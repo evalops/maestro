@@ -6,6 +6,7 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 
 use super::anthropic::AnthropicClient;
+use super::google::GoogleClient;
 use super::openai::OpenAiClient;
 use super::types::*;
 
@@ -16,6 +17,8 @@ pub enum AiProvider {
     OpenAI,
     /// Mistral AI - uses OpenAI-compatible API with special tool handling
     Mistral,
+    /// Google Gemini
+    Google,
 }
 
 impl AiProvider {
@@ -29,6 +32,8 @@ impl AiProvider {
             || model_lower.starts_with("o3")
         {
             AiProvider::OpenAI
+        } else if model_lower.starts_with("gemini") || model_lower.contains("google") {
+            AiProvider::Google
         } else if model_lower.contains("mistral")
             || model_lower.contains("mixtral")
             || model_lower.contains("codestral")
@@ -62,6 +67,8 @@ pub enum UnifiedClient {
     OpenAI(OpenAiClient),
     /// Mistral uses OpenAI client with custom base URL
     Mistral(OpenAiClient),
+    /// Google Gemini
+    Google(GoogleClient),
 }
 
 impl UnifiedClient {
@@ -80,12 +87,18 @@ impl UnifiedClient {
         Ok(Self::Mistral(OpenAiClient::mistral_from_env()?))
     }
 
+    /// Create client for Google Gemini
+    pub fn google() -> Result<Self> {
+        Ok(Self::Google(GoogleClient::from_env()?))
+    }
+
     /// Create client based on provider
     pub fn from_provider(provider: AiProvider) -> Result<Self> {
         match provider {
             AiProvider::Anthropic => Self::anthropic(),
             AiProvider::OpenAI => Self::openai(),
             AiProvider::Mistral => Self::mistral(),
+            AiProvider::Google => Self::google(),
         }
     }
 
@@ -100,6 +113,7 @@ impl UnifiedClient {
             Self::Anthropic(_) => AiProvider::Anthropic,
             Self::OpenAI(_) => AiProvider::OpenAI,
             Self::Mistral(_) => AiProvider::Mistral,
+            Self::Google(_) => AiProvider::Google,
         }
     }
 
@@ -113,6 +127,7 @@ impl UnifiedClient {
             Self::Anthropic(client) => client.stream(messages, config).await,
             Self::OpenAI(client) => client.stream(messages, config).await,
             Self::Mistral(client) => client.stream(messages, config).await,
+            Self::Google(client) => client.stream(messages, config).await,
         }
     }
 }
@@ -173,6 +188,21 @@ mod tests {
         // Case insensitive
         assert_eq!(AiProvider::from_model("Mistral-Large"), AiProvider::Mistral);
         assert_eq!(AiProvider::from_model("MIXTRAL-8x22b"), AiProvider::Mistral);
+    }
+
+    #[test]
+    fn test_provider_from_model_google() {
+        assert_eq!(
+            AiProvider::from_model("gemini-2.0-flash"),
+            AiProvider::Google
+        );
+        assert_eq!(AiProvider::from_model("gemini-2.5-pro"), AiProvider::Google);
+        assert_eq!(
+            AiProvider::from_model("gemini-1.5-pro-latest"),
+            AiProvider::Google
+        );
+        // Case insensitive
+        assert_eq!(AiProvider::from_model("Gemini-Pro"), AiProvider::Google);
     }
 
     #[test]
