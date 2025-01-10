@@ -24,11 +24,22 @@
 //!                                          │ • Owns state     │
 //!                                          │ • Runs AI loop   │
 //!                                          │ • Executes tools │
+//!                                          │ • Safety controls│
 //!                                          └──────────────────┘
 //! ```
 //!
 //! The [`NativeAgent`] type is a cheap, clonable handle held by the TUI.
 //! The runner lives on a Tokio task and owns all mutable agent state.
+//!
+//! # Safety Controls
+//!
+//! The agent includes safety mechanisms to prevent runaway behavior:
+//!
+//! - **Doom loop detection**: Blocks repeated identical tool calls
+//! - **Rate limiting**: Prevents excessive tool invocations per time window
+//! - **Retryable error detection**: Identifies transient errors for auto-retry
+//!
+//! See the [`safety`] module for details.
 //!
 //! # Message types
 //!
@@ -78,6 +89,8 @@
 
 mod native;
 mod protocol;
+pub mod safety;
 
 pub use native::{NativeAgent, NativeAgentConfig, ToolDefinition};
 pub use protocol::{FromAgent, ToAgent, TokenUsage, ToolResult};
+pub use safety::{is_context_overflow, is_retryable_error, SafetyController, SafetyVerdict};
