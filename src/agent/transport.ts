@@ -412,6 +412,40 @@ export class ProviderTransport implements AgentTransport {
 
 	constructor(private options: ProviderTransportOptions = {}) {}
 
+	/**
+	 * Continue from current context without a new user message.
+	 *
+	 * This method reuses the run() logic but skips adding a new user message.
+	 * Useful for:
+	 * - Retrying after transient errors (rate limits, overload, 5xx)
+	 * - Continuing after context compaction
+	 * - Resuming interrupted tool execution
+	 *
+	 * @param messages - Current conversation history
+	 * @param config - Runtime configuration
+	 * @param signal - Optional abort signal for cancellation
+	 * @returns Async iterable of agent events
+	 */
+	async *continue(
+		messages: Message[],
+		config: AgentRunConfig,
+		signal?: AbortSignal,
+	): AsyncGenerator<AgentEvent, void, unknown> {
+		// Create a synthetic "continuation" message that signals we're resuming
+		// This doesn't get added to the conversation but satisfies the run() interface
+		const continuationMessage: Message = {
+			role: "user",
+			content: [
+				{ type: "text", text: "[System: Continuing from previous context]" },
+			],
+			timestamp: Date.now(),
+		};
+
+		// Delegate to run() - the continuation message is used internally
+		// but the actual context comes from the messages array
+		yield* this.run(messages, continuationMessage, config, signal);
+	}
+
 	async *run(
 		messages: Message[],
 		userMessage: Message,

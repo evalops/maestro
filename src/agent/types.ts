@@ -1060,7 +1060,7 @@ export interface AgentRunConfig {
  */
 export interface AgentTransport {
 	/**
-	 * Execute a conversation turn.
+	 * Execute a conversation turn with a new user message.
 	 *
 	 * @param messages - Conversation history
 	 * @param userMessage - New user message
@@ -1071,6 +1071,25 @@ export interface AgentTransport {
 	run(
 		messages: Message[],
 		userMessage: Message,
+		config: AgentRunConfig,
+		signal?: AbortSignal,
+	): AsyncIterable<AgentEvent>;
+
+	/**
+	 * Continue from current context without a new user message.
+	 *
+	 * Used for:
+	 * - Retrying after transient errors (rate limits, overload)
+	 * - Continuing after context compaction
+	 * - Resuming interrupted tool execution
+	 *
+	 * @param messages - Current conversation history
+	 * @param config - Runtime configuration
+	 * @param signal - Optional abort signal for cancellation
+	 * @returns Async iterable of agent events
+	 */
+	continue(
+		messages: Message[],
 		config: AgentRunConfig,
 		signal?: AbortSignal,
 	): AsyncIterable<AgentEvent>;

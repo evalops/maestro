@@ -22,6 +22,25 @@ export class MockToolTransport implements AgentTransport {
 		private readonly buildFinalText: () => string,
 	) {}
 
+	/**
+	 * Continue from current context without a new user message.
+	 * For mock transport, this delegates to run() with a synthetic message.
+	 */
+	async *continue(
+		messages: Message[],
+		config: AgentRunConfig,
+		signal?: AbortSignal,
+	): AsyncGenerator<AgentEvent, void, unknown> {
+		const continuationMessage: Message = {
+			role: "user",
+			content: [
+				{ type: "text", text: "[System: Continuing from previous context]" },
+			],
+			timestamp: Date.now(),
+		};
+		yield* this.run(messages, continuationMessage, config, signal);
+	}
+
 	async *run(
 		_messages: Message[],
 		userMessage: Message,
