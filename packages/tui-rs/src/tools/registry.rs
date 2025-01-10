@@ -404,12 +404,25 @@ impl ToolExecutor {
                 result
             }
             "read" | "Read" => {
-                // File reading tool
+                // File reading tool with optional offset/limit
                 let path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+
+                // Optional line offset (1-indexed, defaults to 1)
+                let offset = args
+                    .get("offset")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.max(1) as usize)
+                    .unwrap_or(1);
+
+                // Optional line limit (defaults to reading all)
+                let limit = args
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize);
 
                 if path.is_empty() {
                     return ToolResult {
@@ -421,11 +434,23 @@ impl ToolExecutor {
 
                 match tokio::fs::read_to_string(path).await {
                     Ok(content) => {
-                        // Add line numbers
-                        let numbered: String = content
-                            .lines()
+                        // Add line numbers with offset/limit support
+                        let lines: Vec<&str> = content.lines().collect();
+                        let total_lines = lines.len();
+
+                        // Apply offset (convert to 0-indexed)
+                        let start_idx = (offset - 1).min(total_lines);
+
+                        // Apply limit
+                        let end_idx = match limit {
+                            Some(lim) => (start_idx + lim).min(total_lines),
+                            None => total_lines,
+                        };
+
+                        let numbered: String = lines[start_idx..end_idx]
+                            .iter()
                             .enumerate()
-                            .map(|(i, line)| format!("{:>6}\t{}", i + 1, line))
+                            .map(|(i, line)| format!("{:>6}\t{}", start_idx + i + 1, line))
                             .collect::<Vec<_>>()
                             .join("\n");
 
@@ -649,6 +674,60 @@ impl ToolExecutor {
                     },
                 }
             }
+            "diff" | "Diff" => {
+                // Git diff tool - shows changes in working tree or between commits
+                let target = args
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("HEAD");
+
+                let path = args.get("path").and_then(|v| v.as_str());
+
+                // Build git diff command
+                let cmd = match path {
+                    Some(p) => format!("git diff {} -- {}", target, p),
+                    None => format!("git diff {}", target),
+                };
+
+                let result = self
+                    .bash
+                    .execute(BashArgs {
+                        command: cmd,
+                        timeout: Some(30000),
+                        description: Some("Get git diff".to_string()),
+                        run_in_background: false,
+                    })
+                    .await;
+
+                result
+            }
+            "list" | "List" | "ls" => {
+                // Directory listing tool
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.cwd);
+
+                let recursive = args
+                    .get("recursive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let cmd = if recursive {
+                    format!("find {} -type f | head -200", path)
+                } else {
+                    format!("ls -la {}", path)
+                };
+
+                self.bash
+                    .execute(BashArgs {
+                        command: cmd,
+                        timeout: Some(10000),
+                        description: Some("List directory".to_string()),
+                        run_in_background: false,
+                    })
+                    .await
+            }
             _ => ToolResult {
                 success: false,
                 output: String::new(),
@@ -871,6 +950,56 @@ impl ToolRegistry {
             },
         );
 
+        // Diff tool - git diff
+        tools.insert(
+            "diff".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "diff",
+                    "Show changes in git working tree or between commits.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "Git ref to diff against (default: HEAD)"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "File or directory path to limit diff to (optional)"
+                        }
+                    },
+                    "required": []
+                })),
+                requires_approval: false,
+            },
+        );
+
+        // List tool - directory listing
+        tools.insert(
+            "list".to_string(),
+            ToolDefinition {
+                tool: Tool::new("list", "List contents of a directory.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Directory path to list (default: current directory)"
+                            },
+                            "recursive": {
+                                "type": "boolean",
+                                "description": "List files recursively (default: false)"
+                            }
+                        },
+                        "required": []
+                    }),
+                ),
+                requires_approval: false,
+            },
+        );
+
         Self { tools }
     }
 
@@ -969,7 +1098,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 6);  // bash, read, write, edit, glob, grep
+    /// assert_eq!(count, 8);  // bash, read, write, edit, glob, grep, diff, list
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {
@@ -1101,7 +1230,7 @@ mod tests {
     fn test_registry_tool_count() {
         let registry = ToolRegistry::new();
         let count = registry.tools().count();
-        assert_eq!(count, 6); // bash, read, write, glob, grep, edit
+        assert_eq!(count, 8); // bash, read, write, glob, grep, edit, diff, list
     }
 
     #[test]
