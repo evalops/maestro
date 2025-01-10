@@ -183,6 +183,18 @@ describe("Agent mock transport", () => {
 		class QueueCaptureTransport implements AgentTransport {
 			public queuedMessages: QueuedMessage<AppMessage>[] = [];
 
+			async *continue(
+				messages: Message[],
+				config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				const msg: Message = {
+					role: "user",
+					content: [{ type: "text", text: "[continue]" }],
+					timestamp: Date.now(),
+				};
+				yield* this.run(messages, msg, config);
+			}
+
 			async *run(
 				_messages: Message[],
 				userMessage: Message,
@@ -261,5 +273,98 @@ describe("Agent mock transport", () => {
 			(chunk) => chunk.type === "text" && chunk.text.includes("[Document"),
 		);
 		expect(docBlock).toBeDefined();
+	});
+
+	it("continue() delegates to run() with synthetic message", async () => {
+		const events: AgentEvent[] = [];
+		let receivedUserMessage: Message | null = null;
+
+		class ContinueTrackingTransport implements AgentTransport {
+			async *continue(
+				messages: Message[],
+				config: AgentRunConfig,
+				signal?: AbortSignal,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				const continuationMessage: Message = {
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: "[System: Continuing from previous context]",
+						},
+					],
+					timestamp: Date.now(),
+				};
+				yield* this.run(messages, continuationMessage, config, signal);
+			}
+
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				receivedUserMessage = userMessage;
+				yield { type: "turn_start" };
+				yield { type: "message_start", message: userMessage };
+				yield { type: "message_end", message: userMessage };
+
+				const assistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "continued" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+				yield { type: "turn_end", message: assistant, toolResults: [] };
+			}
+		}
+
+		const transport = new ContinueTrackingTransport();
+		const config: AgentRunConfig = {
+			model: mockModel,
+			tools: [],
+			systemPrompt: "test",
+		};
+
+		// Collect events from continue()
+		for await (const event of transport.continue([], config)) {
+			events.push(event);
+		}
+
+		// Verify continue() called run() with a synthetic message
+		expect(receivedUserMessage).not.toBeNull();
+		expect(receivedUserMessage?.role).toBe("user");
+
+		// Check that the synthetic message has continuation text
+		const content = receivedUserMessage?.content;
+		expect(Array.isArray(content)).toBe(true);
+		if (Array.isArray(content)) {
+			const textContent = content.find(
+				(c): c is TextContent => c.type === "text",
+			);
+			expect(textContent?.text).toContain("Continuing");
+		}
+
+		// Verify events were emitted
+		expect(events.length).toBeGreaterThan(0);
+		expect(events.some((e) => e.type === "turn_start")).toBe(true);
+		expect(events.some((e) => e.type === "turn_end")).toBe(true);
 	});
 });
