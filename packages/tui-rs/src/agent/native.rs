@@ -95,6 +95,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::safety::{SafetyController, SafetyVerdict};
 use super::{FromAgent, TokenUsage, ToolResult};
 use crate::ai::{
     ContentBlock, Message, MessageContent, RequestConfig, Role, StreamEvent, ThinkingConfig, Tool,
@@ -250,6 +251,12 @@ enum AgentCommand {
     /// Removes all messages from the conversation, starting fresh. Does not
     /// affect configuration (model, thinking, etc.).
     ClearHistory,
+
+    /// Continue from current context without a new user message
+    ///
+    /// Used for retrying after transient errors (rate limits, 5xx errors),
+    /// continuing after context compaction, or resuming interrupted tool execution.
+    Continue,
 }
 
 /// The native agent handle (held by TUI)
@@ -377,6 +384,9 @@ impl NativeAgent {
         let mut hooks = IntegratedHookSystem::load_from_config(&config.cwd);
         hooks.set_model(&config.model);
 
+        // Create safety controller for doom loop and rate limit detection
+        let safety = SafetyController::new();
+
         // Create the background runner
         let runner = NativeAgentRunner {
             client,
@@ -390,6 +400,7 @@ impl NativeAgent {
             busy: false,
             cancel_token: None,
             hooks,
+            safety,
         };
 
         // Spawn the background task
@@ -491,6 +502,23 @@ impl NativeAgent {
             .map_err(|e| anyhow::anyhow!("Failed to set thinking: {}", e))?;
         Ok(())
     }
+
+    /// Continue from current context without a new user message
+    ///
+    /// Used for:
+    /// - Retrying after transient errors (rate limits, 5xx errors, overload)
+    /// - Continuing after context compaction
+    /// - Resuming interrupted tool execution
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the continue command was sent, `Err` if the channel is closed.
+    pub fn continue_execution(&self) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::Continue)
+            .map_err(|e| anyhow::anyhow!("Failed to send continue: {}", e))?;
+        Ok(())
+    }
 }
 
 /// The background agent runner that owns mutable state
@@ -589,6 +617,12 @@ struct NativeAgentRunner {
     /// Executes pre/post tool hooks for safety checks, logging, and context injection.
     /// Loaded from ~/.composer/hooks.toml and .composer/hooks.toml.
     hooks: IntegratedHookSystem,
+
+    /// Safety controller for doom loop and rate limit detection
+    ///
+    /// Prevents runaway agent behavior by blocking repeated identical tool calls
+    /// and excessive tool invocations within a time window.
+    safety: SafetyController,
 }
 
 impl NativeAgentRunner {
@@ -668,6 +702,57 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::ClearHistory => {
                     self.messages.clear();
+                    self.safety.reset(); // Reset doom loop / rate limit state
+                }
+                AgentCommand::Continue => {
+                    // Continue from current context without adding a new user message
+                    // Used for retry after transient errors
+                    if self.busy {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: "Agent is busy".to_string(),
+                            fatal: false,
+                        });
+                        continue;
+                    }
+
+                    // Need at least some history to continue from
+                    if self.messages.is_empty() {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: "Cannot continue: no conversation history".to_string(),
+                            fatal: false,
+                        });
+                        continue;
+                    }
+
+                    self.busy = true;
+                    let cancel_token = CancellationToken::new();
+                    self.cancel_token = Some(cancel_token.clone());
+
+                    // Run the agent loop without adding a user message
+                    let result = tokio::select! {
+                        res = self.run_loop() => res,
+                        _ = cancel_token.cancelled() => {
+                            Err(anyhow::anyhow!("Request cancelled"))
+                        }
+                    };
+
+                    if let Err(e) = result {
+                        let msg = e.to_string();
+                        if msg != "Request cancelled" {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: format!("Agent error: {}", e),
+                                fatal: false,
+                            });
+                        }
+                    }
+
+                    self.busy = false;
+                    self.cancel_token = None;
+
+                    let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                        response_id: "continue".to_string(),
+                        usage: None,
+                    });
                 }
             }
         }
@@ -866,6 +951,37 @@ impl NativeAgentRunner {
                         continue;
                     }
 
+                    // Check safety controls (doom loop and rate limiting)
+                    match self.safety.check_tool_call(&tool_name, &args) {
+                        SafetyVerdict::Allow => {
+                            // Proceed with tool execution
+                        }
+                        SafetyVerdict::BlockDoomLoop { reason } => {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: reason.clone(),
+                                fatal: false,
+                            });
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: call_id,
+                                content: reason,
+                                is_error: Some(true),
+                            });
+                            continue;
+                        }
+                        SafetyVerdict::BlockRateLimit { reason } => {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: reason.clone(),
+                                fatal: false,
+                            });
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: call_id,
+                                content: reason,
+                                is_error: Some(true),
+                            });
+                            continue;
+                        }
+                    }
+
                     // Execute PreToolUse hooks
                     let hook_result = self.hooks.execute_pre_tool_use(&tool_name, &call_id, &args);
 
@@ -964,6 +1080,9 @@ impl NativeAgentRunner {
                     } else {
                         ("Tool call was denied by user".to_string(), true)
                     };
+
+                    // Record tool call for safety tracking (doom loop / rate limit)
+                    self.safety.record_tool_call(&tool_name, &args);
 
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: call_id,
