@@ -3,6 +3,7 @@ export type Mode = "text" | "json" | "rpc";
 export interface Args {
 	provider?: string;
 	model?: string;
+	modelsFile?: string;
 	apiKey?: string;
 	systemPrompt?: string;
 	continue?: boolean;
@@ -37,6 +38,8 @@ export function parseArgs(args: string[]): Args {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
 			result.model = args[++i];
+		} else if (arg === "--models-file" && i + 1 < args.length) {
+			result.modelsFile = args[++i];
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {

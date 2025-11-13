@@ -6,12 +6,6 @@ import {
 	ProviderTransport,
 	type ThinkingLevel,
 } from "@mariozechner/pi-agent";
-import {
-	type Api,
-	type KnownProvider,
-	type Model,
-	getModel,
-} from "@mariozechner/pi-ai";
 import chalk from "chalk";
 import { type Args, type Mode, parseArgs } from "./cli/args.js";
 import { printHelp } from "./cli/help.js";
@@ -24,6 +18,14 @@ import { loadEnv } from "./load-env.js";
 import { SessionManager } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
+import {
+	getCustomConfigPath,
+	getCustomProviderMetadata,
+	getRegisteredModels,
+	getSupportedProviders,
+	reloadModelConfig,
+	resolveModel,
+} from "./models/registry.js";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -33,7 +35,7 @@ const packageJson = JSON.parse(
 );
 const VERSION = packageJson.version;
 
-const envApiKeyMap: Record<KnownProvider, string[]> = {
+const envApiKeyMap: Record<string, string[]> = {
 	google: ["GEMINI_API_KEY"],
 	openai: ["OPENAI_API_KEY"],
 	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
@@ -43,13 +45,6 @@ const envApiKeyMap: Record<KnownProvider, string[]> = {
 	openrouter: ["OPENROUTER_API_KEY"],
 	zai: ["ZAI_API_KEY"],
 };
-
-function isKnownProvider(value: string): value is KnownProvider {
-	return value in envApiKeyMap;
-}
-
-const resolveModel = (provider: KnownProvider, modelId: string): Model<Api> =>
-	getModel(provider, modelId as never) as Model<Api>;
 
 async function runInteractiveMode(
 	agent: Agent,
@@ -193,10 +188,23 @@ export async function main(args: string[]) {
 	}
 
 	// Determine provider and model
-	const provider: KnownProvider =
-		parsed.provider && isKnownProvider(parsed.provider)
-			? parsed.provider
-			: "anthropic";
+	if (parsed.modelsFile) {
+		process.env.COMPOSER_MODELS_FILE = parsed.modelsFile;
+		reloadModelConfig();
+	}
+
+	const provider = parsed.provider ?? "anthropic";
+	const supportedProviders = new Set(getSupportedProviders());
+	if (!supportedProviders.has(provider)) {
+		console.error(
+			chalk.red(
+				`Unknown provider "${provider}". Supported providers: ${Array.from(supportedProviders)
+					.sort()
+					.join(", ")}`,
+			),
+		);
+		process.exit(1);
+	}
 	const modelId = parsed.model || "claude-sonnet-4-5";
 
 	// Helper function to get API key for a provider
@@ -206,14 +214,22 @@ export async function main(args: string[]) {
 			return parsed.apiKey;
 		}
 
-		const envVars = envApiKeyMap[providerName as KnownProvider];
+		const envVars = envApiKeyMap[providerName];
 
 		// Check each environment variable in priority order
-		for (const envVar of envVars) {
+		for (const envVar of envVars ?? []) {
 			const key = process.env[envVar];
 			if (key) {
 				return key;
 			}
+		}
+
+		const customMeta = getCustomProviderMetadata(providerName);
+		if (customMeta?.apiKey) {
+			return customMeta.apiKey;
+		}
+		if (customMeta?.apiKeyEnv) {
+			return process.env[customMeta.apiKeyEnv];
 		}
 
 		return undefined;
@@ -222,19 +238,36 @@ export async function main(args: string[]) {
 	// Get initial API key
 	const initialApiKey = getApiKeyForProvider(provider);
 	if (!initialApiKey) {
-		const envVars = envApiKeyMap[provider];
-		const envVarList = envVars.join(" or ");
 		console.error(
 			chalk.red(`Error: No API key found for provider "${provider}"`),
 		);
-		console.error(
-			chalk.dim(`Set ${envVarList} environment variable or use --api-key flag`),
-		);
+		const envVars = envApiKeyMap[provider] ?? [];
+		if (envVars.length) {
+			const envVarList = envVars.join(" or ");
+			console.error(
+				chalk.dim(`Set ${envVarList} environment variable or use --api-key flag`),
+			);
+		} else {
+			const customMeta = getCustomProviderMetadata(provider);
+			if (customMeta?.apiKeyEnv) {
+				console.error(
+					chalk.dim(
+						`Set ${customMeta.apiKeyEnv} environment variable or provide --api-key for ${provider}`,
+					),
+				);
+			}
+		}
 		process.exit(1);
 	}
 
 	// Create agent
 	const model = resolveModel(provider, modelId);
+	if (!model) {
+		console.error(
+			chalk.red(`Unknown model "${provider}/${modelId}". Check your models config.`),
+		);
+		process.exit(1);
+	}
 	const systemPrompt = buildSystemPrompt(parsed.systemPrompt);
 
 	const agent = new Agent({
