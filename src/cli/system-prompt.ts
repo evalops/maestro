@@ -128,11 +128,13 @@ export function buildSystemPrompt(customPrompt?: string): string {
 
 Available tools:
 - read: Read file contents
+- list: List files and directories safely using glob patterns
+- search: Search files with ripgrep (pattern, glob, context options)
+- diff: Inspect git diffs (workspace, staged, or revision ranges)
 - bash: Execute bash commands (ls, grep, find, etc.)
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
-- list: List files and directories safely using glob patterns
-- todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] } (items may also be a JSON string that parses to that array).
+- todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] } (items may also be a JSON string) and optionally supply updates [{ id: "...", status: "completed" }] to check off existing tasks.
 
 Guidelines:
 - Always use bash tool for file operations like ls, grep, find
@@ -140,7 +142,9 @@ Guidelines:
 - Use edit for precise changes (old text must match exactly)
 - Use write only for new files or complete rewrites
 - Use list to inspect directory structures when you only need filenames
-- Use todo when you need a structured task list; supply a goal plus an items array shaped like TodoWrite entries.
+- Use search to locate relevant files or symbols before editing
+- Use diff to review pending changes before summarizing or committing
+- Use todo when you need a structured task list; supply a goal plus an items array shaped like TodoWrite entries or updates for existing tasks
 - Be concise in your responses
 - Show file paths clearly when working with files`;
 

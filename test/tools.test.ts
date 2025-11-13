@@ -1,11 +1,14 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bashTool } from "../src/tools/bash.js";
+import { diffTool } from "../src/tools/diff.js";
 import { editTool } from "../src/tools/edit.js";
 import { listTool } from "../src/tools/list.js";
 import { readTool } from "../src/tools/read.js";
+import { searchTool } from "../src/tools/search.js";
 import { todoTool } from "../src/tools/todo.js";
 import { writeTool } from "../src/tools/write.js";
 
@@ -26,11 +29,13 @@ describe("Composer Tools", () => {
 		// Create a unique temporary directory for each test
 		testDir = join(tmpdir(), `composer-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
+		process.env.COMPOSER_TODO_FILE = join(testDir, "todos.json");
 	});
 
 	afterEach(() => {
 		// Clean up test directory
 		rmSync(testDir, { recursive: true, force: true });
+		process.env.COMPOSER_TODO_FILE = undefined;
 	});
 
 	describe("list tool", () => {
@@ -324,6 +329,101 @@ describe("Composer Tools", () => {
 		});
 	});
 
+	describe("diff tool", () => {
+		const tempFile = join(process.cwd(), "tmp-diff-tool.txt");
+
+		afterEach(() => {
+			try {
+				execSync(`git reset HEAD -- "${tempFile}"`, { stdio: "ignore" });
+			} catch (error) {
+				// Ignore reset errors (file may not be staged)
+			}
+			if (existsSync(tempFile)) {
+				rmSync(tempFile, { force: true });
+			}
+		});
+
+		it("shows staged changes for new files", async () => {
+			writeFileSync(tempFile, "diff staged example\n");
+			execSync(`git add "${tempFile}"`);
+
+			const result = await diffTool.execute("diff-call-1", {
+				staged: true,
+				paths: tempFile,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("diff --git");
+			expect(output).toContain("tmp-diff-tool.txt");
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("git diff"),
+				}),
+			);
+		});
+
+		it("shows workspace changes with context", async () => {
+			writeFileSync(tempFile, "Original line\n");
+			execSync(`git add "${tempFile}"`);
+			writeFileSync(tempFile, "Original line\nUpdated line\n");
+
+			const result = await diffTool.execute("diff-call-2", {
+				context: 2,
+				paths: tempFile,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Updated line");
+			expect(output).toContain("Original line");
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("git diff"),
+				}),
+			);
+		});
+	});
+
+	describe("search tool", () => {
+		it("finds matches with optional glob and context", async () => {
+			const searchFile = join(testDir, "search-fixture.ts");
+			writeFileSync(
+				searchFile,
+				"export function alpha() {}\n// TODO: implement beta\nconst gamma = 42;\n",
+			);
+
+			const result = await searchTool.execute("search-call-1", {
+				pattern: "beta",
+				paths: searchFile,
+				glob: "*.ts",
+				context: 1,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("search-fixture.ts");
+			expect(output).toMatch(/\d+:\/\/ TODO: implement beta/);
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("rg"),
+				}),
+			);
+		});
+
+		it("returns a friendly message when no matches are found", async () => {
+			const result = await searchTool.execute("search-call-2", {
+				pattern: "no-such-pattern",
+				paths: testDir,
+				ignoreCase: true,
+			});
+
+			expect(getTextOutput(result)).toBe("No matches found.");
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("rg"),
+				}),
+			);
+		});
+	});
+
 	describe("todo tool", () => {
 		it("produces a summary checklist with default statuses", async () => {
 			const result = await todoTool.execute("todo-call-1", {
@@ -342,12 +442,15 @@ describe("Composer Tools", () => {
 			expect(output).toContain("Completed: 0");
 			expect(output).toMatch(/1\. \[ \] Design onboarding screens/);
 			expect(output).toMatch(/2\. \[~\] Implement API endpoints/);
-			expect(result.details).toEqual({
-				pending: 1,
-				in_progress: 1,
-				completed: 0,
-				total: 2,
-			});
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					pending: 1,
+					in_progress: 1,
+					completed: 0,
+					total: 2,
+					items: expect.any(Array),
+				}),
+			);
 		});
 
 		it("includes extended metadata when supplied", async () => {
@@ -379,12 +482,15 @@ describe("Composer Tools", () => {
 			expect(output).toContain("Notes: Coordinate with SRE for failover test");
 			expect(output).toContain('Blocked by: "payments-audit"');
 			expect(output).toMatch(/2\. \[x\] Add Grafana alerts/);
-			expect(result.details).toEqual({
-				pending: 0,
-				in_progress: 1,
-				completed: 1,
-				total: 2,
-			});
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					pending: 0,
+					in_progress: 1,
+					completed: 1,
+					total: 2,
+					items: expect.any(Array),
+				}),
+			);
 		});
 
 		it("parses JSON string payloads", async () => {
@@ -406,12 +512,59 @@ describe("Composer Tools", () => {
 			expect(output).toContain("Goal: Audit repository");
 			expect(output).toMatch(/1\. \[ \] Review directory structure/);
 			expect(output).toMatch(/2\. \[x\] Summarize findings/);
-			expect(result.details).toEqual({
-				pending: 1,
-				in_progress: 0,
-				completed: 1,
-				total: 2,
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					pending: 1,
+					in_progress: 0,
+					completed: 1,
+					total: 2,
+					items: expect.any(Array),
+				}),
+			);
+		});
+
+		it("updates existing tasks via ids", async () => {
+			const goal = "Launch mobile app";
+			await todoTool.execute("todo-call-4", {
+				goal,
+				items: [
+					{ id: "design", content: "Finalize UI mockups", priority: "high" },
+					{
+						id: "qa",
+						content: "Complete regression suite",
+						status: "in_progress",
+					},
+				],
 			});
+
+			const updated = await todoTool.execute("todo-call-5", {
+				goal,
+				updates: [
+					{
+						id: "design",
+						status: "completed",
+						notes: "Approved by design team",
+					},
+					{ id: "qa", status: "completed" },
+				],
+			});
+
+			const output = getTextOutput(updated);
+			expect(output).toMatch(/1\. \[x\] Finalize UI mockups/);
+			expect(output).toMatch(/Notes: Approved by design team/);
+			expect(output).toMatch(/2\. \[x\] Complete regression suite/);
+			expect(updated.details).toEqual(
+				expect.objectContaining({
+					pending: 0,
+					in_progress: 0,
+					completed: 2,
+					total: 2,
+					items: expect.arrayContaining([
+						expect.objectContaining({ id: "design", status: "completed" }),
+						expect.objectContaining({ id: "qa", status: "completed" }),
+					]),
+				}),
+			);
 		});
 	});
 });

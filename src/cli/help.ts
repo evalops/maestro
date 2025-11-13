@@ -1,7 +1,7 @@
 import chalk from "chalk";
 
 export function printHelp(version: string) {
-	console.log(`${chalk.bold("Composer")} v${version} by EvalOps - AI coding assistant with read, bash, edit, write, list tools
+	console.log(`${chalk.bold("Composer")} v${version} by EvalOps - AI coding assistant with read, list, search, diff, bash, edit, write, todo tools
 
 ${chalk.bold("Usage:")}
   composer [options] [messages...]
@@ -43,10 +43,12 @@ ${chalk.bold("Environment Variables:")}
 
 ${chalk.bold("Available Tools:")}
   read   - Read file contents
+  list   - List files in a directory
+  search - Search files with ripgrep-style filtering
+  diff   - Show git diffs (workspace, staged, or ranges)
   bash   - Execute bash commands
   edit   - Edit files with find/replace
   write  - Write files (creates/overwrites)
-  list   - List files in a directory
   todo   - Create TodoWrite-style checklists
 `);
 }

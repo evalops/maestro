@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { createZodTool } from "./zod-tool.js";
 
@@ -56,7 +60,6 @@ const todoItemSchema = z
 					.string({ description: "Task or dependency blocking progress" })
 					.min(1, "Blocker description must not be empty"),
 			)
-			.nonempty()
 			.optional(),
 	})
 	.strict();
@@ -117,18 +120,63 @@ const itemsInputSchema = z
 		return value;
 	});
 
-const todoSchema = z
+const updateSchema = z
+	.object({
+		id: z
+			.string({ description: "Identifier of the task to update" })
+			.min(1, "Update must reference a task id"),
+		status: z
+			.enum(["pending", "in_progress", "completed"], {
+				description: "New status for the task",
+			})
+			.optional(),
+		priority: z
+			.enum(["high", "medium", "low"], {
+				description: "New priority for the task",
+			})
+			.optional(),
+		notes: z
+			.string({ description: "Replace notes associated with the task" })
+			.optional(),
+		due: z.string({ description: "Replace due date or milestone" }).optional(),
+		blockedBy: z
+			.array(
+				z
+					.string({ description: "Replace blockers list" })
+					.min(1, "Blocker description must not be empty"),
+			)
+			.optional(),
+		content: z
+			.string({ description: "Replace the task description" })
+			.optional(),
+		remove: z.boolean({ description: "Remove the task entirely" }).optional(),
+	})
+	.strict();
+
+const todoSchemaBase = z
 	.object({
 		goal: z
 			.string({ description: "Overall objective for this checklist" })
 			.min(1, "Goal must not be empty"),
-		items: itemsInputSchema,
+		items: itemsInputSchema.optional(),
+		updates: z
+			.array(updateSchema, {
+				description:
+					"Updates to apply to existing tasks (identified by their id)",
+			})
+			.nonempty()
+			.optional(),
 		includeSummary: z
 			.boolean({ description: "Include status summary section" })
 			.optional()
 			.default(true),
 	})
 	.strict();
+
+const todoSchema = todoSchemaBase.refine(
+	(data) => data.items !== undefined || data.updates !== undefined,
+	"Provide items to create a checklist or updates to modify an existing one",
+);
 
 const formatPriority = (priority: string | undefined) => {
 	if (!priority) {
@@ -137,30 +185,127 @@ const formatPriority = (priority: string | undefined) => {
 	return priorityLabels[priority as keyof typeof priorityLabels];
 };
 
+type NormalizedTodo = {
+	id: string;
+	content: z.infer<typeof todoItemSchema>["content"];
+	status: z.infer<typeof todoItemSchema>["status"];
+	priority: z.infer<typeof todoItemSchema>["priority"];
+	notes?: z.infer<typeof todoItemSchema>["notes"];
+	due?: z.infer<typeof todoItemSchema>["due"];
+	blockedBy?: z.infer<typeof todoItemSchema>["blockedBy"];
+};
+
+type TodoStore = Record<
+	string,
+	{ goal: string; items: NormalizedTodo[]; updatedAt: string }
+>;
+
+const defaultStorePath =
+	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
+
+async function ensureParentDirectory(filePath: string) {
+	await mkdir(dirname(filePath), { recursive: true });
+}
+
+async function loadStore(): Promise<TodoStore> {
+	try {
+		const raw = await readFile(defaultStorePath, "utf-8");
+		const parsed = JSON.parse(raw) as TodoStore;
+		return parsed;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+			return {};
+		}
+		throw error;
+	}
+}
+
+async function saveStore(store: TodoStore): Promise<void> {
+	await ensureParentDirectory(defaultStorePath);
+	await writeFile(
+		defaultStorePath,
+		`${JSON.stringify(store, null, 2)}\n`,
+		"utf-8",
+	);
+}
+
+function normalizeItems(
+	items: Array<z.infer<typeof todoItemSchema>>,
+): NormalizedTodo[] {
+	return items.map((item) => ({
+		id: item.id ?? randomUUID(),
+		content: item.content,
+		status: item.status ?? "pending",
+		priority: item.priority ?? "medium",
+		notes: item.notes,
+		due: item.due,
+		blockedBy: item.blockedBy,
+	}));
+}
+
+function applyUpdates(
+	items: NormalizedTodo[],
+	updates: Array<z.infer<typeof updateSchema>>,
+): NormalizedTodo[] {
+	const indexById = new Map(
+		items.map((item, index) => [item.id, index] as const),
+	);
+	let result = [...items];
+
+	for (const update of updates) {
+		const targetIndex = indexById.get(update.id);
+		if (targetIndex === undefined) {
+			throw new Error(`No task found with id "${update.id}" for this goal`);
+		}
+		if (update.remove) {
+			result = result.filter((item) => item.id !== update.id);
+			indexById.delete(update.id);
+			continue;
+		}
+		const existing = result[targetIndex];
+		result[targetIndex] = {
+			...existing,
+			status: update.status ?? existing.status,
+			priority: update.priority ?? existing.priority,
+			notes: update.notes ?? existing.notes,
+			due: update.due ?? existing.due,
+			blockedBy: update.blockedBy ?? existing.blockedBy,
+			content: update.content ?? existing.content,
+		};
+	}
+
+	return result;
+}
+
 export const todoTool = createZodTool({
 	name: "todo",
 	label: "todo",
 	description:
-		"Create a status-rich checklist for a coding objective, mirroring TodoWrite semantics (id, content, status, priority).",
+		"Create or update a status-rich checklist for a coding objective, mirroring TodoWrite semantics (id, content, status, priority).",
 	schema: todoSchema,
 	async execute(_toolCallId, params) {
-		const { goal, items, includeSummary } = params;
+		const { goal, items, updates, includeSummary } = params;
 
-		const normalized = items.map((item, index) => {
-			const status = item.status ?? "pending";
-			const priority = item.priority ?? "medium";
-			return {
-				id: item.id ?? String(index + 1),
-				content: item.content,
-				status,
-				priority,
-				notes: item.notes,
-				due: item.due,
-				blockedBy: item.blockedBy,
-			};
-		});
+		const store = await loadStore();
+		const existing = store[goal] ?? {
+			goal,
+			items: [] as NormalizedTodo[],
+			updatedAt: new Date(0).toISOString(),
+		};
 
-		const counts = normalized.reduce(
+		let workingItems = items ? normalizeItems(items) : [...existing.items];
+
+		if (!items && workingItems.length === 0) {
+			throw new Error(
+				"No existing checklist found for this goal. Provide items to create one before sending updates.",
+			);
+		}
+
+		if (updates) {
+			workingItems = applyUpdates(workingItems, updates);
+		}
+
+		const counts = workingItems.reduce(
 			(acc, item) => {
 				acc[item.status] += 1;
 				acc.total += 1;
@@ -178,7 +323,7 @@ Completed: ${counts.completed}`,
 				]
 			: [];
 
-		const todosSection = normalized
+		const todosSection = workingItems
 			.map((item, index) => {
 				const symbol = statusSymbols[item.status as StatusKey];
 				const friendlyPriority = formatPriority(item.priority);
@@ -223,9 +368,16 @@ ${detailLines.join("\n")}`;
 ${todosSection}`,
 		];
 
+		store[goal] = {
+			goal,
+			items: workingItems,
+			updatedAt: new Date().toISOString(),
+		};
+		await saveStore(store);
+
 		return {
 			content: [{ type: "text", text: sections.join("\n\n") }],
-			details: counts,
+			details: { ...counts, items: workingItems },
 		};
 	},
 });

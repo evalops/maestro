@@ -318,26 +318,35 @@ composer --provider openai --model gpt-4o "Help me refactor this code"
 
 ### Built-in Tools
 
-The agent has access to five core tools for working with your codebase:
+The agent has access to eight core tools for working with your codebase:
 
 **read**
 Read file contents. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, defaults to first 2000 lines. Use offset/limit parameters for large files. Lines longer than 2000 characters are truncated.
 
-**write**
-Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.
+**list**
+List directory contents with glob filtering, hidden file toggles, and result limits. Useful for understanding project structure.
 
-**edit**
-Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits. Returns an error if the text appears multiple times or isn't found.
+**search**
+Search across files using ripgrep. Supports regex or literal strings, glob filters, case sensitivity, context lines, and match limits.
+
+**diff**
+Inspect git diffs from the workspace, staged index, or arbitrary revision ranges. Supports context controls, filename-only views, and word-diff mode.
 
 **bash**
 Execute a bash command in the current working directory. Returns stdout and stderr. Optionally accepts a `timeout` parameter (in seconds) - no default timeout.
 
+**edit**
+Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits. Returns an error if the text appears multiple times or isn't found.
+
+**write**
+Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.
+
 **todo**
-Create a status-rich checklist for a coding goal. Mirrors the structure of TodoWrite items (id, status, priority) and surfaces blockers, due dates, and notes alongside a summary of pending/in-progress/completed work. Accepts either an array of task objects or a JSON-stringified array for easy pasting from other tools.
+Create or update a status-rich checklist for a coding goal. Mirrors the structure of TodoWrite items (id, status, priority) and surfaces blockers, due dates, and notes alongside a summary of pending/in-progress/completed work. Accepts either an array of task objects or a JSON-stringified array for easy pasting, and stores checklists in `~/.composer/todos.json` (override with `COMPOSER_TODO_FILE`). Pass an `updates` array with task IDs to mark items complete, edit notes, or remove entries.
 
 ### MCP & Adding Your Own Tools
 
-**Composer does and will not support MCP.** Instead, it relies on the five built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
+**Composer does and will not support MCP.** Instead, it relies on the eight built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
 
 **Here's the gist:**
 
@@ -444,7 +453,7 @@ If you need parallel work on independent tasks, manually run multiple `composer`
 
 ## To-Dos & Planning
 
-Composer includes a built-in `todo` tool for quick, structured checklists. Provide a goal plus an array of TodoWrite-style items (with status, priority, blockers, notes, and due dates) and the agent will return a numbered plan, status summary, and metadata in plain text.
+Composer includes a built-in `todo` tool for quick, structured checklists. Provide a goal plus an array of TodoWrite-style items (with status, priority, blockers, notes, and due dates) and the agent will return a numbered plan, status summary, and metadata in plain text. Checklists are persisted under `~/.composer/todos.json`, and you can send an `updates` array with task IDs to mark items complete, change priorities, or remove finished work without resupplying the full list.
 
 For work that needs to persist across sessions, keep using project files like `TODO.md` or `PLAN.md` alongside version control. The agent can read and update those documents just like any other file, giving you durable history plus the convenience of auto-generated checklists when you need them.
 
