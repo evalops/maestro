@@ -2,6 +2,8 @@
 
 Playwright is a radically simple and opinionated coding agent with multi-model support (including mid-session switching), a powerful headless CLI, and the creature comforts you expect from modern coding copilots.
 
+> Huge thanks to [Mario Zechner](https://github.com/badlogic) and the original [pi coding agent](https://github.com/badlogic/pi-coding-agent). Playwright is an EvalOps fork that layers in additional evaluation workflows and automation on top of Mario's excellent foundation.
+
 Works on Linux, macOS, and Windows (barely tested, needs Git Bash running in the "modern" Windows Terminal).
 
 ## Installation
