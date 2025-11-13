@@ -2,6 +2,12 @@ import { resolve as resolvePath } from "node:path";
 import type { TextContent } from "@mariozechner/pi-ai";
 import { glob } from "glob";
 import { z } from "zod";
+import {
+	zLimitParameter,
+	zOptionalBooleanFlag,
+	zOptionalPathParameter,
+	zPatternParameter,
+} from "./schema-helpers.js";
 import { createZodTool } from "./zod-tool.js";
 
 function expandPath(path: string): string {
@@ -19,33 +25,19 @@ const MAX_LIMIT = 500;
 
 const listSchema = z
 	.object({
-		path: z
-			.string({
-				description:
-					"Directory to list (relative or absolute). Defaults to current directory.",
-			})
-			.min(1, "Path must not be empty")
-			.optional(),
-		pattern: z
-			.string({
-				description: "Glob pattern relative to the directory. Defaults to *",
-			})
-			.min(1, "Pattern must not be empty")
-			.optional(),
-		limit: z
-			.number({
-				description:
-					"Maximum number of entries to return (1-500). Defaults to 200.",
-			})
-			.int()
-			.min(1)
-			.max(MAX_LIMIT)
-			.optional(),
-		includeHidden: z
-			.boolean({
-				description: "Whether to include dotfiles (hidden files)",
-			})
-			.optional(),
+		path: zOptionalPathParameter(
+			"Directory to list (relative or absolute). Defaults to current directory.",
+		),
+		pattern: zPatternParameter(
+			"Glob pattern relative to the directory. Defaults to *",
+		).optional(),
+		limit: zLimitParameter(
+			MAX_LIMIT,
+			"Maximum number of entries to return (1-500). Defaults to 200.",
+		).optional(),
+		includeHidden: zOptionalBooleanFlag(
+			"Whether to include dotfiles (hidden files)",
+		),
 	})
 	.strict();
 

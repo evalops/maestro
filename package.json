@@ -19,6 +19,7 @@
 	"lint": "biome check .",
 	"check": "npm run lint && tsc --noEmit",
 	"evals": "npm run build && node scripts/run-evals.js",
+	"telemetry:report": "node scripts/telemetry-report.js",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},

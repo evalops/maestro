@@ -4,6 +4,7 @@ import * as os from "node:os";
 import { extname, resolve as resolvePath } from "node:path";
 import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
 import { z } from "zod";
+import { zPathParameter } from "./schema-helpers.js";
 import { createZodTool } from "./zod-tool.js";
 
 /**
@@ -40,11 +41,7 @@ function isImageFile(filePath: string): string | null {
 
 const readSchema = z
 	.object({
-		path: z
-			.string({
-				description: "Path to the file to read (relative or absolute)",
-			})
-			.min(1, "Path must not be empty"),
+		path: zPathParameter("Path to the file to read (relative or absolute)"),
 		offset: z
 			.number({ description: "Line number to start reading from (1-indexed)" })
 			.int()

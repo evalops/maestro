@@ -21,18 +21,24 @@ try {
 }
 
 async function runScenario(scenario) {
+	const env = { ...process.env, ...scenario.env };
 	const args = Array.isArray(scenario.args) ? [...scenario.args] : [];
 	const messages = Array.isArray(scenario.messages)
 		? [...scenario.messages]
 		: [];
 
-	const launchArgs = ["--enable-source-maps", cliPath, ...args, ...messages];
+	let command = "node";
+	let launchArgs = ["--enable-source-maps", cliPath, ...args, ...messages];
+
+	if (Array.isArray(scenario.command) && scenario.command.length > 0) {
+		[command, ...launchArgs] = scenario.command;
+	}
 
 	const { exitCode, stdout, stderr } = await new Promise((resolve) => {
-		const child = spawn("node", launchArgs, {
+		const child = spawn(command, launchArgs, {
 			cwd: projectRoot,
 			stdio: ["ignore", "pipe", "pipe"],
-			env: process.env,
+			env,
 		});
 
 		let capturedStdout = "";

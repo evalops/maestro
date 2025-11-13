@@ -389,6 +389,8 @@ Playwright ships with an optional telemetry layer so you can analyze tool usage 
 - `PLAYWRIGHT_TELEMETRY=true` – enable telemetry and write events to `~/.playwright/telemetry.log`.
 - `PLAYWRIGHT_TELEMETRY_FILE=/path/to/log.ndjson` – customise the local log destination.
 - `PLAYWRIGHT_TELEMETRY_ENDPOINT=https://example.com/hook` – POST every event as JSON to your ingestion endpoint.
+- `PLAYWRIGHT_TELEMETRY_SAMPLE=0.25` – only record roughly 25% of events for ultra-light installs (set to `0` to disable while keeping other settings intact).
+- `npm run telemetry:report` – summarise success rates and durations from the current telemetry log.
 
 The payloads capture tool name, success flag, execution duration, and any evaluation results. Transport failures are ignored so telemetry never blocks day-to-day workflows.
 

@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import { dirname, resolve as resolvePath } from "node:path";
 import { z } from "zod";
+import { zPathParameter } from "./schema-helpers.js";
 import { createZodTool } from "./zod-tool.js";
 
 /**
@@ -19,11 +20,7 @@ function expandPath(filePath: string): string {
 
 const writeSchema = z
 	.object({
-		path: z
-			.string({
-				description: "Path to the file to write (relative or absolute)",
-			})
-			.min(1, "Path must not be empty"),
+		path: zPathParameter("Path to the file to write (relative or absolute)"),
 		content: z
 			.string({ description: "Content to write to the file" })
 			.default(""),

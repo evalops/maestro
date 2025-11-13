@@ -40,6 +40,20 @@ const shouldEnableTelemetry = (): boolean => {
 
 const telemetryEnabled = shouldEnableTelemetry();
 
+const parseSamplingRate = (): number => {
+	const raw = process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
+	if (!raw) {
+		return 1;
+	}
+	const rate = Number.parseFloat(raw);
+	if (Number.isNaN(rate)) {
+		return 1;
+	}
+	return Math.min(Math.max(rate, 0), 1);
+};
+
+const samplingRate = parseSamplingRate();
+
 const defaultTelemetryFile = join(homedir(), ".playwright", "telemetry.log");
 
 async function writeToFile(payload: string) {
@@ -84,7 +98,11 @@ async function persistTelemetry(event: TelemetryEvent) {
 }
 
 export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
-	if (!telemetryEnabled) {
+	if (!telemetryEnabled || samplingRate === 0) {
+		return;
+	}
+
+	if (samplingRate < 1 && Math.random() > samplingRate) {
 		return;
 	}
 
