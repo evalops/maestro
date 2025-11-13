@@ -34,6 +34,7 @@ import { ModelSelectorComponent } from "./model-selector.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
+import { WelcomeAnimation } from "./welcome-animation.js";
 
 /**
  * TUI renderer for the coding agent
@@ -72,6 +73,9 @@ export class TuiRenderer {
 
 	// Track if this is the first user message (to skip spacer)
 	private isFirstUserMessage = true;
+
+	// Welcome animation shown before first interaction
+	private welcomeAnimation: WelcomeAnimation | null = null;
 
 	constructor(
 		agent: Agent,
@@ -160,6 +164,11 @@ export class TuiRenderer {
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(header);
 		this.ui.addChild(new Spacer(1));
+		
+		// Show welcome animation initially
+		this.welcomeAnimation = new WelcomeAnimation(() => this.ui.requestRender());
+		this.chatContainer.addChild(this.welcomeAnimation);
+		
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(new Spacer(1));
@@ -183,6 +192,13 @@ export class TuiRenderer {
 		this.editor.onSubmit = (text: string) => {
 			const trimmed = text.trim();
 			if (!trimmed) return;
+
+			// Remove welcome animation on first input
+			if (this.welcomeAnimation) {
+				this.welcomeAnimation.stop();
+				this.chatContainer.clear();
+				this.welcomeAnimation = null;
+			}
 
 			// Check for /thinking command
 			if (trimmed === "/thinking") {
