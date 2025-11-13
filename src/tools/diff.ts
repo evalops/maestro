@@ -119,7 +119,11 @@ export const diffTool = createZodTool({
 		const { staged, range, context, stat, wordDiff, nameOnly, paths } = params;
 
 		const pathArgs = normalizePaths(paths);
-		const args = ["diff", "--no-color"];
+		const args = ["diff"];
+
+		if (!wordDiff) {
+			args.push("--no-color");
+		}
 
 		if (stat) {
 			args.push("--stat");
