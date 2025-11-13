@@ -1,5 +1,4 @@
-import type { AgentState } from "@mariozechner/pi-agent";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AgentState, AssistantMessage } from "../agent/types.js";
 import { visibleWidth } from "@mariozechner/pi-tui";
 import chalk from "chalk";
 

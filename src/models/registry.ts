@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { Api, Model, Provider } from "@mariozechner/pi-ai";
-import { getModel, getModels, getProviders } from "@mariozechner/pi-ai";
+import type { Api, Model, Provider } from "../agent/types.js";
+import { getModel, getModels, getProviders } from "./builtin.js";
 import { z } from "zod";
 
 const COST_DEFAULT = {

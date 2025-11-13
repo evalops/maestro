@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import type { AgentState } from "@mariozechner/pi-agent";
+import type { AgentState } from "../agent/types.js";
 import type { SessionModelMetadata } from "../session-manager.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import type { TelemetryStatus } from "../telemetry.js";
@@ -42,10 +42,14 @@ function formatProviderSection(
 		);
 	}
 	if (modelMetadata?.maxTokens) {
-		parts.push(`${chalk.dim("Max Tokens")}: ${modelMetadata.maxTokens.toLocaleString()}`);
+		parts.push(
+			`${chalk.dim("Max Tokens")}: ${modelMetadata.maxTokens.toLocaleString()}`,
+		);
 	}
 	if (modelMetadata?.reasoning !== undefined) {
-		parts.push(`${chalk.dim("Reasoning")}: ${modelMetadata.reasoning ? "yes" : "no"}`);
+		parts.push(
+			`${chalk.dim("Reasoning")}: ${modelMetadata.reasoning ? "yes" : "no"}`,
+		);
 	}
 	return parts.join("\n");
 }
@@ -85,7 +89,9 @@ function formatApiKeySection(
 
 function formatTelemetrySection(status: TelemetryStatus): string {
 	const lines: string[] = [];
-	lines.push(`${chalk.bold("Telemetry")}: ${status.enabled ? "enabled" : "disabled"}`);
+	lines.push(
+		`${chalk.bold("Telemetry")}: ${status.enabled ? "enabled" : "disabled"}`,
+	);
 	lines.push(chalk.dim(`Reason: ${status.reason}`));
 	if (status.endpoint) {
 		lines.push(chalk.dim(`Endpoint: ${status.endpoint}`));
@@ -100,7 +106,9 @@ function formatTelemetrySection(status: TelemetryStatus): string {
 	return lines.join("\n");
 }
 
-function formatPendingToolsSection(pendingTools: Array<{ id: string; name: string }>): string {
+function formatPendingToolsSection(
+	pendingTools: Array<{ id: string; name: string }>,
+): string {
 	if (pendingTools.length === 0) {
 		return chalk.dim("Pending tools: none");
 	}
@@ -117,7 +125,6 @@ export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	sections.push(`${chalk.bold("Session")}`);
 	sections.push(`${chalk.dim("ID")}: ${input.sessionId}`);
 	sections.push(`${chalk.dim("File")}: ${input.sessionFile}`);
-	inпut.agentSnapshot;
 	sections.push("");
 	sections.push(formatProviderSection(input.state, input.modelMetadata));
 	sections.push("");

@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import * as os from "node:os";
 import { extname, resolve as resolvePath } from "node:path";
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { ImageContent, TextContent } from "../agent/types.js";
 import { z } from "zod";
 import { zPathParameter } from "./schema-helpers.js";
 import { createZodTool } from "./zod-tool.js";

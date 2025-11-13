@@ -3,7 +3,7 @@ import { main } from "../src/main.js";
 
 type SubscriptionHandler = (event: any) => void | Promise<void>;
 
-vi.mock("@mariozechner/pi-agent", async () => {
+vi.mock("../src/agent/agent.js", async () => {
 	class Agent {
 		public state: any;
 		private subscribers: SubscriptionHandler[] = [];
@@ -54,14 +54,16 @@ vi.mock("@mariozechner/pi-agent", async () => {
 		}
 	}
 
-	class ProviderTransport {
-		constructor(public readonly options: any) {}
-	}
-
-	return { Agent, ProviderTransport };
+	return { Agent };
 });
 
-vi.mock("@mariozechner/pi-ai", () => ({
+vi.mock("../src/agent/transport.js", () => ({
+	ProviderTransport: class ProviderTransport {
+		constructor(public readonly options: any) {}
+	},
+}));
+
+vi.mock("../src/models/builtin.js", () => ({
 	getModel: (provider: string, id: string) => ({ provider, id }),
 	getProviders: () => ["anthropic"],
 	getModels: () => [{ id: "claude-sonnet-4-5", provider: "anthropic" }],

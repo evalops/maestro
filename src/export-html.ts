@@ -2,13 +2,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentState } from "@mariozechner/pi-agent";
 import type {
+	AgentState,
 	AssistantMessage,
 	Message,
 	ToolResultMessage,
 	UserMessage,
-} from "@mariozechner/pi-ai";
+} from "./agent/types.js";
 import type { SessionManager } from "./session-manager.js";
 
 // Get version from package.json

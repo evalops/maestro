@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Agent, ProviderTransport, type ThinkingLevel } from "./agent/index.js";
 import {
 	getCustomProviderMetadata,
 	getRegisteredModels,
@@ -19,6 +20,14 @@ import {
 import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
+import { parseArgs, type Args, type Mode } from "./cli/args.js";
+import { printHelp } from "./cli/help.js";
+import {
+	buildSystemPrompt,
+	loadProjectContextFiles,
+} from "./cli/system-prompt.js";
+import { selectSession } from "./cli/session.js";
+import chalk from "chalk";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -289,7 +298,9 @@ export async function main(args: string[]) {
 			if (savedProvider && savedModelId && isKnownProvider(savedProvider)) {
 				try {
 					const restoredModel = resolveModel(savedProvider, savedModelId);
-					agent.setModel(restoredModel);
+					if (restoredModel) {
+						agent.setModel(restoredModel);
+					}
 					if (shouldPrintMessages) {
 						console.log(chalk.dim(`Restored model: ${savedModel}`));
 					}
@@ -361,7 +372,7 @@ export async function main(args: string[]) {
 		await runRpcMode(agent, sessionManager);
 	} else if (isInteractive) {
 		// No messages and not RPC - use TUI
-	await runInteractiveMode(agent, sessionManager, VERSION, parsed.apiKey);
+		await runInteractiveMode(agent, sessionManager, VERSION, parsed.apiKey);
 	} else {
 		// CLI mode with messages
 		await runSingleShotMode(agent, sessionManager, parsed.messages, mode);

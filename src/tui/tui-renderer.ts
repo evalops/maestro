@@ -1,5 +1,10 @@
-import type { Agent, AgentEvent, AgentState } from "@mariozechner/pi-agent";
-import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
+import type { Agent } from "../agent/agent.js";
+import type {
+	AgentEvent,
+	AgentState,
+	AssistantMessage,
+	Message,
+} from "../agent/types.js";
 import type { SlashCommand } from "@mariozechner/pi-tui";
 import {
 	CombinedAutocompleteProvider,
@@ -13,6 +18,10 @@ import {
 import chalk from "chalk";
 import { exportSessionToHtml } from "../export-html.js";
 import type { RegisteredModel } from "../models/registry.js";
+import {
+	toSessionModelMetadata,
+	type SessionModelMetadata,
+} from "../session-manager.js";
 import type { SessionManager } from "../session-manager.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import { getEnvVarsForProvider, lookupApiKey } from "../providers/api-keys.js";
@@ -51,6 +60,9 @@ export class TuiRenderer {
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
 	private explicitApiKey?: string;
+	private currentApiKeyInfo?: ApiKeyLookupResult;
+	private telemetryStatus = getTelemetryStatus();
+	private currentModelMetadata?: SessionModelMetadata;
 
 	// Thinking level selector
 	private thinkingSelector: ThinkingSelectorComponent | null = null;
@@ -95,22 +107,36 @@ export class TuiRenderer {
 			description: "Export session to HTML file",
 		};
 
-	const sessionCommand: SlashCommand = {
-		name: "session",
-		description: "Show session info and stats",
-	};
+		const sessionCommand: SlashCommand = {
+			name: "session",
+			description: "Show session info and stats",
+		};
 
-	const diagnosticsCommand: SlashCommand = {
-		name: "diag",
-		description: "Show provider/model/API key diagnostics",
-	};
+		const diagnosticsCommand: SlashCommand = {
+			name: "diag",
+			description: "Show provider/model/API key diagnostics",
+		};
 
 		// Setup autocomplete for file paths and slash commands
 		const autocompleteProvider = new CombinedAutocompleteProvider(
-		[thinkingCommand, modelCommand, exportCommand, sessionCommand, diagnosticsCommand],
+			[
+				thinkingCommand,
+				modelCommand,
+				exportCommand,
+				sessionCommand,
+				diagnosticsCommand,
+			],
 			process.cwd(),
 		);
 		this.editor.setAutocompleteProvider(autocompleteProvider);
+		if (this.explicitApiKey) {
+			this.currentApiKeyInfo = {
+				provider: this.agent.state.model.provider,
+				source: "explicit",
+				key: this.explicitApiKey,
+				checkedEnvVars: [],
+			};
+		}
 	}
 
 	async init(): Promise<void> {
@@ -174,26 +200,26 @@ export class TuiRenderer {
 				return;
 			}
 
-		// Check for /export command
-		if (trimmed.startsWith("/export")) {
-			this.handleExportCommand(trimmed);
-			this.editor.setText("");
-			return;
-		}
+			// Check for /export command
+			if (trimmed.startsWith("/export")) {
+				this.handleExportCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-		// Check for /session command
-		if (trimmed === "/session") {
-			this.handleSessionCommand();
-			this.editor.setText("");
-			return;
-		}
+			// Check for /session command
+			if (trimmed === "/session") {
+				this.handleSessionCommand();
+				this.editor.setText("");
+				return;
+			}
 
-		// Check for /diag command
-		if (trimmed === "/diag" || trimmed === "/diagnostics") {
-			this.handleDiagnosticsCommand();
-			this.editor.setText("");
-			return;
-		}
+			// Check for /diag command
+			if (trimmed === "/diag" || trimmed === "/diagnostics") {
+				this.handleDiagnosticsCommand();
+				this.editor.setText("");
+				return;
+			}
 
 			if (this.onInputCallback) {
 				this.onInputCallback(trimmed);
@@ -212,6 +238,9 @@ export class TuiRenderer {
 
 		// Update footer with current stats
 		this.footer.updateState(state);
+		this.currentModelMetadata = toSessionModelMetadata(
+			state.model as RegisteredModel,
+		);
 
 		switch (event.type) {
 			case "agent_start":
@@ -701,6 +730,35 @@ export class TuiRenderer {
 		// Show info in chat
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private resolveApiKey(): ApiKeyLookupResult {
+		const provider = this.agent.state.model.provider;
+		const result = lookupApiKey(provider, this.explicitApiKey);
+		return result;
+	}
+
+	private handleDiagnosticsCommand(): void {
+		if (!this.currentApiKeyInfo) {
+			this.currentApiKeyInfo = this.resolveApiKey();
+		}
+
+		const report = formatDiagnosticsReport({
+			sessionId: this.sessionManager.getSessionId(),
+			sessionFile: this.sessionManager.getSessionFile(),
+			state: this.agent.state,
+			modelMetadata: this.currentModelMetadata,
+			apiKeyLookup: this.currentApiKeyInfo,
+			telemetry: this.telemetryStatus,
+			pendingTools: Array.from(this.pendingTools.entries()).map(
+				([id, component]) => ({ id, name: component.getToolName() }),
+			),
+			explicitApiKey: this.explicitApiKey,
+		});
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(report, 1, 0));
 		this.ui.requestRender();
 	}
 

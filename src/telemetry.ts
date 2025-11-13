@@ -35,7 +35,8 @@ const telemetryEndpointEnv =
 	process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT;
 
 const telemetrySampleEnv =
-	process.env.COMPOSER_TELEMETRY_SAMPLE ?? process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
+	process.env.COMPOSER_TELEMETRY_SAMPLE ??
+	process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
 
 const shouldEnableTelemetry = (): boolean => {
 	const flag = telemetryFlag?.toLowerCase();

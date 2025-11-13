@@ -317,8 +317,4 @@ export class ToolExecutionComponent extends Container {
 	getToolName(): string {
 		return this.toolName;
 	}
-
-	getToolName(): string {
-		return this.toolName;
-	}
 }

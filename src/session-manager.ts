@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentState } from "@mariozechner/pi-agent";
+import type { AgentState } from "./agent/types.js";
 import { getRegisteredModels } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
 

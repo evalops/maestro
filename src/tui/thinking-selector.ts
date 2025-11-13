@@ -1,4 +1,4 @@
-import type { ThinkingLevel } from "@mariozechner/pi-agent";
+import type { ThinkingLevel } from "../agent/types.js";
 import {
 	type Component,
 	Container,

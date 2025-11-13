@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage } from "../agent/types.js";
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import chalk from "chalk";
 
@@ -13,7 +13,7 @@ export class AssistantMessageComponent extends Container {
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
-		this.addChild(new Text(chalk.hex("#ffd6a5")("╭── assistant"), 1, 0));
+		this.addChild(new Text(chalk.hex("#ffd6a5")("╭── composer"), 1, 0));
 		this.addChild(this.contentContainer);
 
 		if (message) {

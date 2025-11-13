@@ -1,6 +1,5 @@
 import { performance } from "node:perf_hooks";
-import type { AgentTool } from "@mariozechner/pi-ai";
-import type { AgentToolResult } from "@mariozechner/pi-ai/dist/agent/types.js";
+import type { AgentTool, AgentToolResult } from "../agent/types.js";
 import { Type } from "@sinclair/typebox";
 import type { z } from "zod";
 import { ZodError } from "zod";

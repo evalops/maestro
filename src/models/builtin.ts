@@ -1,0 +1,150 @@
+import type { Model, Provider } from "../agent/types.js";
+
+// Built-in model definitions
+const BUILTIN_MODELS: Record<string, Model<any>[]> = {
+	anthropic: [
+		{
+			id: "claude-opus-4-5",
+			name: "Claude Opus 4.5",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com/v1/messages",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+			contextWindow: 200000,
+			maxTokens: 16384,
+		},
+		{
+			id: "claude-sonnet-4-5",
+			name: "Claude Sonnet 4.5",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com/v1/messages",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+			contextWindow: 200000,
+			maxTokens: 8192,
+		},
+		{
+			id: "claude-haiku-4-5",
+			name: "Claude Haiku 4.5",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com/v1/messages",
+			reasoning: false,
+			input: ["text", "image"],
+			cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+			contextWindow: 200000,
+			maxTokens: 8192,
+		},
+	],
+	openai: [
+		{
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1/chat/completions",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 5, output: 15, cacheRead: 1.25, cacheWrite: 0 },
+			contextWindow: 200000,
+			maxTokens: 32768,
+		},
+		{
+			id: "gpt-4o",
+			name: "GPT-4o",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1/chat/completions",
+			reasoning: false,
+			input: ["text", "image"],
+			cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 16384,
+		},
+		{
+			id: "gpt-4o-mini",
+			name: "GPT-4o Mini",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1/chat/completions",
+			reasoning: false,
+			input: ["text", "image"],
+			cost: { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 16384,
+		},
+	],
+	openrouter: [
+		{
+			id: "anthropic/claude-sonnet-4-5",
+			name: "Claude Sonnet 4.5 (OpenRouter)",
+			api: "openai-responses",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1/chat/completions",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+			contextWindow: 200000,
+			maxTokens: 8192,
+		},
+	],
+	xai: [
+		{
+			id: "grok-2-latest",
+			name: "Grok 2",
+			api: "openai-responses",
+			provider: "xai",
+			baseUrl: "https://api.x.ai/v1/chat/completions",
+			reasoning: false,
+			input: ["text", "image"],
+			cost: { input: 2, output: 10, cacheRead: 0.5, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 32768,
+		},
+	],
+	groq: [
+		{
+			id: "llama-3.3-70b-versatile",
+			name: "Llama 3.3 70B",
+			api: "openai-responses",
+			provider: "groq",
+			baseUrl: "https://api.groq.com/openai/v1/chat/completions",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0.59, output: 0.79, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 32768,
+		},
+	],
+	cerebras: [
+		{
+			id: "llama-3.3-70b",
+			name: "Llama 3.3 70B (Cerebras)",
+			api: "openai-responses",
+			provider: "cerebras",
+			baseUrl: "https://api.cerebras.ai/v1/chat/completions",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0.6, output: 0.6, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 8192,
+		},
+	],
+};
+
+export function getProviders(): string[] {
+	return Object.keys(BUILTIN_MODELS);
+}
+
+export function getModels(provider: string): Model<any>[] {
+	return BUILTIN_MODELS[provider] || [];
+}
+
+export function getModel(provider: string, modelId: string): Model<any> | null {
+	const models = getModels(provider);
+	return models.find((m) => m.id === modelId) || null;
+}
