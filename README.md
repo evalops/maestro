@@ -332,6 +332,9 @@ Edit a file by replacing exact text. The oldText must match exactly (including w
 **bash**
 Execute a bash command in the current working directory. Returns stdout and stderr. Optionally accepts a `timeout` parameter (in seconds) - no default timeout.
 
+**plan**
+Generate a lightweight execution plan for a coding goal. Accepts optional constraints and explicit task bullets; otherwise emits a minimal to-do list that includes testing and rollout reminders.
+
 ### MCP & Adding Your Own Tools
 
 **Playwright does and will not support MCP.** Instead, it relies on the four built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.

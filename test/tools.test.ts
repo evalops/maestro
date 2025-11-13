@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bashTool } from "../src/tools/bash.js";
 import { editTool } from "../src/tools/edit.js";
 import { listTool } from "../src/tools/list.js";
+import { planTool } from "../src/tools/plan.js";
 import { readTool } from "../src/tools/read.js";
 import { writeTool } from "../src/tools/write.js";
 
@@ -319,6 +320,44 @@ describe("Playwright Tools", () => {
 
 			expect(getTextOutput(result)).toContain(
 				`Command timed out after ${timeoutSeconds} seconds`,
+			);
+		});
+	});
+
+	describe("plan tool", () => {
+		it("produces a default plan when only goal is provided", async () => {
+			const result = await planTool.execute("plan-call-1", {
+				goal: "Add dark mode toggle to the dashboard",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Goal: Add dark mode toggle to the dashboard");
+			expect(output).toContain("Plan:");
+			expect(
+				output.split("\n").filter((line) => /^\d+\.\s/.test(line)).length,
+			).toBeGreaterThan(0);
+			expect(result.details).toEqual({ steps: expect.any(Number) });
+		});
+
+		it("respects explicit tasks and flags", async () => {
+			const result = await planTool.execute("plan-call-2", {
+				goal: "Refactor authentication module",
+				tasks: [
+					"Audit current authentication flows",
+					"Introduce shared auth utilities",
+				],
+				includeTesting: false,
+				includeReview: false,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Audit current authentication flows");
+			expect(output).toContain("Introduce shared auth utilities");
+			expect(output).not.toContain(
+				"Verify changes with automated and manual testing",
+			);
+			expect(output).not.toContain(
+				"Share results, gather feedback, and finalize rollout",
 			);
 		});
 	});
