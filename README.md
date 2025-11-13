@@ -333,7 +333,7 @@ Edit a file by replacing exact text. The oldText must match exactly (including w
 Execute a bash command in the current working directory. Returns stdout and stderr. Optionally accepts a `timeout` parameter (in seconds) - no default timeout.
 
 **todo**
-Create a status-rich checklist for a coding goal. Mirrors the structure of TodoWrite items (id, status, priority) and surfaces blockers, due dates, and notes alongside a summary of pending/in-progress/completed work.
+Create a status-rich checklist for a coding goal. Mirrors the structure of TodoWrite items (id, status, priority) and surfaces blockers, due dates, and notes alongside a summary of pending/in-progress/completed work. Accepts either an array of task objects or a JSON-stringified array for easy pasting from other tools.
 
 ### MCP & Adding Your Own Tools
 

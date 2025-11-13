@@ -386,5 +386,32 @@ describe("Playwright Tools", () => {
 				total: 2,
 			});
 		});
+
+		it("parses JSON string payloads", async () => {
+			const itemsJson = JSON.stringify(
+				[
+					{ content: "Review directory structure", priority: "high" },
+					{ content: "Summarize findings", status: "completed" },
+				],
+				null,
+				2,
+			);
+
+			const result = await todoTool.execute("todo-call-3", {
+				goal: "Audit repository",
+				items: itemsJson,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Goal: Audit repository");
+			expect(output).toMatch(/1\. \[ \] Review directory structure/);
+			expect(output).toMatch(/2\. \[x\] Summarize findings/);
+			expect(result.details).toEqual({
+				pending: 1,
+				in_progress: 0,
+				completed: 1,
+				total: 2,
+			});
+		});
 	});
 });

@@ -61,16 +61,68 @@ const todoItemSchema = z
 	})
 	.strict();
 
+const itemsInputSchema = z
+	.union([
+		z.array(todoItemSchema).nonempty("Provide at least one task"),
+		z
+			.string({
+				description: "JSON stringified array of TodoWrite-style task objects",
+			})
+			.min(2, "Items string must not be empty"),
+	])
+	.transform((value, ctx) => {
+		if (typeof value === "string") {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(value);
+			} catch (_error) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					message: "items string must be valid JSON",
+				});
+				return z.NEVER;
+			}
+			if (!Array.isArray(parsed)) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					message: "items JSON must be an array",
+				});
+				return z.NEVER;
+			}
+			if (parsed.length === 0) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					message: "Provide at least one task",
+				});
+				return z.NEVER;
+			}
+			const validated: Array<z.infer<typeof todoItemSchema>> = [];
+			for (const [index, item] of parsed.entries()) {
+				const result = todoItemSchema.safeParse(item);
+				if (!result.success) {
+					ctx.addIssue({
+						code: z.ZodIssueCode.custom,
+						path: [index],
+						message: result.error.issues
+							.map((issue) => issue.message)
+							.join(", "),
+					});
+					return z.NEVER;
+				}
+				validated.push(result.data);
+			}
+			return validated;
+		}
+
+		return value;
+	});
+
 const todoSchema = z
 	.object({
 		goal: z
 			.string({ description: "Overall objective for this checklist" })
 			.min(1, "Goal must not be empty"),
-		items: z
-			.array(todoItemSchema, {
-				description: "Collection of tasks that make up the plan",
-			})
-			.nonempty("Provide at least one task"),
+		items: itemsInputSchema,
 		includeSummary: z
 			.boolean({ description: "Include status summary section" })
 			.optional()

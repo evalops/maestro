@@ -131,7 +131,7 @@ Available tools:
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
 - list: List files and directories safely using glob patterns
-- todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] }.
+- todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] } (items may also be a JSON string that parses to that array).
 
 Guidelines:
 - Always use bash tool for file operations like ls, grep, find
