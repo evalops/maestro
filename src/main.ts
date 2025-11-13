@@ -2,27 +2,20 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	Agent,
-	ProviderTransport,
-	type ThinkingLevel,
-} from "@mariozechner/pi-agent";
-import chalk from "chalk";
-import { type Args, type Mode, parseArgs } from "./cli/args.js";
-import { printHelp } from "./cli/help.js";
-import { selectSession } from "./cli/session.js";
-import {
-	buildSystemPrompt,
-	loadProjectContextFiles,
-} from "./cli/system-prompt.js";
-import { loadEnv } from "./load-env.js";
-import {
-	getCustomConfigPath,
 	getCustomProviderMetadata,
 	getRegisteredModels,
 	getSupportedProviders,
 	reloadModelConfig,
 	resolveModel,
+	getCustomConfigPath,
 } from "./models/registry.js";
+import type { RegisteredModel } from "./models/registry.js";
+import { loadEnv } from "./load-env.js";
+import {
+	lookupApiKey,
+	getEnvVarsForProvider,
+	isKnownProvider,
+} from "./providers/api-keys.js";
 import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
@@ -35,29 +28,18 @@ const packageJson = JSON.parse(
 );
 const VERSION = packageJson.version;
 
-const envApiKeyMap = {
-	google: ["GEMINI_API_KEY"],
-	openai: ["OPENAI_API_KEY"],
-	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
-	xai: ["XAI_API_KEY"],
-	groq: ["GROQ_API_KEY"],
-	cerebras: ["CEREBRAS_API_KEY"],
-	openrouter: ["OPENROUTER_API_KEY"],
-	zai: ["ZAI_API_KEY"],
-} as const satisfies Record<string, readonly string[]>;
-
-type KnownProvider = keyof typeof envApiKeyMap;
-
-function isKnownProvider(value: string): value is KnownProvider {
-	return value in envApiKeyMap;
-}
-
 async function runInteractiveMode(
 	agent: Agent,
 	sessionManager: SessionManager,
 	version: string,
+	explicitApiKey?: string,
 ): Promise<void> {
-	const renderer = new TuiRenderer(agent, sessionManager, version);
+	const renderer = new TuiRenderer(
+		agent,
+		sessionManager,
+		version,
+		explicitApiKey,
+	);
 
 	// Initialize TUI
 	await renderer.init();
@@ -217,32 +199,8 @@ export async function main(args: string[]) {
 
 	// Helper function to get API key for a provider
 	const getApiKeyForProvider = (providerName: string): string | undefined => {
-		// Check if API key was provided via command line
-		if (parsed.apiKey) {
-			return parsed.apiKey;
-		}
-
-		const envVars = isKnownProvider(providerName)
-			? envApiKeyMap[providerName]
-			: undefined;
-
-		// Check each environment variable in priority order
-		for (const envVar of envVars ?? []) {
-			const key = process.env[envVar];
-			if (key) {
-				return key;
-			}
-		}
-
-		const customMeta = getCustomProviderMetadata(providerName);
-		if (customMeta?.apiKey) {
-			return customMeta.apiKey;
-		}
-		if (customMeta?.apiKeyEnv) {
-			return process.env[customMeta.apiKeyEnv];
-		}
-
-		return undefined;
+		const result = lookupApiKey(providerName, parsed.apiKey);
+		return result.key;
 	};
 
 	// Get initial API key
@@ -251,7 +209,7 @@ export async function main(args: string[]) {
 		console.error(
 			chalk.red(`Error: No API key found for provider "${provider}"`),
 		);
-		const envVars = isKnownProvider(provider) ? envApiKeyMap[provider] : [];
+		const envVars = getEnvVarsForProvider(provider);
 		if (envVars.length) {
 			const envVarList = envVars.join(" or ");
 			console.error(
@@ -391,13 +349,10 @@ export async function main(args: string[]) {
 			}
 		}
 
-		if (event.type === "model_change") {
-			const model = agent.state.model as RegisteredModel;
-			sessionManager.saveModelChange(
-				`${model.provider}/${model.id}`,
-				toSessionModelMetadata(model),
-			);
-		}
+		const modelMetadata = toSessionModelMetadata(
+			agent.state.model as RegisteredModel,
+		);
+		sessionManager.updateSnapshot(agent.state, modelMetadata);
 	});
 
 	// Route to appropriate mode
@@ -406,7 +361,7 @@ export async function main(args: string[]) {
 		await runRpcMode(agent, sessionManager);
 	} else if (isInteractive) {
 		// No messages and not RPC - use TUI
-		await runInteractiveMode(agent, sessionManager, VERSION);
+	await runInteractiveMode(agent, sessionManager, VERSION, parsed.apiKey);
 	} else {
 		// CLI mode with messages
 		await runSingleShotMode(agent, sessionManager, parsed.messages, mode);

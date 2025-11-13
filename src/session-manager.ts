@@ -95,6 +95,8 @@ export class SessionManager {
 	private enabled = true;
 	private sessionInitialized = false;
 	private pendingMessages: any[] = [];
+	private agentSnapshot?: AgentState;
+	private lastModelMetadata?: SessionModelMetadata;
 
 	constructor(continueSession = false, customSessionPath?: string) {
 		this.sessionDir = this.getSessionDirectory();
@@ -359,6 +361,13 @@ export class SessionManager {
 
 	getSessionFile(): string {
 		return this.sessionFile;
+	}
+
+	updateSnapshot(state: AgentState, metadata?: SessionModelMetadata): void {
+		this.agentSnapshot = state;
+		if (metadata) {
+			this.lastModelMetadata = metadata;
+		}
 	}
 
 	/**

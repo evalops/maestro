@@ -14,6 +14,10 @@ import chalk from "chalk";
 import { exportSessionToHtml } from "../export-html.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { SessionManager } from "../session-manager.js";
+import type { ApiKeyLookupResult } from "../providers/api-keys.js";
+import { getEnvVarsForProvider, lookupApiKey } from "../providers/api-keys.js";
+import { getTelemetryStatus } from "../telemetry.js";
+import { formatDiagnosticsReport } from "./diagnostics.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { CustomEditor } from "./custom-editor.js";
 import { FooterComponent } from "./footer.js";
@@ -46,6 +50,7 @@ export class TuiRenderer {
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
+	private explicitApiKey?: string;
 
 	// Thinking level selector
 	private thinkingSelector: ThinkingSelectorComponent | null = null;
@@ -56,10 +61,16 @@ export class TuiRenderer {
 	// Track if this is the first user message (to skip spacer)
 	private isFirstUserMessage = true;
 
-	constructor(agent: Agent, sessionManager: SessionManager, version: string) {
+	constructor(
+		agent: Agent,
+		sessionManager: SessionManager,
+		version: string,
+		explicitApiKey?: string,
+	) {
 		this.agent = agent;
 		this.sessionManager = sessionManager;
 		this.version = version;
+		this.explicitApiKey = explicitApiKey;
 		this.ui = new TUI(new ProcessTerminal());
 		this.chatContainer = new Container();
 		this.statusContainer = new Container();
@@ -84,14 +95,19 @@ export class TuiRenderer {
 			description: "Export session to HTML file",
 		};
 
-		const sessionCommand: SlashCommand = {
-			name: "session",
-			description: "Show session info and stats",
-		};
+	const sessionCommand: SlashCommand = {
+		name: "session",
+		description: "Show session info and stats",
+	};
+
+	const diagnosticsCommand: SlashCommand = {
+		name: "diag",
+		description: "Show provider/model/API key diagnostics",
+	};
 
 		// Setup autocomplete for file paths and slash commands
 		const autocompleteProvider = new CombinedAutocompleteProvider(
-			[thinkingCommand, modelCommand, exportCommand, sessionCommand],
+		[thinkingCommand, modelCommand, exportCommand, sessionCommand, diagnosticsCommand],
 			process.cwd(),
 		);
 		this.editor.setAutocompleteProvider(autocompleteProvider);
@@ -158,19 +174,26 @@ export class TuiRenderer {
 				return;
 			}
 
-			// Check for /export command
-			if (trimmed.startsWith("/export")) {
-				this.handleExportCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
+		// Check for /export command
+		if (trimmed.startsWith("/export")) {
+			this.handleExportCommand(trimmed);
+			this.editor.setText("");
+			return;
+		}
 
-			// Check for /session command
-			if (trimmed === "/session") {
-				this.handleSessionCommand();
-				this.editor.setText("");
-				return;
-			}
+		// Check for /session command
+		if (trimmed === "/session") {
+			this.handleSessionCommand();
+			this.editor.setText("");
+			return;
+		}
+
+		// Check for /diag command
+		if (trimmed === "/diag" || trimmed === "/diagnostics") {
+			this.handleDiagnosticsCommand();
+			this.editor.setText("");
+			return;
+		}
 
 			if (this.onInputCallback) {
 				this.onInputCallback(trimmed);

@@ -35,8 +35,7 @@ const telemetryEndpointEnv =
 	process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT;
 
 const telemetrySampleEnv =
-	process.env.COMPOSER_TELEMETRY_SAMPLE ??
-	process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
+	process.env.COMPOSER_TELEMETRY_SAMPLE ?? process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
 
 const shouldEnableTelemetry = (): boolean => {
 	const flag = telemetryFlag?.toLowerCase();
@@ -66,6 +65,37 @@ const parseSamplingRate = (): number => {
 const samplingRate = parseSamplingRate();
 
 const defaultTelemetryFile = join(homedir(), ".composer", "telemetry.log");
+
+export interface TelemetryStatus {
+	enabled: boolean;
+	reason: string;
+	endpoint?: string;
+	filePath?: string;
+	sampleRate: number;
+	flagValue?: string;
+}
+
+export function getTelemetryStatus(): TelemetryStatus {
+	let reason = "disabled";
+	if (!shouldEnableTelemetry()) {
+		reason = "flag disabled";
+	} else if (samplingRate === 0) {
+		reason = "sampling=0";
+	} else if (telemetryEndpointEnv) {
+		reason = "endpoint";
+	} else if (telemetryFileEnv || telemetryEnabled) {
+		reason = "file";
+	}
+
+	return {
+		enabled: telemetryEnabled && samplingRate > 0,
+		reason,
+		endpoint: telemetryEndpointEnv,
+		filePath: telemetryFileEnv || defaultTelemetryFile,
+		sampleRate: samplingRate,
+		flagValue: telemetryFlag,
+	};
+}
 
 async function writeToFile(payload: string) {
 	const filePath = telemetryFileEnv || defaultTelemetryFile;
