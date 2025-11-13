@@ -121,31 +121,19 @@ export async function* streamAnthropic(
 								},
 							};
 						});
-			// Find the assistant message with this tool call
-			const lastAssistantMsg = [...messages]
-				.reverse()
-				.find((m) => m.role === "assistant");
-			if (lastAssistantMsg && Array.isArray(lastAssistantMsg.content)) {
-				lastAssistantMsg.content.push({
-					type: "tool_result",
-					tool_use_id: msg.toolCallId,
-					content: toolResultContent,
-					is_error: msg.isError,
-				});
-			} else {
-				// Create a new user message with tool result
-				messages.push({
-					role: "user",
-					content: [
-						{
-							type: "tool_result",
-							tool_use_id: msg.toolCallId,
-							content: toolResultContent,
-							is_error: msg.isError,
-						},
-					],
-				});
-			}
+			// tool_result blocks MUST be in user messages, not assistant messages
+			// Create a new user message with tool result
+			messages.push({
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: msg.toolCallId,
+						content: toolResultContent,
+						is_error: msg.isError,
+					},
+				],
+			});
 		}
 	}
 
