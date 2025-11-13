@@ -40,18 +40,32 @@ export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 		options.schemaName ??
 		`${options.name.charAt(0).toUpperCase()}${options.name.slice(1)}Parameters`;
 
-	const jsonSchema = zodToJsonSchema(options.schema, {
+	let jsonSchema = zodToJsonSchema(options.schema, {
 		target: "jsonSchema7",
 		$refStrategy: "none",
 		name: schemaName,
 	}) as JsonSchema7Type;
+
+	// If the schema has $ref and definitions, inline the definition
+	const schemaAny = jsonSchema as any;
+	if (schemaAny.$ref && schemaAny.definitions) {
+		const refKey = schemaAny.$ref.replace("#/definitions/", "");
+		const definition = schemaAny.definitions[refKey];
+		if (definition) {
+			// Use the definition directly as the schema
+			jsonSchema = definition as JsonSchema7Type;
+		}
+	}
 
 	const schemaWithDescription = {
 		...jsonSchema,
 		description: jsonSchema.description ?? options.description,
 	};
 
-	const parameters = Type.Unsafe<z.infer<Schema>>(schemaWithDescription as any);
+	// Remove $schema and definitions from the final schema
+	const { $schema, definitions, $ref, ...cleanSchema } = schemaWithDescription as any;
+
+	const parameters = Type.Unsafe<z.infer<Schema>>(cleanSchema);
 
 	return {
 		name: options.name,

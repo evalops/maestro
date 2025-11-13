@@ -1,6 +1,6 @@
 import type { Component } from "../tui.js";
 import chalk from "chalk";
-import { marked } from "marked";
+import { marked, type Token, type Tokens } from "marked";
 import { visibleWidth } from "../utils.js";
 
 type Color =
@@ -167,7 +167,7 @@ export class Markdown implements Component {
         this.cachedLines = result;
         return result.length > 0 ? result : [""];
     }
-    private renderToken(token: any, width: number, nextTokenType?: string): string[] {
+    private renderToken(token: Token, width: number, nextTokenType?: string): string[] {
         const lines = [];
         switch (token.type) {
             case "heading": {
@@ -207,15 +207,19 @@ export class Markdown implements Component {
                 break;
             }
             case "list": {
-                const listLines = this.renderList(token, 0);
-                lines.push(...listLines);
+                if ("items" in token && Array.isArray(token.items)) {
+                    const listLines = this.renderList(token as Tokens.List, 0);
+                    lines.push(...listLines);
+                }
                 // Don't add spacing after lists if a space token follows
                 // (the space token will handle it)
                 break;
             }
             case "table": {
-                const tableLines = this.renderTable(token);
-                lines.push(...tableLines);
+                if ("header" in token && "rows" in token) {
+                    const tableLines = this.renderTable(token as Tokens.Table);
+                    lines.push(...tableLines);
+                }
                 break;
             }
             case "blockquote": {
@@ -246,7 +250,7 @@ export class Markdown implements Component {
         }
         return lines;
     }
-    private renderInlineTokens(tokens: any[]): string {
+    private renderInlineTokens(tokens: Token[]): string {
         let result = "";
         for (const token of tokens) {
             switch (token.type) {
@@ -394,7 +398,7 @@ export class Markdown implements Component {
     /**
      * Render a list with proper nesting support
      */
-    private renderList(token: any, depth: number): string[] {
+    private renderList(token: Tokens.List, depth: number): string[] {
         const lines = [];
         const indent = "  ".repeat(depth);
         for (let i = 0; i < token.items.length; i++) {
@@ -438,13 +442,13 @@ export class Markdown implements Component {
      * Render list item tokens, handling nested lists
      * Returns lines WITHOUT the parent indent (renderList will add it)
      */
-    private renderListItem(tokens: any[], parentDepth: number): string[] {
+    private renderListItem(tokens: Token[], parentDepth: number): string[] {
         const lines = [];
         for (const token of tokens) {
-            if (token.type === "list") {
+            if (token.type === "list" && "items" in token && Array.isArray(token.items)) {
                 // Nested list - render with one additional indent level
                 // These lines will have their own indent, so we just add them as-is
-                const nestedLines = this.renderList(token, parentDepth + 1);
+                const nestedLines = this.renderList(token as Tokens.List, parentDepth + 1);
                 lines.push(...nestedLines);
             }
             else if (token.type === "text") {
@@ -479,7 +483,7 @@ export class Markdown implements Component {
     /**
      * Render a table
      */
-    private renderTable(token: any): string[] {
+    private renderTable(token: Tokens.Table): string[] {
         const lines: string[] = [];
         // Calculate column widths
         const columnWidths: number[] = [];
@@ -503,7 +507,7 @@ export class Markdown implements Component {
             columnWidths[i] = Math.min(columnWidths[i], maxColWidth);
         }
         // Render header
-        const headerCells = token.header.map((cell: any, i: number) => {
+        const headerCells = token.header.map((cell: Tokens.TableCell, i: number) => {
             const text = this.renderInlineTokens(cell.tokens || []);
             return chalk.bold(text.padEnd(columnWidths[i]));
         });
@@ -513,7 +517,7 @@ export class Markdown implements Component {
         lines.push("├─" + separatorCells.join("─┼─") + "─┤");
         // Render rows
         for (const row of token.rows) {
-            const rowCells = row.map((cell: any, i: number) => {
+            const rowCells = row.map((cell: Tokens.TableCell, i: number) => {
                 const text = this.renderInlineTokens(cell.tokens || []);
                 const visWidth = visibleWidth(text);
                 const padding = " ".repeat(Math.max(0, columnWidths[i] - visWidth));
