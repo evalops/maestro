@@ -318,7 +318,7 @@ playwright --provider openai --model gpt-4o "Help me refactor this code"
 
 ### Built-in Tools
 
-The agent has access to four core tools for working with your codebase:
+The agent has access to five core tools for working with your codebase:
 
 **read**
 Read file contents. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, defaults to first 2000 lines. Use offset/limit parameters for large files. Lines longer than 2000 characters are truncated.
@@ -337,7 +337,7 @@ Generate a lightweight execution plan for a coding goal. Accepts optional constr
 
 ### MCP & Adding Your Own Tools
 
-**Playwright does and will not support MCP.** Instead, it relies on the four built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
+**Playwright does and will not support MCP.** Instead, it relies on the five built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
 
 **Here's the gist:**
 
