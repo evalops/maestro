@@ -332,8 +332,8 @@ Edit a file by replacing exact text. The oldText must match exactly (including w
 **bash**
 Execute a bash command in the current working directory. Returns stdout and stderr. Optionally accepts a `timeout` parameter (in seconds) - no default timeout.
 
-**plan**
-Generate a lightweight execution plan for a coding goal. Accepts optional constraints and explicit task bullets; otherwise emits a minimal to-do list that includes testing and rollout reminders.
+**todo**
+Create a status-rich checklist for a coding goal. Mirrors the structure of TodoWrite items (id, status, priority) and surfaces blockers, due dates, and notes alongside a summary of pending/in-progress/completed work.
 
 ### MCP & Adding Your Own Tools
 
@@ -442,47 +442,11 @@ Context transfer between agents is generally poor. Information gets lost, compre
 
 If you need parallel work on independent tasks, manually run multiple `playwright` sessions in different terminal tabs. You're the orchestrator.
 
-## To-Dos
+## To-Dos & Planning
 
-**Playwright does not and will not support built-in to-dos.** In my experience, to-do lists generally confuse models more than they help.
+Playwright includes a built-in `todo` tool for quick, structured checklists. Provide a goal plus an array of TodoWrite-style items (with status, priority, blockers, notes, and due dates) and the agent will return a numbered plan, status summary, and metadata in plain text.
 
-If you need task tracking, make it stateful by writing to a file:
-
-```markdown
-# TODO.md
-
-- [x] Implement user authentication
-- [x] Add database migrations
-- [ ] Write API documentation
-- [ ] Add rate limiting
-```
-
-The agent can read and update this file as needed. Using checkboxes keeps track of what's done and what remains. Simple, visible, and under your control.
-
-## Planning
-
-**Playwright does not and will not have a built-in planning mode.** Telling the agent to think through a problem together with you, without modifying files or executing commands, is generally sufficient.
-
-If you need persistent planning across sessions, write it to a file:
-
-```markdown
-# PLAN.md
-
-## Goal
-Refactor authentication system to support OAuth
-
-## Approach
-1. Research OAuth 2.0 flows
-2. Design token storage schema
-3. Implement authorization server endpoints
-4. Update client-side login flow
-5. Add tests
-
-## Current Step
-Working on step 3 - authorization endpoints
-```
-
-The agent can read, update, and reference the plan as it works. Unlike ephemeral planning modes that only exist within a session, file-based plans persist and can be versioned with your code.
+For work that needs to persist across sessions, keep using project files like `TODO.md` or `PLAN.md` alongside version control. The agent can read and update those documents just like any other file, giving you durable history plus the convenience of auto-generated checklists when you need them.
 
 ## Background Bash
 

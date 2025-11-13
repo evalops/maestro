@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bashTool } from "../src/tools/bash.js";
 import { editTool } from "../src/tools/edit.js";
 import { listTool } from "../src/tools/list.js";
-import { planTool } from "../src/tools/plan.js";
 import { readTool } from "../src/tools/read.js";
+import { todoTool } from "../src/tools/todo.js";
 import { writeTool } from "../src/tools/write.js";
 
 // Helper to extract text from content blocks
@@ -324,41 +324,67 @@ describe("Playwright Tools", () => {
 		});
 	});
 
-	describe("plan tool", () => {
-		it("produces a default plan when only goal is provided", async () => {
-			const result = await planTool.execute("plan-call-1", {
-				goal: "Add dark mode toggle to the dashboard",
+	describe("todo tool", () => {
+		it("produces a summary checklist with default statuses", async () => {
+			const result = await todoTool.execute("todo-call-1", {
+				goal: "Ship onboarding flow",
+				items: [
+					{ content: "Design onboarding screens" },
+					{ content: "Implement API endpoints", status: "in_progress" },
+				],
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("Goal: Add dark mode toggle to the dashboard");
-			expect(output).toContain("Plan:");
-			expect(
-				output.split("\n").filter((line) => /^\d+\.\s/.test(line)).length,
-			).toBeGreaterThan(0);
-			expect(result.details).toEqual({ steps: expect.any(Number) });
+			expect(output).toContain("Goal: Ship onboarding flow");
+			expect(output).toContain("Summary:");
+			expect(output).toContain("Pending: 1");
+			expect(output).toContain("In Progress: 1");
+			expect(output).toContain("Completed: 0");
+			expect(output).toMatch(/1\. \[ \] Design onboarding screens/);
+			expect(output).toMatch(/2\. \[~\] Implement API endpoints/);
+			expect(result.details).toEqual({
+				pending: 1,
+				in_progress: 1,
+				completed: 0,
+				total: 2,
+			});
 		});
 
-		it("respects explicit tasks and flags", async () => {
-			const result = await planTool.execute("plan-call-2", {
-				goal: "Refactor authentication module",
-				tasks: [
-					"Audit current authentication flows",
-					"Introduce shared auth utilities",
+		it("includes extended metadata when supplied", async () => {
+			const result = await todoTool.execute("todo-call-2", {
+				goal: "Stabilize payments pipeline",
+				items: [
+					{
+						id: "payments-audit",
+						content: "Audit webhook retries",
+						priority: "high",
+						status: "in_progress",
+						due: "2025-11-20",
+						notes: "Coordinate with SRE for failover test",
+					},
+					{
+						id: "payments-metrics",
+						content: "Add Grafana alerts",
+						priority: "medium",
+						status: "completed",
+						blockedBy: ["payments-audit"],
+					},
 				],
-				includeTesting: false,
-				includeReview: false,
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("Audit current authentication flows");
-			expect(output).toContain("Introduce shared auth utilities");
-			expect(output).not.toContain(
-				"Verify changes with automated and manual testing",
-			);
-			expect(output).not.toContain(
-				"Share results, gather feedback, and finalize rollout",
-			);
+			expect(output).toContain("(ID: payments-audit)");
+			expect(output).toContain("(Priority: High)");
+			expect(output).toContain("Due: 2025-11-20");
+			expect(output).toContain("Notes: Coordinate with SRE for failover test");
+			expect(output).toContain('Blocked by: "payments-audit"');
+			expect(output).toMatch(/2\. \[x\] Add Grafana alerts/);
+			expect(result.details).toEqual({
+				pending: 0,
+				in_progress: 1,
+				completed: 1,
+				total: 2,
+			});
 		});
 	});
 });
