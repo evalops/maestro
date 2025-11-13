@@ -392,6 +392,8 @@ Playwright ships with an optional telemetry layer so you can analyze tool usage 
 - `PLAYWRIGHT_TELEMETRY_SAMPLE=0.25` – only record roughly 25% of events for ultra-light installs (set to `0` to disable while keeping other settings intact).
 - `npm run telemetry:report` – summarise success rates and durations from the current telemetry log.
 
+You can also drop credentials into a `.env` or `.env.local` file in the current working directory (e.g. `ANTHROPIC_API_KEY=...`); Playwright loads these automatically on startup.
+
 The payloads capture tool name, success flag, execution duration, and any evaluation results. Transport failures are ignored so telemetry never blocks day-to-day workflows.
 
 ## Security (YOLO by default)

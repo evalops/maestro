@@ -20,6 +20,7 @@ import {
 	buildSystemPrompt,
 	loadProjectContextFiles,
 } from "./cli/system-prompt.js";
+import { loadEnv } from "./load-env.js";
 import { SessionManager } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
@@ -160,6 +161,8 @@ async function runRpcMode(
 }
 
 export async function main(args: string[]) {
+	loadEnv();
+
 	const parsed = parseArgs(args);
 
 	if (parsed.help) {
