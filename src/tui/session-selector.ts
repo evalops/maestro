@@ -4,7 +4,7 @@ import {
 	Input,
 	Spacer,
 	Text,
-} from "@mariozechner/pi-tui";
+} from "../tui-lib/index.js";
 import chalk from "chalk";
 import type { SessionManager } from "../session-manager.js";
 

@@ -1,4 +1,4 @@
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { Container, Markdown, Spacer, Text } from "../tui-lib/index.js";
 import chalk from "chalk";
 
 /**

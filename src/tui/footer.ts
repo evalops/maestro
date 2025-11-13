@@ -1,5 +1,5 @@
 import type { AgentState, AssistantMessage } from "../agent/types.js";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "../tui-lib/index.js";
 import chalk from "chalk";
 
 /**

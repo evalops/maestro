@@ -4,7 +4,7 @@ import {
 	Container,
 	type SelectItem,
 	SelectList,
-} from "@mariozechner/pi-tui";
+} from "../tui-lib/index.js";
 import chalk from "chalk";
 
 /**

@@ -1,5 +1,5 @@
 import * as os from "node:os";
-import { Container, Spacer, Text } from "@mariozechner/pi-tui";
+import { Container, Spacer, Text } from "../tui-lib/index.js";
 import chalk from "chalk";
 import * as Diff from "diff";
 

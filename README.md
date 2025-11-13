@@ -2,8 +2,6 @@
 
 Composer is a radically simple and opinionated coding agent with multi-model support (including mid-session switching), a powerful headless CLI, and the creature comforts you expect from modern coding copilots.
 
-> Huge thanks to [Mario Zechner](https://github.com/badlogic) and the original [pi coding agent](https://github.com/badlogic/pi-coding-agent). Composer is an EvalOps fork that layers in additional evaluation workflows and automation on top of Mario's excellent foundation.
-
 Works on Linux, macOS, and Windows (barely tested, needs Git Bash running in the "modern" Windows Terminal).
 
 ## Installation
@@ -271,7 +269,7 @@ If the argument is a valid file path, the file contents will be used as the syst
 **--mode <mode>**
 Output mode for non-interactive usage. Options:
 - `text` (default): Output only the final assistant message text
-- `json`: Stream all agent events as JSON (one event per line). Events are emitted by `@mariozechner/pi-agent` and include message updates, tool executions, and completions
+- `json`: Stream all agent events as JSON (one event per line). Events include message updates, tool executions, and completions
 - `rpc`: JSON mode plus stdin listener for headless operation. Send JSON commands on stdin: `{"type":"prompt","message":"..."}` or `{"type":"abort"}`. See [test/rpc-example.ts](test/rpc-example.ts) for a complete example
 
 **--no-session**
@@ -388,12 +386,6 @@ You can also reference tool READMEs in your `AGENT.md` files to make them automa
 - Global: `~/.composer/agent/AGENT.md` - available in all sessions
 - Project-specific: `./AGENT.md` - available in this project
 
-**Real-world example:**
-
-The [exa-search](https://github.com/badlogic/exa-search) tools provide web search capabilities via the Exa API. Built by the agent itself in ~2 minutes. Far from perfect, but functional. Just tell your agent: "Read ~/agent-tools/exa-search/README.md and search for X".
-
-For a detailed walkthrough with more examples, and the reasons for and benefits of this decision, see: https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/
-
 ## Telemetry & Dashboards
 
 Composer ships with an optional telemetry layer so you can analyze tool usage and evaluation health without leaving your EvalOps dashboards. Telemetry is disabled by default.
@@ -459,7 +451,7 @@ For work that needs to persist across sessions, keep using project files like `T
 
 ## Background Bash
 
-**Composer does not and will not implement background bash execution.** Instead, tell the agent to use `tmux` or something like [tterminal-cp](https://mariozechner.at/posts/2025-08-15-mcp-vs-cli/). Bonus points: you can watch the agent interact with a CLI like a debugger and even intervene if necessary.
+**Composer does not and will not implement background bash execution.** Instead, tell the agent to use `tmux` or similar terminal multiplexers. Bonus points: you can watch the agent interact with a CLI like a debugger and even intervene if necessary.
 
 ## Planned Features
 
@@ -479,7 +471,4 @@ Things that might happen eventually:
 
 MIT
 
-## See Also
 
-- [@mariozechner/pi-ai](https://www.npmjs.com/package/@mariozechner/pi-ai): Core LLM toolkit with multi-provider support
-- [@mariozechner/pi-agent](https://www.npmjs.com/package/@mariozechner/pi-agent): Agent framework with tool execution

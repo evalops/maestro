@@ -1,4 +1,4 @@
-import { Container, Input, Spacer, Text } from "@mariozechner/pi-tui";
+import { Container, Input, Spacer, Text } from "../tui-lib/index.js";
 import chalk from "chalk";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";

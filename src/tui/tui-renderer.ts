@@ -5,7 +5,7 @@ import type {
 	AssistantMessage,
 	Message,
 } from "../agent/types.js";
-import type { SlashCommand } from "@mariozechner/pi-tui";
+import type { SlashCommand } from "../tui-lib/index.js";
 import {
 	CombinedAutocompleteProvider,
 	Container,
@@ -14,7 +14,7 @@ import {
 	Spacer,
 	TUI,
 	Text,
-} from "@mariozechner/pi-tui";
+} from "../tui-lib/index.js";
 import chalk from "chalk";
 import { exportSessionToHtml } from "../export-html.js";
 import type { RegisteredModel } from "../models/registry.js";

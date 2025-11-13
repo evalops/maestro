@@ -1,4 +1,4 @@
-import { Editor } from "@mariozechner/pi-tui";
+import { Editor } from "../tui-lib/index.js";
 
 /**
  * Custom editor that handles Escape and Ctrl+C keys for Composer

@@ -1,4 +1,4 @@
-import { ProcessTerminal, TUI } from "@mariozechner/pi-tui";
+import { ProcessTerminal, TUI } from "../tui-lib/index.js";
 import type { SessionManager } from "../session-manager.js";
 import { SessionSelectorComponent } from "../tui/session-selector.js";
 
