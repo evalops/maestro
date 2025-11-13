@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { z } from "zod";
 import { createZodTool } from "./zod-tool.js";
 
@@ -109,21 +108,32 @@ async function runRipgrep(
 		signal,
 	});
 
-	let stdout = "";
-	let stderr = "";
+	return await new Promise((resolve, reject) => {
+		let stdout = "";
+		let stderr = "";
 
-	child.stdout.setEncoding("utf-8");
-	child.stdout.on("data", (chunk) => {
-		stdout += chunk;
+		child.stdout.setEncoding("utf-8");
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk;
+		});
+
+		child.stderr.setEncoding("utf-8");
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk;
+		});
+
+		child.once("error", (error) => {
+			reject(
+				error instanceof Error
+					? new Error(`Failed to start ripgrep: ${error.message}`)
+					: new Error(`Failed to start ripgrep: ${String(error)}`),
+			);
+		});
+
+		child.once("close", (code) => {
+			resolve({ stdout, stderr, exitCode: code ?? 0 });
+		});
 	});
-
-	child.stderr.setEncoding("utf-8");
-	child.stderr.on("data", (chunk) => {
-		stderr += chunk;
-	});
-
-	const [exitCode] = (await once(child, "close")) as [number];
-	return { stdout, stderr, exitCode: exitCode ?? 0 };
 }
 
 export const searchTool = createZodTool({
@@ -196,7 +206,24 @@ export const searchTool = createZodTool({
 			args.push(".");
 		}
 
-		const result = await runRipgrep(args, signal);
+		let result: { stdout: string; stderr: string; exitCode: number };
+		try {
+			result = await runRipgrep(args, signal);
+		} catch (error) {
+			const reason =
+				error instanceof Error
+					? error.message
+					: `Unknown error: ${String(error)}`;
+			return {
+				content: [
+					{
+						type: "text",
+						text: `ripgrep failed\n\n${reason}`,
+					},
+				],
+				details: { command: ["rg", ...args].join(" ") },
+			};
+		}
 
 		if (result.exitCode === 2) {
 			const message = result.stderr.trim() || result.stdout.trim();

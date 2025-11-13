@@ -26,7 +26,7 @@ export const bashTool = createZodTool({
 		return new Promise<{
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
-		}>((resolve, _reject) => {
+		}>((resolve) => {
 			const child = spawn("sh", ["-c", command], {
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
@@ -44,6 +44,31 @@ export const bashTool = createZodTool({
 					onAbort();
 				}, timeout * 1000);
 			}
+
+			const onAbort = () => {
+				if (child.pid) {
+					// Kill the entire process group (negative PID kills all processes in the group)
+					try {
+						process.kill(-child.pid, "SIGKILL");
+					} catch (e) {
+						// Fallback to killing just the child if process group kill fails
+						try {
+							child.kill("SIGKILL");
+						} catch (e2) {
+							// Process already dead
+						}
+					}
+				}
+			};
+
+			const cleanup = () => {
+				if (timeoutHandle) {
+					clearTimeout(timeoutHandle);
+				}
+				if (signal) {
+					signal.removeEventListener("abort", onAbort);
+				}
+			};
 
 			// Collect stdout
 			if (child.stdout) {
@@ -69,12 +94,7 @@ export const bashTool = createZodTool({
 
 			// Handle process exit
 			child.on("close", (code) => {
-				if (timeoutHandle) {
-					clearTimeout(timeoutHandle);
-				}
-				if (signal) {
-					signal.removeEventListener("abort", onAbort);
-				}
+				cleanup();
 
 				if (signal?.aborted) {
 					let output = "";
@@ -134,22 +154,22 @@ export const bashTool = createZodTool({
 				}
 			});
 
-			// Handle abort signal - kill entire process tree
-			const onAbort = () => {
-				if (child.pid) {
-					// Kill the entire process group (negative PID kills all processes in the group)
-					try {
-						process.kill(-child.pid, "SIGKILL");
-					} catch (e) {
-						// Fallback to killing just the child if process group kill fails
-						try {
-							child.kill("SIGKILL");
-						} catch (e2) {
-							// Process already dead
-						}
-					}
-				}
-			};
+			child.once("error", (error) => {
+				cleanup();
+				const reason =
+					error instanceof Error
+						? `${error.name}: ${error.message}`
+						: `Failed to start process: ${String(error)}`;
+				resolve({
+					content: [
+						{
+							type: "text",
+							text: `Command failed to start\n\n${reason}`,
+						},
+					],
+					details: undefined,
+				});
+			});
 
 			if (signal) {
 				if (signal.aborted) {

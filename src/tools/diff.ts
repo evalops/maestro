@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { z } from "zod";
 import { createZodTool } from "./zod-tool.js";
 
@@ -82,21 +81,32 @@ async function runGitDiff(
 		signal,
 	});
 
-	let stdout = "";
-	let stderr = "";
+	return await new Promise((resolve, reject) => {
+		let stdout = "";
+		let stderr = "";
 
-	child.stdout.setEncoding("utf-8");
-	child.stdout.on("data", (chunk) => {
-		stdout += chunk;
+		child.stdout.setEncoding("utf-8");
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk;
+		});
+
+		child.stderr.setEncoding("utf-8");
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk;
+		});
+
+		child.once("error", (error) => {
+			reject(
+				error instanceof Error
+					? new Error(`Failed to start git diff: ${error.message}`)
+					: new Error(`Failed to start git diff: ${String(error)}`),
+			);
+		});
+
+		child.once("close", (code) => {
+			resolve({ stdout, stderr, exitCode: code ?? 0 });
+		});
 	});
-
-	child.stderr.setEncoding("utf-8");
-	child.stderr.on("data", (chunk) => {
-		stderr += chunk;
-	});
-
-	const [exitCode] = (await once(child, "close")) as [number];
-	return { stdout, stderr, exitCode: exitCode ?? 0 };
 }
 
 export const diffTool = createZodTool({
@@ -139,7 +149,24 @@ export const diffTool = createZodTool({
 
 		const commandSummary = ["git", ...args].join(" ");
 
-		const result = await runGitDiff(args, signal);
+		let result: { stdout: string; stderr: string; exitCode: number };
+		try {
+			result = await runGitDiff(args, signal);
+		} catch (error) {
+			const reason =
+				error instanceof Error
+					? error.message
+					: `Unknown error: ${String(error)}`;
+			return {
+				content: [
+					{
+						type: "text",
+						text: `git diff failed\n\n${reason}`,
+					},
+				],
+				details: { command: commandSummary },
+			};
+		}
 
 		if (result.exitCode !== 0) {
 			const message = result.stderr.trim() || result.stdout.trim();
