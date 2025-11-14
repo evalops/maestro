@@ -6,7 +6,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { LspDiagnostic } from "../src/lsp/index.js";
 import {
 	configureSafeMode,
 	resetSafeModeForTests,
@@ -100,5 +101,36 @@ describe("Safe mode", () => {
 			content: "hello",
 		});
 		expect(result.details?.validators?.[0]?.stdout).toContain("ok");
+	});
+
+	it("blocks operations when LSP diagnostics indicate errors", async () => {
+		setSafeModeEnv();
+		setPlanSatisfied(true);
+		process.env.COMPOSER_SAFE_LSP_SEVERITY = "2";
+		configureSafeMode(true);
+
+		const { runValidatorsOnSuccess } = await import(
+			"../src/safety/safe-mode.js"
+		);
+
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
+		const mockDiagnostics: Record<string, LspDiagnostic[]> = {
+			[testFile]: [
+				{
+					severity: 1,
+					message: "Type error in file",
+					range: {
+						start: { line: 0, character: 0 },
+						end: { line: 0, character: 5 },
+					},
+				},
+			],
+		};
+
+		await expect(
+			runValidatorsOnSuccess([testFile], mockDiagnostics),
+		).rejects.toThrow(/lsp-diagnostics/);
 	});
 });

@@ -11,6 +11,7 @@ import {
 	loadProjectContextFiles,
 } from "./cli/system-prompt.js";
 import { loadEnv } from "./load-env.js";
+import { bootstrapLsp } from "./lsp/bootstrap.js";
 import {
 	getCustomConfigPath,
 	getCustomProviderMetadata,
@@ -164,6 +165,9 @@ export async function main(args: string[]) {
 	}
 
 	configureSafeMode(true);
+
+	// Bootstrap LSP with workspace root resolver and config overrides
+	await bootstrapLsp();
 
 	if (parsed.help) {
 		printHelp(VERSION);

@@ -3,6 +3,7 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { z } from "zod";
+import { collectDiagnostics } from "../lsp/index.js";
 import {
 	requirePlanCheck,
 	runValidatorsOnSuccess,
@@ -151,7 +152,11 @@ export const editTool = createZodTool({
 					await writeFile(absolutePath, newContent, "utf-8");
 					let validatorSummaries: ValidatorRunResult[] | undefined;
 					try {
-						validatorSummaries = await runValidatorsOnSuccess([absolutePath]);
+						const lspDiagnostics = await collectDiagnostics();
+						validatorSummaries = await runValidatorsOnSuccess(
+							[absolutePath],
+							lspDiagnostics,
+						);
 					} catch (validatorError) {
 						await writeFile(absolutePath, content, "utf-8");
 						if (signal) {
