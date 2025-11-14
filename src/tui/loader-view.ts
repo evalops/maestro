@@ -1,7 +1,7 @@
-import type { Container } from "../tui-lib/index.js";
-import { Loader, TUI } from "../tui-lib/index.js";
-import type { FooterComponent } from "./footer.js";
 import { recordLoaderStage } from "../telemetry.js";
+import type { Container } from "../tui-lib/index.js";
+import { Loader, type TUI } from "../tui-lib/index.js";
+import type { FooterComponent } from "./footer.js";
 
 interface LoaderStageEntry {
 	key: string;
@@ -72,7 +72,8 @@ export class LoaderView {
 		const respondingIndex = this.stages.findIndex(
 			(stage) => stage.key === "responding",
 		);
-		const insertIndex = respondingIndex === -1 ? this.stages.length : respondingIndex;
+		const insertIndex =
+			respondingIndex === -1 ? this.stages.length : respondingIndex;
 		this.stages.splice(insertIndex, 0, {
 			key: toolCallId,
 			label: `Tool · ${toolName}`,
@@ -238,7 +239,10 @@ export class LoaderView {
 
 	private finalizeStageTiming(): void {
 		if (this.currentStageKey && this.stageStartTime) {
-			this.recordStageTiming(this.currentStageKey, Date.now() - this.stageStartTime);
+			this.recordStageTiming(
+				this.currentStageKey,
+				Date.now() - this.stageStartTime,
+			);
 		}
 		this.stageStartTime = null;
 	}

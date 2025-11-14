@@ -74,7 +74,9 @@ export class PlanView {
 		const goalQuery = text.slice(text.indexOf(" ") + 1).trim();
 		const goalKey =
 			goals.find((goal) => goal.toLowerCase() === goalQuery.toLowerCase()) ??
-			goals.find((goal) => goal.toLowerCase().includes(goalQuery.toLowerCase()));
+			goals.find((goal) =>
+				goal.toLowerCase().includes(goalQuery.toLowerCase()),
+			);
 		if (!goalKey) {
 			this.options.showInfoMessage(`No plan found matching "${goalQuery}".`);
 			return;
@@ -92,7 +94,8 @@ export class PlanView {
 		const total =
 			counts.pending + counts.in_progress + counts.completed ||
 			entry.items.length;
-		const summary = total > 0 ? `${counts.completed}/${total} done` : "no tasks yet";
+		const summary =
+			total > 0 ? `${counts.completed}/${total} done` : "no tasks yet";
 		this.options.setPlanHint(`${goalKey}: ${summary}`);
 	}
 

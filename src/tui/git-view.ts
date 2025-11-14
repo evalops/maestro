@@ -174,7 +174,8 @@ Use /preview <file> to inspect diffs.`;
 			return {
 				ok: false,
 				stdout: "",
-				stderr: error instanceof Error ? error.message : String(error ?? "unknown"),
+				stderr:
+					error instanceof Error ? error.message : String(error ?? "unknown"),
 			};
 		}
 	}

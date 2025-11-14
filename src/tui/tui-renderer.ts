@@ -1,8 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
-import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import type {
 	AgentEvent,
@@ -17,8 +15,6 @@ import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import { importFactoryConfig } from "../factory/index.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels, reloadModelConfig } from "../models/registry.js";
-import type { ApiKeyLookupResult } from "../providers/api-keys.js";
-import { getEnvVarsForProvider, lookupApiKey } from "../providers/api-keys.js";
 import {
 	type SessionModelMetadata,
 	toSessionModelMetadata,
@@ -40,21 +36,18 @@ import { CommandPaletteComponent } from "./command-palette.js";
 import { createCommandRegistry } from "./commands/registry.js";
 import type { CommandEntry } from "./commands/types.js";
 import { CustomEditor } from "./custom-editor.js";
-import { formatDiagnosticsReport } from "./diagnostics.js";
+import { DiagnosticsView } from "./diagnostics-view.js";
 import { FileSearchComponent } from "./file-search.js";
 import { FooterComponent } from "./footer.js";
-import { LoaderView } from "./loader-view.js";
-import { InstructionPanelComponent } from "./instruction-panel.js";
-import { PlanView, loadTodoStore } from "./plan-view.js";
 import { GitView } from "./git-view.js";
-import { RunCommandView } from "./run-command-view.js";
-import {
-	TOOL_FAILURE_LOG_PATH,
-	ToolStatusView,
-} from "./tool-status-view.js";
+import { InstructionPanelComponent } from "./instruction-panel.js";
+import { LoaderView } from "./loader-view.js";
 import { ModelSelectorComponent } from "./model-selector.js";
+import { PlanView } from "./plan-view.js";
+import { RunCommandView } from "./run-command-view.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
+import { ToolStatusView } from "./tool-status-view.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
@@ -85,7 +78,6 @@ export class TuiRenderer {
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
 	private explicitApiKey?: string;
-	private currentApiKeyInfo?: ApiKeyLookupResult;
 	private telemetryStatus = getTelemetryStatus();
 	private currentModelMetadata?: SessionModelMetadata;
 
@@ -119,6 +111,7 @@ export class TuiRenderer {
 	private runCommandView: RunCommandView;
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
+	private diagnosticsView: DiagnosticsView;
 
 	constructor(
 		agent: Agent,
@@ -170,6 +163,20 @@ export class TuiRenderer {
 			getTools: () => this.agent.state.tools,
 			showInfoMessage: (message) => this.showInfoMessage(message),
 		});
+		this.diagnosticsView = new DiagnosticsView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			telemetryStatus: this.telemetryStatus,
+			version: this.version,
+			explicitApiKey: this.explicitApiKey,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			getCurrentModelMetadata: () => this.currentModelMetadata,
+			getPendingTools: () => this.pendingTools,
+			toolStatusView: this.toolStatusView,
+			gitView: this.gitView,
+			todoStorePath: TODO_STORE_PATH,
+		});
 
 		const commandRegistry = createCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -182,18 +189,19 @@ export class TuiRenderer {
 				importConfig: (input) => this.handleImportCommand(input),
 				sessionInfo: () => this.handleSessionCommand(),
 				sessions: (input) => this.handleSessionsCommand(input),
-				reportBug: () => this.handleBugCommand(),
-				status: () => this.handleStatusCommand(),
+				reportBug: () => this.diagnosticsView.handleBugCommand(),
+				status: () => this.diagnosticsView.handleStatusCommand(),
 				review: () => this.gitView.handleReviewCommand(),
 				undoChanges: (input) => this.gitView.handleUndoCommand(input),
-				shareFeedback: () => this.handleFeedbackCommand(),
+				shareFeedback: () => this.diagnosticsView.handleFeedbackCommand(),
 				mention: (input) => this.handleMentionCommand(input),
 				help: () => this.handleHelpCommand(),
 				plan: (input) => this.planView.handlePlanCommand(input),
 				preview: (input) => this.gitView.handlePreviewCommand(input),
 				run: (input) => this.runCommandView.handleRunCommand(input),
 				why: () => this.handleWhyCommand(),
-				diagnostics: (input) => this.handleDiagnosticsCommand(input),
+				diagnostics: (input) =>
+					this.diagnosticsView.handleDiagnosticsCommand(input),
 				compact: () => this.handleCompactCommand(),
 				compactTools: (input) => this.handleCompactToolsCommand(input),
 				quit: () => {
@@ -211,14 +219,6 @@ export class TuiRenderer {
 			process.cwd(),
 		);
 		this.editor.setAutocompleteProvider(autocompleteProvider);
-		if (this.explicitApiKey) {
-			this.currentApiKeyInfo = {
-				provider: this.agent.state.model.provider,
-				source: "explicit",
-				key: this.explicitApiKey,
-				checkedEnvVars: [],
-			};
-		}
 	}
 
 	async init(): Promise<void> {
@@ -434,10 +434,7 @@ export class TuiRenderer {
 				break;
 
 			case "tool_execution_start": {
-				this.loaderView.registerToolStage(
-					event.toolCallId,
-					event.toolName,
-				);
+				this.loaderView.registerToolStage(event.toolCallId, event.toolName);
 				this.currentRunToolNames.push(event.toolName);
 				// Component should already exist from message_update, but create if missing
 				if (!this.pendingTools.has(event.toolCallId)) {
@@ -1178,114 +1175,6 @@ Use /sessions load <number> to switch.`,
 		this.ui.requestRender();
 	}
 
-	private handleBugCommand(): void {
-		const sessionFile = this.sessionManager.getSessionFile();
-		const sessionId = this.sessionManager.getSessionId();
-		const model = this.agent.state.model;
-		const toolFailureTips = existsSync(TOOL_FAILURE_LOG_PATH)
-			? `- ${TOOL_FAILURE_LOG_PATH}`
-			: null;
-		const filesToShare = [sessionFile, toolFailureTips]
-			.filter((value): value is string => Boolean(value))
-			.map((path) => `- ${path}`)
-			.join("\n");
-
-		const text = `${chalk.bold("Bug report info")}
-Session ID: ${sessionId}
-Session file: ${sessionFile}
-Model: ${model ? `${model.provider}/${model.id}` : "unknown"}
-Messages: ${this.agent.state.messages.length}
-Tools: ${
-			(this.agent.state.tools ?? []).map((tool) => tool.name).join(", ") ||
-			"none"
-		}
-
-${chalk.bold("Send these files:")}
-${filesToShare || chalk.dim("(session file will appear once persisted)")}
-
-Attach them in the bug report so we can replay the session.`;
-		const copied = this.copyTextToClipboard(text);
-
-		const copyNote = copied
-			? chalk.dim("Bug info copied to clipboard.")
-			: chalk.dim("(Could not copy bug info to clipboard.)");
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(`${text}\n\n${copyNote}`, 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleStatusCommand(): void {
-		const snapshot = this.collectHealthSnapshot();
-		const sessionId = this.sessionManager.getSessionId();
-		const sessionFile = this.sessionManager.getSessionFile();
-		const model = this.agent.state.model
-			? `${this.agent.state.model.provider}/${this.agent.state.model.id}`
-			: "unknown";
-		const thinking = this.agent.state.thinkingLevel ?? "off";
-		const telemetry = this.telemetryStatus;
-		const telemetryLine = telemetry.enabled
-			? `on · ${telemetry.reason}${telemetry.endpoint ? ` → ${telemetry.endpoint}` : ""}`
-			: `off · ${telemetry.reason}`;
-		const toolLine =
-			snapshot.toolFailures > 0
-				? `${snapshot.toolFailures} logged${snapshot.toolFailurePath ? ` · ${snapshot.toolFailurePath}` : ""}`
-				: "none logged";
-		const planLine =
-			(snapshot.planGoals ?? 0) > 0
-				? `${snapshot.planGoals} goal${snapshot.planGoals === 1 ? "" : "s"} · ${snapshot.planPendingTasks ?? 0} pending`
-				: "no saved plans";
-		const gitLine = snapshot.gitStatus ?? "unknown (git unavailable)";
-		const sessionLine = sessionId
-			? `${sessionId}\n${sessionFile}`
-			: "No persisted session yet.";
-
-		const text = `${chalk.bold("Status snapshot")} ${chalk.dim(`v${this.version}`)}
-${chalk.dim("Model")}: ${model}
-${chalk.dim("Thinking")}: ${thinking}
-${chalk.dim("Telemetry")}: ${telemetryLine}
-${chalk.dim("Git")}: ${gitLine}
-${chalk.dim("Plans")}: ${planLine}
-${chalk.dim("Tool failures")}: ${toolLine}
-${chalk.dim("Session")}: ${sessionLine}
-
-Use /diag for a full diagnostic report.`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(text, 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleFeedbackCommand(): void {
-		const snapshot = this.collectHealthSnapshot();
-		const sessionId = this.sessionManager.getSessionId();
-		const sessionFile = this.sessionManager.getSessionFile();
-		const model = this.agent.state.model
-			? `${this.agent.state.model.provider}/${this.agent.state.model.id}`
-			: "unknown";
-		const plain = `Composer feedback
-Version: ${this.version}
-Session: ${sessionId}
-Session file: ${sessionFile}
-Model: ${model}
-Git: ${snapshot.gitStatus ?? "unknown"}
-Tool failures: ${snapshot.toolFailures}
-Plans pending: ${snapshot.planPendingTasks ?? 0}
-
-What happened?
-
-What did you expect instead?
-
-Anything else we should know?`;
-		const copied = this.copyTextToClipboard(plain);
-		const body = `${chalk.bold("Feedback template")}
-${plain}
-
-${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.") : chalk.dim("Copy failed — select and copy manually.")}`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(body, 1, 0));
-		this.ui.requestRender();
-	}
-
 	private handleMentionCommand(text: string): void {
 		const files = this.getWorkspaceFileList();
 		if (!files.length) {
@@ -1315,15 +1204,6 @@ Use @ in the editor for the interactive search palette.`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(textBlock, 1, 0));
 		this.ui.requestRender();
-	}
-
-	private copyTextToClipboard(value: string): boolean {
-		try {
-			clipboard.writeSync(value);
-			return true;
-		} catch {
-			return false;
-		}
 	}
 
 	private handleWhyCommand(): void {
@@ -1366,37 +1246,6 @@ ${lines.join("\n")}`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
 		this.ui.requestRender();
-	}
-
-	private collectHealthSnapshot(): {
-		toolFailures: number;
-		toolFailurePath?: string;
-		gitStatus?: string;
-		planGoals?: number;
-		planPendingTasks?: number;
-	} {
-		const { counts } = this.toolStatusView.getToolFailureData();
-		const totalFailures = Array.from(counts.values()).reduce(
-			(sum, value) => sum + value,
-			0,
-		);
-		const gitStatus = this.gitView.getStatusSummary();
-		const store = loadTodoStore(TODO_STORE_PATH);
-		let pending = 0;
-		for (const goal of Object.values(store)) {
-			pending += goal.items.filter(
-				(item) => (item.status ?? "pending") === "pending",
-			).length;
-		}
-		return {
-			toolFailures: totalFailures,
-			toolFailurePath: existsSync(TOOL_FAILURE_LOG_PATH)
-				? TOOL_FAILURE_LOG_PATH
-				: undefined,
-			gitStatus,
-			planGoals: Object.keys(store).length,
-			planPendingTasks: pending,
-		};
 	}
 
 	private extractTextFromAppMessage(message: AppMessage): string {
@@ -1489,43 +1338,6 @@ ${lines.join("\n")}`;
 				? "Tool outputs will collapse by default."
 				: "Tool outputs will show full content.",
 		);
-	}
-
-	private resolveApiKey(): ApiKeyLookupResult {
-		const provider = this.agent.state.model.provider;
-		const result = lookupApiKey(provider, this.explicitApiKey);
-		return result;
-	}
-
-	private handleDiagnosticsCommand(commandText = "/diag"): void {
-		if (!this.currentApiKeyInfo) {
-			this.currentApiKeyInfo = this.resolveApiKey();
-		}
-
-		const health = this.collectHealthSnapshot();
-		const report = formatDiagnosticsReport({
-			sessionId: this.sessionManager.getSessionId(),
-			sessionFile: this.sessionManager.getSessionFile(),
-			state: this.agent.state,
-			modelMetadata: this.currentModelMetadata,
-			apiKeyLookup: this.currentApiKeyInfo,
-			telemetry: this.telemetryStatus,
-			pendingTools: Array.from(this.pendingTools.entries()).map(
-				([id, component]) => ({ id, name: component.getToolName() }),
-			),
-			explicitApiKey: this.explicitApiKey,
-			health,
-		});
-
-		const shouldCopy = /copy|share/.test(commandText.split(/\s+/)[1] ?? "");
-		let copyNote = "";
-		if (shouldCopy) {
-			const copied = this.copyTextToClipboard(report);
-			copyNote = `\n\n${copied ? chalk.dim("Diagnostics copied to clipboard.") : chalk.dim("(Could not copy diagnostics to clipboard.)")}`;
-		}
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(`${report}${copyNote}`, 1, 0));
-		this.ui.requestRender();
 	}
 
 	stop(): void {

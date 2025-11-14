@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import type { AutocompleteItem } from "../tui-lib/index.js";
-import { Spacer, Text, type Container, type TUI } from "../tui-lib/index.js";
+import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
 import { runShellCommand } from "./run-shell-command.js";
 
 interface RunCommandViewOptions {

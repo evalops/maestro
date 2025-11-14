@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
-import { Spacer, Text, type Container, type TUI } from "../tui-lib/index.js";
+import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
 
 export const TOOL_FAILURE_LOG_PATH = join(
 	homedir(),
@@ -87,7 +87,10 @@ ${toolLines.join("\n\n")}\n\n${failureSection}\n\n${chalk.dim("Use /tools clear 
 					timestamp?: number;
 				};
 				if (parsed.tool) {
-					result.counts.set(parsed.tool, (result.counts.get(parsed.tool) ?? 0) + 1);
+					result.counts.set(
+						parsed.tool,
+						(result.counts.get(parsed.tool) ?? 0) + 1,
+					);
 				}
 				result.recent.push({
 					tool: parsed.tool ?? "unknown",
