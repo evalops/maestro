@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +26,7 @@ import {
 } from "../session-manager.js";
 import type { SessionManager } from "../session-manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
-import type { AutocompleteItem, SlashCommand } from "../tui-lib/index.js";
+import type { SlashCommand } from "../tui-lib/index.js";
 import {
 	CombinedAutocompleteProvider,
 	Container,
@@ -47,6 +47,8 @@ import { FooterComponent } from "./footer.js";
 import { LoaderView } from "./loader-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
 import { PlanView, loadTodoStore } from "./plan-view.js";
+import { RunCommandView } from "./run-command-view.js";
+import { runShellCommand } from "./run-shell-command.js";
 import { ModelSelectorComponent } from "./model-selector.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
@@ -105,7 +107,6 @@ export class TuiRenderer {
 	private commandPalette: CommandPaletteComponent | null = null;
 	private fileSearchComponent: FileSearchComponent | null = null;
 	private workspaceFiles: string[] = [];
-	private runScripts: string[] = [];
 	private lastUserMessageText?: string;
 	private lastAssistantMessageText?: string;
 	private currentRunToolNames: string[] = [];
@@ -114,6 +115,7 @@ export class TuiRenderer {
 	private slashCommands: SlashCommand[] = [];
 	private commandEntries: CommandEntry[] = [];
 	private planView: PlanView;
+	private runCommandView: RunCommandView;
 
 	constructor(
 		agent: Agent,
@@ -148,10 +150,15 @@ export class TuiRenderer {
 				this.refreshFooterHint();
 			},
 		});
-		this.runScripts = this.loadRunScripts();
+		this.runCommandView = new RunCommandView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+		});
 
 		const commandRegistry = createCommandRegistry({
-			getRunScriptCompletions: (prefix) => this.getRunScriptCompletions(prefix),
+			getRunScriptCompletions: (prefix) =>
+				this.runCommandView.getRunScriptCompletions(prefix),
 			handlers: {
 				thinking: () => this.showThinkingSelector(),
 				model: () => this.showModelSelector(),
@@ -169,7 +176,7 @@ export class TuiRenderer {
 				help: () => this.handleHelpCommand(),
 				plan: (input) => this.planView.handlePlanCommand(input),
 				preview: (input) => this.handlePreviewCommand(input),
-				run: (input) => this.handleRunCommand(input),
+				run: (input) => this.runCommandView.handleRunCommand(input),
 				why: () => this.handleWhyCommand(),
 				diagnostics: (input) => this.handleDiagnosticsCommand(input),
 				compact: () => this.handleCompactCommand(),
@@ -1425,75 +1432,6 @@ Use @ in the editor for the interactive search palette.`;
 		}
 	}
 
-	private async handleRunCommand(text: string): Promise<void> {
-		const parts = text.trim().split(/\s+/);
-		if (parts.length < 2) {
-			this.showInfoMessage("Usage: /run <script> [args]");
-			return;
-		}
-		const script = parts[1];
-		const args = parts.slice(2).join(" ");
-		const command = args ? `npm run ${script} -- ${args}` : `npm run ${script}`;
-
-		this.chatContainer.addChild(new Spacer(1));
-		const outputComponent = new Text(
-			`${chalk.bold(`$ ${command}`)}\nRunning…`,
-			1,
-			0,
-		);
-		this.chatContainer.addChild(outputComponent);
-		this.ui.requestRender();
-
-		const result = await this.runShellCommand(command);
-		const statusLine = result.success
-			? chalk.green(`Exit code ${result.code}`)
-			: chalk.red(`Exit code ${result.code}`);
-		const body = [result.stdout, result.stderr].filter(Boolean).join("\n");
-		outputComponent.setText(
-			`${chalk.bold(`$ ${command}`)}\n${body || chalk.dim("(no output)")}\n\n${statusLine}`,
-		);
-		this.ui.requestRender();
-	}
-
-	private async runShellCommand(command: string): Promise<{
-		success: boolean;
-		code: number;
-		stdout: string;
-		stderr: string;
-	}> {
-		return await new Promise((resolve) => {
-			const child = spawn("bash", ["-lc", command], {
-				cwd: process.cwd(),
-				env: process.env,
-			});
-			let stdout = "";
-			let stderr = "";
-			child.stdout?.on("data", (chunk) => {
-				stdout += chunk.toString();
-			});
-			child.stderr?.on("data", (chunk) => {
-				stderr += chunk.toString();
-			});
-			child.on("close", (code) => {
-				resolve({
-					success: code === 0,
-					code: code ?? -1,
-					stdout: stdout.trimEnd(),
-					stderr: stderr.trimEnd(),
-				});
-			});
-			child.on("error", (error) => {
-				resolve({
-					success: false,
-					code: -1,
-					stdout,
-					stderr:
-						error instanceof Error ? error.message : String(error ?? "unknown"),
-				});
-			});
-		});
-	}
-
 	private async handlePreviewCommand(text: string): Promise<void> {
 		const parts = text.trim().split(/\s+/);
 		if (parts.length < 2) {
@@ -1502,7 +1440,7 @@ Use @ in the editor for the interactive search palette.`;
 		}
 		const target = parts.slice(1).join(" ");
 		const quoted = JSON.stringify(target);
-		const result = await this.runShellCommand(`git diff -- ${quoted}`);
+		const result = await runShellCommand(`git diff -- ${quoted}`);
 		this.chatContainer.addChild(new Spacer(1));
 		const content = result.stdout || result.stderr;
 		const textOutput = content
@@ -1543,38 +1481,6 @@ ${response}`;
 			this.workspaceFiles = getWorkspaceFiles();
 		}
 		return this.workspaceFiles;
-	}
-
-	private loadRunScripts(): string[] {
-		try {
-			const pkgPath = join(process.cwd(), "package.json");
-			const raw = readFileSync(pkgPath, "utf-8");
-			const pkg = JSON.parse(raw);
-			return pkg?.scripts ? Object.keys(pkg.scripts) : [];
-		} catch {
-			return [];
-		}
-	}
-
-	private getRunScriptCompletions(prefix: string): AutocompleteItem[] | null {
-		if (!this.runScripts.length) {
-			this.runScripts = this.loadRunScripts();
-		}
-		if (!this.runScripts.length) {
-			return null;
-		}
-		const lower = prefix.toLowerCase();
-		const matches = this.runScripts
-			.filter((script) => script.toLowerCase().startsWith(lower))
-			.slice(0, 10);
-		if (!matches.length) {
-			return null;
-		}
-		return matches.map((script) => ({
-			value: script,
-			label: script,
-			description: "package script",
-		}));
 	}
 
 	private runGitCommand(args: string[]): {
