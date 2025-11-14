@@ -54,6 +54,7 @@ import { ModelSelectorView } from "./model-selector-view.js";
 import { StreamingView } from "./streaming-view.js";
 import { NotificationView } from "./notification-view.js";
 import { EditorView } from "./editor-view.js";
+import { RunController } from "./run-controller.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -74,7 +75,6 @@ export class TuiRenderer {
 	private onInputCallback?: (text: string) => void;
 	private loaderView: LoaderView;
 	private onInterruptCallback?: () => void;
-	private lastSigintTime = 0;
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -113,6 +113,7 @@ export class TuiRenderer {
 	private thinkingSelectorView: ThinkingSelectorView;
 	private modelSelectorView: ModelSelectorView;
 	private notificationView: NotificationView;
+	private runController: RunController;
 
 	constructor(
 		agent: Agent,
@@ -162,6 +163,19 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			showToast: (message, tone) =>
 				this.notificationView.showToast(message, tone),
+		});
+		this.runController = new RunController({
+			loaderView: this.loaderView,
+			footer: this.footer,
+			ui: this.ui,
+			workingHint: "Working… press esc to interrupt",
+			setEditorDisabled: (disabled) => {
+				this.editor.disableSubmit = disabled;
+			},
+			clearEditor: () => this.clearEditor(),
+			stopRenderer: () => this.stop(),
+			refreshFooterHint: () => this.refreshFooterHint(),
+			notifyFileChanges: () => this.gitView.notifyFileChanges(),
 		});
 		this.toolStatusView = new ToolStatusView({
 			chatContainer: this.chatContainer,
@@ -336,7 +350,7 @@ export class TuiRenderer {
 					this.onInterruptCallback();
 				}
 			},
-			onCtrlC: () => this.handleCtrlC(),
+			onCtrlC: () => this.runController.handleCtrlC(),
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
 		});
@@ -384,10 +398,7 @@ export class TuiRenderer {
 		switch (event.type) {
 			case "agent_start":
 				this.currentRunToolNames = [];
-				this.editor.disableSubmit = true;
-				this.loaderView.start();
-				this.footer.setHint("Working… press esc to interrupt");
-				this.ui.requestRender();
+				this.runController.handleAgentStart();
 				break;
 
 			case "message_start":
@@ -472,13 +483,10 @@ export class TuiRenderer {
 			}
 
 			case "agent_end":
-				this.loaderView.finish();
-				this.streamingView.forceStopStreaming();
-				this.pendingTools.clear();
-				this.editor.disableSubmit = false;
-				this.gitView.notifyFileChanges();
-				this.refreshFooterHint();
-				this.ui.requestRender();
+				this.runController.handleAgentEnd(() => {
+					this.streamingView.forceStopStreaming();
+					this.pendingTools.clear();
+				});
 				break;
 		}
 	}
@@ -500,22 +508,6 @@ export class TuiRenderer {
 
 	setInterruptCallback(callback: () => void): void {
 		this.onInterruptCallback = callback;
-	}
-
-	private handleCtrlC(): void {
-		// Handle Ctrl+C double-press logic
-		const now = Date.now();
-		const timeSinceLastCtrlC = now - this.lastSigintTime;
-
-		if (timeSinceLastCtrlC < 500) {
-			// Second Ctrl+C within 500ms - exit
-			this.stop();
-			process.exit(0);
-		} else {
-			// First Ctrl+C - clear the editor
-			this.clearEditor();
-			this.lastSigintTime = now;
-		}
 	}
 
 	private async handleCompactCommand(): Promise<void> {
