@@ -46,6 +46,9 @@ export class WelcomeAnimation extends Container {
 		const centerY = height / 2 - 1;
 		const baseRadius = Math.min(width, height) * 0.4;
 		const layers = [" ", ".", ":", "-", "~", "*", "o", "O", "@"];
+		const waveAngle = Math.sin(time * 0.45) * Math.PI;
+		const waveFrequency = 2.5 + Math.sin(time * 0.25) * 1.5;
+		const ringDensity = 11 + Math.sin(time * 0.2) * 2;
 
 		for (let y = 0; y < height; y++) {
 			let line = "";
@@ -84,6 +87,23 @@ export class WelcomeAnimation extends Container {
 					if (twinkle > 0.98) {
 						char = "·";
 						color = chalk.hex("#312e81");
+					}
+				}
+
+				if (distance < 0.92) {
+					const ringPulse = Math.sin(distance * ringDensity - time * 2 + Math.cos(angle - waveAngle) * waveFrequency);
+					const ringGlow = Math.exp(-Math.abs(ringPulse) * 4) * Math.max(0, 1 - distance);
+					if (ringGlow > 0.04) {
+						const nodePhase = Math.sin(time * 1.6 + distance * 14 + angle * 4);
+						if (nodePhase > 0.9) {
+							char = "•";
+						} else if (ringGlow > 0.25) {
+							char = ringPulse > 0 ? "°" : "·";
+						} else {
+							char = "`";
+						}
+						const ringColorMix = Math.max(0, Math.min(1, 0.4 + ringGlow * 0.6 + Math.sin(time + angle) * 0.1));
+						color = chalk.hex(WelcomeAnimation.interpolateGradient(ringColorMix));
 					}
 				}
 
@@ -194,6 +214,23 @@ export class WelcomeAnimation extends Container {
 				if (ribbonSpark > 0.995) {
 					char = ".";
 					color = chalk.hex("#a5b4fc");
+				}
+
+				const tendrilAngles = [
+					waveAngle,
+					waveAngle + Math.PI * 0.75,
+					waveAngle + Math.PI * 1.25,
+				];
+				for (const baseAngle of tendrilAngles) {
+					const tendrilDistance = Math.abs(Math.atan2(Math.sin(angle - baseAngle), Math.cos(angle - baseAngle)));
+					const canOverride = char === " " || char === "~" || char === "≈";
+					if (distance > 0.9 && distance < 1.35 && tendrilDistance < 0.18 && canOverride) {
+						const tendrilPulse = Math.sin(time * 1.1 + distance * 8 + baseAngle * 2);
+						char = tendrilPulse > 0 ? "~" : "-";
+						const tendrilGlow = Math.max(0, Math.min(1, 0.3 + (distance - 0.9) * 0.5 + tendrilPulse * 0.2));
+						color = chalk.hex(WelcomeAnimation.interpolateGradient(tendrilGlow));
+						break;
+					}
 				}
 
 				line += color(char);
