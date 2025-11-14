@@ -198,7 +198,7 @@ export const searchTool = createZodTool({
 			args.push("--glob", globPattern);
 		}
 
-		args.push(pattern);
+		args.push("--", pattern);
 
 		if (pathArgs.length > 0) {
 			args.push(...pathArgs);
