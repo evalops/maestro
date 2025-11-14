@@ -2,19 +2,28 @@ import type { AssistantMessage } from "../agent/types.js";
 import { Container, Markdown, Spacer, Text } from "../tui-lib/index.js";
 import chalk from "chalk";
 
+const ASSISTANT_BORDER = "#fcd5ce";
+const ASSISTANT_LABEL = "#ffafcc";
+const ASSISTANT_FILL = { r: 22, g: 24, b: 30 };
+
 /**
- * Component that renders a complete assistant message
+ * Component that renders a complete assistant message in a pastel card.
  */
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
-	private readonly panelWidth = 48;
+	private panelWidth = 64;
 
 	constructor(message?: AssistantMessage) {
 		super();
-
-		// Container for text/thinking content
 		this.contentContainer = new Container();
 		this.addChild(new Text(this.buildTopLine(), 1, 0));
+		this.addChild(
+			new Text(
+				`${chalk.hex(ASSISTANT_LABEL).bold("COMPOSER")} ${chalk.dim("· response")}`,
+				1,
+				0,
+			),
+		);
 		this.addChild(this.contentContainer);
 		this.addChild(new Text(this.buildBottomLine(), 1, 0));
 
@@ -24,18 +33,16 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	private buildTopLine(): string {
-		const accent = chalk.hex("#ffd6a5");
-		const label = chalk.hex("#ffd6a5").bold("COMPOSER");
-		const dashCount = Math.max(0, this.panelWidth - (label.length + 3));
-		return accent(`╭ ${label} ${"─".repeat(dashCount)}╮`);
+		const dashCount = Math.max(0, this.panelWidth - 2);
+		return chalk.hex(ASSISTANT_BORDER)(`╭${"─".repeat(dashCount)}╮`);
 	}
 
 	private buildBottomLine(): string {
-		return chalk.hex("#ffd6a5")(`╰${"─".repeat(this.panelWidth - 2)}╯`);
+		const dashCount = Math.max(0, this.panelWidth - 2);
+		return chalk.hex(ASSISTANT_BORDER)(`╰${"─".repeat(dashCount)}╯`);
 	}
 
 	updateContent(message: AssistantMessage): void {
-		// Clear content container
 		this.contentContainer.clear();
 
 		if (
@@ -49,24 +56,19 @@ export class AssistantMessageComponent extends Container {
 			this.contentContainer.addChild(new Spacer(1));
 		}
 
-		// Render content in order
 		for (const content of message.content) {
 			if (content.type === "text" && content.text.trim()) {
-				// Assistant text messages with no background - trim the text
-				// Set paddingY=0 to avoid extra spacing before tool executions
 				this.contentContainer.addChild(
 					new Markdown(
 						content.text.trim(),
 						undefined,
 						undefined,
-						undefined,
+						ASSISTANT_FILL,
 						1,
 						0,
 					),
 				);
 			} else if (content.type === "thinking" && content.thinking.trim()) {
-				// Thinking traces in dark gray italic
-				// Use Markdown component because it preserves ANSI codes across wrapped lines
 				const thinkingText = chalk.gray.italic(content.thinking);
 				this.contentContainer.addChild(
 					new Markdown(thinkingText, undefined, undefined, undefined, 1, 0),
@@ -75,16 +77,16 @@ export class AssistantMessageComponent extends Container {
 			}
 		}
 
-		// Check if aborted - show after partial content
-		// But only if there are no tool calls (tool execution components will show the error)
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
 		if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
-				this.contentContainer.addChild(new Text(chalk.red("Aborted"), 1, 0));
+				this.contentContainer.addChild(
+					new Text(chalk.red("Aborted"), 1, 0),
+				);
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(
-					new Text(chalk.red(`Error: ${errorMsg}`)),
+					new Text(chalk.red(`Error: ${errorMsg}`), 1, 0),
 				);
 			}
 		}
