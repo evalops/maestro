@@ -10,6 +10,7 @@ import type {
 	TextContent,
 	ThinkingContent,
 	ToolCall,
+	ToolResultMessage,
 	Usage,
 } from "../types.js";
 
@@ -70,7 +71,9 @@ export async function* streamAnthropic(
 
 	// Convert messages
 	const messages: AnthropicMessage[] = [];
-	for (const msg of context.messages) {
+	for (let i = 0; i < context.messages.length; i++) {
+		const msg = context.messages[i];
+		
 		if (msg.role === "user") {
 			const content =
 				typeof msg.content === "string"
@@ -105,10 +108,14 @@ export async function* streamAnthropic(
 			}
 			messages.push({ role: "assistant", content });
 		} else if (msg.role === "toolResult") {
-			const toolResultContent =
-				typeof msg.content === "string"
-					? msg.content
-					: msg.content.map((c) => {
+			// Collect all consecutive toolResult messages into one user message
+			const toolResults: any[] = [];
+
+			// Helper to convert tool result content
+			const convertToolResultContent = (content: any) =>
+				typeof content === "string"
+					? content
+					: content.map((c: any) => {
 							if (c.type === "text") {
 								return { type: "text" as const, text: c.text };
 							}
@@ -121,18 +128,38 @@ export async function* streamAnthropic(
 								},
 							};
 						});
-			// tool_result blocks MUST be in user messages, not assistant messages
-			// Create a new user message with tool result
+
+			// Add the current tool result
+			toolResults.push({
+				type: "tool_result",
+				tool_use_id: msg.toolCallId,
+				content: convertToolResultContent(msg.content),
+				is_error: msg.isError,
+			});
+
+			// Look ahead for consecutive toolResult messages
+			let j = i + 1;
+			while (
+				j < context.messages.length &&
+				context.messages[j].role === "toolResult"
+			) {
+				const nextMsg = context.messages[j] as ToolResultMessage;
+				toolResults.push({
+					type: "tool_result",
+					tool_use_id: nextMsg.toolCallId,
+					content: convertToolResultContent(nextMsg.content),
+					is_error: nextMsg.isError,
+				});
+				j++;
+			}
+
+			// Skip the messages we've already processed
+			i = j - 1;
+
+			// Add a single user message with all tool results
 			messages.push({
 				role: "user",
-				content: [
-					{
-						type: "tool_result",
-						tool_use_id: msg.toolCallId,
-						content: toolResultContent,
-						is_error: msg.isError,
-					},
-				],
+				content: toolResults,
 			});
 		}
 	}
