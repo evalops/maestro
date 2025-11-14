@@ -15,6 +15,8 @@ interface SessionViewOptions {
 	chatContainer: Container;
 	ui: TUI;
 	applyLoadedSessionContext: () => void;
+	showInfoMessage: (message: string) => void;
+	onSessionLoaded: (session: { id: string; messageCount: number }) => void;
 }
 
 export class SessionView {
@@ -134,38 +136,48 @@ export class SessionView {
 		this.options.ui.requestRender();
 	}
 
-	loadSession(index: number, sessions: any[]): void {
+	loadSession(index: number, sessions: any[]): boolean {
 		if (!Number.isFinite(index) || index <= 0) {
-			this.options.chatContainer.addChild(new Spacer(1));
-			this.options.chatContainer.addChild(
-				new Text("Usage: /sessions load <number>", 1, 0),
-			);
-			this.options.ui.requestRender();
-			return;
+			this.options.showInfoMessage("Usage: /sessions load <number>");
+			return false;
 		}
 		if (sessions.length === 0) {
-			this.options.chatContainer.addChild(new Spacer(1));
-			this.options.chatContainer.addChild(
-				new Text("No saved sessions to load.", 1, 0),
-			);
-			this.options.ui.requestRender();
-			return;
+			this.options.showInfoMessage("No saved sessions to load.");
+			return false;
 		}
 		const selected = sessions[index - 1];
 		if (!selected) {
-			this.options.chatContainer.addChild(new Spacer(1));
-			this.options.chatContainer.addChild(
-				new Text(`No session #${index} found.`, 1, 0),
-			);
-			this.options.ui.requestRender();
-			return;
+			this.options.showInfoMessage(`No session #${index} found.`);
+			return false;
 		}
 		this.options.sessionManager.setSessionFile(selected.path);
 		const loaded = this.options.sessionManager.loadMessages() as AppMessage[];
 		this.options.agent.replaceMessages(loaded);
 		this.options.applyLoadedSessionContext();
-		this.options.chatContainer.clear();
-		this.options.ui.requestRender();
+		this.options.onSessionLoaded({
+			id: selected.id,
+			messageCount: selected.messageCount,
+		});
+		return true;
+	}
+
+	handleSessionsCommand(text: string): void {
+		const parts = text.trim().split(/\s+/);
+		const sessions = this.options.sessionManager.loadAllSessions();
+		if (parts.length === 1 || parts[1] === "list") {
+			this.showSessionsList(sessions);
+			return;
+		}
+
+		if (parts[1] === "load" && parts.length >= 3) {
+			const index = Number.parseInt(parts[2], 10);
+			if (!this.loadSession(index, sessions)) {
+				return;
+			}
+			return;
+		}
+
+		this.options.showInfoMessage("Usage: /sessions [list|load <number>]");
 	}
 
 }

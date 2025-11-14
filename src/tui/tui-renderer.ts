@@ -169,6 +169,15 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
+			showInfoMessage: (message) => this.showInfoMessage(message),
+			onSessionLoaded: (sessionInfo) => {
+				this.toolComponents.clear();
+				this.renderInitialMessages(this.agent.state);
+				this.footer.updateState(this.agent.state);
+				this.showInfoMessage(
+					`Loaded session ${sessionInfo.id} (${sessionInfo.messageCount} messages).`,
+				);
+			},
 		});
 		this.diagnosticsView = new DiagnosticsView({
 			agent: this.agent,
@@ -216,7 +225,7 @@ export class TuiRenderer {
 				tools: (input) => this.toolStatusView.handleToolsCommand(input),
 				importConfig: (input) => this.importExportView.handleImportCommand(input),
 				sessionInfo: () => this.sessionView.showSessionInfo(),
-				sessions: (input) => this.handleSessionsCommand(input),
+				sessions: (input) => this.sessionView.handleSessionsCommand(input),
 				reportBug: () => this.diagnosticsView.handleBugCommand(),
 				status: () => this.diagnosticsView.handleStatusCommand(),
 				review: () => this.gitView.handleReviewCommand(),
@@ -909,42 +918,6 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 		this.commandPaletteView.hideCommandPalette();
 	}
 
-	private handleSessionsCommand(text: string): void {
-		const parts = text.trim().split(/\s+/);
-		const sessions = this.sessionManager.loadAllSessions();
-		if (parts.length === 1 || parts[1] === "list") {
-			this.sessionView.showSessionsList(sessions);
-			return;
-		}
-
-		if (parts[1] === "load" && parts.length >= 3) {
-			const index = Number.parseInt(parts[2], 10);
-			if (!Number.isFinite(index) || index <= 0) {
-				this.showInfoMessage("Usage: /sessions load <number>");
-				return;
-			}
-			if (sessions.length === 0) {
-				this.showInfoMessage("No saved sessions to load.");
-				return;
-			}
-			const selected = sessions[index - 1];
-			if (!selected) {
-				this.showInfoMessage(`No session #${index} found.`);
-				return;
-			}
-			this.sessionView.loadSession(index, sessions);
-			this.toolComponents.clear();
-			this.renderInitialMessages(this.agent.state);
-			this.footer.updateState(this.agent.state);
-			this.showInfoMessage(
-				`Loaded session ${selected.id} (${selected.messageCount} messages).`,
-			);
-			return;
-		}
-
-		this.showInfoMessage("Usage: /sessions [list|load <number>]");
-	}
-
 	private showInfoMessage(text: string): void {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(chalk.dim(text), 1, 0));
@@ -971,6 +944,17 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 		this.ui.requestRender();
 	}
 
+	private handleHelpCommand(): void {
+		const lines = this.slashCommands.map(
+			(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
+		);
+		const text = `${chalk.bold("Slash commands")}
+${lines.join("\n")}`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(text, 1, 0));
+		this.ui.requestRender();
+	}
+
 	private handleWhyCommand(): void {
 		const user = this.lastUserMessageText
 			? this.lastUserMessageText
@@ -990,17 +974,6 @@ ${tools}
 
 ${chalk.dim("Assistant reply")}:
 ${response}`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(text, 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleHelpCommand(): void {
-		const lines = this.slashCommands.map(
-			(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
-		);
-		const text = `${chalk.bold("Slash commands")}
-${lines.join("\n")}`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
 		this.ui.requestRender();
