@@ -48,13 +48,16 @@ import { InstructionPanelComponent } from "./instruction-panel.js";
 import { PlanView, loadTodoStore } from "./plan-view.js";
 import { GitView } from "./git-view.js";
 import { RunCommandView } from "./run-command-view.js";
+import {
+	TOOL_FAILURE_LOG_PATH,
+	ToolStatusView,
+} from "./tool-status-view.js";
 import { ModelSelectorComponent } from "./model-selector.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
-const TOOL_FAILURE_LOG_PATH = join(homedir(), ".composer", "tool-failures.log");
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 /**
@@ -115,6 +118,7 @@ export class TuiRenderer {
 	private planView: PlanView;
 	private runCommandView: RunCommandView;
 	private gitView: GitView;
+	private toolStatusView: ToolStatusView;
 
 	constructor(
 		agent: Agent,
@@ -160,6 +164,12 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.showInfoMessage(message),
 			showToast: (message, tone) => this.showToast(message, tone),
 		});
+		this.toolStatusView = new ToolStatusView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			getTools: () => this.agent.state.tools,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+		});
 
 		const commandRegistry = createCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -168,7 +178,7 @@ export class TuiRenderer {
 				thinking: () => this.showThinkingSelector(),
 				model: () => this.showModelSelector(),
 				exportSession: (input) => this.handleExportCommand(input),
-				tools: (input) => this.handleToolsCommand(input),
+				tools: (input) => this.toolStatusView.handleToolsCommand(input),
 				importConfig: (input) => this.handleImportCommand(input),
 				sessionInfo: () => this.handleSessionCommand(),
 				sessions: (input) => this.handleSessionsCommand(input),
@@ -1168,50 +1178,6 @@ Use /sessions load <number> to switch.`,
 		this.ui.requestRender();
 	}
 
-	private handleToolsCommand(commandText = "/tools"): void {
-		const parts = commandText.trim().split(/\s+/);
-		if (parts.length > 1 && parts[1] === "clear") {
-			if (!existsSync(TOOL_FAILURE_LOG_PATH)) {
-				this.showInfoMessage("No tool failure log found to clear.");
-				return;
-			}
-			try {
-				writeFileSync(TOOL_FAILURE_LOG_PATH, "");
-				this.showInfoMessage("Cleared tool failure log.");
-			} catch (error) {
-				const message =
-					error instanceof Error ? error.message : String(error ?? "unknown");
-				this.showInfoMessage(`Failed to clear log: ${message}`);
-			}
-			return;
-		}
-		const tools = this.agent.state.tools ?? [];
-		const { recent, counts } = this.getToolFailureData();
-		const toolLines = tools.length
-			? tools.map((tool) => {
-					const label = tool.label ?? tool.name;
-					const description = tool.description || "No description provided";
-					const failureCount = counts.get(tool.name) ?? 0;
-					const failureBadge =
-						failureCount > 0 ? ` ${chalk.red(`✗ ${failureCount}`)}` : "";
-					return `${chalk.cyan(label)} ${chalk.dim(`(${tool.name})`)}${failureBadge}\n  ${chalk.dim(description)}`;
-				})
-			: [chalk.dim("No tools are currently registered.")];
-
-		const failureSection = recent.length
-			? `${chalk.bold("Recent tool failures")}\n${recent
-					.map((entry) => `${entry.timestamp} · ${entry.tool} · ${entry.error}`)
-					.join("\n")}`
-			: chalk.dim("No recent tool failures logged.");
-
-		const text = `${chalk.bold("Available tools")}
-${toolLines.join("\n\n")}\n\n${failureSection}\n\n${chalk.dim("Use /tools clear to reset the failure log.")}`;
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(text, 1, 0));
-		this.ui.requestRender();
-	}
-
 	private handleBugCommand(): void {
 		const sessionFile = this.sessionManager.getSessionFile();
 		const sessionId = this.sessionManager.getSessionId();
@@ -1409,7 +1375,7 @@ ${lines.join("\n")}`;
 		planGoals?: number;
 		planPendingTasks?: number;
 	} {
-		const { counts } = this.getToolFailureData();
+		const { counts } = this.toolStatusView.getToolFailureData();
 		const totalFailures = Array.from(counts.values()).reduce(
 			(sum, value) => sum + value,
 			0,
@@ -1431,48 +1397,6 @@ ${lines.join("\n")}`;
 			planGoals: Object.keys(store).length,
 			planPendingTasks: pending,
 		};
-	}
-
-	private getToolFailureData(limit = 5): {
-		recent: Array<{ tool: string; error: string; timestamp: string }>;
-		counts: Map<string, number>;
-	} {
-		const result = {
-			recent: [] as Array<{ tool: string; error: string; timestamp: string }>,
-			counts: new Map<string, number>(),
-		};
-		try {
-			if (!existsSync(TOOL_FAILURE_LOG_PATH)) {
-				return result;
-			}
-			const raw = readFileSync(TOOL_FAILURE_LOG_PATH, "utf-8");
-			const lines = raw
-				.split("\n")
-				.map((line) => line.trim())
-				.filter(Boolean);
-			for (const line of lines) {
-				try {
-					const parsed = JSON.parse(line) as {
-						tool?: string;
-						error?: string;
-						timestamp?: string;
-					};
-					const toolName = parsed.tool ?? "unknown";
-					const timestamp = parsed.timestamp
-						? new Date(parsed.timestamp).toLocaleString()
-						: "unknown time";
-					const error = parsed.error ?? "unknown error";
-					result.counts.set(toolName, (result.counts.get(toolName) ?? 0) + 1);
-					result.recent.push({ tool: toolName, error, timestamp });
-				} catch {
-					// ignore malformed lines
-				}
-			}
-			result.recent = result.recent.slice(-limit);
-			return result;
-		} catch {
-			return result;
-		}
 	}
 
 	private extractTextFromAppMessage(message: AppMessage): string {
