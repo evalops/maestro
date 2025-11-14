@@ -101,14 +101,15 @@ export class TuiRenderer {
 
 		// Add header with logo and instructions
 		const logo =
-			chalk.bold.cyan("Composer") + chalk.dim(` v${this.version} (EvalOps)`);
+			chalk.hex("#a5b4fc")("╔═ composer ═╗") +
+			chalk.dim(` v${this.version} · EvalOps`);
 		const instructions = [
-			`${chalk.dim("esc")}${chalk.gray(" to interrupt")}`,
-			`${chalk.dim("ctrl+c")}${chalk.gray(" to clear")}`,
-			`${chalk.dim("ctrl+c twice")}${chalk.gray(" to exit")}`,
-			`${chalk.dim("ctrl+k")}${chalk.gray(" to delete line")}`,
-			`${chalk.dim("/")}${chalk.gray(" for commands")}`,
-			`${chalk.dim("drop files")}${chalk.gray(" to attach")}`,
+			`${chalk.hex("#f1c0e8")("· esc ")}${chalk.gray("interrupt")}`,
+			`${chalk.hex("#f1c0e8")("· ctrl+c ")}${chalk.gray("clear")}`,
+			`${chalk.hex("#f1c0e8")("· ctrl+c×2 ")}${chalk.gray("exit")}`,
+			`${chalk.hex("#f1c0e8")("· ctrl+k ")}${chalk.gray("delete line")}`,
+			`${chalk.hex("#f1c0e8")("· / ")}${chalk.gray("commands")}`,
+			`${chalk.hex("#f1c0e8")("· drop ")}${chalk.gray("attach files")}`,
 		].join("\n");
 		const header = new Text(`${logo}\n${instructions}`, 1, 0);
 

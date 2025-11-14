@@ -148,7 +148,7 @@ export class ToolExecutionComponent extends Container {
 		this.args = args;
 		this.addChild(new Spacer(1));
 		// Content with colored background and padding
-		this.contentText = new Text("", 1, 1, { r: 40, g: 40, b: 50 });
+		this.contentText = new Text("", 1, 1, { r: 34, g: 36, b: 48 });
 		this.addChild(this.contentText);
 		this.updateDisplay();
 	}
@@ -175,9 +175,9 @@ export class ToolExecutionComponent extends Container {
 	private updateDisplay(): void {
 		const bgColor = this.result
 			? this.result.isError
-				? { r: 60, g: 40, b: 40 }
-				: { r: 40, g: 50, b: 40 }
-			: { r: 40, g: 40, b: 50 };
+				? { r: 68, g: 36, b: 44 }
+				: { r: 36, g: 52, b: 42 }
+			: { r: 34, g: 36, b: 48 };
 
 		this.contentText.setCustomBgRgb(bgColor);
 		this.contentText.setText(this.formatToolExecution());
@@ -211,7 +211,9 @@ export class ToolExecutionComponent extends Container {
 		// Format based on tool type
 		if (this.toolName === "bash") {
 			const command = this.args?.command || "";
-			text = chalk.bold(`$ ${command || chalk.dim("...")}`);
+			text = `${chalk.hex("#eab676")("⟢ bash")}\n${chalk.bold(
+				`$ ${command || chalk.dim("...")}`,
+			)}`;
 
 			if (this.result) {
 				// Show output without code fences - more minimal
@@ -232,7 +234,9 @@ export class ToolExecutionComponent extends Container {
 			}
 		} else if (this.toolName === "read") {
 			const path = shortenPath(this.args?.file_path || this.args?.path || "");
-			text = `${chalk.bold("read")} ${path ? chalk.cyan(path) : chalk.dim("...")}`;
+			text = `${chalk.hex("#7bc7ff")("✦ read")} ${
+				path ? chalk.cyan(path) : chalk.dim("...")
+			}`;
 
 			if (this.result) {
 				const output = this.getTextOutput();
@@ -254,7 +258,9 @@ export class ToolExecutionComponent extends Container {
 			const lines = fileContent ? fileContent.split("\n") : [];
 			const totalLines = lines.length;
 
-			text = `${chalk.bold("write")} ${path ? chalk.cyan(path) : chalk.dim("...")}`;
+			text = `${chalk.hex("#adf7b6")("✸ write")} ${
+				path ? chalk.cyan(path) : chalk.dim("...")
+			}`;
 			if (totalLines > 10) {
 				text += ` (${totalLines} lines)`;
 			}
@@ -274,7 +280,9 @@ export class ToolExecutionComponent extends Container {
 			}
 		} else if (this.toolName === "edit") {
 			const path = shortenPath(this.args?.file_path || this.args?.path || "");
-			text = `${chalk.bold("edit")} ${path ? chalk.cyan(path) : chalk.dim("...")}`;
+			text = `${chalk.hex("#fcd5ce")("✧ edit")} ${
+				path ? chalk.cyan(path) : chalk.dim("...")
+			}`;
 
 			// Show diff if available
 			if (this.result?.details?.diff) {
@@ -293,7 +301,7 @@ export class ToolExecutionComponent extends Container {
 			}
 		} else {
 			// Generic tool
-			text = chalk.bold(this.toolName);
+			text = chalk.bold(`${chalk.hex("#d4d8ff")("✷")} ${this.toolName}`);
 
 			const content = JSON.stringify(this.args, null, 2);
 			text += `\n\n${content}`;

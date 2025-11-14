@@ -13,6 +13,7 @@ export class AssistantMessageComponent extends Container {
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
+		this.addChild(new Text(chalk.hex("#ffd6a5")("╭── assistant"), 1, 0));
 		this.addChild(this.contentContainer);
 
 		if (message) {

@@ -79,12 +79,31 @@ export class FooterComponent {
 
 		// Build stats line
 		const statsParts = [];
-		if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
-		if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
-		if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
-		if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
-		if (totalCost) statsParts.push(`$${totalCost.toFixed(3)}`);
-		statsParts.push(`${contextPercent}%`);
+		if (totalInput)
+			statsParts.push(
+				`${chalk.hex("#9ad5ff")("▲")} ${formatTokens(totalInput)}`,
+			);
+		if (totalOutput)
+			statsParts.push(
+				`${chalk.hex("#f7b267")("▼")} ${formatTokens(totalOutput)}`,
+			);
+		if (totalCacheRead)
+			statsParts.push(
+				`${chalk.hex("#c1ffd7")("⟲")} ${formatTokens(totalCacheRead)}`,
+			);
+		if (totalCacheWrite)
+			statsParts.push(
+				`${chalk.hex("#f7b7c3")("⟳")} ${formatTokens(totalCacheWrite)}`,
+			);
+		if (totalCost)
+			statsParts.push(
+				`${chalk.hex("#ffd6a5")("$")}${totalCost.toFixed(3)}`,
+			);
+
+		const contextBadgeColor = parseFloat(contextPercent) >= 80 ? "#ff6b6b" : "#a0aec0";
+		statsParts.push(
+			chalk.hex(contextBadgeColor)(`ctx ${contextPercent}%`),
+		);
 
 		const statsLeft = statsParts.join(" ");
 
