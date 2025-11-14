@@ -191,20 +191,10 @@ export function resolveModel(
 	provider: Provider,
 	modelId: string,
 ): Model<Api> | null {
-	// Custom first
-	const config = loadConfig();
-	const customProvider = config.providers.find((p) => p.id === provider);
-	if (customProvider) {
-		const customModel = customProvider.models.find((m) => m.id === modelId);
-		if (customModel) {
-			return toModel(customProvider, customModel);
-		}
-	}
-	try {
-		return getModel(provider as any, modelId as any) as Model<Api>;
-	} catch {
-		return null;
-	}
+	const match = getRegisteredModels().find(
+		(entry) => entry.provider === provider && entry.id === modelId,
+	);
+	return match ?? null;
 }
 
 export function getSupportedProviders(): string[] {
