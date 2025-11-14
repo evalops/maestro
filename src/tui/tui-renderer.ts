@@ -118,12 +118,14 @@ export class TuiRenderer {
 	private currentStageKey: string | null = null;
 	private stageStartTime: number | null = null;
 	private readonly idleFooterHint = "Try /help for commands or /tools for status";
+	private planHint: string | null = null;
 	private compactToolOutputs = false;
 	private toolComponents = new Set<ToolExecutionComponent>();
 	private lastUserMessageText?: string;
 	private lastAssistantMessageText?: string;
 	private currentRunToolNames: string[] = [];
 	private lastRunToolNames: string[] = [];
+	private lastNotifiedChanges: string[] = [];
 	private slashCommands: SlashCommand[] = [];
 
 	constructor(
@@ -285,7 +287,7 @@ export class TuiRenderer {
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(this.editorContainer); // Use container that can hold editor or selector
-		this.footer.setHint(this.idleFooterHint);
+		this.refreshFooterHint();
 		this.ui.addChild(this.footer);
 		this.ui.setFocus(this.editor);
 
@@ -635,7 +637,8 @@ export class TuiRenderer {
 				this.pendingTools.clear();
 				this.clearLoaderProgressTracking();
 				this.editor.disableSubmit = false;
-				this.footer.setHint(this.idleFooterHint);
+				this.notifyFileChanges();
+				this.refreshFooterHint();
 				this.ui.requestRender();
 				break;
 		}
@@ -1243,6 +1246,26 @@ Use /sessions load <number> to switch.`,
 		this.ui.requestRender();
 	}
 
+	private refreshFooterHint(): void {
+		const suffix = this.planHint ? ` • Plan ${this.planHint}` : "";
+		this.footer.setHint(`${this.idleFooterHint}${suffix}`);
+	}
+
+	private showToast(
+		text: string,
+		tone: "info" | "warn" | "success" = "info",
+	): void {
+		const color =
+			tone === "warn"
+				? chalk.hex("#f97316")
+				: tone === "success"
+					? chalk.hex("#10b981")
+					: chalk.hex("#38bdf8");
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(color(`ℹ ${text}`), 1, 0));
+		this.ui.requestRender();
+	}
+
 	private handleToolsCommand(commandText = "/tools"): void {
 		const parts = commandText.trim().split(/\s+/);
 		if (parts.length > 1 && parts[1] === "clear") {
@@ -1338,6 +1361,8 @@ Attach them in the bug report so we can replay the session.`;
 			this.showInfoMessage(
 				"No plans found. Use the todo tool in a message to create one.",
 			);
+			this.planHint = null;
+			this.refreshFooterHint();
 			return;
 		}
 		const parts = text.trim().split(/\s+/);
@@ -1350,12 +1375,16 @@ Attach them in the bug report so we can replay the session.`;
 			this.chatContainer.addChild(new Spacer(1));
 			this.chatContainer.addChild(
 				new Text(
-					`${chalk.bold("Plans")}\n${summaries.join("\n\n")}\n\nUse /plan <goal> to see details.`,
+					`${chalk.bold("Plans")}\n${summaries.join(
+						"\n\n",
+					)}\n\nUse /plan <goal> to see details.`,
 					1,
 					0,
 				),
 			);
 			this.ui.requestRender();
+			this.planHint = null;
+			this.refreshFooterHint();
 			return;
 		}
 		const goalQuery = text.slice(text.indexOf(" ") + 1).trim();
@@ -1388,6 +1417,12 @@ Attach them in the bug report so we can replay the session.`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(detail, 1, 0));
 		this.ui.requestRender();
+		const total =
+			counts.pending + counts.in_progress + counts.completed || entry.items.length;
+		const summary =
+			total > 0 ? `${counts.completed}/${total} done` : "no tasks yet";
+		this.planHint = `${goalKey}: ${summary}`;
+		this.refreshFooterHint();
 	}
 
 	private loadTodoStore(): Record<string, { goal: string; items: Array<{ id: string; content: string; status: string; priority: string; notes?: string; due?: string; blockedBy?: string[] }>; updatedAt: string }>
@@ -1532,6 +1567,44 @@ ${response}`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
 		this.ui.requestRender();
+	}
+
+	private notifyFileChanges(): void {
+		try {
+			const result = spawnSync("git", ["status", "-sb"], {
+				cwd: process.cwd(),
+				encoding: "utf-8",
+			});
+			if ((result.status ?? 0) !== 0) {
+				return;
+			}
+			const lines = result.stdout
+				.split("\n")
+				.map((line) => line.trim())
+				.filter(
+					(line) => line.length > 0 && !line.startsWith("##"),
+				);
+			if (lines.length === 0) {
+				this.lastNotifiedChanges = [];
+				return;
+			}
+			const normalized = lines.slice().sort();
+			if (
+				normalized.length === this.lastNotifiedChanges.length &&
+				normalized.every((line, index) => line === this.lastNotifiedChanges[index])
+			) {
+				return;
+			}
+			this.lastNotifiedChanges = normalized;
+			const files = lines
+				.map((line) => line.replace(/^[A-Z?]{1,2}\s+/, ""))
+				.filter(Boolean);
+			const previewTargets = files.slice(0, 3).join("\n- ");
+			const message = `${files.length} file${files.length === 1 ? "" : "s"} modified.\n- ${previewTargets}\nUse /preview <file> to inspect diffs.`;
+			this.showToast(message, "info");
+		} catch {
+			// ignore git errors
+		}
 	}
 
 	private handleHelpCommand(): void {
