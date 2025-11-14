@@ -22,7 +22,8 @@ import {
 } from "../tui-lib/index.js";
 import chalk from "chalk";
 import clipboard from "clipboardy";
-import { existsSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
@@ -106,6 +107,7 @@ export class TuiRenderer {
 	private readonly idleFooterHint = "Use /model or /thinking to tune replies";
 	private compactToolOutputs = false;
 	private toolComponents = new Set<ToolExecutionComponent>();
+	private slashCommands: SlashCommand[] = [];
 
 	constructor(
 		agent: Agent,
@@ -143,7 +145,7 @@ export class TuiRenderer {
 
 		const toolsCommand: SlashCommand = {
 			name: "tools",
-			description: "Show available tools and recent failures",
+			description: "Show available tools, failures, or clear logs",
 		};
 
 		const importCommand: SlashCommand = {
@@ -171,6 +173,11 @@ export class TuiRenderer {
 			description: "List available slash commands",
 		};
 
+		const runCommand: SlashCommand = {
+			name: "run",
+			description: "Run npm script (e.g. /run test --watch)",
+		};
+
 		const diagnosticsCommand: SlashCommand = {
 			name: "diag",
 			description: "Show provider/model/API key diagnostics",
@@ -192,22 +199,25 @@ export class TuiRenderer {
 		};
 
 		// Setup autocomplete for file paths and slash commands
+		this.slashCommands = [
+			thinkingCommand,
+			modelCommand,
+			exportCommand,
+			toolsCommand,
+			importCommand,
+			sessionCommand,
+			sessionsCommand,
+			bugCommand,
+			runCommand,
+			helpCommand,
+			diagnosticsCommand,
+			compactCommand,
+			compactToolsCommand,
+			quitCommand,
+		];
+
 		const autocompleteProvider = new CombinedAutocompleteProvider(
-			[
-				thinkingCommand,
-				modelCommand,
-				exportCommand,
-				toolsCommand,
-				importCommand,
-				sessionCommand,
-				sessionsCommand,
-				bugCommand,
-				helpCommand,
-				diagnosticsCommand,
-				compactCommand,
-				compactToolsCommand,
-				quitCommand,
-			],
+			this.slashCommands,
 			process.cwd(),
 		);
 		this.editor.setAutocompleteProvider(autocompleteProvider);
@@ -291,8 +301,8 @@ export class TuiRenderer {
 					return;
 				}
 
-				if (trimmed === "/tools") {
-					this.handleToolsCommand();
+				if (trimmed === "/tools" || trimmed.startsWith("/tools ")) {
+					this.handleToolsCommand(trimmed);
 					this.editor.setText("");
 					return;
 				}
@@ -315,6 +325,12 @@ export class TuiRenderer {
 					return;
 				}
 
+				if (trimmed.startsWith("/run")) {
+					void this.handleRunCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
+
 			// Check for /session command
 			if (trimmed === "/session") {
 				this.handleSessionCommand();
@@ -329,8 +345,8 @@ export class TuiRenderer {
 			}
 
 			// Check for /diag command
-			if (trimmed === "/diag" || trimmed === "/diagnostics") {
-				this.handleDiagnosticsCommand();
+			if (trimmed === "/diag" || trimmed.startsWith("/diag ") || trimmed === "/diagnostics") {
+				this.handleDiagnosticsCommand(trimmed);
 				this.editor.setText("");
 				return;
 			}
@@ -1158,7 +1174,23 @@ Use /sessions load <number> to switch.`,
 		this.ui.requestRender();
 	}
 
-	private handleToolsCommand(): void {
+	private handleToolsCommand(commandText = "/tools"): void {
+		const parts = commandText.trim().split(/\s+/);
+		if (parts.length > 1 && parts[1] === "clear") {
+			if (!existsSync(TOOL_FAILURE_LOG_PATH)) {
+				this.showInfoMessage("No tool failure log found to clear.");
+				return;
+			}
+			try {
+				writeFileSync(TOOL_FAILURE_LOG_PATH, "");
+				this.showInfoMessage("Cleared tool failure log.");
+			} catch (error) {
+				const message =
+					error instanceof Error ? error.message : String(error ?? "unknown");
+				this.showInfoMessage(`Failed to clear log: ${message}`);
+			}
+			return;
+		}
 		const tools = this.agent.state.tools ?? [];
 		const { recent, counts } = this.getToolFailureData();
 		const toolLines = tools.length
@@ -1178,7 +1210,7 @@ Use /sessions load <number> to switch.`,
 			: chalk.dim("No recent tool failures logged.");
 
 		const text = `${chalk.bold("Available tools")}
-${toolLines.join("\n\n")}\n\n${failureSection}`;
+${toolLines.join("\n\n")}\n\n${failureSection}\n\n${chalk.dim("Use /tools clear to reset the failure log.")}`;
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
@@ -1230,23 +1262,78 @@ Attach them in the bug report so we can replay the session.`;
 		}
 	}
 
+	private async handleRunCommand(text: string): Promise<void> {
+		const parts = text.trim().split(/\s+/);
+		if (parts.length < 2) {
+			this.showInfoMessage("Usage: /run <script> [args]");
+			return;
+		}
+		const script = parts[1];
+		const args = parts.slice(2).join(" ");
+		const command = args
+			? `npm run ${script} -- ${args}`
+			: `npm run ${script}`;
+
+		this.chatContainer.addChild(new Spacer(1));
+		const outputComponent = new Text(
+			`${chalk.bold(`$ ${command}`)}\nRunning…`,
+			1,
+			0,
+		);
+		this.chatContainer.addChild(outputComponent);
+		this.ui.requestRender();
+
+		const result = await this.runShellCommand(command);
+		const statusLine = result.success
+			? chalk.green(`Exit code ${result.code}`)
+			: chalk.red(`Exit code ${result.code}`);
+		const body = [result.stdout, result.stderr].filter(Boolean).join("\n");
+		outputComponent.setText(
+			`${chalk.bold(`$ ${command}`)}\n${body || chalk.dim("(no output)")}\n\n${statusLine}`,
+		);
+		this.ui.requestRender();
+	}
+
+	private async runShellCommand(command: string): Promise<{
+		success: boolean;
+		code: number;
+		stdout: string;
+		stderr: string;
+	}> {
+		return await new Promise((resolve) => {
+			const child = spawn("bash", ["-lc", command], {
+				cwd: process.cwd(),
+				env: process.env,
+			});
+			let stdout = "";
+			let stderr = "";
+			child.stdout?.on("data", (chunk) => {
+				stdout += chunk.toString();
+			});
+			child.stderr?.on("data", (chunk) => {
+				stderr += chunk.toString();
+			});
+			child.on("close", (code) => {
+				resolve({
+					success: code === 0,
+					code: code ?? -1,
+					stdout: stdout.trimEnd(),
+					stderr: stderr.trimEnd(),
+				});
+			});
+			child.on("error", (error) => {
+				resolve({
+					success: false,
+					code: -1,
+					stdout,
+					stderr: error instanceof Error ? error.message : String(error ?? "unknown"),
+				});
+			});
+		});
+	}
+
 	private handleHelpCommand(): void {
-		const commands: SlashCommand[] = [
-			thinkingCommand,
-			modelCommand,
-			exportCommand,
-			toolsCommand,
-			importCommand,
-			sessionCommand,
-			sessionsCommand,
-			bugCommand,
-			helpCommand,
-			diagnosticsCommand,
-			compactCommand,
-			compactToolsCommand,
-			quitCommand,
-		];
-		const lines = commands.map(
+		const lines = this.slashCommands.map(
 			(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
 		);
 		const text = `${chalk.bold("Slash commands")}
@@ -1380,7 +1467,7 @@ ${lines.join("\n")}`;
 		return result;
 	}
 
-	private handleDiagnosticsCommand(): void {
+	private handleDiagnosticsCommand(commandText = "/diag"): void {
 		if (!this.currentApiKeyInfo) {
 			this.currentApiKeyInfo = this.resolveApiKey();
 		}
@@ -1398,8 +1485,14 @@ ${lines.join("\n")}`;
 			explicitApiKey: this.explicitApiKey,
 		});
 
+		const shouldCopy = /copy|share/.test(commandText.split(/\s+/)[1] ?? "");
+		let copyNote = "";
+		if (shouldCopy) {
+			const copied = this.copyBugInfoToClipboard(report);
+			copyNote = `\n\n${copied ? chalk.dim("Diagnostics copied to clipboard.") : chalk.dim("(Could not copy diagnostics to clipboard.)")}`;
+		}
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(report, 1, 0));
+		this.chatContainer.addChild(new Text(`${report}${copyNote}`, 1, 0));
 		this.ui.requestRender();
 	}
 
