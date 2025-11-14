@@ -195,6 +195,31 @@ export class TuiRenderer {
 			description: "Copy session info for bug reports",
 		};
 
+		const statusCommand: SlashCommand = {
+			name: "status",
+			description: "Show health snapshot (model, git, plan, telemetry)",
+		};
+
+		const reviewCommand: SlashCommand = {
+			name: "review",
+			description: "Summarize git status and diff stats",
+		};
+
+		const undoCommand: SlashCommand = {
+			name: "undo",
+			description: "Discard local changes in files via git checkout",
+		};
+
+		const feedbackCommand: SlashCommand = {
+			name: "feedback",
+			description: "Copy a feedback template with session context",
+		};
+
+		const mentionCommand: SlashCommand = {
+			name: "mention",
+			description: "Search files to mention (same as @ search)",
+		};
+
 		const helpCommand: SlashCommand = {
 			name: "help",
 			description: "List available slash commands",
@@ -259,6 +284,11 @@ export class TuiRenderer {
 			planCommand,
 			previewCommand,
 			diffCommand,
+			statusCommand,
+			reviewCommand,
+			undoCommand,
+			feedbackCommand,
+			mentionCommand,
 			runCommand,
 			whyCommand,
 			helpCommand,
@@ -379,6 +409,36 @@ export class TuiRenderer {
 
 				if (trimmed === "/bug") {
 					this.handleBugCommand();
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed === "/status") {
+					this.handleStatusCommand();
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed === "/review") {
+					this.handleReviewCommand();
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed === "/feedback") {
+					this.handleFeedbackCommand();
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed.startsWith("/undo")) {
+					this.handleUndoCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed.startsWith("/mention")) {
+					this.handleMentionCommand(trimmed);
 					this.editor.setText("");
 					return;
 				}
@@ -1435,6 +1495,170 @@ Attach them in the bug report so we can replay the session.`;
 		this.ui.requestRender();
 	}
 
+	private handleStatusCommand(): void {
+		const snapshot = this.collectHealthSnapshot();
+		const sessionId = this.sessionManager.getSessionId();
+		const sessionFile = this.sessionManager.getSessionFile();
+		const model = this.agent.state.model
+			? `${this.agent.state.model.provider}/${this.agent.state.model.id}`
+			: "unknown";
+		const thinking = this.agent.state.thinkingLevel ?? "off";
+		const telemetry = this.telemetryStatus;
+		const telemetryLine = telemetry.enabled
+			? `on · ${telemetry.reason}${telemetry.endpoint ? ` → ${telemetry.endpoint}` : ""}`
+			: `off · ${telemetry.reason}`;
+		const toolLine =
+			snapshot.toolFailures > 0
+				? `${snapshot.toolFailures} logged${snapshot.toolFailurePath ? ` · ${snapshot.toolFailurePath}` : ""}`
+				: "none logged";
+		const planLine =
+			(snapshot.planGoals ?? 0) > 0
+				? `${snapshot.planGoals} goal${snapshot.planGoals === 1 ? "" : "s"} · ${snapshot.planPendingTasks ?? 0} pending`
+				: "no saved plans";
+		const gitLine = snapshot.gitStatus ?? "unknown (git unavailable)";
+		const sessionLine = sessionId
+			? `${sessionId}\n${sessionFile}`
+			: "No persisted session yet.";
+
+		const text = `${chalk.bold("Status snapshot")} ${chalk.dim(`v${this.version}`)}
+${chalk.dim("Model")}: ${model}
+${chalk.dim("Thinking")}: ${thinking}
+${chalk.dim("Telemetry")}: ${telemetryLine}
+${chalk.dim("Git")}: ${gitLine}
+${chalk.dim("Plans")}: ${planLine}
+${chalk.dim("Tool failures")}: ${toolLine}
+${chalk.dim("Session")}: ${sessionLine}
+
+Use /diag for a full diagnostic report.`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(text, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleReviewCommand(): void {
+		const statusResult = this.runGitCommand(["status", "-sb"]);
+		const diffResult = this.runGitCommand(["diff", "--stat"]);
+		const statusText = statusResult.ok
+			? statusResult.stdout.trim() || chalk.dim("Working tree clean.")
+			: chalk.red(
+					`git status failed: ${
+						statusResult.stderr.trim() || statusResult.stdout.trim() || "unknown error"
+					}`,
+				);
+		const diffLinesRaw = diffResult.ok
+			? diffResult.stdout.trim()
+			: chalk.red(
+					`git diff --stat failed: ${
+						diffResult.stderr.trim() || diffResult.stdout.trim() || "unknown error"
+					}`,
+				);
+		const diffLines = diffLinesRaw.split("\n");
+		const limit = 20;
+		const preview = diffLines.slice(0, limit).join("\n");
+		const remainder = diffLines.length > limit ? `\n${chalk.dim(`(+${diffLines.length - limit} more lines)`)}` : "";
+		const diffText =
+			diffLinesRaw.trim().length > 0 ? `${preview}${remainder}` : chalk.dim("No pending changes.");
+
+		const message = `${chalk.bold("Review snapshot")}
+${chalk.dim("Git status")}:
+${statusText}
+
+${chalk.dim("Diff stats")}:
+${diffText}
+
+${chalk.dim("Next steps")}:
+- Use /preview <file> for an inline diff
+- Use /plan to revisit saved goals
+- Use /status for a lightweight health check`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(message, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleUndoCommand(text: string): void {
+		const parts = text.trim().split(/\s+/);
+		if (parts.length < 2) {
+			this.showInfoMessage("Usage: /undo <file> [more files]");
+			return;
+		}
+		const targets = parts.slice(1).filter(Boolean);
+		if (!targets.length) {
+			this.showInfoMessage("Usage: /undo <file> [more files]");
+			return;
+		}
+		const result = this.runGitCommand(["checkout", "--", ...targets]);
+		if (!result.ok) {
+			const error =
+				result.stderr.trim() || result.stdout.trim() || "Failed to undo changes.";
+			this.showInfoMessage(error);
+			return;
+		}
+		const summary = `${chalk.bold("Undo complete")}
+Reverted changes in:
+- ${targets.join("\n- ")}`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(summary, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleFeedbackCommand(): void {
+		const snapshot = this.collectHealthSnapshot();
+		const sessionId = this.sessionManager.getSessionId();
+		const sessionFile = this.sessionManager.getSessionFile();
+		const model = this.agent.state.model
+			? `${this.agent.state.model.provider}/${this.agent.state.model.id}`
+			: "unknown";
+		const plain = `Composer feedback
+Version: ${this.version}
+Session: ${sessionId}
+Session file: ${sessionFile}
+Model: ${model}
+Git: ${snapshot.gitStatus ?? "unknown"}
+Tool failures: ${snapshot.toolFailures}
+Plans pending: ${snapshot.planPendingTasks ?? 0}
+
+What happened?
+
+What did you expect instead?
+
+Anything else we should know?`;
+		const copied = this.copyTextToClipboard(plain);
+		const body = `${chalk.bold("Feedback template")}
+${plain}
+
+${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.") : chalk.dim("Copy failed — select and copy manually.")}`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(body, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleMentionCommand(text: string): void {
+		const files = this.getWorkspaceFileList();
+		if (!files.length) {
+			this.showInfoMessage("Workspace file index is empty.");
+			return;
+		}
+		const query = text.includes(" ") ? text.slice(text.indexOf(" ")).trim() : "";
+		const normalized = query.toLowerCase();
+		const matches = files
+			.filter((file) =>
+				normalized ? file.toLowerCase().includes(normalized) : true,
+			)
+			.slice(0, 15);
+		if (!matches.length) {
+			this.showInfoMessage(`No files found matching "${query}".`);
+			return;
+		}
+		const listing = matches.map((file, index) => `${index + 1}. @${file}`).join("\n");
+		const textBlock = `${chalk.bold("Mention helper")}
+${listing}
+
+Use @ in the editor for the interactive search palette.`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(textBlock, 1, 0));
+		this.ui.requestRender();
+	}
+
 	private copyTextToClipboard(value: string): boolean {
 		try {
 			clipboard.writeSync(value);
@@ -1698,6 +1922,31 @@ ${response}`;
 			label: script,
 			description: "package script",
 		}));
+	}
+
+	private runGitCommand(args: string[]): {
+		ok: boolean;
+		stdout: string;
+		stderr: string;
+	} {
+		try {
+			const result = spawnSync("git", args, {
+				cwd: process.cwd(),
+				encoding: "utf-8",
+			});
+			return {
+				ok: (result.status ?? 0) === 0,
+				stdout: result.stdout ?? "",
+				stderr: result.stderr ?? "",
+			};
+		} catch (error) {
+			return {
+				ok: false,
+				stdout: "",
+				stderr:
+					error instanceof Error ? error.message : String(error ?? "unknown"),
+			};
+		}
 	}
 
 	private notifyFileChanges(): void {

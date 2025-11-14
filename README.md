@@ -178,6 +178,48 @@ Summarize the most recent user question, assistant reply, and tools invoked:
 /why
 ```
 
+### /status
+
+Show a quick health summary (model, thinking level, git status, plan stats, telemetry) without running the heavier diagnostics report.
+
+```
+/status
+```
+
+### /review
+
+Print a review-friendly snapshot of `git status` plus `git diff --stat` so you can see which files changed before deciding what to preview.
+
+```
+/review
+```
+
+### /undo
+
+Discard working tree changes in one or more files via `git checkout --`.
+
+```
+/undo src/tui/tui-renderer.ts
+/undo package.json README.md
+```
+
+### /feedback
+
+Copy a feedback template (including session/model metadata) to your clipboard. Paste it into Discord/GitHub when reporting UX issues or wins.
+
+```
+/feedback
+```
+
+### /mention
+
+List workspace files (filtered by an optional query) so you can quickly grab `@path` references. It's the slash-command twin of the in-editor `@` palette.
+
+```
+/mention
+/mention renderer
+```
+
 ## Editor Features
 
 The interactive input editor includes several productivity features:
