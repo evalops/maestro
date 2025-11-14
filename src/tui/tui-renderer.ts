@@ -49,6 +49,7 @@ import { SessionView } from "./session-view.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 import { ImportExportView } from "./import-view.js";
+import { ConversationCompactor } from "./conversation-compactor.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -112,6 +113,7 @@ export class TuiRenderer {
 	private toolStatusView: ToolStatusView;
 	private diagnosticsView: DiagnosticsView;
 	private fileSearchView: FileSearchView;
+	private conversationCompactor: ConversationCompactor;
 
 	constructor(
 		agent: Agent,
@@ -213,6 +215,17 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.showInfoMessage(message),
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
+		});
+		this.conversationCompactor = new ConversationCompactor({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			footer: this.footer,
+			idleHint: this.idleFooterHint,
+			toolComponents: this.toolComponents,
+			renderMessages: () => this.renderInitialMessages(this.agent.state),
+			showInfoMessage: (message) => this.showInfoMessage(message),
 		});
 
 		const commandRegistry = createCommandRegistry({
@@ -657,170 +670,14 @@ export class TuiRenderer {
 	}
 
 	private async handleCompactCommand(): Promise<void> {
-		const messages = [...this.agent.state.messages];
-		const keepCount = 6;
-		if (messages.length <= keepCount + 1) {
-			this.showInfoMessage("Not enough history to compact. Keep chatting!");
-			return;
-		}
-
-		const boundary = Math.max(0, messages.length - keepCount);
-		const older = messages.slice(0, boundary);
-		if (!older.length) {
-			this.showInfoMessage("No earlier messages to compact.");
-			return;
-		}
-
-		const sliceSize = Math.min(40, older.length);
-		const summaryInput = older.slice(-sliceSize) as Message[];
-		this.footer.setHint("Summarizing history…");
-		let summaryMessage: AssistantMessage | null = null;
-		let usedModel = false;
-		try {
-			const prompt = this.buildSummarizationPrompt(summaryInput.length);
-			const summary = await this.agent.generateSummary(
-				summaryInput,
-				prompt,
-				this.buildSummarizationSystemPrompt(),
-			);
-			const llmText = this.extractPlainText(summary).trim();
-			const decorated = this.decorateSummaryText(
-				llmText || this.buildCompactSummary(summaryInput),
-				older.length,
-				true,
-			);
-			summaryMessage = {
-				...summary,
-				content: [{ type: "text", text: decorated }],
-				timestamp: Date.now(),
-			};
-			usedModel = true;
-		} catch (error) {
-			console.warn("LLM compaction failed:", error);
-		} finally {
-			this.footer.setHint(this.idleFooterHint);
-		}
-
-		if (!summaryMessage) {
-			const fallbackText = this.decorateSummaryText(
-				this.buildCompactSummary(older),
-				older.length,
-				false,
-			);
-			summaryMessage = {
-				role: "assistant",
-				content: [{ type: "text", text: fallbackText }],
-				api: this.agent.state.model.api,
-				provider: this.agent.state.model.provider,
-				model: this.agent.state.model.id,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "stop",
-				timestamp: Date.now(),
-			};
-		}
-
-		const keep = messages.slice(boundary);
-		const newMessages = [summaryMessage as AppMessage, ...keep];
-		this.agent.replaceMessages(newMessages);
-		this.sessionManager.saveMessage(summaryMessage);
-
-		this.chatContainer.clear();
-		this.toolComponents.clear();
-		this.renderInitialMessages(this.agent.state);
-		this.showInfoMessage(
-			usedModel
-				? `Compacted ${older.length} messages via model summary.`
-				: `Compacted ${older.length} messages with a local summary.`,
-		);
+		await this.conversationCompactor.compactHistory();
 	}
 
-	private buildCompactSummary(messages: Message[]): string {
-		const lines: string[] = [];
-		let exchange = 1;
-		for (const message of messages) {
-			const text = this.extractPlainText(message).trim();
-			if (!text) continue;
-			const truncated = this.truncateText(text, 180);
-			if (message.role === "user") {
-				lines.push(`• User ${exchange}: ${truncated}`);
-			} else if (message.role === "assistant") {
-				lines.push(`  ↳ Assistant: ${truncated}`);
-				exchange += 1;
-			} else if (message.role === "toolResult") {
-				lines.push(
-					`  ↳ Tool ${(message as ToolResultMessage).toolName}: ${this.truncateText(
-						this.extractPlainText(message),
-						160,
-					)}`,
-				);
-			}
-			if (lines.length >= 32) break;
-		}
-		if (!lines.length) {
-			return "(conversation summary placeholder: no textual content to compact)";
-		}
-		return `Conversation summary generated at ${new Date().toLocaleString()}\n${lines.join("\n")}`;
-	}
 
-	private buildSummarizationPrompt(messageCount: number): string {
-		return `Summarize the preceding ${messageCount} conversation messages from a coding session.
-Provide concise markdown with sections for Summary, Decisions, and Outstanding Work.
-Highlight key files, TODOs, and blockers. Limit to 200 words.`;
-	}
 
-	private buildSummarizationSystemPrompt(): string {
-		return "You are a careful note-taker that distills coding conversations into actionable summaries.";
-	}
 
-	private decorateSummaryText(
-		text: string,
-		compactedCount: number,
-		fromModel: boolean,
-	): string {
-		const meta = fromModel
-			? "_Model-generated summary of prior discussion._"
-			: "_Local summary of prior discussion (model unavailable)._";
-		return `${meta}\n\n${text}\n\n(Compacted ${compactedCount} messages on ${new Date().toLocaleString()})`;
-	}
 
-	private extractPlainText(message: Message): string {
-		if ((message as any).content === undefined) return "";
-		if (typeof (message as any).content === "string") {
-			return (message as any).content as string;
-		}
-		if (Array.isArray((message as any).content)) {
-			return (message as any).content
-				.filter((block: any) => block.type === "text")
-				.map((block: any) => block.text)
-				.join("\n");
-		}
-		return "";
-	}
 
-	private truncateText(text: string, limit = 160): string {
-		if (text.length <= limit) return text;
-		return `${text.slice(0, limit - 1).trim()}…`;
-	}
-
-	clearEditor(): void {
-		this.editor.setText("");
-		this.ui.requestRender();
-	}
-
-	showError(errorMessage: string): void {
-		// Show error message in the chat
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(
-			new Text(chalk.red(`Error: ${errorMessage}`), 1, 0),
-		);
-		this.ui.requestRender();
-	}
 
 	private showThinkingSelector(): void {
 		// Create thinking selector with current level
@@ -918,9 +775,22 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 		this.commandPaletteView.hideCommandPalette();
 	}
 
+	private clearEditor(): void {
+		this.editor.setText("");
+		this.ui.requestRender();
+	}
+
 	private showInfoMessage(text: string): void {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(chalk.dim(text), 1, 0));
+		this.ui.requestRender();
+	}
+
+	showError(errorMessage: string): void {
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(
+			new Text(chalk.red(`Error: ${errorMessage}`), 1, 0),
+		);
 		this.ui.requestRender();
 	}
 
