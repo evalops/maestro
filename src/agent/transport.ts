@@ -39,6 +39,12 @@ export class ProviderTransport implements AgentTransport {
 			);
 		}
 
+		// Emit message_start for user message
+		yield {
+			type: "message_start",
+			message: userMessage,
+		};
+
 		// Build context
 		const context = {
 			systemPrompt,
