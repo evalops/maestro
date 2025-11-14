@@ -128,5 +128,10 @@
 			"README.md"
 		],
 		"expectedRegex": "Read .*/README\\.md"
+	},
+	{
+		"name": "mock agent write+read flow",
+		"command": ["node", "scripts/run-mock-agent-write-read.js"],
+		"expectedRegex": "Wrote and read .*/mock-agent-flow\\.txt"
 	}
 ]
