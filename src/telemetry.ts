@@ -76,6 +76,7 @@ const parseSamplingRate = (): number => {
 const samplingRate = parseSamplingRate();
 
 const defaultTelemetryFile = join(homedir(), ".composer", "telemetry.log");
+const toolFailureLogFile = join(homedir(), ".composer", "tool-failures.log");
 
 export interface TelemetryStatus {
 	enabled: boolean;
@@ -112,6 +113,11 @@ async function writeToFile(payload: string) {
 	const filePath = telemetryFileEnv || defaultTelemetryFile;
 	await mkdir(dirname(filePath), { recursive: true });
 	await appendFile(filePath, `${payload}\n`, "utf-8");
+}
+
+async function appendToolFailure(payload: string): Promise<void> {
+	await mkdir(dirname(toolFailureLogFile), { recursive: true });
+	await appendFile(toolFailureLogFile, `${payload}\n`, "utf-8");
 }
 
 async function postToEndpoint(payload: string) {
@@ -206,4 +212,18 @@ export function recordLoaderStage(
 		durationMs,
 		metadata,
 	});
+}
+
+export function logToolFailure(
+	toolName: string,
+	errorMessage: string,
+	metadata?: Record<string, unknown>,
+): void {
+	const payload = {
+		tool: toolName,
+		error: errorMessage,
+		metadata,
+		timestamp: new Date().toISOString(),
+	};
+	void appendToolFailure(JSON.stringify(payload));
 }

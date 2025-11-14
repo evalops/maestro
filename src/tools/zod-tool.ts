@@ -5,7 +5,7 @@ import type { z } from "zod";
 import { ZodError } from "zod";
 import type { JsonSchema7Type } from "zod-to-json-schema";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { recordToolExecution } from "../telemetry.js";
+import { logToolFailure, recordToolExecution } from "../telemetry.js";
 
 type ExecuteResult<Details> =
 	| AgentToolResult<Details>
@@ -94,11 +94,13 @@ export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 				});
 				return result;
 			} catch (error: unknown) {
+				const errorMessage =
+					error instanceof Error ? error.message : String(error ?? "unknown");
 				recordToolExecution(options.name, false, performance.now() - start, {
 					toolCallId,
-					error:
-						error instanceof Error ? error.message : String(error ?? "unknown"),
+					error: errorMessage,
 				});
+				logToolFailure(options.name, errorMessage, { toolCallId });
 				throw error;
 			}
 		},

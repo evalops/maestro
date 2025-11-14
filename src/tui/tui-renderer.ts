@@ -21,6 +21,9 @@ import {
 	type Component,
 } from "../tui-lib/index.js";
 import chalk from "chalk";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels, reloadModelConfig } from "../models/registry.js";
@@ -47,6 +50,8 @@ type LoaderStage = {
 	key: string;
 	label: string;
 };
+
+const TOOL_FAILURE_LOG_PATH = join(homedir(), ".composer", "tool-failures.log");
 
 /**
  * TUI renderer for the coding agent
@@ -135,6 +140,11 @@ export class TuiRenderer {
 			description: "Export session to HTML file",
 		};
 
+		const toolsCommand: SlashCommand = {
+			name: "tools",
+			description: "Show available tools and recent failures",
+		};
+
 		const importCommand: SlashCommand = {
 			name: "import",
 			description: "Import configuration (e.g. /import factory)",
@@ -176,6 +186,7 @@ export class TuiRenderer {
 				thinkingCommand,
 				modelCommand,
 				exportCommand,
+				toolsCommand,
 				importCommand,
 				sessionCommand,
 				sessionsCommand,
@@ -263,6 +274,12 @@ export class TuiRenderer {
 				// Check for /export command
 				if (trimmed.startsWith("/export")) {
 					this.handleExportCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed === "/tools") {
+					this.handleToolsCommand();
 					this.editor.setText("");
 					return;
 				}
@@ -1114,6 +1131,75 @@ Use /sessions load <number> to switch.`,
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(chalk.dim(text), 1, 0));
 		this.ui.requestRender();
+	}
+
+	private handleToolsCommand(): void {
+		const tools = this.agent.state.tools ?? [];
+		const { recent, counts } = this.getToolFailureData();
+		const toolLines = tools.length
+			? tools.map((tool) => {
+				const label = tool.label ?? tool.name;
+				const description = tool.description || "No description provided";
+				const failureCount = counts.get(tool.name) ?? 0;
+				const failureBadge = failureCount > 0 ? ` ${chalk.red(`✗ ${failureCount}`)}` : "";
+				return `${chalk.cyan(label)} ${chalk.dim(`(${tool.name})`)}${failureBadge}\n  ${chalk.dim(description)}`;
+			})
+			: [chalk.dim("No tools are currently registered.")];
+
+		const failureSection = recent.length
+			? `${chalk.bold("Recent tool failures")}\n${recent
+					.map((entry) => `${entry.timestamp} · ${entry.tool} · ${entry.error}`)
+					.join("\n")}`
+			: chalk.dim("No recent tool failures logged.");
+
+		const text = `${chalk.bold("Available tools")}
+${toolLines.join("\n\n")}\n\n${failureSection}`;
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(text, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private getToolFailureData(limit = 5): {
+		recent: Array<{ tool: string; error: string; timestamp: string }>;
+		counts: Map<string, number>;
+	} {
+		const result = {
+			recent: [] as Array<{ tool: string; error: string; timestamp: string }>,
+			counts: new Map<string, number>(),
+		};
+		try {
+			if (!existsSync(TOOL_FAILURE_LOG_PATH)) {
+				return result;
+			}
+			const raw = readFileSync(TOOL_FAILURE_LOG_PATH, "utf-8");
+			const lines = raw
+				.split("\n")
+				.map((line) => line.trim())
+				.filter(Boolean);
+			for (const line of lines) {
+				try {
+					const parsed = JSON.parse(line) as {
+						tool?: string;
+						error?: string;
+						timestamp?: string;
+					};
+					const toolName = parsed.tool ?? "unknown";
+					const timestamp = parsed.timestamp
+						? new Date(parsed.timestamp).toLocaleString()
+						: "unknown time";
+					const error = parsed.error ?? "unknown error";
+					result.counts.set(toolName, (result.counts.get(toolName) ?? 0) + 1);
+					result.recent.push({ tool: toolName, error, timestamp });
+				} catch {
+					// ignore malformed lines
+				}
+			}
+			result.recent = result.recent.slice(-limit);
+			return result;
+		} catch {
+			return result;
+		}
 	}
 
 	private async handleImportCommand(text: string): Promise<void> {
