@@ -26,7 +26,6 @@ import {
 	ProcessTerminal,
 	Spacer,
 	TUI,
-	Text,
 } from "../tui-lib/index.js";
 import { createCommandRegistry } from "./commands/registry.js";
 import type { CommandEntry } from "./commands/types.js";
@@ -54,6 +53,7 @@ import { ThinkingSelectorView } from "./thinking-selector-view.js";
 import { ModelSelectorView } from "./model-selector-view.js";
 import { StreamingView } from "./streaming-view.js";
 import { NotificationView } from "./notification-view.js";
+import { EditorView } from "./editor-view.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -321,6 +321,25 @@ export class TuiRenderer {
 			process.cwd(),
 		);
 		this.editor.setAutocompleteProvider(autocompleteProvider);
+		new EditorView({
+			editor: this.editor,
+			getCommandEntries: () => this.commandEntries,
+			onFirstInput: () => this.dismissWelcomeAnimation(),
+			onSubmit: (text) => {
+				if (this.onInputCallback) {
+					this.onInputCallback(text);
+				}
+			},
+			isSubmitDisabled: () => this.editor.disableSubmit,
+			onInterrupt: () => {
+				if (this.onInterruptCallback) {
+					this.onInterruptCallback();
+				}
+			},
+			onCtrlC: () => this.handleCtrlC(),
+			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
+			showFileSearch: () => this.fileSearchView.showFileSearch(),
+		});
 	}
 
 	async init(): Promise<void> {
@@ -345,59 +364,6 @@ export class TuiRenderer {
 		this.refreshFooterHint();
 		this.ui.addChild(this.footer);
 		this.ui.setFocus(this.editor);
-
-		// Set up custom key handlers on the editor
-		this.editor.onEscape = () => {
-			// Intercept Escape key when processing
-			if (this.editor.disableSubmit && this.onInterruptCallback) {
-				this.onInterruptCallback();
-			}
-		};
-
-		this.editor.onCtrlC = () => {
-			this.handleCtrlC();
-		};
-
-		this.editor.onShortcut = (shortcut) => {
-			if (shortcut === "ctrl+k") {
-				this.showCommandPalette();
-				return true;
-			}
-			if (shortcut === "at") {
-				this.fileSearchView.showFileSearch();
-				return true;
-			}
-			return false;
-		};
-
-		// Handle editor submission
-		this.editor.onSubmit = (text: string) => {
-			const trimmed = text.trim();
-			if (!trimmed) return;
-
-			// Remove welcome animation on first input
-			if (this.welcomeAnimation) {
-				this.welcomeAnimation.stop();
-				this.chatContainer.clear();
-				this.welcomeAnimation = null;
-			}
-
-			const command = this.commandEntries.find((entry) =>
-				entry.matches(trimmed),
-			);
-			if (command) {
-				const outcome = command.execute(trimmed);
-				this.editor.setText("");
-				if (outcome && typeof (outcome as Promise<void>).then === "function") {
-					void outcome;
-				}
-				return;
-			}
-
-			if (this.onInputCallback) {
-				this.onInputCallback(trimmed);
-			}
-		};
 
 		// Start the UI
 		this.ui.start();
@@ -556,17 +522,18 @@ export class TuiRenderer {
 		await this.conversationCompactor.compactHistory();
 	}
 
-	private showCommandPalette(): void {
-		this.commandPaletteView.showCommandPalette();
-	}
-
-	private hideCommandPalette(): void {
-		this.commandPaletteView.hideCommandPalette();
-	}
-
 	private clearEditor(): void {
 		this.editor.setText("");
 		this.ui.requestRender();
+	}
+
+	private dismissWelcomeAnimation(): void {
+		if (!this.welcomeAnimation) {
+			return;
+		}
+		this.welcomeAnimation.stop();
+		this.chatContainer.clear();
+		this.welcomeAnimation = null;
 	}
 
 	showError(errorMessage: string): void {
