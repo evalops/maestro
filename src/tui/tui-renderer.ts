@@ -41,6 +41,10 @@ import {
 import { getWorkspaceFiles } from "../workspace-files.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { CommandPaletteComponent } from "./command-palette.js";
+import {
+	type CommandEntry,
+	createCommandRegistry,
+} from "./commands/registry.js";
 import { CustomEditor } from "./custom-editor.js";
 import { formatDiagnosticsReport } from "./diagnostics.js";
 import { FileSearchComponent } from "./file-search.js";
@@ -135,6 +139,7 @@ export class TuiRenderer {
 	private lastRunToolNames: string[] = [];
 	private lastNotifiedChanges: string[] = [];
 	private slashCommands: SlashCommand[] = [];
+	private commandEntries: CommandEntry[] = [];
 
 	constructor(
 		agent: Agent,
@@ -155,149 +160,39 @@ export class TuiRenderer {
 		this.footer = new FooterComponent(agent.state);
 		this.runScripts = this.loadRunScripts();
 
-		// Define slash commands
-		const thinkingCommand: SlashCommand = {
-			name: "thinking",
-			description: "Select reasoning level (opens selector UI)",
-		};
+		const commandRegistry = createCommandRegistry({
+			getRunScriptCompletions: (prefix) => this.getRunScriptCompletions(prefix),
+			handlers: {
+				thinking: () => this.showThinkingSelector(),
+				model: () => this.showModelSelector(),
+				exportSession: (input) => this.handleExportCommand(input),
+				tools: (input) => this.handleToolsCommand(input),
+				importConfig: (input) => this.handleImportCommand(input),
+				sessionInfo: () => this.handleSessionCommand(),
+				sessions: (input) => this.handleSessionsCommand(input),
+				reportBug: () => this.handleBugCommand(),
+				status: () => this.handleStatusCommand(),
+				review: () => this.handleReviewCommand(),
+				undoChanges: (input) => this.handleUndoCommand(input),
+				shareFeedback: () => this.handleFeedbackCommand(),
+				mention: (input) => this.handleMentionCommand(input),
+				help: () => this.handleHelpCommand(),
+				plan: (input) => this.handlePlanCommand(input),
+				preview: (input) => this.handlePreviewCommand(input),
+				run: (input) => this.handleRunCommand(input),
+				why: () => this.handleWhyCommand(),
+				diagnostics: (input) => this.handleDiagnosticsCommand(input),
+				compact: () => this.handleCompactCommand(),
+				compactTools: (input) => this.handleCompactToolsCommand(input),
+				quit: () => {
+					this.stop();
+					process.exit(0);
+				},
+			},
+		});
 
-		const modelCommand: SlashCommand = {
-			name: "model",
-			description: "Select model (opens selector UI)",
-		};
-
-		const exportCommand: SlashCommand = {
-			name: "export",
-			description: "Export session to HTML file",
-		};
-
-		const toolsCommand: SlashCommand = {
-			name: "tools",
-			description: "Show available tools, failures, or clear logs",
-		};
-
-		const importCommand: SlashCommand = {
-			name: "import",
-			description: "Import configuration (e.g. /import factory)",
-		};
-
-		const sessionCommand: SlashCommand = {
-			name: "session",
-			description: "Show session info and stats",
-		};
-
-		const sessionsCommand: SlashCommand = {
-			name: "sessions",
-			description: "List or load recent sessions",
-		};
-
-		const bugCommand: SlashCommand = {
-			name: "bug",
-			description: "Copy session info for bug reports",
-		};
-
-		const statusCommand: SlashCommand = {
-			name: "status",
-			description: "Show health snapshot (model, git, plan, telemetry)",
-		};
-
-		const reviewCommand: SlashCommand = {
-			name: "review",
-			description: "Summarize git status and diff stats",
-		};
-
-		const undoCommand: SlashCommand = {
-			name: "undo",
-			description: "Discard local changes in files via git checkout",
-		};
-
-		const feedbackCommand: SlashCommand = {
-			name: "feedback",
-			description: "Copy a feedback template with session context",
-		};
-
-		const mentionCommand: SlashCommand = {
-			name: "mention",
-			description: "Search files to mention (same as @ search)",
-		};
-
-		const helpCommand: SlashCommand = {
-			name: "help",
-			description: "List available slash commands",
-		};
-
-		const planCommand: SlashCommand = {
-			name: "plan",
-			description: "Show saved plans/checklists",
-		};
-
-		const previewCommand: SlashCommand = {
-			name: "preview",
-			description: "Preview git diff for a file",
-		};
-
-		const diffCommand: SlashCommand = {
-			name: "diff",
-			description: "Show git diff for a file",
-		};
-
-		const whyCommand: SlashCommand = {
-			name: "why",
-			description: "Explain the last response/tools used",
-		};
-
-		const runCommand: SlashCommand = {
-			name: "run",
-			description: "Run npm script (e.g. /run test --watch)",
-			getArgumentCompletions: (prefix) => this.getRunScriptCompletions(prefix),
-		};
-
-		const diagnosticsCommand: SlashCommand = {
-			name: "diag",
-			description: "Show provider/model/API key diagnostics",
-		};
-
-		const compactToolsCommand: SlashCommand = {
-			name: "compact-tools",
-			description: "Toggle folding of tool outputs",
-		};
-
-		const compactCommand: SlashCommand = {
-			name: "compact",
-			description: "Summarize older messages to reclaim context",
-		};
-
-		const quitCommand: SlashCommand = {
-			name: "quit",
-			description: "Exit composer (same as ctrl+c twice)",
-		};
-
-		// Setup autocomplete for file paths and slash commands
-		this.slashCommands = [
-			thinkingCommand,
-			modelCommand,
-			exportCommand,
-			toolsCommand,
-			importCommand,
-			sessionCommand,
-			sessionsCommand,
-			bugCommand,
-			planCommand,
-			previewCommand,
-			diffCommand,
-			statusCommand,
-			reviewCommand,
-			undoCommand,
-			feedbackCommand,
-			mentionCommand,
-			runCommand,
-			whyCommand,
-			helpCommand,
-			diagnosticsCommand,
-			compactCommand,
-			compactToolsCommand,
-			quitCommand,
-		];
+		this.commandEntries = commandRegistry;
+		this.slashCommands = commandRegistry.map((entry) => entry.command);
 
 		const autocompleteProvider = new CombinedAutocompleteProvider(
 			this.slashCommands,
@@ -373,146 +268,16 @@ export class TuiRenderer {
 				this.welcomeAnimation = null;
 			}
 
-			// Check for /thinking command
-			if (trimmed === "/thinking") {
-				// Show thinking level selector
-				this.showThinkingSelector();
+			const command = this.commandEntries.find((entry) =>
+				entry.matches(trimmed),
+			);
+			if (command) {
+				const outcome = command.execute(trimmed);
 				this.editor.setText("");
+				if (outcome && typeof (outcome as Promise<void>).then === "function") {
+					void outcome;
+				}
 				return;
-			}
-
-			// Check for /model command
-			if (trimmed === "/model") {
-				// Show model selector
-				this.showModelSelector();
-				this.editor.setText("");
-				return;
-			}
-
-			// Check for /export command
-			if (trimmed.startsWith("/export")) {
-				this.handleExportCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/tools" || trimmed.startsWith("/tools ")) {
-				this.handleToolsCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed.startsWith("/import")) {
-				void this.handleImportCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/bug") {
-				this.handleBugCommand();
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/status") {
-				this.handleStatusCommand();
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/review") {
-				this.handleReviewCommand();
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/feedback") {
-				this.handleFeedbackCommand();
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed.startsWith("/undo")) {
-				this.handleUndoCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed.startsWith("/mention")) {
-				this.handleMentionCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/help") {
-				this.handleHelpCommand();
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/plan" || trimmed.startsWith("/plan ")) {
-				this.handlePlanCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed.startsWith("/preview") || trimmed.startsWith("/diff")) {
-				void this.handlePreviewCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed.startsWith("/run")) {
-				void this.handleRunCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/why") {
-				this.handleWhyCommand();
-				this.editor.setText("");
-				return;
-			}
-
-			// Check for /session command
-			if (trimmed === "/session") {
-				this.handleSessionCommand();
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed.startsWith("/sessions")) {
-				this.handleSessionsCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			// Check for /diag command
-			if (
-				trimmed === "/diag" ||
-				trimmed.startsWith("/diag ") ||
-				trimmed === "/diagnostics"
-			) {
-				this.handleDiagnosticsCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/compact") {
-				void this.handleCompactCommand();
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed.startsWith("/compact-tools")) {
-				this.handleCompactToolsCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
-
-			if (trimmed === "/quit" || trimmed === "/exit") {
-				this.stop();
-				process.exit(0);
 			}
 
 			if (this.onInputCallback) {
