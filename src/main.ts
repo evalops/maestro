@@ -9,6 +9,7 @@ import {
 	reloadModelConfig,
 	resolveModel,
 	getCustomConfigPath,
+	getFactoryDefaultModelSelection,
 } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { loadEnv } from "./load-env.js";
@@ -190,7 +191,24 @@ export async function main(args: string[]) {
 		reloadModelConfig();
 	}
 
-	const provider = parsed.provider ?? "anthropic";
+	let provider = parsed.provider;
+	let modelId = parsed.model;
+
+	if (!provider || !modelId) {
+		const factoryDefault = getFactoryDefaultModelSelection();
+		if (factoryDefault) {
+			if (!provider) {
+				provider = factoryDefault.provider;
+			}
+			if (!modelId) {
+				modelId = factoryDefault.modelId;
+			}
+		}
+	}
+
+	provider ??= "anthropic";
+	modelId ??= "claude-sonnet-4-5";
+
 	const supportedProviders = new Set(getSupportedProviders());
 	if (!supportedProviders.has(provider)) {
 		console.error(
@@ -204,8 +222,6 @@ export async function main(args: string[]) {
 		);
 		process.exit(1);
 	}
-	const modelId = parsed.model || "claude-sonnet-4-5";
-
 	// Helper function to get API key for a provider
 	const getApiKeyForProvider = (providerName: string): string | undefined => {
 		const result = lookupApiKey(providerName, parsed.apiKey);

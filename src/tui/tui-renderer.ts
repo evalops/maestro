@@ -23,7 +23,7 @@ import {
 import chalk from "chalk";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import type { RegisteredModel } from "../models/registry.js";
-import { getRegisteredModels } from "../models/registry.js";
+import { getRegisteredModels, reloadModelConfig } from "../models/registry.js";
 import {
 	toSessionModelMetadata,
 	type SessionModelMetadata,
@@ -41,6 +41,7 @@ import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
+import { importFactoryConfig } from "../factory-sync.js";
 
 type LoaderStage = {
 	key: string;
@@ -134,6 +135,11 @@ export class TuiRenderer {
 			description: "Export session to HTML file",
 		};
 
+		const importCommand: SlashCommand = {
+			name: "import",
+			description: "Import configuration (e.g. /import factory)",
+		};
+
 		const sessionCommand: SlashCommand = {
 			name: "session",
 			description: "Show session info and stats",
@@ -170,6 +176,7 @@ export class TuiRenderer {
 				thinkingCommand,
 				modelCommand,
 				exportCommand,
+				importCommand,
 				sessionCommand,
 				sessionsCommand,
 				diagnosticsCommand,
@@ -253,12 +260,18 @@ export class TuiRenderer {
 				return;
 			}
 
-			// Check for /export command
-			if (trimmed.startsWith("/export")) {
-				this.handleExportCommand(trimmed);
-				this.editor.setText("");
-				return;
-			}
+				// Check for /export command
+				if (trimmed.startsWith("/export")) {
+					this.handleExportCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed.startsWith("/import")) {
+					void this.handleImportCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
 
 			// Check for /session command
 			if (trimmed === "/session") {
@@ -1101,6 +1114,36 @@ Use /sessions load <number> to switch.`,
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(chalk.dim(text), 1, 0));
 		this.ui.requestRender();
+	}
+
+	private async handleImportCommand(text: string): Promise<void> {
+		const parts = text.trim().split(/\s+/);
+		const source = parts[1]?.toLowerCase();
+		if (!source || source === "help") {
+			this.showInfoMessage("Usage: /import factory");
+			return;
+		}
+		if (source === "factory") {
+			try {
+				const result = importFactoryConfig();
+				reloadModelConfig();
+				this.showInfoMessage(
+					`Imported ${result.modelCount} model${result.modelCount === 1 ? "" : "s"} from Factory into ${result.targetPath}.`,
+				);
+			} catch (error: unknown) {
+				this.showInfoMessage(
+					chalk.red(
+						`Factory import failed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					),
+				);
+			}
+			return;
+		}
+		this.showInfoMessage(
+			`Unknown import source "${source}". Supported sources: factory`,
+		);
 	}
 
 	private applyLoadedSessionContext(): void {
