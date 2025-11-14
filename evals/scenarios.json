@@ -2,16 +2,16 @@
 	{
 		"name": "cli help renders",
 		"args": ["--help"],
-		"expectedRegex": "Playwright v\\d+\\.\\d+\\.\\d+ by EvalOps"
+		"expectedRegex": "Composer v\\d+\\.\\d+\\.\\d+ by EvalOps"
 	},
 	{
 		"name": "cli help json mode",
 		"args": ["--help", "--mode", "json"],
-		"expectedRegex": "Playwright v\\d+\\.\\d+\\.\\d+ by EvalOps"
+		"expectedRegex": "Composer v\\d+\\.\\d+\\.\\d+ by EvalOps"
 	},
 	{
 		"name": "read tool returns first line",
 		"command": ["node", "scripts/run-read-tool.js", "README.md"],
-		"expectedRegex": "Playwright CLI by EvalOps"
+		"expectedRegex": "Composer CLI by EvalOps"
 	}
 ]

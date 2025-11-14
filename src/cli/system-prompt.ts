@@ -33,9 +33,10 @@ export function loadProjectContextFiles(): ContextFile[] {
 
 	const homeDir = homedir();
 	const globalContextDir = resolve(
-		process.env.PLAYWRIGHT_AGENT_DIR ??
+		process.env.COMPOSER_AGENT_DIR ??
+			process.env.PLAYWRIGHT_AGENT_DIR ??
 			process.env.CODING_AGENT_DIR ??
-			join(homeDir, ".playwright/agent/"),
+			join(homeDir, ".composer/agent/"),
 	);
 	const globalContext = loadContextFileFromDir(globalContextDir);
 	if (globalContext) {

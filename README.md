@@ -1,15 +1,15 @@
-# Playwright CLI by EvalOps
+# Composer CLI by EvalOps
 
-Playwright is a radically simple and opinionated coding agent with multi-model support (including mid-session switching), a powerful headless CLI, and the creature comforts you expect from modern coding copilots.
+Composer is a radically simple and opinionated coding agent with multi-model support (including mid-session switching), a powerful headless CLI, and the creature comforts you expect from modern coding copilots.
 
-> Huge thanks to [Mario Zechner](https://github.com/badlogic) and the original [pi coding agent](https://github.com/badlogic/pi-coding-agent). Playwright is an EvalOps fork that layers in additional evaluation workflows and automation on top of Mario's excellent foundation.
+> Huge thanks to [Mario Zechner](https://github.com/badlogic) and the original [pi coding agent](https://github.com/badlogic/pi-coding-agent). Composer is an EvalOps fork that layers in additional evaluation workflows and automation on top of Mario's excellent foundation.
 
 Works on Linux, macOS, and Windows (barely tested, needs Git Bash running in the "modern" Windows Terminal).
 
 ## Installation
 
 ```bash
-npm install -g @evalops/playwright
+npm install -g @evalops/composer
 ```
 
 ## Quick Start
@@ -19,7 +19,7 @@ npm install -g @evalops/playwright
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Start the interactive CLI
-playwright
+composer
 ```
 
 Once in the CLI, you can chat with the AI:
@@ -32,9 +32,9 @@ The agent will use its tools to read, write, and edit files as needed, and execu
 
 ## EvalOps Workflows
 
-- **Run automated evaluations:** `npm run evals` builds the CLI and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Playwright into continuous evaluation pipelines.
+- **Run automated evaluations:** `npm run evals` builds the CLI and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Composer into continuous evaluation pipelines.
 - **Customize scenarios:** add more entries to `evals/scenarios.json` to benchmark additional commands (each scenario can assert against stdout via regular expressions).
-- **Surface telemetry:** set `PLAYWRIGHT_TELEMETRY=true` (or point to a custom `PLAYWRIGHT_TELEMETRY_ENDPOINT`) to stream tool usage and evaluation outcomes into your EvalOps dashboards.
+- **Surface telemetry:** set `COMPOSER_TELEMETRY=true` (or point to a custom `COMPOSER_TELEMETRY_ENDPOINT`) to stream tool usage and evaluation outcomes into your EvalOps dashboards.
 
 ## API Keys
 
@@ -132,7 +132,7 @@ Paste multiple lines of text (e.g., code snippets, logs) and they'll be automati
 ### Keyboard Shortcuts
 
 - **Ctrl+K**: Delete current line
-- **Ctrl+C**: Clear editor (first press) / Exit Playwright (second press)
+- **Ctrl+C**: Clear editor (first press) / Exit Composer (second press)
 - **Tab**: Path completion
 - **Enter**: Send message
 - **Shift+Enter**: Insert new line (multi-line input)
@@ -148,7 +148,7 @@ The agent automatically loads context from `AGENT.md` or `CLAUDE.md` files at th
 
 Context files are loaded in this order:
 
-1. **Global context**: `~/.playwright/agent/AGENT.md` or `CLAUDE.md`
+1. **Global context**: `~/.composer/agent/AGENT.md` or `CLAUDE.md`
    - Applies to all your coding sessions
    - Great for personal coding preferences and workflows
 
@@ -206,22 +206,22 @@ The image will be automatically encoded and sent with your message. JPEG and PNG
 
 ## Session Management
 
-Sessions are automatically saved in `~/.playwright/agent/sessions/` organized by working directory. Each session is stored as a JSONL file with a unique timestamp-based ID.
+Sessions are automatically saved in `~/.composer/agent/sessions/` organized by working directory. Each session is stored as a JSONL file with a unique timestamp-based ID.
 
 To continue the most recent session:
 
 ```bash
-playwright --continue
+composer --continue
 # or
-playwright -c
+composer -c
 ```
 
 To browse and select from past sessions:
 
 ```bash
-playwright --resume
+composer --resume
 # or
-playwright -r
+composer -r
 ```
 
 This opens an interactive session selector where you can:
@@ -235,19 +235,19 @@ Sessions include all conversation messages, tool calls and results, model switch
 To run without saving a session (ephemeral mode):
 
 ```bash
-playwright --no-session
+composer --no-session
 ```
 
 To use a specific session file instead of auto-generating one:
 
 ```bash
-playwright --session /path/to/my-session.jsonl
+composer --session /path/to/my-session.jsonl
 ```
 
 ## CLI Options
 
 ```bash
-playwright [options] [messages...]
+composer [options] [messages...]
 ```
 
 ### Options
@@ -293,25 +293,25 @@ Show help message
 
 ```bash
 # Start interactive mode
-playwright
+composer
 
 # Single message mode (text output)
-playwright "List all .ts files in src/"
+composer "List all .ts files in src/"
 
 # JSON mode - stream all agent events
-playwright --mode json "List all .ts files in src/"
+composer --mode json "List all .ts files in src/"
 
 # RPC mode - headless operation (see test/rpc-example.ts)
-playwright --mode rpc --no-session
+composer --mode rpc --no-session
 # Then send JSON on stdin:
 # {"type":"prompt","message":"List all .ts files"}
 # {"type":"abort"}
 
 # Continue previous session
-playwright -c "What did we discuss?"
+composer -c "What did we discuss?"
 
 # Use different model
-playwright --provider openai --model gpt-4o "Help me refactor this code"
+composer --provider openai --model gpt-4o "Help me refactor this code"
 ```
 
 ## Tools
@@ -337,7 +337,7 @@ Create a status-rich checklist for a coding goal. Mirrors the structure of TodoW
 
 ### MCP & Adding Your Own Tools
 
-**Playwright does and will not support MCP.** Instead, it relies on the five built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
+**Composer does and will not support MCP.** Instead, it relies on the five built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
 
 **Here's the gist:**
 
@@ -376,7 +376,7 @@ You: Read ~/agent-tools/screenshot/README.md and use that tool to take a screens
 The agent will read the README, understand the tool, and invoke it via bash as needed. If you need a new tool, ask the agent to write it for you.
 
 You can also reference tool READMEs in your `AGENT.md` files to make them automatically available:
-- Global: `~/.playwright/agent/AGENT.md` - available in all sessions
+- Global: `~/.composer/agent/AGENT.md` - available in all sessions
 - Project-specific: `./AGENT.md` - available in this project
 
 **Real-world example:**
@@ -387,15 +387,15 @@ For a detailed walkthrough with more examples, and the reasons for and benefits 
 
 ## Telemetry & Dashboards
 
-Playwright ships with an optional telemetry layer so you can analyze tool usage and evaluation health without leaving your EvalOps dashboards. Telemetry is disabled by default.
+Composer ships with an optional telemetry layer so you can analyze tool usage and evaluation health without leaving your EvalOps dashboards. Telemetry is disabled by default.
 
-- `PLAYWRIGHT_TELEMETRY=true` – enable telemetry and write events to `~/.playwright/telemetry.log`.
-- `PLAYWRIGHT_TELEMETRY_FILE=/path/to/log.ndjson` – customise the local log destination.
-- `PLAYWRIGHT_TELEMETRY_ENDPOINT=https://example.com/hook` – POST every event as JSON to your ingestion endpoint.
-- `PLAYWRIGHT_TELEMETRY_SAMPLE=0.25` – only record roughly 25% of events for ultra-light installs (set to `0` to disable while keeping other settings intact).
+- `COMPOSER_TELEMETRY=true` – enable telemetry and write events to `~/.composer/telemetry.log`.
+- `COMPOSER_TELEMETRY_FILE=/path/to/log.ndjson` – customise the local log destination.
+- `COMPOSER_TELEMETRY_ENDPOINT=https://example.com/hook` – POST every event as JSON to your ingestion endpoint.
+- `COMPOSER_TELEMETRY_SAMPLE=0.25` – only record roughly 25% of events for ultra-light installs (set to `0` to disable while keeping other settings intact).
 - `npm run telemetry:report` – summarise success rates and durations from the current telemetry log.
 
-You can also drop credentials into a `.env` or `.env.local` file in the current working directory (e.g. `ANTHROPIC_API_KEY=...`); Playwright loads these automatically on startup.
+You can also drop credentials into a `.env` or `.env.local` file in the current working directory (e.g. `ANTHROPIC_API_KEY=...`); Composer loads these automatically on startup.
 
 The payloads capture tool name, success flag, execution duration, and any evaluation results. Transport failures are ignored so telemetry never blocks day-to-day workflows.
 
@@ -414,16 +414,16 @@ This agent runs in full YOLO mode and assumes you know what you're doing. It has
 - Pre-checking tools for "dangerous" patterns introduces latency, false positives, and is ineffective
 
 **Prompt injection risks:**
-- By default, Playwright has no web search or fetch tool
+- By default, Composer has no web search or fetch tool
 - However, it can use `curl` or read files from disk
 - Both provide ample surface area for prompt injection attacks
 - Malicious content in files or command outputs can influence behavior
 
 **Mitigations:**
-- Run Playwright inside a container if you're uncomfortable with full access
+- Run Composer inside a container if you're uncomfortable with full access
 - Use a different tool if you need guardrails
-- Don't use Playwright on systems with sensitive data you can't afford to lose
-- Fork Playwright and add all of the above
+- Don't use Composer on systems with sensitive data you can't afford to lose
+- Fork Composer and add all of the above
 
 This is how I want it to work and I'm not likely to change my stance on this.
 
@@ -431,26 +431,26 @@ Use at your own risk.
 
 ## Sub-Agents
 
-**Playwright does not and will not support sub-agents as a built-in feature.** If the agent needs to delegate work, it can:
+**Composer does not and will not support sub-agents as a built-in feature.** If the agent needs to delegate work, it can:
 
-1. Spawn another instance of itself via the `playwright` CLI command
-2. Write a custom tool with a README.md that describes how to invoke Playwright for specific tasks
+1. Spawn another instance of itself via the `composer` CLI command
+2. Write a custom tool with a README.md that describes how to invoke Composer for specific tasks
 
 **Why no built-in sub-agents:**
 
 Context transfer between agents is generally poor. Information gets lost, compressed, or misrepresented when passed through agent boundaries. Direct execution with full context is more effective than delegation with summarized context.
 
-If you need parallel work on independent tasks, manually run multiple `playwright` sessions in different terminal tabs. You're the orchestrator.
+If you need parallel work on independent tasks, manually run multiple `composer` sessions in different terminal tabs. You're the orchestrator.
 
 ## To-Dos & Planning
 
-Playwright includes a built-in `todo` tool for quick, structured checklists. Provide a goal plus an array of TodoWrite-style items (with status, priority, blockers, notes, and due dates) and the agent will return a numbered plan, status summary, and metadata in plain text.
+Composer includes a built-in `todo` tool for quick, structured checklists. Provide a goal plus an array of TodoWrite-style items (with status, priority, blockers, notes, and due dates) and the agent will return a numbered plan, status summary, and metadata in plain text.
 
 For work that needs to persist across sessions, keep using project files like `TODO.md` or `PLAN.md` alongside version control. The agent can read and update those documents just like any other file, giving you durable history plus the convenience of auto-generated checklists when you need them.
 
 ## Background Bash
 
-**Playwright does not and will not implement background bash execution.** Instead, tell the agent to use `tmux` or something like [tterminal-cp](https://mariozechner.at/posts/2025-08-15-mcp-vs-cli/). Bonus points: you can watch the agent interact with a CLI like a debugger and even intervene if necessary.
+**Composer does not and will not implement background bash execution.** Instead, tell the agent to use `tmux` or something like [tterminal-cp](https://mariozechner.at/posts/2025-08-15-mcp-vs-cli/). Bonus points: you can watch the agent interact with a CLI like a debugger and even intervene if necessary.
 
 ## Planned Features
 

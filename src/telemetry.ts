@@ -24,24 +24,35 @@ export interface EvaluationTelemetry extends BaseTelemetryEvent {
 
 type TelemetryEvent = ToolExecutionTelemetry | EvaluationTelemetry;
 
+const telemetryFlag =
+	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
+
+const telemetryFileEnv =
+	process.env.COMPOSER_TELEMETRY_FILE ?? process.env.PLAYWRIGHT_TELEMETRY_FILE;
+
+const telemetryEndpointEnv =
+	process.env.COMPOSER_TELEMETRY_ENDPOINT ??
+	process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT;
+
+const telemetrySampleEnv =
+	process.env.COMPOSER_TELEMETRY_SAMPLE ??
+	process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
+
 const shouldEnableTelemetry = (): boolean => {
-	const flag = process.env.PLAYWRIGHT_TELEMETRY?.toLowerCase();
+	const flag = telemetryFlag?.toLowerCase();
 	if (flag === "0" || flag === "false") {
 		return false;
 	}
 	if (flag === "1" || flag === "true") {
 		return true;
 	}
-	return Boolean(
-		process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT ||
-			process.env.PLAYWRIGHT_TELEMETRY_FILE,
-	);
+	return Boolean(telemetryEndpointEnv || telemetryFileEnv);
 };
 
 const telemetryEnabled = shouldEnableTelemetry();
 
 const parseSamplingRate = (): number => {
-	const raw = process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
+	const raw = telemetrySampleEnv;
 	if (!raw) {
 		return 1;
 	}
@@ -54,17 +65,16 @@ const parseSamplingRate = (): number => {
 
 const samplingRate = parseSamplingRate();
 
-const defaultTelemetryFile = join(homedir(), ".playwright", "telemetry.log");
+const defaultTelemetryFile = join(homedir(), ".composer", "telemetry.log");
 
 async function writeToFile(payload: string) {
-	const filePath =
-		process.env.PLAYWRIGHT_TELEMETRY_FILE || defaultTelemetryFile;
+	const filePath = telemetryFileEnv || defaultTelemetryFile;
 	await mkdir(dirname(filePath), { recursive: true });
 	await appendFile(filePath, `${payload}\n`, "utf-8");
 }
 
 async function postToEndpoint(payload: string) {
-	const endpoint = process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT;
+	const endpoint = telemetryEndpointEnv;
 	if (!endpoint) {
 		return;
 	}
@@ -83,14 +93,14 @@ async function persistTelemetry(event: TelemetryEvent) {
 	const payload = JSON.stringify(event);
 	const tasks: Promise<void>[] = [];
 
-	if (process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT) {
+	if (telemetryEndpointEnv) {
 		tasks.push(postToEndpoint(payload));
 	}
 
-	if (process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT === undefined) {
+	if (telemetryEndpointEnv === undefined) {
 		// Default to file storage when no endpoint is configured
 		tasks.push(writeToFile(payload));
-	} else if (process.env.PLAYWRIGHT_TELEMETRY_FILE) {
+	} else if (telemetryFileEnv) {
 		tasks.push(writeToFile(payload));
 	}
 

@@ -101,7 +101,7 @@ export class TuiRenderer {
 
 		// Add header with logo and instructions
 		const logo =
-			chalk.bold.cyan("Playwright") + chalk.dim(` v${this.version} (EvalOps)`);
+			chalk.bold.cyan("Composer") + chalk.dim(` v${this.version} (EvalOps)`);
 		const instructions = [
 			`${chalk.dim("esc")}${chalk.gray(" to interrupt")}`,
 			`${chalk.dim("ctrl+c")}${chalk.gray(" to clear")}`,

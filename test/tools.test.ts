@@ -19,12 +19,12 @@ function getTextOutput(result: any): string {
 	);
 }
 
-describe("Playwright Tools", () => {
+describe("Composer Tools", () => {
 	let testDir: string;
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
-		testDir = join(tmpdir(), `playwright-test-${Date.now()}`);
+		testDir = join(tmpdir(), `composer-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
 	});
 

@@ -89,9 +89,10 @@ export class SessionManager {
 		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 
 		const configDir = resolve(
-			process.env.PLAYWRIGHT_AGENT_DIR ??
+			process.env.COMPOSER_AGENT_DIR ??
+				process.env.PLAYWRIGHT_AGENT_DIR ??
 				process.env.CODING_AGENT_DIR ??
-				join(homedir(), ".playwright/agent/"),
+				join(homedir(), ".composer/agent/"),
 		);
 		const sessionDir = join(configDir, "sessions", safePath);
 		if (!existsSync(sessionDir)) {

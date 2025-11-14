@@ -1,7 +1,7 @@
 import { Editor } from "@mariozechner/pi-tui";
 
 /**
- * Custom editor that handles Escape and Ctrl+C keys for Playwright
+ * Custom editor that handles Escape and Ctrl+C keys for Composer
  */
 export class CustomEditor extends Editor {
 	public onEscape?: () => void;

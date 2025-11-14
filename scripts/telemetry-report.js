@@ -10,7 +10,8 @@ const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, "..");
 
 const argsPath = process.argv[2];
-const envPath = process.env.PLAYWRIGHT_TELEMETRY_FILE;
+const envPath =
+	process.env.COMPOSER_TELEMETRY_FILE ?? process.env.PLAYWRIGHT_TELEMETRY_FILE;
 
 const logPath = argsPath
 	? isAbsolute(argsPath)
@@ -18,7 +19,7 @@ const logPath = argsPath
 		: join(projectRoot, argsPath)
 	: envPath
 		? envPath
-		: join(homedir(), ".playwright", "telemetry.log");
+		: join(homedir(), ".composer", "telemetry.log");
 
 if (!existsSync(logPath)) {
 	console.error(`Telemetry log not found at: ${logPath}`);
