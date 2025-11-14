@@ -340,10 +340,10 @@ export class Editor implements Component {
         }
         return layoutLines;
     }
-    getText(): string {
-        return this.state.lines.join("\n");
-    }
-    setText(text: string): void {
+	getText(): string {
+		return this.state.lines.join("\n");
+	}
+	setText(text: string): void {
         // Split text into lines, handling different line endings
         const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
         // Ensure at least one empty line
@@ -384,6 +384,12 @@ export class Editor implements Component {
         }
         else {
             this.updateAutocomplete();
+        }
+    }
+
+    insertText(text: string): void {
+        for (const char of text) {
+            this.insertCharacter(char);
         }
     }
     private handlePaste(pastedText: string): void {

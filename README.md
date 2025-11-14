@@ -200,9 +200,17 @@ Drag files from your OS file explorer (Finder on macOS, Explorer on Windows) dir
 
 Paste multiple lines of text (e.g., code snippets, logs) and they'll be automatically coalesced into a compact `[paste #123 <N> lines]` reference in the editor. The full content is still sent to the model.
 
+### Command Palette
+
+Press **Ctrl+K** to open a searchable list of slash commands. Use the arrow keys to navigate and Enter to run the highlighted command; Escape closes the palette.
+
+### File Search (`@`)
+
+Type **`@`** (or press **Ctrl+K** and choose “File Search”) to open a fuzzy finder over the workspace. Start typing to filter files; press Enter to insert the selected path into the editor.
+
 ### Keyboard Shortcuts
 
-- **Ctrl+K**: Delete current line
+- **Ctrl+K**: Open command palette
 - **Ctrl+C**: Clear editor (first press) / Exit Composer (second press)
 - **Tab**: Path completion
 - **Enter**: Send message

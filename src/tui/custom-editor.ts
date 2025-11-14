@@ -6,6 +6,7 @@ import { Editor } from "../tui-lib/index.js";
 export class CustomEditor extends Editor {
 	public onEscape?: () => void;
 	public onCtrlC?: () => void;
+	public onShortcut?: (shortcut: string) => boolean;
 
 	handleInput(data: string): void {
 		// Intercept Escape key - but only if autocomplete is NOT active
@@ -13,6 +14,22 @@ export class CustomEditor extends Editor {
 		if (data === "\x1b" && this.onEscape && !this.isShowingAutocomplete()) {
 			this.onEscape();
 			return;
+		}
+
+		// Ctrl+K opens palette
+		if (data === "\x0b" && this.onShortcut) {
+			const handled = this.onShortcut("ctrl+k");
+			if (handled) {
+				return;
+			}
+		}
+
+		// @ triggers file search (only when not autocompleting)
+		if (data === "@" && this.onShortcut) {
+			const handled = this.onShortcut("at");
+			if (handled) {
+				return;
+			}
 		}
 
 		// Intercept Ctrl+C

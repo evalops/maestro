@@ -17,16 +17,23 @@ export class SelectList implements Component {
 	onCancel?: () => void;
 
 	constructor(items: SelectItem[], maxVisible: number = 5) {
-        this.items = items;
-        this.filteredItems = items;
-        this.maxVisible = maxVisible;
-    }
-    setFilter(filter: string): void {
-        this.filter = filter;
-        this.filteredItems = this.items.filter((item) => item.value.toLowerCase().startsWith(filter.toLowerCase()));
-        // Reset selection when filter changes
-        this.selectedIndex = 0;
-    }
+		this.items = items;
+		this.filteredItems = items;
+		this.maxVisible = maxVisible;
+	}
+	setFilter(filter: string): void {
+		this.filter = filter;
+		if (!filter) {
+			this.filteredItems = this.items;
+		} else {
+			const lower = filter.toLowerCase();
+			this.filteredItems = this.items.filter((item) =>
+				item.value.toLowerCase().includes(lower),
+			);
+		}
+		// Reset selection when filter changes
+		this.selectedIndex = 0;
+	}
     setSelectedIndex(index: number): void {
         this.selectedIndex = Math.max(0, Math.min(index, this.filteredItems.length - 1));
     }

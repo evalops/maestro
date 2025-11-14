@@ -8,7 +8,7 @@ import type {
 	ThinkingLevel,
 	ToolResultMessage,
 } from "../agent/types.js";
-import type { SlashCommand } from "../tui-lib/index.js";
+import type { SlashCommand, AutocompleteItem } from "../tui-lib/index.js";
 import {
 	CombinedAutocompleteProvider,
 	Container,
@@ -43,10 +43,13 @@ import { CustomEditor } from "./custom-editor.js";
 import { FooterComponent } from "./footer.js";
 import { ModelSelectorComponent } from "./model-selector.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
+import { CommandPaletteComponent } from "./command-palette.js";
+import { FileSearchComponent } from "./file-search.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 import { importFactoryConfig } from "../factory-sync.js";
+import { getWorkspaceFiles } from "../workspace-files.js";
 
 type LoaderStage = {
 	key: string;
@@ -121,6 +124,10 @@ export class TuiRenderer {
 	private planHint: string | null = null;
 	private compactToolOutputs = false;
 	private toolComponents = new Set<ToolExecutionComponent>();
+	private commandPalette: CommandPaletteComponent | null = null;
+	private fileSearchComponent: FileSearchComponent | null = null;
+	private workspaceFiles: string[] = [];
+	private runScripts: string[] = [];
 	private lastUserMessageText?: string;
 	private lastAssistantMessageText?: string;
 	private currentRunToolNames: string[] = [];
@@ -145,6 +152,7 @@ export class TuiRenderer {
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.editorContainer.addChild(this.editor); // Start with editor
 		this.footer = new FooterComponent(agent.state);
+		this.runScripts = this.loadRunScripts();
 
 		// Define slash commands
 		const thinkingCommand: SlashCommand = {
@@ -210,6 +218,7 @@ export class TuiRenderer {
 		const runCommand: SlashCommand = {
 			name: "run",
 			description: "Run npm script (e.g. /run test --watch)",
+			getArgumentCompletions: (prefix) => this.getRunScriptCompletions(prefix),
 		};
 
 		const diagnosticsCommand: SlashCommand = {
@@ -301,6 +310,18 @@ export class TuiRenderer {
 
 		this.editor.onCtrlC = () => {
 			this.handleCtrlC();
+		};
+
+		this.editor.onShortcut = (shortcut) => {
+			if (shortcut === "ctrl+k") {
+				this.showCommandPalette();
+				return true;
+			}
+			if (shortcut === "at") {
+				this.showFileSearch();
+				return true;
+			}
+			return false;
 		};
 
 		// Handle editor submission
@@ -1034,6 +1055,69 @@ export class TuiRenderer {
 		this.ui.setFocus(this.editor);
 	}
 
+	private showCommandPalette(): void {
+		if (this.commandPalette) return;
+		this.commandPalette = new CommandPaletteComponent(
+			this.slashCommands,
+			(command) => {
+				this.hideCommandPalette();
+				const current = this.editor.getText().trim();
+				const insertion = `/${command.name} `;
+				if (!current) {
+					this.editor.setText(insertion);
+				} else {
+					this.editor.insertText(insertion);
+				}
+				this.ui.requestRender();
+			},
+			() => this.hideCommandPalette(),
+		);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.commandPalette);
+		this.ui.setFocus(this.commandPalette);
+		this.ui.requestRender();
+	}
+
+	private hideCommandPalette(): void {
+		if (!this.commandPalette) return;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.editor);
+		this.commandPalette = null;
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
+	}
+
+	private showFileSearch(): void {
+		if (this.fileSearchComponent) return;
+		const files = this.getWorkspaceFileList();
+		if (files.length === 0) {
+			this.showInfoMessage("No files found. Ensure ripgrep or find is available.");
+			return;
+		}
+		this.fileSearchComponent = new FileSearchComponent(
+			files,
+			(file) => {
+				this.hideFileSearch();
+				this.editor.insertText(`${file} `);
+				this.ui.requestRender();
+			},
+			() => this.hideFileSearch(),
+		);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.fileSearchComponent);
+		this.ui.setFocus(this.fileSearchComponent);
+		this.ui.requestRender();
+	}
+
+	private hideFileSearch(): void {
+		if (!this.fileSearchComponent) return;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.editor);
+		this.fileSearchComponent = null;
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
+	}
+
 	private handleExportCommand(text: string): void {
 		// Parse: /export [lite] [filename]
 		const parts = text.split(/\s+/);
@@ -1569,6 +1653,47 @@ ${response}`;
 		this.ui.requestRender();
 	}
 
+	private getWorkspaceFileList(): string[] {
+		if (!this.workspaceFiles.length) {
+			this.workspaceFiles = getWorkspaceFiles();
+		}
+		return this.workspaceFiles;
+	}
+
+	private loadRunScripts(): string[] {
+		try {
+			const pkgPath = join(process.cwd(), "package.json");
+			const raw = readFileSync(pkgPath, "utf-8");
+			const pkg = JSON.parse(raw);
+			return pkg?.scripts ? Object.keys(pkg.scripts) : [];
+		} catch {
+			return [];
+		}
+	}
+
+	private getRunScriptCompletions(
+		prefix: string,
+	): AutocompleteItem[] | null {
+		if (!this.runScripts.length) {
+			this.runScripts = this.loadRunScripts();
+		}
+		if (!this.runScripts.length) {
+			return null;
+		}
+		const lower = prefix.toLowerCase();
+		const matches = this.runScripts
+			.filter((script) => script.toLowerCase().startsWith(lower))
+			.slice(0, 10);
+		if (!matches.length) {
+			return null;
+		}
+		return matches.map((script) => ({
+			value: script,
+			label: script,
+			description: "package script",
+		}));
+	}
+
 	private notifyFileChanges(): void {
 		try {
 			const result = spawnSync("git", ["status", "-sb"], {
@@ -1931,6 +2056,10 @@ ${lines.join("\n")}`;
 		const currentPartial = currentStageCompleted
 			? 0
 			: this.getCurrentStageProgress(this.currentStageKey);
+		if (this.currentStageKey === "responding") {
+			this.loadingAnimation.setProgress(null);
+			return;
+		}
 		const rawProgress = (completedCount + currentPartial) / total;
 		const normalized = Math.min(0.99, Math.max(0, rawProgress));
 		this.loadingAnimation.setProgress(normalized);
