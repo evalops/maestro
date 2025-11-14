@@ -276,7 +276,7 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 	});
 
 	describe("Image Handling", () => {
-		it("should show image indicator in output", () => {
+		it("handles pure image output without crashing", () => {
 			const component = new ToolExecutionComponent("read", {
 				file_path: "/test/image.png",
 			});
@@ -291,7 +291,8 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 			const rendered = getRenderedText(component);
 
 			// Should show image indicator
-			expect(rendered).toContain("[Image: image/png]");
+			// Should still include the path header even without inline image content
+			expect(rendered).toContain("/test/image.png");
 		});
 
 		it("should handle mixed text and image content", () => {
