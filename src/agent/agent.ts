@@ -4,6 +4,7 @@ import type {
 	AgentTool,
 	AgentTransport,
 	AppMessage,
+	AssistantMessage,
 	Attachment,
 	ImageContent,
 	Message,
@@ -233,4 +234,53 @@ export class Agent {
 			this.abortController = undefined;
 		}
 	}
+
+	async generateSummary(
+		history: Message[],
+		prompt: string,
+		systemPrompt = "",
+	): Promise<AssistantMessage> {
+		if (!this._state.model) {
+			throw new Error("No model configured for summarization");
+		}
+
+		const userMessage: UserMessage = {
+			role: "user",
+			content: [{ type: "text", text: prompt }],
+			timestamp: Date.now(),
+		};
+
+		const runMessages: Message[] = [...history, userMessage];
+		const runConfig = {
+			systemPrompt,
+			tools: [],
+			model: this._state.model,
+			reasoning: undefined,
+		};
+
+		const controller = new AbortController();
+		let finalMessage: AssistantMessage | null = null;
+
+		try {
+			for await (const event of this.transport.run(
+				runMessages,
+				userMessage,
+				runConfig,
+				controller.signal,
+			)) {
+				if (event.type === "message_end" && event.message.role === "assistant") {
+					finalMessage = event.message as AssistantMessage;
+				}
+			}
+		} finally {
+			controller.abort();
+		}
+
+		if (!finalMessage) {
+			throw new Error("Summary generation did not return a response");
+		}
+
+		return finalMessage;
+	}
+
 }

@@ -709,3 +709,92 @@ export function exportSessionToHtml(
 
 	return resolvedOutputPath;
 }
+
+export function exportSessionToText(
+	sessionManager: SessionManager,
+	state: AgentState,
+	outputPath?: string,
+): string {
+	const sessionFile = sessionManager.getSessionFile();
+	const timestamp = new Date().toISOString();
+	const resolvedOutputPath = (() => {
+		if (outputPath) {
+			return outputPath;
+		}
+		const sessionBasename = basename(sessionFile, ".jsonl");
+		return `${sessionBasename}.txt`;
+	})();
+
+	const sessionContent = readFileSync(sessionFile, "utf8");
+	const lines = sessionContent.trim().split("\n");
+	const messages: Message[] = [];
+
+	for (const line of lines) {
+		try {
+			const entry = JSON.parse(line);
+			if (entry.type === "message") {
+				messages.push(entry.message);
+			}
+		} catch {
+			// Skip malformed lines
+		}
+	}
+
+	const output: string[] = [];
+	output.push(`Session export: ${basename(sessionFile)}`);
+	output.push(`Generated: ${timestamp}`);
+	output.push("");
+
+	for (const message of messages) {
+		const textBlock = formatMessageAsText(message);
+		if (textBlock) {
+			output.push(textBlock, "");
+		}
+	}
+
+	writeFileSync(resolvedOutputPath, output.join("\n"), "utf-8");
+	return resolvedOutputPath;
+}
+
+function formatMessageAsText(message: Message): string {
+	if (message.role === "user") {
+		return `User:\n${extractPlainText(message)}`;
+	}
+	if (message.role === "assistant") {
+		const parts: string[] = [];
+		for (const content of (message as AssistantMessage).content) {
+			if (content.type === "text" && content.text.trim()) {
+				parts.push(content.text.trim());
+			} else if (content.type === "thinking" && content.thinking.trim()) {
+				parts.push(`[thinking]\n${content.thinking.trim()}`);
+			} else if (content.type === "toolCall") {
+				const argsString = JSON.stringify(content.arguments, null, 2);
+				parts.push(
+					`[tool call] ${content.name}\n${argsString}
+`,
+				);
+			}
+		}
+		return `Assistant:\n${parts.join("\n\n")}`;
+	}
+	if (message.role === "toolResult") {
+		const tool = message as ToolResultMessage;
+		const text = extractPlainText(message);
+		return `Tool ${tool.toolName} (${tool.toolCallId}):\n${text}`;
+	}
+	return "";
+}
+
+function extractPlainText(message: Message): string {
+	const anyMessage: any = message as any;
+	if (typeof anyMessage.content === "string") {
+		return anyMessage.content;
+	}
+	if (Array.isArray(anyMessage.content)) {
+		return anyMessage.content
+			.filter((block: any) => block.type === "text")
+			.map((block: any) => block.text)
+			.join("\n");
+	}
+	return "";
+}

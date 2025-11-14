@@ -5,6 +5,7 @@ import type {
 	AssistantMessage,
 	AppMessage,
 	Message,
+	ThinkingLevel,
 	ToolResultMessage,
 } from "../agent/types.js";
 import type { SlashCommand } from "../tui-lib/index.js";
@@ -20,8 +21,9 @@ import {
 	type Component,
 } from "../tui-lib/index.js";
 import chalk from "chalk";
-import { exportSessionToHtml } from "../export-html.js";
+import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import type { RegisteredModel } from "../models/registry.js";
+import { getRegisteredModels } from "../models/registry.js";
 import {
 	toSessionModelMetadata,
 	type SessionModelMetadata,
@@ -95,6 +97,8 @@ export class TuiRenderer {
 	private currentStageKey: string | null = null;
 	private stageStartTime: number | null = null;
 	private readonly idleFooterHint = "Use /model or /thinking to tune replies";
+	private compactToolOutputs = false;
+	private toolComponents = new Set<ToolExecutionComponent>();
 
 	constructor(
 		agent: Agent,
@@ -135,9 +139,19 @@ export class TuiRenderer {
 			description: "Show session info and stats",
 		};
 
+		const sessionsCommand: SlashCommand = {
+			name: "sessions",
+			description: "List or load recent sessions",
+		};
+
 		const diagnosticsCommand: SlashCommand = {
 			name: "diag",
 			description: "Show provider/model/API key diagnostics",
+		};
+
+		const compactToolsCommand: SlashCommand = {
+			name: "compact-tools",
+			description: "Toggle folding of tool outputs",
 		};
 
 		const compactCommand: SlashCommand = {
@@ -157,8 +171,10 @@ export class TuiRenderer {
 				modelCommand,
 				exportCommand,
 				sessionCommand,
+				sessionsCommand,
 				diagnosticsCommand,
 				compactCommand,
+				compactToolsCommand,
 				quitCommand,
 			],
 			process.cwd(),
@@ -251,6 +267,12 @@ export class TuiRenderer {
 				return;
 			}
 
+			if (trimmed.startsWith("/sessions")) {
+				this.handleSessionsCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
+
 			// Check for /diag command
 			if (trimmed === "/diag" || trimmed === "/diagnostics") {
 				this.handleDiagnosticsCommand();
@@ -259,7 +281,13 @@ export class TuiRenderer {
 			}
 
 			if (trimmed === "/compact") {
-				this.handleCompactCommand();
+				void this.handleCompactCommand();
+				this.editor.setText("");
+				return;
+			}
+
+			if (trimmed.startsWith("/compact-tools")) {
+				this.handleCompactToolsCommand(trimmed);
 				this.editor.setText("");
 				return;
 			}
@@ -346,23 +374,24 @@ export class TuiRenderer {
 					this.streamingComponent.updateContent(assistantMsg);
 
 					// Create tool execution components as soon as we see tool calls
-					for (const content of assistantMsg.content) {
-						if (content.type === "toolCall") {
-							// Only create if we haven't created it yet
-							if (!this.pendingTools.has(content.id)) {
-								this.chatContainer.addChild(new Text("", 0, 0));
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.arguments,
-								);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-							} else {
-								// Update existing component with latest arguments as they stream
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
+				for (const content of assistantMsg.content) {
+					if (content.type === "toolCall") {
+						// Only create if we haven't created it yet
+						if (!this.pendingTools.has(content.id)) {
+							this.chatContainer.addChild(new Text("", 0, 0));
+							const component = new ToolExecutionComponent(
+								content.name,
+								content.arguments,
+							);
+							this.chatContainer.addChild(component);
+							this.pendingTools.set(content.id, component);
+							this.registerToolComponent(component);
+						} else {
+							// Update existing component with latest arguments as they stream
+							const component = this.pendingTools.get(content.id);
+							if (component) {
+								component.updateArgs(content.arguments);
+							}
 							}
 						}
 					}
@@ -423,6 +452,7 @@ export class TuiRenderer {
 					);
 					this.chatContainer.addChild(component);
 					this.pendingTools.set(event.toolCallId, component);
+					this.registerToolComponent(component);
 					this.ui.requestRender();
 				}
 				break;
@@ -508,6 +538,8 @@ export class TuiRenderer {
 
 		// Update footer with loaded state
 		this.footer.updateState(state);
+		this.toolComponents.clear();
+		this.pendingTools.clear();
 
 		// Render messages
 		for (let i = 0; i < state.messages.length; i++) {
@@ -540,6 +572,7 @@ export class TuiRenderer {
 							content.arguments,
 						);
 						this.chatContainer.addChild(component);
+						this.registerToolComponent(component);
 
 						// If message was aborted/errored, immediately mark tool as failed
 						if (
@@ -574,7 +607,7 @@ export class TuiRenderer {
 				}
 			}
 		}
-		// Clear pending tools after rendering initial messages
+		// Clear pending map (should already be empty, but keep tidy)
 		this.pendingTools.clear();
 		this.ui.requestRender();
 	}
@@ -608,74 +641,88 @@ export class TuiRenderer {
 		}
 	}
 
-	private handleCompactCommand(): void {
+	private async handleCompactCommand(): Promise<void> {
 		const messages = [...this.agent.state.messages];
 		const keepCount = 6;
 		if (messages.length <= keepCount + 1) {
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(
-					chalk.dim("Not enough history to compact. Keep chatting!"),
-					1,
-					0,
-				),
-			);
-			this.ui.requestRender();
+			this.showInfoMessage("Not enough history to compact. Keep chatting!");
 			return;
 		}
 
 		const boundary = Math.max(0, messages.length - keepCount);
 		const older = messages.slice(0, boundary);
 		if (!older.length) {
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(
-					chalk.dim("No earlier messages to compact."),
-					1,
-					0,
-				),
-			);
-			this.ui.requestRender();
+			this.showInfoMessage("No earlier messages to compact.");
 			return;
 		}
 
-		const summary = this.buildCompactSummary(older);
-		const summaryMessage: AssistantMessage = {
-			role: "assistant",
-			content: [{ type: "text", text: summary }],
-			api: this.agent.state.model.api,
-			provider: this.agent.state.model.provider,
-			model: this.agent.state.model.id,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		};
+		const sliceSize = Math.min(40, older.length);
+		const summaryInput = older.slice(-sliceSize) as Message[];
+		this.footer.setHint("Summarizing history…");
+		let summaryMessage: AssistantMessage | null = null;
+		let usedModel = false;
+		try {
+			const prompt = this.buildSummarizationPrompt(summaryInput.length);
+			const summary = await this.agent.generateSummary(
+				summaryInput,
+				prompt,
+				this.buildSummarizationSystemPrompt(),
+			);
+			const llmText = this.extractPlainText(summary).trim();
+			const decorated = this.decorateSummaryText(
+				llmText || this.buildCompactSummary(summaryInput),
+				older.length,
+				true,
+			);
+			summaryMessage = {
+				...summary,
+				content: [{ type: "text", text: decorated }],
+				timestamp: Date.now(),
+			};
+			usedModel = true;
+		} catch (error) {
+			console.warn("LLM compaction failed:", error);
+		} finally {
+			this.footer.setHint(this.idleFooterHint);
+		}
+
+		if (!summaryMessage) {
+			const fallbackText = this.decorateSummaryText(
+				this.buildCompactSummary(older),
+				older.length,
+				false,
+			);
+			summaryMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: fallbackText }],
+				api: this.agent.state.model.api,
+				provider: this.agent.state.model.provider,
+				model: this.agent.state.model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: Date.now(),
+			};
+		}
 
 		const keep = messages.slice(boundary);
-		const newMessages = [summaryMessage, ...keep];
-		this.agent.replaceMessages(newMessages as any);
+		const newMessages = [summaryMessage as AppMessage, ...keep];
+		this.agent.replaceMessages(newMessages);
 		this.sessionManager.saveMessage(summaryMessage);
 
-		// Rerender chat with compacted history
 		this.chatContainer.clear();
+		this.toolComponents.clear();
 		this.renderInitialMessages(this.agent.state);
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(
-			new Text(
-				chalk.hex("#94a3b8")(
-					`Compacted ${older.length} message$${older.length === 1 ? "" : "s"} into a summary.`,
-				),
-				1,
-				0,
-			),
+		this.showInfoMessage(
+			usedModel
+				? `Compacted ${older.length} messages via model summary.`
+				: `Compacted ${older.length} messages with a local summary.`,
 		);
-		this.ui.requestRender();
 	}
 
 	private buildCompactSummary(messages: Message[]): string {
@@ -704,6 +751,23 @@ export class TuiRenderer {
 			return "(conversation summary placeholder: no textual content to compact)";
 		}
 		return `Conversation summary generated at ${new Date().toLocaleString()}\n${lines.join("\n")}`;
+	}
+
+	private buildSummarizationPrompt(messageCount: number): string {
+		return `Summarize the preceding ${messageCount} conversation messages from a coding session.` +
+			"\nProvide concise markdown with sections for Summary, Decisions, and Outstanding Work." +
+			"\nHighlight key files, TODOs, and blockers. Limit to 200 words.";
+	}
+
+	private buildSummarizationSystemPrompt(): string {
+		return "You are a careful note-taker that distills coding conversations into actionable summaries.";
+	}
+
+	private decorateSummaryText(text: string, compactedCount: number, fromModel: boolean): string {
+		const meta = fromModel
+			? "_Model-generated summary of prior discussion._"
+			: "_Local summary of prior discussion (model unavailable)._";
+		return `${meta}\n\n${text}\n\n(Compacted ${compactedCount} messages on ${new Date().toLocaleString()})`;
 	}
 
 	private extractPlainText(message: Message): string {
@@ -828,17 +892,32 @@ export class TuiRenderer {
 	}
 
 	private handleExportCommand(text: string): void {
-		// Parse optional filename from command: /export [filename]
+		// Parse: /export [lite] [filename]
 		const parts = text.split(/\s+/);
-		const outputPath = parts.length > 1 ? parts[1] : undefined;
+		let mode: "html" | "text" = "html";
+		let outputPath: string | undefined;
+		if (parts.length > 1) {
+			if (parts[1].toLowerCase() === "lite" || parts[1].toLowerCase() === "text") {
+				mode = "text";
+				outputPath = parts[2];
+			} else {
+				outputPath = parts[1];
+			}
+		}
 
 		try {
-			// Export session to HTML
-			const filePath = exportSessionToHtml(
-				this.sessionManager,
-				this.agent.state,
-				outputPath,
-			);
+			const filePath =
+				mode === "text"
+					? exportSessionToText(
+						this.sessionManager,
+						this.agent.state,
+						outputPath,
+					)
+					: exportSessionToHtml(
+						this.sessionManager,
+						this.agent.state,
+						outputPath,
+					);
 
 			// Show success message in chat - matching thinking level style
 			this.chatContainer.addChild(new Spacer(1));
@@ -939,6 +1018,135 @@ export class TuiRenderer {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(info, 1, 0));
 		this.ui.requestRender();
+	}
+
+	private handleSessionsCommand(text: string): void {
+		const parts = text.trim().split(/\s+/);
+		const sessions = this.sessionManager.loadAllSessions();
+		if (parts.length === 1 || parts[1] === "list") {
+			this.showSessionsList(sessions);
+			return;
+		}
+
+		if (parts[1] === "load" && parts.length >= 3) {
+			const index = Number.parseInt(parts[2], 10);
+			if (!Number.isFinite(index) || index <= 0) {
+				this.showInfoMessage("Usage: /sessions load <number>");
+				return;
+			}
+			if (sessions.length === 0) {
+				this.showInfoMessage("No saved sessions to load.");
+				return;
+			}
+			const selected = sessions[index - 1];
+			if (!selected) {
+				this.showInfoMessage(`No session #${index} found.`);
+				return;
+			}
+			this.sessionManager.setSessionFile(selected.path);
+			const loaded = this.sessionManager.loadMessages() as AppMessage[];
+			this.agent.replaceMessages(loaded);
+			this.applyLoadedSessionContext();
+			this.chatContainer.clear();
+			this.toolComponents.clear();
+			this.renderInitialMessages(this.agent.state);
+			this.footer.updateState(this.agent.state);
+			this.showInfoMessage(
+				`Loaded session ${selected.id} (${selected.messageCount} messages).`,
+			);
+			return;
+		}
+
+		this.showInfoMessage("Usage: /sessions [list|load <number>]");
+	}
+
+	private showSessionsList(sessions: Array<{
+		path: string;
+		id: string;
+		created: Date;
+		modified: Date;
+		messageCount: number;
+		firstMessage: string;
+		allMessagesText: string;
+	}>): void {
+		this.chatContainer.addChild(new Spacer(1));
+		if (sessions.length === 0) {
+			this.chatContainer.addChild(
+				new Text(chalk.dim("No saved sessions for this project."), 1, 0),
+			);
+			this.ui.requestRender();
+			return;
+		}
+		const lines = sessions.slice(0, 5).map((session, idx) => {
+			const preview = session.firstMessage
+				? session.firstMessage.slice(0, 60)
+				: "(no messages)";
+			return `${idx + 1}. ${chalk.cyan(session.id.slice(0, 8))} · ${chalk.dim(
+				session.modified.toLocaleString(),
+			)} · ${preview}`;
+		});
+		this.chatContainer.addChild(
+			new Text(
+				`${chalk.bold("Sessions")}
+${lines.join("\n")}
+Use /sessions load <number> to switch.`,
+				1,
+				0,
+			),
+		);
+		this.ui.requestRender();
+	}
+
+	private showInfoMessage(text: string): void {
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(chalk.dim(text), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private applyLoadedSessionContext(): void {
+		const thinking = this.sessionManager.loadThinkingLevel();
+		if (thinking) {
+			this.agent.setThinkingLevel(thinking as ThinkingLevel);
+		}
+		const modelKey = this.sessionManager.loadModel();
+		if (modelKey) {
+			const [provider, modelId] = modelKey.split("/");
+			if (provider && modelId) {
+				const nextModel = getRegisteredModels().find(
+					(entry) => entry.provider === provider && entry.id === modelId,
+				);
+				if (nextModel) {
+					this.agent.setModel(nextModel);
+				}
+			}
+		}
+	}
+
+	private handleCompactToolsCommand(text: string): void {
+		const parts = text.trim().split(/\s+/);
+		let nextState = this.compactToolOutputs;
+		if (parts.length === 1) {
+			nextState = !nextState;
+		} else {
+			const arg = parts[1].toLowerCase();
+			if (arg === "on" || arg === "true") {
+				nextState = true;
+			} else if (arg === "off" || arg === "false") {
+				nextState = false;
+			} else if (arg === "toggle") {
+				nextState = !nextState;
+			} else {
+				this.showInfoMessage("Usage: /compact-tools [on|off|toggle]");
+				return;
+			}
+		}
+		this.compactToolOutputs = nextState;
+		this.applyCompactModeToTools();
+		this.showInfoMessage(
+			nextState
+				? "Tool outputs will collapse by default."
+				: "Tool outputs will show full content.",
+		);
 	}
 
 	private resolveApiKey(): ApiKeyLookupResult {
@@ -1133,6 +1341,18 @@ export class TuiRenderer {
 			this.loadingAnimation.setStage(label, index + 1, this.loaderStages.length);
 			this.footer.setStage(label);
 		}
+	}
+
+	private registerToolComponent(component: ToolExecutionComponent): void {
+		this.toolComponents.add(component);
+		component.setCollapsed(this.compactToolOutputs);
+	}
+
+	private applyCompactModeToTools(): void {
+		for (const component of this.toolComponents) {
+			component.setCollapsed(this.compactToolOutputs);
+		}
+		this.ui.requestRender();
 	}
 
 	private finalizeStageTiming(): void {

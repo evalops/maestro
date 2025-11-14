@@ -111,8 +111,8 @@ export class FooterComponent {
 		if (totalCost)
 			statsParts.push(`${chalk.hex("#ffd6a5")("$")}${totalCost.toFixed(3)}`);
 
-		const contextBadgeColor =
-			Number.parseFloat(contextPercent) >= 80 ? "#ff6b6b" : "#a0aec0";
+		const contextValue = Number.parseFloat(contextPercent);
+		const contextBadgeColor = contextValue >= 80 ? "#ff6b6b" : "#a0aec0";
 		statsParts.push(chalk.hex(contextBadgeColor)(`ctx ${contextPercent}%`));
 
 		const statsLeft = statsParts.join(" ");
@@ -176,11 +176,13 @@ export class FooterComponent {
 		}
 
 		const lines = [pathLine, chalk.gray(statsLine)];
-		if (this.statusHint) {
-			const hintLabel = this.truncateToWidth(
-				`tip: ${this.statusHint}`,
-				width,
-			);
+		const highContextHint =
+			contextValue >= 80
+				? "Context nearly full – consider /compact or /export"
+				: null;
+		const hintSource = highContextHint || this.statusHint;
+		if (hintSource) {
+			const hintLabel = this.truncateToWidth(`tip: ${hintSource}`, width);
 			lines.push(chalk.hex("#94a3b8")(hintLabel));
 		}
 

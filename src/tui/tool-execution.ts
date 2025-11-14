@@ -131,6 +131,7 @@ export class ToolExecutionComponent extends Container {
 	private contentText: Text;
 	private toolName: string;
 	private args: any;
+	private collapsed = false;
 	private result?: {
 		content: Array<{
 			type: string;
@@ -152,6 +153,11 @@ export class ToolExecutionComponent extends Container {
 		this.contentText = new Text("", 1, 1, { r: 34, g: 36, b: 48 });
 		this.addChild(this.contentText);
 		this.addChild(new Text(this.buildBottomLine(), 1, 0));
+		this.updateDisplay();
+	}
+
+	setCollapsed(collapsed: boolean): void {
+		this.collapsed = collapsed;
 		this.updateDisplay();
 	}
 
@@ -231,6 +237,11 @@ export class ToolExecutionComponent extends Container {
 				`$ ${command || chalk.dim("...")}`,
 			)}`;
 
+			if (this.collapsed && this.result) {
+				text += `\n${chalk.dim(this.buildCollapsedSummary())}`;
+				return text;
+			}
+
 			if (this.result) {
 				// Show output without code fences - more minimal
 				const output = this.getTextOutput().trim();
@@ -253,6 +264,14 @@ export class ToolExecutionComponent extends Container {
 			text = `${chalk.hex("#7bc7ff")("✦ read")} ${
 				path ? chalk.cyan(path) : chalk.dim("...")
 			}`;
+
+			if (this.collapsed) {
+				const summary = this.result
+					? this.buildCollapsedSummary()
+					: "output hidden: awaiting result";
+				text += `\n${chalk.dim(summary)}`;
+				return text;
+			}
 
 			if (this.result) {
 				const output = this.getTextOutput();
@@ -281,6 +300,11 @@ export class ToolExecutionComponent extends Container {
 				text += ` (${totalLines} lines)`;
 			}
 
+			if (this.collapsed) {
+				text += `\n${chalk.dim(this.buildCollapsedSummary(fileContent))}`;
+				return text;
+			}
+
 			// Show first 10 lines of content if available
 			if (fileContent) {
 				const maxLines = 10;
@@ -299,6 +323,12 @@ export class ToolExecutionComponent extends Container {
 			text = `${chalk.hex("#fcd5ce")("✧ edit")} ${
 				path ? chalk.cyan(path) : chalk.dim("...")
 			}`;
+
+			if (this.collapsed) {
+				const diffText = this.result?.details?.diff || this.getTextOutput();
+				text += `\n${chalk.dim(this.buildCollapsedSummary(diffText))}`;
+				return text;
+			}
 
 			// Show diff if available
 			if (this.result?.details?.diff) {
@@ -319,6 +349,17 @@ export class ToolExecutionComponent extends Container {
 			// Generic tool
 			text = chalk.bold(`${chalk.hex("#d4d8ff")("✷")} ${this.toolName}`);
 
+			if (this.collapsed) {
+				const combined = [
+					JSON.stringify(this.args, null, 2),
+					this.getTextOutput(),
+				]
+					.filter(Boolean)
+					.join("\n");
+				text += `\n${chalk.dim(this.buildCollapsedSummary(combined))}`;
+				return text;
+			}
+
 			const content = JSON.stringify(this.args, null, 2);
 			text += `\n\n${content}`;
 			const output = this.getTextOutput();
@@ -328,6 +369,19 @@ export class ToolExecutionComponent extends Container {
 		}
 
 		return text;
+	}
+
+	private buildCollapsedSummary(source?: string): string {
+		if (!source || !source.trim()) {
+			return "output hidden";
+		}
+		const firstLine = source.split("\n").find((line) => line.trim()) || "";
+		const trimmed = firstLine.trim();
+		if (!trimmed) return "output hidden";
+		const snippet = trimmed.slice(0, 80);
+		return `output hidden: ${snippet}${
+			trimmed.length > snippet.length ? "…" : ""
+		}`;
 	}
 
 	getToolName(): string {
