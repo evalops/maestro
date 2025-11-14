@@ -20,94 +20,13 @@ const agentModule = await import(
 const toolsModule = await import(
 	pathToFileURL(join(projectRoot, "dist", "tools", "read.js")).href,
 );
+const helpersModule = await import(
+	pathToFileURL(join(projectRoot, "dist", "testing", "mock-agent.js")).href,
+);
 
 const { Agent } = agentModule;
 const { readTool } = toolsModule;
-
-class MockTransport {
-	constructor(path) {
-		this.path = path;
-	}
-
-	async *run(messages, userMessage, config, signal) {
-		yield { type: "message_start", message: userMessage };
-		const toolCallId = "mock-read-1";
-		const toolCallMessage = this.createAssistantMessage(
-			[
-				{
-					type: "toolCall",
-					id: toolCallId,
-					name: "read",
-					arguments: { path: this.path },
-				},
-			],
-			"toolUse",
-		);
-		yield { type: "message_start", message: toolCallMessage };
-		yield { type: "message_end", message: toolCallMessage };
-
-		const tool = config.tools.find((t) => t.name === "read");
-		if (!tool) {
-			throw new Error("read tool not registered");
-		}
-
-		yield {
-			type: "tool_execution_start",
-			toolCallId,
-			toolName: "read",
-			args: { path: this.path },
-		};
-
-		const toolResult = await tool.execute(toolCallId, { path: this.path }, signal);
-		const toolResultMessage = {
-			role: "toolResult",
-			toolCallId,
-			toolName: "read",
-			content: toolResult.content,
-			details: toolResult.details,
-			isError: toolResult.isError ?? false,
-			timestamp: Date.now(),
-		};
-
-		yield {
-			type: "tool_execution_end",
-			toolCallId,
-			toolName: "read",
-			result: toolResultMessage,
-			isError: toolResult.isError ?? false,
-		};
-
-		const firstText =
-			toolResult.content.find((item) => item.type === "text")?.text ?? "";
-		const firstLine = firstText.split("\n").find((line) => line.trim()) ?? "";
-		const reply = `Read ${this.path}: ${firstLine.trim()}`;
-		const finalMessage = this.createAssistantMessage(
-			[{ type: "text", text: reply }],
-			"stop",
-		);
-		yield { type: "message_start", message: finalMessage };
-		yield { type: "message_end", message: finalMessage };
-	}
-
-	createAssistantMessage(content, stopReason) {
-		return {
-			role: "assistant",
-			content,
-			api: "mock",
-			provider: "mock",
-			model: "mock-model",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason,
-			timestamp: Date.now(),
-		};
-	}
-}
+const { MockToolTransport } = helpersModule;
 
 const mockModel = {
 	id: "mock-model",
@@ -121,8 +40,24 @@ const mockModel = {
 	source: "builtin",
 };
 
+let readSummary = "";
+const transport = new MockToolTransport(
+	[
+		{
+			name: "read",
+			args: { path: targetPath },
+			onResult: (result) => {
+				const firstText = result.content.find((item) => item.type === "text");
+				readSummary =
+					firstText?.text?.split("\n").find((line) => line.trim()) ?? "";
+			},
+		},
+	],
+	() => `Read ${targetPath}: ${readSummary.trim()}`,
+);
+
 const agent = new Agent({
-	transport: new MockTransport(targetPath),
+	transport,
 	initialState: { model: mockModel, tools: [] },
 });
 agent.setModel(mockModel);

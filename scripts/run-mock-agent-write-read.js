@@ -17,102 +17,14 @@ const readModule = await import(
 const writeModule = await import(
 	pathToFileURL(join(projectRoot, "dist", "tools", "write.js")).href,
 );
+const helpersModule = await import(
+	pathToFileURL(join(projectRoot, "dist", "testing", "mock-agent.js")).href,
+);
 
 const { Agent } = agentModule;
 const { readTool } = readModule;
 const { writeTool } = writeModule;
-
-class MultiToolTransport {
-	constructor(path, content) {
-		this.path = path;
-		this.content = content;
-		this.readSummary = "";
-	}
-
-	async *run(messages, userMessage, config, signal) {
-		yield { type: "message_start", message: userMessage };
-
-		const operations = [
-			{ id: "write-op", name: "write", args: { path: this.path, content: this.content } },
-			{ id: "read-op", name: "read", args: { path: this.path } },
-		];
-
-		for (const op of operations) {
-			const callMessage = this.createToolCall(op);
-			yield { type: "message_start", message: callMessage };
-			yield { type: "message_end", message: callMessage };
-
-			const tool = config.tools.find((t) => t.name === op.name);
-			if (!tool) throw new Error(`Tool ${op.name} not registered`);
-
-			yield {
-				type: "tool_execution_start",
-				oolCallId: op.id,
-				oolName: op.name,
-				args: op.args,
-			};
-
-			const result = await tool.execute(op.id, op.args, signal);
-			const toolResultMessage = {
-				role: "toolResult",
-				toolCallId: op.id,
-				oolName: op.name,
-				content: result.content,
-				details: result.details,
-				isError: result.isError ?? false,
-				timestamp: Date.now(),
-			};
-
-			if (op.name === "read") {
-				const firstText = result.content.find((item) => item.type === "text");
-				this.readSummary = firstText?.text?.split("\n").find((line) => line.trim()) ?? "";
-			}
-
-			yield {
-				type: "tool_execution_end",
-				oolCallId: op.id,
-				oolName: op.name,
-				result: toolResultMessage,
-				isError: result.isError ?? false,
-			};
-		}
-
-		const finalText = `Wrote and read ${this.path}: ${this.readSummary.trim()}`;
-		const finalMessage = this.createAssistantMessage([{ type: "text", text: finalText }], "stop");
-		yield { type: "message_start", message: finalMessage };
-		yield { type: "message_end", message: finalMessage };
-	}
-
-	createToolCall(op) {
-		return this.createAssistantMessage([
-			{
-				type: "toolCall",
-				id: op.id,
-				name: op.name,
-				arguments: op.args,
-			},
-		]);
-	}
-
-	createAssistantMessage(content, stopReason = "toolUse") {
-		return {
-			role: "assistant",
-			content,
-			api: "mock",
-			provider: "mock",
-			model: "mock-model",
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason,
-			timestamp: Date.now(),
-		};
-	}
-}
+const { MockToolTransport } = helpersModule;
 
 const mockModel = {
 	id: "mock-model",
@@ -126,8 +38,25 @@ const mockModel = {
 	source: "builtin",
 };
 
+let readSummary = "";
+const transport = new MockToolTransport(
+	[
+		{ name: "write", args: { path: targetFile, content: "Hello evals" } },
+		{
+			name: "read",
+			args: { path: targetFile },
+			onResult: (result) => {
+				const firstText = result.content.find((item) => item.type === "text");
+				readSummary =
+					firstText?.text?.split("\n").find((line) => line.trim()) ?? "";
+			},
+		},
+	],
+	() => `Wrote and read ${targetFile}: ${readSummary.trim()}`,
+);
+
 const agent = new Agent({
-	transport: new MultiToolTransport(targetFile, "Hello evals"),
+	transport,
 	initialState: { model: mockModel, tools: [] },
 });
 agent.setModel(mockModel);
