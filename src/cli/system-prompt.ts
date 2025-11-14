@@ -131,6 +131,7 @@ Available tools:
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
 - list: List files and directories safely using glob patterns
+- todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] }.
 
 Guidelines:
 - Always use bash tool for file operations like ls, grep, find
@@ -138,6 +139,7 @@ Guidelines:
 - Use edit for precise changes (old text must match exactly)
 - Use write only for new files or complete rewrites
 - Use list to inspect directory structures when you only need filenames
+- Use todo when you need a structured task list; supply a goal plus an items array shaped like TodoWrite entries.
 - Be concise in your responses
 - Show file paths clearly when working with files`;
 
