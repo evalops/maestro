@@ -133,5 +133,10 @@
 		"name": "mock agent write+read flow",
 		"command": ["node", "scripts/run-mock-agent-write-read.js"],
 		"expectedRegex": "Wrote and read .*/mock-agent-flow\\.txt"
+	},
+	{
+		"name": "mock agent edit flow",
+		"command": ["node", "scripts/run-mock-agent-edit-read.js"],
+		"expectedRegex": "Edited .*/mock-edit-flow\\.txt"
 	}
 ]
