@@ -27,7 +27,6 @@ import {
 	Spacer,
 	TUI,
 } from "../tui-lib/index.js";
-import { createCommandRegistry } from "./commands/registry.js";
 import type { CommandEntry } from "./commands/types.js";
 import { CustomEditor } from "./custom-editor.js";
 import { DiagnosticsView } from "./diagnostics-view.js";
@@ -39,6 +38,7 @@ import { PlanView } from "./plan-view.js";
 import { RunCommandView } from "./run-command-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
+import { buildCommandRegistry } from "./command-registry-builder.js";
 import { FileSearchView } from "./file-search-view.js";
 import { SessionView } from "./session-view.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
@@ -305,42 +305,42 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 
-		const commandRegistry = createCommandRegistry({
+		const registry = buildCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
 				this.runCommandView.getRunScriptCompletions(prefix),
-			handlers: {
-				thinking: () => this.thinkingSelectorView.show(),
-				model: () => this.modelSelectorView.show(),
-				exportSession: (input) => this.importExportView.handleExportCommand(input),
-				tools: (input) => this.toolStatusView.handleToolsCommand(input),
-				importConfig: (input) => this.importExportView.handleImportCommand(input),
-				sessionInfo: () => this.sessionView.showSessionInfo(),
-				sessions: (input) => this.sessionView.handleSessionsCommand(input),
-				reportBug: () => this.feedbackView.handleBugCommand(),
-				status: () => this.diagnosticsView.handleStatusCommand(),
-				review: () => this.gitView.handleReviewCommand(),
-				undoChanges: (input) => this.gitView.handleUndoCommand(input),
-				shareFeedback: () => this.feedbackView.handleFeedbackCommand(this.version),
-				mention: (input) => this.fileSearchView.handleMentionCommand(input),
-				help: () => this.infoView.showHelp(),
-				plan: (input) => this.planView.handlePlanCommand(input),
-				preview: (input) => this.gitView.handlePreviewCommand(input),
-				run: (input) => this.runCommandView.handleRunCommand(input),
-				why: () => this.infoView.showWhySummary(),
-				diagnostics: (input) =>
-					this.diagnosticsView.handleDiagnosticsCommand(input),
-				compact: () => this.handleCompactCommand(),
-				compactTools: (input) =>
-					this.toolOutputView.handleCompactToolsCommand(input),
-				quit: () => {
-					this.stop();
-					process.exit(0);
-				},
+			showThinkingSelector: () => this.thinkingSelectorView.show(),
+			showModelSelector: () => this.modelSelectorView.show(),
+			handleExportSession: (input) =>
+				this.importExportView.handleExportCommand(input),
+			handleTools: (input) => this.toolStatusView.handleToolsCommand(input),
+			handleImportConfig: (input) =>
+				this.importExportView.handleImportCommand(input),
+			showSessionInfo: () => this.sessionView.showSessionInfo(),
+			handleSessions: (input) => this.sessionView.handleSessionsCommand(input),
+			handleBug: () => this.feedbackView.handleBugCommand(),
+			showStatus: () => this.diagnosticsView.handleStatusCommand(),
+			handleReview: () => this.gitView.handleReviewCommand(),
+			handleUndo: (input) => this.gitView.handleUndoCommand(input),
+			shareFeedback: () => this.feedbackView.handleFeedbackCommand(this.version),
+			handleMention: (input) => this.fileSearchView.handleMentionCommand(input),
+			showHelp: () => this.infoView.showHelp(),
+			handlePlan: (input) => this.planView.handlePlanCommand(input),
+			handlePreview: (input) => this.gitView.handlePreviewCommand(input),
+			handleRun: (input) => this.runCommandView.handleRunCommand(input),
+			handleWhy: () => this.infoView.showWhySummary(),
+			handleDiagnostics: (input) =>
+				this.diagnosticsView.handleDiagnosticsCommand(input),
+			handleCompact: () => this.handleCompactCommand(),
+			handleCompactTools: (input) =>
+				this.toolOutputView.handleCompactToolsCommand(input),
+			handleQuit: () => {
+				this.stop();
+				process.exit(0);
 			},
 		});
 
-		this.commandEntries = commandRegistry;
-		this.slashCommands = commandRegistry.map((entry) => entry.command);
+		this.commandEntries = registry.entries;
+		this.slashCommands = registry.commands;
 
 		const autocompleteProvider = new CombinedAutocompleteProvider(
 			this.slashCommands,
