@@ -66,5 +66,14 @@
 		],
 		"expectedExitCode": 1,
 		"expectedStderrRegex": "File not found"
+	},
+	{
+		"name": "mock agent read flow",
+		"command": [
+			"node",
+			"scripts/run-mock-agent.js",
+			"README.md"
+		],
+		"expectedRegex": "Read .*/README\\.md"
 	}
 ]
