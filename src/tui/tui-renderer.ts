@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -47,8 +46,8 @@ import { FooterComponent } from "./footer.js";
 import { LoaderView } from "./loader-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
 import { PlanView, loadTodoStore } from "./plan-view.js";
+import { GitView } from "./git-view.js";
 import { RunCommandView } from "./run-command-view.js";
-import { runShellCommand } from "./run-shell-command.js";
 import { ModelSelectorComponent } from "./model-selector.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
@@ -111,11 +110,11 @@ export class TuiRenderer {
 	private lastAssistantMessageText?: string;
 	private currentRunToolNames: string[] = [];
 	private lastRunToolNames: string[] = [];
-	private lastNotifiedChanges: string[] = [];
 	private slashCommands: SlashCommand[] = [];
 	private commandEntries: CommandEntry[] = [];
 	private planView: PlanView;
 	private runCommandView: RunCommandView;
+	private gitView: GitView;
 
 	constructor(
 		agent: Agent,
@@ -155,6 +154,12 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.showInfoMessage(message),
 		});
+		this.gitView = new GitView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+			showToast: (message, tone) => this.showToast(message, tone),
+		});
 
 		const commandRegistry = createCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -169,13 +174,13 @@ export class TuiRenderer {
 				sessions: (input) => this.handleSessionsCommand(input),
 				reportBug: () => this.handleBugCommand(),
 				status: () => this.handleStatusCommand(),
-				review: () => this.handleReviewCommand(),
-				undoChanges: (input) => this.handleUndoCommand(input),
+				review: () => this.gitView.handleReviewCommand(),
+				undoChanges: (input) => this.gitView.handleUndoCommand(input),
 				shareFeedback: () => this.handleFeedbackCommand(),
 				mention: (input) => this.handleMentionCommand(input),
 				help: () => this.handleHelpCommand(),
 				plan: (input) => this.planView.handlePlanCommand(input),
-				preview: (input) => this.handlePreviewCommand(input),
+				preview: (input) => this.gitView.handlePreviewCommand(input),
 				run: (input) => this.runCommandView.handleRunCommand(input),
 				why: () => this.handleWhyCommand(),
 				diagnostics: (input) => this.handleDiagnosticsCommand(input),
@@ -458,7 +463,7 @@ export class TuiRenderer {
 				}
 				this.pendingTools.clear();
 				this.editor.disableSubmit = false;
-				this.notifyFileChanges();
+				this.gitView.notifyFileChanges();
 				this.refreshFooterHint();
 				this.ui.requestRender();
 				break;
@@ -1284,83 +1289,6 @@ Use /diag for a full diagnostic report.`;
 		this.ui.requestRender();
 	}
 
-	private handleReviewCommand(): void {
-		const statusResult = this.runGitCommand(["status", "-sb"]);
-		const diffResult = this.runGitCommand(["diff", "--stat"]);
-		const statusText = statusResult.ok
-			? statusResult.stdout.trim() || chalk.dim("Working tree clean.")
-			: chalk.red(
-					`git status failed: ${
-						statusResult.stderr.trim() ||
-						statusResult.stdout.trim() ||
-						"unknown error"
-					}`,
-				);
-		const diffLinesRaw = diffResult.ok
-			? diffResult.stdout.trim()
-			: chalk.red(
-					`git diff --stat failed: ${
-						diffResult.stderr.trim() ||
-						diffResult.stdout.trim() ||
-						"unknown error"
-					}`,
-				);
-		const diffLines = diffLinesRaw.split("\n");
-		const limit = 20;
-		const preview = diffLines.slice(0, limit).join("\n");
-		const remainder =
-			diffLines.length > limit
-				? `\n${chalk.dim(`(+${diffLines.length - limit} more lines)`)}`
-				: "";
-		const diffText =
-			diffLinesRaw.trim().length > 0
-				? `${preview}${remainder}`
-				: chalk.dim("No pending changes.");
-
-		const message = `${chalk.bold("Review snapshot")}
-${chalk.dim("Git status")}:
-${statusText}
-
-${chalk.dim("Diff stats")}:
-${diffText}
-
-${chalk.dim("Next steps")}:
-- Use /preview <file> for an inline diff
-- Use /plan to revisit saved goals
-- Use /status for a lightweight health check`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(message, 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleUndoCommand(text: string): void {
-		const parts = text.trim().split(/\s+/);
-		if (parts.length < 2) {
-			this.showInfoMessage("Usage: /undo <file> [more files]");
-			return;
-		}
-		const targets = parts.slice(1).filter(Boolean);
-		if (!targets.length) {
-			this.showInfoMessage("Usage: /undo <file> [more files]");
-			return;
-		}
-		const result = this.runGitCommand(["checkout", "--", ...targets]);
-		if (!result.ok) {
-			const error =
-				result.stderr.trim() ||
-				result.stdout.trim() ||
-				"Failed to undo changes.";
-			this.showInfoMessage(error);
-			return;
-		}
-		const summary = `${chalk.bold("Undo complete")}
-Reverted changes in:
-- ${targets.join("\n- ")}`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(summary, 1, 0));
-		this.ui.requestRender();
-	}
-
 	private handleFeedbackCommand(): void {
 		const snapshot = this.collectHealthSnapshot();
 		const sessionId = this.sessionManager.getSessionId();
@@ -1432,26 +1360,6 @@ Use @ in the editor for the interactive search palette.`;
 		}
 	}
 
-	private async handlePreviewCommand(text: string): Promise<void> {
-		const parts = text.trim().split(/\s+/);
-		if (parts.length < 2) {
-			this.showInfoMessage("Usage: /preview <file>");
-			return;
-		}
-		const target = parts.slice(1).join(" ");
-		const quoted = JSON.stringify(target);
-		const result = await runShellCommand(`git diff -- ${quoted}`);
-		this.chatContainer.addChild(new Spacer(1));
-		const content = result.stdout || result.stderr;
-		const textOutput = content
-			? content
-			: chalk.dim(`No differences for ${target}`);
-		this.chatContainer.addChild(
-			new Text(`${chalk.bold(`git diff -- ${target}`)}\n${textOutput}`, 1, 0),
-		);
-		this.ui.requestRender();
-	}
-
 	private handleWhyCommand(): void {
 		const user = this.lastUserMessageText
 			? this.lastUserMessageText
@@ -1483,69 +1391,6 @@ ${response}`;
 		return this.workspaceFiles;
 	}
 
-	private runGitCommand(args: string[]): {
-		ok: boolean;
-		stdout: string;
-		stderr: string;
-	} {
-		try {
-			const result = spawnSync("git", args, {
-				cwd: process.cwd(),
-				encoding: "utf-8",
-			});
-			return {
-				ok: (result.status ?? 0) === 0,
-				stdout: result.stdout ?? "",
-				stderr: result.stderr ?? "",
-			};
-		} catch (error) {
-			return {
-				ok: false,
-				stdout: "",
-				stderr:
-					error instanceof Error ? error.message : String(error ?? "unknown"),
-			};
-		}
-	}
-
-	private notifyFileChanges(): void {
-		try {
-			const result = spawnSync("git", ["status", "-sb"], {
-				cwd: process.cwd(),
-				encoding: "utf-8",
-			});
-			if ((result.status ?? 0) !== 0) {
-				return;
-			}
-			const lines = result.stdout
-				.split("\n")
-				.map((line) => line.trim())
-				.filter((line) => line.length > 0 && !line.startsWith("##"));
-			if (lines.length === 0) {
-				this.lastNotifiedChanges = [];
-				return;
-			}
-			const normalized = lines.slice().sort();
-			if (
-				normalized.length === this.lastNotifiedChanges.length &&
-				normalized.every(
-					(line, index) => line === this.lastNotifiedChanges[index],
-				)
-			) {
-				return;
-			}
-			this.lastNotifiedChanges = normalized;
-			const files = lines
-				.map((line) => line.replace(/^[A-Z?]{1,2}\s+/, ""))
-				.filter(Boolean);
-			const previewTargets = files.slice(0, 3).join("\n- ");
-			const message = `${files.length} file${files.length === 1 ? "" : "s"} modified.\n- ${previewTargets}\nUse /preview <file> to inspect diffs.`;
-			this.showToast(message, "info");
-		} catch {
-			// ignore git errors
-		}
-	}
-
 	private handleHelpCommand(): void {
 		const lines = this.slashCommands.map(
 			(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
@@ -1569,18 +1414,7 @@ ${lines.join("\n")}`;
 			(sum, value) => sum + value,
 			0,
 		);
-		let gitStatus: string | undefined;
-		try {
-			const result = spawnSync("git", ["status", "-sb"], {
-				cwd: process.cwd(),
-				encoding: "utf-8",
-			});
-			if ((result.status ?? 0) === 0) {
-				gitStatus = result.stdout.trim() || "clean";
-			}
-		} catch (_error) {
-			// ignore if git is unavailable
-		}
+		const gitStatus = this.gitView.getStatusSummary();
 		const store = loadTodoStore(TODO_STORE_PATH);
 		let pending = 0;
 		for (const goal of Object.values(store)) {
