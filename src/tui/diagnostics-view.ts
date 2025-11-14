@@ -11,20 +11,20 @@ import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 import { formatDiagnosticsReport } from "./diagnostics.js";
 import type { GitView } from "./git-view.js";
-import { loadTodoStore } from "./plan-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import {
 	TOOL_FAILURE_LOG_PATH,
 	type ToolStatusView,
 } from "./tool-status-view.js";
-
-interface HealthSnapshot {
-	toolFailures: number;
-	toolFailurePath?: string;
-	gitStatus?: string;
-	planGoals?: number;
-	planPendingTasks?: number;
-}
+import {
+	buildBugReport,
+	buildFeedbackTemplate,
+	buildStatusSnapshot,
+} from "./diagnostics-templates.js";
+import {
+	collectHealthSnapshot,
+	type HealthSnapshot,
+} from "./health-snapshot.js";
 
 interface DiagnosticsViewOptions {
 	agent: Agent;
@@ -67,21 +67,15 @@ export class DiagnosticsView {
 			.map((path) => `- ${path}`)
 			.join("\n");
 
-		const text = `${chalk.bold("Bug report info")}
-Session ID: ${sessionId}
-Session file: ${sessionFile}
-Model: ${model ? `${model.provider}/${model.id}` : "unknown"}
-Messages: ${this.options.agent.state.messages.length}
-Tools: ${
-			(this.options.agent.state.tools ?? [])
-				.map((tool) => tool.name)
-				.join(", ") || "none"
-		}
-
-${chalk.bold("Send these files:")}
-${filesToShare || chalk.dim("(session file will appear once persisted)")}
-
-Attach them in the bug report so we can replay the session.`;
+		const text = buildBugReport({
+			sessionId,
+			sessionFile,
+			modelLabel: model ? `${model.provider}/${model.id}` : "unknown",
+			messageCount: this.options.agent.state.messages.length,
+			toolNames:
+				this.options.agent.state.tools?.map((tool) => tool.name) ?? [],
+			filesToShare,
+		});
 		const copied = this.copyTextToClipboard(text);
 
 		const copyNote = copied
@@ -96,66 +90,41 @@ Attach them in the bug report so we can replay the session.`;
 	}
 
 	handleStatusCommand(): void {
-		const snapshot = this.collectHealthSnapshot();
+		const snapshot = this.buildHealthSnapshot();
 		const sessionId = this.options.sessionManager.getSessionId();
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		const model = this.options.agent.state.model
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
 		const thinking = this.options.agent.state.thinkingLevel ?? "off";
-		const telemetry = this.options.telemetryStatus;
-		const telemetryLine = telemetry.enabled
-			? `on · ${telemetry.reason}${telemetry.endpoint ? ` → ${telemetry.endpoint}` : ""}`
-			: `off · ${telemetry.reason}`;
-		const toolLine =
-			snapshot.toolFailures > 0
-				? `${snapshot.toolFailures} logged${snapshot.toolFailurePath ? ` · ${snapshot.toolFailurePath}` : ""}`
-				: "none logged";
-		const planLine =
-			(snapshot.planGoals ?? 0) > 0
-				? `${snapshot.planGoals} goal${snapshot.planGoals === 1 ? "" : "s"} · ${snapshot.planPendingTasks ?? 0} pending`
-				: "no saved plans";
-		const gitLine = snapshot.gitStatus ?? "unknown (git unavailable)";
-		const sessionLine = sessionId
-			? `${sessionId}\n${sessionFile}`
-			: "No persisted session yet.";
-
-		const text = `${chalk.bold("Status snapshot")} ${chalk.dim(`v${this.options.version}`)}
-${chalk.dim("Model")}: ${model}
-${chalk.dim("Thinking")}: ${thinking}
-${chalk.dim("Telemetry")}: ${telemetryLine}
-${chalk.dim("Git")}: ${gitLine}
-${chalk.dim("Plans")}: ${planLine}
-${chalk.dim("Tool failures")}: ${toolLine}
-${chalk.dim("Session")}: ${sessionLine}
-
-Use /diag for a full diagnostic report.`;
+		const text = buildStatusSnapshot({
+			version: this.options.version,
+			modelLabel: model,
+			thinkingLevel: thinking,
+			telemetry: this.options.telemetryStatus,
+			health: snapshot,
+			sessionId,
+			sessionFile,
+		});
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(text, 1, 0));
 		this.options.ui.requestRender();
 	}
 
 	handleFeedbackCommand(): void {
-		const snapshot = this.collectHealthSnapshot();
+		const snapshot = this.buildHealthSnapshot();
 		const sessionId = this.options.sessionManager.getSessionId();
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		const model = this.options.agent.state.model
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
-		const plain = `Composer feedback
-Version: ${this.options.version}
-Session: ${sessionId}
-Session file: ${sessionFile}
-Model: ${model}
-Git: ${snapshot.gitStatus ?? "unknown"}
-Tool failures: ${snapshot.toolFailures}
-Plans pending: ${snapshot.planPendingTasks ?? 0}
-
-What happened?
-
-What did you expect instead?
-
-Anything else we should know?`;
+		const plain = buildFeedbackTemplate({
+			version: this.options.version,
+			modelLabel: model,
+			sessionId,
+			sessionFile,
+			health: snapshot,
+		});
 		const copied = this.copyTextToClipboard(plain);
 		const body = `${chalk.bold("Feedback template")}
 ${plain}
@@ -171,7 +140,7 @@ ${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.
 			this.currentApiKeyInfo = this.resolveApiKey();
 		}
 
-		const health = this.collectHealthSnapshot();
+		const health = this.buildHealthSnapshot();
 		const report = formatDiagnosticsReport({
 			sessionId: this.options.sessionManager.getSessionId(),
 			sessionFile: this.options.sessionManager.getSessionFile(),
@@ -202,29 +171,12 @@ ${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.
 		return lookupApiKey(provider, this.options.explicitApiKey);
 	}
 
-	private collectHealthSnapshot(): HealthSnapshot {
-		const { counts } = this.options.toolStatusView.getToolFailureData();
-		const totalFailures = Array.from(counts.values()).reduce(
-			(sum: number, value: number) => sum + value,
-			0,
-		);
-		const gitStatus = this.options.gitView.getStatusSummary();
-		const store = loadTodoStore(this.options.todoStorePath);
-		let pending = 0;
-		for (const goal of Object.values(store)) {
-			pending += goal.items.filter(
-				(item) => (item.status ?? "pending") === "pending",
-			).length;
-		}
-		return {
-			toolFailures: totalFailures,
-			toolFailurePath: existsSync(TOOL_FAILURE_LOG_PATH)
-				? TOOL_FAILURE_LOG_PATH
-				: undefined,
-			gitStatus,
-			planGoals: Object.keys(store).length,
-			planPendingTasks: pending,
-		};
+	private buildHealthSnapshot(): HealthSnapshot {
+		return collectHealthSnapshot({
+			toolStatusView: this.options.toolStatusView,
+			gitView: this.options.gitView,
+			todoStorePath: this.options.todoStorePath,
+		});
 	}
 
 	private copyTextToClipboard(value: string): boolean {
