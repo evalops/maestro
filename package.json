@@ -41,6 +41,7 @@
 	"dependencies": {
 		"@sinclair/typebox": "^0.33.0",
 		"chalk": "^5.5.0",
+		"clipboardy": "^4.0.0",
 		"diff": "^8.0.2",
 		"dotenv": "^16.4.5",
 		"glob": "^11.0.3",

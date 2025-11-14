@@ -21,6 +21,7 @@ import {
 	type Component,
 } from "../tui-lib/index.js";
 import chalk from "chalk";
+import clipboard from "clipboardy";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -160,6 +161,11 @@ export class TuiRenderer {
 			description: "List or load recent sessions",
 		};
 
+		const bugCommand: SlashCommand = {
+			name: "bug",
+			description: "Copy session info for bug reports",
+		};
+
 		const diagnosticsCommand: SlashCommand = {
 			name: "diag",
 			description: "Show provider/model/API key diagnostics",
@@ -190,6 +196,7 @@ export class TuiRenderer {
 				importCommand,
 				sessionCommand,
 				sessionsCommand,
+				bugCommand,
 				diagnosticsCommand,
 				compactCommand,
 				compactToolsCommand,
@@ -255,10 +262,10 @@ export class TuiRenderer {
 				this.welcomeAnimation = null;
 			}
 
-			// Check for /thinking command
-			if (trimmed === "/thinking") {
-				// Show thinking level selector
-				this.showThinkingSelector();
+				// Check for /thinking command
+				if (trimmed === "/thinking") {
+					// Show thinking level selector
+					this.showThinkingSelector();
 				this.editor.setText("");
 				return;
 			}
@@ -286,6 +293,12 @@ export class TuiRenderer {
 
 				if (trimmed.startsWith("/import")) {
 					void this.handleImportCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed === "/bug") {
+					this.handleBugCommand();
 					this.editor.setText("");
 					return;
 				}
@@ -1158,6 +1171,51 @@ ${toolLines.join("\n\n")}\n\n${failureSection}`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
 		this.ui.requestRender();
+	}
+
+	private handleBugCommand(): void {
+		const sessionFile = this.sessionManager.getSessionFile();
+		const sessionId = this.sessionManager.getSessionId();
+		const model = this.agent.state.model;
+		const toolFailureTips = existsSync(TOOL_FAILURE_LOG_PATH)
+			? `- ${TOOL_FAILURE_LOG_PATH}`
+			: null;
+		const filesToShare = [sessionFile, toolFailureTips]
+			.filter((value): value is string => Boolean(value))
+			.map((path) => `- ${path}`)
+			.join("\n");
+
+		const text = `${chalk.bold("Bug report info")}
+Session ID: ${sessionId}
+Session file: ${sessionFile}
+Model: ${model ? `${model.provider}/${model.id}` : "unknown"}
+Messages: ${this.agent.state.messages.length}
+Tools: ${(this.agent.state.tools ?? [])
+			.map((tool) => tool.name)
+			.join(", ") || "none"}
+
+${chalk.bold("Send these files:")}
+${filesToShare || chalk.dim("(session file will appear once persisted)")}
+
+Attach them in the bug report so we can replay the session.`;
+		const copied = this.copyBugInfoToClipboard(text);
+
+		const copyNote = copied
+			? chalk.dim("Bug info copied to clipboard.")
+			: chalk.dim("(Could not copy bug info to clipboard.)");
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(`${text}\n\n${copyNote}`, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private copyBugInfoToClipboard(value: string): boolean {
+		try {
+			clipboard.writeSync(value);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	private getToolFailureData(limit = 5): {
