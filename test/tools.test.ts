@@ -264,15 +264,12 @@ describe("Composer Tools", () => {
 
 			expect(getTextOutput(result)).toContain("Successfully replaced");
 			expect(result.details).toBeDefined();
-			expect(result.details?.diff).toBe(`-1 Hello, world!\n+1 Hello, testing!`);
+			expect(result.details?.diff).toBe("-1 Hello, world!\n+1 Hello, testing!");
 		});
 
 		it("includes surrounding context in diff output", async () => {
 			const testFile = join(testDir, "context-edit.txt");
-			writeFileSync(
-				testFile,
-				"alpha\nbeta\ngamma\ndelta\nepsilon",
-			);
+			writeFileSync(testFile, "alpha\nbeta\ngamma\ndelta\nepsilon");
 
 			const result = await editTool.execute("test-call-ctx", {
 				path: testFile,
@@ -280,7 +277,9 @@ describe("Composer Tools", () => {
 				newText: "gamma-updated",
 			});
 
-			expect(result.details?.diff).toBe(` 1 alpha\n 2 beta\n-3 gamma\n+3 gamma-updated\n 4 delta\n 5 epsilon`);
+			expect(result.details?.diff).toBe(
+				" 1 alpha\n 2 beta\n-3 gamma\n+3 gamma-updated\n 4 delta\n 5 epsilon",
+			);
 		});
 
 		it("should fail if text not found", async () => {

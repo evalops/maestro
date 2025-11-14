@@ -1,5 +1,11 @@
-import { Container, Markdown, Spacer, Text, visibleWidth } from "../tui-lib/index.js";
 import chalk from "chalk";
+import {
+	Container,
+	Markdown,
+	Spacer,
+	Text,
+	visibleWidth,
+} from "../tui-lib/index.js";
 
 const USER_BORDER = "#6e7fff";
 const USER_LABEL = "#c7d2fe";

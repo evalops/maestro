@@ -1,3 +1,5 @@
+import { streamAnthropic } from "./providers/anthropic.js";
+import { streamOpenAI } from "./providers/openai.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
@@ -6,8 +8,6 @@ import type {
 	Message,
 	ToolResultMessage,
 } from "./types.js";
-import { streamAnthropic } from "./providers/anthropic.js";
-import { streamOpenAI } from "./providers/openai.js";
 
 export interface ProviderTransportOptions {
 	getApiKey?: (
@@ -109,148 +109,148 @@ export class ProviderTransport implements AgentTransport {
 
 			// Process events from provider
 			for await (const event of stream) {
-			if (event.type === "start") {
-				currentAssistantMessage = event.partial;
-				if (currentAssistantMessage) {
-					yield {
-						type: "message_start",
-						message: currentAssistantMessage,
-					};
-				}
-			} else if (
-				event.type === "text_delta" ||
-				event.type === "thinking_delta" ||
-				event.type === "toolcall_delta"
-			) {
-				if (currentAssistantMessage) {
-					yield {
-						type: "message_update",
-						message: currentAssistantMessage,
-						assistantMessageEvent: event,
-					};
-				}
-			} else if (event.type === "toolcall_end") {
-				toolCallsToExecute.push({
-					id: event.toolCall.id,
-					name: event.toolCall.name,
-					arguments: event.toolCall.arguments,
-				});
-			} else if (event.type === "done") {
-				if (currentAssistantMessage) {
-					yield {
-						type: "message_end",
-						message: currentAssistantMessage,
-					};
-				}
-
-				hasMoreToolCalls = toolCallsToExecute.length > 0;
-
-				if (hasMoreToolCalls) {
-					const toolResults: ToolResultMessage[] = [];
-
-					for (const toolCall of toolCallsToExecute) {
-						yield {
-							type: "tool_execution_start",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							args: toolCall.arguments,
-						};
-
-						const tool = tools.find((t) => t.name === toolCall.name);
-						if (!tool) {
-							const errorResult: ToolResultMessage = {
-								role: "toolResult",
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								content: [
-									{
-										type: "text",
-										text: `Error: Tool "${toolCall.name}" not found`,
-									},
-								],
-								isError: true,
-								timestamp: Date.now(),
-							};
-							toolResults.push(errorResult);
-
-							yield {
-								type: "tool_execution_end",
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								result: errorResult,
-								isError: true,
-							};
-							continue;
-						}
-
-						try {
-							const result = await tool.execute(
-								toolCall.id,
-								toolCall.arguments,
-								signal,
-							);
-
-							const toolResultMessage: ToolResultMessage = {
-								role: "toolResult",
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								content: result.content,
-								details: result.details,
-								isError: result.isError || false,
-								timestamp: Date.now(),
-							};
-							toolResults.push(toolResultMessage);
-
-							yield {
-								type: "tool_execution_end",
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								result: toolResultMessage,
-								isError: toolResultMessage.isError,
-							};
-						} catch (error: unknown) {
-							const errorMessage =
-								error instanceof Error ? error.message : String(error);
-							const errorResult: ToolResultMessage = {
-								role: "toolResult",
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								content: [
-									{
-										type: "text",
-										text: `Error: ${errorMessage}`,
-									},
-								],
-								isError: true,
-								timestamp: Date.now(),
-							};
-							toolResults.push(errorResult);
-
-							yield {
-								type: "tool_execution_end",
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								result: errorResult,
-								isError: true,
-							};
-						}
-					}
-
+				if (event.type === "start") {
+					currentAssistantMessage = event.partial;
 					if (currentAssistantMessage) {
-						allMessages.push(currentAssistantMessage);
+						yield {
+							type: "message_start",
+							message: currentAssistantMessage,
+						};
 					}
-					allMessages.push(...toolResults);
+				} else if (
+					event.type === "text_delta" ||
+					event.type === "thinking_delta" ||
+					event.type === "toolcall_delta"
+				) {
+					if (currentAssistantMessage) {
+						yield {
+							type: "message_update",
+							message: currentAssistantMessage,
+							assistantMessageEvent: event,
+						};
+					}
+				} else if (event.type === "toolcall_end") {
+					toolCallsToExecute.push({
+						id: event.toolCall.id,
+						name: event.toolCall.name,
+						arguments: event.toolCall.arguments,
+					});
+				} else if (event.type === "done") {
+					if (currentAssistantMessage) {
+						yield {
+							type: "message_end",
+							message: currentAssistantMessage,
+						};
+					}
+
+					hasMoreToolCalls = toolCallsToExecute.length > 0;
+
+					if (hasMoreToolCalls) {
+						const toolResults: ToolResultMessage[] = [];
+
+						for (const toolCall of toolCallsToExecute) {
+							yield {
+								type: "tool_execution_start",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								args: toolCall.arguments,
+							};
+
+							const tool = tools.find((t) => t.name === toolCall.name);
+							if (!tool) {
+								const errorResult: ToolResultMessage = {
+									role: "toolResult",
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									content: [
+										{
+											type: "text",
+											text: `Error: Tool "${toolCall.name}" not found`,
+										},
+									],
+									isError: true,
+									timestamp: Date.now(),
+								};
+								toolResults.push(errorResult);
+
+								yield {
+									type: "tool_execution_end",
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									result: errorResult,
+									isError: true,
+								};
+								continue;
+							}
+
+							try {
+								const result = await tool.execute(
+									toolCall.id,
+									toolCall.arguments,
+									signal,
+								);
+
+								const toolResultMessage: ToolResultMessage = {
+									role: "toolResult",
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									content: result.content,
+									details: result.details,
+									isError: result.isError || false,
+									timestamp: Date.now(),
+								};
+								toolResults.push(toolResultMessage);
+
+								yield {
+									type: "tool_execution_end",
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									result: toolResultMessage,
+									isError: toolResultMessage.isError,
+								};
+							} catch (error: unknown) {
+								const errorMessage =
+									error instanceof Error ? error.message : String(error);
+								const errorResult: ToolResultMessage = {
+									role: "toolResult",
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									content: [
+										{
+											type: "text",
+											text: `Error: ${errorMessage}`,
+										},
+									],
+									isError: true,
+									timestamp: Date.now(),
+								};
+								toolResults.push(errorResult);
+
+								yield {
+									type: "tool_execution_end",
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									result: errorResult,
+									isError: true,
+								};
+							}
+						}
+
+						if (currentAssistantMessage) {
+							allMessages.push(currentAssistantMessage);
+						}
+						allMessages.push(...toolResults);
+					}
+				} else if (event.type === "error") {
+					if (currentAssistantMessage) {
+						yield {
+							type: "message_end",
+							message: currentAssistantMessage,
+						};
+					}
+					hasMoreToolCalls = false;
 				}
-			} else if (event.type === "error") {
-				if (currentAssistantMessage) {
-					yield {
-						type: "message_end",
-						message: currentAssistantMessage,
-					};
-				}
-				hasMoreToolCalls = false;
 			}
-		}
 		}
 	}
 }

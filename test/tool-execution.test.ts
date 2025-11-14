@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ToolExecutionComponent } from "../src/tui/tool-execution.js";
 
 /**
@@ -18,9 +18,10 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 			});
 
 			// Simulate bash result with many lines
-			const longOutput = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join(
-				"\n",
-			);
+			const longOutput = Array.from(
+				{ length: 20 },
+				(_, i) => `line ${i + 1}`,
+			).join("\n");
 
 			component.updateResult({
 				content: [{ type: "text", text: longOutput }],
@@ -256,9 +257,10 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 				param2: "value2",
 			});
 
-			const longOutput = Array.from({ length: 100 }, (_, i) => `data ${i}`).join(
-				"\n",
-			);
+			const longOutput = Array.from(
+				{ length: 100 },
+				(_, i) => `data ${i}`,
+			).join("\n");
 
 			component.updateResult({
 				content: [{ type: "text", text: longOutput }],

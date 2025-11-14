@@ -1,6 +1,6 @@
+import chalk from "chalk";
 import type { AssistantMessage } from "../agent/types.js";
 import { Container, Markdown, Spacer, Text } from "../tui-lib/index.js";
-import chalk from "chalk";
 
 const ASSISTANT_BORDER = "#fcd5ce";
 const ASSISTANT_LABEL = "#ffafcc";
@@ -80,9 +80,7 @@ export class AssistantMessageComponent extends Container {
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
 		if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
-				this.contentContainer.addChild(
-					new Text(chalk.red("Aborted"), 1, 0),
-				);
+				this.contentContainer.addChild(new Text(chalk.red("Aborted"), 1, 0));
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(

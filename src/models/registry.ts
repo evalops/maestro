@@ -1,10 +1,9 @@
-import { readFileSync } from "node:fs";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { z } from "zod";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
-import { z } from "zod";
 
 const COST_DEFAULT = {
 	input: 0,
@@ -78,8 +77,7 @@ const configPath = (): string =>
 		? resolve(process.env.COMPOSER_MODELS_FILE)
 		: join(homedir(), ".composer", "models.json");
 
-const FACTORY_HOME =
-	process.env.FACTORY_HOME ?? join(homedir(), ".factory");
+const FACTORY_HOME = process.env.FACTORY_HOME ?? join(homedir(), ".factory");
 const FACTORY_CONFIG_PATH = join(FACTORY_HOME, "config.json");
 const FACTORY_SETTINGS_PATH = join(FACTORY_HOME, "settings.json");
 
@@ -253,11 +251,13 @@ const FACTORY_API_MAP: Record<string, Api> = {
 };
 
 function sanitizeId(value: string): string {
-	return value
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-+/, "")
-		.replace(/-+$/, "") || "provider";
+	return (
+		value
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-+/, "")
+			.replace(/-+$/, "") || "provider"
+	);
 }
 
 function capitalize(value: string): string {
@@ -284,9 +284,10 @@ function deriveProviderName(provider?: string, baseUrl?: string): string {
 	}
 }
 
-function buildFactoryData():
-	| { config: CustomModelConfig; modelProviderMap: Map<string, string> }
-	| null {
+function buildFactoryData(): {
+	config: CustomModelConfig;
+	modelProviderMap: Map<string, string>;
+} | null {
 	if (!existsSync(FACTORY_CONFIG_PATH)) {
 		return null;
 	}
@@ -354,9 +355,10 @@ function buildFactoryData():
 	}
 }
 
-function ensureFactoryData():
-	| { config: CustomModelConfig; modelProviderMap: Map<string, string> }
-	| null {
+function ensureFactoryData(): {
+	config: CustomModelConfig;
+	modelProviderMap: Map<string, string>;
+} | null {
 	if (factoryDataCache === undefined) {
 		factoryDataCache = buildFactoryData();
 	}
@@ -385,7 +387,7 @@ function stripJsonComments(input: string): string {
 			i++;
 			continue;
 		}
-		if (char === "\"" && previousChar !== "\\") {
+		if (char === '"' && previousChar !== "\\") {
 			insideString = !insideString;
 		}
 		result += char;
@@ -411,9 +413,10 @@ function readFactorySettingsModel(): string | null {
 	}
 }
 
-export function getFactoryDefaultModelSelection():
-	| { provider: string; modelId: string }
-	| null {
+export function getFactoryDefaultModelSelection(): {
+	provider: string;
+	modelId: string;
+} | null {
 	const selection = readFactorySettingsModel();
 	if (!selection) {
 		return null;

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { CustomModelConfig } from "./models/registry.js";
 import {
@@ -18,7 +18,9 @@ interface FactoryModel {
 	max_tokens: number;
 }
 
-const FACTORY_SETTINGS_TEMPLATE = (defaultModel: string): string => `// Factory CLI Settings
+const FACTORY_SETTINGS_TEMPLATE = (
+	defaultModel: string,
+): string => `// Factory CLI Settings
 // This file contains your Factory CLI configuration.
 {
   "model": "${defaultModel}",
@@ -78,8 +80,8 @@ const FACTORY_SETTINGS_TEMPLATE = (defaultModel: string): string => `// Factory 
 }
 `;
 
-function ensureDir(path: string): void {
-	mkdirSync(dirname(path), { recursive: true });
+function ensureParentDir(filePath: string): void {
+	mkdirSync(dirname(filePath), { recursive: true });
 }
 
 function countModels(config: CustomModelConfig): number {
@@ -89,6 +91,31 @@ function countModels(config: CustomModelConfig): number {
 	);
 }
 
+function writeJsonFile(path: string, value: unknown): void {
+	ensureParentDir(path);
+	writeFileSync(path, JSON.stringify(value, null, 2), "utf-8");
+}
+
+function loadFactoryConfigOrThrow(): CustomModelConfig {
+	const factoryConfig = readFactoryConfigSnapshot();
+	if (!factoryConfig || factoryConfig.providers.length === 0) {
+		throw new Error(
+			"Factory configuration not found or contains no custom models. Make sure ~/.factory/config.json exists.",
+		);
+	}
+	return factoryConfig;
+}
+
+function loadComposerConfigOrThrow(): CustomModelConfig {
+	const composerConfig = getComposerCustomConfig();
+	if (composerConfig.providers.length === 0) {
+		throw new Error(
+			"Composer configuration has no custom models. Run npm run factory:import or create ~/.composer/models.json first.",
+		);
+	}
+	return composerConfig;
+}
+
 export interface FactoryImportResult {
 	targetPath: string;
 	providerCount: number;
@@ -96,16 +123,9 @@ export interface FactoryImportResult {
 }
 
 export function importFactoryConfig(): FactoryImportResult {
-	const factoryConfig = readFactoryConfigSnapshot();
-	if (!factoryConfig || factoryConfig.providers.length === 0) {
-		throw new Error(
-			"Factory configuration not found or contains no custom models. Make sure ~/.factory/config.json exists.",
-		);
-	}
-
+	const factoryConfig = loadFactoryConfigOrThrow();
 	const targetPath = getCustomConfigPath();
-	ensureDir(targetPath);
-	writeFileSync(targetPath, JSON.stringify(factoryConfig, null, 2), "utf-8");
+	writeJsonFile(targetPath, factoryConfig);
 
 	return {
 		targetPath,
@@ -143,13 +163,7 @@ export interface FactoryExportResult {
 }
 
 export function exportFactoryConfig(): FactoryExportResult {
-	const composerConfig = getComposerCustomConfig();
-	if (composerConfig.providers.length === 0) {
-		throw new Error(
-			"Composer configuration has no custom models. Run npm run factory:import or create ~/.composer/models.json first.",
-		);
-	}
-
+	const composerConfig = loadComposerConfigOrThrow();
 	const factoryModels = toFactoryModels(composerConfig);
 	if (factoryModels.length === 0) {
 		throw new Error(
@@ -158,19 +172,18 @@ export function exportFactoryConfig(): FactoryExportResult {
 	}
 
 	const configPath = getFactoryConfigPath();
-	ensureDir(configPath);
-	writeFileSync(
-		configPath,
-		JSON.stringify({ custom_models: factoryModels }, null, 2),
-		"utf-8",
-	);
+	writeJsonFile(configPath, { custom_models: factoryModels });
 
 	const defaultModel = factoryModels[0]?.model ?? "claude-sonnet-4-5";
 	const settingsPath = getFactorySettingsPath();
 	const hadSettings = existsSync(settingsPath);
 	if (!hadSettings) {
-		ensureDir(settingsPath);
-		writeFileSync(settingsPath, FACTORY_SETTINGS_TEMPLATE(defaultModel), "utf-8");
+		ensureParentDir(settingsPath);
+		writeFileSync(
+			settingsPath,
+			FACTORY_SETTINGS_TEMPLATE(defaultModel),
+			"utf-8",
+		);
 	}
 
 	return {

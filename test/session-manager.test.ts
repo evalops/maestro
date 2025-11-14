@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { SessionManager } from "../src/session-manager.js";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentState } from "../src/agent/types.js";
+import { SessionManager } from "../src/session-manager.js";
 
 // Helper to create a minimal agent state
 function createMockState(): AgentState {
@@ -158,9 +158,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 			// Sessions directory should not have any .jsonl files
 			if (existsSync(sessionsDir)) {
 				const files = readdirSync(sessionsDir, { recursive: true });
-				const jsonlFiles = files.filter((f) =>
-					f.toString().endsWith(".jsonl"),
-				);
+				const jsonlFiles = files.filter((f) => f.toString().endsWith(".jsonl"));
 				expect(jsonlFiles.length).toBe(0);
 			}
 		});
@@ -183,7 +181,10 @@ describe("SessionManager - Deferred Session Creation", () => {
 			const sessionManager2 = new SessionManager(true); // continue = true
 
 			// Should be marked as initialized (check by verifying shouldInitializeSession returns false)
-			const mockMessages = [createUserMessage("test"), createAssistantMessage("response")];
+			const mockMessages = [
+				createUserMessage("test"),
+				createAssistantMessage("response"),
+			];
 			expect(sessionManager2.shouldInitializeSession(mockMessages)).toBe(false);
 		});
 
@@ -224,7 +225,10 @@ describe("SessionManager - Deferred Session Creation", () => {
 			const sessionManager2 = new SessionManager(false, existingFile);
 
 			// Should be marked as initialized (check by verifying shouldInitializeSession returns false)
-			const mockMessages = [createUserMessage("test"), createAssistantMessage("response")];
+			const mockMessages = [
+				createUserMessage("test"),
+				createAssistantMessage("response"),
+			];
 			expect(sessionManager2.shouldInitializeSession(mockMessages)).toBe(false);
 		});
 
@@ -234,7 +238,10 @@ describe("SessionManager - Deferred Session Creation", () => {
 			const sessionManager = new SessionManager(false, nonExistentFile);
 
 			// Should not be marked as initialized (check by verifying shouldInitializeSession can return true)
-			const mockMessages = [createUserMessage("test"), createAssistantMessage("response")];
+			const mockMessages = [
+				createUserMessage("test"),
+				createAssistantMessage("response"),
+			];
 			expect(sessionManager.shouldInitializeSession(mockMessages)).toBe(true);
 
 			// File should not exist until startSession

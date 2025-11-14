@@ -1,6 +1,6 @@
+import chalk from "chalk";
 import type { AgentState, AssistantMessage } from "../agent/types.js";
 import { visibleWidth } from "../tui-lib/index.js";
-import chalk from "chalk";
 
 /**
  * Footer component that shows pwd, token stats, and context usage
@@ -121,7 +121,7 @@ export class FooterComponent {
 		const composerBrand = chalk.hex("#7c3aed")("♪ composer");
 		let modelName = this.state.model.id;
 		const rightSide = `${modelName} ${composerBrand}`;
-		
+
 		const statsLeftWidth = visibleWidth(statsLeft);
 		const rightSideWidth = visibleWidth(rightSide);
 
@@ -137,7 +137,8 @@ export class FooterComponent {
 		} else {
 			// Need to truncate model name
 			const brandWidth = visibleWidth(composerBrand);
-			const availableForModel = width - statsLeftWidth - minPadding - brandWidth - 1;
+			const availableForModel =
+				width - statsLeftWidth - minPadding - brandWidth - 1;
 			if (availableForModel > 3) {
 				// Truncate model name to fit, keep composer branding
 				modelName = modelName.substring(0, availableForModel);
@@ -162,10 +163,7 @@ export class FooterComponent {
 		let pathLine = chalk.gray(pwd);
 		if (this.activeStage) {
 			const baseBadge = `● ${this.activeStage}`;
-			const available = Math.max(
-				0,
-				width - visibleWidth(pathLine) - 2,
-			);
+			const available = Math.max(0, width - visibleWidth(pathLine) - 2);
 			if (available > 0) {
 				const trimmedBadge = this.truncateToWidth(baseBadge, available);
 				if (trimmedBadge) {

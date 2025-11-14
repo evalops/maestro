@@ -1,7 +1,7 @@
 import * as os from "node:os";
-import { Container, Spacer, Text } from "../tui-lib/index.js";
 import chalk from "chalk";
 import * as Diff from "diff";
+import { Container, Spacer, Text } from "../tui-lib/index.js";
 
 /**
  * Convert absolute path to tilde notation if it's in home directory

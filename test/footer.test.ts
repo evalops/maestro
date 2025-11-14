@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AgentState, AssistantMessage } from "../src/agent/types.js";
 import { FooterComponent } from "../src/tui/footer.js";
 
@@ -34,10 +34,7 @@ function createAssistantMessage(
 }
 
 // Helper to create a mock agent state
-function createMockState(
-	messages: any[],
-	contextWindow = 200000,
-): AgentState {
+function createMockState(messages: any[], contextWindow = 200000): AgentState {
 	return {
 		messages,
 		systemPrompt: "test",

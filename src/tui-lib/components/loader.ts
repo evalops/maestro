@@ -13,7 +13,22 @@ export class Loader extends Text {
 		{ glyph: "◶", color: "#a5b4fc" },
 		{ glyph: "◵", color: "#c4b5fd" },
 	];
-	private progressWave = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"];
+	private progressWave = [
+		"▁",
+		"▂",
+		"▃",
+		"▄",
+		"▅",
+		"▆",
+		"▇",
+		"█",
+		"▇",
+		"▆",
+		"▅",
+		"▄",
+		"▃",
+		"▂",
+	];
 	private currentFrame = 0;
 	private progressOffset = 0;
 	private intervalId: NodeJS.Timeout | null = null;
@@ -24,7 +39,7 @@ export class Loader extends Text {
 	private progressPercent: number | null = null;
 	private title: string | null = null;
 
-	constructor(ui: TUI, message: string = "Loading...") {
+	constructor(ui: TUI, message = "Loading...") {
 		super("", 1, 0);
 		this.message = message;
 		this.ui = ui;
@@ -39,7 +54,8 @@ export class Loader extends Text {
 		this.updateDisplay();
 		this.intervalId = setInterval(() => {
 			this.currentFrame = (this.currentFrame + 1) % this.spinnerFrames.length;
-			this.progressOffset = (this.progressOffset + 1) % this.progressWave.length;
+			this.progressOffset =
+				(this.progressOffset + 1) % this.progressWave.length;
 			this.updateDisplay();
 		}, 80);
 	}
@@ -116,7 +132,10 @@ export class Loader extends Text {
 				const tint = i < filledUnits ? color : "#334155";
 				blocks.push(chalk.hex(tint)(char));
 			}
-			const percentText = `${Math.round(this.progressPercent * 100)}%`.padStart(4, " ");
+			const percentText = `${Math.round(this.progressPercent * 100)}%`.padStart(
+				4,
+				" ",
+			);
 			return `${chalk.gray("[")}${blocks.join("")}${chalk.gray("]")} ${chalk.gray(percentText)}`;
 		}
 

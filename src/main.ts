@@ -1,34 +1,34 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import chalk from "chalk";
 import { Agent, ProviderTransport, type ThinkingLevel } from "./agent/index.js";
-import {
-	getCustomProviderMetadata,
-	getRegisteredModels,
-	getSupportedProviders,
-	reloadModelConfig,
-	resolveModel,
-	getCustomConfigPath,
-	getFactoryDefaultModelSelection,
-} from "./models/registry.js";
-import type { RegisteredModel } from "./models/registry.js";
-import { loadEnv } from "./load-env.js";
-import {
-	lookupApiKey,
-	getEnvVarsForProvider,
-	isKnownProvider,
-} from "./providers/api-keys.js";
-import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
-import { codingTools } from "./tools/index.js";
-import { TuiRenderer } from "./tui/tui-renderer.js";
-import { parseArgs, type Args, type Mode } from "./cli/args.js";
+import { type Args, type Mode, parseArgs } from "./cli/args.js";
 import { printHelp } from "./cli/help.js";
+import { selectSession } from "./cli/session.js";
 import {
 	buildSystemPrompt,
 	loadProjectContextFiles,
 } from "./cli/system-prompt.js";
-import { selectSession } from "./cli/session.js";
-import chalk from "chalk";
+import { loadEnv } from "./load-env.js";
+import {
+	getCustomConfigPath,
+	getCustomProviderMetadata,
+	getFactoryDefaultModelSelection,
+	getRegisteredModels,
+	getSupportedProviders,
+	reloadModelConfig,
+	resolveModel,
+} from "./models/registry.js";
+import type { RegisteredModel } from "./models/registry.js";
+import {
+	getEnvVarsForProvider,
+	isKnownProvider,
+	lookupApiKey,
+} from "./providers/api-keys.js";
+import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
+import { codingTools } from "./tools/index.js";
+import { TuiRenderer } from "./tui/tui-renderer.js";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);

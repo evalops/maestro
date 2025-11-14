@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { loadProjectContextFiles } from "../src/cli/system-prompt.js";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { loadProjectContextFiles } from "../src/cli/system-prompt.js";
 
 describe("Hierarchical Context File Loading", () => {
 	let testDir: string;
@@ -70,9 +70,7 @@ describe("Hierarchical Context File Loading", () => {
 			const contextFiles = loadProjectContextFiles();
 
 			expect(contextFiles.length).toBeGreaterThanOrEqual(1);
-			const globalContext = contextFiles.find((f) =>
-				f.path.includes("global"),
-			);
+			const globalContext = contextFiles.find((f) => f.path.includes("global"));
 			expect(globalContext?.path).toContain("AGENT.md");
 			expect(globalContext?.path).not.toContain("CLAUDE.md");
 			expect(globalContext?.content).toContain("AGENT.md Content");
@@ -94,10 +92,7 @@ describe("Hierarchical Context File Loading", () => {
 				join(parentDir, "AGENT.md"),
 				"# Parent Context\nParent level",
 			);
-			writeFileSync(
-				join(childDir, "AGENT.md"),
-				"# Child Context\nChild level",
-			);
+			writeFileSync(join(childDir, "AGENT.md"), "# Child Context\nChild level");
 
 			// Change to child directory
 			process.chdir(childDir);
@@ -119,11 +114,14 @@ describe("Hierarchical Context File Loading", () => {
 			expect(rootContext).toBeDefined();
 			expect(parentContext).toBeDefined();
 			expect(childContext).toBeDefined();
+			if (!rootContext || !parentContext || !childContext) {
+				throw new Error("Missing context files");
+			}
 
 			// Verify order: should be loaded root → parent → child
-			const rootIndex = contextFiles.indexOf(rootContext!);
-			const parentIndex = contextFiles.indexOf(parentContext!);
-			const childIndex = contextFiles.indexOf(childContext!);
+			const rootIndex = contextFiles.indexOf(rootContext);
+			const parentIndex = contextFiles.indexOf(parentContext);
+			const childIndex = contextFiles.indexOf(childContext);
 
 			expect(rootIndex).toBeLessThan(parentIndex);
 			expect(parentIndex).toBeLessThan(childIndex);
@@ -190,10 +188,7 @@ describe("Hierarchical Context File Loading", () => {
 			// Setup global context
 			const globalDir = join(testDir, "global");
 			mkdirSync(globalDir, { recursive: true });
-			writeFileSync(
-				join(globalDir, "AGENT.md"),
-				"# Global\nGlobal settings",
-			);
+			writeFileSync(join(globalDir, "AGENT.md"), "# Global\nGlobal settings");
 
 			// Setup project context
 			const projectDir = join(testDir, "project");
@@ -220,9 +215,12 @@ describe("Hierarchical Context File Loading", () => {
 
 			expect(globalContext).toBeDefined();
 			expect(projectContext).toBeDefined();
+			if (!globalContext || !projectContext) {
+				throw new Error("Missing global or project context");
+			}
 
-			const globalIndex = contextFiles.indexOf(globalContext!);
-			const projectIndex = contextFiles.indexOf(projectContext!);
+			const globalIndex = contextFiles.indexOf(globalContext);
+			const projectIndex = contextFiles.indexOf(projectContext);
 
 			expect(globalIndex).toBeLessThan(projectIndex);
 		});
@@ -269,7 +267,7 @@ describe("Hierarchical Context File Loading", () => {
 			mkdirSync(emptyDir, { recursive: true });
 
 			// Don't set COMPOSER_AGENT_DIR so no global either
-			delete process.env.COMPOSER_AGENT_DIR;
+			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
 			process.chdir(emptyDir);
 
 			const contextFiles = loadProjectContextFiles();

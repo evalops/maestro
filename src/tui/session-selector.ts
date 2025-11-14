@@ -1,3 +1,5 @@
+import chalk from "chalk";
+import type { SessionManager } from "../session-manager.js";
 import {
 	type Component,
 	Container,
@@ -5,8 +7,6 @@ import {
 	Spacer,
 	Text,
 } from "../tui-lib/index.js";
-import chalk from "chalk";
-import type { SessionManager } from "../session-manager.js";
 
 /**
  * Dynamic border component that adjusts to viewport width

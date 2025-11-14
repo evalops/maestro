@@ -292,9 +292,7 @@ function formatSummarySection(
 	const order: StatusKey[] = ["pending", "in_progress", "completed"];
 	const lines = order.map((status) => {
 		const count = counts[status];
-		const percent = counts.total
-			? Math.round((count / counts.total) * 100)
-			: 0;
+		const percent = counts.total ? Math.round((count / counts.total) * 100) : 0;
 		const bar = buildStatusBar(count, counts.total);
 		return `${statusSymbols[status]} ${statusLabels[status]} ${bar} ${count}/${counts.total} (${percent}%)`;
 	});
@@ -385,9 +383,7 @@ export const todoTool = createZodTool({
 			{ pending: 0, in_progress: 0, completed: 0, total: 0 },
 		);
 
-		const summarySection = includeSummary
-			? formatSummarySection(counts)
-			: null;
+		const summarySection = includeSummary ? formatSummarySection(counts) : null;
 
 		const sections = [
 			formatGoalSection(goal),

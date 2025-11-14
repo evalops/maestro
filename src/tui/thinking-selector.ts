@@ -1,3 +1,4 @@
+import chalk from "chalk";
 import type { ThinkingLevel } from "../agent/types.js";
 import {
 	type Component,
@@ -5,7 +6,6 @@ import {
 	type SelectItem,
 	SelectList,
 } from "../tui-lib/index.js";
-import chalk from "chalk";
 
 /**
  * Dynamic border component that adjusts to viewport width

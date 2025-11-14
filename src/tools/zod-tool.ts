@@ -1,10 +1,10 @@
 import { performance } from "node:perf_hooks";
-import type { AgentTool, AgentToolResult } from "../agent/types.js";
 import { Type } from "@sinclair/typebox";
 import type { z } from "zod";
 import { ZodError } from "zod";
 import type { JsonSchema7Type } from "zod-to-json-schema";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import type { AgentTool, AgentToolResult } from "../agent/types.js";
 import { logToolFailure, recordToolExecution } from "../telemetry.js";
 
 type ExecuteResult<Details> =
@@ -66,7 +66,8 @@ export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 	};
 
 	// Remove $schema and definitions from the final schema
-	const { $schema, definitions, $ref, ...cleanSchema } = schemaWithDescription as any;
+	const { $schema, definitions, $ref, ...cleanSchema } =
+		schemaWithDescription as any;
 
 	const parameters = Type.Unsafe<z.infer<Schema>>(cleanSchema);
 
@@ -92,7 +93,8 @@ export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 			const maxAttempts = Math.max(1, (options.maxRetries ?? 1) + 1);
 			const retryDelayMs = options.retryDelayMs ?? 500;
 			const shouldRetry =
-				options.shouldRetry ?? ((error: unknown) => isTransientToolError(error));
+				options.shouldRetry ??
+				((error: unknown) => isTransientToolError(error));
 
 			let attempt = 0;
 			let lastError: unknown;
@@ -106,23 +108,17 @@ export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 						parsedParams,
 						signal,
 					);
-					recordToolExecution(
-						options.name,
-						true,
-						performance.now() - start,
-						{
-							toolCallId,
-							attempt,
-							maxAttempts,
-						},
-					);
+					recordToolExecution(options.name, true, performance.now() - start, {
+						toolCallId,
+						attempt,
+						maxAttempts,
+					});
 					return result;
 				} catch (error: unknown) {
 					lastError = error;
 					const errorMessage =
 						error instanceof Error ? error.message : String(error ?? "unknown");
-					const isAbort =
-						error instanceof Error && error.name === "AbortError";
+					const isAbort = error instanceof Error && error.name === "AbortError";
 					const isFinalAttempt = attempt === maxAttempts;
 
 					if (isAbort || !shouldRetry(error) || isFinalAttempt) {
@@ -153,7 +149,6 @@ export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 					});
 
 					await delay(retryDelayMs * attempt);
-					continue;
 				}
 			}
 

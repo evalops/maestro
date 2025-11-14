@@ -73,7 +73,7 @@ export async function* streamAnthropic(
 	const messages: AnthropicMessage[] = [];
 	for (let i = 0; i < context.messages.length; i++) {
 		const msg = context.messages[i];
-		
+
 		if (msg.role === "user") {
 			const content =
 				typeof msg.content === "string"
@@ -390,15 +390,16 @@ export async function* streamAnthropic(
 							block?.type === "toolCall"
 						) {
 							const partialJson = delta.partial_json || "";
-							(block as any).partialJson = ((block as any).partialJson || "") + partialJson;
-							
+							(block as any).partialJson =
+								((block as any).partialJson || "") + partialJson;
+
 							// Try to parse accumulated JSON
 							try {
 								block.arguments = JSON.parse((block as any).partialJson);
 							} catch {
 								// Not complete JSON yet, keep accumulating
 							}
-							
+
 							yield {
 								type: "toolcall_delta",
 								contentIndex: idx,

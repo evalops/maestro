@@ -1,5 +1,5 @@
-import { ProcessTerminal, TUI } from "../tui-lib/index.js";
 import type { SessionManager } from "../session-manager.js";
+import { ProcessTerminal, TUI } from "../tui-lib/index.js";
 import { SessionSelectorComponent } from "../tui/session-selector.js";
 
 export async function selectSession(

@@ -11,9 +11,9 @@ export class Text implements Component {
 	private cachedLines?: string[];
 
 	constructor(
-		private text: string = "",
-		private paddingX: number = 1,
-		private paddingY: number = 1,
+		private text = "",
+		private paddingX = 1,
+		private paddingY = 1,
 		private customBgRgb?: { r: number; g: number; b: number },
 	) {}
 
@@ -110,10 +110,7 @@ export class Text implements Component {
 
 		for (const line of lines) {
 			const visibleLength = visibleWidth(line);
-			const rightPadLength = Math.max(
-				0,
-				width - this.paddingX - visibleLength,
-			);
+			const rightPadLength = Math.max(0, width - this.paddingX - visibleLength);
 			const rightPad = " ".repeat(rightPadLength);
 			let paddedLine = leftPad + line + rightPad;
 

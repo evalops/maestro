@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
-import type { SessionModelMetadata } from "../session-manager.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
+import type { SessionModelMetadata } from "../session-manager.js";
 import type { TelemetryStatus } from "../telemetry.js";
 
 export interface DiagnosticsInput {
@@ -125,7 +125,9 @@ function formatPendingToolsSection(
 	return `${chalk.bold("Pending Tools")}\n${items}`;
 }
 
-function formatHealthSection(health?: DiagnosticsInput["health"]): string | null {
+function formatHealthSection(
+	health?: DiagnosticsInput["health"],
+): string | null {
 	if (!health) {
 		return null;
 	}

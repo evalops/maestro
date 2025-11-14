@@ -1,16 +1,35 @@
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import chalk from "chalk";
+import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import type {
 	AgentEvent,
 	AgentState,
-	AssistantMessage,
 	AppMessage,
+	AssistantMessage,
 	Message,
 	ThinkingLevel,
 	ToolResultMessage,
 } from "../agent/types.js";
-import type { SlashCommand, AutocompleteItem } from "../tui-lib/index.js";
+import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
+import { importFactoryConfig } from "../factory-sync.js";
+import type { RegisteredModel } from "../models/registry.js";
+import { getRegisteredModels, reloadModelConfig } from "../models/registry.js";
+import type { ApiKeyLookupResult } from "../providers/api-keys.js";
+import { getEnvVarsForProvider, lookupApiKey } from "../providers/api-keys.js";
+import {
+	type SessionModelMetadata,
+	toSessionModelMetadata,
+} from "../session-manager.js";
+import type { SessionManager } from "../session-manager.js";
+import { getTelemetryStatus, recordLoaderStage } from "../telemetry.js";
+import type { AutocompleteItem, SlashCommand } from "../tui-lib/index.js";
 import {
 	CombinedAutocompleteProvider,
+	type Component,
 	Container,
 	Loader,
 	ProcessTerminal,
@@ -18,38 +37,19 @@ import {
 	TUI,
 	Text,
 	visibleWidth,
-	type Component,
 } from "../tui-lib/index.js";
-import chalk from "chalk";
-import clipboard from "clipboardy";
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
-import type { RegisteredModel } from "../models/registry.js";
-import { getRegisteredModels, reloadModelConfig } from "../models/registry.js";
-import {
-	toSessionModelMetadata,
-	type SessionModelMetadata,
-} from "../session-manager.js";
-import type { SessionManager } from "../session-manager.js";
-import type { ApiKeyLookupResult } from "../providers/api-keys.js";
-import { getEnvVarsForProvider, lookupApiKey } from "../providers/api-keys.js";
-import { getTelemetryStatus, recordLoaderStage } from "../telemetry.js";
-import { formatDiagnosticsReport } from "./diagnostics.js";
+import { getWorkspaceFiles } from "../workspace-files.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
+import { CommandPaletteComponent } from "./command-palette.js";
 import { CustomEditor } from "./custom-editor.js";
+import { formatDiagnosticsReport } from "./diagnostics.js";
+import { FileSearchComponent } from "./file-search.js";
 import { FooterComponent } from "./footer.js";
 import { ModelSelectorComponent } from "./model-selector.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
-import { CommandPaletteComponent } from "./command-palette.js";
-import { FileSearchComponent } from "./file-search.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
-import { importFactoryConfig } from "../factory-sync.js";
-import { getWorkspaceFiles } from "../workspace-files.js";
 
 type LoaderStage = {
 	key: string;
@@ -120,7 +120,8 @@ export class TuiRenderer {
 	private completedStageKeys = new Set<string>();
 	private currentStageKey: string | null = null;
 	private stageStartTime: number | null = null;
-	private readonly idleFooterHint = "Try /help for commands or /tools for status";
+	private readonly idleFooterHint =
+		"Try /help for commands or /tools for status";
 	private planHint: string | null = null;
 	private compactToolOutputs = false;
 	private toolComponents = new Set<ToolExecutionComponent>();
@@ -323,11 +324,11 @@ export class TuiRenderer {
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(headerPanel);
 		this.ui.addChild(new Spacer(1));
-		
+
 		// Show welcome animation initially
 		this.welcomeAnimation = new WelcomeAnimation(() => this.ui.requestRender());
 		this.chatContainer.addChild(this.welcomeAnimation);
-		
+
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(new Spacer(1));
@@ -372,10 +373,10 @@ export class TuiRenderer {
 				this.welcomeAnimation = null;
 			}
 
-				// Check for /thinking command
-				if (trimmed === "/thinking") {
-					// Show thinking level selector
-					this.showThinkingSelector();
+			// Check for /thinking command
+			if (trimmed === "/thinking") {
+				// Show thinking level selector
+				this.showThinkingSelector();
 				this.editor.setText("");
 				return;
 			}
@@ -388,90 +389,90 @@ export class TuiRenderer {
 				return;
 			}
 
-				// Check for /export command
-				if (trimmed.startsWith("/export")) {
-					this.handleExportCommand(trimmed);
-					this.editor.setText("");
-					return;
-				}
+			// Check for /export command
+			if (trimmed.startsWith("/export")) {
+				this.handleExportCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed === "/tools" || trimmed.startsWith("/tools ")) {
-					this.handleToolsCommand(trimmed);
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed === "/tools" || trimmed.startsWith("/tools ")) {
+				this.handleToolsCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed.startsWith("/import")) {
-					void this.handleImportCommand(trimmed);
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed.startsWith("/import")) {
+				void this.handleImportCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed === "/bug") {
-					this.handleBugCommand();
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed === "/bug") {
+				this.handleBugCommand();
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed === "/status") {
-					this.handleStatusCommand();
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed === "/status") {
+				this.handleStatusCommand();
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed === "/review") {
-					this.handleReviewCommand();
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed === "/review") {
+				this.handleReviewCommand();
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed === "/feedback") {
-					this.handleFeedbackCommand();
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed === "/feedback") {
+				this.handleFeedbackCommand();
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed.startsWith("/undo")) {
-					this.handleUndoCommand(trimmed);
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed.startsWith("/undo")) {
+				this.handleUndoCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed.startsWith("/mention")) {
-					this.handleMentionCommand(trimmed);
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed.startsWith("/mention")) {
+				this.handleMentionCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed === "/help") {
-					this.handleHelpCommand();
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed === "/help") {
+				this.handleHelpCommand();
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed === "/plan" || trimmed.startsWith("/plan ")) {
-					this.handlePlanCommand(trimmed);
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed === "/plan" || trimmed.startsWith("/plan ")) {
+				this.handlePlanCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed.startsWith("/preview") || trimmed.startsWith("/diff")) {
-					void this.handlePreviewCommand(trimmed);
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed.startsWith("/preview") || trimmed.startsWith("/diff")) {
+				void this.handlePreviewCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed.startsWith("/run")) {
-					void this.handleRunCommand(trimmed);
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed.startsWith("/run")) {
+				void this.handleRunCommand(trimmed);
+				this.editor.setText("");
+				return;
+			}
 
-				if (trimmed === "/why") {
-					this.handleWhyCommand();
-					this.editor.setText("");
-					return;
-				}
+			if (trimmed === "/why") {
+				this.handleWhyCommand();
+				this.editor.setText("");
+				return;
+			}
 
 			// Check for /session command
 			if (trimmed === "/session") {
@@ -487,7 +488,11 @@ export class TuiRenderer {
 			}
 
 			// Check for /diag command
-			if (trimmed === "/diag" || trimmed.startsWith("/diag ") || trimmed === "/diagnostics") {
+			if (
+				trimmed === "/diag" ||
+				trimmed.startsWith("/diag ") ||
+				trimmed === "/diagnostics"
+			) {
 				this.handleDiagnosticsCommand(trimmed);
 				this.editor.setText("");
 				return;
@@ -532,9 +537,9 @@ export class TuiRenderer {
 		);
 
 		switch (event.type) {
-		case "agent_start":
-			this.currentRunToolNames = [];
-			// Show loading animation
+			case "agent_start":
+				this.currentRunToolNames = [];
+				// Show loading animation
 				this.editor.disableSubmit = true;
 				// Stop old loader before clearing
 				if (this.loadingAnimation) {
@@ -542,10 +547,7 @@ export class TuiRenderer {
 				}
 				this.statusContainer.clear();
 				this.resetLoaderProgressTracking();
-				this.loadingAnimation = new Loader(
-					this.ui,
-					"Planning",
-				);
+				this.loadingAnimation = new Loader(this.ui, "Planning");
 				this.loadingAnimation.setHint("(esc to interrupt)");
 				this.loadingAnimation.setTitle("Active tasks");
 				this.statusContainer.addChild(this.loadingAnimation);
@@ -554,10 +556,12 @@ export class TuiRenderer {
 				this.ui.requestRender();
 				break;
 
-		case "message_start":
-			if (event.message.role === "user") {
-				this.lastUserMessageText = this.extractTextFromAppMessage(event.message);
-				// Show user message immediately and clear editor
+			case "message_start":
+				if (event.message.role === "user") {
+					this.lastUserMessageText = this.extractTextFromAppMessage(
+						event.message,
+					);
+					// Show user message immediately and clear editor
 					this.addMessageToChat(event.message);
 					this.editor.setText("");
 					this.ui.requestRender();
@@ -573,8 +577,7 @@ export class TuiRenderer {
 						const noToolStages = this.loaderToolStageMeta.size === 0;
 						const allToolsComplete =
 							this.loaderToolStageMeta.size > 0 &&
-							this.completedToolStages.size ===
-								this.loaderToolStageMeta.size;
+							this.completedToolStages.size === this.loaderToolStageMeta.size;
 						if (noToolStages || allToolsComplete) {
 							this.updateLoaderStage("responding");
 						}
@@ -589,24 +592,24 @@ export class TuiRenderer {
 					this.streamingComponent.updateContent(assistantMsg);
 
 					// Create tool execution components as soon as we see tool calls
-				for (const content of assistantMsg.content) {
-					if (content.type === "toolCall") {
-						// Only create if we haven't created it yet
-						if (!this.pendingTools.has(content.id)) {
-							this.chatContainer.addChild(new Text("", 0, 0));
-							const component = new ToolExecutionComponent(
-								content.name,
-								content.arguments,
-							);
-							this.chatContainer.addChild(component);
-							this.pendingTools.set(content.id, component);
-							this.registerToolComponent(component);
-						} else {
-							// Update existing component with latest arguments as they stream
-							const component = this.pendingTools.get(content.id);
-							if (component) {
-								component.updateArgs(content.arguments);
-							}
+					for (const content of assistantMsg.content) {
+						if (content.type === "toolCall") {
+							// Only create if we haven't created it yet
+							if (!this.pendingTools.has(content.id)) {
+								this.chatContainer.addChild(new Text("", 0, 0));
+								const component = new ToolExecutionComponent(
+									content.name,
+									content.arguments,
+								);
+								this.chatContainer.addChild(component);
+								this.pendingTools.set(content.id, component);
+								this.registerToolComponent(component);
+							} else {
+								// Update existing component with latest arguments as they stream
+								const component = this.pendingTools.get(content.id);
+								if (component) {
+									component.updateArgs(content.arguments);
+								}
 							}
 						}
 					}
@@ -615,16 +618,16 @@ export class TuiRenderer {
 				}
 				break;
 
-		case "message_end":
-			// Skip user messages (already shown in message_start)
-			if (event.message.role === "user") {
-				break;
-			}
-			if (this.streamingComponent && event.message.role === "assistant") {
-				const assistantMsg = event.message as AssistantMessage;
-				this.lastAssistantMessageText = this.extractTextFromAppMessage(
-					event.message,
-				);
+			case "message_end":
+				// Skip user messages (already shown in message_start)
+				if (event.message.role === "user") {
+					break;
+				}
+				if (this.streamingComponent && event.message.role === "assistant") {
+					const assistantMsg = event.message as AssistantMessage;
+					this.lastAssistantMessageText = this.extractTextFromAppMessage(
+						event.message,
+					);
 
 					// Update streaming component with final message (includes stopReason)
 					this.streamingComponent.updateContent(assistantMsg);
@@ -657,22 +660,22 @@ export class TuiRenderer {
 				) {
 					this.updateLoaderStage("responding");
 				}
-			this.ui.requestRender();
-			break;
+				this.ui.requestRender();
+				break;
 
-		case "turn_end":
-			this.lastRunToolNames = [...this.currentRunToolNames];
-			this.currentRunToolNames = [];
-			if (event.message.role === "assistant") {
-				this.lastAssistantMessageText = this.extractTextFromAppMessage(
-					event.message,
-				);
-			}
-			break;
+			case "turn_end":
+				this.lastRunToolNames = [...this.currentRunToolNames];
+				this.currentRunToolNames = [];
+				if (event.message.role === "assistant") {
+					this.lastAssistantMessageText = this.extractTextFromAppMessage(
+						event.message,
+					);
+				}
+				break;
 
-		case "tool_execution_start": {
-			this.registerToolStage(event.toolCallId, event.toolName);
-			this.currentRunToolNames.push(event.toolName);
+			case "tool_execution_start": {
+				this.registerToolStage(event.toolCallId, event.toolName);
+				this.currentRunToolNames.push(event.toolName);
 				// Component should already exist from message_update, but create if missing
 				if (!this.pendingTools.has(event.toolCallId)) {
 					const component = new ToolExecutionComponent(
@@ -739,10 +742,12 @@ export class TuiRenderer {
 			if (typeof userMsg.content === "string") {
 				textContent = userMsg.content;
 			} else if (Array.isArray(userMsg.content)) {
-				const textBlocks = userMsg.content.filter((c: any) => c.type === "text");
+				const textBlocks = userMsg.content.filter(
+					(c: any) => c.type === "text",
+				);
 				textContent = textBlocks.map((c: any) => c.text).join("");
 			}
-			
+
 			if (textContent) {
 				const userComponent = new UserMessageComponent(
 					textContent,
@@ -984,16 +989,20 @@ export class TuiRenderer {
 	}
 
 	private buildSummarizationPrompt(messageCount: number): string {
-		return `Summarize the preceding ${messageCount} conversation messages from a coding session.` +
-			"\nProvide concise markdown with sections for Summary, Decisions, and Outstanding Work." +
-			"\nHighlight key files, TODOs, and blockers. Limit to 200 words.";
+		return `Summarize the preceding ${messageCount} conversation messages from a coding session.
+Provide concise markdown with sections for Summary, Decisions, and Outstanding Work.
+Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 	}
 
 	private buildSummarizationSystemPrompt(): string {
 		return "You are a careful note-taker that distills coding conversations into actionable summaries.";
 	}
 
-	private decorateSummaryText(text: string, compactedCount: number, fromModel: boolean): string {
+	private decorateSummaryText(
+		text: string,
+		compactedCount: number,
+		fromModel: boolean,
+	): string {
 		const meta = fromModel
 			? "_Model-generated summary of prior discussion._"
 			: "_Local summary of prior discussion (model unavailable)._";
@@ -1157,7 +1166,9 @@ export class TuiRenderer {
 		if (this.fileSearchComponent) return;
 		const files = this.getWorkspaceFileList();
 		if (files.length === 0) {
-			this.showInfoMessage("No files found. Ensure ripgrep or find is available.");
+			this.showInfoMessage(
+				"No files found. Ensure ripgrep or find is available.",
+			);
 			return;
 		}
 		this.fileSearchComponent = new FileSearchComponent(
@@ -1190,7 +1201,10 @@ export class TuiRenderer {
 		let mode: "html" | "text" = "html";
 		let outputPath: string | undefined;
 		if (parts.length > 1) {
-			if (parts[1].toLowerCase() === "lite" || parts[1].toLowerCase() === "text") {
+			if (
+				parts[1].toLowerCase() === "lite" ||
+				parts[1].toLowerCase() === "text"
+			) {
 				mode = "text";
 				outputPath = parts[2];
 			} else {
@@ -1202,15 +1216,15 @@ export class TuiRenderer {
 			const filePath =
 				mode === "text"
 					? exportSessionToText(
-						this.sessionManager,
-						this.agent.state,
-						outputPath,
-					)
+							this.sessionManager,
+							this.agent.state,
+							outputPath,
+						)
 					: exportSessionToHtml(
-						this.sessionManager,
-						this.agent.state,
-						outputPath,
-					);
+							this.sessionManager,
+							this.agent.state,
+							outputPath,
+						);
 
 			// Show success message in chat - matching thinking level style
 			this.chatContainer.addChild(new Spacer(1));
@@ -1353,15 +1367,17 @@ export class TuiRenderer {
 		this.showInfoMessage("Usage: /sessions [list|load <number>]");
 	}
 
-	private showSessionsList(sessions: Array<{
-		path: string;
-		id: string;
-		created: Date;
-		modified: Date;
-		messageCount: number;
-		firstMessage: string;
-		allMessagesText: string;
-	}>): void {
+	private showSessionsList(
+		sessions: Array<{
+			path: string;
+			id: string;
+			created: Date;
+			modified: Date;
+			messageCount: number;
+			firstMessage: string;
+			allMessagesText: string;
+		}>,
+	): void {
 		this.chatContainer.addChild(new Spacer(1));
 		if (sessions.length === 0) {
 			this.chatContainer.addChild(
@@ -1437,12 +1453,13 @@ Use /sessions load <number> to switch.`,
 		const { recent, counts } = this.getToolFailureData();
 		const toolLines = tools.length
 			? tools.map((tool) => {
-				const label = tool.label ?? tool.name;
-				const description = tool.description || "No description provided";
-				const failureCount = counts.get(tool.name) ?? 0;
-				const failureBadge = failureCount > 0 ? ` ${chalk.red(`✗ ${failureCount}`)}` : "";
-				return `${chalk.cyan(label)} ${chalk.dim(`(${tool.name})`)}${failureBadge}\n  ${chalk.dim(description)}`;
-			})
+					const label = tool.label ?? tool.name;
+					const description = tool.description || "No description provided";
+					const failureCount = counts.get(tool.name) ?? 0;
+					const failureBadge =
+						failureCount > 0 ? ` ${chalk.red(`✗ ${failureCount}`)}` : "";
+					return `${chalk.cyan(label)} ${chalk.dim(`(${tool.name})`)}${failureBadge}\n  ${chalk.dim(description)}`;
+				})
 			: [chalk.dim("No tools are currently registered.")];
 
 		const failureSection = recent.length
@@ -1476,9 +1493,10 @@ Session ID: ${sessionId}
 Session file: ${sessionFile}
 Model: ${model ? `${model.provider}/${model.id}` : "unknown"}
 Messages: ${this.agent.state.messages.length}
-Tools: ${(this.agent.state.tools ?? [])
-			.map((tool) => tool.name)
-			.join(", ") || "none"}
+Tools: ${
+			(this.agent.state.tools ?? []).map((tool) => tool.name).join(", ") ||
+			"none"
+		}
 
 ${chalk.bold("Send these files:")}
 ${filesToShare || chalk.dim("(session file will appear once persisted)")}
@@ -1542,22 +1560,31 @@ Use /diag for a full diagnostic report.`;
 			? statusResult.stdout.trim() || chalk.dim("Working tree clean.")
 			: chalk.red(
 					`git status failed: ${
-						statusResult.stderr.trim() || statusResult.stdout.trim() || "unknown error"
+						statusResult.stderr.trim() ||
+						statusResult.stdout.trim() ||
+						"unknown error"
 					}`,
 				);
 		const diffLinesRaw = diffResult.ok
 			? diffResult.stdout.trim()
 			: chalk.red(
 					`git diff --stat failed: ${
-						diffResult.stderr.trim() || diffResult.stdout.trim() || "unknown error"
+						diffResult.stderr.trim() ||
+						diffResult.stdout.trim() ||
+						"unknown error"
 					}`,
 				);
 		const diffLines = diffLinesRaw.split("\n");
 		const limit = 20;
 		const preview = diffLines.slice(0, limit).join("\n");
-		const remainder = diffLines.length > limit ? `\n${chalk.dim(`(+${diffLines.length - limit} more lines)`)}` : "";
+		const remainder =
+			diffLines.length > limit
+				? `\n${chalk.dim(`(+${diffLines.length - limit} more lines)`)}`
+				: "";
 		const diffText =
-			diffLinesRaw.trim().length > 0 ? `${preview}${remainder}` : chalk.dim("No pending changes.");
+			diffLinesRaw.trim().length > 0
+				? `${preview}${remainder}`
+				: chalk.dim("No pending changes.");
 
 		const message = `${chalk.bold("Review snapshot")}
 ${chalk.dim("Git status")}:
@@ -1589,7 +1616,9 @@ ${chalk.dim("Next steps")}:
 		const result = this.runGitCommand(["checkout", "--", ...targets]);
 		if (!result.ok) {
 			const error =
-				result.stderr.trim() || result.stdout.trim() || "Failed to undo changes.";
+				result.stderr.trim() ||
+				result.stdout.trim() ||
+				"Failed to undo changes.";
 			this.showInfoMessage(error);
 			return;
 		}
@@ -1638,7 +1667,9 @@ ${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.
 			this.showInfoMessage("Workspace file index is empty.");
 			return;
 		}
-		const query = text.includes(" ") ? text.slice(text.indexOf(" ")).trim() : "";
+		const query = text.includes(" ")
+			? text.slice(text.indexOf(" ")).trim()
+			: "";
 		const normalized = query.toLowerCase();
 		const matches = files
 			.filter((file) =>
@@ -1649,7 +1680,9 @@ ${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.
 			this.showInfoMessage(`No files found matching "${query}".`);
 			return;
 		}
-		const listing = matches.map((file, index) => `${index + 1}. @${file}`).join("\n");
+		const listing = matches
+			.map((file, index) => `${index + 1}. @${file}`)
+			.join("\n");
 		const textBlock = `${chalk.bold("Mention helper")}
 ${listing}
 
@@ -1704,7 +1737,9 @@ Use @ in the editor for the interactive search palette.`;
 		const goalQuery = text.slice(text.indexOf(" ") + 1).trim();
 		const goalKey =
 			goals.find((goal) => goal.toLowerCase() === goalQuery.toLowerCase()) ??
-			goals.find((goal) => goal.toLowerCase().includes(goalQuery.toLowerCase()));
+			goals.find((goal) =>
+				goal.toLowerCase().includes(goalQuery.toLowerCase()),
+			);
 		if (!goalKey) {
 			this.showInfoMessage(`No plan found matching "${goalQuery}".`);
 			return;
@@ -1732,27 +1767,44 @@ Use @ in the editor for the interactive search palette.`;
 		this.chatContainer.addChild(new Text(detail, 1, 0));
 		this.ui.requestRender();
 		const total =
-			counts.pending + counts.in_progress + counts.completed || entry.items.length;
+			counts.pending + counts.in_progress + counts.completed ||
+			entry.items.length;
 		const summary =
 			total > 0 ? `${counts.completed}/${total} done` : "no tasks yet";
 		this.planHint = `${goalKey}: ${summary}`;
 		this.refreshFooterHint();
 	}
 
-	private loadTodoStore(): Record<string, { goal: string; items: Array<{ id: string; content: string; status: string; priority: string; notes?: string; due?: string; blockedBy?: string[] }>; updatedAt: string }>
+	private loadTodoStore(): Record<
+		string,
 		{
-			try {
-				const raw = readFileSync(TODO_STORE_PATH, "utf-8");
-				return JSON.parse(raw);
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-					return {};
-				}
+			goal: string;
+			items: Array<{
+				id: string;
+				content: string;
+				status: string;
+				priority: string;
+				notes?: string;
+				due?: string;
+				blockedBy?: string[];
+			}>;
+			updatedAt: string;
+		}
+	> {
+		try {
+			const raw = readFileSync(TODO_STORE_PATH, "utf-8");
+			return JSON.parse(raw);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 				return {};
 			}
+			return {};
 		}
+	}
 
-	private countTodoStatuses(items: Array<{ status: string }>): Record<PlanStatusKey, number> {
+	private countTodoStatuses(
+		items: Array<{ status: string }>,
+	): Record<PlanStatusKey, number> {
 		return items.reduce(
 			(acc, item) => {
 				const key = (item.status ?? "pending") as PlanStatusKey;
@@ -1761,7 +1813,10 @@ Use @ in the editor for the interactive search palette.`;
 				}
 				return acc;
 			},
-			{ pending: 0, in_progress: 0, completed: 0 } as Record<PlanStatusKey, number>,
+			{ pending: 0, in_progress: 0, completed: 0 } as Record<
+				PlanStatusKey,
+				number
+			>,
 		);
 	}
 
@@ -1773,9 +1828,7 @@ Use @ in the editor for the interactive search palette.`;
 		}
 		const script = parts[1];
 		const args = parts.slice(2).join(" ");
-		const command = args
-			? `npm run ${script} -- ${args}`
-			: `npm run ${script}`;
+		const command = args ? `npm run ${script} -- ${args}` : `npm run ${script}`;
 
 		this.chatContainer.addChild(new Spacer(1));
 		const outputComponent = new Text(
@@ -1829,7 +1882,8 @@ Use @ in the editor for the interactive search palette.`;
 					success: false,
 					code: -1,
 					stdout,
-					stderr: error instanceof Error ? error.message : String(error ?? "unknown"),
+					stderr:
+						error instanceof Error ? error.message : String(error ?? "unknown"),
 				});
 			});
 		});
@@ -1850,11 +1904,7 @@ Use @ in the editor for the interactive search palette.`;
 			? content
 			: chalk.dim(`No differences for ${target}`);
 		this.chatContainer.addChild(
-			new Text(
-				`${chalk.bold(`git diff -- ${target}`)}\n${textOutput}`,
-				1,
-				0,
-			),
+			new Text(`${chalk.bold(`git diff -- ${target}`)}\n${textOutput}`, 1, 0),
 		);
 		this.ui.requestRender();
 	}
@@ -1901,9 +1951,7 @@ ${response}`;
 		}
 	}
 
-	private getRunScriptCompletions(
-		prefix: string,
-	): AutocompleteItem[] | null {
+	private getRunScriptCompletions(prefix: string): AutocompleteItem[] | null {
 		if (!this.runScripts.length) {
 			this.runScripts = this.loadRunScripts();
 		}
@@ -1961,9 +2009,7 @@ ${response}`;
 			const lines = result.stdout
 				.split("\n")
 				.map((line) => line.trim())
-				.filter(
-					(line) => line.length > 0 && !line.startsWith("##"),
-				);
+				.filter((line) => line.length > 0 && !line.startsWith("##"));
 			if (lines.length === 0) {
 				this.lastNotifiedChanges = [];
 				return;
@@ -1971,7 +2017,9 @@ ${response}`;
 			const normalized = lines.slice().sort();
 			if (
 				normalized.length === this.lastNotifiedChanges.length &&
-				normalized.every((line, index) => line === this.lastNotifiedChanges[index])
+				normalized.every(
+					(line, index) => line === this.lastNotifiedChanges[index],
+				)
 			) {
 				return;
 			}
@@ -2222,7 +2270,6 @@ ${lines.join("\n")}`;
 		}
 	}
 
-
 	private resetLoaderProgressTracking(): void {
 		this.finalizeStageTiming();
 		this.loaderStages = [
@@ -2258,10 +2305,7 @@ ${lines.join("\n")}`;
 		const now = Date.now();
 		const stageChanged = this.currentStageKey !== key;
 		if (stageChanged && this.currentStageKey && this.stageStartTime) {
-			this.recordStageTiming(
-				this.currentStageKey,
-				now - this.stageStartTime,
-			);
+			this.recordStageTiming(this.currentStageKey, now - this.stageStartTime);
 		}
 		const previousStageKey = stageChanged ? this.currentStageKey : null;
 		let index = this.loaderStages.findIndex((stage) => stage.key === key);
@@ -2280,7 +2324,11 @@ ${lines.join("\n")}`;
 		if (stageChanged) {
 			this.stageStartTime = now;
 		}
-		this.loadingAnimation.setStage(stage.label, index + 1, this.loaderStages.length);
+		this.loadingAnimation.setStage(
+			stage.label,
+			index + 1,
+			this.loaderStages.length,
+		);
 		this.refreshLoaderProgress();
 		this.footer.setStage(stage.label);
 	}
@@ -2375,7 +2423,11 @@ ${lines.join("\n")}`;
 		stage.label = label;
 		if (this.currentStageKey === key && this.loadingAnimation) {
 			const index = this.loaderStages.findIndex((entry) => entry.key === key);
-			this.loadingAnimation.setStage(label, index + 1, this.loaderStages.length);
+			this.loadingAnimation.setStage(
+				label,
+				index + 1,
+				this.loaderStages.length,
+			);
 			this.footer.setStage(label);
 		}
 	}
@@ -2394,7 +2446,10 @@ ${lines.join("\n")}`;
 
 	private finalizeStageTiming(): void {
 		if (this.currentStageKey && this.stageStartTime) {
-			this.recordStageTiming(this.currentStageKey, Date.now() - this.stageStartTime);
+			this.recordStageTiming(
+				this.currentStageKey,
+				Date.now() - this.stageStartTime,
+			);
 		}
 		this.stageStartTime = null;
 	}
@@ -2433,23 +2488,15 @@ class InstructionPanelComponent implements Component {
 		const titleLine = `${chalk.hex("#8b5cf6")("│ ")}${chalk
 			.hex("#e2e8f0")
 			.bold(title)}${chalk.hex("#8b5cf6")(" │")}`;
-		const separator = chalk.hex("#8b5cf6")(
-			`├${"─".repeat(panelWidth - 2)}┤`,
-		);
+		const separator = chalk.hex("#8b5cf6")(`├${"─".repeat(panelWidth - 2)}┤`);
 		const keyWidth = Math.min(16, Math.max(10, Math.floor(innerWidth * 0.4)));
 		const descWidth = Math.max(8, innerWidth - keyWidth - 1);
 		const rows = this.shortcuts.map(({ keys, desc }) => {
-			const keyLabel = chalk
-				.hex("#f1c0e8")
-				.bold(this.padText(keys, keyWidth));
-			const descLabel = chalk
-				.hex("#94a3b8")
-				(this.padText(desc, descWidth));
+			const keyLabel = chalk.hex("#f1c0e8").bold(this.padText(keys, keyWidth));
+			const descLabel = chalk.hex("#94a3b8")(this.padText(desc, descWidth));
 			return `${chalk.hex("#8b5cf6")("│ ")}${keyLabel} ${descLabel}${chalk.hex("#8b5cf6")(" │")}`;
 		});
-		const bottom = chalk.hex("#8b5cf6")(
-			`╰${"─".repeat(panelWidth - 2)}╯`,
-		);
+		const bottom = chalk.hex("#8b5cf6")(`╰${"─".repeat(panelWidth - 2)}╯`);
 		return [top, titleLine, separator, ...rows, bottom];
 	}
 

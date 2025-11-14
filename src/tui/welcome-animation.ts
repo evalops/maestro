@@ -1,5 +1,5 @@
-import { Container, Text } from "../tui-lib/index.js";
 import chalk from "chalk";
+import { Container, Text } from "../tui-lib/index.js";
 
 /**
  * Beautiful animated welcome screen shown before user enters text
@@ -9,7 +9,10 @@ export class WelcomeAnimation extends Container {
 	private intervalId: NodeJS.Timeout | null = null;
 	private textComponent: Text;
 	private onRenderRequest?: () => void;
-	private static readonly orbPalette: { stop: number; color: [number, number, number] }[] = [
+	private static readonly orbPalette: {
+		stop: number;
+		color: [number, number, number];
+	}[] = [
 		{ stop: 0, color: [14, 165, 233] }, // cyan
 		{ stop: 0.3, color: [56, 189, 248] }, // sky blue
 		{ stop: 0.55, color: [139, 92, 246] }, // violet
@@ -70,7 +73,8 @@ export class WelcomeAnimation extends Container {
 				let intensity = 1 - (distance + swirl + pulse - ripple - drift);
 				intensity += Math.exp(-distance * 2.5) * 0.35 + breathing;
 				if (distance < 0.92) {
-					const undertow = Math.sin(angle * 2 - time * 0.6 + distance * 4.5) * 0.05;
+					const undertow =
+						Math.sin(angle * 2 - time * 0.6 + distance * 4.5) * 0.05;
 					const tide = Math.cos(distance * 3.2 - time * 1.1) * 0.03;
 					intensity += undertow + tide;
 				}
@@ -79,9 +83,14 @@ export class WelcomeAnimation extends Container {
 				const corePulse = 0.03 + (Math.sin(time * 1.4) + 1) * 0.02;
 				const heartBeat = Math.sin(time * 4 + distance * 6) * 0.02;
 				if (intensity > 0.04) {
-					const idx = Math.min(layers.length - 1, Math.floor(intensity * (layers.length - 1)));
+					const idx = Math.min(
+						layers.length - 1,
+						Math.floor(intensity * (layers.length - 1)),
+					);
 					char = layers[idx];
-					color = chalk.hex(WelcomeAnimation.interpolateGradient(Math.min(1, intensity + 0.2)));
+					color = chalk.hex(
+						WelcomeAnimation.interpolateGradient(Math.min(1, intensity + 0.2)),
+					);
 				} else {
 					const twinkle = Math.sin((x + y) * 0.3 + time * 3);
 					if (twinkle > 0.98) {
@@ -91,8 +100,13 @@ export class WelcomeAnimation extends Container {
 				}
 
 				if (distance < 0.92) {
-					const ringPulse = Math.sin(distance * ringDensity - time * 2 + Math.cos(angle - waveAngle) * waveFrequency);
-					const ringGlow = Math.exp(-Math.abs(ringPulse) * 4) * Math.max(0, 1 - distance);
+					const ringPulse = Math.sin(
+						distance * ringDensity -
+							time * 2 +
+							Math.cos(angle - waveAngle) * waveFrequency,
+					);
+					const ringGlow =
+						Math.exp(-Math.abs(ringPulse) * 4) * Math.max(0, 1 - distance);
 					if (ringGlow > 0.04) {
 						const nodePhase = Math.sin(time * 1.6 + distance * 14 + angle * 4);
 						if (nodePhase > 0.9) {
@@ -102,16 +116,26 @@ export class WelcomeAnimation extends Container {
 						} else {
 							char = "`";
 						}
-						const ringColorMix = Math.max(0, Math.min(1, 0.4 + ringGlow * 0.6 + Math.sin(time + angle) * 0.1));
-						color = chalk.hex(WelcomeAnimation.interpolateGradient(ringColorMix));
+						const ringColorMix = Math.max(
+							0,
+							Math.min(1, 0.4 + ringGlow * 0.6 + Math.sin(time + angle) * 0.1),
+						);
+						color = chalk.hex(
+							WelcomeAnimation.interpolateGradient(ringColorMix),
+						);
 					}
 				}
 
 				if (distance < 0.4 + corePulse) {
-					const coreGlow = Math.max(0, Math.min(1, 0.65 + (0.4 + corePulse - distance) * 0.9 + heartBeat));
+					const coreGlow = Math.max(
+						0,
+						Math.min(1, 0.65 + (0.4 + corePulse - distance) * 0.9 + heartBeat),
+					);
 					if (distance < 0.2 + corePulse * 0.6) {
 						char = distance % 0.05 > 0.025 ? "@" : "0";
-						color = chalk.hex(WelcomeAnimation.interpolateGradient(Math.min(1, coreGlow + 0.2)));
+						color = chalk.hex(
+							WelcomeAnimation.interpolateGradient(Math.min(1, coreGlow + 0.2)),
+						);
 					} else {
 						char = distance % 0.08 > 0.04 ? "o" : "*";
 						color = chalk.hex(WelcomeAnimation.interpolateGradient(coreGlow));
@@ -119,26 +143,49 @@ export class WelcomeAnimation extends Container {
 				}
 
 				if (distance < 0.92) {
-					const ribbonPhase = Math.sin(angle * 3.1 - time * 1.3 + distance * 5.2);
-					const ribbonMix = Math.max(0, Math.min(1, 0.45 + (0.92 - distance) * 0.45 + Math.sin(time * 0.7 + angle) * 0.15));
+					const ribbonPhase = Math.sin(
+						angle * 3.1 - time * 1.3 + distance * 5.2,
+					);
+					const ribbonMix = Math.max(
+						0,
+						Math.min(
+							1,
+							0.45 +
+								(0.92 - distance) * 0.45 +
+								Math.sin(time * 0.7 + angle) * 0.15,
+						),
+					);
 					if (Math.abs(ribbonPhase) < 0.08) {
 						char = ribbonPhase > 0 ? "≈" : "~";
 						color = chalk.hex(WelcomeAnimation.interpolateGradient(ribbonMix));
 					} else {
-						const gentleSheen = Math.sin(distance * 9 - time * 2.4 + angle * 2.2);
+						const gentleSheen = Math.sin(
+							distance * 9 - time * 2.4 + angle * 2.2,
+						);
 						if (gentleSheen > 0.8) {
 							char = ".";
-							color = chalk.hex(WelcomeAnimation.interpolateGradient(ribbonMix + 0.1));
+							color = chalk.hex(
+								WelcomeAnimation.interpolateGradient(ribbonMix + 0.1),
+							);
 						}
 					}
 
 					const eyeBandAngle = Math.sin(time * 0.6) * 0.5;
 					const eyeRadius = 0.45 + Math.sin(time * 0.7) * 0.05;
 					const eyeWidth = 0.1 + (Math.cos(time * 0.4) + 1) * 0.04;
-					const angleDelta = Math.atan2(Math.sin(angle - eyeBandAngle), Math.cos(angle - eyeBandAngle));
-					if (Math.abs(distance - eyeRadius) < 0.04 + corePulse * 0.8 && Math.abs(angleDelta) < eyeWidth) {
+					const angleDelta = Math.atan2(
+						Math.sin(angle - eyeBandAngle),
+						Math.cos(angle - eyeBandAngle),
+					);
+					if (
+						Math.abs(distance - eyeRadius) < 0.04 + corePulse * 0.8 &&
+						Math.abs(angleDelta) < eyeWidth
+					) {
 						char = angleDelta > 0 ? ">" : "<";
-						const pupilGlow = Math.max(0, Math.min(1, 0.7 + Math.cos(time * 1.5 + angle * 3) * 0.2));
+						const pupilGlow = Math.max(
+							0,
+							Math.min(1, 0.7 + Math.cos(time * 1.5 + angle * 3) * 0.2),
+						);
 						color = chalk.hex(WelcomeAnimation.interpolateGradient(pupilGlow));
 					}
 				}
@@ -167,7 +214,10 @@ export class WelcomeAnimation extends Container {
 				for (const band of flowBands) {
 					if (Math.abs(distance - band.radius) < band.thickness) {
 						const gradientSeed = (Math.sin(angle * 2 + time * 1.5) + 1) / 2;
-						const lerpValue = Math.max(0, Math.min(1, band.colorBias * 0.6 + gradientSeed * 0.4));
+						const lerpValue = Math.max(
+							0,
+							Math.min(1, band.colorBias * 0.6 + gradientSeed * 0.4),
+						);
 						char = distance < band.radius ? band.chars[0] : band.chars[1];
 						color = chalk.hex(WelcomeAnimation.interpolateGradient(lerpValue));
 						break;
@@ -181,23 +231,41 @@ export class WelcomeAnimation extends Container {
 					color = chalk.hex("#c4b5fd");
 				}
 
-				const highlightBand = Math.abs(distance - 0.35 - Math.sin(time * 2 + angle * 5) * 0.03);
+				const highlightBand = Math.abs(
+					distance - 0.35 - Math.sin(time * 2 + angle * 5) * 0.03,
+				);
 				if (highlightBand < 0.02) {
 					char = "*";
 					color = chalk.hex("#f472b6");
 				}
 
 				const finConfigs = [
-					{ angle: Math.PI - 0.55, variance: 0.25, offset: 0.04, chars: [")", "="] },
-					{ angle: -Math.PI + 0.55, variance: 0.25, offset: -0.04, chars: ["(", "="] },
+					{
+						angle: Math.PI - 0.55,
+						variance: 0.25,
+						offset: 0.04,
+						chars: [")", "="],
+					},
+					{
+						angle: -Math.PI + 0.55,
+						variance: 0.25,
+						offset: -0.04,
+						chars: ["(", "="],
+					},
 				];
 				for (const fin of finConfigs) {
 					if (distance > 0.85 && distance < 1.2) {
-						const delta = Math.atan2(Math.sin(angle - fin.angle), Math.cos(angle - fin.angle));
+						const delta = Math.atan2(
+							Math.sin(angle - fin.angle),
+							Math.cos(angle - fin.angle),
+						);
 						if (Math.abs(delta) < fin.variance) {
 							const finWave = Math.sin(time * 1.2 + distance * 6 + delta * 4);
 							char = delta > fin.offset ? fin.chars[0] : fin.chars[1];
-							const finGlow = Math.max(0, Math.min(1, 0.35 + (distance - 0.85) * 0.4 + finWave * 0.15));
+							const finGlow = Math.max(
+								0,
+								Math.min(1, 0.35 + (distance - 0.85) * 0.4 + finWave * 0.15),
+							);
 							color = chalk.hex(WelcomeAnimation.interpolateGradient(finGlow));
 							break;
 						}
@@ -222,13 +290,30 @@ export class WelcomeAnimation extends Container {
 					waveAngle + Math.PI * 1.25,
 				];
 				for (const baseAngle of tendrilAngles) {
-					const tendrilDistance = Math.abs(Math.atan2(Math.sin(angle - baseAngle), Math.cos(angle - baseAngle)));
+					const tendrilDistance = Math.abs(
+						Math.atan2(
+							Math.sin(angle - baseAngle),
+							Math.cos(angle - baseAngle),
+						),
+					);
 					const canOverride = char === " " || char === "~" || char === "≈";
-					if (distance > 0.9 && distance < 1.35 && tendrilDistance < 0.18 && canOverride) {
-						const tendrilPulse = Math.sin(time * 1.1 + distance * 8 + baseAngle * 2);
+					if (
+						distance > 0.9 &&
+						distance < 1.35 &&
+						tendrilDistance < 0.18 &&
+						canOverride
+					) {
+						const tendrilPulse = Math.sin(
+							time * 1.1 + distance * 8 + baseAngle * 2,
+						);
 						char = tendrilPulse > 0 ? "~" : "-";
-						const tendrilGlow = Math.max(0, Math.min(1, 0.3 + (distance - 0.9) * 0.5 + tendrilPulse * 0.2));
-						color = chalk.hex(WelcomeAnimation.interpolateGradient(tendrilGlow));
+						const tendrilGlow = Math.max(
+							0,
+							Math.min(1, 0.3 + (distance - 0.9) * 0.5 + tendrilPulse * 0.2),
+						);
+						color = chalk.hex(
+							WelcomeAnimation.interpolateGradient(tendrilGlow),
+						);
 						break;
 					}
 				}
@@ -252,7 +337,9 @@ export class WelcomeAnimation extends Container {
 
 	private centerText(text: string, width: number): string {
 		// Strip ANSI codes to get actual length
-		const plainText = text.replace(/\u001b\[[0-9;]*m/g, "");
+		const ESC = String.fromCharCode(27);
+		const ansiRegex = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
+		const plainText = text.replace(ansiRegex, "");
 		const padding = Math.max(0, Math.floor((width - plainText.length) / 2));
 		return " ".repeat(padding) + text;
 	}
@@ -283,7 +370,11 @@ export class WelcomeAnimation extends Container {
 		}
 
 		const last = palette[palette.length - 1];
-		return WelcomeAnimation.rgbToHex(last.color[0], last.color[1], last.color[2]);
+		return WelcomeAnimation.rgbToHex(
+			last.color[0],
+			last.color[1],
+			last.color[2],
+		);
 	}
 
 	private static lerp(start: number, end: number, ratio: number): number {

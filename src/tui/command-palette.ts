@@ -1,7 +1,10 @@
-import { Container, Text } from "../tui-lib/index.js";
-import { SelectList, type SelectItem } from "../tui-lib/components/select-list.js";
-import type { SlashCommand } from "../tui-lib/autocomplete.js";
 import chalk from "chalk";
+import type { SlashCommand } from "../tui-lib/autocomplete.js";
+import {
+	type SelectItem,
+	SelectList,
+} from "../tui-lib/components/select-list.js";
+import { Container, Text } from "../tui-lib/index.js";
 
 export class CommandPaletteComponent extends Container {
 	private list: SelectList;
@@ -17,9 +20,9 @@ export class CommandPaletteComponent extends Container {
 	) {
 		super();
 
-		commands.forEach((cmd) => {
+		for (const cmd of commands) {
 			this.commandMap.set(cmd.name, cmd);
-		});
+		}
 
 		this.items = commands.map((cmd) => ({
 			value: cmd.name,

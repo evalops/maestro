@@ -268,7 +268,10 @@ export class Agent {
 				runConfig,
 				controller.signal,
 			)) {
-				if (event.type === "message_end" && event.message.role === "assistant") {
+				if (
+					event.type === "message_end" &&
+					event.message.role === "assistant"
+				) {
 					finalMessage = event.message as AssistantMessage;
 				}
 			}
@@ -282,5 +285,4 @@ export class Agent {
 
 		return finalMessage;
 	}
-
 }

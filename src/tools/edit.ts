@@ -293,12 +293,19 @@ function findExactMatches(content: string, snippet: string): MatchPreview[] {
 	return matches;
 }
 
-function findApproximateMatches(content: string, snippet: string): MatchPreview[] {
+function findApproximateMatches(
+	content: string,
+	snippet: string,
+): MatchPreview[] {
 	const relaxed = buildRelaxedRegex(snippet);
 	if (!relaxed) return [];
 	const matches: MatchPreview[] = [];
 	let result: RegExpExecArray | null;
-	while ((result = relaxed.exec(content)) && matches.length < 5) {
+	while (matches.length < 5) {
+		result = relaxed.exec(content);
+		if (!result) {
+			break;
+		}
 		const matchIndex = result.index;
 		const matchLength = result[0]?.length ?? snippet.length;
 		matches.push({
