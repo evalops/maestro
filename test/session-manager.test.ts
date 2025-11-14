@@ -15,28 +15,45 @@ function createMockState(): AgentState {
 			id: "claude-sonnet-4",
 			contextWindow: 200000,
 			name: "Claude Sonnet 4",
-			providerName: "Anthropic",
-			source: "builtin",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: false,
+			input: ["text", "image"],
+			cost: {
+				input: 0.003,
+				output: 0.015,
+				cacheRead: 0.0003,
+				cacheWrite: 0.00375,
+			},
+			maxTokens: 8192,
 		},
 		tools: [],
 		thinkingLevel: "off",
+		isStreaming: false,
+		streamMessage: null,
+		pendingToolCalls: new Set(),
 	};
 }
 
 // Helper to create a user message
 function createUserMessage(text: string) {
 	return {
-		role: "user",
-		content: [{ type: "text", text }],
+		role: "user" as const,
+		content: [{ type: "text" as const, text }],
+		timestamp: Date.now(),
 	};
 }
 
 // Helper to create an assistant message
 function createAssistantMessage(text: string) {
 	return {
-		role: "assistant",
-		content: [{ type: "text", text }],
-		stopReason: "end_turn",
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text }],
+		api: "anthropic-messages" as const,
+		provider: "anthropic",
+		model: "claude-sonnet-4",
+		stopReason: "stop" as const,
+		timestamp: Date.now(),
 		usage: {
 			input: 100,
 			output: 50,
@@ -318,8 +335,14 @@ describe("SessionManager - Deferred Session Creation", () => {
 			const state = createMockState();
 
 			// Change model before session init
-			sessionManager.saveModelChange("openai", "gpt-4");
-			sessionManager.saveModelChange("anthropic", "claude-sonnet-4");
+			sessionManager.saveModelChange("openai/gpt-4", {
+				provider: "openai",
+				modelId: "gpt-4",
+			});
+			sessionManager.saveModelChange("anthropic/claude-sonnet-4", {
+				provider: "anthropic",
+				modelId: "claude-sonnet-4",
+			});
 
 			// Start session
 			sessionManager.startSession(state);

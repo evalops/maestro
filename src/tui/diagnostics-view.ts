@@ -6,6 +6,7 @@ import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import { lookupApiKey } from "../providers/api-keys.js";
 import type { SessionManager } from "../session-manager.js";
 import type { SessionModelMetadata } from "../session-manager.js";
+import type { TelemetryStatus } from "../telemetry.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 import { formatDiagnosticsReport } from "./diagnostics.js";
@@ -16,7 +17,6 @@ import {
 	TOOL_FAILURE_LOG_PATH,
 	type ToolStatusView,
 } from "./tool-status-view.js";
-import type { TelemetryStatus } from "../telemetry.js";
 
 interface HealthSnapshot {
 	toolFailures: number;
@@ -29,9 +29,7 @@ interface HealthSnapshot {
 interface DiagnosticsViewOptions {
 	agent: Agent;
 	sessionManager: SessionManager;
-	telemetryStatus: ReturnType<
-		typeof import("../telemetry.js").getTelemetryStatus
-	>;
+	telemetryStatus: TelemetryStatus;
 	version: string;
 	explicitApiKey?: string;
 	chatContainer: Container;

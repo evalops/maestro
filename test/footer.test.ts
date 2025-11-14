@@ -11,12 +11,16 @@ function createAssistantMessage(
 		cacheWrite?: number;
 		cost?: number;
 	},
-	stopReason: "end_turn" | "aborted" = "end_turn",
+	stopReason: "stop" | "aborted" = "stop",
 ): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: "test response" }],
 		stopReason,
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet-4",
+		timestamp: Date.now(),
 		usage: {
 			input: usage.input,
 			output: usage.output,
@@ -41,10 +45,25 @@ function createMockState(messages: any[], contextWindow = 200000): AgentState {
 		model: {
 			provider: "anthropic",
 			id: "claude-sonnet-4",
+			name: "Claude Sonnet 4",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
 			contextWindow,
+			reasoning: false,
+			input: ["text", "image"],
+			cost: {
+				input: 0.003,
+				output: 0.015,
+				cacheRead: 0.0003,
+				cacheWrite: 0.00375,
+			},
+			maxTokens: 8192,
 		},
 		tools: [],
 		thinkingLevel: "off",
+		isStreaming: false,
+		streamMessage: null,
+		pendingToolCalls: new Set(),
 	};
 }
 
