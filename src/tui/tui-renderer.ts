@@ -389,9 +389,15 @@ export class TuiRenderer {
 	private addMessageToChat(message: Message): void {
 		if (message.role === "user") {
 			const userMsg = message as any;
-			// Extract text content from content blocks
-			const textBlocks = userMsg.content.filter((c: any) => c.type === "text");
-			const textContent = textBlocks.map((c: any) => c.text).join("");
+			// Extract text content - handle both string and array content
+			let textContent = "";
+			if (typeof userMsg.content === "string") {
+				textContent = userMsg.content;
+			} else if (Array.isArray(userMsg.content)) {
+				const textBlocks = userMsg.content.filter((c: any) => c.type === "text");
+				textContent = textBlocks.map((c: any) => c.text).join("");
+			}
+			
 			if (textContent) {
 				const userComponent = new UserMessageComponent(
 					textContent,

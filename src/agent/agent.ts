@@ -5,8 +5,10 @@ import type {
 	AgentTransport,
 	AppMessage,
 	Attachment,
+	ImageContent,
 	Message,
 	Model,
+	TextContent,
 	ThinkingLevel,
 	UserMessage,
 } from "./types.js";
@@ -108,15 +110,33 @@ export class Agent {
 	}
 
 	async prompt(input: string, attachments?: Attachment[]): Promise<void> {
-		const userMessage: UserMessage = {
-			role: "user",
-			content: input,
-			timestamp: Date.now(),
-		};
+		// Build user message content as array (matching Mario's implementation)
+		const content: Array<TextContent | ImageContent> = [
+			{ type: "text", text: input },
+		];
 
 		if (attachments && attachments.length > 0) {
-			(userMessage as any).attachments = attachments;
+			for (const a of attachments) {
+				if (a.type === "image") {
+					content.push({
+						type: "image",
+						data: a.content,
+						mimeType: a.mimeType,
+					});
+				} else if (a.type === "document" && a.extractedText) {
+					content.push({
+						type: "text",
+						text: `\n\n[Document: ${a.fileName}]\n${a.extractedText}`,
+					});
+				}
+			}
 		}
+
+		const userMessage: UserMessage = {
+			role: "user",
+			content,
+			timestamp: Date.now(),
+		};
 
 		this._state.messages.push(userMessage);
 		this._state.isStreaming = true;
