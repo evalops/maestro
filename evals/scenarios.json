@@ -15,6 +15,59 @@
 		"expectedRegex": "Composer CLI by EvalOps"
 	},
 	{
+		"name": "write tool writes file",
+		"command": [
+			"node",
+			"scripts/run-write-tool.js",
+			"evals/write-test.txt",
+			"hello evals"
+		],
+		"expectedRegex": "Successfully wrote"
+	},
+	{
+		"name": "list tool counts files",
+		"command": [
+			"node",
+			"scripts/run-list-tool.js",
+			"src"
+		],
+		"expectedRegex": "src"
+	},
+	{
+		"name": "bash tool echo",
+		"command": [
+			"node",
+			"scripts/run-bash-tool.js",
+			"echo TOOL"
+		],
+		"expectedRegex": "TOOL"
+	},
+	{
+		"name": "search tool pattern",
+		"command": [
+			"node",
+			"scripts/run-search-tool.js",
+			"README.md",
+			"Composer"
+		],
+		"expectedRegex": "README\\.md:1:# Composer"
+	},
+	{
+		"name": "diff tool detects change",
+		"command": ["node", "scripts/run-diff-tool.js"],
+		"expectedRegex": "diff --git"
+	},
+	{
+		"name": "edit tool replaces text",
+		"command": ["node", "scripts/run-edit-tool.js"],
+		"expectedRegex": "Successfully replaced text"
+	},
+	{
+		"name": "todo tool creates list",
+		"command": ["node", "scripts/run-todo-tool.js"],
+		"expectedRegex": "Eval todo"
+	},
+	{
 		"name": "cli help lists env vars",
 		"args": ["--help"],
 		"expectedRegex": "Environment Variables:\\s+GEMINI_API_KEY"
