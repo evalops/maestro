@@ -1,0 +1,15 @@
+# Build output
+dist/
+node_modules/
+
+# External checkouts
+.external/
+
+# macOS metadata
+.DS_Store
+
+# Session exports
+*.html
+
+# Misc artifacts
+out.html

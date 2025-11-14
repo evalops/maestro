@@ -1,0 +1,19 @@
+{
+	"$schema": "https://biomejs.dev/schemas/1.9.3/schema.json",
+	"files": {
+		"include": ["src", "test"],
+		"ignore": ["dist", "node_modules", ".external"]
+	},
+	"formatter": {
+		"enabled": true
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"suspicious": {
+				"noConsole": "off",
+				"noExplicitAny": "off"
+			}
+		}
+	}
+}

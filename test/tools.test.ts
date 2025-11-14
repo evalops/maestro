@@ -1,0 +1,325 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { bashTool } from "../src/tools/bash.js";
+import { editTool } from "../src/tools/edit.js";
+import { listTool } from "../src/tools/list.js";
+import { readTool } from "../src/tools/read.js";
+import { writeTool } from "../src/tools/write.js";
+
+// Helper to extract text from content blocks
+function getTextOutput(result: any): string {
+	return (
+		result.content
+			?.filter((c: any) => c.type === "text")
+			.map((c: any) => c.text)
+			.join("\n") || ""
+	);
+}
+
+describe("Playwright Tools", () => {
+	let testDir: string;
+
+	beforeEach(() => {
+		// Create a unique temporary directory for each test
+		testDir = join(tmpdir(), `playwright-test-${Date.now()}`);
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		// Clean up test directory
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	describe("list tool", () => {
+		it("lists directory contents with default options", async () => {
+			writeFileSync(join(testDir, "a.txt"), "Hello");
+			writeFileSync(join(testDir, "b.md"), "World");
+
+			const result = await listTool.execute("list-call-1", { path: testDir });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Directory:");
+			expect(output).toContain("a.txt");
+			expect(output).toContain("b.md");
+		});
+
+		it("respects glob patterns and limits", async () => {
+			writeFileSync(join(testDir, "match-1.ts"), "");
+			writeFileSync(join(testDir, "match-2.ts"), "");
+			writeFileSync(join(testDir, "skip.js"), "");
+
+			const result = await listTool.execute("list-call-2", {
+				path: testDir,
+				pattern: "match-*.ts",
+				limit: 1,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Pattern: match-*.ts");
+			expect(output).toContain("Results: 1 of 2");
+			expect(output).toMatch(/match-\d\.ts/);
+			expect(output).not.toContain("skip.js");
+		});
+
+		it("includes hidden files when requested", async () => {
+			writeFileSync(join(testDir, ".hidden"), "");
+			writeFileSync(join(testDir, "visible"), "");
+
+			const result = await listTool.execute("list-call-3", {
+				path: testDir,
+				includeHidden: true,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Including hidden files");
+			expect(output).toContain(".hidden");
+			expect(output).toContain("visible");
+		});
+	});
+
+	describe("read tool", () => {
+		it("should read file contents that fit within limits", async () => {
+			const testFile = join(testDir, "test.txt");
+			const content = "Hello, world!\nLine 2\nLine 3";
+			writeFileSync(testFile, content);
+
+			const result = await readTool.execute("test-call-1", { path: testFile });
+
+			expect(getTextOutput(result)).toBe(content);
+			expect(getTextOutput(result)).not.toContain("more lines not shown");
+			expect(result.details).toBeUndefined();
+		});
+
+		it("should handle non-existent files", async () => {
+			const testFile = join(testDir, "nonexistent.txt");
+
+			const result = await readTool.execute("test-call-2", { path: testFile });
+
+			expect(getTextOutput(result)).toContain("Error");
+			expect(getTextOutput(result)).toContain("File not found");
+		});
+
+		it("should truncate files exceeding line limit", async () => {
+			const testFile = join(testDir, "large.txt");
+			const lines = Array.from({ length: 2500 }, (_, i) => `Line ${i + 1}`);
+			writeFileSync(testFile, lines.join("\n"));
+
+			const result = await readTool.execute("test-call-3", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Line 1");
+			expect(output).toContain("Line 2000");
+			expect(output).not.toContain("Line 2001");
+			expect(output).toContain("500 more lines not shown");
+			expect(output).toContain("Use offset=2001 to continue reading");
+		});
+
+		it("should truncate long lines and show notice", async () => {
+			const testFile = join(testDir, "long-lines.txt");
+			const longLine = "a".repeat(3000);
+			const content = `Short line\n${longLine}\nAnother short line`;
+			writeFileSync(testFile, content);
+
+			const result = await readTool.execute("test-call-4", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Short line");
+			expect(output).toContain("Another short line");
+			expect(output).toContain("Some lines were truncated to 2000 characters");
+			expect(output.split("\n")[1].length).toBe(2000);
+		});
+
+		it("should handle offset parameter", async () => {
+			const testFile = join(testDir, "offset-test.txt");
+			const lines = Array.from({ length: 100 }, (_, i) => `Line ${i + 1}`);
+			writeFileSync(testFile, lines.join("\n"));
+
+			const result = await readTool.execute("test-call-5", {
+				path: testFile,
+				offset: 51,
+			});
+			const output = getTextOutput(result);
+
+			expect(output).not.toContain("Line 50");
+			expect(output).toContain("Line 51");
+			expect(output).toContain("Line 100");
+			expect(output).not.toContain("more lines not shown");
+		});
+
+		it("should handle limit parameter", async () => {
+			const testFile = join(testDir, "limit-test.txt");
+			const lines = Array.from({ length: 100 }, (_, i) => `Line ${i + 1}`);
+			writeFileSync(testFile, lines.join("\n"));
+
+			const result = await readTool.execute("test-call-6", {
+				path: testFile,
+				limit: 10,
+			});
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Line 1");
+			expect(output).toContain("Line 10");
+			expect(output).not.toContain("Line 11");
+			expect(output).toContain("90 more lines not shown");
+			expect(output).toContain("Use offset=11 to continue reading");
+		});
+
+		it("should handle offset + limit together", async () => {
+			const testFile = join(testDir, "offset-limit-test.txt");
+			const lines = Array.from({ length: 100 }, (_, i) => `Line ${i + 1}`);
+			writeFileSync(testFile, lines.join("\n"));
+
+			const result = await readTool.execute("test-call-7", {
+				path: testFile,
+				offset: 41,
+				limit: 20,
+			});
+			const output = getTextOutput(result);
+
+			expect(output).not.toContain("Line 40");
+			expect(output).toContain("Line 41");
+			expect(output).toContain("Line 60");
+			expect(output).not.toContain("Line 61");
+			expect(output).toContain("40 more lines not shown");
+			expect(output).toContain("Use offset=61 to continue reading");
+		});
+
+		it("should show error when offset is beyond file length", async () => {
+			const testFile = join(testDir, "short.txt");
+			writeFileSync(testFile, "Line 1\nLine 2\nLine 3");
+
+			const result = await readTool.execute("test-call-8", {
+				path: testFile,
+				offset: 100,
+			});
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Error: Offset 100 is beyond end of file");
+			expect(output).toContain("3 lines total");
+		});
+
+		it("should show both truncation notices when applicable", async () => {
+			const testFile = join(testDir, "both-truncations.txt");
+			const longLine = "b".repeat(3000);
+			const lines = Array.from({ length: 2500 }, (_, i) =>
+				i === 500 ? longLine : `Line ${i + 1}`,
+			);
+			writeFileSync(testFile, lines.join("\n"));
+
+			const result = await readTool.execute("test-call-9", { path: testFile });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Some lines were truncated to 2000 characters");
+			expect(output).toContain("500 more lines not shown");
+		});
+	});
+
+	describe("write tool", () => {
+		it("should write file contents", async () => {
+			const testFile = join(testDir, "write-test.txt");
+			const content = "Test content";
+
+			const result = await writeTool.execute("test-call-3", {
+				path: testFile,
+				content,
+			});
+
+			expect(getTextOutput(result)).toContain("Successfully wrote");
+			expect(getTextOutput(result)).toContain(testFile);
+			expect(result.details).toBeUndefined();
+		});
+
+		it("should create parent directories", async () => {
+			const testFile = join(testDir, "nested", "dir", "test.txt");
+			const content = "Nested content";
+
+			const result = await writeTool.execute("test-call-4", {
+				path: testFile,
+				content,
+			});
+
+			expect(getTextOutput(result)).toContain("Successfully wrote");
+		});
+	});
+
+	describe("edit tool", () => {
+		it("should replace text in file", async () => {
+			const testFile = join(testDir, "edit-test.txt");
+			const originalContent = "Hello, world!";
+			writeFileSync(testFile, originalContent);
+
+			const result = await editTool.execute("test-call-5", {
+				path: testFile,
+				oldText: "world",
+				newText: "testing",
+			});
+
+			expect(getTextOutput(result)).toContain("Successfully replaced");
+			expect(result.details).toBeDefined();
+			expect(result.details.diff).toBeDefined();
+			expect(typeof result.details.diff).toBe("string");
+			expect(result.details.diff).toContain("testing");
+		});
+
+		it("should fail if text not found", async () => {
+			const testFile = join(testDir, "edit-test.txt");
+			const originalContent = "Hello, world!";
+			writeFileSync(testFile, originalContent);
+
+			await expect(
+				editTool.execute("test-call-6", {
+					path: testFile,
+					oldText: "nonexistent",
+					newText: "testing",
+				}),
+			).rejects.toThrow("Could not find the exact text");
+		});
+
+		it("should fail if text appears multiple times", async () => {
+			const testFile = join(testDir, "edit-test.txt");
+			const originalContent = "foo foo foo";
+			writeFileSync(testFile, originalContent);
+
+			await expect(
+				editTool.execute("test-call-7", {
+					path: testFile,
+					oldText: "foo",
+					newText: "bar",
+				}),
+			).rejects.toThrow("Found 3 occurrences");
+		});
+	});
+
+	describe("bash tool", () => {
+		it("should execute simple commands", async () => {
+			const result = await bashTool.execute("test-call-8", {
+				command: "echo 'test output'",
+			});
+
+			expect(getTextOutput(result)).toContain("test output");
+			expect(result.details).toBeUndefined();
+		});
+
+		it("should handle command errors", async () => {
+			const result = await bashTool.execute("test-call-9", {
+				command: "exit 1",
+			});
+
+			expect(getTextOutput(result)).toContain("Command failed");
+		});
+
+		it("should respect timeout", async () => {
+			const timeoutSeconds = 1;
+			const result = await bashTool.execute("test-call-10", {
+				command: "sleep 5",
+				timeout: timeoutSeconds,
+			});
+
+			expect(getTextOutput(result)).toContain(
+				`Command timed out after ${timeoutSeconds} seconds`,
+			);
+		});
+	});
+});

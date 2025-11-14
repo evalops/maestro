@@ -1,0 +1,57 @@
+{
+"name": "@evalops/playwright",
+	"version": "0.7.6",
+"description": "Playwright CLI by EvalOps with rich tooling for AI-assisted development",
+	"type": "module",
+"bin": {
+	"playwright": "dist/cli.js"
+},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"clean": "rm -rf dist",
+	"build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+	"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+	"lint": "biome check .",
+	"check": "npm run lint && tsc --noEmit",
+		"test": "vitest --run",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+"dependencies": {
+	"@mariozechner/pi-agent": "^0.7.5",
+"@mariozechner/pi-ai": "^0.7.5",
+"@mariozechner/pi-tui": "^0.7.5",
+		"chalk": "^5.5.0",
+		"diff": "^8.0.2",
+		"glob": "^11.0.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.3",
+		"@types/diff": "^7.0.2",
+		"@types/node": "^24.3.0",
+		"typescript": "^5.7.3",
+		"vitest": "^3.2.4"
+	},
+"keywords": [
+	"playwright",
+	"evalops",
+	"ai",
+	"llm",
+	"cli",
+	"tui",
+	"agent"
+],
+"author": "EvalOps",
+	"license": "MIT",
+"repository": {
+	"type": "git",
+	"url": "git+https://github.com/badlogic/pi-mono.git",
+	"directory": "packages/coding-agent"
+},
+	"engines": {
+		"node": ">=20.0.0"
+	}
+}
