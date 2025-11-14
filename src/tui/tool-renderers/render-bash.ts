@@ -1,6 +1,6 @@
 import chalk from "chalk";
-import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 import { buildCollapsedSummary } from "../tool-text-utils.js";
+import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class BashRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {

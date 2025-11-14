@@ -1,9 +1,13 @@
-import type { AgentEvent, AppMessage, AssistantMessage } from "../agent/types.js";
-import { MessageView } from "./message-view.js";
-import { StreamingView } from "./streaming-view.js";
-import { LoaderView } from "./loader-view.js";
-import { RunController } from "./run-controller.js";
-import { SessionContext } from "./session-context.js";
+import type {
+	AgentEvent,
+	AppMessage,
+	AssistantMessage,
+} from "../agent/types.js";
+import type { LoaderView } from "./loader-view.js";
+import type { MessageView } from "./message-view.js";
+import type { RunController } from "./run-controller.js";
+import type { SessionContext } from "./session-context.js";
+import type { StreamingView } from "./streaming-view.js";
 
 interface AgentEventRouterOptions {
 	messageView: MessageView;
@@ -84,7 +88,9 @@ export class AgentEventRouter {
 		}
 	}
 
-	private handleMessageStart(event: AgentEvent & { type: "message_start" }): void {
+	private handleMessageStart(
+		event: AgentEvent & { type: "message_start" },
+	): void {
 		if (event.message.role === "user") {
 			this.options.sessionContext.setLastUserMessage(
 				this.options.extractText(event.message as AppMessage),

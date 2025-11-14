@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { join, dirname } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import { runMockAgentFlow } from "./mock-agent-runner.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -14,35 +15,10 @@ if (!existsSync(targetPath)) {
 	process.exit(1);
 }
 
-const agentModule = await import(
-	pathToFileURL(join(projectRoot, "dist", "agent", "index.js")).href,
-);
-const toolsModule = await import(
-	pathToFileURL(join(projectRoot, "dist", "tools", "read.js")).href,
-);
-const helpersModule = await import(
-	pathToFileURL(join(projectRoot, "dist", "testing", "mock-agent.js")).href,
-);
-
-const { Agent } = agentModule;
-const { readTool } = toolsModule;
-const { MockToolTransport } = helpersModule;
-
-const mockModel = {
-	id: "mock-model",
-	name: "Mock",
-	provider: "mock",
-	api: "openai-completions",
-	baseUrl: "",
-	reasoning: false,
-	contextWindow: 8192,
-	maxTokens: 2048,
-	source: "builtin",
-};
-
 let readSummary = "";
-const transport = new MockToolTransport(
-	[
+
+await runMockAgentFlow({
+	steps: [
 		{
 			name: "read",
 			args: { path: targetPath },
@@ -53,31 +29,8 @@ const transport = new MockToolTransport(
 			},
 		},
 	],
-	() => `Read ${targetPath}: ${readSummary.trim()}`,
-);
-
-const agent = new Agent({
-	transport,
-	initialState: { model: mockModel, tools: [] },
+	buildSummary: () => `Read ${targetPath}: ${readSummary.trim()}`,
+	targetPath,
+	tools: ["read"],
+	prompt: `Read file ${targetPath}`,
 });
-agent.setModel(mockModel);
-agent.setTools([readTool]);
-
-await agent.prompt(`Read file ${targetPath}`);
-
-const lastAssistant = [...agent.state.messages]
-	.reverse()
-	.find((msg) => msg.role === "assistant");
-
-if (!lastAssistant) {
-	console.error("No assistant response recorded.");
-	process.exit(1);
-}
-
-const textContent = lastAssistant.content.find((c) => c.type === "text");
-if (!textContent) {
-	console.error("Assistant response missing text content.");
-	process.exit(1);
-}
-
-console.log(textContent.text.trim());

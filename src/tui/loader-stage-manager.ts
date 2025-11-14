@@ -97,8 +97,8 @@ export class LoaderStageManager {
 		this.toolStagesByName.clear();
 		this.completedToolStages.clear();
 		this.completedStageKeys.clear();
-	this.currentStageKey = null;
-	this.options.setFooterStage(null);
+		this.currentStageKey = null;
+		this.options.setFooterStage(null);
 	}
 
 	private clearTracking(): void {
@@ -108,8 +108,8 @@ export class LoaderStageManager {
 		this.toolStagesByName.clear();
 		this.completedToolStages.clear();
 		this.completedStageKeys.clear();
-	this.currentStageKey = null;
-	this.options.setFooterStage(null);
+		this.currentStageKey = null;
+		this.options.setFooterStage(null);
 		this.options.onProgressChanged(null);
 	}
 
@@ -214,5 +214,4 @@ export class LoaderStageManager {
 		}
 		return 0.3;
 	}
-
 }

@@ -1,6 +1,9 @@
-import { createCommandRegistry } from "./commands/registry.js";
-import type { CommandEntry, RunScriptCompletionProvider } from "./commands/types.js";
 import type { SlashCommand } from "../tui-lib/index.js";
+import { createCommandRegistry } from "./commands/registry.js";
+import type {
+	CommandEntry,
+	RunScriptCompletionProvider,
+} from "./commands/types.js";
 
 interface CommandRegistryOptions {
 	getRunScriptCompletions: RunScriptCompletionProvider;
@@ -28,9 +31,10 @@ interface CommandRegistryOptions {
 	handleQuit: () => void;
 }
 
-export function buildCommandRegistry(
-	opts: CommandRegistryOptions,
-): { entries: CommandEntry[]; commands: SlashCommand[] } {
+export function buildCommandRegistry(opts: CommandRegistryOptions): {
+	entries: CommandEntry[];
+	commands: SlashCommand[];
+} {
 	const registry = createCommandRegistry({
 		getRunScriptCompletions: opts.getRunScriptCompletions,
 		handlers: {

@@ -1,7 +1,7 @@
-import { CommandPaletteComponent } from "./command-palette.js";
-import type { CustomEditor } from "./custom-editor.js";
 import type { SlashCommand } from "../tui-lib/index.js";
 import type { Container, TUI } from "../tui-lib/index.js";
+import { CommandPaletteComponent } from "./command-palette.js";
+import type { CustomEditor } from "./custom-editor.js";
 
 interface CommandPaletteViewOptions {
 	editor: CustomEditor;

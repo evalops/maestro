@@ -7,8 +7,8 @@ import type {
 } from "../agent/types.js";
 import type { SessionManager } from "../session-manager.js";
 import type { Container, TUI } from "../tui-lib/index.js";
-import type { ToolExecutionComponent } from "./tool-execution.js";
 import type { FooterComponent } from "./footer.js";
+import type { ToolExecutionComponent } from "./tool-execution.js";
 
 interface ConversationCompactorOptions {
 	agent: Agent;

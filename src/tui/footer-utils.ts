@@ -106,7 +106,9 @@ export function buildStatsLine(
 			`${chalk.hex("#f7b7c3")("⟳")} ${formatTokenCount(stats.totalCacheWrite)}`,
 		);
 	if (stats.totalCost)
-		statsParts.push(`${chalk.hex("#ffd6a5")("$")}${stats.totalCost.toFixed(3)}`);
+		statsParts.push(
+			`${chalk.hex("#ffd6a5")("$")}${stats.totalCost.toFixed(3)}`,
+		);
 
 	const contextValue = Number.parseFloat(stats.contextPercent);
 	const contextBadgeColor = contextValue >= 80 ? "#ff6b6b" : "#a0aec0";
@@ -123,7 +125,8 @@ export function buildStatsLine(
 
 	if (totalNeeded > width) {
 		const brandWidth = visibleWidth(composerBrand);
-		const availableForModel = width - statsLeftWidth - minPadding - brandWidth - 1;
+		const availableForModel =
+			width - statsLeftWidth - minPadding - brandWidth - 1;
 		if (availableForModel > 3) {
 			const truncated = modelName.substring(0, availableForModel);
 			rightSide = `${truncated} ${composerBrand}`;

@@ -9,22 +9,22 @@ import type { SessionModelMetadata } from "../session-manager.js";
 import type { TelemetryStatus } from "../telemetry.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
-import { formatDiagnosticsReport } from "./diagnostics.js";
-import type { GitView } from "./git-view.js";
-import type { ToolExecutionComponent } from "./tool-execution.js";
-import {
-	TOOL_FAILURE_LOG_PATH,
-	type ToolStatusView,
-} from "./tool-status-view.js";
 import {
 	buildBugReport,
 	buildFeedbackTemplate,
 	buildStatusSnapshot,
 } from "./diagnostics-templates.js";
+import { formatDiagnosticsReport } from "./diagnostics.js";
+import type { GitView } from "./git-view.js";
 import {
-	collectHealthSnapshot,
 	type HealthSnapshot,
+	collectHealthSnapshot,
 } from "./health-snapshot.js";
+import type { ToolExecutionComponent } from "./tool-execution.js";
+import {
+	TOOL_FAILURE_LOG_PATH,
+	type ToolStatusView,
+} from "./tool-status-view.js";
 
 interface DiagnosticsViewOptions {
 	agent: Agent;
@@ -72,8 +72,7 @@ export class DiagnosticsView {
 			sessionFile,
 			modelLabel: model ? `${model.provider}/${model.id}` : "unknown",
 			messageCount: this.options.agent.state.messages.length,
-			toolNames:
-				this.options.agent.state.tools?.map((tool) => tool.name) ?? [],
+			toolNames: this.options.agent.state.tools?.map((tool) => tool.name) ?? [],
 			filesToShare,
 		});
 		const copied = this.copyTextToClipboard(text);

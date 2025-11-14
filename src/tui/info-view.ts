@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import type { SlashCommand, Container, TUI } from "../tui-lib/index.js";
+import type { Container, SlashCommand, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 
 interface InfoViewOptions {
@@ -17,9 +17,7 @@ export class InfoView {
 	showHelp(): void {
 		const lines = this.options
 			.getSlashCommands()
-			.map(
-				(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
-			);
+			.map((cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`);
 		const body = `${chalk.bold("Slash commands")}
 ${lines.join("\n")}`;
 		this.options.chatContainer.addChild(new Spacer(1));

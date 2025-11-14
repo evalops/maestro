@@ -1,11 +1,11 @@
 import chalk from "chalk";
+import type { Agent } from "../agent/agent.js";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import { importFactoryConfig } from "../factory/index.js";
-import type { Agent } from "../agent/agent.js";
+import { reloadModelConfig } from "../models/registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
-import { reloadModelConfig } from "../models/registry.js";
 
 interface ImportExportViewOptions {
 	agent: Agent;
@@ -59,11 +59,7 @@ export class ImportExportView {
 				error instanceof Error ? error.message : String(error ?? "unknown");
 			this.options.chatContainer.addChild(new Spacer(1));
 			this.options.chatContainer.addChild(
-				new Text(
-					chalk.red(`Failed to export session: ${message}`),
-					1,
-					0,
-				),
+				new Text(chalk.red(`Failed to export session: ${message}`), 1, 0),
 			);
 			this.options.ui.requestRender();
 		}

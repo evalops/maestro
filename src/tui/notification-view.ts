@@ -24,10 +24,7 @@ export class NotificationView {
 		this.options.ui.requestRender();
 	}
 
-	showToast(
-		text: string,
-		tone: "info" | "warn" | "success" = "info",
-	): void {
+	showToast(text: string, tone: "info" | "warn" | "success" = "info"): void {
 		const color =
 			tone === "warn"
 				? chalk.hex("#f97316")

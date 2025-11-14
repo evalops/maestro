@@ -50,7 +50,9 @@ Attach them in the bug report so we can replay the session.`;
 			: chalk.dim("(Could not copy bug info to clipboard.)");
 
 		this.options.chatContainer.addChild(new Spacer(1));
-		this.options.chatContainer.addChild(new Text(`${text}\n\n${copyNote}`, 1, 0));
+		this.options.chatContainer.addChild(
+			new Text(`${text}\n\n${copyNote}`, 1, 0),
+		);
 		this.options.ui.requestRender();
 	}
 
@@ -79,10 +81,10 @@ Anything else we should know?`;
 ${plain}
 
 ${
-			copied
-				? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.")
-				: chalk.dim("Copy failed — select and copy manually.")
-		}`;
+	copied
+		? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.")
+		: chalk.dim("Copy failed — select and copy manually.")
+}`;
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(body, 1, 0));
 		this.options.ui.requestRender();

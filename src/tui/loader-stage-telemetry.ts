@@ -15,10 +15,7 @@ export class LoaderStageTelemetry {
 		this.stageStartTime = Date.now();
 	}
 
-	recordStage(
-		stageKey: string,
-		stages: LoaderStageEntry[],
-	): void {
+	recordStage(stageKey: string, stages: LoaderStageEntry[]): void {
 		if (!this.enabled || !this.stageStartTime) return;
 		const duration = Date.now() - this.stageStartTime;
 		this.logStage(stageKey, stages, duration);

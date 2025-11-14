@@ -13,6 +13,7 @@ export interface MockToolOperation {
 	args: Record<string, any>;
 	id?: string;
 	onResult?: (result: ToolResultMessage) => void;
+	error?: string;
 }
 
 export class MockToolTransport implements AgentTransport {
@@ -23,16 +24,26 @@ export class MockToolTransport implements AgentTransport {
 
 	async *run(
 		_messages: Message[],
-		userMessage: AssistantMessage,
+		userMessage: Message,
 		config: AgentRunConfig,
 		signal?: AbortSignal,
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		yield { type: "message_start", message: userMessage };
 
+		const throwIfAborted = () => {
+			if (signal?.aborted) {
+				const abortError = new Error("Operation aborted");
+				abortError.name = "AbortError";
+				throw abortError;
+			}
+		};
+
 		for (const operation of this.operations) {
+			throwIfAborted();
 			const toolCallId = operation.id ?? randomUUID();
-			yield { type: "message_start", message: this.createToolCall(toolCallId, operation) };
-			yield { type: "message_end", message: this.createToolCall(toolCallId, operation) };
+			const toolCallMessage = this.createToolCall(toolCallId, operation);
+			yield { type: "message_start", message: toolCallMessage };
+			yield { type: "message_end", message: toolCallMessage };
 
 			const tool = config.tools.find((def) => def.name === operation.name);
 			if (!tool) {
@@ -46,33 +57,101 @@ export class MockToolTransport implements AgentTransport {
 				args: operation.args,
 			};
 
-			const toolResult = await tool.execute(toolCallId, operation.args, signal);
-			const resultMessage: ToolResultMessage = {
-				role: "toolResult",
-				toolCallId,
-				toolName: operation.name,
-				content: toolResult.content,
-				details: toolResult.details,
-				isError: toolResult.isError ?? false,
-				timestamp: Date.now(),
-			};
-			operation.onResult?.(resultMessage);
+			try {
+				if (operation.error) {
+					throw new Error(operation.error);
+				}
+				const toolResult = await tool.execute(
+					toolCallId,
+					operation.args,
+					signal,
+				);
+				const resultMessage: ToolResultMessage = {
+					role: "toolResult",
+					toolCallId,
+					toolName: operation.name,
+					content: toolResult.content,
+					details: toolResult.details,
+					isError: toolResult.isError ?? false,
+					timestamp: Date.now(),
+				};
+				operation.onResult?.(resultMessage);
 
-			yield {
-				type: "tool_execution_end",
-				toolCallId,
-				toolName: operation.name,
-				result: resultMessage,
-				isError: resultMessage.isError,
-			};
+				yield {
+					type: "tool_execution_end",
+					toolCallId,
+					toolName: operation.name,
+					result: resultMessage,
+					isError: resultMessage.isError,
+				};
+			} catch (error) {
+				if (error instanceof Error && error.name === "AbortError") {
+					const abortResult = this.createToolErrorResult(
+						toolCallId,
+						operation,
+						"Operation aborted",
+					);
+					operation.onResult?.(abortResult);
+					yield {
+						type: "tool_execution_end",
+						toolCallId,
+						toolName: operation.name,
+						result: abortResult,
+						isError: true,
+					};
+					throw error;
+				}
+
+				const message = error instanceof Error ? error.message : String(error);
+				const errorResult = this.createToolErrorResult(
+					toolCallId,
+					operation,
+					message,
+				);
+				operation.onResult?.(errorResult);
+				yield {
+					type: "tool_execution_end",
+					toolCallId,
+					toolName: operation.name,
+					result: errorResult,
+					isError: true,
+				};
+			}
+
+			throwIfAborted();
 		}
+
+		throwIfAborted();
 
 		const finalMessage = this.createAssistantMessage(this.buildFinalText());
 		yield { type: "message_start", message: finalMessage };
 		yield { type: "message_end", message: finalMessage };
 	}
 
-	private createToolCall(toolCallId: string, operation: MockToolOperation): AssistantMessage {
+	private createToolErrorResult(
+		toolCallId: string,
+		operation: MockToolOperation,
+		message: string,
+	): ToolResultMessage {
+		return {
+			role: "toolResult",
+			toolCallId,
+			toolName: operation.name,
+			content: [
+				{
+					type: "text",
+					text: `Error: ${message}`,
+				},
+			],
+			isError: true,
+			timestamp: Date.now(),
+		};
+	}
+
+	private createToolCall(
+		toolCallId: string,
+		operation: MockToolOperation,
+	): AssistantMessage {
 		return {
 			role: "assistant",
 			content: [

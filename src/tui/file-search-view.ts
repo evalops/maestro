@@ -1,9 +1,9 @@
 import chalk from "chalk";
-import { FileSearchComponent } from "./file-search.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 import { getWorkspaceFiles } from "../workspace-files.js";
 import type { CustomEditor } from "./custom-editor.js";
+import { FileSearchComponent } from "./file-search.js";
 
 interface FileSearchViewOptions {
 	editor: CustomEditor;

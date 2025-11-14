@@ -2,8 +2,8 @@ import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
 import { visibleWidth } from "../tui-lib/index.js";
 import {
-	calculateFooterStats,
 	buildStatsLine,
+	calculateFooterStats,
 	formatPath,
 } from "./footer-utils.js";
 
@@ -64,7 +64,7 @@ export class FooterComponent {
 	}
 
 	private renderPathLine(width: number): string {
-		let pathLine = chalk.gray(formatPath(process.cwd(), width));
+		const pathLine = chalk.gray(formatPath(process.cwd(), width));
 		if (!this.activeStage) {
 			return pathLine;
 		}

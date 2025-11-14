@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
@@ -88,13 +88,31 @@ let factoryDataCache:
 	| { config: CustomModelConfig; modelProviderMap: Map<string, string> }
 	| null
 	| undefined;
+const fileSnapshots = new Map<string, { mtimeMs: number; data: string }>();
+
+function readJsonFile(filePath: string): string | null {
+	try {
+		const stats = statSync(filePath);
+		const cached = fileSnapshots.get(filePath);
+		if (cached && cached.mtimeMs === stats.mtimeMs) {
+			return cached.data;
+		}
+		const data = readFileSync(filePath, "utf-8");
+		fileSnapshots.set(filePath, { mtimeMs: stats.mtimeMs, data });
+		return data;
+	} catch {
+		fileSnapshots.delete(filePath);
+		return null;
+	}
+}
 
 function loadConfig(): CustomModelConfig {
 	if (cachedConfig) {
 		return cachedConfig;
 	}
 	const path = configPath();
-	if (!existsSync(path)) {
+	const raw = existsSync(path) ? readJsonFile(path) : null;
+	if (!raw) {
 		const factoryFallback = ensureFactoryData();
 		if (factoryFallback) {
 			cachedConfig = factoryFallback.config;
@@ -104,7 +122,6 @@ function loadConfig(): CustomModelConfig {
 		return cachedConfig;
 	}
 	try {
-		const raw = readFileSync(path, "utf-8");
 		const parsed = configSchema.parse(JSON.parse(raw));
 		cachedConfig = parsed;
 		return parsed;
@@ -183,6 +200,9 @@ export function reloadModelConfig(): void {
 	cachedProviders = null;
 	customProviderMetadata.clear();
 	factoryDataCache = undefined;
+	fileSnapshots.delete(configPath());
+	fileSnapshots.delete(FACTORY_CONFIG_PATH);
+	fileSnapshots.delete(FACTORY_SETTINGS_PATH);
 	loadConfig();
 	getRegisteredModels();
 }
@@ -282,7 +302,10 @@ function buildFactoryData(): {
 		return null;
 	}
 	try {
-		const raw = readFileSync(FACTORY_CONFIG_PATH, "utf-8");
+		const raw = readJsonFile(FACTORY_CONFIG_PATH);
+		if (!raw) {
+			return null;
+		}
 		const parsed = JSON.parse(raw) as FactoryConfigFile;
 		if (!parsed.custom_models?.length) {
 			return null;
@@ -387,11 +410,13 @@ function stripJsonComments(input: string): string {
 }
 
 function readFactorySettingsModel(): string | null {
-	if (!existsSync(FACTORY_SETTINGS_PATH)) {
+	const raw = existsSync(FACTORY_SETTINGS_PATH)
+		? readJsonFile(FACTORY_SETTINGS_PATH)
+		: null;
+	if (!raw) {
 		return null;
 	}
 	try {
-		const raw = readFileSync(FACTORY_SETTINGS_PATH, "utf-8");
 		const sanitized = stripJsonComments(raw);
 		const parsed = JSON.parse(sanitized);
 		if (parsed && typeof parsed.model === "string" && parsed.model.trim()) {

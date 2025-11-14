@@ -92,5 +92,4 @@ export class MessageView {
 			this.addMessage(message as AppMessage);
 		}
 	}
-
 }

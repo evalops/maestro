@@ -27,36 +27,36 @@ import {
 	Spacer,
 	TUI,
 } from "../tui-lib/index.js";
-import type { CommandEntry } from "./commands/types.js";
-import { CustomEditor } from "./custom-editor.js";
-import { DiagnosticsView } from "./diagnostics-view.js";
-import { FooterComponent } from "./footer.js";
-import { GitView } from "./git-view.js";
-import { InstructionPanelComponent } from "./instruction-panel.js";
-import { LoaderView } from "./loader-view.js";
-import { PlanView } from "./plan-view.js";
-import { RunCommandView } from "./run-command-view.js";
-import { ToolStatusView } from "./tool-status-view.js";
+import { AgentEventRouter } from "./agent-event-router.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { buildCommandRegistry } from "./command-registry-builder.js";
-import { FileSearchView } from "./file-search-view.js";
-import { SessionView } from "./session-view.js";
-import { WelcomeAnimation } from "./welcome-animation.js";
-import { ImportExportView } from "./import-view.js";
-import { ToolExecutionComponent } from "./tool-execution.js";
+import type { CommandEntry } from "./commands/types.js";
 import { ConversationCompactor } from "./conversation-compactor.js";
-import { MessageView } from "./message-view.js";
-import { FeedbackView } from "./feedback-view.js";
-import { InfoView } from "./info-view.js";
-import { ToolOutputView } from "./tool-output-view.js";
-import { ThinkingSelectorView } from "./thinking-selector-view.js";
-import { ModelSelectorView } from "./model-selector-view.js";
-import { StreamingView } from "./streaming-view.js";
-import { NotificationView } from "./notification-view.js";
+import { CustomEditor } from "./custom-editor.js";
+import { DiagnosticsView } from "./diagnostics-view.js";
 import { EditorView } from "./editor-view.js";
+import { FeedbackView } from "./feedback-view.js";
+import { FileSearchView } from "./file-search-view.js";
+import { FooterComponent } from "./footer.js";
+import { GitView } from "./git-view.js";
+import { ImportExportView } from "./import-view.js";
+import { InfoView } from "./info-view.js";
+import { InstructionPanelComponent } from "./instruction-panel.js";
+import { LoaderView } from "./loader-view.js";
+import { MessageView } from "./message-view.js";
+import { ModelSelectorView } from "./model-selector-view.js";
+import { NotificationView } from "./notification-view.js";
+import { PlanView } from "./plan-view.js";
+import { RunCommandView } from "./run-command-view.js";
 import { RunController } from "./run-controller.js";
 import { SessionContext } from "./session-context.js";
-import { AgentEventRouter } from "./agent-event-router.js";
+import { SessionView } from "./session-view.js";
+import { StreamingView } from "./streaming-view.js";
+import { ThinkingSelectorView } from "./thinking-selector-view.js";
+import type { ToolExecutionComponent } from "./tool-execution.js";
+import { ToolOutputView } from "./tool-output-view.js";
+import { ToolStatusView } from "./tool-status-view.js";
+import { WelcomeAnimation } from "./welcome-animation.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -91,7 +91,7 @@ export class TuiRenderer {
 	private readonly idleFooterHint =
 		"Try /help for commands or /tools for status";
 	private planHint: string | null = null;
-    private toolOutputView: ToolOutputView;
+	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
 	private slashCommands: SlashCommand[] = [];
 	private commandEntries: CommandEntry[] = [];
@@ -321,7 +321,8 @@ export class TuiRenderer {
 			showStatus: () => this.diagnosticsView.handleStatusCommand(),
 			handleReview: () => this.gitView.handleReviewCommand(),
 			handleUndo: (input) => this.gitView.handleUndoCommand(input),
-			shareFeedback: () => this.feedbackView.handleFeedbackCommand(this.version),
+			shareFeedback: () =>
+				this.feedbackView.handleFeedbackCommand(this.version),
 			handleMention: (input) => this.fileSearchView.handleMentionCommand(input),
 			showHelp: () => this.infoView.showHelp(),
 			handlePlan: (input) => this.planView.handlePlanCommand(input),
@@ -471,7 +472,6 @@ export class TuiRenderer {
 		}
 		return "";
 	}
-
 
 	private applyLoadedSessionContext(): void {
 		const thinking = this.sessionManager.loadThinkingLevel();

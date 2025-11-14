@@ -1,6 +1,9 @@
 import chalk from "chalk";
 import { Container, Spacer, Text } from "../tui-lib/index.js";
-import { createToolRenderer, type ToolRenderer } from "./tool-renderers/index.js";
+import {
+	type ToolRenderer,
+	createToolRenderer,
+} from "./tool-renderers/index.js";
 
 /**
  * Component that renders a tool call with its result (updateable)

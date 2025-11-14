@@ -1,10 +1,16 @@
 import chalk from "chalk";
+import {
+	buildCollapsedSummary,
+	replaceTabs,
+	shortenPath,
+} from "../tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
-import { buildCollapsedSummary, replaceTabs, shortenPath } from "../tool-text-utils.js";
 
 export class WriteRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
-		const path = shortenPath(context.args?.file_path || context.args?.path || "");
+		const path = shortenPath(
+			context.args?.file_path || context.args?.path || "",
+		);
 		const fileContent = context.args?.content || "";
 		const lines = fileContent ? fileContent.split("\n") : [];
 		const totalLines = lines.length;

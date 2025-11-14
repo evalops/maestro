@@ -1,5 +1,5 @@
 import type { TUI } from "../tui-lib/index.js";
-import { ToolExecutionComponent } from "./tool-execution.js";
+import type { ToolExecutionComponent } from "./tool-execution.js";
 
 interface ToolOutputViewOptions {
 	ui: TUI;
@@ -39,9 +39,7 @@ export class ToolOutputView {
 			} else if (arg === "toggle") {
 				nextState = !nextState;
 			} else {
-				this.options.showInfoMessage(
-					"Usage: /compact-tools [on|off|toggle]",
-				);
+				this.options.showInfoMessage("Usage: /compact-tools [on|off|toggle]");
 				return;
 			}
 		}

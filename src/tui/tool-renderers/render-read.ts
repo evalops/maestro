@@ -1,14 +1,16 @@
 import chalk from "chalk";
-import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 import {
 	buildCollapsedSummary,
 	replaceTabs,
 	shortenPath,
 } from "../tool-text-utils.js";
+import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class ReadRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
-		const path = shortenPath(context.args?.file_path || context.args?.path || "");
+		const path = shortenPath(
+			context.args?.file_path || context.args?.path || "",
+		);
 		let text = `${chalk.hex("#7bc7ff")("✦ read")} ${
 			path ? chalk.cyan(path) : chalk.dim("...")
 		}`;

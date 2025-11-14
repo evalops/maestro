@@ -1,8 +1,8 @@
 import { BashRenderer } from "./render-bash.js";
-import { ReadRenderer } from "./render-read.js";
-import { WriteRenderer } from "./render-write.js";
 import { EditRenderer } from "./render-edit.js";
 import { GenericRenderer } from "./render-generic.js";
+import { ReadRenderer } from "./render-read.js";
+import { WriteRenderer } from "./render-write.js";
 import type { ToolRenderer } from "./types.js";
 
 const RENDERERS: Record<string, new () => ToolRenderer> = {

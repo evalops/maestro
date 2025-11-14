@@ -1,14 +1,16 @@
 import chalk from "chalk";
-import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 import {
 	buildCollapsedSummary,
 	generateDiff,
 	shortenPath,
 } from "../tool-text-utils.js";
+import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class EditRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
-		const path = shortenPath(context.args?.file_path || context.args?.path || "");
+		const path = shortenPath(
+			context.args?.file_path || context.args?.path || "",
+		);
 		let text = `${chalk.hex("#fcd5ce")("✧ edit")} ${
 			path ? chalk.cyan(path) : chalk.dim("...")
 		}`;

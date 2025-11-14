@@ -35,10 +35,7 @@ export class StreamingView {
 	finishAssistantMessage(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
 		this.streamingComponent.updateContent(message);
-		if (
-			message.stopReason === "aborted" ||
-			message.stopReason === "error"
-		) {
+		if (message.stopReason === "aborted" || message.stopReason === "error") {
 			const errorMessage =
 				message.stopReason === "aborted"
 					? "Operation aborted"

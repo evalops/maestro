@@ -1,12 +1,12 @@
 import chalk from "chalk";
-import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 import { buildCollapsedSummary } from "../tool-text-utils.js";
+import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class GenericRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
 		const label = context.toolName
 			? `${context.toolName}`
-			: context.args?.name ?? "tool";
+			: (context.args?.name ?? "tool");
 		let text = chalk.bold(`${chalk.hex("#d4d8ff")("✷")} ${label}`);
 		if (context.collapsed) {
 			const combined = [

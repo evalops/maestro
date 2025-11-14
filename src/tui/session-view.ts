@@ -26,9 +26,7 @@ export class SessionView {
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		const state = this.options.agent.state;
 
-		const userMessages = state.messages.filter(
-			(m) => m.role === "user",
-		).length;
+		const userMessages = state.messages.filter((m) => m.role === "user").length;
 		const assistantMessages = state.messages.filter(
 			(m) => m.role === "assistant",
 		).length;
@@ -179,5 +177,4 @@ export class SessionView {
 
 		this.options.showInfoMessage("Usage: /sessions [list|load <number>]");
 	}
-
 }
