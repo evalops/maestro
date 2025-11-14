@@ -30,14 +30,12 @@ import {
 	TUI,
 	Text,
 } from "../tui-lib/index.js";
-import { getWorkspaceFiles } from "../workspace-files.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { CommandPaletteComponent } from "./command-palette.js";
 import { createCommandRegistry } from "./commands/registry.js";
 import type { CommandEntry } from "./commands/types.js";
 import { CustomEditor } from "./custom-editor.js";
 import { DiagnosticsView } from "./diagnostics-view.js";
-import { FileSearchComponent } from "./file-search.js";
 import { FooterComponent } from "./footer.js";
 import { GitView } from "./git-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
@@ -48,6 +46,7 @@ import { RunCommandView } from "./run-command-view.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolStatusView } from "./tool-status-view.js";
+import { FileSearchView } from "./file-search-view.js";
 import { SessionView } from "./session-view.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
@@ -100,8 +99,6 @@ export class TuiRenderer {
 	private compactToolOutputs = false;
 	private toolComponents = new Set<ToolExecutionComponent>();
 	private commandPalette: CommandPaletteComponent | null = null;
-	private fileSearchComponent: FileSearchComponent | null = null;
-	private workspaceFiles: string[] = [];
 	private lastUserMessageText?: string;
 	private lastAssistantMessageText?: string;
 	private currentRunToolNames: string[] = [];
@@ -114,6 +111,7 @@ export class TuiRenderer {
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
 	private diagnosticsView: DiagnosticsView;
+	private fileSearchView: FileSearchView;
 
 	constructor(
 		agent: Agent,
@@ -186,6 +184,13 @@ export class TuiRenderer {
 			gitView: this.gitView,
 			todoStorePath: TODO_STORE_PATH,
 		});
+		this.fileSearchView = new FileSearchView({
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+		});
 
 		const commandRegistry = createCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -203,7 +208,7 @@ export class TuiRenderer {
 				review: () => this.gitView.handleReviewCommand(),
 				undoChanges: (input) => this.gitView.handleUndoCommand(input),
 				shareFeedback: () => this.diagnosticsView.handleFeedbackCommand(),
-				mention: (input) => this.handleMentionCommand(input),
+				mention: (input) => this.fileSearchView.handleMentionCommand(input),
 				help: () => this.handleHelpCommand(),
 				plan: (input) => this.planView.handlePlanCommand(input),
 				preview: (input) => this.gitView.handlePreviewCommand(input),
@@ -271,7 +276,7 @@ export class TuiRenderer {
 				return true;
 			}
 			if (shortcut === "at") {
-				this.showFileSearch();
+				this.fileSearchView.showFileSearch();
 				return true;
 			}
 			return false;
@@ -914,39 +919,6 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 		this.ui.requestRender();
 	}
 
-	private showFileSearch(): void {
-		if (this.fileSearchComponent) return;
-		const files = this.getWorkspaceFileList();
-		if (files.length === 0) {
-			this.showInfoMessage(
-				"No files found. Ensure ripgrep or find is available.",
-			);
-			return;
-		}
-		this.fileSearchComponent = new FileSearchComponent(
-			files,
-			(file) => {
-				this.hideFileSearch();
-				this.editor.insertText(`${file} `);
-				this.ui.requestRender();
-			},
-			() => this.hideFileSearch(),
-		);
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.fileSearchComponent);
-		this.ui.setFocus(this.fileSearchComponent);
-		this.ui.requestRender();
-	}
-
-	private hideFileSearch(): void {
-		if (!this.fileSearchComponent) return;
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.fileSearchComponent = null;
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
-	}
-
 	private handleSessionsCommand(text: string): void {
 		const parts = text.trim().split(/\s+/);
 		const sessions = this.sessionManager.loadAllSessions();
@@ -1009,37 +981,6 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 		this.ui.requestRender();
 	}
 
-	private handleMentionCommand(text: string): void {
-		const files = this.getWorkspaceFileList();
-		if (!files.length) {
-			this.showInfoMessage("Workspace file index is empty.");
-			return;
-		}
-		const query = text.includes(" ")
-			? text.slice(text.indexOf(" ")).trim()
-			: "";
-		const normalized = query.toLowerCase();
-		const matches = files
-			.filter((file) =>
-				normalized ? file.toLowerCase().includes(normalized) : true,
-			)
-			.slice(0, 15);
-		if (!matches.length) {
-			this.showInfoMessage(`No files found matching "${query}".`);
-			return;
-		}
-		const listing = matches
-			.map((file, index) => `${index + 1}. @${file}`)
-			.join("\n");
-		const textBlock = `${chalk.bold("Mention helper")}
-${listing}
-
-Use @ in the editor for the interactive search palette.`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(textBlock, 1, 0));
-		this.ui.requestRender();
-	}
-
 	private handleWhyCommand(): void {
 		const user = this.lastUserMessageText
 			? this.lastUserMessageText
@@ -1062,13 +1003,6 @@ ${response}`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
 		this.ui.requestRender();
-	}
-
-	private getWorkspaceFileList(): string[] {
-		if (!this.workspaceFiles.length) {
-			this.workspaceFiles = getWorkspaceFiles();
-		}
-		return this.workspaceFiles;
 	}
 
 	private handleHelpCommand(): void {
