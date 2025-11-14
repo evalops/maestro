@@ -34,7 +34,6 @@ import {
 	Spacer,
 	TUI,
 	Text,
-	visibleWidth,
 } from "../tui-lib/index.js";
 import { getWorkspaceFiles } from "../workspace-files.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
@@ -47,6 +46,7 @@ import { FileSearchComponent } from "./file-search.js";
 import { FooterComponent } from "./footer.js";
 import { LoaderView } from "./loader-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
+import { PlanView, loadTodoStore } from "./plan-view.js";
 import { ModelSelectorComponent } from "./model-selector.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
@@ -56,18 +56,6 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 const TOOL_FAILURE_LOG_PATH = join(homedir(), ".composer", "tool-failures.log");
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
-const PLAN_STATUS_SYMBOLS = {
-	pending: "[ ]",
-	in_progress: "[~]",
-	completed: "[x]",
-} as const;
-const PLAN_STATUS_LABELS = {
-	pending: "Pending",
-	in_progress: "In Progress",
-	completed: "Completed",
-} as const;
-type PlanStatusKey = keyof typeof PLAN_STATUS_SYMBOLS;
-
 /**
  * TUI renderer for the coding agent
  */
@@ -125,6 +113,7 @@ export class TuiRenderer {
 	private lastNotifiedChanges: string[] = [];
 	private slashCommands: SlashCommand[] = [];
 	private commandEntries: CommandEntry[] = [];
+	private planView: PlanView;
 
 	constructor(
 		agent: Agent,
@@ -149,6 +138,16 @@ export class TuiRenderer {
 			footer: this.footer,
 			telemetryEnabled: this.telemetryStatus.enabled,
 		});
+		this.planView = new PlanView({
+			filePath: TODO_STORE_PATH,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+			setPlanHint: (hint) => {
+				this.planHint = hint;
+				this.refreshFooterHint();
+			},
+		});
 		this.runScripts = this.loadRunScripts();
 
 		const commandRegistry = createCommandRegistry({
@@ -168,7 +167,7 @@ export class TuiRenderer {
 				shareFeedback: () => this.handleFeedbackCommand(),
 				mention: (input) => this.handleMentionCommand(input),
 				help: () => this.handleHelpCommand(),
-				plan: (input) => this.handlePlanCommand(input),
+				plan: (input) => this.planView.handlePlanCommand(input),
 				preview: (input) => this.handlePreviewCommand(input),
 				run: (input) => this.handleRunCommand(input),
 				why: () => this.handleWhyCommand(),
@@ -1426,125 +1425,6 @@ Use @ in the editor for the interactive search palette.`;
 		}
 	}
 
-	private handlePlanCommand(text: string): void {
-		const store = this.loadTodoStore();
-		const goals = Object.keys(store);
-		if (goals.length === 0) {
-			this.showInfoMessage(
-				"No plans found. Use the todo tool in a message to create one.",
-			);
-			this.planHint = null;
-			this.refreshFooterHint();
-			return;
-		}
-		const parts = text.trim().split(/\s+/);
-		if (parts.length === 1) {
-			const summaries = goals.map((goal) => {
-				const entry = store[goal];
-				const counts = this.countTodoStatuses(entry.items);
-				return `${chalk.bold(goal)}\n  Pending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}`;
-			});
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(
-					`${chalk.bold("Plans")}\n${summaries.join(
-						"\n\n",
-					)}\n\nUse /plan <goal> to see details.`,
-					1,
-					0,
-				),
-			);
-			this.ui.requestRender();
-			this.planHint = null;
-			this.refreshFooterHint();
-			return;
-		}
-		const goalQuery = text.slice(text.indexOf(" ") + 1).trim();
-		const goalKey =
-			goals.find((goal) => goal.toLowerCase() === goalQuery.toLowerCase()) ??
-			goals.find((goal) =>
-				goal.toLowerCase().includes(goalQuery.toLowerCase()),
-			);
-		if (!goalKey) {
-			this.showInfoMessage(`No plan found matching "${goalQuery}".`);
-			return;
-		}
-		const entry = store[goalKey];
-		const counts = this.countTodoStatuses(entry.items);
-		const tasks = entry.items.length
-			? entry.items
-					.map((item, index) => {
-						const status = (item.status ?? "pending") as PlanStatusKey;
-						const symbol = PLAN_STATUS_SYMBOLS[status] ?? "[ ]";
-						const lines = [`${index + 1}. ${symbol} ${item.content}`];
-						lines.push(`   • Status: ${PLAN_STATUS_LABELS[status] ?? status}`);
-						lines.push(`   • Priority: ${item.priority ?? "medium"}`);
-						if (item.due) lines.push(`   • Due: ${item.due}`);
-						if (item.blockedBy?.length)
-							lines.push(`   • Blocked by: ${item.blockedBy.join(", ")}`);
-						if (item.notes) lines.push(`   • Notes: ${item.notes}`);
-						return lines.join("\n");
-					})
-					.join("\n\n")
-			: chalk.dim("No tasks yet — add some with the todo tool.");
-		const detail = `${chalk.bold(goalKey)}\nUpdated: ${new Date(entry.updatedAt).toLocaleString()}\nPending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}\n\n${tasks}`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(detail, 1, 0));
-		this.ui.requestRender();
-		const total =
-			counts.pending + counts.in_progress + counts.completed ||
-			entry.items.length;
-		const summary =
-			total > 0 ? `${counts.completed}/${total} done` : "no tasks yet";
-		this.planHint = `${goalKey}: ${summary}`;
-		this.refreshFooterHint();
-	}
-
-	private loadTodoStore(): Record<
-		string,
-		{
-			goal: string;
-			items: Array<{
-				id: string;
-				content: string;
-				status: string;
-				priority: string;
-				notes?: string;
-				due?: string;
-				blockedBy?: string[];
-			}>;
-			updatedAt: string;
-		}
-	> {
-		try {
-			const raw = readFileSync(TODO_STORE_PATH, "utf-8");
-			return JSON.parse(raw);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				return {};
-			}
-			return {};
-		}
-	}
-
-	private countTodoStatuses(
-		items: Array<{ status: string }>,
-	): Record<PlanStatusKey, number> {
-		return items.reduce(
-			(acc, item) => {
-				const key = (item.status ?? "pending") as PlanStatusKey;
-				if (acc[key] !== undefined) {
-					acc[key] += 1;
-				}
-				return acc;
-			},
-			{ pending: 0, in_progress: 0, completed: 0 } as Record<
-				PlanStatusKey,
-				number
-			>,
-		);
-	}
-
 	private async handleRunCommand(text: string): Promise<void> {
 		const parts = text.trim().split(/\s+/);
 		if (parts.length < 2) {
@@ -1795,7 +1675,7 @@ ${lines.join("\n")}`;
 		} catch (_error) {
 			// ignore if git is unavailable
 		}
-		const store = this.loadTodoStore();
+		const store = loadTodoStore(TODO_STORE_PATH);
 		let pending = 0;
 		for (const goal of Object.values(store)) {
 			pending += goal.items.filter(
