@@ -15,7 +15,7 @@ import type {
 	ToolResultMessage,
 } from "../agent/types.js";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
-import { importFactoryConfig } from "../factory-sync.js";
+import { importFactoryConfig } from "../factory/index.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels, reloadModelConfig } from "../models/registry.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";

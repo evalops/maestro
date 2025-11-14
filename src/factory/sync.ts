@@ -1,13 +1,13 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { CustomModelConfig } from "./models/registry.js";
+import type { CustomModelConfig } from "../models/registry.js";
 import {
 	getComposerCustomConfig,
 	getCustomConfigPath,
 	getFactoryConfigPath,
 	getFactorySettingsPath,
 	readFactoryConfigSnapshot,
-} from "./models/registry.js";
+} from "../models/registry.js";
 
 interface FactoryModel {
 	model: string;
@@ -84,13 +84,6 @@ function ensureParentDir(filePath: string): void {
 	mkdirSync(dirname(filePath), { recursive: true });
 }
 
-function countModels(config: CustomModelConfig): number {
-	return config.providers.reduce(
-		(total, provider) => total + provider.models.length,
-		0,
-	);
-}
-
 function writeJsonFile(path: string, value: unknown): void {
 	ensureParentDir(path);
 	writeFileSync(path, JSON.stringify(value, null, 2), "utf-8");
@@ -116,22 +109,11 @@ function loadComposerConfigOrThrow(): CustomModelConfig {
 	return composerConfig;
 }
 
-export interface FactoryImportResult {
-	targetPath: string;
-	providerCount: number;
-	modelCount: number;
-}
-
-export function importFactoryConfig(): FactoryImportResult {
-	const factoryConfig = loadFactoryConfigOrThrow();
-	const targetPath = getCustomConfigPath();
-	writeJsonFile(targetPath, factoryConfig);
-
-	return {
-		targetPath,
-		providerCount: factoryConfig.providers.length,
-		modelCount: countModels(factoryConfig),
-	};
+function countModels(config: CustomModelConfig): number {
+	return config.providers.reduce(
+		(total, provider) => total + provider.models.length,
+		0,
+	);
 }
 
 function toFactoryModels(config: CustomModelConfig): FactoryModel[] {
@@ -153,6 +135,24 @@ function toFactoryModels(config: CustomModelConfig): FactoryModel[] {
 		}
 	}
 	return models;
+}
+
+export interface FactoryImportResult {
+	targetPath: string;
+	providerCount: number;
+	modelCount: number;
+}
+
+export function importFactoryConfig(): FactoryImportResult {
+	const factoryConfig = loadFactoryConfigOrThrow();
+	const targetPath = getCustomConfigPath();
+	writeJsonFile(targetPath, factoryConfig);
+
+	return {
+		targetPath,
+		providerCount: factoryConfig.providers.length,
+		modelCount: countModels(factoryConfig),
+	};
 }
 
 export interface FactoryExportResult {

@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { exportFactoryConfig } from "../factory-sync.js";
+import { exportFactoryConfig } from "../factory/index.js";
 
 async function main(): Promise<void> {
 	try {
