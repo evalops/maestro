@@ -9,6 +9,13 @@ export class WelcomeAnimation extends Container {
 	private intervalId: NodeJS.Timeout | null = null;
 	private textComponent: Text;
 	private onRenderRequest?: () => void;
+	private static readonly orbPalette: { stop: number; color: [number, number, number] }[] = [
+		{ stop: 0, color: [14, 165, 233] }, // cyan
+		{ stop: 0.3, color: [56, 189, 248] }, // sky blue
+		{ stop: 0.55, color: [139, 92, 246] }, // violet
+		{ stop: 0.75, color: [236, 72, 153] }, // pink
+		{ stop: 1, color: [249, 115, 22] }, // amber highlight
+	];
 
 	constructor(onRenderRequest?: () => void) {
 		super();
@@ -33,72 +40,57 @@ export class WelcomeAnimation extends Container {
 		const time = this.frame * 0.1;
 		const lines: string[] = [];
 
-		// Musical staff with flowing notes
-		const width = 60;
-		const height = 17;
-		
-		// Staff lines positions (5 lines like real musical staff)
-		const staffLines = [5, 7, 9, 11, 13];
-		const staffColor = chalk.hex("#8b8b8b");
-		
-		// Musical note characters
-		const notes = ["♪", "♫", "♩", "♬"];
-		
-		// Create multiple flowing notes at different positions/speeds
-		const notePositions = [
-			{ speed: 0.8, offset: 0, verticalWave: 1.2, noteIndex: 0 },
-			{ speed: 1.2, offset: 15, verticalWave: 0.8, noteIndex: 1 },
-			{ speed: 0.6, offset: 30, verticalWave: 1.5, noteIndex: 2 },
-			{ speed: 1.0, offset: 45, verticalWave: 1.0, noteIndex: 3 },
-			{ speed: 0.9, offset: 8, verticalWave: 0.9, noteIndex: 1 },
-		];
+		const width = 64;
+		const height = 22;
+		const centerX = width / 2;
+		const centerY = height / 2 - 1;
+		const baseRadius = Math.min(width, height) * 0.4;
+		const layers = [" ", ".", "·", "°", "o", "O", "@"];
 
-		// Build the frame
 		for (let y = 0; y < height; y++) {
 			let line = "";
-			
+
 			for (let x = 0; x < width; x++) {
 				let char = " ";
-				let color = chalk.gray;
-				
-				// Draw staff lines
-				if (staffLines.includes(y)) {
-					char = "─";
-					color = staffColor;
-				}
-				
-				// Draw flowing notes
-				for (const notePos of notePositions) {
-					// Calculate note position with wrapping
-					const noteX = ((time * notePos.speed * 5 + notePos.offset) % (width + 10)) - 5;
-					
-					// Vertical oscillation
-					const verticalOffset = Math.sin(time * notePos.verticalWave + notePos.offset) * 2;
-					const noteY = 9 + verticalOffset; // Center around middle staff line
-					
-					// Check if note should be drawn at this position
-					if (Math.abs(x - noteX) < 1 && Math.abs(y - noteY) < 0.5) {
-						// Fade in/out based on position
-						const fadeIn = Math.min(1, noteX / 5);
-						const fadeOut = Math.min(1, (width - noteX) / 5);
-						const alpha = Math.min(fadeIn, fadeOut);
-						
-						if (alpha > 0.3) {
-							char = notes[notePos.noteIndex];
-							// Color gradient based on position
-							if (alpha > 0.8) {
-								color = chalk.hex("#ffd6a5");
-							} else if (alpha > 0.6) {
-								color = chalk.hex("#ffb87a");
-							} else if (alpha > 0.4) {
-								color = chalk.hex("#ff9a50");
-							} else {
-								color = chalk.hex("#cc7a40");
-							}
-						}
+				let color: (input: string) => string = (input) => input;
+
+				const dx = (x - centerX) / baseRadius;
+				const dy = (y - centerY) / baseRadius;
+				const distance = Math.sqrt(dx * dx + dy * dy);
+				const angle = Math.atan2(dy, dx);
+
+				const swirl = Math.sin(angle * 3.5 + time * 1.5) * 0.08;
+				const pulse = Math.sin(time * 1.2) * 0.05;
+				const ripple = Math.sin(distance * 8 - time * 3 + angle * 2) * 0.04;
+				let intensity = 1 - (distance + swirl + pulse - ripple);
+				intensity += Math.exp(-distance * 2.5) * 0.3;
+				intensity = Math.max(0, Math.min(1.15, intensity));
+
+				if (intensity > 0.04) {
+					const idx = Math.min(layers.length - 1, Math.floor(intensity * (layers.length - 1)));
+					char = layers[idx];
+					color = chalk.hex(WelcomeAnimation.interpolateGradient(Math.min(1, intensity + 0.2)));
+				} else {
+					const twinkle = Math.sin((x + y) * 0.3 + time * 3);
+					if (twinkle > 0.98) {
+						char = "·";
+						color = chalk.hex("#312e81");
 					}
 				}
-				
+
+				const orbitRadius = 1.05;
+				const orbitWave = Math.sin(time + angle * 2) * 0.03;
+				if (Math.abs(distance - orbitRadius + orbitWave) < 0.02) {
+					char = distance > 1 ? "~" : "≈";
+					color = chalk.hex("#c4b5fd");
+				}
+
+				const highlightBand = Math.abs(distance - 0.35 - Math.sin(time * 2 + angle * 5) * 0.03);
+				if (highlightBand < 0.02) {
+					char = "*";
+					color = chalk.hex("#f472b6");
+				}
+
 				line += color(char);
 			}
 			lines.push(line);
@@ -106,11 +98,11 @@ export class WelcomeAnimation extends Container {
 
 		// Add centered text below
 		lines.push("");
-		const note = chalk.hex("#7c3aed")("♪");
-		const title = chalk.hex("#8b5cf6").bold("composer");
-		const titleWithNote = `${note} ${title}`;
+		const orb = chalk.hex("#f472b6")("◯");
+		const title = chalk.hex("#c4b5fd").bold("composer");
+		const titleWithOrb = `${orb} ${title}`;
 		const subtitle = chalk.hex("#a78bfa")("orchestrating your code");
-		lines.push(this.centerText(titleWithNote, width));
+		lines.push(this.centerText(titleWithOrb, width));
 		lines.push(this.centerText(subtitle, width));
 
 		this.textComponent.setText(lines.join("\n"));
@@ -128,5 +120,39 @@ export class WelcomeAnimation extends Container {
 			clearInterval(this.intervalId);
 			this.intervalId = null;
 		}
+	}
+
+	private static interpolateGradient(value: number): string {
+		const palette = WelcomeAnimation.orbPalette;
+		const clamped = Math.max(0, Math.min(1, value));
+
+		for (let i = 0; i < palette.length - 1; i++) {
+			const current = palette[i];
+			const next = palette[i + 1];
+
+			if (clamped <= next.stop) {
+				const range = next.stop - current.stop || 1;
+				const ratio = (clamped - current.stop) / range;
+				const r = WelcomeAnimation.lerp(current.color[0], next.color[0], ratio);
+				const g = WelcomeAnimation.lerp(current.color[1], next.color[1], ratio);
+				const b = WelcomeAnimation.lerp(current.color[2], next.color[2], ratio);
+				return WelcomeAnimation.rgbToHex(r, g, b);
+			}
+		}
+
+		const last = palette[palette.length - 1];
+		return WelcomeAnimation.rgbToHex(last.color[0], last.color[1], last.color[2]);
+	}
+
+	private static lerp(start: number, end: number, ratio: number): number {
+		return start + (end - start) * ratio;
+	}
+
+	private static rgbToHex(r: number, g: number, b: number): string {
+		const toHex = (value: number) =>
+			Math.max(0, Math.min(255, Math.round(value)))
+				.toString(16)
+				.padStart(2, "0");
+		return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 	}
 }
