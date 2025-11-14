@@ -30,6 +30,12 @@ You: Create a simple Express server in src/server.ts
 
 The agent will use its tools to read, write, and edit files as needed, and execute commands via Bash.
 
+## EvalOps Workflows
+
+- **Run automated evaluations:** `npm run evals` builds the CLI and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Playwright into continuous evaluation pipelines.
+- **Customize scenarios:** add more entries to `evals/scenarios.json` to benchmark additional commands (each scenario can assert against stdout via regular expressions).
+- **Surface telemetry:** set `PLAYWRIGHT_TELEMETRY=true` (or point to a custom `PLAYWRIGHT_TELEMETRY_ENDPOINT`) to stream tool usage and evaluation outcomes into your EvalOps dashboards.
+
 ## API Keys
 
 The CLI supports multiple LLM providers. Set the appropriate environment variable for your chosen provider:
@@ -375,6 +381,16 @@ You can also reference tool READMEs in your `AGENT.md` files to make them automa
 The [exa-search](https://github.com/badlogic/exa-search) tools provide web search capabilities via the Exa API. Built by the agent itself in ~2 minutes. Far from perfect, but functional. Just tell your agent: "Read ~/agent-tools/exa-search/README.md and search for X".
 
 For a detailed walkthrough with more examples, and the reasons for and benefits of this decision, see: https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/
+
+## Telemetry & Dashboards
+
+Playwright ships with an optional telemetry layer so you can analyze tool usage and evaluation health without leaving your EvalOps dashboards. Telemetry is disabled by default.
+
+- `PLAYWRIGHT_TELEMETRY=true` – enable telemetry and write events to `~/.playwright/telemetry.log`.
+- `PLAYWRIGHT_TELEMETRY_FILE=/path/to/log.ndjson` – customise the local log destination.
+- `PLAYWRIGHT_TELEMETRY_ENDPOINT=https://example.com/hook` – POST every event as JSON to your ingestion endpoint.
+
+The payloads capture tool name, success flag, execution duration, and any evaluation results. Transport failures are ignored so telemetry never blocks day-to-day workflows.
 
 ## Security (YOLO by default)
 

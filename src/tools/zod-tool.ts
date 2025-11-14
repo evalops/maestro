@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import type { AgentTool } from "@mariozechner/pi-ai";
 import type { AgentToolResult } from "@mariozechner/pi-ai/dist/agent/types.js";
 import { Type } from "@sinclair/typebox";
@@ -5,6 +6,7 @@ import type { z } from "zod";
 import { ZodError } from "zod";
 import type { JsonSchema7Type } from "zod-to-json-schema";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { recordToolExecution } from "../telemetry.js";
 
 type ExecuteResult<Details> =
 	| AgentToolResult<Details>
@@ -71,7 +73,21 @@ export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 				throw error;
 			}
 
-			return options.execute(toolCallId, parsedParams, signal);
+			const start = performance.now();
+			try {
+				const result = await options.execute(toolCallId, parsedParams, signal);
+				recordToolExecution(options.name, true, performance.now() - start, {
+					toolCallId,
+				});
+				return result;
+			} catch (error: unknown) {
+				recordToolExecution(options.name, false, performance.now() - start, {
+					toolCallId,
+					error:
+						error instanceof Error ? error.message : String(error ?? "unknown"),
+				});
+				throw error;
+			}
 		},
 	};
 }

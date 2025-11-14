@@ -7,3 +7,7 @@ export {
 	readTool,
 	writeTool,
 } from "./tools/index.js";
+export {
+	recordEvaluationResult,
+	recordToolExecution,
+} from "./telemetry.js";

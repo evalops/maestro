@@ -1,0 +1,7 @@
+[
+	{
+		"name": "cli help renders",
+		"args": ["--help"],
+		"expectedRegex": "Playwright v\\d+\\.\\d+\\.\\d+ by EvalOps"
+	}
+]
