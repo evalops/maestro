@@ -25,13 +25,12 @@ import {
 	toSessionModelMetadata,
 } from "../session-manager.js";
 import type { SessionManager } from "../session-manager.js";
-import { getTelemetryStatus, recordLoaderStage } from "../telemetry.js";
+import { getTelemetryStatus } from "../telemetry.js";
 import type { AutocompleteItem, SlashCommand } from "../tui-lib/index.js";
 import {
 	CombinedAutocompleteProvider,
 	type Component,
 	Container,
-	Loader,
 	ProcessTerminal,
 	Spacer,
 	TUI,
@@ -41,24 +40,18 @@ import {
 import { getWorkspaceFiles } from "../workspace-files.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { CommandPaletteComponent } from "./command-palette.js";
-import {
-	type CommandEntry,
-	createCommandRegistry,
-} from "./commands/registry.js";
+import { createCommandRegistry } from "./commands/registry.js";
+import type { CommandEntry } from "./commands/types.js";
 import { CustomEditor } from "./custom-editor.js";
 import { formatDiagnosticsReport } from "./diagnostics.js";
 import { FileSearchComponent } from "./file-search.js";
 import { FooterComponent } from "./footer.js";
+import { LoaderView } from "./loader-view.js";
 import { ModelSelectorComponent } from "./model-selector.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
-
-type LoaderStage = {
-	key: string;
-	label: string;
-};
 
 const TOOL_FAILURE_LOG_PATH = join(homedir(), ".composer", "tool-failures.log");
 const TODO_STORE_PATH =
@@ -90,7 +83,7 @@ export class TuiRenderer {
 	private version: string;
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
-	private loadingAnimation: Loader | null = null;
+	private loaderView: LoaderView;
 	private onInterruptCallback?: () => void;
 	private lastSigintTime = 0;
 
@@ -116,14 +109,6 @@ export class TuiRenderer {
 	// Welcome animation shown before first interaction
 	private welcomeAnimation: WelcomeAnimation | null = null;
 
-	// Loader stage tracking
-	private loaderStages: LoaderStage[] = [];
-	private loaderToolStageMeta = new Map<string, { toolName: string }>();
-	private toolStagesByName = new Map<string, string[]>();
-	private completedToolStages = new Set<string>();
-	private completedStageKeys = new Set<string>();
-	private currentStageKey: string | null = null;
-	private stageStartTime: number | null = null;
 	private readonly idleFooterHint =
 		"Try /help for commands or /tools for status";
 	private planHint: string | null = null;
@@ -158,6 +143,12 @@ export class TuiRenderer {
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.editorContainer.addChild(this.editor); // Start with editor
 		this.footer = new FooterComponent(agent.state);
+		this.loaderView = new LoaderView({
+			ui: this.ui,
+			statusContainer: this.statusContainer,
+			footer: this.footer,
+			telemetryEnabled: this.telemetryStatus.enabled,
+		});
 		this.runScripts = this.loadRunScripts();
 
 		const commandRegistry = createCommandRegistry({
@@ -235,7 +226,7 @@ export class TuiRenderer {
 		// Set up custom key handlers on the editor
 		this.editor.onEscape = () => {
 			// Intercept Escape key when processing
-			if (this.loadingAnimation && this.onInterruptCallback) {
+			if (this.editor.disableSubmit && this.onInterruptCallback) {
 				this.onInterruptCallback();
 			}
 		};
@@ -304,19 +295,8 @@ export class TuiRenderer {
 		switch (event.type) {
 			case "agent_start":
 				this.currentRunToolNames = [];
-				// Show loading animation
 				this.editor.disableSubmit = true;
-				// Stop old loader before clearing
-				if (this.loadingAnimation) {
-					this.loadingAnimation.stop();
-				}
-				this.statusContainer.clear();
-				this.resetLoaderProgressTracking();
-				this.loadingAnimation = new Loader(this.ui, "Planning");
-				this.loadingAnimation.setHint("(esc to interrupt)");
-				this.loadingAnimation.setTitle("Active tasks");
-				this.statusContainer.addChild(this.loadingAnimation);
-				this.updateLoaderStage("planning");
+				this.loaderView.start();
 				this.footer.setHint("Working… press esc to interrupt");
 				this.ui.requestRender();
 				break;
@@ -337,16 +317,9 @@ export class TuiRenderer {
 					this.streamingComponent.updateContent(
 						event.message as AssistantMessage,
 					);
+					this.loaderView.setStreamingActive(true);
+					this.loaderView.maybeTransitionToResponding();
 					this.ui.requestRender();
-					if (this.loadingAnimation) {
-						const noToolStages = this.loaderToolStageMeta.size === 0;
-						const allToolsComplete =
-							this.loaderToolStageMeta.size > 0 &&
-							this.completedToolStages.size === this.loaderToolStageMeta.size;
-						if (noToolStages || allToolsComplete) {
-							this.updateLoaderStage("responding");
-						}
-					}
 				}
 				break;
 
@@ -389,6 +362,7 @@ export class TuiRenderer {
 					break;
 				}
 				if (this.streamingComponent && event.message.role === "assistant") {
+					this.loaderView.setStreamingActive(false);
 					const assistantMsg = event.message as AssistantMessage;
 					this.lastAssistantMessageText = this.extractTextFromAppMessage(
 						event.message,
@@ -423,7 +397,7 @@ export class TuiRenderer {
 					event.message.stopReason &&
 					event.message.stopReason !== "toolUse"
 				) {
-					this.updateLoaderStage("responding");
+					this.loaderView.maybeTransitionToResponding();
 				}
 				this.ui.requestRender();
 				break;
@@ -439,7 +413,10 @@ export class TuiRenderer {
 				break;
 
 			case "tool_execution_start": {
-				this.registerToolStage(event.toolCallId, event.toolName);
+				this.loaderView.registerToolStage(
+					event.toolCallId,
+					event.toolName,
+				);
 				this.currentRunToolNames.push(event.toolName);
 				// Component should already exist from message_update, but create if missing
 				if (!this.pendingTools.has(event.toolCallId)) {
@@ -463,34 +440,17 @@ export class TuiRenderer {
 					this.pendingTools.delete(event.toolCallId);
 					this.ui.requestRender();
 				}
-				this.completedToolStages.add(event.toolCallId);
-				if (
-					this.loaderToolStageMeta.size > 0 &&
-					this.completedToolStages.size === this.loaderToolStageMeta.size
-				) {
-					this.updateLoaderStage("responding");
-				}
+				this.loaderView.markToolComplete(event.toolCallId);
 				break;
 			}
 
 			case "agent_end":
-				// Stop loading animation
-				if (this.loadingAnimation) {
-					if (this.currentStageKey) {
-						this.completedStageKeys.add(this.currentStageKey);
-						this.refreshLoaderProgress();
-						this.loadingAnimation.setProgress(1);
-					}
-					this.loadingAnimation.stop();
-					this.loadingAnimation = null;
-					this.statusContainer.clear();
-				}
+				this.loaderView.finish();
 				if (this.streamingComponent) {
 					this.chatContainer.removeChild(this.streamingComponent);
 					this.streamingComponent = null;
 				}
 				this.pendingTools.clear();
-				this.clearLoaderProgressTracking();
 				this.editor.disableSubmit = false;
 				this.notifyFileChanges();
 				this.refreshFooterHint();
@@ -2025,175 +1985,10 @@ ${lines.join("\n")}`;
 	}
 
 	stop(): void {
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = null;
-		}
+		this.loaderView.stop();
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;
-		}
-	}
-
-	private resetLoaderProgressTracking(): void {
-		this.finalizeStageTiming();
-		this.loaderStages = [
-			{ key: "planning", label: "Planning" },
-			{ key: "responding", label: "Responding" },
-		];
-		this.loaderToolStageMeta.clear();
-		this.toolStagesByName.clear();
-		this.completedToolStages.clear();
-		this.completedStageKeys.clear();
-		this.currentStageKey = null;
-		this.stageStartTime = null;
-		this.footer.setStage(null);
-	}
-
-	private clearLoaderProgressTracking(): void {
-		this.finalizeStageTiming();
-		this.loaderStages = [];
-		this.loaderToolStageMeta.clear();
-		this.toolStagesByName.clear();
-		this.completedToolStages.clear();
-		this.completedStageKeys.clear();
-		this.currentStageKey = null;
-		this.stageStartTime = null;
-		this.footer.setStage(null);
-		if (this.loadingAnimation) {
-			this.loadingAnimation.setProgress(null);
-		}
-	}
-
-	private updateLoaderStage(key: string, labelOverride?: string): void {
-		if (!this.loadingAnimation) return;
-		const now = Date.now();
-		const stageChanged = this.currentStageKey !== key;
-		if (stageChanged && this.currentStageKey && this.stageStartTime) {
-			this.recordStageTiming(this.currentStageKey, now - this.stageStartTime);
-		}
-		const previousStageKey = stageChanged ? this.currentStageKey : null;
-		let index = this.loaderStages.findIndex((stage) => stage.key === key);
-		if (index === -1) {
-			const label = labelOverride ?? this.formatStageLabel(key);
-			this.loaderStages.push({ key, label });
-			index = this.loaderStages.length - 1;
-		} else if (labelOverride) {
-			this.loaderStages[index].label = labelOverride;
-		}
-		if (previousStageKey) {
-			this.completedStageKeys.add(previousStageKey);
-		}
-		const stage = this.loaderStages[index];
-		this.currentStageKey = key;
-		if (stageChanged) {
-			this.stageStartTime = now;
-		}
-		this.loadingAnimation.setStage(
-			stage.label,
-			index + 1,
-			this.loaderStages.length,
-		);
-		this.refreshLoaderProgress();
-		this.footer.setStage(stage.label);
-	}
-
-	private formatStageLabel(key: string): string {
-		if (key === "planning") return "Planning";
-		if (key === "responding") return "Responding";
-		const toolMeta = this.loaderToolStageMeta.get(key);
-		if (toolMeta) {
-			return `Tool · ${toolMeta.toolName}`;
-		}
-		return key;
-	}
-
-	private refreshLoaderProgress(): void {
-		if (!this.loadingAnimation || !this.currentStageKey) return;
-		const total = this.loaderStages.length;
-		if (total === 0) {
-			this.loadingAnimation.setProgress(null);
-			return;
-		}
-		const completedCount = this.loaderStages.reduce((count, stage) => {
-			return this.completedStageKeys.has(stage.key) ? count + 1 : count;
-		}, 0);
-		const currentStageCompleted = this.completedStageKeys.has(
-			this.currentStageKey,
-		);
-		const currentPartial = currentStageCompleted
-			? 0
-			: this.getCurrentStageProgress(this.currentStageKey);
-		if (this.currentStageKey === "responding") {
-			this.loadingAnimation.setProgress(null);
-			return;
-		}
-		const rawProgress = (completedCount + currentPartial) / total;
-		const normalized = Math.min(0.99, Math.max(0, rawProgress));
-		this.loadingAnimation.setProgress(normalized);
-	}
-
-	private getCurrentStageProgress(stageKey: string): number {
-		if (stageKey === "responding") {
-			return this.streamingComponent ? 0.6 : 0.85;
-		}
-		if (stageKey === "planning") {
-			return 0.4;
-		}
-		if (this.loaderToolStageMeta.has(stageKey)) {
-			return this.pendingTools.has(stageKey) ? 0.5 : 0.75;
-		}
-		return 0.3;
-	}
-
-	private registerToolStage(toolCallId: string, toolName: string): void {
-		if (!this.loadingAnimation) return;
-		if (this.loaderToolStageMeta.has(toolCallId)) {
-			this.updateLoaderStage(toolCallId);
-			return;
-		}
-		this.loaderToolStageMeta.set(toolCallId, { toolName });
-		const respondingIndex = this.loaderStages.findIndex(
-			(stage) => stage.key === "responding",
-		);
-		const insertIndex =
-			respondingIndex === -1 ? this.loaderStages.length : respondingIndex;
-		this.loaderStages.splice(insertIndex, 0, {
-			key: toolCallId,
-			label: `Tool · ${toolName}`,
-		});
-		const group = this.toolStagesByName.get(toolName) ?? [];
-		group.push(toolCallId);
-		this.toolStagesByName.set(toolName, group);
-		this.refreshToolStageLabels(toolName);
-		this.updateLoaderStage(toolCallId);
-	}
-
-	private refreshToolStageLabels(toolName: string): void {
-		const entries = this.toolStagesByName.get(toolName);
-		if (!entries || entries.length === 0) return;
-		const total = entries.length;
-		entries.forEach((key, index) => {
-			const label =
-				total > 1
-					? `Tool · ${toolName} (${index + 1}/${total})`
-					: `Tool · ${toolName}`;
-			this.renameStage(key, label);
-		});
-	}
-
-	private renameStage(key: string, label: string): void {
-		const stage = this.loaderStages.find((entry) => entry.key === key);
-		if (!stage) return;
-		stage.label = label;
-		if (this.currentStageKey === key && this.loadingAnimation) {
-			const index = this.loaderStages.findIndex((entry) => entry.key === key);
-			this.loadingAnimation.setStage(
-				label,
-				index + 1,
-				this.loaderStages.length,
-			);
-			this.footer.setStage(label);
 		}
 	}
 
@@ -2207,26 +2002,6 @@ ${lines.join("\n")}`;
 			component.setCollapsed(this.compactToolOutputs);
 		}
 		this.ui.requestRender();
-	}
-
-	private finalizeStageTiming(): void {
-		if (this.currentStageKey && this.stageStartTime) {
-			this.recordStageTiming(
-				this.currentStageKey,
-				Date.now() - this.stageStartTime,
-			);
-		}
-		this.stageStartTime = null;
-	}
-
-	private recordStageTiming(stageKey: string, durationMs: number): void {
-		if (!this.telemetryStatus.enabled) return;
-		const stage = this.loaderStages.find((entry) => entry.key === stageKey);
-		const label = stage?.label ?? stageKey;
-		recordLoaderStage(label, durationMs, {
-			stageKey,
-			stages: this.loaderStages.map((entry) => entry.label),
-		});
 	}
 }
 

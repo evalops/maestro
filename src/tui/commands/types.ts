@@ -1,4 +1,7 @@
-import type { AutocompleteItem, SlashCommand } from "../tui-lib/index.js";
+import type {
+	AutocompleteItem,
+	SlashCommand,
+} from "../../tui-lib/index.js";
 
 export type RunScriptCompletionProvider = (
 	prefix: string,
