@@ -29,7 +29,6 @@ import {
 	Text,
 } from "../tui-lib/index.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
-import { CommandPaletteComponent } from "./command-palette.js";
 import { createCommandRegistry } from "./commands/registry.js";
 import type { CommandEntry } from "./commands/types.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -44,6 +43,7 @@ import { RunCommandView } from "./run-command-view.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolStatusView } from "./tool-status-view.js";
+import { CommandPaletteView } from "./command-palette-view.js";
 import { FileSearchView } from "./file-search-view.js";
 import { SessionView } from "./session-view.js";
 import { UserMessageComponent } from "./user-message.js";
@@ -97,7 +97,7 @@ export class TuiRenderer {
 	private planHint: string | null = null;
 	private compactToolOutputs = false;
 	private toolComponents = new Set<ToolExecutionComponent>();
-	private commandPalette: CommandPaletteComponent | null = null;
+	private commandPaletteView: CommandPaletteView;
 	private lastUserMessageText?: string;
 	private lastAssistantMessageText?: string;
 	private currentRunToolNames: string[] = [];
@@ -190,6 +190,12 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			showInfoMessage: (message) => this.showInfoMessage(message),
+		});
+		this.commandPaletteView = new CommandPaletteView({
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			ui: this.ui,
+			getCommands: () => this.slashCommands,
 		});
 		this.importExportView = new ImportExportView({
 			agent: this.agent,
@@ -896,35 +902,11 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 	}
 
 	private showCommandPalette(): void {
-		if (this.commandPalette) return;
-		this.commandPalette = new CommandPaletteComponent(
-			this.slashCommands,
-			(command) => {
-				this.hideCommandPalette();
-				const current = this.editor.getText().trim();
-				const insertion = `/${command.name} `;
-				if (!current) {
-					this.editor.setText(insertion);
-				} else {
-					this.editor.insertText(insertion);
-				}
-				this.ui.requestRender();
-			},
-			() => this.hideCommandPalette(),
-		);
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.commandPalette);
-		this.ui.setFocus(this.commandPalette);
-		this.ui.requestRender();
+		this.commandPaletteView.showCommandPalette();
 	}
 
 	private hideCommandPalette(): void {
-		if (!this.commandPalette) return;
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.commandPalette = null;
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
+		this.commandPaletteView.hideCommandPalette();
 	}
 
 	private handleSessionsCommand(text: string): void {
