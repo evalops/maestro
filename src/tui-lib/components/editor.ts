@@ -3,7 +3,7 @@ import type { AutocompleteProvider } from "../autocomplete.js";
 import type { Component } from "../tui.js";
 import { SelectList } from "./select-list.js";
 
-export type TextEditorConfig = Record<string, never>;
+export type TextEditorConfig = Record<string, unknown>;
 
 interface EditorState {
 	lines: string[];
