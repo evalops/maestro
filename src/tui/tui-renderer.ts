@@ -55,6 +55,8 @@ import { StreamingView } from "./streaming-view.js";
 import { NotificationView } from "./notification-view.js";
 import { EditorView } from "./editor-view.js";
 import { RunController } from "./run-controller.js";
+import { SessionContext } from "./session-context.js";
+import { AgentEventRouter } from "./agent-event-router.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -91,10 +93,6 @@ export class TuiRenderer {
 	private planHint: string | null = null;
     private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
-	private lastUserMessageText?: string;
-	private lastAssistantMessageText?: string;
-	private currentRunToolNames: string[] = [];
-	private lastRunToolNames: string[] = [];
 	private slashCommands: SlashCommand[] = [];
 	private commandEntries: CommandEntry[] = [];
 	private planView: PlanView;
@@ -114,6 +112,8 @@ export class TuiRenderer {
 	private modelSelectorView: ModelSelectorView;
 	private notificationView: NotificationView;
 	private runController: RunController;
+	private agentEventRouter!: AgentEventRouter;
+	private sessionContext = new SessionContext();
 
 	constructor(
 		agent: Agent,
@@ -243,6 +243,17 @@ export class TuiRenderer {
 			pendingTools: this.pendingTools,
 			toolOutputView: this.toolOutputView,
 		});
+		this.agentEventRouter = new AgentEventRouter({
+			messageView: this.messageView,
+			streamingView: this.streamingView,
+			loaderView: this.loaderView,
+			runController: this.runController,
+			sessionContext: this.sessionContext,
+			extractText: (message) => this.extractTextFromAppMessage(message),
+			clearEditor: () => this.clearEditor(),
+			requestRender: () => this.ui.requestRender(),
+			clearPendingTools: () => this.pendingTools.clear(),
+		});
 		this.importExportView = new ImportExportView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -261,9 +272,10 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			getSlashCommands: () => this.slashCommands,
-			getLastUserMessage: () => this.lastUserMessageText,
-			getLastAssistantMessage: () => this.lastAssistantMessageText,
-			getLastRunToolNames: () => this.lastRunToolNames,
+			getLastUserMessage: () => this.sessionContext.getLastUserMessage(),
+			getLastAssistantMessage: () =>
+				this.sessionContext.getLastAssistantMessage(),
+			getLastRunToolNames: () => this.sessionContext.getLastRunToolNames(),
 		});
 		this.thinkingSelectorView = new ThinkingSelectorView({
 			agent: this.agent,
@@ -395,100 +407,7 @@ export class TuiRenderer {
 			state.model as RegisteredModel,
 		);
 
-		switch (event.type) {
-			case "agent_start":
-				this.currentRunToolNames = [];
-				this.runController.handleAgentStart();
-				break;
-
-			case "message_start":
-				if (event.message.role === "user") {
-					this.lastUserMessageText = this.extractTextFromAppMessage(
-						event.message,
-					);
-					// Show user message immediately and clear editor
-					this.messageView.addMessage(event.message as AppMessage);
-					this.editor.setText("");
-					this.ui.requestRender();
-				} else if (event.message.role === "assistant") {
-					this.streamingView.beginAssistantMessage(
-						event.message as AssistantMessage,
-					);
-					this.loaderView.setStreamingActive(true);
-					this.loaderView.maybeTransitionToResponding();
-					this.ui.requestRender();
-				}
-				break;
-
-			case "message_update":
-				if (event.message.role === "assistant") {
-					this.streamingView.updateAssistantMessage(
-						event.message as AssistantMessage,
-					);
-					this.ui.requestRender();
-				}
-				break;
-
-			case "message_end":
-				// Skip user messages (already shown in message_start)
-				if (event.message.role === "user") {
-					break;
-				}
-				if (event.message.role === "assistant") {
-					this.loaderView.setStreamingActive(false);
-					const assistantMsg = event.message as AssistantMessage;
-					this.lastAssistantMessageText = this.extractTextFromAppMessage(
-						event.message,
-					);
-
-					this.streamingView.finishAssistantMessage(assistantMsg);
-				}
-				if (
-					event.message.role === "assistant" &&
-					event.message.stopReason &&
-					event.message.stopReason !== "toolUse"
-				) {
-					this.loaderView.maybeTransitionToResponding();
-				}
-				this.ui.requestRender();
-				break;
-
-			case "turn_end":
-				this.lastRunToolNames = [...this.currentRunToolNames];
-				this.currentRunToolNames = [];
-				if (event.message.role === "assistant") {
-					this.lastAssistantMessageText = this.extractTextFromAppMessage(
-						event.message,
-					);
-				}
-				break;
-
-			case "tool_execution_start": {
-				this.loaderView.registerToolStage(event.toolCallId, event.toolName);
-				this.currentRunToolNames.push(event.toolName);
-				this.streamingView.ensureToolComponent(
-					event.toolCallId,
-					event.toolName,
-					event.args,
-				);
-				this.ui.requestRender();
-				break;
-			}
-
-			case "tool_execution_end": {
-				this.streamingView.resolveToolResult(event.toolCallId, event.result);
-				this.ui.requestRender();
-				this.loaderView.markToolComplete(event.toolCallId);
-				break;
-			}
-
-			case "agent_end":
-				this.runController.handleAgentEnd(() => {
-					this.streamingView.forceStopStreaming();
-					this.pendingTools.clear();
-				});
-				break;
-		}
+		this.agentEventRouter.handle(event);
 	}
 
 	renderInitialMessages(state: AgentState): void {
