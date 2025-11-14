@@ -12,6 +12,7 @@ import {
 } from "@mariozechner/pi-tui";
 import chalk from "chalk";
 import { exportSessionToHtml } from "../export-html.js";
+import type { RegisteredModel } from "../models/registry.js";
 import type { SessionManager } from "../session-manager.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -527,7 +528,7 @@ export class TuiRenderer {
 	private showModelSelector(): void {
 		// Create model selector with current model
 		this.modelSelector = new ModelSelectorComponent(
-			this.agent.state.model,
+			this.agent.state.model as RegisteredModel,
 			(model) => {
 				// Apply the selected model
 				this.agent.setModel(model);

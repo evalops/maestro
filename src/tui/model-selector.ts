@@ -1,20 +1,7 @@
-import {
-	type Api,
-	type KnownProvider,
-	type Model,
-	getModels,
-	getProviders,
-} from "@mariozechner/pi-ai";
 import { Container, Input, Spacer, Text } from "@mariozechner/pi-tui";
 import chalk from "chalk";
-
-type AnyModel = Model<Api>;
-
-interface ModelItem {
-	provider: KnownProvider;
-	id: string;
-	model: AnyModel;
-}
+import type { RegisteredModel } from "../models/registry.js";
+import { getRegisteredModels } from "../models/registry.js";
 
 /**
  * Component that renders a model selector with search
@@ -22,16 +9,16 @@ interface ModelItem {
 export class ModelSelectorComponent extends Container {
 	private searchInput: Input;
 	private listContainer: Container;
-	private allModels: ModelItem[] = [];
-	private filteredModels: ModelItem[] = [];
+	private allModels: RegisteredModel[] = [];
+	private filteredModels: RegisteredModel[] = [];
 	private selectedIndex = 0;
-	private currentModel: AnyModel;
-	private onSelectCallback: (model: AnyModel) => void;
+	private currentModel: RegisteredModel;
+	private onSelectCallback: (model: RegisteredModel) => void;
 	private onCancelCallback: () => void;
 
 	constructor(
-		currentModel: AnyModel,
-		onSelect: (model: AnyModel) => void,
+		currentModel: RegisteredModel,
+		onSelect: (model: RegisteredModel) => void,
 		onCancel: () => void,
 	) {
 		super();
@@ -50,9 +37,8 @@ export class ModelSelectorComponent extends Container {
 		// Create search input
 		this.searchInput = new Input();
 		this.searchInput.onSubmit = () => {
-			// Enter on search input selects the first filtered item
 			if (this.filteredModels[this.selectedIndex]) {
-				this.handleSelect(this.filteredModels[this.selectedIndex].model);
+				this.handleSelect(this.filteredModels[this.selectedIndex]);
 			}
 		};
 		this.addChild(this.searchInput);
@@ -73,25 +59,14 @@ export class ModelSelectorComponent extends Container {
 	}
 
 	private loadModels(): void {
-		const models: ModelItem[] = [];
-		const providers = getProviders() as KnownProvider[];
-
-		for (const provider of providers) {
-			const providerModels = getModels(provider) as AnyModel[];
-			for (const model of providerModels) {
-				models.push({ provider, id: model.id, model });
-			}
-		}
-
-		// Sort: current model first, then by provider
+		const models = getRegisteredModels();
 		models.sort((a, b) => {
-			const aIsCurrent = this.currentModel?.id === a.model.id;
-			const bIsCurrent = this.currentModel?.id === b.model.id;
+			const aIsCurrent = this.currentModel?.id === a.id;
+			const bIsCurrent = this.currentModel?.id === b.id;
 			if (aIsCurrent && !bIsCurrent) return -1;
 			if (!aIsCurrent && bIsCurrent) return 1;
-			return a.provider.localeCompare(b.provider);
+			return a.providerName.localeCompare(b.providerName);
 		});
-
 		this.allModels = models;
 		this.filteredModels = models;
 	}
@@ -104,10 +79,13 @@ export class ModelSelectorComponent extends Container {
 				.toLowerCase()
 				.split(/\s+/)
 				.filter((t) => t);
-			this.filteredModels = this.allModels.filter(({ provider, id, model }) => {
-				const searchText = `${provider} ${id} ${model.name}`.toLowerCase();
-				return searchTokens.every((token) => searchText.includes(token));
-			});
+			this.filteredModels = this.allModels.filter(
+				({ providerName, id, name, source }) => {
+					const searchText =
+						`${providerName} ${id} ${name ?? ""} ${source}`.toLowerCase();
+					return searchTokens.every((token) => searchText.includes(token));
+				},
+			);
 		}
 
 		this.selectedIndex = Math.min(
@@ -133,24 +111,23 @@ export class ModelSelectorComponent extends Container {
 			this.filteredModels.length,
 		);
 
-		// Show visible slice of filtered models
 		for (let i = startIndex; i < endIndex; i++) {
 			const item = this.filteredModels[i];
 			if (!item) continue;
 
 			const isSelected = i === this.selectedIndex;
-			const isCurrent = this.currentModel?.id === item.model.id;
+			const isCurrent = this.currentModel?.id === item.id;
 
 			let line = "";
 			if (isSelected) {
 				const prefix = chalk.blue("→ ");
 				const modelText = `${item.id}`;
-				const providerBadge = chalk.gray(`[${item.provider}]`);
+				const providerBadge = chalk.gray(`[${item.providerName}]`);
 				const checkmark = isCurrent ? chalk.green(" ✓") : "";
 				line = `${prefix}${chalk.blue(modelText)} ${providerBadge}${checkmark}`;
 			} else {
 				const modelText = `  ${item.id}`;
-				const providerBadge = chalk.gray(`[${item.provider}]`);
+				const providerBadge = chalk.gray(`[${item.providerName}]`);
 				const checkmark = isCurrent ? chalk.green(" ✓") : "";
 				line = `${modelText} ${providerBadge}${checkmark}`;
 			}
@@ -158,7 +135,6 @@ export class ModelSelectorComponent extends Container {
 			this.listContainer.addChild(new Text(line, 0, 0));
 		}
 
-		// Add scroll indicator if needed
 		if (startIndex > 0 || endIndex < this.filteredModels.length) {
 			const scrollInfo = chalk.gray(
 				`  (${this.selectedIndex + 1}/${this.filteredModels.length})`,
@@ -166,7 +142,6 @@ export class ModelSelectorComponent extends Container {
 			this.listContainer.addChild(new Text(scrollInfo, 0, 0));
 		}
 
-		// Show "no results" if empty
 		if (this.filteredModels.length === 0) {
 			this.listContainer.addChild(
 				new Text(chalk.gray("  No matching models"), 0, 0),
@@ -192,7 +167,7 @@ export class ModelSelectorComponent extends Container {
 		else if (keyData === "\r") {
 			const selectedModel = this.filteredModels[this.selectedIndex];
 			if (selectedModel) {
-				this.handleSelect(selectedModel.model);
+				this.handleSelect(selectedModel);
 			}
 		}
 		// Escape
@@ -206,7 +181,7 @@ export class ModelSelectorComponent extends Container {
 		}
 	}
 
-	private handleSelect(model: AnyModel): void {
+	private handleSelect(model: RegisteredModel): void {
 		this.onSelectCallback(model);
 	}
 

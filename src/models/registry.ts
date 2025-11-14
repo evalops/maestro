@@ -60,7 +60,7 @@ export type CustomModelConfig = z.infer<typeof configSchema>;
 export type CustomProvider = z.infer<typeof providerSchema>;
 export type CustomModel = z.infer<typeof modelSchema>;
 
-interface RegisteredModel extends Model<Api> {
+export interface RegisteredModel extends Model<Api> {
 	providerName: string;
 	source: "builtin" | "custom";
 }

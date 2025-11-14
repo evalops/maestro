@@ -23,9 +23,17 @@ process.emit = (event, ...args) => {
 	return originalEmit.apply(process, [event, ...args]);
 };
 
-import { main } from "./main.js";
+const resolveEntry = () => (process.versions?.bun ? "./main.ts" : "./main.js");
 
-main(process.argv.slice(2)).catch((err) => {
-	console.error(err);
-	process.exit(1);
-});
+const run = async () => {
+	try {
+		const modulePath = resolveEntry();
+		const { main } = await import(modulePath);
+		await main(process.argv.slice(2));
+	} catch (err) {
+		console.error(err);
+		process.exit(1);
+	}
+};
+
+await run();

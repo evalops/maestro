@@ -23,7 +23,7 @@ import {
 	reloadModelConfig,
 	resolveModel,
 } from "./models/registry.js";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 
@@ -389,6 +389,14 @@ export async function main(args: string[]) {
 			if (sessionManager.shouldInitializeSession(agent.state.messages)) {
 				sessionManager.startSession(agent.state);
 			}
+		}
+
+		if (event.type === "model_change") {
+			const model = agent.state.model as RegisteredModel;
+			sessionManager.saveModelChange(
+				`${model.provider}/${model.id}`,
+				toSessionModelMetadata(model),
+			);
 		}
 	});
 

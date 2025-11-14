@@ -10,6 +10,8 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentState } from "@mariozechner/pi-agent";
+import { getRegisteredModels } from "./models/registry.js";
+import type { RegisteredModel } from "./models/registry.js";
 
 function uuidv4(): string {
 	const bytes = randomBytes(16);
@@ -25,6 +27,7 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	model: string;
+	modelMetadata?: SessionModelMetadata;
 	thinkingLevel: string;
 }
 
@@ -44,6 +47,45 @@ export interface ModelChangeEntry {
 	type: "model_change";
 	timestamp: string;
 	model: string;
+	modelMetadata?: SessionModelMetadata;
+}
+
+export interface SessionModelMetadata {
+	provider: string;
+	modelId: string;
+	providerName?: string;
+	name?: string;
+	baseUrl?: string;
+	reasoning?: boolean;
+	contextWindow?: number;
+	maxTokens?: number;
+	source?: "builtin" | "custom";
+}
+
+export function toSessionModelMetadata(
+	model: RegisteredModel,
+): SessionModelMetadata {
+	return {
+		provider: model.provider,
+		modelId: model.id,
+		providerName: model.providerName,
+		name: model.name,
+		baseUrl: model.baseUrl,
+		reasoning: model.reasoning,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+		source: model.source,
+	};
+}
+
+function findRegisteredModel(modelKey: string): RegisteredModel | undefined {
+	const [provider, modelId] = modelKey.split("/");
+	if (!provider || !modelId) {
+		return undefined;
+	}
+	return getRegisteredModels().find(
+		(entry) => entry.provider === provider && entry.id === modelId,
+	);
 }
 
 export class SessionManager {
@@ -149,12 +191,21 @@ export class SessionManager {
 		if (!this.enabled || this.sessionInitialized) return;
 		this.sessionInitialized = true;
 
+		const modelKey = `${state.model.provider}/${state.model.id}`;
+		const primaryMetadata = toSessionModelMetadata(
+			state.model as RegisteredModel,
+		);
+		const fallbackModel = findRegisteredModel(modelKey);
+		const fallbackMetadata = fallbackModel
+			? toSessionModelMetadata(fallbackModel)
+			: undefined;
 		const entry: SessionHeader = {
 			type: "session",
 			id: this.sessionId,
 			timestamp: new Date().toISOString(),
 			cwd: process.cwd(),
-			model: `${state.model.provider}/${state.model.id}`,
+			model: modelKey,
+			modelMetadata: primaryMetadata ?? fallbackMetadata,
 			thinkingLevel: state.thinkingLevel,
 		};
 		appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
@@ -196,12 +247,13 @@ export class SessionManager {
 		}
 	}
 
-	saveModelChange(model: string): void {
+	saveModelChange(model: string, metadata?: SessionModelMetadata): void {
 		if (!this.enabled) return;
 		const entry: ModelChangeEntry = {
 			type: "model_change",
 			timestamp: new Date().toISOString(),
 			model,
+			modelMetadata: metadata,
 		};
 
 		if (!this.sessionInitialized) {
@@ -278,6 +330,27 @@ export class SessionManager {
 		}
 
 		return lastModel;
+	}
+
+	loadModelMetadata(): SessionModelMetadata | undefined {
+		if (!existsSync(this.sessionFile)) return undefined;
+
+		const lines = readFileSync(this.sessionFile, "utf8").trim().split("\n");
+
+		let metadata: SessionModelMetadata | undefined;
+		for (const line of lines) {
+			try {
+				const entry = JSON.parse(line);
+				if (entry.type === "session" && entry.modelMetadata) {
+					metadata = entry.modelMetadata;
+				} else if (entry.type === "model_change" && entry.modelMetadata) {
+					metadata = entry.modelMetadata;
+				}
+			} catch {
+				// Ignore malformed
+			}
+		}
+		return metadata;
 	}
 
 	getSessionId(): string {
