@@ -210,6 +210,11 @@ export class TuiRenderer {
 			description: "Preview git diff for a file",
 		};
 
+		const diffCommand: SlashCommand = {
+			name: "diff",
+			description: "Show git diff for a file",
+		};
+
 		const whyCommand: SlashCommand = {
 			name: "why",
 			description: "Explain the last response/tools used",
@@ -253,6 +258,7 @@ export class TuiRenderer {
 			bugCommand,
 			planCommand,
 			previewCommand,
+			diffCommand,
 			runCommand,
 			whyCommand,
 			helpCommand,
@@ -389,7 +395,7 @@ export class TuiRenderer {
 					return;
 				}
 
-				if (trimmed.startsWith("/preview")) {
+				if (trimmed.startsWith("/preview") || trimmed.startsWith("/diff")) {
 					void this.handlePreviewCommand(trimmed);
 					this.editor.setText("");
 					return;
