@@ -53,6 +53,7 @@ import { ToolOutputView } from "./tool-output-view.js";
 import { ThinkingSelectorView } from "./thinking-selector-view.js";
 import { ModelSelectorView } from "./model-selector-view.js";
 import { StreamingView } from "./streaming-view.js";
+import { NotificationView } from "./notification-view.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -111,6 +112,7 @@ export class TuiRenderer {
 	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
 	private modelSelectorView: ModelSelectorView;
+	private notificationView: NotificationView;
 
 	constructor(
 		agent: Agent,
@@ -129,6 +131,10 @@ export class TuiRenderer {
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.editorContainer.addChild(this.editor); // Start with editor
 		this.footer = new FooterComponent(agent.state);
+		this.notificationView = new NotificationView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+		});
 		this.loaderView = new LoaderView({
 			ui: this.ui,
 			statusContainer: this.statusContainer,
@@ -139,7 +145,7 @@ export class TuiRenderer {
 			filePath: TODO_STORE_PATH,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			setPlanHint: (hint) => {
 				this.planHint = hint;
 				this.refreshFooterHint();
@@ -148,19 +154,20 @@ export class TuiRenderer {
 		this.runCommandView = new RunCommandView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.gitView = new GitView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			showInfoMessage: (message) => this.showInfoMessage(message),
-			showToast: (message, tone) => this.showToast(message, tone),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			showToast: (message, tone) =>
+				this.notificationView.showToast(message, tone),
 		});
 		this.toolStatusView = new ToolStatusView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			getTools: () => this.agent.state.tools,
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.sessionView = new SessionView({
 			agent: this.agent,
@@ -168,12 +175,12 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			onSessionLoaded: (sessionInfo) => {
-		this.toolOutputView.clearTrackedComponents();
+				this.toolOutputView.clearTrackedComponents();
 				this.renderInitialMessages(this.agent.state);
 				this.footer.updateState(this.agent.state);
-				this.showInfoMessage(
+				this.notificationView.showInfo(
 					`Loaded session ${sessionInfo.id} (${sessionInfo.messageCount} messages).`,
 				);
 			},
@@ -197,7 +204,7 @@ export class TuiRenderer {
 			editorContainer: this.editorContainer,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.commandPaletteView = new CommandPaletteView({
 			editor: this.editor,
@@ -207,7 +214,7 @@ export class TuiRenderer {
 		});
 		this.toolOutputView = new ToolOutputView({
 			ui: this.ui,
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.messageView = new MessageView({
 			chatContainer: this.chatContainer,
@@ -227,7 +234,7 @@ export class TuiRenderer {
 			sessionManager: this.sessionManager,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
 		});
 		this.feedbackView = new FeedbackView({
@@ -250,7 +257,7 @@ export class TuiRenderer {
 			editor: this.editor,
 			editorContainer: this.editorContainer,
 			ui: this.ui,
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.modelSelectorView = new ModelSelectorView({
 			agent: this.agent,
@@ -258,19 +265,19 @@ export class TuiRenderer {
 			editor: this.editor,
 			editorContainer: this.editorContainer,
 			ui: this.ui,
-			showInfoMessage: (message) => this.showInfoMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.conversationCompactor = new ConversationCompactor({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
-            chatContainer: this.chatContainer,
-            ui: this.ui,
-            footer: this.footer,
-            idleHint: this.idleFooterHint,
-            toolComponents: this.toolOutputView.getTrackedComponents(),
-            renderMessages: () => this.renderInitialMessages(this.agent.state),
-            showInfoMessage: (message) => this.showInfoMessage(message),
-        });
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			footer: this.footer,
+			idleHint: this.idleFooterHint,
+			toolComponents: this.toolOutputView.getTrackedComponents(),
+			renderMessages: () => this.renderInitialMessages(this.agent.state),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+		});
 
 		const commandRegistry = createCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -562,38 +569,13 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
-	public showInfoMessage(text: string): void {
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(chalk.dim(text), 1, 0));
-		this.ui.requestRender();
-	}
-
 	showError(errorMessage: string): void {
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(
-			new Text(chalk.red(`Error: ${errorMessage}`), 1, 0),
-		);
-		this.ui.requestRender();
+		this.notificationView.showError(errorMessage);
 	}
 
 	public refreshFooterHint(): void {
 		const suffix = this.planHint ? ` • Plan ${this.planHint}` : "";
 		this.footer.setHint(`${this.idleFooterHint}${suffix}`);
-	}
-
-	public showToast(
-		text: string,
-		tone: "info" | "warn" | "success" = "info",
-	): void {
-		const color =
-			tone === "warn"
-				? chalk.hex("#f97316")
-				: tone === "success"
-					? chalk.hex("#10b981")
-					: chalk.hex("#38bdf8");
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(color(`ℹ ${text}`), 1, 0));
-		this.ui.requestRender();
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {
