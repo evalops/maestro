@@ -147,10 +147,26 @@ export class ToolExecutionComponent extends Container {
 		this.toolName = toolName;
 		this.args = args;
 		this.addChild(new Spacer(1));
+		this.addChild(new Text(this.buildTopLine(), 1, 0));
 		// Content with colored background and padding
 		this.contentText = new Text("", 1, 1, { r: 34, g: 36, b: 48 });
 		this.addChild(this.contentText);
+		this.addChild(new Text(this.buildBottomLine(), 1, 0));
 		this.updateDisplay();
+	}
+
+	private buildTopLine(): string {
+		const label = this.toolName.toUpperCase();
+		const accent = "#475569";
+		const width = 50;
+		const dashCount = Math.max(0, width - (label.length + 4));
+		return chalk.hex(accent)(`╭ ${label} ${"─".repeat(dashCount)}╮`);
+	}
+
+	private buildBottomLine(): string {
+		const accent = "#475569";
+		const width = 50;
+		return chalk.hex(accent)(`╰${"─".repeat(width - 2)}╯`);
 	}
 
 	updateArgs(args: any): void {

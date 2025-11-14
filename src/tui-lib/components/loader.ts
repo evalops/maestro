@@ -22,6 +22,7 @@ export class Loader extends Text {
 	private stageInfo: { step: number; total: number } | null = null;
 	private hint: string | null = null;
 	private progressPercent: number | null = null;
+	private title: string | null = null;
 
 	constructor(ui: TUI, message: string = "Loading...") {
 		super("", 1, 0);
@@ -63,6 +64,11 @@ export class Loader extends Text {
 
 	setHint(hint: string | null): void {
 		this.hint = hint;
+		this.updateDisplay();
+	}
+
+	setTitle(title: string | null): void {
+		this.title = title;
 		this.updateDisplay();
 	}
 
@@ -128,7 +134,11 @@ export class Loader extends Text {
 	private updateDisplay(): void {
 		const spinner = this.spinnerFrames[this.currentFrame];
 		const spinnerGlyph = chalk.hex(spinner.color)(spinner.glyph);
+		const titlePart = this.title
+			? `${chalk.hex("#b3b8ff")(this.title.toUpperCase())} `
+			: "";
 		const parts = [
+			titlePart ? titlePart.trim() : "",
 			spinnerGlyph,
 			this.formatMessage(),
 			this.formatStepInfo(),

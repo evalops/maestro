@@ -8,6 +8,7 @@ import chalk from "chalk";
 export class FooterComponent {
 	private state: AgentState;
 	private activeStage: string | null = null;
+	private statusHint: string | null = null;
 
 	constructor(state: AgentState) {
 		this.state = state;
@@ -19,6 +20,10 @@ export class FooterComponent {
 
 	setStage(stage: string | null): void {
 		this.activeStage = stage;
+	}
+
+	setHint(hint: string | null): void {
+		this.statusHint = hint;
 	}
 
 	render(width: number): string[] {
@@ -170,8 +175,17 @@ export class FooterComponent {
 			}
 		}
 
-		// Return two lines: pwd+stage and stats
-		return [pathLine, chalk.gray(statsLine)];
+		const lines = [pathLine, chalk.gray(statsLine)];
+		if (this.statusHint) {
+			const hintLabel = this.truncateToWidth(
+				`tip: ${this.statusHint}`,
+				width,
+			);
+			lines.push(chalk.hex("#94a3b8")(hintLabel));
+		}
+
+		// Return lines with optional hint
+		return lines;
 	}
 
 	private truncateToWidth(text: string, width: number): string {

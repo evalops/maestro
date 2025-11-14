@@ -3,7 +3,9 @@ import type {
 	AgentEvent,
 	AgentState,
 	AssistantMessage,
+	AppMessage,
 	Message,
+	ToolResultMessage,
 } from "../agent/types.js";
 import type { SlashCommand } from "../tui-lib/index.js";
 import {
@@ -14,6 +16,8 @@ import {
 	Spacer,
 	TUI,
 	Text,
+	visibleWidth,
+	type Component,
 } from "../tui-lib/index.js";
 import chalk from "chalk";
 import { exportSessionToHtml } from "../export-html.js";
@@ -90,6 +94,7 @@ export class TuiRenderer {
 	private completedStageKeys = new Set<string>();
 	private currentStageKey: string | null = null;
 	private stageStartTime: number | null = null;
+	private readonly idleFooterHint = "Use /model or /thinking to tune replies";
 
 	constructor(
 		agent: Agent,
@@ -135,6 +140,16 @@ export class TuiRenderer {
 			description: "Show provider/model/API key diagnostics",
 		};
 
+		const compactCommand: SlashCommand = {
+			name: "compact",
+			description: "Summarize older messages to reclaim context",
+		};
+
+		const quitCommand: SlashCommand = {
+			name: "quit",
+			description: "Exit composer (same as ctrl+c twice)",
+		};
+
 		// Setup autocomplete for file paths and slash commands
 		const autocompleteProvider = new CombinedAutocompleteProvider(
 			[
@@ -143,6 +158,8 @@ export class TuiRenderer {
 				exportCommand,
 				sessionCommand,
 				diagnosticsCommand,
+				compactCommand,
+				quitCommand,
 			],
 			process.cwd(),
 		);
@@ -160,23 +177,12 @@ export class TuiRenderer {
 	async init(): Promise<void> {
 		if (this.isInitialized) return;
 
-		// Add header with logo and instructions
-		const logo =
-			chalk.hex("#a5b4fc")("╔═ composer ═╗") +
-			chalk.dim(` v${this.version} · EvalOps`);
-		const instructions = [
-			`${chalk.hex("#f1c0e8")("· esc ")}${chalk.gray("interrupt")}`,
-			`${chalk.hex("#f1c0e8")("· ctrl+c ")}${chalk.gray("clear")}`,
-			`${chalk.hex("#f1c0e8")("· ctrl+c×2 ")}${chalk.gray("exit")}`,
-			`${chalk.hex("#f1c0e8")("· ctrl+k ")}${chalk.gray("delete line")}`,
-			`${chalk.hex("#f1c0e8")("· / ")}${chalk.gray("commands")}`,
-			`${chalk.hex("#f1c0e8")("· drop ")}${chalk.gray("attach files")}`,
-		].join("\n");
-		const header = new Text(`${logo}\n${instructions}`, 1, 0);
+		// Add framed header with quick shortcuts
+		const headerPanel = new InstructionPanelComponent(this.version);
 
 		// Setup UI layout
 		this.ui.addChild(new Spacer(1));
-		this.ui.addChild(header);
+		this.ui.addChild(headerPanel);
 		this.ui.addChild(new Spacer(1));
 		
 		// Show welcome animation initially
@@ -187,6 +193,7 @@ export class TuiRenderer {
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(this.editorContainer); // Use container that can hold editor or selector
+		this.footer.setHint(this.idleFooterHint);
 		this.ui.addChild(this.footer);
 		this.ui.setFocus(this.editor);
 
@@ -251,6 +258,17 @@ export class TuiRenderer {
 				return;
 			}
 
+			if (trimmed === "/compact") {
+				this.handleCompactCommand();
+				this.editor.setText("");
+				return;
+			}
+
+			if (trimmed === "/quit" || trimmed === "/exit") {
+				this.stop();
+				process.exit(0);
+			}
+
 			if (this.onInputCallback) {
 				this.onInputCallback(trimmed);
 			}
@@ -287,8 +305,10 @@ export class TuiRenderer {
 					"Planning",
 				);
 				this.loadingAnimation.setHint("(esc to interrupt)");
+				this.loadingAnimation.setTitle("Active tasks");
 				this.statusContainer.addChild(this.loadingAnimation);
 				this.updateLoaderStage("planning");
+				this.footer.setHint("Working… press esc to interrupt");
 				this.ui.requestRender();
 				break;
 
@@ -445,6 +465,7 @@ export class TuiRenderer {
 				this.pendingTools.clear();
 				this.clearLoaderProgressTracking();
 				this.editor.disableSubmit = false;
+				this.footer.setHint(this.idleFooterHint);
 				this.ui.requestRender();
 				break;
 		}
@@ -585,6 +606,123 @@ export class TuiRenderer {
 			this.clearEditor();
 			this.lastSigintTime = now;
 		}
+	}
+
+	private handleCompactCommand(): void {
+		const messages = [...this.agent.state.messages];
+		const keepCount = 6;
+		if (messages.length <= keepCount + 1) {
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(
+				new Text(
+					chalk.dim("Not enough history to compact. Keep chatting!"),
+					1,
+					0,
+				),
+			);
+			this.ui.requestRender();
+			return;
+		}
+
+		const boundary = Math.max(0, messages.length - keepCount);
+		const older = messages.slice(0, boundary);
+		if (!older.length) {
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(
+				new Text(
+					chalk.dim("No earlier messages to compact."),
+					1,
+					0,
+				),
+			);
+			this.ui.requestRender();
+			return;
+		}
+
+		const summary = this.buildCompactSummary(older);
+		const summaryMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: summary }],
+			api: this.agent.state.model.api,
+			provider: this.agent.state.model.provider,
+			model: this.agent.state.model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+
+		const keep = messages.slice(boundary);
+		const newMessages = [summaryMessage, ...keep];
+		this.agent.replaceMessages(newMessages as any);
+		this.sessionManager.saveMessage(summaryMessage);
+
+		// Rerender chat with compacted history
+		this.chatContainer.clear();
+		this.renderInitialMessages(this.agent.state);
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(
+			new Text(
+				chalk.hex("#94a3b8")(
+					`Compacted ${older.length} message$${older.length === 1 ? "" : "s"} into a summary.`,
+				),
+				1,
+				0,
+			),
+		);
+		this.ui.requestRender();
+	}
+
+	private buildCompactSummary(messages: Message[]): string {
+		const lines: string[] = [];
+		let exchange = 1;
+		for (const message of messages) {
+			const text = this.extractPlainText(message).trim();
+			if (!text) continue;
+			const truncated = this.truncateText(text, 180);
+			if (message.role === "user") {
+				lines.push(`• User ${exchange}: ${truncated}`);
+			} else if (message.role === "assistant") {
+				lines.push(`  ↳ Assistant: ${truncated}`);
+				exchange += 1;
+			} else if (message.role === "toolResult") {
+				lines.push(
+					`  ↳ Tool ${(message as ToolResultMessage).toolName}: ${this.truncateText(
+						this.extractPlainText(message),
+						160,
+					)}`,
+				);
+			}
+			if (lines.length >= 32) break;
+		}
+		if (!lines.length) {
+			return "(conversation summary placeholder: no textual content to compact)";
+		}
+		return `Conversation summary generated at ${new Date().toLocaleString()}\n${lines.join("\n")}`;
+	}
+
+	private extractPlainText(message: Message): string {
+		if ((message as any).content === undefined) return "";
+		if (typeof (message as any).content === "string") {
+			return (message as any).content as string;
+		}
+		if (Array.isArray((message as any).content)) {
+			return (message as any).content
+				.filter((block: any) => block.type === "text")
+				.map((block: any) => block.text)
+				.join("\n");
+		}
+		return "";
+	}
+
+	private truncateText(text: string, limit = 160): string {
+		if (text.length <= limit) return text;
+		return `${text.slice(0, limit - 1).trim()}…`;
 	}
 
 	clearEditor(): void {
@@ -843,6 +981,7 @@ export class TuiRenderer {
 		}
 	}
 
+
 	private resetLoaderProgressTracking(): void {
 		this.finalizeStageTiming();
 		this.loaderStages = [
@@ -1011,5 +1150,73 @@ export class TuiRenderer {
 			stageKey,
 			stages: this.loaderStages.map((entry) => entry.label),
 		});
+	}
+}
+
+class InstructionPanelComponent implements Component {
+	private shortcuts = [
+		{ keys: "esc", desc: "interrupt" },
+		{ keys: "ctrl+c", desc: "clear" },
+		{ keys: "ctrl+c×2", desc: "exit" },
+		{ keys: "ctrl+k", desc: "delete line" },
+		{ keys: "/ command", desc: "commands" },
+		{ keys: "drop", desc: "attach files" },
+	];
+
+	constructor(private version: string) {}
+
+	render(width: number): string[] {
+		const panelWidth = this.calculateWidth(width);
+		const innerWidth = Math.max(1, panelWidth - 4);
+		const top = chalk.hex("#8b5cf6")(`╭${"─".repeat(panelWidth - 2)}╮`);
+		const title = this.centerText(
+			`composer v${this.version} · EvalOps`,
+			innerWidth,
+		);
+		const titleLine = `${chalk.hex("#8b5cf6")("│ ")}${chalk
+			.hex("#e2e8f0")
+			.bold(title)}${chalk.hex("#8b5cf6")(" │")}`;
+		const separator = chalk.hex("#8b5cf6")(
+			`├${"─".repeat(panelWidth - 2)}┤`,
+		);
+		const keyWidth = Math.min(16, Math.max(10, Math.floor(innerWidth * 0.4)));
+		const descWidth = Math.max(8, innerWidth - keyWidth - 1);
+		const rows = this.shortcuts.map(({ keys, desc }) => {
+			const keyLabel = chalk
+				.hex("#f1c0e8")
+				.bold(this.padText(keys, keyWidth));
+			const descLabel = chalk
+				.hex("#94a3b8")
+				(this.padText(desc, descWidth));
+			return `${chalk.hex("#8b5cf6")("│ ")}${keyLabel} ${descLabel}${chalk.hex("#8b5cf6")(" │")}`;
+		});
+		const bottom = chalk.hex("#8b5cf6")(
+			`╰${"─".repeat(panelWidth - 2)}╯`,
+		);
+		return [top, titleLine, separator, ...rows, bottom];
+	}
+
+	private calculateWidth(terminalWidth: number): number {
+		const maxWidth = Math.max(36, Math.floor(terminalWidth * 0.75));
+		return Math.max(32, Math.min(maxWidth, terminalWidth - 2));
+	}
+
+	private padText(text: string, width: number): string {
+		const length = visibleWidth(text);
+		if (length >= width) {
+			return text;
+		}
+		return `${text}${" ".repeat(width - length)}`;
+	}
+
+	private centerText(text: string, width: number): string {
+		const length = visibleWidth(text);
+		if (length >= width) {
+			return text;
+		}
+		const totalPad = width - length;
+		const left = Math.floor(totalPad / 2);
+		const right = totalPad - left;
+		return `${" ".repeat(left)}${text}${" ".repeat(right)}`;
 	}
 }

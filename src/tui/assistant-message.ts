@@ -7,18 +7,31 @@ import chalk from "chalk";
  */
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
+	private readonly panelWidth = 48;
 
 	constructor(message?: AssistantMessage) {
 		super();
 
 		// Container for text/thinking content
 		this.contentContainer = new Container();
-		this.addChild(new Text(chalk.hex("#ffd6a5")("╭── composer"), 1, 0));
+		this.addChild(new Text(this.buildTopLine(), 1, 0));
 		this.addChild(this.contentContainer);
+		this.addChild(new Text(this.buildBottomLine(), 1, 0));
 
 		if (message) {
 			this.updateContent(message);
 		}
+	}
+
+	private buildTopLine(): string {
+		const accent = chalk.hex("#ffd6a5");
+		const label = chalk.hex("#ffd6a5").bold("COMPOSER");
+		const dashCount = Math.max(0, this.panelWidth - (label.length + 3));
+		return accent(`╭ ${label} ${"─".repeat(dashCount)}╮`);
+	}
+
+	private buildBottomLine(): string {
+		return chalk.hex("#ffd6a5")(`╰${"─".repeat(this.panelWidth - 2)}╯`);
 	}
 
 	updateContent(message: AssistantMessage): void {
