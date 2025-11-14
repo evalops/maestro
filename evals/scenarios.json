@@ -13,5 +13,19 @@
 		"name": "read tool returns first line",
 		"command": ["node", "scripts/run-read-tool.js", "README.md"],
 		"expectedRegex": "Composer CLI by EvalOps"
+	},
+	{
+		"name": "cli help lists env vars",
+		"args": ["--help"],
+		"expectedRegex": "Environment Variables:\\s+GEMINI_API_KEY"
+	},
+	{
+		"name": "telemetry report summarizes log",
+		"command": [
+			"node",
+			"scripts/telemetry-report.js",
+			"evals/sample-telemetry.log"
+		],
+		"expectedRegex": "Telemetry Summary\\n=+\\nLog file: .*sample-telemetry\\.log"
 	}
 ]
