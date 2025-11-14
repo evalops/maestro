@@ -10,7 +10,7 @@ import type {
 
 export interface MockToolOperation {
 	name: string;
-	args: Record<string, any>;
+	args: Record<string, any> | (() => Record<string, any>);
 	id?: string;
 	onResult?: (result: ToolResultMessage) => void;
 	error?: string;
@@ -40,8 +40,16 @@ export class MockToolTransport implements AgentTransport {
 
 		for (const operation of this.operations) {
 			throwIfAborted();
+			const resolvedArgs =
+				typeof operation.args === "function"
+					? (operation.args as () => Record<string, any>)()
+					: operation.args;
 			const toolCallId = operation.id ?? randomUUID();
-			const toolCallMessage = this.createToolCall(toolCallId, operation);
+			const toolCallMessage = this.createToolCall(
+				toolCallId,
+				operation,
+				resolvedArgs,
+			);
 			yield { type: "message_start", message: toolCallMessage };
 			yield { type: "message_end", message: toolCallMessage };
 
@@ -54,18 +62,14 @@ export class MockToolTransport implements AgentTransport {
 				type: "tool_execution_start",
 				toolCallId,
 				toolName: operation.name,
-				args: operation.args,
+				args: resolvedArgs,
 			};
 
 			try {
 				if (operation.error) {
 					throw new Error(operation.error);
 				}
-				const toolResult = await tool.execute(
-					toolCallId,
-					operation.args,
-					signal,
-				);
+				const toolResult = await tool.execute(toolCallId, resolvedArgs, signal);
 				const resultMessage: ToolResultMessage = {
 					role: "toolResult",
 					toolCallId,
@@ -121,8 +125,6 @@ export class MockToolTransport implements AgentTransport {
 			throwIfAborted();
 		}
 
-		throwIfAborted();
-
 		const finalMessage = this.createAssistantMessage(this.buildFinalText());
 		yield { type: "message_start", message: finalMessage };
 		yield { type: "message_end", message: finalMessage };
@@ -151,6 +153,7 @@ export class MockToolTransport implements AgentTransport {
 	private createToolCall(
 		toolCallId: string,
 		operation: MockToolOperation,
+		args: Record<string, any>,
 	): AssistantMessage {
 		return {
 			role: "assistant",
@@ -159,7 +162,7 @@ export class MockToolTransport implements AgentTransport {
 					type: "toolCall",
 					id: toolCallId,
 					name: operation.name,
-					arguments: operation.args,
+					arguments: args,
 				},
 			],
 			api: "openai-completions",

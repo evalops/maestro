@@ -1,142 +1,180 @@
 [
-	{
-		"name": "cli help renders",
-		"args": ["--help"],
-		"expectedRegex": "Composer v\\d+\\.\\d+\\.\\d+ by EvalOps"
-	},
-	{
-		"name": "cli help json mode",
-		"args": ["--help", "--mode", "json"],
-		"expectedRegex": "Composer v\\d+\\.\\d+\\.\\d+ by EvalOps"
-	},
-	{
-		"name": "read tool returns first line",
-		"command": ["node", "scripts/run-read-tool.js", "README.md"],
-		"expectedRegex": "Composer CLI by EvalOps"
-	},
-	{
-		"name": "write tool writes file",
-		"command": [
-			"node",
-			"scripts/run-write-tool.js",
-			"evals/write-test.txt",
-			"hello evals"
-		],
-		"expectedRegex": "Successfully wrote"
-	},
-	{
-		"name": "list tool counts files",
-		"command": [
-			"node",
-			"scripts/run-list-tool.js",
-			"src"
-		],
-		"expectedRegex": "src"
-	},
-	{
-		"name": "bash tool echo",
-		"command": [
-			"node",
-			"scripts/run-bash-tool.js",
-			"echo TOOL"
-		],
-		"expectedRegex": "TOOL"
-	},
-	{
-		"name": "search tool pattern",
-		"command": [
-			"node",
-			"scripts/run-search-tool.js",
-			"README.md",
-			"Composer"
-		],
-		"expectedRegex": "README\\.md:1:# Composer"
-	},
-	{
-		"name": "diff tool detects change",
-		"command": ["node", "scripts/run-diff-tool.js"],
-		"expectedRegex": "diff --git"
-	},
-	{
-		"name": "edit tool replaces text",
-		"command": ["node", "scripts/run-edit-tool.js"],
-		"expectedRegex": "Successfully replaced text"
-	},
-	{
-		"name": "todo tool creates list",
-		"command": ["node", "scripts/run-todo-tool.js"],
-		"expectedRegex": "Eval todo"
-	},
-	{
-		"name": "cli help lists env vars",
-		"args": ["--help"],
-		"expectedRegex": "Environment Variables:\\s+GEMINI_API_KEY"
-	},
-	{
-		"name": "telemetry report summarizes log",
-		"command": [
-			"node",
-			"scripts/telemetry-report.js",
-			"evals/sample-telemetry.log"
-		],
-		"expectedRegex": "Telemetry Summary\\n=+\\nLog file: .*sample-telemetry\\.log",
-		"expectedStdoutRegex": "Tool success rate: 50\\.0%"
-	},
-	{
-		"name": "telemetry report missing log fails",
-		"command": [
-			"node",
-			"scripts/telemetry-report.js",
-			"evals/does-not-exist.log"
-		],
-		"expectedExitCode": 1,
-		"expectedStderrRegex": "Telemetry log not found"
-	},
-	{
-		"name": "telemetry report via env",
-		"command": ["node", "scripts/telemetry-report.js"],
-		"env": {
-			"COMPOSER_TELEMETRY_FILE": "evals/sample-telemetry.log"
-		},
-		"expectedRegex": "Log file: .*sample-telemetry\\.log"
-	},
-	{
-		"name": "telemetry report zero data",
-		"command": [
-			"node",
-			"scripts/telemetry-report.js",
-			"evals/sample-empty.log"
-		],
-		"expectedRegex": "Tool executions: 0",
-		"expectedStdoutRegex": "Evaluation success rate: n/a"
-	},
-	{
-		"name": "read tool missing file fails",
-		"command": [
-			"node",
-			"scripts/run-read-tool.js",
-			"evals/does-not-exist.md"
-		],
-		"expectedExitCode": 1,
-		"expectedStderrRegex": "File not found"
-	},
-	{
-		"name": "mock agent read flow",
-		"command": [
-			"node",
-			"scripts/run-mock-agent.js",
-			"README.md"
-		],
-		"expectedRegex": "Read .*/README\\.md"
-	},
-	{
-		"name": "mock agent write+read flow",
-		"command": ["node", "scripts/run-mock-agent-write-read.js"],
-		"expectedRegex": "Wrote and read .*/mock-agent-flow\\.txt"
-	},
-	{
-		"name": "mock agent edit flow",
-		"command": ["node", "scripts/run-mock-agent-edit-read.js"],
-		"expectedRegex": "Edited .*/mock-edit-flow\\.txt"
-	}
+    {
+        "name": "cli help renders",
+        "args": [
+            "--help"
+        ],
+        "expectedRegex": "Composer v\\d+\\.\\d+\\.\\d+ by EvalOps"
+    },
+    {
+        "name": "cli help json mode",
+        "args": [
+            "--help",
+            "--mode",
+            "json"
+        ],
+        "expectedRegex": "Composer v\\d+\\.\\d+\\.\\d+ by EvalOps"
+    },
+    {
+        "name": "read tool returns first line",
+        "command": [
+            "node",
+            "scripts/run-read-tool.js",
+            "README.md"
+        ],
+        "expectedRegex": "Composer CLI by EvalOps"
+    },
+    {
+        "name": "write tool writes file",
+        "command": [
+            "node",
+            "scripts/run-write-tool.js",
+            "evals/write-test.txt",
+            "hello evals"
+        ],
+        "expectedRegex": "Successfully wrote"
+    },
+    {
+        "name": "list tool counts files",
+        "command": [
+            "node",
+            "scripts/run-list-tool.js",
+            "src"
+        ],
+        "expectedRegex": "src"
+    },
+    {
+        "name": "bash tool echo",
+        "command": [
+            "node",
+            "scripts/run-bash-tool.js",
+            "echo TOOL"
+        ],
+        "expectedRegex": "TOOL"
+    },
+    {
+        "name": "search tool pattern",
+        "command": [
+            "node",
+            "scripts/run-search-tool.js",
+            "README.md",
+            "Composer"
+        ],
+        "expectedRegex": "README\\.md:1:# Composer"
+    },
+    {
+        "name": "diff tool detects change",
+        "command": [
+            "node",
+            "scripts/run-diff-tool.js"
+        ],
+        "expectedRegex": "diff --git"
+    },
+    {
+        "name": "edit tool replaces text",
+        "command": [
+            "node",
+            "scripts/run-edit-tool.js"
+        ],
+        "expectedRegex": "Successfully replaced text"
+    },
+    {
+        "name": "todo tool creates list",
+        "command": [
+            "node",
+            "scripts/run-todo-tool.js"
+        ],
+        "expectedRegex": "Eval todo"
+    },
+    {
+        "name": "cli help lists env vars",
+        "args": [
+            "--help"
+        ],
+        "expectedRegex": "Environment Variables:\\s+GEMINI_API_KEY"
+    },
+    {
+        "name": "telemetry report summarizes log",
+        "command": [
+            "node",
+            "scripts/telemetry-report.js",
+            "evals/sample-telemetry.log"
+        ],
+        "expectedRegex": "Telemetry Summary\\n=+\\nLog file: .*sample-telemetry\\.log",
+        "expectedStdoutRegex": "Tool success rate: 50\\.0%"
+    },
+    {
+        "name": "telemetry report missing log fails",
+        "command": [
+            "node",
+            "scripts/telemetry-report.js",
+            "evals/does-not-exist.log"
+        ],
+        "expectedExitCode": 1,
+        "expectedStderrRegex": "Telemetry log not found"
+    },
+    {
+        "name": "telemetry report via env",
+        "command": [
+            "node",
+            "scripts/telemetry-report.js"
+        ],
+        "env": {
+            "COMPOSER_TELEMETRY_FILE": "evals/sample-telemetry.log"
+        },
+        "expectedRegex": "Log file: .*sample-telemetry\\.log"
+    },
+    {
+        "name": "telemetry report zero data",
+        "command": [
+            "node",
+            "scripts/telemetry-report.js",
+            "evals/sample-empty.log"
+        ],
+        "expectedRegex": "Tool executions: 0",
+        "expectedStdoutRegex": "Evaluation success rate: n/a"
+    },
+    {
+        "name": "read tool missing file fails",
+        "command": [
+            "node",
+            "scripts/run-read-tool.js",
+            "evals/does-not-exist.md"
+        ],
+        "expectedExitCode": 1,
+        "expectedStderrRegex": "File not found"
+    },
+    {
+        "name": "mock agent read flow",
+        "command": [
+            "node",
+            "scripts/run-mock-agent.js",
+            "README.md"
+        ],
+        "expectedRegex": "Read .*/README\\.md"
+    },
+    {
+        "name": "mock agent write+read flow",
+        "command": [
+            "node",
+            "scripts/run-mock-agent-write-read.js"
+        ],
+        "expectedRegex": "Wrote and read .*/mock-agent-flow\\.txt"
+    },
+    {
+        "name": "mock agent edit flow",
+        "command": [
+            "node",
+            "scripts/run-mock-agent-edit-read.js"
+        ],
+        "expectedRegex": "Edited .*/mock-edit-flow\\.txt"
+    },
+    {
+        "name": "mock agent search+read",
+        "command": [
+            "node",
+            "scripts/run-mock-agent-search-read.js"
+        ],
+        "expectedRegex": "Search and read"
+    }
 ]
