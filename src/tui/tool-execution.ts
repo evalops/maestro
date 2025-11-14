@@ -1,128 +1,11 @@
-import * as os from "node:os";
 import chalk from "chalk";
-import * as Diff from "diff";
 import { Container, Spacer, Text } from "../tui-lib/index.js";
-
-/**
- * Convert absolute path to tilde notation if it's in home directory
- */
-function shortenPath(path: string): string {
-	const home = os.homedir();
-	if (path.startsWith(home)) {
-		return `~${path.slice(home.length)}`;
-	}
-	return path;
-}
-
-/**
- * Replace tabs with spaces for consistent rendering
- */
-function replaceTabs(text: string): string {
-	return text.replace(/\t/g, "   ");
-}
-
-/**
- * Generate a unified diff with line numbers and context
- */
-function generateDiff(oldStr: string, newStr: string): string {
-	const parts = Diff.diffLines(oldStr, newStr);
-	const output: string[] = [];
-
-	// Calculate max line number for padding
-	const oldLines = oldStr.split("\n");
-	const newLines = newStr.split("\n");
-	const maxLineNum = Math.max(oldLines.length, newLines.length);
-	const lineNumWidth = String(maxLineNum).length;
-
-	const CONTEXT_LINES = 2; // Show 2 lines of context around changes
-
-	let oldLineNum = 1;
-	let newLineNum = 1;
-	let lastWasChange = false;
-
-	for (let i = 0; i < parts.length; i++) {
-		const part = parts[i];
-		const raw = part.value.split("\n");
-		if (raw[raw.length - 1] === "") {
-			raw.pop();
-		}
-
-		if (part.added || part.removed) {
-			// Show the change
-			for (const line of raw) {
-				if (part.added) {
-					const lineNum = String(newLineNum).padStart(lineNumWidth, " ");
-					output.push(chalk.green(`${lineNum} ${line}`));
-					newLineNum++;
-				} else {
-					// removed
-					const lineNum = String(oldLineNum).padStart(lineNumWidth, " ");
-					output.push(chalk.red(`${lineNum} ${line}`));
-					oldLineNum++;
-				}
-			}
-			lastWasChange = true;
-		} else {
-			// Context lines - only show a few before/after changes
-			const isFirstPart = i === 0;
-			const isLastPart = i === parts.length - 1;
-			const nextPartIsChange =
-				i < parts.length - 1 && (parts[i + 1].added || parts[i + 1].removed);
-
-			if (lastWasChange || nextPartIsChange || isFirstPart || isLastPart) {
-				// Show context
-				let linesToShow = raw;
-				let skipStart = 0;
-				let skipEnd = 0;
-
-				if (!isFirstPart && !lastWasChange) {
-					// Show only last N lines as leading context
-					skipStart = Math.max(0, raw.length - CONTEXT_LINES);
-					linesToShow = raw.slice(skipStart);
-				}
-
-				if (
-					!isLastPart &&
-					!nextPartIsChange &&
-					linesToShow.length > CONTEXT_LINES
-				) {
-					// Show only first N lines as trailing context
-					skipEnd = linesToShow.length - CONTEXT_LINES;
-					linesToShow = linesToShow.slice(0, CONTEXT_LINES);
-				}
-
-				// Add ellipsis if we skipped lines at start
-				if (skipStart > 0) {
-					output.push(chalk.dim(`${"".padStart(lineNumWidth, " ")} ...`));
-				}
-
-				for (const line of linesToShow) {
-					const lineNum = String(oldLineNum).padStart(lineNumWidth, " ");
-					output.push(chalk.dim(`${lineNum} ${line}`));
-					oldLineNum++;
-					newLineNum++;
-				}
-
-				// Add ellipsis if we skipped lines at end
-				if (skipEnd > 0) {
-					output.push(chalk.dim(`${"".padStart(lineNumWidth, " ")} ...`));
-				}
-
-				// Update line numbers for skipped lines
-				oldLineNum += skipStart + skipEnd;
-				newLineNum += skipStart + skipEnd;
-			} else {
-				// Skip these context lines entirely
-				oldLineNum += raw.length;
-				newLineNum += raw.length;
-			}
-
-			lastWasChange = false;
-		}
-	}
-
-	return output.join("\n");
-}
+import {
+	buildCollapsedSummary,
+	generateDiff,
+	replaceTabs,
+	shortenPath,
+} from "./tool-text-utils.js";
 
 /**
  * Component that renders a tool call with its result (updateable)
@@ -238,7 +121,7 @@ export class ToolExecutionComponent extends Container {
 			)}`;
 
 			if (this.collapsed && this.result) {
-				text += `\n${chalk.dim(this.buildCollapsedSummary())}`;
+				text += `\n${chalk.dim(buildCollapsedSummary())}`;
 				return text;
 			}
 
@@ -267,7 +150,7 @@ export class ToolExecutionComponent extends Container {
 
 			if (this.collapsed) {
 				const summary = this.result
-					? this.buildCollapsedSummary()
+					? buildCollapsedSummary()
 					: "output hidden: awaiting result";
 				text += `\n${chalk.dim(summary)}`;
 				return text;
@@ -301,7 +184,7 @@ export class ToolExecutionComponent extends Container {
 			}
 
 			if (this.collapsed) {
-				text += `\n${chalk.dim(this.buildCollapsedSummary(fileContent))}`;
+				text += `\n${chalk.dim(buildCollapsedSummary(fileContent))}`;
 				return text;
 			}
 
@@ -326,7 +209,7 @@ export class ToolExecutionComponent extends Container {
 
 			if (this.collapsed) {
 				const diffText = this.result?.details?.diff || this.getTextOutput();
-				text += `\n${chalk.dim(this.buildCollapsedSummary(diffText))}`;
+				text += `\n${chalk.dim(buildCollapsedSummary(diffText))}`;
 				return text;
 			}
 
@@ -356,7 +239,7 @@ export class ToolExecutionComponent extends Container {
 				]
 					.filter(Boolean)
 					.join("\n");
-				text += `\n${chalk.dim(this.buildCollapsedSummary(combined))}`;
+				text += `\n${chalk.dim(buildCollapsedSummary(combined))}`;
 				return text;
 			}
 
@@ -369,19 +252,6 @@ export class ToolExecutionComponent extends Container {
 		}
 
 		return text;
-	}
-
-	private buildCollapsedSummary(source?: string): string {
-		if (!source || !source.trim()) {
-			return "output hidden";
-		}
-		const firstLine = source.split("\n").find((line) => line.trim()) || "";
-		const trimmed = firstLine.trim();
-		if (!trimmed) return "output hidden";
-		const snippet = trimmed.slice(0, 80);
-		return `output hidden: ${snippet}${
-			trimmed.length > snippet.length ? "…" : ""
-		}`;
 	}
 
 	getToolName(): string {
