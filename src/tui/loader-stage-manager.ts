@@ -1,4 +1,4 @@
-import { recordLoaderStage } from "../telemetry.js";
+import { LoaderStageTelemetry } from "./loader-stage-telemetry.js";
 
 interface LoaderStageEntry {
 	key: string;
@@ -19,10 +19,12 @@ export class LoaderStageManager {
 	private completedToolStages = new Set<string>();
 	private completedStageKeys = new Set<string>();
 	private currentStageKey: string | null = null;
-	private stageStartTime: number | null = null;
 	private streamingActive = false;
+	private telemetry: LoaderStageTelemetry;
 
-	constructor(private readonly options: LoaderStageManagerOptions) {}
+	constructor(private readonly options: LoaderStageManagerOptions) {
+		this.telemetry = new LoaderStageTelemetry(options.telemetryEnabled);
+	}
 
 	start(): void {
 		this.resetTracking();
@@ -86,7 +88,7 @@ export class LoaderStageManager {
 	}
 
 	private resetTracking(): void {
-		this.finalizeStageTiming();
+		this.telemetry.finalize(this.stages);
 		this.stages = [
 			{ key: "planning", label: "Planning" },
 			{ key: "responding", label: "Responding" },
@@ -95,29 +97,26 @@ export class LoaderStageManager {
 		this.toolStagesByName.clear();
 		this.completedToolStages.clear();
 		this.completedStageKeys.clear();
-		this.currentStageKey = null;
-		this.stageStartTime = null;
-		this.options.setFooterStage(null);
+	this.currentStageKey = null;
+	this.options.setFooterStage(null);
 	}
 
 	private clearTracking(): void {
-		this.finalizeStageTiming();
+		this.telemetry.finalize(this.stages);
 		this.stages = [];
 		this.toolStageMeta.clear();
 		this.toolStagesByName.clear();
 		this.completedToolStages.clear();
 		this.completedStageKeys.clear();
-		this.currentStageKey = null;
-		this.stageStartTime = null;
-		this.options.setFooterStage(null);
+	this.currentStageKey = null;
+	this.options.setFooterStage(null);
 		this.options.onProgressChanged(null);
 	}
 
 	private updateStage(key: string, labelOverride?: string): void {
-		const now = Date.now();
 		const stageChanged = this.currentStageKey !== key;
-		if (stageChanged && this.currentStageKey && this.stageStartTime) {
-			this.recordStageTiming(this.currentStageKey, now - this.stageStartTime);
+		if (stageChanged && this.currentStageKey) {
+			this.telemetry.recordStage(this.currentStageKey, this.stages);
 		}
 		const previousStageKey = stageChanged ? this.currentStageKey : null;
 		let index = this.stages.findIndex((stage) => stage.key === key);
@@ -134,7 +133,7 @@ export class LoaderStageManager {
 		const stage = this.stages[index];
 		this.currentStageKey = key;
 		if (stageChanged) {
-			this.stageStartTime = now;
+			this.telemetry.updateCurrentStage(key);
 		}
 		this.options.onStageChanged(stage.label, index + 1, this.stages.length);
 		this.options.setFooterStage(stage.label);
@@ -216,23 +215,4 @@ export class LoaderStageManager {
 		return 0.3;
 	}
 
-	private finalizeStageTiming(): void {
-		if (this.currentStageKey && this.stageStartTime) {
-			this.recordStageTiming(
-				this.currentStageKey,
-				Date.now() - this.stageStartTime,
-			);
-		}
-		this.stageStartTime = null;
-	}
-
-	private recordStageTiming(stageKey: string, durationMs: number): void {
-		if (!this.options.telemetryEnabled) return;
-		const stage = this.stages.find((entry) => entry.key === stageKey);
-		const label = stage?.label ?? stageKey;
-		recordLoaderStage(label, durationMs, {
-			stageKey,
-			stages: this.stages.map((entry) => entry.label),
-		});
-	}
 }
