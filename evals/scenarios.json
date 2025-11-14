@@ -38,5 +38,33 @@
 		],
 		"expectedExitCode": 1,
 		"expectedStderrRegex": "Telemetry log not found"
+	},
+	{
+		"name": "telemetry report via env",
+		"command": ["node", "scripts/telemetry-report.js"],
+		"env": {
+			"COMPOSER_TELEMETRY_FILE": "evals/sample-telemetry.log"
+		},
+		"expectedRegex": "Log file: .*sample-telemetry\\.log"
+	},
+	{
+		"name": "telemetry report zero data",
+		"command": [
+			"node",
+			"scripts/telemetry-report.js",
+			"evals/sample-empty.log"
+		],
+		"expectedRegex": "Tool executions: 0",
+		"expectedStdoutRegex": "Evaluation success rate: n/a"
+	},
+	{
+		"name": "read tool missing file fails",
+		"command": [
+			"node",
+			"scripts/run-read-tool.js",
+			"evals/does-not-exist.md"
+		],
+		"expectedExitCode": 1,
+		"expectedStderrRegex": "File not found"
 	}
 ]
