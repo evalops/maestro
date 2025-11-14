@@ -61,11 +61,22 @@ async function runScenario(scenario) {
 		});
 	});
 
-	let passed = exitCode === 0;
-	if (scenario.expectedRegex) {
+	const expectedExit =
+		scenario.expectedExitCode === undefined ? 0 : Number(scenario.expectedExitCode);
+	let passed = exitCode === expectedExit;
+
+	const checks = [
+		{ value: scenario.expectedRegex ?? scenario.expectedStdoutRegex, source: stdout },
+		{ value: scenario.expectedStderrRegex, source: stderr },
+	];
+
+	for (const check of checks) {
+		if (!check.value) continue;
 		try {
-			const regex = new RegExp(scenario.expectedRegex, "i");
-			passed = passed && regex.test(stdout);
+			const regex = new RegExp(check.value, "i");
+			if (!regex.test(check.source)) {
+				passed = false;
+			}
 		} catch (_error) {
 			passed = false;
 		}
@@ -99,7 +110,7 @@ async function main() {
 	let failures = 0;
 
 	for (const scenario of scenarios) {
-		const { passed, stdout, stderr } = await runScenario(scenario);
+	const { passed, stdout, stderr } = await runScenario(scenario);
 		const status = passed ? "PASS" : "FAIL";
 		console.log(`[${status}] ${scenario.name}`);
 		if (!passed) {
