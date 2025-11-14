@@ -22,7 +22,7 @@ import {
 } from "../tui-lib/index.js";
 import chalk from "chalk";
 import clipboard from "clipboardy";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +54,19 @@ type LoaderStage = {
 };
 
 const TOOL_FAILURE_LOG_PATH = join(homedir(), ".composer", "tool-failures.log");
+const TODO_STORE_PATH =
+	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
+const PLAN_STATUS_SYMBOLS = {
+	pending: "[ ]",
+	in_progress: "[~]",
+	completed: "[x]",
+} as const;
+const PLAN_STATUS_LABELS = {
+	pending: "Pending",
+	in_progress: "In Progress",
+	completed: "Completed",
+} as const;
+type PlanStatusKey = keyof typeof PLAN_STATUS_SYMBOLS;
 
 /**
  * TUI renderer for the coding agent
@@ -104,9 +117,13 @@ export class TuiRenderer {
 	private completedStageKeys = new Set<string>();
 	private currentStageKey: string | null = null;
 	private stageStartTime: number | null = null;
-	private readonly idleFooterHint = "Use /model or /thinking to tune replies";
+	private readonly idleFooterHint = "Try /help for commands or /tools for status";
 	private compactToolOutputs = false;
 	private toolComponents = new Set<ToolExecutionComponent>();
+	private lastUserMessageText?: string;
+	private lastAssistantMessageText?: string;
+	private currentRunToolNames: string[] = [];
+	private lastRunToolNames: string[] = [];
 	private slashCommands: SlashCommand[] = [];
 
 	constructor(
@@ -173,6 +190,21 @@ export class TuiRenderer {
 			description: "List available slash commands",
 		};
 
+		const planCommand: SlashCommand = {
+			name: "plan",
+			description: "Show saved plans/checklists",
+		};
+
+		const previewCommand: SlashCommand = {
+			name: "preview",
+			description: "Preview git diff for a file",
+		};
+
+		const whyCommand: SlashCommand = {
+			name: "why",
+			description: "Explain the last response/tools used",
+		};
+
 		const runCommand: SlashCommand = {
 			name: "run",
 			description: "Run npm script (e.g. /run test --watch)",
@@ -208,7 +240,10 @@ export class TuiRenderer {
 			sessionCommand,
 			sessionsCommand,
 			bugCommand,
+			planCommand,
+			previewCommand,
 			runCommand,
+			whyCommand,
 			helpCommand,
 			diagnosticsCommand,
 			compactCommand,
@@ -325,8 +360,26 @@ export class TuiRenderer {
 					return;
 				}
 
+				if (trimmed === "/plan" || trimmed.startsWith("/plan ")) {
+					this.handlePlanCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed.startsWith("/preview")) {
+					void this.handlePreviewCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
+
 				if (trimmed.startsWith("/run")) {
 					void this.handleRunCommand(trimmed);
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed === "/why") {
+					this.handleWhyCommand();
 					this.editor.setText("");
 					return;
 				}
@@ -390,8 +443,9 @@ export class TuiRenderer {
 		);
 
 		switch (event.type) {
-			case "agent_start":
-				// Show loading animation
+		case "agent_start":
+			this.currentRunToolNames = [];
+			// Show loading animation
 				this.editor.disableSubmit = true;
 				// Stop old loader before clearing
 				if (this.loadingAnimation) {
@@ -411,9 +465,10 @@ export class TuiRenderer {
 				this.ui.requestRender();
 				break;
 
-			case "message_start":
-				if (event.message.role === "user") {
-					// Show user message immediately and clear editor
+		case "message_start":
+			if (event.message.role === "user") {
+				this.lastUserMessageText = this.extractTextFromAppMessage(event.message);
+				// Show user message immediately and clear editor
 					this.addMessageToChat(event.message);
 					this.editor.setText("");
 					this.ui.requestRender();
@@ -471,13 +526,16 @@ export class TuiRenderer {
 				}
 				break;
 
-			case "message_end":
-				// Skip user messages (already shown in message_start)
-				if (event.message.role === "user") {
-					break;
-				}
-				if (this.streamingComponent && event.message.role === "assistant") {
-					const assistantMsg = event.message as AssistantMessage;
+		case "message_end":
+			// Skip user messages (already shown in message_start)
+			if (event.message.role === "user") {
+				break;
+			}
+			if (this.streamingComponent && event.message.role === "assistant") {
+				const assistantMsg = event.message as AssistantMessage;
+				this.lastAssistantMessageText = this.extractTextFromAppMessage(
+					event.message,
+				);
 
 					// Update streaming component with final message (includes stopReason)
 					this.streamingComponent.updateContent(assistantMsg);
@@ -510,11 +568,22 @@ export class TuiRenderer {
 				) {
 					this.updateLoaderStage("responding");
 				}
-				this.ui.requestRender();
-				break;
+			this.ui.requestRender();
+			break;
 
-			case "tool_execution_start": {
-				this.registerToolStage(event.toolCallId, event.toolName);
+		case "turn_end":
+			this.lastRunToolNames = [...this.currentRunToolNames];
+			this.currentRunToolNames = [];
+			if (event.message.role === "assistant") {
+				this.lastAssistantMessageText = this.extractTextFromAppMessage(
+					event.message,
+				);
+			}
+			break;
+
+		case "tool_execution_start": {
+			this.registerToolStage(event.toolCallId, event.toolName);
+			this.currentRunToolNames.push(event.toolName);
 				// Component should already exist from message_update, but create if missing
 				if (!this.pendingTools.has(event.toolCallId)) {
 					const component = new ToolExecutionComponent(
@@ -1242,7 +1311,7 @@ ${chalk.bold("Send these files:")}
 ${filesToShare || chalk.dim("(session file will appear once persisted)")}
 
 Attach them in the bug report so we can replay the session.`;
-		const copied = this.copyBugInfoToClipboard(text);
+		const copied = this.copyTextToClipboard(text);
 
 		const copyNote = copied
 			? chalk.dim("Bug info copied to clipboard.")
@@ -1253,13 +1322,98 @@ Attach them in the bug report so we can replay the session.`;
 		this.ui.requestRender();
 	}
 
-	private copyBugInfoToClipboard(value: string): boolean {
+	private copyTextToClipboard(value: string): boolean {
 		try {
 			clipboard.writeSync(value);
 			return true;
 		} catch {
 			return false;
 		}
+	}
+
+	private handlePlanCommand(text: string): void {
+		const store = this.loadTodoStore();
+		const goals = Object.keys(store);
+		if (goals.length === 0) {
+			this.showInfoMessage(
+				"No plans found. Use the todo tool in a message to create one.",
+			);
+			return;
+		}
+		const parts = text.trim().split(/\s+/);
+		if (parts.length === 1) {
+			const summaries = goals.map((goal) => {
+				const entry = store[goal];
+				const counts = this.countTodoStatuses(entry.items);
+				return `${chalk.bold(goal)}\n  Pending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}`;
+			});
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(
+				new Text(
+					`${chalk.bold("Plans")}\n${summaries.join("\n\n")}\n\nUse /plan <goal> to see details.`,
+					1,
+					0,
+				),
+			);
+			this.ui.requestRender();
+			return;
+		}
+		const goalQuery = text.slice(text.indexOf(" ") + 1).trim();
+		const goalKey =
+			goals.find((goal) => goal.toLowerCase() === goalQuery.toLowerCase()) ??
+			goals.find((goal) => goal.toLowerCase().includes(goalQuery.toLowerCase()));
+		if (!goalKey) {
+			this.showInfoMessage(`No plan found matching "${goalQuery}".`);
+			return;
+		}
+		const entry = store[goalKey];
+		const counts = this.countTodoStatuses(entry.items);
+		const tasks = entry.items.length
+			? entry.items
+					.map((item, index) => {
+						const status = (item.status ?? "pending") as PlanStatusKey;
+						const symbol = PLAN_STATUS_SYMBOLS[status] ?? "[ ]";
+						const lines = [`${index + 1}. ${symbol} ${item.content}`];
+						lines.push(`   • Status: ${PLAN_STATUS_LABELS[status] ?? status}`);
+						lines.push(`   • Priority: ${item.priority ?? "medium"}`);
+						if (item.due) lines.push(`   • Due: ${item.due}`);
+						if (item.blockedBy?.length)
+							lines.push(`   • Blocked by: ${item.blockedBy.join(", ")}`);
+						if (item.notes) lines.push(`   • Notes: ${item.notes}`);
+						return lines.join("\n");
+					})
+					.join("\n\n")
+			: chalk.dim("No tasks yet — add some with the todo tool.");
+		const detail = `${chalk.bold(goalKey)}\nUpdated: ${new Date(entry.updatedAt).toLocaleString()}\nPending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}\n\n${tasks}`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(detail, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private loadTodoStore(): Record<string, { goal: string; items: Array<{ id: string; content: string; status: string; priority: string; notes?: string; due?: string; blockedBy?: string[] }>; updatedAt: string }>
+		{
+			try {
+				const raw = readFileSync(TODO_STORE_PATH, "utf-8");
+				return JSON.parse(raw);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+					return {};
+				}
+				return {};
+			}
+		}
+
+	private countTodoStatuses(items: Array<{ status: string }>): Record<PlanStatusKey, number> {
+		return items.reduce(
+			(acc, item) => {
+				const key = (item.status ?? "pending") as PlanStatusKey;
+				if (acc[key] !== undefined) {
+					acc[key] += 1;
+				}
+				return acc;
+			},
+			{ pending: 0, in_progress: 0, completed: 0 } as Record<PlanStatusKey, number>,
+		);
 	}
 
 	private async handleRunCommand(text: string): Promise<void> {
@@ -1332,6 +1486,54 @@ Attach them in the bug report so we can replay the session.`;
 		});
 	}
 
+	private async handlePreviewCommand(text: string): Promise<void> {
+		const parts = text.trim().split(/\s+/);
+		if (parts.length < 2) {
+			this.showInfoMessage("Usage: /preview <file>");
+			return;
+		}
+		const target = parts.slice(1).join(" ");
+		const quoted = JSON.stringify(target);
+		const result = await this.runShellCommand(`git diff -- ${quoted}`);
+		this.chatContainer.addChild(new Spacer(1));
+		const content = result.stdout || result.stderr;
+		const textOutput = content
+			? content
+			: chalk.dim(`No differences for ${target}`);
+		this.chatContainer.addChild(
+			new Text(
+				`${chalk.bold(`git diff -- ${target}`)}\n${textOutput}`,
+				1,
+				0,
+			),
+		);
+		this.ui.requestRender();
+	}
+
+	private handleWhyCommand(): void {
+		const user = this.lastUserMessageText
+			? this.lastUserMessageText
+			: chalk.dim("No recent user question recorded.");
+		const response = this.lastAssistantMessageText
+			? this.lastAssistantMessageText
+			: chalk.dim("No assistant response yet.");
+		const tools = this.lastRunToolNames.length
+			? this.lastRunToolNames.join(", ")
+			: chalk.dim("none");
+		const text = `${chalk.bold("Why summary")}
+${chalk.dim("Last question")}:
+${user}
+
+${chalk.dim("Tools invoked")}:
+${tools}
+
+${chalk.dim("Assistant reply")}:
+${response}`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(text, 1, 0));
+		this.ui.requestRender();
+	}
+
 	private handleHelpCommand(): void {
 		const lines = this.slashCommands.map(
 			(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
@@ -1341,6 +1543,48 @@ ${lines.join("\n")}`;
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
 		this.ui.requestRender();
+	}
+
+	private collectHealthSnapshot(): {
+		toolFailures: number;
+		toolFailurePath?: string;
+		gitStatus?: string;
+		planGoals?: number;
+		planPendingTasks?: number;
+	} {
+		const { counts } = this.getToolFailureData();
+		const totalFailures = Array.from(counts.values()).reduce(
+			(sum, value) => sum + value,
+			0,
+		);
+		let gitStatus: string | undefined;
+		try {
+			const result = spawnSync("git", ["status", "-sb"], {
+				cwd: process.cwd(),
+				encoding: "utf-8",
+			});
+			if ((result.status ?? 0) === 0) {
+				gitStatus = result.stdout.trim() || "clean";
+			}
+		} catch (_error) {
+			// ignore if git is unavailable
+		}
+		const store = this.loadTodoStore();
+		let pending = 0;
+		for (const goal of Object.values(store)) {
+			pending += goal.items.filter(
+				(item) => (item.status ?? "pending") === "pending",
+			).length;
+		}
+		return {
+			toolFailures: totalFailures,
+			toolFailurePath: existsSync(TOOL_FAILURE_LOG_PATH)
+				? TOOL_FAILURE_LOG_PATH
+				: undefined,
+			gitStatus,
+			planGoals: Object.keys(store).length,
+			planPendingTasks: pending,
+		};
 	}
 
 	private getToolFailureData(limit = 5): {
@@ -1383,6 +1627,22 @@ ${lines.join("\n")}`;
 		} catch {
 			return result;
 		}
+	}
+
+	private extractTextFromAppMessage(message: AppMessage): string {
+		if ((message as AssistantMessage).content) {
+			const content = (message as AssistantMessage).content;
+			const textParts = content
+				.filter((chunk) => chunk.type === "text")
+				.map((chunk) => (chunk as any).text as string);
+			if (textParts.length) {
+				return textParts.join("\n");
+			}
+		}
+		if (typeof (message as any).content === "string") {
+			return (message as any).content as string;
+		}
+		return "";
 	}
 
 	private async handleImportCommand(text: string): Promise<void> {
@@ -1472,6 +1732,7 @@ ${lines.join("\n")}`;
 			this.currentApiKeyInfo = this.resolveApiKey();
 		}
 
+		const health = this.collectHealthSnapshot();
 		const report = formatDiagnosticsReport({
 			sessionId: this.sessionManager.getSessionId(),
 			sessionFile: this.sessionManager.getSessionFile(),
@@ -1483,12 +1744,13 @@ ${lines.join("\n")}`;
 				([id, component]) => ({ id, name: component.getToolName() }),
 			),
 			explicitApiKey: this.explicitApiKey,
+			health,
 		});
 
 		const shouldCopy = /copy|share/.test(commandText.split(/\s+/)[1] ?? "");
 		let copyNote = "";
 		if (shouldCopy) {
-			const copied = this.copyBugInfoToClipboard(report);
+			const copied = this.copyTextToClipboard(report);
 			copyNote = `\n\n${copied ? chalk.dim("Diagnostics copied to clipboard.") : chalk.dim("(Could not copy diagnostics to clipboard.)")}`;
 		}
 		this.chatContainer.addChild(new Spacer(1));

@@ -101,19 +101,82 @@ Export the current session to a self-contained HTML file:
 
 The HTML file includes the full conversation with syntax highlighting and is viewable in any browser.
 
+### /help
+
+Show a quick reference of all slash commands:
+
+```
+/help
+```
+
 ### /session
 
-Show session information and statistics:
+Display session information and statistics:
 
 ```
 /session
 ```
 
-Displays:
-- Session file path and ID
-- Message counts (user, assistant, total)
-- Token usage (input, output, cache read/write, total)
-- Total cost (if available)
+Includes session file path/ID, message counts, and token usage.
+
+### /tools
+
+List registered tools plus recent failures. Use `clear` to rotate the failure log:
+
+```
+/tools
+/tools clear
+```
+
+### /plan
+
+Inspect plans created via the `todo` tool. Show all goals or a specific one:
+
+```
+/plan
+/plan refactor onboarding
+```
+
+### /preview
+
+Preview a git diff without leaving the TUI:
+
+```
+/preview src/tui/tui-renderer.ts
+```
+
+### /run
+
+Run project scripts (delegates to `npm run`):
+
+```
+/run test --watch
+```
+
+### /diag
+
+Display provider/API key diagnostics plus telemetry/health info. Append `copy` to send the report to your clipboard:
+
+```
+/diag
+/diag copy
+```
+
+### /bug
+
+Copy session details and log paths to your clipboard for bug reports:
+
+```
+/bug
+```
+
+### /why
+
+Summarize the most recent user question, assistant reply, and tools invoked:
+
+```
+/why
+```
 
 ## Editor Features
 

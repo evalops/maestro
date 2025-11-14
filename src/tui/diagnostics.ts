@@ -13,6 +13,13 @@ export interface DiagnosticsInput {
 	telemetry: TelemetryStatus;
 	pendingTools: Array<{ id: string; name: string }>;
 	explicitApiKey?: string;
+	health?: {
+		toolFailures: number;
+		toolFailurePath?: string;
+		gitStatus?: string;
+		planGoals?: number;
+		planPendingTasks?: number;
+	};
 }
 
 function formatProviderSection(
@@ -118,6 +125,31 @@ function formatPendingToolsSection(
 	return `${chalk.bold("Pending Tools")}\n${items}`;
 }
 
+function formatHealthSection(health?: DiagnosticsInput["health"]): string | null {
+	if (!health) {
+		return null;
+	}
+	const lines = [`${chalk.bold("Health")}`];
+	lines.push(`${chalk.dim("Tool failures")}: ${health.toolFailures}`);
+	if (health.toolFailurePath) {
+		lines.push(chalk.dim(`Log: ${health.toolFailurePath}`));
+	}
+	if (health.gitStatus) {
+		lines.push(`${chalk.dim("Git")}: ${health.gitStatus}`);
+	}
+	if (typeof health.planGoals === "number") {
+		lines.push(
+			`${chalk.dim("Plans")}: ${health.planGoals} goal${health.planGoals === 1 ? "" : "s"}`,
+		);
+	}
+	if (typeof health.planPendingTasks === "number") {
+		lines.push(
+			`${chalk.dim("Pending tasks")}: ${health.planPendingTasks.toLocaleString()}`,
+		);
+	}
+	return lines.join("\n");
+}
+
 export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	const sections: string[] = [];
 	sections.push(`${chalk.bold("Diagnostics")}`);
@@ -132,6 +164,11 @@ export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	sections.push("");
 	sections.push(formatTelemetrySection(input.telemetry));
 	sections.push("");
+	const healthSection = formatHealthSection(input.health);
+	if (healthSection) {
+		sections.push(healthSection);
+		sections.push("");
+	}
 	sections.push(formatPendingToolsSection(input.pendingTools));
 	return sections.join("\n");
 }
