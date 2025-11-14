@@ -15,9 +15,6 @@ import {
 	loadProjectContextFiles,
 } from "./cli/system-prompt.js";
 import { loadEnv } from "./load-env.js";
-import { SessionManager } from "./session-manager.js";
-import { codingTools } from "./tools/index.js";
-import { TuiRenderer } from "./tui/tui-renderer.js";
 import {
 	getCustomConfigPath,
 	getCustomProviderMetadata,
@@ -26,6 +23,9 @@ import {
 	reloadModelConfig,
 	resolveModel,
 } from "./models/registry.js";
+import { SessionManager } from "./session-manager.js";
+import { codingTools } from "./tools/index.js";
+import { TuiRenderer } from "./tui/tui-renderer.js";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -35,7 +35,7 @@ const packageJson = JSON.parse(
 );
 const VERSION = packageJson.version;
 
-const envApiKeyMap: Record<string, string[]> = {
+const envApiKeyMap = {
 	google: ["GEMINI_API_KEY"],
 	openai: ["OPENAI_API_KEY"],
 	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
@@ -44,7 +44,13 @@ const envApiKeyMap: Record<string, string[]> = {
 	cerebras: ["CEREBRAS_API_KEY"],
 	openrouter: ["OPENROUTER_API_KEY"],
 	zai: ["ZAI_API_KEY"],
-};
+} as const satisfies Record<string, readonly string[]>;
+
+type KnownProvider = keyof typeof envApiKeyMap;
+
+function isKnownProvider(value: string): value is KnownProvider {
+	return value in envApiKeyMap;
+}
 
 async function runInteractiveMode(
 	agent: Agent,
@@ -198,7 +204,9 @@ export async function main(args: string[]) {
 	if (!supportedProviders.has(provider)) {
 		console.error(
 			chalk.red(
-				`Unknown provider "${provider}". Supported providers: ${Array.from(supportedProviders)
+				`Unknown provider "${provider}". Supported providers: ${Array.from(
+					supportedProviders,
+				)
 					.sort()
 					.join(", ")}`,
 			),
@@ -214,7 +222,9 @@ export async function main(args: string[]) {
 			return parsed.apiKey;
 		}
 
-		const envVars = envApiKeyMap[providerName];
+		const envVars = isKnownProvider(providerName)
+			? envApiKeyMap[providerName]
+			: undefined;
 
 		// Check each environment variable in priority order
 		for (const envVar of envVars ?? []) {
@@ -241,11 +251,13 @@ export async function main(args: string[]) {
 		console.error(
 			chalk.red(`Error: No API key found for provider "${provider}"`),
 		);
-		const envVars = envApiKeyMap[provider] ?? [];
+		const envVars = isKnownProvider(provider) ? envApiKeyMap[provider] : [];
 		if (envVars.length) {
 			const envVarList = envVars.join(" or ");
 			console.error(
-				chalk.dim(`Set ${envVarList} environment variable or use --api-key flag`),
+				chalk.dim(
+					`Set ${envVarList} environment variable or use --api-key flag`,
+				),
 			);
 		} else {
 			const customMeta = getCustomProviderMetadata(provider);
@@ -264,7 +276,9 @@ export async function main(args: string[]) {
 	const model = resolveModel(provider, modelId);
 	if (!model) {
 		console.error(
-			chalk.red(`Unknown model "${provider}/${modelId}". Check your models config.`),
+			chalk.red(
+				`Unknown model "${provider}/${modelId}". Check your models config.`,
+			),
 		);
 		process.exit(1);
 	}

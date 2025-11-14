@@ -21,7 +21,15 @@
 		"evals": "npm run build && node scripts/run-evals.js",
 		"telemetry:report": "node scripts/telemetry-report.js",
 		"test": "vitest --run",
-		"prepublishOnly": "npm run clean && npm run build"
+		"prepublishOnly": "npm run clean && npm run build",
+		"bun:install": "bun install",
+		"bun:cli": "bun run ./src/cli.ts",
+		"bun:watch": "bun run --watch ./src/cli.ts",
+		"bun:lint": "bunx biome check .",
+		"bun:test": "bunx vitest --run",
+		"bun:check": "bun run bun:lint && bunx tsc --noEmit",
+		"bun:compile": "bun build ./src/cli.ts --compile --outfile dist/composer-bun",
+		"bun:evals": "bun run build && bun run ./scripts/run-evals.js"
 	},
 	"dependencies": {
 		"@mariozechner/pi-agent": "^0.7.5",
@@ -58,6 +66,8 @@
 		"directory": "packages/coding-agent"
 	},
 	"engines": {
-		"node": ">=20.0.0"
-	}
+		"node": ">=20.0.0",
+		"bun": ">=1.1.0"
+	},
+	"packageManager": "bun@1.1.31"
 }

@@ -63,6 +63,8 @@ vi.mock("@mariozechner/pi-agent", async () => {
 
 vi.mock("@mariozechner/pi-ai", () => ({
 	getModel: (provider: string, id: string) => ({ provider, id }),
+	getProviders: () => ["anthropic"],
+	getModels: () => [{ id: "claude-sonnet-4-5", provider: "anthropic" }],
 }));
 
 describe("CLI integration", () => {

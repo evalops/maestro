@@ -2,11 +2,16 @@ import { readFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { z } from "zod";
 import type { Api, Model, Provider } from "@mariozechner/pi-ai";
 import { getModel, getModels, getProviders } from "@mariozechner/pi-ai";
+import { z } from "zod";
 
-const COST_DEFAULT = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
+const COST_DEFAULT = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+} as const;
 
 const headersSchema = z.record(z.string()).optional();
 
@@ -47,7 +52,9 @@ const providerSchema = z.object({
 	models: z.array(modelSchema).min(1),
 });
 
-const configSchema = z.object({ providers: z.array(providerSchema).default([]) });
+const configSchema = z.object({
+	providers: z.array(providerSchema).default([]),
+});
 
 export type CustomModelConfig = z.infer<typeof configSchema>;
 export type CustomProvider = z.infer<typeof providerSchema>;
@@ -100,9 +107,9 @@ function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 	const api = model.api ?? provider.api;
 	const baseUrl = model.baseUrl ?? provider.baseUrl;
 	if (!api || !baseUrl) {
-	throw new Error(
-		`Model ${provider.id}/${model.id} is missing api or baseUrl. Specify them either on the model or provider entry in ${configPath()}.`,
-	);
+		throw new Error(
+			`Model ${provider.id}/${model.id} is missing api or baseUrl. Specify them either on the model or provider entry in ${configPath()}.`,
+		);
 	}
 	return {
 		id: model.id,
@@ -167,7 +174,10 @@ export function reloadModelConfig(): void {
 	getRegisteredModels();
 }
 
-export function resolveModel(provider: Provider, modelId: string): Model<Api> | null {
+export function resolveModel(
+	provider: Provider,
+	modelId: string,
+): Model<Api> | null {
 	// Custom first
 	const config = loadConfig();
 	const customProvider = config.providers.find((p) => p.id === provider);
@@ -190,7 +200,9 @@ export function getSupportedProviders(): string[] {
 	return Array.from(new Set([...builtins, ...custom]));
 }
 
-export function getCustomProviderMetadata(provider: string): ProviderMetadata | undefined {
+export function getCustomProviderMetadata(
+	provider: string,
+): ProviderMetadata | undefined {
 	if (!customProviderMetadata.has(provider)) {
 		// ensure cache populated
 		getRegisteredModels();

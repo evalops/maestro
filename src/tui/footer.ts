@@ -50,10 +50,10 @@ export class FooterComponent {
 				lastAssistantMessage.usage.cacheWrite
 			: 0;
 		const contextWindow = this.state.model.contextWindow;
-	const contextPercent =
-		contextWindow > 0
-			? ((contextTokens / contextWindow) * 100).toFixed(1)
-			: "0.0";
+		const contextPercent =
+			contextWindow > 0
+				? ((contextTokens / contextWindow) * 100).toFixed(1)
+				: "0.0";
 
 		// Format token counts (similar to web-ui)
 		const formatTokens = (count: number): string => {
@@ -96,14 +96,11 @@ export class FooterComponent {
 				`${chalk.hex("#f7b7c3")("⟳")} ${formatTokens(totalCacheWrite)}`,
 			);
 		if (totalCost)
-			statsParts.push(
-				`${chalk.hex("#ffd6a5")("$")}${totalCost.toFixed(3)}`,
-			);
+			statsParts.push(`${chalk.hex("#ffd6a5")("$")}${totalCost.toFixed(3)}`);
 
-		const contextBadgeColor = parseFloat(contextPercent) >= 80 ? "#ff6b6b" : "#a0aec0";
-		statsParts.push(
-			chalk.hex(contextBadgeColor)(`ctx ${contextPercent}%`),
-		);
+		const contextBadgeColor =
+			Number.parseFloat(contextPercent) >= 80 ? "#ff6b6b" : "#a0aec0";
+		statsParts.push(chalk.hex(contextBadgeColor)(`ctx ${contextPercent}%`));
 
 		const statsLeft = statsParts.join(" ");
 
