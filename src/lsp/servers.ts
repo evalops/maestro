@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { LspServerConfig, RootResolver } from "./index.js";
+import type { LspServerConfig, RootResolver } from "./types.js";
 
 const TS_EXTENSIONS = [
 	".ts",

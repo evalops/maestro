@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
-import type { MessageConnection } from "vscode-jsonrpc/node";
+import type { MessageConnection } from "vscode-jsonrpc/node.js";
 import { languageIdFromFile } from "./language.js";
 import type { LspDiagnostic, LspServerConfig } from "./types.js";
 import { isConnectionDead, pathToUri, sleep } from "./utils.js";

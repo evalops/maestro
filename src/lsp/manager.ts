@@ -36,10 +36,13 @@ export class LspClientManager extends EventEmitter {
 		const clients: LspClient[] = [];
 
 		for (const server of matchingServers) {
-			const root =
-				(await server.rootResolver?.(absolute)) ??
-				this.defaultRootResolver?.(absolute) ??
-				process.cwd();
+			const resolvedRoot = server.rootResolver
+				? await server.rootResolver(absolute)
+				: undefined;
+			const defaultRoot = this.defaultRootResolver
+				? await this.defaultRootResolver(absolute)
+				: undefined;
+			const root = resolvedRoot ?? defaultRoot ?? process.cwd();
 
 			const key = this.getKey(server.id, root);
 

@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import type { MessageConnection } from "vscode-jsonrpc/node";
+import type { MessageConnection } from "vscode-jsonrpc/node.js";
 
 export interface LspRange {
 	start: { line: number; character: number };
@@ -48,11 +48,13 @@ export interface LspServerConfig {
 	command: string;
 	args?: string[];
 	env?: Record<string, string>;
-	rootResolver?: (file: string) => Promise<string | undefined>;
+	rootResolver?: RootResolver;
 	initializationOptions?: Record<string, unknown>;
 }
 
-export type RootResolver = (file: string) => string;
+export type RootResolver = (
+	file: string,
+) => string | undefined | Promise<string | undefined>;
 
 export enum SymbolKind {
 	File = 1,

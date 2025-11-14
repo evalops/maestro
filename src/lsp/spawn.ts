@@ -1,7 +1,11 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { createMessageConnection } from "vscode-jsonrpc/node";
+import {
+	StreamMessageReader,
+	StreamMessageWriter,
+	createMessageConnection,
+} from "vscode-jsonrpc/node.js";
 import { LspClient } from "./client.js";
 import type { LspServerConfig } from "./types.js";
 import { sleep } from "./utils.js";
@@ -43,8 +47,8 @@ export async function spawnLspClient(
 		});
 
 		// Prevent unhandled pipe errors
-		proc.stdin.on("error", (err) => {
-			if (err.code !== "EPIPE") {
+	proc.stdin.on("error", (err: NodeJS.ErrnoException) => {
+		if (err.code !== "EPIPE") {
 				console.error(`[lsp] stdin error for ${server.id}:`, err);
 			}
 		});
@@ -56,7 +60,10 @@ export async function spawnLspClient(
 		}
 
 		// Create connection (inputStream=stdout, outputStream=stdin)
-		const connection = createMessageConnection(proc.stdout, proc.stdin);
+		const connection = createMessageConnection(
+			new StreamMessageReader(proc.stdout),
+			new StreamMessageWriter(proc.stdin),
+		);
 
 		// Create client instance
 		const client = new LspClient(server, root, proc, connection);

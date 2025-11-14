@@ -1,6 +1,6 @@
 import { applyServerOverrides, getLspConfig } from "../config/lsp-config.js";
-import { createDefaultServers } from "../lsp/servers.js";
 import { resolveWorkspaceRoot } from "../workspace/root-resolver.js";
+import { createDefaultServers } from "./servers.js";
 import {
 	collectDiagnostics,
 	configureRootResolver,
