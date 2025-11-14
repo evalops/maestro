@@ -1,11 +1,11 @@
 import { applyServerOverrides, getLspConfig } from "../config/lsp-config.js";
 import { resolveWorkspaceRoot } from "../workspace/root-resolver.js";
-import { createDefaultServers } from "./servers.js";
 import {
 	collectDiagnostics,
 	configureRootResolver,
 	configureServers,
 } from "./index.js";
+import { createDefaultServers } from "./servers.js";
 
 export async function bootstrapLsp(): Promise<void> {
 	// Configure the workspace root resolver for LSP

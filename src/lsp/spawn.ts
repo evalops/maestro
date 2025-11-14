@@ -47,8 +47,8 @@ export async function spawnLspClient(
 		});
 
 		// Prevent unhandled pipe errors
-	proc.stdin.on("error", (err: NodeJS.ErrnoException) => {
-		if (err.code !== "EPIPE") {
+		proc.stdin.on("error", (err: NodeJS.ErrnoException) => {
+			if (err.code !== "EPIPE") {
 				console.error(`[lsp] stdin error for ${server.id}:`, err);
 			}
 		});
