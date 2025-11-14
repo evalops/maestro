@@ -1,28 +1,32 @@
 import { spawn } from "node:child_process";
-import type { AgentTool } from "@mariozechner/pi-ai";
-import { Type } from "@sinclair/typebox";
+import { z } from "zod";
+import { createZodTool } from "./zod-tool.js";
 
-const bashSchema = Type.Object({
-	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(
-		Type.Number({
-			description: "Timeout in seconds (optional, no default timeout)",
-		}),
-	),
-});
+const bashSchema = z
+	.object({
+		command: z
+			.string({ description: "Bash command to execute" })
+			.min(1, "Command must not be empty"),
+		timeout: z
+			.number({
+				description: "Timeout in seconds (optional, no default timeout)",
+			})
+			.positive()
+			.optional(),
+	})
+	.strict();
 
-export const bashTool: AgentTool<typeof bashSchema> = {
+export const bashTool = createZodTool({
 	name: "bash",
 	label: "bash",
 	description:
 		"Execute a bash command in the current working directory. Returns stdout and stderr. Optionally provide a timeout in seconds.",
-	parameters: bashSchema,
-	execute: async (
-		_toolCallId: string,
-		{ command, timeout }: { command: string; timeout?: number },
-		signal?: AbortSignal,
-	) => {
-		return new Promise((resolve, _reject) => {
+	schema: bashSchema,
+	async execute(_toolCallId, { command, timeout }, signal) {
+		return new Promise<{
+			content: Array<{ type: "text"; text: string }>;
+			details: undefined;
+		}>((resolve, _reject) => {
 			const child = spawn("sh", ["-c", command], {
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
@@ -156,4 +160,4 @@ export const bashTool: AgentTool<typeof bashSchema> = {
 			}
 		});
 	},
-};
+});

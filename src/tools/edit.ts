@@ -2,9 +2,9 @@ import { constants } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import { resolve as resolvePath } from "node:path";
-import type { AgentTool } from "@mariozechner/pi-ai";
-import { Type } from "@sinclair/typebox";
 import * as Diff from "diff";
+import { z } from "zod";
+import { createZodTool } from "./zod-tool.js";
 
 /**
  * Expand ~ to home directory
@@ -117,33 +117,33 @@ function generateDiffString(
 	return output.join("\n");
 }
 
-const editSchema = Type.Object({
-	path: Type.String({
-		description: "Path to the file to edit (relative or absolute)",
-	}),
-	oldText: Type.String({
-		description: "Exact text to find and replace (must match exactly)",
-	}),
-	newText: Type.String({
-		description: "New text to replace the old text with",
-	}),
-});
+const editSchema = z
+	.object({
+		path: z
+			.string({
+				description: "Path to the file to edit (relative or absolute)",
+			})
+			.min(1, "Path must not be empty"),
+		oldText: z
+			.string({
+				description: "Exact text to find and replace (must match exactly)",
+			})
+			.min(1, "oldText must not be empty"),
+		newText: z
+			.string({
+				description: "New text to replace the old text with",
+			})
+			.default(""),
+	})
+	.strict();
 
-export const editTool: AgentTool<typeof editSchema> = {
+export const editTool = createZodTool({
 	name: "edit",
 	label: "edit",
 	description:
 		"Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
-	parameters: editSchema,
-	execute: async (
-		_toolCallId: string,
-		{
-			path,
-			oldText,
-			newText,
-		}: { path: string; oldText: string; newText: string },
-		signal?: AbortSignal,
-	) => {
+	schema: editSchema,
+	async execute(_toolCallId, { path, oldText, newText }, signal) {
 		const absolutePath = resolvePath(expandPath(path));
 
 		return new Promise<{
@@ -264,4 +264,4 @@ export const editTool: AgentTool<typeof editSchema> = {
 			})();
 		});
 	},
-};
+});

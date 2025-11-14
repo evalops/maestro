@@ -1,7 +1,8 @@
 import { resolve as resolvePath } from "node:path";
-import type { AgentTool, TextContent } from "@mariozechner/pi-ai";
-import { Type } from "@sinclair/typebox";
+import type { TextContent } from "@mariozechner/pi-ai";
 import { glob } from "glob";
+import { z } from "zod";
+import { createZodTool } from "./zod-tool.js";
 
 function expandPath(path: string): string {
 	if (path === "~") {
@@ -13,55 +14,52 @@ function expandPath(path: string): string {
 	return path;
 }
 
-const listSchema = Type.Object({
-	path: Type.Optional(
-		Type.String({
-			description:
-				"Directory to list (relative or absolute). Defaults to current directory.",
-		}),
-	),
-	pattern: Type.Optional(
-		Type.String({
-			description: "Glob pattern relative to the directory. Defaults to *",
-		}),
-	),
-	limit: Type.Optional(
-		Type.Number({
-			description:
-				"Maximum number of entries to return (1-500). Defaults to 200.",
-		}),
-	),
-	includeHidden: Type.Optional(
-		Type.Boolean({
-			description: "Whether to include dotfiles (hidden files)",
-		}),
-	),
-});
-
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 500;
 
-export const listTool: AgentTool<typeof listSchema> = {
+const listSchema = z
+	.object({
+		path: z
+			.string({
+				description:
+					"Directory to list (relative or absolute). Defaults to current directory.",
+			})
+			.min(1, "Path must not be empty")
+			.optional(),
+		pattern: z
+			.string({
+				description: "Glob pattern relative to the directory. Defaults to *",
+			})
+			.min(1, "Pattern must not be empty")
+			.optional(),
+		limit: z
+			.number({
+				description:
+					"Maximum number of entries to return (1-500). Defaults to 200.",
+			})
+			.int()
+			.min(1)
+			.max(MAX_LIMIT)
+			.optional(),
+		includeHidden: z
+			.boolean({
+				description: "Whether to include dotfiles (hidden files)",
+			})
+			.optional(),
+	})
+	.strict();
+
+export const listTool = createZodTool({
 	name: "list",
 	label: "list",
 	description:
 		"List files and directories in a path using safe glob patterns. Supports limiting and optional dotfiles.",
-	parameters: listSchema,
-	execute: async (
+	schema: listSchema,
+	async execute(
 		_toolCallId,
-		{
-			path = ".",
-			pattern = "*",
-			limit = DEFAULT_LIMIT,
-			includeHidden = false,
-		}: {
-			path?: string;
-			pattern?: string;
-			limit?: number;
-			includeHidden?: boolean;
-		},
-		signal?: AbortSignal,
-	) => {
+		{ path = ".", pattern = "*", limit = DEFAULT_LIMIT, includeHidden = false },
+		signal,
+	) {
 		if (signal?.aborted) {
 			throw new Error("Operation aborted");
 		}
@@ -129,4 +127,4 @@ ${lines.join("\n")}`;
 			};
 		}
 	},
-};
+});

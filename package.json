@@ -14,6 +14,7 @@
 	"scripts": {
 		"clean": "rm -rf dist",
 	"build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+	"start": "node --enable-source-maps dist/cli.js",
 	"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
 	"lint": "biome check .",
 	"check": "npm run lint && tsc --noEmit",
@@ -26,7 +27,9 @@
 "@mariozechner/pi-tui": "^0.7.5",
 		"chalk": "^5.5.0",
 		"diff": "^8.0.2",
-		"glob": "^11.0.3"
+		"glob": "^11.0.3",
+		"zod": "^3.23.8",
+		"zod-to-json-schema": "^3.23.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.3",

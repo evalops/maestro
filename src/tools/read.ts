@@ -2,8 +2,9 @@ import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import * as os from "node:os";
 import { extname, resolve as resolvePath } from "node:path";
-import type { AgentTool, ImageContent, TextContent } from "@mariozechner/pi-ai";
-import { Type } from "@sinclair/typebox";
+import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import { z } from "zod";
+import { createZodTool } from "./zod-tool.js";
 
 /**
  * Expand ~ to home directory
@@ -37,34 +38,36 @@ function isImageFile(filePath: string): string | null {
 	return IMAGE_MIME_TYPES[ext] || null;
 }
 
-const readSchema = Type.Object({
-	path: Type.String({
-		description: "Path to the file to read (relative or absolute)",
-	}),
-	offset: Type.Optional(
-		Type.Number({
-			description: "Line number to start reading from (1-indexed)",
-		}),
-	),
-	limit: Type.Optional(
-		Type.Number({ description: "Maximum number of lines to read" }),
-	),
-});
+const readSchema = z
+	.object({
+		path: z
+			.string({
+				description: "Path to the file to read (relative or absolute)",
+			})
+			.min(1, "Path must not be empty"),
+		offset: z
+			.number({ description: "Line number to start reading from (1-indexed)" })
+			.int()
+			.min(1)
+			.optional(),
+		limit: z
+			.number({ description: "Maximum number of lines to read" })
+			.int()
+			.min(1)
+			.optional(),
+	})
+	.strict();
 
 const MAX_LINES = 2000;
 const MAX_LINE_LENGTH = 2000;
 
-export const readTool: AgentTool<typeof readSchema> = {
+export const readTool = createZodTool({
 	name: "read",
 	label: "read",
 	description:
 		"Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, defaults to first 2000 lines. Use offset/limit for large files.",
-	parameters: readSchema,
-	execute: async (
-		_toolCallId: string,
-		{ path, offset, limit }: { path: string; offset?: number; limit?: number },
-		signal?: AbortSignal,
-	) => {
+	schema: readSchema,
+	async execute(_toolCallId, { path, offset, limit }, signal) {
 		const absolutePath = resolvePath(expandPath(path));
 		const mimeType = isImageFile(absolutePath);
 
@@ -208,4 +211,4 @@ export const readTool: AgentTool<typeof readSchema> = {
 			})();
 		});
 	},
-};
+});

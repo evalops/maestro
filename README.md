@@ -1,13 +1,13 @@
-# pi
+# Playwright CLI by EvalOps
 
-A radically simple and opinionated coding agent with multi-model support (including mid-session switching), a simple yet powerful CLI for headless coding tasks, and many creature comforts you might be used to from other coding agents.
+Playwright is a radically simple and opinionated coding agent with multi-model support (including mid-session switching), a powerful headless CLI, and the creature comforts you expect from modern coding copilots.
 
 Works on Linux, macOS, and Windows (barely tested, needs Git Bash running in the "modern" Windows Terminal).
 
 ## Installation
 
 ```bash
-npm install -g @mariozechner/pi-coding-agent
+npm install -g @evalops/playwright
 ```
 
 ## Quick Start
@@ -17,7 +17,7 @@ npm install -g @mariozechner/pi-coding-agent
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Start the interactive CLI
-pi
+playwright
 ```
 
 Once in the CLI, you can chat with the AI:
@@ -124,7 +124,7 @@ Paste multiple lines of text (e.g., code snippets, logs) and they'll be automati
 ### Keyboard Shortcuts
 
 - **Ctrl+K**: Delete current line
-- **Ctrl+C**: Clear editor (first press) / Exit pi (second press)
+- **Ctrl+C**: Clear editor (first press) / Exit Playwright (second press)
 - **Tab**: Path completion
 - **Enter**: Send message
 - **Shift+Enter**: Insert new line (multi-line input)
@@ -140,7 +140,7 @@ The agent automatically loads context from `AGENT.md` or `CLAUDE.md` files at th
 
 Context files are loaded in this order:
 
-1. **Global context**: `~/.pi/agent/AGENT.md` or `CLAUDE.md`
+1. **Global context**: `~/.playwright/agent/AGENT.md` or `CLAUDE.md`
    - Applies to all your coding sessions
    - Great for personal coding preferences and workflows
 
@@ -198,22 +198,22 @@ The image will be automatically encoded and sent with your message. JPEG and PNG
 
 ## Session Management
 
-Sessions are automatically saved in `~/.pi/agent/sessions/` organized by working directory. Each session is stored as a JSONL file with a unique timestamp-based ID.
+Sessions are automatically saved in `~/.playwright/agent/sessions/` organized by working directory. Each session is stored as a JSONL file with a unique timestamp-based ID.
 
 To continue the most recent session:
 
 ```bash
-pi --continue
+playwright --continue
 # or
-pi -c
+playwright -c
 ```
 
 To browse and select from past sessions:
 
 ```bash
-pi --resume
+playwright --resume
 # or
-pi -r
+playwright -r
 ```
 
 This opens an interactive session selector where you can:
@@ -227,19 +227,19 @@ Sessions include all conversation messages, tool calls and results, model switch
 To run without saving a session (ephemeral mode):
 
 ```bash
-pi --no-session
+playwright --no-session
 ```
 
 To use a specific session file instead of auto-generating one:
 
 ```bash
-pi --session /path/to/my-session.jsonl
+playwright --session /path/to/my-session.jsonl
 ```
 
 ## CLI Options
 
 ```bash
-pi [options] [messages...]
+playwright [options] [messages...]
 ```
 
 ### Options
@@ -285,25 +285,25 @@ Show help message
 
 ```bash
 # Start interactive mode
-pi
+playwright
 
 # Single message mode (text output)
-pi "List all .ts files in src/"
+playwright "List all .ts files in src/"
 
 # JSON mode - stream all agent events
-pi --mode json "List all .ts files in src/"
+playwright --mode json "List all .ts files in src/"
 
 # RPC mode - headless operation (see test/rpc-example.ts)
-pi --mode rpc --no-session
+playwright --mode rpc --no-session
 # Then send JSON on stdin:
 # {"type":"prompt","message":"List all .ts files"}
 # {"type":"abort"}
 
 # Continue previous session
-pi -c "What did we discuss?"
+playwright -c "What did we discuss?"
 
 # Use different model
-pi --provider openai --model gpt-4o "Help me refactor this code"
+playwright --provider openai --model gpt-4o "Help me refactor this code"
 ```
 
 ## Tools
@@ -326,7 +326,7 @@ Execute a bash command in the current working directory. Returns stdout and stde
 
 ### MCP & Adding Your Own Tools
 
-**pi does and will not support MCP.** Instead, it relies on the four built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
+**Playwright does and will not support MCP.** Instead, it relies on the four built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
 
 **Here's the gist:**
 
@@ -365,7 +365,7 @@ You: Read ~/agent-tools/screenshot/README.md and use that tool to take a screens
 The agent will read the README, understand the tool, and invoke it via bash as needed. If you need a new tool, ask the agent to write it for you.
 
 You can also reference tool READMEs in your `AGENT.md` files to make them automatically available:
-- Global: `~/.pi/agent/AGENT.md` - available in all sessions
+- Global: `~/.playwright/agent/AGENT.md` - available in all sessions
 - Project-specific: `./AGENT.md` - available in this project
 
 **Real-world example:**
@@ -389,16 +389,16 @@ This agent runs in full YOLO mode and assumes you know what you're doing. It has
 - Pre-checking tools for "dangerous" patterns introduces latency, false positives, and is ineffective
 
 **Prompt injection risks:**
-- By default, pi has no web search or fetch tool
+- By default, Playwright has no web search or fetch tool
 - However, it can use `curl` or read files from disk
 - Both provide ample surface area for prompt injection attacks
 - Malicious content in files or command outputs can influence behavior
 
 **Mitigations:**
-- Run pi inside a container if you're uncomfortable with full access
+- Run Playwright inside a container if you're uncomfortable with full access
 - Use a different tool if you need guardrails
-- Don't use pi on systems with sensitive data you can't afford to lose
-- Fork pi and add all of the above
+- Don't use Playwright on systems with sensitive data you can't afford to lose
+- Fork Playwright and add all of the above
 
 This is how I want it to work and I'm not likely to change my stance on this.
 
@@ -406,20 +406,20 @@ Use at your own risk.
 
 ## Sub-Agents
 
-**pi does not and will not support sub-agents as a built-in feature.** If the agent needs to delegate work, it can:
+**Playwright does not and will not support sub-agents as a built-in feature.** If the agent needs to delegate work, it can:
 
-1. Spawn another instance of itself via the `pi` CLI command
-2. Write a custom tool with a README.md that describes how to invoke pi for specific tasks
+1. Spawn another instance of itself via the `playwright` CLI command
+2. Write a custom tool with a README.md that describes how to invoke Playwright for specific tasks
 
 **Why no built-in sub-agents:**
 
 Context transfer between agents is generally poor. Information gets lost, compressed, or misrepresented when passed through agent boundaries. Direct execution with full context is more effective than delegation with summarized context.
 
-If you need parallel work on independent tasks, manually run multiple `pi` sessions in different terminal tabs. You're the orchestrator.
+If you need parallel work on independent tasks, manually run multiple `playwright` sessions in different terminal tabs. You're the orchestrator.
 
 ## To-Dos
 
-**pi does not and will not support built-in to-dos.** In my experience, to-do lists generally confuse models more than they help.
+**Playwright does not and will not support built-in to-dos.** In my experience, to-do lists generally confuse models more than they help.
 
 If you need task tracking, make it stateful by writing to a file:
 
@@ -436,7 +436,7 @@ The agent can read and update this file as needed. Using checkboxes keeps track 
 
 ## Planning
 
-**pi does not and will not have a built-in planning mode.** Telling the agent to think through a problem together with you, without modifying files or executing commands, is generally sufficient.
+**Playwright does not and will not have a built-in planning mode.** Telling the agent to think through a problem together with you, without modifying files or executing commands, is generally sufficient.
 
 If you need persistent planning across sessions, write it to a file:
 
@@ -461,7 +461,7 @@ The agent can read, update, and reference the plan as it works. Unlike ephemeral
 
 ## Background Bash
 
-**pi does not and will not implement background bash execution.** Instead, tell the agent to use `tmux` or something like [tterminal-cp](https://mariozechner.at/posts/2025-08-15-mcp-vs-cli/). Bonus points: you can watch the agent interact with a CLI like a debugger and even intervene if necessary.
+**Playwright does not and will not implement background bash execution.** Instead, tell the agent to use `tmux` or something like [tterminal-cp](https://mariozechner.at/posts/2025-08-15-mcp-vs-cli/). Bonus points: you can watch the agent interact with a CLI like a debugger and even intervene if necessary.
 
 ## Planned Features
 

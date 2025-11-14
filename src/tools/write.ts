@@ -1,8 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import { dirname, resolve as resolvePath } from "node:path";
-import type { AgentTool } from "@mariozechner/pi-ai";
-import { Type } from "@sinclair/typebox";
+import { z } from "zod";
+import { createZodTool } from "./zod-tool.js";
 
 /**
  * Expand ~ to home directory
@@ -17,24 +17,26 @@ function expandPath(filePath: string): string {
 	return filePath;
 }
 
-const writeSchema = Type.Object({
-	path: Type.String({
-		description: "Path to the file to write (relative or absolute)",
-	}),
-	content: Type.String({ description: "Content to write to the file" }),
-});
+const writeSchema = z
+	.object({
+		path: z
+			.string({
+				description: "Path to the file to write (relative or absolute)",
+			})
+			.min(1, "Path must not be empty"),
+		content: z
+			.string({ description: "Content to write to the file" })
+			.default(""),
+	})
+	.strict();
 
-export const writeTool: AgentTool<typeof writeSchema> = {
+export const writeTool = createZodTool({
 	name: "write",
 	label: "write",
 	description:
 		"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
-	parameters: writeSchema,
-	execute: async (
-		_toolCallId: string,
-		{ path, content }: { path: string; content: string },
-		signal?: AbortSignal,
-	) => {
+	schema: writeSchema,
+	async execute(_toolCallId, { path, content }, signal) {
 		const absolutePath = resolvePath(expandPath(path));
 		const dir = dirname(absolutePath);
 
@@ -42,7 +44,6 @@ export const writeTool: AgentTool<typeof writeSchema> = {
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
 		}>((resolve, reject) => {
-			// Check if already aborted
 			if (signal?.aborted) {
 				reject(new Error("Operation aborted"));
 				return;
@@ -50,7 +51,6 @@ export const writeTool: AgentTool<typeof writeSchema> = {
 
 			let aborted = false;
 
-			// Set up abort handler
 			const onAbort = () => {
 				aborted = true;
 				reject(new Error("Operation aborted"));
@@ -60,26 +60,20 @@ export const writeTool: AgentTool<typeof writeSchema> = {
 				signal.addEventListener("abort", onAbort, { once: true });
 			}
 
-			// Perform the write operation
 			(async () => {
 				try {
-					// Create parent directories if needed
 					await mkdir(dir, { recursive: true });
 
-					// Check if aborted before writing
 					if (aborted) {
 						return;
 					}
 
-					// Write the file
 					await writeFile(absolutePath, content, "utf-8");
 
-					// Check if aborted after writing
 					if (aborted) {
 						return;
 					}
 
-					// Clean up abort handler
 					if (signal) {
 						signal.removeEventListener("abort", onAbort);
 					}
@@ -94,7 +88,6 @@ export const writeTool: AgentTool<typeof writeSchema> = {
 						details: undefined,
 					});
 				} catch (error: unknown) {
-					// Clean up abort handler
 					if (signal) {
 						signal.removeEventListener("abort", onAbort);
 					}
@@ -106,4 +99,4 @@ export const writeTool: AgentTool<typeof writeSchema> = {
 			})();
 		});
 	},
-};
+});
