@@ -48,6 +48,7 @@ import { RunCommandView } from "./run-command-view.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolStatusView } from "./tool-status-view.js";
+import { SessionView } from "./session-view.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
@@ -108,6 +109,7 @@ export class TuiRenderer {
 	private slashCommands: SlashCommand[] = [];
 	private commandEntries: CommandEntry[] = [];
 	private planView: PlanView;
+	private sessionView: SessionView;
 	private runCommandView: RunCommandView;
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
@@ -163,6 +165,13 @@ export class TuiRenderer {
 			getTools: () => this.agent.state.tools,
 			showInfoMessage: (message) => this.showInfoMessage(message),
 		});
+		this.sessionView = new SessionView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
+		});
 		this.diagnosticsView = new DiagnosticsView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -184,10 +193,10 @@ export class TuiRenderer {
 			handlers: {
 				thinking: () => this.showThinkingSelector(),
 				model: () => this.showModelSelector(),
-				exportSession: (input) => this.handleExportCommand(input),
+				exportSession: (input) => this.sessionView.handleExportCommand(input),
 				tools: (input) => this.toolStatusView.handleToolsCommand(input),
 				importConfig: (input) => this.handleImportCommand(input),
-				sessionInfo: () => this.handleSessionCommand(),
+				sessionInfo: () => this.sessionView.showSessionInfo(),
 				sessions: (input) => this.handleSessionsCommand(input),
 				reportBug: () => this.diagnosticsView.handleBugCommand(),
 				status: () => this.diagnosticsView.handleStatusCommand(),
@@ -938,143 +947,11 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 		this.ui.requestRender();
 	}
 
-	private handleExportCommand(text: string): void {
-		// Parse: /export [lite] [filename]
-		const parts = text.split(/\s+/);
-		let mode: "html" | "text" = "html";
-		let outputPath: string | undefined;
-		if (parts.length > 1) {
-			if (
-				parts[1].toLowerCase() === "lite" ||
-				parts[1].toLowerCase() === "text"
-			) {
-				mode = "text";
-				outputPath = parts[2];
-			} else {
-				outputPath = parts[1];
-			}
-		}
-
-		try {
-			const filePath =
-				mode === "text"
-					? exportSessionToText(
-							this.sessionManager,
-							this.agent.state,
-							outputPath,
-						)
-					: exportSessionToHtml(
-							this.sessionManager,
-							this.agent.state,
-							outputPath,
-						);
-
-			// Show success message in chat - matching thinking level style
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(chalk.dim(`Session exported to: ${filePath}`), 1, 0),
-			);
-			this.ui.requestRender();
-		} catch (error: any) {
-			// Show error message in chat
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(
-					chalk.red(
-						`Failed to export session: ${error.message || "Unknown error"}`,
-					),
-					1,
-					0,
-				),
-			);
-			this.ui.requestRender();
-		}
-	}
-
-	private handleSessionCommand(): void {
-		// Get session info
-		const sessionFile = this.sessionManager.getSessionFile();
-		const state = this.agent.state;
-
-		// Count messages
-		const userMessages = state.messages.filter((m) => m.role === "user").length;
-		const assistantMessages = state.messages.filter(
-			(m) => m.role === "assistant",
-		).length;
-		const toolResults = state.messages.filter(
-			(m) => m.role === "toolResult",
-		).length;
-		const totalMessages = state.messages.length;
-
-		// Count tool calls from assistant messages
-		let toolCalls = 0;
-		for (const message of state.messages) {
-			if (message.role === "assistant") {
-				const assistantMsg = message as AssistantMessage;
-				toolCalls += assistantMsg.content.filter(
-					(c) => c.type === "toolCall",
-				).length;
-			}
-		}
-
-		// Calculate cumulative usage from all assistant messages (same as footer)
-		let totalInput = 0;
-		let totalOutput = 0;
-		let totalCacheRead = 0;
-		let totalCacheWrite = 0;
-		let totalCost = 0;
-
-		for (const message of state.messages) {
-			if (message.role === "assistant") {
-				const assistantMsg = message as AssistantMessage;
-				totalInput += assistantMsg.usage.input;
-				totalOutput += assistantMsg.usage.output;
-				totalCacheRead += assistantMsg.usage.cacheRead;
-				totalCacheWrite += assistantMsg.usage.cacheWrite;
-				totalCost += assistantMsg.usage.cost.total;
-			}
-		}
-
-		const totalTokens =
-			totalInput + totalOutput + totalCacheRead + totalCacheWrite;
-
-		// Build info text
-		let info = `${chalk.bold("Session Info")}\n\n`;
-		info += `${chalk.dim("File:")} ${sessionFile}\n`;
-		info += `${chalk.dim("ID:")} ${this.sessionManager.getSessionId()}\n\n`;
-		info += `${chalk.bold("Messages")}\n`;
-		info += `${chalk.dim("User:")} ${userMessages}\n`;
-		info += `${chalk.dim("Assistant:")} ${assistantMessages}\n`;
-		info += `${chalk.dim("Tool Calls:")} ${toolCalls}\n`;
-		info += `${chalk.dim("Tool Results:")} ${toolResults}\n`;
-		info += `${chalk.dim("Total:")} ${totalMessages}\n\n`;
-		info += `${chalk.bold("Tokens")}\n`;
-		info += `${chalk.dim("Input:")} ${totalInput.toLocaleString()}\n`;
-		info += `${chalk.dim("Output:")} ${totalOutput.toLocaleString()}\n`;
-		if (totalCacheRead > 0) {
-			info += `${chalk.dim("Cache Read:")} ${totalCacheRead.toLocaleString()}\n`;
-		}
-		if (totalCacheWrite > 0) {
-			info += `${chalk.dim("Cache Write:")} ${totalCacheWrite.toLocaleString()}\n`;
-		}
-		info += `${chalk.dim("Total:")} ${totalTokens.toLocaleString()}\n`;
-
-		if (totalCost > 0) {
-			info += `\n${chalk.bold("Cost")}\n`;
-			info += `${chalk.dim("Total:")} ${totalCost.toFixed(4)}`;
-		}
-
-		// Show info in chat
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
-		this.ui.requestRender();
-	}
-
 	private handleSessionsCommand(text: string): void {
 		const parts = text.trim().split(/\s+/);
 		const sessions = this.sessionManager.loadAllSessions();
 		if (parts.length === 1 || parts[1] === "list") {
-			this.showSessionsList(sessions);
+			this.sessionView.showSessionsList(sessions);
 			return;
 		}
 
@@ -1093,11 +970,7 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 				this.showInfoMessage(`No session #${index} found.`);
 				return;
 			}
-			this.sessionManager.setSessionFile(selected.path);
-			const loaded = this.sessionManager.loadMessages() as AppMessage[];
-			this.agent.replaceMessages(loaded);
-			this.applyLoadedSessionContext();
-			this.chatContainer.clear();
+			this.sessionView.loadSession(index, sessions);
 			this.toolComponents.clear();
 			this.renderInitialMessages(this.agent.state);
 			this.footer.updateState(this.agent.state);
@@ -1108,45 +981,6 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 		}
 
 		this.showInfoMessage("Usage: /sessions [list|load <number>]");
-	}
-
-	private showSessionsList(
-		sessions: Array<{
-			path: string;
-			id: string;
-			created: Date;
-			modified: Date;
-			messageCount: number;
-			firstMessage: string;
-			allMessagesText: string;
-		}>,
-	): void {
-		this.chatContainer.addChild(new Spacer(1));
-		if (sessions.length === 0) {
-			this.chatContainer.addChild(
-				new Text(chalk.dim("No saved sessions for this project."), 1, 0),
-			);
-			this.ui.requestRender();
-			return;
-		}
-		const lines = sessions.slice(0, 5).map((session, idx) => {
-			const preview = session.firstMessage
-				? session.firstMessage.slice(0, 60)
-				: "(no messages)";
-			return `${idx + 1}. ${chalk.cyan(session.id.slice(0, 8))} · ${chalk.dim(
-				session.modified.toLocaleString(),
-			)} · ${preview}`;
-		});
-		this.chatContainer.addChild(
-			new Text(
-				`${chalk.bold("Sessions")}
-${lines.join("\n")}
-Use /sessions load <number> to switch.`,
-				1,
-				0,
-			),
-		);
-		this.ui.requestRender();
 	}
 
 	private showInfoMessage(text: string): void {
