@@ -6,6 +6,7 @@ import {
 	type MessageConnection,
 	createMessageConnection,
 } from "vscode-jsonrpc/node";
+import { languageIdFromFile } from "./language.js";
 
 export interface LspRange {
 	start: { line: number; character: number };
@@ -19,6 +20,24 @@ export interface LspDiagnostic {
 	range: LspRange;
 }
 
+export interface LspSymbol {
+	name: string;
+	kind: number;
+	location: {
+		uri: string;
+		range: LspRange;
+	};
+}
+
+export interface LspDocumentSymbol {
+	name: string;
+	detail?: string;
+	kind: number;
+	range: LspRange;
+	selectionRange: LspRange;
+	children?: LspDocumentSymbol[];
+}
+
 export interface LspClientHandle {
 	id: string;
 	root: string;
@@ -26,6 +45,7 @@ export interface LspClientHandle {
 	connection: MessageConnection;
 	diagnostics: Map<string, LspDiagnostic[]>;
 	initialized: boolean;
+	openFiles: Map<string, number>; // path -> version
 }
 
 export interface LspServerConfig {
@@ -95,6 +115,132 @@ export async function hover(file: string, line: number, character: number) {
 	);
 }
 
+export enum SymbolKind {
+	File = 1,
+	Module = 2,
+	Namespace = 3,
+	Package = 4,
+	Class = 5,
+	Method = 6,
+	Property = 7,
+	Field = 8,
+	Constructor = 9,
+	Enum = 10,
+	Interface = 11,
+	Function = 12,
+	Variable = 13,
+	Constant = 14,
+	String = 15,
+	Number = 16,
+	Boolean = 17,
+	Array = 18,
+	Object = 19,
+	Key = 20,
+	Null = 21,
+	EnumMember = 22,
+	Struct = 23,
+	Event = 24,
+	Operator = 25,
+	TypeParameter = 26,
+}
+
+const IMPORTANT_KINDS = [
+	SymbolKind.Class,
+	SymbolKind.Function,
+	SymbolKind.Method,
+	SymbolKind.Interface,
+	SymbolKind.Variable,
+	SymbolKind.Constant,
+	SymbolKind.Struct,
+	SymbolKind.Enum,
+];
+
+export async function workspaceSymbol(query: string): Promise<LspSymbol[]> {
+	const results = await Promise.all(
+		clients.map((client) =>
+			client.connection
+				.sendRequest("workspace/symbol", { query })
+				.then((symbols: any) =>
+					Array.isArray(symbols)
+						? symbols.filter((s: LspSymbol) => IMPORTANT_KINDS.includes(s.kind))
+						: [],
+				)
+				.catch(() => []),
+		),
+	);
+	return results.flat().slice(0, 50);
+}
+
+export async function documentSymbol(
+	file: string,
+): Promise<(LspSymbol | LspDocumentSymbol)[]> {
+	const uri = pathToUri(file);
+	const handles = await ensureClientsForFile(file);
+	const results = await Promise.all(
+		handles.map((handle) =>
+			handle.connection
+				.sendRequest("textDocument/documentSymbol", {
+					textDocument: { uri },
+				})
+				.then((symbols: any) => (Array.isArray(symbols) ? symbols : []))
+				.catch(() => []),
+		),
+	);
+	return results.flat().filter(Boolean);
+}
+
+export async function changeFile(file: string, content: string): Promise<void> {
+	const handles = await ensureClientsForFile(file);
+	const uri = pathToUri(file);
+
+	await Promise.all(
+		handles.map(async (handle) => {
+			const currentVersion = handle.openFiles.get(file);
+			if (currentVersion === undefined) {
+				// File not open yet, open it first
+				handle.openFiles.set(file, 1);
+				await handle.connection.sendNotification("textDocument/didOpen", {
+					textDocument: {
+						uri,
+						languageId: languageIdFromFile(file),
+						version: 1,
+						text: content,
+					},
+				});
+			} else {
+				// File already open, send change
+				const newVersion = currentVersion + 1;
+				handle.openFiles.set(file, newVersion);
+				await handle.connection.sendNotification("textDocument/didChange", {
+					textDocument: {
+						uri,
+						version: newVersion,
+					},
+					contentChanges: [{ text: content }],
+				});
+			}
+		}),
+	);
+}
+
+export async function closeFile(file: string): Promise<void> {
+	const uri = pathToUri(file);
+	await Promise.all(
+		clients
+			.filter((client) => client.openFiles.has(file))
+			.map(async (client) => {
+				client.openFiles.delete(file);
+				await client.connection.sendNotification("textDocument/didClose", {
+					textDocument: { uri },
+				});
+			}),
+	);
+}
+
+export async function getClients(): Promise<LspClientHandle[]> {
+	return [...clients];
+}
+
 async function ensureClientsForFile(file: string) {
 	const absolute = resolve(file);
 	const ext = extname(absolute);
@@ -140,6 +286,7 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 			connection,
 			diagnostics: new Map(),
 			initialized: false,
+			openFiles: new Map(),
 		};
 		connection.onNotification(
 			"textDocument/publishDiagnostics",
@@ -158,7 +305,34 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 		await connection.sendRequest("initialize", {
 			processId: process.pid,
 			rootUri: pathToUri(root),
-			capabilities: {},
+			capabilities: {
+				workspace: {
+					workspaceFolders: true,
+					symbol: {
+						symbolKind: {
+							valueSet: [
+								1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+								19, 20, 21, 22, 23, 24, 25, 26,
+							],
+						},
+					},
+					configuration: true,
+				},
+				textDocument: {
+					synchronization: {
+						didOpen: true,
+						didChange: true,
+						didSave: true,
+						didClose: true,
+					},
+					hover: {
+						contentFormat: ["plaintext", "markdown"],
+					},
+					documentSymbol: {
+						hierarchicalDocumentSymbolSupport: true,
+					},
+				},
+			},
 			initializationOptions: server.initializationOptions ?? {},
 		});
 		await connection.sendNotification("initialized", {});
@@ -172,21 +346,6 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 		return undefined;
 	} finally {
 		spawning.delete(key);
-	}
-}
-
-function languageIdFromFile(file: string) {
-	switch (extname(file)) {
-		case ".ts":
-		case ".tsx":
-			return "typescript";
-		case ".js":
-		case ".jsx":
-			return "javascript";
-		case ".py":
-			return "python";
-		default:
-			return "plaintext";
 	}
 }
 
