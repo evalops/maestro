@@ -166,6 +166,11 @@ export class TuiRenderer {
 			description: "Copy session info for bug reports",
 		};
 
+		const helpCommand: SlashCommand = {
+			name: "help",
+			description: "List available slash commands",
+		};
+
 		const diagnosticsCommand: SlashCommand = {
 			name: "diag",
 			description: "Show provider/model/API key diagnostics",
@@ -197,6 +202,7 @@ export class TuiRenderer {
 				sessionCommand,
 				sessionsCommand,
 				bugCommand,
+				helpCommand,
 				diagnosticsCommand,
 				compactCommand,
 				compactToolsCommand,
@@ -299,6 +305,12 @@ export class TuiRenderer {
 
 				if (trimmed === "/bug") {
 					this.handleBugCommand();
+					this.editor.setText("");
+					return;
+				}
+
+				if (trimmed === "/help") {
+					this.handleHelpCommand();
 					this.editor.setText("");
 					return;
 				}
@@ -1216,6 +1228,32 @@ Attach them in the bug report so we can replay the session.`;
 		} catch {
 			return false;
 		}
+	}
+
+	private handleHelpCommand(): void {
+		const commands: SlashCommand[] = [
+			thinkingCommand,
+			modelCommand,
+			exportCommand,
+			toolsCommand,
+			importCommand,
+			sessionCommand,
+			sessionsCommand,
+			bugCommand,
+			helpCommand,
+			diagnosticsCommand,
+			compactCommand,
+			compactToolsCommand,
+			quitCommand,
+		];
+		const lines = commands.map(
+			(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
+		);
+		const text = `${chalk.bold("Slash commands")}
+${lines.join("\n")}`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(text, 1, 0));
+		this.ui.requestRender();
 	}
 
 	private getToolFailureData(limit = 5): {
