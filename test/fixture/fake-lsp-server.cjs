@@ -6,14 +6,8 @@
 
 const readline = require("node:readline");
 
-const rl = readline.createInterface({
-	input: process.stdin,
-	output: process.stdout,
-	terminal: false,
-});
-
-let contentLength = 0;
 let buffer = "";
+let contentLength = 0;
 const diagnosticsEnabled = process.env.FAKE_LSP_DIAGNOSTICS === "1";
 const symbolsEnabled = process.env.FAKE_LSP_SYMBOLS === "1";
 
@@ -22,7 +16,12 @@ const openFiles = new Map();
 function sendMessage(msg) {
 	const content = JSON.stringify(msg);
 	const header = `Content-Length: ${content.length}\r\n\r\n`;
-	process.stdout.write(header + content);
+	try {
+		process.stdout.write(header + content);
+	} catch (err) {
+		// Pipe closed, exit gracefully
+		process.exit(0);
+	}
 }
 
 function handleRequest(id, method, params) {
@@ -155,6 +154,11 @@ function handleRequest(id, method, params) {
 }
 
 function handleNotification(method, params) {
+	if (method === "initialized") {
+		// Server is now initialized
+		return;
+	}
+
 	if (method === "textDocument/didOpen") {
 		const { textDocument } = params;
 		openFiles.set(textDocument.uri, {
@@ -186,7 +190,7 @@ function handleNotification(method, params) {
 							: [],
 					},
 				});
-			}, 100);
+			}, 50);
 		}
 		return;
 	}
@@ -224,7 +228,7 @@ function handleNotification(method, params) {
 								: [],
 						},
 					});
-				}, 100);
+				}, 50);
 			}
 		}
 		return;
@@ -233,6 +237,10 @@ function handleNotification(method, params) {
 	if (method === "textDocument/didClose") {
 		openFiles.delete(params.textDocument.uri);
 		return;
+	}
+
+	if (method === "exit") {
+		process.exit(0);
 	}
 }
 
@@ -248,30 +256,45 @@ function processMessage(msg) {
 	}
 }
 
-rl.on("line", (line) => {
-	if (line.startsWith("Content-Length:")) {
-		contentLength = Number.parseInt(line.split(":")[1].trim(), 10);
-	} else if (line === "") {
-		// Empty line signals end of headers
-		buffer = "";
-	} else {
-		buffer += line;
-		if (Buffer.byteLength(buffer, "utf8") >= contentLength) {
+// Read from stdin with proper LSP protocol parsing
+let headerMode = true;
+
+process.stdin.on("data", (chunk) => {
+	buffer += chunk.toString();
+
+	while (true) {
+		if (headerMode) {
+			const headerEnd = buffer.indexOf("\r\n\r\n");
+			if (headerEnd === -1) break;
+
+			const headers = buffer.slice(0, headerEnd);
+			const match = headers.match(/Content-Length: (\d+)/);
+			if (match) {
+				contentLength = Number.parseInt(match[1], 10);
+			}
+
+			buffer = buffer.slice(headerEnd + 4);
+			headerMode = false;
+		} else {
+			if (buffer.length < contentLength) break;
+
+			const message = buffer.slice(0, contentLength);
+			buffer = buffer.slice(contentLength);
+			headerMode = true;
+			contentLength = 0;
+
 			try {
-				const msg = JSON.parse(buffer);
+				const msg = JSON.parse(message);
 				processMessage(msg);
 			} catch (err) {
 				// Ignore parse errors
 			}
-			buffer = "";
-			contentLength = 0;
 		}
 	}
 });
 
-// Handle raw data for proper message parsing
-process.stdin.on("data", (chunk) => {
-	// This is handled by readline
+process.stdin.on("end", () => {
+	process.exit(0);
 });
 
 process.on("SIGTERM", () => {
@@ -281,3 +304,12 @@ process.on("SIGTERM", () => {
 process.on("SIGINT", () => {
 	process.exit(0);
 });
+
+// Handle EPIPE errors gracefully
+process.stdout.on("error", (err) => {
+	if (err.code === "EPIPE") {
+		process.exit(0);
+	}
+});
+
+process.stdin.resume();

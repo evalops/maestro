@@ -69,21 +69,49 @@ export const lspEvents = new EventEmitter();
 
 export function configureServers(config: LspServerConfig[]): void {
 	servers = config;
+	// Clear clients when reconfiguring (for tests)
+	for (const client of clients) {
+		try {
+			if (client.process && !client.process.killed) {
+				client.process.kill("SIGKILL");
+			}
+		} catch {
+			// Ignore
+		}
+	}
+	clients.length = 0;
+	spawning.clear();
+	brokenServers.clear();
 }
 
 export async function touchFile(file: string): Promise<void> {
 	const handles = await ensureClientsForFile(file);
 	await Promise.all(
 		handles.map(async (handle) => {
+			// Skip if file is already open
+			if (handle.openFiles.has(file)) return;
+
 			const uri = pathToUri(file);
-			await handle.connection.sendNotification("textDocument/didOpen", {
-				textDocument: {
-					uri,
-					languageId: languageIdFromFile(file),
-					version: Date.now(),
-					text: await readFileText(file).catch(() => ""),
-				},
-			});
+			const version = 0;
+
+			try {
+				await handle.connection.sendNotification("textDocument/didOpen", {
+					textDocument: {
+						uri,
+						languageId: languageIdFromFile(file),
+						version,
+						text: await readFileText(file).catch(() => ""),
+					},
+				});
+				// Mark file as opened only after successful notification
+				handle.openFiles.set(file, version);
+			} catch (error: any) {
+				// Connection closed or process dead
+				if (error?.code === "EPIPE" || error?.message?.includes("socket")) {
+					return; // Silently ignore dead connections
+				}
+				console.error(`[lsp] Failed to send didOpen for ${file}:`, error);
+			}
 		}),
 	);
 }
@@ -196,28 +224,37 @@ export async function changeFile(file: string, content: string): Promise<void> {
 	await Promise.all(
 		handles.map(async (handle) => {
 			const currentVersion = handle.openFiles.get(file);
-			if (currentVersion === undefined) {
-				// File not open yet, open it first
-				handle.openFiles.set(file, 1);
-				await handle.connection.sendNotification("textDocument/didOpen", {
-					textDocument: {
-						uri,
-						languageId: languageIdFromFile(file),
-						version: 1,
-						text: content,
-					},
-				});
-			} else {
-				// File already open, send change
-				const newVersion = currentVersion + 1;
-				handle.openFiles.set(file, newVersion);
-				await handle.connection.sendNotification("textDocument/didChange", {
-					textDocument: {
-						uri,
-						version: newVersion,
-					},
-					contentChanges: [{ text: content }],
-				});
+			try {
+				if (currentVersion === undefined) {
+					// File not open yet, open it first
+					const version = 0;
+					await handle.connection.sendNotification("textDocument/didOpen", {
+						textDocument: {
+							uri,
+							languageId: languageIdFromFile(file),
+							version,
+							text: content,
+						},
+					});
+					handle.openFiles.set(file, version);
+				} else {
+					// File already open, send change
+					const newVersion = currentVersion + 1;
+					await handle.connection.sendNotification("textDocument/didChange", {
+						textDocument: {
+							uri,
+							version: newVersion,
+						},
+						contentChanges: [{ text: content }],
+					});
+					handle.openFiles.set(file, newVersion);
+				}
+			} catch (error: any) {
+				// Connection closed or process dead
+				if (error?.code === "EPIPE" || error?.message?.includes("socket")) {
+					return; // Silently ignore dead connections
+				}
+				console.error(`[lsp] Failed to send change for ${file}:`, error);
 			}
 		}),
 	);
@@ -230,9 +267,14 @@ export async function closeFile(file: string): Promise<void> {
 			.filter((client) => client.openFiles.has(file))
 			.map(async (client) => {
 				client.openFiles.delete(file);
-				await client.connection.sendNotification("textDocument/didClose", {
-					textDocument: { uri },
-				});
+				try {
+					await client.connection.sendNotification("textDocument/didClose", {
+						textDocument: { uri },
+					});
+				} catch (error) {
+					// Connection may already be closed
+					console.error(`[lsp] Failed to send didClose for ${file}:`, error);
+				}
 			}),
 	);
 }
@@ -274,18 +316,40 @@ async function ensureClientsForFile(file: string) {
 
 async function spawnClient(server: LspServerConfig, root: string, key: string) {
 	try {
+		let spawnFailed = false;
+
 		const proc = spawn(server.command, server.args ?? [], {
 			cwd: root,
 			env: { ...process.env, ...server.env },
 		});
 
-		// Handle spawn errors
+		// Handle spawn errors (fires immediately if command doesn't exist)
 		proc.on("error", (err) => {
 			brokenServers.add(key);
+			spawnFailed = true;
 			console.error(`[lsp] Failed to spawn ${server.id}:`, err);
 		});
 
-		const connection = createMessageConnection(proc.stdin, proc.stdout);
+		// Prevent unhandled pipe errors from stdin
+		proc.stdin.on("error", (err) => {
+			if (err.code === "EPIPE") {
+				// Process already closed, ignore
+				return;
+			}
+			console.error(`[lsp] stdin error for ${server.id}:`, err);
+		});
+
+		// Brief check if spawn failed immediately (e.g., ENOENT)
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		if (spawnFailed) {
+			return undefined;
+		}
+
+		// createMessageConnection(inputStream, outputStream)
+		// inputStream = where we READ from = proc.stdout
+		// outputStream = where we WRITE to = proc.stdin
+		const connection = createMessageConnection(proc.stdout, proc.stdin);
 		const handle: LspClientHandle = {
 			id: server.id,
 			root,
@@ -298,7 +362,8 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 		connection.onNotification(
 			"textDocument/publishDiagnostics",
 			(params: any) => {
-				const uri = params.textDocument?.uri;
+				// LSP spec: publishDiagnostics has { uri, diagnostics }
+				const uri = params.uri;
 				if (!uri) return;
 				handle.diagnostics.set(uri, params.diagnostics ?? []);
 				lspEvents.emit("diagnostics", uri);
@@ -306,10 +371,11 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 		);
 		connection.onClose(() => {
 			brokenServers.add(key);
-			connection.dispose();
+			// Don't try to dispose - connection already closed
 		});
-		connection.onError(() => {
-			// Suppress connection errors to avoid unhandled rejections
+		connection.onError((error) => {
+			console.error(`[lsp] Connection error for ${server.id}:`, error);
+			brokenServers.add(key);
 		});
 		connection.listen();
 		await connection.sendRequest("initialize", {

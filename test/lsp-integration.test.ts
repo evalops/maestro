@@ -32,19 +32,26 @@ describe("LSP Integration Tests", () => {
 		const clients = await getClients();
 		for (const client of clients) {
 			try {
-				client.process.kill("SIGKILL");
-				client.connection.dispose();
+				// Just kill the process - disposing can cause EPIPE if server already dead
+				if (client.process && !client.process.killed) {
+					client.process.kill("SIGKILL");
+				}
 			} catch {
-				// Ignore
+				// Process already dead
 			}
 		}
+
 		// Reset configuration
 		configureServers([]);
-		// Allow cleanup time
-		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		// Allow cleanup time for processes to fully exit
+		await new Promise((resolve) => setTimeout(resolve, 300));
 	});
 
-	it("should configure LSP servers", () => {
+	it("should spawn LSP server and initialize", async () => {
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
 		const config: LspServerConfig = {
 			id: "fake-lsp",
 			name: "Fake LSP Server",
@@ -53,93 +60,226 @@ describe("LSP Integration Tests", () => {
 			extensions: [".ts"],
 		};
 
-		// Should not throw when configuring
 		configureServers([config]);
-		configureServers([]);
 
-		expect(true).toBe(true);
-	});
+		// Touch file to trigger LSP spawn and initialization
+		await touchFile(testFile);
 
-	it("should collect diagnostics returns empty when no clients", async () => {
-		configureServers([]);
+		// Wait for initialization
+		await new Promise((resolve) => setTimeout(resolve, 300));
+
+		const clients = await getClients();
+		expect(clients.length).toBe(1);
+		expect(clients[0].id).toBe("fake-lsp");
+		expect(clients[0].initialized).toBe(true);
+	}, 5000);
+
+	it("should collect diagnostics from LSP server", async () => {
+		const testFile = join(TEST_DIR, "error.ts");
+		writeFileSync(testFile, "const x = error;"); // Contains "error"
+
+		const config: LspServerConfig = {
+			id: "fake-lsp-diag",
+			name: "Fake LSP with Diagnostics",
+			command: process.execPath,
+			args: [FAKE_LSP_PATH],
+			extensions: [".ts"],
+			env: { FAKE_LSP_DIAGNOSTICS: "1" },
+		};
+
+		configureServers([config]);
+
+		await touchFile(testFile);
+
+		// Wait for diagnostics to arrive
+		await new Promise((resolve) => setTimeout(resolve, 300));
 
 		const diagnostics = await collectDiagnostics();
-		expect(diagnostics).toEqual({});
-	}, 1000);
+		const allDiags = Object.values(diagnostics).flat();
+		expect(allDiags.length).toBeGreaterThan(0);
+		expect(allDiags[0].severity).toBe(1); // Error
+		expect(allDiags[0].message).toContain("Test error");
+	}, 5000);
 
-	it("should track file changes without errors", async () => {
+	it("should track file changes with didChange", async () => {
 		const testFile = join(TEST_DIR, "changing.ts");
 		writeFileSync(testFile, "const x = 1;");
 
-		configureServers([]);
+		const config: LspServerConfig = {
+			id: "fake-lsp-change",
+			name: "Fake LSP Change",
+			command: process.execPath,
+			args: [FAKE_LSP_PATH],
+			extensions: [".ts"],
+			env: { FAKE_LSP_DIAGNOSTICS: "1" },
+		};
 
-		// Test that changeFile works without crashing
+		configureServers([config]);
+
+		// Open file
+		await touchFile(testFile);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		// Initially no errors
+		let diagnostics = await collectDiagnostics();
+		let allDiags = Object.values(diagnostics).flat();
+		expect(allDiags.length).toBe(0);
+
+		// Change to include error
+		await changeFile(testFile, "const x = error;");
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		// Should now have diagnostics
+		diagnostics = await collectDiagnostics();
+		allDiags = Object.values(diagnostics).flat();
+		expect(allDiags.length).toBeGreaterThan(0);
+
+		// Change back to valid
 		await changeFile(testFile, "const x = 2;");
-		await changeFile(testFile, "const x = 3;");
+		await new Promise((resolve) => setTimeout(resolve, 200));
 
-		// No errors means success
-		expect(true).toBe(true);
-	}, 2000);
+		// Diagnostics should clear
+		diagnostics = await collectDiagnostics();
+		allDiags = Object.values(diagnostics).flat();
+		expect(allDiags.length).toBe(0);
+	}, 8000);
 
-	it("should handle workspace symbol search with no clients", async () => {
-		configureServers([]);
+	it("should search workspace symbols", async () => {
+		const testFile = join(TEST_DIR, "symbols.ts");
+		writeFileSync(testFile, "class MyClass {}");
+
+		const config: LspServerConfig = {
+			id: "fake-lsp-symbols",
+			name: "Fake LSP Symbols",
+			command: process.execPath,
+			args: [FAKE_LSP_PATH],
+			extensions: [".ts"],
+			env: { FAKE_LSP_SYMBOLS: "1" },
+		};
+
+		configureServers([config]);
+
+		await touchFile(testFile);
+		await new Promise((resolve) => setTimeout(resolve, 200));
 
 		const symbols = await workspaceSymbol("MyClass");
-		expect(symbols).toEqual([]);
-	}, 1000);
+		expect(symbols.length).toBeGreaterThan(0);
+		expect(symbols[0].name).toBe("MyClass");
+		expect(symbols[0].kind).toBe(5); // Class
+	}, 5000);
 
-	it("should handle document symbol requests with no clients", async () => {
+	it("should get document symbols", async () => {
 		const testFile = join(TEST_DIR, "doc-symbols.ts");
 		writeFileSync(testFile, "function test() {}\nclass Test {}");
 
-		configureServers([]);
+		const config: LspServerConfig = {
+			id: "fake-lsp-doc",
+			name: "Fake LSP Doc",
+			command: process.execPath,
+			args: [FAKE_LSP_PATH],
+			extensions: [".ts"],
+			env: { FAKE_LSP_SYMBOLS: "1" },
+		};
+
+		configureServers([config]);
+
+		await touchFile(testFile);
+		await new Promise((resolve) => setTimeout(resolve, 200));
 
 		const symbols = await documentSymbol(testFile);
-		expect(symbols).toEqual([]);
-	}, 1000);
+		expect(symbols.length).toBeGreaterThan(0);
 
-	it("should handle file close without errors", async () => {
+		const func = symbols.find((s) => s.name === "testFunction");
+		const cls = symbols.find((s) => s.name === "TestClass");
+
+		expect(func).toBeDefined();
+		expect(cls).toBeDefined();
+		expect(func?.kind).toBe(12); // Function
+		expect(cls?.kind).toBe(5); // Class
+	}, 5000);
+
+	it("should handle file close", async () => {
 		const testFile = join(TEST_DIR, "close-test.ts");
 		writeFileSync(testFile, "const x = 1;");
 
-		configureServers([]);
+		const config: LspServerConfig = {
+			id: "fake-lsp-close",
+			name: "Fake LSP Close",
+			command: process.execPath,
+			args: [FAKE_LSP_PATH],
+			extensions: [".ts"],
+		};
 
-		// Should not throw even when file wasn't opened
-		await expect(closeFile(testFile)).resolves.toBeUndefined();
-	}, 1000);
+		configureServers([config]);
 
-	it("should handle multiple touchFile calls", async () => {
+		await touchFile(testFile);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		const clientsBefore = await getClients();
+		expect(clientsBefore.length).toBe(1);
+		expect(clientsBefore[0].openFiles.has(testFile)).toBe(true);
+
+		await closeFile(testFile);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		const clientsAfter = await getClients();
+		expect(clientsAfter[0].openFiles.has(testFile)).toBe(false);
+	}, 5000);
+
+	it("should not spawn duplicate clients for same root", async () => {
 		const file1 = join(TEST_DIR, "file1.ts");
 		const file2 = join(TEST_DIR, "file2.ts");
 		writeFileSync(file1, "const a = 1;");
 		writeFileSync(file2, "const b = 2;");
 
-		configureServers([]);
+		const config: LspServerConfig = {
+			id: "fake-lsp-dup",
+			name: "Fake LSP Dup",
+			command: process.execPath,
+			args: [FAKE_LSP_PATH],
+			extensions: [".ts"],
+		};
 
-		// Should handle multiple files without errors
+		configureServers([config]);
+
 		await touchFile(file1);
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		const clientsAfter1 = await getClients();
+		expect(clientsAfter1.length).toBe(1);
+
 		await touchFile(file2);
+		await new Promise((resolve) => setTimeout(resolve, 200));
 
-		expect(true).toBe(true);
-	}, 2000);
+		const clientsAfter2 = await getClients();
+		expect(clientsAfter2.length).toBe(1); // Still only 1 client
+		expect(clientsAfter2[0].openFiles.size).toBe(2); // But tracking 2 files
+	}, 5000);
 
-	it("should handle different file extensions", async () => {
+	it("should handle multiple file extensions with one server", async () => {
 		const tsFile = join(TEST_DIR, "test.ts");
 		const jsFile = join(TEST_DIR, "test.js");
-		const pyFile = join(TEST_DIR, "test.py");
 		writeFileSync(tsFile, "const x = 1;");
 		writeFileSync(jsFile, "const y = 2;");
-		writeFileSync(pyFile, "z = 3");
 
-		configureServers([]);
+		const config: LspServerConfig = {
+			id: "fake-lsp-multi",
+			name: "Fake LSP Multi",
+			command: process.execPath,
+			args: [FAKE_LSP_PATH],
+			extensions: [".ts", ".js"],
+		};
 
-		// Should handle various file types
+		configureServers([config]);
+
 		await touchFile(tsFile);
 		await touchFile(jsFile);
-		await touchFile(pyFile);
+		await new Promise((resolve) => setTimeout(resolve, 200));
 
-		expect(true).toBe(true);
-	}, 2000);
+		const clients = await getClients();
+		expect(clients.length).toBe(1);
+		expect(clients[0].openFiles.size).toBe(2);
+	}, 5000);
 
 	it("should recover when LSP server fails to start", async () => {
 		const testFile = join(TEST_DIR, "fail-test.ts");
