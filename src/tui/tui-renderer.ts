@@ -11,8 +11,6 @@ import type {
 	ThinkingLevel,
 	ToolResultMessage,
 } from "../agent/types.js";
-import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
-import { importFactoryConfig } from "../factory/index.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels, reloadModelConfig } from "../models/registry.js";
 import {
@@ -50,6 +48,7 @@ import { FileSearchView } from "./file-search-view.js";
 import { SessionView } from "./session-view.js";
 import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
+import { ImportExportView } from "./import-view.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -107,6 +106,7 @@ export class TuiRenderer {
 	private commandEntries: CommandEntry[] = [];
 	private planView: PlanView;
 	private sessionView: SessionView;
+	private importExportView: ImportExportView;
 	private runCommandView: RunCommandView;
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
@@ -191,6 +191,14 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.showInfoMessage(message),
 		});
+		this.importExportView = new ImportExportView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
+		});
 
 		const commandRegistry = createCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -198,9 +206,9 @@ export class TuiRenderer {
 			handlers: {
 				thinking: () => this.showThinkingSelector(),
 				model: () => this.showModelSelector(),
-				exportSession: (input) => this.sessionView.handleExportCommand(input),
+				exportSession: (input) => this.importExportView.handleExportCommand(input),
 				tools: (input) => this.toolStatusView.handleToolsCommand(input),
-				importConfig: (input) => this.handleImportCommand(input),
+				importConfig: (input) => this.importExportView.handleImportCommand(input),
 				sessionInfo: () => this.sessionView.showSessionInfo(),
 				sessions: (input) => this.handleSessionsCommand(input),
 				reportBug: () => this.diagnosticsView.handleBugCommand(),
@@ -1032,35 +1040,6 @@ ${lines.join("\n")}`;
 		return "";
 	}
 
-	private async handleImportCommand(text: string): Promise<void> {
-		const parts = text.trim().split(/\s+/);
-		const source = parts[1]?.toLowerCase();
-		if (!source || source === "help") {
-			this.showInfoMessage("Usage: /import factory");
-			return;
-		}
-		if (source === "factory") {
-			try {
-				const result = importFactoryConfig();
-				reloadModelConfig();
-				this.showInfoMessage(
-					`Imported ${result.modelCount} model${result.modelCount === 1 ? "" : "s"} from Factory into ${result.targetPath}.`,
-				);
-			} catch (error: unknown) {
-				this.showInfoMessage(
-					chalk.red(
-						`Factory import failed: ${
-							error instanceof Error ? error.message : String(error)
-						}`,
-					),
-				);
-			}
-			return;
-		}
-		this.showInfoMessage(
-			`Unknown import source "${source}". Supported sources: factory`,
-		);
-	}
 
 	private applyLoadedSessionContext(): void {
 		const thinking = this.sessionManager.loadThinkingLevel();

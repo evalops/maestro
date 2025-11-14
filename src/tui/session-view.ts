@@ -5,7 +5,6 @@ import type {
 	AppMessage,
 	AssistantMessage,
 } from "../agent/types.js";
-import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import type { SessionManager } from "../session-manager.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
@@ -169,53 +168,4 @@ export class SessionView {
 		this.options.ui.requestRender();
 	}
 
-	handleExportCommand(text: string): void {
-		const parts = text.split(/\s+/);
-		let mode: "html" | "text" = "html";
-		let outputPath: string | undefined;
-		if (parts.length > 1) {
-			if (
-				parts[1].toLowerCase() === "lite" ||
-				parts[1].toLowerCase() === "text"
-			) {
-				mode = "text";
-				outputPath = parts[2];
-			} else {
-				outputPath = parts[1];
-			}
-		}
-
-		try {
-			const filePath =
-				mode === "text"
-					? exportSessionToText(
-							this.options.sessionManager,
-							this.options.agent.state,
-							outputPath,
-						)
-					: exportSessionToHtml(
-							this.options.sessionManager,
-							this.options.agent.state,
-							outputPath,
-						);
-
-			this.options.chatContainer.addChild(new Spacer(1));
-			this.options.chatContainer.addChild(
-				new Text(chalk.dim(`Session exported to: ${filePath}`), 1, 0),
-			);
-			this.options.ui.requestRender();
-		} catch (error) {
-			const message =
-				error instanceof Error ? error.message : String(error ?? "unknown");
-			this.options.chatContainer.addChild(new Spacer(1));
-			this.options.chatContainer.addChild(
-				new Text(
-					chalk.red(`Failed to export session: ${message}`),
-					1,
-					0,
-				),
-			);
-			this.options.ui.requestRender();
-		}
-	}
 }
