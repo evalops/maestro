@@ -196,28 +196,37 @@ export const editTool = createZodTool({
 					}
 
 					// Check if old text exists
-					if (!content.includes(oldText)) {
+					const exactMatches = findExactMatches(content, oldText);
+					if (exactMatches.length === 0) {
+						const approx = findApproximateMatches(content, oldText);
+						const suggestion = approx.length
+							? `\n\nPossible matches:\n${approx
+									.slice(0, 3)
+									.map(formatMatchPreview)
+									.join("\n")}`
+							: `\n\nTip: double-check whitespace/newlines via /preview ${path}`;
 						if (signal) {
 							signal.removeEventListener("abort", onAbort);
 						}
 						reject(
 							new Error(
-								`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
+								`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.${suggestion}`,
 							),
 						);
 						return;
 					}
 
-					// Count occurrences
-					const occurrences = content.split(oldText).length - 1;
-
-					if (occurrences > 1) {
+					if (exactMatches.length > 1) {
+						const previews = exactMatches
+							.slice(0, 3)
+							.map(formatMatchPreview)
+							.join("\n");
 						if (signal) {
 							signal.removeEventListener("abort", onAbort);
 						}
 						reject(
 							new Error(
-								`Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
+								`Found ${exactMatches.length} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.\n\nMatches:\n${previews}`,
 							),
 						);
 						return;
@@ -265,3 +274,66 @@ export const editTool = createZodTool({
 		});
 	},
 });
+
+type MatchPreview = {
+	line: number;
+	snippet: string;
+};
+
+function findExactMatches(content: string, snippet: string): MatchPreview[] {
+	const matches: MatchPreview[] = [];
+	let index = content.indexOf(snippet);
+	while (index !== -1) {
+		matches.push({
+			line: getLineNumber(content, index),
+			snippet: getSnippet(content, index, snippet.length),
+		});
+		index = content.indexOf(snippet, index + snippet.length);
+	}
+	return matches;
+}
+
+function findApproximateMatches(content: string, snippet: string): MatchPreview[] {
+	const relaxed = buildRelaxedRegex(snippet);
+	if (!relaxed) return [];
+	const matches: MatchPreview[] = [];
+	let result: RegExpExecArray | null;
+	while ((result = relaxed.exec(content)) && matches.length < 5) {
+		const matchIndex = result.index;
+		const matchLength = result[0]?.length ?? snippet.length;
+		matches.push({
+			line: getLineNumber(content, matchIndex),
+			snippet: getSnippet(content, matchIndex, matchLength),
+		});
+	}
+	return matches;
+}
+
+function buildRelaxedRegex(snippet: string): RegExp | null {
+	const trimmed = snippet.trim();
+	if (!trimmed) return null;
+	const escaped = trimmed
+		.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+		.replace(/\s+/g, "\\s+");
+	try {
+		return new RegExp(escaped, "gi");
+	} catch {
+		return null;
+	}
+}
+
+function getLineNumber(content: string, index: number): number {
+	return content.slice(0, index).split("\n").length;
+}
+
+function getSnippet(content: string, start: number, length: number): string {
+	const lines = content.split("\n");
+	const lineNum = getLineNumber(content, start);
+	const startLine = Math.max(0, lineNum - 2);
+	const endLine = Math.min(lines.length, lineNum + 1);
+	return lines.slice(startLine, endLine).join("\n").trim();
+}
+
+function formatMatchPreview(match: MatchPreview): string {
+	return `• Line ${match.line}: ${match.snippet}`;
+}

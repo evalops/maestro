@@ -1,82 +1,82 @@
 {
-	"name": "@evalops/composer",
-	"description": "Composer CLI by EvalOps with rich tooling for AI-assisted development",
-	"version": "0.7.6",
-	"type": "module",
-	"bin": {
-		"composer": "dist/cli.js"
-	},
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"files": [
-		"dist"
-	],
-	"scripts": {
-		"clean": "rm -rf dist",
-		"build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
-		"start": "node --enable-source-maps dist/cli.js",
-		"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
-		"lint": "biome check .",
-		"format": "biome format .",
-		"check": "npm run lint && tsc --noEmit",
-		"evals": "npm run build && node scripts/run-evals.js",
-		"telemetry:report": "node scripts/telemetry-report.js",
-		"test": "vitest --run",
-		"prepublishOnly": "npm run clean && npm run build",
-		"bun:install": "bun install",
-		"bun:cli": "bun run ./src/cli.ts",
-		"bun:watch": "bun run --watch ./src/cli.ts",
-		"bun:lint": "bunx biome check .",
-		"bun:test": "bunx vitest --run",
-		"bun:check": "bun run bun:lint && bunx tsc --noEmit",
-		"bun:compile": "bun build ./src/cli.ts --compile --outfile dist/composer-bun",
-		"bun:evals": "bun run build && bun run ./scripts/run-evals.js",
-		"compile:binary": "npm run bun:compile && echo \"Binary ready at dist/composer-bun\"",
-		"cli": "node ./dist/cli.js",
-		"tui": "npm run cli",
-		"verify": "npm run format && npm run lint && npm run test && npm run build && npm run telemetry:report",
-		"factory:import": "npm run build && node dist/scripts/import-factory-config.js",
-		"factory:export": "npm run build && node dist/scripts/export-factory-config.js"
-	},
-	"dependencies": {
-		"@sinclair/typebox": "^0.33.0",
-		"chalk": "^5.5.0",
-		"clipboardy": "^4.0.0",
-		"diff": "^8.0.2",
-		"dotenv": "^16.4.5",
-		"glob": "^11.0.3",
-		"marked": "^17.0.0",
-		"mime-types": "^3.0.1",
-		"string-width": "^8.1.0",
-		"zod": "^3.23.8",
-		"zod-to-json-schema": "^3.23.0"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "^1.9.3",
-		"@types/diff": "^7.0.2",
-		"@types/mime-types": "^3.0.1",
-		"@types/node": "^24.3.0",
-		"typescript": "^5.7.3",
-		"vitest": "^3.2.4"
-	},
-	"keywords": [
-		"composer",
-		"evalops",
-		"ai",
-		"llm",
-		"cli",
-		"tui",
-		"agent"
-	],
-	"author": "EvalOps",
-	"license": "MIT",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/evalops/composer-cli.git"
-	},
-	"engines": {
-		"node": ">=20.0.0",
-		"bun": ">=1.1.0"
-	},
-	"packageManager": "bun@1.1.31"
+  "name": "@evalops/composer",
+  "description": "Composer CLI by EvalOps with rich tooling for AI-assisted development",
+  "version": "0.7.7",
+  "type": "module",
+  "bin": {
+    "composer": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "start": "node --enable-source-maps dist/cli.js",
+    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "lint": "biome check .",
+    "format": "biome format .",
+    "check": "npm run lint && tsc --noEmit",
+    "evals": "npm run build && node scripts/run-evals.js",
+    "telemetry:report": "node scripts/telemetry-report.js",
+    "test": "vitest --run",
+    "prepublishOnly": "npm run clean && npm run build",
+    "bun:install": "bun install",
+    "bun:cli": "bun run ./src/cli.ts",
+    "bun:watch": "bun run --watch ./src/cli.ts",
+    "bun:lint": "bunx biome check .",
+    "bun:test": "bunx vitest --run",
+    "bun:check": "bun run bun:lint && bunx tsc --noEmit",
+    "bun:compile": "bun build ./src/cli.ts --compile --outfile dist/composer-bun",
+    "bun:evals": "bun run build && bun run ./scripts/run-evals.js",
+    "compile:binary": "npm run bun:compile && echo \"Binary ready at dist/composer-bun\"",
+    "cli": "node ./dist/cli.js",
+    "tui": "npm run cli",
+    "verify": "npm run format && npm run lint && npm run test && npm run build && npm run telemetry:report",
+    "factory:import": "npm run build && node dist/scripts/import-factory-config.js",
+    "factory:export": "npm run build && node dist/scripts/export-factory-config.js"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.33.0",
+    "chalk": "^5.5.0",
+    "clipboardy": "^4.0.0",
+    "diff": "^8.0.2",
+    "dotenv": "^16.4.5",
+    "glob": "^11.0.3",
+    "marked": "^17.0.0",
+    "mime-types": "^3.0.1",
+    "string-width": "^8.1.0",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.3",
+    "@types/diff": "^7.0.2",
+    "@types/mime-types": "^3.0.1",
+    "@types/node": "^24.3.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "composer",
+    "evalops",
+    "ai",
+    "llm",
+    "cli",
+    "tui",
+    "agent"
+  ],
+  "author": "EvalOps",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evalops/composer-cli.git"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "bun": ">=1.1.0"
+  },
+  "packageManager": "bun@1.1.31"
 }

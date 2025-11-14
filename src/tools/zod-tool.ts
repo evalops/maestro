@@ -17,6 +17,9 @@ interface CreateZodToolOptions<Schema extends z.ZodTypeAny, Details> {
 	description: string;
 	schema: Schema;
 	schemaName?: string;
+	maxRetries?: number;
+	retryDelayMs?: number;
+	shouldRetry?: (error: unknown) => boolean;
 	execute: (
 		toolCallId: string,
 		params: z.infer<Schema>,
@@ -86,23 +89,100 @@ export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 				throw error;
 			}
 
-			const start = performance.now();
-			try {
-				const result = await options.execute(toolCallId, parsedParams, signal);
-				recordToolExecution(options.name, true, performance.now() - start, {
-					toolCallId,
-				});
-				return result;
-			} catch (error: unknown) {
-				const errorMessage =
-					error instanceof Error ? error.message : String(error ?? "unknown");
-				recordToolExecution(options.name, false, performance.now() - start, {
-					toolCallId,
-					error: errorMessage,
-				});
-				logToolFailure(options.name, errorMessage, { toolCallId });
-				throw error;
+			const maxAttempts = Math.max(1, (options.maxRetries ?? 1) + 1);
+			const retryDelayMs = options.retryDelayMs ?? 500;
+			const shouldRetry =
+				options.shouldRetry ?? ((error: unknown) => isTransientToolError(error));
+
+			let attempt = 0;
+			let lastError: unknown;
+
+			while (attempt < maxAttempts) {
+				attempt++;
+				const start = performance.now();
+				try {
+					const result = await options.execute(
+						toolCallId,
+						parsedParams,
+						signal,
+					);
+					recordToolExecution(
+						options.name,
+						true,
+						performance.now() - start,
+						{
+							toolCallId,
+							attempt,
+							maxAttempts,
+						},
+					);
+					return result;
+				} catch (error: unknown) {
+					lastError = error;
+					const errorMessage =
+						error instanceof Error ? error.message : String(error ?? "unknown");
+					const isAbort =
+						error instanceof Error && error.name === "AbortError";
+					const isFinalAttempt = attempt === maxAttempts;
+
+					if (isAbort || !shouldRetry(error) || isFinalAttempt) {
+						recordToolExecution(
+							options.name,
+							false,
+							performance.now() - start,
+							{
+								toolCallId,
+								error: errorMessage,
+								attempt,
+								maxAttempts,
+							},
+						);
+						logToolFailure(options.name, errorMessage, {
+							toolCallId,
+							attempt,
+							maxAttempts,
+						});
+						throw error;
+					}
+
+					logToolFailure(options.name, errorMessage, {
+						toolCallId,
+						attempt,
+						maxAttempts,
+						retrying: true,
+					});
+
+					await delay(retryDelayMs * attempt);
+					continue;
+				}
 			}
+
+			throw lastError ?? new Error("Tool execution failed");
 		},
 	};
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
+function isTransientToolError(error: unknown): boolean {
+	if (!error) return true;
+	if (error instanceof Error) {
+		if (error.name === "AbortError") {
+			return false;
+		}
+		const message = error.message.toLowerCase();
+		if (
+			message.includes("invalid") ||
+			message.includes("syntax") ||
+			message.includes("not found") ||
+			message.includes("unknown command")
+		) {
+			return false;
+		}
+	}
+	return true;
 }
