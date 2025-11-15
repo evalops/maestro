@@ -1,6 +1,8 @@
 import chalk from "chalk";
+import { highlightCodeLines } from "../../style/code-highlighter.js";
 import {
 	buildCollapsedSummary,
+	formatSection,
 	generateDiff,
 	shortenPath,
 } from "../tool-text-utils.js";
@@ -22,23 +24,39 @@ export class EditRenderer implements ToolRenderer {
 			return text;
 		}
 
+		const sections: string[] = [];
 		if (context.result?.details?.diff) {
-			const diffLines = context.result.details.diff.split("\n");
-			const coloredLines = diffLines.map((line: string) => {
-				if (line.startsWith("+")) {
-					return chalk.green(line);
-				}
-				if (line.startsWith("-")) {
-					return chalk.red(line);
-				}
-				return chalk.dim(line);
-			});
-			text += `\n\n${coloredLines.join("\n")}`;
+			const diffLines = highlightCodeLines(context.result.details.diff, "diff");
+			const diffSection = formatSection("diff", diffLines);
+			if (diffSection) {
+				sections.push(diffSection);
+			}
 		} else if (context.args?.before && context.args?.after) {
-			text += `\n\n${generateDiff(context.args.before, context.args.after)}`;
+			const previewSection = formatSection(
+				"preview",
+				generateDiff(context.args.before, context.args.after).split("\n"),
+			);
+			if (previewSection) {
+				sections.push(previewSection);
+			}
 		}
 
-		return text;
+		const message = this.getTextOutput(context).trim();
+		if (message) {
+			const messageSection = formatSection(
+				"result",
+				message.split("\n").map((line) => chalk.dim(line)),
+			);
+			if (messageSection) {
+				sections.push(messageSection);
+			}
+		}
+
+		if (sections.length === 0) {
+			return text;
+		}
+
+		return `${text}\n\n${sections.filter(Boolean).join("\n\n")}`;
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

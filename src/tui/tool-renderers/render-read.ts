@@ -1,8 +1,10 @@
 import chalk from "chalk";
 import {
 	buildCollapsedSummary,
+	formatSection,
 	replaceTabs,
 	shortenPath,
+	summarizeLines,
 } from "../tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
@@ -17,22 +19,20 @@ export class ReadRenderer implements ToolRenderer {
 
 		if (context.collapsed) {
 			const summary = context.result
-				? buildCollapsedSummary()
+				? buildCollapsedSummary(this.getTextOutput(context))
 				: "output hidden: awaiting result";
-			text += `\n${chalk.dim(summary)}`;
-			return text;
+			return `${text}\n${chalk.dim(summary)}`;
 		}
 
 		if (context.result) {
 			const output = this.getTextOutput(context);
-			const lines = output.split("\n");
-			const maxLines = 10;
-			const displayLines = lines.slice(0, maxLines);
-			const remaining = lines.length - maxLines;
-
-			text += `\n\n${displayLines
-				.map((line: string) => chalk.dim(replaceTabs(line)))
-				.join("\n")}`;
+			const { lines, remaining } = summarizeLines(output, 10);
+			const displayLines = lines.map((line: string) =>
+				chalk.dim(replaceTabs(line)),
+			);
+			if (displayLines.length) {
+				text += `\n\n${formatSection("content", displayLines)}`;
+			}
 			if (remaining > 0) {
 				text += chalk.dim(`\n... (${remaining} more lines)`);
 			}

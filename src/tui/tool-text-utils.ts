@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import chalk from "chalk";
 import * as Diff from "diff";
+import { highlightCodeLines } from "../style/code-highlighter.js";
 
 export function shortenPath(path: string): string {
 	const home = os.homedir();
@@ -113,4 +114,44 @@ export function buildCollapsedSummary(source?: string): string {
 	return `output hidden: ${snippet}${
 		trimmed.length > snippet.length ? "…" : ""
 	}`;
+}
+
+export function summarizeLines(
+	source: string,
+	maxLines: number,
+): { lines: string[]; remaining: number } {
+	if (!source) {
+		return { lines: [], remaining: 0 };
+	}
+	const lines = source.split("\n");
+	if (maxLines <= 0 || lines.length <= maxLines) {
+		return { lines, remaining: 0 };
+	}
+	return {
+		lines: lines.slice(0, maxLines),
+		remaining: lines.length - maxLines,
+	};
+}
+
+export function formatSection(title: string, bodyLines: string[]): string {
+	if (bodyLines.length === 0) {
+		return "";
+	}
+	const header = chalk.hex("#c7d2fe").bold(title.toUpperCase());
+	const body = bodyLines.map((line) => `  ${line}`).join("\n");
+	return `${header}\n${body}`;
+}
+
+export function formatJsonSnippet(value: unknown): string[] {
+	try {
+		const stringified = JSON.stringify(value, null, 2);
+		return stringified ? highlightCodeLines(stringified, "json") : [];
+	} catch {
+		return [];
+	}
+}
+
+export function formatShellSnippet(value: string): string[] {
+	if (!value) return [];
+	return highlightCodeLines(value, "bash");
 }

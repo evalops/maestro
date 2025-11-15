@@ -1,5 +1,9 @@
 import chalk from "chalk";
 import { type Token, type Tokens, marked } from "marked";
+import {
+	highlightCodeLines,
+	highlightInlineCode,
+} from "../../style/code-highlighter.js";
 import type { Component } from "../tui.js";
 import { visibleWidth } from "../utils.js";
 
@@ -215,14 +219,14 @@ export class Markdown implements Component {
 				break;
 			}
 			case "code": {
-				lines.push(chalk.gray(`\`\`\`${token.lang || ""}`));
-				// Split code by newlines and style each line
-				const codeLines = token.text.split("\n");
-				for (const codeLine of codeLines) {
-					lines.push(chalk.dim("  ") + chalk.green(codeLine));
+				const highlighted = highlightCodeLines(token.text, token.lang);
+				const label = token.lang || "";
+				lines.push(chalk.gray(`\`\`\`${label}`));
+				for (const codeLine of highlighted) {
+					lines.push(chalk.dim("  ") + codeLine);
 				}
 				lines.push(chalk.gray("```"));
-				lines.push(""); // Add spacing after code blocks
+				lines.push("");
 				break;
 			}
 			case "list": {
@@ -230,8 +234,6 @@ export class Markdown implements Component {
 					const listLines = this.renderList(token as Tokens.List, 0);
 					lines.push(...listLines);
 				}
-				// Don't add spacing after lists if a space token follows
-				// (the space token will handle it)
 				break;
 			}
 			case "table": {
@@ -288,7 +290,7 @@ export class Markdown implements Component {
 					result += chalk.italic(this.renderInlineTokens(token.tokens || []));
 					break;
 				case "codespan":
-					result += chalk.gray("`") + chalk.cyan(token.text) + chalk.gray("`");
+					result += highlightInlineCode(token.text);
 					break;
 				case "link": {
 					const linkText = this.renderInlineTokens(token.tokens || []);
@@ -416,9 +418,22 @@ export class Markdown implements Component {
 	private renderList(token: Tokens.List, depth: number): string[] {
 		const lines = [];
 		const indent = "  ".repeat(depth);
+		const startIndex = (() => {
+			if (typeof token.start === "number" && Number.isFinite(token.start)) {
+				return token.start;
+			}
+			if (typeof token.start === "string") {
+				const parsed = Number.parseInt(token.start, 10);
+				if (!Number.isNaN(parsed)) {
+					return parsed;
+				}
+			}
+			return 1;
+		})();
 		for (let i = 0; i < token.items.length; i++) {
 			const item = token.items[i];
-			const bullet = token.ordered ? `${i + 1}. ` : "- ";
+			const checkbox = item.task ? (item.checked ? "[x] " : "[ ] ") : "";
+			const marker = token.ordered ? `${startIndex + i}. ` : "- ";
 			// Process item tokens to handle nested lists
 			const itemLines = this.renderListItem(item.tokens || [], depth);
 			if (itemLines.length > 0) {
@@ -429,8 +444,7 @@ export class Markdown implements Component {
 					// This is a nested list, just add it as-is (already has full indent)
 					lines.push(firstLine);
 				} else {
-					// Regular text content - add indent and bullet
-					lines.push(indent + chalk.cyan(bullet) + firstLine);
+					lines.push(indent + chalk.cyan(marker + checkbox) + firstLine);
 				}
 				// Rest of the lines
 				for (let j = 1; j < itemLines.length; j++) {
@@ -445,7 +459,7 @@ export class Markdown implements Component {
 					}
 				}
 			} else {
-				lines.push(indent + chalk.cyan(bullet));
+				lines.push(indent + chalk.cyan(marker + checkbox));
 			}
 		}
 		return lines;

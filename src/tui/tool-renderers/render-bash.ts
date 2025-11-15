@@ -1,37 +1,47 @@
 import chalk from "chalk";
-import { buildCollapsedSummary } from "../tool-text-utils.js";
+import {
+	buildCollapsedSummary,
+	formatSection,
+	formatShellSnippet,
+	summarizeLines,
+} from "../tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class BashRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
 		const command = context.args?.command || "";
-		let text = `${chalk.hex("#eab676")("⟢ bash")}\n${chalk.bold(
-			`$ ${command || chalk.dim("...")}`,
-		)}`;
+		const text = chalk.hex("#eab676")("⟢ bash");
+		const commandLines = formatShellSnippet(command ? `$ ${command}` : "$ ...");
+		const sections: string[] = [];
+		if (commandLines.length) {
+			sections.push(formatSection("command", commandLines));
+		}
 
-		if (context.collapsed && context.result) {
-			text += `\n${chalk.dim(buildCollapsedSummary())}`;
-			return text;
+		if (context.collapsed) {
+			const summarySource = context.result
+				? this.getTextOutput(context)
+				: command;
+			const summary = buildCollapsedSummary(summarySource);
+			return `${text}\n${chalk.dim(summary)}`;
 		}
 
 		if (context.result) {
 			const output = this.getTextOutput(context).trim();
 			if (output) {
-				const lines = output.split("\n");
-				const maxLines = 5;
-				const displayLines = lines.slice(0, maxLines);
-				const remaining = lines.length - maxLines;
-
-				text += `\n\n${displayLines
-					.map((line: string) => chalk.dim(line))
-					.join("\n")}`;
+				const { lines, remaining } = summarizeLines(output, 5);
+				const dimmed = lines.map((line) => chalk.dim(line));
+				sections.push(formatSection("output", dimmed));
 				if (remaining > 0) {
-					text += chalk.dim(`\n... (${remaining} more lines)`);
+					sections.push(chalk.dim(`  ... (${remaining} more lines)`));
 				}
 			}
 		}
 
-		return text;
+		if (sections.length === 0) {
+			return `${text}\n${chalk.dim("waiting for output...")}`;
+		}
+
+		return `${text}\n\n${sections.filter(Boolean).join("\n\n")}`;
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

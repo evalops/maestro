@@ -1,5 +1,9 @@
 import chalk from "chalk";
-import { buildCollapsedSummary } from "../tool-text-utils.js";
+import {
+	buildCollapsedSummary,
+	formatJsonSnippet,
+	formatSection,
+} from "../tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class GenericRenderer implements ToolRenderer {
@@ -7,7 +11,7 @@ export class GenericRenderer implements ToolRenderer {
 		const label = context.toolName
 			? `${context.toolName}`
 			: (context.args?.name ?? "tool");
-		let text = chalk.bold(`${chalk.hex("#d4d8ff")("✷")} ${label}`);
+		const text = chalk.bold(`${chalk.hex("#d4d8ff")("✷")} ${label}`);
 		if (context.collapsed) {
 			const combined = [
 				JSON.stringify(context.args, null, 2),
@@ -15,17 +19,28 @@ export class GenericRenderer implements ToolRenderer {
 			]
 				.filter(Boolean)
 				.join("\n");
-			text += `\n${chalk.dim(buildCollapsedSummary(combined))}`;
+			return `${text}\n${chalk.dim(buildCollapsedSummary(combined))}`;
+		}
+
+		const sections: string[] = [];
+		const argsLines = formatJsonSnippet(context.args);
+		if (argsLines.length) {
+			sections.push(formatSection("arguments", argsLines));
+		}
+
+		const output = this.getTextOutput(context);
+		if (output) {
+			const lines = output.split("\n").map((line) => chalk.dim(line));
+			if (lines.length) {
+				sections.push(formatSection("result", lines));
+			}
+		}
+
+		if (sections.length === 0) {
 			return text;
 		}
 
-		const content = JSON.stringify(context.args, null, 2);
-		text += `\n\n${content}`;
-		const output = this.getTextOutput(context);
-		if (output) {
-			text += `\n${output}`;
-		}
-		return text;
+		return `${text}\n\n${sections.filter(Boolean).join("\n\n")}`;
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {
