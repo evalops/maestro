@@ -58,8 +58,10 @@ const shouldEnableTelemetry = (): boolean => {
 	}
 	return Boolean(telemetryEndpointEnv || telemetryFileEnv);
 };
-
-const telemetryEnabled = shouldEnableTelemetry();
+const initialTelemetryEnabled = shouldEnableTelemetry();
+let telemetryEnabled = initialTelemetryEnabled;
+let telemetryOverride: boolean | null = null;
+let telemetryOverrideReason: string | undefined;
 
 const parseSamplingRate = (): number => {
 	const raw = telemetrySampleEnv;
@@ -85,19 +87,28 @@ export interface TelemetryStatus {
 	filePath?: string;
 	sampleRate: number;
 	flagValue?: string;
+	runtimeOverride?: "enabled" | "disabled";
+	overrideReason?: string;
 }
 
 export function getTelemetryStatus(): TelemetryStatus {
 	let reason = "disabled";
+	const baseEnabled = initialTelemetryEnabled && samplingRate > 0;
 	if (!shouldEnableTelemetry()) {
 		reason = "flag disabled";
 	} else if (samplingRate === 0) {
 		reason = "sampling=0";
 	} else if (telemetryEndpointEnv) {
 		reason = "endpoint";
-	} else if (telemetryFileEnv || telemetryEnabled) {
+	} else if (telemetryFileEnv || baseEnabled) {
 		reason = "file";
 	}
+	const runtimeOverride =
+		telemetryOverride === null
+			? undefined
+			: telemetryOverride
+				? "enabled"
+				: "disabled";
 
 	return {
 		enabled: telemetryEnabled && samplingRate > 0,
@@ -106,7 +117,18 @@ export function getTelemetryStatus(): TelemetryStatus {
 		filePath: telemetryFileEnv || defaultTelemetryFile,
 		sampleRate: samplingRate,
 		flagValue: telemetryFlag,
+		runtimeOverride,
+		overrideReason: telemetryOverrideReason,
 	};
+}
+
+export function setTelemetryRuntimeOverride(
+	enabled: boolean | null,
+	reason?: string,
+): void {
+	telemetryOverride = enabled;
+	telemetryOverrideReason = reason;
+	telemetryEnabled = enabled === null ? initialTelemetryEnabled : enabled;
 }
 
 async function writeToFile(payload: string) {

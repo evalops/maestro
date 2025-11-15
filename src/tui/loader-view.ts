@@ -7,7 +7,6 @@ interface LoaderViewOptions {
 	ui: TUI;
 	statusContainer: Container;
 	footer: FooterComponent;
-	telemetryEnabled: boolean;
 }
 
 export class LoaderView {
@@ -16,7 +15,6 @@ export class LoaderView {
 
 	constructor(private readonly options: LoaderViewOptions) {
 		this.stageManager = new LoaderStageManager({
-			telemetryEnabled: options.telemetryEnabled,
 			setFooterStage: (label) => this.options.footer.setStage(label),
 			onStageChanged: (label, index, total) => {
 				if (this.loader) {

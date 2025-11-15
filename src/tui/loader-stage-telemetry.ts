@@ -8,7 +8,6 @@ interface LoaderStageEntry {
 export class LoaderStageTelemetry {
 	private currentStage: string | null = null;
 	private stageStartTime: number | null = null;
-	constructor(private readonly enabled: boolean) {}
 
 	updateCurrentStage(key: string): void {
 		this.currentStage = key;
@@ -16,7 +15,7 @@ export class LoaderStageTelemetry {
 	}
 
 	recordStage(stageKey: string, stages: LoaderStageEntry[]): void {
-		if (!this.enabled || !this.stageStartTime) return;
+		if (!this.stageStartTime) return;
 		const duration = Date.now() - this.stageStartTime;
 		this.logStage(stageKey, stages, duration);
 		this.stageStartTime = Date.now();

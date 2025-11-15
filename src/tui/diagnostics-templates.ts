@@ -54,6 +54,18 @@ export function buildStatusSnapshot(info: StatusSnapshotInfo): string {
 		: info.telemetry.filePath
 			? muted(`file ${info.telemetry.filePath}`)
 			: "";
+	const overrideDetails = info.telemetry.runtimeOverride
+		? muted(
+				`override ${info.telemetry.runtimeOverride}${info.telemetry.overrideReason ? ` (${info.telemetry.overrideReason})` : ""}`,
+			)
+		: "";
+	const telemetryLine = [
+		labeledValue("Telemetry", telemetryBadge),
+		telemetryRoute,
+		overrideDetails,
+	]
+		.filter(Boolean)
+		.join(" ");
 	const toolLine =
 		info.health.toolFailures > 0
 			? `${badge("logged", `${info.health.toolFailures}`, "danger")} ${info.health.toolFailurePath ? muted(info.health.toolFailurePath) : ""}`.trim()
@@ -72,7 +84,7 @@ export function buildStatusSnapshot(info: StatusSnapshotInfo): string {
 	const rows = [
 		`${labeledValue("Model", info.modelLabel)} ${badge("v", info.version, "info")}`,
 		labeledValue("Thinking", info.thinkingLevel),
-		`${labeledValue("Telemetry", telemetryBadge)}${telemetryRoute ? ` ${telemetryRoute}` : ""}`,
+		telemetryLine,
 		labeledValue("Git", gitLine),
 		labeledValue("Plans", planLine),
 		labeledValue("Tool failures", toolLine),

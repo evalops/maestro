@@ -169,6 +169,14 @@ export function createCommandRegistry({
 		},
 		{
 			command: {
+				name: "telemetry",
+				description: "Show telemetry status or toggle (on/off/reset)",
+			},
+			matches: withArgs("telemetry"),
+			execute: (input) => handlers.telemetry(input),
+		},
+		{
+			command: {
 				name: "config",
 				description: "Validate and inspect Composer configuration",
 			},

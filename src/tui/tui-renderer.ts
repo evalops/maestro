@@ -54,6 +54,7 @@ import { RunController } from "./run-controller.js";
 import { SessionContext } from "./session-context.js";
 import { SessionView } from "./session-view.js";
 import { StreamingView } from "./streaming-view.js";
+import { TelemetryView } from "./telemetry-view.js";
 import { ThinkingSelectorView } from "./thinking-selector-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolOutputView } from "./tool-output-view.js";
@@ -105,6 +106,7 @@ export class TuiRenderer {
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
 	private diagnosticsView: DiagnosticsView;
+	private telemetryView: TelemetryView;
 	private fileSearchView: FileSearchView;
 	private conversationCompactor: ConversationCompactor;
 	private messageView: MessageView;
@@ -146,7 +148,6 @@ export class TuiRenderer {
 			ui: this.ui,
 			statusContainer: this.statusContainer,
 			footer: this.footer,
-			telemetryEnabled: this.telemetryStatus.enabled,
 		});
 		this.planView = new PlanView({
 			filePath: TODO_STORE_PATH,
@@ -327,6 +328,16 @@ export class TuiRenderer {
 			showInfo: (message) => this.notificationView.showInfo(message),
 			showError: (message) => this.notificationView.showError(message),
 		});
+		this.telemetryView = new TelemetryView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+			onStatusChanged: (status) => {
+				this.telemetryStatus = status;
+				this.diagnosticsView.setTelemetryStatus(status);
+			},
+		});
 
 		const registry = buildCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -351,6 +362,8 @@ export class TuiRenderer {
 			handleUpdate: () => this.updateView.handleUpdateCommand(),
 			handleConfig: () => this.configView.showConfigSummary(),
 			handleCost: (input) => this.costView.handleCostCommand(input),
+			handleTelemetry: (input) =>
+				this.telemetryView.handleTelemetryCommand(input),
 			handlePlan: (input) => this.planView.handlePlanCommand(input),
 			handlePreview: (input) => this.gitView.handlePreviewCommand(input),
 			handleRun: (input) => this.runCommandView.handleRunCommand(input),

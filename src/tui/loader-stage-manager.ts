@@ -6,7 +6,6 @@ interface LoaderStageEntry {
 }
 
 interface LoaderStageManagerOptions {
-	telemetryEnabled: boolean;
 	setFooterStage: (label: string | null) => void;
 	onStageChanged: (label: string, index: number, total: number) => void;
 	onProgressChanged: (value: number | null) => void;
@@ -23,7 +22,7 @@ export class LoaderStageManager {
 	private telemetry: LoaderStageTelemetry;
 
 	constructor(private readonly options: LoaderStageManagerOptions) {
-		this.telemetry = new LoaderStageTelemetry(options.telemetryEnabled);
+		this.telemetry = new LoaderStageTelemetry();
 	}
 
 	start(): void {

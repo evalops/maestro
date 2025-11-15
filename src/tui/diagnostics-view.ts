@@ -44,8 +44,10 @@ interface DiagnosticsViewOptions {
 
 export class DiagnosticsView {
 	private currentApiKeyInfo?: ApiKeyLookupResult;
+	private telemetryStatus: TelemetryStatus;
 
 	constructor(private readonly options: DiagnosticsViewOptions) {
+		this.telemetryStatus = options.telemetryStatus;
 		if (options.explicitApiKey) {
 			this.currentApiKeyInfo = {
 				provider: options.agent.state.model.provider,
@@ -101,7 +103,7 @@ export class DiagnosticsView {
 			version: this.options.version,
 			modelLabel: model,
 			thinkingLevel: thinking,
-			telemetry: this.options.telemetryStatus,
+			telemetry: this.telemetryStatus,
 			health: snapshot,
 			sessionId,
 			sessionFile,
@@ -150,7 +152,7 @@ ${copyNote}`;
 			state: this.options.agent.state,
 			modelMetadata: this.options.getCurrentModelMetadata(),
 			apiKeyLookup: this.currentApiKeyInfo,
-			telemetry: this.options.telemetryStatus,
+			telemetry: this.telemetryStatus,
 			pendingTools: Array.from(this.options.getPendingTools().entries()).map(
 				([id, component]) => ({ id, name: component.getToolName() }),
 			),
@@ -168,6 +170,10 @@ ${copyNote}`;
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(`${report}${copyNote}`, 1, 0));
 		this.options.ui.requestRender();
+	}
+
+	setTelemetryStatus(status: TelemetryStatus): void {
+		this.telemetryStatus = status;
 	}
 
 	private resolveApiKey(): ApiKeyLookupResult {

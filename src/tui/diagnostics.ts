@@ -112,6 +112,12 @@ function formatTelemetrySection(status: TelemetryStatus): string {
 	if (status.flagValue !== undefined) {
 		lines.push(chalk.dim(`Flag: ${status.flagValue}`));
 	}
+	if (status.runtimeOverride) {
+		const reason = status.overrideReason ? ` (${status.overrideReason})` : "";
+		lines.push(
+			chalk.dim(`Override: ${status.runtimeOverride.toUpperCase()}${reason}`),
+		);
+	}
 	return lines.join("\n");
 }
 
