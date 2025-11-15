@@ -214,6 +214,58 @@ function substituteEnvVars(text: string): string {
 }
 
 /**
+ * Substitute file references in config text
+ * Replaces {file:path} with the contents of the file
+ * Supports relative paths (resolved from config directory) and absolute paths
+ * Supports ~/path for home directory
+ */
+function substituteFileRefs(text: string, configDir: string): string {
+	const lines = text.split("\n");
+	let result = "";
+	
+	for (const line of lines) {
+		// Skip commented lines (don't process file refs in comments)
+		const trimmed = line.trim();
+		if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+			result += line + "\n";
+			continue;
+		}
+		
+		let processedLine = line;
+		const matches = [...line.matchAll(/\{file:([^}]+)\}/g)];
+		
+		for (const match of matches) {
+			let filePath = match[1];
+			
+			// Handle home directory (~/)
+			if (filePath.startsWith("~/")) {
+				filePath = join(homedir(), filePath.slice(2));
+			}
+			// Handle relative paths
+			else if (!filePath.startsWith("/")) {
+				filePath = join(configDir, filePath);
+			}
+			
+			try {
+				const fileContent = readFileSync(filePath, "utf-8").trim();
+				// Escape for JSON string (handle newlines, quotes, etc.)
+				const escaped = JSON.stringify(fileContent).slice(1, -1);
+				processedLine = processedLine.replace(match[0], escaped);
+			} catch (error) {
+				const errMsg = error instanceof Error ? error.message : String(error);
+				throw new Error(
+					`Failed to read file reference "${match[0]}" in config: ${filePath}\n${errMsg}`
+				);
+			}
+		}
+		
+		result += processedLine + "\n";
+	}
+	
+	return result;
+}
+
+/**
  * Parse JSONC (JSON with comments) with helpful error messages
  */
 function parseJsoncWithErrors(text: string, filePath: string): unknown {
@@ -279,8 +331,12 @@ function loadConfig(): CustomModelConfig {
 		return cachedConfig;
 	}
 	try {
+		// Process file references first (before env vars, so file contents can have env vars)
+		const configDir = dirname(path);
+		let processed = substituteFileRefs(raw, configDir);
+		
 		// Process environment variable substitution
-		let processed = substituteEnvVars(raw);
+		processed = substituteEnvVars(processed);
 		
 		// Parse JSONC (supports comments and trailing commas)
 		const data = parseJsoncWithErrors(processed, path);
