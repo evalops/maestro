@@ -7,7 +7,7 @@ import {
 	getUsageFilePath,
 	getUsageSummary,
 	trackUsage,
-} from "../src/tracking/cost-tracker";
+} from "../src/tracking/cost-tracker.js";
 
 describe("Cost Tracking", () => {
 	const usageFile = getUsageFilePath();

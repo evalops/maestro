@@ -5,8 +5,9 @@ import type {
 } from "../src/models/registry.js";
 import { Text } from "../src/tui-lib/components/text.js";
 import { Container, type TUI } from "../src/tui-lib/tui.js";
-import type { CommandExecutionContext } from "../src/tui/commands/types.js";
 import { ConfigView } from "../src/tui/config-view.js";
+
+type ConfigCommandContext = Parameters<ConfigView["handleConfigCommand"]>[0];
 
 vi.mock("../src/models/registry.js", () => ({
 	validateConfig: vi.fn(),
@@ -28,10 +29,11 @@ const TEST_HIERARCHY = ["/home/user/.composer/config.json"];
 
 const createContext = (
 	argumentText: string,
-	overrides: Partial<CommandExecutionContext<{ section?: string }>> = {},
-): CommandExecutionContext<{ section?: string }> => ({
-	command: { name: "config" },
-	rawInput: `/config${argumentText ? ` ${argumentText}` : ""}`,
+	overrides: Partial<ConfigCommandContext> = {},
+): ConfigCommandContext => ({
+	command: overrides.command ?? { name: "config" },
+	rawInput:
+		overrides.rawInput ?? `/config${argumentText ? ` ${argumentText}` : ""}`,
 	argumentText,
 	parsedArgs: overrides.parsedArgs,
 	showInfo: overrides.showInfo ?? vi.fn(),
@@ -67,6 +69,7 @@ const createInspection = (): ConfigInspection => ({
 			name: "Anthropic",
 			baseUrl: "https://api.anthropic.com/v1/messages",
 			apiKeySource: "env:ANTHROPIC_API_KEY",
+			isLocal: false,
 			modelCount: 2,
 			models: [
 				{ id: "claude-sonnet-4-5", name: "Sonnet" },

@@ -55,10 +55,7 @@ import { ModelSelectorView } from "./model-selector-view.js";
 import { NotificationView } from "./notification-view.js";
 import { OllamaView } from "./ollama-view.js";
 import { PlanView } from "./plan-view.js";
-import {
-	PromptQueue,
-	type PromptQueueEvent,
-} from "./prompt-queue.js";
+import type { PromptQueue, PromptQueueEvent } from "./prompt-queue.js";
 import { RunCommandView } from "./run-command-view.js";
 import { RunController } from "./run-controller.js";
 import { SessionContext } from "./session-context.js";

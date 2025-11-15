@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RegisteredModel } from "../src/models/registry.js";
 import { Text } from "../src/tui-lib/components/text.js";
 import { Container, type TUI } from "../src/tui-lib/tui.js";
@@ -94,7 +94,7 @@ describe("OllamaView", () => {
 					Promise.resolve({
 						ok: true,
 						text: async () => "v1.0",
-					}) as Response,
+					}) as unknown as Response,
 			),
 		);
 	});

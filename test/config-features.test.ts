@@ -18,7 +18,7 @@ import {
 	reloadModelConfig,
 	resolveAlias,
 	validateConfig,
-} from "../src/models/registry";
+} from "../src/models/registry.js";
 
 describe("Config Features", () => {
 	let testDir: string;

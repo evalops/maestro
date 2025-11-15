@@ -234,6 +234,10 @@ export type AppMessage =
 	| Message
 	| CustomMessages[keyof CustomMessages];
 
+export interface PendingToolCall {
+	toolName: string;
+}
+
 export interface AgentState {
 	systemPrompt: string;
 	model: Model<any>;
@@ -242,7 +246,7 @@ export interface AgentState {
 	messages: AppMessage[];
 	isStreaming: boolean;
 	streamMessage: Message | null;
-	pendingToolCalls: Set<string>;
+	pendingToolCalls: Map<string, PendingToolCall>;
 	error?: string;
 }
 

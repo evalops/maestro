@@ -3,22 +3,47 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Agent } from "../../src/agent/agent.js";
-import type { AgentEvent } from "../../src/agent/types.js";
+import type {
+	AgentEvent,
+	AssistantMessage,
+	Model,
+	TextContent,
+	ToolResultMessage,
+} from "../../src/agent/types.js";
 import { MockToolTransport } from "../../src/testing/mock-agent.js";
 import { editTool } from "../../src/tools/edit.js";
 import { readTool } from "../../src/tools/read.js";
 import { writeTool } from "../../src/tools/write.js";
 
-const mockModel = {
+const mockModel: Model<any> = {
 	id: "mock",
 	name: "Mock",
 	provider: "mock",
 	api: "openai-completions",
 	baseUrl: "",
 	reasoning: false,
+	input: ["text"],
+	cost: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+	},
 	contextWindow: 8192,
 	maxTokens: 2048,
 };
+
+const isTextContent = (
+	chunk:
+		| AssistantMessage["content"][number]
+		| ToolResultMessage["content"][number],
+): chunk is TextContent => chunk.type === "text";
+
+const isAssistantMessageStart = (
+	event: AgentEvent,
+): event is Extract<AgentEvent, { type: "message_start" }> & {
+	message: AssistantMessage;
+} => event.type === "message_start" && event.message.role === "assistant";
 
 describe("Agent mock transport", () => {
 	it("runs tool execution flow", async () => {
@@ -44,17 +69,16 @@ describe("Agent mock transport", () => {
 				event.type === "tool_execution_end",
 		);
 		expect(toolEvents.length).toBe(2);
-		const finalEvent = [...events]
-			.reverse()
-			.find(
-				(event) =>
-					event.type === "message_start" &&
-					event.message.role === "assistant" &&
-					event.message.content.some((c) => c.type === "text"),
-			);
-		expect(
-			finalEvent?.message.content.find((c) => c.type === "text")?.text,
-		).toBe("Done");
+		const finalEvent = [...events].reverse().find(
+			(
+				event,
+			): event is Extract<AgentEvent, { type: "message_start" }> & {
+				message: AssistantMessage;
+			} =>
+				isAssistantMessageStart(event) &&
+				event.message.content.some(isTextContent),
+		);
+		expect(finalEvent?.message.content.find(isTextContent)?.text).toBe("Done");
 	});
 
 	it("handles multi-tool sequences", async () => {
@@ -90,14 +114,13 @@ describe("Agent mock transport", () => {
 		agent.setTools([writeTool, editTool, readTool]);
 		await agent.prompt("Update note");
 
-		const finalEvent = [...agent.state.messages]
+		const finalAssistant = [...agent.state.messages]
 			.reverse()
 			.find(
-				(msg) =>
-					msg.role === "assistant" &&
-					msg.content.some((c) => c.type === "text"),
+				(message): message is AssistantMessage =>
+					message.role === "assistant" && message.content.some(isTextContent),
 			);
-		expect(finalEvent?.content.find((c) => c.type === "text")?.text).toBe(
+		expect(finalAssistant?.content.find(isTextContent)?.text).toBe(
 			`Summary: ${summary.trim()}`,
 		);
 
@@ -123,15 +146,16 @@ describe("Agent mock transport", () => {
 		await agent.prompt("read file");
 
 		const errorEvents = events.filter(
-			(event) => event.type === "tool_execution_end" && event.isError,
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" && event.isError,
 		);
 		expect(errorEvents.length).toBe(1);
 		const finalAssistant = [...agent.state.messages]
 			.reverse()
-			.find((msg) => msg.role === "assistant");
-		expect(finalAssistant?.content.find((c) => c.type === "text")?.text).toBe(
-			"Done",
-		);
+			.find(
+				(message): message is AssistantMessage => message.role === "assistant",
+			);
+		expect(finalAssistant?.content.find(isTextContent)?.text).toBe("Done");
 	});
 
 	it("aborts execution when agent abort is called", async () => {

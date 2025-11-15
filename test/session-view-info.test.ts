@@ -48,7 +48,7 @@ function createSessionView(messages: AssistantMessage[]): SessionView {
 			messages,
 			isStreaming: false,
 			streamMessage: null,
-			pendingToolCalls: new Set(),
+			pendingToolCalls: new Map(),
 		},
 	} as unknown as Agent;
 

@@ -10,7 +10,7 @@ export type PromptQueueEvent =
 			entry: QueuedPrompt;
 			willRunImmediately: boolean;
 			pendingCount: number;
-		}
+	  }
 	| { type: "start"; entry: QueuedPrompt }
 	| { type: "finish"; entry: QueuedPrompt }
 	| { type: "cancel"; entry: QueuedPrompt }

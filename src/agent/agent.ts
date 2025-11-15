@@ -11,6 +11,7 @@ import type {
 	Model,
 	TextContent,
 	ThinkingLevel,
+	ToolResultMessage,
 	UserMessage,
 } from "./types.js";
 
@@ -44,7 +45,7 @@ export class Agent {
 			messages: [],
 			isStreaming: false,
 			streamMessage: null,
-			pendingToolCalls: new Set(),
+			pendingToolCalls: new Map(),
 			...opts.initialState,
 		};
 	}
@@ -147,6 +148,8 @@ export class Agent {
 		this.emit({ type: "agent_start" });
 		this.emit({ type: "turn_start" });
 
+		let aborted = false;
+
 		try {
 			// Transform messages if needed
 			let messagesToSend: Message[] = this._state.messages;
@@ -195,7 +198,9 @@ export class Agent {
 					finalMessage = event.message;
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
-					this._state.pendingToolCalls.add(event.toolCallId);
+					this._state.pendingToolCalls.set(event.toolCallId, {
+						toolName: event.toolName,
+					});
 					this.emit(event);
 				} else if (event.type === "tool_execution_end") {
 					this._state.pendingToolCalls.delete(event.toolCallId);
@@ -223,7 +228,7 @@ export class Agent {
 			});
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === "AbortError") {
-				// Aborted, don't throw
+				aborted = true;
 			} else {
 				this._state.error =
 					error instanceof Error ? error.message : String(error);
@@ -232,7 +237,40 @@ export class Agent {
 		} finally {
 			this._state.isStreaming = false;
 			this.abortController = undefined;
+			if (this._state.pendingToolCalls.size > 0) {
+				const reason = aborted
+					? "Error: Operation aborted"
+					: "Error: Tool execution did not complete";
+				this.resolvePendingToolCalls(reason);
+			}
 		}
+	}
+
+	private resolvePendingToolCalls(reason: string): void {
+		for (const [toolCallId, info] of this._state.pendingToolCalls.entries()) {
+			const abortedResult: ToolResultMessage = {
+				role: "toolResult",
+				toolCallId,
+				toolName: info.toolName,
+				content: [
+					{
+						type: "text",
+						text: reason,
+					},
+				],
+				isError: true,
+				timestamp: Date.now(),
+			};
+			this._state.messages.push(abortedResult);
+			this.emit({
+				type: "tool_execution_end",
+				toolCallId,
+				toolName: info.toolName,
+				result: abortedResult,
+				isError: true,
+			});
+		}
+		this._state.pendingToolCalls.clear();
 	}
 
 	async generateSummary(

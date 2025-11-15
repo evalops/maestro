@@ -60,9 +60,7 @@ async function runInteractiveMode(
 		},
 		(error) => {
 			renderer.showError(
-				error instanceof Error
-					? error.message
-					: "Unknown error occurred",
+				error instanceof Error ? error.message : "Unknown error occurred",
 			);
 		},
 	);

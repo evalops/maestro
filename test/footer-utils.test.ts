@@ -45,7 +45,7 @@ const baseState = (messages: AssistantMessage[]): AgentState => ({
 	messages,
 	isStreaming: false,
 	streamMessage: null,
-	pendingToolCalls: new Set(),
+	pendingToolCalls: new Map(),
 });
 
 describe("calculateFooterStats", () => {

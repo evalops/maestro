@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Text } from "../src/tui-lib/components/text.js";
 import { Container, type TUI } from "../src/tui-lib/tui.js";
-import type { CommandExecutionContext } from "../src/tui/commands/types.js";
 import { TelemetryView } from "../src/tui/telemetry-view.js";
+
+type TelemetryCommandContext = Parameters<
+	TelemetryView["handleTelemetryCommand"]
+>[0];
 
 vi.mock("../src/telemetry.js", () => ({
 	getTelemetryStatus: vi.fn(),
@@ -30,8 +33,8 @@ const createStatus = (enabled = true) => ({
 
 const createContext = (
 	argumentText = "",
-	parsedArgs?: Record<string, unknown>,
-): CommandExecutionContext<{ action?: string }> => ({
+	parsedArgs?: TelemetryCommandContext["parsedArgs"],
+): TelemetryCommandContext => ({
 	command: { name: "telemetry" },
 	rawInput: `/telemetry${argumentText ? ` ${argumentText}` : ""}`,
 	argumentText,

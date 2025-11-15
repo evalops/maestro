@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { LspClientManager } from "../src/lsp/manager.js";
+import type { RootResolver } from "../src/lsp/types.js";
 
 describe("LspClientManager root resolver", () => {
 	it("should await async root resolver", async () => {
 		const manager = new LspClientManager({ rootResolverTimeoutMs: 1000 });
-		const resolver = vi.fn(async () => {
+		const resolver = vi.fn<RootResolver>(async (file: string) => {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			return "/tmp/root";
 		});
@@ -21,8 +22,8 @@ describe("LspClientManager root resolver", () => {
 
 	it("should handle resolver timeout", async () => {
 		const manager = new LspClientManager({ rootResolverTimeoutMs: 5 });
-		const resolver = vi.fn(
-			async () =>
+		const resolver = vi.fn<RootResolver>(
+			async (file: string) =>
 				new Promise((resolve) => setTimeout(() => resolve("/tmp/slow"), 20)),
 		);
 
@@ -38,7 +39,7 @@ describe("LspClientManager root resolver", () => {
 
 	it("should handle resolver rejection", async () => {
 		const manager = new LspClientManager({ rootResolverTimeoutMs: 100 });
-		const resolver = vi.fn(async () => {
+		const resolver = vi.fn<RootResolver>(async (file: string) => {
 			throw new Error("boom");
 		});
 

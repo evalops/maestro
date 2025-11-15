@@ -63,7 +63,7 @@ function createMockState(messages: any[], contextWindow = 200000): AgentState {
 		thinkingLevel: "off",
 		isStreaming: false,
 		streamMessage: null,
-		pendingToolCalls: new Set(),
+		pendingToolCalls: new Map(),
 	};
 }
 
