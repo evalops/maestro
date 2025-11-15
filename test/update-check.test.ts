@@ -21,11 +21,16 @@ describe("compareVersions", () => {
 		expect(compareVersions("1.2.3", "1.2.3")).toBe(0);
 	});
 
-	it("handles pre-release precedence", () => {
-		expect(compareVersions("1.0.0-beta.1", "1.0.0")).toBe(-1);
-		expect(compareVersions("1.0.0", "1.0.0-beta.1")).toBe(1);
-		expect(compareVersions("1.0.0-alpha", "1.0.0-alpha.1")).toBe(-1);
-	});
+        it("handles pre-release precedence", () => {
+                expect(compareVersions("1.0.0-beta.1", "1.0.0")).toBe(-1);
+                expect(compareVersions("1.0.0", "1.0.0-beta.1")).toBe(1);
+                expect(compareVersions("1.0.0-alpha", "1.0.0-alpha.1")).toBe(-1);
+        });
+
+        it("treats mixed identifiers as non-numeric", () => {
+                expect(compareVersions("1.0.0-123", "1.0.0-123abc")).toBe(-1);
+                expect(compareVersions("1.0.0-123abc", "1.0.0-123")).toBe(1);
+        });
 });
 
 describe("checkForUpdate", () => {
