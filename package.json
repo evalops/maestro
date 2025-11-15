@@ -1,7 +1,7 @@
 {
   "name": "@evalops/composer",
   "description": "Composer CLI by EvalOps with rich tooling for AI-assisted development",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "type": "module",
   "bin": {
     "composer": "dist/cli.js"
@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-		"prepare": "husky",
+    "prepare": "husky",
     "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "start": "node --enable-source-maps dist/cli.js",
     "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
