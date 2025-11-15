@@ -96,10 +96,21 @@ export class ConversationCompactor {
 			};
 		}
 
+		const resumeMessage: AppMessage = {
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: "Use the above summary to resume the plan from where we left off.",
+				},
+			],
+			timestamp: Date.now(),
+		};
 		const keep = messages.slice(boundary);
-		const newMessages = [summaryMessage as AppMessage, ...keep];
+		const newMessages = [summaryMessage as AppMessage, resumeMessage, ...keep];
 		this.options.agent.replaceMessages(newMessages);
 		this.options.sessionManager.saveMessage(summaryMessage);
+		this.options.sessionManager.saveMessage(resumeMessage);
 
 		this.options.chatContainer.clear();
 		this.options.toolComponents.clear();

@@ -143,6 +143,7 @@ export class TuiRenderer {
 
 	private readonly idleFooterHint =
 		"Try /help for commands or /tools for status";
+	private readonly workingFooterHint = "Working… press esc to interrupt";
 	private planHint: string | null = null;
 	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
@@ -181,6 +182,8 @@ export class TuiRenderer {
 	private queueEnabled = false;
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
+	private interruptArmed = false;
+	private interruptTimeout: NodeJS.Timeout | null = null;
 
 	constructor(
 		agent: Agent,
@@ -244,7 +247,7 @@ export class TuiRenderer {
 			loaderView: this.loaderView,
 			footer: this.footer,
 			ui: this.ui,
-			workingHint: "Working… press esc to interrupt",
+			workingHint: this.workingFooterHint,
 			setEditorDisabled: (disabled) => {
 				this.editor.disableSubmit = disabled && !this.queueEnabled;
 			},
@@ -515,12 +518,8 @@ export class TuiRenderer {
 					this.onInputCallback(text);
 				}
 			},
-			shouldInterrupt: () => this.isAgentRunning,
-			onInterrupt: () => {
-				if (this.onInterruptCallback) {
-					this.onInterruptCallback();
-				}
-			},
+			shouldInterrupt: () => this.isAgentRunning || this.interruptArmed,
+			onInterrupt: () => this.handleInterruptRequest(),
 			onCtrlC: () => this.runController.handleCtrlC(),
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
@@ -580,6 +579,7 @@ export class TuiRenderer {
 			this.isAgentRunning = true;
 		} else if (event.type === "agent_end") {
 			this.isAgentRunning = false;
+			this.clearInterruptArm();
 		}
 
 		// Update footer with current stats
@@ -608,6 +608,52 @@ export class TuiRenderer {
 
 	setInterruptCallback(callback: () => void): void {
 		this.onInterruptCallback = callback;
+	}
+
+	private handleInterruptRequest(): void {
+		if (!this.isAgentRunning && !this.interruptArmed) {
+			return;
+		}
+		if (!this.interruptArmed) {
+			this.armInterrupt();
+			return;
+		}
+		this.executeInterrupt();
+	}
+
+	private armInterrupt(): void {
+		this.interruptArmed = true;
+		if (this.interruptTimeout) {
+			clearTimeout(this.interruptTimeout);
+		}
+		this.notificationView.showInfo("Press Esc again within 5s to interrupt.");
+		this.footer.setHint("Esc again within 5s to interrupt");
+		this.interruptTimeout = setTimeout(() => {
+			this.clearInterruptArm();
+		}, 5000);
+	}
+
+	private executeInterrupt(): void {
+		this.clearInterruptArm();
+		this.notificationView.showToast("Interrupted current run", "warn");
+		if (this.onInterruptCallback) {
+			this.onInterruptCallback();
+		}
+	}
+
+	private clearInterruptArm(): void {
+		if (this.interruptTimeout) {
+			clearTimeout(this.interruptTimeout);
+			this.interruptTimeout = null;
+		}
+		if (this.interruptArmed) {
+			this.interruptArmed = false;
+			if (this.isAgentRunning) {
+				this.footer.setHint(this.workingFooterHint);
+			} else {
+				this.refreshFooterHint();
+			}
+		}
 	}
 
 	private async handleCompactCommand(): Promise<void> {
