@@ -4,6 +4,17 @@ Composer is a radically simple and opinionated coding agent with multi-model sup
 
 Works on Linux, macOS, and Windows (barely tested, needs Git Bash running in the "modern" Windows Terminal).
 
+## Design Principles
+
+We keep the CLI intentionally opinionated so every session feels predictable:
+
+- **Slash-command first automation.** Everything routes through explicit commands (`/run`, `/config`, etc.) so actions stay reviewable and scriptable.
+- **Deterministic tooling.** Composer touches the filesystem only via transparent git-aware helpers, keeping review diffs clean.
+- **EvalOps-ready by default.** Built-in scenario runners, telemetry, and cost tracking mean the CLI can drop straight into automated evaluation loops.
+- **Provider-agnostic, session-stable.** Multi-model switching and shared context loading ensure prompts stay portable between Anthropic, OpenAI, Gemini, Groq, and more.
+
+These principles show up throughout the docs below—installation is minimal, workflows double down on slash commands, and the EvalOps section highlights the instrumentation story.
+
 ## Installation
 
 ```bash
@@ -29,6 +40,8 @@ You: Create a simple Express server in src/server.ts
 The agent will use its tools to read, write, and edit files as needed, and execute commands via Bash.
 
 ## EvalOps Workflows
+
+In line with the telemetry/EvalOps design principle, the CLI ships with end-to-end evaluation plumbing:
 
 - **Run automated evaluations:** `npm run evals` builds the CLI and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Composer into continuous evaluation pipelines.
 - **Customize scenarios:** add more entries to `evals/scenarios.json` to benchmark additional commands (each scenario can assert against stdout via regular expressions).
@@ -79,6 +92,8 @@ Composer now mirrors the Factory CLI setup automatically:
 - Already inside the TUI? Use `/import factory` to pull the latest Factory settings without restarting the CLI.
 
 ## Slash Commands
+
+Because Composer is slash-command first (see Design Principles), every interactive capability is surfaced here, keeping automation discoverable:
 
 The CLI supports several commands to control its behavior:
 
