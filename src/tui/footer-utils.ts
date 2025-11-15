@@ -81,7 +81,7 @@ const ZERO_USAGE: Usage = {
 	},
 };
 
-function normalizeUsage(usage?: Usage): Usage {
+export function normalizeUsage(usage?: Usage): Usage {
 	if (!usage) {
 		return ZERO_USAGE;
 	}

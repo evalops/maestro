@@ -14,6 +14,7 @@ import {
 } from "../style/theme.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
+import { normalizeUsage } from "./footer-utils.js";
 import type {
 	SessionDataProvider,
 	SessionItem,
@@ -67,11 +68,12 @@ export class SessionView {
 		for (const message of state.messages) {
 			if (message.role === "assistant") {
 				const assistantMsg = message as AssistantMessage;
-				totalInput += assistantMsg.usage.input;
-				totalOutput += assistantMsg.usage.output;
-				totalCacheRead += assistantMsg.usage.cacheRead;
-				totalCacheWrite += assistantMsg.usage.cacheWrite;
-				totalCost += assistantMsg.usage.cost.total;
+				const usage = normalizeUsage(assistantMsg.usage);
+				totalInput += usage.input;
+				totalOutput += usage.output;
+				totalCacheRead += usage.cacheRead;
+				totalCacheWrite += usage.cacheWrite;
+				totalCost += usage.cost.total;
 			}
 		}
 
