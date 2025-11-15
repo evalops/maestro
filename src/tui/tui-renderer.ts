@@ -56,6 +56,7 @@ import { ThinkingSelectorView } from "./thinking-selector-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
+import { UpdateView } from "./update-view.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 const TODO_STORE_PATH =
@@ -111,6 +112,7 @@ export class TuiRenderer {
 	private thinkingSelectorView: ThinkingSelectorView;
 	private modelSelectorView: ModelSelectorView;
 	private notificationView: NotificationView;
+	private updateView: UpdateView;
 	private runController: RunController;
 	private agentEventRouter!: AgentEventRouter;
 	private sessionContext = new SessionContext();
@@ -304,6 +306,12 @@ export class TuiRenderer {
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
+		this.updateView = new UpdateView({
+			currentVersion: this.version,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showError: (message) => this.notificationView.showError(message),
+		});
 
 		const registry = buildCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -325,6 +333,7 @@ export class TuiRenderer {
 				this.feedbackView.handleFeedbackCommand(this.version),
 			handleMention: (input) => this.fileSearchView.handleMentionCommand(input),
 			showHelp: () => this.infoView.showHelp(),
+			handleUpdate: () => this.updateView.handleUpdateCommand(),
 			handlePlan: (input) => this.planView.handlePlanCommand(input),
 			handlePreview: (input) => this.gitView.handlePreviewCommand(input),
 			handleRun: (input) => this.runCommandView.handleRunCommand(input),

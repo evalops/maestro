@@ -161,6 +161,14 @@ export function createCommandRegistry({
 		},
 		{
 			command: {
+				name: "update",
+				description: "Check for Composer CLI updates",
+			},
+			matches: equals("update"),
+			execute: () => handlers.update(),
+		},
+		{
+			command: {
 				name: "diag",
 				description: "Show provider/model/API key diagnostics",
 			},
