@@ -278,6 +278,13 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 			cwd: root,
 			env: { ...process.env, ...server.env },
 		});
+
+		// Handle spawn errors
+		proc.on("error", (err) => {
+			brokenServers.add(key);
+			console.error(`[lsp] Failed to spawn ${server.id}:`, err);
+		});
+
 		const connection = createMessageConnection(proc.stdin, proc.stdout);
 		const handle: LspClientHandle = {
 			id: server.id,
@@ -300,6 +307,9 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 		connection.onClose(() => {
 			brokenServers.add(key);
 			connection.dispose();
+		});
+		connection.onError(() => {
+			// Suppress connection errors to avoid unhandled rejections
 		});
 		connection.listen();
 		await connection.sendRequest("initialize", {
