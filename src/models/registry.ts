@@ -319,7 +319,43 @@ function buildFactoryData(): {
 			if (!entry?.model || !entry.base_url) {
 				continue;
 			}
-			const uniqueKey = `${entry.provider ?? "factory"}|${entry.base_url}|${entry.api_key ?? ""}`;
+			
+			// Normalize provider base URLs to include proper API endpoints
+			let normalizedBaseUrl = entry.base_url;
+			
+			// Anthropic direct API
+			if (entry.provider === "anthropic" && 
+			    normalizedBaseUrl.includes("api.anthropic.com") && 
+			    !normalizedBaseUrl.includes("/v1/messages")) {
+				normalizedBaseUrl = normalizedBaseUrl.replace(/\/$/, "") + "/v1/messages";
+			}
+			
+			// AWS Bedrock (uses InvokeModel API, not direct HTTP endpoint)
+			// Format: https://bedrock-runtime.{region}.amazonaws.com
+			// Note: Bedrock requires AWS SDK, not direct fetch
+			if (entry.provider === "bedrock" || entry.provider === "aws-bedrock") {
+				if (normalizedBaseUrl.includes("bedrock") && 
+				    normalizedBaseUrl.includes("amazonaws.com") &&
+				    !normalizedBaseUrl.includes("bedrock-runtime")) {
+					// Ensure it's bedrock-runtime, not just bedrock
+					normalizedBaseUrl = normalizedBaseUrl.replace("bedrock.", "bedrock-runtime.");
+				}
+			}
+			
+			// Google Vertex AI
+			// Format: https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models/{model}:rawPredict
+			// This is complex and requires project/location info, so we just validate the base domain
+			if (entry.provider === "vertex" || entry.provider === "google-vertex") {
+				if (normalizedBaseUrl.includes("aiplatform.googleapis.com") && 
+				    !normalizedBaseUrl.includes("/v1/")) {
+					// User needs to provide full path for Vertex AI
+					// We can't auto-complete without project ID and location
+					// So we'll just ensure it ends properly
+					normalizedBaseUrl = normalizedBaseUrl.replace(/\/$/, "");
+				}
+			}
+			
+			const uniqueKey = `${entry.provider ?? "factory"}|${normalizedBaseUrl}|${entry.api_key ?? ""}`;
 			let provider = providerKeyMap.get(uniqueKey);
 			if (!provider) {
 				const sanitized = sanitizeId(entry.provider ?? "factory");
@@ -331,9 +367,9 @@ function buildFactoryData(): {
 				usedIds.add(id);
 				provider = {
 					id,
-					name: deriveProviderName(entry.provider, entry.base_url),
+					name: deriveProviderName(entry.provider, normalizedBaseUrl),
 					api: deriveProviderApi(entry.provider),
-					baseUrl: entry.base_url,
+					baseUrl: normalizedBaseUrl,
 					apiKey: entry.api_key,
 					models: [],
 				};
@@ -347,7 +383,7 @@ function buildFactoryData(): {
 			const model: CustomModel = {
 				id: entry.model,
 				name: entry.model_display_name || entry.model,
-				baseUrl: entry.base_url,
+				baseUrl: normalizedBaseUrl,
 				contextWindow: maxTokens,
 				maxTokens,
 			};
