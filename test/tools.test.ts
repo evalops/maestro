@@ -234,10 +234,15 @@ describe("Composer Tools", () => {
 
 			expect(getTextOutput(result)).toContain("Successfully wrote");
 			expect(getTextOutput(result)).toContain(testFile);
-			expect(result.details).toBeUndefined();
+			expect(result.details).toMatchObject({
+				previousExists: false,
+				bytesWritten: content.length,
+				diff: undefined,
+				backupPath: undefined,
+			});
 		});
 
-		it("should create parent directories", async () => {
+		it("should create parent directories and produce diff + backup metadata", async () => {
 			const testFile = join(testDir, "nested", "dir", "test.txt");
 			const content = "Nested content";
 
@@ -247,6 +252,26 @@ describe("Composer Tools", () => {
 			});
 
 			expect(getTextOutput(result)).toContain("Successfully wrote");
+			expect(result.details).toMatchObject({
+				previousExists: false,
+				bytesWritten: content.length,
+				diff: undefined,
+				backupPath: undefined,
+			});
+
+			const updatedContent = "Updated content";
+			const secondResult = await writeTool.execute("test-call-4b", {
+				path: testFile,
+				content: updatedContent,
+			});
+
+			expect(secondResult.details).toMatchObject({
+				previousExists: true,
+				bytesWritten: updatedContent.length,
+				diff: expect.stringContaining("-1 Nested content"),
+				backupPath: `${testFile}.bak`,
+			});
+			expect(existsSync(`${testFile}.bak`)).toBe(true);
 		});
 	});
 

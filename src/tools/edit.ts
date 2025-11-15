@@ -2,8 +2,8 @@ import { constants } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import { resolve as resolvePath } from "node:path";
-import * as Diff from "diff";
 import { z } from "zod";
+import { generateDiffString } from "./diff-utils.js";
 import { createZodTool } from "./zod-tool.js";
 
 /**
@@ -19,103 +19,7 @@ function expandPath(filePath: string): string {
 	return filePath;
 }
 
-/**
- * Generate a unified diff string with line numbers and context
- */
-function generateDiffString(
-	oldContent: string,
-	newContent: string,
-	contextLines = 4,
-): string {
-	const parts = Diff.diffLines(oldContent, newContent);
-	const output: string[] = [];
-
-	const oldLines = oldContent.split("\n");
-	const newLines = newContent.split("\n");
-	const maxLineNum = Math.max(oldLines.length, newLines.length);
-	const lineNumWidth = String(maxLineNum).length;
-
-	let oldLineNum = 1;
-	let newLineNum = 1;
-	let lastWasChange = false;
-
-	for (let i = 0; i < parts.length; i++) {
-		const part = parts[i];
-		const raw = part.value.split("\n");
-		if (raw[raw.length - 1] === "") {
-			raw.pop();
-		}
-
-		if (part.added || part.removed) {
-			// Show the change
-			for (const line of raw) {
-				if (part.added) {
-					const lineNum = String(newLineNum).padStart(lineNumWidth, " ");
-					output.push(`+${lineNum} ${line}`);
-					newLineNum++;
-				} else {
-					// removed
-					const lineNum = String(oldLineNum).padStart(lineNumWidth, " ");
-					output.push(`-${lineNum} ${line}`);
-					oldLineNum++;
-				}
-			}
-			lastWasChange = true;
-		} else {
-			// Context lines - only show a few before/after changes
-			const nextPartIsChange =
-				i < parts.length - 1 && (parts[i + 1].added || parts[i + 1].removed);
-
-			if (lastWasChange || nextPartIsChange) {
-				// Show context
-				let linesToShow = raw;
-				let skipStart = 0;
-				let skipEnd = 0;
-
-				if (!lastWasChange) {
-					// Show only last N lines as leading context
-					skipStart = Math.max(0, raw.length - contextLines);
-					linesToShow = raw.slice(skipStart);
-				}
-
-				if (!nextPartIsChange && linesToShow.length > contextLines) {
-					// Show only first N lines as trailing context
-					skipEnd = linesToShow.length - contextLines;
-					linesToShow = linesToShow.slice(0, contextLines);
-				}
-
-				// Add ellipsis if we skipped lines at start
-				if (skipStart > 0) {
-					output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
-				}
-
-				for (const line of linesToShow) {
-					const lineNum = String(oldLineNum).padStart(lineNumWidth, " ");
-					output.push(` ${lineNum} ${line}`);
-					oldLineNum++;
-					newLineNum++;
-				}
-
-				// Add ellipsis if we skipped lines at end
-				if (skipEnd > 0) {
-					output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
-				}
-
-				// Update line numbers for skipped lines
-				oldLineNum += skipStart + skipEnd;
-				newLineNum += skipStart + skipEnd;
-			} else {
-				// Skip these context lines entirely
-				oldLineNum += raw.length;
-				newLineNum += raw.length;
-			}
-
-			lastWasChange = false;
-		}
-	}
-
-	return output.join("\n");
-}
+/** Diff support lives in diff-utils for reuse */
 
 const editSchema = z
 	.object({
