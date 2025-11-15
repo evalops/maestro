@@ -45,6 +45,7 @@
     "diff": "^8.0.2",
     "dotenv": "^16.4.5",
     "glob": "^11.0.3",
+    "jsonc-parser": "^3.3.1",
     "marked": "^17.0.0",
     "mime-types": "^3.0.1",
     "string-width": "^8.1.0",

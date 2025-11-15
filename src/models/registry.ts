@@ -1,9 +1,14 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { z } from "zod";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
+import {
+	parse as parseJsonc,
+	type ParseError as JsoncParseError,
+	printParseErrorCode,
+} from "jsonc-parser";
 
 const COST_DEFAULT = {
 	input: 0,
@@ -56,7 +61,7 @@ const providerSchema = z.object({
 	id: z.string().min(1),
 	name: z.string().min(1),
 	api: modelSchema.shape.api.optional(),
-	baseUrl: baseUrlSchema,
+	baseUrl: baseUrlSchema.optional(),
 	apiKeyEnv: z.string().min(1).optional(),
 	apiKey: z.string().min(1).optional(),
 	models: z.array(modelSchema).min(1),
@@ -101,6 +106,147 @@ let factoryDataCache:
 	| undefined;
 const fileSnapshots = new Map<string, { mtimeMs: number; data: string }>();
 
+/**
+ * Provider-specific configuration loaders
+ * These handle provider-specific initialization, defaults, and auto-detection
+ */
+interface ProviderLoaderResult {
+	headers?: Record<string, string>;
+	baseUrl?: string;
+	enabled?: boolean;
+	options?: Record<string, unknown>;
+}
+
+type ProviderLoader = (providerId: string) => ProviderLoaderResult | null;
+
+const PROVIDER_LOADERS: Record<string, ProviderLoader> = {
+	anthropic: (providerId: string) => ({
+		headers: {
+			"anthropic-beta": "prompt-caching-2024-07-31",
+		},
+	}),
+	
+	bedrock: (providerId: string) => {
+		const region = process.env.AWS_REGION ?? "us-east-1";
+		const hasCredentials = Boolean(
+			process.env.AWS_PROFILE ||
+			process.env.AWS_ACCESS_KEY_ID ||
+			process.env.AWS_BEARER_TOKEN_BEDROCK
+		);
+		
+		return {
+			baseUrl: `https://bedrock-runtime.${region}.amazonaws.com`,
+			enabled: hasCredentials,
+			options: { region },
+		};
+	},
+	
+	"vertex-ai": (providerId: string) => {
+		const project = 
+			process.env.GOOGLE_CLOUD_PROJECT ??
+			process.env.GCP_PROJECT ??
+			process.env.GCLOUD_PROJECT;
+		const location = 
+			process.env.GOOGLE_CLOUD_LOCATION ??
+			process.env.VERTEX_LOCATION ??
+			"us-east5";
+		
+		if (!project) {
+			return { enabled: false };
+		}
+		
+		return {
+			enabled: true,
+			options: { project, location },
+		};
+	},
+};
+
+/**
+ * Apply provider-specific configurations
+ */
+function applyProviderLoader(
+	provider: CustomProvider
+): CustomProvider {
+	const loader = 
+		PROVIDER_LOADERS[provider.id] ??
+		PROVIDER_LOADERS[provider.id.split("-")[0]]; // Try base name (e.g., "bedrock" from "aws-bedrock")
+	
+	if (!loader) {
+		return provider;
+	}
+	
+	const result = loader(provider.id);
+	if (!result) {
+		return provider;
+	}
+	
+	// Merge loader results with provider config
+	const enhanced = { ...provider };
+	
+	if (result.headers) {
+		enhanced.models = enhanced.models.map(model => ({
+			...model,
+			headers: { ...result.headers, ...model.headers },
+		}));
+	}
+	
+	if (result.baseUrl && !provider.baseUrl) {
+		enhanced.baseUrl = result.baseUrl;
+	}
+	
+	return enhanced;
+}
+
+/**
+ * Substitute environment variables in config text
+ * Replaces {env:VAR_NAME} with the value of process.env.VAR_NAME
+ */
+function substituteEnvVars(text: string): string {
+	return text.replace(/\{env:([^}]+)\}/g, (match, varName) => {
+		const value = process.env[varName];
+		if (value === undefined) {
+			console.warn(`[Config Warning] Environment variable ${varName} is not set, using empty string`);
+			return "";
+		}
+		return value;
+	});
+}
+
+/**
+ * Parse JSONC (JSON with comments) with helpful error messages
+ */
+function parseJsoncWithErrors(text: string, filePath: string): unknown {
+	const errors: JsoncParseError[] = [];
+	const data = parseJsonc(text, errors, { 
+		allowTrailingComma: true,
+		disallowComments: false,
+	});
+	
+	if (errors.length > 0) {
+		const lines = text.split("\n");
+		const errorDetails = errors
+			.map((e) => {
+				const beforeOffset = text.substring(0, e.offset).split("\n");
+				const line = beforeOffset.length;
+				const column = beforeOffset[beforeOffset.length - 1].length + 1;
+				const problemLine = lines[line - 1];
+				
+				const error = `${printParseErrorCode(e.error)} at line ${line}, column ${column}`;
+				if (!problemLine) return error;
+				
+				return `${error}\n   Line ${line}: ${problemLine}\n${"".padStart(column + 9)}^`;
+			})
+			.join("\n");
+		
+		throw new Error(
+			`Failed to parse JSONC config at ${filePath}:\n${errorDetails}`
+		);
+	}
+	
+	return data;
+}
+
 function readJsonFile(filePath: string): string | null {
 	try {
 		const stats = statSync(filePath);
@@ -133,7 +279,18 @@ function loadConfig(): CustomModelConfig {
 		return cachedConfig;
 	}
 	try {
-		const parsed = configSchema.parse(JSON.parse(raw));
+		// Process environment variable substitution
+		let processed = substituteEnvVars(raw);
+		
+		// Parse JSONC (supports comments and trailing commas)
+		const data = parseJsoncWithErrors(processed, path);
+		
+		// Validate with Zod schema
+		const parsed = configSchema.parse(data);
+		
+		// Apply provider-specific loaders
+		parsed.providers = parsed.providers.map(applyProviderLoader);
+		
 		cachedConfig = parsed;
 		return parsed;
 	} catch (error) {
@@ -467,8 +624,11 @@ function buildFactoryData(): {
 			return null;
 		}
 
+		// Apply provider-specific loaders to Factory providers too
+		const enhancedProviders = providers.map(applyProviderLoader);
+
 		return {
-			config: { providers },
+			config: { providers: enhancedProviders },
 			modelProviderMap,
 		};
 	} catch {
