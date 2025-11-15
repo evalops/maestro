@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import { Container, Text } from "../tui-lib/index.js";
 import { gradientColor } from "./welcome-colors.js";
 
@@ -10,6 +9,7 @@ export class WelcomeAnimation extends Container {
 	private intervalId: NodeJS.Timeout | null = null;
 	private textComponent: Text;
 	private onRenderRequest?: () => void;
+	private trail: Array<{ x: number; y: number; life: number }> = [];
 
 	constructor(onRenderRequest?: () => void) {
 		super();
@@ -38,126 +38,158 @@ export class WelcomeAnimation extends Container {
 	}
 
 	private updateFrame(): void {
-		const time = this.frame * 0.1;
-		const lines: string[] = [];
-
+		const time = this.frame * 0.08;
 		const width = 64;
 		const height = 22;
-		const centerX = width / 2;
-		const centerY = height / 2 - 1;
-		const baseRadius = Math.min(width, height) * 0.4;
-		const layers = [" ", ".", ":", "-", "~", "*", "o", "O", "@"];
-		const waveAngle = Math.sin(time * 0.42) * Math.PI;
-		const waveFrequency = 2.8 + Math.sin(time * 0.2) * 1.7;
-		const ringDensity = 13 + Math.sin(time * 0.18) * 2.5;
-		const orbiters = 5;
-		const orbitPositions = Array.from({ length: orbiters }).map((_, index) => {
-			const offset = (index / orbiters) * Math.PI * 2 + time * 0.8;
-			const radius = 0.18 + Math.sin(time * 0.3 + index) * 0.03;
-			return { angle: offset, radius };
-		});
+		const chars = Array.from({ length: height }, () =>
+			Array.from({ length: width }, () => " "),
+		);
+		const colors = Array.from({ length: height }, () =>
+			Array.from({ length: width }, () => 0),
+		);
+		const clamp = (value: number, min: number, max: number) =>
+			Math.max(min, Math.min(max, value));
+		const mix = (prev: number, next: number, alpha: number) =>
+			prev * (1 - alpha) + next * alpha;
+
+		const noise = (x: number, y: number) =>
+			Math.sin(x * 0.17 + y * 0.11 + time * 1.3) *
+				Math.cos(x * 0.07 - y * 0.19 + time * 0.9);
+		const starNoise = (x: number, y: number) =>
+			Math.sin(x * 0.9 + y * 1.1 + time * 2.3) *
+				Math.cos(x * 1.3 - y * 0.7 + time * 1.7);
 
 		for (let y = 0; y < height; y++) {
-			let line = "";
 			for (let x = 0; x < width; x++) {
-				let char = " ";
-				let color: (input: string) => string = (input) => input;
-
-				const dx = (x - centerX) / baseRadius;
-				const dy = (y - centerY) / baseRadius;
-				const distance = Math.sqrt(dx * dx + dy * dy);
-				const angle = Math.atan2(dy, dx);
-
-				const swirl = Math.sin(angle * 3.8 + time * 1.6) * 0.08;
-				const pulse = Math.sin(time * 1.3 + distance * 2.2) * 0.05;
-				const ripple = Math.sin(distance * 9 - time * 3.3 + angle * 2.4) * 0.05;
-				const drift = Math.cos(angle * 2.3 - time * 0.8) * 0.04;
-				const breathing = Math.sin(distance * 3.2 - time * 1.4) * 0.03;
-				let intensity = 1 - (distance + swirl + pulse - ripple - drift);
-				intensity += Math.exp(-distance * 2.4) * 0.4 + breathing;
-				if (distance < 0.92) {
-					const undertow =
-						Math.sin(angle * 2 - time * 0.6 + distance * 4.5) * 0.05;
-					const tide = Math.cos(distance * 3.4 - time * 1.1) * 0.03;
-					intensity += undertow + tide;
-				}
-				intensity = Math.max(0, Math.min(1.2, intensity));
-
-				if (intensity > 0.04) {
-					const idx = Math.min(
-						layers.length - 1,
-						Math.floor(intensity * (layers.length - 1)),
-					);
-					char = layers[idx];
-					color = gradientColor(Math.min(1, intensity + 0.2));
-				} else {
-					const twinkle = Math.sin((x + y) * 0.3 + time * 3.1);
-					if (twinkle > 0.985) {
-						char = "·";
-						color = gradientColor(0.25);
-					}
-				}
-
-				if (distance < 0.4) {
-					const corePulse = 0.035 + (Math.sin(time * 1.5) + 1) * 0.025;
-					const heartBeat = Math.sin(time * 3.6 + distance * 7) * 0.025;
-					const coreGlow = Math.max(
-						0,
-						Math.min(1, 0.65 + (0.4 + corePulse - distance) * 0.95 + heartBeat),
-					);
-					if (distance < 0.18 + corePulse * 0.65) {
-						char = distance % 0.05 > 0.025 ? "@" : "0";
-						color = gradientColor(Math.min(1, coreGlow + 0.2));
-					} else {
-						char = distance % 0.08 > 0.04 ? "o" : "*";
-						color = gradientColor(coreGlow);
-					}
-				}
-
-				const ribbonPhase = Math.sin(angle * 3.1 - time * 1.3 + distance * 5.2);
-				const ribbonMix = Math.max(
-					0,
-					Math.min(
-						1,
-						0.45 +
-							(0.92 - distance) * 0.45 +
-							Math.sin(time * 0.7 + angle) * 0.15,
-					),
+				const skyGradient = 0.15 + (y / height) * 0.3;
+				const twinkle = Math.pow(
+					Math.max(0, starNoise(x, y) * 0.5 + Math.random() * 0.15),
+					1.7,
 				);
-				if (Math.abs(ribbonPhase) < 0.08) {
-					char = ribbonPhase > 0 ? "≈" : "~";
-					color = gradientColor(ribbonMix);
-				}
-
-				for (const orb of orbitPositions) {
-					const ox = Math.cos(orb.angle) * orb.radius;
-					const oy = Math.sin(orb.angle) * orb.radius;
-					const d = Math.sqrt((dx - ox) ** 2 + (dy - oy) ** 2);
-					if (d < 0.03 + Math.sin(time * 0.9 + orb.angle) * 0.01) {
-						char = orb.angle % Math.PI > 0.5 ? "●" : "○";
-						color = gradientColor(0.7);
-					}
-				}
-
-				const ray = Math.sin(angle * 3 - time * 2 + distance * 7);
-				const rayIntensity = Math.max(0, 0.25 - Math.abs(ray) * 0.18);
-				if (rayIntensity > 0.02 && distance > 0.35) {
-					char = ray > 0 ? "\\" : "/";
-					color = gradientColor(0.3 + rayIntensity);
-				}
-
-				line += color(char);
+				const haze = noise(x * 0.4, y * 0.3) * 0.08;
+				const base = clamp(skyGradient + haze + twinkle, 0, 1);
+				chars[y][x] = twinkle > 0.35 ? "·" : " ";
+				colors[y][x] = base;
 			}
-			lines.push(line);
 		}
 
-		const crest = Math.sin(time * 0.6) * 0.5;
-		const crestLine = Array.from({ length: width }).map((_, index) => {
-			const wave = Math.sin(index * 0.15 + crest) * 0.35;
-			return gradientColor(0.3 + wave * 0.2)("~");
-		});
-		lines.unshift(crestLine.join(""));
-		lines.push(crestLine.join(""));
+		const rays = 6;
+		for (let ray = 0; ray < rays; ray++) {
+			const angle = (Math.PI * 2 * ray) / rays + time * 0.4;
+			const flicker = Math.sin(time * 1.2 + ray) * 0.3 + 1.1;
+			for (let d = 5; d < height * 0.7; d++) {
+				const x = Math.floor(width / 2 + Math.cos(angle) * d * 0.8);
+				const y = Math.floor(height / 2 + Math.sin(angle) * d * 0.4);
+				if (x < 0 || y < 0 || x >= width || y >= height) continue;
+				colors[y][x] = mix(colors[y][x], 0.6 + flicker * 0.2, 0.4);
+				if (chars[y][x] === " ") {
+					chars[y][x] = Math.random() > 0.7 ? "*" : "·";
+				}
+			}
+		}
+
+		const horizonY = height - 4;
+		for (let x = 0; x < width; x++) {
+			const wave =
+				Math.sin(x * 0.2 + time * 0.8) * 0.3 +
+				Math.sin(x * 0.05 + time * 0.3) * 0.2;
+			const crest = Math.floor(horizonY + wave);
+			if (crest >= 0 && crest < height) {
+				chars[crest][x] = wave > 0 ? "≈" : "~";
+				colors[crest][x] = mix(colors[crest][x], 0.4 + wave * 0.2, 0.5);
+			}
+			const shimmer = Math.sin(time * 2 + x * 0.3) * 0.2 + 0.3;
+			if (crest + 1 < height) {
+				chars[crest + 1][x] = "-";
+				colors[crest + 1][x] = mix(
+					colors[crest + 1][x],
+					0.25 + shimmer,
+					0.6,
+				);
+			}
+		}
+
+		const wingBeat = Math.sin(time * 3.4);
+		const wingSpan = 18 + wingBeat * 5;
+		const wingThickness = 5 - wingBeat * 1.2;
+		const birdY = Math.floor(height / 2 + Math.sin(time * 0.9) * 2);
+		const birdX = Math.floor(width / 2 + Math.sin(time * 0.4) * 10);
+		const bodyRadius = 3.5;
+
+		const wingProfile = (x: number) =>
+			Math.exp(-Math.pow((x / wingSpan) * 2, 2)) * wingThickness;
+		const insideWing = (x: number, y: number, flipped: 1 | -1) => {
+			const localX = (x - birdX) * flipped;
+			const localY = y - birdY - Math.sin(time * 4 + localX * 0.2);
+			if (localX < 0 || localX > wingSpan) return false;
+			return Math.abs(localY) < wingProfile(localX);
+		};
+
+		const insideBody = (x: number, y: number) => {
+			const dx = (x - birdX) / bodyRadius;
+			const dy = (y - birdY) / (bodyRadius * 0.8);
+			return dx * dx + dy * dy < 1;
+		};
+
+		const plumeCurve = (tValue: number) =>
+			(
+				Math.sin(tValue * Math.PI * 2 + time * 1.5) * 3 +
+				Math.cos(time * 0.8 + tValue * 3) * 2
+			);
+		for (let i = 0; i < 25; i++) {
+			const tValue = (i + (Math.sin(time) + 1) * 0.5) / 25;
+			const px = birdX - 2 - i * 0.9;
+			const py = birdY + plumeCurve(tValue);
+			const x = Math.floor(px + Math.random());
+			const y = Math.floor(py + Math.random());
+			if (x < 0 || y < 0 || x >= width || y >= height) continue;
+			chars[y][x] = ",";
+			colors[y][x] = mix(colors[y][x], 0.35 - tValue * 0.2, 0.7);
+		}
+
+		for (let y = 0; y < height; y++) {
+			for (let x = 0; x < width; x++) {
+				let draw = false;
+				if (insideBody(x, y)) {
+					chars[y][x] = "@";
+					colors[y][x] = mix(colors[y][x], 0.95, 0.8);
+					this.trail.push({ x, y, life: 1 });
+					draw = true;
+				} else if (insideWing(x, y, 1) || insideWing(x, y, -1)) {
+					const edge = Math.abs(y - birdY) / wingThickness;
+					chars[y][x] = edge > 0.8 ? "/" : edge > 0.3 ? "= "[Math.random() > 0.5 ? 0 : 1] : "#";
+					colors[y][x] = mix(colors[y][x], 0.8 - edge * 0.3, 0.9);
+					draw = true;
+				}
+				if (!draw && Math.random() < 0.002) {
+					this.trail.push({ x, y, life: 0.6 });
+				}
+			}
+		}
+
+		this.trail = this.trail
+			.map((particle) => ({ ...particle, life: particle.life - 0.03 }))
+			.filter((particle) => particle.life > 0);
+		for (const particle of this.trail) {
+			const { x, y, life } = particle;
+			if (x < 0 || y < 0 || x >= width || y >= height) continue;
+			const char = life > 0.4 ? "*" : life > 0.2 ? "." : "'";
+			chars[y][x] = char;
+			colors[y][x] = mix(colors[y][x], 0.4 + life * 0.4, 0.6);
+		}
+
+		const lines = chars.map((row, y) =>
+			row
+				.map((char, x) => {
+					if (char === " ") {
+						return " ";
+					}
+					const colorValue = clamp(colors[y][x], 0, 1);
+					const painter = gradientColor(colorValue);
+					return painter(char);
+				})
+				.join(""),
+		);
 		this.textComponent.setText(lines.join("\n"));
 	}
 }
