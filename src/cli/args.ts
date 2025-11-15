@@ -12,6 +12,7 @@ export interface Args {
 	mode?: Mode;
 	noSession?: boolean;
 	session?: string;
+	safeMode?: boolean;
 	messages: string[];
 }
 
@@ -48,6 +49,8 @@ export function parseArgs(args: string[]): Args {
 			result.noSession = true;
 		} else if (arg === "--session" && i + 1 < args.length) {
 			result.session = args[++i];
+		} else if (arg === "--safe-mode") {
+			result.safeMode = true;
 		} else if (!arg.startsWith("-")) {
 			result.messages.push(arg);
 		}

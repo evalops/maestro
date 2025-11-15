@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { createZodTool } from "./zod-tool.js";
+import { setPlanSatisfied } from "../safety/safe-mode.js";
 
 const sectionDivider = "─".repeat(40);
 
@@ -397,6 +398,7 @@ export const todoTool = createZodTool({
 			updatedAt: new Date().toISOString(),
 		};
 		await saveStore(store);
+		setPlanSatisfied(true);
 
 		return {
 			content: [{ type: "text", text: sections.join("\n\n") }],

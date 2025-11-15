@@ -5,6 +5,10 @@ import { resolve as resolvePath } from "node:path";
 import { z } from "zod";
 import { generateDiffString } from "./diff-utils.js";
 import { createZodTool } from "./zod-tool.js";
+import {
+	requirePlanCheck,
+	runValidatorsOnSuccess,
+} from "../safety/safe-mode.js";
 
 /**
  * Expand ~ to home directory
@@ -49,10 +53,11 @@ export const editTool = createZodTool({
 	schema: editSchema,
 	async execute(_toolCallId, { path, oldText, newText }, signal) {
 		const absolutePath = resolvePath(expandPath(path));
+		requirePlanCheck("edit");
 
 		return new Promise<{
 			content: Array<{ type: "text"; text: string }>;
-			details: { diff: string } | undefined;
+			details: { diff: string; validators?: unknown } | undefined;
 		}>((resolve, reject) => {
 			// Check if already aborted
 			if (signal?.aborted) {
@@ -141,9 +146,19 @@ export const editTool = createZodTool({
 						return;
 					}
 
-					// Perform replacement
 					const newContent = content.replace(oldText, newText);
 					await writeFile(absolutePath, newContent, "utf-8");
+					let validatorSummaries;
+					try {
+						validatorSummaries = await runValidatorsOnSuccess([absolutePath]);
+					} catch (validatorError) {
+						await writeFile(absolutePath, content, "utf-8");
+						if (signal) {
+							signal.removeEventListener("abort", onAbort);
+						}
+						reject(validatorError);
+						return;
+					}
 
 					// Check if aborted after writing
 					if (aborted) {
@@ -162,7 +177,10 @@ export const editTool = createZodTool({
 								text: `Successfully replaced text in ${path}. Changed ${oldText.length} characters to ${newText.length} characters.`,
 							},
 						],
-						details: { diff: generateDiffString(content, newContent) },
+						details: {
+							diff: generateDiffString(content, newContent),
+							validators: validatorSummaries,
+						},
 					});
 				} catch (error: unknown) {
 					// Clean up abort handler

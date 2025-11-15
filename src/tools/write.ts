@@ -1,12 +1,23 @@
 import { constants } from "node:fs";
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+	access,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import * as os from "node:os";
 import { dirname, resolve as resolvePath } from "node:path";
 import { z } from "zod";
 import { zPathParameter } from "./schema-helpers.js";
 import { generateDiffString } from "./diff-utils.js";
 import { createZodTool } from "./zod-tool.js";
-
+import {
+	requirePlanCheck,
+	runValidatorsOnSuccess,
+} from "../safety/safe-mode.js";
+import type { ValidatorRunResult } from "../safety/safe-mode.js";
 /**
  * Expand ~ to home directory
  */
@@ -49,6 +60,7 @@ export const writeTool = createZodTool({
 	schema: writeSchema,
 	async execute(_toolCallId, { path, content, previewDiff, backup }, signal) {
 		const absolutePath = resolvePath(expandPath(path));
+		requirePlanCheck("write");
 		const dir = dirname(absolutePath);
 
 		return new Promise<{
@@ -60,6 +72,7 @@ export const writeTool = createZodTool({
 						bytesWritten: number;
 						diff?: string;
 						backupPath?: string;
+						validators?: ValidatorRunResult[];
 				  };
 		}>((resolve, reject) => {
 			if (signal?.aborted) {
@@ -143,6 +156,20 @@ export const writeTool = createZodTool({
 							? generateDiffString(previousContent, content)
 							: undefined;
 
+					let validatorSummaries;
+					try {
+						validatorSummaries = await runValidatorsOnSuccess([absolutePath]);
+					} catch (validatorError) {
+						if (movedToBackup && backupPath) {
+							await rename(backupPath, absolutePath);
+						} else if (!previousExists) {
+							await rm(absolutePath, { force: true });
+						} else if (previousContent !== null) {
+							await writeFile(absolutePath, previousContent, "utf-8");
+						}
+						throw validatorError;
+					}
+
 					const summaryLines: string[] = [];
 					summaryLines.push(
 						`Successfully wrote ${content.length} bytes to ${path}`,
@@ -171,6 +198,7 @@ export const writeTool = createZodTool({
 							bytesWritten: Buffer.byteLength(content, "utf-8"),
 							diff,
 							backupPath,
+							validators: validatorSummaries,
 						},
 					});
 				} catch (error: unknown) {
