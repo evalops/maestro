@@ -40,6 +40,7 @@ export interface LspServerConfig {
 }
 
 let servers: LspServerConfig[] = [];
+let defaultRootResolver: RootResolver | undefined;
 const clients: LspClientHandle[] = [];
 const spawning = new Map<string, Promise<LspClientHandle | undefined>>();
 const brokenServers = new Set<string>();
@@ -100,7 +101,10 @@ async function ensureClientsForFile(file: string) {
 	const matches = servers.filter((srv) => srv.extensions.includes(ext));
 	const handles: LspClientHandle[] = [];
 	for (const server of matches) {
-		const root = (await server.rootResolver?.(absolute)) ?? process.cwd();
+		const root =
+			(await server.rootResolver?.(absolute)) ??
+			defaultRootResolver?.(absolute) ??
+			process.cwd();
 		const key = `${server.id}:${root}`;
 		if (brokenServers.has(key)) continue;
 		const existing = clients.find((c) => c.id === server.id && c.root === root);
@@ -198,4 +202,10 @@ function pathToUri(file: string) {
 
 function uriToPath(uri: string) {
 	return uri.replace(/^file:\/\//, "");
+}
+
+export type RootResolver = (file: string) => Promise<string | undefined>;
+
+export function configureRootResolver(resolver: RootResolver) {
+	defaultRootResolver = resolver;
 }

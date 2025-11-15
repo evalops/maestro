@@ -1,6 +1,7 @@
 import { exec } from "node:child_process";
 import type { ExecException } from "node:child_process";
 import { promisify } from "node:util";
+import type { LspDiagnostic } from "../lsp/index.js";
 
 const execAsync = promisify(exec);
 
@@ -12,6 +13,7 @@ type SafeModeState = {
 	enabled: boolean;
 	requirePlan: boolean;
 	validators: string[];
+	lspBlockingSeverity: number;
 	planSatisfied: boolean;
 };
 
@@ -37,6 +39,7 @@ const state: SafeModeState = {
 	enabled: false,
 	requirePlan: false,
 	validators: [],
+	lspBlockingSeverity: 1,
 	planSatisfied: false,
 };
 
@@ -50,6 +53,9 @@ export function configureSafeMode(force = false): void {
 	state.enabled = process.env[SAFE_MODE_ENV] === "1";
 	state.requirePlan = false;
 	state.validators = [];
+	state.lspBlockingSeverity = process.env.COMPOSER_SAFE_LSP_SEVERITY
+		? Number(process.env.COMPOSER_SAFE_LSP_SEVERITY)
+		: 1;
 	state.planSatisfied = false;
 	if (!state.enabled) {
 		return;
@@ -82,6 +88,13 @@ export function requirePlanCheck(toolName: string): void {
 
 type ExecError = ExecException & { stdout?: string; stderr?: string };
 
+type BlockingDiagnostic = {
+	file: string;
+	message: string;
+	range?: LspDiagnostic["range"];
+	severity?: number;
+};
+
 function isExecError(error: unknown): error is ExecError {
 	return (
 		typeof error === "object" &&
@@ -93,11 +106,31 @@ function isExecError(error: unknown): error is ExecError {
 
 export async function runValidatorsOnSuccess(
 	paths: string[],
+	lspDiagnostics?: Record<string, LspDiagnostic[]>,
 ): Promise<ValidatorRunResult[]> {
-	if (!state.enabled || state.validators.length === 0) {
+	if (!state.enabled) {
 		return [];
 	}
 	const summaries: ValidatorRunResult[] = [];
+	if (lspDiagnostics) {
+		const blocking = findBlockingDiagnostics(lspDiagnostics);
+		if (blocking.length > 0) {
+			const commandLabel = "lsp-diagnostics";
+			throw new ValidatorError({
+				command: commandLabel,
+				stdout: blocking
+					.map(
+						(entry) =>
+							`${entry.file}:${entry.range?.start.line ?? 0}:${entry.range?.start.character ?? 0} ${entry.message}`,
+					)
+					.join("\n"),
+				stderr: "",
+			});
+		}
+	}
+	if (state.validators.length === 0) {
+		return summaries;
+	}
 	const env = {
 		...process.env,
 		COMPOSER_SAFE_CHANGED_PATHS: paths.join("::"),
@@ -122,6 +155,26 @@ export async function runValidatorsOnSuccess(
 		}
 	}
 	return summaries;
+}
+
+function findBlockingDiagnostics(
+	diagnostics: Record<string, LspDiagnostic[]>,
+): BlockingDiagnostic[] {
+	const blocking: BlockingDiagnostic[] = [];
+	for (const [file, entries] of Object.entries(diagnostics)) {
+		for (const diag of entries) {
+			const severity = diag.severity ?? Number.POSITIVE_INFINITY;
+			if (severity <= state.lspBlockingSeverity) {
+				blocking.push({
+					file,
+					message: diag.message,
+					range: diag.range,
+					severity: diag.severity,
+				});
+			}
+		}
+	}
+	return blocking;
 }
 
 export function resetSafeModeForTests(): void {

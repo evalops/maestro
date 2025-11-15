@@ -46,24 +46,24 @@ describe("Safe mode", () => {
 	it("blocks write/edit until todo plan recorded", async () => {
 		setSafeModeEnv();
 
-	await expect(
-		writeTool.execute("write-test", {
-			path: join(TEST_DIR, "file.txt"),
-			content: "hello",
-		}),
-	).rejects.toThrow(/requires a plan/);
+		await expect(
+			writeTool.execute("write-test", {
+				path: join(TEST_DIR, "file.txt"),
+				content: "hello",
+			}),
+		).rejects.toThrow(/requires a plan/);
 
 		await todoTool.execute("todo-plan", {
 			goal: "Safe mode test",
 			items: [{ content: "plan" }],
 		});
 
-	await expect(
-		writeTool.execute("write-test", {
-			path: join(TEST_DIR, "file.txt"),
-			content: "hello",
-		}),
-	).resolves.toBeDefined();
+		await expect(
+			writeTool.execute("write-test", {
+				path: join(TEST_DIR, "file.txt"),
+				content: "hello",
+			}),
+		).resolves.toBeDefined();
 
 		await expect(
 			editTool.execute("edit-test", {

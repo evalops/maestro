@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
-import { constants, access } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import type { LspServerConfig } from "./index.js";
+import { resolve } from "node:path";
+import type { LspServerConfig, RootResolver } from "./index.js";
 
 const DEFAULT_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 
@@ -24,7 +23,9 @@ async function ensureTsserver(): Promise<string | undefined> {
 	return undefined;
 }
 
-export async function createDefaultServers(): Promise<LspServerConfig[]> {
+export async function createDefaultServers(
+	rootResolver?: RootResolver,
+): Promise<LspServerConfig[]> {
 	const servers: LspServerConfig[] = [];
 	const tsServer = await ensureTsserver();
 	if (tsServer) {
@@ -34,7 +35,7 @@ export async function createDefaultServers(): Promise<LspServerConfig[]> {
 			command: tsServer,
 			args: ["--stdio"],
 			extensions: DEFAULT_EXTENSIONS,
-			rootResolver: async (file) => dirname(file),
+			rootResolver,
 		});
 	}
 	return servers;
