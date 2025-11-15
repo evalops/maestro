@@ -5,6 +5,21 @@ import { spawnLspClient } from "./spawn.js";
 import type { LspServerConfig, RootResolver } from "./types.js";
 import { sleep } from "./utils.js";
 
+const DEFAULT_ROOT_RESOLVER_TIMEOUT_MS = 2000;
+
+interface LspManagerOptions {
+	rootResolverTimeoutMs?: number;
+}
+
+export class RootResolverTimeoutError extends Error {
+	constructor(
+		public readonly label: string,
+		public readonly timeoutMs: number,
+	) {
+		super(`root resolver ${label} timed out after ${timeoutMs}ms`);
+	}
+}
+
 interface BrokenServerEntry {
 	time: number;
 	attempts: number;
@@ -16,6 +31,15 @@ export class LspClientManager extends EventEmitter {
 	private brokenServers = new Map<string, BrokenServerEntry>();
 	private servers: LspServerConfig[] = [];
 	private defaultRootResolver?: RootResolver;
+	private readonly rootResolverTimeoutMs: number;
+
+	constructor(options?: LspManagerOptions) {
+		super();
+		this.rootResolverTimeoutMs =
+			this.normalizeTimeout(options?.rootResolverTimeoutMs) ??
+			this.normalizeTimeout(process.env.COMPOSER_LSP_ROOT_TIMEOUT_MS) ??
+			DEFAULT_ROOT_RESOLVER_TIMEOUT_MS;
+	}
 
 	async configureServers(configs: LspServerConfig[]): Promise<void> {
 		this.servers = configs;
@@ -36,12 +60,16 @@ export class LspClientManager extends EventEmitter {
 		const clients: LspClient[] = [];
 
 		for (const server of matchingServers) {
-			const resolvedRoot = server.rootResolver
-				? await server.rootResolver(absolute)
-				: undefined;
-			const defaultRoot = this.defaultRootResolver
-				? await this.defaultRootResolver(absolute)
-				: undefined;
+			const resolvedRoot = await this.resolveRootSafe(
+				server.rootResolver,
+				absolute,
+				`server:${server.id}`,
+			);
+			const defaultRoot = await this.resolveRootSafe(
+				this.defaultRootResolver,
+				absolute,
+				"default",
+			);
 			const root = resolvedRoot ?? defaultRoot ?? process.cwd();
 
 			const key = this.getKey(server.id, root);
@@ -158,6 +186,46 @@ export class LspClientManager extends EventEmitter {
 
 	private getKey(serverId: string, root: string): string {
 		return `${serverId}:${root}`;
+	}
+
+	private normalizeTimeout(value?: number | string): number | undefined {
+		if (value === undefined) {
+			return undefined;
+		}
+		const numeric =
+			typeof value === "number" ? value : Number.parseInt(String(value), 10);
+		return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
+	}
+
+	public async resolveRootSafe(
+		resolver: RootResolver | undefined,
+		file: string,
+		label: string,
+	): Promise<string | undefined> {
+		if (!resolver) {
+			return undefined;
+		}
+
+		const timeoutPromise = (async () => {
+			await sleep(this.rootResolverTimeoutMs);
+			throw new RootResolverTimeoutError(label, this.rootResolverTimeoutMs);
+		})();
+
+		const resolverPromise = Promise.resolve().then(() => resolver(file));
+
+		try {
+			const result = await Promise.race([resolverPromise, timeoutPromise]);
+			return result ?? undefined;
+		} catch (error) {
+			if (error instanceof RootResolverTimeoutError) {
+				console.warn(
+					`[lsp] root resolver ${label} timed out after ${error.timeoutMs}ms`,
+				);
+			} else {
+				console.warn(`[lsp] root resolver ${label} failed:`, error);
+			}
+			return undefined;
+		}
 	}
 }
 

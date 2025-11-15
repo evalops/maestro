@@ -23,14 +23,18 @@ const projectRoot = join(__dirname, "..");
  * @property {string} [prompt]
  */
 
-export async function runMockAgentFlow({
-	steps,
-	buildSummary,
-	targetPath,
-	tools,
-	cleanup = false,
-	prompt,
-}: RunMockAgentOptions): Promise<void> {
+/**
+ * @param {RunMockAgentOptions} options
+ */
+export async function runMockAgentFlow(options) {
+	const {
+		steps,
+		buildSummary,
+		targetPath,
+		tools,
+		cleanup = false,
+		prompt,
+	} = options;
 	const agentModule = await import(
 		pathToFileURL(join(projectRoot, "dist", "agent", "index.js")).href,
 	);
