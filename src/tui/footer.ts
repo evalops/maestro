@@ -6,6 +6,7 @@ import {
 	calculateFooterStats,
 	formatPath,
 } from "./footer-utils.js";
+import { isSafeModeEnabled } from "../safety/safe-mode.js";
 
 /**
  * Footer component that shows pwd, token stats, and context usage
@@ -14,13 +15,16 @@ export class FooterComponent {
 	private state: AgentState;
 	private activeStage: string | null = null;
 	private statusHint: string | null = null;
+	private safeModeIcon: string | null = null;
 
 	constructor(state: AgentState) {
 		this.state = state;
+		this.safeModeIcon = isSafeModeEnabled() ? "🛡️" : null;
 	}
 
 	updateState(state: AgentState): void {
 		this.state = state;
+		this.safeModeIcon = isSafeModeEnabled() ? "🛡️" : null;
 	}
 
 	setStage(stage: string | null): void {
@@ -64,20 +68,26 @@ export class FooterComponent {
 	}
 
 	private renderPathLine(width: number): string {
-		const pathLine = chalk.gray(formatPath(process.cwd(), width));
-		if (!this.activeStage) {
+		let pathLine = chalk.gray(formatPath(process.cwd(), width));
+		const badges: string[] = [];
+		if (this.activeStage) {
+			badges.push(chalk.hex("#f1c0e8")(this.activeStage));
+		}
+		if (this.safeModeIcon) {
+			badges.push(chalk.hex("#f472b6")(this.safeModeIcon));
+		}
+		if (badges.length === 0) {
 			return pathLine;
 		}
-		const baseBadge = `● ${this.activeStage}`;
+		const suffix = badges.join("  ");
 		const available = Math.max(0, width - visibleWidth(pathLine) - 2);
 		if (available <= 0) {
 			return pathLine;
 		}
-		const trimmedBadge = this.truncateToWidth(baseBadge, available);
-		if (!trimmedBadge) {
+		const trimmedSuffix = this.truncateToWidth(suffix, available);
+		if (!trimmedSuffix) {
 			return pathLine;
 		}
-		const badge = chalk.hex("#f1c0e8")(trimmedBadge);
-		return `${pathLine}  ${badge}`;
+		return `${pathLine}  ${trimmedSuffix}`;
 	}
 }
