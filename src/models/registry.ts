@@ -132,14 +132,48 @@ function loadConfig(): CustomModelConfig {
 	}
 }
 
+function normalizeBaseUrl(baseUrl: string, providerId: string, api?: Api): string {
+	let normalized = baseUrl;
+	
+	// Anthropic direct API
+	if ((providerId === "anthropic" || api === "anthropic-messages") && 
+	    normalized.includes("api.anthropic.com") && 
+	    !normalized.includes("/v1/messages")) {
+		normalized = normalized.replace(/\/$/, "") + "/v1/messages";
+	}
+	
+	// AWS Bedrock
+	if (providerId.includes("bedrock") || providerId.includes("aws")) {
+		if (normalized.includes("bedrock") && 
+		    normalized.includes("amazonaws.com") &&
+		    !normalized.includes("bedrock-runtime")) {
+			normalized = normalized.replace("bedrock.", "bedrock-runtime.");
+		}
+	}
+	
+	// Google Vertex AI
+	if (providerId.includes("vertex") || providerId.includes("google")) {
+		if (normalized.includes("aiplatform.googleapis.com") && 
+		    !normalized.includes("/v1/")) {
+			normalized = normalized.replace(/\/$/, "");
+		}
+	}
+	
+	return normalized;
+}
+
 function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 	const api = model.api ?? provider.api;
-	const baseUrl = model.baseUrl ?? provider.baseUrl;
+	let baseUrl = model.baseUrl ?? provider.baseUrl;
 	if (!api || !baseUrl) {
 		throw new Error(
 			`Model ${provider.id}/${model.id} is missing api or baseUrl. Specify them either on the model or provider entry in ${configPath()}.`,
 		);
 	}
+	
+	// Normalize the base URL
+	baseUrl = normalizeBaseUrl(baseUrl, provider.id, api);
+	
 	return {
 		id: model.id,
 		name: model.name,
@@ -320,40 +354,13 @@ function buildFactoryData(): {
 				continue;
 			}
 			
-			// Normalize provider base URLs to include proper API endpoints
-			let normalizedBaseUrl = entry.base_url;
-			
-			// Anthropic direct API
-			if (entry.provider === "anthropic" && 
-			    normalizedBaseUrl.includes("api.anthropic.com") && 
-			    !normalizedBaseUrl.includes("/v1/messages")) {
-				normalizedBaseUrl = normalizedBaseUrl.replace(/\/$/, "") + "/v1/messages";
-			}
-			
-			// AWS Bedrock (uses InvokeModel API, not direct HTTP endpoint)
-			// Format: https://bedrock-runtime.{region}.amazonaws.com
-			// Note: Bedrock requires AWS SDK, not direct fetch
-			if (entry.provider === "bedrock" || entry.provider === "aws-bedrock") {
-				if (normalizedBaseUrl.includes("bedrock") && 
-				    normalizedBaseUrl.includes("amazonaws.com") &&
-				    !normalizedBaseUrl.includes("bedrock-runtime")) {
-					// Ensure it's bedrock-runtime, not just bedrock
-					normalizedBaseUrl = normalizedBaseUrl.replace("bedrock.", "bedrock-runtime.");
-				}
-			}
-			
-			// Google Vertex AI
-			// Format: https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models/{model}:rawPredict
-			// This is complex and requires project/location info, so we just validate the base domain
-			if (entry.provider === "vertex" || entry.provider === "google-vertex") {
-				if (normalizedBaseUrl.includes("aiplatform.googleapis.com") && 
-				    !normalizedBaseUrl.includes("/v1/")) {
-					// User needs to provide full path for Vertex AI
-					// We can't auto-complete without project ID and location
-					// So we'll just ensure it ends properly
-					normalizedBaseUrl = normalizedBaseUrl.replace(/\/$/, "");
-				}
-			}
+			// Normalize provider base URLs using shared function
+			const api = deriveProviderApi(entry.provider);
+			const normalizedBaseUrl = normalizeBaseUrl(
+				entry.base_url, 
+				entry.provider ?? "factory",
+				api
+			);
 			
 			const uniqueKey = `${entry.provider ?? "factory"}|${normalizedBaseUrl}|${entry.api_key ?? ""}`;
 			let provider = providerKeyMap.get(uniqueKey);
