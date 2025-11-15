@@ -235,6 +235,14 @@ List workspace files (filtered by an optional query) so you can quickly grab `@p
 /mention renderer
 ```
 
+### Command Enhancements
+
+Recent updates add richer behaviors to key commands:
+
+- `/config [section]` renders targeted summaries for `summary`, `sources`, `providers`, `env`, or `files` without re-running diagnostics manually.
+- `/cost` now supports `breakdown`, `clear`, and contextual help so you can jump from totals to provider/model splits or wipe the local cache.
+- `/stats` combines `/status` diagnostics with a `/cost today` snapshot for a quick health pulse.
+
 ## Editor Features
 
 The interactive input editor includes several productivity features:
@@ -524,6 +532,19 @@ You can also reference tool READMEs in your `AGENT.md` files to make them automa
 - Global: `~/.composer/agent/AGENT.md` - available in all sessions
 - Project-specific: `./AGENT.md` - available in this project
 
+## Development & Contributing
+
+Run the same validators the CLI uses internally before committing changes:
+
+```bash
+npm install            # one-time dependency install
+npx biome check .      # format + lint
+npm test               # Vitest suite (fast)
+npm run evals          # Optional: full EvalOps scenarios
+```
+
+All new slash commands or views should come with tests alongside their counterparts in `test/`. The eval runner keeps telemetry scenarios in sync with the Design Principles above, so use it before publishing larger features.
+
 ## Telemetry & Dashboards
 
 Composer ships with an optional telemetry layer so you can analyze tool usage and evaluation health without leaving your EvalOps dashboards. Telemetry is disabled by default.
@@ -540,33 +561,11 @@ The payloads capture tool name, success flag, execution duration, and any evalua
 
 ## Security (YOLO by default)
 
-This agent runs in full YOLO mode and assumes you know what you're doing. It has unrestricted access to your filesystem and can execute any command without permission checks or safety rails.
+In line with the Design Principles, Composer intentionally skips permission prompts, sandboxing, and heuristic “safety” passes—commands have the same power as your shell.
 
-**What this means:**
-- No permission prompts for file operations or commands
-- No pre-checking of bash commands for malicious content
-- Full filesystem access - can read, write, or delete anything
-- Can execute any command with your user privileges
+**Implications:** unrestricted filesystem access, arbitrary command execution, and plenty of prompt-injection surface area (e.g., via `curl`, file reads, or logs).
 
-**Why:**
-- Permission systems add massive friction while being easily circumvented
-- Pre-checking tools for "dangerous" patterns introduces latency, false positives, and is ineffective
-
-**Prompt injection risks:**
-- By default, Composer has no web search or fetch tool
-- However, it can use `curl` or read files from disk
-- Both provide ample surface area for prompt injection attacks
-- Malicious content in files or command outputs can influence behavior
-
-**Mitigations:**
-- Run Composer inside a container if you're uncomfortable with full access
-- Use a different tool if you need guardrails
-- Don't use Composer on systems with sensitive data you can't afford to lose
-- Fork Composer and add all of the above
-
-This is how I want it to work and I'm not likely to change my stance on this.
-
-Use at your own risk.
+**Mitigations (if you need them):** run inside a VM/container, keep sensitive repos elsewhere, or fork the CLI and add the guardrails you prefer. Otherwise, embrace the YOLO mode and proceed at your own risk.
 
 ## Sub-Agents
 
