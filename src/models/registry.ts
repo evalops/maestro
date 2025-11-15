@@ -14,6 +14,17 @@ const COST_DEFAULT = {
 
 const headersSchema = z.record(z.string()).optional();
 
+const baseUrlSchema = z
+	.string()
+	.url("Base URL must be a valid URL")
+	.refine(
+		(url) => {
+			// Warn about common mistakes but don't fail (we auto-normalize)
+			return true;
+		},
+		{ message: "Base URL will be auto-normalized if incomplete" }
+	);
+
 const modelSchema = z.object({
 	id: z.string().min(1),
 	name: z.string().min(1),
@@ -25,7 +36,7 @@ const modelSchema = z.object({
 			"google-generative-ai",
 		])
 		.optional(),
-	baseUrl: z.string().url().optional(),
+	baseUrl: baseUrlSchema.optional(),
 	reasoning: z.boolean().optional(),
 	input: z.array(z.enum(["text", "image"])).optional(),
 	cost: z
@@ -45,7 +56,7 @@ const providerSchema = z.object({
 	id: z.string().min(1),
 	name: z.string().min(1),
 	api: modelSchema.shape.api.optional(),
-	baseUrl: modelSchema.shape.baseUrl,
+	baseUrl: baseUrlSchema,
 	apiKeyEnv: z.string().min(1).optional(),
 	apiKey: z.string().min(1).optional(),
 	models: z.array(modelSchema).min(1),
@@ -132,8 +143,43 @@ function loadConfig(): CustomModelConfig {
 	}
 }
 
+function validateBaseUrl(baseUrl: string, providerId: string, api?: Api): void {
+	// Validate common provider URL patterns
+	if (providerId === "anthropic" || api === "anthropic-messages") {
+		if (baseUrl.includes("api.anthropic.com")) {
+			if (!baseUrl.includes("/v1/messages") && !baseUrl.includes("/v1/complete")) {
+				console.warn(
+					`[Config Warning] Anthropic base URL should end with /v1/messages. ` +
+					`Got: ${baseUrl}. Auto-normalizing to include /v1/messages.`
+				);
+			}
+		}
+	}
+	
+	if (providerId.includes("bedrock") || providerId.includes("aws")) {
+		if (baseUrl.includes("bedrock.") && !baseUrl.includes("bedrock-runtime.")) {
+			console.warn(
+				`[Config Warning] AWS Bedrock URL should use 'bedrock-runtime', not 'bedrock'. ` +
+				`Got: ${baseUrl}. Auto-normalizing to bedrock-runtime.`
+			);
+		}
+	}
+	
+	if (providerId.includes("vertex") || providerId.includes("google")) {
+		if (baseUrl.includes("aiplatform.googleapis.com") && !baseUrl.includes("/v1/")) {
+			console.warn(
+				`[Config Warning] Google Vertex AI URLs should include full path with /v1/. ` +
+				`Got: ${baseUrl}. You may need to specify the full endpoint including project and location.`
+			);
+		}
+	}
+}
+
 function normalizeBaseUrl(baseUrl: string, providerId: string, api?: Api): string {
 	let normalized = baseUrl;
+	
+	// Validate first (logs warnings)
+	validateBaseUrl(baseUrl, providerId, api);
 	
 	// Anthropic direct API
 	if ((providerId === "anthropic" || api === "anthropic-messages") && 
@@ -162,12 +208,31 @@ function normalizeBaseUrl(baseUrl: string, providerId: string, api?: Api): strin
 	return normalized;
 }
 
+function getExpectedUrlFormat(providerId: string, api?: Api): string {
+	if (providerId === "anthropic" || api === "anthropic-messages") {
+		return "https://api.anthropic.com/v1/messages";
+	}
+	if (providerId.includes("bedrock") || providerId.includes("aws")) {
+		return "https://bedrock-runtime.{region}.amazonaws.com (e.g., bedrock-runtime.us-east-1.amazonaws.com)";
+	}
+	if (providerId.includes("vertex") || providerId.includes("google")) {
+		return "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models/{model}:rawPredict";
+	}
+	if (providerId === "openai") {
+		return "https://api.openai.com/v1/chat/completions";
+	}
+	return "A valid API endpoint URL";
+}
+
 function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 	const api = model.api ?? provider.api;
 	let baseUrl = model.baseUrl ?? provider.baseUrl;
 	if (!api || !baseUrl) {
+		const expectedFormat = getExpectedUrlFormat(provider.id, api);
 		throw new Error(
-			`Model ${provider.id}/${model.id} is missing api or baseUrl. Specify them either on the model or provider entry in ${configPath()}.`,
+			`Model ${provider.id}/${model.id} is missing api or baseUrl.\n` +
+			`Expected format: ${expectedFormat}\n` +
+			`Specify them either on the model or provider entry in ${configPath()}.`,
 		);
 	}
 	
