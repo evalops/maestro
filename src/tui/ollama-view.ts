@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import chalk from "chalk";
+import type { RegisteredModel } from "../models/registry.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 
@@ -8,6 +9,8 @@ interface OllamaViewOptions {
 	ui: TUI;
 	showInfoMessage: (message: string) => void;
 	showErrorMessage: (message: string) => void;
+	getRegisteredModels: () => RegisteredModel[];
+	onUseModel: (model: RegisteredModel) => void;
 }
 
 interface OllamaCommandResult {
@@ -18,6 +21,13 @@ interface OllamaCommandResult {
 }
 
 export class OllamaView {
+	private static readonly POPULAR_MODELS = [
+		"llama3.2",
+		"codellama",
+		"qwen2.5",
+		"phi3",
+	];
+
 	constructor(private readonly options: OllamaViewOptions) {}
 
 	handleOllamaCommand(rawInput: string): void {
@@ -40,10 +50,33 @@ export class OllamaView {
 				return;
 			case "pull":
 				if (rest.length === 0) {
-					this.options.showInfoMessage("Usage: /ollama pull <model>");
+					this.options.showInfoMessage(
+						`Usage: /ollama pull <model>\nPopular models: ${OllamaView.POPULAR_MODELS.join(
+							", ",
+						)}`,
+					);
 					return;
 				}
 				this.runAndRender(`Pulling ${rest.join(" ")}`, ["pull", ...rest]);
+				return;
+			case "show":
+				if (rest.length === 0) {
+					this.options.showInfoMessage("Usage: /ollama show <model>");
+					return;
+				}
+				this.runAndRender(`Model details for ${rest.join(" ")}`, [
+					"show",
+					...rest,
+				]);
+				return;
+			case "use":
+				if (rest.length === 0) {
+					this.options.showInfoMessage(
+						"Usage: /ollama use <model> (accepts provider/model)",
+					);
+					return;
+				}
+				this.handleUseCommand(rest.join(" "));
 				return;
 			default:
 				this.options.showInfoMessage(
@@ -111,8 +144,54 @@ export class OllamaView {
 		const message = `${chalk.bold("Ollama control plane")}
 Use /ollama list to view installed models.
 Use /ollama pull <model> to download one (e.g. /ollama pull llama3).
-Use /ollama ps to see currently running models.`;
+Use /ollama ps to see currently running models.
+Use /ollama show <model> to inspect metadata.
+Use /ollama use <model> to switch Composer to a local model.`;
 		this.renderText(message);
+	}
+
+	private handleUseCommand(specifier: string): void {
+		const match = this.resolveLocalModel(specifier);
+		if (!match) {
+			this.options.showInfoMessage(
+				`Could not find a local model matching "${specifier}". Ensure it's configured via /config or /ollama list.`,
+			);
+			return;
+		}
+		this.options.onUseModel(match);
+		const message = `${chalk.bold("Model switched")}
+Now using ${match.id} (${match.providerName}).`;
+		this.renderText(message);
+	}
+
+	private resolveLocalModel(specifier: string): RegisteredModel | undefined {
+		const normalized = specifier.toLowerCase();
+		const models = this.options
+			.getRegisteredModels()
+			.filter((model) => model.isLocal);
+		const exactMatch = models.find(
+			(model) => `${model.provider}/${model.id}`.toLowerCase() === normalized,
+		);
+		if (exactMatch) {
+			return exactMatch;
+		}
+		const shorthandMatches = models.filter((model) => {
+			const id = model.id.toLowerCase();
+			if (id === normalized) {
+				return true;
+			}
+			const tail = id.split("/").pop();
+			return tail === normalized;
+		});
+		if (shorthandMatches.length === 1) {
+			return shorthandMatches[0];
+		}
+		if (shorthandMatches.length > 1) {
+			this.options.showInfoMessage(
+				`Multiple matches for "${specifier}". Use provider/model format (e.g. ollama/${specifier}).`,
+			);
+		}
+		return undefined;
 	}
 
 	private renderText(body: string): void {

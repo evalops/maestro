@@ -351,6 +351,16 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			showErrorMessage: (message) => this.notificationView.showError(message),
+			getRegisteredModels: () => getRegisteredModels(),
+			onUseModel: (model) => {
+				this.agent.setModel(model);
+				this.sessionManager.saveModelChange(
+					`${model.provider}/${model.id}`,
+					toSessionModelMetadata(model),
+				);
+				this.notificationView.showToast(`Switched to ${model.id}`, "success");
+				this.ui.requestRender();
+			},
 		});
 
 		const registry = buildCommandRegistry({

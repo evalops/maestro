@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RegisteredModel } from "../src/models/registry.js";
 import { Text } from "../src/tui-lib/components/text.js";
 import { Container, type TUI } from "../src/tui-lib/tui.js";
 import { OllamaView } from "../src/tui/ollama-view.js";
@@ -11,18 +12,61 @@ import { spawnSync } from "node:child_process";
 
 const mockSpawn = vi.mocked(spawnSync);
 
-const createView = () => {
+const LOCAL_MODELS: RegisteredModel[] = [
+	{
+		id: "ollama/llama3",
+		name: "llama3",
+		api: "openai-responses",
+		provider: "ollama",
+		providerName: "Ollama (local)",
+		baseUrl: "http://localhost:11434/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 8192,
+		source: "custom",
+		isLocal: true,
+	},
+	{
+		id: "local/codellama",
+		name: "codellama",
+		api: "openai-responses",
+		provider: "local",
+		providerName: "Local",
+		baseUrl: "http://localhost:11434/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 8192,
+		source: "custom",
+		isLocal: true,
+	},
+];
+
+const createView = (models: RegisteredModel[] = LOCAL_MODELS) => {
 	const container = new Container();
 	const requestRender = vi.fn();
 	const showInfoMessage = vi.fn();
 	const showErrorMessage = vi.fn();
+	const onUseModel = vi.fn();
 	const view = new OllamaView({
 		chatContainer: container,
 		ui: { requestRender } as unknown as TUI,
 		showInfoMessage,
 		showErrorMessage,
+		getRegisteredModels: () => models,
+		onUseModel,
 	});
-	return { container, requestRender, showInfoMessage, showErrorMessage, view };
+	return {
+		container,
+		requestRender,
+		showInfoMessage,
+		showErrorMessage,
+		view,
+		onUseModel,
+	};
 };
 
 describe("OllamaView", () => {
@@ -39,7 +83,7 @@ describe("OllamaView", () => {
 		);
 		const rendered = text?.render(120).join("\n") ?? "";
 		expect(rendered).toContain("/ollama list");
-		expect(rendered).toContain("/ollama pull");
+		expect(rendered).toContain("/ollama use");
 	});
 
 	it("runs ollama list and prints output", () => {
@@ -62,10 +106,38 @@ describe("OllamaView", () => {
 		expect(rendered).toContain("llama3");
 	});
 
-	it("surfaces errors when model argument is missing for pull", () => {
+	it("suggests popular models when pull target missing", () => {
 		const { showInfoMessage, view } = createView();
 		view.handleOllamaCommand("/ollama pull");
-		expect(showInfoMessage).toHaveBeenCalledWith("Usage: /ollama pull <model>");
+		expect(showInfoMessage).toHaveBeenCalledWith(
+			expect.stringContaining("Popular models"),
+		);
+	});
+
+	it("supports ollama show", () => {
+		const { view } = createView();
+		view.handleOllamaCommand("/ollama show llama3");
+		expect(mockSpawn).toHaveBeenCalledWith(
+			"ollama",
+			["show", "llama3"],
+			expect.any(Object),
+		);
+	});
+
+	it("switches to a local model via use command", () => {
+		const { onUseModel, view } = createView();
+		view.handleOllamaCommand("/ollama use llama3");
+		expect(onUseModel).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "ollama/llama3" }),
+		);
+	});
+
+	it("warns when matching local model is not found", () => {
+		const { showInfoMessage, view } = createView([]);
+		view.handleOllamaCommand("/ollama use llama3");
+		expect(showInfoMessage).toHaveBeenCalledWith(
+			expect.stringContaining("Could not find a local model"),
+		);
 	});
 
 	it("alerts when Ollama CLI is missing", () => {
