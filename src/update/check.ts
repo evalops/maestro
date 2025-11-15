@@ -54,12 +54,12 @@ const parsePreReleaseSegments = (version: string): string[] => {
 };
 
 const isNumericIdentifier = (segment: string): boolean => {
-        return /^[0-9]+$/.test(segment);
+	return /^[0-9]+$/.test(segment);
 };
 
 const comparePreRelease = (
-        aSegments: string[],
-        bSegments: string[],
+	aSegments: string[],
+	bSegments: string[],
 ): number => {
 	if (aSegments.length === 0 && bSegments.length === 0) {
 		return 0;
@@ -83,14 +83,14 @@ const comparePreRelease = (
 		if (a === b) {
 			continue;
 		}
-                const aIsNum = isNumericIdentifier(a);
-                const bIsNum = isNumericIdentifier(b);
-                if (aIsNum && bIsNum) {
-                        const aNum = Number.parseInt(a, 10);
-                        const bNum = Number.parseInt(b, 10);
-                        if (aNum < bNum) {
-                                return -1;
-                        }
+		const aIsNum = isNumericIdentifier(a);
+		const bIsNum = isNumericIdentifier(b);
+		if (aIsNum && bIsNum) {
+			const aNum = Number.parseInt(a, 10);
+			const bNum = Number.parseInt(b, 10);
+			if (aNum < bNum) {
+				return -1;
+			}
 			if (aNum > bNum) {
 				return 1;
 			}

@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -27,8 +27,7 @@ describe("Composer Tools", () => {
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
-		testDir = join(tmpdir(), `composer-test-${Date.now()}`);
-		mkdirSync(testDir, { recursive: true });
+		testDir = mkdtempSync(join(tmpdir(), "composer-test-"));
 		process.env.COMPOSER_TODO_FILE = join(testDir, "todos.json");
 	});
 
