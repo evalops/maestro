@@ -13,6 +13,7 @@ interface SessionSwitcherViewOptions {
 	ui: TUI;
 	showInfoMessage: (text: string) => void;
 	loadSession: (session: SessionItem) => boolean;
+	summarizeSession: (session: SessionItem) => Promise<void>;
 }
 
 export class SessionSwitcherView {
@@ -40,6 +41,11 @@ export class SessionSwitcherView {
 				this.options.sessionDataProvider.toggleFavorite(session.path, favorite);
 				const label = favorite ? "Favorited" : "Unfavorited";
 				this.options.showInfoMessage(`${label} ${session.summary}`);
+			},
+			onSummarize: async (session) => {
+				await this.options.summarizeSession(session);
+				this.switcher?.refresh(true);
+				this.options.ui.requestRender();
 			},
 		});
 		this.options.editorContainer.clear();

@@ -239,8 +239,10 @@ export class Agent {
 		history: Message[],
 		prompt: string,
 		systemPrompt = "",
+		modelOverride?: Model<any>,
 	): Promise<AssistantMessage> {
-		if (!this._state.model) {
+		const summaryModel = modelOverride ?? this._state.model;
+		if (!summaryModel) {
 			throw new Error("No model configured for summarization");
 		}
 
@@ -254,7 +256,7 @@ export class Agent {
 		const runConfig = {
 			systemPrompt,
 			tools: [],
-			model: this._state.model,
+			model: summaryModel,
 			reasoning: undefined,
 		};
 

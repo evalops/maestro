@@ -26,6 +26,7 @@ interface SessionViewOptions {
 	ui: TUI;
 	sessionDataProvider: SessionDataProvider;
 	openSessionSwitcher: () => void;
+	summarizeSession: (session: SessionItem) => Promise<void>;
 	applyLoadedSessionContext: () => void;
 	showInfoMessage: (message: string) => void;
 	onSessionLoaded: (session: { id: string; messageCount: number }) => void;
@@ -261,8 +262,23 @@ ${muted("Use /sessions load <number> to switch.")}`;
 			return;
 		}
 
+		if (parts[1] === "summarize" && parts.length >= 3) {
+			const index = Number.parseInt(parts[2], 10);
+			if (!Number.isFinite(index) || index <= 0) {
+				this.options.showInfoMessage("Usage: /sessions summarize <number>");
+				return;
+			}
+			const target = sessions[index - 1];
+			if (!target) {
+				this.options.showInfoMessage(`No session #${index} found.`);
+				return;
+			}
+			void this.options.summarizeSession(target);
+			return;
+		}
+
 		this.options.showInfoMessage(
-			"Usage: /sessions [list|load <number>|favorite <number>|unfavorite <number>]",
+			"Usage: /sessions [list|load <number>|favorite <number>|unfavorite <number>|summarize <number>]",
 		);
 	}
 }

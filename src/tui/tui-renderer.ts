@@ -59,6 +59,7 @@ import { RunCommandView } from "./run-command-view.js";
 import { RunController } from "./run-controller.js";
 import { SessionContext } from "./session-context.js";
 import { SessionDataProvider } from "./session-data-provider.js";
+import { SessionSummaryController } from "./session-summary-controller.js";
 import { SessionSwitcherView } from "./session-switcher-view.js";
 import { SessionView } from "./session-view.js";
 import { StreamingView } from "./streaming-view.js";
@@ -110,6 +111,7 @@ export class TuiRenderer {
 	private planView: PlanView;
 	private sessionView: SessionView;
 	private sessionDataProvider: SessionDataProvider;
+	private sessionSummaryController!: SessionSummaryController;
 	private sessionSwitcherView!: SessionSwitcherView;
 	private importExportView: ImportExportView;
 	private runCommandView: RunCommandView;
@@ -202,6 +204,13 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.sessionDataProvider = new SessionDataProvider(this.sessionManager);
+		this.sessionSummaryController = new SessionSummaryController({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			sessionDataProvider: this.sessionDataProvider,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+		});
 		this.sessionView = new SessionView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -209,6 +218,8 @@ export class TuiRenderer {
 			ui: this.ui,
 			sessionDataProvider: this.sessionDataProvider,
 			openSessionSwitcher: () => this.sessionSwitcherView.show(),
+			summarizeSession: (session) =>
+				this.sessionSummaryController.summarize(session),
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			onSessionLoaded: (sessionInfo) => {
@@ -227,6 +238,8 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			loadSession: (session) => this.sessionView.loadSessionFromItem(session),
+			summarizeSession: (session) =>
+				this.sessionSummaryController.summarize(session),
 		});
 		this.diagnosticsView = new DiagnosticsView({
 			agent: this.agent,

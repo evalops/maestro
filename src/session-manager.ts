@@ -288,13 +288,16 @@ export class SessionManager {
 		appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
 	}
 
-	saveSessionSummary(summary: string): void {
-		if (!this.enabled || !this.sessionInitialized) return;
-		if (!summary.trim()) return;
-		this.appendSessionMetaEntry(this.sessionFile, { summary: summary.trim() });
+	saveSessionSummary(summary: string, sessionPath?: string): void {
+		const trimmed = summary.trim();
+		if (!trimmed) return;
+		const target = sessionPath ?? this.sessionFile;
+		if (!target || !existsSync(target)) return;
+		this.appendSessionMetaEntry(target, { summary: trimmed });
 	}
 
 	setSessionFavorite(sessionPath: string, favorite: boolean): void {
+		if (!sessionPath || !existsSync(sessionPath)) return;
 		this.appendSessionMetaEntry(sessionPath, { favorite });
 	}
 

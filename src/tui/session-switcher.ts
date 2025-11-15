@@ -10,6 +10,7 @@ interface SessionSwitcherComponentOptions {
 	onSelect: (session: SessionItem) => void;
 	onCancel: () => void;
 	onToggleFavorite: (session: SessionItem, favorite: boolean) => void;
+	onSummarize: (session: SessionItem) => Promise<void> | void;
 }
 
 export class SessionSwitcherComponent extends Container {
@@ -46,6 +47,10 @@ export class SessionSwitcherComponent extends Container {
 	private reloadSessions(force = false): void {
 		this.sessions = this.options.dataProvider.loadSessions(force);
 		this.applyFilters();
+	}
+
+	refresh(force = false): void {
+		this.reloadSessions(force);
 	}
 
 	private applyFilters(): void {
@@ -134,7 +139,7 @@ export class SessionSwitcherComponent extends Container {
 
 	private updateStatus(): void {
 		const hint =
-			"↑/↓ navigate • Enter select • Space star • Tab/F filter • ESC/Q cancel";
+			"↑/↓ navigate • Enter select • Space star • Tab/F filter • S summarize • ESC/Q cancel";
 		this.statusText.setText(chalk.gray(hint));
 	}
 
@@ -178,6 +183,12 @@ export class SessionSwitcherComponent extends Container {
 		}
 	}
 
+	private summarizeCurrent(): void {
+		const session = this.filteredSessions[this.selectedIndex];
+		if (!session) return;
+		void this.options.onSummarize(session);
+	}
+
 	private toggleFavoriteForSelection(): void {
 		const session = this.filteredSessions[this.selectedIndex];
 		if (!session) {
@@ -215,6 +226,10 @@ export class SessionSwitcherComponent extends Container {
 		}
 		if (keyData === " ") {
 			this.toggleFavoriteForSelection();
+			return;
+		}
+		if (keyData.toLowerCase() === "s") {
+			this.summarizeCurrent();
 			return;
 		}
 		if (keyData === "\x1b" || keyData.toLowerCase() === "q") {
