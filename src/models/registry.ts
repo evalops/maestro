@@ -70,6 +70,7 @@ const providerSchema = z.object({
 const configSchema = z.object({
 	$schema: z.string().optional(),
 	providers: z.array(providerSchema).default([]),
+	aliases: z.record(z.string()).optional().describe("Model aliases for convenience (e.g., 'fast': 'anthropic/claude-haiku')"),
 });
 
 export type CustomModelConfig = z.infer<typeof configSchema>;
@@ -1136,4 +1137,41 @@ export function inspectConfig(): ConfigInspection {
  */
 export function getConfigHierarchy(): string[] {
 	return getConfigPaths();
+}
+
+/**
+ * Resolve a model alias to provider/modelId
+ * Returns null if not an alias or alias not found
+ */
+export function resolveAlias(alias: string): { provider: string; modelId: string } | null {
+	const config = loadConfig();
+	
+	if (!config.aliases) {
+		return null;
+	}
+	
+	const target = config.aliases[alias];
+	if (!target) {
+		return null;
+	}
+	
+	// Parse format: "provider/modelId"
+	const parts = target.split("/");
+	if (parts.length !== 2) {
+		console.warn(`[Config Warning] Invalid alias target "${target}". Expected format: "provider/modelId"`);
+		return null;
+	}
+	
+	return {
+		provider: parts[0],
+		modelId: parts[1],
+	};
+}
+
+/**
+ * Get all defined aliases
+ */
+export function getAliases(): Record<string, string> {
+	const config = loadConfig();
+	return config.aliases || {};
 }

@@ -20,6 +20,7 @@ import {
 	getSupportedProviders,
 	reloadModelConfig,
 	resolveModel,
+	resolveAlias,
 } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
@@ -174,6 +175,74 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	// Handle config commands
+	if (parsed.command === "config") {
+		const { 
+			handleConfigValidate, 
+			handleConfigShow, 
+			handleConfigInit 
+		} = await import("./cli/commands/config.js");
+		
+		switch (parsed.subcommand) {
+			case "validate":
+				await handleConfigValidate();
+				return;
+			case "show":
+				await handleConfigShow();
+				return;
+			case "init":
+				await handleConfigInit();
+				return;
+			default:
+				console.error(chalk.red(`Unknown config subcommand: ${parsed.subcommand || "(none)"}`));
+				console.log(chalk.dim("\nAvailable commands:"));
+				console.log(chalk.dim("  composer config validate  - Validate configuration"));
+				console.log(chalk.dim("  composer config show      - Show configuration details"));
+				console.log(chalk.dim("  composer config init      - Initialize configuration"));
+				process.exit(1);
+		}
+	}
+
+	// Handle cost commands
+	if (parsed.command === "cost") {
+		const { 
+			handleCostSummary, 
+			handleCostClear, 
+			handleCostBreakdown 
+		} = await import("./cli/commands/cost.js");
+		
+		switch (parsed.subcommand) {
+			case "clear":
+				await handleCostClear();
+				return;
+			case "breakdown":
+				await handleCostBreakdown();
+				return;
+			case "today":
+			case "yesterday":
+			case "week":
+			case "month":
+			case "all":
+				await handleCostSummary(parsed.subcommand);
+				return;
+			case undefined:
+				// Default to today
+				await handleCostSummary("today");
+				return;
+			default:
+				console.error(chalk.red(`Unknown cost subcommand: ${parsed.subcommand}`));
+				console.log(chalk.dim("\nAvailable commands:"));
+				console.log(chalk.dim("  composer cost [today]     - Show today's costs (default)"));
+				console.log(chalk.dim("  composer cost yesterday   - Show yesterday's costs"));
+				console.log(chalk.dim("  composer cost week        - Show last 7 days"));
+				console.log(chalk.dim("  composer cost month       - Show last 30 days"));
+				console.log(chalk.dim("  composer cost all         - Show all time costs"));
+				console.log(chalk.dim("  composer cost breakdown   - Detailed breakdown"));
+				console.log(chalk.dim("  composer cost clear       - Clear usage data"));
+				process.exit(1);
+		}
+	}
+
 	// Setup session manager
 	const sessionManager = new SessionManager(
 		parsed.continue && !parsed.resume,
@@ -204,6 +273,16 @@ export async function main(args: string[]) {
 
 	let provider = parsed.provider;
 	let modelId = parsed.model;
+
+	// Check if model is an alias
+	if (modelId && !provider) {
+		const resolved = resolveAlias(modelId);
+		if (resolved) {
+			provider = resolved.provider;
+			modelId = resolved.modelId;
+			console.log(chalk.dim(`Using alias: ${parsed.model} → ${provider}/${modelId}`));
+		}
+	}
 
 	if (!provider || !modelId) {
 		const factoryDefault = getFactoryDefaultModelSelection();

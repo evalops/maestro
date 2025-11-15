@@ -13,6 +13,8 @@ export interface Args {
 	noSession?: boolean;
 	session?: string;
 	safeMode?: boolean;
+	command?: string;
+	subcommand?: string;
 	messages: string[];
 }
 
@@ -52,7 +54,16 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--safe-mode") {
 			result.safeMode = true;
 		} else if (!arg.startsWith("-")) {
-			result.messages.push(arg);
+			// Handle commands: "config", "models", "cost", etc.
+			if (!result.command && (arg === "config" || arg === "models" || arg === "cost")) {
+				result.command = arg;
+				// Check for subcommand
+				if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+					result.subcommand = args[++i];
+				}
+			} else {
+				result.messages.push(arg);
+			}
 		}
 	}
 
