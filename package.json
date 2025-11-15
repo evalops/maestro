@@ -1,7 +1,7 @@
 {
   "name": "@evalops/composer",
   "description": "Composer CLI by EvalOps with rich tooling for AI-assisted development",
-  "version": "0.7.7",
+  "version": "0.8.0",
   "type": "module",
   "bin": {
     "composer": "dist/cli.js"
@@ -51,7 +51,7 @@
     "string-width": "^8.1.0",
     "vscode-jsonrpc": "^8.2.0",
     "zod": "^3.23.8",
-    "zod-to-json-schema": "^3.23.0"
+    "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.3",

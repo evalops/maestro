@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { z } from "zod";
@@ -68,12 +68,56 @@ const providerSchema = z.object({
 });
 
 const configSchema = z.object({
+	$schema: z.string().optional(),
 	providers: z.array(providerSchema).default([]),
 });
 
 export type CustomModelConfig = z.infer<typeof configSchema>;
 export type CustomProvider = z.infer<typeof providerSchema>;
 export type CustomModel = z.infer<typeof modelSchema>;
+
+/**
+ * Deep merge two objects (simple implementation for configs)
+ */
+function mergeDeep<T>(target: T, source: Partial<T>): T {
+	const output = { ...target };
+	
+	if (isObject(target) && isObject(source)) {
+		Object.keys(source).forEach(key => {
+			const sourceValue = (source as any)[key];
+			const targetValue = (output as any)[key];
+			
+			if (isObject(sourceValue) && isObject(targetValue)) {
+				(output as any)[key] = mergeDeep(targetValue, sourceValue);
+			} else if (Array.isArray(sourceValue) && Array.isArray(targetValue)) {
+				// For arrays, concatenate and dedupe by id if objects have id property
+				const merged = [...targetValue];
+				for (const item of sourceValue) {
+					if (item && typeof item === 'object' && 'id' in item) {
+						const existingIndex = merged.findIndex((m: any) => m?.id === item.id);
+						if (existingIndex >= 0) {
+							// Merge existing item
+							merged[existingIndex] = mergeDeep(merged[existingIndex], item);
+						} else {
+							merged.push(item);
+						}
+					} else {
+						merged.push(item);
+					}
+				}
+				(output as any)[key] = merged;
+			} else {
+				(output as any)[key] = sourceValue;
+			}
+		});
+	}
+	
+	return output;
+}
+
+function isObject(item: unknown): item is Record<string, unknown> {
+	return item !== null && typeof item === 'object' && !Array.isArray(item);
+}
 
 export interface RegisteredModel extends Model<Api> {
 	providerName: string;
@@ -87,6 +131,39 @@ export interface ProviderMetadata {
 	apiKeyEnv?: string;
 	baseUrl?: string;
 }
+
+/**
+ * Config file paths in order of precedence (last wins)
+ */
+const getConfigPaths = (): string[] => {
+	const paths: string[] = [];
+	
+	// 1. Global config
+	paths.push(join(homedir(), ".composer", "config.json"));
+	
+	// 2. Project config (current directory)
+	const projectConfig = join(process.cwd(), ".composer", "config.json");
+	if (existsSync(projectConfig)) {
+		paths.push(projectConfig);
+	}
+	
+	// 3. Legacy path for backward compatibility
+	const legacyPath = join(homedir(), ".composer", "models.json");
+	if (existsSync(legacyPath)) {
+		paths.push(legacyPath);
+	}
+	
+	// 4. Environment variable override
+	if (process.env.COMPOSER_MODELS_FILE) {
+		paths.push(resolve(process.env.COMPOSER_MODELS_FILE));
+	}
+	
+	if (process.env.COMPOSER_CONFIG) {
+		paths.push(resolve(process.env.COMPOSER_CONFIG));
+	}
+	
+	return paths;
+};
 
 const configPath = (): string =>
 	process.env.COMPOSER_MODELS_FILE
@@ -315,21 +392,15 @@ function readJsonFile(filePath: string): string | null {
 	}
 }
 
-function loadConfig(): CustomModelConfig {
-	if (cachedConfig) {
-		return cachedConfig;
-	}
-	const path = configPath();
+/**
+ * Load and parse a single config file
+ */
+function loadConfigFile(path: string): CustomModelConfig | null {
 	const raw = existsSync(path) ? readJsonFile(path) : null;
 	if (!raw) {
-		const factoryFallback = ensureFactoryData();
-		if (factoryFallback) {
-			cachedConfig = factoryFallback.config;
-			return cachedConfig;
-		}
-		cachedConfig = { providers: [] };
-		return cachedConfig;
+		return null;
 	}
+	
 	try {
 		// Process file references first (before env vars, so file contents can have env vars)
 		const configDir = dirname(path);
@@ -344,16 +415,47 @@ function loadConfig(): CustomModelConfig {
 		// Validate with Zod schema
 		const parsed = configSchema.parse(data);
 		
-		// Apply provider-specific loaders
-		parsed.providers = parsed.providers.map(applyProviderLoader);
-		
-		cachedConfig = parsed;
 		return parsed;
 	} catch (error) {
 		throw new Error(
-			`Failed to parse custom model config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+			`Failed to parse config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
+}
+
+/**
+ * Load config with hierarchy (global -> project -> env)
+ */
+function loadConfig(): CustomModelConfig {
+	if (cachedConfig) {
+		return cachedConfig;
+	}
+	
+	// Try loading from hierarchy
+	const paths = getConfigPaths();
+	let mergedConfig: CustomModelConfig = { providers: [] };
+	
+	for (const path of paths) {
+		const config = loadConfigFile(path);
+		if (config) {
+			mergedConfig = mergeDeep(mergedConfig, config);
+		}
+	}
+	
+	// If no configs found, try Factory fallback
+	if (mergedConfig.providers.length === 0) {
+		const factoryFallback = ensureFactoryData();
+		if (factoryFallback) {
+			cachedConfig = factoryFallback.config;
+			return cachedConfig;
+		}
+	}
+	
+	// Apply provider-specific loaders
+	mergedConfig.providers = mergedConfig.providers.map(applyProviderLoader);
+	
+	cachedConfig = mergedConfig;
+	return mergedConfig;
 }
 
 function validateBaseUrl(baseUrl: string, providerId: string, api?: Api): void {
@@ -785,4 +887,253 @@ export function getFactoryConfigPath(): string {
 
 export function getFactorySettingsPath(): string {
 	return FACTORY_SETTINGS_PATH;
+}
+
+/**
+ * Validate config without loading it (for CLI validation command)
+ */
+export interface ConfigValidationResult {
+	valid: boolean;
+	errors: string[];
+	warnings: string[];
+	summary: {
+		configFiles: string[];
+		providers: number;
+		models: number;
+		fileReferences: string[];
+		envVars: string[];
+	};
+}
+
+export function validateConfig(): ConfigValidationResult {
+	const result: ConfigValidationResult = {
+		valid: true,
+		errors: [],
+		warnings: [],
+		summary: {
+			configFiles: [],
+			providers: 0,
+			models: 0,
+			fileReferences: [],
+			envVars: [],
+		},
+	};
+	
+	const paths = getConfigPaths();
+	
+	// Check each config file
+	for (const path of paths) {
+		if (!existsSync(path)) {
+			continue;
+		}
+		
+		result.summary.configFiles.push(path);
+		
+		try {
+			const raw = readFileSync(path, "utf-8");
+			
+			// Find file references
+			const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
+			for (const match of fileMatches) {
+				let filePath = match[1];
+				if (filePath.startsWith("~/")) {
+					filePath = join(homedir(), filePath.slice(2));
+				} else if (!filePath.startsWith("/")) {
+					filePath = join(dirname(path), filePath);
+				}
+				
+				result.summary.fileReferences.push(filePath);
+				
+				if (!existsSync(filePath)) {
+					result.errors.push(`File reference not found: ${filePath}`);
+					result.valid = false;
+				}
+			}
+			
+			// Find env vars
+			const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];
+			for (const match of envMatches) {
+				const varName = match[1];
+				result.summary.envVars.push(varName);
+				
+				if (!process.env[varName]) {
+					result.warnings.push(`Environment variable not set: ${varName}`);
+				}
+			}
+			
+			// Try parsing
+			const config = loadConfigFile(path);
+			if (config) {
+				result.summary.providers += config.providers.length;
+				for (const provider of config.providers) {
+					result.summary.models += provider.models.length;
+				}
+			}
+		} catch (error) {
+			result.errors.push(`Failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
+			result.valid = false;
+		}
+	}
+	
+	if (result.summary.configFiles.length === 0) {
+		result.warnings.push("No config files found");
+	}
+	
+	return result;
+}
+
+/**
+ * Get config info for inspection (for CLI show command)
+ */
+export interface ConfigInspection {
+	sources: Array<{
+		path: string;
+		exists: boolean;
+		loaded: boolean;
+	}>;
+	providers: Array<{
+		id: string;
+		name: string;
+		baseUrl: string;
+		apiKeySource?: string;
+		modelCount: number;
+		models: Array<{
+			id: string;
+			name: string;
+		}>;
+	}>;
+	fileReferences: Array<{
+		path: string;
+		exists: boolean;
+		size?: number;
+	}>;
+	envVars: Array<{
+		name: string;
+		set: boolean;
+		maskedValue?: string;
+	}>;
+}
+
+export function inspectConfig(): ConfigInspection {
+	const paths = getConfigPaths();
+	const config = loadConfig();
+	
+	const inspection: ConfigInspection = {
+		sources: [],
+		providers: [],
+		fileReferences: [],
+		envVars: [],
+	};
+	
+	// Track sources
+	for (const path of paths) {
+		const exists = existsSync(path);
+		inspection.sources.push({
+			path,
+			exists,
+			loaded: exists,
+		});
+	}
+	
+	// Track providers
+	for (const provider of config.providers) {
+		let apiKeySource: string | undefined;
+		
+		if (provider.apiKeyEnv) {
+			apiKeySource = `env:${provider.apiKeyEnv}`;
+		} else if (provider.apiKey) {
+			apiKeySource = "direct (hardcoded)";
+		}
+		
+		inspection.providers.push({
+			id: provider.id,
+			name: provider.name,
+			baseUrl: provider.baseUrl || "(auto-generated)",
+			apiKeySource,
+			modelCount: provider.models.length,
+			models: provider.models.map(m => ({
+				id: m.id,
+				name: m.name,
+			})),
+		});
+	}
+	
+	// Track file references (scan all config files)
+	for (const path of paths) {
+		if (!existsSync(path)) continue;
+		
+		const raw = readFileSync(path, "utf-8");
+		const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
+		
+		for (const match of fileMatches) {
+			let filePath = match[1];
+			if (filePath.startsWith("~/")) {
+				filePath = join(homedir(), filePath.slice(2));
+			} else if (!filePath.startsWith("/")) {
+				filePath = join(dirname(path), filePath);
+			}
+			
+			const exists = existsSync(filePath);
+			let size: number | undefined;
+			
+			if (exists) {
+				try {
+					size = statSync(filePath).size;
+				} catch {}
+			}
+			
+			inspection.fileReferences.push({
+				path: filePath,
+				exists,
+				size,
+			});
+		}
+	}
+	
+	// Track env vars
+	const envVarsSet = new Set<string>();
+	for (const path of paths) {
+		if (!existsSync(path)) continue;
+		
+		const raw = readFileSync(path, "utf-8");
+		const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];
+		
+		for (const match of envMatches) {
+			envVarsSet.add(match[1]);
+		}
+	}
+	
+	for (const provider of config.providers) {
+		if (provider.apiKeyEnv) {
+			envVarsSet.add(provider.apiKeyEnv);
+		}
+	}
+	
+	for (const varName of envVarsSet) {
+		const value = process.env[varName];
+		const set = value !== undefined;
+		
+		let maskedValue: string | undefined;
+		if (set && value) {
+			// Mask the value (show first 4 chars)
+			maskedValue = value.length > 8
+				? `${value.slice(0, 4)}${"•".repeat(8)}`
+				: "••••••••";
+		}
+		
+		inspection.envVars.push({
+			name: varName,
+			set,
+			maskedValue,
+		});
+	}
+	
+	return inspection;
+}
+
+/**
+ * Get the list of config paths being checked
+ */
+export function getConfigHierarchy(): string[] {
+	return getConfigPaths();
 }
