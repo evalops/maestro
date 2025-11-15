@@ -113,10 +113,10 @@ describe("FooterComponent", () => {
 			expect(statsLine).toContain("3.0k"); // Cache write: 2000 + 1000
 		});
 
-		it("should calculate context percentage from last non-aborted message", () => {
+		it("should calculate context percentage from cumulative tokens", () => {
 			const messages = [
 				createAssistantMessage({ input: 100000, output: 50000 }), // 150k tokens
-				createAssistantMessage({ input: 10000, output: 5000 }, "aborted"), // Should be ignored
+				createAssistantMessage({ input: 10000, output: 5000 }, "aborted"), // Included in cumulative
 			];
 
 			const state = createMockState(messages, 200000); // 200k context window
@@ -124,8 +124,8 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			const statsLine = rendered[1];
-			// (100000 + 50000) / 200000 = 75%
-			expect(statsLine).toContain("75.0%");
+			// Cumulative: (100000 + 10000) input + (50000 + 5000) output = 165k / 200k = 82.5%
+			expect(statsLine).toContain("82.5%");
 		});
 
 		it("should ignore cache reads when computing context percentage", () => {

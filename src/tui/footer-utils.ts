@@ -47,9 +47,8 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 				(m as AssistantMessage).stopReason !== "aborted",
 		) as AssistantMessage | undefined;
 
-	const contextUsage = normalizeUsage(lastAssistant?.usage);
-	const contextTokens =
-		contextUsage.input + contextUsage.output + contextUsage.cacheWrite;
+	// Calculate context percentage using cumulative total, not just last message
+	const contextTokens = totalInput + totalOutput + totalCacheWrite;
 	const contextWindow = state.model.contextWindow;
 	const contextPercent =
 		contextWindow > 0
