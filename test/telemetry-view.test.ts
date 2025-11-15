@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Text } from "../src/tui-lib/components/text.js";
 import { Container, type TUI } from "../src/tui-lib/tui.js";
+import type { CommandExecutionContext } from "../src/tui/commands/types.js";
 import { TelemetryView } from "../src/tui/telemetry-view.js";
 
 vi.mock("../src/telemetry.js", () => ({
@@ -27,6 +28,19 @@ const createStatus = (enabled = true) => ({
 	overrideReason: undefined,
 });
 
+const createContext = (
+	argumentText = "",
+	parsedArgs?: Record<string, unknown>,
+): CommandExecutionContext<{ action?: string }> => ({
+	command: { name: "telemetry" },
+	rawInput: `/telemetry${argumentText ? ` ${argumentText}` : ""}`,
+	argumentText,
+	parsedArgs,
+	showInfo: vi.fn(),
+	showError: vi.fn(),
+	renderHelp: vi.fn(),
+});
+
 describe("TelemetryView", () => {
 	let container: Container;
 	let requestRender: ReturnType<typeof vi.fn>;
@@ -49,7 +63,7 @@ describe("TelemetryView", () => {
 	});
 
 	it("renders telemetry status when no args provided", () => {
-		view.handleTelemetryCommand("/telemetry");
+		view.handleTelemetryCommand(createContext("", {}));
 
 		expect(requestRender).toHaveBeenCalled();
 		const textComponent = container.children.find(
@@ -73,7 +87,7 @@ describe("TelemetryView", () => {
 			onStatusChanged,
 		});
 
-		view.handleTelemetryCommand("/telemetry on");
+		view.handleTelemetryCommand(createContext("on", { action: "on" }));
 
 		expect(mockSetOverride).toHaveBeenCalledWith(true, expect.any(String));
 		expect(onStatusChanged).toHaveBeenCalledWith(enabledStatus);
@@ -82,7 +96,7 @@ describe("TelemetryView", () => {
 	});
 
 	it("resets telemetry when /telemetry reset is used", () => {
-		view.handleTelemetryCommand("/telemetry reset");
+		view.handleTelemetryCommand(createContext("reset", { action: "reset" }));
 		expect(mockSetOverride).toHaveBeenCalledWith(null, undefined);
 	});
 });

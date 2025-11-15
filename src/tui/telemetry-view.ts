@@ -10,8 +10,9 @@ import {
 	setTelemetryRuntimeOverride,
 } from "../telemetry.js";
 import type { TelemetryStatus } from "../telemetry.js";
-import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
+import type { Container, TUI } from "../tui-lib/index.js";
+import type { CommandExecutionContext } from "./commands/types.js";
 
 interface TelemetryViewOptions {
 	chatContainer: Container;
@@ -21,32 +22,46 @@ interface TelemetryViewOptions {
 	onStatusChanged: (status: TelemetryStatus) => void;
 }
 
+type TelemetryAction = "status" | "on" | "off" | "reset";
+
 export class TelemetryView {
 	constructor(private readonly options: TelemetryViewOptions) {}
 
-	handleTelemetryCommand(input: string): void {
-		const [, ...rest] = input.trim().split(/\s+/);
-		const arg = rest.join(" ").trim().toLowerCase();
-		if (!arg || arg === "status") {
-			this.renderStatus(getTelemetryStatus());
-			return;
+	handleTelemetryCommand(
+		context: CommandExecutionContext<{ action?: TelemetryAction }>,
+	): void {
+		const action =
+			context.parsedArgs?.action ?? this.inferAction(context.argumentText);
+		switch (action) {
+			case "on":
+				setTelemetryRuntimeOverride(true, "enabled via /telemetry");
+				this.handleStatusChange("Telemetry enabled for this session.");
+				return;
+			case "off":
+				setTelemetryRuntimeOverride(false, "disabled via /telemetry");
+				this.handleStatusChange("Telemetry disabled for this session.");
+				return;
+			case "reset":
+				setTelemetryRuntimeOverride(null, undefined);
+				this.handleStatusChange("Telemetry settings reset to environment.");
+				return;
+			default:
+				this.renderStatus(getTelemetryStatus());
 		}
+	}
+
+	private inferAction(argumentText: string): TelemetryAction {
+		const arg = argumentText.trim().toLowerCase();
 		if (arg === "on" || arg === "enable") {
-			setTelemetryRuntimeOverride(true, "enabled via /telemetry");
-			this.handleStatusChange("Telemetry enabled for this session.");
-			return;
+			return "on";
 		}
 		if (arg === "off" || arg === "disable") {
-			setTelemetryRuntimeOverride(false, "disabled via /telemetry");
-			this.handleStatusChange("Telemetry disabled for this session.");
-			return;
+			return "off";
 		}
 		if (arg === "reset" || arg === "default") {
-			setTelemetryRuntimeOverride(null, undefined);
-			this.handleStatusChange("Telemetry settings reset to environment.");
-			return;
+			return "reset";
 		}
-		this.options.showError("Usage: /telemetry [status|on|off|reset]");
+		return "status";
 	}
 
 	private handleStatusChange(message: string): void {

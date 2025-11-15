@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UsageSummary } from "../src/tracking/cost-tracker.js";
 import { Text } from "../src/tui-lib/components/text.js";
 import { Container, type TUI } from "../src/tui-lib/tui.js";
+import type { CommandExecutionContext } from "../src/tui/commands/types.js";
 import { CostView } from "../src/tui/cost-view.js";
 
 vi.mock("../src/tracking/cost-tracker.js", () => ({
@@ -13,6 +14,24 @@ import { clearUsage, getUsageSummary } from "../src/tracking/cost-tracker.js";
 
 const mockSummary = vi.mocked(getUsageSummary);
 const mockClear = vi.mocked(clearUsage);
+
+const createContext = (
+	rawInput: string,
+	overrides: Partial<CommandExecutionContext<Record<string, unknown>>> = {},
+): CommandExecutionContext<Record<string, unknown>> => {
+	const argumentText = rawInput.includes(" ")
+		? rawInput.slice(rawInput.indexOf(" ") + 1).trim()
+		: "";
+	return {
+		command: { name: "cost" },
+		rawInput,
+		argumentText,
+		parsedArgs: overrides.parsedArgs,
+		showInfo: overrides.showInfo ?? vi.fn(),
+		showError: overrides.showError ?? vi.fn(),
+		renderHelp: overrides.renderHelp ?? vi.fn(),
+	};
+};
 
 const makeSummary = (overrides: Partial<UsageSummary> = {}): UsageSummary => ({
 	totalCost: 12.3456,
@@ -47,7 +66,7 @@ describe("CostView", () => {
 			showError: vi.fn(),
 		});
 
-		view.handleCostCommand("/cost today");
+		view.handleCostCommand(createContext("/cost today"));
 
 		expect(mockSummary).toHaveBeenCalledWith(
 			expect.objectContaining({ since: expect.any(Number) }),
@@ -73,7 +92,7 @@ describe("CostView", () => {
 			showError: vi.fn(),
 		});
 
-		view.handleCostCommand("/cost nonsense");
+		view.handleCostCommand(createContext("/cost nonsense", { showInfo }));
 
 		expect(showInfo).toHaveBeenCalledWith(expect.stringContaining("nonsense"));
 		expect(mockSummary).toHaveBeenCalledWith({});
@@ -91,7 +110,7 @@ describe("CostView", () => {
 			showError: vi.fn(),
 		});
 
-		view.handleCostCommand("/cost");
+		view.handleCostCommand(createContext("/cost"));
 
 		const textComponent = container.children.find(
 			(child): child is Text => child instanceof Text,
@@ -112,7 +131,7 @@ describe("CostView", () => {
 			showError,
 		});
 
-		view.handleCostCommand("/cost week");
+		view.handleCostCommand(createContext("/cost week"));
 
 		expect(showError).toHaveBeenCalledWith(
 			expect.stringContaining("disk error"),
@@ -128,7 +147,7 @@ describe("CostView", () => {
 			showError: vi.fn(),
 		});
 
-		view.handleCostCommand("/cost breakdown month");
+		view.handleCostCommand(createContext("/cost breakdown month"));
 
 		expect(mockSummary).toHaveBeenCalledWith(
 			expect.objectContaining({ since: expect.any(Number) }),
@@ -150,7 +169,7 @@ describe("CostView", () => {
 			showError: vi.fn(),
 		});
 
-		view.handleCostCommand("/cost clear");
+		view.handleCostCommand(createContext("/cost clear", { showInfo }));
 
 		expect(mockClear).toHaveBeenCalledTimes(1);
 		expect(showInfo).toHaveBeenCalledWith(expect.stringContaining("cleared"));

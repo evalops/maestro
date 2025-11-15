@@ -10,8 +10,9 @@ import {
 	validateConfig,
 } from "../models/registry.js";
 import { badge, muted, separator } from "../style/theme.js";
-import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
+import type { Container, TUI } from "../tui-lib/index.js";
+import type { CommandExecutionContext } from "./commands/types.js";
 
 interface ConfigViewOptions {
 	chatContainer: Container;
@@ -20,12 +21,41 @@ interface ConfigViewOptions {
 	showInfo?: (message: string) => void;
 }
 
+type ConfigSection =
+	| "summary"
+	| "validation"
+	| "sources"
+	| "providers"
+	| "env"
+	| "files";
+
 export class ConfigView {
 	constructor(private readonly options: ConfigViewOptions) {}
 
-	handleConfigCommand(input: string): void {
-		const [, ...rawArgs] = input.trim().split(/\s+/);
-		const action = rawArgs[0]?.toLowerCase();
+	showConfigSummary(): void {
+		this.renderConfigReport("summary");
+	}
+
+	handleConfigCommand(
+		context: CommandExecutionContext<{ section?: ConfigSection }>,
+	): void {
+		const tokens = context.argumentText
+			.trim()
+			.split(/\s+/)
+			.filter((token) => token.length > 0);
+		const fromParser = context.parsedArgs?.section;
+		const action = tokens[0]?.toLowerCase();
+
+		if (!action && !fromParser) {
+			this.showConfigSummary();
+			return;
+		}
+
+		if (fromParser) {
+			this.renderConfigReport(fromParser);
+			return;
+		}
+
 		if (!action || action === "show" || action === "summary") {
 			this.showConfigSummary();
 			return;
@@ -38,28 +68,50 @@ export class ConfigView {
 			this.renderHelp();
 			return;
 		}
+
+		const section = this.toConfigSection(action);
+		if (section) {
+			this.renderConfigReport(section);
+			return;
+		}
+
 		this.renderHelp();
 		this.options.showInfo?.(
 			`Unknown config option "${action}". Showing help instructions instead.`,
 		);
 	}
 
-	showConfigSummary(): void {
+	private toConfigSection(value?: string): ConfigSection | undefined {
+		if (!value) {
+			return undefined;
+		}
+		switch (value) {
+			case "summary":
+			case "validation":
+			case "sources":
+			case "providers":
+			case "env":
+			case "files":
+				return value;
+			default:
+				return undefined;
+		}
+	}
+
+	private renderConfigReport(section: ConfigSection): void {
 		try {
 			const validation = validateConfig();
 			const inspection = inspectConfig();
 			const hierarchy = getConfigHierarchy();
-			const sections = [
-				chalk.bold("Composer configuration"),
-				this.buildValidationSection(validation),
-				this.buildSourcesSection(inspection, hierarchy),
-				this.buildProvidersSection(inspection),
-				this.buildEnvSection(inspection),
-				this.buildFileReferenceSection(inspection),
-			]
-				.filter((section) => section.trim().length > 0)
-				.join("\n\n");
-			const body = sections || chalk.dim("No configuration details available.");
+			const sections = this.buildSections(validation, inspection, hierarchy);
+			const content =
+				sections[section] ??
+				sections.summary ??
+				chalk.dim("No data available.");
+			const body =
+				content.trim().length > 0
+					? content
+					: chalk.dim("No configuration details available.");
 			this.render(body);
 		} catch (error) {
 			const message =
@@ -68,6 +120,36 @@ export class ConfigView {
 					: "Unable to inspect configuration";
 			this.options.showError(`Config inspection failed: ${message}`);
 		}
+	}
+
+	private buildSections(
+		validation: ConfigValidationResult,
+		inspection: ConfigInspection,
+		hierarchy: string[],
+	): Record<ConfigSection, string> {
+		const validationSection = this.buildValidationSection(validation);
+		const sourcesSection = this.buildSourcesSection(inspection, hierarchy);
+		const providersSection = this.buildProvidersSection(inspection);
+		const envSection = this.buildEnvSection(inspection);
+		const filesSection = this.buildFileReferenceSection(inspection);
+		const summaryParts = [
+			chalk.bold("Composer configuration"),
+			validationSection,
+			sourcesSection,
+			providersSection,
+			envSection,
+			filesSection,
+		]
+			.filter((part) => part && part.trim().length > 0)
+			.join("\n\n");
+		return {
+			summary: summaryParts,
+			validation: validationSection,
+			sources: sourcesSection,
+			providers: providersSection,
+			env: envSection,
+			files: filesSection,
+		};
 	}
 
 	private render(text: string): void {

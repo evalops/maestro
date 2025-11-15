@@ -5,6 +5,7 @@ import type {
 } from "../src/models/registry.js";
 import { Text } from "../src/tui-lib/components/text.js";
 import { Container, type TUI } from "../src/tui-lib/tui.js";
+import type { CommandExecutionContext } from "../src/tui/commands/types.js";
 import { ConfigView } from "../src/tui/config-view.js";
 
 vi.mock("../src/models/registry.js", () => ({
@@ -24,6 +25,19 @@ const mockInspect = vi.mocked(inspectConfig);
 const mockHierarchy = vi.mocked(getConfigHierarchy);
 
 const TEST_HIERARCHY = ["/home/user/.composer/config.json"];
+
+const createContext = (
+	argumentText: string,
+	overrides: Partial<CommandExecutionContext<{ section?: string }>> = {},
+): CommandExecutionContext<{ section?: string }> => ({
+	command: { name: "config" },
+	rawInput: `/config${argumentText ? ` ${argumentText}` : ""}`,
+	argumentText,
+	parsedArgs: overrides.parsedArgs,
+	showInfo: overrides.showInfo ?? vi.fn(),
+	showError: overrides.showError ?? vi.fn(),
+	renderHelp: overrides.renderHelp ?? vi.fn(),
+});
 
 const createValidation = (): ConfigValidationResult => ({
 	valid: false,
@@ -126,7 +140,30 @@ describe("ConfigView", () => {
 		expect(showError).toHaveBeenCalledWith(expect.stringContaining("boom"));
 		expect(container.children).toHaveLength(0);
 	});
-	it("shows sources when /config sources is invoked", () => {
+
+	it("renders specific section when requested via command context", () => {
+		const container = new Container();
+		const requestRender = vi.fn();
+		const view = new ConfigView({
+			chatContainer: container,
+			ui: { requestRender } as unknown as TUI,
+			showError: vi.fn(),
+		});
+
+		view.handleConfigCommand(
+			createContext("providers", { parsedArgs: { section: "providers" } }),
+		);
+
+		const textComponent = container.children.find(
+			(component): component is Text => component instanceof Text,
+		);
+		expect(textComponent).toBeDefined();
+		const rendered = textComponent?.render(120).join("\n") ?? "";
+		expect(rendered).toContain("Providers");
+		expect(rendered).not.toContain("Environment variables");
+	});
+
+	it("shows sources when sources subcommand is invoked", () => {
 		const container = new Container();
 		const view = new ConfigView({
 			chatContainer: container,
@@ -135,7 +172,7 @@ describe("ConfigView", () => {
 			showInfo: vi.fn(),
 		});
 
-		view.handleConfigCommand("/config sources");
+		view.handleConfigCommand(createContext("sources"));
 
 		const textComponent = container.children.find(
 			(component): component is Text => component instanceof Text,
@@ -156,7 +193,7 @@ describe("ConfigView", () => {
 			showInfo,
 		});
 
-		view.handleConfigCommand("/config mystery");
+		view.handleConfigCommand(createContext("mystery", { showInfo }));
 
 		const textComponent = container.children.at(-1) as Text;
 		const rendered = textComponent?.render(80).join("\n") ?? "";

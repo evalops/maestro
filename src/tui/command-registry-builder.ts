@@ -2,38 +2,51 @@ import type { SlashCommand } from "../tui-lib/index.js";
 import { createCommandRegistry } from "./commands/registry.js";
 import type {
 	CommandEntry,
+	CommandExecutionContext,
 	RunScriptCompletionProvider,
 } from "./commands/types.js";
 
 interface CommandRegistryOptions {
 	getRunScriptCompletions: RunScriptCompletionProvider;
-	showThinkingSelector: () => void;
-	showModelSelector: () => void;
-	handleExportSession: (input: string) => void;
-	handleTools: (input: string) => void;
-	handleImportConfig: (input: string) => void;
-	showSessionInfo: () => void;
-	handleSessions: (input: string) => void;
-	handleBug: () => void;
-	showStatus: () => void;
-	handleReview: () => void;
-	handleUndo: (input: string) => void;
-	shareFeedback: () => void;
-	handleMention: (input: string) => void;
-	showHelp: () => void;
-	handleUpdate: () => void | Promise<void>;
-	handleConfig: () => void | Promise<void>;
-	handleCost: (input: string) => void | Promise<void>;
-	handleTelemetry: (input: string) => void;
-	handleStats: () => void | Promise<void>;
-	handlePlan: (input: string) => void;
-	handlePreview: (input: string) => void;
-	handleRun: (input: string) => void;
-	handleWhy: () => void;
-	handleDiagnostics: (input: string) => void;
-	handleCompact: () => void;
-	handleCompactTools: (input: string) => void;
-	handleQuit: () => void;
+	createContext: (input: {
+		command: SlashCommand;
+		rawInput: string;
+		argumentText: string;
+		parsedArgs?: Record<string, unknown>;
+	}) => CommandExecutionContext;
+	showThinkingSelector: (context: CommandExecutionContext) => void;
+	showModelSelector: (context: CommandExecutionContext) => void;
+	handleExportSession: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
+	handleTools: (context: CommandExecutionContext) => void | Promise<void>;
+	handleImportConfig: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
+	showSessionInfo: (context: CommandExecutionContext) => void;
+	handleSessions: (context: CommandExecutionContext) => void | Promise<void>;
+	handleBug: (context: CommandExecutionContext) => void;
+	showStatus: (context: CommandExecutionContext) => void;
+	handleReview: (context: CommandExecutionContext) => void;
+	handleUndo: (context: CommandExecutionContext) => void | Promise<void>;
+	shareFeedback: (context: CommandExecutionContext) => void;
+	handleMention: (context: CommandExecutionContext) => void | Promise<void>;
+	showHelp: (context: CommandExecutionContext) => void;
+	handleUpdate: (context: CommandExecutionContext) => void | Promise<void>;
+	handleConfig: (context: CommandExecutionContext) => void | Promise<void>;
+	handleCost: (context: CommandExecutionContext) => void | Promise<void>;
+	handleTelemetry: (context: CommandExecutionContext) => void;
+	handleStats: (context: CommandExecutionContext) => void | Promise<void>;
+	handlePlan: (context: CommandExecutionContext) => void | Promise<void>;
+	handlePreview: (context: CommandExecutionContext) => void | Promise<void>;
+	handleRun: (context: CommandExecutionContext) => void | Promise<void>;
+	handleWhy: (context: CommandExecutionContext) => void;
+	handleDiagnostics: (context: CommandExecutionContext) => void | Promise<void>;
+	handleCompact: (context: CommandExecutionContext) => void | Promise<void>;
+	handleCompactTools: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
+	handleQuit: (context: CommandExecutionContext) => void;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -71,6 +84,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			compactTools: opts.handleCompactTools,
 			quit: opts.handleQuit,
 		},
+		createContext: opts.createContext,
 	});
 	return {
 		entries: registry,

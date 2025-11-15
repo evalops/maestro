@@ -8,6 +8,7 @@ import {
 import { clearUsage, getUsageSummary } from "../tracking/cost-tracker.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
+import type { CommandExecutionContext } from "./commands/types.js";
 
 type CostPeriod = {
 	label: string;
@@ -27,27 +28,29 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 export class CostView {
 	constructor(private readonly options: CostViewOptions) {}
 
-	handleCostCommand(input: string): void {
-		const [, ...rawArgs] = input.trim().split(/\s+/);
-		const action = rawArgs[0]?.toLowerCase();
-		const remainder = rawArgs.slice(1);
+	handleCostCommand(
+		context: CommandExecutionContext<Record<string, unknown>>,
+	): void {
+		const tokens = context.argumentText
+			.trim()
+			.split(/\s+/)
+			.filter((token) => token.length > 0);
+		const action = tokens[0]?.toLowerCase();
+		const remainder = action ? tokens.slice(1) : tokens;
 
-		if (action === "help") {
-			this.renderHelp();
-			return;
+		switch (action) {
+			case "help":
+				this.renderHelp();
+				return;
+			case "clear":
+				this.handleClearCommand();
+				return;
+			case "breakdown":
+				this.handleBreakdownCommand(remainder);
+				return;
+			default:
+				this.handleSummaryCommand(action);
 		}
-
-		if (action === "clear") {
-			this.handleClearCommand();
-			return;
-		}
-
-		if (action === "breakdown") {
-			this.handleBreakdownCommand(remainder);
-			return;
-		}
-
-		this.handleSummaryCommand(action);
 	}
 
 	private handleSummaryCommand(periodArg?: string): void {

@@ -26,11 +26,16 @@ import {
 	ProcessTerminal,
 	Spacer,
 	TUI,
+	Text,
 } from "../tui-lib/index.js";
 import { AgentEventRouter } from "./agent-event-router.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { buildCommandRegistry } from "./command-registry-builder.js";
-import type { CommandEntry } from "./commands/types.js";
+import { formatCommandHelp } from "./commands/argument-parser.js";
+import type {
+	CommandEntry,
+	CommandExecutionContext,
+} from "./commands/types.js";
 import { ConfigView } from "./config-view.js";
 import { ConversationCompactor } from "./conversation-compactor.js";
 import { CostView } from "./cost-view.js";
@@ -343,39 +348,46 @@ export class TuiRenderer {
 		const registry = buildCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
 				this.runCommandView.getRunScriptCompletions(prefix),
-			showThinkingSelector: () => this.thinkingSelectorView.show(),
-			showModelSelector: () => this.modelSelectorView.show(),
-			handleExportSession: (input) =>
-				this.importExportView.handleExportCommand(input),
-			handleTools: (input) => this.toolStatusView.handleToolsCommand(input),
-			handleImportConfig: (input) =>
-				this.importExportView.handleImportCommand(input),
-			showSessionInfo: () => this.sessionView.showSessionInfo(),
-			handleSessions: (input) => this.sessionView.handleSessionsCommand(input),
-			handleBug: () => this.feedbackView.handleBugCommand(),
-			showStatus: () => this.diagnosticsView.handleStatusCommand(),
-			handleReview: () => this.gitView.handleReviewCommand(),
-			handleUndo: (input) => this.gitView.handleUndoCommand(input),
-			shareFeedback: () =>
+			createContext: (ctx) => this.createCommandContext(ctx),
+			showThinkingSelector: (_context) => this.thinkingSelectorView.show(),
+			showModelSelector: (_context) => this.modelSelectorView.show(),
+			handleExportSession: (context) =>
+				this.importExportView.handleExportCommand(context.rawInput),
+			handleTools: (context) =>
+				this.toolStatusView.handleToolsCommand(context.rawInput),
+			handleImportConfig: (context) =>
+				this.importExportView.handleImportCommand(context.rawInput),
+			showSessionInfo: (_context) => this.sessionView.showSessionInfo(),
+			handleSessions: (context) =>
+				this.sessionView.handleSessionsCommand(context.rawInput),
+			handleBug: (_context) => this.feedbackView.handleBugCommand(),
+			showStatus: (_context) => this.diagnosticsView.handleStatusCommand(),
+			handleReview: (_context) => this.gitView.handleReviewCommand(),
+			handleUndo: (context) => this.gitView.handleUndoCommand(context.rawInput),
+			shareFeedback: (_context) =>
 				this.feedbackView.handleFeedbackCommand(this.version),
-			handleMention: (input) => this.fileSearchView.handleMentionCommand(input),
-			showHelp: () => this.infoView.showHelp(),
-			handleUpdate: () => this.updateView.handleUpdateCommand(),
-			handleConfig: (input) => this.configView.handleConfigCommand(input),
-			handleCost: (input) => this.costView.handleCostCommand(input),
-			handleTelemetry: (input) =>
-				this.telemetryView.handleTelemetryCommand(input),
-			handleStats: () => this.handleStatsCommand(),
-			handlePlan: (input) => this.planView.handlePlanCommand(input),
-			handlePreview: (input) => this.gitView.handlePreviewCommand(input),
-			handleRun: (input) => this.runCommandView.handleRunCommand(input),
-			handleWhy: () => this.infoView.showWhySummary(),
-			handleDiagnostics: (input) =>
-				this.diagnosticsView.handleDiagnosticsCommand(input),
-			handleCompact: () => this.handleCompactCommand(),
-			handleCompactTools: (input) =>
-				this.toolOutputView.handleCompactToolsCommand(input),
-			handleQuit: () => {
+			handleMention: (context) =>
+				this.fileSearchView.handleMentionCommand(context.rawInput),
+			showHelp: (_context) => this.infoView.showHelp(),
+			handleUpdate: (_context) => this.updateView.handleUpdateCommand(),
+			handleConfig: (context) => this.configView.handleConfigCommand(context),
+			handleCost: (context) => this.costView.handleCostCommand(context),
+			handleTelemetry: (context) =>
+				this.telemetryView.handleTelemetryCommand(context),
+			handleStats: (context) => this.handleStatsCommand(context),
+			handlePlan: (context) =>
+				this.planView.handlePlanCommand(context.rawInput),
+			handlePreview: (context) =>
+				this.gitView.handlePreviewCommand(context.rawInput),
+			handleRun: (context) =>
+				this.runCommandView.handleRunCommand(context.rawInput),
+			handleWhy: (_context) => this.infoView.showWhySummary(),
+			handleDiagnostics: (context) =>
+				this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
+			handleCompact: (_context) => this.handleCompactCommand(),
+			handleCompactTools: (context) =>
+				this.toolOutputView.handleCompactToolsCommand(context.rawInput),
+			handleQuit: (_context) => {
 				this.stop();
 				process.exit(0);
 			},
@@ -475,13 +487,68 @@ export class TuiRenderer {
 		await this.conversationCompactor.compactHistory();
 	}
 
-	private async handleStatsCommand(): Promise<void> {
+	private async handleStatsCommand(
+		_context: CommandExecutionContext,
+	): Promise<void> {
 		this.diagnosticsView.handleStatusCommand();
-		this.costView.handleCostCommand("/cost today");
+		const costContext = this.createSyntheticContext("cost", "today");
+		this.costView.handleCostCommand(costContext);
 	}
 
 	private clearEditor(): void {
 		this.editor.setText("");
+		this.ui.requestRender();
+	}
+
+	private createCommandContext({
+		command,
+		rawInput,
+		argumentText,
+		parsedArgs,
+	}: {
+		command: SlashCommand;
+		rawInput: string;
+		argumentText: string;
+		parsedArgs?: Record<string, unknown>;
+	}): CommandExecutionContext {
+		return {
+			command,
+			rawInput,
+			argumentText,
+			parsedArgs,
+			showInfo: (message: string) => this.notificationView.showInfo(message),
+			showError: (message: string) => this.notificationView.showError(message),
+			renderHelp: () => this.renderCommandHelp(command),
+		};
+	}
+
+	private createSyntheticContext(
+		commandName: string,
+		argumentText: string,
+	): CommandExecutionContext {
+		const command = this.getSlashCommandByName(commandName);
+		return {
+			command,
+			rawInput: `/${commandName}${argumentText ? ` ${argumentText}` : ""}`,
+			argumentText,
+			showInfo: (message: string) => this.notificationView.showInfo(message),
+			showError: (message: string) => this.notificationView.showError(message),
+			renderHelp: () => this.renderCommandHelp(command),
+		};
+	}
+
+	private getSlashCommandByName(name: string): SlashCommand {
+		return (
+			this.slashCommands.find(
+				(command) => command.name.toLowerCase() === name.toLowerCase(),
+			) ?? { name }
+		);
+	}
+
+	private renderCommandHelp(command: SlashCommand): void {
+		const help = formatCommandHelp(command);
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(help, 1, 0));
 		this.ui.requestRender();
 	}
 

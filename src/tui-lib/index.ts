@@ -3,6 +3,8 @@ export {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
 	type SlashCommand,
+	type CommandArgumentDefinition,
+	type CommandArgumentType,
 } from "./autocomplete.js";
 export { Editor } from "./components/editor.js";
 export { Input } from "./components/input.js";

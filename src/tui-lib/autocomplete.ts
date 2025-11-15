@@ -9,9 +9,26 @@ export interface AutocompleteItem {
 	description?: string;
 }
 
+export type CommandArgumentType = "string" | "number" | "boolean" | "enum";
+
+export interface CommandArgumentDefinition {
+	name: string;
+	type: CommandArgumentType;
+	required?: boolean;
+	description?: string;
+	choices?: string[];
+	variadic?: boolean;
+	defaultValue?: string;
+}
+
 export interface SlashCommand {
 	name: string;
 	description?: string;
+	usage?: string;
+	examples?: string[];
+	tags?: string[];
+	aliases?: string[];
+	arguments?: CommandArgumentDefinition[];
 	getArgumentCompletions?(argumentPrefix: string): AutocompleteItem[] | null;
 }
 
