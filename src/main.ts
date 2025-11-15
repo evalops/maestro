@@ -26,9 +26,9 @@ import {
 	isKnownProvider,
 	lookupApiKey,
 } from "./providers/api-keys.js";
+import { configureSafeMode } from "./safety/safe-mode.js";
 import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
-import { configureSafeMode } from "./safety/safe-mode.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 
 // Get version from package.json

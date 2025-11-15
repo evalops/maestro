@@ -1,12 +1,12 @@
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
+import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import { visibleWidth } from "../tui-lib/index.js";
 import {
 	buildStatsLine,
 	calculateFooterStats,
 	formatPath,
 } from "./footer-utils.js";
-import { isSafeModeEnabled } from "../safety/safe-mode.js";
 
 /**
  * Footer component that shows pwd, token stats, and context usage
@@ -68,7 +68,7 @@ export class FooterComponent {
 	}
 
 	private renderPathLine(width: number): string {
-		let pathLine = chalk.gray(formatPath(process.cwd(), width));
+		const pathLine = chalk.gray(formatPath(process.cwd(), width));
 		const badges: string[] = [];
 		if (this.activeStage) {
 			badges.push(chalk.hex("#f1c0e8")(this.activeStage));

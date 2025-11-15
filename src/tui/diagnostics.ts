@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
+import type { LspDiagnostic } from "../lsp/index.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import type { SessionModelMetadata } from "../session-manager.js";
 import type { TelemetryStatus } from "../telemetry.js";
@@ -20,6 +21,7 @@ export interface DiagnosticsInput {
 		planGoals?: number;
 		planPendingTasks?: number;
 	};
+	lspDiagnostics?: Record<string, LspDiagnostic[]>;
 }
 
 function formatProviderSection(
@@ -152,6 +154,46 @@ function formatHealthSection(
 	return lines.join("\n");
 }
 
+function formatLspSection(
+	diagnostics?: Record<string, LspDiagnostic[]>,
+): string | null {
+	if (!diagnostics) return null;
+	const entries = Object.entries(diagnostics);
+	if (entries.length === 0) {
+		return chalk.dim("LSP: no diagnostics");
+	}
+	const maxFiles = 5;
+	const lines: string[] = [chalk.bold("LSP Diagnostics")];
+	for (const [file, items] of entries.slice(0, maxFiles)) {
+		lines.push(chalk.underline(file));
+		for (const diag of items.slice(0, 5)) {
+			const severity = formatSeverity(diag.severity);
+			lines.push(
+				`${chalk.dim(`[${severity}]`)} ${diag.message} (${diag.range.start.line + 1}:${diag.range.start.character + 1})`,
+			);
+		}
+	}
+	if (entries.length > maxFiles) {
+		lines.push(chalk.dim(`…and ${entries.length - maxFiles} more files`));
+	}
+	return lines.join("\n");
+}
+
+function formatSeverity(sev?: number) {
+	switch (sev) {
+		case 1:
+			return "ERROR";
+		case 2:
+			return "WARN";
+		case 3:
+			return "INFO";
+		case 4:
+			return "HINT";
+		default:
+			return "UNKNOWN";
+	}
+}
+
 export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	const sections: string[] = [];
 	sections.push(`${chalk.bold("Diagnostics")}`);
@@ -169,6 +211,11 @@ export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	const healthSection = formatHealthSection(input.health);
 	if (healthSection) {
 		sections.push(healthSection);
+		sections.push("");
+	}
+	const lspSection = formatLspSection(input.lspDiagnostics);
+	if (lspSection) {
+		sections.push(lspSection);
 		sections.push("");
 	}
 	sections.push(formatPendingToolsSection(input.pendingTools));

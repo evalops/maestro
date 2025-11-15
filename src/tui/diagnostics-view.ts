@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
+import { collectDiagnostics as collectLspDiagnostics } from "../lsp/index.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import { lookupApiKey } from "../providers/api-keys.js";
 import type { SessionManager } from "../session-manager.js";
@@ -134,12 +135,13 @@ ${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.
 		this.options.ui.requestRender();
 	}
 
-	handleDiagnosticsCommand(commandText = "/diag"): void {
+	async handleDiagnosticsCommand(commandText = "/diag"): Promise<void> {
 		if (!this.currentApiKeyInfo) {
 			this.currentApiKeyInfo = this.resolveApiKey();
 		}
 
 		const health = this.buildHealthSnapshot();
+		const lspDiagnostics = await collectLspDiagnostics().catch(() => undefined);
 		const report = formatDiagnosticsReport({
 			sessionId: this.options.sessionManager.getSessionId(),
 			sessionFile: this.options.sessionManager.getSessionFile(),
@@ -152,6 +154,7 @@ ${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.
 			),
 			explicitApiKey: this.options.explicitApiKey,
 			health,
+			lspDiagnostics,
 		});
 
 		const shouldCopy = /copy|share/.test(commandText.split(/\s+/)[1] ?? "");

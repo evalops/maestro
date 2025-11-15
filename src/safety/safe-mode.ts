@@ -131,3 +131,7 @@ export function resetSafeModeForTests(): void {
 	state.validators = [];
 	state.planSatisfied = false;
 }
+
+export function isSafeModeEnabled(): boolean {
+	return state.enabled;
+}

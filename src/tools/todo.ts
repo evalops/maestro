@@ -3,8 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { createZodTool } from "./zod-tool.js";
 import { setPlanSatisfied } from "../safety/safe-mode.js";
+import { createZodTool } from "./zod-tool.js";
 
 const sectionDivider = "─".repeat(40);
 

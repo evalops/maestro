@@ -10,14 +10,14 @@ import {
 import * as os from "node:os";
 import { dirname, resolve as resolvePath } from "node:path";
 import { z } from "zod";
-import { zPathParameter } from "./schema-helpers.js";
-import { generateDiffString } from "./diff-utils.js";
-import { createZodTool } from "./zod-tool.js";
 import {
 	requirePlanCheck,
 	runValidatorsOnSuccess,
 } from "../safety/safe-mode.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
+import { generateDiffString } from "./diff-utils.js";
+import { zPathParameter } from "./schema-helpers.js";
+import { createZodTool } from "./zod-tool.js";
 /**
  * Expand ~ to home directory
  */
@@ -156,7 +156,7 @@ export const writeTool = createZodTool({
 							? generateDiffString(previousContent, content)
 							: undefined;
 
-					let validatorSummaries;
+					let validatorSummaries: ValidatorRunResult[] | undefined;
 					try {
 						validatorSummaries = await runValidatorsOnSuccess([absolutePath]);
 					} catch (validatorError) {

@@ -7,16 +7,20 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { writeTool } from "../src/tools/write.js";
-import { editTool } from "../src/tools/edit.js";
-import { todoTool } from "../src/tools/todo.js";
 import {
 	configureSafeMode,
 	resetSafeModeForTests,
 	setPlanSatisfied,
 } from "../src/safety/safe-mode.js";
+import { editTool } from "../src/tools/edit.js";
+import { todoTool } from "../src/tools/todo.js";
+import { writeTool } from "../src/tools/write.js";
 
 const TEST_DIR = join(process.cwd(), "tmp", "safe-mode-tests");
+
+function unsetEnv(key: string) {
+	Reflect.deleteProperty(process.env, key);
+}
 
 function setSafeModeEnv(validators?: string) {
 	process.env.COMPOSER_SAFE_MODE = "1";
@@ -24,7 +28,7 @@ function setSafeModeEnv(validators?: string) {
 	if (validators) {
 		process.env.COMPOSER_SAFE_VALIDATORS = validators;
 	} else {
-		delete process.env.COMPOSER_SAFE_VALIDATORS;
+		unsetEnv("COMPOSER_SAFE_VALIDATORS");
 	}
 	configureSafeMode(true);
 }
@@ -34,32 +38,32 @@ describe("Safe mode", () => {
 		rmSync(TEST_DIR, { recursive: true, force: true });
 		mkdirSync(TEST_DIR, { recursive: true });
 		resetSafeModeForTests();
-		delete process.env.COMPOSER_SAFE_MODE;
-		delete process.env.COMPOSER_SAFE_REQUIRE_PLAN;
-		delete process.env.COMPOSER_SAFE_VALIDATORS;
+		unsetEnv("COMPOSER_SAFE_MODE");
+		unsetEnv("COMPOSER_SAFE_REQUIRE_PLAN");
+		unsetEnv("COMPOSER_SAFE_VALIDATORS");
 	});
 
 	it("blocks write/edit until todo plan recorded", async () => {
 		setSafeModeEnv();
 
-		await expect(
-			writeTool.execute("write-test", {
-				path: join(TEST_DIR, "file.txt"),
-				content: "hello",
-			}),
-		).rejects.toThrow(/requires a plan/);
+	await expect(
+		writeTool.execute("write-test", {
+			path: join(TEST_DIR, "file.txt"),
+			content: "hello",
+		}),
+	).rejects.toThrow(/requires a plan/);
 
 		await todoTool.execute("todo-plan", {
 			goal: "Safe mode test",
 			items: [{ content: "plan" }],
 		});
 
-		await expect(
-			writeTool.execute("write-test", {
-				path: join(TEST_DIR, "file.txt"),
-				content: "hello",
-			}),
-		).resolves.toBeDefined();
+	await expect(
+		writeTool.execute("write-test", {
+			path: join(TEST_DIR, "file.txt"),
+			content: "hello",
+		}),
+	).resolves.toBeDefined();
 
 		await expect(
 			editTool.execute("edit-test", {
