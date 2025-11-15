@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import { collectDiagnostics as collectLspDiagnostics } from "../lsp/index.js";
@@ -7,6 +6,7 @@ import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import { lookupApiKey } from "../providers/api-keys.js";
 import type { SessionManager } from "../session-manager.js";
 import type { SessionModelMetadata } from "../session-manager.js";
+import { muted } from "../style/theme.js";
 import type { TelemetryStatus } from "../telemetry.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
@@ -79,8 +79,8 @@ export class DiagnosticsView {
 		const copied = this.copyTextToClipboard(text);
 
 		const copyNote = copied
-			? chalk.dim("Bug info copied to clipboard.")
-			: chalk.dim("(Could not copy bug info to clipboard.)");
+			? muted("Bug info copied to clipboard.")
+			: muted("(Could not copy bug info to clipboard.)");
 
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(
@@ -126,10 +126,12 @@ export class DiagnosticsView {
 			health: snapshot,
 		});
 		const copied = this.copyTextToClipboard(plain);
-		const body = `${chalk.bold("Feedback template")}
-${plain}
+		const copyNote = copied
+			? muted("Copied to clipboard — paste this into Discord or GitHub.")
+			: muted("Copy failed — select and copy manually.");
+		const body = `${plain}
 
-${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.") : chalk.dim("Copy failed — select and copy manually.")}`;
+${copyNote}`;
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(body, 1, 0));
 		this.options.ui.requestRender();
@@ -161,7 +163,7 @@ ${copied ? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.
 		let copyNote = "";
 		if (shouldCopy) {
 			const copied = this.copyTextToClipboard(report);
-			copyNote = `\n\n${copied ? chalk.dim("Diagnostics copied to clipboard.") : chalk.dim("(Could not copy diagnostics to clipboard.)")}`;
+			copyNote = `\n\n${copied ? muted("Diagnostics copied to clipboard.") : muted("(Could not copy diagnostics to clipboard.)")}`;
 		}
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(`${report}${copyNote}`, 1, 0));

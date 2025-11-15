@@ -1,8 +1,14 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
+import {
+	badge,
+	heading,
+	labeledValue,
+	muted,
+	separator as themedSeparator,
+} from "../style/theme.js";
 import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
 
 export const TOOL_FAILURE_LOG_PATH = join(
@@ -43,23 +49,28 @@ export class ToolStatusView {
 		const { recent, counts } = this.getToolFailureData();
 		const toolLines = tools.length
 			? tools.map((tool) => {
-					const label = tool.label ?? tool.name;
+					const label = badge(tool.label ?? tool.name, undefined, "info");
 					const description = tool.description || "No description provided";
 					const failureCount = counts.get(tool.name) ?? 0;
 					const failureBadge =
-						failureCount > 0 ? ` ${chalk.red(`✗ ${failureCount}`)}` : "";
-					return `${chalk.cyan(label)} ${chalk.dim(`(${tool.name})`)}${failureBadge}\n  ${chalk.dim(description)}`;
+						failureCount > 0
+							? ` ${badge("failures", failureCount.toString(), "danger")}`
+							: "";
+					return `${label} ${muted(`(${tool.name})`)}${failureBadge}\n  ${muted(description)}`;
 				})
-			: [chalk.dim("No tools are currently registered.")];
+			: [muted("No tools are currently registered.")];
 
 		const failureSection = recent.length
-			? `${chalk.bold("Recent tool failures")}\n${recent
-					.map((entry) => `${entry.timestamp} · ${entry.tool} · ${entry.error}`)
+			? `${heading("Recent tool failures")}\n${recent
+					.map(
+						(entry) =>
+							`${muted(entry.timestamp)} ${themedSeparator()} ${badge("tool", entry.tool, "warn")} ${entry.error}`,
+					)
 					.join("\n")}`
-			: chalk.dim("No recent tool failures logged.");
+			: muted("No recent tool failures logged.");
 
-		const text = `${chalk.bold("Available tools")}
-${toolLines.join("\n\n")}\n\n${failureSection}\n\n${chalk.dim("Use /tools clear to reset the failure log.")}`;
+		const text = `${heading("Available tools")}
+${toolLines.join("\n\n")}\n\n${failureSection}\n\n${muted("Use /tools clear to reset the failure log.")}`;
 
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(text, 1, 0));

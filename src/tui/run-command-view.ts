@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import chalk from "chalk";
+import { badge, heading, muted } from "../style/theme.js";
 import type { AutocompleteItem } from "../tui-lib/index.js";
 import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
 import { runShellCommand } from "./run-shell-command.js";
@@ -28,7 +28,7 @@ export class RunCommandView {
 
 		this.options.chatContainer.addChild(new Spacer(1));
 		const outputComponent = new Text(
-			`${chalk.bold(`$ ${command}`)}\nRunning…`,
+			`${heading(`$ ${command}`)}\n${muted("Running…")}`,
 			1,
 			0,
 		);
@@ -36,12 +36,14 @@ export class RunCommandView {
 		this.options.ui.requestRender();
 
 		const result = await runShellCommand(command);
-		const statusLine = result.success
-			? chalk.green(`Exit code ${result.code}`)
-			: chalk.red(`Exit code ${result.code}`);
+		const statusLine = badge(
+			"Exit code",
+			String(result.code ?? 0),
+			result.success ? "success" : "danger",
+		);
 		const body = [result.stdout, result.stderr].filter(Boolean).join("\n");
 		outputComponent.setText(
-			`${chalk.bold(`$ ${command}`)}\n${body || chalk.dim("(no output)")}\n\n${statusLine}`,
+			`${heading(`$ ${command}`)}\n${body || muted("(no output)")}\n\n${statusLine}`,
 		);
 		this.options.ui.requestRender();
 	}

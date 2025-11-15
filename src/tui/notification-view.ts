@@ -1,4 +1,4 @@
-import chalk from "chalk";
+import { badge, muted } from "../style/theme.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 
@@ -12,27 +12,28 @@ export class NotificationView {
 
 	showInfo(text: string): void {
 		this.options.chatContainer.addChild(new Spacer(1));
-		this.options.chatContainer.addChild(new Text(chalk.dim(text), 1, 0));
+		this.options.chatContainer.addChild(new Text(muted(text), 1, 0));
 		this.options.ui.requestRender();
 	}
 
 	showError(errorMessage: string): void {
 		this.options.chatContainer.addChild(new Spacer(1));
+		const label = badge("Error", undefined, "danger");
 		this.options.chatContainer.addChild(
-			new Text(chalk.red(`Error: ${errorMessage}`), 1, 0),
+			new Text(`${label} ${errorMessage}`, 1, 0),
 		);
 		this.options.ui.requestRender();
 	}
 
 	showToast(text: string, tone: "info" | "warn" | "success" = "info"): void {
-		const color =
+		const toneLabel =
 			tone === "warn"
-				? chalk.hex("#f97316")
+				? badge("Warning", undefined, "warn")
 				: tone === "success"
-					? chalk.hex("#10b981")
-					: chalk.hex("#38bdf8");
+					? badge("Success", undefined, "success")
+					: badge("Info", undefined, "info");
 		this.options.chatContainer.addChild(new Spacer(1));
-		this.options.chatContainer.addChild(new Text(color(`ℹ ${text}`), 1, 0));
+		this.options.chatContainer.addChild(new Text(`${toneLabel} ${text}`, 1, 0));
 		this.options.ui.requestRender();
 	}
 }

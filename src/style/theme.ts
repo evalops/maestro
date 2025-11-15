@@ -19,7 +19,7 @@ export const themePalette = {
 	info: "#c3b8ff",
 } as const;
 
-type BadgeVariant = "info" | "success" | "warn" | "danger";
+export type BadgeVariant = "info" | "success" | "warn" | "danger";
 
 const badgeColors: Record<BadgeVariant, string> = {
 	info: themePalette.info,
@@ -49,6 +49,14 @@ export function separator(spacing = "  ·  "): string {
 
 export function muted(text: string): string {
 	return chalk.hex(themePalette.muted)(text);
+}
+
+export function heading(label: string): string {
+	return chalk.hex(themePalette.text).bold(label);
+}
+
+export function labeledValue(label: string, value: string): string {
+	return `${chalk.hex(themePalette.muted)(`${label}:`)} ${value}`;
 }
 
 export function metricStat(
@@ -96,4 +104,8 @@ export const infoGlyph = {
 
 export function highlightValue(value: string): string {
 	return chalk.hex(themePalette.text).bold(value);
+}
+
+export function toneColor(variant: BadgeVariant = "info"): string {
+	return badgeColors[variant];
 }

@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import type { Agent } from "../agent/agent.js";
 import type {
 	AgentState,
@@ -6,6 +5,13 @@ import type {
 	AssistantMessage,
 } from "../agent/types.js";
 import type { SessionManager } from "../session-manager.js";
+import {
+	badge,
+	heading,
+	labeledValue,
+	muted,
+	separator as themedSeparator,
+} from "../style/theme.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 
@@ -65,31 +71,54 @@ export class SessionView {
 		const totalTokens =
 			totalInput + totalOutput + totalCacheRead + totalCacheWrite;
 
-		let info = `${chalk.bold("Session Info")}`;
-		info += `\n\n${chalk.dim("File:")} ${sessionFile}`;
-		info += `\n${chalk.dim("ID:")} ${this.options.sessionManager.getSessionId()}`;
-		info += `\n\n${chalk.bold("Messages")}`;
-		info += `\n${chalk.dim("User:")} ${userMessages}`;
-		info += `\n${chalk.dim("Assistant:")} ${assistantMessages}`;
-		info += `\n${chalk.dim("Tool Calls:")} ${toolCalls}`;
-		info += `\n${chalk.dim("Tool Results:")} ${toolResults}`;
-		info += `\n${chalk.dim("Total:")} ${totalMessages}`;
-		info += `\n\n${chalk.bold("Tokens")}`;
-		info += `\n${chalk.dim("Input:")} ${totalInput.toLocaleString()}`;
-		info += `\n${chalk.dim("Output:")} ${totalOutput.toLocaleString()}`;
+		const sessionMeta = [
+			heading("Session overview"),
+			labeledValue("File", sessionFile ?? muted("(not yet persisted)")),
+			labeledValue(
+				"ID",
+				this.options.sessionManager.getSessionId() ?? muted("(unset)"),
+			),
+			"",
+		];
+
+		const messageBlock = [
+			badge("Messages", undefined, "info"),
+			`  ${labeledValue("User", userMessages.toString())}`,
+			`  ${labeledValue("Assistant", assistantMessages.toString())}`,
+			`  ${labeledValue("Tool Calls", toolCalls.toString())}`,
+			`  ${labeledValue("Tool Results", toolResults.toString())}`,
+			`  ${labeledValue("Total", totalMessages.toString())}`,
+		].join("\n");
+
+		const tokenLines = [
+			badge("Tokens", undefined, "info"),
+			`  ${labeledValue("Input", totalInput.toLocaleString())}`,
+			`  ${labeledValue("Output", totalOutput.toLocaleString())}`,
+		];
 		if (totalCacheRead > 0) {
-			info += `\n${chalk.dim("Cache Read:")} ${totalCacheRead.toLocaleString()}`;
+			tokenLines.push(
+				`  ${labeledValue("Cache Read", totalCacheRead.toLocaleString())}`,
+			);
 		}
 		if (totalCacheWrite > 0) {
-			info += `\n${chalk.dim("Cache Write:")} ${totalCacheWrite.toLocaleString()}`;
+			tokenLines.push(
+				`  ${labeledValue("Cache Write", totalCacheWrite.toLocaleString())}`,
+			);
 		}
-		info += `\n${chalk.dim("Total:")} ${totalTokens.toLocaleString()}`;
+		tokenLines.push(`  ${labeledValue("Total", totalTokens.toLocaleString())}`);
 
+		const sections = [...sessionMeta, messageBlock, "", tokenLines.join("\n")];
 		if (totalCost > 0) {
-			info += `\n\n${chalk.bold("Cost")}`;
-			info += `\n${chalk.dim("Total:")} ${totalCost.toFixed(4)}`;
+			sections.push(
+				"",
+				[
+					badge("Cost", undefined, "warn"),
+					`  ${labeledValue("Total", totalCost.toFixed(4))}`,
+				].join("\n"),
+			);
 		}
 
+		const info = sections.join("\n");
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(info, 1, 0));
 		this.options.ui.requestRender();
@@ -109,7 +138,7 @@ export class SessionView {
 		this.options.chatContainer.addChild(new Spacer(1));
 		if (sessions.length === 0) {
 			this.options.chatContainer.addChild(
-				new Text(chalk.dim("No saved sessions for this project."), 1, 0),
+				new Text(muted("No saved sessions for this project."), 1, 0),
 			);
 			this.options.ui.requestRender();
 			return;
@@ -118,19 +147,16 @@ export class SessionView {
 			const preview = session.firstMessage
 				? session.firstMessage.slice(0, 60)
 				: "(no messages)";
-			return `${idx + 1}. ${chalk.cyan(session.id.slice(0, 8))} · ${chalk.dim(
-				session.modified.toLocaleString(),
-			)} · ${preview}`;
+			const badgeLabel = badge(`#${idx + 1}`, session.id.slice(0, 8), "info");
+			const meta = `${muted(session.modified.toLocaleString())}${themedSeparator()}${muted(`${session.messageCount} msgs`)}`;
+			return `${badgeLabel} ${themedSeparator()} ${meta}
+	${muted(preview)}`;
 		});
-		this.options.chatContainer.addChild(
-			new Text(
-				`${chalk.bold("Sessions")}
-	${lines.join("\n")}
-	Use /sessions load <number> to switch.`,
-				1,
-				0,
-			),
-		);
+		const body = `${heading("Sessions")}
+${lines.join("\n")}
+
+${muted("Use /sessions load <number> to switch.")}`;
+		this.options.chatContainer.addChild(new Text(body, 1, 0));
 		this.options.ui.requestRender();
 	}
 

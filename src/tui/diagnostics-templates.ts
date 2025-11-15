@@ -1,4 +1,4 @@
-import chalk from "chalk";
+import { badge, heading, labeledValue, muted } from "../style/theme.js";
 import type { TelemetryStatus } from "../telemetry.js";
 import type { HealthSnapshot } from "./health-snapshot.js";
 
@@ -30,65 +30,74 @@ export interface FeedbackTemplateInfo {
 }
 
 export function buildBugReport(info: BugReportInfo): string {
-	return `${chalk.bold("Bug report info")}
-Session ID: ${info.sessionId ?? "unknown"}
-Session file: ${info.sessionFile}
-Model: ${info.modelLabel}
-Messages: ${info.messageCount}
-Tools: ${info.toolNames.length ? info.toolNames.join(", ") : "none"}
+	const files =
+		info.filesToShare || muted("(session file will appear once persisted)");
+	return `${heading("Bug report info")}
+${labeledValue("Session ID", info.sessionId ?? muted("unknown"))}
+${labeledValue("Session file", info.sessionFile)}
+${labeledValue("Model", info.modelLabel)}
+${labeledValue("Messages", info.messageCount.toString())}
+${labeledValue("Tools", info.toolNames.length ? info.toolNames.join(", ") : "none")}
 
-${chalk.bold("Send these files:")}
-${info.filesToShare || chalk.dim("(session file will appear once persisted)")}
+${heading("Send these files")}
+${files}
 
-Attach them in the bug report so we can replay the session.`;
+${muted("Attach them so we can replay the session.")}`;
 }
 
 export function buildStatusSnapshot(info: StatusSnapshotInfo): string {
-	const telemetryLine = info.telemetry.enabled
-		? `on · ${info.telemetry.reason}${
-				info.telemetry.endpoint ? ` → ${info.telemetry.endpoint}` : ""
-			}`
-		: `off · ${info.telemetry.reason}`;
+	const telemetryBadge = info.telemetry.enabled
+		? badge("Telemetry", info.telemetry.reason, "success")
+		: badge("Telemetry", info.telemetry.reason, "warn");
+	const telemetryRoute = info.telemetry.endpoint
+		? muted(`endpoint ${info.telemetry.endpoint}`)
+		: info.telemetry.filePath
+			? muted(`file ${info.telemetry.filePath}`)
+			: "";
 	const toolLine =
 		info.health.toolFailures > 0
-			? `${info.health.toolFailures} logged${
-					info.health.toolFailurePath ? ` · ${info.health.toolFailurePath}` : ""
-				}`
-			: "none logged";
+			? `${badge("logged", `${info.health.toolFailures}`, "danger")} ${info.health.toolFailurePath ? muted(info.health.toolFailurePath) : ""}`.trim()
+			: muted("none logged");
+	const planGoals = info.health.planGoals ?? 0;
+	const planPending = info.health.planPendingTasks ?? 0;
 	const planLine =
-		(info.health.planGoals ?? 0) > 0
-			? `${info.health.planGoals} goal${info.health.planGoals === 1 ? "" : "s"} · ${info.health.planPendingTasks ?? 0} pending`
-			: "no saved plans";
-	const gitLine = info.health.gitStatus ?? "unknown (git unavailable)";
+		planGoals > 0
+			? `${badge("goals", `${planGoals}`, "info")} ${badge("pending", `${planPending}`, "warn")}`
+			: muted("no saved plans");
+	const gitLine = info.health.gitStatus ?? muted("git unavailable");
 	const sessionLine = info.sessionId
-		? `${info.sessionId}\n${info.sessionFile}`
-		: "No persisted session yet.";
+		? `${info.sessionId}\n${muted(info.sessionFile)}`
+		: muted("No persisted session yet.");
 
-	return `${chalk.bold("Status snapshot")} ${chalk.dim(`v${info.version}`)}
-${chalk.dim("Model")}: ${info.modelLabel}
-${chalk.dim("Thinking")}: ${info.thinkingLevel}
-${chalk.dim("Telemetry")}: ${telemetryLine}
-${chalk.dim("Git")}: ${gitLine}
-${chalk.dim("Plans")}: ${planLine}
-${chalk.dim("Tool failures")}: ${toolLine}
-${chalk.dim("Session")}: ${sessionLine}
+	const rows = [
+		`${labeledValue("Model", info.modelLabel)} ${badge("v", info.version, "info")}`,
+		labeledValue("Thinking", info.thinkingLevel),
+		`${labeledValue("Telemetry", telemetryBadge)}${telemetryRoute ? ` ${telemetryRoute}` : ""}`,
+		labeledValue("Git", gitLine),
+		labeledValue("Plans", planLine),
+		labeledValue("Tool failures", toolLine),
+		labeledValue("Session", sessionLine),
+	];
 
-Use /diag for a full diagnostic report.`;
+	return `${heading("Status snapshot")}
+${rows.join("\n")}
+
+${muted("Use /diag for a full diagnostic report.")}`;
 }
 
 export function buildFeedbackTemplate(info: FeedbackTemplateInfo): string {
-	return `Composer feedback
-Version: ${info.version}
-Session: ${info.sessionId ?? "unknown"}
-Session file: ${info.sessionFile}
-Model: ${info.modelLabel}
-Git: ${info.health.gitStatus ?? "unknown"}
-Tool failures: ${info.health.toolFailures}
-Plans pending: ${info.health.planPendingTasks ?? 0}
+	return `${heading("Composer feedback")}
+${labeledValue("Version", info.version)}
+${labeledValue("Session", info.sessionId ?? muted("unknown"))}
+${labeledValue("Session file", info.sessionFile)}
+${labeledValue("Model", info.modelLabel)}
+${labeledValue("Git", info.health.gitStatus ?? "unknown")}
+${labeledValue("Tool failures", String(info.health.toolFailures))}
+${labeledValue("Plans pending", String(info.health.planPendingTasks ?? 0))}
 
-What happened?
+${muted("What happened?")}
 
-What did you expect instead?
+${muted("What did you expect instead?")}
 
-Anything else we should know?`;
+${muted("Anything else we should know?")}`;
 }
