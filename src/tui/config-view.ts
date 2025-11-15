@@ -202,12 +202,18 @@ export class ConfigView {
 		}
 		const sections = inspection.providers.map((provider) => {
 			const header = `${chalk.bold(provider.name)} ${muted(`(${provider.id})`)}`;
-			const meta = [
-				badge("Models", String(provider.modelCount)),
-				provider.apiKeySource
-					? badge("API key", provider.apiKeySource, "success")
-					: badge("API key missing", undefined, "warn"),
-			].join(separator());
+			const metaParts = [badge("Models", String(provider.modelCount))];
+			if (provider.apiKeySource) {
+				metaParts.push(badge("API key", provider.apiKeySource, "success"));
+			} else if (provider.isLocal) {
+				metaParts.push(badge("No API key", "local", "info"));
+			} else {
+				metaParts.push(badge("API key missing", undefined, "warn"));
+			}
+			if (provider.isLocal) {
+				metaParts.push(badge("local", undefined, "warn"));
+			}
+			const meta = metaParts.join(separator());
 			const baseUrlLine = muted(`Base URL: ${provider.baseUrl}`);
 			const modelsToShow = provider.models.slice(0, 3);
 			const modelLines = modelsToShow.map((model) =>

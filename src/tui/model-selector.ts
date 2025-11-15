@@ -118,16 +118,19 @@ export class ModelSelectorComponent extends Container {
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = this.currentModel?.id === item.id;
 
+			const providerLabels = [chalk.gray(`[${item.providerName}]`)];
+			if (item.isLocal) {
+				providerLabels.push(chalk.hex("#fbbf24")("[local]"));
+			}
+			const providerBadge = providerLabels.join(" ");
 			let line = "";
 			if (isSelected) {
 				const prefix = chalk.blue("→ ");
 				const modelText = `${item.id}`;
-				const providerBadge = chalk.gray(`[${item.providerName}]`);
 				const checkmark = isCurrent ? chalk.green(" ✓") : "";
 				line = `${prefix}${chalk.blue(modelText)} ${providerBadge}${checkmark}`;
 			} else {
 				const modelText = `  ${item.id}`;
-				const providerBadge = chalk.gray(`[${item.providerName}]`);
 				const checkmark = isCurrent ? chalk.green(" ✓") : "";
 				line = `${modelText} ${providerBadge}${checkmark}`;
 			}

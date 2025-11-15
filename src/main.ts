@@ -177,8 +177,12 @@ export async function main(args: string[]) {
 
 	// Handle config commands
 	if (parsed.command === "config") {
-		const { handleConfigValidate, handleConfigShow, handleConfigInit } =
-			await import("./cli/commands/config.js");
+		const {
+			handleConfigValidate,
+			handleConfigShow,
+			handleConfigInit,
+			handleConfigLocal,
+		} = await import("./cli/commands/config.js");
 
 		switch (parsed.subcommand) {
 			case "validate":
@@ -189,6 +193,9 @@ export async function main(args: string[]) {
 				return;
 			case "init":
 				await handleConfigInit();
+				return;
+			case "local":
+				await handleConfigLocal();
 				return;
 			default:
 				console.error(
@@ -205,6 +212,9 @@ export async function main(args: string[]) {
 				);
 				console.log(
 					chalk.dim("  composer config init      - Initialize configuration"),
+				);
+				console.log(
+					chalk.dim("  composer config local     - Manage local providers"),
 				);
 				process.exit(1);
 		}

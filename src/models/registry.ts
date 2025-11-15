@@ -30,6 +30,23 @@ const baseUrlSchema = z
 		{ message: "Base URL will be auto-normalized if incomplete" },
 	);
 
+export function isLocalBaseUrl(url?: string): boolean {
+	if (!url) {
+		return false;
+	}
+	try {
+		const parsed = new URL(url);
+		return (
+			parsed.hostname === "localhost" ||
+			parsed.hostname === "127.0.0.1" ||
+			parsed.hostname === "::1" ||
+			parsed.hostname === "0.0.0.0"
+		);
+	} catch {
+		return false;
+	}
+}
+
 const modelSchema = z.object({
 	id: z.string().min(1),
 	name: z.string().min(1),
@@ -130,6 +147,7 @@ function isObject(item: unknown): item is Record<string, unknown> {
 export interface RegisteredModel extends Model<Api> {
 	providerName: string;
 	source: "builtin" | "custom";
+	isLocal: boolean;
 }
 
 export interface ProviderMetadata {
@@ -148,11 +166,16 @@ const getConfigPaths = (): string[] => {
 
 	// 1. Global config
 	paths.push(join(homedir(), ".composer", "config.json"));
+	paths.push(join(homedir(), ".composer", "local.json"));
 
 	// 2. Project config (current directory)
 	const projectConfig = join(process.cwd(), ".composer", "config.json");
 	if (existsSync(projectConfig)) {
 		paths.push(projectConfig);
+	}
+	const projectLocal = join(process.cwd(), ".composer", "local.json");
+	if (existsSync(projectLocal)) {
+		paths.push(projectLocal);
 	}
 
 	// 3. Legacy path for backward compatibility
@@ -602,6 +625,7 @@ function buildRegistry(): RegisteredModel[] {
 				...(model as Model<Api>),
 				providerName: provider,
 				source: "builtin",
+				isLocal: false,
 			});
 		}
 	}
@@ -614,13 +638,16 @@ function buildRegistry(): RegisteredModel[] {
 			name: provider.name,
 			apiKey: provider.apiKey,
 			apiKeyEnv: provider.apiKeyEnv,
+			baseUrl: provider.baseUrl,
 		});
 		for (const model of provider.models) {
 			const resolved = toModel(provider, model);
+			const modelBaseUrl = model.baseUrl ?? provider.baseUrl;
 			registry.push({
 				...resolved,
 				providerName: provider.name,
 				source: "custom",
+				isLocal: isLocalBaseUrl(modelBaseUrl),
 			});
 		}
 	}
@@ -1023,6 +1050,7 @@ export interface ConfigInspection {
 		name: string;
 		baseUrl: string;
 		apiKeySource?: string;
+		isLocal: boolean;
 		modelCount: number;
 		models: Array<{
 			id: string;
@@ -1072,11 +1100,16 @@ export function inspectConfig(): ConfigInspection {
 			apiKeySource = "direct (hardcoded)";
 		}
 
+		const providerBase = provider.baseUrl || "(auto-generated)";
+		const local =
+			isLocalBaseUrl(provider.baseUrl) ||
+			provider.models.some((model) => isLocalBaseUrl(model.baseUrl));
 		inspection.providers.push({
 			id: provider.id,
 			name: provider.name,
-			baseUrl: provider.baseUrl || "(auto-generated)",
+			baseUrl: providerBase,
 			apiKeySource,
+			isLocal: local,
 			modelCount: provider.models.length,
 			models: provider.models.map((m) => ({
 				id: m.id,

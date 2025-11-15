@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
+import { parse as parseJsonc } from "jsonc-parser";
 import {
 	type ConfigInspection,
 	type ConfigValidationResult,
@@ -220,14 +221,17 @@ export async function handleConfigInit(): Promise<void> {
 		console.log("  2) OpenAI (GPT)");
 		console.log("  3) AWS Bedrock");
 		console.log("  4) Google Vertex AI");
+		console.log("  5) LM Studio (local)");
+		console.log("  6) Ollama (local)");
 
-		const providerChoice = await rl.question(chalk.cyan("\nProvider (1-4): "));
+		const providerChoice = await rl.question(chalk.cyan("\nProvider (1-6): "));
 
 		let providerId: string;
 		let providerName: string;
 		let baseUrl: string | undefined;
 		let apiType: string;
 		let defaultModel: string;
+		let requiresApiKey = true;
 
 		switch (providerChoice.trim()) {
 			case "1":
@@ -257,6 +261,22 @@ export async function handleConfigInit(): Promise<void> {
 				apiType = "anthropic-messages";
 				defaultModel = "claude-sonnet-4-5@20250929";
 				break;
+			case "5":
+				providerId = "lmstudio";
+				providerName = "LM Studio (local)";
+				baseUrl = "http://127.0.0.1:1234/v1";
+				apiType = "openai-responses";
+				defaultModel = "lmstudio/gemma-3n";
+				requiresApiKey = false;
+				break;
+			case "6":
+				providerId = "ollama";
+				providerName = "Ollama (local)";
+				baseUrl = "http://localhost:11434/v1";
+				apiType = "openai-responses";
+				defaultModel = "ollama/llama3.1";
+				requiresApiKey = false;
+				break;
 			default:
 				console.log(chalk.red("\nInvalid choice. Defaulting to Anthropic."));
 				providerId = "anthropic";
@@ -266,24 +286,37 @@ export async function handleConfigInit(): Promise<void> {
 				defaultModel = "claude-sonnet-4-5";
 		}
 
-		// Step 2: API key method
-		console.log(
-			`\n${badge("2. How would you like to provide your API key?", undefined, "info")}`,
-		);
-		console.log("  1) Environment variable (recommended)");
-		console.log("  2) Direct in config (not recommended)");
-
-		const keyChoice = await rl.question(chalk.cyan("\nChoice (1-2): "));
-		const useEnv = keyChoice.trim() !== "2";
-
+		let useEnv = true;
 		let apiKeyField: Record<string, string> = {};
-		if (useEnv) {
-			const envVarName = `${providerId.toUpperCase().replace(/-/g, "_")}_API_KEY`;
-			apiKeyField = { apiKeyEnv: envVarName };
-			console.log(chalk.dim(`\nUsing environment variable: ${envVarName}`));
+		if (requiresApiKey) {
+			console.log(
+				`\n${badge(
+					"2. How would you like to provide your API key?",
+					undefined,
+					"info",
+				)}`,
+			);
+			console.log("  1) Environment variable (recommended)");
+			console.log("  2) Direct in config (not recommended)");
+
+			const keyChoice = await rl.question(chalk.cyan("\nChoice (1-2): "));
+			useEnv = keyChoice.trim() !== "2";
+
+			if (useEnv) {
+				const envVarName = `${providerId
+					.toUpperCase()
+					.replace(/-/g, "_")}_API_KEY`;
+				apiKeyField = { apiKeyEnv: envVarName };
+				console.log(chalk.dim(`\nUsing environment variable: ${envVarName}`));
+			} else {
+				const apiKey = await rl.question(chalk.cyan("\nEnter API key: "));
+				apiKeyField = { apiKey: apiKey.trim() };
+			}
 		} else {
-			const apiKey = await rl.question(chalk.cyan("\nEnter API key: "));
-			apiKeyField = { apiKey: apiKey.trim() };
+			useEnv = false;
+			console.log(
+				chalk.dim("\nLocal providers do not require API keys. Skipping step."),
+			);
 		}
 
 		// Step 3: Use file references for prompts
@@ -389,6 +422,270 @@ You are a helpful AI coding assistant.
 		}
 		console.log(muted("  3. Run: composer models list"));
 		console.log(muted('  4. Start using: composer "your prompt"\n'));
+
+		rl.close();
+	} catch (error) {
+		rl.close();
+		throw error;
+	}
+}
+
+type LocalProviderTemplate = {
+	id: string;
+	name: string;
+	baseUrl: string;
+	api: string;
+	model: {
+		id: string;
+		name: string;
+		contextWindow: number;
+		maxTokens: number;
+	};
+};
+
+const LOCAL_PROVIDER_TEMPLATES: Record<string, LocalProviderTemplate> = {
+	lmstudio: {
+		id: "lmstudio",
+		name: "LM Studio (local)",
+		baseUrl: "http://127.0.0.1:1234/v1",
+		api: "openai-responses",
+		model: {
+			id: "lmstudio/gemma-3n",
+			name: "Gemma 3n (local)",
+			contextWindow: 200_000,
+			maxTokens: 8192,
+		},
+	},
+	ollama: {
+		id: "ollama",
+		name: "Ollama (local)",
+		baseUrl: "http://localhost:11434/v1",
+		api: "openai-responses",
+		model: {
+			id: "ollama/llama3.1",
+			name: "Llama 3.1 (local)",
+			contextWindow: 128_000,
+			maxTokens: 8192,
+		},
+	},
+};
+
+interface LocalConfigFile {
+	$schema?: string;
+	providers?: Array<{
+		id: string;
+		name: string;
+		api: string;
+		baseUrl: string;
+		models: Array<{
+			id: string;
+			name: string;
+			contextWindow: number;
+			maxTokens: number;
+			input?: Array<"text" | "image">;
+		}>;
+	}>;
+}
+
+function loadLocalConfig(path: string): LocalConfigFile {
+	if (!existsSync(path)) {
+		return {
+			$schema: "https://composer-cli.dev/config.schema.json",
+			providers: [],
+		};
+	}
+	const raw = readFileSync(path, "utf-8");
+	try {
+		const parsed = parseJsonc(raw, [], {
+			allowTrailingComma: true,
+			disallowComments: false,
+		});
+		if (!parsed || typeof parsed !== "object") {
+			return {
+				$schema: "https://composer-cli.dev/config.schema.json",
+				providers: [],
+			};
+		}
+		return parsed as LocalConfigFile;
+	} catch (error) {
+		throw new Error(
+			`Failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+function upsertLocalProvider(
+	config: LocalConfigFile,
+	provider: LocalProviderTemplate,
+	overrides: {
+		id: string;
+		name: string;
+		baseUrl: string;
+		modelId: string;
+		modelName: string;
+		contextWindow: number;
+		maxTokens: number;
+	},
+): void {
+	if (!Array.isArray(config.providers)) {
+		config.providers = [];
+	}
+	const entry = {
+		id: overrides.id,
+		name: overrides.name,
+		api: provider.api,
+		baseUrl: overrides.baseUrl,
+		models: [
+			{
+				id: overrides.modelId,
+				name: overrides.modelName,
+				contextWindow: overrides.contextWindow,
+				maxTokens: overrides.maxTokens,
+				input: ["text"],
+			},
+		],
+	};
+	const existingIndex = config.providers.findIndex(
+		(p) => p?.id === overrides.id,
+	);
+	if (existingIndex >= 0) {
+		config.providers[existingIndex] = entry;
+	} else {
+		config.providers.push(entry);
+	}
+}
+
+async function checkLocalEndpoint(
+	name: string,
+	baseUrl: string,
+): Promise<string> {
+	try {
+		const url = new URL(baseUrl);
+		url.pathname = "/models";
+		const response = await fetch(url.toString(), { method: "GET" });
+		if (response.ok) {
+			return `${badge(name, undefined, "success")} ${chalk.dim(
+				`responded with ${response.status}`,
+			)}`;
+		}
+		return `${badge(name, undefined, "warn")} ${chalk.dim(
+			`HTTP ${response.status}`,
+		)}`;
+	} catch (error) {
+		return `${badge(name, undefined, "danger")} ${chalk.dim(
+			error instanceof Error ? error.message : String(error),
+		)}`;
+	}
+}
+
+export async function handleConfigLocal(): Promise<void> {
+	console.log(sectionHeading("🖥️ Local provider helper"));
+	const readline = await import("node:readline/promises");
+	const rl = readline.createInterface({
+		input: process.stdin,
+		output: process.stdout,
+	});
+
+	try {
+		console.log("  1) Add LM Studio provider");
+		console.log("  2) Add Ollama provider");
+		console.log("  3) Check local endpoints");
+		console.log("  4) Cancel");
+		const choice = (await rl.question(chalk.cyan("\nChoice (1-4): "))).trim();
+
+		if (choice === "4") {
+			console.log(muted("\nCancelled."));
+			rl.close();
+			return;
+		}
+
+		if (choice === "3") {
+			const targets = [
+				{ name: "LM Studio", url: LOCAL_PROVIDER_TEMPLATES.lmstudio.baseUrl },
+				{ name: "Ollama", url: LOCAL_PROVIDER_TEMPLATES.ollama.baseUrl },
+			];
+			for (const target of targets) {
+				console.log(await checkLocalEndpoint(target.name, target.url));
+			}
+			rl.close();
+			return;
+		}
+
+		const templateKey = choice === "2" ? "ollama" : "lmstudio";
+		const template = LOCAL_PROVIDER_TEMPLATES[templateKey];
+
+		const scope = (
+			await rl.question(
+				chalk.cyan(
+					"\nSave provider to:\n  1) Project (.composer/local.json)\n  2) Home (~/.composer/local.json)\n\nChoice (1-2): ",
+				),
+			)
+		).trim();
+		const targetDir =
+			scope === "2"
+				? join(homedir(), ".composer")
+				: join(process.cwd(), ".composer");
+		mkdirSync(targetDir, { recursive: true });
+		const localPath = join(targetDir, "local.json");
+		const config = loadLocalConfig(localPath);
+
+		const providerId =
+			(
+				await rl.question(chalk.cyan(`\nProvider id (${template.id}): `))
+			).trim() || template.id;
+		const providerName =
+			(
+				await rl.question(chalk.cyan(`Provider name (${template.name}): `))
+			).trim() || template.name;
+		const baseUrl =
+			(
+				await rl.question(chalk.cyan(`Base URL (${template.baseUrl}): `))
+			).trim() || template.baseUrl;
+		const modelId =
+			(
+				await rl.question(chalk.cyan(`Model id (${template.model.id}): `))
+			).trim() || template.model.id;
+		const modelName =
+			(
+				await rl.question(chalk.cyan(`Model name (${template.model.name}): `))
+			).trim() || template.model.name;
+		const contextWindowAnswer = (
+			await rl.question(
+				chalk.cyan(`Context window (${template.model.contextWindow}): `),
+			)
+		).trim();
+		const maxTokensAnswer = (
+			await rl.question(
+				chalk.cyan(`Max output tokens (${template.model.maxTokens}): `),
+			)
+		).trim();
+		const contextWindow =
+			Number.parseInt(contextWindowAnswer, 10) || template.model.contextWindow;
+		const maxTokens =
+			Number.parseInt(maxTokensAnswer, 10) || template.model.maxTokens;
+
+		upsertLocalProvider(config, template, {
+			id: providerId,
+			name: providerName,
+			baseUrl,
+			modelId,
+			modelName,
+			contextWindow,
+			maxTokens,
+		});
+		if (!config.$schema) {
+			config.$schema = "https://composer-cli.dev/config.schema.json";
+		}
+		writeFileSync(localPath, JSON.stringify(config, null, 2));
+		console.log(`\n${badge("Updated local config", localPath, "success")}`);
+		console.log(
+			muted(
+				"Reload your models (/model) after starting the local runtime to use the new provider.",
+			),
+		);
+		console.log(
+			muted("Tip: run `composer config local` again to check connectivity."),
+		);
 
 		rl.close();
 	} catch (error) {

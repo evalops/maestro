@@ -12,7 +12,9 @@ import {
 	type ConfigInspection,
 	type ConfigValidationResult,
 	getAliases,
+	getRegisteredModels,
 	inspectConfig,
+	isLocalBaseUrl,
 	reloadModelConfig,
 	resolveAlias,
 	validateConfig,
@@ -429,6 +431,78 @@ describe("Config Features", () => {
 			expect(provider).toBeDefined();
 			expect(provider?.name).toBe("Test Provider");
 			expect(provider?.modelCount).toBe(2);
+		});
+	});
+
+	describe("Local provider detection", () => {
+		it("should mark localhost providers as local in inspection", () => {
+			const configPath = join(testDir, "local-provider.json");
+			const config = {
+				providers: [
+					{
+						id: "lmstudio",
+						name: "LM Studio",
+						baseUrl: "http://127.0.0.1:1234/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "lmstudio/gemma",
+								name: "Gemma",
+								contextWindow: 200000,
+								maxTokens: 8192,
+							},
+						],
+					},
+				],
+			};
+
+			writeFileSync(configPath, JSON.stringify(config));
+			process.env.COMPOSER_CONFIG = configPath;
+			reloadModelConfig();
+
+			const inspection = inspectConfig();
+			const provider = inspection.providers.find((p) => p.id === "lmstudio");
+			expect(provider).toBeDefined();
+			expect(provider?.isLocal).toBe(true);
+		});
+
+		it("should set isLocal flag on registered models with localhost base URLs", () => {
+			const configPath = join(testDir, "local-model.json");
+			const config = {
+				providers: [
+					{
+						id: "custom",
+						name: "Custom",
+						baseUrl: "https://api.example.com/v1",
+						api: "openai-responses",
+						models: [
+							{
+								id: "custom/local",
+								name: "Local override",
+								baseUrl: "http://localhost:7777/v1",
+								contextWindow: 100000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				],
+			};
+
+			writeFileSync(configPath, JSON.stringify(config));
+			process.env.COMPOSER_CONFIG = configPath;
+			reloadModelConfig();
+
+			const models = getRegisteredModels().filter(
+				(model) => model.id === "custom/local" && model.provider === "custom",
+			);
+			expect(models).toHaveLength(1);
+			expect(models[0]?.isLocal).toBe(true);
+		});
+
+		it("should detect localhost URLs via helper", () => {
+			expect(isLocalBaseUrl("http://localhost:11434/v1")).toBe(true);
+			expect(isLocalBaseUrl("http://127.0.0.1")).toBe(true);
+			expect(isLocalBaseUrl("https://api.example.com")).toBe(false);
 		});
 	});
 });
