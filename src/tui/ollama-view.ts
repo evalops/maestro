@@ -1,9 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import chalk from "chalk";
 import type { RegisteredModel } from "../models/registry.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
-
 interface OllamaViewOptions {
 	chatContainer: Container;
 	ui: TUI;
@@ -20,6 +19,13 @@ interface OllamaCommandResult {
 	missingCli: boolean;
 }
 
+interface OllamaListEntry {
+	name: string;
+	size?: number;
+	digest?: string;
+	modified_at?: string;
+}
+
 export class OllamaView {
 	private static readonly POPULAR_MODELS = [
 		"llama3.2",
@@ -27,10 +33,12 @@ export class OllamaView {
 		"qwen2.5",
 		"phi3",
 	];
+	private static readonly LIST_CACHE_TTL = 30_000;
+	private listCache?: { timestamp: number; entries: OllamaListEntry[] };
 
 	constructor(private readonly options: OllamaViewOptions) {}
 
-	handleOllamaCommand(rawInput: string): void {
+	async handleOllamaCommand(rawInput: string): Promise<void> {
 		const argumentText = rawInput.replace(/^\/ollama\b/i, "").trim();
 		if (!argumentText || argumentText.toLowerCase() === "help") {
 			this.renderUsage();
@@ -43,7 +51,7 @@ export class OllamaView {
 
 		switch (action) {
 			case "list":
-				this.runAndRender("Installed Ollama models", ["list"]);
+				await this.renderInventory();
 				return;
 			case "ps":
 				this.runAndRender("Running Ollama models", ["ps"]);
@@ -57,7 +65,7 @@ export class OllamaView {
 					);
 					return;
 				}
-				this.runAndRender(`Pulling ${rest.join(" ")}`, ["pull", ...rest]);
+				await this.streamPull(rest);
 				return;
 			case "show":
 				if (rest.length === 0) {
@@ -71,12 +79,21 @@ export class OllamaView {
 				return;
 			case "use":
 				if (rest.length === 0) {
+					const available = this.getLocalModelNames();
+					const hint = available.length
+						? `Available: ${available.slice(0, 5).join(", ")}${
+								available.length > 5 ? "…" : ""
+							}`
+						: "Configure a local provider via /config local.";
 					this.options.showInfoMessage(
-						"Usage: /ollama use <model> (accepts provider/model)",
+						`Usage: /ollama use <model> (accepts provider/model)\n${hint}`,
 					);
 					return;
 				}
 				this.handleUseCommand(rest.join(" "));
+				return;
+			case "doctor":
+				await this.handleDoctorCommand();
 				return;
 			default:
 				this.options.showInfoMessage(
@@ -89,9 +106,7 @@ export class OllamaView {
 	private runAndRender(summary: string, args: string[]): void {
 		const result = this.runOllama(args);
 		if (result.missingCli) {
-			this.options.showErrorMessage(
-				"Ollama CLI not found. Install it from https://ollama.com/download and ensure it's on your PATH.",
-			);
+			this.showMissingCliError();
 			return;
 		}
 
@@ -108,6 +123,164 @@ export class OllamaView {
 		}
 
 		this.renderText(`${heading}\n\n${body.trimEnd()}`);
+	}
+
+	private renderInventory(): void {
+		const inventory = this.getCachedInventory();
+		if (inventory === null) {
+			return;
+		}
+		if (!inventory) {
+			this.runAndRender("Installed Ollama models", ["list"]);
+			return;
+		}
+
+		const localIndex = this.buildLocalModelIndex();
+		const lines = inventory.entries.map((entry) => {
+			const ready = this.isEntryReady(entry, localIndex);
+			const marker = ready ? chalk.green("●") : chalk.dim("○");
+			const size = entry.size
+				? chalk.cyan(this.formatBytes(entry.size))
+				: chalk.dim("?");
+			const status = ready
+				? chalk.green("ready")
+				: chalk.dim("pull to configure");
+			return `${marker} ${entry.name.padEnd(24)} ${size.padStart(8)}  ${status}`;
+		});
+
+		const freshness = this.listCache
+			? chalk.dim(
+					`cached ${Math.round((Date.now() - this.listCache.timestamp) / 1000)}s ago`,
+				)
+			: "";
+		const header = `${chalk.bold("Installed Ollama models (JSON)")}${
+			freshness ? ` ${freshness}` : ""
+		}`;
+		const readyHint = chalk.dim(
+			`Composer-ready models: ${localIndex.readyNames.size || localIndex.readyTailNames.size ? "highlighted" : "none"}`,
+		);
+		this.renderText(`${header}\n${readyHint}\n\n${lines.join("\n")}`);
+	}
+
+	private getCachedInventory(
+		forceRefresh = false,
+	): { entries: OllamaListEntry[] } | null | undefined {
+		if (!forceRefresh && this.listCache) {
+			const fresh =
+				Date.now() - this.listCache.timestamp < OllamaView.LIST_CACHE_TTL;
+			if (fresh) {
+				return { entries: this.listCache.entries };
+			}
+		}
+
+		const result = this.runOllama(["list", "--json"]);
+		if (result.missingCli) {
+			this.showMissingCliError();
+			return null;
+		}
+		if (!result.ok || !result.stdout.trim()) {
+			return undefined;
+		}
+		try {
+			const parsed = JSON.parse(result.stdout) as OllamaListEntry[];
+			this.listCache = { timestamp: Date.now(), entries: parsed };
+			return { entries: parsed };
+		} catch (error) {
+			this.options.showErrorMessage(
+				`Failed to parse ollama list output: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return undefined;
+		}
+	}
+
+	private buildLocalModelIndex(): {
+		readyNames: Set<string>;
+		readyTailNames: Set<string>;
+	} {
+		const readyNames = new Set<string>();
+		const readyTailNames = new Set<string>();
+		for (const model of this.options.getRegisteredModels()) {
+			if (!model.isLocal) continue;
+			const lowerId = model.id.toLowerCase();
+			readyNames.add(lowerId);
+			const tail = lowerId.split("/").pop();
+			if (tail) {
+				readyTailNames.add(tail);
+			}
+		}
+		return { readyNames, readyTailNames };
+	}
+
+	private isEntryReady(
+		entry: OllamaListEntry,
+		index: { readyNames: Set<string>; readyTailNames: Set<string> },
+	): boolean {
+		const name = entry.name.toLowerCase();
+		return (
+			index.readyNames.has(name) ||
+			index.readyNames.has(`ollama/${name}`) ||
+			index.readyTailNames.has(name)
+		);
+	}
+
+	private formatBytes(bytes: number): string {
+		if (!Number.isFinite(bytes)) {
+			return "?";
+		}
+		if (bytes < 1024) return `${bytes}B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+		if (bytes < 1024 * 1024 * 1024)
+			return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+	}
+
+	private async streamPull(modelParts: string[]): Promise<void> {
+		return await new Promise((resolve) => {
+			const heading = `${chalk.bold(`Pulling ${modelParts.join(" ")}`)}\n${chalk.dim(
+				`$ ollama pull ${modelParts.join(" ")}`,
+			)}`;
+			const textComponent = new Text("", 1, 0);
+			this.options.chatContainer.addChild(new Spacer(1));
+			this.options.chatContainer.addChild(textComponent);
+			textComponent.setText(`${heading}\n\nStarting download…`);
+			this.options.ui.requestRender();
+
+			const child = spawn("ollama", ["pull", ...modelParts], {
+				cwd: process.cwd(),
+				env: process.env,
+			});
+			let buffer = "";
+			const update = (chunk: Buffer) => {
+				buffer += chunk.toString();
+				textComponent.setText(`${heading}\n\n${buffer.trimEnd()}`);
+				this.options.ui.requestRender();
+			};
+			child.stdout?.on("data", update);
+			child.stderr?.on("data", update);
+			child.on("error", (error) => {
+				textComponent.setText(
+					`${heading}\n\n${chalk.red(
+						error instanceof Error ? error.message : String(error),
+					)}`,
+				);
+				this.options.ui.requestRender();
+				resolve();
+			});
+			child.on("close", (code) => {
+				const status =
+					code === 0 ? chalk.green("Complete") : chalk.red("Failed");
+				const tail = buffer.trim().length
+					? buffer.trimEnd()
+					: code === 0
+						? "Model is ready to use."
+						: "Command exited without output.";
+				textComponent.setText(`${heading}\n\n${status}\n${tail}`);
+				this.options.ui.requestRender();
+				resolve();
+			});
+		});
 	}
 
 	private runOllama(args: string[]): OllamaCommandResult {
@@ -146,7 +319,8 @@ Use /ollama list to view installed models.
 Use /ollama pull <model> to download one (e.g. /ollama pull llama3).
 Use /ollama ps to see currently running models.
 Use /ollama show <model> to inspect metadata.
-Use /ollama use <model> to switch Composer to a local model.`;
+Use /ollama use <model> to switch Composer to a local model.
+Use /ollama doctor to diagnose daemon + disk health.`;
 		this.renderText(message);
 	}
 
@@ -192,6 +366,85 @@ Now using ${match.id} (${match.providerName}).`;
 			);
 		}
 		return undefined;
+	}
+
+	private getLocalModelNames(): string[] {
+		return this.options
+			.getRegisteredModels()
+			.filter((model) => model.isLocal)
+			.map((model) => model.id)
+			.sort();
+	}
+
+	private async handleDoctorCommand(): Promise<void> {
+		const lines: string[] = [];
+		const cli = this.runOllama(["version"]);
+		const cliStatus = cli.ok
+			? chalk.green("available")
+			: chalk.red(`missing${cli.stderr ? ` (${cli.stderr})` : ""}`);
+		lines.push(`${chalk.bold("CLI")}: ${cliStatus}`);
+		const daemon = await this.checkDaemon();
+		lines.push(
+			`${chalk.bold("Daemon")}: ${daemon.ok ? chalk.green(daemon.message) : chalk.red(daemon.message)}`,
+		);
+		if (this.listCache) {
+			lines.push(
+				chalk.dim(
+					`Cached inventory: ${this.listCache.entries.length} models (age ${Math.round((Date.now() - this.listCache.timestamp) / 1000)}s)`,
+				),
+			);
+		}
+		const disk = this.runSystemCommand(["df", "-h", process.cwd()]);
+		if (disk) {
+			lines.push(`${chalk.bold("Disk")}:\n${disk}`);
+		}
+		this.renderText(`${chalk.bold("Ollama diagnostics")}\n${lines.join("\n")}`);
+	}
+
+	private async checkDaemon(): Promise<{ ok: boolean; message: string }> {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 2000);
+		try {
+			const response = await fetch("http://127.0.0.1:11434/api/version", {
+				method: "GET",
+				signal: controller.signal,
+			});
+			clearTimeout(timeout);
+			if (!response.ok) {
+				return { ok: false, message: `HTTP ${response.status}` };
+			}
+			const body = await response.text();
+			return { ok: true, message: body.trim() || "reachable" };
+		} catch (error) {
+			clearTimeout(timeout);
+			return {
+				ok: false,
+				message:
+					error instanceof Error ? error.message : String(error ?? "offline"),
+			};
+		}
+	}
+
+	private runSystemCommand(args: string[]): string | undefined {
+		try {
+			const result = spawnSync(args[0], args.slice(1), {
+				cwd: process.cwd(),
+				encoding: "utf-8",
+			});
+			if ((result.status ?? 0) !== 0) {
+				return undefined;
+			}
+			const lines = (result.stdout ?? "").trim().split("\n");
+			return lines.slice(0, 3).join("\n");
+		} catch {
+			return undefined;
+		}
+	}
+
+	private showMissingCliError(): void {
+		this.options.showErrorMessage(
+			"Ollama CLI not found. Install it from https://ollama.com/download and ensure it's on your PATH.",
+		);
 	}
 
 	private renderText(body: string): void {

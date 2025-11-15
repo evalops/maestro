@@ -4,13 +4,27 @@ import { Text } from "../src/tui-lib/components/text.js";
 import { Container, type TUI } from "../src/tui-lib/tui.js";
 import { OllamaView } from "../src/tui/ollama-view.js";
 
-vi.mock("node:child_process", () => ({
-	spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
-}));
+vi.mock("node:child_process", () => {
+	const { EventEmitter } = require("node:events");
+	return {
+		spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
+		spawn: vi.fn(() => {
+			const stdout = new EventEmitter();
+			const stderr = new EventEmitter();
+			const emitter = new EventEmitter();
+			return {
+				stdout,
+				stderr,
+				on: emitter.on.bind(emitter),
+				emit: emitter.emit.bind(emitter),
+			};
+		}),
+	};
+});
 
 import { spawnSync } from "node:child_process";
 
-const mockSpawn = vi.mocked(spawnSync);
+const mockSpawnSync = vi.mocked(spawnSync);
 
 const LOCAL_MODELS: RegisteredModel[] = [
 	{
@@ -72,12 +86,26 @@ const createView = (models: RegisteredModel[] = LOCAL_MODELS) => {
 describe("OllamaView", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockSpawn.mockReturnValue({ status: 0, stdout: "", stderr: "" } as any);
+		mockSpawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "" } as any);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				() =>
+					Promise.resolve({
+						ok: true,
+						text: async () => "v1.0",
+					}) as Response,
+			),
+		);
 	});
 
-	it("renders usage when no arguments are provided", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("renders usage when no arguments are provided", async () => {
 		const { container, view } = createView();
-		view.handleOllamaCommand("/ollama");
+		await view.handleOllamaCommand("/ollama");
 		const text = container.children.find(
 			(component): component is Text => component instanceof Text,
 		);
@@ -86,17 +114,17 @@ describe("OllamaView", () => {
 		expect(rendered).toContain("/ollama use");
 	});
 
-	it("runs ollama list and prints output", () => {
-		mockSpawn.mockReturnValueOnce({
+	it("runs ollama list and prints parsed output", async () => {
+		mockSpawnSync.mockReturnValueOnce({
 			status: 0,
-			stdout: "NAME\nllama3\n",
+			stdout: JSON.stringify([{ name: "llama3", size: 1024 }]),
 			stderr: "",
 		} as any);
 		const { container, view } = createView();
-		view.handleOllamaCommand("/ollama list");
-		expect(mockSpawn).toHaveBeenCalledWith(
+		await view.handleOllamaCommand("/ollama list");
+		expect(mockSpawnSync).toHaveBeenCalledWith(
 			"ollama",
-			["list"],
+			["list", "--json"],
 			expect.objectContaining({ encoding: "utf-8" }),
 		);
 		const text = container.children.find(
@@ -106,51 +134,61 @@ describe("OllamaView", () => {
 		expect(rendered).toContain("llama3");
 	});
 
-	it("suggests popular models when pull target missing", () => {
+	it("suggests popular models when pull target missing", async () => {
 		const { showInfoMessage, view } = createView();
-		view.handleOllamaCommand("/ollama pull");
+		await view.handleOllamaCommand("/ollama pull");
 		expect(showInfoMessage).toHaveBeenCalledWith(
 			expect.stringContaining("Popular models"),
 		);
 	});
 
-	it("supports ollama show", () => {
+	it("supports ollama show", async () => {
 		const { view } = createView();
-		view.handleOllamaCommand("/ollama show llama3");
-		expect(mockSpawn).toHaveBeenCalledWith(
+		await view.handleOllamaCommand("/ollama show llama3");
+		expect(mockSpawnSync).toHaveBeenCalledWith(
 			"ollama",
 			["show", "llama3"],
 			expect.any(Object),
 		);
 	});
 
-	it("switches to a local model via use command", () => {
+	it("switches to a local model via use command", async () => {
 		const { onUseModel, view } = createView();
-		view.handleOllamaCommand("/ollama use llama3");
+		await view.handleOllamaCommand("/ollama use llama3");
 		expect(onUseModel).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "ollama/llama3" }),
 		);
 	});
 
-	it("warns when matching local model is not found", () => {
+	it("warns when matching local model is not found", async () => {
 		const { showInfoMessage, view } = createView([]);
-		view.handleOllamaCommand("/ollama use llama3");
+		await view.handleOllamaCommand("/ollama use llama3");
 		expect(showInfoMessage).toHaveBeenCalledWith(
 			expect.stringContaining("Could not find a local model"),
 		);
 	});
 
-	it("alerts when Ollama CLI is missing", () => {
-		mockSpawn.mockReturnValueOnce({
+	it("alerts when Ollama CLI is missing", async () => {
+		mockSpawnSync.mockReturnValueOnce({
 			status: null,
 			stdout: "",
 			stderr: "",
 			error: Object.assign(new Error("not found"), { code: "ENOENT" }),
 		} as any);
 		const { showErrorMessage, view } = createView();
-		view.handleOllamaCommand("/ollama list");
+		await view.handleOllamaCommand("/ollama list");
 		expect(showErrorMessage).toHaveBeenCalledWith(
 			expect.stringContaining("Ollama CLI not found"),
 		);
+	});
+
+	it("provides doctor diagnostics", async () => {
+		const { container, view } = createView();
+		await view.handleOllamaCommand("/ollama doctor");
+		const text = container.children.find(
+			(component): component is Text => component instanceof Text,
+		);
+		const rendered = text?.render(120).join("\n") ?? "";
+		expect(rendered).toContain("Ollama diagnostics");
 	});
 });
