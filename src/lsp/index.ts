@@ -67,21 +67,48 @@ const brokenServers = new Set<string>();
 
 export const lspEvents = new EventEmitter();
 
-export function configureServers(config: LspServerConfig[]): void {
+export async function configureServers(
+	config: LspServerConfig[],
+): Promise<void> {
 	servers = config;
-	// Clear clients when reconfiguring (for tests)
-	for (const client of clients) {
-		try {
-			if (client.process && !client.process.killed) {
-				client.process.kill("SIGKILL");
-			}
-		} catch {
-			// Ignore
-		}
-	}
+	// Properly shutdown all existing clients
+	await shutdownAllClients();
+}
+
+async function shutdownAllClients(): Promise<void> {
+	const clientsToShutdown = [...clients];
 	clients.length = 0;
 	spawning.clear();
 	brokenServers.clear();
+
+	await Promise.allSettled(
+		clientsToShutdown.map(async (client) => {
+			// Try proper shutdown with short timeout
+			const shutdownPromise = (async () => {
+				try {
+					await client.connection.sendRequest("shutdown", null, 500);
+					await client.connection.sendNotification("exit", {});
+				} catch {
+					// Server didn't respond, will force kill
+				}
+			})();
+
+			// Race between proper shutdown and timeout
+			await Promise.race([
+				shutdownPromise,
+				new Promise((resolve) => setTimeout(resolve, 600)),
+			]);
+
+			// Force kill if still alive
+			try {
+				if (client.process && !client.process.killed) {
+					client.process.kill("SIGKILL");
+				}
+			} catch {
+				// Process already dead
+			}
+		}),
+	);
 }
 
 export async function touchFile(file: string): Promise<void> {
@@ -106,9 +133,11 @@ export async function touchFile(file: string): Promise<void> {
 				// Mark file as opened only after successful notification
 				handle.openFiles.set(file, version);
 			} catch (error: any) {
-				// Connection closed or process dead
+				// Connection closed or process dead - remove from openFiles
+				handle.openFiles.delete(file);
 				if (error?.code === "EPIPE" || error?.message?.includes("socket")) {
-					return; // Silently ignore dead connections
+					// Connection dead - it will be cleaned up by onClose/onError handlers
+					return;
 				}
 				console.error(`[lsp] Failed to send didOpen for ${file}:`, error);
 			}
@@ -252,7 +281,8 @@ export async function changeFile(file: string, content: string): Promise<void> {
 			} catch (error: any) {
 				// Connection closed or process dead
 				if (error?.code === "EPIPE" || error?.message?.includes("socket")) {
-					return; // Silently ignore dead connections
+					// Connection dead - it will be cleaned up by onClose/onError handlers
+					return;
 				}
 				console.error(`[lsp] Failed to send change for ${file}:`, error);
 			}
@@ -316,19 +346,38 @@ async function ensureClientsForFile(file: string) {
 
 async function spawnClient(server: LspServerConfig, root: string, key: string) {
 	try {
-		let spawnFailed = false;
-
 		const proc = spawn(server.command, server.args ?? [], {
 			cwd: root,
 			env: { ...process.env, ...server.env },
 		});
 
-		// Handle spawn errors (fires immediately if command doesn't exist)
-		proc.on("error", (err) => {
-			brokenServers.add(key);
-			spawnFailed = true;
-			console.error(`[lsp] Failed to spawn ${server.id}:`, err);
+		// Wait for spawn to complete or fail (no race condition)
+		const spawnResult = await new Promise<boolean>((resolve) => {
+			// If process emits error, spawn failed
+			proc.on("error", (err) => {
+				brokenServers.add(key);
+				console.error(`[lsp] Failed to spawn ${server.id}:`, err);
+				resolve(false);
+			});
+
+			// If stdout is readable, spawn succeeded
+			proc.stdout.once("readable", () => resolve(true));
+
+			// If process exits immediately, spawn failed
+			proc.once("exit", (code) => {
+				if (code !== null && code !== 0) {
+					brokenServers.add(key);
+					resolve(false);
+				}
+			});
+
+			// Timeout fallback - assume success if no error within 100ms
+			setTimeout(() => resolve(true), 100);
 		});
+
+		if (!spawnResult) {
+			return undefined;
+		}
 
 		// Prevent unhandled pipe errors from stdin
 		proc.stdin.on("error", (err) => {
@@ -338,13 +387,6 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 			}
 			console.error(`[lsp] stdin error for ${server.id}:`, err);
 		});
-
-		// Brief check if spawn failed immediately (e.g., ENOENT)
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		if (spawnFailed) {
-			return undefined;
-		}
 
 		// createMessageConnection(inputStream, outputStream)
 		// inputStream = where we READ from = proc.stdout
@@ -371,11 +413,20 @@ async function spawnClient(server: LspServerConfig, root: string, key: string) {
 		);
 		connection.onClose(() => {
 			brokenServers.add(key);
-			// Don't try to dispose - connection already closed
+			// Remove from clients array to prevent memory leak
+			const index = clients.indexOf(handle);
+			if (index >= 0) {
+				clients.splice(index, 1);
+			}
 		});
 		connection.onError((error) => {
 			console.error(`[lsp] Connection error for ${server.id}:`, error);
 			brokenServers.add(key);
+			// Remove from clients array
+			const index = clients.indexOf(handle);
+			if (index >= 0) {
+				clients.splice(index, 1);
+			}
 		});
 		connection.listen();
 		await connection.sendRequest("initialize", {

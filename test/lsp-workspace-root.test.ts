@@ -12,8 +12,8 @@ describe("LSP Workspace Root Integration", () => {
 		mkdirSync(TEST_DIR, { recursive: true });
 	});
 
-	afterEach(() => {
-		configureServers([]);
+	afterEach(async () => {
+		await configureServers([]);
 	});
 
 	it("should resolve workspace root with package.json", async () => {

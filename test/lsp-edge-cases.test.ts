@@ -34,17 +34,17 @@ describe("LSP Edge Cases", () => {
 				// Ignore
 			}
 		}
-		configureServers([]);
+		await configureServers([]);
 	});
 
 	it("should handle touchFile on non-existent file", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const nonExistent = join(TEST_DIR, "non-existent.ts");
 		await expect(touchFile(nonExistent)).resolves.toBeUndefined();
 	});
 
 	it("should handle changeFile without opening first", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const testFile = join(TEST_DIR, "not-opened.ts");
 		writeFileSync(testFile, "const x = 1;");
 
@@ -52,14 +52,14 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle closeFile on non-opened file", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const testFile = join(TEST_DIR, "not-opened.ts");
 
 		await expect(closeFile(testFile)).resolves.toBeUndefined();
 	});
 
 	it("should handle hover with no servers configured", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const testFile = join(TEST_DIR, "test.ts");
 		writeFileSync(testFile, "const x = 1;");
 
@@ -68,13 +68,13 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle workspaceSymbol with no clients", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const results = await workspaceSymbol("test");
 		expect(results).toEqual([]);
 	});
 
 	it("should handle documentSymbol with no clients", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const testFile = join(TEST_DIR, "test.ts");
 		writeFileSync(testFile, "const x = 1;");
 
@@ -83,7 +83,7 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle collectDiagnostics with no clients", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const results = await collectDiagnostics();
 		expect(results).toEqual({});
 	});
@@ -100,7 +100,7 @@ describe("LSP Edge Cases", () => {
 			extensions: [".ts"],
 		};
 
-		configureServers([config]);
+		await configureServers([config]);
 
 		await expect(touchFile(testFile)).resolves.toBeUndefined();
 
@@ -117,7 +117,7 @@ describe("LSP Edge Cases", () => {
 		};
 
 		configureRootResolver(resolver);
-		configureServers([]);
+		await configureServers([]);
 
 		// Root resolver is configured, touchFile should work
 		const testFile = join(TEST_DIR, "test.ts");
@@ -172,7 +172,7 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle concurrent touchFile calls", async () => {
-		configureServers([]);
+		await configureServers([]);
 
 		const files = [
 			join(TEST_DIR, "file1.ts"),
@@ -191,7 +191,7 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle rapid changeFile calls", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const testFile = join(TEST_DIR, "rapid.ts");
 		writeFileSync(testFile, "const x = 1;");
 
@@ -205,7 +205,7 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle empty file content", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const testFile = join(TEST_DIR, "empty.ts");
 		writeFileSync(testFile, "");
 
@@ -214,7 +214,7 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle very large file content", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const testFile = join(TEST_DIR, "large.ts");
 		const largeContent = "const x = 1;\n".repeat(10000);
 		writeFileSync(testFile, largeContent);
@@ -224,7 +224,7 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle file paths with special characters", async () => {
-		configureServers([]);
+		await configureServers([]);
 
 		const specialDir = join(TEST_DIR, "special (dir) [test]");
 		mkdirSync(specialDir, { recursive: true });
@@ -236,7 +236,7 @@ describe("LSP Edge Cases", () => {
 	});
 
 	it("should handle relative vs absolute paths", async () => {
-		configureServers([]);
+		await configureServers([]);
 
 		const testFile = join(TEST_DIR, "relative.ts");
 		writeFileSync(testFile, "const x = 1;");

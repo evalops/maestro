@@ -21,7 +21,7 @@ export async function bootstrapLsp(): Promise<void> {
 	const finalServers = applyServerOverrides(defaultServers);
 
 	// Configure servers in LSP
-	configureServers(finalServers);
+	await configureServers(finalServers);
 
 	// Configure blocking severity in safe-mode if specified
 	if (lspConfig.blockingSeverity) {

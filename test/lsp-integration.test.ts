@@ -22,9 +22,10 @@ const FAKE_LSP_PATH = join(
 );
 
 describe("LSP Integration Tests", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		rmSync(TEST_DIR, { recursive: true, force: true });
 		mkdirSync(TEST_DIR, { recursive: true });
+		await configureServers([]);
 	});
 
 	afterEach(async () => {
@@ -41,11 +42,11 @@ describe("LSP Integration Tests", () => {
 			}
 		}
 
-		// Reset configuration
-		configureServers([]);
+		// Reset configuration and shutdown clients
+		await configureServers([]);
 
 		// Allow cleanup time for processes to fully exit
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await new Promise((resolve) => setTimeout(resolve, 200));
 	});
 
 	it("should spawn LSP server and initialize", async () => {

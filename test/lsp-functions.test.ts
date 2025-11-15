@@ -28,7 +28,7 @@ describe("LSP functions", () => {
 		writeFileSync(testFile, "const x = 1;");
 
 		// Mock LSP config - no real servers for this test
-		configureServers([]);
+		await configureServers([]);
 
 		// Since no servers are configured, changeFile should complete without error
 		await expect(changeFile(testFile, "const x = 2;")).resolves.toBeUndefined();
@@ -38,7 +38,7 @@ describe("LSP functions", () => {
 		const testFile = join(TEST_DIR, "test.ts");
 		writeFileSync(testFile, "const x = 1;");
 
-		configureServers([]);
+		await configureServers([]);
 
 		await expect(closeFile(testFile)).resolves.toBeUndefined();
 	});
@@ -52,7 +52,7 @@ describe("LSP functions", () => {
 	});
 
 	it("should return empty array for workspaceSymbol with no clients", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const symbols = await workspaceSymbol("test");
 		expect(symbols).toEqual([]);
 	});
@@ -61,19 +61,19 @@ describe("LSP functions", () => {
 		const testFile = join(TEST_DIR, "test.ts");
 		writeFileSync(testFile, "const x = 1;");
 
-		configureServers([]);
+		await configureServers([]);
 		const symbols = await documentSymbol(testFile);
 		expect(symbols).toEqual([]);
 	});
 
 	it("should return empty diagnostics when no clients are running", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const diagnostics = await collectDiagnostics();
 		expect(diagnostics).toEqual({});
 	});
 
 	it("should return empty clients array when no servers configured", async () => {
-		configureServers([]);
+		await configureServers([]);
 		const clients = await getClients();
 		expect(clients).toEqual([]);
 	});
@@ -94,7 +94,7 @@ describe("LSP functions", () => {
 		const testFile = join(TEST_DIR, "test.ts");
 		writeFileSync(testFile, "const x = 1;");
 
-		configureServers([]);
+		await configureServers([]);
 		await expect(touchFile(testFile)).resolves.toBeUndefined();
 	});
 });
