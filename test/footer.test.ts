@@ -124,11 +124,13 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			const statsLine = rendered[1];
-			// Cumulative: (100000 + 10000) input + (50000 + 5000) output = 165k / 200k = 82.5%
-			expect(statsLine).toContain("82.5%");
+			// Last message input (10k) + all outputs (50k + 5k) = 65k / 200k = 32.5%
+			// But wait - aborted messages should be excluded from lastAssistant
+			// So: first message input (100k) + all outputs (50k + 5k) = 155k / 200k = 77.5%
+			expect(statsLine).toContain("77.5%");
 		});
 
-		it("should ignore cache reads when computing context percentage", () => {
+		it("should include cache reads when computing context percentage", () => {
 			const messages = [
 				createAssistantMessage({
 					input: 2000,
@@ -142,8 +144,9 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			const statsLine = rendered[1];
-			expect(statsLine).toContain("ctx 1.5%");
-			expect(statsLine).not.toContain("ctx 46.5%");
+			// (2k input + 90k cacheRead + 1k output) / 200k = 93k / 200k = 46.5%
+			expect(statsLine).toContain("ctx 46.5%");
+			expect(statsLine).not.toContain("ctx 1.5%");
 		});
 
 		it("should format token counts correctly", () => {
