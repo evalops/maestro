@@ -52,119 +52,95 @@ export class WelcomeAnimation extends Container {
 		const mix = (prev: number, next: number, alpha: number) =>
 			prev * (1 - alpha) + next * alpha;
 
-		const noise = (x: number, y: number) =>
-			Math.sin(x * 0.17 + y * 0.11 + time * 1.3) *
-				Math.cos(x * 0.07 - y * 0.19 + time * 0.9);
-		const starNoise = (x: number, y: number) =>
-			Math.sin(x * 0.9 + y * 1.1 + time * 2.3) *
-				Math.cos(x * 1.3 - y * 0.7 + time * 1.7);
-
-		for (let y = 0; y < height; y++) {
-			for (let x = 0; x < width; x++) {
-				const skyGradient = 0.15 + (y / height) * 0.3;
-				const twinkle = Math.pow(
-					Math.max(0, starNoise(x, y) * 0.5 + Math.random() * 0.15),
-					1.7,
-				);
-				const haze = noise(x * 0.4, y * 0.3) * 0.08;
-				const base = clamp(skyGradient + haze + twinkle, 0, 1);
-				chars[y][x] = twinkle > 0.35 ? "·" : " ";
-				colors[y][x] = base;
+		const staffSpacing = 3;
+		const staffCount = 4;
+		const staffStartY = 5;
+		for (let i = 0; i < staffCount; i++) {
+			const baseY = staffStartY + i * staffSpacing;
+			for (let line = 0; line < 5; line++) {
+				const y = clamp(baseY + line, 0, height - 1);
+				for (let x = 0; x < width; x++) {
+					const waviness = Math.sin((x + time * 20 + i * 10) * 0.05) * 0.3;
+					const offsetY = clamp(y + Math.round(waviness), 0, height - 1);
+					chars[offsetY][x] = chars[offsetY][x] === " " ? "─" : chars[offsetY][x];
+					colors[offsetY][x] = mix(colors[offsetY][x], 0.35 + i * 0.1, 0.6);
+				}
 			}
 		}
 
-		const rays = 6;
-		for (let ray = 0; ray < rays; ray++) {
-			const angle = (Math.PI * 2 * ray) / rays + time * 0.4;
-			const flicker = Math.sin(time * 1.2 + ray) * 0.3 + 1.1;
-			for (let d = 5; d < height * 0.7; d++) {
-				const x = Math.floor(width / 2 + Math.cos(angle) * d * 0.8);
-				const y = Math.floor(height / 2 + Math.sin(angle) * d * 0.4);
+		const divisionHeight = 15;
+		for (let measure = 0; measure < width / 6; measure++) {
+			const x = Math.floor((measure / (width / 6)) * width + Math.sin(time + measure) * 1.5);
+			for (let y = staffStartY - 1; y < staffStartY + divisionHeight; y++) {
 				if (x < 0 || y < 0 || x >= width || y >= height) continue;
-				colors[y][x] = mix(colors[y][x], 0.6 + flicker * 0.2, 0.4);
-				if (chars[y][x] === " ") {
-					chars[y][x] = Math.random() > 0.7 ? "*" : "·";
-				}
+				chars[y][x] = "│";
+				colors[y][x] = mix(colors[y][x], 0.25, 0.5);
 			}
 		}
 
-		const horizonY = height - 4;
-		for (let x = 0; x < width; x++) {
-			const wave =
-				Math.sin(x * 0.2 + time * 0.8) * 0.3 +
-				Math.sin(x * 0.05 + time * 0.3) * 0.2;
-			const crest = Math.floor(horizonY + wave);
-			if (crest >= 0 && crest < height) {
-				chars[crest][x] = wave > 0 ? "≈" : "~";
-				colors[crest][x] = mix(colors[crest][x], 0.4 + wave * 0.2, 0.5);
-			}
-			const shimmer = Math.sin(time * 2 + x * 0.3) * 0.2 + 0.3;
-			if (crest + 1 < height) {
-				chars[crest + 1][x] = "-";
-				colors[crest + 1][x] = mix(
-					colors[crest + 1][x],
-					0.25 + shimmer,
-					0.6,
-				);
-			}
-		}
-
-		const wingBeat = Math.sin(time * 3.4);
-		const wingSpan = 18 + wingBeat * 5;
-		const wingThickness = 5 - wingBeat * 1.2;
-		const birdY = Math.floor(height / 2 + Math.sin(time * 0.9) * 2);
-		const birdX = Math.floor(width / 2 + Math.sin(time * 0.4) * 10);
-		const bodyRadius = 3.5;
-
-		const wingProfile = (x: number) =>
-			Math.exp(-Math.pow((x / wingSpan) * 2, 2)) * wingThickness;
-		const insideWing = (x: number, y: number, flipped: 1 | -1) => {
-			const localX = (x - birdX) * flipped;
-			const localY = y - birdY - Math.sin(time * 4 + localX * 0.2);
-			if (localX < 0 || localX > wingSpan) return false;
-			return Math.abs(localY) < wingProfile(localX);
-		};
-
-		const insideBody = (x: number, y: number) => {
-			const dx = (x - birdX) / bodyRadius;
-			const dy = (y - birdY) / (bodyRadius * 0.8);
-			return dx * dx + dy * dy < 1;
-		};
-
-		const plumeCurve = (tValue: number) =>
-			(
-				Math.sin(tValue * Math.PI * 2 + time * 1.5) * 3 +
-				Math.cos(time * 0.8 + tValue * 3) * 2
+		const noteCount = 18;
+		for (let i = 0; i < noteCount; i++) {
+			const lane = i % staffCount;
+			const laneY = staffStartY + lane * staffSpacing + 2;
+			const x = clamp(
+				Math.floor((i / noteCount) * width * 1.1 + Math.sin(time * 0.6 + i) * 4),
+				0,
+				width - 1,
 			);
-		for (let i = 0; i < 25; i++) {
-			const tValue = (i + (Math.sin(time) + 1) * 0.5) / 25;
-			const px = birdX - 2 - i * 0.9;
-			const py = birdY + plumeCurve(tValue);
-			const x = Math.floor(px + Math.random());
-			const y = Math.floor(py + Math.random());
-			if (x < 0 || y < 0 || x >= width || y >= height) continue;
-			chars[y][x] = ",";
-			colors[y][x] = mix(colors[y][x], 0.35 - tValue * 0.2, 0.7);
+			const yOffset =
+				Math.sin(time * 1.3 + i * 0.9) * 1.5 +
+				Math.cos(x * 0.05 + time * 0.4) * 0.6;
+			const y = clamp(Math.floor(laneY + yOffset), 0, height - 1);
+			const glyph = Math.random() > 0.7 ? "♩" : "●";
+			chars[y][x] = glyph;
+			colors[y][x] = mix(colors[y][x], 0.7, 0.8);
+			const stemLength = 3 + (i % 2);
+			for (let stem = 1; stem <= stemLength; stem++) {
+				const stemY = clamp(y - stem, 0, height - 1);
+				chars[stemY][x + 1] = "│";
+				colors[stemY][x + 1] = mix(colors[stemY][x + 1], 0.5, 0.7);
+			}
 		}
 
-		for (let y = 0; y < height; y++) {
-			for (let x = 0; x < width; x++) {
-				let draw = false;
-				if (insideBody(x, y)) {
-					chars[y][x] = "@";
-					colors[y][x] = mix(colors[y][x], 0.95, 0.8);
-					this.trail.push({ x, y, life: 1 });
-					draw = true;
-				} else if (insideWing(x, y, 1) || insideWing(x, y, -1)) {
-					const edge = Math.abs(y - birdY) / wingThickness;
-					chars[y][x] = edge > 0.8 ? "/" : edge > 0.3 ? "= "[Math.random() > 0.5 ? 0 : 1] : "#";
-					colors[y][x] = mix(colors[y][x], 0.8 - edge * 0.3, 0.9);
-					draw = true;
-				}
-				if (!draw && Math.random() < 0.002) {
-					this.trail.push({ x, y, life: 0.6 });
+		const batonLength = 14;
+		const batonCenterX = width - 12;
+		const batonCenterY = Math.floor(height / 2 + Math.sin(time * 0.8) * 3);
+		const batonAngle = Math.sin(time * 0.9) * 0.4 - 0.8;
+		for (let i = -batonLength; i <= batonLength; i++) {
+			const radius = i / batonLength;
+			const x = Math.floor(batonCenterX + Math.cos(batonAngle) * i);
+			const y = Math.floor(batonCenterY + Math.sin(batonAngle) * i);
+			if (x < 0 || y < 0 || x >= width || y >= height) continue;
+			const char = i === batonLength ? "✧" : "╲╱"[Number(radius > 0)];
+			chars[y][x] = char;
+			colors[y][x] = mix(colors[y][x], 0.9 - Math.abs(radius) * 0.4, 0.6);
+			if (i % 4 === 0 && i !== batonLength) {
+				const sparkX = Math.floor(x - Math.cos(batonAngle) * 2);
+				const sparkY = Math.floor(y - Math.sin(batonAngle) * 2);
+				if (
+					sparkX >= 0 &&
+					sparkY >= 0 &&
+					sparkX < width &&
+					sparkY < height
+				) {
+					chars[sparkY][sparkX] = "·";
+					colors[sparkY][sparkX] = mix(colors[sparkY][sparkX], 0.7, 0.5);
 				}
 			}
+		}
+
+		const floatingSymbols = 8;
+		for (let i = 0; i < floatingSymbols; i++) {
+			const x = Math.floor((i / floatingSymbols) * width);
+			const y = clamp(
+				Math.floor(
+					staffStartY - 2 + Math.sin(time * 0.5 + i) * 6 + Math.cos(x * 0.1) * 1.5,
+				),
+				0,
+				height - 1,
+			);
+			chars[y][x] = "♪";
+			colors[y][x] = mix(colors[y][x], 0.6, 0.7);
 		}
 
 		this.trail = this.trail
@@ -173,9 +149,9 @@ export class WelcomeAnimation extends Container {
 		for (const particle of this.trail) {
 			const { x, y, life } = particle;
 			if (x < 0 || y < 0 || x >= width || y >= height) continue;
-			const char = life > 0.4 ? "*" : life > 0.2 ? "." : "'";
+			const char = life > 0.5 ? "*" : life > 0.25 ? "." : "'";
 			chars[y][x] = char;
-			colors[y][x] = mix(colors[y][x], 0.4 + life * 0.4, 0.6);
+			colors[y][x] = mix(colors[y][x], 0.35 + life * 0.4, 0.6);
 		}
 
 		const lines = chars.map((row, y) =>
