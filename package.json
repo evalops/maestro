@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
+		"prepare": "husky",
     "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "start": "node --enable-source-maps dist/cli.js",
     "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
@@ -58,6 +59,7 @@
     "@types/diff": "^7.0.2",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24.3.0",
+    "husky": "^9.1.7",
     "typescript": "^5.7.3",
     "vitest": "^3.2.4"
   },
