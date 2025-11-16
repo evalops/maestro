@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import type { AgentState, AssistantMessage } from "../agent/types.js";
+import type { AgentState, AssistantMessage, Usage } from "../agent/types.js";
 import {
 	brand,
 	contextualBadge,
@@ -29,11 +29,12 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 	for (const message of state.messages) {
 		if (message.role === "assistant") {
 			const assistantMsg = message as AssistantMessage;
-			totalInput += assistantMsg.usage.input;
-			totalOutput += assistantMsg.usage.output;
-			totalCacheRead += assistantMsg.usage.cacheRead;
-			totalCacheWrite += assistantMsg.usage.cacheWrite;
-			totalCost += assistantMsg.usage.cost.total;
+			const usage = normalizeUsage(assistantMsg.usage);
+			totalInput += usage.input;
+			totalOutput += usage.output;
+			totalCacheRead += usage.cacheRead;
+			totalCacheWrite += usage.cacheWrite;
+			totalCost += usage.cost.total;
 		}
 	}
 
@@ -46,11 +47,9 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 				(m as AssistantMessage).stopReason !== "aborted",
 		) as AssistantMessage | undefined;
 
-	const contextTokens = lastAssistant
-		? lastAssistant.usage.input +
-			lastAssistant.usage.output +
-			lastAssistant.usage.cacheWrite
-		: 0;
+	const contextUsage = normalizeUsage(lastAssistant?.usage);
+	const contextTokens =
+		contextUsage.input + contextUsage.output + contextUsage.cacheWrite;
 	const contextWindow = state.model.contextWindow;
 	const contextPercent =
 		contextWindow > 0
@@ -65,6 +64,39 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 		totalCost,
 		contextPercent,
 		lastAssistant,
+	};
+}
+
+const ZERO_USAGE: Usage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	cost: {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		total: 0,
+	},
+};
+
+function normalizeUsage(usage?: Usage): Usage {
+	if (!usage) {
+		return ZERO_USAGE;
+	}
+	return {
+		input: usage.input ?? 0,
+		output: usage.output ?? 0,
+		cacheRead: usage.cacheRead ?? 0,
+		cacheWrite: usage.cacheWrite ?? 0,
+		cost: {
+			input: usage.cost?.input ?? 0,
+			output: usage.cost?.output ?? 0,
+			cacheRead: usage.cost?.cacheRead ?? 0,
+			cacheWrite: usage.cost?.cacheWrite ?? 0,
+			total: usage.cost?.total ?? 0,
+		},
 	};
 }
 
