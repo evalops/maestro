@@ -120,6 +120,10 @@ export class OllamaView {
 		} else {
 			const details = result.stderr || result.stdout || "Command failed.";
 			body = chalk.red(details.trim().length ? details : "Command failed.");
+			const daemonHint = this.buildDaemonUnavailableHint(details);
+			if (daemonHint) {
+				body = `${body.trimEnd()}\n\n${daemonHint}`;
+			}
 		}
 
 		this.renderText(`${heading}\n\n${body.trimEnd()}`);
@@ -445,6 +449,25 @@ Now using ${match.id} (${match.providerName}).`;
 		this.options.showErrorMessage(
 			"Ollama CLI not found. Install it from https://ollama.com/download and ensure it's on your PATH.",
 		);
+	}
+
+	private buildDaemonUnavailableHint(
+		output: string | undefined,
+	): string | undefined {
+		if (!output) {
+			return undefined;
+		}
+		const patterns = [
+			/ollama server not responding/i,
+			/could not find ollama app/i,
+			/connection refused/i,
+		];
+		if (!patterns.some((pattern) => pattern.test(output))) {
+			return undefined;
+		}
+		return `${chalk.yellow("Hint")}: Launch the Ollama desktop app or run ${chalk.cyan(
+			"ollama serve",
+		)} so the daemon is reachable at http://127.0.0.1:11434.`;
 	}
 
 	private renderText(body: string): void {

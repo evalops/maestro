@@ -182,6 +182,24 @@ describe("OllamaView", () => {
 		);
 	});
 
+	it("adds daemon hint when Ollama app is closed", async () => {
+		const errorResult = {
+			status: 1,
+			stdout: "",
+			stderr: "ollama server not responding - could not find ollama app",
+		} as any;
+		mockSpawnSync
+			.mockReturnValueOnce(errorResult)
+			.mockReturnValueOnce(errorResult);
+		const { container, view } = createView();
+		await view.handleOllamaCommand("/ollama list");
+		const text = container.children.find(
+			(component): component is Text => component instanceof Text,
+		);
+		const rendered = text?.render(120).join("\n") ?? "";
+		expect(rendered).toContain("Launch the Ollama desktop app");
+	});
+
 	it("provides doctor diagnostics", async () => {
 		const { container, view } = createView();
 		await view.handleOllamaCommand("/ollama doctor");
