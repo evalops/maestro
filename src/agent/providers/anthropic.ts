@@ -71,6 +71,16 @@ export async function* streamAnthropic(
 
 	// Convert messages
 	const messages: AnthropicMessage[] = [];
+	const pushMessage = (message: AnthropicMessage): void => {
+		if (typeof message.content === "string") {
+			if (message.content.trim().length === 0) {
+				return;
+			}
+		} else if (Array.isArray(message.content) && message.content.length === 0) {
+			return;
+		}
+		messages.push(message);
+	};
 	for (let i = 0; i < context.messages.length; i++) {
 		const msg = context.messages[i];
 
@@ -91,7 +101,7 @@ export async function* streamAnthropic(
 								},
 							};
 						});
-			messages.push({ role: "user", content });
+			pushMessage({ role: "user", content });
 		} else if (msg.role === "assistant") {
 			const content: any[] = [];
 			for (const c of msg.content) {
@@ -106,7 +116,7 @@ export async function* streamAnthropic(
 					});
 				}
 			}
-			messages.push({ role: "assistant", content });
+			pushMessage({ role: "assistant", content });
 		} else if (msg.role === "toolResult") {
 			// Collect all consecutive toolResult messages into one user message
 			const toolResults: any[] = [];
@@ -157,7 +167,7 @@ export async function* streamAnthropic(
 			i = j - 1;
 
 			// Add a single user message with all tool results
-			messages.push({
+			pushMessage({
 				role: "user",
 				content: toolResults,
 			});
