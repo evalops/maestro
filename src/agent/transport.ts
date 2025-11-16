@@ -26,7 +26,7 @@ export interface ProviderTransportOptions {
  * Calculate cost in USD based on token usage and model pricing.
  *
  * @param usage - Token counts for input, output, cache read, and cache write
- * @param costConfig - Pricing per token for each category (in USD per token)
+ * @param costConfig - Pricing per million tokens for each category (in USD per million tokens)
  * @returns Total cost in USD
  */
 function calculateCost(
@@ -43,10 +43,10 @@ function calculateCost(
 		cacheWrite: number;
 	},
 ): number {
-	const inputCost = (usage.input || 0) * costConfig.input;
-	const outputCost = (usage.output || 0) * costConfig.output;
-	const cacheReadCost = (usage.cacheRead || 0) * costConfig.cacheRead;
-	const cacheWriteCost = (usage.cacheWrite || 0) * costConfig.cacheWrite;
+	const inputCost = ((usage.input || 0) * costConfig.input) / 1_000_000;
+	const outputCost = ((usage.output || 0) * costConfig.output) / 1_000_000;
+	const cacheReadCost = ((usage.cacheRead || 0) * costConfig.cacheRead) / 1_000_000;
+	const cacheWriteCost = ((usage.cacheWrite || 0) * costConfig.cacheWrite) / 1_000_000;
 
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
