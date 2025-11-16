@@ -21,6 +21,7 @@ interface CommandRegistryOptions {
 	shareFeedback: () => void;
 	handleMention: (input: string) => void;
 	showHelp: () => void;
+	handleUpdate: () => void | Promise<void>;
 	handlePlan: (input: string) => void;
 	handlePreview: (input: string) => void;
 	handleRun: (input: string) => void;
@@ -52,6 +53,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			shareFeedback: opts.shareFeedback,
 			mention: opts.handleMention,
 			help: opts.showHelp,
+			update: opts.handleUpdate,
 			plan: opts.handlePlan,
 			preview: opts.handlePreview,
 			run: opts.handleRun,
