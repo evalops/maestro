@@ -169,6 +169,14 @@ export function createCommandRegistry({
 		},
 		{
 			command: {
+				name: "config",
+				description: "Validate and inspect Composer configuration",
+			},
+			matches: equals("config"),
+			execute: () => handlers.config(),
+		},
+		{
+			command: {
 				name: "diag",
 				description: "Show provider/model/API key diagnostics",
 			},
