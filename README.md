@@ -295,7 +295,6 @@ New slash commands or views should ship with tests in `test/`. Use the eval runn
 
 ## Planned Features
 
-- **Custom/local models:** Support for Ollama, llama.cpp, vLLM, SGLang, LM Studio via JSON config.
 - **Auto-compaction:** Watch the context percentage; ask Composer to summarize to `.md` or switch to a larger-context model.
 - **Message queuing:** Engine support exists; UI wiring TBD.
 - **Better RPC docs:** Works today; see `test/rpc-example.ts`.
