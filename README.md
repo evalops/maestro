@@ -2,18 +2,26 @@
 
 Composer is a radically simple and opinionated coding agent with multi-model support (including mid-session switching), a powerful headless CLI, and the creature comforts you expect from modern coding copilots.
 
-Works on Linux, macOS, and Windows (barely tested, needs Git Bash running in the "modern" Windows Terminal).
+## Who It's For
 
-## Design Principles
+Developers who want deterministic, scriptable AI assistance with zero mystery meat. You value explicit commands over hidden heuristics, git-friendly edits over magical patches, and the ability to reason about every action Composer takes. If you prefer tight control, fast iteration, and the option to automate everything, you're in the right place.
 
-We keep the CLI intentionally opinionated so every session feels predictable:
+## Concept
+
+Composer exposes every capability through slash commands and git-aware helpers so you always know what changed and why. The agent is intentionally minimal: no hidden context juggling, no silent retries, just explicit tools you can chain together or script.
+
+### Design Principles
 
 - **Slash-command first automation.** Everything routes through explicit commands (`/run`, `/config`, etc.) so actions stay reviewable and scriptable.
 - **Deterministic tooling.** Composer touches the filesystem only via transparent git-aware helpers, keeping review diffs clean.
 - **EvalOps-ready by default.** Built-in scenario runners, telemetry, and cost tracking mean the CLI can drop straight into automated evaluation loops.
 - **Provider-agnostic, session-stable.** Multi-model switching and shared context loading ensure prompts stay portable between Anthropic, OpenAI, Gemini, Groq, and more.
 
-These principles show up throughout the docs below—installation is minimal, workflows double down on slash commands, and the EvalOps section highlights the instrumentation story.
+### EvalOps Workflows
+
+- **Run automated evaluations:** `npm run evals` builds the CLI and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Composer into continuous evaluation pipelines.
+- **Customize scenarios:** add more entries to `evals/scenarios.json` to benchmark additional commands (each scenario can assert against stdout via regular expressions).
+- **Surface telemetry:** set `COMPOSER_TELEMETRY=true` (or point to a custom `COMPOSER_TELEMETRY_ENDPOINT`) to stream tool usage and evaluation outcomes into your EvalOps dashboards.
 
 ## Installation
 
@@ -24,32 +32,18 @@ npm install -g @evalops/composer
 ## Quick Start
 
 ```bash
-# Set your API key (see API Keys section)
+# Set your API key (see API Keys below)
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Start the interactive CLI
 composer
 ```
 
-Once in the CLI, you can chat with the AI:
+Once in the CLI, chat with the AI: `Create a simple Express server in src/server.ts`. Composer will read/write files and run shell commands via explicit slash commands.
 
-```
-You: Create a simple Express server in src/server.ts
-```
+### API Keys
 
-The agent will use its tools to read, write, and edit files as needed, and execute commands via Bash.
-
-## EvalOps Workflows
-
-In line with the telemetry/EvalOps design principle, the CLI ships with end-to-end evaluation plumbing:
-
-- **Run automated evaluations:** `npm run evals` builds the CLI and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Composer into continuous evaluation pipelines.
-- **Customize scenarios:** add more entries to `evals/scenarios.json` to benchmark additional commands (each scenario can assert against stdout via regular expressions).
-- **Surface telemetry:** set `COMPOSER_TELEMETRY=true` (or point to a custom `COMPOSER_TELEMETRY_ENDPOINT`) to stream tool usage and evaluation outcomes into your EvalOps dashboards.
-
-## API Keys
-
-The CLI supports multiple LLM providers. Set the appropriate environment variable for your chosen provider:
+Composer supports multiple LLM providers. Set the environment variable for the provider you want to use:
 
 ```bash
 # Anthropic (Claude)
@@ -79,65 +73,44 @@ export OPENROUTER_API_KEY=sk-or-...
 export ZAI_API_KEY=...
 ```
 
-If no API key is set, the CLI will prompt you to configure one on first run.
-
 > **Factory CLI users:** Run `npm run factory:import` / `npm run factory:export` or use `/import factory` inside the TUI whenever you want to sync providers and settings—otherwise Composer stays fully standalone.
 
 ## Slash Commands
 
-Because Composer is slash-command first (see Design Principles), every interactive capability is surfaced here, keeping automation discoverable:
-
-The CLI supports several commands to control its behavior:
+This CLI doesn't hide behaviors behind fuzzy chat. Every operation is exposed as an explicit slash command—the covenant is that if the agent can do it, you can run it yourself.
 
 ### /model
 
-Switch models mid-session. Opens an interactive selector where you can type to search (by provider or model name), use arrow keys to navigate, Enter to select, or Escape to cancel.
+Switch models mid-session via an interactive selector (search by provider or model, arrow keys to navigate, Enter to select).
 
 ### /thinking
 
-Adjust thinking/reasoning level for supported models (Claude Sonnet 4, GPT-5, Gemini 2.5). Opens an interactive selector where you can use arrow keys to navigate, Enter to select, or Escape to cancel.
+Adjust thinking/reasoning level for supported models (Claude Sonnet 4, GPT-5, Gemini 2.5).
 
 ### /export [filename]
 
-Export the current session to a self-contained HTML file:
+Export the current session to a self-contained HTML file.
 
 ```
-/export                          # Auto-generates filename
-/export my-session.html          # Custom filename
+/export
+/export my-session.html
 ```
-
-The HTML file includes the full conversation with syntax highlighting and is viewable in any browser.
 
 ### /help
 
-Show a quick reference of all slash commands:
-
-```
-/help
-```
+List available slash commands.
 
 ### /session
 
-Display session information and statistics:
-
-```
-/session
-```
-
-Includes session file path/ID, message counts, and token usage.
+Display session information and statistics (file path, token counts, etc.).
 
 ### /tools
 
-List registered tools plus recent failures. Use `clear` to rotate the failure log:
-
-```
-/tools
-/tools clear
-```
+Show registered tools plus recent failures. Use `clear` to rotate the failure log.
 
 ### /config [summary|sources|providers|env|files]
 
-Show validation, sources, providers, env vars, or file references without chaining commands:
+Render validation, sources, providers, env vars, or file references without chaining commands.
 
 ```
 /config
@@ -149,7 +122,7 @@ Show validation, sources, providers, env vars, or file references without chaini
 
 ### /cost [period|breakdown|clear|help]
 
-Display usage summaries, provider/model breakdowns, or reset local tracking data:
+Display usage summaries, provider/model breakdowns, or reset local tracking data.
 
 ```
 /cost today
@@ -160,7 +133,7 @@ Display usage summaries, provider/model breakdowns, or reset local tracking data
 
 ### /stats
 
-Run `/status` plus `/cost today` together for a health snapshot:
+Run `/status` plus `/cost today` together for a quick health pulse.
 
 ```
 /stats
@@ -168,456 +141,166 @@ Run `/status` plus `/cost today` together for a health snapshot:
 
 ### /plan
 
-Inspect plans created via the `todo` tool. Show all goals or a specific one:
-
-```
-/plan
-/plan refactor onboarding
-```
+Inspect plans created via the `todo` tool. Show all goals or a specific one.
 
 ### /preview
 
-Preview a git diff without leaving the TUI:
-
-```
-/preview src/tui/tui-renderer.ts
-```
+Preview a git diff without leaving the TUI.
 
 ### /run
 
-Run project scripts (delegates to `npm run`):
-
-```
-/run test --watch
-```
+Execute project scripts (delegates to `npm run`).
 
 ### /diag
 
-Display provider/API key diagnostics plus telemetry/health info. Append `copy` to send the report to your clipboard:
-
-```
-/diag
-/diag copy
-```
+Display provider/API key diagnostics plus telemetry/health info. Append `copy` to send the report to your clipboard.
 
 ### /bug
 
-Copy session details and log paths to your clipboard for bug reports:
-
-```
-/bug
-```
+Copy session details and log paths for bug reports.
 
 ### /why
 
-Summarize the most recent user question, assistant reply, and tools invoked:
-
-```
-/why
-```
+Summarize the most recent user question, assistant reply, and tools invoked.
 
 ### /status
 
 Show a quick health summary (model, thinking level, git status, plan stats, telemetry) without running the heavier diagnostics report.
 
-```
-/status
-```
-
 ### /review
 
-Print a review-friendly snapshot of `git status` plus `git diff --stat` so you can see which files changed before deciding what to preview.
-
-```
-/review
-```
+Print a review-friendly snapshot of `git status` plus `git diff --stat` before diving deeper.
 
 ### /undo
 
-Discard working tree changes in one or more files via `git checkout --`.
-
-```
-/undo src/tui/tui-renderer.ts
-/undo package.json README.md
-```
+Discard working tree changes in one or more files via git checkout.
 
 ### /feedback
 
-Copy a feedback template (including session/model metadata) to your clipboard. Paste it into Discord/GitHub when reporting UX issues or wins.
-
-```
-/feedback
-```
+Copy a feedback template (session/model metadata included) to your clipboard.
 
 ### /mention
 
-List workspace files (filtered by an optional query) so you can quickly grab `@path` references. It's the slash-command twin of the in-editor `@` palette.
-
-```
-/mention
-/mention renderer
-```
-
-## Editor Features
-
-The interactive input editor includes several productivity features:
-
-### Path Completion
-
-Press **Tab** to autocomplete file and directory paths:
-- Works with relative paths: `./src/` + Tab → complete files in src/
-- Works with parent directories: `../../` + Tab → navigate up and complete
-- Works with home directory: `~/Des` + Tab → `~/Desktop/`
-- Use **Up/Down arrows** to navigate completion suggestions
-- Press **Enter** to select a completion
-- Shows matching files and directories as you type
-
-### File Drag & Drop
-
-Drag files from your OS file explorer (Finder on macOS, Explorer on Windows) directly onto the terminal. The file path will be automatically inserted into the editor. Works great with screenshots from macOS screenshot tool.
-
-### Multi-line Paste
-
-Paste multiple lines of text (e.g., code snippets, logs) and they'll be automatically coalesced into a compact `[paste #123 <N> lines]` reference in the editor. The full content is still sent to the model.
-
-### Command Palette
-
-Press **Ctrl+K** to open a searchable list of slash commands. Use the arrow keys to navigate and Enter to run the highlighted command; Escape closes the palette.
-
-### File Search (`@`)
-
-Type **`@`** (or press **Ctrl+K** and choose “File Search”) to open a fuzzy finder over the workspace. Start typing to filter files; press Enter to insert the selected path into the editor.
-
-### Keyboard Shortcuts
-
-- **Ctrl+K**: Open command palette
-- **Ctrl+C**: Clear editor (first press) / Exit Composer (second press)
-- **Tab**: Path completion
-- **Enter**: Send message
-- **Shift+Enter**: Insert new line (multi-line input)
-- **Arrow keys**: Move cursor
-- **Ctrl+A** / **Home** / **Cmd+Left** (macOS): Jump to start of line
-- **Ctrl+E** / **End** / **Cmd+Right** (macOS): Jump to end of line
-
-## Project Context Files
-
-The agent automatically loads context from `AGENT.md` or `CLAUDE.md` files at the start of new sessions (not when continuing/resuming). These files are loaded in hierarchical order to support both global preferences and monorepo structures.
-
-### File Locations
-
-Context files are loaded in this order:
-
-1. **Global context**: `~/.composer/agent/AGENT.md` or `CLAUDE.md`
-   - Applies to all your coding sessions
-   - Great for personal coding preferences and workflows
-
-2. **Parent directories** (top-most first down to current directory)
-   - Walks up from current directory to filesystem root
-   - Each directory can have its own `AGENT.md` or `CLAUDE.md`
-   - Perfect for monorepos with shared context at higher levels
-
-3. **Current directory**: Your project's `AGENT.md` or `CLAUDE.md`
-   - Most specific context, loaded last
-   - Overwrites or extends parent/global context
-
-**File preference**: In each directory, `AGENT.md` is preferred over `CLAUDE.md` if both exist.
-
-### What to Include
-
-Context files are useful for:
-- Project-specific instructions and guidelines
-- Common bash commands and workflows
-- Architecture documentation
-- Coding conventions and style guides
-- Dependencies and setup information
-- Testing instructions
-- Repository etiquette (branch naming, merge vs. rebase, etc.)
-
-### Example
-
-```markdown
-# Common Commands
-- npm run build: Build the project
-- npm test: Run tests
-
-# Code Style
-- Use TypeScript strict mode
-- Prefer async/await over promises
-
-# Workflow
-- Always run tests before committing
-- Update CHANGELOG.md for user-facing changes
-```
-
-All context files are automatically included in the system prompt at session start, along with the current date/time and working directory. This ensures the AI has complete project context from the very first message.
-
-## Image Support
-
-Send images to vision-capable models by providing file paths:
-
-```
-You: What is in this screenshot? /path/to/image.png
-```
-
-Supported formats: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
-
-The image will be automatically encoded and sent with your message. JPEG and PNG are supported across all vision models. Other formats may only be supported by some models.
-
-## Session Management
-
-Sessions are automatically saved in `~/.composer/agent/sessions/` organized by working directory. Each session is stored as a JSONL file with a unique timestamp-based ID.
-
-To continue the most recent session:
-
-```bash
-composer --continue
-# or
-composer -c
-```
-
-To browse and select from past sessions:
-
-```bash
-composer --resume
-# or
-composer -r
-```
-
-This opens an interactive session selector where you can:
-- Type to search through session messages
-- Use arrow keys to navigate the list
-- Press Enter to resume a session
-- Press Escape to cancel
-
-Sessions include all conversation messages, tool calls and results, model switches, and thinking level changes.
-
-To run without saving a session (ephemeral mode):
-
-```bash
-composer --no-session
-```
-
-To use a specific session file instead of auto-generating one:
-
-```bash
-composer --session /path/to/my-session.jsonl
-```
-
-## CLI Options
-
-```bash
-composer [options] [messages...]
-```
-
-### Options
-
-**--provider <name>**
-Provider name. Available: `anthropic`, `openai`, `google`, `xai`, `groq`, `cerebras`, `openrouter`, `zai`. Default: `anthropic`
-
-**--model <id>**
-Model ID. Default: `claude-sonnet-4-5`
-
-**--api-key <key>**
-API key (overrides environment variables)
-
-**--system-prompt <text|file>**
-Custom system prompt. Can be:
-- Inline text: `--system-prompt "You are a helpful assistant"`
-- File path: `--system-prompt ./my-prompt.txt`
-
-If the argument is a valid file path, the file contents will be used as the system prompt. Otherwise, the text is used directly. Project context files and datetime are automatically appended.
-
-**--mode <mode>**
-Output mode for non-interactive usage. Options:
-- `text` (default): Output only the final assistant message text
-- `json`: Stream all agent events as JSON (one event per line). Events include message updates, tool executions, and completions
-- `rpc`: JSON mode plus stdin listener for headless operation. Send JSON commands on stdin: `{"type":"prompt","message":"..."}` or `{"type":"abort"}`. See [test/rpc-example.ts](test/rpc-example.ts) for a complete example
-
-**--no-session**
-Don't save session (ephemeral mode)
-
-**--session <path>**
-Use specific session file path instead of auto-generating one
-
-**--continue, -c**
-Continue the most recent session
-
-**--resume, -r**
-Select a session to resume (opens interactive selector)
-
-**--help, -h**
-Show help message
-
-### Examples
-
-```bash
-# Start interactive mode
-composer
-
-# Single message mode (text output)
-composer "List all .ts files in src/"
-
-# JSON mode - stream all agent events
-composer --mode json "List all .ts files in src/"
-
-# RPC mode - headless operation (see test/rpc-example.ts)
-composer --mode rpc --no-session
-# Then send JSON on stdin:
-# {"type":"prompt","message":"List all .ts files"}
-# {"type":"abort"}
-
-# Continue previous session
-composer -c "What did we discuss?"
-
-# Use different model
-composer --provider openai --model gpt-4o "Help me refactor this code"
-```
+List workspace files (filtered by an optional query) so you can quickly grab `@path` references.
 
 ## Tools
 
 ### Built-in Tools
 
-The agent has access to eight core tools for working with your codebase:
+Composer ships with eight core tools:
 
-**read**
-Read file contents. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, defaults to first 2000 lines. Use offset/limit parameters for large files. Lines longer than 2000 characters are truncated.
+- **read** – Read file contents (text + images). Supports offset/limit for large files.
+- **list** – List directory contents with glob filtering and hidden-file toggles.
+- **search** – Ripgrep-backed search with regex, glob filters, and context.
+- **diff** – Inspect git diffs (working tree, staged index, revision ranges).
+- **bash** – Execute bash commands with optional timeouts.
+- **edit** – Replace exact text in a file (fails if multiple matches).
+- **write** – Write/overwrite files, creating parent directories as needed.
+- **todo** – Manage TodoWrite-style checklists (`~/.composer/todos.json`).
 
-**list**
-List directory contents with glob filtering, hidden file toggles, and result limits. Useful for understanding project structure.
+### Adding Your Own Tools
 
-**search**
-Search across files using ripgrep. Supports regex or literal strings, glob filters, case sensitivity, context lines, and match limits.
+Composer does not implement MCP. To extend it:
 
-**diff**
-Inspect git diffs from the workspace, staged index, or arbitrary revision ranges. Supports context controls, filename-only views, and word-diff mode.
+1. Create a simple CLI tool (any language).
+2. Document it in a README.
+3. Tell the agent to read that README (or reference it from `AGENT.md`).
 
-**bash**
-Execute a bash command in the current working directory. Returns stdout and stderr. Optionally accepts a `timeout` parameter (in seconds) - no default timeout.
+### Editor Features
 
-**edit**
-Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits. Returns an error if the text appears multiple times or isn't found.
+- **Path completion:** Tab through relative/absolute paths, with arrow navigation.
+- **File drag & drop:** Drop files onto the terminal to insert paths.
+- **Multi-line paste:** Pasted blocks collapse into `[paste #123 <N> lines]` markers, but full content is sent.
+- **Command palette:** `Ctrl+K` opens a searchable list of slash commands.
+- **File search:** Type `@` (or `Ctrl+K` → File Search) for fuzzy find.
+- **Keyboard shortcuts:** `Ctrl+K`, `Ctrl+C`, Tab, Enter, Shift+Enter, arrow keys, `Ctrl+A/E`, etc.
 
-**write**
-Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.
-
-**todo**
-Create or update a status-rich checklist for a coding goal. Mirrors the structure of TodoWrite items (id, status, priority) and surfaces blockers, due dates, and notes alongside a summary of pending/in-progress/completed work. Accepts either an array of task objects or a JSON-stringified array for easy pasting, and stores checklists in `~/.composer/todos.json` (override with `COMPOSER_TODO_FILE`). Pass an `updates` array with task IDs to mark items complete, edit notes, or remove entries.
-
-### MCP & Adding Your Own Tools
-
-**Composer does and will not support MCP.** Instead, it relies on the eight built-in tools above and assumes the agent can invoke pre-existing CLI tools or write them on the fly as needed.
-
-**Here's the gist:**
-
-1. Create a simple CLI tool (any language, any executable)
-2. Write a concise README.md describing what it does and how to use it
-3. Tell the agent to read that README
-
-**Minimal example:**
-
-`~/agent-tools/screenshot/README.md`:
-```markdown
-# Screenshot Tool
-
-Takes a screenshot of your main display.
-
-## Usage
-```bash
-screenshot.sh
-```
-
-Returns the path to the saved PNG file.
-```
-
-`~/agent-tools/screenshot/screenshot.sh`:
-```bash
-#!/bin/bash
-screencapture -x /tmp/screenshot-$(date +%s).png
-ls -t /tmp/screenshot-*.png | head -1
-```
-
-**In your session:**
-```
-You: Read ~/agent-tools/screenshot/README.md and use that tool to take a screenshot
-```
-
-The agent will read the README, understand the tool, and invoke it via bash as needed. If you need a new tool, ask the agent to write it for you.
-
-You can also reference tool READMEs in your `AGENT.md` files to make them automatically available:
-- Global: `~/.composer/agent/AGENT.md` - available in all sessions
-- Project-specific: `./AGENT.md` - available in this project
-
-## Development & Contributing
-
-Run the same validators the CLI uses internally before committing changes:
+### CLI Options
 
 ```bash
-npm install            # one-time dependency install
-npx biome check .      # format + lint
-npm test               # Vitest suite (fast)
-npm run evals          # Optional: full EvalOps scenarios
+composer [options] [messages...]
 ```
 
-All new slash commands or views should come with tests alongside their counterparts in `test/`. The eval runner keeps telemetry scenarios in sync with the Design Principles above, so use it before publishing larger features.
+Key flags:
 
-## Telemetry & Dashboards
+- `--provider <name>` – Provider (`anthropic`, `openai`, `google`, `xai`, `groq`, `cerebras`, `openrouter`, `zai`). Default `anthropic`.
+- `--model <id>` – Model ID. Default `claude-sonnet-4-5`.
+- `--api-key <key>` – Override environment variables.
+- `--system-prompt <text|file>` – Inline prompt or file reference.
+- `--mode <text|json|rpc>` – Control output format / RPC integration.
+- `--no-session` – Ephemeral run.
+- `--session <path>` – Use a specific session file.
+- `--continue/-c`, `--resume/-r`, `--help/-h` – Session helpers and docs.
 
-Composer ships with an optional telemetry layer so you can analyze tool usage and evaluation health without leaving your EvalOps dashboards. Telemetry is disabled by default.
+### Session Management
 
-- `COMPOSER_TELEMETRY=true` – enable telemetry and write events to `~/.composer/telemetry.log`.
-- `COMPOSER_TELEMETRY_FILE=/path/to/log.ndjson` – customise the local log destination.
-- `COMPOSER_TELEMETRY_ENDPOINT=https://example.com/hook` – POST every event as JSON to your ingestion endpoint.
-- `COMPOSER_TELEMETRY_SAMPLE=0.25` – only record roughly 25% of events for ultra-light installs (set to `0` to disable while keeping other settings intact).
-- `npm run telemetry:report` – summarise success rates and durations from the current telemetry log.
+Sessions live under `~/.composer/agent/sessions/` as JSONL. Use:
 
-You can also drop credentials into a `.env` or `.env.local` file in the current working directory (e.g. `ANTHROPIC_API_KEY=...`); Composer loads these automatically on startup.
+- `composer --continue` (or `-c`) – resume the latest session.
+- `composer --resume` (or `-r`) – interactive session selector.
+- `composer --no-session` – run without saving.
+- `composer --session /path/file.jsonl` – resume a specific session.
 
-The payloads capture tool name, success flag, execution duration, and any evaluation results. Transport failures are ignored so telemetry never blocks day-to-day workflows.
+### Image Support
 
-## Security (YOLO by default)
+Pass image paths directly (e.g., `What is in this screenshot? /path/to/image.png`). Composer encodes `.jpg/.jpeg/.png/.gif/.webp` and attaches them for vision-capable models.
 
-In line with the Design Principles, Composer intentionally skips permission prompts, sandboxing, and heuristic “safety” passes—commands have the same power as your shell.
+## Context
 
-**Implications:** unrestricted filesystem access, arbitrary command execution, and plenty of prompt-injection surface area (e.g., via `curl`, file reads, or logs).
+Composer automatically loads `AGENT.md`/`CLAUDE.md` files when starting new sessions so you can layer global, repo, and subdirectory guidance.
 
-**Mitigations (if you need them):** run inside a VM/container, keep sensitive repos elsewhere, or fork the CLI and add the guardrails you prefer. Otherwise, embrace the YOLO mode and proceed at your own risk.
+1. **Global** (`~/.composer/agent/AGENT.md`) – personal defaults.
+2. **Parent directories** – the agent walks up the tree, applying each file.
+3. **Project root** – the most specific context wins.
 
-## Sub-Agents
+Use them for coding conventions, architecture notes, commands, testing instructions, etc. `AGENT.md` takes precedence over `CLAUDE.md` when both exist.
 
-**Composer does not and will not support sub-agents as a built-in feature.** If the agent needs to delegate work, it can:
+## Telemetry
 
-1. Spawn another instance of itself via the `composer` CLI command
-2. Write a custom tool with a README.md that describes how to invoke Composer for specific tasks
+Telemetry is off by default. Enable it when you want EvalOps analytics:
 
-**Why no built-in sub-agents:**
+- `COMPOSER_TELEMETRY=true` – write events to `~/.composer/telemetry.log` (or `COMPOSER_TELEMETRY_FILE`).
+- `COMPOSER_TELEMETRY_ENDPOINT=https://example.com/hook` – stream events to your ingestion endpoint.
+- `COMPOSER_TELEMETRY_SAMPLE=0.25` – sample rate control (set to `0` to disable while leaving config in place).
+- `npm run telemetry:report` – summarize success rates + durations from the log.
 
-Context transfer between agents is generally poor. Information gets lost, compressed, or misrepresented when passed through agent boundaries. Direct execution with full context is more effective than delegation with summarized context.
+Payloads capture tool name, success flag, duration, and evaluation context. Transport failures are ignored so telemetry never blocks day-to-day workflows.
 
-If you need parallel work on independent tasks, manually run multiple `composer` sessions in different terminal tabs. You're the orchestrator.
+## Philosophy
 
-## To-Dos & Planning
+### Security (YOLO by default)
 
-Composer includes a built-in `todo` tool for quick, structured checklists. Provide a goal plus an array of TodoWrite-style items (with status, priority, blockers, notes, and due dates) and the agent will return a numbered plan, status summary, and metadata in plain text. Checklists are persisted under `~/.composer/todos.json`, and you can send an `updates` array with task IDs to mark items complete, change priorities, or remove finished work without resupplying the full list.
+Composer runs with full trust: no prompts for permission, no command filtering, no sandboxing. It can read/write/delete anything your user can. If you need guardrails, run inside a VM/container or fork the CLI and add them. Otherwise, embrace the YOLO mode and proceed at your own risk.
 
-For work that needs to persist across sessions, keep using project files like `TODO.md` or `PLAN.md` alongside version control. The agent can read and update those documents just like any other file, giving you durable history plus the convenience of auto-generated checklists when you need them.
+### Sub-Agents
 
-## Background Bash
+Composer will not grow built-in sub-agents. If you need delegation, spawn another `composer` process or write a small helper tool + README the agent can call. Direct execution with full context beats lossy hand-offs.
 
-**Composer does not and will not implement background bash execution.** Instead, tell the agent to use `tmux` or similar terminal multiplexers. Bonus points: you can watch the agent interact with a CLI like a debugger and even intervene if necessary.
+### Background Bash
+
+No background bash APIs. Use `tmux`, `screen`, or your terminal emulator to watch long-running commands (and intervene if needed).
+
+## Contributing
+
+Run the same validators Composer uses internally before submitting changes:
+
+```bash
+npm install            # one-time
+npx biome check .      # lint/format
+npm test               # Vitest suite
+npm run evals          # optional EvalOps scenarios
+```
+
+New slash commands or views should ship with tests in `test/`. Use the eval runner for larger feature work so telemetry scenarios stay honest.
 
 ## Planned Features
 
-Things that might happen eventually:
-
-- **Custom/local models**: Support for Ollama, llama.cpp, vLLM, SGLang, LM Studio via JSON config file
-- **Auto-compaction**: Currently, watch the context percentage at the bottom. When it approaches 80%, either:
-  - Ask the agent to write a summary .md file you can load in a new session
-  - Switch to a model with bigger context (e.g., Gemini) using `/model` and either continue with that model, or let it summarize the session to a .md file to be loaded in a new session
-- **Message queuing**: Core engine supports it, just needs UI wiring
-- **Better RPC mode docs**: It works, you'll figure it out (see `test/rpc-example.ts`)
-- **Beter Markdown and tool call/result rendering**
-- **Full details mode**: use `/export out.html` for now
-- **More flicker than Claude Code**: One day...
+- **Custom/local models:** Support for Ollama, llama.cpp, vLLM, SGLang, LM Studio via JSON config.
+- **Auto-compaction:** Watch the context percentage; ask Composer to summarize to `.md` or switch to a larger-context model.
+- **Message queuing:** Engine support exists; UI wiring TBD.
+- **Better RPC docs:** Works today; see `test/rpc-example.ts`.
+- **Better Markdown/tool rendering** and richer `/export` views.
+- **More flicker than Claude Code:** aspirational.
 
 ## License
 
