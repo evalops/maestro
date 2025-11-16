@@ -47,7 +47,7 @@ function createMockState(messages: any[], contextWindow = 200000): AgentState {
 			id: "claude-sonnet-4",
 			name: "Claude Sonnet 4",
 			api: "anthropic-messages",
-			baseUrl: "https://api.anthropic.com",
+			baseUrl: "https://api.anthropic.com/v1/messages",
 			contextWindow,
 			reasoning: false,
 			input: ["text", "image"],

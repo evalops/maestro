@@ -252,7 +252,7 @@ describe("Config Features", () => {
 					{
 						id: "anthropic",
 						name: "Anthropic",
-						baseUrl: "https://api.anthropic.com",
+						baseUrl: "https://api.anthropic.com/v1/messages",
 						api: "anthropic-messages",
 						models: [
 							{

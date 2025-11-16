@@ -65,7 +65,7 @@ const createInspection = (): ConfigInspection => ({
 		{
 			id: "anthropic",
 			name: "Anthropic",
-			baseUrl: "https://api.anthropic.com",
+			baseUrl: "https://api.anthropic.com/v1/messages",
 			apiKeySource: "env:ANTHROPIC_API_KEY",
 			modelCount: 2,
 			models: [

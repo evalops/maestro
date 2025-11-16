@@ -4,7 +4,6 @@ import {
 	type ToolRenderer,
 	createToolRenderer,
 } from "./tool-renderers/index.js";
-import { shortenPath } from "./tool-text-utils.js";
 
 /**
  * Component that renders a tool call with its result (updateable)
@@ -91,67 +90,15 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private formatToolExecution(): string {
-		const header = this.buildHeaderLine();
-		const body = this.renderer.render({
+		return this.renderer.render({
 			toolName: this.toolName,
 			args: this.args,
 			result: this.result,
 			collapsed: this.collapsed,
 		});
-		const footer = this.buildFooterLine();
-		return [header, body, footer]
-			.filter((section) => section?.trim())
-			.join("\n\n");
 	}
 
 	getToolName(): string {
 		return this.toolName;
-	}
-
-	private buildHeaderLine(): string {
-		const statusIcon = this.result
-			? this.result.isError
-				? chalk.hex("#f87171")("✖")
-				: chalk.hex("#34d399")("✔")
-			: chalk.hex("#facc15")("⏳");
-		const label = chalk.bold(this.toolName.toUpperCase());
-		const argsSummary = this.getArgsSummary();
-		const collapsedHint = this.collapsed ? chalk.dim(" (collapsed)") : "";
-		return `${statusIcon} ${label}${argsSummary ? chalk.dim(` · ${argsSummary}`) : ""}${collapsedHint}`;
-	}
-
-	private getArgsSummary(): string | null {
-		if (!this.args || typeof this.args !== "object") {
-			return null;
-		}
-		const pathLike = (this.args as any).file_path || (this.args as any).path;
-		if (typeof pathLike === "string" && pathLike.trim()) {
-			return this.truncateSummary(shortenPath(pathLike.trim()));
-		}
-		const command = (this.args as any).command;
-		if (typeof command === "string" && command.trim()) {
-			return this.truncateSummary(command.trim());
-		}
-		return null;
-	}
-
-	private truncateSummary(value: string, limit = 48): string {
-		if (value.length <= limit) {
-			return value;
-		}
-		return `${value.slice(0, limit - 1)}…`;
-	}
-
-	private buildFooterLine(): string {
-		if (!this.result) {
-			return "";
-		}
-		if (this.result.isError) {
-			return chalk.hex("#fca5a5")("Tool failed");
-		}
-		if (!this.result.content || this.result.content.length === 0) {
-			return chalk.dim("No tool output captured");
-		}
-		return "";
 	}
 }
