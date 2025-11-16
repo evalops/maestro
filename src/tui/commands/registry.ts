@@ -177,6 +177,14 @@ export function createCommandRegistry({
 		},
 		{
 			command: {
+				name: "cost",
+				description: "Show usage and cost summary (/cost today, /cost week)",
+			},
+			matches: withArgs("cost"),
+			execute: (input) => handlers.cost(input),
+		},
+		{
+			command: {
 				name: "diag",
 				description: "Show provider/model/API key diagnostics",
 			},

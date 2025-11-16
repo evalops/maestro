@@ -33,6 +33,7 @@ import { buildCommandRegistry } from "./command-registry-builder.js";
 import type { CommandEntry } from "./commands/types.js";
 import { ConfigView } from "./config-view.js";
 import { ConversationCompactor } from "./conversation-compactor.js";
+import { CostView } from "./cost-view.js";
 import { CustomEditor } from "./custom-editor.js";
 import { DiagnosticsView } from "./diagnostics-view.js";
 import { EditorView } from "./editor-view.js";
@@ -115,6 +116,7 @@ export class TuiRenderer {
 	private notificationView: NotificationView;
 	private updateView: UpdateView;
 	private configView: ConfigView;
+	private costView: CostView;
 	private runController: RunController;
 	private agentEventRouter!: AgentEventRouter;
 	private sessionContext = new SessionContext();
@@ -319,6 +321,12 @@ export class TuiRenderer {
 			ui: this.ui,
 			showError: (message) => this.notificationView.showError(message),
 		});
+		this.costView = new CostView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+		});
 
 		const registry = buildCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -342,6 +350,7 @@ export class TuiRenderer {
 			showHelp: () => this.infoView.showHelp(),
 			handleUpdate: () => this.updateView.handleUpdateCommand(),
 			handleConfig: () => this.configView.showConfigSummary(),
+			handleCost: (input) => this.costView.handleCostCommand(input),
 			handlePlan: (input) => this.planView.handlePlanCommand(input),
 			handlePreview: (input) => this.gitView.handlePreviewCommand(input),
 			handleRun: (input) => this.runCommandView.handleRunCommand(input),

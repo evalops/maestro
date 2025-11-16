@@ -21,6 +21,7 @@ export interface CommandHandlers {
 	help(): void;
 	update(): Promise<void> | void;
 	config(): Promise<void> | void;
+	cost(text: string): Promise<void> | void;
 	plan(text: string): void;
 	preview(text: string): Promise<void> | void;
 	run(text: string): Promise<void> | void;
