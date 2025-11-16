@@ -237,6 +237,8 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			showToast: (message, tone) =>
 				this.notificationView.showToast(message, tone),
+			editor: this.editor,
+			editorContainer: this.editorContainer,
 		});
 		this.runController = new RunController({
 			loaderView: this.loaderView,

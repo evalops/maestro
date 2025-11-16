@@ -1,7 +1,7 @@
 {
   "name": "@evalops/composer",
   "description": "Composer CLI by EvalOps with rich tooling for AI-assisted development",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "type": "module",
   "bin": {
     "composer": "dist/cli.js"

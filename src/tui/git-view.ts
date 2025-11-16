@@ -1,41 +1,314 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import chalk from "chalk";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
-import { runShellCommand } from "./run-shell-command.js";
+import type { CustomEditor } from "./custom-editor.js";
+import {
+	GitPreviewModal,
+	type GitPreviewMode,
+	type GitStatusEntry,
+} from "./git-preview-modal.js";
 
 interface GitViewOptions {
 	chatContainer: Container;
 	ui: TUI;
 	showInfoMessage: (message: string) => void;
 	showToast: (message: string, tone?: "info" | "warn" | "success") => void;
+	editor: CustomEditor;
+	editorContainer: Container;
 }
 
 export class GitView {
 	private lastNotifiedChanges: string[] = [];
+	private previewModal: GitPreviewModal | null = null;
+	private previewEntries: GitStatusEntry[] = [];
+	private previewSelection = 0;
+	private previewMode: GitPreviewMode = "worktree";
+	private previewRequestId = 0;
 
 	constructor(private readonly options: GitViewOptions) {}
 
 	async handlePreviewCommand(text: string): Promise<void> {
-		const parts = text.trim().split(/\s+/);
-		if (parts.length < 2) {
-			this.options.showInfoMessage("Usage: /preview <file>");
+		const trimmed = text.trim();
+		const spaceIndex = trimmed.indexOf(" ");
+		const target =
+			spaceIndex === -1 ? undefined : trimmed.slice(spaceIndex + 1).trim();
+		await this.openPreviewModal(target);
+	}
+
+	private async openPreviewModal(target?: string): Promise<void> {
+		if (!this.previewModal) {
+			this.previewModal = new GitPreviewModal({
+				onClose: () => this.closePreviewModal(),
+				onNavigate: (delta) => void this.movePreviewSelection(delta),
+				onStage: () => void this.stageSelectedEntry(),
+				onUnstage: () => void this.unstageSelectedEntry(),
+				onRefresh: () => void this.refreshPreviewEntries(),
+				onToggleMode: () => void this.togglePreviewMode(),
+			});
+			this.options.editorContainer.clear();
+			this.options.editorContainer.addChild(this.previewModal);
+			this.options.ui.setFocus(this.previewModal);
+		}
+		await this.refreshPreviewEntries(target);
+	}
+
+	private closePreviewModal(): void {
+		if (!this.previewModal) return;
+		this.options.editorContainer.clear();
+		this.options.editorContainer.addChild(this.options.editor);
+		this.options.ui.setFocus(this.options.editor);
+		this.previewModal = null;
+		this.previewEntries = [];
+	}
+
+	private async refreshPreviewEntries(targetPath?: string): Promise<void> {
+		if (!this.previewModal) return;
+		this.previewModal.setLoading(true);
+		const status = await this.getStatusEntries();
+		if (!status.ok) {
+			this.previewModal.setEntries([], 0);
+			this.previewModal.setDiff(status.message, this.previewMode);
+			this.previewModal.setStatusMessage(status.message);
+			this.previewModal.setLoading(false);
+			if (!status.entries.length) {
+				this.options.showInfoMessage(status.message);
+				this.closePreviewModal();
+			}
 			return;
 		}
-		const target = parts.slice(1).join(" ");
-		const quoted = JSON.stringify(target);
-		const result = await runShellCommand(`git diff -- ${quoted}`);
-		this.options.chatContainer.addChild(new Spacer(1));
-		const content = result.stdout || result.stderr;
-		const textOutput = content
-			? content
-			: chalk.dim(
-					result.success
-						? "(No diff output — file may not be tracked.)"
-						: result.stderr || "git diff failed.",
-				);
-		this.options.chatContainer.addChild(new Text(textOutput, 1, 0));
-		this.options.ui.requestRender();
+		if (!status.entries.length) {
+			this.previewModal.setEntries([], 0);
+			this.previewModal.setDiff(
+				chalk.dim("Working tree clean."),
+				this.previewMode,
+			);
+			this.previewModal.setStatusMessage("Working tree clean");
+			this.previewModal.setLoading(false);
+			return;
+		}
+		this.previewEntries = status.entries;
+		let nextIndex = this.previewSelection;
+		if (typeof targetPath === "string" && targetPath.trim().length > 0) {
+			const trimmed = targetPath.trim();
+			const found = status.entries.findIndex((entry) => entry.path === trimmed);
+			if (found >= 0) {
+				nextIndex = found;
+			}
+		}
+		nextIndex = Math.min(Math.max(0, nextIndex), status.entries.length - 1);
+		this.previewSelection = nextIndex;
+		this.previewModal.setEntries(this.previewEntries, this.previewSelection);
+		this.previewModal.setStatusMessage(null);
+		await this.loadPreviewDiff(this.previewEntries[this.previewSelection]);
+	}
+
+	private async movePreviewSelection(delta: number): Promise<void> {
+		if (!this.previewEntries.length || !this.previewModal) {
+			return;
+		}
+		const nextIndex = Math.min(
+			Math.max(0, this.previewSelection + delta),
+			this.previewEntries.length - 1,
+		);
+		if (nextIndex === this.previewSelection) {
+			return;
+		}
+		this.previewSelection = nextIndex;
+		this.previewModal.setEntries(this.previewEntries, this.previewSelection);
+		await this.loadPreviewDiff(this.previewEntries[this.previewSelection]);
+	}
+
+	private async loadPreviewDiff(entry?: GitStatusEntry): Promise<void> {
+		if (!this.previewModal || !entry) return;
+		const token = ++this.previewRequestId;
+		this.previewModal.setLoading(true);
+		const diff = await this.getDiffForEntry(entry, this.previewMode);
+		if (!this.previewModal || token !== this.previewRequestId) {
+			return;
+		}
+		this.previewModal.setDiff(diff, this.previewMode);
+		this.previewModal.setLoading(false);
+	}
+
+	private async getDiffForEntry(
+		entry: GitStatusEntry,
+		mode: GitPreviewMode,
+	): Promise<string> {
+		const args =
+			mode === "staged"
+				? ["diff", "--cached", "--", entry.path]
+				: ["diff", "--", entry.path];
+		if (mode === "staged" && !entry.stagedCode.trim()) {
+			return chalk.dim("No staged changes for this file.");
+		}
+		const result = await this.runGitAsync(args);
+		if (!result.success) {
+			return chalk.red(
+				result.stderr.trim() || result.stdout.trim() || "Failed to load diff",
+			);
+		}
+		const raw = result.stdout.trim();
+		if (!raw) {
+			return chalk.dim("(no diff output)");
+		}
+		const lines = raw.split("\n");
+		const limit = 200;
+		const slice = lines.slice(0, limit).map((line) => {
+			if (line.startsWith("+++") || line.startsWith("---")) {
+				return chalk.blue(line);
+			}
+			if (line.startsWith("@@")) {
+				return chalk.cyan(line);
+			}
+			if (line.startsWith("+")) {
+				return chalk.green(line);
+			}
+			if (line.startsWith("-")) {
+				return chalk.red(line);
+			}
+			return line;
+		});
+		if (lines.length > limit) {
+			slice.push(
+				chalk.dim(
+					`… (+${lines.length - limit} more lines truncated for display)`,
+				),
+			);
+		}
+		return slice.join("\n");
+	}
+
+	private async stageSelectedEntry(): Promise<void> {
+		const entry = this.previewEntries[this.previewSelection];
+		if (!entry) {
+			return;
+		}
+		const result = await this.runGitAsync(["add", "--", entry.path]);
+		if (!result.success) {
+			this.previewModal?.setStatusMessage(
+				result.stderr.trim() || "Failed to stage file",
+			);
+			return;
+		}
+		this.options.showToast(`Staged ${entry.path}`, "success");
+		await this.refreshPreviewEntries(entry.path);
+	}
+
+	private async unstageSelectedEntry(): Promise<void> {
+		const entry = this.previewEntries[this.previewSelection];
+		if (!entry) {
+			return;
+		}
+		let result = await this.runGitAsync([
+			"restore",
+			"--staged",
+			"--",
+			entry.path,
+		]);
+		if (!result.success) {
+			result = await this.runGitAsync(["reset", "HEAD", "--", entry.path]);
+		}
+		if (!result.success) {
+			this.previewModal?.setStatusMessage(
+				result.stderr.trim() || "Failed to unstage file",
+			);
+			return;
+		}
+		this.options.showToast(`Unstaged ${entry.path}`, "info");
+		await this.refreshPreviewEntries(entry.path);
+	}
+
+	private async togglePreviewMode(): Promise<void> {
+		if (!this.previewEntries.length) {
+			return;
+		}
+		this.previewMode = this.previewMode === "worktree" ? "staged" : "worktree";
+		await this.loadPreviewDiff(this.previewEntries[this.previewSelection]);
+	}
+
+	private async getStatusEntries(): Promise<{
+		ok: boolean;
+		entries: GitStatusEntry[];
+		message: string;
+	}> {
+		const result = await this.runGitAsync([
+			"status",
+			"--short",
+			"--untracked-files=all",
+			"--renames",
+		]);
+		if (!result.success) {
+			return {
+				ok: false,
+				entries: [],
+				message:
+					result.stderr.trim() || result.stdout.trim() || "git status failed",
+			};
+		}
+		const entries = this.parseStatusOutput(result.stdout);
+		return {
+			ok: true,
+			entries,
+			message: entries.length ? "" : "Working tree clean",
+		};
+	}
+
+	private parseStatusOutput(output: string): GitStatusEntry[] {
+		const lines = output
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.filter((line) => line.length > 0);
+		return lines.map((line) => {
+			const code = line.slice(0, 2);
+			const rest = line.slice(3).trim();
+			const renameParts = rest.split(" -> ");
+			const displayPath =
+				renameParts.length === 2 ? renameParts[1].trim() : rest;
+			return {
+				path: displayPath,
+				displayPath,
+				stagedCode: code[0] ?? " ",
+				worktreeCode: code[1] ?? " ",
+				renamePath:
+					renameParts.length === 2 ? renameParts[0].trim() : undefined,
+			};
+		});
+	}
+
+	private async runGitAsync(args: string[]): Promise<{
+		success: boolean;
+		stdout: string;
+		stderr: string;
+	}> {
+		return await new Promise((resolve) => {
+			const child = spawn("git", args, {
+				cwd: process.cwd(),
+				env: process.env,
+			});
+			let stdout = "";
+			let stderr = "";
+			child.stdout?.on("data", (chunk) => {
+				stdout += chunk.toString();
+			});
+			child.stderr?.on("data", (chunk) => {
+				stderr += chunk.toString();
+			});
+			child.on("close", (code) => {
+				resolve({
+					success: (code ?? 1) === 0,
+					stdout,
+					stderr,
+				});
+			});
+			child.on("error", (error) => {
+				resolve({
+					success: false,
+					stdout,
+					stderr: error instanceof Error ? error.message : String(error ?? ""),
+				});
+			});
+		});
 	}
 
 	handleReviewCommand(): void {
@@ -79,7 +352,7 @@ ${chalk.dim("Diff stats")}:
 ${diffText}
 
 ${chalk.dim("Next steps")}:
-- Use /preview <file> for an inline diff
+- Use /preview to open the interactive git panel
 - Use /plan to revisit saved goals
 - Use /status for a lightweight health check`;
 		this.options.chatContainer.addChild(new Spacer(1));
