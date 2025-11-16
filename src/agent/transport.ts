@@ -210,17 +210,24 @@ export class ProviderTransport implements AgentTransport {
 						}
 
 						// Continue conversation with tool results
+						// Don't include toolResults in allMessages - they'll be added by the recursive run() call
 						const allMessages = [
 							...messages,
 							userMessage,
 							currentAssistantMessage,
-							...toolResults,
 						];
 
-						// Recursive call for tool use continuation
+						// Create a dummy user message for continuation
+						const dummyMessage = {
+							role: "user" as const,
+							content: [],
+							timestamp: Date.now(),
+						};
+
+						// Recursive call - pass tool results in the messages array
 						yield* this.run(
-							allMessages,
-							toolResults[0], // Use first tool result as trigger
+							[...allMessages, ...toolResults],
+							dummyMessage,
 							cfg,
 							signal,
 						);
