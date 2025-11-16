@@ -10,15 +10,24 @@ import type {
 	ToolResultMessage,
 } from "./types.js";
 
+/**
+ * Configuration options for ProviderTransport.
+ */
 export interface ProviderTransportOptions {
+	/** Function to retrieve API keys for providers (can be async) */
 	getApiKey?: (
 		provider: string,
 	) => Promise<string | undefined> | string | undefined;
+	/** Optional CORS proxy URL for browser-based usage */
 	corsProxyUrl?: string;
 }
 
 /**
- * Calculate cost in USD based on token usage
+ * Calculate cost in USD based on token usage and model pricing.
+ *
+ * @param usage - Token counts for input, output, cache read, and cache write
+ * @param costConfig - Pricing per token for each category (in USD per token)
+ * @returns Total cost in USD
  */
 function calculateCost(
 	usage: {
@@ -42,9 +51,58 @@ function calculateCost(
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
 
+/**
+ * Universal transport layer that abstracts LLM provider differences.
+ *
+ * This class handles:
+ * - API key management
+ * - Provider-specific streaming format conversion
+ * - Token usage tracking and cost calculation
+ * - Tool call format normalization
+ * - Error handling and abort signals
+ *
+ * Supports multiple providers through a unified interface:
+ * - Anthropic (Claude)
+ * - OpenAI (GPT) and OpenAI-compatible APIs (Groq, xAI, etc.)
+ *
+ * @example
+ * ```typescript
+ * const transport = new ProviderTransport({
+ *   getApiKey: async (provider) => process.env[`${provider.toUpperCase()}_API_KEY`]
+ * });
+ *
+ * for await (const event of transport.run(messages, userMsg, config, signal)) {
+ *   if (event.type === 'content_block_delta') {
+ *     process.stdout.write(event.text);
+ *   }
+ * }
+ * ```
+ */
 export class ProviderTransport implements AgentTransport {
+	/**
+	 * Creates a new ProviderTransport instance.
+	 *
+	 * @param options - Configuration options including API key retrieval
+	 */
 	constructor(private options: ProviderTransportOptions = {}) {}
 
+	/**
+	 * Streams an LLM completion from the configured provider.
+	 *
+	 * This generator yields events as they arrive from the provider, including:
+	 * - message_start: User message acknowledgment
+	 * - content_block_start: Start of text or thinking block
+	 * - content_block_delta: Incremental text updates
+	 * - tool_call: Tool invocation request
+	 * - message_stop: Completion finished with usage stats
+	 *
+	 * @param messages - Full conversation history including the current user message
+	 * @param userMessage - The current user message being responded to
+	 * @param cfg - Run configuration (model, system prompt, tools, reasoning level)
+	 * @param signal - Optional AbortSignal to cancel the request
+	 * @yields AgentEvent objects representing the streaming response
+	 * @throws Error if API key is missing or provider request fails
+	 */
 	async *run(
 		messages: Message[],
 		userMessage: Message,

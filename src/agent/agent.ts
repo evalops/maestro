@@ -15,14 +15,42 @@ import type {
 	UserMessage,
 } from "./types.js";
 
+/**
+ * Configuration options for creating an Agent instance.
+ */
 export interface AgentOptions {
+	/** Initial state to override defaults (system prompt, model, tools, etc.) */
 	initialState?: Partial<AgentState>;
+	/** Transport implementation for LLM provider communication */
 	transport: AgentTransport;
+	/** Optional transformer to convert app messages to provider-specific format */
 	messageTransformer?: (
 		messages: AppMessage[],
 	) => Message[] | Promise<Message[]>;
 }
 
+/**
+ * Core Agent class implementing event-driven LLM interaction.
+ *
+ * The Agent manages conversation state, tool execution, and streaming responses
+ * across multiple LLM providers through an abstracted transport layer.
+ *
+ * @example
+ * ```typescript
+ * const agent = new Agent({
+ *   transport: new AnthropicTransport(apiKey),
+ *   initialState: { model: claudeSonnet4, tools: codingTools }
+ * });
+ *
+ * agent.subscribe((event) => {
+ *   if (event.type === 'content_block_delta') {
+ *     process.stdout.write(event.text);
+ *   }
+ * });
+ *
+ * await agent.prompt("Create a hello world function");
+ * ```
+ */
 export class Agent {
 	private _state: AgentState;
 	private listeners: Array<(e: AgentEvent) => void> = [];
@@ -33,6 +61,11 @@ export class Agent {
 	) => Message[] | Promise<Message[]>;
 	private messageQueue: AppMessage[] = [];
 
+	/**
+	 * Creates a new Agent instance.
+	 *
+	 * @param opts - Configuration options including transport and initial state
+	 */
 	constructor(opts: AgentOptions) {
 		this.transport = opts.transport;
 		this.messageTransformer = opts.messageTransformer;
@@ -50,10 +83,33 @@ export class Agent {
 		};
 	}
 
+	/**
+	 * Gets the current agent state (read-only).
+	 *
+	 * @returns The current state including messages, model, tools, and streaming status
+	 */
 	get state(): AgentState {
 		return this._state;
 	}
 
+	/**
+	 * Subscribes to agent events (streaming deltas, tool calls, errors, etc.).
+	 *
+	 * @param fn - Event listener function to be called on each event
+	 * @returns Unsubscribe function to remove the listener
+	 *
+	 * @example
+	 * ```typescript
+	 * const unsubscribe = agent.subscribe((event) => {
+	 *   if (event.type === 'content_block_delta') {
+	 *     console.log(event.text);
+	 *   }
+	 * });
+	 *
+	 * // Later, to stop listening:
+	 * unsubscribe();
+	 * ```
+	 */
 	subscribe(fn: (e: AgentEvent) => void): () => void {
 		this.listeners.push(fn);
 		return () => {
@@ -62,6 +118,12 @@ export class Agent {
 		};
 	}
 
+	/**
+	 * Emits an event to all subscribed listeners.
+	 * Errors in listeners are caught and logged to prevent cascading failures.
+	 *
+	 * @param event - The event to emit
+	 */
 	private emit(event: AgentEvent): void {
 		for (const listener of this.listeners) {
 			try {
@@ -72,38 +134,79 @@ export class Agent {
 		}
 	}
 
+	/**
+	 * Sets the system prompt that provides context and instructions to the model.
+	 *
+	 * @param v - The system prompt text
+	 */
 	setSystemPrompt(v: string): void {
 		this._state.systemPrompt = v;
 	}
 
+	/**
+	 * Sets the active LLM model for this agent.
+	 *
+	 * @param m - The model configuration
+	 */
 	setModel(m: Model<any>): void {
 		this._state.model = m;
 	}
 
+	/**
+	 * Sets the thinking/reasoning level for extended reasoning models.
+	 *
+	 * @param l - Thinking level: "off", "low", "medium", "high", "max"
+	 */
 	setThinkingLevel(l: ThinkingLevel): void {
 		this._state.thinkingLevel = l;
 	}
 
+	/**
+	 * Sets the available tools that the model can invoke.
+	 *
+	 * @param t - Array of tool definitions with schemas and execute functions
+	 */
 	setTools(t: AgentTool<any>[]): void {
 		this._state.tools = t;
 	}
 
+	/**
+	 * Replaces the entire message history with a new set of messages.
+	 *
+	 * @param ms - New message array
+	 */
 	replaceMessages(ms: AppMessage[]): void {
 		this._state.messages = ms;
 	}
 
+	/**
+	 * Appends a single message to the conversation history.
+	 *
+	 * @param m - Message to append
+	 */
 	appendMessage(m: AppMessage): void {
 		this._state.messages.push(m);
 	}
 
+	/**
+	 * Queues a message for later processing.
+	 *
+	 * @param m - Message to queue
+	 */
 	async queueMessage(m: AppMessage): Promise<void> {
 		this.messageQueue.push(m);
 	}
 
+	/**
+	 * Clears all messages from the conversation history.
+	 */
 	clearMessages(): void {
 		this._state.messages = [];
 	}
 
+	/**
+	 * Aborts the current streaming request if one is in progress.
+	 */
 	abort(): void {
 		if (this.abortController) {
 			this.abortController.abort();
@@ -111,6 +214,30 @@ export class Agent {
 		}
 	}
 
+	/**
+	 * Sends a prompt to the model and processes the response, including tool calls.
+	 *
+	 * This is the main entry point for interacting with the agent. It handles:
+	 * - Building the user message with optional image/document attachments
+	 * - Streaming the model's response
+	 * - Executing any tool calls made by the model
+	 * - Automatic retries for tool execution
+	 *
+	 * @param input - The user's text prompt
+	 * @param attachments - Optional images or documents to include with the prompt
+	 *
+	 * @example
+	 * ```typescript
+	 * await agent.prompt("Read the package.json file");
+	 *
+	 * // With image attachment
+	 * await agent.prompt("What's in this screenshot?", [{
+	 *   type: "image",
+	 *   content: base64Data,
+	 *   mimeType: "image/png"
+	 * }]);
+	 * ```
+	 */
 	async prompt(input: string, attachments?: Attachment[]): Promise<void> {
 		// Build user message content as array (matching Mario's implementation)
 		const content: Array<TextContent | ImageContent> = [

@@ -74,8 +74,41 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
+
 /**
- * TUI renderer for the coding agent
+ * Main TUI (Terminal User Interface) renderer for the Composer coding agent.
+ *
+ * This class orchestrates all UI components, event handling, and user interactions.
+ * It manages:
+ * - Message rendering (user, assistant, tool calls)
+ * - Streaming text display with markdown formatting
+ * - Command palette and slash command execution
+ * - Session management and switching
+ * - Cost tracking and telemetry views
+ * - Model selection and configuration
+ * - File search and path autocomplete
+ * - Git integration and status display
+ *
+ * The TUI uses an event-driven architecture where the Agent emits events
+ * (streaming deltas, tool calls, etc.) and the TuiRenderer subscribes to
+ * update the UI accordingly.
+ *
+ * @example
+ * ```typescript
+ * const renderer = new TuiRenderer({
+ *   agent,
+ *   sessionManager,
+ *   version: "0.8.2",
+ *   sessionContext: { sessionFile: "~/.composer/agent/sessions/default.jsonl" }
+ * });
+ *
+ * await renderer.initialize();
+ * renderer.setInputCallback(async (text) => {
+ *   await agent.prompt(text);
+ * });
+ *
+ * await renderer.run();
+ * ```
  */
 export class TuiRenderer {
 	private ui: TUI;

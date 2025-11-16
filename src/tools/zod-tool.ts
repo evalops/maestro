@@ -11,15 +11,30 @@ type ExecuteResult<Details> =
 	| AgentToolResult<Details>
 	| Promise<AgentToolResult<Details>>;
 
+/**
+ * Configuration options for creating a Zod-validated tool.
+ *
+ * @template Schema - The Zod schema type for parameter validation
+ * @template Details - Optional details type for the tool result
+ */
 interface CreateZodToolOptions<Schema extends z.ZodTypeAny, Details> {
+	/** Unique tool name (must match the name LLMs will use to invoke it) */
 	name: string;
+	/** Human-readable label for UI display */
 	label: string;
+	/** Description of what the tool does (shown to LLMs and users) */
 	description: string;
+	/** Zod schema defining valid parameters */
 	schema: Schema;
+	/** Optional name for the JSON schema (defaults to capitalized tool name + "Parameters") */
 	schemaName?: string;
+	/** Maximum number of retry attempts on transient failures (default: 1, no retries) */
 	maxRetries?: number;
+	/** Delay in milliseconds between retry attempts (default: 500ms) */
 	retryDelayMs?: number;
+	/** Custom predicate to determine if an error should trigger a retry */
 	shouldRetry?: (error: unknown) => boolean;
+	/** Tool execution function that receives validated parameters */
 	execute: (
 		toolCallId: string,
 		params: z.infer<Schema>,
@@ -27,6 +42,12 @@ interface CreateZodToolOptions<Schema extends z.ZodTypeAny, Details> {
 	) => ExecuteResult<Details>;
 }
 
+/**
+ * Formats Zod validation errors into a human-readable string.
+ *
+ * @param error - The ZodError to format
+ * @returns Formatted error message with path and message for each issue
+ */
 function formatZodIssues(error: ZodError): string {
 	return error.issues
 		.map((issue) => {
@@ -36,6 +57,40 @@ function formatZodIssues(error: ZodError): string {
 		.join(", ");
 }
 
+/**
+ * Creates a type-safe AgentTool with Zod schema validation and automatic retry logic.
+ *
+ * This factory function wraps tool execution with:
+ * - Runtime parameter validation using Zod
+ * - Automatic JSON schema generation for LLM tool calling
+ * - Configurable retry logic for transient failures
+ * - Telemetry integration (success/failure tracking, timing)
+ * - Abort signal support for cancellation
+ *
+ * @template Schema - The Zod schema type for parameter validation
+ * @template Details - Optional details type for structured tool results
+ *
+ * @param options - Tool configuration including name, schema, and execute function
+ * @returns An AgentTool that can be registered with the agent
+ *
+ * @example
+ * ```typescript
+ * const readTool = createZodTool({
+ *   name: "read",
+ *   label: "Read File",
+ *   description: "Read contents of a file",
+ *   schema: z.object({
+ *     path: z.string().describe("File path to read"),
+ *     offset: z.number().optional().describe("Line number to start reading from")
+ *   }),
+ *   maxRetries: 2,
+ *   execute: async (toolCallId, params) => {
+ *     const content = await fs.readFile(params.path, 'utf-8');
+ *     return { success: true, data: content };
+ *   }
+ * });
+ * ```
+ */
 export function createZodTool<Schema extends z.ZodTypeAny, Details = undefined>(
 	options: CreateZodToolOptions<Schema, Details>,
 ): AgentTool<any, Details> {

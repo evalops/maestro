@@ -22,7 +22,8 @@ const STATUS_ACCENTS = {
 	completed: (value: string) => chalk.green(value),
 } as const;
 
-const formatInfoLabel = (label: string): string => chalk.dim(label.toUpperCase());
+const formatInfoLabel = (label: string): string =>
+	chalk.dim(label.toUpperCase());
 
 export type PlanStatusKey = keyof typeof PLAN_STATUS_SYMBOLS;
 
@@ -229,7 +230,10 @@ export class PlanView {
 			const counts = countTodoStatuses(entry.items);
 			return `${chalk.bold(goal)}\n  ${formatInfoLabel("Pending")} ${counts.pending
 				.toString()
-				.padStart(2, " ")}\n  ${formatInfoLabel("In Progress")} ${counts.in_progress
+				.padStart(
+					2,
+					" ",
+				)}\n  ${formatInfoLabel("In Progress")} ${counts.in_progress
 				.toString()
 				.padStart(2, " ")}\n  ${formatInfoLabel("Completed")} ${counts.completed
 				.toString()
@@ -251,7 +255,10 @@ export class PlanView {
 					.map((item, index) => formatTask(item, index + 1))
 					.join("\n\n")
 			: chalk.dim("No tasks yet — add some with /plan add <goal> :: <task>.");
-		const totalTasks = counts.pending + counts.in_progress + counts.completed || entry.items.length || 0;
+		const totalTasks =
+			counts.pending + counts.in_progress + counts.completed ||
+			entry.items.length ||
+			0;
 		const progressLine = `${formatInfoLabel("Progress")}  ${counts.completed}/${totalTasks}`;
 		const totalsLine = `${formatInfoLabel("Totals")}   ${counts.pending}/${counts.in_progress}/${counts.completed}`;
 		const detail = `${chalk.bold(goalKey.toUpperCase())}\n${formatInfoLabel("Updated")}  ${new Date(entry.updatedAt).toLocaleString()}\n${progressLine}\n${totalsLine}\n\n${tasks}`;

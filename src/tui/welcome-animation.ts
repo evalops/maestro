@@ -65,7 +65,8 @@ export class WelcomeAnimation extends Container {
 				for (let x = 0; x < width; x++) {
 					const waviness = Math.sin((x + time * 20 + i * 10) * 0.05) * 0.3;
 					const offsetY = clamp(y + Math.round(waviness), 0, height - 1);
-					chars[offsetY][x] = chars[offsetY][x] === " " ? "─" : chars[offsetY][x];
+					chars[offsetY][x] =
+						chars[offsetY][x] === " " ? "─" : chars[offsetY][x];
 					colors[offsetY][x] = mix(colors[offsetY][x], staffHue, 0.7);
 				}
 			}
@@ -74,13 +75,25 @@ export class WelcomeAnimation extends Container {
 		const divisionHeight = 15;
 		const measureSpacing = 8;
 		const sweep = (time * 2) % measureSpacing;
-		for (let x = -measureSpacing; x < width + measureSpacing; x += measureSpacing) {
+		for (
+			let x = -measureSpacing;
+			x < width + measureSpacing;
+			x += measureSpacing
+		) {
 			const position = Math.floor(x + sweep);
-			const fade = clamp(1 - Math.abs((position - width / 2) / (width / 2)), 0.2, 1);
+			const fade = clamp(
+				1 - Math.abs((position - width / 2) / (width / 2)),
+				0.2,
+				1,
+			);
 			for (let y = staffStartY - 1; y < staffStartY + divisionHeight; y++) {
 				if (position < 0 || y < 0 || position >= width || y >= height) continue;
 				chars[y][position] = "│";
-				colors[y][position] = mix(colors[y][position], 0.2 * crescendo * fade, 0.6);
+				colors[y][position] = mix(
+					colors[y][position],
+					0.2 * crescendo * fade,
+					0.6,
+				);
 			}
 		}
 
@@ -89,7 +102,9 @@ export class WelcomeAnimation extends Container {
 			const lane = i % staffCount;
 			const laneY = staffStartY + lane * staffSpacing + 2;
 			const x = clamp(
-				Math.floor((i / noteCount) * width * 1.1 + Math.sin(time * 0.6 + i) * 4),
+				Math.floor(
+					(i / noteCount) * width * 1.1 + Math.sin(time * 0.6 + i) * 4,
+				),
 				0,
 				width - 1,
 			);
@@ -105,7 +120,11 @@ export class WelcomeAnimation extends Container {
 				const stemY = clamp(y - stem, 0, height - 1);
 				if (x + 1 < width) {
 					chars[stemY][x + 1] = "│";
-					colors[stemY][x + 1] = mix(colors[stemY][x + 1], 0.4 + 0.25 * crescendo, 0.7);
+					colors[stemY][x + 1] = mix(
+						colors[stemY][x + 1],
+						0.4 + 0.25 * crescendo,
+						0.7,
+					);
 				}
 			}
 		}
@@ -133,7 +152,10 @@ export class WelcomeAnimation extends Container {
 			const x = Math.floor((i / floatingSymbols) * width);
 			const y = clamp(
 				Math.floor(
-					staffStartY - 2 + Math.sin(time * 0.5 + i) * 6 + Math.cos(x * 0.1) * 1.5,
+					staffStartY -
+						2 +
+						Math.sin(time * 0.5 + i) * 6 +
+						Math.cos(x * 0.1) * 1.5,
 				),
 				0,
 				height - 1,
@@ -148,7 +170,8 @@ export class WelcomeAnimation extends Container {
 			const heightOffset = Math.floor(envelope * 3 + Math.sin(time + x * 0.2));
 			for (let h = 0; h < heightOffset; h++) {
 				const y = clamp(orchestraBaseY - h, 0, height - 1);
-				chars[y][x] = chars[y][x] === " " ? "▁▂▃▄▅"[Math.min(h, 4)]! : chars[y][x];
+				const barChar = "▁▂▃▄▅"[Math.min(h, 4)];
+				chars[y][x] = chars[y][x] === " " && barChar ? barChar : chars[y][x];
 				colors[y][x] = mix(colors[y][x], 0.25 + 0.2 * crescendo, 0.5);
 			}
 		}
