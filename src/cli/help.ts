@@ -13,6 +13,7 @@ export function printHelp(version: string) {
 		"--api-key <key>         API key (defaults to env vars)",
 		"--system-prompt <text>  System prompt (default: coding assistant prompt)",
 		"--mode <mode>           Output mode: text (default), json, or rpc",
+		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
 		"--continue, -c          Continue previous session",
 		"--resume, -r            Select a session to resume",
 		"--session <path>        Use specific session file",

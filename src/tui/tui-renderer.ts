@@ -1,6 +1,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
+import type {
+	ActionApprovalDecision,
+	ActionApprovalRequest,
+	ActionApprovalService,
+} from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
 import type {
 	AgentEvent,
@@ -72,6 +77,7 @@ import { ToolStatusView } from "./tool-status-view.js";
 import { UpdateView } from "./update-view.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
+import { ApprovalController } from "./approval-controller.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
@@ -174,11 +180,13 @@ export class TuiRenderer {
 	private queuedPromptCount = 0;
 	private queueEnabled = false;
 	private isAgentRunning = false;
+	private approvalController?: ApprovalController;
 
 	constructor(
 		agent: Agent,
 		sessionManager: SessionManager,
 		version: string,
+		approvalService: ActionApprovalService,
 		explicitApiKey?: string,
 	) {
 		this.agent = agent;
@@ -195,6 +203,13 @@ export class TuiRenderer {
 		this.notificationView = new NotificationView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
+		});
+		this.approvalController = new ApprovalController({
+			approvalService,
+			ui: this.ui,
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			notificationView: this.notificationView,
 		});
 		this.loaderView = new LoaderView({
 			ui: this.ui,
@@ -551,6 +566,14 @@ export class TuiRenderer {
 		if (!this.isInitialized) {
 			await this.init();
 		}
+		if (event.type === "action_approval_required") {
+			this.handleApprovalRequired(event.request);
+			return;
+		}
+		if (event.type === "action_approval_resolved") {
+			this.handleApprovalResolved(event.request, event.decision);
+			return;
+		}
 		if (event.type === "agent_start") {
 			this.isAgentRunning = true;
 		} else if (event.type === "agent_end") {
@@ -620,6 +643,23 @@ export class TuiRenderer {
 		if (!this.isAgentRunning) {
 			this.refreshFooterHint();
 		}
+		this.ui.requestRender();
+	}
+
+	private handleApprovalRequired(request: ActionApprovalRequest): void {
+		this.approvalController?.enqueue(request);
+		const component = this.pendingTools.get(request.id);
+		component?.setPendingStatus(request.reason ?? "Awaiting approval");
+		this.ui.requestRender();
+	}
+
+	private handleApprovalResolved(
+		request: ActionApprovalRequest,
+		decision: ActionApprovalDecision,
+	): void {
+		this.approvalController?.resolve(request, decision);
+		const component = this.pendingTools.get(request.id);
+		component?.setPendingStatus(null);
 		this.ui.requestRender();
 	}
 

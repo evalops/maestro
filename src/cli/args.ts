@@ -15,6 +15,7 @@ export interface Args {
 	safeMode?: boolean;
 	command?: string;
 	subcommand?: string;
+	approvalMode?: "auto" | "prompt" | "fail";
 	messages: string[];
 }
 
@@ -53,6 +54,11 @@ export function parseArgs(args: string[]): Args {
 			result.session = args[++i];
 		} else if (arg === "--safe-mode") {
 			result.safeMode = true;
+		} else if (arg === "--approval-mode" && i + 1 < args.length) {
+			const mode = args[++i];
+			if (mode === "auto" || mode === "prompt" || mode === "fail") {
+				result.approvalMode = mode;
+			}
 		} else if (!arg.startsWith("-")) {
 			// Handle commands: "config", "models", "cost", etc.
 			if (

@@ -1,4 +1,6 @@
+import { defaultActionFirewall } from "../safety/action-firewall.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
+import type { ActionApprovalService } from "./action-approval.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamOpenAI } from "./providers/openai.js";
 import type {
@@ -20,6 +22,8 @@ export interface ProviderTransportOptions {
 	) => Promise<string | undefined> | string | undefined;
 	/** Optional CORS proxy URL for browser-based usage */
 	corsProxyUrl?: string;
+	/** Optional approval service for destructive tool calls */
+	approvalService?: ActionApprovalService;
 }
 
 /**
@@ -45,8 +49,10 @@ function calculateCost(
 ): number {
 	const inputCost = ((usage.input || 0) * costConfig.input) / 1_000_000;
 	const outputCost = ((usage.output || 0) * costConfig.output) / 1_000_000;
-	const cacheReadCost = ((usage.cacheRead || 0) * costConfig.cacheRead) / 1_000_000;
-	const cacheWriteCost = ((usage.cacheWrite || 0) * costConfig.cacheWrite) / 1_000_000;
+	const cacheReadCost =
+		((usage.cacheRead || 0) * costConfig.cacheRead) / 1_000_000;
+	const cacheWriteCost =
+		((usage.cacheWrite || 0) * costConfig.cacheWrite) / 1_000_000;
 
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
@@ -110,6 +116,7 @@ export class ProviderTransport implements AgentTransport {
 		signal?: AbortSignal,
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		const { model, systemPrompt, tools } = cfg;
+		const firewall = defaultActionFirewall;
 
 		// Get API key
 		let apiKey: string | undefined;
@@ -260,6 +267,74 @@ export class ProviderTransport implements AgentTransport {
 								toolName: toolCall.name,
 								args: toolCall.arguments,
 							};
+
+							let approvalAllowed = true;
+							let approvalReason: string | undefined;
+							const verdict = firewall.evaluate({
+								toolName: toolCall.name,
+								args: toolCall.arguments,
+							});
+							if (verdict.action === "require_approval") {
+								const approvalService = this.options.approvalService;
+								if (approvalService) {
+									const request = {
+										id: toolCall.id,
+										toolName: toolCall.name,
+										args: toolCall.arguments,
+										reason: verdict.reason,
+									};
+									const shouldEmitEvents =
+										approvalService.requiresUserInteraction();
+									if (shouldEmitEvents) {
+										yield {
+											type: "action_approval_required",
+											request,
+										};
+									}
+
+									const decision = await approvalService.requestApproval(
+										request,
+										signal,
+									);
+									if (shouldEmitEvents) {
+										yield {
+											type: "action_approval_resolved",
+											request,
+											decision,
+										};
+									}
+
+									if (!decision.approved) {
+										approvalAllowed = false;
+										approvalReason = decision.reason ?? verdict.reason;
+									}
+								}
+							}
+
+							if (!approvalAllowed) {
+								const deniedResult: ToolResultMessage = {
+									role: "toolResult",
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									content: [
+										{
+											type: "text",
+											text: approvalReason ?? "Action denied",
+										},
+									],
+									isError: true,
+									timestamp: Date.now(),
+								};
+								toolResults.push(deniedResult);
+								yield {
+									type: "tool_execution_end",
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									result: deniedResult,
+									isError: true,
+								};
+								continue;
+							}
 
 							const tool = tools.find((t) => t.name === toolCall.name);
 							if (!tool) {

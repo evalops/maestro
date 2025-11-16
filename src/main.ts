@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import {
+	ActionApprovalService,
+	type ApprovalMode,
+} from "./agent/action-approval.js";
 import { Agent, ProviderTransport, type ThinkingLevel } from "./agent/index.js";
 import { type Args, type Mode, parseArgs } from "./cli/args.js";
 import { printHelp } from "./cli/help.js";
@@ -46,12 +50,14 @@ async function runInteractiveMode(
 	agent: Agent,
 	sessionManager: SessionManager,
 	version: string,
+	approvalService: ActionApprovalService,
 	explicitApiKey?: string,
 ): Promise<void> {
 	const renderer = new TuiRenderer(
 		agent,
 		sessionManager,
 		version,
+		approvalService,
 		explicitApiKey,
 	);
 	const promptQueue = new PromptQueue(
@@ -394,6 +400,15 @@ export async function main(args: string[]) {
 	}
 	const systemPrompt = buildSystemPrompt(parsed.systemPrompt);
 
+	const isInteractiveTui =
+		parsed.messages.length === 0 && (parsed.mode ?? "text") !== "rpc";
+	const defaultApprovalMode: ApprovalMode = isInteractiveTui
+		? "prompt"
+		: "auto";
+	const approvalService = new ActionApprovalService(
+		parsed.approvalMode ?? defaultApprovalMode,
+	);
+
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
@@ -413,6 +428,7 @@ export async function main(args: string[]) {
 				}
 				return key;
 			},
+			approvalService,
 		}),
 	});
 
@@ -515,7 +531,13 @@ export async function main(args: string[]) {
 		await runRpcMode(agent, sessionManager);
 	} else if (isInteractive) {
 		// No messages and not RPC - use TUI
-		await runInteractiveMode(agent, sessionManager, VERSION, parsed.apiKey);
+		await runInteractiveMode(
+			agent,
+			sessionManager,
+			VERSION,
+			approvalService,
+			parsed.apiKey,
+		);
 	} else {
 		// CLI mode with messages
 		await runSingleShotMode(agent, sessionManager, parsed.messages, mode);

@@ -1,4 +1,8 @@
 import type { TSchema } from "@sinclair/typebox";
+import type {
+	ActionApprovalDecision,
+	ActionApprovalRequest,
+} from "./action-approval.js";
 
 export type Api =
 	| "openai-completions"
@@ -291,6 +295,15 @@ export type AgentEvent =
 			toolName: string;
 			result: any;
 			isError: boolean;
+	  }
+	| {
+			type: "action_approval_required";
+			request: ActionApprovalRequest;
+	  }
+	| {
+			type: "action_approval_resolved";
+			request: ActionApprovalRequest;
+			decision: ActionApprovalDecision;
 	  };
 
 export interface QueuedMessage<T = any> {

@@ -1,12 +1,16 @@
-import type { Response } from "undici";
 import { describe, expect, it, vi } from "vitest";
 import { checkForUpdate, compareVersions } from "../src/update/check.js";
 
-type ResponseFields = Pick<Response, "ok" | "status" | "statusText" | "json">;
+type ResponseFields = {
+	ok: boolean;
+	status: number;
+	statusText: string;
+	json: () => Promise<unknown>;
+};
 
 const createResponse = (
 	data: unknown,
-	overrides: Partial<Pick<Response, "ok" | "status" | "statusText">> = {},
+	overrides: Partial<Omit<ResponseFields, "json">> = {},
 ): ResponseFields => ({
 	ok: overrides.ok ?? true,
 	status: overrides.status ?? 200,
@@ -41,7 +45,7 @@ describe("checkForUpdate", () => {
 		const fetchMock = vi
 			.fn()
 			.mockResolvedValue(
-				createResponse({ version: "0.9.0", notes: "New release" }) as Response,
+				createResponse({ version: "0.9.0", notes: "New release" }),
 			);
 		const result = await checkForUpdate("0.8.0", {
 			...options,
@@ -57,7 +61,7 @@ describe("checkForUpdate", () => {
 	it("returns false when already on the latest version", async () => {
 		const fetchMock = vi
 			.fn()
-			.mockResolvedValue(createResponse({ version: "0.8.0" }) as Response);
+			.mockResolvedValue(createResponse({ version: "0.8.0" }));
 		const result = await checkForUpdate("0.8.0", {
 			...options,
 			fetch: fetchMock,
@@ -77,7 +81,7 @@ describe("checkForUpdate", () => {
 	});
 
 	it("flags invalid payloads", async () => {
-		const fetchMock = vi.fn().mockResolvedValue(createResponse({}) as Response);
+		const fetchMock = vi.fn().mockResolvedValue(createResponse({}));
 		const result = await checkForUpdate("0.8.0", {
 			...options,
 			fetch: fetchMock,

@@ -13,6 +13,7 @@ export class ToolExecutionComponent extends Container {
 	private toolName: string;
 	private args: any;
 	private collapsed = false;
+	private pendingStatus: string | null = null;
 	private result?: {
 		content: Array<{
 			type: string;
@@ -78,6 +79,11 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	setPendingStatus(status: string | null): void {
+		this.pendingStatus = status;
+		this.updateDisplay();
+	}
+
 	private updateDisplay(): void {
 		const bgColor = this.result
 			? this.result.isError
@@ -90,12 +96,19 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private formatToolExecution(): string {
-		return this.renderer.render({
+		const body = this.renderer.render({
 			toolName: this.toolName,
 			args: this.args,
 			result: this.result,
 			collapsed: this.collapsed,
 		});
+		if (!this.pendingStatus) {
+			return body;
+		}
+		const banner = chalk.hex("#fbbf24")(
+			`⚠ ${this.pendingStatus.trim() || "Awaiting approval"}`,
+		);
+		return `${banner}\n\n${body}`;
 	}
 
 	getToolName(): string {
