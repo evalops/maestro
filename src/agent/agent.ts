@@ -177,7 +177,7 @@ export class Agent {
 			let finalMessage: AppMessage | null = null;
 
 			for await (const event of this.transport.run(
-				messagesToSend.slice(0, -1),
+				messagesToSend, // Include userMessage in messages array
 				userMessage,
 				runConfig,
 				this.abortController.signal,
@@ -198,9 +198,8 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "tool_execution_end") {
 					this._state.pendingToolCalls.delete(event.toolCallId);
-					// NOTE: Don't add result to messages here - the transport already does this
-					// when building allMessages for the recursive call. Adding it here causes duplicates.
 					if (event.result) {
+						this._state.messages.push(event.result as any);
 						toolResults.push(event.result as any);
 					}
 					this.emit(event);

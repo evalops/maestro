@@ -46,9 +46,10 @@ export class ProviderTransport implements AgentTransport {
 		};
 
 		// Build context
+		// Note: messages already includes userMessage from the caller
 		const context = {
 			systemPrompt,
-			messages: [...messages, userMessage],
+			messages: messages,
 			tools,
 		};
 
@@ -210,24 +211,17 @@ export class ProviderTransport implements AgentTransport {
 						}
 
 						// Continue conversation with tool results
-						// Don't include toolResults in allMessages - they'll be added by the recursive run() call
 						const allMessages = [
 							...messages,
 							userMessage,
 							currentAssistantMessage,
+							...toolResults,
 						];
 
-						// Create a dummy user message for continuation
-						const dummyMessage = {
-							role: "user" as const,
-							content: [],
-							timestamp: Date.now(),
-						};
-
-						// Recursive call - pass tool results in the messages array
+						// Recursive call for tool use continuation
 						yield* this.run(
-							[...allMessages, ...toolResults],
-							dummyMessage,
+							allMessages,
+							toolResults[0], // Use first tool result as trigger
 							cfg,
 							signal,
 						);
