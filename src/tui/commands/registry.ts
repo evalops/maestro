@@ -180,8 +180,8 @@ export function createCommandRegistry({
 				name: "config",
 				description: "Validate and inspect Composer configuration",
 			},
-			matches: equals("config"),
-			execute: () => handlers.config(),
+			matches: withArgs("config"),
+			execute: (input) => handlers.config(input),
 		},
 		{
 			command: {
@@ -190,6 +190,14 @@ export function createCommandRegistry({
 			},
 			matches: withArgs("cost"),
 			execute: (input) => handlers.cost(input),
+		},
+		{
+			command: {
+				name: "stats",
+				description: "Show combined status and cost overview",
+			},
+			matches: equals("stats"),
+			execute: () => handlers.stats(),
 		},
 		{
 			command: {

@@ -5,7 +5,7 @@ import {
 	muted,
 	separator as themedSeparator,
 } from "../style/theme.js";
-import { getUsageSummary } from "../tracking/cost-tracker.js";
+import { clearUsage, getUsageSummary } from "../tracking/cost-tracker.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 
@@ -28,7 +28,29 @@ export class CostView {
 	constructor(private readonly options: CostViewOptions) {}
 
 	handleCostCommand(input: string): void {
-		const periodArg = input.split(/\s+/)[1]?.trim();
+		const [, ...rawArgs] = input.trim().split(/\s+/);
+		const action = rawArgs[0]?.toLowerCase();
+		const remainder = rawArgs.slice(1);
+
+		if (action === "help") {
+			this.renderHelp();
+			return;
+		}
+
+		if (action === "clear") {
+			this.handleClearCommand();
+			return;
+		}
+
+		if (action === "breakdown") {
+			this.handleBreakdownCommand(remainder);
+			return;
+		}
+
+		this.handleSummaryCommand(action);
+	}
+
+	private handleSummaryCommand(periodArg?: string): void {
 		const period = this.resolvePeriod(periodArg);
 		try {
 			const summary = getUsageSummary({
@@ -41,6 +63,47 @@ export class CostView {
 				error instanceof Error ? error.message : "Unable to load usage";
 			this.options.showError(`Cost summary failed: ${message}`);
 		}
+	}
+
+	private handleBreakdownCommand(args: string[]): void {
+		const period = this.resolvePeriod(args[0]);
+		try {
+			const summary = getUsageSummary({
+				since: period.since,
+				until: period.until,
+			});
+			this.renderBreakdown(summary, period.label);
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : "Unable to load usage";
+			this.options.showError(`Cost breakdown failed: ${message}`);
+		}
+	}
+
+	private handleClearCommand(): void {
+		try {
+			clearUsage();
+			this.renderText(
+				`${badge("Usage data cleared", undefined, "success")}\n${muted("Cost tracking has been reset.")}`,
+			);
+			this.options.showInfo("All cost-tracking data cleared.");
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : "Unable to clear usage";
+			this.options.showError(`Failed to clear usage: ${message}`);
+		}
+	}
+
+	private renderHelp(): void {
+		const lines = [
+			chalk.bold("/cost usage"),
+			"/cost — show cost summary (all time)",
+			"/cost today|yesterday|week|month — specify a time window",
+			"/cost breakdown [period] — provider/model share details",
+			"/cost clear — reset stored usage data",
+			"/cost help — show this help",
+		];
+		this.renderText(lines.join("\n"));
 	}
 
 	private resolvePeriod(arg?: string): CostPeriod {
@@ -169,6 +232,49 @@ export class CostView {
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(content, 1, 0));
 		this.options.ui.requestRender();
+	}
+
+	private renderBreakdown(
+		summary: ReturnType<typeof getUsageSummary>,
+		label: string,
+	): void {
+		if (summary.totalRequests === 0) {
+			this.renderText(
+				`${badge("📊 Cost Breakdown", label, "info")}\n${muted("No usage data found for this period.")}`,
+			);
+			return;
+		}
+		const providers = Object.entries(summary.byProvider).sort(
+			(a, b) => b[1].cost - a[1].cost,
+		);
+		const lines = providers.map(([provider, data]) => {
+			const share = summary.totalCost
+				? (data.cost / summary.totalCost) * 100
+				: 0;
+			const metrics = [
+				badge("req", data.requests.toString(), "info"),
+				badge("tok", this.formatTokens(data.tokens), "info"),
+				badge("cost", `$${data.cost.toFixed(4)}`, "warn"),
+				contextualBadge("share", share, { warn: 30, danger: 50 }),
+			];
+			return `  ${chalk.cyan(provider.padEnd(16))} ${metrics.join(themedSeparator())}`;
+		});
+		const footer = `${badge(
+			"Total requests",
+			summary.totalRequests.toLocaleString(),
+			"info",
+		)} ${themedSeparator()} ${badge(
+			"Total tokens",
+			summary.totalTokens.toLocaleString(),
+			"info",
+		)} ${themedSeparator()} ${badge(
+			"Total cost",
+			`$${summary.totalCost.toFixed(4)}`,
+			"warn",
+		)}`;
+		this.renderText(
+			`${badge("📊 Cost Breakdown", label, "info")}\n${lines.join("\n")}\n\n  ${footer}`,
+		);
 	}
 
 	private formatTokens(tokens: number): string {

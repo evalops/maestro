@@ -20,9 +20,10 @@ export interface CommandHandlers {
 	mention(text: string): void;
 	help(): void;
 	update(): Promise<void> | void;
-	config(): Promise<void> | void;
+	config(text: string): Promise<void> | void;
 	cost(text: string): Promise<void> | void;
 	telemetry(text: string): void;
+	stats(): Promise<void> | void;
 	plan(text: string): void;
 	preview(text: string): Promise<void> | void;
 	run(text: string): Promise<void> | void;

@@ -88,6 +88,7 @@ describe("ConfigView", () => {
 			chatContainer: container,
 			ui: { requestRender } as unknown as TUI,
 			showError: vi.fn(),
+			showInfo: vi.fn(),
 		});
 
 		view.showConfigSummary();
@@ -117,11 +118,51 @@ describe("ConfigView", () => {
 			chatContainer: container,
 			ui: { requestRender: vi.fn() } as unknown as TUI,
 			showError,
+			showInfo: vi.fn(),
 		});
 
 		view.showConfigSummary();
 
 		expect(showError).toHaveBeenCalledWith(expect.stringContaining("boom"));
 		expect(container.children).toHaveLength(0);
+	});
+	it("shows sources when /config sources is invoked", () => {
+		const container = new Container();
+		const view = new ConfigView({
+			chatContainer: container,
+			ui: { requestRender: vi.fn() } as unknown as TUI,
+			showError: vi.fn(),
+			showInfo: vi.fn(),
+		});
+
+		view.handleConfigCommand("/config sources");
+
+		const textComponent = container.children.find(
+			(component): component is Text => component instanceof Text,
+		);
+		const rendered = textComponent?.render(120).join("\n") ?? "";
+		expect(rendered).toContain("Config sources");
+		expect(mockInspect).toHaveBeenCalledTimes(1);
+		expect(mockHierarchy).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows help and info for unknown subcommands", () => {
+		const container = new Container();
+		const showInfo = vi.fn();
+		const view = new ConfigView({
+			chatContainer: container,
+			ui: { requestRender: vi.fn() } as unknown as TUI,
+			showError: vi.fn(),
+			showInfo,
+		});
+
+		view.handleConfigCommand("/config mystery");
+
+		const textComponent = container.children.at(-1) as Text;
+		const rendered = textComponent?.render(80).join("\n") ?? "";
+		expect(rendered).toContain("/config");
+		expect(showInfo).toHaveBeenCalledWith(
+			expect.stringContaining("Unknown config option"),
+		);
 	});
 });

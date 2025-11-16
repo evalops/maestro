@@ -17,10 +17,32 @@ interface ConfigViewOptions {
 	chatContainer: Container;
 	ui: TUI;
 	showError: (message: string) => void;
+	showInfo?: (message: string) => void;
 }
 
 export class ConfigView {
 	constructor(private readonly options: ConfigViewOptions) {}
+
+	handleConfigCommand(input: string): void {
+		const [, ...rawArgs] = input.trim().split(/\s+/);
+		const action = rawArgs[0]?.toLowerCase();
+		if (!action || action === "show" || action === "summary") {
+			this.showConfigSummary();
+			return;
+		}
+		if (action === "sources" || action === "files") {
+			this.showSourcesOnly();
+			return;
+		}
+		if (action === "help") {
+			this.renderHelp();
+			return;
+		}
+		this.renderHelp();
+		this.options.showInfo?.(
+			`Unknown config option "${action}". Showing help instructions instead.`,
+		);
+	}
 
 	showConfigSummary(): void {
 		try {
@@ -155,6 +177,36 @@ export class ConfigView {
 			return `  ${status} ${muted(rel)}${size}`;
 		});
 		return `${badge("File references", String(inspection.fileReferences.length), "info")}\n${lines.join("\n")}`;
+	}
+
+	private showSourcesOnly(): void {
+		try {
+			const inspection = inspectConfig();
+			const hierarchy = getConfigHierarchy();
+			const sources = this.buildSourcesSection(inspection, hierarchy);
+			const body =
+				sources ||
+				chalk.dim(
+					"No configuration sources were discovered for this workspace.",
+				);
+			this.render(`${badge("Config sources", undefined, "info")}\n${body}`);
+		} catch (error) {
+			const message =
+				error instanceof Error
+					? error.message
+					: "Unable to load configuration sources";
+			this.options.showError(`Config sources failed: ${message}`);
+		}
+	}
+
+	private renderHelp(): void {
+		const content = [
+			chalk.bold("/config usage"),
+			"/config — show validation + provider summary",
+			"/config sources — list config files and whether they loaded",
+			"/config help — show this help message",
+		].join("\n");
+		this.render(content);
 	}
 }
 

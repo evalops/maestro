@@ -6,11 +6,13 @@ import { CostView } from "../src/tui/cost-view.js";
 
 vi.mock("../src/tracking/cost-tracker.js", () => ({
 	getUsageSummary: vi.fn(),
+	clearUsage: vi.fn(),
 }));
 
-import { getUsageSummary } from "../src/tracking/cost-tracker.js";
+import { clearUsage, getUsageSummary } from "../src/tracking/cost-tracker.js";
 
 const mockSummary = vi.mocked(getUsageSummary);
+const mockClear = vi.mocked(clearUsage);
 
 const makeSummary = (overrides: Partial<UsageSummary> = {}): UsageSummary => ({
 	totalCost: 12.3456,
@@ -115,5 +117,42 @@ describe("CostView", () => {
 		expect(showError).toHaveBeenCalledWith(
 			expect.stringContaining("disk error"),
 		);
+	});
+
+	it("renders detailed breakdown when requested", () => {
+		const container = new Container();
+		const view = new CostView({
+			chatContainer: container,
+			ui: { requestRender: vi.fn() } as unknown as TUI,
+			showInfo: vi.fn(),
+			showError: vi.fn(),
+		});
+
+		view.handleCostCommand("/cost breakdown month");
+
+		expect(mockSummary).toHaveBeenCalledWith(
+			expect.objectContaining({ since: expect.any(Number) }),
+		);
+		const textComponent = container.children.find(
+			(child): child is Text => child instanceof Text,
+		);
+		const rendered = textComponent?.render(100).join("\n") ?? "";
+		expect(rendered).toContain("Cost Breakdown");
+		expect(rendered.toLowerCase()).toContain("share");
+	});
+
+	it("clears stored usage data", () => {
+		const showInfo = vi.fn();
+		const view = new CostView({
+			chatContainer: new Container(),
+			ui: { requestRender: vi.fn() } as unknown as TUI,
+			showInfo,
+			showError: vi.fn(),
+		});
+
+		view.handleCostCommand("/cost clear");
+
+		expect(mockClear).toHaveBeenCalledTimes(1);
+		expect(showInfo).toHaveBeenCalledWith(expect.stringContaining("cleared"));
 	});
 });

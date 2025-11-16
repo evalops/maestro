@@ -321,6 +321,7 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			showError: (message) => this.notificationView.showError(message),
+			showInfo: (message) => this.notificationView.showInfo(message),
 		});
 		this.costView = new CostView({
 			chatContainer: this.chatContainer,
@@ -360,10 +361,11 @@ export class TuiRenderer {
 			handleMention: (input) => this.fileSearchView.handleMentionCommand(input),
 			showHelp: () => this.infoView.showHelp(),
 			handleUpdate: () => this.updateView.handleUpdateCommand(),
-			handleConfig: () => this.configView.showConfigSummary(),
+			handleConfig: (input) => this.configView.handleConfigCommand(input),
 			handleCost: (input) => this.costView.handleCostCommand(input),
 			handleTelemetry: (input) =>
 				this.telemetryView.handleTelemetryCommand(input),
+			handleStats: () => this.handleStatsCommand(),
 			handlePlan: (input) => this.planView.handlePlanCommand(input),
 			handlePreview: (input) => this.gitView.handlePreviewCommand(input),
 			handleRun: (input) => this.runCommandView.handleRunCommand(input),
@@ -471,6 +473,11 @@ export class TuiRenderer {
 
 	private async handleCompactCommand(): Promise<void> {
 		await this.conversationCompactor.compactHistory();
+	}
+
+	private async handleStatsCommand(): Promise<void> {
+		this.diagnosticsView.handleStatusCommand();
+		this.costView.handleCostCommand("/cost today");
 	}
 
 	private clearEditor(): void {

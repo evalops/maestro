@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import chalk from "chalk";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
@@ -48,47 +49,192 @@ export class PlanView {
 
 	handlePlanCommand(text: string): void {
 		const store = loadTodoStore(this.options.filePath);
+		const argsPortion = this.extractArgs(text);
+		if (this.tryHandlePlanAction(store, argsPortion)) {
+			return;
+		}
 		const goals = Object.keys(store);
 		if (goals.length === 0) {
 			this.options.showInfoMessage(
-				"No plans found. Use the todo tool in a message to create one.",
+				"No plans found. Use /plan new <goal> to start a checklist.",
 			);
 			this.options.setPlanHint(null);
 			return;
 		}
-
-		const parts = text.trim().split(/\s+/);
-		if (parts.length === 1) {
-			const summaries = goals.map((goal) => {
-				const entry = store[goal];
-				const counts = countTodoStatuses(entry.items);
-				return `${chalk.bold(goal)}\n  Pending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}`;
-			});
-			this.showTextBlock(
-				`${chalk.bold("Plans")}\n${summaries.join("\n\n")}\n\nUse /plan <goal> to see details.`,
-			);
-			this.options.setPlanHint(null);
+		if (!argsPortion) {
+			this.showPlanSummary(store);
 			return;
 		}
-
-		const goalQuery = text.slice(text.indexOf(" ") + 1).trim();
-		const goalKey =
-			goals.find((goal) => goal.toLowerCase() === goalQuery.toLowerCase()) ??
-			goals.find((goal) =>
-				goal.toLowerCase().includes(goalQuery.toLowerCase()),
-			);
+		const goalKey = findGoalKey(store, argsPortion);
 		if (!goalKey) {
-			this.options.showInfoMessage(`No plan found matching "${goalQuery}".`);
+			this.options.showInfoMessage(`No plan found matching "${argsPortion}".`);
 			return;
 		}
+		this.showGoalDetail(store, goalKey);
+	}
 
+	private showTextBlock(content: string): void {
+		this.options.chatContainer.addChild(new Spacer(1));
+		this.options.chatContainer.addChild(new Text(content, 1, 0));
+		this.options.ui.requestRender();
+	}
+
+	private extractArgs(text: string): string {
+		const trimmed = text.trim();
+		if (!trimmed.startsWith("/plan")) {
+			return trimmed;
+		}
+		return trimmed.slice("/plan".length).trim();
+	}
+
+	private tryHandlePlanAction(store: TodoStore, argsPortion: string): boolean {
+		if (!argsPortion) {
+			return false;
+		}
+		const [firstWord, ...restWords] = argsPortion.split(/\s+/);
+		const action = firstWord.toLowerCase();
+		const remainder = argsPortion.slice(firstWord.length).trim();
+		switch (action) {
+			case "help":
+				this.showTextBlock(
+					`${chalk.bold("Plan command help")}
+/plan — list all plans
+/plan <goal> — show plan details
+/plan new <goal> — create a plan
+/plan add <goal> :: <task> [:: priority] — add a task
+/plan complete <goal> :: <task number|id> — mark done`,
+				);
+				return true;
+			case "new":
+				this.handlePlanCreate(store, remainder);
+				return true;
+			case "add":
+				this.handlePlanAdd(store, remainder);
+				return true;
+			case "complete":
+				this.handlePlanComplete(store, remainder);
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	private handlePlanCreate(store: TodoStore, goalName: string): void {
+		const name = goalName.trim();
+		if (!name) {
+			this.options.showInfoMessage(
+				"Provide a goal name, e.g. /plan new Release Checklist",
+			);
+			return;
+		}
+		if (store[name]) {
+			this.options.showInfoMessage(`A plan named "${name}" already exists.`);
+			return;
+		}
+		store[name] = {
+			goal: name,
+			items: [],
+			updatedAt: new Date().toISOString(),
+		};
+		saveTodoStore(this.options.filePath, store);
+		this.options.showInfoMessage(`Created plan "${name}".`);
+		this.options.setPlanHint(`${name}: no tasks yet`);
+		this.showGoalDetail(store, name);
+	}
+
+	private handlePlanAdd(store: TodoStore, remainder: string): void {
+		const segments = remainder
+			.split("::")
+			.map((segment) => segment.trim())
+			.filter(Boolean);
+		if (segments.length < 2) {
+			this.options.showInfoMessage(
+				"Use /plan add <goal> :: <task> [:: priority]",
+			);
+			return;
+		}
+		const goalKey = findGoalKey(store, segments[0]);
+		if (!goalKey) {
+			this.options.showInfoMessage(`No plan found matching "${segments[0]}".`);
+			return;
+		}
+		const priority = (segments[2]?.toLowerCase() || "medium").trim();
+		const entry = store[goalKey];
+		entry.items.push({
+			id: randomUUID(),
+			content: segments[1],
+			status: "pending",
+			priority,
+		});
+		entry.updatedAt = new Date().toISOString();
+		saveTodoStore(this.options.filePath, store);
+		this.options.showInfoMessage(`Added task to "${goalKey}".`);
+		this.showGoalDetail(store, goalKey);
+	}
+
+	private handlePlanComplete(store: TodoStore, remainder: string): void {
+		const segments = remainder
+			.split("::")
+			.map((segment) => segment.trim())
+			.filter(Boolean);
+		if (segments.length < 2) {
+			this.options.showInfoMessage(
+				"Use /plan complete <goal> :: <task number|id>",
+			);
+			return;
+		}
+		const goalKey = findGoalKey(store, segments[0]);
+		if (!goalKey) {
+			this.options.showInfoMessage(`No plan found matching "${segments[0]}".`);
+			return;
+		}
+		const entry = store[goalKey];
+		const taskRef = segments[1];
+		const task = this.resolveTask(entry, taskRef);
+		if (!task) {
+			this.options.showInfoMessage(`Task "${taskRef}" was not found.`);
+			return;
+		}
+		task.status = "completed";
+		entry.updatedAt = new Date().toISOString();
+		saveTodoStore(this.options.filePath, store);
+		this.options.showInfoMessage(`Marked task as completed in "${goalKey}".`);
+		this.showGoalDetail(store, goalKey);
+	}
+
+	private resolveTask(entry: TodoGoalEntry, ref: string): TodoItem | undefined {
+		const numeric = Number.parseInt(ref, 10);
+		if (
+			!Number.isNaN(numeric) &&
+			numeric > 0 &&
+			numeric <= entry.items.length
+		) {
+			return entry.items[numeric - 1];
+		}
+		return entry.items.find((item) => item.id === ref.trim());
+	}
+
+	private showPlanSummary(store: TodoStore): void {
+		const goals = Object.keys(store);
+		const summaries = goals.map((goal) => {
+			const entry = store[goal];
+			const counts = countTodoStatuses(entry.items);
+			return `${chalk.bold(goal)}\n  Pending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}`;
+		});
+		this.showTextBlock(
+			`${chalk.bold("Plans")}\n${summaries.join("\n\n")}\n\nUse /plan <goal> to see details.`,
+		);
+		this.options.setPlanHint(null);
+	}
+
+	private showGoalDetail(store: TodoStore, goalKey: string): void {
 		const entry = store[goalKey];
 		const counts = countTodoStatuses(entry.items);
 		const tasks = entry.items.length
 			? entry.items
 					.map((item, index) => formatTask(item, index + 1))
 					.join("\n\n")
-			: chalk.dim("No tasks yet — add some with the todo tool.");
+			: chalk.dim("No tasks yet — add some with /plan add <goal> :: <task>.");
 		const detail = `${chalk.bold(goalKey)}\nUpdated: ${new Date(entry.updatedAt).toLocaleString()}\nPending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}\n\n${tasks}`;
 		this.showTextBlock(detail);
 		const total =
@@ -97,12 +243,6 @@ export class PlanView {
 		const summary =
 			total > 0 ? `${counts.completed}/${total} done` : "no tasks yet";
 		this.options.setPlanHint(`${goalKey}: ${summary}`);
-	}
-
-	private showTextBlock(content: string): void {
-		this.options.chatContainer.addChild(new Spacer(1));
-		this.options.chatContainer.addChild(new Text(content, 1, 0));
-		this.options.ui.requestRender();
 	}
 }
 
@@ -131,6 +271,10 @@ export function loadTodoStore(filePath: string): TodoStore {
 	}
 }
 
+export function saveTodoStore(filePath: string, store: TodoStore): void {
+	writeFileSync(filePath, JSON.stringify(store, null, 2));
+}
+
 export function countTodoStatuses(
 	items: Array<{ status: string }>,
 ): Record<PlanStatusKey, number> {
@@ -146,5 +290,13 @@ export function countTodoStatuses(
 			PlanStatusKey,
 			number
 		>,
+	);
+}
+
+function findGoalKey(store: TodoStore, query: string): string | undefined {
+	const goals = Object.keys(store);
+	return (
+		goals.find((goal) => goal.toLowerCase() === query.toLowerCase()) ??
+		goals.find((goal) => goal.toLowerCase().includes(query.toLowerCase()))
 	);
 }
