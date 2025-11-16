@@ -81,15 +81,7 @@ export ZAI_API_KEY=...
 
 If no API key is set, the CLI will prompt you to configure one on first run.
 
-### Factory Integration
-
-Composer now mirrors the Factory CLI setup automatically:
-
-- If `~/.composer/models.json` is missing, Composer loads custom providers and API keys directly from `~/.factory/config.json`.
-- Default provider/model come from `~/.factory/settings.json`, so running Composer without flags uses the same model Factory is configured to use.
-- To create a standalone Composer config (and optionally edit it), run `npm run factory:import` which copies the Factory models into `~/.composer/models.json`.
-- Need to go the other way? `npm run factory:export` writes your Composer config back into `~/.factory/config.json` (and bootstraps `settings.json` if missing) so Factory can pick up the same providers.
-- Already inside the TUI? Use `/import factory` to pull the latest Factory settings without restarting the CLI.
+> **Factory CLI users:** Run `npm run factory:import` / `npm run factory:export` or use `/import factory` inside the TUI whenever you want to sync providers and settings—otherwise Composer stays fully standalone.
 
 ## Slash Commands
 
