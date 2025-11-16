@@ -46,6 +46,7 @@ export interface CommandHandlers {
 	diagnostics(context: CommandExecutionContext): void;
 	compact(context: CommandExecutionContext): Promise<void> | void;
 	compactTools(context: CommandExecutionContext): void;
+	queue(context: CommandExecutionContext): Promise<void> | void;
 	quit(context: CommandExecutionContext): void;
 }
 

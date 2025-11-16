@@ -101,6 +101,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "queue",
+				description: "List or cancel queued prompts",
+				usage: "/queue [list|cancel <id>]",
+				tags: ["session"],
+			},
+			withArgs("queue"),
+			handlers.queue,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "bug",
 				description: "Copy session info for bug reports",
 				usage: "/bug",

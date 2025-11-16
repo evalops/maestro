@@ -6,7 +6,7 @@ interface EditorViewOptions {
 	getCommandEntries: () => CommandEntry[];
 	onFirstInput: () => void;
 	onSubmit: (text: string) => void;
-	isSubmitDisabled: () => boolean;
+	shouldInterrupt: () => boolean;
 	onInterrupt?: () => void;
 	onCtrlC?: () => void;
 	showCommandPalette: () => void;
@@ -17,7 +17,7 @@ export class EditorView {
 	constructor(private readonly options: EditorViewOptions) {
 		const editor = options.editor;
 		editor.onEscape = () => {
-			if (this.options.isSubmitDisabled() && this.options.onInterrupt) {
+			if (this.options.shouldInterrupt() && this.options.onInterrupt) {
 				this.options.onInterrupt();
 			}
 		};

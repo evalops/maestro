@@ -47,6 +47,7 @@ interface CommandRegistryOptions {
 	handleCompactTools: (
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
+	handleQueue: (context: CommandExecutionContext) => void | Promise<void>;
 	handleQuit: (context: CommandExecutionContext) => void;
 }
 
@@ -84,6 +85,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			diagnostics: opts.handleDiagnostics,
 			compact: opts.handleCompact,
 			compactTools: opts.handleCompactTools,
+			queue: opts.handleQueue,
 			quit: opts.handleQuit,
 		},
 		createContext: opts.createContext,

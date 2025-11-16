@@ -55,6 +55,10 @@ import { ModelSelectorView } from "./model-selector-view.js";
 import { NotificationView } from "./notification-view.js";
 import { OllamaView } from "./ollama-view.js";
 import { PlanView } from "./plan-view.js";
+import {
+	PromptQueue,
+	type PromptQueueEvent,
+} from "./prompt-queue.js";
 import { RunCommandView } from "./run-command-view.js";
 import { RunController } from "./run-controller.js";
 import { SessionContext } from "./session-context.js";
@@ -135,6 +139,11 @@ export class TuiRenderer {
 	private runController: RunController;
 	private agentEventRouter!: AgentEventRouter;
 	private sessionContext = new SessionContext();
+	private promptQueue?: PromptQueue;
+	private promptQueueUnsubscribe?: () => void;
+	private queuedPromptCount = 0;
+	private queueEnabled = false;
+	private isAgentRunning = false;
 
 	constructor(
 		agent: Agent,
@@ -190,7 +199,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			workingHint: "Working… press esc to interrupt",
 			setEditorDisabled: (disabled) => {
-				this.editor.disableSubmit = disabled;
+				this.editor.disableSubmit = disabled && !this.queueEnabled;
 			},
 			clearEditor: () => this.clearEditor(),
 			stopRenderer: () => this.stop(),
@@ -435,6 +444,7 @@ export class TuiRenderer {
 			handleCompact: (_context) => this.handleCompactCommand(),
 			handleCompactTools: (context) =>
 				this.toolOutputView.handleCompactToolsCommand(context.rawInput),
+			handleQueue: (context) => this.handleQueueCommand(context),
 			handleQuit: (_context) => {
 				this.stop();
 				process.exit(0);
@@ -458,7 +468,7 @@ export class TuiRenderer {
 					this.onInputCallback(text);
 				}
 			},
-			isSubmitDisabled: () => this.editor.disableSubmit,
+			shouldInterrupt: () => this.isAgentRunning,
 			onInterrupt: () => {
 				if (this.onInterruptCallback) {
 					this.onInterruptCallback();
@@ -468,6 +478,15 @@ export class TuiRenderer {
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
 		});
+	}
+
+	attachPromptQueue(queue: PromptQueue): void {
+		this.promptQueue = queue;
+		this.queueEnabled = true;
+		this.promptQueueUnsubscribe?.();
+		this.promptQueueUnsubscribe = queue.subscribe((event) =>
+			this.handlePromptQueueEvent(event),
+		);
 	}
 
 	async init(): Promise<void> {
@@ -501,6 +520,11 @@ export class TuiRenderer {
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
 		if (!this.isInitialized) {
 			await this.init();
+		}
+		if (event.type === "agent_start") {
+			this.isAgentRunning = true;
+		} else if (event.type === "agent_end") {
+			this.isAgentRunning = false;
 		}
 
 		// Update footer with current stats
@@ -546,6 +570,107 @@ export class TuiRenderer {
 	private clearEditor(): void {
 		this.editor.setText("");
 		this.ui.requestRender();
+	}
+
+	private handlePromptQueueEvent(event: PromptQueueEvent): void {
+		if (!this.promptQueue) {
+			return;
+		}
+		if (event.type === "enqueue" && !event.willRunImmediately) {
+			this.notificationView.showInfo(
+				`Queued prompt #${event.entry.id} (${event.pendingCount} pending)`,
+			);
+		}
+		if (event.type === "cancel") {
+			this.notificationView.showInfo(
+				`Removed queued prompt #${event.entry.id}`,
+			);
+		}
+		this.updateQueuedPromptCount();
+		if (!this.isAgentRunning) {
+			this.refreshFooterHint();
+		}
+		this.ui.requestRender();
+	}
+
+	private updateQueuedPromptCount(): void {
+		if (!this.promptQueue) {
+			this.queuedPromptCount = 0;
+			return;
+		}
+		const snapshot = this.promptQueue.getSnapshot();
+		this.queuedPromptCount = snapshot.pending.length;
+	}
+
+	private handleQueueCommand(context: CommandExecutionContext): void {
+		if (!this.promptQueue) {
+			context.showInfo("Prompt queue is not available.");
+			return;
+		}
+		const args = context.argumentText.trim();
+		if (!args || args === "list") {
+			this.renderQueueList();
+			return;
+		}
+		const [action, idText] = args.split(/\s+/, 2);
+		if (action === "cancel") {
+			const id = Number.parseInt(idText ?? "", 10);
+			if (!Number.isFinite(id)) {
+				context.showError("Provide a numeric prompt id to cancel.");
+				return;
+			}
+			const removed = this.promptQueue.cancel(id);
+			if (!removed) {
+				context.showError(`No queued prompt #${id} to cancel.`);
+				return;
+			}
+			this.notificationView.showToast(
+				`Cancelled queued prompt #${id}`,
+				"success",
+			);
+			this.renderQueueList();
+			this.updateQueuedPromptCount();
+			if (!this.isAgentRunning) {
+				this.refreshFooterHint();
+			}
+			return;
+		}
+		context.renderHelp();
+	}
+
+	private renderQueueList(): void {
+		if (!this.promptQueue) {
+			return;
+		}
+		const snapshot = this.promptQueue.getSnapshot();
+		const lines: string[] = [];
+		if (snapshot.active) {
+			lines.push(
+				`Active: #${snapshot.active.id} – ${this.formatQueuedText(snapshot.active.text)}`,
+			);
+		}
+		if (snapshot.pending.length === 0) {
+			lines.push("No queued prompts.");
+		} else {
+			lines.push("Pending prompts:");
+			snapshot.pending.forEach((entry, index) => {
+				lines.push(
+					`${index + 1}. #${entry.id} – ${this.formatQueuedText(entry.text)}`,
+				);
+			});
+			lines.push("Use /queue cancel <id> to remove a prompt.");
+		}
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private formatQueuedText(message: string): string {
+		const singleLine = message.replace(/\s+/g, " ").trim();
+		if (singleLine.length <= 80) {
+			return singleLine || "(empty message)";
+		}
+		return `${singleLine.slice(0, 77)}…`;
 	}
 
 	private createCommandContext({
@@ -614,8 +739,21 @@ export class TuiRenderer {
 	}
 
 	public refreshFooterHint(): void {
-		const suffix = this.planHint ? ` • Plan ${this.planHint}` : "";
-		this.footer.setHint(`${this.idleFooterHint}${suffix}`);
+		if (this.isAgentRunning) {
+			return;
+		}
+		const hints: string[] = [this.idleFooterHint];
+		if (this.queuedPromptCount > 0) {
+			const queueLabel =
+				this.queuedPromptCount === 1
+					? "1 prompt queued"
+					: `${this.queuedPromptCount} prompts queued`;
+			hints.push(queueLabel);
+		}
+		if (this.planHint) {
+			hints.push(`Plan ${this.planHint}`);
+		}
+		this.footer.setHint(hints.filter(Boolean).join(" • "));
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {
@@ -655,6 +793,8 @@ export class TuiRenderer {
 
 	stop(): void {
 		this.loaderView.stop();
+		this.promptQueueUnsubscribe?.();
+		this.promptQueueUnsubscribe = undefined;
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;

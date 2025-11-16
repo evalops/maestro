@@ -31,6 +31,7 @@ import {
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
+import { PromptQueue } from "./tui/prompt-queue.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 
 // Get version from package.json
@@ -53,6 +54,19 @@ async function runInteractiveMode(
 		version,
 		explicitApiKey,
 	);
+	const promptQueue = new PromptQueue(
+		async (text) => {
+			await agent.prompt(text);
+		},
+		(error) => {
+			renderer.showError(
+				error instanceof Error
+					? error.message
+					: "Unknown error occurred",
+			);
+		},
+	);
+	renderer.attachPromptQueue(promptQueue);
 
 	// Initialize TUI
 	await renderer.init();
@@ -74,16 +88,7 @@ async function runInteractiveMode(
 	// Interactive loop
 	while (true) {
 		const userInput = await renderer.getUserInput();
-
-		// Process the message - agent.prompt will add user message and trigger state updates
-		try {
-			await agent.prompt(userInput);
-		} catch (error: unknown) {
-			// Display error in the TUI by adding an error message to the chat
-			renderer.showError(
-				error instanceof Error ? error.message : "Unknown error occurred",
-			);
-		}
+		promptQueue.enqueue(userInput);
 	}
 }
 
