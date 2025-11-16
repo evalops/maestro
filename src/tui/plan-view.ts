@@ -16,6 +16,14 @@ const PLAN_STATUS_LABELS = {
 	completed: "Completed",
 } as const;
 
+const STATUS_ACCENTS = {
+	pending: (value: string) => chalk.dim(value),
+	in_progress: (value: string) => chalk.yellow(value),
+	completed: (value: string) => chalk.green(value),
+} as const;
+
+const formatInfoLabel = (label: string): string => chalk.dim(label.toUpperCase());
+
 export type PlanStatusKey = keyof typeof PLAN_STATUS_SYMBOLS;
 
 export interface TodoItem {
@@ -219,10 +227,18 @@ export class PlanView {
 		const summaries = goals.map((goal) => {
 			const entry = store[goal];
 			const counts = countTodoStatuses(entry.items);
-			return `${chalk.bold(goal)}\n  Pending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}`;
+			return `${chalk.bold(goal)}\n  ${formatInfoLabel("Pending")} ${counts.pending
+				.toString()
+				.padStart(2, " ")}\n  ${formatInfoLabel("In Progress")} ${counts.in_progress
+				.toString()
+				.padStart(2, " ")}\n  ${formatInfoLabel("Completed")} ${counts.completed
+				.toString()
+				.padStart(2, " ")}`;
 		});
 		this.showTextBlock(
-			`${chalk.bold("Plans")}\n${summaries.join("\n\n")}\n\nUse /plan <goal> to see details.`,
+			`${chalk.bold("PLAN OVERVIEW")}\n${summaries.join("\n\n")}\n\n${chalk.dim(
+				"Use /plan <goal> to see details.",
+			)}`,
 		);
 		this.options.setPlanHint(null);
 	}
@@ -235,7 +251,10 @@ export class PlanView {
 					.map((item, index) => formatTask(item, index + 1))
 					.join("\n\n")
 			: chalk.dim("No tasks yet — add some with /plan add <goal> :: <task>.");
-		const detail = `${chalk.bold(goalKey)}\nUpdated: ${new Date(entry.updatedAt).toLocaleString()}\nPending: ${counts.pending} · In Progress: ${counts.in_progress} · Completed: ${counts.completed}\n\n${tasks}`;
+		const totalTasks = counts.pending + counts.in_progress + counts.completed || entry.items.length || 0;
+		const progressLine = `${formatInfoLabel("Progress")}  ${counts.completed}/${totalTasks}`;
+		const totalsLine = `${formatInfoLabel("Totals")}   ${counts.pending}/${counts.in_progress}/${counts.completed}`;
+		const detail = `${chalk.bold(goalKey.toUpperCase())}\n${formatInfoLabel("Updated")}  ${new Date(entry.updatedAt).toLocaleString()}\n${progressLine}\n${totalsLine}\n\n${tasks}`;
 		this.showTextBlock(detail);
 		const total =
 			counts.pending + counts.in_progress + counts.completed ||
@@ -248,15 +267,29 @@ export class PlanView {
 
 function formatTask(item: TodoItem, index: number): string {
 	const status = (item.status ?? "pending") as PlanStatusKey;
-	const symbol = PLAN_STATUS_SYMBOLS[status] ?? "[ ]";
-	const lines = [`${index}. ${symbol} ${item.content}`];
-	lines.push(`   • Status: ${PLAN_STATUS_LABELS[status] ?? status}`);
-	lines.push(`   • Priority: ${item.priority ?? "medium"}`);
-	if (item.due) lines.push(`   • Due: ${item.due}`);
+	const accent = STATUS_ACCENTS[status] ?? ((value: string) => value);
+	const symbol = accent(PLAN_STATUS_SYMBOLS[status] ?? "[ ]");
+	const statusLabel = accent(PLAN_STATUS_LABELS[status] ?? status);
+	const indexLabel = chalk.dim(`#${String(index).padStart(2, "0")}`);
+	const priorityValue = capitalizeWords(item.priority ?? "medium");
+	const lines = [`${indexLabel}  ${symbol} ${chalk.bold(item.content)}`];
+	lines.push(`   ${formatInfoLabel("Status")}   ${statusLabel}`);
+	lines.push(`   ${formatInfoLabel("Priority")} ${priorityValue}`);
+	if (item.due) lines.push(`   ${formatInfoLabel("Due")}      ${item.due}`);
 	if (item.blockedBy?.length)
-		lines.push(`   • Blocked by: ${item.blockedBy.join(", ")}`);
-	if (item.notes) lines.push(`   • Notes: ${item.notes}`);
+		lines.push(
+			`   ${formatInfoLabel("Blocked By")} ${item.blockedBy.join(", ")}`,
+		);
+	if (item.notes) lines.push(`   ${formatInfoLabel("Notes")}    ${item.notes}`);
 	return lines.join("\n");
+}
+
+function capitalizeWords(value: string): string {
+	return value
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+		.join(" ");
 }
 
 export function loadTodoStore(filePath: string): TodoStore {
