@@ -14,12 +14,18 @@ import {
 } from "../style/theme.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
+import type {
+	SessionDataProvider,
+	SessionItem,
+} from "./session-data-provider.js";
 
 interface SessionViewOptions {
 	agent: Agent;
 	sessionManager: SessionManager;
 	chatContainer: Container;
 	ui: TUI;
+	sessionDataProvider: SessionDataProvider;
+	openSessionSwitcher: () => void;
 	applyLoadedSessionContext: () => void;
 	showInfoMessage: (message: string) => void;
 	onSessionLoaded: (session: { id: string; messageCount: number }) => void;
@@ -160,7 +166,7 @@ ${muted("Use /sessions load <number> to switch.")}`;
 		this.options.ui.requestRender();
 	}
 
-	loadSession(index: number, sessions: any[]): boolean {
+	loadSession(index: number, sessions: SessionItem[]): boolean {
 		if (!Number.isFinite(index) || index <= 0) {
 			this.options.showInfoMessage("Usage: /sessions load <number>");
 			return false;
@@ -174,24 +180,43 @@ ${muted("Use /sessions load <number> to switch.")}`;
 			this.options.showInfoMessage(`No session #${index} found.`);
 			return false;
 		}
-		this.options.sessionManager.setSessionFile(selected.path);
+		return this.loadSessionFromItem(selected);
+	}
+
+	loadSessionFromItem(session: SessionItem): boolean {
+		if (!session?.path) {
+			this.options.showInfoMessage("Unable to load that session.");
+			return false;
+		}
+		this.options.sessionManager.setSessionFile(session.path);
 		const loaded = this.options.sessionManager.loadMessages() as AppMessage[];
 		this.options.agent.replaceMessages(loaded);
 		this.options.applyLoadedSessionContext();
 		this.options.onSessionLoaded({
-			id: selected.id,
-			messageCount: selected.messageCount,
+			id: session.id,
+			messageCount: session.messageCount,
 		});
 		return true;
 	}
 
 	handleSessionsCommand(text: string): void {
 		const parts = text.trim().split(/\s+/);
-		const sessions = this.options.sessionManager.loadAllSessions();
-		if (parts.length === 1 || parts[1] === "list") {
-			this.showSessionsList(sessions);
+		if (parts.length === 1) {
+			this.options.openSessionSwitcher();
 			return;
 		}
+
+		if (parts[1] === "list") {
+			if (parts[2] === "text") {
+				const sessions = this.options.sessionDataProvider.loadSessions();
+				this.showSessionsList(sessions);
+			} else {
+				this.options.openSessionSwitcher();
+			}
+			return;
+		}
+
+		const sessions = this.options.sessionDataProvider.loadSessions();
 
 		if (parts[1] === "load" && parts.length >= 3) {
 			const index = Number.parseInt(parts[2], 10);
@@ -201,6 +226,43 @@ ${muted("Use /sessions load <number> to switch.")}`;
 			return;
 		}
 
-		this.options.showInfoMessage("Usage: /sessions [list|load <number>]");
+		if (["favorite", "fav", "star"].includes(parts[1]) && parts.length >= 3) {
+			const index = Number.parseInt(parts[2], 10);
+			if (!Number.isFinite(index) || index <= 0) {
+				this.options.showInfoMessage("Usage: /sessions favorite <number>");
+				return;
+			}
+			const target = sessions[index - 1];
+			if (!target) {
+				this.options.showInfoMessage(`No session #${index} found.`);
+				return;
+			}
+			this.options.sessionDataProvider.toggleFavorite(target.path, true);
+			this.options.showInfoMessage(`Favorited session #${index}.`);
+			return;
+		}
+
+		if (
+			["unfavorite", "unfav", "unstar"].includes(parts[1]) &&
+			parts.length >= 3
+		) {
+			const index = Number.parseInt(parts[2], 10);
+			if (!Number.isFinite(index) || index <= 0) {
+				this.options.showInfoMessage("Usage: /sessions unfavorite <number>");
+				return;
+			}
+			const target = sessions[index - 1];
+			if (!target) {
+				this.options.showInfoMessage(`No session #${index} found.`);
+				return;
+			}
+			this.options.sessionDataProvider.toggleFavorite(target.path, false);
+			this.options.showInfoMessage(`Removed favorite for session #${index}.`);
+			return;
+		}
+
+		this.options.showInfoMessage(
+			"Usage: /sessions [list|load <number>|favorite <number>|unfavorite <number>]",
+		);
 	}
 }

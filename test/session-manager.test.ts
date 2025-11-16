@@ -83,6 +83,42 @@ describe("SessionManager - Deferred Session Creation", () => {
 		process.chdir(testDir);
 	});
 
+	describe("Session metadata", () => {
+		it("derives summaries and toggles favorites", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const userMessage = createUserMessage(
+				"Deeply review the codebase to get an understanding",
+			);
+			state.messages.push(userMessage);
+			sessionManager.saveMessage(userMessage);
+			sessionManager.startSession(state);
+			sessionManager.saveMessage(createAssistantMessage("ack"));
+
+			const sessions = sessionManager.loadAllSessions();
+			expect(sessions.length).toBe(1);
+			expect(sessions[0].summary).toContain("Deeply review the codebase");
+			expect(sessions[0].favorite).toBe(false);
+
+			sessionManager.setSessionFavorite(sessions[0].path, true);
+			const updated = sessionManager.loadAllSessions();
+			expect(updated[0].favorite).toBe(true);
+		});
+
+		it("prefers custom summary metadata when provided", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const userMessage = createUserMessage("Investigate tests");
+			state.messages.push(userMessage);
+			sessionManager.saveMessage(userMessage);
+			sessionManager.startSession(state);
+			sessionManager.saveSessionSummary("Custom curated summary");
+
+			const sessions = sessionManager.loadAllSessions();
+			expect(sessions[0].summary).toBe("Custom curated summary");
+		});
+	});
+
 	afterEach(() => {
 		// Restore original state
 		process.chdir(originalCwd);

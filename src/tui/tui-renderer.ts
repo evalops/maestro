@@ -58,6 +58,8 @@ import { PlanView } from "./plan-view.js";
 import { RunCommandView } from "./run-command-view.js";
 import { RunController } from "./run-controller.js";
 import { SessionContext } from "./session-context.js";
+import { SessionDataProvider } from "./session-data-provider.js";
+import { SessionSwitcherView } from "./session-switcher-view.js";
 import { SessionView } from "./session-view.js";
 import { StreamingView } from "./streaming-view.js";
 import { TelemetryView } from "./telemetry-view.js";
@@ -107,6 +109,8 @@ export class TuiRenderer {
 	private commandEntries: CommandEntry[] = [];
 	private planView: PlanView;
 	private sessionView: SessionView;
+	private sessionDataProvider: SessionDataProvider;
+	private sessionSwitcherView!: SessionSwitcherView;
 	private importExportView: ImportExportView;
 	private runCommandView: RunCommandView;
 	private gitView: GitView;
@@ -197,11 +201,14 @@ export class TuiRenderer {
 			getTools: () => this.agent.state.tools,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
+		this.sessionDataProvider = new SessionDataProvider(this.sessionManager);
 		this.sessionView = new SessionView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
+			sessionDataProvider: this.sessionDataProvider,
+			openSessionSwitcher: () => this.sessionSwitcherView.show(),
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			onSessionLoaded: (sessionInfo) => {
@@ -212,6 +219,14 @@ export class TuiRenderer {
 					`Loaded session ${sessionInfo.id} (${sessionInfo.messageCount} messages).`,
 				);
 			},
+		});
+		this.sessionSwitcherView = new SessionSwitcherView({
+			sessionDataProvider: this.sessionDataProvider,
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			loadSession: (session) => this.sessionView.loadSessionFromItem(session),
 		});
 		this.diagnosticsView = new DiagnosticsView({
 			agent: this.agent,

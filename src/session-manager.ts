@@ -50,6 +50,13 @@ export interface ModelChangeEntry {
 	modelMetadata?: SessionModelMetadata;
 }
 
+export interface SessionMetaEntry {
+	type: "session_meta";
+	timestamp: string;
+	summary?: string;
+	favorite?: boolean;
+}
+
 export interface SessionModelMetadata {
 	provider: string;
 	modelId: string;
@@ -265,6 +272,32 @@ export class SessionManager {
 		}
 	}
 
+	private appendSessionMetaEntry(
+		targetFile: string,
+		meta: { summary?: string; favorite?: boolean },
+	): void {
+		if (!existsSync(targetFile)) return;
+		if (meta.summary === undefined && meta.favorite === undefined) {
+			return;
+		}
+		const entry: SessionMetaEntry = {
+			type: "session_meta",
+			timestamp: new Date().toISOString(),
+			...meta,
+		};
+		appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
+	}
+
+	saveSessionSummary(summary: string): void {
+		if (!this.enabled || !this.sessionInitialized) return;
+		if (!summary.trim()) return;
+		this.appendSessionMetaEntry(this.sessionFile, { summary: summary.trim() });
+	}
+
+	setSessionFavorite(sessionPath: string, favorite: boolean): void {
+		this.appendSessionMetaEntry(sessionPath, { favorite });
+	}
+
 	loadMessages(): any[] {
 		if (!existsSync(this.sessionFile)) return [];
 
@@ -378,8 +411,11 @@ export class SessionManager {
 		id: string;
 		created: Date;
 		modified: Date;
+		size: number;
 		messageCount: number;
 		firstMessage: string;
+		summary: string;
+		favorite: boolean;
 		allMessagesText: string;
 	}> {
 		const sessions: Array<{
@@ -387,43 +423,54 @@ export class SessionManager {
 			id: string;
 			created: Date;
 			modified: Date;
+			size: number;
 			messageCount: number;
 			firstMessage: string;
+			summary: string;
+			favorite: boolean;
 			allMessagesText: string;
 		}> = [];
 
 		try {
 			const files = readdirSync(this.sessionDir)
 				.filter((f) => f.endsWith(".jsonl"))
-				.map((f) => join(this.sessionDir, f));
+				.map((f) => {
+					const fullPath = join(this.sessionDir, f);
+					const stats = statSync(fullPath);
+					return { path: fullPath, stats };
+				})
+				.sort((a, b) => b.stats.mtime.getTime() - a.stats.mtime.getTime());
 
-			for (const file of files) {
+			for (const fileEntry of files) {
+				const file = fileEntry.path;
+				const stats = fileEntry.stats;
 				try {
-					const stats = statSync(file);
 					const content = readFileSync(file, "utf8");
-					const lines = content.trim().split("\n");
+					const trimmed = content.trim();
+					if (!trimmed) {
+						continue;
+					}
+					const lines = trimmed.split("\n");
 
 					let sessionId = "";
 					let created = stats.birthtime;
 					let messageCount = 0;
 					let firstMessage = "";
 					const allMessages: string[] = [];
+					let summary: string | undefined;
+					let favorite = false;
 
 					for (const line of lines) {
 						try {
 							const entry = JSON.parse(line);
 
-							// Extract session ID from first session entry
 							if (entry.type === "session" && !sessionId) {
 								sessionId = entry.id;
 								created = new Date(entry.timestamp);
 							}
 
-							// Count messages and collect all text
 							if (entry.type === "message") {
 								messageCount++;
-
-								// Extract text from user and assistant messages
 								if (
 									entry.message.role === "user" ||
 									entry.message.role === "assistant"
@@ -435,12 +482,19 @@ export class SessionManager {
 
 									if (textContent) {
 										allMessages.push(textContent);
-
-										// Get first user message for display
 										if (!firstMessage && entry.message.role === "user") {
 											firstMessage = textContent;
 										}
 									}
+								}
+							}
+
+							if (entry.type === "session_meta") {
+								if (typeof entry.summary === "string" && entry.summary.trim()) {
+									summary = entry.summary;
+								}
+								if (typeof entry.favorite === "boolean") {
+									favorite = entry.favorite;
 								}
 							}
 						} catch {
@@ -448,23 +502,24 @@ export class SessionManager {
 						}
 					}
 
+					const derivedSummary = summary || firstMessage || "(no summary)";
+
 					sessions.push({
 						path: file,
 						id: sessionId || "unknown",
 						created,
 						modified: stats.mtime,
+						size: stats.size,
 						messageCount,
 						firstMessage: firstMessage || "(no messages)",
+						summary: derivedSummary,
+						favorite,
 						allMessagesText: allMessages.join(" "),
 					});
 				} catch (error) {
-					// Skip files that can't be read
 					console.error(`Failed to read session file ${file}:`, error);
 				}
 			}
-
-			// Sort by modified date (most recent first)
-			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		} catch (error) {
 			console.error("Failed to load sessions:", error);
 		}
