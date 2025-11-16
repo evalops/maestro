@@ -40,6 +40,7 @@ interface CommandRegistryOptions {
 	handlePlan: (context: CommandExecutionContext) => void | Promise<void>;
 	handlePreview: (context: CommandExecutionContext) => void | Promise<void>;
 	handleRun: (context: CommandExecutionContext) => void | Promise<void>;
+	handleOllama: (context: CommandExecutionContext) => void | Promise<void>;
 	handleWhy: (context: CommandExecutionContext) => void;
 	handleDiagnostics: (context: CommandExecutionContext) => void | Promise<void>;
 	handleCompact: (context: CommandExecutionContext) => void | Promise<void>;
@@ -78,6 +79,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			plan: opts.handlePlan,
 			preview: opts.handlePreview,
 			run: opts.handleRun,
+			ollama: opts.handleOllama,
 			why: opts.handleWhy,
 			diagnostics: opts.handleDiagnostics,
 			compact: opts.handleCompact,

@@ -53,6 +53,7 @@ import { LoaderView } from "./loader-view.js";
 import { MessageView } from "./message-view.js";
 import { ModelSelectorView } from "./model-selector-view.js";
 import { NotificationView } from "./notification-view.js";
+import { OllamaView } from "./ollama-view.js";
 import { PlanView } from "./plan-view.js";
 import { RunCommandView } from "./run-command-view.js";
 import { RunController } from "./run-controller.js";
@@ -112,6 +113,7 @@ export class TuiRenderer {
 	private toolStatusView: ToolStatusView;
 	private diagnosticsView: DiagnosticsView;
 	private telemetryView: TelemetryView;
+	private ollamaView: OllamaView;
 	private fileSearchView: FileSearchView;
 	private conversationCompactor: ConversationCompactor;
 	private messageView: MessageView;
@@ -344,6 +346,12 @@ export class TuiRenderer {
 				this.diagnosticsView.setTelemetryStatus(status);
 			},
 		});
+		this.ollamaView = new OllamaView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			showErrorMessage: (message) => this.notificationView.showError(message),
+		});
 
 		const registry = buildCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -381,6 +389,8 @@ export class TuiRenderer {
 				this.gitView.handlePreviewCommand(context.rawInput),
 			handleRun: (context) =>
 				this.runCommandView.handleRunCommand(context.rawInput),
+			handleOllama: (context) =>
+				this.ollamaView.handleOllamaCommand(context.rawInput),
 			handleWhy: (_context) => this.infoView.showWhySummary(),
 			handleDiagnostics: (context) =>
 				this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),

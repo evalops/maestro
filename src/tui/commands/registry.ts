@@ -212,6 +212,18 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "ollama",
+				description: "Control local Ollama models (list, pull, ps)",
+				usage: "/ollama [list|pull <model>|ps]",
+				tags: ["local", "models"],
+				examples: ["/ollama list", "/ollama pull llama3", "/ollama ps"],
+			},
+			withArgs("ollama"),
+			handlers.ollama,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "why",
 				description: "Explain the last response/tools used",
 				usage: "/why",
