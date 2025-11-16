@@ -37,10 +37,8 @@ import { FooterComponent } from "./footer.js";
 import { GitView } from "./git-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
 import { LoaderView } from "./loader-view.js";
-import { ModelSelectorComponent } from "./model-selector.js";
 import { PlanView } from "./plan-view.js";
 import { RunCommandView } from "./run-command-view.js";
-import { ThinkingSelectorComponent } from "./thinking-selector.js";
 import { ToolStatusView } from "./tool-status-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { FileSearchView } from "./file-search-view.js";
@@ -53,6 +51,8 @@ import { MessageView } from "./message-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { InfoView } from "./info-view.js";
 import { ToolOutputView } from "./tool-output-view.js";
+import { ThinkingSelectorView } from "./thinking-selector-view.js";
+import { ModelSelectorView } from "./model-selector-view.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -84,12 +84,6 @@ export class TuiRenderer {
 	private telemetryStatus = getTelemetryStatus();
 	private currentModelMetadata?: SessionModelMetadata;
 
-	// Thinking level selector
-	private thinkingSelector: ThinkingSelectorComponent | null = null;
-
-	// Model selector
-	private modelSelector: ModelSelectorComponent | null = null;
-
 	// Track if this is the first user message (to skip spacer)
 	// Welcome animation shown before first interaction
 	private welcomeAnimation: WelcomeAnimation | null = null;
@@ -117,6 +111,8 @@ export class TuiRenderer {
 	private messageView: MessageView;
 	private feedbackView: FeedbackView;
 	private infoView: InfoView;
+	private thinkingSelectorView: ThinkingSelectorView;
+	private modelSelectorView: ModelSelectorView;
 
 	constructor(
 		agent: Agent,
@@ -245,9 +241,25 @@ export class TuiRenderer {
 			getLastAssistantMessage: () => this.lastAssistantMessageText,
 			getLastRunToolNames: () => this.lastRunToolNames,
 		});
-        this.conversationCompactor = new ConversationCompactor({
-            agent: this.agent,
-            sessionManager: this.sessionManager,
+		this.thinkingSelectorView = new ThinkingSelectorView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+		});
+		this.modelSelectorView = new ModelSelectorView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+		});
+		this.conversationCompactor = new ConversationCompactor({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
             chatContainer: this.chatContainer,
             ui: this.ui,
             footer: this.footer,
@@ -261,8 +273,8 @@ export class TuiRenderer {
 			getRunScriptCompletions: (prefix) =>
 				this.runCommandView.getRunScriptCompletions(prefix),
 			handlers: {
-				thinking: () => this.showThinkingSelector(),
-				model: () => this.showModelSelector(),
+				thinking: () => this.thinkingSelectorView.show(),
+				model: () => this.modelSelectorView.show(),
 				exportSession: (input) => this.importExportView.handleExportCommand(input),
 				tools: (input) => this.toolStatusView.handleToolsCommand(input),
 				importConfig: (input) => this.importExportView.handleImportCommand(input),
@@ -594,100 +606,6 @@ export class TuiRenderer {
 
 	private async handleCompactCommand(): Promise<void> {
 		await this.conversationCompactor.compactHistory();
-	}
-
-
-
-
-
-
-
-	private showThinkingSelector(): void {
-		// Create thinking selector with current level
-		this.thinkingSelector = new ThinkingSelectorComponent(
-			this.agent.state.thinkingLevel,
-			(level) => {
-				// Apply the selected thinking level
-				this.agent.setThinkingLevel(level);
-
-				// Save thinking level change to session
-				this.sessionManager.saveThinkingLevelChange(level);
-
-				// Show confirmation message with proper spacing
-				this.chatContainer.addChild(new Spacer(1));
-				const confirmText = new Text(
-					chalk.dim(`Thinking level: ${level}`),
-					1,
-					0,
-				);
-				this.chatContainer.addChild(confirmText);
-
-				// Hide selector and show editor again
-				this.hideThinkingSelector();
-				this.ui.requestRender();
-			},
-			() => {
-				// Just hide the selector
-				this.hideThinkingSelector();
-				this.ui.requestRender();
-			},
-		);
-
-		// Replace editor with selector
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.thinkingSelector);
-		this.ui.setFocus(this.thinkingSelector.getSelectList());
-		this.ui.requestRender();
-	}
-
-	private hideThinkingSelector(): void {
-		// Replace selector with editor in the container
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.thinkingSelector = null;
-		this.ui.setFocus(this.editor);
-	}
-
-	private showModelSelector(): void {
-		// Create model selector with current model
-		this.modelSelector = new ModelSelectorComponent(
-			this.agent.state.model as RegisteredModel,
-			(model) => {
-				// Apply the selected model
-				this.agent.setModel(model);
-
-				// Save model change to session
-				this.sessionManager.saveModelChange(`${model.provider}/${model.id}`);
-
-				// Show confirmation message with proper spacing
-				this.chatContainer.addChild(new Spacer(1));
-				const confirmText = new Text(chalk.dim(`Model: ${model.id}`), 1, 0);
-				this.chatContainer.addChild(confirmText);
-
-				// Hide selector and show editor again
-				this.hideModelSelector();
-				this.ui.requestRender();
-			},
-			() => {
-				// Just hide the selector
-				this.hideModelSelector();
-				this.ui.requestRender();
-			},
-		);
-
-		// Replace editor with selector
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.modelSelector);
-		this.ui.setFocus(this.modelSelector);
-		this.ui.requestRender();
-	}
-
-	private hideModelSelector(): void {
-		// Replace selector with editor in the container
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.modelSelector = null;
-		this.ui.setFocus(this.editor);
 	}
 
 	private showCommandPalette(): void {
