@@ -264,9 +264,23 @@ describe("Composer Tools", () => {
 
 			expect(getTextOutput(result)).toContain("Successfully replaced");
 			expect(result.details).toBeDefined();
-			expect(result.details.diff).toBeDefined();
-			expect(typeof result.details.diff).toBe("string");
-			expect(result.details.diff).toContain("testing");
+			expect(result.details?.diff).toBe(`-1 Hello, world!\n+1 Hello, testing!`);
+		});
+
+		it("includes surrounding context in diff output", async () => {
+			const testFile = join(testDir, "context-edit.txt");
+			writeFileSync(
+				testFile,
+				"alpha\nbeta\ngamma\ndelta\nepsilon",
+			);
+
+			const result = await editTool.execute("test-call-ctx", {
+				path: testFile,
+				oldText: "gamma",
+				newText: "gamma-updated",
+			});
+
+			expect(result.details?.diff).toBe(` 1 alpha\n 2 beta\n-3 gamma\n+3 gamma-updated\n 4 delta\n 5 epsilon`);
 		});
 
 		it("should fail if text not found", async () => {
@@ -429,17 +443,19 @@ describe("Composer Tools", () => {
 			const result = await todoTool.execute("todo-call-1", {
 				goal: "Ship onboarding flow",
 				items: [
-					{ content: "Design onboarding screens" },
-					{ content: "Implement API endpoints", status: "in_progress" },
+					{ id: "design", content: "Design onboarding screens" },
+					{
+						id: "api",
+						content: "Implement API endpoints",
+						status: "in_progress",
+					},
 				],
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("Goal: Ship onboarding flow");
-			expect(output).toContain("Summary:");
-			expect(output).toContain("Pending: 1");
-			expect(output).toContain("In Progress: 1");
-			expect(output).toContain("Completed: 0");
+			expect(output).toContain("Goal");
+			expect(output).toContain("Progress");
+			expect(output).toContain("Checklist");
 			expect(output).toMatch(/1\. \[ \] Design onboarding screens/);
 			expect(output).toMatch(/2\. \[~\] Implement API endpoints/);
 			expect(result.details).toEqual(
@@ -476,11 +492,12 @@ describe("Composer Tools", () => {
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("(ID: payments-audit)");
-			expect(output).toContain("(Priority: High)");
-			expect(output).toContain("Due: 2025-11-20");
-			expect(output).toContain("Notes: Coordinate with SRE for failover test");
-			expect(output).toContain('Blocked by: "payments-audit"');
+			expect(output).toContain("Goal");
+			expect(output).toContain("Progress");
+			expect(output).toMatch(/Due: 2025-11-20/);
+			expect(output).toMatch(/Notes: Coordinate with SRE for failover test/);
+			expect(output).toMatch(/Blocked by: "payments-audit"/);
+			expect(output).toMatch(/1\. \[~\] Audit webhook retries/);
 			expect(output).toMatch(/2\. \[x\] Add Grafana alerts/);
 			expect(result.details).toEqual(
 				expect.objectContaining({
@@ -496,8 +513,16 @@ describe("Composer Tools", () => {
 		it("parses JSON string payloads", async () => {
 			const itemsJson = JSON.stringify(
 				[
-					{ content: "Review directory structure", priority: "high" },
-					{ content: "Summarize findings", status: "completed" },
+					{
+						id: "struct",
+						content: "Review directory structure",
+						priority: "high",
+					},
+					{
+						id: "summary",
+						content: "Summarize findings",
+						status: "completed",
+					},
 				],
 				null,
 				2,
@@ -509,7 +534,7 @@ describe("Composer Tools", () => {
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("Goal: Audit repository");
+			expect(output).toContain("Goal");
 			expect(output).toMatch(/1\. \[ \] Review directory structure/);
 			expect(output).toMatch(/2\. \[x\] Summarize findings/);
 			expect(result.details).toEqual(

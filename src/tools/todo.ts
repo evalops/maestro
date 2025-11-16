@@ -8,9 +8,9 @@ import { createZodTool } from "./zod-tool.js";
 const sectionDivider = "─".repeat(40);
 
 const statusSymbols = {
-	pending: "⏳",
-	in_progress: "🔧",
-	completed: "✅",
+	pending: "[ ]",
+	in_progress: "[~]",
+	completed: "[x]",
 } as const;
 
 type StatusKey = keyof typeof statusSymbols;
@@ -280,14 +280,14 @@ function applyUpdates(
 }
 
 function formatGoalSection(goal: string): string {
-	return `🎯 Goal\n${sectionDivider}\n${goal}`;
+	return `Goal\n${sectionDivider}\n${goal}`;
 }
 
 function formatSummarySection(
 	counts: Record<StatusKey | "total", number>,
 ): string {
 	if (counts.total === 0) {
-		return `📊 Progress\n${sectionDivider}\nNo tasks yet — start by adding one above.`;
+		return `Progress\n${sectionDivider}\nNo tasks yet — start by adding one above.`;
 	}
 	const order: StatusKey[] = ["pending", "in_progress", "completed"];
 	const lines = order.map((status) => {
@@ -298,7 +298,7 @@ function formatSummarySection(
 		const bar = buildStatusBar(count, counts.total);
 		return `${statusSymbols[status]} ${statusLabels[status]} ${bar} ${count}/${counts.total} (${percent}%)`;
 	});
-	return `📊 Progress\n${sectionDivider}\n${lines.join("\n")}`;
+	return `Progress\n${sectionDivider}\n${lines.join("\n")}`;
 }
 
 function buildStatusBar(count: number, total: number): string {
@@ -316,10 +316,10 @@ function buildStatusBar(count: number, total: number): string {
 
 function formatTodosSection(items: NormalizedTodo[]): string {
 	if (items.length === 0) {
-		return `✅ Checklist\n${sectionDivider}\nNo tasks tracked for this goal yet.`;
+		return `Checklist\n${sectionDivider}\nNo tasks tracked for this goal yet.`;
 	}
 	const entries = items.map((item, index) => formatTodoEntry(item, index));
-	return `✅ Checklist\n${sectionDivider}\n${entries.join("\n\n")}`;
+	return `Checklist\n${sectionDivider}\n${entries.join("\n\n")}`;
 }
 
 function formatTodoEntry(item: NormalizedTodo, index: number): string {
