@@ -7,6 +7,7 @@ import chalk from "chalk";
  */
 export class FooterComponent {
 	private state: AgentState;
+	private activeStage: string | null = null;
 
 	constructor(state: AgentState) {
 		this.state = state;
@@ -14,6 +15,10 @@ export class FooterComponent {
 
 	updateState(state: AgentState): void {
 		this.state = state;
+	}
+
+	setStage(stage: string | null): void {
+		this.activeStage = stage;
 	}
 
 	render(width: number): string[] {
@@ -149,7 +154,34 @@ export class FooterComponent {
 			}
 		}
 
-		// Return two lines: pwd and stats
-		return [chalk.gray(pwd), chalk.gray(statsLine)];
+		let pathLine = chalk.gray(pwd);
+		if (this.activeStage) {
+			const baseBadge = `● ${this.activeStage}`;
+			const available = Math.max(
+				0,
+				width - visibleWidth(pathLine) - 2,
+			);
+			if (available > 0) {
+				const trimmedBadge = this.truncateToWidth(baseBadge, available);
+				if (trimmedBadge) {
+					const badge = chalk.hex("#f1c0e8")(trimmedBadge);
+					pathLine = `${pathLine}  ${badge}`;
+				}
+			}
+		}
+
+		// Return two lines: pwd+stage and stats
+		return [pathLine, chalk.gray(statsLine)];
+	}
+
+	private truncateToWidth(text: string, width: number): string {
+		if (width <= 0) return "";
+		if (visibleWidth(text) <= width) return text;
+		if (width === 1) return text.slice(0, 1);
+		let result = text;
+		while (visibleWidth(result) > width - 1 && result.length > 0) {
+			result = result.slice(0, -1);
+		}
+		return `${result.trimEnd()}…`;
 	}
 }

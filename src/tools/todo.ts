@@ -5,10 +5,12 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { createZodTool } from "./zod-tool.js";
 
+const sectionDivider = "─".repeat(40);
+
 const statusSymbols = {
-	pending: "[ ]",
-	in_progress: "[~]",
-	completed: "[x]",
+	pending: "⏳",
+	in_progress: "🔧",
+	completed: "✅",
 } as const;
 
 type StatusKey = keyof typeof statusSymbols;
@@ -277,6 +279,75 @@ function applyUpdates(
 	return result;
 }
 
+function formatGoalSection(goal: string): string {
+	return `🎯 Goal\n${sectionDivider}\n${goal}`;
+}
+
+function formatSummarySection(
+	counts: Record<StatusKey | "total", number>,
+): string {
+	if (counts.total === 0) {
+		return `📊 Progress\n${sectionDivider}\nNo tasks yet — start by adding one above.`;
+	}
+	const order: StatusKey[] = ["pending", "in_progress", "completed"];
+	const lines = order.map((status) => {
+		const count = counts[status];
+		const percent = counts.total
+			? Math.round((count / counts.total) * 100)
+			: 0;
+		const bar = buildStatusBar(count, counts.total);
+		return `${statusSymbols[status]} ${statusLabels[status]} ${bar} ${count}/${counts.total} (${percent}%)`;
+	});
+	return `📊 Progress\n${sectionDivider}\n${lines.join("\n")}`;
+}
+
+function buildStatusBar(count: number, total: number): string {
+	const segments = 12;
+	if (total === 0) {
+		return `[${"░".repeat(segments)}]`;
+	}
+	const filled = Math.round((count / total) * segments);
+	const clampedFilled = Math.min(segments, Math.max(0, filled));
+	const bar = `${"█".repeat(clampedFilled)}${"░".repeat(
+		segments - clampedFilled,
+	)}`;
+	return `[${bar}]`;
+}
+
+function formatTodosSection(items: NormalizedTodo[]): string {
+	if (items.length === 0) {
+		return `✅ Checklist\n${sectionDivider}\nNo tasks tracked for this goal yet.`;
+	}
+	const entries = items.map((item, index) => formatTodoEntry(item, index));
+	return `✅ Checklist\n${sectionDivider}\n${entries.join("\n\n")}`;
+}
+
+function formatTodoEntry(item: NormalizedTodo, index: number): string {
+	const statusKey = item.status as StatusKey;
+	const symbol = statusSymbols[statusKey];
+	const friendlyPriority = formatPriority(item.priority) ?? "Medium";
+	const header = `${index + 1}. ${symbol} ${item.content}`;
+	const metaLines = [
+		`   • Status: ${statusLabels[statusKey]}`,
+		`   • Priority: ${friendlyPriority}`,
+		`   • ID: ${item.id}`,
+	];
+	if (item.due) {
+		metaLines.splice(2, 0, `   • Due: ${item.due}`);
+	}
+	if (item.blockedBy && item.blockedBy.length > 0) {
+		metaLines.push(
+			`   • Blocked by: ${item.blockedBy
+				.map((entry) => `"${entry}"`)
+				.join(", ")}`,
+		);
+	}
+	if (item.notes) {
+		metaLines.push(`   • Notes: ${item.notes}`);
+	}
+	return `${header}\n${metaLines.join("\n")}`;
+}
+
 export const todoTool = createZodTool({
 	name: "todo",
 	label: "todo",
@@ -314,58 +385,14 @@ export const todoTool = createZodTool({
 			{ pending: 0, in_progress: 0, completed: 0, total: 0 },
 		);
 
-		const summaryLines = includeSummary
-			? [
-					`Summary:
-Pending: ${counts.pending}
-In Progress: ${counts.in_progress}
-Completed: ${counts.completed}`,
-				]
-			: [];
-
-		const todosSection = workingItems
-			.map((item, index) => {
-				const symbol = statusSymbols[item.status as StatusKey];
-				const friendlyPriority = formatPriority(item.priority);
-
-				const lineParts = [
-					`${index + 1}. ${symbol} ${item.content}`,
-					item.id ? `(ID: ${item.id})` : undefined,
-					friendlyPriority ? `(Priority: ${friendlyPriority})` : undefined,
-				];
-
-				const header = lineParts.filter(Boolean).join(" ");
-
-				const metadata: string[] = [];
-				metadata.push(`Status: ${statusLabels[item.status as StatusKey]}`);
-
-				if (item.due) {
-					metadata.push(`Due: ${item.due}`);
-				}
-				if (item.blockedBy) {
-					metadata.push(
-						`Blocked by: ${item.blockedBy.map((entry) => `"${entry}"`).join(", ")}`,
-					);
-				}
-				if (item.notes) {
-					metadata.push(`Notes: ${item.notes}`);
-				}
-
-				if (metadata.length === 0) {
-					return header;
-				}
-
-				const detailLines = metadata.map((entry) => `  - ${entry}`);
-				return `${header}
-${detailLines.join("\n")}`;
-			})
-			.join("\n\n");
+		const summarySection = includeSummary
+			? formatSummarySection(counts)
+			: null;
 
 		const sections = [
-			`Goal: ${goal}`,
-			...summaryLines,
-			`Todos:
-${todosSection}`,
+			formatGoalSection(goal),
+			...(summarySection ? [summarySection] : []),
+			formatTodosSection(workingItems),
 		];
 
 		store[goal] = {

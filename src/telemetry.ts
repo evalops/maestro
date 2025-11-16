@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 type BaseTelemetryEvent = {
-	type: "tool-execution" | "evaluation";
+	type: "tool-execution" | "evaluation" | "loader-stage";
 	timestamp: string;
 };
 
@@ -22,7 +22,17 @@ export interface EvaluationTelemetry extends BaseTelemetryEvent {
 	details?: Record<string, unknown>;
 }
 
-type TelemetryEvent = ToolExecutionTelemetry | EvaluationTelemetry;
+export interface LoaderStageTelemetry extends BaseTelemetryEvent {
+	type: "loader-stage";
+	stage: string;
+	durationMs: number;
+	metadata?: Record<string, unknown>;
+}
+
+type TelemetryEvent =
+	| ToolExecutionTelemetry
+	| EvaluationTelemetry
+	| LoaderStageTelemetry;
 
 const telemetryFlag =
 	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
@@ -181,5 +191,19 @@ export function recordEvaluationResult(
 		scenario,
 		success,
 		details,
+	});
+}
+
+export function recordLoaderStage(
+	stage: string,
+	durationMs: number,
+	metadata?: Record<string, unknown>,
+): void {
+	void recordTelemetry({
+		type: "loader-stage",
+		timestamp: new Date().toISOString(),
+		stage,
+		durationMs,
+		metadata,
 	});
 }
