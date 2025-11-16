@@ -143,6 +143,37 @@ List registered tools plus recent failures. Use `clear` to rotate the failure lo
 /tools clear
 ```
 
+### /config [summary|sources|providers|env|files]
+
+Show validation, sources, providers, env vars, or file references without chaining commands:
+
+```
+/config
+/config sources
+/config providers
+/config env
+/config files
+```
+
+### /cost [period|breakdown|clear|help]
+
+Display usage summaries, provider/model breakdowns, or reset local tracking data:
+
+```
+/cost today
+/cost breakdown week
+/cost clear
+/cost help
+```
+
+### /stats
+
+Run `/status` plus `/cost today` together for a health snapshot:
+
+```
+/stats
+```
+
 ### /plan
 
 Inspect plans created via the `todo` tool. Show all goals or a specific one:
@@ -234,14 +265,6 @@ List workspace files (filtered by an optional query) so you can quickly grab `@p
 /mention
 /mention renderer
 ```
-
-### Command Enhancements
-
-Recent updates add richer behaviors to key commands:
-
-- `/config [section]` renders targeted summaries for `summary`, `sources`, `providers`, `env`, or `files` without re-running diagnostics manually.
-- `/cost` now supports `breakdown`, `clear`, and contextual help so you can jump from totals to provider/model splits or wipe the local cache.
-- `/stats` combines `/status` diagnostics with a `/cost today` snapshot for a quick health pulse.
 
 ## Editor Features
 
