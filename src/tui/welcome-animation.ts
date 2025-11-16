@@ -51,30 +51,36 @@ export class WelcomeAnimation extends Container {
 			Math.max(min, Math.min(max, value));
 		const mix = (prev: number, next: number, alpha: number) =>
 			prev * (1 - alpha) + next * alpha;
+		const crescendo = 0.55 + 0.45 * ((Math.sin(time * 0.4) + 1) / 2);
+		const staffPalette = [0.2, 0.32, 0.44, 0.56];
 
 		const staffSpacing = 3;
 		const staffCount = 4;
 		const staffStartY = 5;
 		for (let i = 0; i < staffCount; i++) {
 			const baseY = staffStartY + i * staffSpacing;
+			const staffHue = staffPalette[i % staffPalette.length] * crescendo;
 			for (let line = 0; line < 5; line++) {
 				const y = clamp(baseY + line, 0, height - 1);
 				for (let x = 0; x < width; x++) {
 					const waviness = Math.sin((x + time * 20 + i * 10) * 0.05) * 0.3;
 					const offsetY = clamp(y + Math.round(waviness), 0, height - 1);
 					chars[offsetY][x] = chars[offsetY][x] === " " ? "─" : chars[offsetY][x];
-					colors[offsetY][x] = mix(colors[offsetY][x], 0.35 + i * 0.1, 0.6);
+					colors[offsetY][x] = mix(colors[offsetY][x], staffHue, 0.7);
 				}
 			}
 		}
 
 		const divisionHeight = 15;
-		for (let measure = 0; measure < width / 6; measure++) {
-			const x = Math.floor((measure / (width / 6)) * width + Math.sin(time + measure) * 1.5);
+		const measureSpacing = 8;
+		const sweep = (time * 2) % measureSpacing;
+		for (let x = -measureSpacing; x < width + measureSpacing; x += measureSpacing) {
+			const position = Math.floor(x + sweep);
+			const fade = clamp(1 - Math.abs((position - width / 2) / (width / 2)), 0.2, 1);
 			for (let y = staffStartY - 1; y < staffStartY + divisionHeight; y++) {
-				if (x < 0 || y < 0 || x >= width || y >= height) continue;
-				chars[y][x] = "│";
-				colors[y][x] = mix(colors[y][x], 0.25, 0.5);
+				if (position < 0 || y < 0 || position >= width || y >= height) continue;
+				chars[y][position] = "│";
+				colors[y][position] = mix(colors[y][position], 0.2 * crescendo * fade, 0.6);
 			}
 		}
 
@@ -93,12 +99,14 @@ export class WelcomeAnimation extends Container {
 			const y = clamp(Math.floor(laneY + yOffset), 0, height - 1);
 			const glyph = Math.random() > 0.7 ? "♩" : "●";
 			chars[y][x] = glyph;
-			colors[y][x] = mix(colors[y][x], 0.7, 0.8);
+			colors[y][x] = mix(colors[y][x], 0.55 + 0.35 * crescendo, 0.8);
 			const stemLength = 3 + (i % 2);
 			for (let stem = 1; stem <= stemLength; stem++) {
 				const stemY = clamp(y - stem, 0, height - 1);
-				chars[stemY][x + 1] = "│";
-				colors[stemY][x + 1] = mix(colors[stemY][x + 1], 0.5, 0.7);
+				if (x + 1 < width) {
+					chars[stemY][x + 1] = "│";
+					colors[stemY][x + 1] = mix(colors[stemY][x + 1], 0.4 + 0.25 * crescendo, 0.7);
+				}
 			}
 		}
 
@@ -113,20 +121,11 @@ export class WelcomeAnimation extends Container {
 			if (x < 0 || y < 0 || x >= width || y >= height) continue;
 			const char = i === batonLength ? "✧" : "╲╱"[Number(radius > 0)];
 			chars[y][x] = char;
-			colors[y][x] = mix(colors[y][x], 0.9 - Math.abs(radius) * 0.4, 0.6);
-			if (i % 4 === 0 && i !== batonLength) {
-				const sparkX = Math.floor(x - Math.cos(batonAngle) * 2);
-				const sparkY = Math.floor(y - Math.sin(batonAngle) * 2);
-				if (
-					sparkX >= 0 &&
-					sparkY >= 0 &&
-					sparkX < width &&
-					sparkY < height
-				) {
-					chars[sparkY][sparkX] = "·";
-					colors[sparkY][sparkX] = mix(colors[sparkY][sparkX], 0.7, 0.5);
-				}
-			}
+			colors[y][x] = mix(
+				colors[y][x],
+				(0.75 - Math.abs(radius) * 0.3) * crescendo,
+				0.6,
+			);
 		}
 
 		const floatingSymbols = 8;
@@ -140,7 +139,18 @@ export class WelcomeAnimation extends Container {
 				height - 1,
 			);
 			chars[y][x] = "♪";
-			colors[y][x] = mix(colors[y][x], 0.6, 0.7);
+			colors[y][x] = mix(colors[y][x], 0.45 + 0.4 * crescendo, 0.7);
+		}
+
+		const orchestraBaseY = height - 3;
+		for (let x = 0; x < width; x++) {
+			const envelope = (Math.sin(time * 0.3 + x * 0.04) + 1) / 2;
+			const heightOffset = Math.floor(envelope * 3 + Math.sin(time + x * 0.2));
+			for (let h = 0; h < heightOffset; h++) {
+				const y = clamp(orchestraBaseY - h, 0, height - 1);
+				chars[y][x] = chars[y][x] === " " ? "▁▂▃▄▅"[Math.min(h, 4)]! : chars[y][x];
+				colors[y][x] = mix(colors[y][x], 0.25 + 0.2 * crescendo, 0.5);
+			}
 		}
 
 		this.trail = this.trail
