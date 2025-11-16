@@ -530,7 +530,8 @@ function upsertLocalProvider(
 	if (!Array.isArray(config.providers)) {
 		config.providers = [];
 	}
-	const entry = {
+	type ProviderEntry = NonNullable<LocalConfigFile["providers"]>[number];
+	const entry: ProviderEntry = {
 		id: overrides.id,
 		name: overrides.name,
 		api: provider.api,
@@ -541,7 +542,7 @@ function upsertLocalProvider(
 				name: overrides.modelName,
 				contextWindow: overrides.contextWindow,
 				maxTokens: overrides.maxTokens,
-				input: ["text"],
+				input: ["text"] as Array<"text" | "image">,
 			},
 		],
 	};
