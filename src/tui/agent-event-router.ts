@@ -19,6 +19,7 @@ interface AgentEventRouterOptions {
 	clearEditor: () => void;
 	requestRender: () => void;
 	clearPendingTools: () => void;
+	refreshPlanHint: () => void;
 }
 
 export class AgentEventRouter {
@@ -82,6 +83,9 @@ export class AgentEventRouter {
 				);
 				this.options.requestRender();
 				this.options.loaderView.markToolComplete(event.toolCallId);
+				if (event.toolName === "todo") {
+					this.options.refreshPlanHint();
+				}
 				return;
 
 			case "agent_end":

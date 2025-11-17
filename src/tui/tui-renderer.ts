@@ -231,6 +231,7 @@ export class TuiRenderer {
 				this.refreshFooterHint();
 			},
 		});
+		this.planView.syncHintWithStore();
 		this.runCommandView = new RunCommandView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -356,6 +357,7 @@ export class TuiRenderer {
 			clearEditor: () => this.clearEditor(),
 			requestRender: () => this.ui.requestRender(),
 			clearPendingTools: () => this.pendingTools.clear(),
+			refreshPlanHint: () => this.planView.syncHintWithStore(),
 		});
 		this.importExportView = new ImportExportView({
 			agent: this.agent,

@@ -174,6 +174,11 @@ export async function main(args: string[]) {
 		process.env.COMPOSER_SAFE_MODE = "1";
 	}
 
+	if (parsed.modelsFile) {
+		process.env.COMPOSER_MODELS_FILE = parsed.modelsFile;
+		reloadModelConfig();
+	}
+
 	configureSafeMode(true);
 
 	// Bootstrap LSP with workspace root resolver and config overrides
@@ -284,6 +289,39 @@ export async function main(args: string[]) {
 		}
 	}
 
+	// Handle models commands
+	if (parsed.command === "models") {
+		const { handleModelsList, handleModelsProviders } = await import(
+			"./cli/commands/models.js"
+		);
+		const providerFilter = parsed.provider;
+		switch (parsed.subcommand) {
+			case "providers":
+				await handleModelsProviders(providerFilter);
+				return;
+			case undefined:
+			case "list":
+				await handleModelsList(providerFilter);
+				return;
+			default:
+				console.error(
+					chalk.red(
+						`Unknown models subcommand: ${parsed.subcommand || "(none)"}`,
+					),
+				);
+				console.log(chalk.dim("\nAvailable commands:"));
+				console.log(
+					chalk.dim(
+						"  composer models list             - List registered models",
+					),
+				);
+				console.log(
+					chalk.dim("  composer models providers        - Summarize providers"),
+				);
+				process.exit(1);
+		}
+	}
+
 	// Setup session manager
 	const sessionManager = new SessionManager(
 		parsed.continue && !parsed.resume,
@@ -307,11 +345,6 @@ export async function main(args: string[]) {
 	}
 
 	// Determine provider and model
-	if (parsed.modelsFile) {
-		process.env.COMPOSER_MODELS_FILE = parsed.modelsFile;
-		reloadModelConfig();
-	}
-
 	let provider = parsed.provider;
 	let modelId = parsed.model;
 

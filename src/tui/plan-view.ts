@@ -56,6 +56,12 @@ export interface PlanViewOptions {
 export class PlanView {
 	constructor(private readonly options: PlanViewOptions) {}
 
+	syncHintWithStore(): void {
+		const store = loadTodoStore(this.options.filePath);
+		const hint = calculatePlanHint(store);
+		this.options.setPlanHint(hint);
+	}
+
 	handlePlanCommand(text: string): void {
 		const store = loadTodoStore(this.options.filePath);
 		const argsPortion = this.extractArgs(text);
@@ -313,6 +319,21 @@ export function loadTodoStore(filePath: string): TodoStore {
 
 export function saveTodoStore(filePath: string, store: TodoStore): void {
 	writeFileSync(filePath, JSON.stringify(store, null, 2));
+}
+
+export function calculatePlanHint(store: TodoStore): string | null {
+	const goals = Object.values(store);
+	if (goals.length === 0) return null;
+	goals.sort((a, b) => {
+		const aTime = Number(new Date(a.updatedAt ?? 0));
+		const bTime = Number(new Date(b.updatedAt ?? 0));
+		return bTime - aTime;
+	});
+	const entry = goals[0];
+	const counts = countTodoStatuses(entry.items ?? []);
+	const total = counts.pending + counts.in_progress + counts.completed;
+	const summary = total > 0 ? `${counts.completed}/${total} done` : "no tasks";
+	return `${entry.goal}: ${summary}`;
 }
 
 export function countTodoStatuses(

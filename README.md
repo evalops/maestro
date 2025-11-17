@@ -223,6 +223,13 @@ Composer ships with eight core tools:
 - **write** – Write/overwrite files, creating parent directories as needed.
 - **todo** – Manage TodoWrite-style checklists (`~/.composer/todos.json`).
 
+### CLI Helpers
+
+Use Composer's CLI commands to inspect your model registry:
+
+- `composer models list` – grouped list of every registered model (built-in + custom). Add `--provider openrouter` to filter.
+- `composer models providers` – summarize providers, API key env vars, and base URLs so you know which endpoints are wired up.
+
 ### Adding Your Own Tools
 
 Composer does not implement MCP. To extend it:
