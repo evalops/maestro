@@ -12,7 +12,7 @@ export class SessionContext {
 		this.lastAssistantMessage = text;
 	}
 
-	resetCurrentRunTools(): void {
+	beginTurn(): void {
 		this.currentRunTools = [];
 	}
 

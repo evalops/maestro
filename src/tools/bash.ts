@@ -1,6 +1,59 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { Type } from "@sinclair/typebox";
 import { createTypeboxTool } from "./typebox-tool.js";
+
+function getShellConfig(): { shell: string; args: string[] } {
+	if (process.platform === "win32") {
+		const paths: string[] = [];
+		const programFiles = process.env.ProgramFiles;
+		if (programFiles) {
+			paths.push(`${programFiles}\\Git\\bin\\bash.exe`);
+		}
+		const programFilesX86 = process.env["ProgramFiles(x86)"];
+		if (programFilesX86) {
+			paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
+		}
+
+		for (const path of paths) {
+			if (existsSync(path)) {
+				return { shell: path, args: ["-c"] };
+			}
+		}
+
+		throw new Error(
+			`Git Bash not found. Please install Git for Windows from https://git-scm.com/download/win\nSearched in:\n${paths
+				.map((p) => `  ${p}`)
+				.join("\n")}`,
+		);
+	}
+
+	return { shell: "sh", args: ["-c"] };
+}
+
+function killProcessTree(pid: number): void {
+	if (process.platform === "win32") {
+		try {
+			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+				stdio: "ignore",
+				detached: true,
+			});
+		} catch (error) {
+			// ignore
+		}
+		return;
+	}
+
+	try {
+		process.kill(-pid, "SIGKILL");
+	} catch (error) {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch (error_) {
+			// already exited
+		}
+	}
+}
 
 const bashSchema = Type.Object({
 	command: Type.String({
@@ -26,7 +79,8 @@ export const bashTool = createTypeboxTool({
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
 		}>((resolve) => {
-			const child = spawn("sh", ["-c", command], {
+			const { shell, args } = getShellConfig();
+			const child = spawn(shell, [...args, command], {
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
 			});
@@ -46,17 +100,7 @@ export const bashTool = createTypeboxTool({
 
 			const onAbort = () => {
 				if (child.pid) {
-					// Kill the entire process group (negative PID kills all processes in the group)
-					try {
-						process.kill(-child.pid, "SIGKILL");
-					} catch (e) {
-						// Fallback to killing just the child if process group kill fails
-						try {
-							child.kill("SIGKILL");
-						} catch (e2) {
-							// Process already dead
-						}
-					}
+					killProcessTree(child.pid);
 				}
 			};
 

@@ -27,8 +27,12 @@ export class AgentEventRouter {
 	handle(event: AgentEvent): void {
 		switch (event.type) {
 			case "agent_start":
-				this.options.sessionContext.resetCurrentRunTools();
 				this.options.runController.handleAgentStart();
+				return;
+
+			case "turn_start":
+				this.options.sessionContext.beginTurn();
+				this.options.loaderView.beginTurn();
 				return;
 
 			case "message_start":
@@ -54,6 +58,7 @@ export class AgentEventRouter {
 						? this.options.extractText(event.message as AppMessage)
 						: undefined,
 				);
+				this.options.loaderView.completeTurn();
 				return;
 
 			case "tool_execution_start":

@@ -9,11 +9,53 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	QueuedMessage,
 	TextContent,
 	ThinkingLevel,
 	ToolResultMessage,
 	UserMessage,
+	UserMessageWithAttachments,
 } from "./types.js";
+
+function defaultMessageTransformer(messages: AppMessage[]): Message[] {
+	return messages
+		.filter(
+			(m) =>
+				m.role === "user" || m.role === "assistant" || m.role === "toolResult",
+		)
+		.map((message) => {
+			if (message.role !== "user") {
+				return message as Message;
+			}
+
+			const { attachments, ...rest } = message as UserMessageWithAttachments;
+			if (!attachments || attachments.length === 0) {
+				return rest as Message;
+			}
+
+			const content: Array<TextContent | ImageContent> = Array.isArray(
+				rest.content,
+			)
+				? [...rest.content]
+				: [{ type: "text", text: rest.content }];
+			for (const attachment of attachments) {
+				if (attachment.type === "image") {
+					content.push({
+						type: "image",
+						data: attachment.content,
+						mimeType: attachment.mimeType,
+					} as ImageContent);
+				} else if (attachment.type === "document" && attachment.extractedText) {
+					content.push({
+						type: "text",
+						text: `\n\n[Document: ${attachment.fileName}]\n${attachment.extractedText}`,
+					} as TextContent);
+				}
+			}
+
+			return { ...rest, content } as Message;
+		});
+}
 
 /**
  * Configuration options for creating an Agent instance.
@@ -56,10 +98,10 @@ export class Agent {
 	private listeners: Array<(e: AgentEvent) => void> = [];
 	private abortController?: AbortController;
 	private transport: AgentTransport;
-	private messageTransformer?: (
+	private messageTransformer: (
 		messages: AppMessage[],
 	) => Message[] | Promise<Message[]>;
-	private messageQueue: AppMessage[] = [];
+	private messageQueue: Array<QueuedMessage<AppMessage>> = [];
 
 	/**
 	 * Creates a new Agent instance.
@@ -68,7 +110,9 @@ export class Agent {
 	 */
 	constructor(opts: AgentOptions) {
 		this.transport = opts.transport;
-		this.messageTransformer = opts.messageTransformer;
+		this.messageTransformer =
+			opts.messageTransformer ??
+			((messages) => defaultMessageTransformer(messages));
 
 		this._state = {
 			systemPrompt: "",
@@ -134,6 +178,14 @@ export class Agent {
 		}
 	}
 
+	private async dequeueQueuedMessages<T>(): Promise<QueuedMessage<T>[]> {
+		if (this.messageQueue.length === 0) {
+			return [];
+		}
+		const queued = this.messageQueue.splice(0);
+		return queued as unknown as QueuedMessage<T>[];
+	}
+
 	/**
 	 * Sets the system prompt that provides context and instructions to the model.
 	 *
@@ -194,7 +246,11 @@ export class Agent {
 	 * @param m - Message to queue
 	 */
 	async queueMessage(m: AppMessage): Promise<void> {
-		this.messageQueue.push(m);
+		const transformed = await this.messageTransformer([m]);
+		this.messageQueue.push({
+			original: m,
+			llm: transformed[0],
+		});
 	}
 
 	/**
@@ -261,19 +317,20 @@ export class Agent {
 			}
 		}
 
-		const userMessage: UserMessage = {
+		const userMessage: UserMessageWithAttachments = {
 			role: "user",
 			content,
+			attachments: attachments?.length ? attachments : undefined,
 			timestamp: Date.now(),
 		};
 
 		this._state.messages.push(userMessage);
 		this._state.isStreaming = true;
 
-		this.abortController = new AbortController();
+		const abortController = new AbortController();
+		this.abortController = abortController;
 
 		this.emit({ type: "agent_start" });
-		this.emit({ type: "turn_start" });
 
 		let aborted = false;
 
@@ -283,10 +340,6 @@ export class Agent {
 			if (this.messageTransformer) {
 				messagesToSend = await this.messageTransformer(this._state.messages);
 			}
-
-			// Get queued messages if any
-			const queuedMessages = this.messageQueue.splice(0);
-			messagesToSend = [...messagesToSend, ...queuedMessages];
 
 			// Determine reasoning level
 			let reasoning: "low" | "medium" | "high" | undefined;
@@ -302,16 +355,14 @@ export class Agent {
 				tools: this._state.tools,
 				model: this._state.model,
 				reasoning,
+				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
 			};
-
-			const toolResults: AppMessage[] = [];
-			let finalMessage: AppMessage | null = null;
 
 			for await (const event of this.transport.run(
 				messagesToSend, // Include userMessage in messages array
 				userMessage,
 				runConfig,
-				this.abortController.signal,
+				abortController.signal,
 			)) {
 				if (event.type === "message_start") {
 					this._state.streamMessage = event.message;
@@ -322,7 +373,6 @@ export class Agent {
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
 					this._state.messages.push(event.message);
-					finalMessage = event.message;
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
 					this._state.pendingToolCalls.set(event.toolCallId, {
@@ -331,22 +381,10 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "tool_execution_end") {
 					this._state.pendingToolCalls.delete(event.toolCallId);
-					if (event.result) {
-						this._state.messages.push(event.result as any);
-						toolResults.push(event.result as any);
-					}
 					this.emit(event);
 				} else {
 					this.emit(event);
 				}
-			}
-
-			if (finalMessage) {
-				this.emit({
-					type: "turn_end",
-					message: finalMessage,
-					toolResults,
-				});
 			}
 
 			this.emit({
@@ -363,7 +401,9 @@ export class Agent {
 			}
 		} finally {
 			this._state.isStreaming = false;
-			this.abortController = undefined;
+			if (this.abortController === abortController) {
+				this.abortController = undefined;
+			}
 			if (this._state.pendingToolCalls.size > 0) {
 				const reason = aborted
 					? "Error: Operation aborted"

@@ -12,6 +12,7 @@ interface LoaderViewOptions {
 export class LoaderView {
 	private loader: Loader | null = null;
 	private stageManager: LoaderStageManager;
+	private hasActiveTurn = false;
 
 	constructor(private readonly options: LoaderViewOptions) {
 		this.stageManager = new LoaderStageManager({
@@ -36,6 +37,7 @@ export class LoaderView {
 		this.loader.setTitle("Active tasks");
 		this.options.statusContainer.addChild(this.loader);
 		this.stageManager.start();
+		this.hasActiveTurn = true;
 	}
 
 	stop(): void {
@@ -45,6 +47,22 @@ export class LoaderView {
 		}
 		this.options.statusContainer.clear();
 		this.stageManager.stop();
+	}
+
+	beginTurn(): void {
+		if (!this.loader) {
+			return;
+		}
+		this.stageManager.start();
+		this.hasActiveTurn = true;
+	}
+
+	completeTurn(): void {
+		if (!this.loader || !this.hasActiveTurn) {
+			return;
+		}
+		this.stageManager.completeTurn();
+		this.hasActiveTurn = false;
 	}
 
 	setStreamingActive(active: boolean): void {

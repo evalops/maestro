@@ -86,6 +86,16 @@ export class LoaderStageManager {
 		this.clearTracking();
 	}
 
+	completeTurn(): void {
+		if (this.currentStageKey) {
+			this.telemetry.recordStage(this.currentStageKey, this.stages);
+			this.completedStageKeys.add(this.currentStageKey);
+		}
+		this.options.onProgressChanged(1);
+		this.options.setFooterStage(null);
+		this.currentStageKey = null;
+	}
+
 	private resetTracking(): void {
 		this.telemetry.finalize(this.stages);
 		this.stages = [

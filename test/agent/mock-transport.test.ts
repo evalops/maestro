@@ -5,8 +5,13 @@ import { describe, expect, it } from "vitest";
 import { Agent } from "../../src/agent/agent.js";
 import type {
 	AgentEvent,
+	AgentRunConfig,
+	AgentTransport,
+	AppMessage,
 	AssistantMessage,
+	Message,
 	Model,
+	QueuedMessage,
 	TextContent,
 	ToolResultMessage,
 } from "../../src/agent/types.js";
@@ -172,5 +177,88 @@ describe("Agent mock transport", () => {
 		const runPromise = agent.prompt("read file");
 		agent.abort();
 		await expect(runPromise).resolves.toBeUndefined();
+	});
+
+	it("transforms and injects queued messages", async () => {
+		class QueueCaptureTransport implements AgentTransport {
+			public queuedMessages: QueuedMessage<AppMessage>[] = [];
+
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				yield { type: "turn_start" };
+				yield { type: "message_start", message: userMessage };
+				yield { type: "message_end", message: userMessage };
+
+				const queued = await config.getQueuedMessages?.<AppMessage>();
+				this.queuedMessages = queued ?? [];
+				for (const entry of this.queuedMessages) {
+					yield { type: "message_start", message: entry.original };
+					yield { type: "message_end", message: entry.original };
+				}
+
+				const assistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+				yield { type: "turn_end", message: assistant, toolResults: [] };
+			}
+		}
+
+		const transport = new QueueCaptureTransport();
+		const agent = new Agent({
+			transport,
+			initialState: { model: mockModel },
+		});
+
+		await agent.queueMessage({
+			role: "user",
+			content: [{ type: "text", text: "See docs" }],
+			attachments: [
+				{
+					id: "doc-1",
+					type: "document",
+					fileName: "design.md",
+					mimeType: "text/markdown",
+					size: 10,
+					content: Buffer.from("Hello").toString("base64"),
+					extractedText: "Important notes",
+				},
+			],
+			timestamp: Date.now(),
+		});
+
+		await agent.prompt("Process queued context");
+
+		expect(transport.queuedMessages).toHaveLength(1);
+		const queuedEntry = transport.queuedMessages[0];
+		expect(queuedEntry.original.role).toBe("user");
+		const llmContent = queuedEntry.llm?.content ?? [];
+		const docBlock = llmContent.find(
+			(chunk) => chunk.type === "text" && chunk.text.includes("[Document"),
+		);
+		expect(docBlock).toBeDefined();
 	});
 });

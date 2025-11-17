@@ -306,9 +306,9 @@ export type AgentEvent =
 			decision: ActionApprovalDecision;
 	  };
 
-export interface QueuedMessage<T = any> {
-	message: Message;
-	data?: T;
+export interface QueuedMessage<TOriginal = AppMessage> {
+	original: TOriginal;
+	llm?: Message;
 }
 
 export interface AgentRunConfig {
