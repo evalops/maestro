@@ -2,6 +2,14 @@
 
 Composer is a radically simple and opinionated coding agent with multi-model support (including mid-session switching), a powerful headless CLI, and the creature comforts you expect from modern coding copilots.
 
+## Documentation
+
+- [Quickstart](docs/QUICKSTART.md) – install, build, and eval instructions
+- [Feature Guide](docs/FEATURES.md) – TUI/CLI walkthrough, bash mode, prompt queue
+- [Tools Reference](docs/TOOLS_REFERENCE.md) – detailed list of built-in tools
+- [CONTRIBUTING](CONTRIBUTING.md) – workflow, coding standards, release steps
+- [Changelog](CHANGELOG.md) – notable fixes and features per release
+
 ## Who It's For
 
 Developers who want deterministic, scriptable AI assistance with zero mystery meat. You value explicit commands over hidden heuristics, git-friendly edits over magical patches, and the ability to reason about every action Composer takes. If you prefer tight control, fast iteration, and the option to automate everything, you're in the right place.
