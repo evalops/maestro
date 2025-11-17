@@ -58,6 +58,8 @@ const providerSchema = Type.Object({
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	apiKeyEnv: Type.Optional(Type.String({ minLength: 1 })),
 	apiKey: Type.Optional(Type.String({ minLength: 1 })),
+	enabled: Type.Optional(Type.Boolean({ default: true })),
+	options: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	models: Type.Array(modelSchema, { minItems: 1 }),
 });
 
@@ -280,7 +282,10 @@ const PROVIDER_LOADERS: Record<string, ProviderLoader> = {
 /**
  * Apply provider-specific configurations
  */
-function applyProviderLoader(provider: CustomProvider): CustomProvider {
+function applyProviderLoader(
+	provider: CustomProvider,
+	options?: { includeDisabled?: boolean },
+): CustomProvider | null {
 	const loader =
 		PROVIDER_LOADERS[provider.id] ??
 		PROVIDER_LOADERS[provider.id.split("-")[0]]; // Try base name (e.g., "bedrock" from "aws-bedrock")
@@ -290,22 +295,36 @@ function applyProviderLoader(provider: CustomProvider): CustomProvider {
 	}
 
 	const result = loader(provider.id);
-	if (!result) {
-		return provider;
-	}
+
+	const enhanced: CustomProvider = { ...provider };
+	let enabled = provider.enabled ?? true;
 
 	// Merge loader results with provider config
-	const enhanced = { ...provider };
+	if (result) {
+		if (result.headers) {
+			enhanced.models = enhanced.models.map((model) => ({
+				...model,
+				headers: { ...result.headers, ...model.headers },
+			}));
+		}
 
-	if (result.headers) {
-		enhanced.models = enhanced.models.map((model) => ({
-			...model,
-			headers: { ...result.headers, ...model.headers },
-		}));
+		if (result.baseUrl && !provider.baseUrl) {
+			enhanced.baseUrl = result.baseUrl;
+		}
+
+		if (result.enabled !== undefined) {
+			enabled = result.enabled;
+		}
+
+		if (result.options) {
+			enhanced.options = { ...result.options, ...enhanced.options };
+		}
 	}
 
-	if (result.baseUrl && !provider.baseUrl) {
-		enhanced.baseUrl = result.baseUrl;
+	enhanced.enabled = enabled;
+
+	if (enabled === false && !options?.includeDisabled) {
+		return null;
 	}
 
 	return enhanced;
@@ -469,8 +488,8 @@ function loadConfigFile(path: string): CustomModelConfig | null {
 /**
  * Load config with hierarchy (global -> project -> env)
  */
-function loadConfig(): CustomModelConfig {
-	if (cachedConfig) {
+function loadConfig(includeDisabled = false): CustomModelConfig {
+	if (cachedConfig && !includeDisabled) {
 		return cachedConfig;
 	}
 
@@ -489,15 +508,21 @@ function loadConfig(): CustomModelConfig {
 	if (mergedConfig.providers.length === 0) {
 		const factoryFallback = ensureFactoryData();
 		if (factoryFallback) {
-			cachedConfig = factoryFallback.config;
-			return cachedConfig;
+			if (!includeDisabled) {
+				cachedConfig = factoryFallback.config;
+			}
+			return factoryFallback.config;
 		}
 	}
 
 	// Apply provider-specific loaders
-	mergedConfig.providers = mergedConfig.providers.map(applyProviderLoader);
+	mergedConfig.providers = mergedConfig.providers
+		.map((provider) => applyProviderLoader(provider, { includeDisabled }))
+		.filter((provider): provider is CustomProvider => Boolean(provider));
 
-	cachedConfig = mergedConfig;
+	if (!includeDisabled) {
+		cachedConfig = mergedConfig;
+	}
 	return mergedConfig;
 }
 
@@ -843,7 +868,11 @@ function buildFactoryData(): {
 		}
 
 		// Apply provider-specific loaders to Factory providers too
-		const enhancedProviders = providers.map(applyProviderLoader);
+		const enhancedProviders = providers
+			.map((provider) =>
+				applyProviderLoader(provider, { includeDisabled: true }),
+			)
+			.filter((provider): provider is CustomProvider => Boolean(provider));
 
 		return {
 			config: { providers: enhancedProviders },
@@ -1057,12 +1086,16 @@ export interface ConfigInspection {
 		id: string;
 		name: string;
 		baseUrl: string;
+		enabled: boolean;
 		apiKeySource?: string;
 		isLocal: boolean;
+		options?: Record<string, unknown>;
 		modelCount: number;
 		models: Array<{
 			id: string;
 			name: string;
+			reasoning?: boolean;
+			input?: string[];
 		}>;
 	}>;
 	fileReferences: Array<{
@@ -1079,7 +1112,7 @@ export interface ConfigInspection {
 
 export function inspectConfig(): ConfigInspection {
 	const paths = getConfigPaths();
-	const config = loadConfig();
+	const config = loadConfig(true);
 
 	const inspection: ConfigInspection = {
 		sources: [],
@@ -1116,12 +1149,16 @@ export function inspectConfig(): ConfigInspection {
 			id: provider.id,
 			name: provider.name,
 			baseUrl: providerBase,
+			enabled: provider.enabled !== false,
 			apiKeySource,
 			isLocal: local,
+			options: provider.options,
 			modelCount: provider.models.length,
 			models: provider.models.map((m) => ({
 				id: m.id,
 				name: m.name,
+				reasoning: m.reasoning,
+				input: m.input,
 			})),
 		});
 	}

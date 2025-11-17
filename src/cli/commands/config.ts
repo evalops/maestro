@@ -120,19 +120,27 @@ export async function handleConfigShow(): Promise<void> {
 			const keyBadge = provider.apiKeySource
 				? badge("API key", provider.apiKeySource, "success")
 				: badge("API key missing", undefined, "warn");
+			const enabledBadge = provider.enabled
+				? badge("enabled", undefined, "success")
+				: badge("disabled", undefined, "warn");
 
-			console.log(`  ${heading} ${themedSeparator()} ${keyBadge}`);
+			console.log(
+				`  ${heading} ${themedSeparator()} ${keyBadge} ${themedSeparator()} ${enabledBadge}`,
+			);
 			console.log(`     ${muted(provider.name)}`);
 			console.log(`     ${muted(`Base URL: ${provider.baseUrl}`)}`);
+			if (provider.options && Object.keys(provider.options).length > 0) {
+				console.log(muted(`     Options: ${JSON.stringify(provider.options)}`));
+			}
 
 			// Show models
 			if (provider.models.length <= 3) {
 				for (const model of provider.models) {
-					console.log(muted(`       • ${model.id}`));
+					console.log(muted(`       • ${formatModelLabel(model)}`));
 				}
 			} else {
-				console.log(muted(`       • ${provider.models[0].id}`));
-				console.log(muted(`       • ${provider.models[1].id}`));
+				console.log(muted(`       • ${formatModelLabel(provider.models[0])}`));
+				console.log(muted(`       • ${formatModelLabel(provider.models[1])}`));
 				console.log(muted(`       ... and ${provider.models.length - 2} more`));
 			}
 			console.log();
@@ -699,7 +707,28 @@ export async function handleConfigLocal(): Promise<void> {
  * Format bytes to human-readable string
  */
 function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} bytes`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	const units = ["B", "KB", "MB", "GB", "TB"];
+	let index = 0;
+	let value = bytes;
+	while (value >= 1024 && index < units.length - 1) {
+		value /= 1024;
+		index += 1;
+	}
+	return `${value.toFixed(1)} ${units[index]}`;
+}
+
+function formatModelLabel(model: {
+	id: string;
+	reasoning?: boolean;
+	input?: string[];
+}): string {
+	const caps: string[] = [];
+	if (model.reasoning) {
+		caps.push("thinking");
+	}
+	if (model.input?.includes("image")) {
+		caps.push("vision");
+	}
+	const suffix = caps.length ? ` ${chalk.dim(`[${caps.join(", ")}]`)}` : "";
+	return `${model.id}${suffix}`;
 }
