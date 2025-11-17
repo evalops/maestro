@@ -110,14 +110,20 @@ class MermaidAsciiRenderer {
 				nodePositions.set(node.id, { x: boxX, y: rowY });
 			});
 		});
-		if (!this.drawEdges(canvas, nodePositions, boxWidth, layers.length)) {
-			return null;
-		}
+		const edgeWarnings = this.drawEdges(canvas, nodePositions, boxWidth);
 		const title = chalk.hex("#a855f7")(
 			`╭─ mermaid graph (${this.diagram.orientation}) ─╮`,
 		);
 		const footer = chalk.hex("#a855f7")("╰──────────────────────────────╯");
-		return [title, ...canvas.map((row) => row.join("")), footer];
+		const warningLines = edgeWarnings.length
+			? edgeWarnings.map((warning) => chalk.dim(`⚠ ${warning}`))
+			: [];
+		return [
+			title,
+			...canvas.map((row) => row.join("")),
+			footer,
+			...warningLines,
+		];
 	}
 
 	private computeBoxWidth(maxLayerSize: number): number | null {
@@ -164,16 +170,20 @@ class MermaidAsciiRenderer {
 		canvas: string[][],
 		nodePositions: Map<string, { x: number; y: number }>,
 		boxWidth: number,
-		layerCount: number,
-	): boolean {
+	): string[] {
+		const warnings: string[] = [];
 		for (const edge of this.diagram.edges) {
 			const from = nodePositions.get(edge.from);
 			const to = nodePositions.get(edge.to);
 			if (!from || !to) {
-				return false;
+				warnings.push(`Skipped edge ${edge.from} -> ${edge.to} (node missing)`);
+				continue;
 			}
 			if (to.y <= from.y) {
-				return false;
+				warnings.push(
+					`Skipped edge ${edge.from} -> ${edge.to} (non-forward edge not drawn)`,
+				);
+				continue;
 			}
 			const startX = from.x + Math.floor(boxWidth / 2);
 			const startY = from.y + BOX_HEIGHT;
@@ -200,7 +210,7 @@ class MermaidAsciiRenderer {
 				this.writeLabel(canvas, edge.label, startX, endX, midY - 1);
 			}
 		}
-		return true;
+		return warnings;
 	}
 
 	private writeLabel(
@@ -284,7 +294,17 @@ function assignLayers(diagram: ParsedMermaid): Map<string, number> | null {
 		}
 	}
 	if (layerMap.size !== diagram.nodes.length) {
-		return null;
+		let maxLayerValue = -1;
+		for (const value of layerMap.values()) {
+			maxLayerValue = Math.max(maxLayerValue, value);
+		}
+		let nextLayer = Math.max(0, maxLayerValue + 1);
+		for (const node of diagram.nodes) {
+			if (!layerMap.has(node.id)) {
+				layerMap.set(node.id, nextLayer);
+				nextLayer += 1;
+			}
+		}
 	}
 	return layerMap;
 }

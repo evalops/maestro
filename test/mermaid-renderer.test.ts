@@ -19,4 +19,15 @@ B --> D[Fallback]
 		const lines = renderMermaidDiagram("", 60);
 		expect(lines).toBeNull();
 	});
+
+	it("still renders nodes when cycles prevent some edges", () => {
+		const source = `graph TD
+A --> B
+B --> C
+C --> A
+`;
+		const lines = renderMermaidDiagram(source, 80);
+		expect(lines).toBeTruthy();
+		expect(lines?.some((line) => line.includes("Skipped edge"))).toBe(true);
+	});
 });
