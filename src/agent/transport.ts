@@ -2,6 +2,7 @@ import { defaultActionFirewall } from "../safety/action-firewall.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import type { ActionApprovalService } from "./action-approval.js";
 import { streamAnthropic } from "./providers/anthropic.js";
+import { streamGoogle } from "./providers/google.js";
 import { streamOpenAI } from "./providers/openai.js";
 import type {
 	AgentEvent,
@@ -139,6 +140,11 @@ export class ProviderTransport implements AgentTransport {
 				stream = streamOpenAI(model as any, currentContext, {
 					...streamOptions,
 					reasoningEffort: cfg.reasoning,
+				});
+			} else if (model.api === "google-generative-ai") {
+				stream = streamGoogle(model as any, currentContext, {
+					...streamOptions,
+					thinking: cfg.reasoning,
 				});
 			} else {
 				throw new Error(`Unsupported API: ${model.api}`);

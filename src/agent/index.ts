@@ -3,6 +3,9 @@ export {
 	ProviderTransport,
 	type ProviderTransportOptions,
 } from "./transport.js";
+export { sanitizeSurrogates } from "./providers/sanitize-unicode.js";
+export { StringEnum } from "./providers/typebox-helpers.js";
+export { validateToolArguments } from "./providers/validation.js";
 export type {
 	AgentEvent,
 	AgentRunConfig,

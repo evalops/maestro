@@ -1,0 +1,519 @@
+import {
+	type Content,
+	FinishReason,
+	FunctionCallingConfigMode,
+	type GenerateContentConfig,
+	type GenerateContentParameters,
+	GoogleGenAI,
+	type Part,
+} from "@google/genai";
+import type {
+	AssistantMessage,
+	AssistantMessageEvent,
+	Context,
+	Model,
+	ReasoningEffort,
+	StopReason,
+	StreamOptions,
+	TextContent,
+	ThinkingContent,
+	ToolCall,
+} from "../types.js";
+import { sanitizeSurrogates } from "./sanitize-unicode.js";
+import { transformMessages } from "./transform-messages.js";
+import { validateToolArguments } from "./validation.js";
+
+export interface GoogleOptions extends StreamOptions {
+	toolChoice?: "auto" | "none" | "any";
+	thinking?: ReasoningEffort;
+}
+
+// Counter for generating unique tool call IDs
+let toolCallCounter = 0;
+
+/**
+ * Google Gemini provider with thinking support and caching.
+ * Supports Gemini 2.5 Pro/Flash models with extended context.
+ */
+export async function* streamGoogle(
+	model: Model<"google-generative-ai">,
+	context: Context,
+	options: GoogleOptions,
+): AsyncGenerator<AssistantMessageEvent, void, unknown> {
+	const apiKey = options.apiKey;
+	if (!apiKey) {
+		throw new Error("API key is required for Google");
+	}
+
+	const client = new GoogleGenAI({ apiKey });
+	const params = buildParams(model, context, options);
+
+	const partial: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: "google-generative-ai",
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+
+	yield { type: "start", partial };
+
+	try {
+		const googleStream = await client.models.generateContentStream(params);
+
+		let currentBlock: TextContent | ThinkingContent | null = null;
+		const blockIndex = () => partial.content.length - 1;
+
+		for await (const chunk of googleStream) {
+			const candidate = chunk.candidates?.[0];
+
+			if (candidate?.content?.parts) {
+				for (const part of candidate.content.parts) {
+					if (part.text !== undefined) {
+						const isThinking = part.thought === true;
+
+						if (
+							!currentBlock ||
+							(isThinking && currentBlock.type !== "thinking") ||
+							(!isThinking && currentBlock.type !== "text")
+						) {
+							// Finish previous block
+							if (currentBlock) {
+								if (currentBlock.type === "text") {
+									yield {
+										type: "text_end",
+										contentIndex: blockIndex(),
+										content: currentBlock.text,
+										partial,
+									};
+								} else {
+									yield {
+										type: "thinking_end",
+										contentIndex: blockIndex(),
+										content: currentBlock.thinking,
+										partial,
+									};
+								}
+							}
+
+							// Start new block
+							if (isThinking) {
+								currentBlock = { type: "thinking", thinking: "" };
+								partial.content.push(currentBlock);
+								yield {
+									type: "thinking_start",
+									contentIndex: blockIndex(),
+									partial,
+								};
+							} else {
+								currentBlock = { type: "text", text: "" };
+								partial.content.push(currentBlock);
+								yield {
+									type: "text_start",
+									contentIndex: blockIndex(),
+									partial,
+								};
+							}
+						}
+
+						// Accumulate delta
+						if (currentBlock.type === "thinking") {
+							currentBlock.thinking += part.text;
+							yield {
+								type: "thinking_delta",
+								contentIndex: blockIndex(),
+								delta: part.text,
+								partial,
+							};
+						} else {
+							currentBlock.text += part.text;
+							yield {
+								type: "text_delta",
+								contentIndex: blockIndex(),
+								delta: part.text,
+								partial,
+							};
+						}
+					}
+
+					if (part.functionCall) {
+						// Finish current block if any
+						if (currentBlock) {
+							if (currentBlock.type === "text") {
+								yield {
+									type: "text_end",
+									contentIndex: blockIndex(),
+									content: currentBlock.text,
+									partial,
+								};
+							} else {
+								yield {
+									type: "thinking_end",
+									contentIndex: blockIndex(),
+									content: currentBlock.thinking,
+									partial,
+								};
+							}
+							currentBlock = null;
+						}
+
+						// Generate unique ID if not provided or if it's a duplicate
+						const providedId = part.functionCall.id;
+						const needsNewId =
+							!providedId ||
+							partial.content.some(
+								(b) => b.type === "toolCall" && b.id === providedId,
+							);
+						const toolCallId = needsNewId
+							? `${part.functionCall.name}_${Date.now()}_${++toolCallCounter}`
+							: providedId;
+
+						const toolCall: ToolCall = {
+							type: "toolCall",
+							id: toolCallId,
+							name: part.functionCall.name || "",
+							arguments: part.functionCall.args as Record<string, any>,
+						};
+
+						// Note: Validation happens in the agent executor, not during streaming
+
+						partial.content.push(toolCall);
+						yield {
+							type: "toolcall_start",
+							contentIndex: blockIndex(),
+							partial,
+						};
+						yield {
+							type: "toolcall_delta",
+							contentIndex: blockIndex(),
+							delta: JSON.stringify(toolCall.arguments),
+							partial,
+						};
+						yield {
+							type: "toolcall_end",
+							contentIndex: blockIndex(),
+							toolCall,
+							partial,
+						};
+					}
+				}
+			}
+
+			if (candidate?.finishReason) {
+				partial.stopReason = mapStopReason(candidate.finishReason);
+				if (partial.content.some((b) => b.type === "toolCall")) {
+					partial.stopReason = "toolUse";
+				}
+			}
+
+			if (chunk.usageMetadata) {
+				partial.usage = {
+					input: chunk.usageMetadata.promptTokenCount || 0,
+					output:
+						(chunk.usageMetadata.candidatesTokenCount || 0) +
+						(chunk.usageMetadata.thoughtsTokenCount || 0),
+					cacheRead: chunk.usageMetadata.cachedContentTokenCount || 0,
+					cacheWrite: 0,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				};
+
+				// Calculate costs
+				partial.usage.cost = {
+					input: (partial.usage.input * model.cost.input) / 1_000_000,
+					output: (partial.usage.output * model.cost.output) / 1_000_000,
+					cacheRead:
+						(partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
+					cacheWrite: 0,
+					total: 0,
+				};
+				partial.usage.cost.total =
+					partial.usage.cost.input +
+					partial.usage.cost.output +
+					partial.usage.cost.cacheRead;
+			}
+		}
+
+		// Finish any remaining block
+		if (currentBlock) {
+			if (currentBlock.type === "text") {
+				yield {
+					type: "text_end",
+					contentIndex: blockIndex(),
+					content: currentBlock.text,
+					partial,
+				};
+			} else {
+				yield {
+					type: "thinking_end",
+					contentIndex: blockIndex(),
+					content: currentBlock.thinking,
+					partial,
+				};
+			}
+		}
+
+		yield {
+			type: "done",
+			reason: partial.stopReason as any,
+			message: partial,
+		};
+	} catch (error: unknown) {
+		if (error instanceof Error && error.name === "AbortError") {
+			partial.stopReason = "aborted";
+			yield { type: "error", reason: "aborted", error: partial };
+		} else {
+			partial.stopReason = "error";
+			partial.errorMessage =
+				error instanceof Error ? error.message : JSON.stringify(error);
+			yield { type: "error", reason: "error", error: partial };
+		}
+	}
+}
+
+function buildParams(
+	model: Model<"google-generative-ai">,
+	context: Context,
+	options: GoogleOptions,
+): GenerateContentParameters {
+	const contents = convertMessages(model, context);
+
+	const generationConfig: GenerateContentConfig = {};
+	if (options.temperature !== undefined) {
+		generationConfig.temperature = options.temperature;
+	}
+	if (options.maxTokens !== undefined) {
+		generationConfig.maxOutputTokens = options.maxTokens;
+	}
+
+	const config: GenerateContentConfig = {
+		...(Object.keys(generationConfig).length > 0 && generationConfig),
+		...(context.systemPrompt && {
+			systemInstruction: sanitizeSurrogates(context.systemPrompt),
+		}),
+		...(context.tools &&
+			context.tools.length > 0 && { tools: convertTools(context.tools) }),
+	};
+
+	if (context.tools && context.tools.length > 0 && options.toolChoice) {
+		config.toolConfig = {
+			functionCallingConfig: {
+				mode: mapToolChoice(options.toolChoice),
+			},
+		};
+	}
+
+	// Add thinking config based on reasoning level
+	if (options.thinking && model.reasoning) {
+		const budgets: Record<ReasoningEffort, number> = {
+			minimal: 128,
+			low: 2048,
+			medium: model.id.includes("2.5-pro") ? 8192 : 8192,
+			high: model.id.includes("2.5-pro") ? 32768 : 24576,
+		};
+
+		config.thinkingConfig = {
+			includeThoughts: true,
+			thinkingBudget: budgets[options.thinking],
+		};
+	}
+
+	if (options.signal) {
+		if (options.signal.aborted) {
+			throw new Error("Request aborted");
+		}
+		config.abortSignal = options.signal;
+	}
+
+	return {
+		model: model.id,
+		contents,
+		config,
+	};
+}
+
+function convertMessages(
+	model: Model<"google-generative-ai">,
+	context: Context,
+): Content[] {
+	const contents: Content[] = [];
+	const transformedMessages = transformMessages(context.messages, model);
+
+	for (const msg of transformedMessages) {
+		if (msg.role === "user") {
+			if (typeof msg.content === "string") {
+				contents.push({
+					role: "user",
+					parts: [{ text: sanitizeSurrogates(msg.content) }],
+				});
+			} else {
+				const parts: Part[] = msg.content.map((item) => {
+					if (item.type === "text") {
+						return { text: sanitizeSurrogates(item.text) };
+					}
+					return {
+						inlineData: {
+							mimeType: item.mimeType,
+							data: item.data,
+						},
+					};
+				});
+				const filteredParts = !model.input.includes("image")
+					? parts.filter((p) => p.text !== undefined)
+					: parts;
+				if (filteredParts.length === 0) continue;
+				contents.push({
+					role: "user",
+					parts: filteredParts,
+				});
+			}
+		} else if (msg.role === "assistant") {
+			const parts: Part[] = [];
+
+			for (const block of msg.content) {
+				if (block.type === "text") {
+					parts.push({ text: sanitizeSurrogates(block.text) });
+				} else if (block.type === "thinking") {
+					parts.push({
+						thought: true,
+						text: sanitizeSurrogates(block.thinking),
+					});
+				} else if (block.type === "toolCall") {
+					parts.push({
+						functionCall: {
+							id: block.id,
+							name: block.name,
+							args: block.arguments,
+						},
+					});
+				}
+			}
+
+			if (parts.length === 0) continue;
+			contents.push({
+				role: "model",
+				parts,
+			});
+		} else if (msg.role === "toolResult") {
+			const parts: Part[] = [];
+
+			// Extract text and image content
+			const textResult = msg.content
+				.filter((c) => c.type === "text")
+				.map((c) => (c as any).text)
+				.join("\n");
+			const imageBlocks = model.input.includes("image")
+				? msg.content.filter((c) => c.type === "image")
+				: [];
+
+			const hasText = textResult.length > 0;
+			const hasImages = imageBlocks.length > 0;
+
+			// Always add functionResponse
+			parts.push({
+				functionResponse: {
+					id: msg.toolCallId,
+					name: msg.toolName,
+					response: {
+						result: hasText
+							? sanitizeSurrogates(textResult)
+							: hasImages
+								? "(see attached image)"
+								: "",
+						isError: msg.isError,
+					},
+				},
+			});
+
+			// Add any images as inlineData parts
+			for (const imageBlock of imageBlocks) {
+				parts.push({
+					inlineData: {
+						mimeType: (imageBlock as any).mimeType,
+						data: (imageBlock as any).data,
+					},
+				});
+			}
+
+			contents.push({
+				role: "user",
+				parts,
+			});
+		}
+	}
+
+	return contents;
+}
+
+function convertTools(tools: any[]): any[] | undefined {
+	if (tools.length === 0) return undefined;
+	return [
+		{
+			functionDeclarations: tools.map((tool) => ({
+				name: tool.name,
+				description: tool.description,
+				parameters: tool.parameters as any,
+			})),
+		},
+	];
+}
+
+function mapToolChoice(choice: string): FunctionCallingConfigMode {
+	switch (choice) {
+		case "auto":
+			return FunctionCallingConfigMode.AUTO;
+		case "none":
+			return FunctionCallingConfigMode.NONE;
+		case "any":
+			return FunctionCallingConfigMode.ANY;
+		default:
+			return FunctionCallingConfigMode.AUTO;
+	}
+}
+
+function mapStopReason(reason: FinishReason): StopReason {
+	switch (reason) {
+		case FinishReason.STOP:
+			return "stop";
+		case FinishReason.MAX_TOKENS:
+			return "length";
+		case FinishReason.BLOCKLIST:
+		case FinishReason.PROHIBITED_CONTENT:
+		case FinishReason.SPII:
+		case FinishReason.SAFETY:
+		case FinishReason.IMAGE_SAFETY:
+		case FinishReason.IMAGE_PROHIBITED_CONTENT:
+		case FinishReason.RECITATION:
+		case FinishReason.FINISH_REASON_UNSPECIFIED:
+		case FinishReason.OTHER:
+		case FinishReason.LANGUAGE:
+		case FinishReason.MALFORMED_FUNCTION_CALL:
+		case FinishReason.UNEXPECTED_TOOL_CALL:
+		case FinishReason.NO_IMAGE:
+			return "error";
+		default: {
+			const _exhaustive: never = reason;
+			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
+		}
+	}
+}

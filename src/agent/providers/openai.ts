@@ -6,6 +6,7 @@ import type {
 	StreamOptions,
 } from "../types.js";
 import { parseStreamingJson } from "./json-parse.js";
+import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { transformMessages } from "./transform-messages.js";
 
 export interface OpenAIOptions extends StreamOptions {
@@ -52,7 +53,7 @@ export async function* streamOpenAI(
 	if (context.systemPrompt) {
 		messages.push({
 			role: "system",
-			content: context.systemPrompt,
+			content: sanitizeSurrogates(context.systemPrompt),
 		});
 	}
 
@@ -64,10 +65,13 @@ export async function* streamOpenAI(
 		if (msg.role === "user") {
 			const content =
 				typeof msg.content === "string"
-					? msg.content
+					? sanitizeSurrogates(msg.content)
 					: msg.content.map((c) => {
 							if (c.type === "text") {
-								return { type: "text" as const, text: c.text };
+								return {
+									type: "text" as const,
+									text: sanitizeSurrogates(c.text),
+								};
 							}
 							// OpenAI expects image URLs
 							const dataUrl = `data:${c.mimeType};base64,${c.data}`;
@@ -87,7 +91,7 @@ export async function* streamOpenAI(
 
 			for (const c of msg.content) {
 				if (c.type === "text") {
-					textContent.push({ type: "text", text: c.text });
+					textContent.push({ type: "text", text: sanitizeSurrogates(c.text) });
 				} else if (c.type === "toolCall") {
 					toolCalls.push({
 						id: c.id,

@@ -40,6 +40,7 @@
     "factory:export": "npm run build && node dist/scripts/export-factory-config.js"
   },
   "dependencies": {
+    "@google/genai": "^1.29.1",
     "@sinclair/typebox": "^0.33.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
