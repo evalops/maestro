@@ -7,6 +7,10 @@ Composer is a radically simple and opinionated coding agent with multi-model sup
 - [Quickstart](docs/QUICKSTART.md) – install, build, and eval instructions
 - [Feature Guide](docs/FEATURES.md) – TUI/CLI walkthrough, bash mode, prompt queue
 - [Tools Reference](docs/TOOLS_REFERENCE.md) – detailed list of built-in tools
+- [Safety & Approvals](docs/SAFETY.md) – action firewall rules, safe mode, approvals
+- [Sessions](docs/SESSIONS.md) – JSONL format, continuation/resume flags
+- [Prompt Queue](docs/PROMPT_QUEUE.md) – how prompts are queued and loader stages update
+- [Providers & Factory](docs/MODELS.md) – model registry resolution and factory sync
 - [CONTRIBUTING](CONTRIBUTING.md) – workflow, coding standards, release steps
 - [Changelog](CHANGELOG.md) – notable fixes and features per release
 
