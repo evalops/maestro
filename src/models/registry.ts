@@ -1,14 +1,14 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import {
+	type ParseError as JsoncParseError,
+	parse as parseJsonc,
+	printParseErrorCode,
+} from "jsonc-parser";
 import { z } from "zod";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
-import {
-	parse as parseJsonc,
-	type ParseError as JsoncParseError,
-	printParseErrorCode,
-} from "jsonc-parser";
 
 const COST_DEFAULT = {
 	input: 0,
@@ -27,7 +27,7 @@ const baseUrlSchema = z
 			// Warn about common mistakes but don't fail (we auto-normalize)
 			return true;
 		},
-		{ message: "Base URL will be auto-normalized if incomplete" }
+		{ message: "Base URL will be auto-normalized if incomplete" },
 	);
 
 const modelSchema = z.object({
@@ -70,7 +70,12 @@ const providerSchema = z.object({
 const configSchema = z.object({
 	$schema: z.string().optional(),
 	providers: z.array(providerSchema).default([]),
-	aliases: z.record(z.string()).optional().describe("Model aliases for convenience (e.g., 'fast': 'anthropic/claude-haiku')"),
+	aliases: z
+		.record(z.string())
+		.optional()
+		.describe(
+			"Model aliases for convenience (e.g., 'fast': 'anthropic/claude-haiku')",
+		),
 });
 
 export type CustomModelConfig = z.infer<typeof configSchema>;
@@ -82,20 +87,22 @@ export type CustomModel = z.infer<typeof modelSchema>;
  */
 function mergeDeep<T>(target: T, source: Partial<T>): T {
 	const output = { ...target };
-	
+
 	if (isObject(target) && isObject(source)) {
-		Object.keys(source).forEach(key => {
+		for (const key of Object.keys(source)) {
 			const sourceValue = (source as any)[key];
 			const targetValue = (output as any)[key];
-			
+
 			if (isObject(sourceValue) && isObject(targetValue)) {
 				(output as any)[key] = mergeDeep(targetValue, sourceValue);
 			} else if (Array.isArray(sourceValue) && Array.isArray(targetValue)) {
 				// For arrays, concatenate and dedupe by id if objects have id property
 				const merged = [...targetValue];
 				for (const item of sourceValue) {
-					if (item && typeof item === 'object' && 'id' in item) {
-						const existingIndex = merged.findIndex((m: any) => m?.id === item.id);
+					if (item && typeof item === "object" && "id" in item) {
+						const existingIndex = merged.findIndex(
+							(m: any) => m?.id === item.id,
+						);
 						if (existingIndex >= 0) {
 							// Merge existing item
 							merged[existingIndex] = mergeDeep(merged[existingIndex], item);
@@ -110,14 +117,14 @@ function mergeDeep<T>(target: T, source: Partial<T>): T {
 			} else {
 				(output as any)[key] = sourceValue;
 			}
-		});
+		}
 	}
-	
+
 	return output;
 }
 
 function isObject(item: unknown): item is Record<string, unknown> {
-	return item !== null && typeof item === 'object' && !Array.isArray(item);
+	return item !== null && typeof item === "object" && !Array.isArray(item);
 }
 
 export interface RegisteredModel extends Model<Api> {
@@ -138,31 +145,31 @@ export interface ProviderMetadata {
  */
 const getConfigPaths = (): string[] => {
 	const paths: string[] = [];
-	
+
 	// 1. Global config
 	paths.push(join(homedir(), ".composer", "config.json"));
-	
+
 	// 2. Project config (current directory)
 	const projectConfig = join(process.cwd(), ".composer", "config.json");
 	if (existsSync(projectConfig)) {
 		paths.push(projectConfig);
 	}
-	
+
 	// 3. Legacy path for backward compatibility
 	const legacyPath = join(homedir(), ".composer", "models.json");
 	if (existsSync(legacyPath)) {
 		paths.push(legacyPath);
 	}
-	
+
 	// 4. Environment variable override
 	if (process.env.COMPOSER_MODELS_FILE) {
 		paths.push(resolve(process.env.COMPOSER_MODELS_FILE));
 	}
-	
+
 	if (process.env.COMPOSER_CONFIG) {
 		paths.push(resolve(process.env.COMPOSER_CONFIG));
 	}
-	
+
 	return paths;
 };
 
@@ -203,36 +210,36 @@ const PROVIDER_LOADERS: Record<string, ProviderLoader> = {
 			"anthropic-beta": "prompt-caching-2024-07-31",
 		},
 	}),
-	
+
 	bedrock: (providerId: string) => {
 		const region = process.env.AWS_REGION ?? "us-east-1";
 		const hasCredentials = Boolean(
 			process.env.AWS_PROFILE ||
-			process.env.AWS_ACCESS_KEY_ID ||
-			process.env.AWS_BEARER_TOKEN_BEDROCK
+				process.env.AWS_ACCESS_KEY_ID ||
+				process.env.AWS_BEARER_TOKEN_BEDROCK,
 		);
-		
+
 		return {
 			baseUrl: `https://bedrock-runtime.${region}.amazonaws.com`,
 			enabled: hasCredentials,
 			options: { region },
 		};
 	},
-	
+
 	"vertex-ai": (providerId: string) => {
-		const project = 
+		const project =
 			process.env.GOOGLE_CLOUD_PROJECT ??
 			process.env.GCP_PROJECT ??
 			process.env.GCLOUD_PROJECT;
-		const location = 
+		const location =
 			process.env.GOOGLE_CLOUD_LOCATION ??
 			process.env.VERTEX_LOCATION ??
 			"us-east5";
-		
+
 		if (!project) {
 			return { enabled: false };
 		}
-		
+
 		return {
 			enabled: true,
 			options: { project, location },
@@ -243,36 +250,34 @@ const PROVIDER_LOADERS: Record<string, ProviderLoader> = {
 /**
  * Apply provider-specific configurations
  */
-function applyProviderLoader(
-	provider: CustomProvider
-): CustomProvider {
-	const loader = 
+function applyProviderLoader(provider: CustomProvider): CustomProvider {
+	const loader =
 		PROVIDER_LOADERS[provider.id] ??
 		PROVIDER_LOADERS[provider.id.split("-")[0]]; // Try base name (e.g., "bedrock" from "aws-bedrock")
-	
+
 	if (!loader) {
 		return provider;
 	}
-	
+
 	const result = loader(provider.id);
 	if (!result) {
 		return provider;
 	}
-	
+
 	// Merge loader results with provider config
 	const enhanced = { ...provider };
-	
+
 	if (result.headers) {
-		enhanced.models = enhanced.models.map(model => ({
+		enhanced.models = enhanced.models.map((model) => ({
 			...model,
 			headers: { ...result.headers, ...model.headers },
 		}));
 	}
-	
+
 	if (result.baseUrl && !provider.baseUrl) {
 		enhanced.baseUrl = result.baseUrl;
 	}
-	
+
 	return enhanced;
 }
 
@@ -284,7 +289,9 @@ function substituteEnvVars(text: string): string {
 	return text.replace(/\{env:([^}]+)\}/g, (match, varName) => {
 		const value = process.env[varName];
 		if (value === undefined) {
-			console.warn(`[Config Warning] Environment variable ${varName} is not set, using empty string`);
+			console.warn(
+				`[Config Warning] Environment variable ${varName} is not set, using empty string`,
+			);
 			return "";
 		}
 		return value;
@@ -300,21 +307,25 @@ function substituteEnvVars(text: string): string {
 function substituteFileRefs(text: string, configDir: string): string {
 	const lines = text.split("\n");
 	let result = "";
-	
+
 	for (const line of lines) {
 		// Skip commented lines (don't process file refs in comments)
 		const trimmed = line.trim();
-		if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
-			result += line + "\n";
+		if (
+			trimmed.startsWith("//") ||
+			trimmed.startsWith("/*") ||
+			trimmed.startsWith("*")
+		) {
+			result += `${line}\n`;
 			continue;
 		}
-		
+
 		let processedLine = line;
 		const matches = [...line.matchAll(/\{file:([^}]+)\}/g)];
-		
+
 		for (const match of matches) {
 			let filePath = match[1];
-			
+
 			// Handle home directory (~/)
 			if (filePath.startsWith("~/")) {
 				filePath = join(homedir(), filePath.slice(2));
@@ -323,7 +334,7 @@ function substituteFileRefs(text: string, configDir: string): string {
 			else if (!filePath.startsWith("/")) {
 				filePath = join(configDir, filePath);
 			}
-			
+
 			try {
 				const fileContent = readFileSync(filePath, "utf-8").trim();
 				// Escape for JSON string (handle newlines, quotes, etc.)
@@ -332,14 +343,14 @@ function substituteFileRefs(text: string, configDir: string): string {
 			} catch (error) {
 				const errMsg = error instanceof Error ? error.message : String(error);
 				throw new Error(
-					`Failed to read file reference "${match[0]}" in config: ${filePath}\n${errMsg}`
+					`Failed to read file reference "${match[0]}" in config: ${filePath}\n${errMsg}`,
 				);
 			}
 		}
-		
-		result += processedLine + "\n";
+
+		result += `${processedLine}\n`;
 	}
-	
+
 	return result;
 }
 
@@ -348,11 +359,11 @@ function substituteFileRefs(text: string, configDir: string): string {
  */
 function parseJsoncWithErrors(text: string, filePath: string): unknown {
 	const errors: JsoncParseError[] = [];
-	const data = parseJsonc(text, errors, { 
+	const data = parseJsonc(text, errors, {
 		allowTrailingComma: true,
 		disallowComments: false,
 	});
-	
+
 	if (errors.length > 0) {
 		const lines = text.split("\n");
 		const errorDetails = errors
@@ -361,19 +372,19 @@ function parseJsoncWithErrors(text: string, filePath: string): unknown {
 				const line = beforeOffset.length;
 				const column = beforeOffset[beforeOffset.length - 1].length + 1;
 				const problemLine = lines[line - 1];
-				
+
 				const error = `${printParseErrorCode(e.error)} at line ${line}, column ${column}`;
 				if (!problemLine) return error;
-				
+
 				return `${error}\n   Line ${line}: ${problemLine}\n${"".padStart(column + 9)}^`;
 			})
 			.join("\n");
-		
+
 		throw new Error(
-			`Failed to parse JSONC config at ${filePath}:\n${errorDetails}`
+			`Failed to parse JSONC config at ${filePath}:\n${errorDetails}`,
 		);
 	}
-	
+
 	return data;
 }
 
@@ -401,21 +412,21 @@ function loadConfigFile(path: string): CustomModelConfig | null {
 	if (!raw) {
 		return null;
 	}
-	
+
 	try {
 		// Process file references first (before env vars, so file contents can have env vars)
 		const configDir = dirname(path);
 		let processed = substituteFileRefs(raw, configDir);
-		
+
 		// Process environment variable substitution
 		processed = substituteEnvVars(processed);
-		
+
 		// Parse JSONC (supports comments and trailing commas)
 		const data = parseJsoncWithErrors(processed, path);
-		
+
 		// Validate with Zod schema
 		const parsed = configSchema.parse(data);
-		
+
 		return parsed;
 	} catch (error) {
 		throw new Error(
@@ -431,18 +442,18 @@ function loadConfig(): CustomModelConfig {
 	if (cachedConfig) {
 		return cachedConfig;
 	}
-	
+
 	// Try loading from hierarchy
 	const paths = getConfigPaths();
 	let mergedConfig: CustomModelConfig = { providers: [] };
-	
+
 	for (const path of paths) {
 		const config = loadConfigFile(path);
 		if (config) {
 			mergedConfig = mergeDeep(mergedConfig, config);
 		}
 	}
-	
+
 	// If no configs found, try Factory fallback
 	if (mergedConfig.providers.length === 0) {
 		const factoryFallback = ensureFactoryData();
@@ -451,10 +462,10 @@ function loadConfig(): CustomModelConfig {
 			return cachedConfig;
 		}
 	}
-	
+
 	// Apply provider-specific loaders
 	mergedConfig.providers = mergedConfig.providers.map(applyProviderLoader);
-	
+
 	cachedConfig = mergedConfig;
 	return mergedConfig;
 }
@@ -463,64 +474,77 @@ function validateBaseUrl(baseUrl: string, providerId: string, api?: Api): void {
 	// Validate common provider URL patterns
 	if (providerId === "anthropic" || api === "anthropic-messages") {
 		if (baseUrl.includes("api.anthropic.com")) {
-			if (!baseUrl.includes("/v1/messages") && !baseUrl.includes("/v1/complete")) {
+			if (
+				!baseUrl.includes("/v1/messages") &&
+				!baseUrl.includes("/v1/complete")
+			) {
 				console.warn(
-					`[Config Warning] Anthropic base URL should end with /v1/messages. ` +
-					`Got: ${baseUrl}. Auto-normalizing to include /v1/messages.`
+					`[Config Warning] Anthropic base URL should end with /v1/messages. Got: ${baseUrl}. Auto-normalizing to include /v1/messages.`,
 				);
 			}
 		}
 	}
-	
+
 	if (providerId.includes("bedrock") || providerId.includes("aws")) {
 		if (baseUrl.includes("bedrock.") && !baseUrl.includes("bedrock-runtime.")) {
 			console.warn(
-				`[Config Warning] AWS Bedrock URL should use 'bedrock-runtime', not 'bedrock'. ` +
-				`Got: ${baseUrl}. Auto-normalizing to bedrock-runtime.`
+				`[Config Warning] AWS Bedrock URL should use 'bedrock-runtime', not 'bedrock'. Got: ${baseUrl}. Auto-normalizing to bedrock-runtime.`,
 			);
 		}
 	}
-	
+
 	if (providerId.includes("vertex") || providerId.includes("google")) {
-		if (baseUrl.includes("aiplatform.googleapis.com") && !baseUrl.includes("/v1/")) {
+		if (
+			baseUrl.includes("aiplatform.googleapis.com") &&
+			!baseUrl.includes("/v1/")
+		) {
 			console.warn(
-				`[Config Warning] Google Vertex AI URLs should include full path with /v1/. ` +
-				`Got: ${baseUrl}. You may need to specify the full endpoint including project and location.`
+				`[Config Warning] Google Vertex AI URLs should include full path with /v1/. Got: ${baseUrl}. You may need to specify the full endpoint including project and location.`,
 			);
 		}
 	}
 }
 
-function normalizeBaseUrl(baseUrl: string, providerId: string, api?: Api): string {
+function normalizeBaseUrl(
+	baseUrl: string,
+	providerId: string,
+	api?: Api,
+): string {
 	let normalized = baseUrl;
-	
+
 	// Validate first (logs warnings)
 	validateBaseUrl(baseUrl, providerId, api);
-	
+
 	// Anthropic direct API
-	if ((providerId === "anthropic" || api === "anthropic-messages") && 
-	    normalized.includes("api.anthropic.com") && 
-	    !normalized.includes("/v1/messages")) {
-		normalized = normalized.replace(/\/$/, "") + "/v1/messages";
+	if (
+		(providerId === "anthropic" || api === "anthropic-messages") &&
+		normalized.includes("api.anthropic.com") &&
+		!normalized.includes("/v1/messages")
+	) {
+		normalized = `${normalized.replace(/\/$/, "")}/v1/messages`;
 	}
-	
+
 	// AWS Bedrock
 	if (providerId.includes("bedrock") || providerId.includes("aws")) {
-		if (normalized.includes("bedrock") && 
-		    normalized.includes("amazonaws.com") &&
-		    !normalized.includes("bedrock-runtime")) {
+		if (
+			normalized.includes("bedrock") &&
+			normalized.includes("amazonaws.com") &&
+			!normalized.includes("bedrock-runtime")
+		) {
 			normalized = normalized.replace("bedrock.", "bedrock-runtime.");
 		}
 	}
-	
+
 	// Google Vertex AI
 	if (providerId.includes("vertex") || providerId.includes("google")) {
-		if (normalized.includes("aiplatform.googleapis.com") && 
-		    !normalized.includes("/v1/")) {
+		if (
+			normalized.includes("aiplatform.googleapis.com") &&
+			!normalized.includes("/v1/")
+		) {
 			normalized = normalized.replace(/\/$/, "");
 		}
 	}
-	
+
 	return normalized;
 }
 
@@ -547,14 +571,14 @@ function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 		const expectedFormat = getExpectedUrlFormat(provider.id, api);
 		throw new Error(
 			`Model ${provider.id}/${model.id} is missing api or baseUrl.\n` +
-			`Expected format: ${expectedFormat}\n` +
-			`Specify them either on the model or provider entry in ${configPath()}.`,
+				`Expected format: ${expectedFormat}\n` +
+				`Specify them either on the model or provider entry in ${configPath()}.`,
 		);
 	}
-	
+
 	// Normalize the base URL
 	baseUrl = normalizeBaseUrl(baseUrl, provider.id, api);
-	
+
 	return {
 		id: model.id,
 		name: model.name,
@@ -734,15 +758,15 @@ function buildFactoryData(): {
 			if (!entry?.model || !entry.base_url) {
 				continue;
 			}
-			
+
 			// Normalize provider base URLs using shared function
 			const api = deriveProviderApi(entry.provider);
 			const normalizedBaseUrl = normalizeBaseUrl(
-				entry.base_url, 
+				entry.base_url,
 				entry.provider ?? "factory",
-				api
+				api,
 			);
-			
+
 			const uniqueKey = `${entry.provider ?? "factory"}|${normalizedBaseUrl}|${entry.api_key ?? ""}`;
 			let provider = providerKeyMap.get(uniqueKey);
 			if (!provider) {
@@ -919,20 +943,20 @@ export function validateConfig(): ConfigValidationResult {
 			envVars: [],
 		},
 	};
-	
+
 	const paths = getConfigPaths();
-	
+
 	// Check each config file
 	for (const path of paths) {
 		if (!existsSync(path)) {
 			continue;
 		}
-		
+
 		result.summary.configFiles.push(path);
-		
+
 		try {
 			const raw = readFileSync(path, "utf-8");
-			
+
 			// Find file references
 			const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
 			for (const match of fileMatches) {
@@ -942,26 +966,26 @@ export function validateConfig(): ConfigValidationResult {
 				} else if (!filePath.startsWith("/")) {
 					filePath = join(dirname(path), filePath);
 				}
-				
+
 				result.summary.fileReferences.push(filePath);
-				
+
 				if (!existsSync(filePath)) {
 					result.errors.push(`File reference not found: ${filePath}`);
 					result.valid = false;
 				}
 			}
-			
+
 			// Find env vars
 			const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];
 			for (const match of envMatches) {
 				const varName = match[1];
 				result.summary.envVars.push(varName);
-				
+
 				if (!process.env[varName]) {
 					result.warnings.push(`Environment variable not set: ${varName}`);
 				}
 			}
-			
+
 			// Try parsing
 			const config = loadConfigFile(path);
 			if (config) {
@@ -971,15 +995,17 @@ export function validateConfig(): ConfigValidationResult {
 				}
 			}
 		} catch (error) {
-			result.errors.push(`Failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
+			result.errors.push(
+				`Failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 			result.valid = false;
 		}
 	}
-	
+
 	if (result.summary.configFiles.length === 0) {
 		result.warnings.push("No config files found");
 	}
-	
+
 	return result;
 }
 
@@ -1018,14 +1044,14 @@ export interface ConfigInspection {
 export function inspectConfig(): ConfigInspection {
 	const paths = getConfigPaths();
 	const config = loadConfig();
-	
+
 	const inspection: ConfigInspection = {
 		sources: [],
 		providers: [],
 		fileReferences: [],
 		envVars: [],
 	};
-	
+
 	// Track sources
 	for (const path of paths) {
 		const exists = existsSync(path);
@@ -1035,37 +1061,37 @@ export function inspectConfig(): ConfigInspection {
 			loaded: exists,
 		});
 	}
-	
+
 	// Track providers
 	for (const provider of config.providers) {
 		let apiKeySource: string | undefined;
-		
+
 		if (provider.apiKeyEnv) {
 			apiKeySource = `env:${provider.apiKeyEnv}`;
 		} else if (provider.apiKey) {
 			apiKeySource = "direct (hardcoded)";
 		}
-		
+
 		inspection.providers.push({
 			id: provider.id,
 			name: provider.name,
 			baseUrl: provider.baseUrl || "(auto-generated)",
 			apiKeySource,
 			modelCount: provider.models.length,
-			models: provider.models.map(m => ({
+			models: provider.models.map((m) => ({
 				id: m.id,
 				name: m.name,
 			})),
 		});
 	}
-	
+
 	// Track file references (scan all config files)
 	for (const path of paths) {
 		if (!existsSync(path)) continue;
-		
+
 		const raw = readFileSync(path, "utf-8");
 		const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
-		
+
 		for (const match of fileMatches) {
 			let filePath = match[1];
 			if (filePath.startsWith("~/")) {
@@ -1073,16 +1099,16 @@ export function inspectConfig(): ConfigInspection {
 			} else if (!filePath.startsWith("/")) {
 				filePath = join(dirname(path), filePath);
 			}
-			
+
 			const exists = existsSync(filePath);
 			let size: number | undefined;
-			
+
 			if (exists) {
 				try {
 					size = statSync(filePath).size;
 				} catch {}
 			}
-			
+
 			inspection.fileReferences.push({
 				path: filePath,
 				exists,
@@ -1090,45 +1116,44 @@ export function inspectConfig(): ConfigInspection {
 			});
 		}
 	}
-	
+
 	// Track env vars
 	const envVarsSet = new Set<string>();
 	for (const path of paths) {
 		if (!existsSync(path)) continue;
-		
+
 		const raw = readFileSync(path, "utf-8");
 		const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];
-		
+
 		for (const match of envMatches) {
 			envVarsSet.add(match[1]);
 		}
 	}
-	
+
 	for (const provider of config.providers) {
 		if (provider.apiKeyEnv) {
 			envVarsSet.add(provider.apiKeyEnv);
 		}
 	}
-	
+
 	for (const varName of envVarsSet) {
 		const value = process.env[varName];
 		const set = value !== undefined;
-		
+
 		let maskedValue: string | undefined;
 		if (set && value) {
 			// Mask the value (show first 4 chars)
-			maskedValue = value.length > 8
-				? `${value.slice(0, 4)}${"•".repeat(8)}`
-				: "••••••••";
+			maskedValue =
+				value.length > 8 ? `${value.slice(0, 4)}${"•".repeat(8)}` : "••••••••";
 		}
-		
+
 		inspection.envVars.push({
 			name: varName,
 			set,
 			maskedValue,
 		});
 	}
-	
+
 	return inspection;
 }
 
@@ -1143,25 +1168,29 @@ export function getConfigHierarchy(): string[] {
  * Resolve a model alias to provider/modelId
  * Returns null if not an alias or alias not found
  */
-export function resolveAlias(alias: string): { provider: string; modelId: string } | null {
+export function resolveAlias(
+	alias: string,
+): { provider: string; modelId: string } | null {
 	const config = loadConfig();
-	
+
 	if (!config.aliases) {
 		return null;
 	}
-	
+
 	const target = config.aliases[alias];
 	if (!target) {
 		return null;
 	}
-	
+
 	// Parse format: "provider/modelId"
 	const parts = target.split("/");
 	if (parts.length !== 2) {
-		console.warn(`[Config Warning] Invalid alias target "${target}". Expected format: "provider/modelId"`);
+		console.warn(
+			`[Config Warning] Invalid alias target "${target}". Expected format: "provider/modelId"`,
+		);
 		return null;
 	}
-	
+
 	return {
 		provider: parts[0],
 		modelId: parts[1],

@@ -1,4 +1,11 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -60,19 +67,19 @@ function readCache(): ModelsDev | null {
 		if (!existsSync(CACHE_FILE)) {
 			return null;
 		}
-		
+
 		const data = readFileSync(CACHE_FILE, "utf-8");
 		const parsed = JSON.parse(data);
-		
+
 		// Check cache age
-		const stats = require("fs").statSync(CACHE_FILE);
+		const stats = statSync(CACHE_FILE);
 		const age = Date.now() - stats.mtimeMs;
-		
+
 		if (age > CACHE_MAX_AGE_MS) {
 			console.log("[Models.dev] Cache expired, will refresh");
 			return null;
 		}
-		
+
 		return parsed as ModelsDev;
 	} catch (error) {
 		console.warn("[Models.dev] Failed to read cache:", error);
@@ -87,9 +94,9 @@ function writeCache(data: ModelsDev): void {
 	try {
 		// Ensure directory exists
 		if (!existsSync(CACHE_DIR)) {
-			require("fs").mkdirSync(CACHE_DIR, { recursive: true });
+			mkdirSync(CACHE_DIR, { recursive: true });
 		}
-		
+
 		writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2), "utf-8");
 		console.log("[Models.dev] Cache updated");
 	} catch (error) {
@@ -103,26 +110,26 @@ function writeCache(data: ModelsDev): void {
 async function fetchFromApi(): Promise<ModelsDev | null> {
 	try {
 		console.log("[Models.dev] Fetching from API...");
-		
+
 		const response = await fetch(MODELS_DEV_URL, {
 			signal: AbortSignal.timeout(10000), // 10 second timeout
 			headers: {
 				"User-Agent": "composer-cli",
 			},
 		});
-		
+
 		if (!response.ok) {
 			console.warn(`[Models.dev] API returned ${response.status}`);
 			return null;
 		}
-		
-		const data = await response.json() as ModelsDev;
+
+		const data = (await response.json()) as ModelsDev;
 		console.log(`[Models.dev] Fetched ${Object.keys(data).length} providers`);
-		
+
 		// Cache the fresh data
 		writeCache(data);
 		lastFetchTime = Date.now();
-		
+
 		return data;
 	} catch (error) {
 		console.warn("[Models.dev] Failed to fetch from API:", error);
@@ -138,7 +145,7 @@ export async function getModelsDev(): Promise<ModelsDev | null> {
 	if (cachedData && Date.now() - lastFetchTime < CACHE_MAX_AGE_MS) {
 		return cachedData;
 	}
-	
+
 	// Try reading from disk cache
 	const diskCache = readCache();
 	if (diskCache) {
@@ -146,14 +153,14 @@ export async function getModelsDev(): Promise<ModelsDev | null> {
 		lastFetchTime = Date.now();
 		return diskCache;
 	}
-	
+
 	// Fetch fresh data from API
 	const freshData = await fetchFromApi();
 	if (freshData) {
 		cachedData = freshData;
 		return freshData;
 	}
-	
+
 	// If all else fails, return null
 	return null;
 }
@@ -175,7 +182,7 @@ export function refreshModelsDev(): void {
 export function clearModelsDevCache(): void {
 	try {
 		if (existsSync(CACHE_FILE)) {
-			require("fs").unlinkSync(CACHE_FILE);
+			unlinkSync(CACHE_FILE);
 			console.log("[Models.dev] Cache cleared");
 		}
 		cachedData = null;
@@ -193,9 +200,9 @@ export function startAutoRefresh(): void {
 	const interval = setInterval(() => {
 		refreshModelsDev();
 	}, CACHE_MAX_AGE_MS);
-	
+
 	// Don't block process exit
 	interval.unref();
-	
+
 	console.log("[Models.dev] Auto-refresh enabled (1 hour interval)");
 }

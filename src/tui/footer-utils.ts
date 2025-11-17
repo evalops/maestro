@@ -42,7 +42,6 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 	const contextTokens = lastAssistant
 		? lastAssistant.usage.input +
 			lastAssistant.usage.output +
-			lastAssistant.usage.cacheRead +
 			lastAssistant.usage.cacheWrite
 		: 0;
 	const contextWindow = state.model.contextWindow;

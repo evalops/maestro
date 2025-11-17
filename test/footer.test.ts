@@ -128,6 +128,24 @@ describe("FooterComponent", () => {
 			expect(statsLine).toContain("75.0%");
 		});
 
+		it("should ignore cache reads when computing context percentage", () => {
+			const messages = [
+				createAssistantMessage({
+					input: 2000,
+					output: 1000,
+					cacheRead: 90000,
+				}),
+			];
+
+			const state = createMockState(messages, 200000);
+			const footer = new FooterComponent(state);
+			const rendered = footer.render(120);
+
+			const statsLine = rendered[1];
+			expect(statsLine).toContain("ctx 1.5%");
+			expect(statsLine).not.toContain("ctx 46.5%");
+		});
+
 		it("should format token counts correctly", () => {
 			const messages = [
 				createAssistantMessage({ input: 500, output: 100 }), // Under 1k
