@@ -8,6 +8,7 @@ import type { SessionManager } from "../session-manager.js";
 import type { SessionModelMetadata } from "../session-manager.js";
 import { muted } from "../style/theme.js";
 import type { TelemetryStatus } from "../telemetry.js";
+import { getExaUsageSummary } from "../tools/exa-usage.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 import {
@@ -153,6 +154,7 @@ ${copyNote}`;
 			modelMetadata: this.options.getCurrentModelMetadata(),
 			apiKeyLookup: this.currentApiKeyInfo,
 			telemetry: this.telemetryStatus,
+			exaUsage: getExaUsageSummary(),
 			pendingTools: Array.from(this.options.getPendingTools().entries()).map(
 				([id, component]) => ({ id, name: component.getToolName() }),
 			),

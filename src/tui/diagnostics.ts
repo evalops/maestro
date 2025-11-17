@@ -4,6 +4,7 @@ import type { LspDiagnostic } from "../lsp/index.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import type { SessionModelMetadata } from "../session-manager.js";
 import type { TelemetryStatus } from "../telemetry.js";
+import type { ExaUsageSummary } from "../tools/exa-usage.js";
 
 export interface DiagnosticsInput {
 	sessionId: string;
@@ -12,6 +13,7 @@ export interface DiagnosticsInput {
 	modelMetadata?: SessionModelMetadata;
 	apiKeyLookup: ApiKeyLookupResult;
 	telemetry: TelemetryStatus;
+	exaUsage?: ExaUsageSummary | null;
 	pendingTools: Array<{ id: string; name: string }>;
 	explicitApiKey?: string;
 	health?: {
@@ -121,6 +123,31 @@ function formatTelemetrySection(status: TelemetryStatus): string {
 	return lines.join("\n");
 }
 
+function formatExaUsageSection(
+	summary?: ExaUsageSummary | null,
+): string | null {
+	if (!summary) return null;
+	const lines: string[] = [];
+	lines.push(chalk.bold("Exa Usage"));
+	lines.push(
+		`${chalk.dim("Calls")}: ${summary.totalCalls} (${summary.successes} ok, ${summary.failures} fail)`,
+	);
+	lines.push(
+		`${chalk.dim("Duration")}: ${(summary.totalDurationMs / 1000).toFixed(2)}s total`,
+	);
+	lines.push(`${chalk.dim("Cost")}: $${summary.totalCostDollars.toFixed(4)}`);
+	if (summary.lastEvents.length) {
+		lines.push(chalk.dim("Recent"));
+		for (const event of summary.lastEvents) {
+			const ts = new Date(event.timestamp).toLocaleTimeString();
+			lines.push(
+				` - ${ts} ${event.operation ?? event.endpoint} (${event.success ? "ok" : "fail"}) ${event.costDollars ? `$${event.costDollars.toFixed(4)}` : ""}`.trim(),
+			);
+		}
+	}
+	return lines.join("\n");
+}
+
 function formatPendingToolsSection(
 	pendingTools: Array<{ id: string; name: string }>,
 ): string {
@@ -214,6 +241,11 @@ export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	sections.push("");
 	sections.push(formatTelemetrySection(input.telemetry));
 	sections.push("");
+	const exaUsageSection = formatExaUsageSection(input.exaUsage);
+	if (exaUsageSection) {
+		sections.push(exaUsageSection);
+		sections.push("");
+	}
 	const healthSection = formatHealthSection(input.health);
 	if (healthSection) {
 		sections.push(healthSection);

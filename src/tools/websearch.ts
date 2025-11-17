@@ -74,10 +74,37 @@ const websearchSchema = Type.Object({
 		}),
 	),
 	summary: Type.Optional(
-		Type.Boolean({
-			description: "Return AI-generated summary of each result",
-			default: false,
-		}),
+		Type.Union(
+			[
+				Type.Boolean({
+					description: "Return AI-generated summary of each result",
+				}),
+				Type.Object({
+					target: Type.Optional(
+						Type.String({
+							description:
+								"Hint the summary for a specific target (docs, news, finance, etc.)",
+						}),
+					),
+					model: Type.Optional(
+						Type.String({
+							description: "Override Exa summary model (e.g., exa:claude-3)",
+						}),
+					),
+					includeQuotes: Type.Optional(
+						Type.Boolean({
+							description: "Include quoted sentences in the summary",
+							default: false,
+						}),
+					),
+				}),
+			],
+			{
+				description:
+					"Return AI-generated summary (boolean) or customize via target/model",
+				default: false,
+			},
+		),
 	),
 	highlights: Type.Optional(
 		Type.Union(

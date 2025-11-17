@@ -51,6 +51,7 @@ describe("websearch tool", () => {
 			livecrawl: "always",
 			subpages: { limit: 2 },
 			highlights: { numSentences: 2 },
+			summary: { target: "news", model: "exa:claude" },
 		});
 
 		const requestBody = mockedCallExa.mock.calls[0][1];
@@ -59,7 +60,7 @@ describe("websearch tool", () => {
 			subpages: { limit: 2 },
 			contents: {
 				text: true,
-				summary: false,
+				summary: { target: "news", model: "exa:claude" },
 				context: true,
 				highlights: { numSentences: 2 },
 			},

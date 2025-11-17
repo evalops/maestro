@@ -1,6 +1,9 @@
 import { recordToolExecution } from "../telemetry.js";
+import { trackExaUsage } from "./exa-usage.js";
 
 const EXA_API_BASE = "https://api.exa.ai";
+const EXA_DEBUG = (process.env.EXA_DEBUG ?? "").toLowerCase();
+const EXA_DEBUG_ENABLED = EXA_DEBUG === "1" || EXA_DEBUG === "true";
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429]);
 const RETRYABLE_ERROR_SUBSTRINGS = [
 	"ECONNRESET",
@@ -31,6 +34,7 @@ export interface ExaTelemetryEvent {
 	requestId?: string;
 	costDollars?: number;
 	errorMessage?: string;
+	timestamp: number;
 }
 
 export interface CallExaOptions {
@@ -154,6 +158,13 @@ function reportExaTelemetry(event: ExaTelemetryEvent): void {
 		costDollars: event.costDollars,
 	};
 	recordToolExecution(toolName, event.success, event.durationMs, metadata);
+	trackExaUsage(event);
+}
+
+function logExaDebug(message: string, payload?: unknown): void {
+	if (!EXA_DEBUG_ENABLED) return;
+	const suffix = payload ? ` ${JSON.stringify(payload)}` : "";
+	console.error(`[exa] ${message}${suffix}`);
 }
 
 function wait(ms: number): Promise<void> {
@@ -178,6 +189,12 @@ export async function callExa<T>(
 		let response: Response;
 		let responseBody = "";
 		try {
+			if (EXA_DEBUG_ENABLED) {
+				logExaDebug(`request ${endpoint}`, {
+					attempt: attemptNumber,
+					body,
+				});
+			}
 			response = await fetch(`${EXA_API_BASE}${endpoint}`, {
 				method: "POST",
 				headers: {
@@ -187,6 +204,13 @@ export async function callExa<T>(
 				body: JSON.stringify(body),
 			});
 			responseBody = await response.text();
+			if (EXA_DEBUG_ENABLED) {
+				logExaDebug(`response ${endpoint}`, {
+					attempt: attemptNumber,
+					status: response.status,
+					body: responseBody.slice(0, 2000),
+				});
+			}
 		} catch (error) {
 			emitTelemetry(telemetryHandler, {
 				toolName: options.toolName,
@@ -196,6 +220,7 @@ export async function callExa<T>(
 				durationMs: performance.now() - start,
 				success: false,
 				errorMessage: (error as Error)?.message,
+				timestamp: Date.now(),
 			});
 			if (attempt < retries && isRetryableNetworkError(error)) {
 				await wait(retryDelayMs * 2 ** attempt);
@@ -229,6 +254,7 @@ export async function callExa<T>(
 				errorMessage: message,
 				requestId: parsedError?.requestId,
 				costDollars: normalizeCostDollars(parsedError?.costDollars),
+				timestamp: Date.now(),
 			});
 
 			if (attempt < retries && isRetryableStatus(response.status)) {
@@ -248,6 +274,7 @@ export async function callExa<T>(
 				durationMs,
 				status: response.status,
 				success: true,
+				timestamp: Date.now(),
 			});
 			return {} as T;
 		}
@@ -267,6 +294,7 @@ export async function callExa<T>(
 				success: true,
 				requestId: data.requestId,
 				costDollars: normalizeCostDollars(data.costDollars),
+				timestamp: Date.now(),
 			});
 			return data;
 		} catch (error) {
