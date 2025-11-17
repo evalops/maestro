@@ -1,7 +1,6 @@
 import { Type } from "@sinclair/typebox";
+import { callExa } from "./exa-client.js";
 import { createTypeboxTool } from "./typebox-tool.js";
-
-const EXA_API_BASE = "https://api.exa.ai";
 
 interface ExaSearchResult {
 	title: string;
@@ -123,13 +122,6 @@ export const websearchTool = createTypeboxTool({
 		"Search the web using Exa AI for real-time information beyond training cutoff. Supports semantic (neural) and keyword search with optional full text and summaries. Use for: recent news, documentation, research papers, current events.",
 	schema: websearchSchema,
 	async execute(_toolCallId, params) {
-		const apiKey = process.env.EXA_API_KEY;
-		if (!apiKey) {
-			throw new Error(
-				"EXA_API_KEY environment variable is required. Get your key at https://dashboard.exa.ai/api-keys",
-			);
-		}
-
 		const requestBody: Record<string, unknown> = {
 			query: params.query,
 			numResults: params.numResults ?? 5,
@@ -159,23 +151,7 @@ export const websearchTool = createTypeboxTool({
 			};
 		}
 
-		const response = await fetch(`${EXA_API_BASE}/search`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"x-api-key": apiKey,
-			},
-			body: JSON.stringify(requestBody),
-		});
-
-		if (!response.ok) {
-			const errorText = await response.text();
-			throw new Error(
-				`Exa API error (${response.status}): ${errorText || response.statusText}`,
-			);
-		}
-
-		const data = (await response.json()) as ExaSearchResponse;
+		const data = await callExa<ExaSearchResponse>("/search", requestBody);
 
 		// Format results
 		const outputLines: string[] = [];

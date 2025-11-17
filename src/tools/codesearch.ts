@@ -1,7 +1,6 @@
 import { Type } from "@sinclair/typebox";
+import { callExa } from "./exa-client.js";
 import { createTypeboxTool } from "./typebox-tool.js";
-
-const EXA_API_BASE = "https://api.exa.ai";
 
 interface ExaContextResponse {
 	requestId: string;
@@ -45,35 +44,12 @@ export const codesearchTool = createTypeboxTool({
 		"Search billions of GitHub repos, documentation, and Stack Overflow for code examples and programming context using Exa Code API. Returns token-efficient, working code examples. Use for: framework usage, API syntax, library examples, best practices, setup instructions.",
 	schema: codesearchSchema,
 	async execute(_toolCallId, params) {
-		const apiKey = process.env.EXA_API_KEY;
-		if (!apiKey) {
-			throw new Error(
-				"EXA_API_KEY environment variable is required. Get your key at https://dashboard.exa.ai/api-keys",
-			);
-		}
-
 		const requestBody: Record<string, unknown> = {
 			query: params.query,
 			tokensNum: params.tokensNum ?? "dynamic",
 		};
 
-		const response = await fetch(`${EXA_API_BASE}/context`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"x-api-key": apiKey,
-			},
-			body: JSON.stringify(requestBody),
-		});
-
-		if (!response.ok) {
-			const errorText = await response.text();
-			throw new Error(
-				`Exa API error (${response.status}): ${errorText || response.statusText}`,
-			);
-		}
-
-		const data = (await response.json()) as ExaContextResponse;
+		const data = await callExa<ExaContextResponse>("/context", requestBody);
 
 		// Parse cost (returned as JSON string)
 		let costTotal = 0;

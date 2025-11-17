@@ -1,7 +1,6 @@
 import { Type } from "@sinclair/typebox";
+import { callExa } from "./exa-client.js";
 import { createTypeboxTool } from "./typebox-tool.js";
-
-const EXA_API_BASE = "https://api.exa.ai";
 
 interface ExaContentsResult {
 	id: string;
@@ -68,13 +67,6 @@ export const webfetchTool = createTypeboxTool({
 		"Fetch and extract content from specific URLs using Exa. Converts HTML to clean markdown, optionally returns summaries and highlights. Use for: reading documentation, fetching article content, extracting information from known URLs.",
 	schema: webfetchSchema,
 	async execute(_toolCallId, params) {
-		const apiKey = process.env.EXA_API_KEY;
-		if (!apiKey) {
-			throw new Error(
-				"EXA_API_KEY environment variable is required. Get your key at https://dashboard.exa.ai/api-keys",
-			);
-		}
-
 		// Normalize URLs to array
 		const urls = Array.isArray(params.urls) ? params.urls : [params.urls];
 
@@ -87,23 +79,7 @@ export const webfetchTool = createTypeboxTool({
 			},
 		};
 
-		const response = await fetch(`${EXA_API_BASE}/contents`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"x-api-key": apiKey,
-			},
-			body: JSON.stringify(requestBody),
-		});
-
-		if (!response.ok) {
-			const errorText = await response.text();
-			throw new Error(
-				`Exa API error (${response.status}): ${errorText || response.statusText}`,
-			);
-		}
-
-		const data = (await response.json()) as ExaContentsResponse;
+		const data = await callExa<ExaContentsResponse>("/contents", requestBody);
 
 		// Check for errors
 		const errors: string[] = [];
