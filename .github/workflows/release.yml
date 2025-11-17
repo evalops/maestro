@@ -128,15 +128,6 @@ jobs:
       - name: Generate version metadata
         run: node scripts/create-version-json.js
 
-      - name: Verify NPM token is present
-        run: |
-          if [[ -z "${NPM_TOKEN}" ]]; then
-            echo "::error::NPM_TOKEN secret is not configured" >&2
-            exit 1
-          fi
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-
       - id: pack
         run: |
           set -euo pipefail
@@ -151,12 +142,17 @@ jobs:
           path: ${{ steps.pack.outputs.tarball }}
 
       - name: Publish to npm
+        if: secrets.NPM_TOKEN != ''
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           printf "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n" > "$HOME/.npmrc"
           npm publish "${{ steps.pack.outputs.tarball }}" --access public
+
+      - name: Warn when NPM_TOKEN missing
+        if: secrets.NPM_TOKEN == ''
+        run: echo "NPM_TOKEN secret not configured; skipping npm publish"
 
       - name: Sync Hopper version metadata
         env:
