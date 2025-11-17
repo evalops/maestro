@@ -123,6 +123,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "about",
+				description: "Show Composer build, env, and git info",
+				usage: "/about",
+				tags: ["system", "diagnostics"],
+			},
+			equals("about"),
+			handlers.about,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "plan",
 				description: "Show saved plans/checklists",
 				usage: "/plan [id]",

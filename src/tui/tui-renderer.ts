@@ -33,6 +33,7 @@ import {
 	TUI,
 	Text,
 } from "../tui-lib/index.js";
+import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
 import { BashModeView } from "./bash-mode-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
@@ -167,6 +168,7 @@ export class TuiRenderer {
 	private conversationCompactor: ConversationCompactor;
 	private messageView: MessageView;
 	private feedbackView: FeedbackView;
+	private aboutView: AboutView;
 	private infoView: InfoView;
 	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
@@ -376,6 +378,15 @@ export class TuiRenderer {
 			gitView: this.gitView,
 			version: this.version,
 		});
+		this.aboutView = new AboutView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			gitView: this.gitView,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			version: this.version,
+			telemetryStatus: () => this.describeTelemetryStatus(),
+		});
 		this.infoView = new InfoView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -473,6 +484,7 @@ export class TuiRenderer {
 			handleSessions: (context) =>
 				this.sessionView.handleSessionsCommand(context.rawInput),
 			handleBug: (_context) => this.feedbackView.handleBugCommand(),
+			handleAbout: (_context) => this.aboutView.handleAboutCommand(),
 			showStatus: (_context) => this.diagnosticsView.handleStatusCommand(),
 			handleReview: (_context) => this.gitView.handleReviewCommand(),
 			handleUndo: (context) => this.gitView.handleUndoCommand(context.rawInput),
@@ -856,6 +868,21 @@ export class TuiRenderer {
 				(command) => command.name.toLowerCase() === name.toLowerCase(),
 			) ?? { name }
 		);
+	}
+
+	private describeTelemetryStatus(): string {
+		const status = this.telemetryStatus;
+		const base = status.enabled ? "enabled" : "disabled";
+		const details: string[] = [];
+		if (status.runtimeOverride) {
+			details.push(`override=${status.runtimeOverride}`);
+		} else if (status.reason) {
+			details.push(status.reason);
+		}
+		if (status.sampleRate !== 1) {
+			details.push(`sample=${status.sampleRate}`);
+		}
+		return details.length > 0 ? `${base} (${details.join(", ")})` : base;
 	}
 
 	private renderCommandHelp(command: SlashCommand): void {
