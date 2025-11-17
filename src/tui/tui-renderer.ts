@@ -41,15 +41,15 @@ import { ModelSelectorComponent } from "./model-selector.js";
 import { PlanView } from "./plan-view.js";
 import { RunCommandView } from "./run-command-view.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
-import { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolStatusView } from "./tool-status-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { FileSearchView } from "./file-search-view.js";
 import { SessionView } from "./session-view.js";
-import { UserMessageComponent } from "./user-message.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 import { ImportExportView } from "./import-view.js";
+import { ToolExecutionComponent } from "./tool-execution.js";
 import { ConversationCompactor } from "./conversation-compactor.js";
+import { MessageView } from "./message-view.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -88,8 +88,6 @@ export class TuiRenderer {
 	private modelSelector: ModelSelectorComponent | null = null;
 
 	// Track if this is the first user message (to skip spacer)
-	private isFirstUserMessage = true;
-
 	// Welcome animation shown before first interaction
 	private welcomeAnimation: WelcomeAnimation | null = null;
 
@@ -114,6 +112,7 @@ export class TuiRenderer {
 	private diagnosticsView: DiagnosticsView;
 	private fileSearchView: FileSearchView;
 	private conversationCompactor: ConversationCompactor;
+	private messageView: MessageView;
 
 	constructor(
 		agent: Agent,
@@ -207,6 +206,13 @@ export class TuiRenderer {
 			editorContainer: this.editorContainer,
 			ui: this.ui,
 			getCommands: () => this.slashCommands,
+		});
+		this.messageView = new MessageView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			toolComponents: this.toolComponents,
+			pendingTools: this.pendingTools,
+			registerToolComponent: (component) => this.registerToolComponent(component),
 		});
 		this.importExportView = new ImportExportView({
 			agent: this.agent,
@@ -378,7 +384,7 @@ export class TuiRenderer {
 						event.message,
 					);
 					// Show user message immediately and clear editor
-					this.addMessageToChat(event.message);
+					this.messageView.addMessage(event.message as AppMessage);
 					this.editor.setText("");
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
@@ -527,116 +533,9 @@ export class TuiRenderer {
 		}
 	}
 
-	private addMessageToChat(message: Message): void {
-		if (message.role === "user") {
-			const userMsg = message as any;
-			// Extract text content - handle both string and array content
-			let textContent = "";
-			if (typeof userMsg.content === "string") {
-				textContent = userMsg.content;
-			} else if (Array.isArray(userMsg.content)) {
-				const textBlocks = userMsg.content.filter(
-					(c: any) => c.type === "text",
-				);
-				textContent = textBlocks.map((c: any) => c.text).join("");
-			}
-
-			if (textContent) {
-				const userComponent = new UserMessageComponent(
-					textContent,
-					this.isFirstUserMessage,
-				);
-				this.chatContainer.addChild(userComponent);
-				this.isFirstUserMessage = false;
-			}
-		} else if (message.role === "assistant") {
-			const assistantMsg = message as AssistantMessage;
-
-			// Add assistant message component
-			const assistantComponent = new AssistantMessageComponent(assistantMsg);
-			this.chatContainer.addChild(assistantComponent);
-		}
-		// Note: tool calls and results are now handled via tool_execution_start/end events
-	}
-
 	renderInitialMessages(state: AgentState): void {
-		// Render all existing messages (for --continue mode)
-		// Reset first user message flag for initial render
-		this.isFirstUserMessage = true;
-
-		// Update footer with loaded state
 		this.footer.updateState(state);
-		this.toolComponents.clear();
-		this.pendingTools.clear();
-
-		// Render messages
-		for (let i = 0; i < state.messages.length; i++) {
-			const message = state.messages[i];
-
-			if (message.role === "user") {
-				const userMsg = message as any;
-				const textBlocks = userMsg.content.filter(
-					(c: any) => c.type === "text",
-				);
-				const textContent = textBlocks.map((c: any) => c.text).join("");
-				if (textContent) {
-					const userComponent = new UserMessageComponent(
-						textContent,
-						this.isFirstUserMessage,
-					);
-					this.chatContainer.addChild(userComponent);
-					this.isFirstUserMessage = false;
-				}
-			} else if (message.role === "assistant") {
-				const assistantMsg = message as AssistantMessage;
-				const assistantComponent = new AssistantMessageComponent(assistantMsg);
-				this.chatContainer.addChild(assistantComponent);
-
-				// Create tool execution components for any tool calls
-				for (const content of assistantMsg.content) {
-					if (content.type === "toolCall") {
-						const component = new ToolExecutionComponent(
-							content.name,
-							content.arguments,
-						);
-						this.chatContainer.addChild(component);
-						this.registerToolComponent(component);
-
-						// If message was aborted/errored, immediately mark tool as failed
-						if (
-							assistantMsg.stopReason === "aborted" ||
-							assistantMsg.stopReason === "error"
-						) {
-							const errorMessage =
-								assistantMsg.stopReason === "aborted"
-									? "Operation aborted"
-									: assistantMsg.errorMessage || "Error";
-							component.updateResult({
-								content: [{ type: "text", text: errorMessage }],
-								isError: true,
-							});
-						} else {
-							// Store in map so we can update with results later
-							this.pendingTools.set(content.id, component);
-						}
-					}
-				}
-			} else if (message.role === "toolResult") {
-				// Update existing tool execution component with results				;
-				const component = this.pendingTools.get(message.toolCallId);
-				if (component) {
-					component.updateResult({
-						content: message.content,
-						details: message.details,
-						isError: message.isError,
-					});
-					// Remove from pending map since it's complete
-					this.pendingTools.delete(message.toolCallId);
-				}
-			}
-		}
-		// Clear pending map (should already be empty, but keep tidy)
-		this.pendingTools.clear();
+		this.messageView.renderInitialMessages(state);
 		this.ui.requestRender();
 	}
 
