@@ -4,6 +4,7 @@ import {
 	highlightCodeLines,
 	highlightInlineCode,
 } from "../../style/code-highlighter.js";
+import { renderMermaidDiagram } from "../../tui/mermaid-renderer.js";
 import type { Component } from "../tui.js";
 import { visibleWidth } from "../utils.js";
 
@@ -219,6 +220,14 @@ export class Markdown implements Component {
 				break;
 			}
 			case "code": {
+				if (token.lang?.toLowerCase() === "mermaid") {
+					const diagram = renderMermaidDiagram(token.text, width);
+					if (diagram) {
+						lines.push(...diagram);
+						lines.push("");
+						break;
+					}
+				}
 				const highlighted = highlightCodeLines(token.text, token.lang);
 				const label = token.lang || "";
 				lines.push(chalk.gray(`\`\`\`${label}`));
