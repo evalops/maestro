@@ -1,95 +1,108 @@
 import { spawn } from "node:child_process";
-import { z } from "zod";
-import { createZodTool } from "./zod-tool.js";
+import { Type } from "@sinclair/typebox";
+import { createTypeboxTool } from "./typebox-tool.js";
 
-const pathSchema = z
-	.union([
-		z.string({ description: "Directory or file to search" }).min(1),
-		z
-			.array(
-				z
-					.string({ description: "Multiple directories or files to search" })
-					.min(1),
-			)
-			.min(1, "Provide at least one search path"),
-	])
-	.optional();
+const pathSchema = Type.Optional(
+	Type.Union([
+		Type.String({
+			description: "Directory or file to search",
+			minLength: 1,
+		}),
+		Type.Array(
+			Type.String({
+				description: "Multiple directories or files to search",
+				minLength: 1,
+			}),
+			{ minItems: 1 },
+		),
+	]),
+);
 
-const globSchema = z
-	.union([
-		z.string({ description: "Glob pattern passed to ripgrep" }).min(1),
-		z
-			.array(z.string({ description: "Multiple glob patterns" }).min(1))
-			.min(1, "Provide at least one glob"),
-	])
-	.optional();
+const globSchema = Type.Optional(
+	Type.Union([
+		Type.String({
+			description: "Glob pattern passed to ripgrep",
+			minLength: 1,
+		}),
+		Type.Array(
+			Type.String({
+				description: "Multiple glob patterns",
+				minLength: 1,
+			}),
+			{ minItems: 1 },
+		),
+	]),
+);
 
-const searchSchemaBase = z
-	.object({
-		pattern: z
-			.string({ description: "Regex pattern (or literal when literal=true)" })
-			.min(1, "Search pattern must not be empty"),
+const searchSchema = Type.Intersect([
+	Type.Object({
+		pattern: Type.String({
+			description: "Regex pattern (or literal when literal=true)",
+			minLength: 1,
+		}),
 		paths: pathSchema,
 		glob: globSchema,
-		ignoreCase: z
-			.boolean({ description: "Perform case-insensitive search (-i)." })
-			.optional()
-			.default(false),
-		literal: z
-			.boolean({
-				description: "Treat the pattern as a literal string (--fixed-strings).",
-			})
-			.optional()
-			.default(false),
-		word: z
-			.boolean({ description: "Match only whole words (-w)." })
-			.optional()
-			.default(false),
-		multiline: z
-			.boolean({ description: "Enable multiline matching (--multiline)." })
-			.optional()
-			.default(false),
-		maxResults: z
-			.number({ description: "Stop after this many matches (-m)." })
-			.int()
-			.min(1)
-			.max(1000)
-			.optional(),
-		context: z
-			.number({
-				description: "Show this many lines of context before and after (-C).",
-			})
-			.int()
-			.min(0)
-			.max(20)
-			.optional(),
-		beforeContext: z
-			.number({
-				description: "Show this many lines of context before each match (-B).",
-			})
-			.int()
-			.min(0)
-			.max(20)
-			.optional(),
-		afterContext: z
-			.number({
-				description: "Show this many lines of context after each match (-A).",
-			})
-			.int()
-			.min(0)
-			.max(20)
-			.optional(),
-	})
-	.strict();
-
-const searchSchema = searchSchemaBase.refine(
-	(data) =>
-		!(
-			data.context !== undefined &&
-			(data.beforeContext !== undefined || data.afterContext !== undefined)
+		ignoreCase: Type.Optional(
+			Type.Boolean({
+				description: "Perform case-insensitive search (-i).",
+				default: false,
+			}),
 		),
-	"Use either context or before/after context options, not both.",
-);
+		literal: Type.Optional(
+			Type.Boolean({
+				description: "Treat the pattern as a literal string (--fixed-strings).",
+				default: false,
+			}),
+		),
+		word: Type.Optional(
+			Type.Boolean({
+				description: "Match only whole words (-w).",
+				default: false,
+			}),
+		),
+		multiline: Type.Optional(
+			Type.Boolean({
+				description: "Enable multiline matching (--multiline).",
+				default: false,
+			}),
+		),
+		maxResults: Type.Optional(
+			Type.Integer({
+				description: "Stop after this many matches (-m).",
+				minimum: 1,
+				maximum: 1000,
+			}),
+		),
+		context: Type.Optional(
+			Type.Integer({
+				description: "Show this many lines of context before and after (-C).",
+				minimum: 0,
+				maximum: 20,
+			}),
+		),
+		beforeContext: Type.Optional(
+			Type.Integer({
+				description: "Show this many lines of context before each match (-B).",
+				minimum: 0,
+				maximum: 20,
+			}),
+		),
+		afterContext: Type.Optional(
+			Type.Integer({
+				description: "Show this many lines of context after each match (-A).",
+				minimum: 0,
+				maximum: 20,
+			}),
+		),
+	}),
+	Type.Object(
+		{},
+		{
+			description:
+				"Use either context or before/after context options, not both.",
+		},
+	),
+]);
 
 function toArray<T>(value: T | T[] | undefined): T[] {
 	if (value === undefined) {
@@ -136,7 +149,7 @@ async function runRipgrep(
 	});
 }
 
-export const searchTool = createZodTool({
+export const searchTool = createTypeboxTool({
 	name: "search",
 	label: "search",
 	description:
@@ -156,6 +169,15 @@ export const searchTool = createZodTool({
 			beforeContext,
 			afterContext,
 		} = params;
+
+		if (
+			context !== undefined &&
+			(beforeContext !== undefined || afterContext !== undefined)
+		) {
+			throw new Error(
+				"Use either context or before/after context options, not both.",
+			);
+		}
 
 		const pathArgs = toArray(paths);
 		const globArgs = toArray(glob);

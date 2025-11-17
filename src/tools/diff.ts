@@ -1,70 +1,73 @@
 import { spawn } from "node:child_process";
-import { z } from "zod";
-import { createZodTool } from "./zod-tool.js";
+import { Type } from "@sinclair/typebox";
+import { createTypeboxTool } from "./typebox-tool.js";
 
-const pathInputSchema = z
-	.union([
-		z.string({ description: "Limit diff to a specific path" }).min(1),
-		z
-			.array(
-				z
-					.string({ description: "Multiple paths to include in the diff" })
-					.min(1),
-			)
-			.min(1, "Provide at least one path"),
-	])
-	.optional();
-
-const diffSchemaBase = z
-	.object({
-		staged: z
-			.boolean({
-				description:
-					"Show staged (index) changes instead of working tree modifications.",
-			})
-			.optional()
-			.default(false),
-		range: z
-			.string({
-				description:
-					"Git revision or range (for example HEAD~1..HEAD). Overrides staged/worktree scope.",
-			})
-			.min(1)
-			.optional(),
-		context: z
-			.number({ description: "Number of context lines to include (git -U)." })
-			.int()
-			.min(0)
-			.max(1000)
-			.optional(),
-		stat: z
-			.boolean({
-				description: "Include a summary (--stat) alongside the patch.",
-			})
-			.optional()
-			.default(false),
-		wordDiff: z
-			.boolean({
-				description: "Highlight changes at the word level (--word-diff=color).",
-			})
-			.optional()
-			.default(false),
-		nameOnly: z
-			.boolean({
-				description: "List only filenames that changed (--name-only).",
-			})
-			.optional()
-			.default(false),
-		paths: pathInputSchema,
-	})
-	.strict();
-
-const diffSchema = diffSchemaBase.refine(
-	(data) => !(data.nameOnly && data.wordDiff),
-	"Cannot request both name-only and word-diff output.",
+const pathInputSchema = Type.Optional(
+	Type.Union([
+		Type.String({
+			description: "Limit diff to a specific path",
+			minLength: 1,
+		}),
+		Type.Array(
+			Type.String({
+				description: "Multiple paths to include in the diff",
+				minLength: 1,
+			}),
+			{ minItems: 1 },
+		),
+	]),
 );
 
-function normalizePaths(paths: z.infer<typeof pathInputSchema>): string[] {
+const diffSchema = Type.Intersect([
+	Type.Object({
+		staged: Type.Optional(
+			Type.Boolean({
+				description:
+					"Show staged (index) changes instead of working tree modifications.",
+				default: false,
+			}),
+		),
+		range: Type.Optional(
+			Type.String({
+				description:
+					"Git revision or range (for example HEAD~1..HEAD). Overrides staged/worktree scope.",
+				minLength: 1,
+			}),
+		),
+		context: Type.Optional(
+			Type.Integer({
+				description: "Number of context lines to include (git -U).",
+				minimum: 0,
+				maximum: 1000,
+			}),
+		),
+		stat: Type.Optional(
+			Type.Boolean({
+				description: "Include a summary (--stat) alongside the patch.",
+				default: false,
+			}),
+		),
+		wordDiff: Type.Optional(
+			Type.Boolean({
+				description: "Highlight changes at the word level (--word-diff=color).",
+				default: false,
+			}),
+		),
+		nameOnly: Type.Optional(
+			Type.Boolean({
+				description: "List only filenames that changed (--name-only).",
+				default: false,
+			}),
+		),
+		paths: pathInputSchema,
+	}),
+	Type.Object(
+		{},
+		{ description: "Cannot request both name-only and word-diff output." },
+	),
+]);
+
+function normalizePaths(paths: string | string[] | undefined): string[] {
 	if (paths === undefined) {
 		return [];
 	}
@@ -109,7 +112,7 @@ async function runGitDiff(
 	});
 }
 
-export const diffTool = createZodTool({
+export const diffTool = createTypeboxTool({
 	name: "diff",
 	label: "diff",
 	description:
@@ -117,6 +120,10 @@ export const diffTool = createZodTool({
 	schema: diffSchema,
 	async execute(_toolCallId, params, signal) {
 		const { staged, range, context, stat, wordDiff, nameOnly, paths } = params;
+
+		if (wordDiff && nameOnly) {
+			throw new Error("Cannot request both name-only and word-diff output.");
+		}
 
 		const pathArgs = normalizePaths(paths);
 		const args = ["diff"];

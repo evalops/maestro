@@ -2,10 +2,9 @@ import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import * as os from "node:os";
 import { extname, resolve as resolvePath } from "node:path";
-import { z } from "zod";
+import { Type } from "@sinclair/typebox";
 import type { ImageContent, TextContent } from "../agent/types.js";
-import { zPathParameter } from "./schema-helpers.js";
-import { createZodTool } from "./zod-tool.js";
+import { createTypeboxTool } from "./typebox-tool.js";
 
 /**
  * Expand ~ to home directory
@@ -39,26 +38,29 @@ function isImageFile(filePath: string): string | null {
 	return IMAGE_MIME_TYPES[ext] || null;
 }
 
-const readSchema = z
-	.object({
-		path: zPathParameter("Path to the file to read (relative or absolute)"),
-		offset: z
-			.number({ description: "Line number to start reading from (1-indexed)" })
-			.int()
-			.min(1)
-			.optional(),
-		limit: z
-			.number({ description: "Maximum number of lines to read" })
-			.int()
-			.min(1)
-			.optional(),
-	})
-	.strict();
+const readSchema = Type.Object({
+	path: Type.String({
+		description: "Path to the file to read (relative or absolute)",
+		minLength: 1,
+	}),
+	offset: Type.Optional(
+		Type.Integer({
+			description: "Line number to start reading from (1-indexed)",
+			minimum: 1,
+		}),
+	),
+	limit: Type.Optional(
+		Type.Integer({
+			description: "Maximum number of lines to read",
+			minimum: 1,
+		}),
+	),
+});
 
 const MAX_LINES = 2000;
 const MAX_LINE_LENGTH = 2000;
 
-export const readTool = createZodTool({
+export const readTool = createTypeboxTool({
 	name: "read",
 	label: "read",
 	description:

@@ -1,22 +1,21 @@
 import { spawn } from "node:child_process";
-import { z } from "zod";
-import { createZodTool } from "./zod-tool.js";
+import { Type } from "@sinclair/typebox";
+import { createTypeboxTool } from "./typebox-tool.js";
 
-const bashSchema = z
-	.object({
-		command: z
-			.string({ description: "Bash command to execute" })
-			.min(1, "Command must not be empty"),
-		timeout: z
-			.number({
-				description: "Timeout in seconds (optional, no default timeout)",
-			})
-			.positive()
-			.optional(),
-	})
-	.strict();
+const bashSchema = Type.Object({
+	command: Type.String({
+		description: "Bash command to execute",
+		minLength: 1,
+	}),
+	timeout: Type.Optional(
+		Type.Number({
+			description: "Timeout in seconds (optional, no default timeout)",
+			exclusiveMinimum: 0,
+		}),
+	),
+});
 
-export const bashTool = createZodTool({
+export const bashTool = createTypeboxTool({
 	name: "bash",
 	label: "bash",
 	description:

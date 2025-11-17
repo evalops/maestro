@@ -41,6 +41,7 @@
   },
   "dependencies": {
     "@sinclair/typebox": "^0.33.0",
+    "ajv": "^8.17.1",
     "chalk": "^5.5.0",
     "clipboardy": "^4.0.0",
     "diff": "^8.0.2",

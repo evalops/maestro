@@ -218,7 +218,7 @@ function delay(ms: number): Promise<void> {
 	});
 }
 
-function isTransientToolError(error: unknown): boolean {
+export function isTransientToolError(error: unknown): boolean {
 	if (!error) return true;
 	if (error instanceof Error) {
 		if (error.name === "AbortError") {

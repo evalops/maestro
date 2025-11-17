@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import { resolve as resolvePath } from "node:path";
-import { z } from "zod";
+import { Type } from "@sinclair/typebox";
 import { collectDiagnostics } from "../lsp/index.js";
 import {
 	requirePlanCheck,
@@ -10,7 +10,7 @@ import {
 } from "../safety/safe-mode.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import { generateDiffString } from "./diff-utils.js";
-import { createZodTool } from "./zod-tool.js";
+import { createTypeboxTool } from "./typebox-tool.js";
 
 /**
  * Expand ~ to home directory
@@ -27,27 +27,22 @@ function expandPath(filePath: string): string {
 
 /** Diff support lives in diff-utils for reuse */
 
-const editSchema = z
-	.object({
-		path: z
-			.string({
-				description: "Path to the file to edit (relative or absolute)",
-			})
-			.min(1, "Path must not be empty"),
-		oldText: z
-			.string({
-				description: "Exact text to find and replace (must match exactly)",
-			})
-			.min(1, "oldText must not be empty"),
-		newText: z
-			.string({
-				description: "New text to replace the old text with",
-			})
-			.default(""),
-	})
-	.strict();
+const editSchema = Type.Object({
+	path: Type.String({
+		description: "Path to the file to edit (relative or absolute)",
+		minLength: 1,
+	}),
+	oldText: Type.String({
+		description: "Exact text to find and replace (must match exactly)",
+		minLength: 1,
+	}),
+	newText: Type.String({
+		description: "New text to replace the old text with",
+		default: "",
+	}),
+});
 
-export const editTool = createZodTool({
+export const editTool = createTypeboxTool({
 	name: "edit",
 	label: "edit",
 	description:

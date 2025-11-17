@@ -1,14 +1,8 @@
 import { resolve as resolvePath } from "node:path";
+import { Type } from "@sinclair/typebox";
 import { glob } from "glob";
-import { z } from "zod";
 import type { TextContent } from "../agent/types.js";
-import {
-	zLimitParameter,
-	zOptionalBooleanFlag,
-	zOptionalPathParameter,
-	zPatternParameter,
-} from "./schema-helpers.js";
-import { createZodTool } from "./zod-tool.js";
+import { createTypeboxTool } from "./typebox-tool.js";
 
 function expandPath(path: string): string {
 	if (path === "~") {
@@ -23,25 +17,36 @@ function expandPath(path: string): string {
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 500;
 
-const listSchema = z
-	.object({
-		path: zOptionalPathParameter(
-			"Directory to list (relative or absolute). Defaults to current directory.",
-		),
-		pattern: zPatternParameter(
-			"Glob pattern relative to the directory. Defaults to *",
-		).optional(),
-		limit: zLimitParameter(
-			MAX_LIMIT,
-			"Maximum number of entries to return (1-500). Defaults to 200.",
-		).optional(),
-		includeHidden: zOptionalBooleanFlag(
-			"Whether to include dotfiles (hidden files)",
-		),
-	})
-	.strict();
+const listSchema = Type.Object({
+	path: Type.Optional(
+		Type.String({
+			description:
+				"Directory to list (relative or absolute). Defaults to current directory.",
+			minLength: 1,
+		}),
+	),
+	pattern: Type.Optional(
+		Type.String({
+			description: "Glob pattern relative to the directory. Defaults to *",
+			minLength: 1,
+		}),
+	),
+	limit: Type.Optional(
+		Type.Integer({
+			description:
+				"Maximum number of entries to return (1-500). Defaults to 200.",
+			minimum: 1,
+			maximum: MAX_LIMIT,
+		}),
+	),
+	includeHidden: Type.Optional(
+		Type.Boolean({
+			description: "Whether to include dotfiles (hidden files)",
+		}),
+	),
+});
 
-export const listTool = createZodTool({
+export const listTool = createTypeboxTool({
 	name: "list",
 	label: "list",
 	description:

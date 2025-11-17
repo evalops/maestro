@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { z } from "zod";
+import { Type } from "@sinclair/typebox";
+import type { Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import { setPlanSatisfied } from "../safety/safe-mode.js";
-import { createZodTool } from "./zod-tool.js";
+import { createTypeboxTool } from "./typebox-tool.js";
 
 const sectionDivider = "─".repeat(40);
 
@@ -28,158 +30,143 @@ const priorityLabels = {
 	low: "Low",
 } as const;
 
-const todoItemSchema = z
-	.object({
-		id: z
-			.string({ description: "Stable identifier for the task" })
-			.min(1, "ID must not be empty")
-			.optional(),
-		content: z
-			.string({ description: "Human readable description of the task" })
-			.min(1, "Task description must not be empty"),
-		status: z
-			.enum(["pending", "in_progress", "completed"], {
-				description: "Current progress state of the task",
-			})
-			.optional()
-			.default("pending"),
-		priority: z
-			.enum(["high", "medium", "low"], {
+const todoItemSchema = Type.Object({
+	id: Type.Optional(
+		Type.String({
+			description: "Stable identifier for the task",
+			minLength: 1,
+		}),
+	),
+	content: Type.String({
+		description: "Human readable description of the task",
+		minLength: 1,
+	}),
+	status: Type.Optional(
+		Type.Union(
+			[
+				Type.Literal("pending"),
+				Type.Literal("in_progress"),
+				Type.Literal("completed"),
+			],
+			{ description: "Current progress state of the task", default: "pending" },
+		),
+	),
+	priority: Type.Optional(
+		Type.Union(
+			[Type.Literal("high"), Type.Literal("medium"), Type.Literal("low")],
+			{
 				description: "Relative urgency of the task",
-			})
-			.optional()
-			.default("medium"),
-		notes: z
-			.string({ description: "Additional context or reminders" })
-			.min(1, "Notes must not be empty")
-			.optional(),
-		due: z
-			.string({ description: "Due date or target milestone" })
-			.min(1, "Due date must not be empty")
-			.optional(),
-		blockedBy: z
-			.array(
-				z
-					.string({ description: "Task or dependency blocking progress" })
-					.min(1, "Blocker description must not be empty"),
-			)
-			.optional(),
-	})
-	.strict();
+				default: "medium",
+			},
+		),
+	),
+	notes: Type.Optional(
+		Type.String({
+			description: "Additional context or reminders",
+			minLength: 1,
+		}),
+	),
+	due: Type.Optional(
+		Type.String({ description: "Due date or target milestone", minLength: 1 }),
+	),
+	blockedBy: Type.Optional(
+		Type.Array(
+			Type.String({
+				description: "Task or dependency blocking progress",
+				minLength: 1,
+			}),
+		),
+	),
+});
 
-const itemsInputSchema = z
-	.union([
-		z.array(todoItemSchema).nonempty("Provide at least one task"),
-		z
-			.string({
-				description: "JSON stringified array of TodoWrite-style task objects",
-			})
-			.min(2, "Items string must not be empty"),
-	])
-	.transform((value, ctx) => {
-		if (typeof value === "string") {
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(value);
-			} catch (_error) {
-				ctx.addIssue({
-					code: z.ZodIssueCode.custom,
-					message: "items string must be valid JSON",
-				});
-				return z.NEVER;
-			}
-			if (!Array.isArray(parsed)) {
-				ctx.addIssue({
-					code: z.ZodIssueCode.custom,
-					message: "items JSON must be an array",
-				});
-				return z.NEVER;
-			}
-			if (parsed.length === 0) {
-				ctx.addIssue({
-					code: z.ZodIssueCode.custom,
-					message: "Provide at least one task",
-				});
-				return z.NEVER;
-			}
-			const validated: Array<z.infer<typeof todoItemSchema>> = [];
-			for (const [index, item] of parsed.entries()) {
-				const result = todoItemSchema.safeParse(item);
-				if (!result.success) {
-					ctx.addIssue({
-						code: z.ZodIssueCode.custom,
-						path: [index],
-						message: result.error.issues
-							.map((issue) => issue.message)
-							.join(", "),
-					});
-					return z.NEVER;
-				}
-				validated.push(result.data);
-			}
-			return validated;
+const itemsInputSchema = Type.Union([
+	Type.Array(todoItemSchema, { minItems: 1 }),
+	Type.String({
+		description: "JSON stringified array of TodoWrite-style task objects",
+		minLength: 2,
+	}),
+]);
+
+const updateSchema = Type.Object({
+	id: Type.String({
+		description: "Identifier of the task to update",
+		minLength: 1,
+	}),
+	status: Type.Optional(
+		Type.Union([
+			Type.Literal("pending"),
+			Type.Literal("in_progress"),
+			Type.Literal("completed"),
+		]),
+	),
+	priority: Type.Optional(
+		Type.Union([
+			Type.Literal("high"),
+			Type.Literal("medium"),
+			Type.Literal("low"),
+		]),
+	),
+	notes: Type.Optional(
+		Type.String({ description: "Replace notes associated with the task" }),
+	),
+	due: Type.Optional(
+		Type.String({ description: "Replace due date or milestone" }),
+	),
+	blockedBy: Type.Optional(
+		Type.Array(
+			Type.String({ description: "Replace blockers list", minLength: 1 }),
+		),
+	),
+	content: Type.Optional(
+		Type.String({ description: "Replace the task description" }),
+	),
+	remove: Type.Optional(
+		Type.Boolean({ description: "Remove the task entirely" }),
+	),
+});
+
+const todoSchema = Type.Object({
+	goal: Type.String({
+		description: "Overall objective for this checklist",
+		minLength: 1,
+	}),
+	items: Type.Optional(itemsInputSchema),
+	updates: Type.Optional(
+		Type.Array(updateSchema, {
+			description:
+				"Updates to apply to existing tasks (identified by their id)",
+			minItems: 1,
+		}),
+	),
+	includeSummary: Type.Optional(
+		Type.Boolean({
+			description: "Include status summary section",
+			default: true,
+		}),
+	),
+});
+
+const parseItemsInput = (
+	input: Static<typeof itemsInputSchema>,
+): Array<Static<typeof todoItemSchema>> => {
+	if (typeof input === "string") {
+		const parsed = JSON.parse(input);
+		if (!Array.isArray(parsed)) {
+			throw new Error("items JSON must be an array");
 		}
-
-		return value;
-	});
-
-const updateSchema = z
-	.object({
-		id: z
-			.string({ description: "Identifier of the task to update" })
-			.min(1, "Update must reference a task id"),
-		status: z
-			.enum(["pending", "in_progress", "completed"], {
-				description: "New status for the task",
-			})
-			.optional(),
-		priority: z
-			.enum(["high", "medium", "low"], {
-				description: "New priority for the task",
-			})
-			.optional(),
-		notes: z
-			.string({ description: "Replace notes associated with the task" })
-			.optional(),
-		due: z.string({ description: "Replace due date or milestone" }).optional(),
-		blockedBy: z
-			.array(
-				z
-					.string({ description: "Replace blockers list" })
-					.min(1, "Blocker description must not be empty"),
-			)
-			.optional(),
-		content: z
-			.string({ description: "Replace the task description" })
-			.optional(),
-		remove: z.boolean({ description: "Remove the task entirely" }).optional(),
-	})
-	.strict();
-
-const todoSchemaBase = z
-	.object({
-		goal: z
-			.string({ description: "Overall objective for this checklist" })
-			.min(1, "Goal must not be empty"),
-		items: itemsInputSchema.optional(),
-		updates: z
-			.array(updateSchema, {
-				description:
-					"Updates to apply to existing tasks (identified by their id)",
-			})
-			.nonempty()
-			.optional(),
-		includeSummary: z
-			.boolean({ description: "Include status summary section" })
-			.optional()
-			.default(true),
-	})
-	.strict();
-
-const todoSchema = todoSchemaBase.refine(
-	(data) => data.items !== undefined || data.updates !== undefined,
-	"Provide items to create a checklist or updates to modify an existing one",
-);
+		if (parsed.length === 0) {
+			throw new Error("Provide at least one task");
+		}
+		return parsed.map((item, index) => {
+			// Basic validation: ensure required fields exist before trusting Value.Cast
+			if (!item || typeof item !== "object") {
+				throw new Error(`Invalid task at index ${index}`);
+			}
+			return Value.Cast(todoItemSchema, item);
+		});
+	}
+	return input;
+};
 
 const formatPriority = (priority: string | undefined) => {
 	if (!priority) {
@@ -190,12 +177,12 @@ const formatPriority = (priority: string | undefined) => {
 
 type NormalizedTodo = {
 	id: string;
-	content: z.infer<typeof todoItemSchema>["content"];
-	status: z.infer<typeof todoItemSchema>["status"];
-	priority: z.infer<typeof todoItemSchema>["priority"];
-	notes?: z.infer<typeof todoItemSchema>["notes"];
-	due?: z.infer<typeof todoItemSchema>["due"];
-	blockedBy?: z.infer<typeof todoItemSchema>["blockedBy"];
+	content: string;
+	status: "pending" | "in_progress" | "completed";
+	priority: "high" | "medium" | "low";
+	notes?: string;
+	due?: string;
+	blockedBy?: string[];
 };
 
 type TodoStore = Record<
@@ -233,7 +220,7 @@ async function saveStore(store: TodoStore): Promise<void> {
 }
 
 function normalizeItems(
-	items: Array<z.infer<typeof todoItemSchema>>,
+	items: Array<Static<typeof todoItemSchema>>,
 ): NormalizedTodo[] {
 	return items.map((item) => ({
 		id: item.id ?? randomUUID(),
@@ -248,7 +235,7 @@ function normalizeItems(
 
 function applyUpdates(
 	items: NormalizedTodo[],
-	updates: Array<z.infer<typeof updateSchema>>,
+	updates: Array<Static<typeof updateSchema>>,
 ): NormalizedTodo[] {
 	const indexById = new Map(
 		items.map((item, index) => [item.id, index] as const),
@@ -347,7 +334,7 @@ function formatTodoEntry(item: NormalizedTodo, index: number): string {
 	return `${header}\n${metaLines.join("\n")}`;
 }
 
-export const todoTool = createZodTool({
+export const todoTool = createTypeboxTool({
 	name: "todo",
 	label: "todo",
 	description:
@@ -363,7 +350,21 @@ export const todoTool = createZodTool({
 			updatedAt: new Date(0).toISOString(),
 		};
 
-		let workingItems = items ? normalizeItems(items) : [...existing.items];
+		let workingItems: NormalizedTodo[];
+		if (items) {
+			try {
+				const parsedItems = parseItemsInput(items);
+				workingItems = normalizeItems(parsedItems);
+			} catch (error) {
+				const message =
+					error instanceof Error
+						? error.message
+						: String(error ?? "invalid items");
+				throw new Error(`Invalid todo items: ${message}`);
+			}
+		} else {
+			workingItems = [...existing.items];
+		}
 
 		if (!items && workingItems.length === 0) {
 			throw new Error(

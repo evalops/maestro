@@ -3,6 +3,14 @@
 The agent and CLI expose a consistent set of tools. Use this sheet when adding
 new tools or debugging existing ones.
 
+## Parameter Validation
+
+Every tool declares a TypeBox schema, so arguments coming from the LLM (or
+slash commands) are validated before execution. Defaults (e.g., `write.backup`,
+`read.limit`) are applied automatically, and invalid combinations (such as
+`search.context` alongside `beforeContext`/`afterContext`) are rejected with a
+clear error message in chat.
+
 ## Built-in Tools
 
 | Tool | Description | Key Options / Notes |

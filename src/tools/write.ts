@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import * as os from "node:os";
 import { dirname, resolve as resolvePath } from "node:path";
-import { z } from "zod";
+import { Type } from "@sinclair/typebox";
 import { collectDiagnostics } from "../lsp/index.js";
 import {
 	requirePlanCheck,
@@ -17,8 +17,7 @@ import {
 } from "../safety/safe-mode.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import { generateDiffString } from "./diff-utils.js";
-import { zPathParameter } from "./schema-helpers.js";
-import { createZodTool } from "./zod-tool.js";
+import { createTypeboxTool } from "./typebox-tool.js";
 /**
  * Expand ~ to home directory
  */
@@ -32,28 +31,28 @@ function expandPath(filePath: string): string {
 	return filePath;
 }
 
-const writeSchema = z
-	.object({
-		path: zPathParameter("Path to the file to write (relative or absolute)"),
-		content: z
-			.string({ description: "Content to write to the file" })
-			.default(""),
-		previewDiff: z
-			.boolean({
-				description:
-					"If true, return the diff between previous content and new content (when file exists)",
-			})
-			.default(true),
-		backup: z
-			.boolean({
-				description:
-					"If true, writes a .bak copy alongside the file before overwriting",
-			})
-			.default(true),
-	})
-	.strict();
+const writeSchema = Type.Object({
+	path: Type.String({
+		description: "Path to the file to write (relative or absolute)",
+		minLength: 1,
+	}),
+	content: Type.String({
+		description: "Content to write to the file",
+		default: "",
+	}),
+	previewDiff: Type.Boolean({
+		description:
+			"If true, return the diff between previous content and new content (when file exists)",
+		default: true,
+	}),
+	backup: Type.Boolean({
+		description:
+			"If true, writes a .bak copy alongside the file before overwriting",
+		default: true,
+	}),
+});
 
-export const writeTool = createZodTool({
+export const writeTool = createTypeboxTool({
 	name: "write",
 	label: "write",
 	description:
