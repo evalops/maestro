@@ -1,26 +1,7 @@
 import { Type } from "@sinclair/typebox";
-import { callExa } from "./exa-client.js";
+import { buildContentsOptions, callExa } from "./exa-client.js";
+import type { ExaSearchResponse } from "./exa-types.js";
 import { createTypeboxTool } from "./typebox-tool.js";
-
-interface ExaSearchResult {
-	title: string;
-	url: string;
-	publishedDate?: string;
-	author?: string;
-	text?: string;
-	summary?: string;
-	highlights?: string[];
-}
-
-interface ExaSearchResponse {
-	requestId: string;
-	results: ExaSearchResult[];
-	resolvedSearchType?: string;
-	context?: string;
-	costDollars?: {
-		total: number;
-	};
-}
 
 const websearchSchema = Type.Object({
 	query: Type.String({
@@ -139,19 +120,18 @@ export const websearchTool = createTypeboxTool({
 			requestBody.endPublishedDate = params.endPublishedDate;
 
 		// Configure contents retrieval
-		const shouldGetText = params.text ?? true;
-		const shouldGetSummary = params.summary ?? false;
-		const shouldGetContext = params.context ?? true;
-
-		if (shouldGetText || shouldGetSummary || shouldGetContext) {
-			requestBody.contents = {
-				text: shouldGetText,
-				summary: shouldGetSummary,
-				context: shouldGetContext,
-			};
+		const contents = buildContentsOptions(
+			{ text: params.text, summary: params.summary, context: params.context },
+			{ text: true, summary: false, context: true },
+		);
+		if (contents) {
+			requestBody.contents = contents;
 		}
 
-		const data = await callExa<ExaSearchResponse>("/search", requestBody);
+		const data = await callExa<ExaSearchResponse>("/search", requestBody, {
+			toolName: "websearch",
+			operation: "search",
+		});
 
 		// Format results
 		const outputLines: string[] = [];
@@ -160,9 +140,10 @@ export const websearchTool = createTypeboxTool({
 			`Search type: ${data.resolvedSearchType || params.type || "auto"}`,
 		);
 		outputLines.push(`Found ${data.results.length} results`);
-		if (data.costDollars) {
+		const totalCost = data.costDollars?.total;
+		if (typeof totalCost === "number") {
 			outputLines.push(
-				`Cost: $${data.costDollars.total.toFixed(4)} (charged to Exa account)`,
+				`Cost: $${totalCost.toFixed(4)} (charged to Exa account)`,
 			);
 		}
 		outputLines.push("");
@@ -219,7 +200,7 @@ export const websearchTool = createTypeboxTool({
 				requestId: data.requestId,
 				resolvedSearchType: data.resolvedSearchType,
 				resultsCount: data.results.length,
-				costDollars: data.costDollars?.total,
+				costDollars: totalCost,
 				context: data.context,
 				results: data.results,
 			},

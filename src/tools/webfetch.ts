@@ -1,27 +1,7 @@
 import { Type } from "@sinclair/typebox";
-import { callExa } from "./exa-client.js";
+import { buildContentsOptions, callExa } from "./exa-client.js";
+import type { ExaContentsResponse } from "./exa-types.js";
 import { createTypeboxTool } from "./typebox-tool.js";
-
-interface ExaContentsResult {
-	id: string;
-	url: string;
-	title?: string;
-	text?: string;
-	summary?: string;
-	highlights?: string[];
-}
-
-interface ExaContentsResponse {
-	results: ExaContentsResult[];
-	statuses?: Array<{
-		id: string;
-		status: "success" | "error";
-		error?: {
-			tag: string;
-			httpStatusCode: number;
-		};
-	}>;
-}
 
 const webfetchSchema = Type.Object({
 	urls: Type.Union(
@@ -70,16 +50,24 @@ export const webfetchTool = createTypeboxTool({
 		// Normalize URLs to array
 		const urls = Array.isArray(params.urls) ? params.urls : [params.urls];
 
-		const requestBody: Record<string, unknown> = {
-			ids: urls,
-			contents: {
-				text: params.text ?? true,
-				summary: params.summary ?? false,
-				highlights: params.highlights ?? false,
+		const contents = buildContentsOptions(
+			{
+				text: params.text,
+				summary: params.summary,
+				highlights: params.highlights,
 			},
-		};
+			{ text: true, summary: false, highlights: false },
+		);
 
-		const data = await callExa<ExaContentsResponse>("/contents", requestBody);
+		const requestBody: Record<string, unknown> = { ids: urls };
+		if (contents) {
+			requestBody.contents = contents;
+		}
+
+		const data = await callExa<ExaContentsResponse>("/contents", requestBody, {
+			toolName: "webfetch",
+			operation: "contents",
+		});
 
 		// Check for errors
 		const errors: string[] = [];

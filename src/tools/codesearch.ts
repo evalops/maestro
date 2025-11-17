@@ -1,16 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import { callExa } from "./exa-client.js";
+import type { ExaContextResponse } from "./exa-types.js";
 import { createTypeboxTool } from "./typebox-tool.js";
-
-interface ExaContextResponse {
-	requestId: string;
-	query: string;
-	response: string;
-	resultsCount: number;
-	costDollars: string;
-	searchTime: number;
-	outputTokens: number;
-}
 
 const codesearchSchema = Type.Object({
 	query: Type.String({
@@ -49,7 +40,10 @@ export const codesearchTool = createTypeboxTool({
 			tokensNum: params.tokensNum ?? "dynamic",
 		};
 
-		const data = await callExa<ExaContextResponse>("/context", requestBody);
+		const data = await callExa<ExaContextResponse>("/context", requestBody, {
+			toolName: "codesearch",
+			operation: "context",
+		});
 
 		// Parse cost (returned as JSON string)
 		let costTotal = 0;

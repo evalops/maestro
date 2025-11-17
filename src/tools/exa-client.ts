@@ -1,11 +1,66 @@
 const EXA_API_BASE = "https://api.exa.ai";
+const RETRYABLE_STATUS_CODES = new Set([408, 425, 429]);
+const RETRYABLE_ERROR_SUBSTRINGS = [
+	"ECONNRESET",
+	"ENOTFOUND",
+	"ETIMEDOUT",
+	"fetch failed",
+];
 
 interface ExaErrorResponse {
 	error?: {
 		message?: string;
 		type?: string;
+		status?: number;
 	};
 	message?: string;
+	requestId?: string;
+	costDollars?: number | string | { total?: number };
+}
+
+export interface ExaTelemetryEvent {
+	toolName?: string;
+	operation?: string;
+	endpoint: string;
+	attempt: number;
+	durationMs: number;
+	status?: number;
+	success: boolean;
+	requestId?: string;
+	costDollars?: number;
+	errorMessage?: string;
+}
+
+export interface CallExaOptions {
+	toolName?: string;
+	operation?: string;
+	retries?: number;
+	retryDelayMs?: number;
+	onTelemetry?: (event: ExaTelemetryEvent) => void;
+}
+
+export class ExaApiError extends Error {
+	readonly status?: number;
+	readonly endpoint: string;
+	readonly body?: string;
+	readonly parsedError?: ExaErrorResponse;
+
+	constructor(
+		message: string,
+		options: {
+			endpoint: string;
+			status?: number;
+			body?: string;
+			parsedError?: ExaErrorResponse;
+		},
+	) {
+		super(message);
+		this.name = "ExaApiError";
+		this.status = options.status;
+		this.endpoint = options.endpoint;
+		this.body = options.body;
+		this.parsedError = options.parsedError;
+	}
 }
 
 function getExaApiKey(): string {
@@ -18,45 +73,216 @@ function getExaApiKey(): string {
 	return apiKey;
 }
 
-function parseErrorMessage(rawBody: string): string | undefined {
+function parseErrorResponse(rawBody?: string): ExaErrorResponse | undefined {
 	if (!rawBody) return undefined;
 	try {
-		const parsed = JSON.parse(rawBody) as ExaErrorResponse;
-		return parsed.error?.message ?? parsed.message ?? rawBody;
+		return JSON.parse(rawBody) as ExaErrorResponse;
 	} catch {
-		return rawBody;
+		return undefined;
 	}
 }
 
-export async function callExa<T>(endpoint: string, body: unknown): Promise<T> {
-	const apiKey = getExaApiKey();
-	const response = await fetch(`${EXA_API_BASE}${endpoint}`, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			"x-api-key": apiKey,
-		},
-		body: JSON.stringify(body),
+function deriveErrorMessage(
+	parsed: ExaErrorResponse | undefined,
+	fallback: string,
+	rawBody?: string,
+): string {
+	return parsed?.error?.message ?? parsed?.message ?? rawBody ?? fallback;
+}
+
+function isRetryableStatus(status?: number): boolean {
+	if (typeof status !== "number") return false;
+	if (status >= 500 && status < 600) {
+		return true;
+	}
+	return RETRYABLE_STATUS_CODES.has(status);
+}
+
+function isRetryableNetworkError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	return (
+		RETRYABLE_ERROR_SUBSTRINGS.some((substring) =>
+			error.message.toLowerCase().includes(substring),
+		) || error.name === "AbortError"
+	);
+}
+
+function extractCostDollars(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) {
+		return value;
+	}
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (!trimmed) return undefined;
+		try {
+			const parsed = JSON.parse(trimmed) as { total?: number } | number;
+			if (typeof parsed === "number") {
+				return Number.isFinite(parsed) ? parsed : undefined;
+			}
+			const total = parsed?.total;
+			return typeof total === "number" ? total : undefined;
+		} catch {
+			const numeric = Number(trimmed);
+			return Number.isFinite(numeric) ? numeric : undefined;
+		}
+	}
+	if (typeof value === "object" && value !== null) {
+		const total = (value as { total?: number }).total;
+		return typeof total === "number" ? total : undefined;
+	}
+	return undefined;
+}
+
+function emitTelemetry(
+	onTelemetry: CallExaOptions["onTelemetry"],
+	event: ExaTelemetryEvent,
+): void {
+	if (!onTelemetry) return;
+	onTelemetry(event);
+}
+
+function wait(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
 	});
+}
 
-	const responseBody = await response.text();
+export async function callExa<T>(
+	endpoint: string,
+	body: unknown,
+	options: CallExaOptions = {},
+): Promise<T> {
+	const apiKey = getExaApiKey();
+	const retries = Math.max(0, options.retries ?? 0);
+	const retryDelayMs = Math.max(0, options.retryDelayMs ?? 200);
 
-	if (!response.ok) {
-		const message = parseErrorMessage(responseBody) ?? response.statusText;
-		throw new Error(
-			`Exa API error (${response.status}): ${message.trim() || response.statusText}`,
-		);
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		const attemptNumber = attempt + 1;
+		const start = performance.now();
+		let response: Response;
+		let responseBody = "";
+		try {
+			response = await fetch(`${EXA_API_BASE}${endpoint}`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"x-api-key": apiKey,
+				},
+				body: JSON.stringify(body),
+			});
+			responseBody = await response.text();
+		} catch (error) {
+			emitTelemetry(options.onTelemetry, {
+				toolName: options.toolName,
+				operation: options.operation,
+				endpoint,
+				attempt: attemptNumber,
+				durationMs: performance.now() - start,
+				success: false,
+				errorMessage: (error as Error)?.message,
+			});
+			if (attempt < retries && isRetryableNetworkError(error)) {
+				await wait(retryDelayMs * 2 ** attempt);
+				continue;
+			}
+			throw error;
+		}
+
+		if (!response.ok) {
+			const parsedError = parseErrorResponse(responseBody);
+			const message = deriveErrorMessage(
+				parsedError,
+				response.statusText,
+				responseBody,
+			);
+			const error = new ExaApiError(message, {
+				endpoint,
+				status: response.status,
+				body: responseBody,
+				parsedError,
+			});
+
+			emitTelemetry(options.onTelemetry, {
+				toolName: options.toolName,
+				operation: options.operation,
+				endpoint,
+				attempt: attemptNumber,
+				durationMs: performance.now() - start,
+				status: response.status,
+				success: false,
+				errorMessage: message,
+				requestId: parsedError?.requestId,
+				costDollars: extractCostDollars(parsedError?.costDollars),
+			});
+
+			if (attempt < retries && isRetryableStatus(response.status)) {
+				await wait(retryDelayMs * 2 ** attempt);
+				continue;
+			}
+			throw error;
+		}
+
+		const durationMs = performance.now() - start;
+		if (!responseBody) {
+			emitTelemetry(options.onTelemetry, {
+				toolName: options.toolName,
+				operation: options.operation,
+				endpoint,
+				attempt: attemptNumber,
+				durationMs,
+				status: response.status,
+				success: true,
+			});
+			return {} as T;
+		}
+
+		try {
+			const data = JSON.parse(responseBody) as T & {
+				requestId?: string;
+				costDollars?: unknown;
+			};
+			emitTelemetry(options.onTelemetry, {
+				toolName: options.toolName,
+				operation: options.operation,
+				endpoint,
+				attempt: attemptNumber,
+				durationMs,
+				status: response.status,
+				success: true,
+				requestId: data.requestId,
+				costDollars: extractCostDollars(data.costDollars),
+			});
+			return data;
+		} catch (error) {
+			throw new Error(
+				`Failed to parse Exa response: ${(error as Error).message}`,
+			);
+		}
 	}
 
-	if (!responseBody) {
-		return {} as T;
-	}
+	throw new Error("Exa API request failed after retries");
+}
 
-	try {
-		return JSON.parse(responseBody) as T;
-	} catch (error) {
-		throw new Error(
-			`Failed to parse Exa response: ${(error as Error).message}`,
-		);
+type ContentsKey = "text" | "summary" | "context" | "highlights";
+type ContentsOptionsMap<K extends ContentsKey> = Partial<Record<K, boolean>>;
+
+export function buildContentsOptions<K extends ContentsKey>(
+	options: ContentsOptionsMap<K>,
+	defaults?: ContentsOptionsMap<K>,
+): ContentsOptionsMap<K> | undefined {
+	const defaultKeys = defaults ? (Object.keys(defaults) as ContentsKey[]) : [];
+	const optionKeys = options ? (Object.keys(options) as ContentsKey[]) : [];
+	const keys = new Set<ContentsKey>([...defaultKeys, ...optionKeys]);
+	const result: Partial<Record<ContentsKey, boolean>> = {};
+	let hasValue = false;
+	for (const key of keys) {
+		const value =
+			(options as Record<ContentsKey, boolean | undefined>)[key] ??
+			(defaults as Record<ContentsKey, boolean | undefined> | undefined)?.[key];
+		if (value !== undefined) {
+			result[key] = value;
+			hasValue = true;
+		}
 	}
+	return hasValue ? (result as ContentsOptionsMap<K>) : undefined;
 }
