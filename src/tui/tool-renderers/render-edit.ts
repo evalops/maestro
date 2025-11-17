@@ -2,6 +2,7 @@ import chalk from "chalk";
 import { highlightCodeLines } from "../../style/code-highlighter.js";
 import {
 	buildCollapsedSummary,
+	formatDetailSections,
 	formatSection,
 	generateDiff,
 	shortenPath,
@@ -51,6 +52,11 @@ export class EditRenderer implements ToolRenderer {
 				sections.push(messageSection);
 			}
 		}
+
+		const detailSections = formatDetailSections(context.result?.details, {
+			excludeKeys: ["diff"],
+		});
+		sections.push(...detailSections);
 
 		if (sections.length === 0) {
 			return text;

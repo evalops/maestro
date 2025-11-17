@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import {
 	buildCollapsedSummary,
+	formatDetailSections,
 	formatSection,
 	formatShellSnippet,
 	summarizeLines,
@@ -38,6 +39,13 @@ export class BashRenderer implements ToolRenderer {
 					sections.push(chalk.dim(`  ... (${remaining} more lines)`));
 				}
 			}
+		}
+
+		if (!context.collapsed) {
+			const detailSections = formatDetailSections(context.result?.details, {
+				excludeKeys: ["command", "output"],
+			});
+			sections.push(...detailSections);
 		}
 
 		if (sections.length === 0) {

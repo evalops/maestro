@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import {
 	buildCollapsedSummary,
+	formatDetailSections,
 	formatJsonSnippet,
 	formatSection,
 } from "../tool-text-utils.js";
@@ -37,6 +38,11 @@ export class GenericRenderer implements ToolRenderer {
 			if (lines.length) {
 				sections.push(formatSection("result", lines));
 			}
+		}
+
+		if (!context.collapsed) {
+			const detailSections = formatDetailSections(context.result?.details);
+			sections.push(...detailSections);
 		}
 
 		if (sections.length === 0) {

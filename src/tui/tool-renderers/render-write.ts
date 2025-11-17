@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import {
 	buildCollapsedSummary,
+	formatDetailSections,
 	formatSection,
 	replaceTabs,
 	shortenPath,
@@ -39,6 +40,15 @@ export class WriteRenderer implements ToolRenderer {
 			}
 			if (remaining > 0) {
 				text += chalk.dim(`\n... (${remaining} more lines)`);
+			}
+		}
+
+		if (context.result?.details) {
+			const detailSections = formatDetailSections(context.result.details, {
+				excludeKeys: ["content"],
+			});
+			if (detailSections.length) {
+				text += `\n\n${detailSections.join("\n\n")}`;
 			}
 		}
 

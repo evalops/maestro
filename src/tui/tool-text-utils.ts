@@ -155,3 +155,65 @@ export function formatShellSnippet(value: string): string[] {
 	if (!value) return [];
 	return highlightCodeLines(value, "bash");
 }
+
+type DetailSectionOptions = {
+	excludeKeys?: string[];
+};
+
+export function formatDetailSections(
+	details: unknown,
+	options?: DetailSectionOptions,
+): string[] {
+	if (!details || typeof details !== "object") {
+		return [];
+	}
+	const exclude = new Set(
+		(options?.excludeKeys || []).map((key) => key.toLowerCase()),
+	);
+	const sections: string[] = [];
+	for (const [rawKey, value] of Object.entries(details)) {
+		if (value === undefined || value === null) continue;
+		if (exclude.has(rawKey.toLowerCase())) continue;
+		const lines = formatDetailValueLines(value);
+		if (!lines.length) continue;
+		sections.push(formatSection(humanizeDetailKey(rawKey), lines));
+	}
+	return sections;
+}
+
+function formatDetailValueLines(value: unknown): string[] {
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		return trimmed ? trimmed.split(/\r?\n/).map((line) => chalk.dim(line)) : [];
+	}
+	if (typeof value === "number" || typeof value === "boolean") {
+		return [chalk.bold(String(value))];
+	}
+	if (Array.isArray(value)) {
+		if (value.length === 0) {
+			return [chalk.dim("[]")];
+		}
+		const primitiveItems = value.every(
+			(item) => typeof item === "string" || typeof item === "number",
+		);
+		if (primitiveItems) {
+			return value.slice(0, 8).map((item) => chalk.dim(`- ${item}`));
+		}
+		return formatJsonSnippet(value);
+	}
+	if (typeof value === "object") {
+		const entries = Object.entries(value as Record<string, unknown>);
+		if (entries.length === 0) {
+			return [chalk.dim("{}")];
+		}
+		return formatJsonSnippet(value);
+	}
+	return [String(value ?? "")];
+}
+
+function humanizeDetailKey(key: string): string {
+	const withSpaces = key
+		.replace(/[_-]+/g, " ")
+		.replace(/([a-z])([A-Z])/g, "$1 $2");
+	return withSpaces.trim() || "details";
+}
