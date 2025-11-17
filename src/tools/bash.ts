@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import os from "node:os";
+import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { createTypeboxTool } from "./typebox-tool.js";
 
@@ -55,6 +57,17 @@ function killProcessTree(pid: number): void {
 	}
 }
 
+function expandPath(path?: string): string | undefined {
+	if (!path) return undefined;
+	if (path === "~") {
+		return os.homedir();
+	}
+	if (path.startsWith("~/")) {
+		return os.homedir() + path.slice(1);
+	}
+	return resolvePath(path);
+}
+
 const bashSchema = Type.Object({
 	command: Type.String({
 		description: "Bash command to execute",
@@ -66,6 +79,17 @@ const bashSchema = Type.Object({
 			exclusiveMinimum: 0,
 		}),
 	),
+	cwd: Type.Optional(
+		Type.String({
+			description: "Working directory for the command (relative or absolute)",
+			minLength: 1,
+		}),
+	),
+	env: Type.Optional(
+		Type.Record(Type.String({ minLength: 1 }), Type.String(), {
+			description: "Additional environment variables for the command",
+		}),
+	),
 });
 
 export const bashTool = createTypeboxTool({
@@ -74,20 +98,31 @@ export const bashTool = createTypeboxTool({
 	description:
 		"Execute a bash command in the current working directory. Returns stdout and stderr. Optionally provide a timeout in seconds.",
 	schema: bashSchema,
-	async execute(_toolCallId, { command, timeout }, signal) {
+	async execute(_toolCallId, { command, timeout, cwd, env }, signal) {
 		return new Promise<{
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
-		}>((resolve) => {
+		}>((resolve, reject) => {
 			const { shell, args } = getShellConfig();
+			const resolvedCwd = expandPath(cwd);
+			if (resolvedCwd && !existsSync(resolvedCwd)) {
+				reject(new Error(`Working directory not found: ${cwd}`));
+				return;
+			}
+			const mergedEnv = { ...process.env, ...env } as Record<string, string>;
 			const child = spawn(shell, [...args, command], {
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
+				cwd: resolvedCwd,
+				env: mergedEnv,
 			});
 
 			let stdout = "";
 			let stderr = "";
 			let timedOut = false;
+			let stdoutTruncated = false;
+			let stderrTruncated = false;
+			const MAX_BUFFER = 10 * 1024 * 1024;
 
 			// Set timeout if provided
 			let timeoutHandle: NodeJS.Timeout | undefined;
@@ -117,9 +152,9 @@ export const bashTool = createTypeboxTool({
 			if (child.stdout) {
 				child.stdout.on("data", (data) => {
 					stdout += data.toString();
-					// Limit buffer size
-					if (stdout.length > 10 * 1024 * 1024) {
-						stdout = stdout.slice(0, 10 * 1024 * 1024);
+					if (stdout.length > MAX_BUFFER) {
+						stdout = stdout.slice(0, MAX_BUFFER);
+						stdoutTruncated = true;
 					}
 				});
 			}
@@ -128,9 +163,9 @@ export const bashTool = createTypeboxTool({
 			if (child.stderr) {
 				child.stderr.on("data", (data) => {
 					stderr += data.toString();
-					// Limit buffer size
-					if (stderr.length > 10 * 1024 * 1024) {
-						stderr = stderr.slice(0, 10 * 1024 * 1024);
+					if (stderr.length > MAX_BUFFER) {
+						stderr = stderr.slice(0, MAX_BUFFER);
+						stderrTruncated = true;
 					}
 				});
 			}
@@ -145,6 +180,10 @@ export const bashTool = createTypeboxTool({
 					if (stderr) {
 						if (output) output += "\n";
 						output += stderr;
+					}
+					if (stdoutTruncated || stderrTruncated) {
+						if (output) output += "\n\n";
+						output += "Output truncated at 10MB";
 					}
 					if (output) output += "\n\n";
 					output += "Command aborted";
@@ -162,6 +201,10 @@ export const bashTool = createTypeboxTool({
 						if (output) output += "\n";
 						output += stderr;
 					}
+					if (stdoutTruncated || stderrTruncated) {
+						if (output) output += "\n\n";
+						output += "Output truncated at 10MB";
+					}
 					if (output) output += "\n\n";
 					output += `Command timed out after ${timeout} seconds`;
 					resolve({
@@ -176,6 +219,10 @@ export const bashTool = createTypeboxTool({
 				if (stderr) {
 					if (output) output += "\n";
 					output += stderr;
+				}
+				if (stdoutTruncated || stderrTruncated) {
+					if (output) output += "\n\n";
+					output += "Output truncated at 10MB";
 				}
 
 				if (code !== 0 && code !== null) {

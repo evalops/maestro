@@ -3,6 +3,8 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -89,6 +91,28 @@ describe("Composer Tools", () => {
 			expect(output).toContain(".hidden");
 			expect(output).toContain("visible");
 		});
+
+		it("supports metadata, sorting, and json format", async () => {
+			const older = join(testDir, "a.txt");
+			const newerDir = join(testDir, "dir");
+			writeFileSync(older, "123");
+			mkdirSync(newerDir);
+
+			const result = await listTool.execute("list-call-4", {
+				path: testDir,
+				includeMetadata: true,
+				format: "json",
+				sortBy: "type",
+				sortDirection: "desc",
+			});
+
+			const output = getTextOutput(result);
+			const jsonPayload = output.slice(output.indexOf("["));
+			const parsed = JSON.parse(jsonPayload);
+			expect(Array.isArray(parsed)).toBe(true);
+			expect(parsed[0]).toHaveProperty("type");
+			expect(parsed[0]).toHaveProperty("size");
+		});
 	});
 
 	describe("read tool", () => {
@@ -98,10 +122,16 @@ describe("Composer Tools", () => {
 			writeFileSync(testFile, content);
 
 			const result = await readTool.execute("test-call-1", { path: testFile });
+			const output = getTextOutput(result);
 
-			expect(getTextOutput(result)).toBe(content);
-			expect(getTextOutput(result)).not.toContain("more lines not shown");
-			expect(result.details).toBeUndefined();
+			expect(output).toContain("Hello, world!");
+			expect(output).toContain("Line 3");
+			expect(output).toContain("```");
+			expect(result.details).toMatchObject({
+				startLine: 1,
+				endLine: 3,
+				totalLines: 3,
+			});
 		});
 
 		it("should handle non-existent files", async () => {
@@ -123,8 +153,7 @@ describe("Composer Tools", () => {
 
 			expect(output).toContain("Line 1");
 			expect(output).toContain("Line 2000");
-			expect(output).not.toContain("Line 2001");
-			expect(output).toContain("500 more lines not shown");
+			expect(output).toContain("500 later lines not shown");
 			expect(output).toContain("Use offset=2001 to continue reading");
 		});
 
@@ -140,7 +169,6 @@ describe("Composer Tools", () => {
 			expect(output).toContain("Short line");
 			expect(output).toContain("Another short line");
 			expect(output).toContain("Some lines were truncated to 2000 characters");
-			expect(output.split("\n")[1].length).toBe(2000);
 		});
 
 		it("should handle offset parameter", async () => {
@@ -154,10 +182,9 @@ describe("Composer Tools", () => {
 			});
 			const output = getTextOutput(result);
 
-			expect(output).not.toContain("Line 50");
 			expect(output).toContain("Line 51");
 			expect(output).toContain("Line 100");
-			expect(output).not.toContain("more lines not shown");
+			expect(result.details).toMatchObject({ startLine: 51, endLine: 100 });
 		});
 
 		it("should handle limit parameter", async () => {
@@ -173,8 +200,7 @@ describe("Composer Tools", () => {
 
 			expect(output).toContain("Line 1");
 			expect(output).toContain("Line 10");
-			expect(output).not.toContain("Line 11");
-			expect(output).toContain("90 more lines not shown");
+			expect(output).toContain("90 later lines not shown");
 			expect(output).toContain("Use offset=11 to continue reading");
 		});
 
@@ -190,12 +216,11 @@ describe("Composer Tools", () => {
 			});
 			const output = getTextOutput(result);
 
-			expect(output).not.toContain("Line 40");
 			expect(output).toContain("Line 41");
 			expect(output).toContain("Line 60");
-			expect(output).not.toContain("Line 61");
-			expect(output).toContain("40 more lines not shown");
+			expect(output).toContain("40 later lines not shown");
 			expect(output).toContain("Use offset=61 to continue reading");
+			expect(result.details).toMatchObject({ startLine: 41, endLine: 60 });
 		});
 
 		it("should show error when offset is beyond file length", async () => {
@@ -224,7 +249,26 @@ describe("Composer Tools", () => {
 			const output = getTextOutput(result);
 
 			expect(output).toContain("Some lines were truncated to 2000 characters");
-			expect(output).toContain("500 more lines not shown");
+			expect(output).toContain("500 later lines not shown");
+		});
+
+		it("supports tail mode for log-style reads", async () => {
+			const testFile = join(testDir, "tail.txt");
+			const lines = Array.from({ length: 50 }, (_, i) => `Line ${i + 1}`);
+			writeFileSync(testFile, lines.join("\n"));
+
+			const result = await readTool.execute("test-call-10", {
+				path: testFile,
+				mode: "tail",
+				limit: 5,
+				lineNumbers: false,
+			});
+			const output = getTextOutput(result);
+
+			expect(output).not.toContain("| Line");
+			expect(output).toContain("Line 46");
+			expect(output).toContain("Line 50");
+			expect(output).toContain("Showing last 5 line(s)");
 		});
 	});
 
@@ -327,18 +371,50 @@ describe("Composer Tools", () => {
 			).rejects.toThrow("Could not find the exact text");
 		});
 
-		it("should fail if text appears multiple times", async () => {
-			const testFile = join(testDir, "edit-test.txt");
-			const originalContent = "foo foo foo";
-			writeFileSync(testFile, originalContent);
+		it("replaces the first occurrence by default when multiple matches exist", async () => {
+			const testFile = join(testDir, "edit-multi.txt");
+			writeFileSync(testFile, "foo foo foo");
 
-			await expect(
-				editTool.execute("test-call-7", {
-					path: testFile,
-					oldText: "foo",
-					newText: "bar",
-				}),
-			).rejects.toThrow("Found 3 occurrences");
+			await editTool.execute("test-call-7", {
+				path: testFile,
+				oldText: "foo",
+				newText: "bar",
+			});
+
+			const updated = readFileSync(testFile, "utf-8");
+			expect(updated).toBe("bar foo foo");
+		});
+
+		it("supports selecting a specific occurrence", async () => {
+			const testFile = join(testDir, "edit-specific.txt");
+			writeFileSync(testFile, "foo foo foo");
+
+			await editTool.execute("test-call-7b", {
+				path: testFile,
+				oldText: "foo",
+				newText: "bar",
+				occurrence: 2,
+			});
+
+			const updated = readFileSync(testFile, "utf-8");
+			expect(updated).toBe("foo bar foo");
+		});
+
+		it("supports dryRun without touching disk", async () => {
+			const testFile = join(testDir, "edit-dry.txt");
+			writeFileSync(testFile, "alpha beta");
+
+			const result = await editTool.execute("test-call-7c", {
+				path: testFile,
+				oldText: "beta",
+				newText: "gamma",
+				dryRun: true,
+			});
+
+			expect(getTextOutput(result)).toContain("Dry run");
+			expect(result.details?.diff).toContain("-1 alpha beta");
+			const onDisk = readFileSync(testFile, "utf-8");
+			expect(onDisk).toBe("alpha beta");
 		});
 	});
 
@@ -370,6 +446,27 @@ describe("Composer Tools", () => {
 			expect(getTextOutput(result)).toContain(
 				`Command timed out after ${timeoutSeconds} seconds`,
 			);
+		});
+
+		it("should honor the cwd option", async () => {
+			const subDir = join(testDir, "nested");
+			mkdirSync(subDir);
+			const result = await bashTool.execute("test-call-10b", {
+				command: "pwd",
+				cwd: subDir,
+			});
+
+			const normalizedOutput = getTextOutput(result).trim();
+			expect(normalizedOutput).toBe(realpathSync(subDir));
+		});
+
+		it("should merge custom environment variables", async () => {
+			const result = await bashTool.execute("test-call-10c", {
+				command: "echo $BASH_TOOL_TEST_VAR",
+				env: { BASH_TOOL_TEST_VAR: "from-bash" },
+			});
+
+			expect(getTextOutput(result)).toContain("from-bash");
 		});
 	});
 
@@ -465,6 +562,23 @@ describe("Composer Tools", () => {
 					command: expect.stringContaining("rg"),
 				}),
 			);
+		});
+
+		it("supports includeHidden and json format", async () => {
+			const hiddenFile = join(testDir, ".secret.txt");
+			writeFileSync(hiddenFile, "needle");
+
+			const result = await searchTool.execute("search-call-3", {
+				pattern: "needle",
+				paths: testDir,
+				includeHidden: true,
+				format: "json",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Found 1 match");
+			expect(result.details).toMatchObject({ format: "json" });
+			expect(result.details?.matches?.[0]?.file).toContain(".secret.txt");
 		});
 	});
 

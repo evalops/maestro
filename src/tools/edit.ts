@@ -1,5 +1,6 @@
+import crypto from "node:crypto";
 import { constants } from "node:fs";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -25,6 +26,20 @@ function expandPath(filePath: string): string {
 	return filePath;
 }
 
+async function writeFileAtomically(
+	filePath: string,
+	contents: string,
+): Promise<void> {
+	const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+	await writeFile(tempPath, contents, "utf-8");
+	try {
+		await rename(tempPath, filePath);
+	} catch (error) {
+		await unlink(tempPath).catch(() => {});
+		throw error;
+	}
+}
+
 /** Diff support lives in diff-utils for reuse */
 
 const editSchema = Type.Object({
@@ -40,6 +55,19 @@ const editSchema = Type.Object({
 		description: "New text to replace the old text with",
 		default: "",
 	}),
+	occurrence: Type.Optional(
+		Type.Integer({
+			description: "Which occurrence of the text to replace (1-based)",
+			minimum: 1,
+			default: 1,
+		}),
+	),
+	dryRun: Type.Optional(
+		Type.Boolean({
+			description: "Preview the diff without writing changes",
+			default: false,
+		}),
+	),
 });
 
 export const editTool = createTypeboxTool({
@@ -48,7 +76,11 @@ export const editTool = createTypeboxTool({
 	description:
 		"Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
 	schema: editSchema,
-	async execute(_toolCallId, { path, oldText, newText }, signal) {
+	async execute(
+		_toolCallId,
+		{ path, oldText, newText, occurrence = 1, dryRun = false },
+		signal,
+	) {
 		const absolutePath = resolvePath(expandPath(path));
 		requirePlanCheck("edit");
 
@@ -122,29 +154,50 @@ export const editTool = createTypeboxTool({
 						return;
 					}
 
-					if (exactMatches.length > 1) {
-						const previews = exactMatches
-							.slice(0, 3)
-							.map(formatMatchPreview)
-							.join("\n");
+					if (occurrence > exactMatches.length) {
 						if (signal) {
 							signal.removeEventListener("abort", onAbort);
 						}
 						reject(
 							new Error(
-								`Found ${exactMatches.length} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.\n\nMatches:\n${previews}`,
+								`Only ${exactMatches.length} occurrence(s) found in ${path}, but occurrence #${occurrence} was requested`,
 							),
 						);
 						return;
 					}
+
+					const targetMatch = exactMatches[occurrence - 1];
+					const matchIndex = targetMatch.index ?? 0;
 
 					// Check if aborted before writing
 					if (aborted) {
 						return;
 					}
 
-					const newContent = content.replace(oldText, newText);
-					await writeFile(absolutePath, newContent, "utf-8");
+					const newContent =
+						content.slice(0, matchIndex) +
+						newText +
+						content.slice(matchIndex + oldText.length);
+
+					const diff = generateDiffString(content, newContent);
+
+					if (dryRun) {
+						if (signal) {
+							signal.removeEventListener("abort", onAbort);
+						}
+						resolve({
+							content: [
+								{
+									type: "text",
+									text: `Dry run: preview for ${path} (occurrence #${occurrence}). No changes written.`,
+								},
+							],
+							details: { diff },
+						});
+						return;
+					}
+
+					await writeFileAtomically(absolutePath, newContent);
 					let validatorSummaries: ValidatorRunResult[] | undefined;
 					try {
 						const lspDiagnostics = await collectDiagnostics();
@@ -153,7 +206,7 @@ export const editTool = createTypeboxTool({
 							lspDiagnostics,
 						);
 					} catch (validatorError) {
-						await writeFile(absolutePath, content, "utf-8");
+						await writeFileAtomically(absolutePath, content);
 						if (signal) {
 							signal.removeEventListener("abort", onAbort);
 						}
@@ -175,11 +228,11 @@ export const editTool = createTypeboxTool({
 						content: [
 							{
 								type: "text",
-								text: `Successfully replaced text in ${path}. Changed ${oldText.length} characters to ${newText.length} characters.`,
+								text: `Successfully replaced ${oldText.length} characters with ${newText.length} characters in ${path}${exactMatches.length > 1 ? ` (occurrence #${occurrence} of ${exactMatches.length})` : ""}.`,
 							},
 						],
 						details: {
-							diff: generateDiffString(content, newContent),
+							diff,
 							validators: validatorSummaries,
 						},
 					});
@@ -201,6 +254,7 @@ export const editTool = createTypeboxTool({
 type MatchPreview = {
 	line: number;
 	snippet: string;
+	index?: number;
 };
 
 function findExactMatches(content: string, snippet: string): MatchPreview[] {
@@ -210,6 +264,7 @@ function findExactMatches(content: string, snippet: string): MatchPreview[] {
 		matches.push({
 			line: getLineNumber(content, index),
 			snippet: getSnippet(content, index, snippet.length),
+			index,
 		});
 		index = content.indexOf(snippet, index + snippet.length);
 	}

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import os from "node:os";
+import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { createTypeboxTool } from "./typebox-tool.js";
 
@@ -94,6 +96,30 @@ const searchSchema = Type.Intersect([
 				maximum: 20,
 			}),
 		),
+		cwd: Type.Optional(
+			Type.String({
+				description: "Working directory to run ripgrep from",
+				minLength: 1,
+			}),
+		),
+		includeHidden: Type.Optional(
+			Type.Boolean({
+				description: "Include hidden files (--hidden)",
+				default: false,
+			}),
+		),
+		useGitIgnore: Type.Optional(
+			Type.Boolean({
+				description: "Respect .gitignore (set false to pass --no-ignore)",
+				default: true,
+			}),
+		),
+		format: Type.Optional(
+			Type.Union([Type.Literal("text"), Type.Literal("json")], {
+				description: "Output format",
+				default: "text",
+			}),
+		),
 	}),
 	Type.Object(
 		{},
@@ -111,12 +137,20 @@ function toArray<T>(value: T | T[] | undefined): T[] {
 	return Array.isArray(value) ? value : [value];
 }
 
+function expandPath(path?: string): string | undefined {
+	if (!path) return undefined;
+	if (path === "~") return os.homedir();
+	if (path.startsWith("~/")) return os.homedir() + path.slice(1);
+	return resolvePath(path);
+}
+
 async function runRipgrep(
 	args: string[],
 	signal?: AbortSignal,
+	cwd?: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const child = spawn("rg", args, {
-		cwd: process.cwd(),
+		cwd: cwd ?? process.cwd(),
 		stdio: ["ignore", "pipe", "pipe"],
 		signal,
 	});
@@ -149,7 +183,52 @@ async function runRipgrep(
 	});
 }
 
-export const searchTool = createTypeboxTool({
+type RipgrepMatch = {
+	file: string;
+	line: number;
+	column: number;
+	match: string;
+	lines: string;
+};
+
+function parseRipgrepJson(output: string): RipgrepMatch[] {
+	const matches: RipgrepMatch[] = [];
+	for (const line of output.split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		try {
+			const event = JSON.parse(line);
+			if (event.type === "match") {
+				const pathText = event.data?.path?.text ?? "";
+				for (const submatch of event.data?.submatches ?? []) {
+					matches.push({
+						file: pathText,
+						line: event.data?.line_number ?? 0,
+						column: submatch.start ?? 0,
+						match: submatch.match?.text ?? "",
+						lines: event.data?.lines?.text ?? "",
+					});
+				}
+			}
+		} catch {
+			// ignore parse errors from non-JSON lines
+		}
+	}
+	return matches;
+}
+
+const JSON_DETAIL_LIMIT = 200;
+
+type SearchToolDetails = {
+	command: string;
+	cwd: string;
+	format?: "text" | "json";
+	matches?: RipgrepMatch[];
+};
+
+export const searchTool = createTypeboxTool<
+	typeof searchSchema,
+	SearchToolDetails
+>({
 	name: "search",
 	label: "search",
 	description:
@@ -168,6 +247,10 @@ export const searchTool = createTypeboxTool({
 			context,
 			beforeContext,
 			afterContext,
+			cwd,
+			includeHidden,
+			useGitIgnore = true,
+			format = "text",
 		} = params;
 
 		if (
@@ -181,8 +264,9 @@ export const searchTool = createTypeboxTool({
 
 		const pathArgs = toArray(paths);
 		const globArgs = toArray(glob);
+		const commandCwd = expandPath(cwd) ?? process.cwd();
 
-		const args: string[] = ["--color=never", "-n", "--with-filename"]; // include line numbers and filenames
+		const args: string[] = ["--color=never", "-n", "--with-filename"];
 
 		if (ignoreCase) {
 			args.push("-i");
@@ -198,6 +282,14 @@ export const searchTool = createTypeboxTool({
 
 		if (multiline) {
 			args.push("--multiline");
+		}
+
+		if (includeHidden) {
+			args.push("--hidden");
+		}
+
+		if (!useGitIgnore) {
+			args.push("--no-ignore");
 		}
 
 		if (maxResults !== undefined) {
@@ -220,6 +312,10 @@ export const searchTool = createTypeboxTool({
 			args.push("--glob", globPattern);
 		}
 
+		if (format === "json") {
+			args.push("--json");
+		}
+
 		args.push("--", pattern);
 
 		if (pathArgs.length > 0) {
@@ -230,7 +326,7 @@ export const searchTool = createTypeboxTool({
 
 		let result: { stdout: string; stderr: string; exitCode: number };
 		try {
-			result = await runRipgrep(args, signal);
+			result = await runRipgrep(args, signal, commandCwd);
 		} catch (error) {
 			const reason =
 				error instanceof Error
@@ -243,7 +339,7 @@ export const searchTool = createTypeboxTool({
 						text: `ripgrep failed\n\n${reason}`,
 					},
 				],
-				details: { command: ["rg", ...args].join(" ") },
+				details: { command: ["rg", ...args].join(" "), cwd: commandCwd },
 			};
 		}
 
@@ -254,6 +350,8 @@ export const searchTool = createTypeboxTool({
 			);
 		}
 
+		const command = ["rg", ...args].join(" ");
+
 		if (result.exitCode === 1 || result.stdout.trim().length === 0) {
 			return {
 				content: [
@@ -262,13 +360,38 @@ export const searchTool = createTypeboxTool({
 						text: "No matches found.",
 					},
 				],
-				details: { command: ["rg", ...args].join(" ") },
+				details: { command, cwd: commandCwd, format },
+			};
+		}
+
+		if (format === "json") {
+			const matches = parseRipgrepJson(result.stdout);
+			const preview = matches
+				.slice(0, 5)
+				.map(
+					(match) =>
+						`${match.file}:${match.line}:${match.column} ${match.match.trim()}`,
+				)
+				.join("\n");
+			const suffix =
+				matches.length > 5 ? `\n... (${matches.length - 5} more matches)` : "";
+			const text = matches.length
+				? `Found ${matches.length} match(es).\n\n${preview}${suffix}`
+				: "No matches found.";
+			return {
+				content: [{ type: "text", text }],
+				details: {
+					command,
+					cwd: commandCwd,
+					format,
+					matches: matches.slice(0, JSON_DETAIL_LIMIT),
+				},
 			};
 		}
 
 		return {
 			content: [{ type: "text", text: result.stdout.trimEnd() }],
-			details: { command: ["rg", ...args].join(" ") },
+			details: { command, cwd: commandCwd, format },
 		};
 	},
 });

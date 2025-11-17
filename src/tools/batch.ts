@@ -2,6 +2,10 @@ import { Type } from "@sinclair/typebox";
 import type { AgentTool, AgentToolResult } from "../agent/types.js";
 import { createTypeboxTool } from "./typebox-tool.js";
 
+export interface BatchAgentTool extends AgentTool {
+	setAvailableTools: (tools: AgentTool<any, any>[]) => void;
+}
+
 const DISALLOWED_TOOLS = new Set(["batch", "edit", "write"]);
 
 const batchSchema = Type.Object({
@@ -20,18 +24,32 @@ const batchSchema = Type.Object({
 			maxItems: 10,
 		},
 	),
+	toolTimeoutMs: Type.Optional(
+		Type.Integer({
+			description: "Per-tool timeout in milliseconds",
+			minimum: 1_000,
+			maximum: 300_000,
+			default: 30_000,
+		}),
+	),
 });
 
 interface BatchToolContext {
 	availableTools: Map<string, AgentTool<any, any>>;
 }
 
+const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
+
+function buildToolMap(tools: AgentTool<any, any>[]): Map<string, AgentTool> {
+	return new Map(tools.map((t) => [t.name, t]));
+}
+
 export function createBatchTool(
 	availableTools: AgentTool<any, any>[],
-): AgentTool<any, any> {
-	const toolMap = new Map(availableTools.map((t) => [t.name, t]));
+): BatchAgentTool {
+	let toolMap = buildToolMap(availableTools);
 
-	return createTypeboxTool({
+	const batchTool = createTypeboxTool({
 		name: "batch",
 		label: "batch",
 		description: `Execute multiple independent tool calls in parallel to reduce latency. Best used for gathering context (reads, searches, listings).
@@ -59,11 +77,12 @@ Good Use Cases:
 
 Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 		schema: batchSchema,
-		async execute(_toolCallId, { toolCalls }, signal) {
+		async execute(_toolCallId, { toolCalls, toolTimeoutMs }, signal) {
 			// Validate all tool calls before execution
 			const validationErrors: string[] = [];
 			const filteredToolCalls = toolCalls.slice(0, 10);
 			const discardedCount = toolCalls.length - filteredToolCalls.length;
+			const timeoutPerCall = toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
 
 			for (const call of filteredToolCalls) {
 				if (DISALLOWED_TOOLS.has(call.tool)) {
@@ -90,6 +109,32 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 				index: number,
 			) => {
 				const callStartTime = Date.now();
+				const controller = new AbortController();
+				let timeoutHandle: NodeJS.Timeout | undefined;
+				let callTimedOut = false;
+
+				if (signal) {
+					if (signal.aborted) {
+						controller.abort();
+					} else {
+						const abortListener = () => controller.abort();
+						signal.addEventListener("abort", abortListener, { once: true });
+						controller.signal.addEventListener(
+							"abort",
+							() => {
+								signal.removeEventListener("abort", abortListener);
+							},
+							{ once: true },
+						);
+					}
+				}
+
+				if (timeoutPerCall > 0) {
+					timeoutHandle = setTimeout(() => {
+						callTimedOut = true;
+						controller.abort();
+					}, timeoutPerCall);
+				}
 
 				try {
 					const tool = toolMap.get(call.tool);
@@ -99,7 +144,7 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 					const result = await tool.execute(
 						`batch-${_toolCallId}-${index}`,
 						call.parameters,
-						signal,
+						controller.signal,
 					);
 
 					return {
@@ -109,12 +154,21 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 						duration: Date.now() - callStartTime,
 					};
 				} catch (error) {
+					const errorMessage = callTimedOut
+						? `Timed out after ${timeoutPerCall}ms`
+						: error instanceof Error
+							? error.message
+							: String(error);
 					return {
 						success: false as const,
 						tool: call.tool,
-						error: error instanceof Error ? error.message : String(error),
+						error: errorMessage,
 						duration: Date.now() - callStartTime,
 					};
+				} finally {
+					if (timeoutHandle) {
+						clearTimeout(timeoutHandle);
+					}
 				}
 			};
 
@@ -157,13 +211,12 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 						.filter((c) => c.type === "text")
 						.map((c) => c.text)
 						.join("\n");
-
-					// Show abbreviated output
-					const lines = textContent.split("\n");
+					const lines = textContent.split("\n").filter((line) => line.length);
+					const previewLines = lines.slice(0, 5);
 					const preview =
-						lines.length > 5
-							? `${lines.slice(0, 5).join("\n")}\n... (${lines.length - 5} more lines)`
-							: textContent;
+						lines.length > previewLines.length
+							? `${previewLines.join("\n")}\n... (${lines.length - previewLines.length} more lines)`
+							: previewLines.join("\n");
 
 					outputLines.push(
 						"",
@@ -190,15 +243,40 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 					failed: failedCalls,
 					discarded: discardedCount,
 					tools: filteredToolCalls.map((c) => c.tool),
-					results: results.map((r) => ({
+					results: results.map((r, idx) => ({
 						tool: r.tool,
 						success: r.success,
 						duration: r.duration,
+						error: r.success ? undefined : r.error,
+						summary: r.success
+							? textSummary(filteredToolCalls[idx], r.result)
+							: undefined,
+						details: r.success ? r.result.details : undefined,
 					})),
 				},
 			};
 		},
-	});
+	}) as BatchAgentTool;
+
+	batchTool.setAvailableTools = (tools: AgentTool<any, any>[]) => {
+		toolMap = buildToolMap(tools);
+	};
+
+	return batchTool;
+}
+
+function textSummary(
+	_call: { tool: string; parameters: Record<string, unknown> },
+	result: AgentToolResult<any>,
+): string | undefined {
+	const content = result.content
+		.filter((c) => c.type === "text")
+		.map((c) => c.text)
+		.join("\n")
+		.trim();
+	if (!content) return undefined;
+	const lines = content.split(/\r?\n/).slice(0, 5);
+	return lines.join("\n");
 }
 
 export const batchTool = createBatchTool([]);

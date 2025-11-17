@@ -57,6 +57,23 @@ const mockSlowTool: AgentTool<any, any> = {
 	},
 };
 
+const mockHangingTool: AgentTool<any, any> = {
+	name: "mock-hang",
+	label: "mock-hang",
+	description: "A mock tool that never resolves until aborted",
+	parameters: {} as any,
+	execute: (_toolCallId, _params, signal) =>
+		new Promise((_, reject) => {
+			if (signal?.aborted) {
+				reject(new Error("aborted"));
+				return;
+			}
+			signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+				once: true,
+			});
+		}),
+};
+
 describe("batch tool", () => {
 	let testDir: string;
 
@@ -90,6 +107,43 @@ describe("batch tool", () => {
 				successful: 3,
 				failed: 0,
 				discarded: 0,
+			});
+		});
+
+		describe("advanced features", () => {
+			it("enforces per-call timeouts", async () => {
+				const batchTool = createBatchTool([mockHangingTool]);
+
+				const result = await batchTool.execute("batch-call-timeout", {
+					toolCalls: [{ tool: "mock-hang", parameters: {} }],
+					toolTimeoutMs: 1000,
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("Timed out");
+				expect(result.details?.results?.[0]).toMatchObject({
+					success: false,
+					error: expect.stringContaining("Timed out"),
+				});
+			});
+
+			it("supports refreshing the tool registry", async () => {
+				const batchTool = createBatchTool([]);
+				await expect(
+					batchTool.execute("batch-call-refresh", {
+						toolCalls: [{ tool: "mock-success", parameters: {} }],
+					}),
+				).rejects.toThrow("Tool 'mock-success' not found");
+
+				batchTool.setAvailableTools([mockSuccessTool]);
+
+				const result = await batchTool.execute("batch-call-refresh-2", {
+					toolCalls: [{ tool: "mock-success", parameters: {} }],
+				});
+
+				expect(getTextOutput(result)).toContain(
+					"All 1 tools executed successfully",
+				);
 			});
 		});
 
