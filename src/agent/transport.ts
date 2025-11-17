@@ -76,15 +76,39 @@ export class ProviderTransport implements AgentTransport {
 			throw new Error(`Unsupported API: ${model.api}`);
 		}
 
-		let currentAssistantMessage: AssistantMessage | null = null;
-		const toolCallsToExecute: Array<{
-			id: string;
-			name: string;
-			arguments: any;
-		}> = [];
+		// WHILE LOOP for tool use continuation (like Mario's agentLoop)
+		let hasMoreToolCalls = true;
+		const allMessages = [...context.messages];
 
-		// Process events from provider
-		for await (const event of stream) {
+		while (hasMoreToolCalls) {
+			let currentAssistantMessage: AssistantMessage | null = null;
+			const toolCallsToExecute: Array<{
+				id: string;
+				name: string;
+				arguments: any;
+			}> = [];
+
+			// Update context with current messages
+			const currentContext = {
+				...context,
+				messages: allMessages,
+			};
+
+			// Create new stream for this iteration
+			if (model.api === "anthropic-messages") {
+				stream = streamAnthropic(model as any, currentContext, {
+					...streamOptions,
+					thinking: cfg.reasoning,
+				});
+			} else if (
+				model.api === "openai-responses" ||
+				model.api === "openai-completions"
+			) {
+				stream = streamOpenAI(model as any, currentContext, streamOptions);
+			}
+
+			// Process events from provider
+			for await (const event of stream) {
 			if (event.type === "start") {
 				currentAssistantMessage = event.partial;
 				if (currentAssistantMessage) {
@@ -118,123 +142,115 @@ export class ProviderTransport implements AgentTransport {
 						message: currentAssistantMessage,
 					};
 
-					// Execute tools if present
-					if (toolCallsToExecute.length > 0) {
-						const toolResults: ToolResultMessage[] = [];
+				hasMoreToolCalls = toolCallsToExecute.length > 0;
 
-						for (const toolCall of toolCallsToExecute) {
-							yield {
-								type: "tool_execution_start",
+				if (hasMoreToolCalls) {
+					const toolResults: ToolResultMessage[] = [];
+
+					for (const toolCall of toolCallsToExecute) {
+						yield {
+							type: "tool_execution_start",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							args: toolCall.arguments,
+						};
+
+						const tool = tools.find((t) => t.name === toolCall.name);
+						if (!tool) {
+							const errorResult: ToolResultMessage = {
+								role: "toolResult",
 								toolCallId: toolCall.id,
 								toolName: toolCall.name,
-								args: toolCall.arguments,
+								content: [
+									{
+										type: "text",
+										text: `Error: Tool "${toolCall.name}" not found`,
+									},
+								],
+								isError: true,
+								timestamp: Date.now(),
 							};
+							toolResults.push(errorResult);
 
-							const tool = tools.find((t) => t.name === toolCall.name);
-							if (!tool) {
-								const errorResult: ToolResultMessage = {
-									role: "toolResult",
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									content: [
-										{
-											type: "text",
-											text: `Error: Tool "${toolCall.name}" not found`,
-										},
-									],
-									isError: true,
-									timestamp: Date.now(),
-								};
-								toolResults.push(errorResult);
-
-								yield {
-									type: "tool_execution_end",
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									result: errorResult,
-									isError: true,
-								};
-								continue;
-							}
-
-							try {
-								const result = await tool.execute(
-									toolCall.id,
-									toolCall.arguments,
-									signal,
-								);
-
-								const toolResultMessage: ToolResultMessage = {
-									role: "toolResult",
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									content: result.content,
-									details: result.details,
-									isError: result.isError || false,
-									timestamp: Date.now(),
-								};
-								toolResults.push(toolResultMessage);
-
-								yield {
-									type: "tool_execution_end",
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									result: toolResultMessage,
-									isError: toolResultMessage.isError,
-								};
-							} catch (error: unknown) {
-								const errorMessage =
-									error instanceof Error ? error.message : String(error);
-								const errorResult: ToolResultMessage = {
-									role: "toolResult",
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									content: [
-										{
-											type: "text",
-											text: `Error: ${errorMessage}`,
-										},
-									],
-									isError: true,
-									timestamp: Date.now(),
-								};
-								toolResults.push(errorResult);
-
-								yield {
-									type: "tool_execution_end",
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									result: errorResult,
-									isError: true,
-								};
-							}
+							yield {
+								type: "tool_execution_end",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								result: errorResult,
+								isError: true,
+							};
+							continue;
 						}
 
-						// Continue conversation with tool results
-						const allMessages = [
-							...messages,
-							userMessage,
-							currentAssistantMessage,
-							...toolResults,
-						];
+						try {
+							const result = await tool.execute(
+								toolCall.id,
+								toolCall.arguments,
+								signal,
+							);
 
-						// Recursive call for tool use continuation
-						yield* this.run(
-							allMessages,
-							toolResults[0], // Use first tool result as trigger
-							cfg,
-							signal,
-						);
+							const toolResultMessage: ToolResultMessage = {
+								role: "toolResult",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								content: result.content,
+								details: result.details,
+								isError: result.isError || false,
+								timestamp: Date.now(),
+							};
+							toolResults.push(toolResultMessage);
+
+							yield {
+								type: "tool_execution_end",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								result: toolResultMessage,
+								isError: toolResultMessage.isError,
+							};
+						} catch (error: unknown) {
+							const errorMessage =
+								error instanceof Error ? error.message : String(error);
+							const errorResult: ToolResultMessage = {
+								role: "toolResult",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								content: [
+									{
+										type: "text",
+										text: `Error: ${errorMessage}`,
+									},
+								],
+								isError: true,
+								timestamp: Date.now(),
+							};
+							toolResults.push(errorResult);
+
+							yield {
+								type: "tool_execution_end",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								result: errorResult,
+								isError: true,
+							};
+						}
 					}
-				}
-			} else if (event.type === "error") {
-				if (currentAssistantMessage) {
-					yield {
-						type: "message_end",
-						message: currentAssistantMessage,
-					};
+
+					allMessages.push(currentAssistantMessage);
+					allMessages.push(...toolResults);
+				} else {
+					break;
 				}
 			}
+		} else if (event.type === "error") {
+			if (currentAssistantMessage) {
+				yield {
+					type: "message_end",
+					message: currentAssistantMessage,
+				};
+			}
+			hasMoreToolCalls = false;
 		}
+	}
+}
 	}
 }
