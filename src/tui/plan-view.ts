@@ -117,7 +117,9 @@ export class PlanView {
 /plan <goal> — show plan details
 /plan new <goal> — create a plan
 /plan add <goal> :: <task> [:: priority] — add a task
-/plan complete <goal> :: <task number|id> — mark done`,
+/plan complete <goal> :: <task number|id> — mark done
+/plan clear <goal> — delete a plan
+/plan clear all — delete all plans`,
 				);
 				return true;
 			case "new":
@@ -128,6 +130,9 @@ export class PlanView {
 				return true;
 			case "complete":
 				this.handlePlanComplete(store, remainder);
+				return true;
+			case "clear":
+				this.handlePlanClear(store, remainder);
 				return true;
 			default:
 				return false;
@@ -215,6 +220,58 @@ export class PlanView {
 		saveTodoStore(this.options.filePath, store);
 		this.options.showInfoMessage(`Marked task as completed in "${goalKey}".`);
 		this.showGoalDetail(store, goalKey);
+	}
+
+	private handlePlanClear(store: TodoStore, remainder: string): void {
+		const targetName = remainder.trim();
+		if (!targetName) {
+			this.options.showInfoMessage(
+				"Provide a goal name or 'all', e.g. /plan clear Release Checklist",
+			);
+			return;
+		}
+
+		// Handle clearing all plans
+		if (targetName.toLowerCase() === "all") {
+			const count = Object.keys(store).length;
+			if (count === 0) {
+				this.options.showInfoMessage("No plans to clear.");
+				return;
+			}
+			// Clear all plans
+			for (const key of Object.keys(store)) {
+				delete store[key];
+			}
+			saveTodoStore(this.options.filePath, store);
+			this.options.showInfoMessage(`Cleared all ${count} plan(s).`);
+			this.options.setPlanHint(null);
+			this.showTextBlock(
+				"All plans have been deleted. Use /plan new <goal> to start fresh.",
+			);
+			return;
+		}
+
+		// Handle clearing a specific plan
+		const goalKey = findGoalKey(store, targetName);
+		if (!goalKey) {
+			this.options.showInfoMessage(`No plan found matching "${targetName}".`);
+			return;
+		}
+
+		delete store[goalKey];
+		saveTodoStore(this.options.filePath, store);
+		this.options.showInfoMessage(`Deleted plan "${goalKey}".`);
+		this.options.setPlanHint(calculatePlanHint(store));
+		
+		// Show remaining plans or empty state
+		const remaining = Object.keys(store);
+		if (remaining.length > 0) {
+			this.showPlanSummary(store);
+		} else {
+			this.showTextBlock(
+				"No plans found. Use /plan new <goal> to start a checklist.",
+			);
+		}
 	}
 
 	private resolveTask(entry: TodoGoalEntry, ref: string): TodoItem | undefined {

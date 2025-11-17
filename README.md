@@ -168,6 +168,16 @@ Run `/status` plus `/cost today` together for a quick health pulse.
 
 Inspect plans created via the `todo` tool. Show all goals or a specific one.
 
+```
+/plan                                   # list all plans
+/plan <goal>                            # show plan details
+/plan new <goal>                        # create a plan
+/plan add <goal> :: <task> [:: priority] # add a task
+/plan complete <goal> :: <task number|id> # mark done
+/plan clear <goal>                      # delete a plan
+/plan clear all                         # delete all plans
+```
+
 ### /preview
 
 Preview a git diff without leaving the TUI.
