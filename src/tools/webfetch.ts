@@ -33,10 +33,35 @@ const webfetchSchema = Type.Object({
 		}),
 	),
 	highlights: Type.Optional(
-		Type.Boolean({
-			description: "Return relevant highlights/excerpts",
-			default: false,
-		}),
+		Type.Union(
+			[
+				Type.Boolean({
+					description: "Return relevant highlights/excerpts",
+				}),
+				Type.Object({
+					numSentences: Type.Optional(
+						Type.Integer({
+							description: "Number of sentences per highlight",
+							minimum: 1,
+							maximum: 10,
+							default: 3,
+						}),
+					),
+					highlightsPerUrl: Type.Optional(
+						Type.Integer({
+							description: "Maximum highlights per URL",
+							minimum: 1,
+							maximum: 20,
+							default: 5,
+						}),
+					),
+				}),
+			],
+			{
+				description:
+					"Return highlights (boolean) or provide an object to control numSentences/highlightsPerUrl",
+			},
+		),
 	),
 });
 

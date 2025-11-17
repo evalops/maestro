@@ -1,3 +1,5 @@
+import { recordToolExecution } from "../telemetry.js";
+
 const EXA_API_BASE = "https://api.exa.ai";
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429]);
 const RETRYABLE_ERROR_SUBSTRINGS = [
@@ -107,7 +109,7 @@ function isRetryableNetworkError(error: unknown): boolean {
 	);
 }
 
-function extractCostDollars(value: unknown): number | undefined {
+export function normalizeCostDollars(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) {
 		return value;
 	}
@@ -141,6 +143,19 @@ function emitTelemetry(
 	onTelemetry(event);
 }
 
+function reportExaTelemetry(event: ExaTelemetryEvent): void {
+	const toolName = event.toolName ?? "exa";
+	const metadata: Record<string, unknown> = {
+		endpoint: event.endpoint,
+		operation: event.operation,
+		attempt: event.attempt,
+		status: event.status,
+		requestId: event.requestId,
+		costDollars: event.costDollars,
+	};
+	recordToolExecution(toolName, event.success, event.durationMs, metadata);
+}
+
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => {
 		setTimeout(resolve, ms);
@@ -155,6 +170,7 @@ export async function callExa<T>(
 	const apiKey = getExaApiKey();
 	const retries = Math.max(0, options.retries ?? 0);
 	const retryDelayMs = Math.max(0, options.retryDelayMs ?? 200);
+	const telemetryHandler = options.onTelemetry ?? reportExaTelemetry;
 
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		const attemptNumber = attempt + 1;
@@ -172,7 +188,7 @@ export async function callExa<T>(
 			});
 			responseBody = await response.text();
 		} catch (error) {
-			emitTelemetry(options.onTelemetry, {
+			emitTelemetry(telemetryHandler, {
 				toolName: options.toolName,
 				operation: options.operation,
 				endpoint,
@@ -202,7 +218,7 @@ export async function callExa<T>(
 				parsedError,
 			});
 
-			emitTelemetry(options.onTelemetry, {
+			emitTelemetry(telemetryHandler, {
 				toolName: options.toolName,
 				operation: options.operation,
 				endpoint,
@@ -212,7 +228,7 @@ export async function callExa<T>(
 				success: false,
 				errorMessage: message,
 				requestId: parsedError?.requestId,
-				costDollars: extractCostDollars(parsedError?.costDollars),
+				costDollars: normalizeCostDollars(parsedError?.costDollars),
 			});
 
 			if (attempt < retries && isRetryableStatus(response.status)) {
@@ -224,7 +240,7 @@ export async function callExa<T>(
 
 		const durationMs = performance.now() - start;
 		if (!responseBody) {
-			emitTelemetry(options.onTelemetry, {
+			emitTelemetry(telemetryHandler, {
 				toolName: options.toolName,
 				operation: options.operation,
 				endpoint,
@@ -241,7 +257,7 @@ export async function callExa<T>(
 				requestId?: string;
 				costDollars?: unknown;
 			};
-			emitTelemetry(options.onTelemetry, {
+			emitTelemetry(telemetryHandler, {
 				toolName: options.toolName,
 				operation: options.operation,
 				endpoint,
@@ -250,7 +266,7 @@ export async function callExa<T>(
 				status: response.status,
 				success: true,
 				requestId: data.requestId,
-				costDollars: extractCostDollars(data.costDollars),
+				costDollars: normalizeCostDollars(data.costDollars),
 			});
 			return data;
 		} catch (error) {
@@ -264,7 +280,10 @@ export async function callExa<T>(
 }
 
 type ContentsKey = "text" | "summary" | "context" | "highlights";
-type ContentsOptionsMap<K extends ContentsKey> = Partial<Record<K, boolean>>;
+type ContentsValue = boolean | Record<string, unknown>;
+type ContentsOptionsMap<K extends ContentsKey> = Partial<
+	Record<K, ContentsValue>
+>;
 
 export function buildContentsOptions<K extends ContentsKey>(
 	options: ContentsOptionsMap<K>,
@@ -273,12 +292,14 @@ export function buildContentsOptions<K extends ContentsKey>(
 	const defaultKeys = defaults ? (Object.keys(defaults) as ContentsKey[]) : [];
 	const optionKeys = options ? (Object.keys(options) as ContentsKey[]) : [];
 	const keys = new Set<ContentsKey>([...defaultKeys, ...optionKeys]);
-	const result: Partial<Record<ContentsKey, boolean>> = {};
+	const result: Partial<Record<ContentsKey, ContentsValue>> = {};
 	let hasValue = false;
 	for (const key of keys) {
 		const value =
-			(options as Record<ContentsKey, boolean | undefined>)[key] ??
-			(defaults as Record<ContentsKey, boolean | undefined> | undefined)?.[key];
+			(options as Record<ContentsKey, ContentsValue | undefined>)[key] ??
+			(
+				defaults as Record<ContentsKey, ContentsValue | undefined> | undefined
+			)?.[key];
 		if (value !== undefined) {
 			result[key] = value;
 			hasValue = true;

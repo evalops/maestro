@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { recordToolExecution } from "../src/telemetry.js";
 import {
 	ExaApiError,
 	buildContentsOptions,
 	callExa,
 } from "../src/tools/exa-client.js";
+
+vi.mock("../src/telemetry.js", () => ({
+	recordToolExecution: vi.fn(),
+}));
 
 const originalEnv = { ...process.env };
 
@@ -115,6 +120,28 @@ describe("callExa", () => {
 			expect.objectContaining({ success: false, status: 500 }),
 		);
 	});
+
+	it("records telemetry via default reporter", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(
+				mockFetchOnce({ body: JSON.stringify({ requestId: "req-telemetry" }) }),
+			);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await callExa("/search", { query: "telemetry" });
+
+		expect(recordToolExecution).toHaveBeenCalledWith(
+			"exa",
+			true,
+			expect.any(Number),
+			expect.objectContaining({
+				endpoint: "/search",
+				attempt: 1,
+				operation: undefined,
+			}),
+		);
+	});
 });
 
 describe("buildContentsOptions", () => {
@@ -129,5 +156,13 @@ describe("buildContentsOptions", () => {
 	it("returns undefined when no values provided", () => {
 		const contents = buildContentsOptions({}, {});
 		expect(contents).toBeUndefined();
+	});
+
+	it("supports object-based options", () => {
+		const contents = buildContentsOptions(
+			{ highlights: { numSentences: 2 } },
+			{ text: true },
+		);
+		expect(contents).toEqual({ text: true, highlights: { numSentences: 2 } });
 	});
 });

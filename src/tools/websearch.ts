@@ -1,5 +1,9 @@
 import { Type } from "@sinclair/typebox";
-import { buildContentsOptions, callExa } from "./exa-client.js";
+import {
+	buildContentsOptions,
+	callExa,
+	normalizeCostDollars,
+} from "./exa-client.js";
 import type { ExaSearchResponse } from "./exa-types.js";
 import { createTypeboxTool } from "./typebox-tool.js";
 
@@ -75,6 +79,37 @@ const websearchSchema = Type.Object({
 			default: false,
 		}),
 	),
+	highlights: Type.Optional(
+		Type.Union(
+			[
+				Type.Boolean({
+					description: "Return relevant highlights/excerpts",
+				}),
+				Type.Object({
+					numSentences: Type.Optional(
+						Type.Integer({
+							description: "Number of sentences per highlight",
+							minimum: 1,
+							maximum: 10,
+							default: 3,
+						}),
+					),
+					highlightsPerUrl: Type.Optional(
+						Type.Integer({
+							description: "Maximum highlights per URL",
+							minimum: 1,
+							maximum: 20,
+							default: 5,
+						}),
+					),
+				}),
+			],
+			{
+				description:
+					"Control highlight extraction (boolean or config object with numSentences/highlightsPerUrl)",
+			},
+		),
+	),
 	context: Type.Optional(
 		Type.Boolean({
 			description:
@@ -92,6 +127,38 @@ const websearchSchema = Type.Object({
 		Type.String({
 			description:
 				"Only results published before this date (ISO 8601 format: YYYY-MM-DD)",
+		}),
+	),
+	livecrawl: Type.Optional(
+		Type.Union(
+			[
+				Type.Literal("never"),
+				Type.Literal("fallback"),
+				Type.Literal("preferred"),
+				Type.Literal("always"),
+			],
+			{
+				description:
+					"Live crawling preference: never (cache only), fallback (use cache unless needed), preferred (prefer live crawl), always",
+			},
+		),
+	),
+	subpages: Type.Optional(
+		Type.Object({
+			limit: Type.Integer({
+				description: "Number of subpages to crawl per root result",
+				minimum: 1,
+				maximum: 20,
+				default: 5,
+			}),
+			depth: Type.Optional(
+				Type.Integer({
+					description: "Subpage crawl depth",
+					minimum: 1,
+					maximum: 5,
+					default: 1,
+				}),
+			),
 		}),
 	),
 });
@@ -121,11 +188,22 @@ export const websearchTool = createTypeboxTool({
 
 		// Configure contents retrieval
 		const contents = buildContentsOptions(
-			{ text: params.text, summary: params.summary, context: params.context },
-			{ text: true, summary: false, context: true },
+			{
+				text: params.text,
+				summary: params.summary,
+				context: params.context,
+				highlights: params.highlights,
+			},
+			{ text: true, summary: false, context: true, highlights: false },
 		);
 		if (contents) {
 			requestBody.contents = contents;
+		}
+		if (params.livecrawl) {
+			requestBody.livecrawl = params.livecrawl;
+		}
+		if (params.subpages) {
+			requestBody.subpages = params.subpages;
 		}
 
 		const data = await callExa<ExaSearchResponse>("/search", requestBody, {
@@ -140,7 +218,7 @@ export const websearchTool = createTypeboxTool({
 			`Search type: ${data.resolvedSearchType || params.type || "auto"}`,
 		);
 		outputLines.push(`Found ${data.results.length} results`);
-		const totalCost = data.costDollars?.total;
+		const totalCost = normalizeCostDollars(data.costDollars);
 		if (typeof totalCost === "number") {
 			outputLines.push(
 				`Cost: $${totalCost.toFixed(4)} (charged to Exa account)`,

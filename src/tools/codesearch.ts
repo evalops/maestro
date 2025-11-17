@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { callExa } from "./exa-client.js";
+import { callExa, normalizeCostDollars } from "./exa-client.js";
 import type { ExaContextResponse } from "./exa-types.js";
 import { createTypeboxTool } from "./typebox-tool.js";
 
@@ -45,14 +45,7 @@ export const codesearchTool = createTypeboxTool({
 			operation: "context",
 		});
 
-		// Parse cost (returned as JSON string)
-		let costTotal = 0;
-		try {
-			const costData = JSON.parse(data.costDollars);
-			costTotal = costData.total || 0;
-		} catch {
-			// Ignore parse errors
-		}
+		const costTotal = normalizeCostDollars(data.costDollars) ?? 0;
 
 		// Format output
 		const outputLines: string[] = [];
