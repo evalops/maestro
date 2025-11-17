@@ -23,7 +23,7 @@ describe("AboutView", () => {
 			} as any,
 			chatContainer: { addChild: () => {} } as any,
 			ui: { requestRender: () => {} } as any,
-			version: "0.9.0",
+			version: "0.10.0",
 			telemetryStatus: () => "enabled",
 		});
 		const card = about.buildAboutCard();
