@@ -28,7 +28,6 @@ import {
 	TUI,
 	Text,
 } from "../tui-lib/index.js";
-import { AssistantMessageComponent } from "./assistant-message.js";
 import { createCommandRegistry } from "./commands/registry.js";
 import type { CommandEntry } from "./commands/types.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -53,6 +52,7 @@ import { InfoView } from "./info-view.js";
 import { ToolOutputView } from "./tool-output-view.js";
 import { ThinkingSelectorView } from "./thinking-selector-view.js";
 import { ModelSelectorView } from "./model-selector-view.js";
+import { StreamingView } from "./streaming-view.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -74,9 +74,6 @@ export class TuiRenderer {
 	private loaderView: LoaderView;
 	private onInterruptCallback?: () => void;
 	private lastSigintTime = 0;
-
-	// Streaming message tracking
-	private streamingComponent: AssistantMessageComponent | null = null;
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -111,6 +108,7 @@ export class TuiRenderer {
 	private messageView: MessageView;
 	private feedbackView: FeedbackView;
 	private infoView: InfoView;
+	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
 	private modelSelectorView: ModelSelectorView;
 
@@ -207,18 +205,23 @@ export class TuiRenderer {
 			ui: this.ui,
 			getCommands: () => this.slashCommands,
 		});
-        this.toolOutputView = new ToolOutputView({
-            ui: this.ui,
-            showInfoMessage: (message) => this.showInfoMessage(message),
-        });
-        this.messageView = new MessageView({
-            chatContainer: this.chatContainer,
-            ui: this.ui,
-            toolComponents: this.toolOutputView.getTrackedComponents(),
-            pendingTools: this.pendingTools,
-            registerToolComponent: (component) =>
-                this.toolOutputView.registerToolComponent(component),
-        });
+		this.toolOutputView = new ToolOutputView({
+			ui: this.ui,
+			showInfoMessage: (message) => this.showInfoMessage(message),
+		});
+		this.messageView = new MessageView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			toolComponents: this.toolOutputView.getTrackedComponents(),
+			pendingTools: this.pendingTools,
+			registerToolComponent: (component) =>
+				this.toolOutputView.registerToolComponent(component),
+		});
+		this.streamingView = new StreamingView({
+			chatContainer: this.chatContainer,
+			pendingTools: this.pendingTools,
+			toolOutputView: this.toolOutputView,
+		});
 		this.importExportView = new ImportExportView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -424,10 +427,7 @@ export class TuiRenderer {
 					this.editor.setText("");
 					this.ui.requestRender();
 				} else if (event.message.role === "assistant") {
-					// Create assistant component for streaming
-					this.streamingComponent = new AssistantMessageComponent();
-					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(
+					this.streamingView.beginAssistantMessage(
 						event.message as AssistantMessage,
 					);
 					this.loaderView.setStreamingActive(true);
@@ -437,34 +437,10 @@ export class TuiRenderer {
 				break;
 
 			case "message_update":
-				// Update streaming component
-				if (this.streamingComponent && event.message.role === "assistant") {
-					const assistantMsg = event.message as AssistantMessage;
-					this.streamingComponent.updateContent(assistantMsg);
-
-					// Create tool execution components as soon as we see tool calls
-					for (const content of assistantMsg.content) {
-						if (content.type === "toolCall") {
-							// Only create if we haven't created it yet
-							if (!this.pendingTools.has(content.id)) {
-								this.chatContainer.addChild(new Text("", 0, 0));
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.arguments,
-								);
-				this.chatContainer.addChild(component);
-				this.pendingTools.set(content.id, component);
-				this.toolOutputView.registerToolComponent(component);
-							} else {
-								// Update existing component with latest arguments as they stream
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
-							}
-						}
-					}
-
+				if (event.message.role === "assistant") {
+					this.streamingView.updateAssistantMessage(
+						event.message as AssistantMessage,
+					);
 					this.ui.requestRender();
 				}
 				break;
@@ -474,36 +450,14 @@ export class TuiRenderer {
 				if (event.message.role === "user") {
 					break;
 				}
-				if (this.streamingComponent && event.message.role === "assistant") {
+				if (event.message.role === "assistant") {
 					this.loaderView.setStreamingActive(false);
 					const assistantMsg = event.message as AssistantMessage;
 					this.lastAssistantMessageText = this.extractTextFromAppMessage(
 						event.message,
 					);
 
-					// Update streaming component with final message (includes stopReason)
-					this.streamingComponent.updateContent(assistantMsg);
-
-					// If message was aborted or errored, mark all pending tool components as failed
-					if (
-						assistantMsg.stopReason === "aborted" ||
-						assistantMsg.stopReason === "error"
-					) {
-						const errorMessage =
-							assistantMsg.stopReason === "aborted"
-								? "Operation aborted"
-								: assistantMsg.errorMessage || "Error";
-						for (const [toolCallId, component] of this.pendingTools.entries()) {
-							component.updateResult({
-								content: [{ type: "text", text: errorMessage }],
-								isError: true,
-							});
-						}
-						this.pendingTools.clear();
-					}
-
-					// Keep the streaming component - it's now the final assistant message
-					this.streamingComponent = null;
+					this.streamingView.finishAssistantMessage(assistantMsg);
 				}
 				if (
 					event.message.role === "assistant" &&
@@ -528,38 +482,25 @@ export class TuiRenderer {
 			case "tool_execution_start": {
 				this.loaderView.registerToolStage(event.toolCallId, event.toolName);
 				this.currentRunToolNames.push(event.toolName);
-				// Component should already exist from message_update, but create if missing
-				if (!this.pendingTools.has(event.toolCallId)) {
-					const component = new ToolExecutionComponent(
-						event.toolName,
-						event.args,
-					);
-			this.chatContainer.addChild(component);
-			this.pendingTools.set(event.toolCallId, component);
-			this.toolOutputView.registerToolComponent(component);
-					this.ui.requestRender();
-				}
+				this.streamingView.ensureToolComponent(
+					event.toolCallId,
+					event.toolName,
+					event.args,
+				);
+				this.ui.requestRender();
 				break;
 			}
 
 			case "tool_execution_end": {
-				// Update the existing tool component with the result
-				const component = this.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateResult(event.result);
-					this.pendingTools.delete(event.toolCallId);
-					this.ui.requestRender();
-				}
+				this.streamingView.resolveToolResult(event.toolCallId, event.result);
+				this.ui.requestRender();
 				this.loaderView.markToolComplete(event.toolCallId);
 				break;
 			}
 
 			case "agent_end":
 				this.loaderView.finish();
-				if (this.streamingComponent) {
-					this.chatContainer.removeChild(this.streamingComponent);
-					this.streamingComponent = null;
-				}
+				this.streamingView.forceStopStreaming();
 				this.pendingTools.clear();
 				this.editor.disableSubmit = false;
 				this.gitView.notifyFileChanges();
