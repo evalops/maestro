@@ -68,6 +68,8 @@ etc.) control provider access without embedding keys in CLI flags.
 When the agent is busy, additional prompts are enqueued. The footer shows the
 count (“2 prompts queued”), and `/queue` lists, cancels, or reprioritizes the
 pending items. Bash mode bypasses the queue to provide immediate shell access.
+While a tool runs you’ll see its arguments stream live (e.g., `write` shows the
+path/content being written) so you can audit actions before they complete.
 
 ## Telemetry & Diagnostics
 

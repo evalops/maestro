@@ -8,9 +8,12 @@ import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class GenericRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
+		const args = context.result
+			? context.args
+			: (context.partialArgs ?? context.args);
 		const label = context.toolName
 			? `${context.toolName}`
-			: (context.args?.name ?? "tool");
+			: (args?.name ?? "tool");
 		const text = chalk.bold(`${chalk.hex("#d4d8ff")("✷")} ${label}`);
 		if (context.collapsed) {
 			const combined = [
@@ -23,7 +26,7 @@ export class GenericRenderer implements ToolRenderer {
 		}
 
 		const sections: string[] = [];
-		const argsLines = formatJsonSnippet(context.args);
+		const argsLines = formatJsonSnippet(args);
 		if (argsLines.length) {
 			sections.push(formatSection("arguments", argsLines));
 		}

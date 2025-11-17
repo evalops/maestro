@@ -9,7 +9,10 @@ import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class BashRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
-		const command = context.args?.command || "";
+		const args = context.result
+			? context.args
+			: (context.partialArgs ?? context.args);
+		const command = args?.command || "";
 		const text = chalk.hex("#eab676")("⟢ bash");
 		const commandLines = formatShellSnippet(command ? `$ ${command}` : "$ ...");
 		const sections: string[] = [];

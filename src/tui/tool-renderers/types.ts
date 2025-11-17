@@ -1,6 +1,7 @@
 export interface ToolRenderArgs {
 	toolName: string;
 	args: any;
+	partialArgs?: any;
 	result?: {
 		content: Array<{
 			type: string;

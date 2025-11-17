@@ -10,9 +10,10 @@ import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class ReadRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
-		const path = shortenPath(
-			context.args?.file_path || context.args?.path || "",
-		);
+		const args = context.result
+			? context.args
+			: (context.partialArgs ?? context.args);
+		const path = shortenPath(args?.file_path || args?.path || "");
 		let text = `${chalk.hex("#7bc7ff")("✦ read")} ${
 			path ? chalk.cyan(path) : chalk.dim("...")
 		}`;

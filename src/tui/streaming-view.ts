@@ -28,6 +28,7 @@ export class StreamingView {
 		for (const content of message.content) {
 			if (content.type === "toolCall") {
 				this.ensureToolComponent(content.id, content.name, content.arguments);
+				this.updatePartialArgs(content.id, content.arguments);
 			}
 		}
 	}
@@ -62,6 +63,12 @@ export class StreamingView {
 		this.options.chatContainer.addChild(component);
 		this.options.pendingTools.set(toolCallId, component);
 		this.options.toolOutputView.registerToolComponent(component);
+	}
+
+	updatePartialArgs(toolCallId: string, args: any): void {
+		const component = this.options.pendingTools.get(toolCallId);
+		if (!component) return;
+		component.updatePartialArgs(args);
 	}
 
 	resolveToolResult(

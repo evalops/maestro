@@ -12,6 +12,7 @@ export class ToolExecutionComponent extends Container {
 	private contentText: Text;
 	private toolName: string;
 	private args: any;
+	private partialArgs: any;
 	private collapsed = false;
 	private pendingStatus: string | null = null;
 	private result?: {
@@ -31,6 +32,7 @@ export class ToolExecutionComponent extends Container {
 		super();
 		this.toolName = toolName;
 		this.args = args;
+		this.partialArgs = args;
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(this.buildTopLine(), 1, 0));
 		// Content with colored background and padding
@@ -62,6 +64,12 @@ export class ToolExecutionComponent extends Container {
 
 	updateArgs(args: any): void {
 		this.args = args;
+		this.partialArgs = args;
+		this.updateDisplay();
+	}
+
+	updatePartialArgs(args: any): void {
+		this.partialArgs = args;
 		this.updateDisplay();
 	}
 
@@ -99,6 +107,7 @@ export class ToolExecutionComponent extends Container {
 		const body = this.renderer.render({
 			toolName: this.toolName,
 			args: this.args,
+			partialArgs: this.partialArgs,
 			result: this.result,
 			collapsed: this.collapsed,
 		});

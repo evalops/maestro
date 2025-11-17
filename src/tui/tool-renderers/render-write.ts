@@ -10,10 +10,11 @@ import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class WriteRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
-		const path = shortenPath(
-			context.args?.file_path || context.args?.path || "",
-		);
-		const fileContent = context.args?.content || "";
+		const args = context.result
+			? context.args
+			: (context.partialArgs ?? context.args);
+		const path = shortenPath(args?.file_path || args?.path || "");
+		const fileContent = args?.content || "";
 		const lines = fileContent ? fileContent.split("\n") : [];
 		const totalLines = lines.length;
 
