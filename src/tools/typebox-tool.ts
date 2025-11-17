@@ -1,11 +1,10 @@
 import { performance } from "node:perf_hooks";
 import type { Static, TSchema } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
-import AjvPkg from "ajv";
-import type { Ajv as AjvInstance, ErrorObject } from "ajv";
+import type { ErrorObject } from "ajv";
 import type { AgentTool, AgentToolResult } from "../agent/types.js";
 import { logToolFailure, recordToolExecution } from "../telemetry.js";
-import { isTransientToolError } from "./zod-tool.js";
+import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 
 type ExecuteResult<Details> =
 	| AgentToolResult<Details>
@@ -26,20 +25,12 @@ interface CreateTypeboxToolOptions<Schema extends TSchema, Details> {
 	) => ExecuteResult<Details>;
 }
 
-const AjvConstructor: new (options?: any) => AjvInstance =
-	((AjvPkg as any).default ?? AjvPkg) as any;
-const ajv = new AjvConstructor({
-	allErrors: true,
-	useDefaults: true,
-	strict: false,
-});
-
 export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 	options: CreateTypeboxToolOptions<Schema, Details>,
 ): AgentTool<any, Details> {
 	const schema = Type.Strict(options.schema) as Schema;
 	const parameters = schema;
-	const validate = ajv.compile<Static<Schema>>(schema as any);
+	const validate = compileTypeboxSchema(schema);
 
 	return {
 		name: options.name,
@@ -55,7 +46,9 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 			if (!validate(input)) {
 				const message =
 					validate.errors
-						?.map((err: ErrorObject) => `${err.instancePath || "/"} ${err.message}`)
+						?.map((err: ErrorObject) => {
+							return `${err.instancePath || "/"} ${err.message}`;
+						})
 						.join("; ") ?? "Invalid arguments";
 				throw new Error(`Invalid arguments for ${options.name}: ${message}`);
 			}
@@ -125,4 +118,22 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 			throw lastError ?? new Error("Unknown tool execution failure");
 		},
 	};
+}
+function isTransientToolError(error: unknown): boolean {
+	if (!error) return true;
+	if (error instanceof Error) {
+		if (error.name === "AbortError") {
+			return false;
+		}
+		const message = error.message.toLowerCase();
+		if (
+			message.includes("invalid") ||
+			message.includes("syntax") ||
+			message.includes("not found") ||
+			message.includes("unknown command")
+		) {
+			return false;
+		}
+	}
+	return true;
 }

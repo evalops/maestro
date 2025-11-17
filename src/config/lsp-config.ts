@@ -1,31 +1,45 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
+import { Type } from "@sinclair/typebox";
+import type { Static } from "@sinclair/typebox";
 import type { LspServerConfig } from "../lsp/index.js";
-import { resolveWorkspaceRoot } from "../workspace/root-resolver.js";
+import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 
 const CONFIG_PATH = join(homedir(), ".composer", "config.json");
 
-const serverOverrideSchema = z.object({
-	enabled: z.boolean().optional(),
-	command: z.string().min(1).optional(),
-	args: z.array(z.string()).optional(),
-	env: z.record(z.string()).optional(),
-	extensions: z.array(z.string().regex(/^\./)).optional(),
-	initializationOptions: z.record(z.unknown()).optional(),
+const serverOverrideSchema = Type.Object({
+	enabled: Type.Optional(Type.Boolean()),
+	command: Type.Optional(Type.String({ minLength: 1 })),
+	args: Type.Optional(Type.Array(Type.String())),
+	env: Type.Optional(Type.Record(Type.String(), Type.String())),
+	extensions: Type.Optional(
+		Type.Array(
+			Type.String({
+				pattern: "^\\.",
+			}),
+		),
+	),
+	initializationOptions: Type.Optional(
+		Type.Record(Type.String(), Type.Unknown()),
+	),
 });
 
-const configSchema = z.object({
-	lsp: z
-		.object({
-			enabled: z.boolean().default(true),
-			servers: z.record(serverOverrideSchema).optional(),
-			blockingSeverity: z.number().int().positive().optional(),
-		})
-		.default({ enabled: true }),
+const configSchema = Type.Object({
+	lsp: Type.Object(
+		{
+			enabled: Type.Optional(Type.Boolean({ default: true })),
+			servers: Type.Optional(Type.Record(Type.String(), serverOverrideSchema)),
+			blockingSeverity: Type.Optional(
+				Type.Integer({ minimum: 1, description: "LSP blocking severity" }),
+			),
+		},
+		{ default: { enabled: true } },
+	),
 });
-type LspConfig = z.infer<typeof configSchema>["lsp"];
+type LspConfig = Static<typeof configSchema>["lsp"];
+
+const validateConfig = compileTypeboxSchema(configSchema);
 
 let cachedConfig: LspConfig | null = null;
 
@@ -39,9 +53,18 @@ function loadRawConfig(): LspConfig {
 	}
 	try {
 		const raw = readFileSync(CONFIG_PATH, "utf-8");
-		const parsed = configSchema.parse(JSON.parse(raw));
-		cachedConfig = parsed.lsp;
-		return parsed.lsp;
+		const data = JSON.parse(raw);
+		if (!validateConfig(data)) {
+			const message =
+				validateConfig.errors
+					?.map(
+						(err) => `${err.instancePath || "/"} ${err.message ?? "invalid"}`,
+					)
+					.join("; ") ?? "Invalid config";
+			throw new Error(message);
+		}
+		cachedConfig = data.lsp;
+		return cachedConfig;
 	} catch (error) {
 		console.error("[lsp-config] Failed to parse", error);
 		cachedConfig = { enabled: true };

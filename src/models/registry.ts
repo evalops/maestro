@@ -1,13 +1,16 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { Type } from "@sinclair/typebox";
+import type { Static } from "@sinclair/typebox";
+import type { ErrorObject } from "ajv";
 import {
 	type ParseError as JsoncParseError,
 	parse as parseJsonc,
 	printParseErrorCode,
 } from "jsonc-parser";
-import { z } from "zod";
 import type { Api, Model, Provider } from "../agent/types.js";
+import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
 
 const COST_DEFAULT = {
@@ -17,18 +20,59 @@ const COST_DEFAULT = {
 	cacheWrite: 0,
 } as const;
 
-const headersSchema = z.record(z.string()).optional();
+const headersSchema = Type.Optional(Type.Record(Type.String(), Type.String()));
 
-const baseUrlSchema = z
-	.string()
-	.url("Base URL must be a valid URL")
-	.refine(
-		(url) => {
-			// Warn about common mistakes but don't fail (we auto-normalize)
-			return true;
-		},
-		{ message: "Base URL will be auto-normalized if incomplete" },
-	);
+const modelSchema = Type.Object({
+	id: Type.String({ minLength: 1 }),
+	name: Type.String({ minLength: 1 }),
+	api: Type.Optional(
+		Type.Union([
+			Type.Literal("openai-completions"),
+			Type.Literal("openai-responses"),
+			Type.Literal("anthropic-messages"),
+			Type.Literal("google-generative-ai"),
+		]),
+	),
+	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
+	reasoning: Type.Optional(Type.Boolean()),
+	input: Type.Optional(
+		Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")])),
+	),
+	cost: Type.Optional(
+		Type.Object({
+			input: Type.Number({ minimum: 0 }),
+			output: Type.Number({ minimum: 0 }),
+			cacheRead: Type.Number({ minimum: 0 }),
+			cacheWrite: Type.Number({ minimum: 0 }),
+		}),
+	),
+	contextWindow: Type.Number({ minimum: 1 }),
+	maxTokens: Type.Number({ minimum: 1 }),
+	headers: headersSchema,
+});
+
+const providerSchema = Type.Object({
+	id: Type.String({ minLength: 1 }),
+	name: Type.String({ minLength: 1 }),
+	api: Type.Optional(modelSchema.properties.api),
+	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
+	apiKeyEnv: Type.Optional(Type.String({ minLength: 1 })),
+	apiKey: Type.Optional(Type.String({ minLength: 1 })),
+	models: Type.Array(modelSchema, { minItems: 1 }),
+});
+
+const configSchema = Type.Object({
+	$schema: Type.Optional(Type.String()),
+	providers: Type.Array(providerSchema, { default: [] }),
+	aliases: Type.Optional(
+		Type.Record(Type.String(), Type.String(), {
+			description:
+				"Model aliases for convenience (e.g., 'fast': 'anthropic/claude-haiku')",
+		}),
+	),
+});
+
+const configValidator = compileTypeboxSchema(configSchema);
 
 export function isLocalBaseUrl(url?: string): boolean {
 	if (!url) {
@@ -47,57 +91,9 @@ export function isLocalBaseUrl(url?: string): boolean {
 	}
 }
 
-const modelSchema = z.object({
-	id: z.string().min(1),
-	name: z.string().min(1),
-	api: z
-		.enum([
-			"openai-completions",
-			"openai-responses",
-			"anthropic-messages",
-			"google-generative-ai",
-		])
-		.optional(),
-	baseUrl: baseUrlSchema.optional(),
-	reasoning: z.boolean().optional(),
-	input: z.array(z.enum(["text", "image"])).optional(),
-	cost: z
-		.object({
-			input: z.number().nonnegative(),
-			output: z.number().nonnegative(),
-			cacheRead: z.number().nonnegative(),
-			cacheWrite: z.number().nonnegative(),
-		})
-		.optional(),
-	contextWindow: z.number().positive(),
-	maxTokens: z.number().positive(),
-	headers: headersSchema,
-});
-
-const providerSchema = z.object({
-	id: z.string().min(1),
-	name: z.string().min(1),
-	api: modelSchema.shape.api.optional(),
-	baseUrl: baseUrlSchema.optional(),
-	apiKeyEnv: z.string().min(1).optional(),
-	apiKey: z.string().min(1).optional(),
-	models: z.array(modelSchema).min(1),
-});
-
-const configSchema = z.object({
-	$schema: z.string().optional(),
-	providers: z.array(providerSchema).default([]),
-	aliases: z
-		.record(z.string())
-		.optional()
-		.describe(
-			"Model aliases for convenience (e.g., 'fast': 'anthropic/claude-haiku')",
-		),
-});
-
-export type CustomModelConfig = z.infer<typeof configSchema>;
-export type CustomProvider = z.infer<typeof providerSchema>;
-export type CustomModel = z.infer<typeof modelSchema>;
+export type CustomModelConfig = Static<typeof configSchema>;
+export type CustomProvider = Static<typeof providerSchema>;
+export type CustomModel = Static<typeof modelSchema>;
 
 /**
  * Deep merge two objects (simple implementation for configs)
@@ -142,6 +138,17 @@ function mergeDeep<T>(target: T, source: Partial<T>): T {
 
 function isObject(item: unknown): item is Record<string, unknown> {
 	return item !== null && typeof item === "object" && !Array.isArray(item);
+}
+
+function formatValidationErrors(errors?: ErrorObject[] | null): string {
+	if (!errors || errors.length === 0) {
+		return "Invalid configuration";
+	}
+	return errors
+		.map(
+			(err) => `${err.instancePath || "/"} ${err.message ?? "invalid value"}`,
+		)
+		.join("; ");
 }
 
 export interface RegisteredModel extends Model<Api> {
@@ -447,10 +454,11 @@ function loadConfigFile(path: string): CustomModelConfig | null {
 		// Parse JSONC (supports comments and trailing commas)
 		const data = parseJsoncWithErrors(processed, path);
 
-		// Validate with Zod schema
-		const parsed = configSchema.parse(data);
+		if (!configValidator(data)) {
+			throw new Error(formatValidationErrors(configValidator.errors));
+		}
 
-		return parsed;
+		return data as CustomModelConfig;
 	} catch (error) {
 		throw new Error(
 			`Failed to parse config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
