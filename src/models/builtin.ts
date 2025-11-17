@@ -1,226 +1,27 @@
-import type { Model, Provider } from "../agent/types.js";
+import type { Model } from "../agent/types.js";
+import { MODELS as GENERATED_MODELS } from "./models.generated.js";
 
-// Built-in model definitions
-const BUILTIN_MODELS: Record<string, Model<any>[]> = {
-	anthropic: [
-		{
-			id: "claude-opus-4-5",
-			name: "Claude Opus 4.5",
-			api: "anthropic-messages",
-			provider: "anthropic",
-			baseUrl: "https://api.anthropic.com/v1/messages",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
-			contextWindow: 200000,
-			maxTokens: 16384,
-		},
-		{
-			id: "claude-sonnet-4-5",
-			name: "Claude Sonnet 4.5",
-			api: "anthropic-messages",
-			provider: "anthropic",
-			baseUrl: "https://api.anthropic.com/v1/messages",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-			contextWindow: 200000,
-			maxTokens: 8192,
-		},
-		{
-			id: "claude-haiku-4-5",
-			name: "Claude Haiku 4.5",
-			api: "anthropic-messages",
-			provider: "anthropic",
-			baseUrl: "https://api.anthropic.com/v1/messages",
-			reasoning: false,
-			input: ["text", "image"],
-			cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
-			contextWindow: 200000,
-			maxTokens: 8192,
-		},
-	],
-	openai: [
-		{
-			id: "gpt-5.1-codex",
-			name: "GPT-5.1 Codex",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1/chat/completions",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 5, output: 15, cacheRead: 1.25, cacheWrite: 0 },
-			contextWindow: 200000,
-			maxTokens: 32768,
-		},
-		{
-			id: "gpt-4o",
-			name: "GPT-4o",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1/chat/completions",
-			reasoning: false,
-			input: ["text", "image"],
-			cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 16384,
-		},
-		{
-			id: "gpt-4o-mini",
-			name: "GPT-4o Mini",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1/chat/completions",
-			reasoning: false,
-			input: ["text", "image"],
-			cost: { input: 0.15, output: 0.6, cacheRead: 0.075, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 16384,
-		},
-	],
-	openrouter: [
-		{
-			id: "anthropic/claude-sonnet-4-5",
-			name: "Claude Sonnet 4.5 (OpenRouter)",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1/chat/completions",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-			contextWindow: 200000,
-			maxTokens: 8192,
-		},
-		{
-			id: "openrouter/sherlock-dash-alpha",
-			name: "Sherlock Dash Alpha",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1/chat/completions",
-			reasoning: false,
-			input: ["text", "image"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 1840000,
-			maxTokens: 64000,
-		},
-		{
-			id: "openrouter/sherlock-think-alpha",
-			name: "Sherlock Think Alpha",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1/chat/completions",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 1840000,
-			maxTokens: 64000,
-		},
-		{
-			id: "openai/gpt-5.1",
-			name: "OpenAI: GPT-5.1 (via OpenRouter)",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1/chat/completions",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
-			contextWindow: 400000,
-			maxTokens: 128000,
-		},
-		{
-			id: "openai/gpt-5.1-codex",
-			name: "OpenAI: GPT-5.1-Codex (via OpenRouter)",
-			api: "openai-completions",
-			provider: "openrouter",
-			baseUrl: "https://openrouter.ai/api/v1/chat/completions",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 5, output: 15, cacheRead: 1.25, cacheWrite: 0 },
-			contextWindow: 200000,
-			maxTokens: 32768,
-		},
-	],
-	xai: [
-		{
-			id: "grok-2-latest",
-			name: "Grok 2",
-			api: "openai-responses",
-			provider: "xai",
-			baseUrl: "https://api.x.ai/v1/chat/completions",
-			reasoning: false,
-			input: ["text", "image"],
-			cost: { input: 2, output: 10, cacheRead: 0.5, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 32768,
-		},
-	],
-	groq: [
-		{
-			id: "llama-3.3-70b-versatile",
-			name: "Llama 3.3 70B",
-			api: "openai-responses",
-			provider: "groq",
-			baseUrl: "https://api.groq.com/openai/v1/chat/completions",
-			reasoning: false,
-			input: ["text"],
-			cost: { input: 0.59, output: 0.79, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 32768,
-		},
-	],
-	cerebras: [
-		{
-			id: "llama-3.3-70b",
-			name: "Llama 3.3 70B (Cerebras)",
-			api: "openai-responses",
-			provider: "cerebras",
-			baseUrl: "https://api.cerebras.ai/v1/chat/completions",
-			reasoning: false,
-			input: ["text"],
-			cost: { input: 0.6, output: 0.6, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 8192,
-		},
-	],
-	google: [
-		{
-			id: "gemini-2.5-pro",
-			name: "Gemini 2.5 Pro",
-			api: "google-generative-ai",
-			provider: "google",
-			baseUrl: "https://generativelanguage.googleapis.com",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 1.25, output: 5, cacheRead: 0.3125, cacheWrite: 0 },
-			contextWindow: 2097152,
-			maxTokens: 65536,
-		},
-		{
-			id: "gemini-2.5-flash",
-			name: "Gemini 2.5 Flash",
-			api: "google-generative-ai",
-			provider: "google",
-			baseUrl: "https://generativelanguage.googleapis.com",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 0.075, output: 0.3, cacheRead: 0.01875, cacheWrite: 0 },
-			contextWindow: 2097152,
-			maxTokens: 65536,
-		},
-		{
-			id: "gemini-2.5-flash-8b",
-			name: "Gemini 2.5 Flash 8B",
-			api: "google-generative-ai",
-			provider: "google",
-			baseUrl: "https://generativelanguage.googleapis.com",
-			reasoning: false,
-			input: ["text", "image"],
-			cost: { input: 0.0375, output: 0.15, cacheRead: 0.009375, cacheWrite: 0 },
-			contextWindow: 2097152,
-			maxTokens: 65536,
-		},
-	],
-};
+// Convert generated models to our format
+function convertGeneratedModels(): Record<string, Model<any>[]> {
+	const converted: Record<string, Model<any>[]> = {};
+
+	for (const [provider, models] of Object.entries(GENERATED_MODELS)) {
+		converted[provider] = Object.values(models).map((model) => ({
+			...model,
+			// Ensure baseUrl format consistency for Anthropic
+			baseUrl:
+				model.provider === "anthropic" &&
+				!model.baseUrl.includes("/v1/messages")
+					? `${model.baseUrl}/v1/messages`
+					: model.baseUrl,
+		}));
+	}
+
+	return converted;
+}
+
+// Get all models from generated registry
+const BUILTIN_MODELS = convertGeneratedModels();
 
 export function getProviders(): string[] {
 	return Object.keys(BUILTIN_MODELS);
