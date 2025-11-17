@@ -13,6 +13,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types.js";
+import { transformMessages } from "./transform-messages.js";
 
 export interface AnthropicOptions extends StreamOptions {
 	thinking?: ReasoningEffort;
@@ -81,8 +82,11 @@ export async function* streamAnthropic(
 		}
 		messages.push(message);
 	};
-	for (let i = 0; i < context.messages.length; i++) {
-		const msg = context.messages[i];
+	// Transform messages for cross-provider compatibility
+	const transformedMessages = transformMessages(context.messages, model);
+
+	for (let i = 0; i < transformedMessages.length; i++) {
+		const msg = transformedMessages[i];
 
 		if (msg.role === "user") {
 			const content =

@@ -6,7 +6,7 @@ describe("Built-in model registry", () => {
 		const model = getModel("openrouter", "anthropic/claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 		expect(model?.provider).toBe("openrouter");
-		expect(model?.api).toBe("openai-responses");
+		expect(model?.api).toBe("openai-completions");
 		expect(model?.baseUrl).toBe(
 			"https://openrouter.ai/api/v1/chat/completions",
 		);

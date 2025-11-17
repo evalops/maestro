@@ -136,7 +136,10 @@ export class ProviderTransport implements AgentTransport {
 				model.api === "openai-responses" ||
 				model.api === "openai-completions"
 			) {
-				stream = streamOpenAI(model as any, currentContext, streamOptions);
+				stream = streamOpenAI(model as any, currentContext, {
+					...streamOptions,
+					reasoningEffort: cfg.reasoning,
+				});
 			} else {
 				throw new Error(`Unsupported API: ${model.api}`);
 			}

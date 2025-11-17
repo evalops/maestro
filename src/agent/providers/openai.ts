@@ -5,8 +5,12 @@ import type {
 	Model,
 	StreamOptions,
 } from "../types.js";
+import { parseStreamingJson } from "./json-parse.js";
+import { transformMessages } from "./transform-messages.js";
 
-export interface OpenAIOptions extends StreamOptions {}
+export interface OpenAIOptions extends StreamOptions {
+	reasoningEffort?: "minimal" | "low" | "medium" | "high";
+}
 
 interface OpenAIMessage {
 	role: "system" | "user" | "assistant" | "tool";
@@ -52,8 +56,11 @@ export async function* streamOpenAI(
 		});
 	}
 
+	// Transform messages for cross-provider compatibility
+	const transformedMessages = transformMessages(context.messages, model);
+
 	// Convert messages
-	for (const msg of context.messages) {
+	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
 			const content =
 				typeof msg.content === "string"
@@ -142,6 +149,16 @@ export async function* streamOpenAI(
 		requestBody.temperature = options.temperature;
 	}
 
+	// Add reasoning effort for reasoning-capable models
+	// Note: Grok models don't support reasoning_effort parameter
+	if (
+		options.reasoningEffort &&
+		model.reasoning &&
+		!model.id.toLowerCase().includes("grok")
+	) {
+		requestBody.reasoning_effort = options.reasoningEffort;
+	}
+
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		Authorization: `Bearer ${apiKey}`,
@@ -215,7 +232,10 @@ export async function* streamOpenAI(
 						// Check for usage data
 						if (event.usage) {
 							partial.usage.input = event.usage.prompt_tokens || 0;
-							partial.usage.output = event.usage.completion_tokens || 0;
+							// Include reasoning tokens in output count
+							partial.usage.output =
+								(event.usage.completion_tokens || 0) +
+								(event.usage.completion_tokens_details?.reasoning_tokens || 0);
 							// OpenAI caching: cached_tokens in prompt_tokens_details
 							if (event.usage.prompt_tokens_details?.cached_tokens) {
 								partial.usage.cacheRead =
@@ -248,6 +268,43 @@ export async function* streamOpenAI(
 						};
 					}
 
+					// Handle reasoning/thinking content
+					// Some endpoints return reasoning in "reasoning_content" (llama.cpp),
+					// others use "reasoning" (other OpenAI-compatible endpoints)
+					const reasoningFields = ["reasoning_content", "reasoning"];
+					for (const field of reasoningFields) {
+						const reasoningDelta = (delta as any)[field];
+						if (
+							reasoningDelta !== null &&
+							reasoningDelta !== undefined &&
+							reasoningDelta.length > 0
+						) {
+							// Find or create thinking block
+							let thinkingBlock = partial.content.find(
+								(c) => c.type === "thinking",
+							);
+							if (!thinkingBlock) {
+								const idx = partial.content.length;
+								thinkingBlock = { type: "thinking", thinking: "" };
+								partial.content.push(thinkingBlock);
+								yield { type: "thinking_start", contentIndex: idx, partial };
+							}
+
+							if (thinkingBlock.type === "thinking") {
+								const idx = partial.content.indexOf(thinkingBlock);
+								thinkingBlock.thinking += reasoningDelta;
+								yield {
+									type: "thinking_delta",
+									contentIndex: idx,
+									delta: reasoningDelta,
+									partial,
+								};
+							}
+							// Only process first matching field
+							break;
+						}
+					}
+
 					if (delta.tool_calls) {
 						for (const toolCall of delta.tool_calls) {
 							const idx = toolCall.index;
@@ -259,7 +316,9 @@ export async function* streamOpenAI(
 									id: "",
 									name: "",
 									arguments: {},
-								});
+									// Track partial JSON string for progressive parsing
+									partialArgs: "",
+								} as any);
 							}
 
 							const block = partial.content[idx];
@@ -273,6 +332,20 @@ export async function* streamOpenAI(
 
 							if (toolCall.function?.arguments) {
 								const argsDelta = toolCall.function.arguments;
+
+								// Accumulate partial JSON string
+								if (!(block as any).partialArgs) {
+									(block as any).partialArgs = "";
+								}
+								(block as any).partialArgs += argsDelta;
+
+								// Parse streaming JSON progressively
+								// This allows UI to show partial arguments like file paths
+								// before the complete JSON arrives
+								block.arguments = parseStreamingJson(
+									(block as any).partialArgs,
+								);
+
 								yield {
 									type: "toolcall_delta",
 									contentIndex: idx,
@@ -293,17 +366,21 @@ export async function* streamOpenAI(
 										? "toolUse"
 										: "stop";
 
-						// Parse tool call arguments
+						// Finalize all content blocks
 						for (let i = 0; i < partial.content.length; i++) {
 							const block = partial.content[i];
 							if (block.type === "toolCall") {
-								// Collect all deltas for this tool call (already accumulated as string)
-								const argsStr = (block.arguments as any).toString?.() || "{}";
+								// Final parse of accumulated JSON
+								const partialArgs = (block as any).partialArgs || "{}";
 								try {
-									block.arguments = JSON.parse(argsStr);
+									block.arguments = JSON.parse(partialArgs);
 								} catch {
-									block.arguments = {};
+									// Fall back to partial parse result
+									block.arguments = parseStreamingJson(partialArgs);
 								}
+								// Clean up temporary field
+								(block as any).partialArgs = undefined;
+
 								yield {
 									type: "toolcall_end",
 									contentIndex: i,
@@ -315,6 +392,13 @@ export async function* streamOpenAI(
 									type: "text_end",
 									contentIndex: i,
 									content: block.text,
+									partial,
+								};
+							} else if (block.type === "thinking") {
+								yield {
+									type: "thinking_end",
+									contentIndex: i,
+									content: block.thinking,
 									partial,
 								};
 							}
