@@ -15,7 +15,8 @@ clear error message in chat.
 
 | Tool | Description | Key Options / Notes |
 | ---- | ----------- | ------------------- |
-| `read` | Reads file contents with syntax-aware chunking. | Accepts `path`, optional `startLine`/`endLine`. Errors with “File not found”. |
+| `batch` | Executes multiple independent tools in parallel (1-10 tools). | Accepts `toolCalls` array. Disallows `batch`, `edit`, `write`. Ideal for parallel reads/searches/listings. |
+| `read` | Reads file contents with syntax-aware chunking. | Accepts `path`, optional `startLine`/`endLine`. Errors with "File not found". |
 | `list` | Lists files in a directory (non-recursive by default). | Supports glob filters and depth. Used for context discovery. |
 | `search` | Ripgrep-style text search. | Args mirror `rg` (`pattern`, `path`, `glob`). Output includes file:line matches. |
 | `diff` | Wrapper around `git diff`. | Modes: workspace, staged, or custom ranges. Highlights hunks for the agent. |

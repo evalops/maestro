@@ -627,6 +627,7 @@ describe("codingTools bundle", () => {
 	it("exposes every built-in tool", () => {
 		const toolNames = codingTools.map((tool) => tool.name);
 		expect(toolNames).toEqual([
+			"batch",
 			"read",
 			"list",
 			"search",

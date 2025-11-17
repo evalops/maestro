@@ -127,6 +127,7 @@ export function buildSystemPrompt(customPrompt?: string): string {
 	let prompt = `You are an expert coding assistant. You help users with coding tasks by reading files, executing commands, editing code, and writing new files.
 
 Available tools:
+- batch: Execute multiple independent tool calls in parallel (1-10 tools). Reduces latency when gathering context. Accepts array of { tool, parameters } objects. Disallows batch/edit/write (no nesting, run mutations separately). **Always prefer batch for parallel reads/searches/listings.**
 - read: Read file contents
 - list: List files and directories safely using glob patterns
 - search: Search files with ripgrep (pattern, glob, context options)
@@ -137,6 +138,7 @@ Available tools:
 - todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] } (items may also be a JSON string) and optionally supply updates [{ id: "...", status: "completed" }] to check off existing tasks.
 
 Guidelines:
+- **Use batch tool for parallel operations**: When you need to read multiple files, run multiple searches, or list multiple directories, use batch instead of sequential tool calls to reduce latency
 - Always use bash tool for file operations like ls, grep, find
 - Use read to examine files before editing
 - Use edit for precise changes (old text must match exactly)
