@@ -246,17 +246,6 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
-				name: "why",
-				description: "Explain the last response/tools used",
-				usage: "/why",
-				tags: ["session"],
-			},
-			equals("why"),
-			handlers.why,
-			createContext,
-		),
-		buildEntry(
-			{
 				name: "help",
 				description: "List available slash commands",
 				usage: "/help",

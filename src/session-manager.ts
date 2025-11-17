@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
 	statSync,
 } from "node:fs";
-import { appendFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentState } from "./agent/types.js";
@@ -15,7 +15,6 @@ import type { RegisteredModel } from "./models/registry.js";
 
 class SessionFileWriter {
 	private buffer: string[] = [];
-	private flushPromise: Promise<void> | null = null;
 
 	constructor(
 		private readonly filePath: string,
@@ -29,24 +28,33 @@ class SessionFileWriter {
 	write(entry: unknown): void {
 		this.buffer.push(JSON.stringify(entry));
 		if (this.buffer.length >= this.batchSize) {
-			void this.flush();
+			this.flushSync();
+		}
+	}
+
+	private drainBuffer(): string | null {
+		if (this.buffer.length === 0) return null;
+		const chunk = `${this.buffer.join("\n")}\n`;
+		this.buffer = [];
+		return chunk;
+	}
+
+	private writeChunkSync(chunk: string): void {
+		try {
+			appendFileSync(this.filePath, chunk);
+		} catch (error) {
+			console.error("Failed to flush session file", error);
 		}
 	}
 
 	async flush(): Promise<void> {
-		if (this.buffer.length > 0 && !this.flushPromise) {
-			const chunk = `${this.buffer.join("\n")}\n`;
-			this.buffer = [];
-			this.flushPromise = appendFile(this.filePath, chunk)
-				.catch((error) => {
-					console.error("Failed to flush session file", error);
-				})
-				.finally(() => {
-					this.flushPromise = null;
-				});
-		}
-		if (this.flushPromise) {
-			await this.flushPromise;
+		this.flushSync();
+	}
+
+	flushSync(): void {
+		const chunk = this.drainBuffer();
+		if (chunk) {
+			this.writeChunkSync(chunk);
 		}
 	}
 }
@@ -321,22 +329,24 @@ export class SessionManager {
 		if (!this.enabled || this.sessionInitialized) return;
 		this.sessionInitialized = true;
 
-		const modelKey = `${state.model.provider}/${state.model.id}`;
-		const primaryMetadata = toSessionModelMetadata(
-			state.model as RegisteredModel,
-		);
-		const fallbackModel = findRegisteredModel(modelKey);
-		const fallbackMetadata = fallbackModel
-			? toSessionModelMetadata(fallbackModel)
-			: undefined;
+		const modelKeyFromState = `${state.model.provider}/${state.model.id}`;
+		const pendingModelChange = this.getLatestPendingModelChange();
+		const pendingThinkingLevel = this.getLatestPendingThinkingLevel();
+		const sessionModelKey = pendingModelChange?.model ?? modelKeyFromState;
+		const primaryMetadata =
+			pendingModelChange?.modelMetadata ??
+			(sessionModelKey === modelKeyFromState
+				? toSessionModelMetadata(state.model as RegisteredModel)
+				: undefined);
+		const fallbackMetadata = this.resolveModelMetadata(sessionModelKey);
 		const entry: SessionHeader = {
 			type: "session",
 			id: this.sessionId,
 			timestamp: new Date().toISOString(),
 			cwd: process.cwd(),
-			model: modelKey,
+			model: sessionModelKey,
 			modelMetadata: primaryMetadata ?? fallbackMetadata,
-			thinkingLevel: state.thinkingLevel,
+			thinkingLevel: pendingThinkingLevel ?? state.thinkingLevel,
 		};
 		this.metadataCache.apply(entry);
 		this.writer?.write(entry);
@@ -346,6 +356,7 @@ export class SessionManager {
 			this.writer?.write(msg);
 		}
 		this.pendingMessages = [];
+		this.writer?.flushSync();
 	}
 
 	saveMessage(message: any): void {
@@ -396,6 +407,33 @@ export class SessionManager {
 		}
 	}
 
+	private getLatestPendingThinkingLevel(): string | undefined {
+		for (let i = this.pendingMessages.length - 1; i >= 0; i--) {
+			const entry = this.pendingMessages[i];
+			if (entry.type === "thinking_level_change") {
+				return entry.thinkingLevel;
+			}
+		}
+		return undefined;
+	}
+
+	private getLatestPendingModelChange(): ModelChangeEntry | undefined {
+		for (let i = this.pendingMessages.length - 1; i >= 0; i--) {
+			const entry = this.pendingMessages[i];
+			if (entry.type === "model_change") {
+				return entry;
+			}
+		}
+		return undefined;
+	}
+
+	private resolveModelMetadata(
+		modelKey: string,
+	): SessionModelMetadata | undefined {
+		const registered = findRegisteredModel(modelKey);
+		return registered ? toSessionModelMetadata(registered) : undefined;
+	}
+
 	private appendSessionMetaEntry(
 		targetFile: string,
 		meta: { summary?: string; favorite?: boolean },
@@ -409,9 +447,11 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			...meta,
 		};
-		void appendFile(targetFile, `${JSON.stringify(entry)}\n`).catch((error) => {
+		try {
+			appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
+		} catch (error) {
 			console.error("Failed to append session metadata", error);
-		});
+		}
 	}
 
 	saveSessionSummary(summary: string, sessionPath?: string): void {
@@ -428,6 +468,7 @@ export class SessionManager {
 	}
 
 	loadMessages(): any[] {
+		this.writer?.flushSync();
 		if (!existsSync(this.sessionFile)) return [];
 
 		const messages: any[] = [];
@@ -493,6 +534,7 @@ export class SessionManager {
 		favorite: boolean;
 		allMessagesText: string;
 	}> {
+		this.writer?.flushSync();
 		const sessions: Array<{
 			path: string;
 			id: string;

@@ -391,10 +391,6 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			getSlashCommands: () => this.slashCommands,
-			getLastUserMessage: () => this.sessionContext.getLastUserMessage(),
-			getLastAssistantMessage: () =>
-				this.sessionContext.getLastAssistantMessage(),
-			getLastRunToolNames: () => this.sessionContext.getLastRunToolNames(),
 		});
 		this.thinkingSelectorView = new ThinkingSelectorView({
 			agent: this.agent,
@@ -507,7 +503,6 @@ export class TuiRenderer {
 				this.runCommandView.handleRunCommand(context.rawInput),
 			handleOllama: (context) =>
 				this.ollamaView.handleOllamaCommand(context.rawInput),
-			handleWhy: (_context) => this.infoView.showWhySummary(),
 			handleDiagnostics: (context) =>
 				this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
 			handleCompact: (_context) => this.handleCompactCommand(),
