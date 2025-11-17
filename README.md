@@ -85,6 +85,19 @@ export OPENROUTER_API_KEY=sk-or-...
 export ZAI_API_KEY=...
 ```
 
+## Providers
+
+### OpenAI & OpenRouter
+
+Composer treats OpenAI-compatible hosts the same way pi-mono does. Use
+`--provider openai --model gpt-4o` (or any built-in ID) when pointing at the
+official OpenAI endpoint, and `OPENAI_API_KEY` is all you need. To route through
+OpenRouter, pass `--provider openrouter --model anthropic/claude-sonnet-4-5`
+and set `OPENROUTER_API_KEY`; the CLI automatically targets
+`https://openrouter.ai/api/v1/chat/completions` and keeps tool calling working
+without any MCP shim. Saved sessions remember the provider/model pair, so
+continuations continue hitting the correct API without extra flags.
+
 > **Factory CLI users:** Run `npm run factory:import` / `npm run factory:export` or use `/import factory` inside the TUI whenever you want to sync providers and settings—otherwise Composer stays fully standalone.
 
 ## Slash Commands

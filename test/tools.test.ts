@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bashTool } from "../src/tools/bash.js";
 import { diffTool } from "../src/tools/diff.js";
 import { editTool } from "../src/tools/edit.js";
+import { codingTools } from "../src/tools/index.js";
 import { listTool } from "../src/tools/list.js";
 import { readTool } from "../src/tools/read.js";
 import { searchTool } from "../src/tools/search.js";
@@ -620,5 +621,20 @@ describe("Composer Tools", () => {
 				}),
 			);
 		});
+	});
+});
+describe("codingTools bundle", () => {
+	it("exposes every built-in tool", () => {
+		const toolNames = codingTools.map((tool) => tool.name);
+		expect(toolNames).toEqual([
+			"read",
+			"list",
+			"search",
+			"diff",
+			"bash",
+			"edit",
+			"write",
+			"todo",
+		]);
 	});
 });
