@@ -32,10 +32,10 @@ import {
 	isKnownProvider,
 	lookupApiKey,
 } from "./providers/api-keys.js";
+import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
-import { PromptQueue } from "./tui/prompt-queue.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 
 // Get version from package.json
@@ -60,25 +60,18 @@ async function runInteractiveMode(
 		approvalService,
 		explicitApiKey,
 	);
-	const promptQueue = new PromptQueue(
-		async (text) => {
-			await agent.prompt(text);
+	const runtime = new AgentRuntimeController({
+		agent,
+		renderer,
+		onError: (error) => {
+			const message =
+				error instanceof Error ? error.message : "Unknown error occurred";
+			renderer.showError(message);
 		},
-		(error) => {
-			renderer.showError(
-				error instanceof Error ? error.message : "Unknown error occurred",
-			);
-		},
-	);
-	renderer.attachPromptQueue(promptQueue);
+	});
 
 	// Initialize TUI
 	await renderer.init();
-
-	// Set interrupt callback
-	renderer.setInterruptCallback(() => {
-		agent.abort();
-	});
 
 	// Render any existing messages (from --continue mode)
 	renderer.renderInitialMessages(agent.state);
@@ -89,11 +82,7 @@ async function runInteractiveMode(
 		await renderer.handleEvent(event, agent.state);
 	});
 
-	// Interactive loop
-	while (true) {
-		const userInput = await renderer.getUserInput();
-		promptQueue.enqueue(userInput);
-	}
+	await runtime.runInteractiveLoop(renderer);
 }
 
 async function runSingleShotMode(

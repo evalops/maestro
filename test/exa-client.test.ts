@@ -12,7 +12,11 @@ vi.mock("../src/telemetry.js", () => ({
 
 const originalEnv = { ...process.env };
 
-function mockFetchOnce(response: Partial<Response> & { body?: string }) {
+function mockFetchOnce(response: {
+	ok?: boolean;
+	status?: number;
+	body?: string;
+}) {
 	return {
 		ok: response.ok ?? true,
 		status: response.status ?? 200,

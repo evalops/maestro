@@ -255,7 +255,8 @@ describe("Agent mock transport", () => {
 		expect(transport.queuedMessages).toHaveLength(1);
 		const queuedEntry = transport.queuedMessages[0];
 		expect(queuedEntry.original.role).toBe("user");
-		const llmContent = queuedEntry.llm?.content ?? [];
+		const rawContent = queuedEntry.llm?.content;
+		const llmContent = Array.isArray(rawContent) ? rawContent : [];
 		const docBlock = llmContent.find(
 			(chunk) => chunk.type === "text" && chunk.text.includes("[Document"),
 		);

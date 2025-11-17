@@ -1,17 +1,118 @@
 import { randomBytes } from "node:crypto";
 import {
-	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
 	statSync,
 } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentState } from "./agent/types.js";
 import { getRegisteredModels } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
+
+class SessionFileWriter {
+	private buffer: string[] = [];
+	private flushPromise: Promise<void> | null = null;
+
+	constructor(
+		private readonly filePath: string,
+		private readonly batchSize = 25,
+	) {
+		process.once("beforeExit", () => {
+			void this.flush();
+		});
+	}
+
+	write(entry: unknown): void {
+		this.buffer.push(JSON.stringify(entry));
+		if (this.buffer.length >= this.batchSize) {
+			void this.flush();
+		}
+	}
+
+	async flush(): Promise<void> {
+		if (this.buffer.length > 0 && !this.flushPromise) {
+			const chunk = `${this.buffer.join("\n")}\n`;
+			this.buffer = [];
+			this.flushPromise = appendFile(this.filePath, chunk)
+				.catch((error) => {
+					console.error("Failed to flush session file", error);
+				})
+				.finally(() => {
+					this.flushPromise = null;
+				});
+		}
+		if (this.flushPromise) {
+			await this.flushPromise;
+		}
+	}
+}
+
+class SessionMetadataCache {
+	private thinkingLevel = "off";
+	private model: string | null = null;
+	private metadata?: SessionModelMetadata;
+
+	apply(entry: any): void {
+		if (entry.type === "session") {
+			if (typeof entry.thinkingLevel === "string") {
+				this.thinkingLevel = entry.thinkingLevel;
+			}
+			if (typeof entry.model === "string") {
+				this.model = entry.model;
+			}
+			if (entry.modelMetadata) {
+				this.metadata = entry.modelMetadata;
+			}
+			return;
+		}
+		if (entry.type === "thinking_level_change" && entry.thinkingLevel) {
+			this.thinkingLevel = entry.thinkingLevel;
+			return;
+		}
+		if (entry.type === "model_change") {
+			if (entry.model) {
+				this.model = entry.model;
+			}
+			if (entry.modelMetadata) {
+				this.metadata = entry.modelMetadata;
+			}
+		}
+	}
+
+	seedFromFile(filePath: string): void {
+		if (!existsSync(filePath)) {
+			return;
+		}
+		const contents = readFileSync(filePath, "utf8").trim();
+		if (!contents) {
+			return;
+		}
+		for (const line of contents.split("\n")) {
+			try {
+				const entry = JSON.parse(line);
+				this.apply(entry);
+			} catch {
+				// ignore malformed lines
+			}
+		}
+	}
+
+	getThinkingLevel(): string {
+		return this.thinkingLevel;
+	}
+
+	getModel(): string | null {
+		return this.model;
+	}
+
+	getModelMetadata(): SessionModelMetadata | undefined {
+		return this.metadata;
+	}
+}
 
 function uuidv4(): string {
 	const bytes = randomBytes(16);
@@ -69,6 +170,11 @@ export interface SessionModelMetadata {
 	source?: "builtin" | "custom";
 }
 
+type PendingSessionEntry =
+	| SessionMessageEntry
+	| ThinkingLevelChangeEntry
+	| ModelChangeEntry;
+
 export function toSessionModelMetadata(
 	model: RegisteredModel,
 ): SessionModelMetadata {
@@ -101,9 +207,11 @@ export class SessionManager {
 	private sessionDir: string;
 	private enabled = true;
 	private sessionInitialized = false;
-	private pendingMessages: any[] = [];
+	private pendingMessages: PendingSessionEntry[] = [];
+	private writer?: SessionFileWriter;
 	private agentSnapshot?: AgentState;
 	private lastModelMetadata?: SessionModelMetadata;
+	private metadataCache = new SessionMetadataCache();
 
 	constructor(continueSession = false, customSessionPath?: string) {
 		this.sessionDir = this.getSessionDirectory();
@@ -127,11 +235,24 @@ export class SessionManager {
 		} else {
 			this.initNewSession();
 		}
+
+		this.initializeWriter();
+		this.metadataCache.seedFromFile(this.sessionFile);
 	}
 
 	/** Disable session saving (for --no-session mode) */
 	disable() {
 		this.enabled = false;
+		this.writer = undefined;
+		this.pendingMessages = [];
+	}
+
+	private initializeWriter(): void {
+		if (!this.enabled) {
+			this.writer = undefined;
+			return;
+		}
+		this.writer = new SessionFileWriter(this.sessionFile);
 	}
 
 	private getSessionDirectory(): string {
@@ -217,11 +338,12 @@ export class SessionManager {
 			modelMetadata: primaryMetadata ?? fallbackMetadata,
 			thinkingLevel: state.thinkingLevel,
 		};
-		appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+		this.metadataCache.apply(entry);
+		this.writer?.write(entry);
 
 		// Write any queued messages
 		for (const msg of this.pendingMessages) {
-			appendFileSync(this.sessionFile, `${JSON.stringify(msg)}\n`);
+			this.writer?.write(msg);
 		}
 		this.pendingMessages = [];
 	}
@@ -237,7 +359,7 @@ export class SessionManager {
 		if (!this.sessionInitialized) {
 			this.pendingMessages.push(entry);
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			this.writer?.write(entry);
 		}
 	}
 
@@ -248,11 +370,12 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			thinkingLevel,
 		};
+		this.metadataCache.apply(entry);
 
 		if (!this.sessionInitialized) {
 			this.pendingMessages.push(entry);
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			this.writer?.write(entry);
 		}
 	}
 
@@ -264,11 +387,12 @@ export class SessionManager {
 			model,
 			modelMetadata: metadata,
 		};
+		this.metadataCache.apply(entry);
 
 		if (!this.sessionInitialized) {
 			this.pendingMessages.push(entry);
 		} else {
-			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
+			this.writer?.write(entry);
 		}
 	}
 
@@ -285,7 +409,9 @@ export class SessionManager {
 			timestamp: new Date().toISOString(),
 			...meta,
 		};
-		appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
+		void appendFile(targetFile, `${JSON.stringify(entry)}\n`).catch((error) => {
+			console.error("Failed to append session metadata", error);
+		});
 	}
 
 	saveSessionSummary(summary: string, sessionPath?: string): void {
@@ -322,73 +448,15 @@ export class SessionManager {
 	}
 
 	loadThinkingLevel(): string {
-		if (!existsSync(this.sessionFile)) return "off";
-
-		const lines = readFileSync(this.sessionFile, "utf8").trim().split("\n");
-
-		// Find the most recent thinking level (from session header or change event)
-		let lastThinkingLevel = "off";
-		for (const line of lines) {
-			try {
-				const entry = JSON.parse(line);
-				if (entry.type === "session" && entry.thinkingLevel) {
-					lastThinkingLevel = entry.thinkingLevel;
-				} else if (
-					entry.type === "thinking_level_change" &&
-					entry.thinkingLevel
-				) {
-					lastThinkingLevel = entry.thinkingLevel;
-				}
-			} catch {
-				// Skip malformed lines
-			}
-		}
-
-		return lastThinkingLevel;
+		return this.metadataCache.getThinkingLevel();
 	}
 
 	loadModel(): string | null {
-		if (!existsSync(this.sessionFile)) return null;
-
-		const lines = readFileSync(this.sessionFile, "utf8").trim().split("\n");
-
-		// Find the most recent model (from session header or change event)
-		let lastModel: string | null = null;
-		for (const line of lines) {
-			try {
-				const entry = JSON.parse(line);
-				if (entry.type === "session" && entry.model) {
-					lastModel = entry.model;
-				} else if (entry.type === "model_change" && entry.model) {
-					lastModel = entry.model;
-				}
-			} catch {
-				// Skip malformed lines
-			}
-		}
-
-		return lastModel;
+		return this.metadataCache.getModel();
 	}
 
 	loadModelMetadata(): SessionModelMetadata | undefined {
-		if (!existsSync(this.sessionFile)) return undefined;
-
-		const lines = readFileSync(this.sessionFile, "utf8").trim().split("\n");
-
-		let metadata: SessionModelMetadata | undefined;
-		for (const line of lines) {
-			try {
-				const entry = JSON.parse(line);
-				if (entry.type === "session" && entry.modelMetadata) {
-					metadata = entry.modelMetadata;
-				} else if (entry.type === "model_change" && entry.modelMetadata) {
-					metadata = entry.modelMetadata;
-				}
-			} catch {
-				// Ignore malformed
-			}
-		}
-		return metadata;
+		return this.metadataCache.getModelMetadata() ?? this.lastModelMetadata;
 	}
 
 	getSessionId(): string {
@@ -404,6 +472,10 @@ export class SessionManager {
 		if (metadata) {
 			this.lastModelMetadata = metadata;
 		}
+	}
+
+	async flush(): Promise<void> {
+		await this.writer?.flush();
 	}
 
 	/**
@@ -534,10 +606,15 @@ export class SessionManager {
 	 * Set the session file to an existing session
 	 */
 	setSessionFile(path: string): void {
+		if (this.writer) {
+			void this.writer.flush();
+		}
 		this.sessionFile = path;
 		this.loadSessionId();
 		// Mark as initialized since we're loading an existing session
 		this.sessionInitialized = existsSync(path);
+		this.initializeWriter();
+		this.metadataCache.seedFromFile(this.sessionFile);
 	}
 
 	/**

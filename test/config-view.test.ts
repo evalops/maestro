@@ -68,6 +68,7 @@ const createInspection = (): ConfigInspection => ({
 			id: "anthropic",
 			name: "Anthropic",
 			baseUrl: "https://api.anthropic.com/v1/messages",
+			enabled: true,
 			apiKeySource: "env:ANTHROPIC_API_KEY",
 			isLocal: false,
 			modelCount: 2,

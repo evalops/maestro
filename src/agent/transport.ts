@@ -14,12 +14,24 @@ import type {
 	ToolResultMessage,
 } from "./types.js";
 
+interface ToolExecutionOutcome {
+	message: ToolResultMessage;
+	isError: boolean;
+}
+
+interface PendingExecution {
+	toolCallId: string;
+	toolName: string;
+	promise: Promise<ToolExecutionOutcome>;
+}
+
 export interface ProviderTransportOptions {
 	getApiKey?: (
 		provider: string,
 	) => Promise<string | undefined> | string | undefined;
 	corsProxyUrl?: string;
 	approvalService?: ActionApprovalService;
+	maxConcurrentToolExecutions?: number;
 }
 
 function calculateCost(
@@ -96,6 +108,7 @@ export class ProviderTransport implements AgentTransport {
 		let queuedMessages = cfg.getQueuedMessages
 			? await cfg.getQueuedMessages<AppMessage>()
 			: [];
+		let prefetchedQueuedMessages: typeof queuedMessages | null = null;
 
 		while (hasMoreToolCalls || queuedMessages.length > 0) {
 			yield { type: "turn_start" };
@@ -210,6 +223,46 @@ export class ProviderTransport implements AgentTransport {
 
 			if (toolCallsToExecute.length > 0) {
 				toolResults = [];
+				const pendingExecutions: PendingExecution[] = [];
+				const concurrencyLimit = Math.max(
+					1,
+					this.options.maxConcurrentToolExecutions ?? 2,
+				);
+
+				const emitToolResult = (
+					message: ToolResultMessage,
+					toolCallId: string,
+					toolName: string,
+					isError: boolean,
+				) => {
+					toolResults.push(message);
+					return [
+						{ type: "message_start", message } as AgentEvent,
+						{ type: "message_end", message } as AgentEvent,
+						{
+							type: "tool_execution_end",
+							toolCallId,
+							toolName,
+							result: message,
+							isError,
+						} as AgentEvent,
+					];
+				};
+
+				const scheduleResolveIfNeeded = async (): Promise<AgentEvent[]> => {
+					if (pendingExecutions.length < concurrencyLimit) {
+						return [];
+					}
+					const resolved = await waitForNextExecution(pendingExecutions);
+					const outcome = resolved.outcome;
+					return emitToolResult(
+						outcome.message,
+						resolved.toolCallId,
+						resolved.toolName,
+						outcome.isError,
+					);
+				};
+
 				for (const toolCall of toolCallsToExecute) {
 					yield {
 						type: "tool_execution_start",
@@ -269,16 +322,14 @@ export class ProviderTransport implements AgentTransport {
 							isError: true,
 							timestamp: Date.now(),
 						};
-						toolResults.push(deniedResult);
-						yield { type: "message_start", message: deniedResult };
-						yield { type: "message_end", message: deniedResult };
-						yield {
-							type: "tool_execution_end",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							result: deniedResult,
-							isError: true,
-						};
+						for (const event of emitToolResult(
+							deniedResult,
+							toolCall.id,
+							toolCall.name,
+							true,
+						)) {
+							yield event;
+						}
 						continue;
 					}
 
@@ -297,66 +348,77 @@ export class ProviderTransport implements AgentTransport {
 							isError: true,
 							timestamp: Date.now(),
 						};
-						toolResults.push(errorResult);
-						yield { type: "message_start", message: errorResult };
-						yield { type: "message_end", message: errorResult };
-						yield {
-							type: "tool_execution_end",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							result: errorResult,
-							isError: true,
-						};
+						for (const event of emitToolResult(
+							errorResult,
+							toolCall.id,
+							toolCall.name,
+							true,
+						)) {
+							yield event;
+						}
 						continue;
 					}
 
-					try {
-						const result = await tool.execute(
-							toolCall.id,
-							toolCall.arguments,
-							signal,
-						);
+					const executionPromise: Promise<ToolExecutionOutcome> =
+						Promise.resolve()
+							.then(() => tool.execute(toolCall.id, toolCall.arguments, signal))
+							.then((result) => ({
+								message: {
+									role: "toolResult" as const,
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									content: result.content,
+									details: result.details,
+									isError: result.isError || false,
+									timestamp: Date.now(),
+								},
+								isError: result.isError || false,
+							}))
+							.catch((error: unknown) => ({
+								message: {
+									role: "toolResult" as const,
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									content: [
+										{
+											type: "text",
+											text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+										},
+									],
+									isError: true,
+									timestamp: Date.now(),
+								},
+								isError: true,
+							}));
 
-						const toolResultMessage: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: result.content,
-							details: result.details,
-							isError: result.isError || false,
-							timestamp: Date.now(),
-						};
-						toolResults.push(toolResultMessage);
-						yield { type: "message_start", message: toolResultMessage };
-						yield { type: "message_end", message: toolResultMessage };
-						yield {
-							type: "tool_execution_end",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							result: toolResultMessage,
-							isError: toolResultMessage.isError,
-						};
-					} catch (error: unknown) {
-						const errorMessage =
-							error instanceof Error ? error.message : String(error);
-						const errorResult: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [{ type: "text", text: `Error: ${errorMessage}` }],
-							isError: true,
-							timestamp: Date.now(),
-						};
-						toolResults.push(errorResult);
-						yield { type: "message_start", message: errorResult };
-						yield { type: "message_end", message: errorResult };
-						yield {
-							type: "tool_execution_end",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							result: errorResult,
-							isError: true,
-						};
+					pendingExecutions.push({
+						toolCallId: toolCall.id,
+						toolName: toolCall.name,
+						promise: executionPromise,
+					});
+					const events = await scheduleResolveIfNeeded();
+					for (const event of events) {
+						yield event;
+					}
+				}
+
+				while (pendingExecutions.length > 0) {
+					const resolved = await waitForNextExecution(pendingExecutions);
+					const outcome = resolved.outcome;
+					for (const event of emitToolResult(
+						outcome.message,
+						resolved.toolCallId,
+						resolved.toolName,
+						outcome.isError,
+					)) {
+						yield event;
+					}
+				}
+
+				if (cfg.getQueuedMessages) {
+					prefetchedQueuedMessages = await cfg.getQueuedMessages<AppMessage>();
+					if (prefetchedQueuedMessages.length > 0) {
+						pendingNextTurn = true;
 					}
 				}
 			}
@@ -394,11 +456,39 @@ export class ProviderTransport implements AgentTransport {
 				toolResults,
 			};
 
-			queuedMessages = cfg.getQueuedMessages
-				? await cfg.getQueuedMessages<AppMessage>()
-				: [];
+			if (prefetchedQueuedMessages) {
+				queuedMessages = prefetchedQueuedMessages;
+				prefetchedQueuedMessages = null;
+			} else {
+				queuedMessages = cfg.getQueuedMessages
+					? await cfg.getQueuedMessages<AppMessage>()
+					: [];
+			}
 
 			hasMoreToolCalls = encounteredError ? false : pendingNextTurn;
 		}
 	}
+}
+
+async function waitForNextExecution(
+	pendingExecutions: PendingExecution[],
+): Promise<{
+	toolCallId: string;
+	toolName: string;
+	outcome: ToolExecutionOutcome;
+}> {
+	const race = await Promise.race(
+		pendingExecutions.map((entry) =>
+			entry.promise.then((outcome) => ({ entry, outcome })),
+		),
+	);
+	const index = pendingExecutions.indexOf(race.entry);
+	if (index >= 0) {
+		pendingExecutions.splice(index, 1);
+	}
+	return {
+		toolCallId: race.entry.toolCallId,
+		toolName: race.entry.toolName,
+		outcome: race.outcome,
+	};
 }
