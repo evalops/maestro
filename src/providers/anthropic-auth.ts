@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { safeJsonParse } from "../utils/json.js";
 
 // Portions of this module are derived from https://github.com/sst/opencode-anthropic-auth (MIT).
 
@@ -75,7 +76,18 @@ function ensureAuthDir(): void {
 export async function getStoredAnthropicOAuthCredential(): Promise<AnthropicOAuthCredential | null> {
 	try {
 		const contents = readFileSync(AUTH_FILE, "utf8");
-		const parsed = JSON.parse(contents);
+		const result = safeJsonParse<{
+			accessToken?: unknown;
+			refreshToken?: unknown;
+			expiresAt?: unknown;
+			mode?: unknown;
+		}>(contents, "Anthropic auth credentials");
+
+		if (!result.success) {
+			return null;
+		}
+
+		const parsed = result.data;
 		if (
 			typeof parsed.accessToken === "string" &&
 			typeof parsed.refreshToken === "string" &&

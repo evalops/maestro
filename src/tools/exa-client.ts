@@ -1,4 +1,6 @@
 import { recordToolExecution } from "../telemetry.js";
+import { parseJsonOr, safeJsonParse } from "../utils/json.js";
+import { retry } from "../utils/retry.js";
 import { trackExaUsage } from "./exa-usage.js";
 
 const EXA_API_BASE = "https://api.exa.ai";
@@ -81,11 +83,7 @@ function getExaApiKey(): string {
 
 function parseErrorResponse(rawBody?: string): ExaErrorResponse | undefined {
 	if (!rawBody) return undefined;
-	try {
-		return JSON.parse(rawBody) as ExaErrorResponse;
-	} catch {
-		return undefined;
-	}
+	return parseJsonOr<ExaErrorResponse | undefined>(rawBody, undefined);
 }
 
 function deriveErrorMessage(
@@ -120,17 +118,21 @@ export function normalizeCostDollars(value: unknown): number | undefined {
 	if (typeof value === "string") {
 		const trimmed = value.trim();
 		if (!trimmed) return undefined;
-		try {
-			const parsed = JSON.parse(trimmed) as { total?: number } | number;
+
+		const parsed = parseJsonOr<{ total?: number } | number | null>(
+			trimmed,
+			null,
+		);
+		if (parsed !== null) {
 			if (typeof parsed === "number") {
 				return Number.isFinite(parsed) ? parsed : undefined;
 			}
 			const total = parsed?.total;
 			return typeof total === "number" ? total : undefined;
-		} catch {
-			const numeric = Number(trimmed);
-			return Number.isFinite(numeric) ? numeric : undefined;
 		}
+
+		const numeric = Number(trimmed);
+		return Number.isFinite(numeric) ? numeric : undefined;
 	}
 	if (typeof value === "object" && value !== null) {
 		const total = (value as { total?: number }).total;
@@ -167,123 +169,135 @@ function logExaDebug(message: string, payload?: unknown): void {
 	console.error(`[exa] ${message}${suffix}`);
 }
 
-function wait(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		setTimeout(resolve, ms);
-	});
-}
-
 export async function callExa<T>(
 	endpoint: string,
 	body: unknown,
 	options: CallExaOptions = {},
 ): Promise<T> {
 	const apiKey = getExaApiKey();
-	const retries = Math.max(0, options.retries ?? 0);
-	const retryDelayMs = Math.max(0, options.retryDelayMs ?? 200);
+	const maxAttempts = Math.max(1, (options.retries ?? 0) + 1);
+	const initialDelay = Math.max(0, options.retryDelayMs ?? 200);
 	const telemetryHandler = options.onTelemetry ?? reportExaTelemetry;
 
-	for (let attempt = 0; attempt <= retries; attempt++) {
-		const attemptNumber = attempt + 1;
-		const start = performance.now();
-		let response: Response;
-		let responseBody = "";
-		try {
-			if (EXA_DEBUG_ENABLED) {
-				logExaDebug(`request ${endpoint}`, {
-					attempt: attemptNumber,
-					body,
+	let attemptNumber = 0;
+
+	return retry(
+		async () => {
+			attemptNumber++;
+			const start = performance.now();
+			let response: Response;
+			let responseBody = "";
+
+			try {
+				if (EXA_DEBUG_ENABLED) {
+					logExaDebug(`request ${endpoint}`, {
+						attempt: attemptNumber,
+						body,
+					});
+				}
+
+				response = await fetch(`${EXA_API_BASE}${endpoint}`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"x-api-key": apiKey,
+					},
+					body: JSON.stringify(body),
 				});
-			}
-			response = await fetch(`${EXA_API_BASE}${endpoint}`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"x-api-key": apiKey,
-				},
-				body: JSON.stringify(body),
-			});
-			responseBody = await response.text();
-			if (EXA_DEBUG_ENABLED) {
-				logExaDebug(`response ${endpoint}`, {
+				responseBody = await response.text();
+
+				if (EXA_DEBUG_ENABLED) {
+					logExaDebug(`response ${endpoint}`, {
+						attempt: attemptNumber,
+						status: response.status,
+						body: responseBody.slice(0, 2000),
+					});
+				}
+			} catch (error) {
+				emitTelemetry(telemetryHandler, {
+					toolName: options.toolName,
+					operation: options.operation,
+					endpoint,
 					attempt: attemptNumber,
+					durationMs: performance.now() - start,
+					success: false,
+					errorMessage: (error as Error)?.message,
+					timestamp: Date.now(),
+				});
+
+				// Let retry utility handle retryable errors
+				if (isRetryableNetworkError(error)) {
+					throw error;
+				}
+				// Non-retryable errors should fail immediately
+				throw new Error(`Network error: ${(error as Error)?.message}`);
+			}
+
+			if (!response.ok) {
+				const parsedError = parseErrorResponse(responseBody);
+				const message = deriveErrorMessage(
+					parsedError,
+					response.statusText,
+					responseBody,
+				);
+				const error = new ExaApiError(message, {
+					endpoint,
 					status: response.status,
-					body: responseBody.slice(0, 2000),
+					body: responseBody,
+					parsedError,
 				});
+
+				emitTelemetry(telemetryHandler, {
+					toolName: options.toolName,
+					operation: options.operation,
+					endpoint,
+					attempt: attemptNumber,
+					durationMs: performance.now() - start,
+					status: response.status,
+					success: false,
+					errorMessage: message,
+					requestId: parsedError?.requestId,
+					costDollars: normalizeCostDollars(parsedError?.costDollars),
+					timestamp: Date.now(),
+				});
+
+				// Let retry utility handle retryable status codes
+				if (isRetryableStatus(response.status)) {
+					throw error;
+				}
+				// Non-retryable errors should fail immediately
+				throw error;
 			}
-		} catch (error) {
-			emitTelemetry(telemetryHandler, {
-				toolName: options.toolName,
-				operation: options.operation,
-				endpoint,
-				attempt: attemptNumber,
-				durationMs: performance.now() - start,
-				success: false,
-				errorMessage: (error as Error)?.message,
-				timestamp: Date.now(),
-			});
-			if (attempt < retries && isRetryableNetworkError(error)) {
-				await wait(retryDelayMs * 2 ** attempt);
-				continue;
+
+			const durationMs = performance.now() - start;
+			if (!responseBody) {
+				emitTelemetry(telemetryHandler, {
+					toolName: options.toolName,
+					operation: options.operation,
+					endpoint,
+					attempt: attemptNumber,
+					durationMs,
+					status: response.status,
+					success: true,
+					timestamp: Date.now(),
+				});
+				return {} as T;
 			}
-			throw error;
-		}
 
-		if (!response.ok) {
-			const parsedError = parseErrorResponse(responseBody);
-			const message = deriveErrorMessage(
-				parsedError,
-				response.statusText,
-				responseBody,
-			);
-			const error = new ExaApiError(message, {
-				endpoint,
-				status: response.status,
-				body: responseBody,
-				parsedError,
-			});
+			const result = safeJsonParse<
+				T & {
+					requestId?: string;
+					costDollars?: unknown;
+				}
+			>(responseBody, "Exa API response");
 
-			emitTelemetry(telemetryHandler, {
-				toolName: options.toolName,
-				operation: options.operation,
-				endpoint,
-				attempt: attemptNumber,
-				durationMs: performance.now() - start,
-				status: response.status,
-				success: false,
-				errorMessage: message,
-				requestId: parsedError?.requestId,
-				costDollars: normalizeCostDollars(parsedError?.costDollars),
-				timestamp: Date.now(),
-			});
-
-			if (attempt < retries && isRetryableStatus(response.status)) {
-				await wait(retryDelayMs * 2 ** attempt);
-				continue;
+			if (!result.success) {
+				throw new Error(
+					`Failed to parse Exa response: ${result.error.message}`,
+				);
 			}
-			throw error;
-		}
 
-		const durationMs = performance.now() - start;
-		if (!responseBody) {
-			emitTelemetry(telemetryHandler, {
-				toolName: options.toolName,
-				operation: options.operation,
-				endpoint,
-				attempt: attemptNumber,
-				durationMs,
-				status: response.status,
-				success: true,
-				timestamp: Date.now(),
-			});
-			return {} as T;
-		}
-
-		try {
-			const data = JSON.parse(responseBody) as T & {
-				requestId?: string;
-				costDollars?: unknown;
-			};
+			const data = result.data;
 			emitTelemetry(telemetryHandler, {
 				toolName: options.toolName,
 				operation: options.operation,
@@ -296,13 +310,23 @@ export async function callExa<T>(
 				costDollars: normalizeCostDollars(data.costDollars),
 				timestamp: Date.now(),
 			});
-			return data;
-		} catch (error) {
-			throw new Error(
-				`Failed to parse Exa response: ${(error as Error).message}`,
-			);
-		}
-	}
 
-	throw new Error("Exa API request failed after retries");
+			return data;
+		},
+		{
+			maxAttempts,
+			initialDelay,
+			exponentialBackoff: true,
+			shouldRetry: (error, attempt) => {
+				// Check if it's a retryable error
+				if (isRetryableNetworkError(error)) {
+					return attempt < maxAttempts;
+				}
+				if (error instanceof ExaApiError && isRetryableStatus(error.status)) {
+					return attempt < maxAttempts;
+				}
+				return false;
+			},
+		},
+	);
 }

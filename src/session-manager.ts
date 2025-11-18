@@ -25,6 +25,7 @@ import {
 	type ThinkingLevelChangeEntry,
 	tryParseSessionEntry,
 } from "./session-manager-types.js";
+import { parseJsonOr } from "./utils/json.js";
 import { createLogger } from "./utils/logger.js";
 
 const logger = createLogger("session-manager");
@@ -348,14 +349,14 @@ export class SessionManager {
 
 		const lines = readFileSync(this.sessionFile, "utf8").trim().split("\n");
 		for (const line of lines) {
-			try {
-				const entry = JSON.parse(line);
-				if (entry.type === "session") {
-					this.sessionId = entry.id;
-					return;
-				}
-			} catch {
-				// Skip malformed lines
+			const entry = parseJsonOr<{
+				type?: string;
+				id?: string;
+			} | null>(line, null);
+
+			if (entry?.type === "session" && typeof entry.id === "string") {
+				this.sessionId = entry.id;
+				return;
 			}
 		}
 		this.sessionId = uuidv4();

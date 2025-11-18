@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import type { LspServerConfig } from "../lsp/index.js";
+import { safeJsonParse } from "../utils/json.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 
 const CONFIG_PATH = join(homedir(), ".composer", "config.json");
@@ -53,7 +54,13 @@ function loadRawConfig(): LspConfig {
 	}
 	try {
 		const raw = readFileSync(CONFIG_PATH, "utf-8");
-		const data = JSON.parse(raw);
+		const result = safeJsonParse<{ lsp?: LspConfig }>(raw, "LSP config");
+
+		if (!result.success) {
+			throw new Error(`Failed to parse config: ${result.error.message}`);
+		}
+
+		const data = result.data;
 		if (!validateConfig(data)) {
 			const message =
 				validateConfig.errors

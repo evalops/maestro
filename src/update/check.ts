@@ -1,3 +1,5 @@
+import { withTimeout } from "../utils/async.js";
+
 const DEFAULT_UPDATE_URL =
 	"https://raw.githubusercontent.com/evalops/hopper/main/public/composer/version.json";
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -142,20 +144,15 @@ export async function checkForUpdate(
 	const fetchImpl = options.fetch ?? fetch;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-	let controller: AbortController | undefined;
-	let timeoutHandle: NodeJS.Timeout | undefined;
-	if (typeof AbortController !== "undefined" && timeoutMs > 0) {
-		controller = new AbortController();
-		timeoutHandle = setTimeout(() => {
-			controller?.abort();
-		}, timeoutMs);
-	}
-
 	try {
-		const response = await fetchImpl(url, {
-			headers: { Accept: "application/json" },
-			signal: controller?.signal,
-		});
+		const response = await withTimeout(
+			fetchImpl(url, {
+				headers: { Accept: "application/json" },
+			}),
+			timeoutMs,
+			`Update check timed out after ${timeoutMs}ms`,
+		);
+
 		if (!response.ok) {
 			return {
 				currentVersion,
@@ -200,9 +197,5 @@ export async function checkForUpdate(
 			sourceUrl: url,
 			error: toErrorMessage(error),
 		};
-	} finally {
-		if (timeoutHandle) {
-			clearTimeout(timeoutHandle);
-		}
 	}
 }
