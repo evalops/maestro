@@ -352,7 +352,7 @@ ${chalk.dim("Diff stats")}:
 ${diffText}
 
 ${chalk.dim("Next steps")}:
-- Use /preview to open the interactive git panel
+- Use /diff to open the interactive git panel
 - Use /plan to revisit saved goals
 - Use /status for a lightweight health check`;
 		this.options.chatContainer.addChild(new Spacer(1));
@@ -421,7 +421,7 @@ Reverted changes in:
 			const previewTargets = files.slice(0, 3).join("\n- ");
 			const message = `${files.length} file${files.length === 1 ? "" : "s"} modified.
 - ${previewTargets}
-Use /preview <file> to inspect diffs.`;
+Use /diff <file> to inspect diffs.`;
 			this.options.showToast(message, "info");
 		} catch {
 			// ignore git errors

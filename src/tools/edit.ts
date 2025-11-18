@@ -142,7 +142,7 @@ export const editTool = createTypeboxTool({
 									.slice(0, 3)
 									.map(formatMatchPreview)
 									.join("\n")}`
-							: `\n\nTip: double-check whitespace/newlines via /preview ${path}`;
+							: `\n\nTip: double-check whitespace/newlines via /diff ${path}`;
 						if (signal) {
 							signal.removeEventListener("abort", onAbort);
 						}

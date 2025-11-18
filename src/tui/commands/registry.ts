@@ -145,17 +145,6 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
-				name: "preview",
-				description: "Preview git diff for a file",
-				usage: "/preview <path>",
-				tags: ["git"],
-			},
-			withArgs("preview"),
-			handlers.preview,
-			createContext,
-		),
-		buildEntry(
-			{
 				name: "diff",
 				description: "Show git diff for a file",
 				usage: "/diff <path>",
