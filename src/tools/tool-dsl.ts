@@ -20,6 +20,14 @@ export class ToolResponseBuilder<Details> {
 		return this.text(serialized);
 	}
 
+	code(language: string | undefined, code: string): this {
+		const lang = language?.trim();
+		const fence = "```";
+		const header = lang && lang.length > 0 ? `${fence}${lang}\n` : `${fence}\n`;
+		const block = `${header}${code}\n${fence}`;
+		return this.text(block);
+	}
+
 	image(data: string, mimeType: string): this {
 		this.contents.push({ type: "image", data, mimeType });
 		return this;
@@ -107,6 +115,17 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 	});
 }
 
+function isAgentToolResult<Details>(
+	value: unknown,
+): value is AgentToolResult<Details> {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"content" in (value as Record<string, unknown>) &&
+		Array.isArray((value as AgentToolResult<Details>).content)
+	);
+}
+
 export interface CreateTextToolOptions<Schema extends TSchema, Details>
 	extends Omit<CreateToolOptions<Schema, Details>, "run"> {
 	run: (
@@ -136,6 +155,43 @@ export function createTextTool<Schema extends TSchema, Details = undefined>(
 				return context.respond.text(result);
 			}
 			return result;
+		},
+	});
+}
+
+export interface CreateJsonToolOptions<Schema extends TSchema, Details>
+	extends Omit<CreateToolOptions<Schema, Details>, "run"> {
+	run: (
+		params: Static<Schema>,
+		context: ToolRunContext<Details>,
+	) =>
+		| unknown
+		| undefined
+		| ToolResponseBuilder<Details>
+		| AgentToolResult<Details>
+		| Promise<
+				| unknown
+				| undefined
+				| ToolResponseBuilder<Details>
+				| AgentToolResult<Details>
+		  >;
+}
+
+export function createJsonTool<Schema extends TSchema, Details = undefined>(
+	options: CreateJsonToolOptions<Schema, Details>,
+) {
+	return createTool<Schema, Details>({
+		...options,
+		run: async (params, context) => {
+			const result = await options.run(params, context);
+			if (
+				result === undefined ||
+				result instanceof ToolResponseBuilder ||
+				isAgentToolResult<Details>(result)
+			) {
+				return result;
+			}
+			return context.respond.json(result);
 		},
 	});
 }

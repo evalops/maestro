@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
 import {
 	ToolResponseBuilder,
+	createJsonTool,
 	createTextTool,
 	createTool,
 } from "../src/tools/tool-dsl.js";
@@ -39,6 +40,20 @@ const textHelperTool = createTextTool({
 	run: async ({ prefix }) => `${prefix}:done`,
 });
 
+const jsonHelperTool = createJsonTool({
+	name: "json-helper",
+	description: "Return JSON payloads",
+	schema: Type.Object({ value: Type.Number() }),
+	run: ({ value }) => ({ value, double: value * 2 }),
+});
+
+const codeTool = createTool({
+	name: "code-tool",
+	description: "Emit code block",
+	schema: Type.Object({}),
+	run: (_params, { respond }) => respond.code("ts", "const x = 42;"),
+});
+
 describe("createTool DSL", () => {
 	it("builds response via context builder", async () => {
 		const result = await echoTool.execute("call-1", { text: "hello" });
@@ -62,6 +77,21 @@ describe("createTool DSL", () => {
 	it("supports createTextTool helper for string responses", async () => {
 		const result = await textHelperTool.execute("call-4", { prefix: "task" });
 		expect(result.content[0]).toMatchObject({ text: "task:done" });
+	});
+
+	it("supports createJsonTool helper for objects", async () => {
+		const result = await jsonHelperTool.execute("call-5", { value: 3 });
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining("double"),
+		});
+	});
+
+	it("renders code fences via builder", async () => {
+		const result = await codeTool.execute("call-6", {});
+		const text =
+			result.content[0].type === "text" ? result.content[0].text : "";
+		expect(text).toContain("```ts");
+		expect(text).toContain("const x = 42;");
 	});
 
 	it("throws when builder has no content", () => {
