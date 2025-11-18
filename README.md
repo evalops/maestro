@@ -218,20 +218,44 @@ List workspace files (filtered by an optional query) so you can quickly grab `@p
 
 ### Built-in Tools
 
-Composer ships with twelve core tools:
+Composer ships with core tools for file operations, git, web search, and GitHub automation:
 
+**File & Code Operations:**
 - **batch** – Execute multiple independent tools in parallel (1-10 tools) to reduce latency.
 - **read** – Read file contents (text + images). Supports offset/limit for large files.
 - **list** – List directory contents with glob filtering and hidden-file toggles.
 - **search** – Ripgrep-backed search with regex, glob filters, and context.
-- **diff** – Inspect git diffs (working tree, staged index, revision ranges).
-- **bash** – Execute bash commands with optional timeouts.
 - **edit** – Replace exact text in a file (fails if multiple matches).
 - **write** – Write/overwrite files, creating parent directories as needed.
+
+**Git & Version Control:**
+- **diff** – Inspect git diffs (working tree, staged index, revision ranges).
+- **bash** – Execute bash commands with optional timeouts.
+
+**Task Management:**
 - **todo** – Manage TodoWrite-style checklists (`~/.composer/todos.json`).
+
+**Web & Search:**
 - **websearch** – Search the web via Exa AI for real-time information (requires `EXA_API_KEY`).
 - **codesearch** – Search GitHub/docs/Stack Overflow for code examples via Exa Code (requires `EXA_API_KEY`).
 - **webfetch** – Fetch and extract content from specific URLs via Exa (requires `EXA_API_KEY`).
+
+**GitHub CLI Tools** (requires `gh` CLI installed and authenticated):
+- **gh_pr** – Pull request operations (create, checkout, view, list, comment)
+- **gh_issue** – Issue operations (create, view, list, comment, close)
+- **gh_repo** – Repository operations (view, fork, clone)
+
+Install GitHub CLI: `brew install gh` (macOS) or visit [cli.github.com](https://cli.github.com)
+
+**Batch Tool:** Read-only actions (`view`, `list`) are safe to batch. Do NOT batch mutations (`create`, `comment`, `close`, `checkout`) as order and outcome matter.
+
+Examples:
+```
+Create PR:     {action: "create", title: "Fix bug", body: "Details"}
+Checkout PR:   {action: "checkout", number: 123}
+Create issue:  {action: "create", title: "Bug report", labels: ["bug"]}
+List issues:   {action: "list", state: "open", author: "username"}
+```
 
 ### CLI Helpers
 

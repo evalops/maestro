@@ -8,6 +8,8 @@ import { codesearchTool } from "./codesearch.js";
 import { diffTool } from "./diff.js";
 // Structured find/replace editing
 import { editTool } from "./edit.js";
+// GitHub CLI tools (requires gh CLI)
+import { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 // Directory listing / globbing
 import { listTool } from "./list.js";
 // File reader with range support
@@ -35,8 +37,11 @@ export { todoTool } from "./todo.js";
 export { webfetchTool } from "./webfetch.js";
 export { websearchTool } from "./websearch.js";
 export { writeTool } from "./write.js";
+export { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 
 // Create batch tool with all available tools (excluding batch itself)
+// Note: GitHub tools are included for read-only operations (list, view)
+// but the batch tool will still validate they're not doing mutations
 const allTools = [
 	readTool,
 	listTool,
@@ -49,6 +54,9 @@ const allTools = [
 	websearchTool,
 	codesearchTool,
 	webfetchTool,
+	ghPrTool,
+	ghIssueTool,
+	ghRepoTool,
 ];
 
 export const batchTool = createBatchTool(allTools);
@@ -66,4 +74,8 @@ export const codingTools = [
 	websearchTool,
 	codesearchTool,
 	webfetchTool,
+	// GitHub CLI tools
+	ghPrTool,
+	ghIssueTool,
+	ghRepoTool,
 ];

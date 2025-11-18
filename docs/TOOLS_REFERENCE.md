@@ -28,6 +28,41 @@ clear error message in chat.
 | `codesearch` | Search GitHub/docs/Stack Overflow for code examples via Exa Code. | Returns working code snippets with context. Requires `EXA_API_KEY` env var. |
 | `webfetch` | Fetch content from specific URLs via Exa. | Converts HTML to markdown. Requires `EXA_API_KEY` env var. |
 
+## GitHub CLI Tools
+
+| Tool | Description | Actions / Options |
+| ---- | ----------- | ----------------- |
+| `gh_pr` | Pull request operations | **Actions:** `create`, `checkout`, `view`, `list`, `comment`<br>**Options:** `number`, `title`, `body`, `branch`, `base`, `draft`, `state`, `author`, `limit`, `json` |
+| `gh_issue` | Issue operations | **Actions:** `create`, `view`, `list`, `comment`, `close`<br>**Options:** `number`, `title`, `body`, `labels`, `state`, `author`, `limit`, `json` |
+| `gh_repo` | Repository operations | **Actions:** `view`, `fork`, `clone`<br>**Options:** `repository`, `directory`, `json` |
+
+**Prerequisites:**
+- GitHub CLI (`gh`) must be installed: `brew install gh` (macOS) or see [cli.github.com](https://cli.github.com)
+- Must be authenticated: `gh auth login`
+- Must be in a git repository with GitHub remote (for PR/issue operations)
+
+**Batch Tool Usage:**
+- ✅ Safe for batch: `view`, `list` actions (read-only operations)
+- ❌ Do NOT batch: `create`, `comment`, `close`, `checkout` actions (mutations where order/outcome matters)
+
+**Examples:**
+```javascript
+// Create PR
+{action: "create", title: "Fix auth bug", body: "Details...", base: "main"}
+
+// Checkout PR for review
+{action: "checkout", number: 123}
+
+// Create issue with labels
+{action: "create", title: "Bug report", body: "Steps...", labels: ["bug", "priority"]}
+
+// List open issues by author
+{action: "list", state: "open", author: "username", limit: 10}
+
+// View repo info as JSON
+{action: "view", json: true}
+```
+
 ## CLI Commands
 
 | Command | Purpose |
