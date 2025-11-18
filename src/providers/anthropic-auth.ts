@@ -1,8 +1,8 @@
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { generatePKCE } from "@openauthjs/openauth/pkce";
 
 // Portions of this module are derived from https://github.com/sst/opencode-anthropic-auth (MIT).
 
@@ -48,6 +48,25 @@ const AUTH_FILE = resolve(
 
 export const CLAUDE_CODE_BETA_HEADER =
 	"oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
+
+interface PKCEPair {
+	verifier: string;
+	challenge: string;
+}
+
+function toBase64Url(buffer: Buffer): string {
+	return buffer
+		.toString("base64")
+		.replace(/\+/g, "-")
+		.replace(/\//g, "_")
+		.replace(/=+$/g, "");
+}
+
+async function generatePKCE(): Promise<PKCEPair> {
+	const verifier = toBase64Url(randomBytes(32));
+	const challenge = toBase64Url(createHash("sha256").update(verifier).digest());
+	return { verifier, challenge };
+}
 
 function ensureAuthDir(): void {
 	mkdirSync(dirname(AUTH_FILE), { recursive: true });

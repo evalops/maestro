@@ -43,7 +43,6 @@
   },
   "dependencies": {
     "@google/genai": "^1.29.1",
-    "@openauthjs/openauth": "^0.4.3",
     "@sinclair/typebox": "^0.33.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
