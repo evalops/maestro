@@ -5,8 +5,8 @@ import {
 	ExaTextOptionSchema,
 	buildContentsOptions,
 } from "./exa-contents.js";
-import type { ExaContentsResponse } from "./exa-types.js";
 import { createExaTool } from "./exa-tool.js";
+import type { ExaContentsResponse } from "./exa-types.js";
 
 const webfetchSchema = Type.Object({
 	urls: Type.Union(

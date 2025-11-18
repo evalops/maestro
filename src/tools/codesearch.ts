@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import { normalizeCostDollars } from "./exa-client.js";
-import type { ExaContextResponse } from "./exa-types.js";
 import { createExaTool } from "./exa-tool.js";
+import type { ExaContextResponse } from "./exa-types.js";
 
 const codesearchSchema = Type.Object({
 	query: Type.String({

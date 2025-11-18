@@ -7,8 +7,8 @@ import {
 	ExaTextOptionSchema,
 	buildContentsOptions,
 } from "./exa-contents.js";
-import type { ExaSearchResponse } from "./exa-types.js";
 import { createExaTool } from "./exa-tool.js";
+import type { ExaSearchResponse } from "./exa-types.js";
 
 const websearchSchema = Type.Object({
 	query: Type.String({

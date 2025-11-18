@@ -1,7 +1,7 @@
 import type { Static, TSchema } from "@sinclair/typebox";
 import type { AgentToolResult } from "../agent/types.js";
+import { type CallExaOptions, callExa } from "./exa-client.js";
 import { createTypeboxTool } from "./typebox-tool.js";
-import { callExa, type CallExaOptions } from "./exa-client.js";
 
 interface CreateExaToolOptions<Schema extends TSchema, Response, Details> {
 	name: string;
@@ -22,9 +22,11 @@ interface CreateExaToolOptions<Schema extends TSchema, Response, Details> {
 	callOptions?: Pick<CallExaOptions, "retries" | "retryDelayMs">;
 }
 
-export function createExaTool<Schema extends TSchema, Response, Details = undefined>(
-	options: CreateExaToolOptions<Schema, Response, Details>,
-) {
+export function createExaTool<
+	Schema extends TSchema,
+	Response,
+	Details = undefined,
+>(options: CreateExaToolOptions<Schema, Response, Details>) {
 	return createTypeboxTool<Schema, Details>({
 		name: options.name,
 		label: options.label,
@@ -35,15 +37,11 @@ export function createExaTool<Schema extends TSchema, Response, Details = undefi
 		shouldRetry: options.shouldRetry,
 		execute: async (toolCallId, params) => {
 			const requestBody = options.buildRequest(params);
-			const response = await callExa<Response>(
-				options.endpoint,
-				requestBody,
-				{
-					toolName: options.name,
-					operation: options.operation,
-					...options.callOptions,
-				},
-			);
+			const response = await callExa<Response>(options.endpoint, requestBody, {
+				toolName: options.name,
+				operation: options.operation,
+				...options.callOptions,
+			});
 			return options.mapResponse(response, params, { toolCallId });
 		},
 	});

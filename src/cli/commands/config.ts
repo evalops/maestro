@@ -17,6 +17,108 @@ import {
 	separator as themedSeparator,
 } from "../../style/theme.js";
 
+export interface ConfigShowRenderOptions {
+	hierarchy: string[];
+	homeDir?: string;
+}
+
+export function buildConfigShowSections(
+	inspection: ConfigInspection,
+	options: ConfigShowRenderOptions,
+): string[] {
+	const homeDir = options.homeDir ?? homedir();
+	const rel = (path: string) => path.replace(homeDir, "~");
+	const output: string[] = [];
+
+	output.push(sectionHeading("📋 Configuration Inspection"));
+	output.push("");
+	output.push(badge("Config Sources", undefined, "info"));
+	for (const source of inspection.sources) {
+		const status = source.exists
+			? badge("present", undefined, "success")
+			: badge("missing", undefined, "warn");
+		const mark = options.hierarchy.includes(source.path) ? "•" : " ";
+		output.push(`  ${mark} ${status} ${muted(rel(source.path))}`);
+	}
+	output.push("");
+
+	if (inspection.providers.length > 0) {
+		output.push(
+			badge(`Providers (${inspection.providers.length})`, undefined, "info"),
+		);
+		for (const provider of inspection.providers) {
+			const heading = `${chalk.cyan(provider.id)} ${muted(
+				`(${provider.modelCount} models)`,
+			)}`;
+			const keyBadge = provider.apiKeySource
+				? badge("API key", provider.apiKeySource, "success")
+				: badge("API key missing", undefined, "warn");
+			const enabledBadge = provider.enabled
+				? badge("enabled", undefined, "success")
+				: badge("disabled", undefined, "warn");
+			output.push(
+				`  ${heading} ${themedSeparator()} ${keyBadge} ${themedSeparator()} ${enabledBadge}`,
+			);
+			output.push(`     ${muted(provider.name)}`);
+			output.push(`     ${muted(`Base URL: ${provider.baseUrl}`)}`);
+			if (provider.options && Object.keys(provider.options).length > 0) {
+				output.push(muted(`     Options: ${JSON.stringify(provider.options)}`));
+			}
+			if (provider.models.length <= 3) {
+				for (const model of provider.models) {
+					output.push(muted(`       • ${formatModelLabel(model)}`));
+				}
+			} else {
+				output.push(muted(`       • ${formatModelLabel(provider.models[0])}`));
+				output.push(muted(`       • ${formatModelLabel(provider.models[1])}`));
+				output.push(muted(`       ... and ${provider.models.length - 2} more`));
+			}
+			output.push("");
+		}
+	} else {
+		output.push(`${badge("No providers configured", undefined, "warn")}`);
+		output.push("");
+	}
+
+	if (inspection.fileReferences.length > 0) {
+		output.push(
+			badge(
+				`File References (${inspection.fileReferences.length})`,
+				undefined,
+				"info",
+			),
+		);
+		for (const ref of inspection.fileReferences) {
+			const status = ref.exists
+				? badge("present", undefined, "success")
+				: badge("missing", undefined, "danger");
+			const size = ref.size ? ` (${formatBytes(ref.size)})` : "";
+			output.push(`  ${status} ${muted(rel(ref.path))}${muted(size)}`);
+		}
+		output.push("");
+	}
+
+	if (inspection.envVars.length > 0) {
+		output.push(
+			badge(
+				`Environment Variables (${inspection.envVars.length})`,
+				undefined,
+				"info",
+			),
+		);
+		for (const envVar of inspection.envVars) {
+			const status = envVar.set
+				? badge("set", undefined, "success")
+				: badge("missing", undefined, "warn");
+			const value = envVar.maskedValue ? envVar.maskedValue : "(not set)";
+			output.push(`  ${status} ${chalk.cyan(envVar.name)}: ${muted(value)}`);
+		}
+		output.push("");
+	}
+
+	return output;
+}
+
 /**
  * Handle `composer config validate` command
  */
@@ -88,18 +190,19 @@ export async function handleConfigValidate(): Promise<void> {
 }
 
 /**
- * Handle `composer config show` command
+ * Legacy renderer for `composer config show`
  */
-export async function handleConfigShow(): Promise<void> {
+function renderConfigShowLegacy(
+	inspection: ConfigInspection,
+	hierarchy: string[],
+	homeDir: string,
+): void {
 	console.log(sectionHeading("📋 Configuration Inspection"));
-
-	const inspection: ConfigInspection = inspectConfig();
 
 	// Show config sources
 	console.log(badge("Config Sources", undefined, "info"));
-	const hierarchy = getConfigHierarchy();
 	for (const source of inspection.sources) {
-		const relPath = source.path.replace(homedir(), "~");
+		const relPath = source.path.replace(homeDir, "~");
 		const status = source.exists
 			? badge("present", undefined, "success")
 			: badge("missing", undefined, "warn");
@@ -159,7 +262,7 @@ export async function handleConfigShow(): Promise<void> {
 			),
 		);
 		for (const ref of inspection.fileReferences) {
-			const relPath = ref.path.replace(homedir(), "~");
+			const relPath = ref.path.replace(homeDir, "~");
 			const status = ref.exists
 				? badge("present", undefined, "success")
 				: badge("missing", undefined, "danger");
@@ -186,6 +289,27 @@ export async function handleConfigShow(): Promise<void> {
 			console.log(`  ${status} ${chalk.cyan(envVar.name)}: ${muted(value)}`);
 		}
 		console.log();
+	}
+}
+
+/**
+ * Handle `composer config show` command
+ */
+export async function handleConfigShow(): Promise<void> {
+	const inspection: ConfigInspection = inspectConfig();
+	const hierarchy = getConfigHierarchy();
+	const homeDir = homedir();
+	const layoutPref = (
+		process.env.COMPOSER_CONFIG_SHOW_LAYOUT ?? "v2"
+	).toLowerCase();
+
+	if (layoutPref === "legacy") {
+		renderConfigShowLegacy(inspection, hierarchy, homeDir);
+	} else {
+		const lines = buildConfigShowSections(inspection, { hierarchy, homeDir });
+		for (const line of lines) {
+			console.log(line);
+		}
 	}
 
 	process.exit(0);

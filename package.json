@@ -36,7 +36,8 @@
     "compile:binary": "npm run bun:compile && echo \"Binary ready at dist/composer-bun\"",
     "cli": "node ./dist/cli.js",
     "tui": "npm run cli",
-    "verify": "npm run format && npm run lint && npm run test && npm run build && npm run telemetry:report",
+	"verify": "npm run format && npm run lint && npm run test && npm run build && npm run smoke && npm run telemetry:report",
+	"smoke": "node scripts/smoke-cli.js",
     "factory:import": "npm run build && node dist/scripts/import-factory-config.js",
     "factory:export": "npm run build && node dist/scripts/export-factory-config.js"
   },
