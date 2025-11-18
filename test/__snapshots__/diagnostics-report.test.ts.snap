@@ -11,7 +11,7 @@ Provider: anthropic
 Model: claude-sonnet-4-5
 Provider Name: Anthropic
 Model Name: Claude Sonnet
-Source: config
+Source: custom
 Base URL: https://api.anthropic.com
 Context Window: 200,000
 Max Tokens: 8,192
@@ -38,7 +38,7 @@ Provider: anthropic
 Model: claude-sonnet-4-5
 Provider Name: Anthropic
 Model Name: Claude Sonnet
-Source: config
+Source: custom
 Base URL: https://api.anthropic.com
 Context Window: 200,000
 Max Tokens: 8,192
@@ -59,7 +59,7 @@ Calls: 3 (2 ok, 1 fail)
 Duration: 4.20s total
 Cost: $0.0123
 Recent
-- 8:13:20 AM websearch (ok) $0.0040
+- 16:13:20Z websearch (ok) $0.0040
 
 Health
 Tool failures: 0

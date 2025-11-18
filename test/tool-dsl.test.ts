@@ -10,13 +10,15 @@ import {
 	expandUserPath,
 } from "../src/tools/tool-dsl.js";
 
-const echoTool = createTool({
+const echoSchema = Type.Object({
+	text: Type.String(),
+});
+
+const echoTool = createTool<typeof echoSchema, { length: number }>({
 	name: "echo",
 	label: "echo",
 	description: "Echo text",
-	schema: Type.Object({
-		text: Type.String(),
-	}),
+	schema: echoSchema,
 	run: ({ text }, { respond }) =>
 		respond.text(text).detail({ length: text.length }),
 });

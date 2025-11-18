@@ -139,7 +139,7 @@ function formatExaUsageSection(
 	if (summary.lastEvents.length) {
 		lines.push(chalk.dim("Recent"));
 		for (const event of summary.lastEvents) {
-			const ts = new Date(event.timestamp).toLocaleTimeString();
+			const ts = formatExaTimestamp(event.timestamp);
 			lines.push(
 				` - ${ts} ${event.operation ?? event.endpoint} (${event.success ? "ok" : "fail"}) ${event.costDollars ? `$${event.costDollars.toFixed(4)}` : ""}`.trim(),
 			);
@@ -225,6 +225,15 @@ function formatSeverity(sev?: number) {
 		default:
 			return "UNKNOWN";
 	}
+}
+
+function formatExaTimestamp(timestamp: number | string): string {
+	const date = new Date(timestamp);
+	if (Number.isNaN(date.getTime())) {
+		return "invalid";
+	}
+	const iso = date.toISOString();
+	return `${iso.slice(11, 19)}Z`;
 }
 
 export function formatDiagnosticsReport(input: DiagnosticsInput): string {
