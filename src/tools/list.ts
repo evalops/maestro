@@ -2,8 +2,7 @@ import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { glob } from "glob";
-import type { TextContent } from "../agent/types.js";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createTool } from "./tool-dsl.js";
 
 function expandPath(path: string): string {
 	if (path === "~") {
@@ -17,6 +16,13 @@ function expandPath(path: string): string {
 
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 500;
+
+type ListToolDetails = {
+	format: "text" | "json";
+	includeMetadata: boolean;
+	limit: number;
+	truncated: boolean;
+};
 
 const listSchema = Type.Object({
 	path: Type.Optional(
@@ -86,14 +92,13 @@ const listSchema = Type.Object({
 	),
 });
 
-export const listTool = createTypeboxTool({
+export const listTool = createTool<typeof listSchema, ListToolDetails>({
 	name: "list",
 	label: "list",
 	description:
 		"List files and directories in a path using safe glob patterns. Supports limiting and optional dotfiles.",
 	schema: listSchema,
-	async execute(
-		_toolCallId,
+	async run(
 		{
 			path = ".",
 			pattern = "*",
@@ -105,7 +110,7 @@ export const listTool = createTypeboxTool({
 			sortBy = "name",
 			sortDirection = "asc",
 		},
-		signal,
+		{ signal, respond },
 	) {
 		if (signal?.aborted) {
 			throw new Error("Operation aborted");
@@ -232,29 +237,15 @@ export const listTool = createTypeboxTool({
 
 ${body}`;
 
-			return {
-				content: [{ type: "text", text } satisfies TextContent],
-				details: {
-					format,
-					includeMetadata,
-					limit: safeLimit,
-					truncated,
-				},
-			};
+			return respond
+				.text(text)
+				.detail({ format, includeMetadata, limit: safeLimit, truncated });
 		} catch (error: unknown) {
 			const message =
 				error instanceof Error
 					? error.message
 					: "Unknown error while listing files";
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Error listing ${resolvedPath}: ${message}`,
-					} satisfies TextContent,
-				],
-				details: undefined,
-			};
+			return respond.text(`Error listing ${resolvedPath}: ${message}`);
 		}
 	},
 });
