@@ -7,6 +7,7 @@ export {
 	type CommandArgumentType,
 } from "./autocomplete.js";
 export { Editor } from "./components/editor.js";
+export type { LargePasteEvent } from "./components/editor.js";
 export { Input } from "./components/input.js";
 export { Loader } from "./components/loader.js";
 export { Markdown } from "./components/markdown.js";

@@ -25,6 +25,7 @@ import {
 } from "../session-manager.js";
 import type { SessionManager } from "../session-manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
+import type { LargePasteEvent } from "../tui-lib/components/editor.js";
 import type { SlashCommand } from "../tui-lib/index.js";
 import {
 	CombinedAutocompleteProvider,
@@ -52,7 +53,11 @@ import { DiagnosticsView } from "./diagnostics-view.js";
 import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { FileSearchView } from "./file-search-view.js";
-import { calculateFooterStats } from "./footer-utils.js";
+import {
+	type FooterStats,
+	calculateFooterStats,
+	formatTokenCount,
+} from "./footer-utils.js";
 import { FooterComponent } from "./footer.js";
 import { GitView } from "./git-view.js";
 import { ImportExportView } from "./import-view.js";
@@ -197,6 +202,8 @@ export class TuiRenderer {
 	private interruptArmed = false;
 	private interruptTimeout: NodeJS.Timeout | null = null;
 	private compactionInProgress = false;
+	private pendingPasteSummaries = new Set<number>();
+	private contextWarningLevel: "none" | "warn" | "danger" = "none";
 
 	constructor(
 		agent: Agent,
@@ -213,6 +220,9 @@ export class TuiRenderer {
 		this.chatContainer = new Container();
 		this.statusContainer = new Container();
 		this.editor = new CustomEditor();
+		this.editor.onLargePaste = (event) => {
+			void this.handleLargePaste(event);
+		};
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.editorContainer.addChild(this.editor); // Start with editor
 		this.footer = new FooterComponent(agent.state);
@@ -655,6 +665,8 @@ export class TuiRenderer {
 
 		// Update footer with current stats
 		this.footer.updateState(state);
+		const stats = calculateFooterStats(state);
+		this.maybeShowContextWarning(stats);
 		this.currentModelMetadata = toSessionModelMetadata(
 			state.model as RegisteredModel,
 		);
@@ -678,6 +690,12 @@ export class TuiRenderer {
 	}
 
 	private async handleTextSubmit(text: string): Promise<void> {
+		if (this.pendingPasteSummaries.size > 0) {
+			this.notificationView.showInfo(
+				"Still summarizing pasted content — please wait a moment.",
+			);
+			return;
+		}
 		if (await this.bashModeView.tryHandleInput(text)) {
 			return;
 		}
@@ -1102,6 +1120,12 @@ export class TuiRenderer {
 					: `${this.queuedPromptCount} prompts queued`;
 			hints.push(queueLabel);
 		}
+		if (this.compactionInProgress) {
+			hints.push("Compacting history…");
+		}
+		if (this.pendingPasteSummaries.size > 0) {
+			hints.push("Summarizing pasted text…");
+		}
 		if (this.bashModeView?.isActive()) {
 			hints.push("Bash mode active — type exit to leave");
 		}
@@ -1125,6 +1149,131 @@ export class TuiRenderer {
 			return (message as any).content as string;
 		}
 		return "";
+	}
+
+	private maybeShowContextWarning(stats: FooterStats): void {
+		if (!stats.contextWindow) {
+			this.contextWarningLevel = "none";
+			return;
+		}
+		const percent = stats.contextPercent;
+		let nextLevel: "none" | "warn" | "danger" = "none";
+		if (percent >= 90) {
+			nextLevel = "danger";
+		} else if (percent >= 70) {
+			nextLevel = "warn";
+		}
+		if (nextLevel === this.contextWarningLevel) {
+			return;
+		}
+		if (nextLevel === "none") {
+			this.contextWarningLevel = "none";
+			return;
+		}
+		const label = `${formatTokenCount(stats.contextTokens)}/${formatTokenCount(
+			stats.contextWindow,
+		)}`;
+		if (nextLevel === "warn") {
+			this.notificationView.showToast(
+				`Context ${percent.toFixed(1)}% used (${label}). Consider /compact before your next prompt.`,
+				"info",
+			);
+		} else {
+			this.notificationView.showToast(
+				`Context ${percent.toFixed(1)}% used (${label}). Composer will auto-compact soon.`,
+				"warn",
+			);
+		}
+		this.contextWarningLevel = nextLevel;
+	}
+
+	private async handleLargePaste(event: LargePasteEvent): Promise<void> {
+		if (!event.content.trim()) {
+			return;
+		}
+		if (this.pendingPasteSummaries.has(event.pasteId)) {
+			return;
+		}
+		this.pendingPasteSummaries.add(event.pasteId);
+		this.refreshFooterHint();
+		this.notificationView.showInfo(
+			`Summarizing pasted block (~${event.lineCount} lines)…`,
+		);
+		try {
+			const summaryMessage = await this.agent.generateSummary(
+				[
+					{
+						role: "user",
+						content: [
+							{
+								type: "text",
+								text: this.buildPasteSummaryContext(event.content),
+							},
+						],
+						timestamp: Date.now(),
+					} as Message,
+				],
+				this.buildPasteSummaryPrompt(event.lineCount, event.charCount),
+				"You turn large clipboard snippets into concise summaries highlighting key takeaways, files, and follow-ups.",
+			);
+			const summaryText = this.extractTextFromAppMessage(
+				summaryMessage as AppMessage,
+			).trim();
+			if (!summaryText) {
+				throw new Error("Empty summary");
+			}
+			const decorated = this.decoratePasteSummary(
+				summaryText,
+				event.lineCount,
+				event.charCount,
+			);
+			const replaced = this.editor.replacePasteMarker(event.pasteId, decorated);
+			if (replaced) {
+				this.notificationView.showToast(
+					`Summarized pasted block (~${event.lineCount} lines)`,
+					"success",
+				);
+			} else {
+				this.notificationView.showInfo(
+					"Generated paste summary but it was no longer needed.",
+				);
+			}
+		} catch (error) {
+			console.error("Failed to summarize pasted content", error);
+			this.notificationView.showError(
+				"Couldn't summarize pasted content. The original text will be sent.",
+			);
+		} finally {
+			this.pendingPasteSummaries.delete(event.pasteId);
+			this.refreshFooterHint();
+		}
+	}
+
+	private buildPasteSummaryPrompt(lines: number, chars: number): string {
+		const formatter = new Intl.NumberFormat("en-US");
+		return `Summarize the preceding clipboard snippet (~${formatter.format(
+			lines,
+		)} lines, ${formatter.format(chars)} chars). Provide concise bullet points highlighting what the snippet contains, key issues, and any follow-up actions. Limit to 120 words.`;
+	}
+
+	private buildPasteSummaryContext(content: string): string {
+		const limit = 12000;
+		if (content.length <= limit) {
+			return content;
+		}
+		return `${content.slice(0, limit)}\n\n[truncated ${content.length - limit} additional chars]`;
+	}
+
+	private decoratePasteSummary(
+		summary: string,
+		lines: number,
+		chars: number,
+	): string {
+		const formatter = new Intl.NumberFormat("en-US");
+		const meta = `[[Pasted ${formatter.format(lines)} lines (~${formatter.format(
+			chars,
+		)} chars) summarized]]`;
+		return `${meta}\n${summary.trim()}\n[[End paste summary]]`;
 	}
 
 	private applyLoadedSessionContext(): void {

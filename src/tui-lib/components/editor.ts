@@ -3,6 +3,14 @@ import type { AutocompleteProvider } from "../autocomplete.js";
 import type { Component } from "../tui.js";
 import { SelectList } from "./select-list.js";
 
+export interface LargePasteEvent {
+	pasteId: number;
+	content: string;
+	lineCount: number;
+	charCount: number;
+	marker: string;
+}
+
 export type TextEditorConfig = Record<string, unknown>;
 
 interface EditorState {
@@ -24,12 +32,15 @@ export class Editor implements Component {
 	private autocompletePrefix = "";
 	private pastes = new Map<number, string>();
 	private pasteCounter = 0;
+	private pasteMarkers = new Map<number, string>();
+	private pasteReplacements = new Map<number, string>();
 	private pasteBuffer = "";
 	private isInPaste = false;
 	private largePasteMode: "placeholder" | "verbatim" = "placeholder";
 
 	onSubmit?: (text: string) => void;
 	onChange?: (text: string) => void;
+	onLargePaste?: (event: LargePasteEvent) => void;
 	disableSubmit = false;
 
 	constructor(config?: TextEditorConfig) {
@@ -229,7 +240,8 @@ export class Editor implements Component {
 					`\\[paste #${pasteId}( (\\+\\d+ lines|\\d+ chars))?\\]`,
 					"g",
 				);
-				result = result.replace(markerRegex, pasteContent);
+				const replacement = this.pasteReplacements.get(pasteId) ?? pasteContent;
+				result = result.replace(markerRegex, replacement);
 			}
 			// Reset editor and clear pastes
 			this.state = {
@@ -238,6 +250,8 @@ export class Editor implements Component {
 				cursorCol: 0,
 			};
 			this.pastes.clear();
+			this.pasteMarkers.clear();
+			this.pasteReplacements.clear();
 			this.pasteCounter = 0;
 			// Notify that editor is now empty
 			if (this.onChange) {
@@ -406,6 +420,34 @@ export class Editor implements Component {
 			this.insertCharacter(char);
 		}
 	}
+	setPasteReplacement(pasteId: number, replacement: string): void {
+		this.pasteReplacements.set(pasteId, replacement);
+	}
+	replacePasteMarker(
+		pasteId: number,
+		replacementText: string,
+		options?: { keepOriginal?: boolean },
+	): boolean {
+		const marker = this.pasteMarkers.get(pasteId);
+		if (!marker) {
+			return false;
+		}
+		const currentText = this.state.lines.join("\n");
+		if (!currentText.includes(marker)) {
+			return false;
+		}
+		const updated = currentText.replace(marker, replacementText);
+		if (updated === currentText) {
+			return false;
+		}
+		this.setText(updated);
+		if (!options?.keepOriginal) {
+			this.pastes.delete(pasteId);
+			this.pasteMarkers.delete(pasteId);
+			this.pasteReplacements.delete(pasteId);
+		}
+		return true;
+	}
 	private handlePaste(pastedText: string): void {
 		// Clean the pasted text
 		const cleanText = pastedText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -431,9 +473,17 @@ export class Editor implements Component {
 				pastedLines.length > 10
 					? `[paste #${pasteId} +${pastedLines.length} lines]`
 					: `[paste #${pasteId} ${totalChars} chars]`;
+			this.pasteMarkers.set(pasteId, marker);
 			for (const char of marker) {
 				this.insertCharacter(char);
 			}
+			this.onLargePaste?.({
+				pasteId,
+				content: filteredText,
+				lineCount: pastedLines.length,
+				charCount: totalChars,
+				marker,
+			});
 			return;
 		}
 		if (pastedLines.length === 1) {
