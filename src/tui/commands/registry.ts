@@ -24,6 +24,18 @@ export function createCommandRegistry({
 	const entries: CommandEntry[] = [
 		buildEntry(
 			{
+				name: "approvals",
+				description:
+					"Show approval status or switch between auto/prompt/fail modes",
+				usage: "/approvals [auto|prompt|fail]",
+				tags: ["safety"],
+			},
+			withArgs("approvals"),
+			handlers.approvals,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "report",
 				description: "Collect info for bug reports or general feedback",
 				usage: "/report [bug|feedback]",
@@ -52,6 +64,17 @@ export function createCommandRegistry({
 			},
 			equals("model"),
 			handlers.model,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "new",
+				description: "Start a fresh chat session",
+				usage: "/new",
+				tags: ["session"],
+			},
+			equals("new"),
+			handlers.newChat,
 			createContext,
 		),
 		buildEntry(
@@ -140,6 +163,17 @@ export function createCommandRegistry({
 			},
 			withArgs("plan"),
 			handlers.plan,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "init",
+				description: "Create or overwrite AGENTS.md scaffolding for this repo",
+				usage: "/init [path]",
+				tags: ["config"],
+			},
+			withArgs("init"),
+			handlers.initAgents,
 			createContext,
 		),
 		buildEntry(
@@ -309,6 +343,17 @@ export function createCommandRegistry({
 			},
 			matchDiagnostics,
 			handlers.diagnostics,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "mcp",
+				description: "Show configured Model Context Protocol servers",
+				usage: "/mcp",
+				tags: ["tools"],
+			},
+			equals("mcp"),
+			handlers.mcp,
 			createContext,
 		),
 		buildEntry(

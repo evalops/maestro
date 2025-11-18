@@ -1,10 +1,11 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import chalk from "chalk";
 import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 	ActionApprovalService,
+	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
 import type {
@@ -80,6 +81,7 @@ import { ToolStatusView } from "./tool-status-view.js";
 import { UpdateView } from "./update-view.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
+import { handleAgentsInit } from "../cli/commands/agents.js";
 import { ApprovalController } from "./approval-controller.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -188,6 +190,7 @@ export class TuiRenderer {
 	private queueEnabled = false;
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
+	private approvalService: ActionApprovalService;
 	private interruptArmed = false;
 	private interruptTimeout: NodeJS.Timeout | null = null;
 
@@ -220,6 +223,7 @@ export class TuiRenderer {
 			editorContainer: this.editorContainer,
 			notificationView: this.notificationView,
 		});
+		this.approvalService = approvalService;
 		this.loaderView = new LoaderView({
 			ui: this.ui,
 			statusContainer: this.statusContainer,
@@ -525,6 +529,10 @@ export class TuiRenderer {
 				this.stop();
 				process.exit(0);
 			},
+			handleApprovals: (context) => this.handleApprovalsCommand(context),
+			handleNewChat: (context) => this.handleNewChatCommand(context),
+			handleInitAgents: (context) => this.handleInitCommand(context),
+			handleMcp: (context) => this.handleMcpCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -819,6 +827,102 @@ export class TuiRenderer {
 			return;
 		}
 		context.renderHelp();
+	}
+
+	private handleApprovalsCommand(context: CommandExecutionContext): void {
+		const arg = context.argumentText.trim().toLowerCase();
+		if (arg) {
+			if (!["auto", "prompt", "fail"].includes(arg)) {
+				context.showError('Mode must be one of "auto", "prompt", or "fail".');
+				context.renderHelp();
+				return;
+			}
+			this.approvalService.setMode(arg as ApprovalMode);
+			this.notificationView.showToast(
+				`Switched approval mode to ${arg}.`,
+				"success",
+			);
+		}
+		const pending = this.approvalService.getPendingRequests();
+		const pendingSummary = pending.length
+			? `Pending approvals (${pending.length}):${pending
+					.slice(0, 5)
+					.map((req) => `\n• ${req.toolName} – ${req.reason ?? "awaiting"}`)
+					.join("")}`
+			: "No pending approval requests.";
+		const summaryLines = [
+			`Approval mode: ${this.approvalService.getMode()}`,
+			pendingSummary,
+		];
+		if (pending.length > 5) {
+			summaryLines.push(
+				`Showing first 5 of ${pending.length}. Use the approvals panel to review all.`,
+			);
+		}
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(summaryLines.join("\n"), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleNewChatCommand(context: CommandExecutionContext): void {
+		if (this.isAgentRunning) {
+			context.showError(
+				"Wait for the current run to finish before starting a new chat.",
+			);
+			return;
+		}
+		this.sessionManager.startFreshSession();
+		this.agent.clearMessages();
+		this.toolOutputView.clearTrackedComponents();
+		this.chatContainer.clear();
+		this.planView.syncHintWithStore();
+		this.planHint = null;
+		this.footer.updateState(this.agent.state);
+		this.refreshFooterHint();
+		this.renderInitialMessages(this.agent.state);
+		this.notificationView.showToast("Started a new chat session.", "success");
+	}
+
+	private handleInitCommand(context: CommandExecutionContext): void {
+		try {
+			const targetArg = context.argumentText.trim() || undefined;
+			const createdPath = handleAgentsInit(targetArg, { force: false });
+			const relativePath = relative(process.cwd(), createdPath);
+			const displayPath =
+				relativePath && !relativePath.startsWith("..") && relativePath !== ""
+					? `./${relativePath}`
+					: createdPath;
+			this.notificationView.showToast(
+				`Scaffolded ${displayPath}. Update it before your next run.`,
+				"success",
+			);
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(
+				new Text(
+					`Created AGENTS instructions at ${displayPath}. Customize it with project-specific guidance to improve future sessions.`,
+					1,
+					0,
+				),
+			);
+			this.ui.requestRender();
+		} catch (error) {
+			const message =
+				error instanceof Error
+					? error.message
+					: "Failed to scaffold AGENTS file.";
+			context.showError(message);
+		}
+	}
+
+	private handleMcpCommand(_context: CommandExecutionContext): void {
+		const lines = [
+			"Model Context Protocol",
+			"No MCP servers are configured yet.",
+			"Add them to your Composer config once MCP support lands, or set the MCP_* environment variables when running under Codex.",
+		];
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
 	}
 
 	private renderQueueList(): void {

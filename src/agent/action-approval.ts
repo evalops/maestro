@@ -37,6 +37,10 @@ export class ActionApprovalService {
 		this.mode = mode;
 	}
 
+	getMode(): ApprovalMode {
+		return this.mode;
+	}
+
 	requiresUserInteraction(): boolean {
 		return this.mode === "prompt";
 	}

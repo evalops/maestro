@@ -404,4 +404,29 @@ describe("SessionManager - Deferred Session Creation", () => {
 			expect(loadedLevel).toBe("high");
 		});
 	});
+
+	describe("startFreshSession", () => {
+		it("rotates the session file and clears metadata", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const userMessage = createUserMessage("Investigate api regressions");
+			state.messages.push(userMessage);
+			sessionManager.saveMessage(userMessage);
+			sessionManager.startSession(state);
+			const firstFile = sessionManager.getSessionFile();
+			expect(existsSync(firstFile)).toBe(true);
+
+			sessionManager.saveThinkingLevelChange("high");
+			sessionManager.startFreshSession();
+
+			const secondFile = sessionManager.getSessionFile();
+			expect(secondFile).not.toBe(firstFile);
+			expect(existsSync(secondFile)).toBe(false);
+			expect(sessionManager.loadModel()).toBeNull();
+
+			sessionManager.saveMessage(userMessage);
+			sessionManager.startSession(state);
+			expect(existsSync(secondFile)).toBe(true);
+		});
+	});
 });

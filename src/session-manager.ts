@@ -290,6 +290,19 @@ export class SessionManager {
 		);
 	}
 
+	startFreshSession(): void {
+		if (!this.enabled) {
+			return;
+		}
+		this.writer?.flushSync();
+		this.writer = undefined;
+		this.pendingMessages = [];
+		this.sessionInitialized = false;
+		this.metadataCache = new SessionMetadataCache();
+		this.initNewSession();
+		this.initializeWriter();
+	}
+
 	private findMostRecentlyModifiedSession(): string | null {
 		try {
 			const files = readdirSync(this.sessionDir)

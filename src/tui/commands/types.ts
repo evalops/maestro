@@ -47,6 +47,10 @@ export interface CommandHandlers {
 	compactTools(context: CommandExecutionContext): void;
 	queue(context: CommandExecutionContext): Promise<void> | void;
 	quit(context: CommandExecutionContext): void;
+	approvals(context: CommandExecutionContext): void;
+	newChat(context: CommandExecutionContext): void;
+	initAgents(context: CommandExecutionContext): void;
+	mcp(context: CommandExecutionContext): void;
 }
 
 export interface CommandEntry {
