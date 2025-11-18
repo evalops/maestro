@@ -31,6 +31,25 @@ describe("Hierarchical Context File Loading", () => {
 	});
 
 	describe("Global Context Loading", () => {
+		it("should load AGENTS.md when present", () => {
+			const globalDir = join(testDir, "global");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(
+				join(globalDir, "AGENTS.md"),
+				"# Global AGENTS\nThis is AGENTS.md",
+			);
+
+			process.env.COMPOSER_AGENT_DIR = globalDir;
+			process.chdir(testDir);
+
+			const contextFiles = loadProjectContextFiles();
+			const globalContext = contextFiles.find((f) =>
+				f.path.endsWith("AGENTS.md"),
+			);
+			expect(globalContext).toBeDefined();
+			expect(globalContext?.content).toContain("This is AGENTS.md");
+		});
+
 		it("should load AGENT.md from global directory", () => {
 			const globalDir = join(testDir, "global");
 			mkdirSync(globalDir, { recursive: true });
@@ -74,6 +93,29 @@ describe("Hierarchical Context File Loading", () => {
 			expect(globalContext?.path).toContain("AGENT.md");
 			expect(globalContext?.path).not.toContain("CLAUDE.md");
 			expect(globalContext?.content).toContain("AGENT.md Content");
+		});
+
+		it("should prefer AGENTS.override.md over other context files", () => {
+			const globalDir = join(testDir, "global");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "AGENTS.md"), "# Base instructions\nBase");
+			writeFileSync(
+				join(globalDir, "AGENT.md"),
+				"# Legacy instructions\nLegacy",
+			);
+			writeFileSync(
+				join(globalDir, "AGENTS.override.md"),
+				"# Override instructions\nOverride",
+			);
+
+			process.env.COMPOSER_AGENT_DIR = globalDir;
+			process.chdir(testDir);
+
+			const contextFiles = loadProjectContextFiles();
+			const globalContext = contextFiles.find((f) => f.path.includes("global"));
+
+			expect(globalContext?.path).toContain("AGENTS.override.md");
+			expect(globalContext?.content).toContain("Override");
 		});
 	});
 

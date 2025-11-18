@@ -311,6 +311,40 @@ export async function main(args: string[]) {
 		}
 	}
 
+	if (parsed.command === "agents") {
+		const { handleAgentsInit } = await import("./cli/commands/agents.js");
+		if (parsed.subcommand && parsed.subcommand !== "init") {
+			console.error(
+				chalk.red(
+					`Unknown agents subcommand: ${parsed.subcommand}. Try "composer agents init"`,
+				),
+			);
+			process.exit(1);
+		}
+		try {
+			const targetArg = parsed.messages[0];
+			const filePath = handleAgentsInit(targetArg, { force: parsed.force });
+			const cwd = process.cwd();
+			const relativePath = filePath.startsWith(cwd)
+				? `.${filePath.slice(cwd.length)}` || "."
+				: filePath;
+			console.log(chalk.green(`Created ${relativePath}`));
+			console.log(
+				chalk.dim(
+					"Update the file with project-specific guidance before your next session.",
+				),
+			);
+			return;
+		} catch (error) {
+			const message =
+				error instanceof Error
+					? error.message
+					: "Failed to initialize AGENTS.md";
+			console.error(chalk.red(message));
+			process.exit(1);
+		}
+	}
+
 	// Setup session manager
 	const sessionManager = new SessionManager(
 		parsed.continue && !parsed.resume,

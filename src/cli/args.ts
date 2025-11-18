@@ -16,6 +16,7 @@ export interface Args {
 	command?: string;
 	subcommand?: string;
 	approvalMode?: "auto" | "prompt" | "fail";
+	force?: boolean;
 	messages: string[];
 }
 
@@ -59,11 +60,16 @@ export function parseArgs(args: string[]): Args {
 			if (mode === "auto" || mode === "prompt" || mode === "fail") {
 				result.approvalMode = mode;
 			}
+		} else if (arg === "--force") {
+			result.force = true;
 		} else if (!arg.startsWith("-")) {
 			// Handle commands: "config", "models", "cost", etc.
 			if (
 				!result.command &&
-				(arg === "config" || arg === "models" || arg === "cost")
+				(arg === "config" ||
+					arg === "models" ||
+					arg === "cost" ||
+					arg === "agents")
 			) {
 				result.command = arg;
 				// Check for subcommand

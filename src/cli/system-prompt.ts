@@ -8,8 +8,15 @@ interface ContextFile {
 	content: string;
 }
 
+const CONTEXT_FILE_CANDIDATES = [
+	"AGENTS.override.md",
+	"AGENTS.md",
+	"AGENT.md",
+	"CLAUDE.md",
+];
+
 function loadContextFileFromDir(dir: string): ContextFile | null {
-	const candidates = ["AGENT.md", "CLAUDE.md"];
+	const candidates = CONTEXT_FILE_CANDIDATES;
 	for (const filename of candidates) {
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
