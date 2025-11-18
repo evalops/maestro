@@ -10,6 +10,8 @@ const ghPrSchema = Type.Object({
 		Type.Literal("view"),
 		Type.Literal("list"),
 		Type.Literal("comment"),
+		Type.Literal("checks"),
+		Type.Literal("diff"),
 	]),
 	number: Type.Optional(Type.Number({ minimum: 1 })),
 	title: Type.Optional(Type.String({ minLength: 1 })),
@@ -25,8 +27,11 @@ const ghPrSchema = Type.Object({
 		]),
 	),
 	author: Type.Optional(Type.String()),
+	label: Type.Optional(Type.Array(Type.String())),
+	milestone: Type.Optional(Type.String()),
 	limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100, default: 30 })),
 	json: Type.Optional(Type.Boolean({ default: false })),
+	nameOnly: Type.Optional(Type.Boolean({ default: false })),
 });
 
 export const ghPrTool = createTool<typeof ghPrSchema>({
@@ -37,15 +42,20 @@ export const ghPrTool = createTool<typeof ghPrSchema>({
 Actions:
   create    - Create PR from current branch (requires: title)
   checkout  - Checkout PR locally (requires: number)
-  view      - View PR details (optional: number for specific PR)
-  list      - List PRs (filters: state, author, limit)
+  view      - View PR details (optional: number for specific PR, json for structured output)
+  list      - List PRs (filters: state, author, label, milestone, limit)
   comment   - Add comment (requires: number, body)
+  checks    - View PR review status and CI checks (requires: number)
+  diff      - View PR diff or changed files (requires: number, nameOnly for file list only)
 
 Examples:
   {action: "create", title: "Fix bug", body: "Details", base: "main"}
   {action: "checkout", number: 123}
-  {action: "list", state: "open", author: "username"}
-  {action: "comment", number: 42, body: "LGTM"}`,
+  {action: "list", state: "open", label: ["bug", "priority"]}
+  {action: "list", milestone: "v1.0"}
+  {action: "comment", number: 42, body: "LGTM"}
+  {action: "checks", number: 42, json: true}
+  {action: "diff", number: 42, nameOnly: true}`,
 	schema: ghPrSchema,
 	async run(params, { signal, respond }) {
 		const check = await checkGhCliAvailable(signal);
@@ -65,16 +75,35 @@ Examples:
 			if (params.branch) args.push("--branch", params.branch);
 		} else if (params.action === "view") {
 			if (params.number) args.push(String(params.number));
-			if (params.json) args.push("--json", "title,body,state,number,url");
+			if (params.json)
+				args.push(
+					"--json",
+					"title,body,state,number,url,reviewDecision,statusCheckRollup",
+				);
 		} else if (params.action === "list") {
 			if (params.state) args.push("--state", params.state);
 			if (params.author) args.push("--author", params.author);
+			if (params.label?.length) args.push("--label", params.label.join(","));
+			if (params.milestone) args.push("--search", `milestone:"${params.milestone}"`);
 			if (params.limit) args.push("--limit", String(params.limit));
 		} else if (params.action === "comment") {
 			if (!params.number || !params.body) {
 				throw new Error("number and body required for comment");
 			}
 			args.push(String(params.number), "--body", params.body);
+		} else if (params.action === "checks") {
+			if (!params.number) throw new Error("number required for checks");
+			args.push(String(params.number));
+			if (params.json) {
+				args.push(
+					"--json",
+					"reviewDecision,statusCheckRollup,reviews,latestReviews",
+				);
+			}
+		} else if (params.action === "diff") {
+			if (!params.number) throw new Error("number required for diff");
+			args.push(String(params.number));
+			if (params.nameOnly) args.push("--name-only");
 		}
 
 		const cmd = `gh ${args.map((a) => `"${a.replace(/"/g, '\\"')}"`).join(" ")}`;
