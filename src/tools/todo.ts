@@ -6,7 +6,7 @@ import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { setPlanSatisfied } from "../safety/safe-mode.js";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createTool } from "./tool-dsl.js";
 
 const sectionDivider = "─".repeat(40);
 
@@ -334,13 +334,21 @@ function formatTodoEntry(item: NormalizedTodo, index: number): string {
 	return `${header}\n${metaLines.join("\n")}`;
 }
 
-export const todoTool = createTypeboxTool({
+type TodoToolDetails = {
+	items: NormalizedTodo[];
+	pending: number;
+	in_progress: number;
+	completed: number;
+	total: number;
+};
+
+export const todoTool = createTool<typeof todoSchema, TodoToolDetails>({
 	name: "todo",
 	label: "todo",
 	description:
 		"Create or update a status-rich checklist for a coding objective, mirroring TodoWrite semantics (id, content, status, priority).",
 	schema: todoSchema,
-	async execute(_toolCallId, params) {
+	async run(params, { respond }) {
 		const { goal, items, updates, includeSummary } = params;
 
 		const store = await loadStore();
@@ -401,9 +409,8 @@ export const todoTool = createTypeboxTool({
 		await saveStore(store);
 		setPlanSatisfied(true);
 
-		return {
-			content: [{ type: "text", text: sections.join("\n\n") }],
-			details: { ...counts, items: workingItems },
-		};
+		return respond
+			.text(sections.join("\n\n"))
+			.detail({ ...counts, items: workingItems });
 	},
 });

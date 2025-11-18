@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import os from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createTool, expandUserPath } from "./tool-dsl.js";
 
 function getShellConfig(): { shell: string; args: string[] } {
 	if (process.platform === "win32") {
@@ -40,7 +39,7 @@ function killProcessTree(pid: number): void {
 				stdio: "ignore",
 				detached: true,
 			});
-		} catch (error) {
+		} catch {
 			// ignore
 		}
 		return;
@@ -48,24 +47,13 @@ function killProcessTree(pid: number): void {
 
 	try {
 		process.kill(-pid, "SIGKILL");
-	} catch (error) {
+	} catch {
 		try {
 			process.kill(pid, "SIGKILL");
-		} catch (error_) {
+		} catch {
 			// already exited
 		}
 	}
-}
-
-function expandPath(path?: string): string | undefined {
-	if (!path) return undefined;
-	if (path === "~") {
-		return os.homedir();
-	}
-	if (path.startsWith("~/")) {
-		return os.homedir() + path.slice(1);
-	}
-	return resolvePath(path);
 }
 
 const bashSchema = Type.Object({
@@ -92,19 +80,19 @@ const bashSchema = Type.Object({
 	),
 });
 
-export const bashTool = createTypeboxTool({
+export const bashTool = createTool<typeof bashSchema>({
 	name: "bash",
 	label: "bash",
 	description:
 		"Execute a bash command in the current working directory. Returns stdout and stderr. Optionally provide a timeout in seconds.",
 	schema: bashSchema,
-	async execute(_toolCallId, { command, timeout, cwd, env }, signal) {
+	async run({ command, timeout, cwd, env }, { signal }) {
 		return new Promise<{
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
 		}>((resolve, reject) => {
 			const { shell, args } = getShellConfig();
-			const resolvedCwd = expandPath(cwd);
+			const resolvedCwd = cwd ? resolvePath(expandUserPath(cwd)) : undefined;
 			if (resolvedCwd && !existsSync(resolvedCwd)) {
 				reject(new Error(`Working directory not found: ${cwd}`));
 				return;
@@ -124,7 +112,6 @@ export const bashTool = createTypeboxTool({
 			let stderrTruncated = false;
 			const MAX_BUFFER = 10 * 1024 * 1024;
 
-			// Set timeout if provided
 			let timeoutHandle: NodeJS.Timeout | undefined;
 			if (timeout !== undefined && timeout > 0) {
 				timeoutHandle = setTimeout(() => {
@@ -148,7 +135,6 @@ export const bashTool = createTypeboxTool({
 				}
 			};
 
-			// Collect stdout
 			if (child.stdout) {
 				child.stdout.on("data", (data) => {
 					stdout += data.toString();
@@ -159,7 +145,6 @@ export const bashTool = createTypeboxTool({
 				});
 			}
 
-			// Collect stderr
 			if (child.stderr) {
 				child.stderr.on("data", (data) => {
 					stderr += data.toString();
@@ -170,13 +155,11 @@ export const bashTool = createTypeboxTool({
 				});
 			}
 
-			// Handle process exit
 			child.on("close", (code) => {
 				cleanup();
 
 				if (signal?.aborted) {
-					let output = "";
-					if (stdout) output += stdout;
+					let output = stdout;
 					if (stderr) {
 						if (output) output += "\n";
 						output += stderr;
@@ -195,8 +178,7 @@ export const bashTool = createTypeboxTool({
 				}
 
 				if (timedOut) {
-					let output = "";
-					if (stdout) output += stdout;
+					let output = stdout;
 					if (stderr) {
 						if (output) output += "\n";
 						output += stderr;
@@ -214,8 +196,7 @@ export const bashTool = createTypeboxTool({
 					return;
 				}
 
-				let output = "";
-				if (stdout) output += stdout;
+				let output = stdout;
 				if (stderr) {
 					if (output) output += "\n";
 					output += stderr;

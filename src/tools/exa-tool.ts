@@ -1,7 +1,7 @@
 import type { Static, TSchema } from "@sinclair/typebox";
 import type { AgentToolResult } from "../agent/types.js";
 import { type CallExaOptions, callExa } from "./exa-client.js";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createLegacyTool } from "./tool-dsl.js";
 
 interface CreateExaToolOptions<Schema extends TSchema, Response, Details> {
 	name: string;
@@ -27,7 +27,7 @@ export function createExaTool<
 	Response,
 	Details = undefined,
 >(options: CreateExaToolOptions<Schema, Response, Details>) {
-	return createTypeboxTool<Schema, Details>({
+	return createLegacyTool<Schema, Details>({
 		name: options.name,
 		label: options.label,
 		description: options.description,
@@ -35,7 +35,7 @@ export function createExaTool<
 		maxRetries: options.maxRetries,
 		retryDelayMs: options.retryDelayMs,
 		shouldRetry: options.shouldRetry,
-		execute: async (toolCallId, params) => {
+		legacyExecute: async (params, { toolCallId }) => {
 			const requestBody = options.buildRequest(params);
 			const response = await callExa<Response>(options.endpoint, requestBody, {
 				toolName: options.name,

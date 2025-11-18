@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import { constants } from "node:fs";
 import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import * as os from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { collectDiagnostics } from "../lsp/index.js";
@@ -11,20 +10,7 @@ import {
 } from "../safety/safe-mode.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import { generateDiffString } from "./diff-utils.js";
-import { createTypeboxTool } from "./typebox-tool.js";
-
-/**
- * Expand ~ to home directory
- */
-function expandPath(filePath: string): string {
-	if (filePath === "~") {
-		return os.homedir();
-	}
-	if (filePath.startsWith("~/")) {
-		return os.homedir() + filePath.slice(1);
-	}
-	return filePath;
-}
+import { createTool, expandUserPath } from "./tool-dsl.js";
 
 async function writeFileAtomically(
 	filePath: string,
@@ -70,184 +56,99 @@ const editSchema = Type.Object({
 	),
 });
 
-export const editTool = createTypeboxTool({
+type EditToolDetails = {
+	diff: string;
+	validators?: ValidatorRunResult[];
+};
+
+export const editTool = createTool<typeof editSchema, EditToolDetails>({
 	name: "edit",
 	label: "edit",
 	description:
 		"Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
 	schema: editSchema,
-	async execute(
-		_toolCallId,
+	async run(
 		{ path, oldText, newText, occurrence = 1, dryRun = false },
-		signal,
+		{ signal, respond },
 	) {
-		const absolutePath = resolvePath(expandPath(path));
 		requirePlanCheck("edit");
-
-		return new Promise<{
-			content: Array<{ type: "text"; text: string }>;
-			details: { diff: string; validators?: unknown } | undefined;
-		}>((resolve, reject) => {
-			// Check if already aborted
+		const absolutePath = resolvePath(expandUserPath(path));
+		const throwIfAborted = () => {
 			if (signal?.aborted) {
-				reject(new Error("Operation aborted"));
-				return;
+				throw new Error("Operation aborted");
 			}
+		};
 
-			let aborted = false;
+		try {
+			await access(absolutePath, constants.R_OK | constants.W_OK);
+		} catch {
+			throw new Error(`File not found: ${path}`);
+		}
 
-			// Set up abort handler
-			const onAbort = () => {
-				aborted = true;
-				reject(new Error("Operation aborted"));
-			};
+		throwIfAborted();
+		const content = await readFile(absolutePath, "utf-8");
+		throwIfAborted();
 
-			if (signal) {
-				signal.addEventListener("abort", onAbort, { once: true });
-			}
+		const exactMatches = findExactMatches(content, oldText);
+		if (exactMatches.length === 0) {
+			const approx = findApproximateMatches(content, oldText);
+			const suggestion = approx.length
+				? `\n\nPossible matches:\n${approx
+						.slice(0, 3)
+						.map(formatMatchPreview)
+						.join("\n")}`
+				: `\n\nTip: double-check whitespace/newlines via /diff ${path}`;
+			throw new Error(
+				`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.${suggestion}`,
+			);
+		}
 
-			// Perform the edit operation
-			(async () => {
-				try {
-					// Check if file exists
-					try {
-						await access(absolutePath, constants.R_OK | constants.W_OK);
-					} catch {
-						if (signal) {
-							signal.removeEventListener("abort", onAbort);
-						}
-						reject(new Error(`File not found: ${path}`));
-						return;
-					}
+		if (occurrence > exactMatches.length) {
+			throw new Error(
+				`Only ${exactMatches.length} occurrence(s) found in ${path}, but occurrence #${occurrence} was requested`,
+			);
+		}
 
-					// Check if aborted before reading
-					if (aborted) {
-						return;
-					}
+		const targetMatch = exactMatches[occurrence - 1];
+		const matchIndex = targetMatch.index ?? 0;
+		const newContent =
+			content.slice(0, matchIndex) +
+			newText +
+			content.slice(matchIndex + oldText.length);
+		const diff = generateDiffString(content, newContent);
 
-					// Read the file
-					const content = await readFile(absolutePath, "utf-8");
+		if (dryRun) {
+			return respond
+				.text(
+					`Dry run: preview for ${path} (occurrence #${occurrence}). No changes written.`,
+				)
+				.detail({ diff });
+		}
 
-					// Check if aborted after reading
-					if (aborted) {
-						return;
-					}
+		await writeFileAtomically(absolutePath, newContent);
+		let validatorSummaries: ValidatorRunResult[] | undefined;
+		try {
+			const lspDiagnostics = await collectDiagnostics();
+			validatorSummaries = await runValidatorsOnSuccess(
+				[absolutePath],
+				lspDiagnostics,
+			);
+		} catch (validatorError) {
+			await writeFileAtomically(absolutePath, content);
+			throw validatorError;
+		}
 
-					// Check if old text exists
-					const exactMatches = findExactMatches(content, oldText);
-					if (exactMatches.length === 0) {
-						const approx = findApproximateMatches(content, oldText);
-						const suggestion = approx.length
-							? `\n\nPossible matches:\n${approx
-									.slice(0, 3)
-									.map(formatMatchPreview)
-									.join("\n")}`
-							: `\n\nTip: double-check whitespace/newlines via /diff ${path}`;
-						if (signal) {
-							signal.removeEventListener("abort", onAbort);
-						}
-						reject(
-							new Error(
-								`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.${suggestion}`,
-							),
-						);
-						return;
-					}
+		throwIfAborted();
 
-					if (occurrence > exactMatches.length) {
-						if (signal) {
-							signal.removeEventListener("abort", onAbort);
-						}
-						reject(
-							new Error(
-								`Only ${exactMatches.length} occurrence(s) found in ${path}, but occurrence #${occurrence} was requested`,
-							),
-						);
-						return;
-					}
-
-					const targetMatch = exactMatches[occurrence - 1];
-					const matchIndex = targetMatch.index ?? 0;
-
-					// Check if aborted before writing
-					if (aborted) {
-						return;
-					}
-
-					const newContent =
-						content.slice(0, matchIndex) +
-						newText +
-						content.slice(matchIndex + oldText.length);
-
-					const diff = generateDiffString(content, newContent);
-
-					if (dryRun) {
-						if (signal) {
-							signal.removeEventListener("abort", onAbort);
-						}
-						resolve({
-							content: [
-								{
-									type: "text",
-									text: `Dry run: preview for ${path} (occurrence #${occurrence}). No changes written.`,
-								},
-							],
-							details: { diff },
-						});
-						return;
-					}
-
-					await writeFileAtomically(absolutePath, newContent);
-					let validatorSummaries: ValidatorRunResult[] | undefined;
-					try {
-						const lspDiagnostics = await collectDiagnostics();
-						validatorSummaries = await runValidatorsOnSuccess(
-							[absolutePath],
-							lspDiagnostics,
-						);
-					} catch (validatorError) {
-						await writeFileAtomically(absolutePath, content);
-						if (signal) {
-							signal.removeEventListener("abort", onAbort);
-						}
-						reject(validatorError);
-						return;
-					}
-
-					// Check if aborted after writing
-					if (aborted) {
-						return;
-					}
-
-					// Clean up abort handler
-					if (signal) {
-						signal.removeEventListener("abort", onAbort);
-					}
-
-					resolve({
-						content: [
-							{
-								type: "text",
-								text: `Successfully replaced ${oldText.length} characters with ${newText.length} characters in ${path}${exactMatches.length > 1 ? ` (occurrence #${occurrence} of ${exactMatches.length})` : ""}.`,
-							},
-						],
-						details: {
-							diff,
-							validators: validatorSummaries,
-						},
-					});
-				} catch (error: unknown) {
-					// Clean up abort handler
-					if (signal) {
-						signal.removeEventListener("abort", onAbort);
-					}
-
-					if (!aborted) {
-						reject(error instanceof Error ? error : new Error(String(error)));
-					}
-				}
-			})();
-		});
+		return respond
+			.text(
+				`Successfully replaced ${oldText.length} characters with ${newText.length} characters in ${path}${
+					exactMatches.length > 1
+						? ` (occurrence #${occurrence} of ${exactMatches.length})`
+						: ""
+				}.`,
+			)
+			.detail({ diff, validators: validatorSummaries });
 	},
 });
 

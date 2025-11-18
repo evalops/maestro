@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import type { AgentTool, AgentToolResult } from "../agent/types.js";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createTool } from "./tool-dsl.js";
 
 export interface BatchAgentTool extends AgentTool {
 	setAvailableTools: (tools: AgentTool<any, any>[]) => void;
@@ -46,6 +46,22 @@ interface BatchToolContext {
 
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
+type BatchToolDetails = {
+	totalCalls: number;
+	successful: number;
+	failed: number;
+	discarded: number;
+	tools: string[];
+	results: Array<{
+		tool: string;
+		success: boolean;
+		duration: number;
+		error?: string;
+		summary?: string;
+		details?: unknown;
+	}>;
+};
+
 function buildToolMap(tools: AgentTool<any, any>[]): Map<string, AgentTool> {
 	return new Map(tools.map((t) => [t.name, t]));
 }
@@ -55,7 +71,7 @@ export function createBatchTool(
 ): BatchAgentTool {
 	let toolMap = buildToolMap(availableTools);
 
-	const batchTool = createTypeboxTool({
+	const batchTool = createTool<typeof batchSchema, BatchToolDetails>({
 		name: "batch",
 		label: "batch",
 		description: `Execute multiple independent tool calls in parallel to reduce latency. Best used for gathering context (reads, searches, listings).
@@ -85,10 +101,9 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.
 
 Set mode="serial" when call ordering matters.`,
 		schema: batchSchema,
-		async execute(
-			_toolCallId,
+		async run(
 			{ toolCalls, toolTimeoutMs, mode = "parallel" },
-			signal,
+			{ signal, respond, toolCallId },
 		) {
 			// Validate all tool calls before execution
 			const validationErrors: string[] = [];
@@ -155,7 +170,7 @@ Set mode="serial" when call ordering matters.`,
 						throw new Error(`Tool '${call.tool}' not found`);
 					}
 					const result = await tool.execute(
-						`batch-${_toolCallId}-${index}`,
+						`batch-${toolCallId}-${index}`,
 						call.parameters,
 						controller.signal,
 					);
@@ -255,27 +270,24 @@ Set mode="serial" when call ordering matters.`,
 				}
 			}
 
-			return {
-				content: [{ type: "text", text: outputLines.join("\n") }],
-				details: {
-					totalCalls: results.length,
-					successful: successfulCalls,
-					failed: failedCalls,
-					discarded: discardedCount,
-					tools: filteredToolCalls.map((c) => c.tool),
-					results: results.map((r, index) => {
-						const preview = previewInfos[index];
-						return {
-							tool: r.tool,
-							success: r.success,
-							duration: r.duration,
-							error: r.success ? undefined : r.error,
-							summary: r.success ? preview?.summaryText : undefined,
-							details: r.success ? r.result.details : undefined,
-						};
-					}),
-				},
-			};
+			return respond.text(outputLines.join("\n")).detail({
+				totalCalls: results.length,
+				successful: successfulCalls,
+				failed: failedCalls,
+				discarded: discardedCount,
+				tools: filteredToolCalls.map((c) => c.tool),
+				results: results.map((r, index) => {
+					const preview = previewInfos[index];
+					return {
+						tool: r.tool,
+						success: r.success,
+						duration: r.duration,
+						error: r.success ? undefined : r.error,
+						summary: r.success ? preview?.summaryText : undefined,
+						details: r.success ? r.result.details : undefined,
+					};
+				}),
+			});
 		},
 	}) as BatchAgentTool;
 
