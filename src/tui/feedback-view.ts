@@ -4,7 +4,11 @@ import { dirname } from "node:path";
 import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
-import type { ToolResultMessage } from "../agent/types.js";
+import type { AppMessage, ToolResultMessage } from "../agent/types.js";
+import {
+	buildConversationModel,
+	isRenderableAssistantMessage,
+} from "../conversation/render-model.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import type { SessionManager } from "../session-manager.js";
 import type { Container, TUI } from "../tui-lib/index.js";
@@ -51,10 +55,14 @@ export class FeedbackView {
 		const toolFailureSummary = this.buildToolFailureSummary();
 		const validatorSummary = this.buildValidatorSummary();
 		const envSummary = this.buildEnvironmentSummary();
-		const toolsLine =
-			(this.options.agent.state.tools ?? [])
-				.map((tool) => tool.name)
-				.join(", ") || "none";
+		const renderables = buildConversationModel(
+			this.options.agent.state.messages as AppMessage[],
+		);
+		const toolsUsed = renderables
+			.filter((message) => isRenderableAssistantMessage(message))
+			.flatMap((message) => message.toolCalls.map((tool) => tool.name));
+		const uniqueTools = Array.from(new Set(toolsUsed));
+		const toolsLine = uniqueTools.join(", ") || "none";
 		const sessionDirLine = sessionDir
 			? `Session directory:\n  ${sessionDir}`
 			: chalk.dim("Session directory has not been persisted yet.");
@@ -65,7 +73,7 @@ export class FeedbackView {
 			`Session ID: ${sessionId}`,
 			sessionDirLine,
 			`Model: ${model ? `${model.provider}/${model.id}` : "unknown"}`,
-			`Messages: ${this.options.agent.state.messages.length}`,
+			`Messages: ${renderables.length}`,
 			`Tools: ${toolsLine}`,
 			`Env: ${envSummary}`,
 			`Git: ${gitBranch} @ ${gitCommit} (dirty: ${gitDirty})`,

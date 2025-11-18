@@ -1,5 +1,9 @@
 import type { Agent } from "../agent/agent.js";
-import type { AgentState, AppMessage, AssistantMessage } from "../agent/types.js";
+import type {
+	AgentState,
+	AppMessage,
+	AssistantMessage,
+} from "../agent/types.js";
 import {
 	buildConversationModel,
 	isRenderableAssistantMessage,

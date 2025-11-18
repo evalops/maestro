@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
+import type { AppMessage } from "../agent/types.js";
+import { buildConversationModel } from "../conversation/render-model.js";
 import { collectDiagnostics as collectLspDiagnostics } from "../lsp/index.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import { lookupApiKey } from "../providers/api-keys.js";
@@ -70,13 +72,18 @@ export class DiagnosticsView {
 			.filter((value): value is string => Boolean(value))
 			.map((path) => `- ${path}`)
 			.join("\n");
+		const renderables = buildConversationModel(
+			this.options.agent.state.messages as AppMessage[],
+		);
 
 		const text = buildBugReport({
 			sessionId,
 			sessionFile,
 			modelLabel: model ? `${model.provider}/${model.id}` : "unknown",
-			messageCount: this.options.agent.state.messages.length,
-			toolNames: this.options.agent.state.tools?.map((tool) => tool.name) ?? [],
+			messageCount: renderables.length,
+			toolNames: renderables
+				.filter((message) => message.kind === "assistant")
+				.flatMap((message) => message.toolCalls.map((tool) => tool.name)),
 			filesToShare,
 		});
 		const copied = this.copyTextToClipboard(text);
