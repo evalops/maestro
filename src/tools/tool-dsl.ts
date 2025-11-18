@@ -106,3 +106,36 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 		},
 	});
 }
+
+export interface CreateTextToolOptions<Schema extends TSchema, Details>
+	extends Omit<CreateToolOptions<Schema, Details>, "run"> {
+	run: (
+		params: Static<Schema>,
+		context: ToolRunContext<Details>,
+	) =>
+		| string
+		| undefined
+		| ToolResponseBuilder<Details>
+		| AgentToolResult<Details>
+		| Promise<
+				| string
+				| undefined
+				| ToolResponseBuilder<Details>
+				| AgentToolResult<Details>
+		  >;
+}
+
+export function createTextTool<Schema extends TSchema, Details = undefined>(
+	options: CreateTextToolOptions<Schema, Details>,
+) {
+	return createTool<Schema, Details>({
+		...options,
+		run: async (params, context) => {
+			const result = await options.run(params, context);
+			if (typeof result === "string") {
+				return context.respond.text(result);
+			}
+			return result;
+		},
+	});
+}

@@ -1,6 +1,10 @@
 import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
-import { ToolResponseBuilder, createTool } from "../src/tools/tool-dsl.js";
+import {
+	ToolResponseBuilder,
+	createTextTool,
+	createTool,
+} from "../src/tools/tool-dsl.js";
 
 const echoTool = createTool({
 	name: "echo",
@@ -28,6 +32,13 @@ const directTool = createTool({
 	run: () => ({ content: [{ type: "text", text: "ok" }], details: undefined }),
 });
 
+const textHelperTool = createTextTool({
+	name: "text-helper",
+	description: "Return plain strings",
+	schema: Type.Object({ prefix: Type.String() }),
+	run: async ({ prefix }) => `${prefix}:done`,
+});
+
 describe("createTool DSL", () => {
 	it("builds response via context builder", async () => {
 		const result = await echoTool.execute("call-1", { text: "hello" });
@@ -46,6 +57,11 @@ describe("createTool DSL", () => {
 	it("allows direct AgentToolResult return", async () => {
 		const result = await directTool.execute("call-3", {});
 		expect(result.content[0]).toMatchObject({ text: "ok" });
+	});
+
+	it("supports createTextTool helper for string responses", async () => {
+		const result = await textHelperTool.execute("call-4", { prefix: "task" });
+		expect(result.content[0]).toMatchObject({ text: "task:done" });
 	});
 
 	it("throws when builder has no content", () => {
