@@ -1,15 +1,25 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import type { AgentState, AppMessage } from "./agent/types.js";
+import {
+	type RenderableAssistantMessage,
+	type RenderableMessage,
+	type RenderableToolCall,
+	type RenderableToolResultMessage,
+	type RenderableUserMessage,
+	buildConversationModel,
+	isRenderableAssistantMessage,
+	isRenderableToolResultMessage,
+	isRenderableUserMessage,
+} from "./conversation/render-model.js";
 import type {
-	AgentState,
-	AssistantMessage,
-	Message,
-	ToolResultMessage,
-	UserMessage,
-} from "./agent/types.js";
-import type { SessionManager } from "./session-manager.js";
+	SessionHeader,
+	SessionManager,
+	SessionToolInfo,
+} from "./session-manager.js";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -18,6 +28,11 @@ const packageJson = JSON.parse(
 	readFileSync(join(__dirname, "../package.json"), "utf-8"),
 );
 const VERSION = packageJson.version;
+
+interface SessionFileParseResult {
+	header: SessionHeader | null;
+	messages: AppMessage[];
+}
 
 /**
  * TUI Color scheme (matching exact RGB values from TUI components)
@@ -40,6 +55,42 @@ const COLORS = {
 	yellow: "rgb(234, 179, 8)", // Yellow for warnings
 	italic: "rgb(161, 161, 170)", // Gray italic for thinking
 };
+
+async function parseSessionFile(
+	sessionFile: string,
+): Promise<SessionFileParseResult> {
+	const messages: AppMessage[] = [];
+	let header: SessionHeader | null = null;
+	const stream = createReadStream(sessionFile, { encoding: "utf8" });
+	const rl = createInterface({
+		input: stream,
+		crlfDelay: Number.POSITIVE_INFINITY,
+	});
+	try {
+		for await (const line of rl) {
+			const trimmed = line.trim();
+			if (!trimmed) {
+				continue;
+			}
+			try {
+				const entry = JSON.parse(trimmed);
+				if (entry.type === "session" && !header) {
+					header = entry as SessionHeader;
+					continue;
+				}
+				if (entry.type === "message" && entry.message) {
+					messages.push(entry.message as AppMessage);
+				}
+			} catch {
+				// ignore malformed lines
+			}
+		}
+	} finally {
+		rl.close();
+		stream.close();
+	}
+	return { header, messages };
+}
 
 /**
  * Escape HTML special characters
@@ -71,16 +122,25 @@ function replaceTabs(text: string): string {
 	return text.replace(/\t/g, "   ");
 }
 
+function toToolInfo(state: AgentState): SessionToolInfo[] {
+	return state.tools.map((tool) => ({
+		name: tool.name,
+		label: tool.label,
+		description: tool.description,
+	}));
+}
+
 /**
  * Format tool execution matching TUI ToolExecutionComponent
  */
 function formatToolExecution(
-	toolName: string,
-	args: any,
-	result?: ToolResultMessage,
+	toolCall: RenderableToolCall,
+	result?: RenderableToolResultMessage,
 ): { html: string; bgColor: string } {
+	const toolName = toolCall.name;
+	const args = toolCall.arguments;
 	let html = "";
-	const isError = result?.isError || false;
+	const isError = result?.raw.isError || false;
 	const bgColor = result
 		? isError
 			? COLORS.toolErrorBg
@@ -89,9 +149,7 @@ function formatToolExecution(
 
 	// Get text output from result
 	const getTextOutput = (): string => {
-		if (!result) return "";
-		const textBlocks = result.content.filter((c) => c.type === "text");
-		return textBlocks.map((c: any) => c.text).join("\n");
+		return result?.textContent ?? "";
 	};
 
 	// Format based on tool type (matching TUI logic exactly)
@@ -223,8 +281,8 @@ function formatToolExecution(
 		html = `<div class="tool-header"><span class="tool-name">edit</span> <span class="tool-path">${escapeHtml(path || "...")}</span></div>`;
 
 		// Show diff if available from result.details.diff
-		if (result?.details?.diff) {
-			const diffLines = result.details.diff.split("\n");
+		if (result?.raw.details?.diff) {
+			const diffLines = result.raw.details.diff.split("\n");
 			html += '<div class="tool-diff">';
 			for (const line of diffLines) {
 				if (line.startsWith("+")) {
@@ -260,83 +318,81 @@ function formatToolExecution(
 	return { html, bgColor };
 }
 
-/**
- * Format a message as HTML (matching TUI component styling)
- */
-function formatMessage(
-	message: Message,
-	toolResultsMap: Map<string, ToolResultMessage>,
+function formatRenderableMessageHtml(
+	message: RenderableMessage,
+	toolResultsMap: Map<string, RenderableToolResultMessage>,
+): string {
+	if (isRenderableUserMessage(message)) {
+		return formatUserMessageHtml(message);
+	}
+	if (isRenderableAssistantMessage(message)) {
+		return formatAssistantMessageHtml(message, toolResultsMap);
+	}
+	return "";
+}
+
+function formatUserMessageHtml(message: RenderableUserMessage): string {
+	const textContent = message.text.trim();
+	if (!textContent) {
+		return "";
+	}
+	return `<div class="user-message">${escapeHtml(textContent).replace(/\n/g, "<br>")}</div>`;
+}
+
+function formatAssistantMessageHtml(
+	message: RenderableAssistantMessage,
+	toolResultsMap: Map<string, RenderableToolResultMessage>,
 ): string {
 	let html = "";
-
-	if (message.role === "user") {
-		const userMsg = message as UserMessage;
-		let textContent = "";
-
-		if (typeof userMsg.content === "string") {
-			textContent = userMsg.content;
-		} else {
-			const textBlocks = userMsg.content.filter((c) => c.type === "text");
-			textContent = textBlocks.map((c: any) => c.text).join("");
-		}
-
-		if (textContent.trim()) {
-			html += `<div class="user-message">${escapeHtml(textContent).replace(/\n/g, "<br>")}</div>`;
-		}
-	} else if (message.role === "assistant") {
-		const assistantMsg = message as AssistantMessage;
-
-		// Render text and thinking content
-		for (const content of assistantMsg.content) {
-			if (content.type === "text" && content.text.trim()) {
-				html += `<div class="assistant-text">${escapeHtml(content.text.trim()).replace(/\n/g, "<br>")}</div>`;
-			} else if (content.type === "thinking" && content.thinking.trim()) {
-				html += `<div class="thinking-text">${escapeHtml(content.thinking.trim()).replace(/\n/g, "<br>")}</div>`;
-			}
-		}
-
-		// Render tool calls with their results
-		for (const content of assistantMsg.content) {
-			if (content.type === "toolCall") {
-				const toolResult = toolResultsMap.get(content.id);
-				const { html: toolHtml, bgColor } = formatToolExecution(
-					content.name,
-					content.arguments,
-					toolResult,
-				);
-				html += `<div class="tool-execution" style="background-color: ${bgColor}">${toolHtml}</div>`;
-			}
-		}
-
-		// Show error/abort status if no tool calls
-		const hasToolCalls = assistantMsg.content.some(
-			(c) => c.type === "toolCall",
+	for (const text of message.textBlocks) {
+		html += `<div class="assistant-text">${escapeHtml(text).replace(/\n/g, "<br>")}</div>`;
+	}
+	for (const thinking of message.thinkingBlocks) {
+		html += `<div class="thinking-text">${escapeHtml(thinking).replace(/\n/g, "<br>")}</div>`;
+	}
+	for (const toolCall of message.toolCalls) {
+		const toolResult = toolResultsMap.get(toolCall.id);
+		const { html: toolHtml, bgColor } = formatToolExecution(
+			toolCall,
+			toolResult,
 		);
-		if (!hasToolCalls) {
-			if (assistantMsg.stopReason === "aborted") {
-				html += '<div class="error-text">Aborted</div>';
-			} else if (assistantMsg.stopReason === "error") {
-				const errorMsg = assistantMsg.errorMessage || "Unknown error";
-				html += `<div class="error-text">Error: ${escapeHtml(errorMsg)}</div>`;
-			}
+		html += `<div class="tool-execution" style="background-color: ${bgColor}">${toolHtml}</div>`;
+	}
+	if (message.toolCalls.length === 0) {
+		if (message.stopReason === "aborted") {
+			html += '<div class="error-text">Aborted</div>';
+		} else if (message.stopReason === "error") {
+			const errorMsg = message.errorMessage || "Unknown error";
+			html += `<div class="error-text">Error: ${escapeHtml(errorMsg)}</div>`;
 		}
 	}
-
 	return html;
 }
 
 /**
  * Export session to a self-contained HTML file matching TUI visual style
  */
-export function exportSessionToHtml(
+export async function exportSessionToHtml(
 	sessionManager: SessionManager,
 	state: AgentState,
 	outputPath?: string,
-): string {
+): Promise<string> {
 	const sessionFile = sessionManager.getSessionFile();
 	const timestamp = new Date().toISOString();
+	const { header: sessionHeader, messages } =
+		await parseSessionFile(sessionFile);
+	const renderableMessages = buildConversationModel(messages);
+	const toolResultsMap = new Map(
+		renderableMessages
+			.filter((message): message is RenderableToolResultMessage =>
+				isRenderableToolResultMessage(message),
+			)
+			.map((message) => [message.toolCallId, message] as const),
+	);
+	const visibleMessages = renderableMessages.filter(
+		(message) => !isRenderableToolResultMessage(message),
+	);
 
-	// Use session filename + .html if no output path provided
 	const resolvedOutputPath = (() => {
 		if (outputPath) {
 			return outputPath;
@@ -345,41 +401,20 @@ export function exportSessionToHtml(
 		return `${sessionBasename}.html`;
 	})();
 
-	// Read and parse session data
-	const sessionContent = readFileSync(sessionFile, "utf8");
-	const lines = sessionContent.trim().split("\n");
+	const toolsToRender = sessionHeader?.tools ?? toToolInfo(state);
+	const messagesHtml = visibleMessages
+		.map((message) => formatRenderableMessageHtml(message, toolResultsMap))
+		.join("");
+	const toolListHtml = toolsToRender
+		.map(
+			(tool) =>
+				`<div class="tool-item"><span class="tool-item-name">${escapeHtml(tool.label ?? tool.name)}</span>${tool.description ? ` - ${escapeHtml(tool.description)}` : ""}</div>`,
+		)
+		.join("");
 
-	let sessionHeader: any = null;
-	const messages: Message[] = [];
-	const toolResultsMap = new Map<string, ToolResultMessage>();
-
-	for (const line of lines) {
-		try {
-			const entry = JSON.parse(line);
-			if (entry.type === "session") {
-				sessionHeader = entry;
-			} else if (entry.type === "message") {
-				messages.push(entry.message);
-				// Build map of tool call ID to result
-				if (entry.message.role === "toolResult") {
-					toolResultsMap.set(entry.message.toolCallId, entry.message);
-				}
-			}
-		} catch {
-			// Skip malformed lines
-		}
-	}
-
-	// Generate messages HTML
-	let messagesHtml = "";
-	for (const message of messages) {
-		if (message.role !== "toolResult") {
-			// Skip toolResult messages as they're rendered with their tool calls
-			messagesHtml += formatMessage(message, toolResultsMap);
-		}
-	}
-
-	// Generate HTML (matching TUI aesthetic)
+	const systemPromptContent =
+		sessionHeader?.systemPrompt ?? state.systemPrompt ?? "";
+	const thinkingLevel = sessionHeader?.thinkingLevel ?? state.thinkingLevel;
 	const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -663,7 +698,7 @@ export function exportSessionToHtml(
                 </div>
                 <div class="info-item">
                     <span class="info-label">Messages:</span>
-                    <span class="info-value">${messages.filter((m) => m.role !== "toolResult").length}</span>
+                    <span class="info-value">${visibleMessages.length}</span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">Directory:</span>
@@ -671,26 +706,19 @@ export function exportSessionToHtml(
                 </div>
                 <div class="info-item">
                     <span class="info-label">Thinking:</span>
-                    <span class="info-value">${escapeHtml(sessionHeader?.thinkingLevel || state.thinkingLevel)}</span>
+                    <span class="info-value">${escapeHtml(thinkingLevel)}</span>
                 </div>
             </div>
         </div>
 
         <div class="system-prompt">
             <div class="system-prompt-header">System Prompt</div>
-            <div class="system-prompt-content">${escapeHtml(sessionHeader?.systemPrompt || state.systemPrompt)}</div>
+            <div class="system-prompt-content">${escapeHtml(systemPromptContent)}</div>
         </div>
 
         <div class="tools-list">
             <div class="tools-header">Available Tools</div>
-            <div class="tools-content">
-                ${state.tools
-									.map(
-										(tool) =>
-											`<div class="tool-item"><span class="tool-item-name">${escapeHtml(tool.name)}</span> - ${escapeHtml(tool.description)}</div>`,
-									)
-									.join("")}
-            </div>
+            <div class="tools-content">${toolListHtml || '<div class="tool-item">No tools available</div>'}</div>
         </div>
 
         <div class="messages">
@@ -704,17 +732,15 @@ export function exportSessionToHtml(
 </body>
 </html>`;
 
-	// Write HTML file
 	writeFileSync(resolvedOutputPath, html, "utf8");
-
 	return resolvedOutputPath;
 }
 
-export function exportSessionToText(
+export async function exportSessionToText(
 	sessionManager: SessionManager,
-	state: AgentState,
+	_state: AgentState,
 	outputPath?: string,
-): string {
+): Promise<string> {
 	const sessionFile = sessionManager.getSessionFile();
 	const timestamp = new Date().toISOString();
 	const resolvedOutputPath = (() => {
@@ -725,28 +751,23 @@ export function exportSessionToText(
 		return `${sessionBasename}.txt`;
 	})();
 
-	const sessionContent = readFileSync(sessionFile, "utf8");
-	const lines = sessionContent.trim().split("\n");
-	const messages: Message[] = [];
-
-	for (const line of lines) {
-		try {
-			const entry = JSON.parse(line);
-			if (entry.type === "message") {
-				messages.push(entry.message);
-			}
-		} catch {
-			// Skip malformed lines
-		}
-	}
+	const { messages } = await parseSessionFile(sessionFile);
+	const renderableMessages = buildConversationModel(messages);
+	const toolResultsMap = new Map(
+		renderableMessages
+			.filter((message): message is RenderableToolResultMessage =>
+				isRenderableToolResultMessage(message),
+			)
+			.map((message) => [message.toolCallId, message] as const),
+	);
 
 	const output: string[] = [];
 	output.push(`Session export: ${basename(sessionFile)}`);
 	output.push(`Generated: ${timestamp}`);
 	output.push("");
 
-	for (const message of messages) {
-		const textBlock = formatMessageAsText(message);
+	for (const message of renderableMessages) {
+		const textBlock = formatMessageAsText(message, toolResultsMap);
 		if (textBlock) {
 			output.push(textBlock, "");
 		}
@@ -756,45 +777,41 @@ export function exportSessionToText(
 	return resolvedOutputPath;
 }
 
-function formatMessageAsText(message: Message): string {
-	if (message.role === "user") {
-		return `User:\n${extractPlainText(message)}`;
+function formatMessageAsText(
+	message: RenderableMessage,
+	toolResultsMap: Map<string, RenderableToolResultMessage>,
+): string {
+	if (isRenderableUserMessage(message)) {
+		return message.text.trim() ? `User:\n${message.text.trim()}` : "";
 	}
-	if (message.role === "assistant") {
+	if (isRenderableAssistantMessage(message)) {
 		const parts: string[] = [];
-		for (const content of (message as AssistantMessage).content) {
-			if (content.type === "text" && content.text.trim()) {
-				parts.push(content.text.trim());
-			} else if (content.type === "thinking" && content.thinking.trim()) {
-				parts.push(`[thinking]\n${content.thinking.trim()}`);
-			} else if (content.type === "toolCall") {
-				const argsString = JSON.stringify(content.arguments, null, 2);
-				parts.push(
-					`[tool call] ${content.name}\n${argsString}
-`,
-				);
+		for (const text of message.textBlocks) {
+			if (text.trim()) {
+				parts.push(text.trim());
 			}
+		}
+		for (const thinking of message.thinkingBlocks) {
+			if (thinking.trim()) {
+				parts.push(`[thinking]\n${thinking.trim()}`);
+			}
+		}
+		for (const toolCall of message.toolCalls) {
+			const argsString = JSON.stringify(toolCall.arguments, null, 2);
+			parts.push(`[tool call] ${toolCall.name}\n${argsString}\n`);
+			const result = toolResultsMap.get(toolCall.id);
+			if (result?.textContent) {
+				parts.push(`[tool result] ${toolCall.name}\n${result.textContent}`);
+			}
+		}
+		if (parts.length === 0) {
+			return "";
 		}
 		return `Assistant:\n${parts.join("\n\n")}`;
 	}
-	if (message.role === "toolResult") {
-		const tool = message as ToolResultMessage;
-		const text = extractPlainText(message);
-		return `Tool ${tool.toolName} (${tool.toolCallId}):\n${text}`;
-	}
-	return "";
-}
-
-function extractPlainText(message: Message): string {
-	const anyMessage: any = message as any;
-	if (typeof anyMessage.content === "string") {
-		return anyMessage.content;
-	}
-	if (Array.isArray(anyMessage.content)) {
-		return anyMessage.content
-			.filter((block: any) => block.type === "text")
-			.map((block: any) => block.text)
-			.join("\n");
+	if (isRenderableToolResultMessage(message)) {
+		const text = message.textContent.trim();
+		return `Tool ${message.toolName} (${message.toolCallId}):\n${text}`;
 	}
 	return "";
 }

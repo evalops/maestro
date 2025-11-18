@@ -505,9 +505,9 @@ export class TuiRenderer {
 			createContext: (ctx) => this.createCommandContext(ctx),
 			showThinkingSelector: (_context) => this.thinkingSelectorView.show(),
 			showModelSelector: (_context) => this.modelSelectorView.show(),
-			handleExportSession: (context) =>
+			handleExportSession: async (context) =>
 				this.importExportView.handleExportCommand(context.rawInput),
-			handleShareSession: (context) =>
+			handleShareSession: async (context) =>
 				this.importExportView.handleShareCommand(context.rawInput),
 			handleTools: (context) =>
 				this.toolStatusView.handleToolsCommand(context.rawInput),

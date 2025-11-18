@@ -33,7 +33,7 @@ export class ImportExportView {
 		return resolve(process.cwd(), input);
 	}
 
-	handleExportCommand(text: string): void {
+	async handleExportCommand(text: string): Promise<void> {
 		const parts = text.split(/\s+/);
 		let mode: "html" | "text" = "html";
 		let outputPath: string | undefined;
@@ -50,18 +50,20 @@ export class ImportExportView {
 		}
 
 		try {
-			const filePath =
-				mode === "text"
-					? exportSessionToText(
-							this.options.sessionManager,
-							this.options.agent.state,
-							outputPath,
-						)
-					: exportSessionToHtml(
-							this.options.sessionManager,
-							this.options.agent.state,
-							outputPath,
-						);
+			let filePath: string;
+			if (mode === "text") {
+				filePath = await exportSessionToText(
+					this.options.sessionManager,
+					this.options.agent.state,
+					outputPath,
+				);
+			} else {
+				filePath = await exportSessionToHtml(
+					this.options.sessionManager,
+					this.options.agent.state,
+					outputPath,
+				);
+			}
 
 			this.options.chatContainer.addChild(new Spacer(1));
 			this.options.chatContainer.addChild(
@@ -107,7 +109,7 @@ export class ImportExportView {
 		);
 	}
 
-	handleShareCommand(text: string): void {
+	async handleShareCommand(text: string): Promise<void> {
 		const parts = text.trim().split(/\s+/);
 		const customTarget = parts[1];
 		const baseDir = join(homedir(), ".composer", "share");
@@ -126,7 +128,7 @@ export class ImportExportView {
 		}
 
 		try {
-			const filePath = exportSessionToHtml(
+			const filePath = await exportSessionToHtml(
 				this.options.sessionManager,
 				this.options.agent.state,
 				outputPath,

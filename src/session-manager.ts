@@ -160,6 +160,8 @@ export interface SessionHeader {
 	model: string;
 	modelMetadata?: SessionModelMetadata;
 	thinkingLevel: string;
+	systemPrompt?: string;
+	tools?: SessionToolInfo[];
 }
 
 export interface SessionMessageEntry {
@@ -186,6 +188,12 @@ export interface SessionMetaEntry {
 	timestamp: string;
 	summary?: string;
 	favorite?: boolean;
+}
+
+export interface SessionToolInfo {
+	name: string;
+	label?: string;
+	description?: string;
 }
 
 export interface SessionModelMetadata {
@@ -385,6 +393,12 @@ export class SessionManager {
 			model: sessionModelKey,
 			modelMetadata: primaryMetadata ?? fallbackMetadata,
 			thinkingLevel: pendingThinkingLevel ?? state.thinkingLevel,
+			systemPrompt: state.systemPrompt,
+			tools: state.tools.map((tool) => ({
+				name: tool.name,
+				label: tool.label,
+				description: tool.description,
+			})),
 		};
 		this.metadataCache.apply(entry);
 		this.writer?.write(entry);

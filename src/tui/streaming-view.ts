@@ -1,4 +1,5 @@
 import type { AssistantMessage } from "../agent/types.js";
+import { toRenderableAssistantMessage } from "../conversation/render-model.js";
 import type { Container } from "../tui-lib/index.js";
 import { Text } from "../tui-lib/index.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
@@ -19,12 +20,16 @@ export class StreamingView {
 	beginAssistantMessage(message: AssistantMessage): void {
 		this.streamingComponent = new AssistantMessageComponent();
 		this.options.chatContainer.addChild(this.streamingComponent);
-		this.streamingComponent.updateContent(message);
+		this.streamingComponent.updateContent(
+			toRenderableAssistantMessage(message),
+		);
 	}
 
 	updateAssistantMessage(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
-		this.streamingComponent.updateContent(message);
+		this.streamingComponent.updateContent(
+			toRenderableAssistantMessage(message),
+		);
 		for (const content of message.content) {
 			if (content.type === "toolCall") {
 				this.ensureToolComponent(content.id, content.name, content.arguments);
@@ -35,7 +40,9 @@ export class StreamingView {
 
 	finishAssistantMessage(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
-		this.streamingComponent.updateContent(message);
+		this.streamingComponent.updateContent(
+			toRenderableAssistantMessage(message),
+		);
 		if (message.stopReason === "aborted" || message.stopReason === "error") {
 			const errorMessage =
 				message.stopReason === "aborted"

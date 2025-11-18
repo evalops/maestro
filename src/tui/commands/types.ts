@@ -21,8 +21,8 @@ export type RunScriptCompletionProvider = (
 export interface CommandHandlers {
 	thinking(context: CommandExecutionContext): void;
 	model(context: CommandExecutionContext): void;
-	exportSession(context: CommandExecutionContext): void;
-	shareSession(context: CommandExecutionContext): void;
+	exportSession(context: CommandExecutionContext): Promise<void> | void;
+	shareSession(context: CommandExecutionContext): Promise<void> | void;
 	tools(context: CommandExecutionContext): void;
 	importConfig(context: CommandExecutionContext): Promise<void> | void;
 	sessionInfo(context: CommandExecutionContext): void;

@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import type { AssistantMessage } from "../agent/types.js";
+import type { RenderableAssistantMessage } from "../conversation/render-model.js";
 import { Container, Markdown, Spacer, Text } from "../tui-lib/index.js";
 
 const ASSISTANT_BORDER = "#fcd5ce";
@@ -13,7 +13,7 @@ export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
 	private panelWidth = 64;
 
-	constructor(message?: AssistantMessage) {
+	constructor(message?: RenderableAssistantMessage) {
 		super();
 		this.contentContainer = new Container();
 		this.addChild(new Text(this.buildTopLine(), 1, 0));
@@ -42,42 +42,30 @@ export class AssistantMessageComponent extends Container {
 		return chalk.hex(ASSISTANT_BORDER)(`╰${"─".repeat(dashCount)}╯`);
 	}
 
-	updateContent(message: AssistantMessage): void {
+	updateContent(message: RenderableAssistantMessage): void {
 		this.contentContainer.clear();
 
-		if (
-			message.content.length > 0 &&
-			message.content.some(
-				(c) =>
-					(c.type === "text" && c.text.trim()) ||
-					(c.type === "thinking" && c.thinking.trim()),
-			)
-		) {
+		const hasPrimaryContent =
+			message.textBlocks.length > 0 || message.thinkingBlocks.length > 0;
+		if (hasPrimaryContent) {
 			this.contentContainer.addChild(new Spacer(1));
 		}
 
-		for (const content of message.content) {
-			if (content.type === "text" && content.text.trim()) {
-				this.contentContainer.addChild(
-					new Markdown(
-						content.text.trim(),
-						undefined,
-						undefined,
-						ASSISTANT_FILL,
-						1,
-						0,
-					),
-				);
-			} else if (content.type === "thinking" && content.thinking.trim()) {
-				const thinkingText = chalk.gray.italic(content.thinking);
-				this.contentContainer.addChild(
-					new Markdown(thinkingText, undefined, undefined, undefined, 1, 0),
-				);
-				this.contentContainer.addChild(new Spacer(1));
-			}
+		for (const text of message.textBlocks) {
+			this.contentContainer.addChild(
+				new Markdown(text, undefined, undefined, ASSISTANT_FILL, 1, 0),
+			);
 		}
 
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
+		for (const thinking of message.thinkingBlocks) {
+			const thinkingText = chalk.gray.italic(thinking);
+			this.contentContainer.addChild(
+				new Markdown(thinkingText, undefined, undefined, undefined, 1, 0),
+			);
+			this.contentContainer.addChild(new Spacer(1));
+		}
+
+		const hasToolCalls = message.toolCalls.length > 0;
 		if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
 				this.contentContainer.addChild(new Text(chalk.red("Aborted"), 1, 0));

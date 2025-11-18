@@ -1,9 +1,10 @@
-import type {
-	AgentState,
-	AppMessage,
-	AssistantMessage,
-	ToolResultMessage,
-} from "../agent/types.js";
+import type { AgentState, AppMessage } from "../agent/types.js";
+import {
+	createRenderableMessage,
+	isRenderableAssistantMessage,
+	isRenderableToolResultMessage,
+	isRenderableUserMessage,
+} from "../conversation/render-model.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
@@ -23,63 +24,60 @@ export class MessageView {
 	constructor(private readonly options: MessageViewOptions) {}
 
 	addMessage(message: AppMessage): void {
-		if (message.role === "user") {
-			const userMsg = message as any;
-			let textContent = "";
-			if (typeof userMsg.content === "string") {
-				textContent = userMsg.content;
-			} else if (Array.isArray(userMsg.content)) {
-				const textBlocks = userMsg.content.filter(
-					(c: any) => c.type === "text",
-				);
-				textContent = textBlocks.map((c: any) => c.text).join("");
-			}
-			if (textContent) {
+		const renderable = createRenderableMessage(message);
+		if (!renderable) {
+			return;
+		}
+
+		if (isRenderableUserMessage(renderable)) {
+			if (renderable.text) {
 				const userComponent = new UserMessageComponent(
-					textContent,
+					renderable.text,
 					this.isFirstUserMessage,
 				);
 				this.options.chatContainer.addChild(userComponent);
 				this.isFirstUserMessage = false;
 			}
-		} else if (message.role === "assistant") {
-			const assistantMsg = message as AssistantMessage;
-			const assistantComponent = new AssistantMessageComponent(assistantMsg);
+			return;
+		}
+
+		if (isRenderableAssistantMessage(renderable)) {
+			const assistantComponent = new AssistantMessageComponent(renderable);
 			this.options.chatContainer.addChild(assistantComponent);
-			for (const content of assistantMsg.content) {
-				if (content.type === "toolCall") {
-					const component = new ToolExecutionComponent(
-						content.name,
-						content.arguments,
-					);
-					this.options.chatContainer.addChild(component);
-					this.options.registerToolComponent(component);
-					this.options.pendingTools.set(content.id, component);
-					if (
-						assistantMsg.stopReason === "aborted" ||
-						assistantMsg.stopReason === "error"
-					) {
-						const errorMessage =
-							assistantMsg.stopReason === "aborted"
-								? "Operation aborted"
-								: assistantMsg.errorMessage || "Error";
-						component.updateResult({
-							content: [{ type: "text", text: errorMessage }],
-							isError: true,
-						});
-					}
+			for (const toolCall of renderable.toolCalls) {
+				const component = new ToolExecutionComponent(
+					toolCall.name,
+					toolCall.arguments,
+				);
+				this.options.chatContainer.addChild(component);
+				this.options.registerToolComponent(component);
+				this.options.pendingTools.set(toolCall.id, component);
+				if (
+					renderable.stopReason === "aborted" ||
+					renderable.stopReason === "error"
+				) {
+					const errorMessage =
+						renderable.stopReason === "aborted"
+							? "Operation aborted"
+							: renderable.errorMessage || "Error";
+					component.updateResult({
+						content: [{ type: "text", text: errorMessage }],
+						isError: true,
+					});
 				}
 			}
-		} else if (message.role === "toolResult") {
-			const toolResult = message as ToolResultMessage;
-			const component = this.options.pendingTools.get(toolResult.toolCallId);
+			return;
+		}
+
+		if (isRenderableToolResultMessage(renderable)) {
+			const component = this.options.pendingTools.get(renderable.toolCallId);
 			if (component) {
 				component.updateResult({
-					content: toolResult.content,
-					details: toolResult.details,
-					isError: toolResult.isError,
+					content: renderable.raw.content,
+					details: renderable.raw.details,
+					isError: renderable.raw.isError,
 				});
-				this.options.pendingTools.delete(toolResult.toolCallId);
+				this.options.pendingTools.delete(renderable.toolCallId);
 			}
 		}
 	}
