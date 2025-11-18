@@ -147,13 +147,13 @@ export class CostView {
 	): void {
 		if (summary.totalRequests === 0) {
 			this.renderText(
-				`${badge("💰 Cost Summary", label, "info")}\n${muted("No usage data found for this period.")}`,
+				`${badge("[Cost Summary]", label, "info")}\n${muted("No usage data found for this period.")}`,
 			);
 			return;
 		}
 
 		const sections = [
-			badge("💰 Cost Summary", label, "info"),
+			badge("[Cost Summary]", label, "info"),
 			this.buildOverview(summary),
 			this.buildProviderSection(summary),
 			this.buildModelSection(summary),
@@ -243,7 +243,7 @@ export class CostView {
 	): void {
 		if (summary.totalRequests === 0) {
 			this.renderText(
-				`${badge("📊 Cost Breakdown", label, "info")}\n${muted("No usage data found for this period.")}`,
+				`${badge("[Cost Breakdown]", label, "info")}\n${muted("No usage data found for this period.")}`,
 			);
 			return;
 		}
@@ -276,7 +276,7 @@ export class CostView {
 			"warn",
 		)}`;
 		this.renderText(
-			`${badge("📊 Cost Breakdown", label, "info")}\n${lines.join("\n")}\n\n  ${footer}`,
+			`${badge("[Cost Breakdown]", label, "info")}\n${lines.join("\n")}\n\n  ${footer}`,
 		);
 	}
 

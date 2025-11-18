@@ -133,7 +133,7 @@ export class GitPreviewModal implements Component {
 		return slice.map((entry, idx) => {
 			const actualIndex = start + idx;
 			const selected = actualIndex === this.selectedIndex;
-			const prefix = selected ? chalk.cyan("➤") : " ";
+			const prefix = selected ? chalk.cyan(">") : " ";
 			const staged = entry.stagedCode.trim()
 				? chalk.green("S")
 				: chalk.gray("s");

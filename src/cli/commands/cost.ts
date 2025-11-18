@@ -50,7 +50,7 @@ export async function handleCostSummary(period?: string): Promise<void> {
 
 	const summary = getUsageSummary({ since, until });
 
-	console.log(sectionHeading(`💰 Cost Summary (${label})`));
+	console.log(sectionHeading(`Cost Summary (${label})`));
 
 	if (summary.totalRequests === 0) {
 		console.log(muted("No usage data found.\n"));
@@ -124,7 +124,7 @@ export async function handleCostSummary(period?: string): Promise<void> {
  * Handle `composer cost clear` command
  */
 export async function handleCostClear(): Promise<void> {
-	console.log(sectionHeading("🧹 Clear Usage Data"));
+	console.log(sectionHeading("Clear Usage Data"));
 	const readline = await import("node:readline/promises");
 	const rl = readline.createInterface({
 		input: process.stdin,
@@ -151,7 +151,7 @@ export async function handleCostClear(): Promise<void> {
 export async function handleCostBreakdown(): Promise<void> {
 	const summary = getUsageSummary();
 
-	console.log(sectionHeading("📊 Detailed Cost Breakdown"));
+	console.log(sectionHeading("Detailed Cost Breakdown"));
 
 	if (summary.totalRequests === 0) {
 		console.log(muted("No usage data found.\n"));

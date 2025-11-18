@@ -30,7 +30,7 @@ export function buildConfigShowSections(
 	const rel = (path: string) => path.replace(homeDir, "~");
 	const output: string[] = [];
 
-	output.push(sectionHeading("📋 Configuration Inspection"));
+	output.push(sectionHeading("Configuration Inspection"));
 	output.push("");
 	output.push(badge("Config Sources", undefined, "info"));
 	for (const source of inspection.sources) {
@@ -123,7 +123,7 @@ export function buildConfigShowSections(
  * Handle `composer config validate` command
  */
 export async function handleConfigValidate(): Promise<void> {
-	console.log(sectionHeading("🔍 Validating Configuration"));
+	console.log(sectionHeading("Validating Configuration"));
 
 	const result: ConfigValidationResult = validateConfig();
 
@@ -139,7 +139,7 @@ export async function handleConfigValidate(): Promise<void> {
 
 	// Show errors
 	if (result.errors.length > 0) {
-		console.log(badge("✗ Errors", undefined, "danger"));
+		console.log(badge("[ERROR] Errors", undefined, "danger"));
 		for (const error of result.errors) {
 			console.log(chalk.red(`  • ${error}`));
 		}
@@ -148,7 +148,7 @@ export async function handleConfigValidate(): Promise<void> {
 
 	// Show warnings
 	if (result.warnings.length > 0) {
-		console.log(badge("⚠  Warnings", undefined, "warn"));
+		console.log(badge("[WARN] Warnings", undefined, "warn"));
 		for (const warning of result.warnings) {
 			console.log(chalk.yellow(`  • ${warning}`));
 		}
@@ -197,7 +197,7 @@ function renderConfigShowLegacy(
 	hierarchy: string[],
 	homeDir: string,
 ): void {
-	console.log(sectionHeading("📋 Configuration Inspection"));
+	console.log(sectionHeading("Configuration Inspection"));
 
 	// Show config sources
 	console.log(badge("Config Sources", undefined, "info"));
@@ -319,7 +319,7 @@ export async function handleConfigShow(): Promise<void> {
  * Handle `composer config init` command
  */
 export async function handleConfigInit(): Promise<void> {
-	console.log(sectionHeading("🚀 Initialize Composer Configuration"));
+	console.log(sectionHeading("Initialize Composer Configuration"));
 
 	const readline = await import("node:readline/promises");
 	const rl = readline.createInterface({
@@ -542,7 +542,7 @@ You are a helpful AI coding assistant.
 		}
 
 		// Show next steps
-		console.log(sectionHeading("🎉 Configuration initialized!"));
+		console.log(sectionHeading("Configuration initialized successfully!"));
 		console.log(muted("Next steps:"));
 
 		if (useEnv) {
@@ -712,7 +712,7 @@ async function checkLocalEndpoint(
 }
 
 export async function handleConfigLocal(): Promise<void> {
-	console.log(sectionHeading("🖥️ Local provider helper"));
+	console.log(sectionHeading("Local provider helper"));
 	const readline = await import("node:readline/promises");
 	const rl = readline.createInterface({
 		input: process.stdin,

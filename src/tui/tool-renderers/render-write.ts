@@ -19,7 +19,7 @@ export class WriteRenderer implements ToolRenderer {
 		const lines = fileContent ? fileContent.split("\n") : [];
 		const totalLines = lines.length;
 
-		let text = `${chalk.hex("#adf7b6")("✸ write")} ${
+		let text = `${chalk.hex("#adf7b6")("[write]")} ${
 			path ? chalk.cyan(path) : chalk.dim("...")
 		}`;
 		if (totalLines > 10) {

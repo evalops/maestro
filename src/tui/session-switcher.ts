@@ -128,7 +128,7 @@ export class SessionSwitcherComponent extends Container {
 
 	private renderRow(session: SessionItem, isSelected: boolean): string {
 		const pointer = isSelected ? chalk.blue("→") : " ";
-		const star = session.favorite ? chalk.yellow("★") : " ";
+		const star = session.favorite ? chalk.yellow("*") : " ";
 		const modified = this.formatRelative(session.modified).padEnd(8);
 		const created = this.formatRelative(session.created).padEnd(8);
 		const size = this.formatSize(session.size).padStart(6);

@@ -15,7 +15,7 @@ export class GenericRenderer implements ToolRenderer {
 		const label = context.toolName
 			? `${context.toolName}`
 			: (args?.name ?? "tool");
-		const text = chalk.bold(`${chalk.hex("#d4d8ff")("✷")} ${label}`);
+		const text = chalk.bold(`${chalk.hex("#d4d8ff")(`[${label}]`)}`);
 		if (context.collapsed) {
 			const combined = [
 				JSON.stringify(context.args, null, 2),

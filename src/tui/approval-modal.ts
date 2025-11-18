@@ -23,7 +23,7 @@ export class ApprovalModal implements Component {
 
 	render(width: number): string[] {
 		const lines: string[] = [];
-		const header = chalk.hex("#fbbf24").bold("⚠ Approval required");
+		const header = chalk.hex("#fbbf24").bold("[!] Approval required");
 		lines.push(this.pad(header, width));
 		lines.push("");
 		lines.push(

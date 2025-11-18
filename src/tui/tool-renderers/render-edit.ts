@@ -14,7 +14,7 @@ export class EditRenderer implements ToolRenderer {
 		const path = shortenPath(
 			context.args?.file_path || context.args?.path || "",
 		);
-		let text = `${chalk.hex("#fcd5ce")("✧ edit")} ${
+		let text = `${chalk.hex("#fcd5ce")("[edit]")} ${
 			path ? chalk.cyan(path) : chalk.dim("...")
 		}`;
 

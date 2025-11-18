@@ -75,7 +75,7 @@ export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 		}
 
 		if (errors.length > 0) {
-			respond.text("⚠️  Some URLs failed to fetch:");
+			respond.text("[WARN] Some URLs failed to fetch:");
 			for (const error of errors) {
 				respond.text(`   ${error}`);
 			}

@@ -116,7 +116,7 @@ class MermaidAsciiRenderer {
 		);
 		const footer = chalk.hex("#a855f7")("╰──────────────────────────────╯");
 		const warningLines = edgeWarnings.length
-			? edgeWarnings.map((warning) => chalk.dim(`⚠ ${warning}`))
+			? edgeWarnings.map((warning) => chalk.dim(`[!] ${warning}`))
 			: [];
 		return [
 			title,

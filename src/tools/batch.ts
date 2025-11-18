@@ -258,7 +258,7 @@ Example:
 
 					outputLines.push(
 						"",
-						`✓ ${result.tool} (${result.duration}ms)`,
+						`[OK] ${result.tool} (${result.duration}ms)`,
 						previewText
 							.split("\n")
 							.map((line) => `  ${line}`)
@@ -267,7 +267,7 @@ Example:
 				} else {
 					outputLines.push(
 						"",
-						`✗ ${result.tool} (${result.duration}ms)`,
+						`[ERROR] ${result.tool} (${result.duration}ms)`,
 						`  Error: ${result.error}`,
 					);
 				}

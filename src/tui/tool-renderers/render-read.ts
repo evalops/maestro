@@ -15,7 +15,7 @@ export class ReadRenderer implements ToolRenderer {
 			? context.args
 			: (context.partialArgs ?? context.args);
 		const path = shortenPath(args?.file_path || args?.path || "");
-		let text = `${chalk.hex("#7bc7ff")("✦ read")} ${
+		let text = `${chalk.hex("#7bc7ff")("[read]")} ${
 			path ? chalk.cyan(path) : chalk.dim("...")
 		}`;
 

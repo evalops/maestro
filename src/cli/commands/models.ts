@@ -52,7 +52,7 @@ function printEmptyState(providerFilter?: string): void {
 }
 
 export async function handleModelsList(providerFilter?: string): Promise<void> {
-	console.log(sectionHeading("📚 Registered Models"));
+	console.log(sectionHeading("Registered Models"));
 	const filtered = filterModels(providerFilter);
 	if (filtered.length === 0) {
 		printEmptyState(providerFilter);
@@ -143,7 +143,7 @@ function buildProviderStats(
 export async function handleModelsProviders(
 	providerFilter?: string,
 ): Promise<void> {
-	console.log(sectionHeading("🛰 Provider Overview"));
+	console.log(sectionHeading("Provider Overview"));
 	const stats = buildProviderStats(getRegisteredModels());
 	if (providerFilter && !stats.has(providerFilter)) {
 		printEmptyState(providerFilter);

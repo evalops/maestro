@@ -15,8 +15,19 @@ import {
 	isRenderableUserMessage,
 	renderMessageToPlainText,
 } from "./conversation/render-model.js";
+import { SESSION_CONFIG } from "./config/constants.js";
 import { getRegisteredModels } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
+import {
+	type ModelChangeEntry,
+	type SessionEntry,
+	type SessionMetadata,
+	type ThinkingLevelChangeEntry,
+	tryParseSessionEntry,
+} from "./session-manager-types.js";
+import { createLogger } from "./utils/logger.js";
+
+const logger = createLogger("session-manager");
 
 class SessionFileWriter {
 	private static readonly writers = new Set<SessionFileWriter>();
@@ -26,7 +37,7 @@ class SessionFileWriter {
 
 	constructor(
 		private readonly filePath: string,
-		private readonly batchSize = 25,
+		private readonly batchSize = SESSION_CONFIG.WRITE_BATCH_SIZE,
 	) {
 		SessionFileWriter.registerBeforeExit();
 		SessionFileWriter.writers.add(this);
@@ -42,7 +53,7 @@ class SessionFileWriter {
 				try {
 					writer.flushSync();
 				} catch (error) {
-					console.error("Failed to flush session file", error);
+					logger.error("Failed to flush session file on exit", error instanceof Error ? error : undefined);
 				}
 			}
 		});
@@ -52,7 +63,7 @@ class SessionFileWriter {
 		SessionFileWriter.writers.delete(this);
 	}
 
-	write(entry: unknown): void {
+	write(entry: SessionEntry): void {
 		this.buffer.push(JSON.stringify(entry));
 		if (this.buffer.length >= this.batchSize) {
 			this.flushSync();
@@ -70,7 +81,8 @@ class SessionFileWriter {
 		try {
 			appendFileSync(this.filePath, chunk);
 		} catch (error) {
-			console.error("Failed to flush session file", error);
+			logger.error("Failed to write session chunk", error instanceof Error ? error : undefined, { filePath: this.filePath });
+			throw error;
 		}
 	}
 
@@ -91,7 +103,7 @@ class SessionMetadataCache {
 	private model: string | null = null;
 	private metadata?: SessionModelMetadata;
 
-	apply(entry: any): void {
+	apply(entry: SessionEntry): void {
 		if (entry.type === "session") {
 			if (typeof entry.thinkingLevel === "string") {
 				this.thinkingLevel = entry.thinkingLevel;
@@ -127,11 +139,9 @@ class SessionMetadataCache {
 			return;
 		}
 		for (const line of contents.split("\n")) {
-			try {
-				const entry = JSON.parse(line);
+			const entry = tryParseSessionEntry(line);
+			if (entry) {
 				this.apply(entry);
-			} catch {
-				// ignore malformed lines
 			}
 		}
 	}
@@ -157,44 +167,6 @@ function uuidv4(): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-export interface SessionHeader {
-	type: "session";
-	id: string;
-	timestamp: string;
-	cwd: string;
-	model: string;
-	modelMetadata?: SessionModelMetadata;
-	thinkingLevel: string;
-	systemPrompt?: string;
-	tools?: SessionToolInfo[];
-}
-
-export interface SessionMessageEntry {
-	type: "message";
-	timestamp: string;
-	message: any; // AppMessage from agent state
-}
-
-export interface ThinkingLevelChangeEntry {
-	type: "thinking_level_change";
-	timestamp: string;
-	thinkingLevel: string;
-}
-
-export interface ModelChangeEntry {
-	type: "model_change";
-	timestamp: string;
-	model: string;
-	modelMetadata?: SessionModelMetadata;
-}
-
-export interface SessionMetaEntry {
-	type: "session_meta";
-	timestamp: string;
-	summary?: string;
-	favorite?: boolean;
-}
-
 export interface SessionToolInfo {
 	name: string;
 	label?: string;
@@ -212,6 +184,12 @@ export interface SessionModelMetadata {
 	maxTokens?: number;
 	source?: "builtin" | "custom";
 }
+
+import type {
+	SessionHeaderEntry,
+	SessionMessageEntry,
+	SessionMetaEntry,
+} from "./session-manager-types.js";
 
 type PendingSessionEntry =
 	| SessionMessageEntry
@@ -390,7 +368,7 @@ export class SessionManager {
 				? toSessionModelMetadata(state.model as RegisteredModel)
 				: undefined);
 		const fallbackMetadata = this.resolveModelMetadata(sessionModelKey);
-		const entry: SessionHeader = {
+		const entry: SessionHeaderEntry = {
 			type: "session",
 			id: this.sessionId,
 			timestamp: new Date().toISOString(),
@@ -416,7 +394,7 @@ export class SessionManager {
 		this.writer?.flushSync();
 	}
 
-	saveMessage(message: any): void {
+	saveMessage(message: AppMessage): void {
 		if (!this.enabled) return;
 		const entry: SessionMessageEntry = {
 			type: "message",
@@ -524,21 +502,17 @@ export class SessionManager {
 		this.appendSessionMetaEntry(sessionPath, { favorite });
 	}
 
-	loadMessages(): any[] {
+	loadMessages(): AppMessage[] {
 		this.writer?.flushSync();
 		if (!existsSync(this.sessionFile)) return [];
 
-		const messages: any[] = [];
+		const messages: AppMessage[] = [];
 		const lines = readFileSync(this.sessionFile, "utf8").trim().split("\n");
 
 		for (const line of lines) {
-			try {
-				const entry = JSON.parse(line);
-				if (entry.type === "message") {
-					messages.push(entry.message);
-				}
-			} catch {
-				// Skip malformed lines
+			const entry = tryParseSessionEntry(line);
+			if (entry && entry.type === "message") {
+				messages.push(entry.message);
 			}
 		}
 
@@ -579,31 +553,9 @@ export class SessionManager {
 	/**
 	 * Load all sessions for the current directory with metadata
 	 */
-	loadAllSessions(): Array<{
-		path: string;
-		id: string;
-		created: Date;
-		modified: Date;
-		size: number;
-		messageCount: number;
-		firstMessage: string;
-		summary: string;
-		favorite: boolean;
-		allMessagesText: string;
-	}> {
+	loadAllSessions(): SessionMetadata[] {
 		this.writer?.flushSync();
-		const sessions: Array<{
-			path: string;
-			id: string;
-			created: Date;
-			modified: Date;
-			size: number;
-			messageCount: number;
-			firstMessage: string;
-			summary: string;
-			favorite: boolean;
-			allMessagesText: string;
-		}> = [];
+		const sessions: SessionMetadata[] = [];
 
 		try {
 			const files = readdirSync(this.sessionDir)
@@ -634,29 +586,52 @@ export class SessionManager {
 					const appMessages: AppMessage[] = [];
 
 					for (const line of lines) {
-						try {
-							const entry = JSON.parse(line);
+						const entry = tryParseSessionEntry(line);
+						if (!entry) continue;
 
-							if (entry.type === "session" && !sessionId) {
-								sessionId = entry.id;
-								created = new Date(entry.timestamp);
-							}
+						if (entry.type === "session" && !sessionId) {
+							sessionId = entry.id;
+							created = new Date(entry.timestamp);
+						}
 
+<<<<<<< HEAD
 							if (entry.type === "message" && entry.message) {
 								messageCount++;
 								appMessages.push(entry.message as AppMessage);
-							}
+=======
+						if (entry.type === "message") {
+							messageCount++;
+							const message = entry.message;
+							if (
+								message.role === "user" ||
+								message.role === "assistant"
+							) {
+								const textContent = Array.isArray(message.content)
+									? message.content
+											.filter((c) => c.type === "text")
+											.map((c) => "text" in c ? c.text : "")
+											.join(" ")
+									: typeof message.content === "string"
+										? message.content
+										: "";
 
-							if (entry.type === "session_meta") {
-								if (typeof entry.summary === "string" && entry.summary.trim()) {
-									summary = entry.summary;
+								if (textContent) {
+									allMessages.push(textContent);
+									if (!firstMessage && message.role === "user") {
+										firstMessage = textContent;
+									}
 								}
-								if (typeof entry.favorite === "boolean") {
-									favorite = entry.favorite;
-								}
+>>>>>>> 70ae7e5 (refactor: improve type safety and remove emoji)
 							}
-						} catch {
-							// Skip malformed lines
+						}
+
+						if (entry.type === "session_meta") {
+							if (typeof entry.summary === "string" && entry.summary.trim()) {
+								summary = entry.summary;
+							}
+							if (typeof entry.favorite === "boolean") {
+								favorite = entry.favorite;
+							}
 						}
 					}
 
@@ -686,11 +661,11 @@ export class SessionManager {
 						allMessagesText,
 					});
 				} catch (error) {
-					console.error(`Failed to read session file ${file}:`, error);
+					logger.error(`Failed to read session file ${file}`, error instanceof Error ? error : undefined);
 				}
 			}
 		} catch (error) {
-			console.error("Failed to load sessions:", error);
+			logger.error("Failed to load sessions", error instanceof Error ? error : undefined);
 		}
 
 		return sessions;
@@ -722,7 +697,7 @@ export class SessionManager {
 	 * Check if we should initialize the session based on message history.
 	 * Session is initialized when we have at least 1 user message and 1 assistant message.
 	 */
-	shouldInitializeSession(messages: any[]): boolean {
+	shouldInitializeSession(messages: AppMessage[]): boolean {
 		if (this.sessionInitialized) return false;
 
 		const userMessages = messages.filter((m) => m.role === "user");

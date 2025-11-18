@@ -97,9 +97,9 @@ export const brand = {
 };
 
 export const infoGlyph = {
-	success: () => chalk.hex(themePalette.success)("✓"),
-	warn: () => chalk.hex(themePalette.warning)("⚠"),
-	danger: () => chalk.hex(themePalette.danger)("✕"),
+	success: () => chalk.hex(themePalette.success)("[OK]"),
+	warn: () => chalk.hex(themePalette.warning)("[WARN]"),
+	danger: () => chalk.hex(themePalette.danger)("[ERROR]"),
 };
 
 export function highlightValue(value: string): string {
