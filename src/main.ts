@@ -8,6 +8,10 @@ import {
 } from "./agent/action-approval.js";
 import { Agent, ProviderTransport, type ThinkingLevel } from "./agent/index.js";
 import { type Args, type Mode, parseArgs } from "./cli/args.js";
+import {
+	EXEC_SESSION_SUMMARY_PREFIX,
+	runExecCommand,
+} from "./cli/commands/exec.js";
 import { printHelp } from "./cli/help.js";
 import { selectSession } from "./cli/session.js";
 import {
@@ -158,6 +162,29 @@ export async function main(args: string[]) {
 	loadEnv();
 
 	const parsed = parseArgs(args);
+
+	if (parsed.command === "exec") {
+		if (parsed.execFullAuto && parsed.execReadOnly) {
+			console.error(
+				chalk.red(
+					"Cannot combine --full-auto with --read-only in composer exec.",
+				),
+			);
+			process.exit(1);
+		}
+		if (
+			parsed.execSandbox &&
+			parsed.execSandbox !== "danger-full-access" &&
+			parsed.execSandbox !== "default"
+		) {
+			console.error(
+				chalk.red(
+					`Unknown sandbox mode "${parsed.execSandbox}". Supported: default, danger-full-access`,
+				),
+			);
+			process.exit(1);
+		}
+	}
 
 	if (parsed.safeMode) {
 		process.env.COMPOSER_SAFE_MODE = "1";
@@ -351,6 +378,36 @@ export async function main(args: string[]) {
 		parsed.session,
 	);
 
+	let execResumeApplied = false;
+	if (parsed.command === "exec") {
+		let targetPath: string | null = null;
+		if (parsed.execResumeId) {
+			targetPath = sessionManager.getSessionFileById(parsed.execResumeId);
+			if (!targetPath) {
+				console.error(
+					chalk.red(`No session found with id ${parsed.execResumeId}.`),
+				);
+				process.exit(1);
+			}
+		} else if (parsed.execUseLast) {
+			const sessions = sessionManager.loadAllSessions();
+			const lastExec = sessions.find((session) =>
+				session.summary?.startsWith(EXEC_SESSION_SUMMARY_PREFIX),
+			);
+			if (!lastExec) {
+				console.error(
+					chalk.red("No previous composer exec sessions were found."),
+				);
+				process.exit(1);
+			}
+			targetPath = lastExec.path;
+		}
+		if (targetPath) {
+			sessionManager.setSessionFile(targetPath);
+			execResumeApplied = true;
+		}
+	}
+
 	// Disable session saving if --no-session flag is set
 	if (parsed.noSession) {
 		sessionManager.disable();
@@ -461,9 +518,14 @@ export async function main(args: string[]) {
 	const defaultApprovalMode: ApprovalMode = isInteractiveTui
 		? "prompt"
 		: "auto";
-	const approvalService = new ActionApprovalService(
-		parsed.approvalMode ?? defaultApprovalMode,
-	);
+	const approvalModeOverride = (() => {
+		if (parsed.command === "exec") {
+			if (parsed.execReadOnly) return "fail";
+			if (parsed.execFullAuto) return "auto";
+		}
+		return parsed.approvalMode ?? defaultApprovalMode;
+	})();
+	const approvalService = new ActionApprovalService(approvalModeOverride);
 
 	const agent = new Agent({
 		initialState: {
@@ -494,7 +556,9 @@ export async function main(args: string[]) {
 	const shouldPrintMessages = isInteractive || mode === "text";
 
 	// Load previous messages if continuing or resuming
-	if (parsed.continue || parsed.resume) {
+	const shouldRestoreSession =
+		parsed.continue || parsed.resume || execResumeApplied;
+	if (shouldRestoreSession) {
 		const messages = sessionManager.loadMessages();
 		if (messages.length > 0) {
 			if (shouldPrintMessages) {
@@ -594,6 +658,16 @@ export async function main(args: string[]) {
 			approvalService,
 			parsed.apiKey,
 		);
+	} else if (parsed.command === "exec") {
+		await runExecCommand({
+			agent,
+			sessionManager,
+			prompts: parsed.messages,
+			jsonl: Boolean(parsed.execJson),
+			sandboxMode: parsed.execSandbox ?? "default",
+			outputSchema: parsed.execOutputSchema,
+			outputLastMessage: parsed.execOutputLast,
+		});
 	} else {
 		// CLI mode with messages
 		await runSingleShotMode(agent, sessionManager, parsed.messages, mode);

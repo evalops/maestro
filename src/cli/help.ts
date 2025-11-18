@@ -45,6 +45,18 @@ export function printHelp(version: string) {
   COMPOSER_AGENT_DIR      - Session storage directory (default: ~/.composer/agent)
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,
 	)}`;
+	const execSection = `${sectionHeading("composer exec")}${muted(
+		`  composer exec "Summarize recent changes" --json
+
+  Flags:
+    --json                      Stream JSONL thread/turn events
+    --output-schema <file|json> Validate final assistant JSON against a schema
+    --output-last-message <path> Write the final assistant message to disk
+    --full-auto | --read-only   Force approval policy (auto or fail)
+    --sandbox danger-full-access Remove sandbox guardrails (default: safe)
+    --resume <sessionId>        Resume a prior exec session by id
+    --last                      Resume the most recent exec session`,
+	)}`;
 	const tools = `${sectionHeading("Available Tools")}${muted(
 		`  read   - Read file contents
   list   - List files in a directory
@@ -63,6 +75,7 @@ export function printHelp(version: string) {
 			options,
 			examples,
 			env,
+			execSection,
 			`${sectionHeading("Tips")}${badge(
 				"Need models?",
 				"composer models list",

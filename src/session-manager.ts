@@ -657,6 +657,13 @@ export class SessionManager {
 		return sessions;
 	}
 
+	getSessionFileById(sessionId: string): string | null {
+		const match = this.loadAllSessions().find(
+			(session) => session.id === sessionId,
+		);
+		return match?.path ?? null;
+	}
+
 	/**
 	 * Set the session file to an existing session
 	 */

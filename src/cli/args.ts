@@ -17,8 +17,19 @@ export interface Args {
 	subcommand?: string;
 	approvalMode?: "auto" | "prompt" | "fail";
 	force?: boolean;
+	execJson?: boolean;
+	execFullAuto?: boolean;
+	execReadOnly?: boolean;
+	execSandbox?: string;
+	execOutputSchema?: string;
+	execOutputLast?: string;
+	execResumeId?: string;
+	execUseLast?: boolean;
 	messages: string[];
 }
+
+const COMMANDS = new Set(["config", "models", "cost", "agents", "exec"]);
+const SUBCOMMAND_COMMANDS = new Set(["config", "models", "cost", "agents"]);
 
 export function parseArgs(args: string[]): Args {
 	const result: Args = {
@@ -38,7 +49,15 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
-			result.resume = true;
+			if (result.command === "exec") {
+				if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+					result.execResumeId = args[++i];
+				} else {
+					result.execUseLast = true;
+				}
+			} else {
+				result.resume = true;
+			}
 		} else if (arg === "--provider" && i + 1 < args.length) {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
@@ -62,18 +81,28 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--force") {
 			result.force = true;
+		} else if (arg === "--json") {
+			result.execJson = true;
+		} else if (arg === "--full-auto") {
+			result.execFullAuto = true;
+		} else if (arg === "--read-only") {
+			result.execReadOnly = true;
+		} else if (arg === "--sandbox" && i + 1 < args.length) {
+			result.execSandbox = args[++i];
+		} else if (arg === "--output-schema" && i + 1 < args.length) {
+			result.execOutputSchema = args[++i];
+		} else if (arg === "--output-last-message" && i + 1 < args.length) {
+			result.execOutputLast = args[++i];
+		} else if (arg === "--last" && result.command === "exec") {
+			result.execUseLast = true;
 		} else if (!arg.startsWith("-")) {
-			// Handle commands: "config", "models", "cost", etc.
-			if (
-				!result.command &&
-				(arg === "config" ||
-					arg === "models" ||
-					arg === "cost" ||
-					arg === "agents")
-			) {
+			if (!result.command && COMMANDS.has(arg)) {
 				result.command = arg;
-				// Check for subcommand
-				if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+				if (
+					SUBCOMMAND_COMMANDS.has(arg) &&
+					i + 1 < args.length &&
+					!args[i + 1].startsWith("-")
+				) {
 					result.subcommand = args[++i];
 				}
 			} else {

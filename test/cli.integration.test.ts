@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/main.js";
 
@@ -25,9 +28,12 @@ vi.mock("../src/agent/agent.js", async () => {
 				content: [{ type: "text", text: message }],
 			});
 
+			const responseText = message.startsWith("JSON:")
+				? message.slice(5)
+				: `Echo: ${message}`;
 			const assistantMessage = {
 				role: "assistant",
-				content: [{ type: "text", text: `Echo: ${message}` }],
+				content: [{ type: "text", text: responseText }],
 				stopReason: "completed",
 			};
 			this.state.messages.push(assistantMessage);
@@ -121,23 +127,40 @@ vi.mock("../src/models/registry.js", () => ({
 
 describe("CLI integration", () => {
 	const originalEnv = process.env.ANTHROPIC_API_KEY;
+	const originalAgentDir = process.env.COMPOSER_AGENT_DIR;
 	const originalLog = console.log;
+	const originalError = console.error;
 	let output: string[];
+	let tempAgentDir: string;
 
 	beforeEach(() => {
+		tempAgentDir = mkdtempSync(join(tmpdir(), "composer-cli-test-"));
+		process.env.COMPOSER_AGENT_DIR = tempAgentDir;
 		process.env.ANTHROPIC_API_KEY = "test-key";
 		output = [];
 		console.log = (...args: unknown[]) => {
+			output.push(args.map((arg) => String(arg)).join(" "));
+		};
+		console.error = (...args: unknown[]) => {
 			output.push(args.map((arg) => String(arg)).join(" "));
 		};
 	});
 
 	afterEach(() => {
 		console.log = originalLog;
+		console.error = originalError;
 		if (originalEnv === undefined) {
 			process.env.ANTHROPIC_API_KEY = undefined;
 		} else {
 			process.env.ANTHROPIC_API_KEY = originalEnv;
+		}
+		if (originalAgentDir === undefined) {
+			process.env.COMPOSER_AGENT_DIR = undefined;
+		} else {
+			process.env.COMPOSER_AGENT_DIR = originalAgentDir;
+		}
+		if (tempAgentDir) {
+			rmSync(tempAgentDir, { recursive: true, force: true });
 		}
 		vi.restoreAllMocks();
 		vi.resetModules();
@@ -176,5 +199,55 @@ describe("CLI integration", () => {
 		expect(exitCodes).toEqual([0]);
 		expect(output.join("\n")).toContain("openrouter");
 		exitSpy.mockRestore();
+	});
+
+	it("runs composer exec in text mode", async () => {
+		await main(["exec", "Summarize release notes"]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Echo: Summarize release notes");
+	});
+
+	it("streams JSON events in composer exec", async () => {
+		const originalWrite = process.stdout.write;
+		let streamed = "";
+		(process.stdout.write as unknown as (chunk: string) => boolean) = ((
+			chunk: any,
+		) => {
+			streamed += String(chunk);
+			return true;
+		}) as any;
+		try {
+			await main(["exec", "Plan work", "--json"]);
+		} finally {
+			process.stdout.write = originalWrite;
+		}
+		expect(streamed).toContain('"type":"thread"');
+	});
+
+	it("validates schema in composer exec", async () => {
+		await main([
+			"exec",
+			'JSON:{"result":"ok"}',
+			"--output-schema",
+			'{"type":"object","properties":{"result":{"const":"ok"}},"required":["result"]}',
+		]);
+	});
+
+	it("fails schema validation in composer exec", async () => {
+		await expect(
+			main([
+				"exec",
+				'JSON:{"result":"ok"}',
+				"--output-schema",
+				'{"type":"object","required":["status"]}',
+			]),
+		).rejects.toThrow(/schema/);
+	});
+
+	it("supports --last for exec sessions", async () => {
+		await main(["exec", "Initial run"]);
+		output = [];
+		await main(["exec", "--last", "Follow up run"]);
+		expect(output.join("\n")).toContain("Echo: Follow up run");
 	});
 });
