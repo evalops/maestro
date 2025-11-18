@@ -45,7 +45,7 @@ export const codesearchTool = createTool<
 	name: "codesearch",
 	label: "codesearch",
 	description:
-		"Search billions of GitHub repos, documentation, and Stack Overflow for code examples and programming context using Exa Code API. Returns token-efficient, working code examples. Use for: framework usage, API syntax, library examples, best practices, setup instructions.",
+		"Search GitHub, docs, and Stack Overflow for code examples. Returns working code snippets. Use for API syntax, framework patterns, or library usage.",
 	schema: codesearchSchema,
 	run: async (params, { respond }) => {
 		const data = await callExa<ExaContextResponse>(

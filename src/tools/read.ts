@@ -121,8 +121,16 @@ export const readTool = createTool<
 >({
 	name: "read",
 	label: "read",
-	description:
-		"Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, defaults to first 2000 lines. Use offset/limit for large files.",
+	description: `Read file contents. Supports text and images (JPEG, PNG, GIF, WebP).
+
+Parameters:
+- path: File path (relative/absolute, supports ~/)
+- offset: Start line (1-indexed)
+- limit: Max lines
+- mode: "normal", "head", "tail"
+
+Auto-detects images, provides syntax highlighting, handles large files.
+Use 'batch' to read multiple files in parallel.`,
 	schema: readSchema,
 	async run(
 		{

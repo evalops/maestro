@@ -345,8 +345,30 @@ type TodoToolDetails = {
 export const todoTool = createTool<typeof todoSchema, TodoToolDetails>({
 	name: "todo",
 	label: "todo",
-	description:
-		"Create or update a status-rich checklist for a coding objective, mirroring TodoWrite semantics (id, content, status, priority).",
+	description: `Track tasks for coding sessions. Use for complex, multi-step work to demonstrate progress.
+
+When to use:
+- 3+ steps or non-trivial work
+- User requests multiple tasks
+- After receiving new instructions
+
+When NOT to use:
+- Single, straightforward tasks
+- Trivial work (<3 steps)
+- Conversational requests
+
+Task states:
+- pending: Not started
+- in_progress: Currently working (ONE AT A TIME)
+- completed: Finished
+
+Management:
+- Mark in_progress BEFORE starting work
+- Mark completed IMMEDIATELY when done
+- Only ONE in_progress task at a time
+- Use 'updates' to modify existing tasks by id
+
+Call this tool IN PARALLEL with other tools to save time.`,
 	schema: todoSchema,
 	async run(params, { respond }) {
 		const { goal, items, updates, includeSummary } = params;

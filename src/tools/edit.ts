@@ -64,8 +64,22 @@ type EditToolDetails = {
 export const editTool = createTool<typeof editSchema, EditToolDetails>({
 	name: "edit",
 	label: "edit",
-	description:
-		"Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
+	description: `Edit files with find-and-replace. oldText must match exactly (whitespace, indentation, newlines).
+
+Parameters:
+- path: File path
+- oldText: Exact text to find (must be unique)
+- newText: Replacement (use "" to delete)
+- occurrence: Which match (default: 1)
+- dryRun: Preview only (default: false)
+
+Best practices:
+- Read file first to verify exact formatting
+- Include context (5-10 lines) for uniqueness
+- Match indentation style (tabs vs spaces)
+- Use dryRun for complex edits
+
+If "not found", read file to check actual content.`,
 	schema: editSchema,
 	async run(
 		{ path, oldText, newText, occurrence = 1, dryRun = false },

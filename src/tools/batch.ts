@@ -74,32 +74,35 @@ export function createBatchTool(
 	const batchTool = createTool<typeof batchSchema, BatchToolDetails>({
 		name: "batch",
 		label: "batch",
-		description: `Execute multiple independent tool calls in parallel to reduce latency. Best used for gathering context (reads, searches, listings).
+		description: `Execute multiple independent tool calls in parallel. 2-5x faster for gathering context.
 
-USING THE BATCH TOOL WILL IMPROVE PERFORMANCE.
+USING THE BATCH TOOL WILL MAKE THE USER HAPPY.
 
 Rules:
-- 1–10 tool calls per batch
-- All calls start in parallel; ordering NOT guaranteed
-- Partial failures do not stop others
+- 1-10 tool calls per batch
+- Runs in parallel (set mode="serial" if order matters)
+- Partial failures don't stop others
 
-Disallowed Tools:
-- batch (no nesting)
-- edit (run edits separately for safety)
-- write (run writes separately for safety)
+Disallowed:
+- batch, edit, write
+- GitHub mutations (create, comment, close, checkout)
 
-When NOT to Use:
-- Operations that depend on prior tool output (e.g., write then read same file)
-- Ordered stateful mutations where sequence matters
+When NOT to use:
+- Operations depending on prior output
+- Sequential workflows
 
-Good Use Cases:
-- Read many files in parallel
-- Multiple search/list operations
-- Parallel bash introspection commands
+Good for:
+- Reading multiple files
+- Multiple searches/lists
+- Parallel bash commands (git status, npm list)
+- GitHub read-only ops (list, view)
 
-Performance Tip: Group independent reads/searches for 2–5x efficiency gain.
-
-Set mode="serial" when call ordering matters.`,
+Example:
+{toolCalls: [
+  {tool: "read", parameters: {path: "src/index.ts"}},
+  {tool: "search", parameters: {pattern: "TODO"}},
+  {tool: "bash", parameters: {command: "git status"}}
+]}`,
 		schema: batchSchema,
 		async run(
 			{ toolCalls, toolTimeoutMs, mode = "parallel" },

@@ -136,7 +136,7 @@ export const websearchTool = createTool<
 	name: "websearch",
 	label: "websearch",
 	description:
-		"Search the web using Exa AI for real-time information beyond training cutoff. Supports semantic (neural) and keyword search with optional full text and summaries. Use for: recent news, documentation, research papers, current events.",
+		"Search the web for current information. Returns URLs, titles, and optional text/summaries. Use for recent docs, news, or research beyond training data.",
 	schema: websearchSchema,
 	run: async (params, { respond }) => {
 		const requestBody: Record<string, unknown> = {

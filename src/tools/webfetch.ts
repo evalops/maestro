@@ -41,7 +41,7 @@ export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 	name: "webfetch",
 	label: "webfetch",
 	description:
-		"Fetch and extract content from specific URLs using Exa. Converts HTML to clean markdown, optionally returns summaries and highlights. Use for: reading documentation, fetching article content, extracting information from known URLs.",
+		"Fetch content from URLs. Returns clean markdown with optional summaries and highlights. Use when you have specific URLs to read.",
 	schema: webfetchSchema,
 	run: async (params, { respond }) => {
 		const urls = Array.isArray(params.urls) ? params.urls : [params.urls];

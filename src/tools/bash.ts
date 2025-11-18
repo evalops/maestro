@@ -83,8 +83,16 @@ const bashSchema = Type.Object({
 export const bashTool = createTool<typeof bashSchema>({
 	name: "bash",
 	label: "bash",
-	description:
-		"Execute a bash command in the current working directory. Returns stdout and stderr. Optionally provide a timeout in seconds.",
+	description: `Execute bash commands. Returns stdout and stderr.
+
+Usage guidelines:
+- ALWAYS quote paths with spaces: cd "/path with spaces"
+- DO NOT use: find, grep, cat, head, tail, ls (use search, read, list tools instead)
+- Prefer rg over grep if you must search
+- Chain commands with ';' or '&&', avoid cd
+- Use 'gh' CLI for GitHub operations (gh pr create, gh issue list, gh repo view)
+
+Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 	schema: bashSchema,
 	async run({ command, timeout, cwd, env }, { signal }) {
 		return new Promise<{
