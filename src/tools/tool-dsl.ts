@@ -1,3 +1,4 @@
+import os from "node:os";
 import type { Static, TSchema } from "@sinclair/typebox";
 import type {
 	AgentToolResult,
@@ -115,6 +116,16 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 	});
 }
 
+export function expandUserPath(path: string): string {
+	if (path === "~") {
+		return os.homedir();
+	}
+	if (path.startsWith("~/")) {
+		return os.homedir() + path.slice(1);
+	}
+	return path;
+}
+
 function isAgentToolResult<Details>(
 	value: unknown,
 ): value is AgentToolResult<Details> {
@@ -193,5 +204,22 @@ export function createJsonTool<Schema extends TSchema, Details = undefined>(
 			}
 			return context.respond.json(result);
 		},
+	});
+}
+
+export interface CreateLegacyToolOptions<Schema extends TSchema, Details>
+	extends Omit<CreateToolOptions<Schema, Details>, "run"> {
+	legacyExecute: (
+		params: Static<Schema>,
+		context: ToolRunContext<Details>,
+	) => AgentToolResult<Details> | Promise<AgentToolResult<Details>>;
+}
+
+export function createLegacyTool<Schema extends TSchema, Details = undefined>(
+	options: CreateLegacyToolOptions<Schema, Details>,
+) {
+	return createTool<Schema, Details>({
+		...options,
+		run: (params, context) => options.legacyExecute(params, context),
 	});
 }

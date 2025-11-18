@@ -2,17 +2,7 @@ import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { glob } from "glob";
-import { createTool } from "./tool-dsl.js";
-
-function expandPath(path: string): string {
-	if (path === "~") {
-		return process.env.HOME || path;
-	}
-	if (path.startsWith("~/")) {
-		return (process.env.HOME || "") + path.slice(1);
-	}
-	return path;
-}
+import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 500;
@@ -116,7 +106,7 @@ export const listTool = createTool<typeof listSchema, ListToolDetails>({
 			throw new Error("Operation aborted");
 		}
 
-		const resolvedPath = resolvePath(expandPath(path));
+		const resolvedPath = resolvePath(expandUserPath(path));
 		const safeLimit = Math.min(
 			Math.max(Math.floor(limit || DEFAULT_LIMIT), 1),
 			MAX_LIMIT,
