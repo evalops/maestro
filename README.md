@@ -1,6 +1,6 @@
 # Composer CLI by EvalOps
 
-Composer is a radically simple and opinionated coding agent with multi-model support (including mid-session switching), a powerful headless CLI, and the creature comforts you expect from modern coding copilots.
+Composer is a deterministic coding agent with multi-model support, powerful headless CLI, and scriptable automation.
 
 ## Documentation
 
@@ -14,13 +14,13 @@ Composer is a radically simple and opinionated coding agent with multi-model sup
 - [CONTRIBUTING](CONTRIBUTING.md) – workflow, coding standards, release steps
 - [Changelog](CHANGELOG.md) – notable fixes and features per release
 
-## Who It's For
-
-Developers who want deterministic, scriptable AI assistance with zero mystery meat. You value explicit commands over hidden heuristics, git-friendly edits over magical patches, and the ability to reason about every action Composer takes. If you prefer tight control, fast iteration, and the option to automate everything, you're in the right place.
-
 ## Concept
 
 Composer exposes every capability through slash commands and git-aware helpers so you always know what changed and why. The agent is intentionally minimal: no hidden context juggling, no silent retries, just explicit tools you can chain together or script.
+
+## Who It's For
+
+Developers who want deterministic, scriptable AI assistance with zero mystery meat. You value explicit commands over hidden heuristics, git-friendly edits over magical patches, and the ability to reason about every action Composer takes. If you prefer tight control, fast iteration, and the option to automate everything, you're in the right place.
 
 ### Design Principles
 
@@ -90,16 +90,9 @@ export EXA_API_KEY=...  # Get yours at https://dashboard.exa.ai/api-keys
 
 ## Providers
 
-### OpenAI & OpenRouter
+Composer supports Anthropic, OpenAI, Google (Gemini), xAI (Grok), Groq, Cerebras, OpenRouter, and ZAI. Set the appropriate API key environment variable (see API Keys section), then use `--provider` and `--model` flags to select your provider and model. Sessions remember the provider/model pair for seamless continuations.
 
-Composer treats OpenAI-compatible hosts the same way pi-mono does. Use
-`--provider openai --model gpt-4o` (or any built-in ID) when pointing at the
-official OpenAI endpoint, and `OPENAI_API_KEY` is all you need. To route through
-OpenRouter, pass `--provider openrouter --model anthropic/claude-sonnet-4-5`
-and set `OPENROUTER_API_KEY`; the CLI automatically targets
-`https://openrouter.ai/api/v1/chat/completions` and keeps tool calling working
-without any MCP shim. Saved sessions remember the provider/model pair, so
-continuations continue hitting the correct API without extra flags.
+For detailed provider configuration, including OpenRouter integration and custom endpoints, see [Providers & Factory](docs/MODELS.md).
 
 > **Factory CLI users:** Run `npm run factory:import` / `npm run factory:export` or use `/import factory` inside the TUI whenever you want to sync providers and settings—otherwise Composer stays fully standalone.
 
@@ -342,13 +335,24 @@ npm run evals          # optional EvalOps scenarios
 
 New slash commands or views should ship with tests in `test/`. Use the eval runner for larger feature work so telemetry scenarios stay honest.
 
-## Planned Features
+## Troubleshooting
 
-- **Auto-compaction:** Watch the context percentage; ask Composer to summarize to `.md` or switch to a larger-context model.
-- **Message queuing:** Engine support exists; UI wiring TBD.
-- **Better RPC docs:** Works today; see `test/rpc-example.ts`.
-- **Better Markdown/tool rendering** and richer `/export` views.
-- **More flicker than Claude Code:** aspirational.
+### Missing or Invalid API Keys
+
+If you see authentication errors:
+
+1. Verify your API key is correctly set: `echo $ANTHROPIC_API_KEY` (or the relevant provider variable)
+2. Check for typos or extra whitespace in your `.bashrc`/`.zshrc`
+3. Restart your terminal after setting environment variables
+4. Use `composer --diag` to verify provider configuration
+
+### Session Files
+
+Sessions are stored as JSONL in `~/.composer/agent/sessions/`. Each message appends to the file, so sessions can grow large over time. You can:
+
+- Start fresh with `composer --no-session`
+- Archive old sessions by moving them out of the sessions directory
+- Use `/export` to save sessions as standalone HTML before archiving
 
 ## License
 
