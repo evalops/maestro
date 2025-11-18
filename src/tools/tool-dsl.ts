@@ -39,6 +39,15 @@ export class ToolResponseBuilder<Details> {
 		return this;
 	}
 
+	error(message: string, details?: Details): this {
+		const prefix = message.startsWith("Error:") ? message : `Error: ${message}`;
+		this.text(prefix);
+		if (details !== undefined) {
+			this.detail(details);
+		}
+		return this;
+	}
+
 	detail(value: Details): this {
 		this.details = value;
 		return this;

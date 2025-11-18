@@ -123,4 +123,12 @@ describe("createTool DSL", () => {
 		const builder = new ToolResponseBuilder();
 		expect(() => builder.build()).toThrow(/no content/i);
 	});
+
+	it("emits standardized error responses", () => {
+		const builder = new ToolResponseBuilder<{ code: number }>();
+		builder.error("File not found", { code: 404 });
+		const result = builder.build();
+		expect(result.content[0]).toMatchObject({ text: "Error: File not found" });
+		expect(result.details).toEqual({ code: 404 });
+	});
 });
