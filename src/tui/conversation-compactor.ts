@@ -1,10 +1,13 @@
 import type { Agent } from "../agent/agent.js";
-import type {
-	AppMessage,
-	AssistantMessage,
-	Message,
-	ToolResultMessage,
-} from "../agent/types.js";
+import type { AppMessage, AssistantMessage, Message } from "../agent/types.js";
+import {
+	buildConversationModel,
+	createRenderableMessage,
+	isRenderableAssistantMessage,
+	isRenderableToolResultMessage,
+	isRenderableUserMessage,
+	renderMessageToPlainText,
+} from "../conversation/render-model.js";
 import type { SessionManager } from "../session-manager.js";
 import type { Container, TUI } from "../tui-lib/index.js";
 import type { FooterComponent } from "./footer.js";
@@ -54,7 +57,10 @@ export class ConversationCompactor {
 				prompt,
 				this.buildSummarizationSystemPrompt(),
 			);
-			const llmText = this.extractPlainText(summary).trim();
+			const summaryRenderable = createRenderableMessage(summary as AppMessage);
+			const llmText = summaryRenderable
+				? renderMessageToPlainText(summaryRenderable).trim()
+				: "";
 			const decorated = this.decorateSummaryText(
 				llmText || this.buildCompactSummary(summaryInput),
 				older.length,
@@ -125,19 +131,20 @@ export class ConversationCompactor {
 	private buildCompactSummary(messages: Message[]): string {
 		const lines: string[] = [];
 		let exchange = 1;
-		for (const message of messages) {
-			const text = this.extractPlainText(message).trim();
+		const renderables = buildConversationModel(messages as AppMessage[]);
+		for (const renderable of renderables) {
+			const text = renderMessageToPlainText(renderable).trim();
 			if (!text) continue;
 			const truncated = this.truncateText(text, 180);
-			if (message.role === "user") {
+			if (isRenderableUserMessage(renderable)) {
 				lines.push(`• User ${exchange}: ${truncated}`);
-			} else if (message.role === "assistant") {
+			} else if (isRenderableAssistantMessage(renderable)) {
 				lines.push(`  ↳ Assistant: ${truncated}`);
 				exchange += 1;
-			} else if (message.role === "toolResult") {
+			} else if (isRenderableToolResultMessage(renderable)) {
 				lines.push(
-					`  ↳ Tool ${(message as ToolResultMessage).toolName}: ${this.truncateText(
-						this.extractPlainText(message),
+					`  ↳ Tool ${renderable.toolName}: ${this.truncateText(
+						renderMessageToPlainText(renderable),
 						160,
 					)}`,
 				);
@@ -169,20 +176,6 @@ Highlight key files, TODOs, and blockers. Limit to 200 words.`;
 			? "_Model-generated summary of prior discussion._"
 			: "_Local summary of prior discussion (model unavailable)._";
 		return `${meta}\n\n${text}\n\n(Compacted ${compactedCount} messages on ${new Date().toLocaleString()})`;
-	}
-
-	private extractPlainText(message: Message): string {
-		if ((message as any).content === undefined) return "";
-		if (typeof (message as any).content === "string") {
-			return (message as any).content as string;
-		}
-		if (Array.isArray((message as any).content)) {
-			return (message as any).content
-				.filter((block: any) => block.type === "text")
-				.map((block: any) => block.text)
-				.join("\n");
-		}
-		return "";
 	}
 
 	private truncateText(text: string, limit = 160): string {

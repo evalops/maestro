@@ -180,6 +180,38 @@ export function isRenderableToolResultMessage(
 	return message.kind === "toolResult";
 }
 
+export function renderMessageToPlainText(message: RenderableMessage): string {
+	if (isRenderableUserMessage(message)) {
+		const attachmentNotes = message.attachments.map(
+			(attachment) =>
+				`[attachment] ${attachment.fileName} (${attachment.mimeType})`,
+		);
+		return [message.text, ...attachmentNotes]
+			.filter((part) => Boolean(part?.trim()))
+			.join("\n")
+			.trim();
+	}
+	if (isRenderableAssistantMessage(message)) {
+		const lines: string[] = [];
+		lines.push(...message.textBlocks);
+		lines.push(
+			...message.thinkingBlocks.map((thinking) => `[thinking] ${thinking}`),
+		);
+		lines.push(...message.toolCalls.map((call) => `[tool call] ${call.name}`));
+		return lines.filter((part) => Boolean(part?.trim())).join("\n");
+	}
+	if (isRenderableToolResultMessage(message)) {
+		const imageLines = message.images.map(
+			(image) => `[image] ${image.mimeType || "attachment"}`,
+		);
+		return [message.textContent, ...imageLines]
+			.filter((part) => Boolean(part?.trim()))
+			.join("\n")
+			.trim();
+	}
+	return "";
+}
+
 function extractTextFromUserContent(
 	message: UserMessageWithAttachments,
 ): string {

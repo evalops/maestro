@@ -48,6 +48,14 @@ const sessionJson = `
 {"type":"message","message":{"role":"toolResult","toolCallId":"tool-1","toolName":"bash","content":[{"type":"text","text":"src\\npackage.json"}],"isError":false,"timestamp":3}}
 `;
 
+const richSessionJson = `
+{"type":"session","id":"session-2","timestamp":"2024-02-01T00:00:00.000Z","cwd":"/repo","model":"anthropic/claude-3","thinkingLevel":"medium","systemPrompt":"Persisted system","tools":[{"name":"read","description":"Read files"},{"name":"bash","description":"Run bash"}]}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"See attachment for context"}],"attachments":[{"id":"att-1","type":"image","fileName":"design.png","mimeType":"image/png","size":12345,"content":"base64-data","preview":"thumbnail"}],"timestamp":4}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Reviewing screenshot"},{"type":"text","text":"Scanning files"},{"type":"toolCall","id":"tool-2","name":"read","arguments":{"path":"src/export-html.ts"}},{"type":"toolCall","id":"tool-3","name":"bash","arguments":{"command":"npm run test"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-3","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":5}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"tool-2","toolName":"read","content":[{"type":"text","text":"// file contents"}],"isError":false,"timestamp":6}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"tool-3","toolName":"bash","content":[{"type":"text","text":"All tests passing"},{"type":"image","mimeType":"image/png","data":"image-bytes"}],"isError":false,"timestamp":7}}
+`;
+
 describe("exporters", () => {
 	it("includes tool result renderables", () => {
 		const messages = sessionJson
@@ -92,5 +100,37 @@ describe("exporters", () => {
 		expect(text).toContain("User:\nlist files");
 		expect(text).toContain("[tool call] bash");
 		expect(text).toContain("[tool result] bash");
+	});
+
+	it("renders attachments, thinking, and multiple tool calls in HTML", async () => {
+		const sessionFile = createTempSessionFile(richSessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const htmlPath = join(dirname(sessionFile), "rich.html");
+		const outputPath = await exportSessionToHtml(
+			manager,
+			buildAgentState(),
+			htmlPath,
+		);
+		const html = readFileSync(outputPath, "utf8");
+		expect(html).toContain("design.png");
+		expect(html).toContain("Reviewing screenshot");
+		expect(html).toContain("read");
+		expect(html).toContain("npm run test");
+	});
+
+	it("exports attachments and tool images in text transcript", async () => {
+		const sessionFile = createTempSessionFile(richSessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const textPath = join(dirname(sessionFile), "rich.txt");
+		const outputPath = await exportSessionToText(
+			manager,
+			buildAgentState(),
+			textPath,
+		);
+		const text = readFileSync(outputPath, "utf8");
+		expect(text).toContain("[attachment] design.png (image/png)");
+		expect(text).toContain("[tool call] read");
+		expect(text).toContain("[tool result] read");
+		expect(text).toContain("[image] image/png");
 	});
 });

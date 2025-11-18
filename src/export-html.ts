@@ -333,10 +333,21 @@ function formatRenderableMessageHtml(
 
 function formatUserMessageHtml(message: RenderableUserMessage): string {
 	const textContent = message.text.trim();
-	if (!textContent) {
+	const textHtml = textContent
+		? `<div>${escapeHtml(textContent).replace(/\n/g, "<br>")}</div>`
+		: "";
+	const attachmentsHtml = message.attachments.length
+		? `<div class="attachment-list">${message.attachments
+				.map(
+					(attachment) =>
+						`<div class="attachment-item">📎 ${escapeHtml(attachment.fileName)} <span>${escapeHtml(attachment.mimeType)}</span></div>`,
+				)
+				.join("")}</div>`
+		: "";
+	if (!textHtml && !attachmentsHtml) {
 		return "";
 	}
-	return `<div class="user-message">${escapeHtml(textContent).replace(/\n/g, "<br>")}</div>`;
+	return `<div class="user-message">${textHtml}${attachmentsHtml}</div>`;
 }
 
 function formatAssistantMessageHtml(
@@ -493,6 +504,18 @@ export async function exportSessionToHtml(
             border-radius: 4px;
             white-space: pre-wrap;
             word-wrap: break-word;
+        }
+
+        .attachment-list {
+            margin-top: 8px;
+            border-left: 2px solid ${COLORS.cyan};
+            padding-left: 12px;
+        }
+
+        .attachment-item {
+            color: ${COLORS.textDim};
+            font-size: 13px;
+            line-height: 1.4;
         }
 
         /* Assistant text - matching TUI AssistantMessageComponent */
@@ -782,7 +805,22 @@ function formatMessageAsText(
 	toolResultsMap: Map<string, RenderableToolResultMessage>,
 ): string {
 	if (isRenderableUserMessage(message)) {
-		return message.text.trim() ? `User:\n${message.text.trim()}` : "";
+		const parts: string[] = [];
+		if (message.text.trim()) {
+			parts.push(message.text.trim());
+		}
+		if (message.attachments.length) {
+			parts.push(
+				...message.attachments.map(
+					(attachment) =>
+						`[attachment] ${attachment.fileName} (${attachment.mimeType})`,
+				),
+			);
+		}
+		if (!parts.length) {
+			return "";
+		}
+		return `User:\n${parts.join("\n")}`;
 	}
 	if (isRenderableAssistantMessage(message)) {
 		const parts: string[] = [];
@@ -810,7 +848,18 @@ function formatMessageAsText(
 		return `Assistant:\n${parts.join("\n\n")}`;
 	}
 	if (isRenderableToolResultMessage(message)) {
-		const text = message.textContent.trim();
+		const lines: string[] = [];
+		if (message.textContent.trim()) {
+			lines.push(message.textContent.trim());
+		}
+		if (message.images.length) {
+			lines.push(
+				...message.images.map(
+					(image) => `[image] ${image.mimeType || "attachment"}`,
+				),
+			);
+		}
+		const text = lines.join("\n");
 		return `Tool ${message.toolName} (${message.toolCallId}):\n${text}`;
 	}
 	return "";
