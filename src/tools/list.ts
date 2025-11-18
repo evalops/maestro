@@ -235,7 +235,7 @@ ${body}`;
 				error instanceof Error
 					? error.message
 					: "Unknown error while listing files";
-			return respond.text(`Error listing ${resolvedPath}: ${message}`);
+			return respond.error(`Listing ${resolvedPath} failed: ${message}`);
 		}
 	},
 });

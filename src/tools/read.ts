@@ -149,7 +149,7 @@ export const readTool = createTool<
 		try {
 			await access(absolutePath, constants.R_OK);
 		} catch {
-			return respond.text(`Error: File not found: ${path}`);
+			return respond.error(`File not found: ${path}`);
 		}
 
 		throwIfAborted();
@@ -203,11 +203,10 @@ export const readTool = createTool<
 		}
 
 		if (startLine >= lines.length) {
-			return respond
-				.text(
-					`Error: Offset ${offset} is beyond end of file (${lines.length} lines total)`,
-				)
-				.detail({ mode, totalLines: lines.length });
+			return respond.error(
+				`Offset ${offset} is beyond end of file (${lines.length} lines total)`,
+				{ mode, totalLines: lines.length },
+			);
 		}
 
 		const endLine = Math.min(startLine + maxLines, lines.length);
