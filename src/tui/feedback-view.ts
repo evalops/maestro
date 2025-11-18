@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import * as os from "node:os";
+import { dirname } from "node:path";
 import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
@@ -17,6 +20,7 @@ interface FeedbackViewOptions {
 	ui: TUI;
 	toolStatusView: ToolStatusView;
 	gitView: GitView;
+	version: string;
 }
 
 export class FeedbackView {
@@ -24,45 +28,65 @@ export class FeedbackView {
 
 	handleBugCommand(): void {
 		const sessionFile = this.options.sessionManager.getSessionFile();
+		const sessionDir = sessionFile ? dirname(sessionFile) : undefined;
 		const sessionId = this.options.sessionManager.getSessionId();
 		const model = this.options.agent.state.model;
-		const toolFailureTips = TOOL_FAILURE_LOG_PATH
-			? `- ${TOOL_FAILURE_LOG_PATH}`
-			: null;
-		const filesToShare = [sessionFile, toolFailureTips]
-			.filter((value): value is string => Boolean(value))
-			.map((path) => `- ${path}`)
-			.join("\n");
+		const attachments = this.buildAttachmentSection(
+			[
+				sessionDir ? { label: "Session directory", path: sessionDir } : null,
+				existsSync(TOOL_FAILURE_LOG_PATH)
+					? { label: "Tool failures log", path: TOOL_FAILURE_LOG_PATH }
+					: null,
+			].filter((value): value is { label: string; path: string } =>
+				Boolean(value),
+			),
+		);
 
 		const gitStatus =
 			this.options.gitView.getStatusSummary() ?? "git status unavailable";
 		const gitCommit = this.options.gitView.getCurrentCommit() ?? "unknown";
+		const gitState = this.options.gitView.getWorkingTreeState();
+		const gitBranch = gitState?.branch ?? "unknown";
+		const gitDirty = gitState ? (gitState.dirty ? "yes" : "no") : "unknown";
 		const toolFailureSummary = this.buildToolFailureSummary();
 		const validatorSummary = this.buildValidatorSummary();
-
-		const text = `${chalk.bold("Bug report info")}
-Session ID: ${sessionId}
-Session file: ${sessionFile}
-Model: ${model ? `${model.provider}/${model.id}` : "unknown"}
-Messages: ${this.options.agent.state.messages.length}
-Tools: ${
+		const envSummary = this.buildEnvironmentSummary();
+		const toolsLine =
 			(this.options.agent.state.tools ?? [])
 				.map((tool) => tool.name)
-				.join(", ") || "none"
+				.join(", ") || "none";
+		const sessionDirLine = sessionDir
+			? `Session directory:\n  ${sessionDir}`
+			: chalk.dim("Session directory has not been persisted yet.");
+
+		const infoSection = [
+			chalk.bold("Bug report info"),
+			`Composer: ${this.options.version || "unknown"}`,
+			`Session ID: ${sessionId}`,
+			sessionDirLine,
+			`Model: ${model ? `${model.provider}/${model.id}` : "unknown"}`,
+			`Messages: ${this.options.agent.state.messages.length}`,
+			`Tools: ${toolsLine}`,
+			`Env: ${envSummary}`,
+			`Git: ${gitBranch} @ ${gitCommit} (dirty: ${gitDirty})`,
+		].join("\n");
+
+		const sections: string[] = [
+			infoSection,
+			`${chalk.bold("Git status")}\n${this.formatBlock(gitStatus)}`,
+		];
+		if (toolFailureSummary) {
+			sections.push(toolFailureSummary);
 		}
+		if (validatorSummary) {
+			sections.push(validatorSummary);
+		}
+		sections.push(attachments);
+		sections.push(
+			"Attach them in the bug report so we can replay the session.",
+		);
 
-${chalk.bold("Git snapshot")}
-${this.formatBlock(gitStatus)}
-  commit: ${gitCommit}
-
-${toolFailureSummary}
-
-${validatorSummary}
-
-${chalk.bold("Send these files:")}
-${filesToShare || chalk.dim("(session file will appear once persisted)")}
-
-Attach them in the bug report so we can replay the session.`;
+		const text = sections.filter(Boolean).join("\n\n");
 
 		const copied = this.copyTextToClipboard(text);
 		const copyNote = copied
@@ -83,64 +107,68 @@ Attach them in the bug report so we can replay the session.`;
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
 		const snapshot = this.collectHealthSnapshot();
-		const plain = `Composer feedback
-Version: ${version}
-Session: ${sessionId}
-Session file: ${sessionFile}
-Model: ${model}
-Tool failures: ${snapshot.toolFailures}
-
-What happened?
-
-What did you expect instead?
-
-Anything else we should know?`;
+		const plain = `Composer feedback\nVersion: ${version}\nSession: ${sessionId}\nSession file: ${sessionFile}\nModel: ${model}\nTool failures: ${snapshot.toolFailures}\n\nWhat happened?\n\nWhat did you expect instead?\n\nAnything else we should know?`;
 
 		const copied = this.copyTextToClipboard(plain);
-		const body = `${chalk.bold("Feedback template")}
-${plain}
-
-${
-	copied
-		? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.")
-		: chalk.dim("Copy failed — select and copy manually.")
-}`;
+		const body = `${chalk.bold("Feedback template")}\n${plain}\n\n${
+			copied
+				? chalk.dim("Copied to clipboard — paste this into Discord or GitHub.")
+				: chalk.dim("Copy failed — select and copy manually.")
+		}`;
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(body, 1, 0));
 		this.options.ui.requestRender();
 	}
 
-	private buildToolFailureSummary(): string {
+	private buildToolFailureSummary(): string | undefined {
 		const { recent, counts } =
 			this.options.toolStatusView.getToolFailureData(5);
 		if (recent.length === 0) {
-			return `${chalk.bold("Tool failures")}
-${chalk.dim("No tool failures captured yet.")}`;
+			return undefined;
 		}
-		const total = Array.from(counts.values()).reduce(
+		const aggregates: Array<{
+			tool: string;
+			error: string;
+			timestamp: string;
+			count: number;
+		}> = [];
+		const indexes = new Map<string, number>();
+		for (const entry of recent) {
+			const key = `${entry.tool}|${entry.error}`;
+			const position = indexes.get(key);
+			if (position === undefined) {
+				aggregates.push({
+					tool: entry.tool,
+					error: entry.error,
+					timestamp: entry.timestamp,
+					count: 1,
+				});
+				indexes.set(key, aggregates.length - 1);
+			} else {
+				aggregates[position].count += 1;
+			}
+		}
+		const lines = aggregates
+			.map((entry) => {
+				const countLabel =
+					entry.count > 1 ? chalk.dim(` (${entry.count}×)`) : "";
+				return `  - ${entry.timestamp}: ${entry.tool} → ${entry.error}${countLabel}`;
+			})
+			.join("\n");
+		const totalFailures = Array.from(counts.values()).reduce(
 			(sum, value) => sum + value,
 			0,
 		);
-		const lines = recent
-			.map((entry) => `  - ${entry.timestamp}: ${entry.tool} → ${entry.error}`)
-			.join("\n");
-		const totalsLine =
-			total > recent.length
-				? `\n  ${chalk.dim(
-						`Totals: ${Array.from(counts.entries())
-							.map(([tool, value]) => `${tool}×${value}`)
-							.join(", ")}`,
-					)}`
-				: "";
-		return `${chalk.bold(`Tool failures (last ${recent.length})`)}
-${lines}${totalsLine}`;
+		const header = chalk.bold(
+			`Tool failures (last ${recent.length}, total ${totalFailures})`,
+		);
+		return `${header}\n${lines}`;
 	}
 
-	private buildValidatorSummary(): string {
+	private buildValidatorSummary(): string | undefined {
 		const latest = this.findLatestValidatorDetails();
 		if (!latest) {
-			return `${chalk.bold("Validator runs")}
-${chalk.dim("No validator output captured in recent tool results.")}`;
+			return undefined;
 		}
 		const lines = latest.validators
 			.map((validator) => {
@@ -156,8 +184,7 @@ ${chalk.dim("No validator output captured in recent tool results.")}`;
 				return parts.join("\n");
 			})
 			.join("\n");
-		return `${chalk.bold(`Validator runs (from ${latest.toolName})`)}
-${lines}`;
+		return `${chalk.bold(`Validator runs (from ${latest.toolName})`)}\n${lines}`;
 	}
 
 	private findLatestValidatorDetails(): {
@@ -209,6 +236,62 @@ ${lines}`;
 			limited.push(`  … (+${lines.length - maxLines} more lines)`);
 		}
 		return limited.join("\n");
+	}
+
+	private buildAttachmentSection(
+		entries: Array<{ label: string; path: string }>,
+	): string {
+		if (entries.length === 0) {
+			return `${chalk.bold("Send these files")}
+${chalk.dim("Session artifacts will appear once persisted.")}`;
+		}
+		const bulletLines = entries
+			.map((entry) => `  • ${entry.label}:\n    ${entry.path}`)
+			.join("\n");
+		const tarCommand = this.buildTarCommand(entries.map((entry) => entry.path));
+		return `${chalk.bold("Send these files")}
+${bulletLines}
+
+${chalk.bold("Quick tar command")}
+${tarCommand}`;
+	}
+
+	private buildTarCommand(paths: string[]): string {
+		if (!paths.length) {
+			return chalk.dim("(no files to archive)");
+		}
+		const quoted = paths.map((value) => this.quotePath(value));
+		const firstLine = "tar czf composer-bug-report.tgz";
+		const subsequent = quoted.map((value) => `  ${value}`);
+		return [firstLine, ...subsequent].join(" \\\n");
+	}
+
+	private quotePath(value: string): string {
+		if (!value.includes(" ")) {
+			return value;
+		}
+		return `"${value}"`;
+	}
+
+	private buildEnvironmentSummary(): string {
+		const platform = process.platform;
+		const osName =
+			platform === "darwin"
+				? "macOS"
+				: platform === "win32"
+					? "Windows"
+					: "Linux";
+		const release = os.release();
+		const version = typeof os.version === "function" ? os.version() : "";
+		const parts = [`${osName} ${release}`];
+		if (version && !version.includes(release)) {
+			parts.push(version);
+		}
+		parts.push(`node ${process.version}`);
+		if (process.versions?.bun) {
+			parts.push(`bun ${process.versions.bun}`);
+		}
+		return parts.join(" · ");
 	}
 
 	private collectHealthSnapshot(): { toolFailures: number } {

@@ -374,6 +374,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			toolStatusView: this.toolStatusView,
 			gitView: this.gitView,
+			version: this.version,
 		});
 		this.infoView = new InfoView({
 			chatContainer: this.chatContainer,

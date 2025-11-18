@@ -459,6 +459,25 @@ Use /preview <file> to inspect diffs.`;
 		return status.stdout.trim() || "clean";
 	}
 
+	getWorkingTreeState(): { branch?: string; dirty: boolean } | undefined {
+		const status = this.runGitCommand(["status", "-sb"]);
+		if (!status.ok) {
+			return undefined;
+		}
+		const lines = status.stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0);
+		if (lines.length === 0) {
+			return { dirty: false };
+		}
+		const branch = lines[0]?.startsWith("##")
+			? lines[0].slice(2).trim()
+			: undefined;
+		const dirty = lines.length > 1;
+		return { branch, dirty };
+	}
+
 	getCurrentCommit(): string | undefined {
 		const result = this.runGitCommand(["rev-parse", "--short", "HEAD"]);
 		if (!result.ok) {
