@@ -334,6 +334,7 @@ export interface StreamOptions {
 	signal?: AbortSignal;
 	apiKey?: string;
 	headers?: Record<string, string>;
+	authType?: "api-key" | "chatgpt";
 }
 
 export interface PromptCacheControl {

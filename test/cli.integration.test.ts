@@ -106,11 +106,26 @@ const fakeRegisteredModels = [
 		source: "custom" as const,
 		isLocal: true,
 	},
+	{
+		id: "gpt-test",
+		name: "GPT Test",
+		api: "openai-responses",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1/responses",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200000,
+		maxTokens: 16384,
+		providerName: "OpenAI",
+		source: "builtin" as const,
+		isLocal: false,
+	},
 ];
 
 vi.mock("../src/models/registry.js", () => ({
 	getRegisteredModels: () => fakeRegisteredModels,
-	getSupportedProviders: () => ["anthropic", "openrouter"],
+	getSupportedProviders: () => ["anthropic", "openrouter", "openai"],
 	getCustomProviderMetadata: () => undefined,
 	getCustomConfigPath: () => "/tmp/composer.json",
 	getFactoryDefaultModelSelection: () => ({
@@ -128,6 +143,8 @@ vi.mock("../src/models/registry.js", () => ({
 describe("CLI integration", () => {
 	const originalEnv = process.env.ANTHROPIC_API_KEY;
 	const originalAgentDir = process.env.COMPOSER_AGENT_DIR;
+	const originalOpenAI = process.env.OPENAI_API_KEY;
+	const originalCodex = process.env.CODEX_API_KEY;
 	const originalLog = console.log;
 	const originalError = console.error;
 	let output: string[];
@@ -137,6 +154,10 @@ describe("CLI integration", () => {
 		tempAgentDir = mkdtempSync(join(tmpdir(), "composer-cli-test-"));
 		process.env.COMPOSER_AGENT_DIR = tempAgentDir;
 		process.env.ANTHROPIC_API_KEY = "test-key";
+		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
+		delete process.env.OPENAI_API_KEY;
+		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
+		delete process.env.CODEX_API_KEY;
 		output = [];
 		console.log = (...args: unknown[]) => {
 			output.push(args.map((arg) => String(arg)).join(" "));
@@ -150,9 +171,22 @@ describe("CLI integration", () => {
 		console.log = originalLog;
 		console.error = originalError;
 		if (originalEnv === undefined) {
-			process.env.ANTHROPIC_API_KEY = undefined;
+			// biome-ignore lint/performance/noDelete: restoring env var state
+			delete process.env.ANTHROPIC_API_KEY;
 		} else {
 			process.env.ANTHROPIC_API_KEY = originalEnv;
+		}
+		if (originalOpenAI === undefined) {
+			// biome-ignore lint/performance/noDelete: restoring env var state
+			delete process.env.OPENAI_API_KEY;
+		} else {
+			process.env.OPENAI_API_KEY = originalOpenAI;
+		}
+		if (originalCodex === undefined) {
+			// biome-ignore lint/performance/noDelete: restoring env var state
+			delete process.env.CODEX_API_KEY;
+		} else {
+			process.env.CODEX_API_KEY = originalCodex;
 		}
 		if (originalAgentDir === undefined) {
 			process.env.COMPOSER_AGENT_DIR = undefined;
@@ -249,5 +283,44 @@ describe("CLI integration", () => {
 		output = [];
 		await main(["exec", "--last", "Follow up run"]);
 		expect(output.join("\n")).toContain("Echo: Follow up run");
+	});
+
+	it("uses chatgpt auth when Codex token is provided", async () => {
+		await main([
+			"--provider",
+			"openai",
+			"--model",
+			"gpt-test",
+			"--auth",
+			"chatgpt",
+			"--codex-api-key",
+			"codex-token",
+			"hello",
+		]);
+		expect(output.join("\n")).toContain("Echo: hello");
+	});
+
+	it("fails when chatgpt auth mode lacks a Codex token", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+			code?: number,
+		) => {
+			exitCodes.push(code ?? 0);
+			throw new Error("exit");
+		}) as never);
+		await expect(
+			main([
+				"--provider",
+				"openai",
+				"--model",
+				"gpt-test",
+				"--auth",
+				"chatgpt",
+				"hello",
+			]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain("CODEX_API_KEY");
+		exitSpy.mockRestore();
 	});
 });

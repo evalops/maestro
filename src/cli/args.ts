@@ -5,6 +5,7 @@ export interface Args {
 	model?: string;
 	modelsFile?: string;
 	apiKey?: string;
+	codexApiKey?: string;
 	systemPrompt?: string;
 	continue?: boolean;
 	resume?: boolean;
@@ -17,6 +18,7 @@ export interface Args {
 	subcommand?: string;
 	approvalMode?: "auto" | "prompt" | "fail";
 	force?: boolean;
+	authMode?: "auto" | "api-key" | "chatgpt";
 	execJson?: boolean;
 	execFullAuto?: boolean;
 	execReadOnly?: boolean;
@@ -66,6 +68,8 @@ export function parseArgs(args: string[]): Args {
 			result.modelsFile = args[++i];
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
+		} else if (arg === "--codex-api-key" && i + 1 < args.length) {
+			result.codexApiKey = args[++i];
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {
 			result.systemPrompt = args[++i];
 		} else if (arg === "--no-session") {
@@ -78,6 +82,11 @@ export function parseArgs(args: string[]): Args {
 			const mode = args[++i];
 			if (mode === "auto" || mode === "prompt" || mode === "fail") {
 				result.approvalMode = mode;
+			}
+		} else if (arg === "--auth" && i + 1 < args.length) {
+			const value = args[++i];
+			if (value === "auto" || value === "api-key" || value === "chatgpt") {
+				result.authMode = value;
 			}
 		} else if (arg === "--force") {
 			result.force = true;

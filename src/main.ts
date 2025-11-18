@@ -34,8 +34,12 @@ import type { RegisteredModel } from "./models/registry.js";
 import {
 	getEnvVarsForProvider,
 	isKnownProvider,
-	lookupApiKey,
 } from "./providers/api-keys.js";
+import {
+	type AuthCredential,
+	type AuthMode,
+	createAuthResolver,
+} from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
@@ -162,6 +166,76 @@ export async function main(args: string[]) {
 	loadEnv();
 
 	const parsed = parseArgs(args);
+
+	const authMode: AuthMode = parsed.authMode ?? "auto";
+	const codexCliToken = parsed.codexApiKey;
+	const codexEnvToken = process.env.CODEX_API_KEY;
+	const effectiveCodexToken = codexCliToken ?? codexEnvToken;
+	const authResolver = createAuthResolver({
+		mode: authMode,
+		explicitApiKey: parsed.apiKey,
+		codexApiKey: effectiveCodexToken,
+		codexSource: codexCliToken ? "flag" : codexEnvToken ? "env" : undefined,
+	});
+
+	type AuthLine = { plain: string; colored: string };
+	const buildMissingAuthLines = (providerName: string): AuthLine[] => {
+		const lines: AuthLine[] = [];
+		const push = (plain: string, colored?: string) => {
+			lines.push({ plain, colored: colored ?? plain });
+		};
+		push(
+			`Error: No credentials found for provider "${providerName}"`,
+			chalk.red(`Error: No credentials found for provider "${providerName}"`),
+		);
+		if (authMode !== "api-key") {
+			push(
+				"Set CODEX_API_KEY (or use --codex-api-key) or switch to --auth api-key to rely on provider API keys.",
+				chalk.dim(
+					"Set CODEX_API_KEY (or use --codex-api-key) or switch to --auth api-key to rely on provider API keys.",
+				),
+			);
+		}
+		const envVars = getEnvVarsForProvider(providerName);
+		if (envVars.length) {
+			push(
+				`Set ${envVars.join(" or ")} or provide --api-key for ${providerName}.`,
+				chalk.dim(
+					`Set ${envVars.join(" or ")} or provide --api-key for ${providerName}.`,
+				),
+			);
+		} else {
+			const customMeta = getCustomProviderMetadata(providerName);
+			if (customMeta?.apiKeyEnv) {
+				push(
+					`Set ${customMeta.apiKeyEnv} environment variable or provide --api-key for ${providerName}.`,
+					chalk.dim(
+						`Set ${customMeta.apiKeyEnv} environment variable or provide --api-key for ${providerName}.`,
+					),
+				);
+			}
+		}
+		return lines;
+	};
+
+	const requireCredential = (
+		providerName: string,
+		fatal: boolean,
+	): AuthCredential => {
+		const credential = authResolver(providerName);
+		if (credential) {
+			return credential;
+		}
+		const lines = buildMissingAuthLines(providerName);
+		if (fatal) {
+			for (const line of lines) {
+				console.error(line.colored);
+			}
+			process.exit(1);
+		}
+		const plain = lines.map((line) => line.plain).join("\n");
+		throw new Error(plain);
+	};
 
 	if (parsed.command === "exec") {
 		if (parsed.execFullAuto && parsed.execReadOnly) {
@@ -468,38 +542,7 @@ export async function main(args: string[]) {
 		);
 		process.exit(1);
 	}
-	// Helper function to get API key for a provider
-	const getApiKeyForProvider = (providerName: string): string | undefined => {
-		const result = lookupApiKey(providerName, parsed.apiKey);
-		return result.key;
-	};
-
-	// Get initial API key
-	const initialApiKey = getApiKeyForProvider(provider);
-	if (!initialApiKey) {
-		console.error(
-			chalk.red(`Error: No API key found for provider "${provider}"`),
-		);
-		const envVars = getEnvVarsForProvider(provider);
-		if (envVars.length) {
-			const envVarList = envVars.join(" or ");
-			console.error(
-				chalk.dim(
-					`Set ${envVarList} environment variable or use --api-key flag`,
-				),
-			);
-		} else {
-			const customMeta = getCustomProviderMetadata(provider);
-			if (customMeta?.apiKeyEnv) {
-				console.error(
-					chalk.dim(
-						`Set ${customMeta.apiKeyEnv} environment variable or provide --api-key for ${provider}`,
-					),
-				);
-			}
-		}
-		process.exit(1);
-	}
+	requireCredential(provider, true);
 
 	// Create agent
 	const model = resolveModel(provider, modelId);
@@ -535,17 +578,7 @@ export async function main(args: string[]) {
 			tools: codingTools,
 		},
 		transport: new ProviderTransport({
-			// Dynamic API key lookup based on current model's provider
-			getApiKey: async () => {
-				const currentProvider = agent.state.model.provider;
-				const key = getApiKeyForProvider(currentProvider);
-				if (!key) {
-					throw new Error(
-						`No API key found for provider "${currentProvider}". Please set the appropriate environment variable.`,
-					);
-				}
-				return key;
-			},
+			getAuthContext: (providerName) => requireCredential(providerName, false),
 			approvalService,
 		}),
 	});

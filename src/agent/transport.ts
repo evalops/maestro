@@ -1,3 +1,4 @@
+import type { AuthCredential } from "../providers/auth.js";
 import { defaultActionFirewall } from "../safety/action-firewall.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import type { ActionApprovalService } from "./action-approval.js";
@@ -29,6 +30,9 @@ export interface ProviderTransportOptions {
 	getApiKey?: (
 		provider: string,
 	) => Promise<string | undefined> | string | undefined;
+	getAuthContext?: (
+		provider: string,
+	) => AuthCredential | undefined | Promise<AuthCredential | undefined>;
 	corsProxyUrl?: string;
 	approvalService?: ActionApprovalService;
 	maxConcurrentToolExecutions?: number;
@@ -71,14 +75,26 @@ export class ProviderTransport implements AgentTransport {
 		let model = cfg.model;
 		const firewall = defaultActionFirewall;
 
-		let apiKey: string | undefined;
-		if (this.options.getApiKey) {
-			apiKey = await this.options.getApiKey(model.provider);
+		let credential: AuthCredential | undefined;
+		if (this.options.getAuthContext) {
+			credential = await this.options.getAuthContext(model.provider);
+		}
+		if (!credential && this.options.getApiKey) {
+			const fallbackKey = await this.options.getApiKey(model.provider);
+			if (fallbackKey) {
+				credential = {
+					provider: model.provider,
+					token: fallbackKey,
+					type: "api-key",
+					source: "env",
+				};
+			}
 		}
 
+		const apiKey = credential?.token;
 		if (!apiKey) {
 			throw new Error(
-				`No API key found for provider "${model.provider}". Please configure getApiKey.`,
+				`No credentials found for provider "${model.provider}". Provide an API key or configure getAuthContext.`,
 			);
 		}
 
@@ -101,6 +117,7 @@ export class ProviderTransport implements AgentTransport {
 			apiKey,
 			maxTokens: model.maxTokens,
 			signal,
+			authType: credential?.type ?? "api-key",
 		};
 
 		let hasMoreToolCalls = true;

@@ -11,8 +11,10 @@ export function printHelp(version: string) {
 		"--provider <name>       Provider name (default: anthropic)",
 		"--model <id>            Model ID (default: claude-sonnet-4-5)",
 		"--api-key <key>         API key (defaults to env vars)",
+		"--codex-api-key <key>   Codex/ChatGPT API token (defaults to CODEX_API_KEY)",
 		"--system-prompt <text>  System prompt (default: coding assistant prompt)",
 		"--mode <mode>           Output mode: text (default), json, or rpc",
+		"--auth <mode>           Credential mode: auto (default), api-key, chatgpt",
 		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
 		"--continue, -c          Continue previous session",
 		"--resume, -r            Select a session to resume",
@@ -42,6 +44,7 @@ export function printHelp(version: string) {
 		`  GEMINI_API_KEY          - Google Gemini API key
   OPENAI_API_KEY          - OpenAI API key
   ANTHROPIC_API_KEY       - Anthropic API key
+  CODEX_API_KEY           - Codex/ChatGPT API token for --auth chatgpt
   COMPOSER_AGENT_DIR      - Session storage directory (default: ~/.composer/agent)
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,
 	)}`;
