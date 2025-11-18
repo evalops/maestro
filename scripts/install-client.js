@@ -8,7 +8,22 @@ const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 process.chdir(path.resolve(projectRoot, ".."));
 
 const args = new Set(process.argv.slice(2));
-const skipLink = args.has("--no-link");
+if (args.has("--no-link") && args.has("--link")) {
+	console.error("Cannot use --no-link and --link together.");
+	process.exit(1);
+}
+
+const isNixEnv = Boolean(
+	process.env.NIX_REMOTE ||
+		process.env.NIX_PROFILES ||
+		process.env.NIX_USER_PROFILE_DIR ||
+		process.env.IN_NIX_SHELL,
+);
+
+const explicitSkip = args.has("--no-link");
+const explicitForce = args.has("--link");
+const shouldLink = explicitForce || (!explicitSkip && !isNixEnv);
+
 const steps = [
 	{
 		title: "Installing dependencies",
@@ -22,12 +37,26 @@ const steps = [
 	},
 ];
 
-if (!skipLink) {
+if (shouldLink) {
 	steps.push({
 		title: "Linking composer globally (npm link)",
 		command: "npm",
 		args: ["link"],
 	});
+}
+
+if (isNixEnv && !explicitForce && !explicitSkip) {
+	console.log(
+		"Detected Nix-managed environment (.dotfiles). Skipping npm link. Use --link to force linking.",
+	);
+}
+
+if (explicitSkip) {
+	console.log("Skipping npm link as requested (--no-link).");
+}
+
+if (explicitForce && isNixEnv) {
+	console.log("Forcing npm link even though a Nix environment was detected.");
 }
 
 for (const step of steps) {
@@ -42,8 +71,20 @@ for (const step of steps) {
 	}
 }
 
-const completionMessage = skipLink
-	? "Composer built locally. Run 'npm link' to expose the CLI globally when ready."
-	: "Composer linked globally. Run 'composer --help' to verify installation.";
+const completionMessage = shouldLink
+	? "Composer linked globally. Run 'composer --help' to verify installation."
+	: "Composer built locally. Run 'npm link' to expose the CLI globally when ready.";
+
+console.log(`\n✅ ${completionMessage}`);
+	});
+	if (result.status !== 0) {
+		console.error(`\n✖ Step failed: ${step.title}`);
+		process.exit(result.status ?? 1);
+	}
+}
+
+const completionMessage = shouldLink
+	? "Composer linked globally. Run 'composer --help' to verify installation."
+	: "Composer built locally. Run 'npm link' to expose the CLI globally when ready.";
 
 console.log(`\n✅ ${completionMessage}`);
