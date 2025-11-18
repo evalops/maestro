@@ -1,8 +1,8 @@
 import chalk from "chalk";
 import type { AgentState, AssistantMessage, Usage } from "../agent/types.js";
 import {
+	badge,
 	brand,
-	contextualBadge,
 	metricStat,
 	themePalette,
 	separator as themedSeparator,
@@ -15,7 +15,9 @@ export interface FooterStats {
 	totalCacheRead: number;
 	totalCacheWrite: number;
 	totalCost: number;
-	contextPercent: string;
+	contextTokens: number;
+	contextWindow: number;
+	contextPercent: number;
 	lastAssistant?: AssistantMessage;
 }
 
@@ -50,12 +52,13 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 	// Calculate context percentage: last turn's input (fresh + cached) + all accumulated outputs
 	// This represents the actual conversation size, not the sum of all API calls
 	const lastUsage = normalizeUsage(lastAssistant?.usage);
-	const contextTokens = lastUsage.input + lastUsage.cacheRead + totalOutput;
-	const contextWindow = state.model.contextWindow;
+	const contextTokens = Math.max(
+		0,
+		lastUsage.input + lastUsage.cacheRead + totalOutput,
+	);
+	const contextWindow = state.model.contextWindow ?? 0;
 	const contextPercent =
-		contextWindow > 0
-			? ((contextTokens / contextWindow) * 100).toFixed(1)
-			: "0.0";
+		contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
 
 	return {
 		totalInput,
@@ -63,6 +66,8 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 		totalCacheRead,
 		totalCacheWrite,
 		totalCost,
+		contextTokens,
+		contextWindow,
 		contextPercent,
 		lastAssistant,
 	};
@@ -167,10 +172,22 @@ export function buildStatsLine(
 				.bold(stats.totalCost.toFixed(3))}`,
 		);
 
-	const contextValue = Number.parseFloat(stats.contextPercent);
-	statsParts.push(
-		contextualBadge("ctx", contextValue, { warn: 80, danger: 90 }),
-	);
+	const contextValue = Number.isFinite(stats.contextPercent)
+		? stats.contextPercent
+		: 0;
+	const warnThreshold = 75;
+	const dangerThreshold = 90;
+	const variant =
+		contextValue >= dangerThreshold
+			? "danger"
+			: contextValue >= warnThreshold
+				? "warn"
+				: "info";
+	const tokensLabel = stats.contextWindow
+		? `${formatTokenCount(stats.contextTokens)}/${formatTokenCount(stats.contextWindow)}`
+		: formatTokenCount(stats.contextTokens);
+	const contextLabel = `ctx ${tokensLabel} (${contextValue.toFixed(1)}%)`;
+	statsParts.push(badge(contextLabel, undefined, variant));
 
 	const separator = themedSeparator();
 	const statsLeft = statsParts.join(separator);

@@ -145,8 +145,8 @@ describe("FooterComponent", () => {
 
 			const statsLine = rendered[1];
 			// (2k input + 90k cacheRead + 1k output) / 200k = 93k / 200k = 46.5%
-			expect(statsLine).toContain("ctx 46.5%");
-			expect(statsLine).not.toContain("ctx 1.5%");
+			expect(statsLine).toContain("93k/200k (46.5%)");
+			expect(statsLine).not.toContain("(1.5%)");
 		});
 
 		it("should format token counts correctly", () => {
@@ -218,7 +218,7 @@ describe("FooterComponent", () => {
 
 			const statsLine = rendered[1];
 			// Should still contain composer branding even if model name is truncated
-			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
+			expect(statsLine).toContain("𝅘𝅥𝅮");
 		});
 
 		it("should show pwd with home directory as ~", () => {

@@ -28,12 +28,12 @@ class SessionFileWriter {
 	}
 
 	private static registerBeforeExit(): void {
-		if (this.beforeExitRegistered) {
+		if (SessionFileWriter.beforeExitRegistered) {
 			return;
 		}
-		this.beforeExitRegistered = true;
+		SessionFileWriter.beforeExitRegistered = true;
 		process.once("beforeExit", () => {
-			for (const writer of this.writers) {
+			for (const writer of SessionFileWriter.writers) {
 				try {
 					writer.flushSync();
 				} catch (error) {

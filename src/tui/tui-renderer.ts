@@ -52,6 +52,7 @@ import { DiagnosticsView } from "./diagnostics-view.js";
 import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { FileSearchView } from "./file-search-view.js";
+import { calculateFooterStats } from "./footer-utils.js";
 import { FooterComponent } from "./footer.js";
 import { GitView } from "./git-view.js";
 import { ImportExportView } from "./import-view.js";
@@ -149,6 +150,8 @@ export class TuiRenderer {
 	private readonly idleFooterHint =
 		"Try /help for commands or /tools for status";
 	private readonly workingFooterHint = "Working… press esc to interrupt";
+	private readonly autoCompactThreshold = 85;
+	private readonly autoCompactMinimumMessages = 10;
 	private planHint: string | null = null;
 	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
@@ -193,6 +196,7 @@ export class TuiRenderer {
 	private approvalService: ActionApprovalService;
 	private interruptArmed = false;
 	private interruptTimeout: NodeJS.Timeout | null = null;
+	private compactionInProgress = false;
 
 	constructor(
 		agent: Agent,
@@ -575,6 +579,33 @@ export class TuiRenderer {
 		);
 	}
 
+	public async ensureContextBudgetBeforePrompt(): Promise<void> {
+		if (this.compactionInProgress) {
+			return;
+		}
+		const state = this.agent.state;
+		if (!state?.model?.contextWindow) {
+			return;
+		}
+		if (state.messages.length < this.autoCompactMinimumMessages) {
+			return;
+		}
+		const stats = calculateFooterStats(state);
+		if (
+			!stats.contextWindow ||
+			stats.contextPercent < this.autoCompactThreshold
+		) {
+			return;
+		}
+		const percentLabel = stats.contextPercent.toFixed(1);
+		this.notificationView.showInfo(
+			`Context ${percentLabel}% full – compacting history before sending prompt…`,
+		);
+		await this.runCompactionTask(() =>
+			this.conversationCompactor.compactHistory(),
+		);
+	}
+
 	async init(): Promise<void> {
 		if (this.isInitialized) return;
 
@@ -705,8 +736,27 @@ export class TuiRenderer {
 		}
 	}
 
+	private async runCompactionTask(work: () => Promise<void>): Promise<boolean> {
+		if (this.compactionInProgress) {
+			return false;
+		}
+		this.compactionInProgress = true;
+		try {
+			await work();
+			return true;
+		} finally {
+			this.compactionInProgress = false;
+		}
+	}
+
 	private async handleCompactCommand(): Promise<void> {
-		await this.conversationCompactor.compactHistory();
+		if (this.compactionInProgress) {
+			this.notificationView.showInfo("Already compacting history…");
+			return;
+		}
+		await this.runCompactionTask(() =>
+			this.conversationCompactor.compactHistory(),
+		);
 	}
 
 	private handleReportCommand(context: CommandExecutionContext): void {

@@ -299,7 +299,9 @@ export async function* streamAnthropic(
 
 	if (!response.ok) {
 		const errorText = await response.text();
-		throw new Error(`Anthropic API error (${response.status}): ${errorText}`);
+		throw new Error(
+			buildAnthropicErrorMessage(response.status, errorText, model),
+		);
 	}
 
 	if (!response.body) {
@@ -509,4 +511,38 @@ export async function* streamAnthropic(
 			throw error;
 		}
 	}
+}
+
+function buildAnthropicErrorMessage(
+	status: number,
+	rawText: string,
+	model: Model<"anthropic-messages">,
+): string {
+	try {
+		const payload = JSON.parse(rawText);
+		const requestId = payload?.request_id ?? payload?.error?.request_id;
+		const message = payload?.error?.message ?? payload?.message;
+		const type = payload?.error?.type;
+		if (
+			type === "invalid_request_error" &&
+			typeof message === "string" &&
+			/(prompt is too long|context (?:length|window))/i.test(message)
+		) {
+			const formatter = new Intl.NumberFormat("en-US");
+			const limitLabel = model.contextWindow
+				? `${formatter.format(model.contextWindow)} tokens`
+				: "its context window";
+			let friendly = `Anthropic rejected this request because the prompt exceeded ${limitLabel}. Use /compact to summarize prior messages or remove large attachments, then retry.`;
+			if (requestId) {
+				friendly += ` (request ${requestId})`;
+			}
+			return friendly;
+		}
+		if (typeof message === "string") {
+			return requestId ? `${message} (request ${requestId})` : message;
+		}
+	} catch {
+		// ignore parse failures
+	}
+	return `Anthropic API error (${status}): ${rawText}`;
 }

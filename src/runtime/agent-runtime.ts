@@ -16,6 +16,9 @@ export class AgentRuntimeController {
 	constructor(private readonly options: AgentRuntimeControllerOptions) {
 		this.promptQueue = new PromptQueue(
 			async (text) => {
+				if (this.renderer?.ensureContextBudgetBeforePrompt) {
+					await this.renderer.ensureContextBudgetBeforePrompt();
+				}
 				await this.options.agent.prompt(text);
 			},
 			(error) => {

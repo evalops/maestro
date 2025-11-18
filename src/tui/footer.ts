@@ -41,10 +41,10 @@ export class FooterComponent {
 		const statsLine = buildStatsLine(stats, width, this.state.model.id);
 
 		const lines = [pathLine, chalk.gray(statsLine)];
-		const contextValue = Number.parseFloat(stats.contextPercent);
+		const contextValue = stats.contextPercent;
 		const highContextHint =
-			contextValue >= 80
-				? "Context nearly full – consider /compact or /export"
+			stats.contextWindow > 0 && contextValue >= 70
+				? `Context ${contextValue.toFixed(1)}% – run /compact to summarize`
 				: null;
 		const hintSource = highContextHint || this.statusHint;
 		if (hintSource) {

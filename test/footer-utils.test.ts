@@ -56,12 +56,16 @@ describe("calculateFooterStats", () => {
 		expect(stats.totalInput).toBe(0);
 		expect(stats.totalOutput).toBe(0);
 		expect(stats.totalCost).toBe(0);
-		expect(stats.contextPercent).toBe("0.0");
+		expect(stats.contextTokens).toBe(0);
+		expect(stats.contextWindow).toBe(1000);
+		expect(stats.contextPercent).toBe(0);
 	});
 
 	it("sums usage when present", () => {
 		const stats = calculateFooterStats(baseState([baseAssistant()]));
 		expect(stats.totalInput).toBe(10);
 		expect(stats.totalOutput).toBe(5);
+		expect(stats.contextTokens).toBe(15);
+		expect(stats.contextPercent).toBeCloseTo(1.5);
 	});
 });
