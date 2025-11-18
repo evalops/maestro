@@ -32,6 +32,12 @@ const batchSchema = Type.Object({
 			default: 30_000,
 		}),
 	),
+	mode: Type.Optional(
+		Type.Union([Type.Literal("parallel"), Type.Literal("serial")], {
+			description: "Execution mode (parallel or serial)",
+			default: "parallel",
+		}),
+	),
 });
 
 interface BatchToolContext {
@@ -75,14 +81,21 @@ Good Use Cases:
 - Multiple search/list operations
 - Parallel bash introspection commands
 
-Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
+Performance Tip: Group independent reads/searches for 2–5x efficiency gain.
+
+Set mode="serial" when call ordering matters.`,
 		schema: batchSchema,
-		async execute(_toolCallId, { toolCalls, toolTimeoutMs }, signal) {
+		async execute(
+			_toolCallId,
+			{ toolCalls, toolTimeoutMs, mode = "parallel" },
+			signal,
+		) {
 			// Validate all tool calls before execution
 			const validationErrors: string[] = [];
 			const filteredToolCalls = toolCalls.slice(0, 10);
 			const discardedCount = toolCalls.length - filteredToolCalls.length;
 			const timeoutPerCall = toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
+			const executionMode = mode === "serial" ? "serial" : "parallel";
 
 			for (const call of filteredToolCalls) {
 				if (DISALLOWED_TOOLS.has(call.tool)) {
@@ -172,11 +185,26 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 				}
 			};
 
-			const results = await Promise.all(
-				filteredToolCalls.map((call, index) => executeCall(call, index)),
-			);
+			const results: Array<Awaited<ReturnType<typeof executeCall>>> = [];
+			if (executionMode === "serial") {
+				for (const [index, call] of filteredToolCalls.entries()) {
+					if (signal?.aborted) {
+						break;
+					}
+					results.push(await executeCall(call, index));
+				}
+			} else {
+				const parallelResults = await Promise.all(
+					filteredToolCalls.map((call, index) => executeCall(call, index)),
+				);
+				results.push(...parallelResults);
+			}
 
 			// Build output summary
+			const previewInfos = results.map((r) =>
+				r.success ? buildPreview(r.result) : undefined,
+			);
+
 			const successfulCalls = results.filter((r) => r.success).length;
 			const failedCalls = results.length - successfulCalls;
 
@@ -205,23 +233,15 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 			// Add individual results
 			outputLines.push("", "Results:");
 
-			for (const result of results) {
+			for (const [index, result] of results.entries()) {
 				if (result.success) {
-					const textContent = result.result.content
-						.filter((c) => c.type === "text")
-						.map((c) => c.text)
-						.join("\n");
-					const lines = textContent.split("\n").filter((line) => line.length);
-					const previewLines = lines.slice(0, 5);
-					const preview =
-						lines.length > previewLines.length
-							? `${previewLines.join("\n")}\n... (${lines.length - previewLines.length} more lines)`
-							: previewLines.join("\n");
+					const previewInfo = previewInfos[index];
+					const previewText = previewInfo?.previewText ?? "(no text output)";
 
 					outputLines.push(
 						"",
 						`✓ ${result.tool} (${result.duration}ms)`,
-						preview
+						previewText
 							.split("\n")
 							.map((line) => `  ${line}`)
 							.join("\n"),
@@ -243,16 +263,17 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 					failed: failedCalls,
 					discarded: discardedCount,
 					tools: filteredToolCalls.map((c) => c.tool),
-					results: results.map((r, idx) => ({
-						tool: r.tool,
-						success: r.success,
-						duration: r.duration,
-						error: r.success ? undefined : r.error,
-						summary: r.success
-							? textSummary(filteredToolCalls[idx], r.result)
-							: undefined,
-						details: r.success ? r.result.details : undefined,
-					})),
+					results: results.map((r, index) => {
+						const preview = previewInfos[index];
+						return {
+							tool: r.tool,
+							success: r.success,
+							duration: r.duration,
+							error: r.success ? undefined : r.error,
+							summary: r.success ? preview?.summaryText : undefined,
+							details: r.success ? r.result.details : undefined,
+						};
+					}),
 				},
 			};
 		},
@@ -265,18 +286,44 @@ Performance Tip: Group independent reads/searches for 2–5x efficiency gain.`,
 	return batchTool;
 }
 
-function textSummary(
-	_call: { tool: string; parameters: Record<string, unknown> },
-	result: AgentToolResult<any>,
-): string | undefined {
-	const content = result.content
+function extractSummaryFromDetails(details: unknown): string | undefined {
+	if (!details || typeof details !== "object") {
+		return undefined;
+	}
+	const summary = (details as Record<string, unknown>).summary;
+	if (typeof summary === "string" && summary.trim().length > 0) {
+		return summary.trim();
+	}
+	return undefined;
+}
+
+function buildPreview(result: AgentToolResult<any>): {
+	previewText: string;
+	summaryText?: string;
+} {
+	const summaryFromDetails = extractSummaryFromDetails(result.details);
+	if (summaryFromDetails) {
+		return { previewText: summaryFromDetails, summaryText: summaryFromDetails };
+	}
+	const textContent = result.content
 		.filter((c) => c.type === "text")
 		.map((c) => c.text)
 		.join("\n")
 		.trim();
-	if (!content) return undefined;
-	const lines = content.split(/\r?\n/).slice(0, 5);
-	return lines.join("\n");
+	if (!textContent) {
+		return { previewText: "(no text output)", summaryText: undefined };
+	}
+	const lines = textContent.split(/\r?\n/).filter((line) => line.length);
+	const previewLines = lines.slice(0, 5);
+	const basePreview = previewLines.join("\n") || textContent;
+	const previewText =
+		lines.length > previewLines.length
+			? `${basePreview}\n... (${lines.length - previewLines.length} more lines)`
+			: basePreview;
+	return {
+		previewText,
+		summaryText: basePreview,
+	};
 }
 
 export const batchTool = createBatchTool([]);

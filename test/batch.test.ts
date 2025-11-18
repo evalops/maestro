@@ -74,6 +74,17 @@ const mockHangingTool: AgentTool<any, any> = {
 		}),
 };
 
+const mockSummaryTool: AgentTool<any, any> = {
+	name: "mock-summary",
+	label: "mock-summary",
+	description: "A mock tool that returns a summary in details",
+	parameters: {} as any,
+	execute: async (_toolCallId, params) => ({
+		content: [{ type: "text", text: `Verbose output for ${params.id}` }],
+		details: { summary: `Summary for ${params.id}` },
+	}),
+};
+
 describe("batch tool", () => {
 	let testDir: string;
 
@@ -144,6 +155,37 @@ describe("batch tool", () => {
 				expect(getTextOutput(result)).toContain(
 					"All 1 tools executed successfully",
 				);
+			});
+
+			it("supports serial mode for ordered execution", async () => {
+				const events: string[] = [];
+				const mockOrderTool: AgentTool<any, any> = {
+					name: "mock-order",
+					label: "mock-order",
+					description: "Records start/finish events",
+					parameters: {} as any,
+					execute: async (_toolCallId, params) => {
+						events.push(`start-${params.id}`);
+						await new Promise((resolve) =>
+							setTimeout(resolve, params.delay ?? 0),
+						);
+						events.push(`finish-${params.id}`);
+						return {
+							content: [{ type: "text", text: `done ${params.id}` }],
+						};
+					},
+				};
+
+				const batchTool = createBatchTool([mockOrderTool]);
+				await batchTool.execute("batch-call-serial", {
+					mode: "serial",
+					toolCalls: [
+						{ tool: "mock-order", parameters: { id: 1, delay: 10 } },
+						{ tool: "mock-order", parameters: { id: 2, delay: 0 } },
+					],
+				});
+
+				expect(events).toEqual(["start-1", "finish-1", "start-2", "finish-2"]);
 			});
 		});
 
@@ -464,6 +506,18 @@ describe("batch tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).not.toContain("Keep using the batch tool");
+		});
+
+		it("uses summary metadata when provided", async () => {
+			const batchTool = createBatchTool([mockSummaryTool]);
+
+			const result = await batchTool.execute("batch-call-summary", {
+				toolCalls: [{ tool: "mock-summary", parameters: { id: "alpha" } }],
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Summary for alpha");
+			expect(result.details?.results?.[0]?.summary).toBe("Summary for alpha");
 		});
 	});
 
