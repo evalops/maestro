@@ -1,11 +1,14 @@
 import { Type } from "@sinclair/typebox";
+import { normalizeCostDollars } from "./exa-client.js";
 import {
+	ExaContextOptionSchema,
+	ExaHighlightsOptionSchema,
+	ExaSummaryOptionSchema,
+	ExaTextOptionSchema,
 	buildContentsOptions,
-	callExa,
-	normalizeCostDollars,
-} from "./exa-client.js";
+} from "./exa-contents.js";
 import type { ExaSearchResponse } from "./exa-types.js";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createExaTool } from "./exa-tool.js";
 
 const websearchSchema = Type.Object({
 	query: Type.String({
@@ -67,83 +70,10 @@ const websearchSchema = Type.Object({
 			maxItems: 50,
 		}),
 	),
-	text: Type.Optional(
-		Type.Boolean({
-			description: "Return full page text content in markdown format",
-			default: true,
-		}),
-	),
-	summary: Type.Optional(
-		Type.Union(
-			[
-				Type.Boolean({
-					description: "Return AI-generated summary of each result",
-				}),
-				Type.Object({
-					target: Type.Optional(
-						Type.String({
-							description:
-								"Hint the summary for a specific target (docs, news, finance, etc.)",
-						}),
-					),
-					model: Type.Optional(
-						Type.String({
-							description: "Override Exa summary model (e.g., exa:claude-3)",
-						}),
-					),
-					includeQuotes: Type.Optional(
-						Type.Boolean({
-							description: "Include quoted sentences in the summary",
-							default: false,
-						}),
-					),
-				}),
-			],
-			{
-				description:
-					"Return AI-generated summary (boolean) or customize via target/model",
-				default: false,
-			},
-		),
-	),
-	highlights: Type.Optional(
-		Type.Union(
-			[
-				Type.Boolean({
-					description: "Return relevant highlights/excerpts",
-				}),
-				Type.Object({
-					numSentences: Type.Optional(
-						Type.Integer({
-							description: "Number of sentences per highlight",
-							minimum: 1,
-							maximum: 10,
-							default: 3,
-						}),
-					),
-					highlightsPerUrl: Type.Optional(
-						Type.Integer({
-							description: "Maximum highlights per URL",
-							minimum: 1,
-							maximum: 20,
-							default: 5,
-						}),
-					),
-				}),
-			],
-			{
-				description:
-					"Control highlight extraction (boolean or config object with numSentences/highlightsPerUrl)",
-			},
-		),
-	),
-	context: Type.Optional(
-		Type.Boolean({
-			description:
-				"Return LLM-optimized context string combining all results (recommended for RAG). Better than individual text for LLM consumption.",
-			default: true,
-		}),
-	),
+	text: Type.Optional(ExaTextOptionSchema),
+	summary: Type.Optional(ExaSummaryOptionSchema),
+	highlights: Type.Optional(ExaHighlightsOptionSchema),
+	context: Type.Optional(ExaContextOptionSchema),
 	startPublishedDate: Type.Optional(
 		Type.String({
 			description:
@@ -190,13 +120,15 @@ const websearchSchema = Type.Object({
 	),
 });
 
-export const websearchTool = createTypeboxTool({
+export const websearchTool = createExaTool({
 	name: "websearch",
 	label: "websearch",
 	description:
 		"Search the web using Exa AI for real-time information beyond training cutoff. Supports semantic (neural) and keyword search with optional full text and summaries. Use for: recent news, documentation, research papers, current events.",
 	schema: websearchSchema,
-	async execute(_toolCallId, params) {
+	endpoint: "/search",
+	operation: "search",
+	buildRequest: (params) => {
 		const requestBody: Record<string, unknown> = {
 			query: params.query,
 			numResults: params.numResults ?? 5,
@@ -213,7 +145,6 @@ export const websearchTool = createTypeboxTool({
 		if (params.endPublishedDate)
 			requestBody.endPublishedDate = params.endPublishedDate;
 
-		// Configure contents retrieval
 		const contents = buildContentsOptions(
 			{
 				text: params.text,
@@ -233,12 +164,9 @@ export const websearchTool = createTypeboxTool({
 			requestBody.subpages = params.subpages;
 		}
 
-		const data = await callExa<ExaSearchResponse>("/search", requestBody, {
-			toolName: "websearch",
-			operation: "search",
-		});
-
-		// Format results
+		return requestBody;
+	},
+	mapResponse: (data: ExaSearchResponse, params) => {
 		const outputLines: string[] = [];
 		outputLines.push(`Query: "${params.query}"`);
 		outputLines.push(
@@ -253,7 +181,6 @@ export const websearchTool = createTypeboxTool({
 		}
 		outputLines.push("");
 
-		// If context string is available, use it (LLM-optimized)
 		if (data.context) {
 			outputLines.push("LLM-Optimized Context:");
 			outputLines.push("─".repeat(80));
@@ -281,7 +208,6 @@ export const websearchTool = createTypeboxTool({
 			}
 
 			if (result.text) {
-				// Show first 500 characters of text
 				const textPreview =
 					result.text.length > 500
 						? `${result.text.substring(0, 500)}...`

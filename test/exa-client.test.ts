@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordToolExecution } from "../src/telemetry.js";
-import {
-	ExaApiError,
-	buildContentsOptions,
-	callExa,
-} from "../src/tools/exa-client.js";
+import { ExaApiError, callExa } from "../src/tools/exa-client.js";
+import { buildContentsOptions } from "../src/tools/exa-contents.js";
 
 vi.mock("../src/telemetry.js", () => ({
 	recordToolExecution: vi.fn(),

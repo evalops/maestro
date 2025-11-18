@@ -1,7 +1,12 @@
 import { Type } from "@sinclair/typebox";
-import { buildContentsOptions, callExa } from "./exa-client.js";
+import {
+	ExaHighlightsOptionSchema,
+	ExaSummaryOptionSchema,
+	ExaTextOptionSchema,
+	buildContentsOptions,
+} from "./exa-contents.js";
 import type { ExaContentsResponse } from "./exa-types.js";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createExaTool } from "./exa-tool.js";
 
 const webfetchSchema = Type.Object({
 	urls: Type.Union(
@@ -20,61 +25,21 @@ const webfetchSchema = Type.Object({
 			description: "URL(s) to fetch content from",
 		},
 	),
-	text: Type.Optional(
-		Type.Boolean({
-			description: "Return full page text content in markdown format",
-			default: true,
-		}),
-	),
-	summary: Type.Optional(
-		Type.Boolean({
-			description: "Return AI-generated summary",
-			default: false,
-		}),
-	),
-	highlights: Type.Optional(
-		Type.Union(
-			[
-				Type.Boolean({
-					description: "Return relevant highlights/excerpts",
-				}),
-				Type.Object({
-					numSentences: Type.Optional(
-						Type.Integer({
-							description: "Number of sentences per highlight",
-							minimum: 1,
-							maximum: 10,
-							default: 3,
-						}),
-					),
-					highlightsPerUrl: Type.Optional(
-						Type.Integer({
-							description: "Maximum highlights per URL",
-							minimum: 1,
-							maximum: 20,
-							default: 5,
-						}),
-					),
-				}),
-			],
-			{
-				description:
-					"Return highlights (boolean) or provide an object to control numSentences/highlightsPerUrl",
-			},
-		),
-	),
+	text: Type.Optional(ExaTextOptionSchema),
+	summary: Type.Optional(ExaSummaryOptionSchema),
+	highlights: Type.Optional(ExaHighlightsOptionSchema),
 });
 
-export const webfetchTool = createTypeboxTool({
+export const webfetchTool = createExaTool({
 	name: "webfetch",
 	label: "webfetch",
 	description:
 		"Fetch and extract content from specific URLs using Exa. Converts HTML to clean markdown, optionally returns summaries and highlights. Use for: reading documentation, fetching article content, extracting information from known URLs.",
 	schema: webfetchSchema,
-	async execute(_toolCallId, params) {
-		// Normalize URLs to array
+	endpoint: "/contents",
+	operation: "contents",
+	buildRequest: (params) => {
 		const urls = Array.isArray(params.urls) ? params.urls : [params.urls];
-
 		const contents = buildContentsOptions(
 			{
 				text: params.text,
@@ -83,18 +48,13 @@ export const webfetchTool = createTypeboxTool({
 			},
 			{ text: true, summary: false, highlights: false },
 		);
-
 		const requestBody: Record<string, unknown> = { ids: urls };
 		if (contents) {
 			requestBody.contents = contents;
 		}
-
-		const data = await callExa<ExaContentsResponse>("/contents", requestBody, {
-			toolName: "webfetch",
-			operation: "contents",
-		});
-
-		// Check for errors
+		return requestBody;
+	},
+	mapResponse: (data: ExaContentsResponse) => {
 		const errors: string[] = [];
 		if (data.statuses) {
 			for (const status of data.statuses) {
@@ -106,7 +66,6 @@ export const webfetchTool = createTypeboxTool({
 			}
 		}
 
-		// Format results
 		const outputLines: string[] = [];
 
 		if (errors.length > 0) {
@@ -141,7 +100,6 @@ export const webfetchTool = createTypeboxTool({
 			if (result.text) {
 				outputLines.push("   Content:");
 				outputLines.push(`   ${"─".repeat(78)}`);
-				// Split text into lines and indent each
 				const textLines = result.text.split("\n");
 				for (const line of textLines) {
 					outputLines.push(`   ${line}`);

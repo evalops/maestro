@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
-import { callExa, normalizeCostDollars } from "./exa-client.js";
+import { normalizeCostDollars } from "./exa-client.js";
 import type { ExaContextResponse } from "./exa-types.js";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createExaTool } from "./exa-tool.js";
 
 const codesearchSchema = Type.Object({
 	query: Type.String({
@@ -28,26 +28,21 @@ const codesearchSchema = Type.Object({
 	),
 });
 
-export const codesearchTool = createTypeboxTool({
+export const codesearchTool = createExaTool({
 	name: "codesearch",
 	label: "codesearch",
 	description:
 		"Search billions of GitHub repos, documentation, and Stack Overflow for code examples and programming context using Exa Code API. Returns token-efficient, working code examples. Use for: framework usage, API syntax, library examples, best practices, setup instructions.",
 	schema: codesearchSchema,
-	async execute(_toolCallId, params) {
-		const requestBody: Record<string, unknown> = {
-			query: params.query,
-			tokensNum: params.tokensNum ?? "dynamic",
-		};
-
-		const data = await callExa<ExaContextResponse>("/context", requestBody, {
-			toolName: "codesearch",
-			operation: "context",
-		});
-
+	endpoint: "/context",
+	operation: "context",
+	buildRequest: (params) => ({
+		query: params.query,
+		tokensNum: params.tokensNum ?? "dynamic",
+	}),
+	mapResponse: (data: ExaContextResponse) => {
 		const costTotal = normalizeCostDollars(data.costDollars) ?? 0;
 
-		// Format output
 		const outputLines: string[] = [];
 		outputLines.push(`Query: "${data.query}"`);
 		outputLines.push(

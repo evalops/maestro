@@ -307,31 +307,3 @@ export async function callExa<T>(
 	throw new Error("Exa API request failed after retries");
 }
 
-type ContentsKey = "text" | "summary" | "context" | "highlights";
-type ContentsValue = boolean | Record<string, unknown>;
-type ContentsOptionsMap<K extends ContentsKey> = Partial<
-	Record<K, ContentsValue>
->;
-
-export function buildContentsOptions<K extends ContentsKey>(
-	options: ContentsOptionsMap<K>,
-	defaults?: ContentsOptionsMap<K>,
-): ContentsOptionsMap<K> | undefined {
-	const defaultKeys = defaults ? (Object.keys(defaults) as ContentsKey[]) : [];
-	const optionKeys = options ? (Object.keys(options) as ContentsKey[]) : [];
-	const keys = new Set<ContentsKey>([...defaultKeys, ...optionKeys]);
-	const result: Partial<Record<ContentsKey, ContentsValue>> = {};
-	let hasValue = false;
-	for (const key of keys) {
-		const value =
-			(options as Record<ContentsKey, ContentsValue | undefined>)[key] ??
-			(
-				defaults as Record<ContentsKey, ContentsValue | undefined> | undefined
-			)?.[key];
-		if (value !== undefined) {
-			result[key] = value;
-			hasValue = true;
-		}
-	}
-	return hasValue ? (result as ContentsOptionsMap<K>) : undefined;
-}
