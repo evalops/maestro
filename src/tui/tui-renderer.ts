@@ -504,6 +504,8 @@ export class TuiRenderer {
 			showModelSelector: (_context) => this.modelSelectorView.show(),
 			handleExportSession: (context) =>
 				this.importExportView.handleExportCommand(context.rawInput),
+			handleShareSession: (context) =>
+				this.importExportView.handleShareCommand(context.rawInput),
 			handleTools: (context) =>
 				this.toolStatusView.handleToolsCommand(context.rawInput),
 			handleImportConfig: (context) =>

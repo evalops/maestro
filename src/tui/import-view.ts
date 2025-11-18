@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import chalk from "chalk";
 import type { Agent } from "../agent/agent.js";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
@@ -18,6 +21,16 @@ interface ImportExportViewOptions {
 
 export class ImportExportView {
 	constructor(private readonly options: ImportExportViewOptions) {}
+
+	private expandPath(input: string): string {
+		if (!input) {
+			return input;
+		}
+		if (input.startsWith("~/")) {
+			return join(homedir(), input.slice(2));
+		}
+		return resolve(process.cwd(), input);
+	}
 
 	handleExportCommand(text: string): void {
 		const parts = text.split(/\s+/);
@@ -91,5 +104,52 @@ export class ImportExportView {
 		this.options.showInfoMessage(
 			`Unknown import source "${source}". Supported sources: factory`,
 		);
+	}
+
+	handleShareCommand(text: string): void {
+		const parts = text.trim().split(/\s+/);
+		const customTarget = parts[1];
+		const baseDir = join(homedir(), ".composer", "share");
+		let outputPath: string;
+		if (customTarget) {
+			outputPath = this.expandPath(customTarget);
+			mkdirSync(dirname(outputPath), { recursive: true });
+		} else {
+			mkdirSync(baseDir, { recursive: true });
+			const timestamp = new Date()
+				.toISOString()
+				.replace(/[:.]/g, "-")
+				.replace("T", "_")
+				.replace("Z", "");
+			outputPath = join(baseDir, `composer-share-${timestamp}.html`);
+		}
+
+		try {
+			const filePath = exportSessionToHtml(
+				this.options.sessionManager,
+				this.options.agent.state,
+				outputPath,
+			);
+			const fileUrl = `file://${filePath}`;
+			this.options.chatContainer.addChild(new Spacer(1));
+			this.options.chatContainer.addChild(
+				new Text(
+					chalk.dim(
+						`Share-ready HTML saved to ${filePath}\nOpen in browser: open ${filePath} \nURL: ${fileUrl}`,
+					),
+					1,
+					0,
+				),
+			);
+			this.options.ui.requestRender();
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : String(error ?? "unknown");
+			this.options.chatContainer.addChild(new Spacer(1));
+			this.options.chatContainer.addChild(
+				new Text(chalk.red(`Failed to create share file: ${message}`), 1, 0),
+			);
+			this.options.ui.requestRender();
+		}
 	}
 }

@@ -22,6 +22,7 @@ export interface CommandHandlers {
 	thinking(context: CommandExecutionContext): void;
 	model(context: CommandExecutionContext): void;
 	exportSession(context: CommandExecutionContext): void;
+	shareSession(context: CommandExecutionContext): void;
 	tools(context: CommandExecutionContext): void;
 	importConfig(context: CommandExecutionContext): Promise<void> | void;
 	sessionInfo(context: CommandExecutionContext): void;

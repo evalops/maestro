@@ -90,6 +90,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "share",
+				description: "Generate a self-contained HTML share link",
+				usage: "/share [output.html]",
+				tags: ["session", "sharing"],
+			},
+			withArgs("share"),
+			handlers.shareSession,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "tools",
 				description: "Show available tools, failures, or clear logs",
 				usage: "/tools [list|failures|clear]",

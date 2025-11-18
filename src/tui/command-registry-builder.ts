@@ -19,6 +19,9 @@ interface CommandRegistryOptions {
 	handleExportSession: (
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
+	handleShareSession: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
 	handleTools: (context: CommandExecutionContext) => void | Promise<void>;
 	handleImportConfig: (
 		context: CommandExecutionContext,
@@ -64,6 +67,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			thinking: opts.showThinkingSelector,
 			model: opts.showModelSelector,
 			exportSession: opts.handleExportSession,
+			shareSession: opts.handleShareSession,
 			tools: opts.handleTools,
 			importConfig: opts.handleImportConfig,
 			sessionInfo: opts.showSessionInfo,
