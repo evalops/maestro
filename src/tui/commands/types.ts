@@ -26,12 +26,11 @@ export interface CommandHandlers {
 	importConfig(context: CommandExecutionContext): Promise<void> | void;
 	sessionInfo(context: CommandExecutionContext): void;
 	sessions(context: CommandExecutionContext): void;
-	reportBug(context: CommandExecutionContext): void;
+	report(context: CommandExecutionContext): void;
 	about(context: CommandExecutionContext): void;
 	status(context: CommandExecutionContext): void;
 	review(context: CommandExecutionContext): void;
 	undoChanges(context: CommandExecutionContext): void;
-	shareFeedback(context: CommandExecutionContext): void;
 	mention(context: CommandExecutionContext): void;
 	help(context: CommandExecutionContext): void;
 	update(context: CommandExecutionContext): Promise<void> | void;

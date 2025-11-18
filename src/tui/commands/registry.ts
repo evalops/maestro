@@ -24,18 +24,28 @@ export function createCommandRegistry({
 	const entries: CommandEntry[] = [
 		buildEntry(
 			{
-				name: "thinking",
-				description: "Select reasoning level (opens selector UI)",
-				usage: "/thinking",
-				tags: ["session"],
+				name: "report",
+				description: "Collect info for bug reports or general feedback",
+				usage: "/report [bug|feedback]",
+				tags: ["support"],
+				arguments: [
+					{
+						name: "type",
+						type: "enum",
+						required: false,
+						description: "Select report type",
+						choices: ["bug", "feedback"],
+					},
+				],
+				examples: ["/report", "/report bug", "/report feedback"],
 			},
-			equals("thinking"),
-			handlers.thinking,
+			withArgs("report"),
+			handlers.report,
 			createContext,
 		),
 		buildEntry(
 			{
-				name: "model",
+				name: "plan",
 				description: "Select model (opens selector UI)",
 				usage: "/model",
 				tags: ["session"],
@@ -112,17 +122,6 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
-				name: "bug",
-				description: "Copy session info for bug reports",
-				usage: "/bug",
-				tags: ["support"],
-			},
-			equals("bug"),
-			handlers.reportBug,
-			createContext,
-		),
-		buildEntry(
-			{
 				name: "about",
 				description: "Show Composer build, env, and git info",
 				usage: "/about",
@@ -185,17 +184,6 @@ export function createCommandRegistry({
 			},
 			withArgs("undo"),
 			handlers.undoChanges,
-			createContext,
-		),
-		buildEntry(
-			{
-				name: "feedback",
-				description: "Copy a feedback template with session context",
-				usage: "/feedback",
-				tags: ["support"],
-			},
-			equals("feedback"),
-			handlers.shareFeedback,
 			createContext,
 		),
 		buildEntry(

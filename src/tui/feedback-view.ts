@@ -100,14 +100,14 @@ export class FeedbackView {
 		this.options.ui.requestRender();
 	}
 
-	handleFeedbackCommand(version: string): void {
+	handleFeedbackCommand(): void {
 		const sessionId = this.options.sessionManager.getSessionId();
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		const model = this.options.agent.state.model
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
 		const snapshot = this.collectHealthSnapshot();
-		const plain = `Composer feedback\nVersion: ${version}\nSession: ${sessionId}\nSession file: ${sessionFile}\nModel: ${model}\nTool failures: ${snapshot.toolFailures}\n\nWhat happened?\n\nWhat did you expect instead?\n\nAnything else we should know?`;
+		const plain = `Composer feedback\nVersion: ${this.options.version}\nSession: ${sessionId}\nSession file: ${sessionFile}\nModel: ${model}\nTool failures: ${snapshot.toolFailures}\n\nWhat happened?\n\nWhat did you expect instead?\n\nAnything else we should know?`;
 
 		const copied = this.copyTextToClipboard(plain);
 		const body = `${chalk.bold("Feedback template")}\n${plain}\n\n${

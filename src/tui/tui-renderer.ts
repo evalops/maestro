@@ -63,6 +63,7 @@ import { NotificationView } from "./notification-view.js";
 import { OllamaView } from "./ollama-view.js";
 import { PlanView } from "./plan-view.js";
 import type { PromptQueue, PromptQueueEvent } from "./prompt-queue.js";
+import { ReportSelectorView } from "./report-selector-view.js";
 import { RunCommandView } from "./run-command-view.js";
 import { RunController } from "./run-controller.js";
 import { SessionContext } from "./session-context.js";
@@ -173,6 +174,7 @@ export class TuiRenderer {
 	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
 	private modelSelectorView: ModelSelectorView;
+	private reportSelectorView: ReportSelectorView;
 	private notificationView: NotificationView;
 	private updateView: UpdateView;
 	private configView: ConfigView;
@@ -408,6 +410,18 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
+		this.reportSelectorView = new ReportSelectorView({
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			ui: this.ui,
+			onSelect: (type) => {
+				if (type === "bug") {
+					this.feedbackView.handleBugCommand();
+				} else {
+					this.feedbackView.handleFeedbackCommand();
+				}
+			},
+		});
 		this.conversationCompactor = new ConversationCompactor({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -479,13 +493,11 @@ export class TuiRenderer {
 			showSessionInfo: (_context) => this.sessionView.showSessionInfo(),
 			handleSessions: (context) =>
 				this.sessionView.handleSessionsCommand(context.rawInput),
-			handleBug: (_context) => this.feedbackView.handleBugCommand(),
+			handleReport: (context) => this.handleReportCommand(context),
 			handleAbout: (_context) => this.aboutView.handleAboutCommand(),
 			showStatus: (_context) => this.diagnosticsView.handleStatusCommand(),
 			handleReview: (_context) => this.gitView.handleReviewCommand(),
 			handleUndo: (context) => this.gitView.handleUndoCommand(context.rawInput),
-			shareFeedback: (_context) =>
-				this.feedbackView.handleFeedbackCommand(this.version),
 			handleMention: (context) =>
 				this.fileSearchView.handleMentionCommand(context.rawInput),
 			showHelp: (_context) => this.infoView.showHelp(),
@@ -687,6 +699,30 @@ export class TuiRenderer {
 
 	private async handleCompactCommand(): Promise<void> {
 		await this.conversationCompactor.compactHistory();
+	}
+
+	private handleReportCommand(context: CommandExecutionContext): void {
+		const parsedType = context.parsedArgs?.type;
+		const inlineArg = context.argumentText.trim().split(/\s+/)[0] ?? "";
+		const candidate =
+			typeof parsedType === "string" && parsedType.length > 0
+				? parsedType.toLowerCase()
+				: inlineArg.toLowerCase();
+
+		if (candidate === "bug") {
+			this.feedbackView.handleBugCommand();
+			return;
+		}
+		if (candidate === "feedback") {
+			this.feedbackView.handleFeedbackCommand();
+			return;
+		}
+		if (candidate.length > 0) {
+			context.showError('Report type must be "bug" or "feedback".');
+			context.renderHelp();
+			return;
+		}
+		this.reportSelectorView.show();
 	}
 
 	private async handleStatsCommand(

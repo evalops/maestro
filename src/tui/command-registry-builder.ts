@@ -25,12 +25,11 @@ interface CommandRegistryOptions {
 	) => void | Promise<void>;
 	showSessionInfo: (context: CommandExecutionContext) => void;
 	handleSessions: (context: CommandExecutionContext) => void | Promise<void>;
-	handleBug: (context: CommandExecutionContext) => void;
 	handleAbout: (context: CommandExecutionContext) => void;
 	showStatus: (context: CommandExecutionContext) => void;
 	handleReview: (context: CommandExecutionContext) => void;
 	handleUndo: (context: CommandExecutionContext) => void | Promise<void>;
-	shareFeedback: (context: CommandExecutionContext) => void;
+	handleReport: (context: CommandExecutionContext) => void;
 	handleMention: (context: CommandExecutionContext) => void | Promise<void>;
 	showHelp: (context: CommandExecutionContext) => void;
 	handleUpdate: (context: CommandExecutionContext) => void | Promise<void>;
@@ -65,12 +64,11 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			importConfig: opts.handleImportConfig,
 			sessionInfo: opts.showSessionInfo,
 			sessions: opts.handleSessions,
-			reportBug: opts.handleBug,
+			report: opts.handleReport,
 			about: opts.handleAbout,
 			status: opts.showStatus,
 			review: opts.handleReview,
 			undoChanges: opts.handleUndo,
-			shareFeedback: opts.shareFeedback,
 			mention: opts.handleMention,
 			help: opts.showHelp,
 			update: opts.handleUpdate,
