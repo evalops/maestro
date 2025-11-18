@@ -1,8 +1,7 @@
 import { spawn } from "node:child_process";
-import os from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const pathSchema = Type.Optional(
 	Type.Union([
@@ -137,13 +136,6 @@ function toArray<T>(value: T | T[] | undefined): T[] {
 	return Array.isArray(value) ? value : [value];
 }
 
-function expandPath(path?: string): string | undefined {
-	if (!path) return undefined;
-	if (path === "~") return os.homedir();
-	if (path.startsWith("~/")) return os.homedir() + path.slice(1);
-	return resolvePath(path);
-}
-
 async function runRipgrep(
 	args: string[],
 	signal?: AbortSignal,
@@ -225,16 +217,13 @@ type SearchToolDetails = {
 	matches?: RipgrepMatch[];
 };
 
-export const searchTool = createTypeboxTool<
-	typeof searchSchema,
-	SearchToolDetails
->({
+export const searchTool = createTool<typeof searchSchema, SearchToolDetails>({
 	name: "search",
 	label: "search",
 	description:
 		"Find text across files using ripgrep with optional globbing and context controls.",
 	schema: searchSchema,
-	async execute(_toolCallId, params, signal) {
+	async run(params, { signal, respond }) {
 		const {
 			pattern,
 			paths,
@@ -264,7 +253,7 @@ export const searchTool = createTypeboxTool<
 
 		const pathArgs = toArray(paths);
 		const globArgs = toArray(glob);
-		const commandCwd = expandPath(cwd) ?? process.cwd();
+		const commandCwd = cwd ? resolvePath(expandUserPath(cwd)) : process.cwd();
 
 		const args: string[] = ["--color=never", "-n", "--with-filename"];
 
@@ -332,15 +321,9 @@ export const searchTool = createTypeboxTool<
 				error instanceof Error
 					? error.message
 					: `Unknown error: ${String(error)}`;
-			return {
-				content: [
-					{
-						type: "text",
-						text: `ripgrep failed\n\n${reason}`,
-					},
-				],
-				details: { command: ["rg", ...args].join(" "), cwd: commandCwd },
-			};
+			return respond
+				.text(`ripgrep failed\n\n${reason}`)
+				.detail({ command: ["rg", ...args].join(" "), cwd: commandCwd });
 		}
 
 		if (result.exitCode === 2) {
@@ -353,15 +336,9 @@ export const searchTool = createTypeboxTool<
 		const command = ["rg", ...args].join(" ");
 
 		if (result.exitCode === 1 || result.stdout.trim().length === 0) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: "No matches found.",
-					},
-				],
-				details: { command, cwd: commandCwd, format },
-			};
+			return respond
+				.text("No matches found.")
+				.detail({ command, cwd: commandCwd, format });
 		}
 
 		if (format === "json") {
@@ -378,20 +355,16 @@ export const searchTool = createTypeboxTool<
 			const text = matches.length
 				? `Found ${matches.length} match(es).\n\n${preview}${suffix}`
 				: "No matches found.";
-			return {
-				content: [{ type: "text", text }],
-				details: {
-					command,
-					cwd: commandCwd,
-					format,
-					matches: matches.slice(0, JSON_DETAIL_LIMIT),
-				},
-			};
+			return respond.text(text).detail({
+				command,
+				cwd: commandCwd,
+				format,
+				matches: matches.slice(0, JSON_DETAIL_LIMIT),
+			});
 		}
 
-		return {
-			content: [{ type: "text", text: result.stdout.trimEnd() }],
-			details: { command, cwd: commandCwd, format },
-		};
+		return respond
+			.text(result.stdout.trimEnd())
+			.detail({ command, cwd: commandCwd, format });
 	},
 });

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
-import { createTypeboxTool } from "./typebox-tool.js";
+import { createTool } from "./tool-dsl.js";
 
 const pathInputSchema = Type.Optional(
 	Type.Union([
@@ -112,13 +112,15 @@ async function runGitDiff(
 	});
 }
 
-export const diffTool = createTypeboxTool({
+type DiffToolDetails = { command: string };
+
+export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 	name: "diff",
 	label: "diff",
 	description:
 		"Inspect git diffs with optional staging, revision, and path filters.",
 	schema: diffSchema,
-	async execute(_toolCallId, params, signal) {
+	async run(params, { signal, respond }) {
 		const { staged, range, context, stat, wordDiff, nameOnly, paths } = params;
 
 		if (wordDiff && nameOnly) {
@@ -168,15 +170,9 @@ export const diffTool = createTypeboxTool({
 				error instanceof Error
 					? error.message
 					: `Unknown error: ${String(error)}`;
-			return {
-				content: [
-					{
-						type: "text",
-						text: `git diff failed\n\n${reason}`,
-					},
-				],
-				details: { command: commandSummary },
-			};
+			return respond
+				.text(`git diff failed\n\n${reason}`)
+				.detail({ command: commandSummary });
 		}
 
 		if (result.exitCode !== 0) {
@@ -189,20 +185,11 @@ export const diffTool = createTypeboxTool({
 		const output = result.stdout.trim();
 
 		if (output.length === 0) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: "No changes found for the selected diff options.",
-					},
-				],
-				details: { command: commandSummary },
-			};
+			return respond
+				.text("No changes found for the selected diff options.")
+				.detail({ command: commandSummary });
 		}
 
-		return {
-			content: [{ type: "text", text: output }],
-			details: { command: commandSummary },
-		};
+		return respond.text(output).detail({ command: commandSummary });
 	},
 });

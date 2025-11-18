@@ -7,7 +7,6 @@ import {
 	rm,
 	writeFile,
 } from "node:fs/promises";
-import * as os from "node:os";
 import { dirname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { collectDiagnostics } from "../lsp/index.js";
@@ -17,19 +16,7 @@ import {
 } from "../safety/safe-mode.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import { generateDiffString } from "./diff-utils.js";
-import { createTypeboxTool } from "./typebox-tool.js";
-/**
- * Expand ~ to home directory
- */
-function expandPath(filePath: string): string {
-	if (filePath === "~") {
-		return os.homedir();
-	}
-	if (filePath.startsWith("~/")) {
-		return os.homedir() + filePath.slice(1);
-	}
-	return filePath;
-}
+import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const writeSchema = Type.Object({
 	path: Type.String({
@@ -52,169 +39,119 @@ const writeSchema = Type.Object({
 	}),
 });
 
-export const writeTool = createTypeboxTool({
+type WriteToolDetails = {
+	previousExists: boolean;
+	bytesWritten: number;
+	diff?: string;
+	backupPath?: string;
+	validators?: ValidatorRunResult[];
+};
+
+export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 	name: "write",
 	label: "write",
 	description:
 		"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
 	schema: writeSchema,
-	async execute(_toolCallId, { path, content, previewDiff, backup }, signal) {
-		const absolutePath = resolvePath(expandPath(path));
+	async run({ path, content, previewDiff, backup }, { signal, respond }) {
 		requirePlanCheck("write");
+		const absolutePath = resolvePath(expandUserPath(path));
 		const dir = dirname(absolutePath);
-
-		return new Promise<{
-			content: Array<{ type: "text"; text: string }>;
-			details:
-				| undefined
-				| {
-						previousExists: boolean;
-						bytesWritten: number;
-						diff?: string;
-						backupPath?: string;
-						validators?: ValidatorRunResult[];
-				  };
-		}>((resolve, reject) => {
+		const ensureNotAborted = () => {
 			if (signal?.aborted) {
-				reject(new Error("Operation aborted"));
-				return;
+				throw new Error("Operation aborted");
 			}
+		};
 
-			let aborted = false;
+		ensureNotAborted();
+		await mkdir(dir, { recursive: true });
+		ensureNotAborted();
 
-			const onAbort = () => {
-				aborted = true;
-				reject(new Error("Operation aborted"));
-			};
+		let previousContent: string | null = null;
+		let backupPath: string | undefined;
+		let previousExists = false;
 
-			if (signal) {
-				signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			await access(absolutePath, constants.R_OK);
+			previousContent = await readFile(absolutePath, "utf-8");
+			previousExists = true;
+		} catch {
+			previousExists = false;
+		}
+
+		ensureNotAborted();
+
+		let movedToBackup = false;
+		if (previousExists && backup && previousContent !== null) {
+			backupPath = `${absolutePath}.bak`;
+			try {
+				await rename(absolutePath, backupPath);
+				movedToBackup = true;
+			} catch {
+				await writeFile(backupPath, previousContent, "utf-8");
 			}
+		}
 
-			(async () => {
+		ensureNotAborted();
+
+		try {
+			await writeFile(absolutePath, content, "utf-8");
+		} catch (error) {
+			if (movedToBackup && backupPath) {
 				try {
-					await mkdir(dir, { recursive: true });
-
-					if (aborted) {
-						return;
-					}
-
-					let previousContent: string | null = null;
-					let backupPath: string | undefined;
-					let previousExists = false;
-
-					try {
-						await access(absolutePath, constants.R_OK);
-						previousContent = await readFile(absolutePath, "utf-8");
-						previousExists = true;
-					} catch {
-						previousExists = false;
-					}
-
-					if (aborted) {
-						return;
-					}
-
-					let movedToBackup = false;
-					if (previousExists && backup && previousContent !== null) {
-						backupPath = `${absolutePath}.bak`;
-						try {
-							await rename(absolutePath, backupPath);
-							movedToBackup = true;
-						} catch {
-							await writeFile(backupPath, previousContent, "utf-8");
-						}
-					}
-
-					if (aborted) {
-						return;
-					}
-
-					try {
-						await writeFile(absolutePath, content, "utf-8");
-					} catch (error) {
-						if (movedToBackup && backupPath) {
-							try {
-								await rename(backupPath, absolutePath);
-							} catch {
-								// Best-effort restore; ignore restore errors
-							}
-						}
-						throw error;
-					}
-
-					if (aborted) {
-						return;
-					}
-
-					if (signal) {
-						signal.removeEventListener("abort", onAbort);
-					}
-
-					const diff =
-						previousContent !== null && previewDiff
-							? generateDiffString(previousContent, content)
-							: undefined;
-
-					let validatorSummaries: ValidatorRunResult[] | undefined;
-					try {
-						const lspDiagnostics = await collectDiagnostics();
-						validatorSummaries = await runValidatorsOnSuccess(
-							[absolutePath],
-							lspDiagnostics,
-						);
-					} catch (validatorError) {
-						if (movedToBackup && backupPath) {
-							await rename(backupPath, absolutePath);
-						} else if (!previousExists) {
-							await rm(absolutePath, { force: true });
-						} else if (previousContent !== null) {
-							await writeFile(absolutePath, previousContent, "utf-8");
-						}
-						throw validatorError;
-					}
-
-					const summaryLines: string[] = [];
-					summaryLines.push(
-						`Successfully wrote ${content.length} bytes to ${path}`,
-					);
-					if (previousExists) {
-						summaryLines.push("Previous content was overwritten.");
-						if (backupPath) {
-							summaryLines.push(`Backup saved to ${backupPath}`);
-						}
-						if (diff) {
-							summaryLines.push("Diff preview available in tool details.");
-						}
-					} else {
-						summaryLines.push("File did not exist; it was created.");
-					}
-
-					resolve({
-						content: [
-							{
-								type: "text",
-								text: summaryLines.join("\n"),
-							},
-						],
-						details: {
-							previousExists,
-							bytesWritten: Buffer.byteLength(content, "utf-8"),
-							diff,
-							backupPath,
-							validators: validatorSummaries,
-						},
-					});
-				} catch (error: unknown) {
-					if (signal) {
-						signal.removeEventListener("abort", onAbort);
-					}
-
-					if (!aborted) {
-						reject(error instanceof Error ? error : new Error(String(error)));
-					}
+					await rename(backupPath, absolutePath);
+				} catch {
+					// Best-effort restore; ignore restore errors
 				}
-			})();
+			}
+			throw error;
+		}
+
+		ensureNotAborted();
+
+		const diff =
+			previousContent !== null && previewDiff
+				? generateDiffString(previousContent, content)
+				: undefined;
+
+		let validatorSummaries: ValidatorRunResult[] | undefined;
+		try {
+			const lspDiagnostics = await collectDiagnostics();
+			validatorSummaries = await runValidatorsOnSuccess(
+				[absolutePath],
+				lspDiagnostics,
+			);
+		} catch (validatorError) {
+			if (movedToBackup && backupPath) {
+				await rename(backupPath, absolutePath);
+			} else if (!previousExists) {
+				await rm(absolutePath, { force: true });
+			} else if (previousContent !== null) {
+				await writeFile(absolutePath, previousContent, "utf-8");
+			}
+			throw validatorError;
+		}
+
+		const summaryLines: string[] = [];
+		summaryLines.push(`Successfully wrote ${content.length} bytes to ${path}`);
+		if (previousExists) {
+			summaryLines.push("Previous content was overwritten.");
+			if (backupPath) {
+				summaryLines.push(`Backup saved to ${backupPath}`);
+			}
+			if (diff) {
+				summaryLines.push("Diff preview available in tool details.");
+			}
+		} else {
+			summaryLines.push("File did not exist; it was created.");
+		}
+
+		return respond.text(summaryLines.join("\n")).detail({
+			previousExists,
+			bytesWritten: Buffer.byteLength(content, "utf-8"),
+			diff,
+			backupPath,
+			validators: validatorSummaries,
 		});
 	},
 });

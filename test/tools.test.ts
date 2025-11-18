@@ -8,7 +8,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bashTool } from "../src/tools/bash.js";
@@ -323,6 +323,27 @@ describe("Composer Tools", () => {
 			});
 			expect(existsSync(`${testFile}.bak`)).toBe(true);
 		});
+
+		it("skips backups and diffs when disabled", async () => {
+			const testFile = join(testDir, "write-skip-bak.txt");
+			writeFileSync(testFile, "before");
+
+			const result = await writeTool.execute("test-call-4c", {
+				path: testFile,
+				content: "after",
+				backup: false,
+				previewDiff: false,
+			});
+
+			expect(getTextOutput(result)).toContain("Successfully wrote");
+			expect(existsSync(`${testFile}.bak`)).toBe(false);
+			expect(result.details).toMatchObject({
+				previousExists: true,
+				bytesWritten: "after".length,
+				diff: undefined,
+				backupPath: undefined,
+			});
+		});
 	});
 
 	describe("edit tool", () => {
@@ -522,6 +543,22 @@ describe("Composer Tools", () => {
 				}),
 			);
 		});
+
+		it("reports when no changes are detected", async () => {
+			const result = await diffTool.execute("diff-call-3", {
+				paths: tempFile,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain(
+				"No changes found for the selected diff options.",
+			);
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("git diff"),
+				}),
+			);
+		});
 	});
 
 	describe("search tool", () => {
@@ -579,6 +616,27 @@ describe("Composer Tools", () => {
 			expect(output).toContain("Found 1 match");
 			expect(result.details).toMatchObject({ format: "json" });
 			expect(result.details?.matches?.[0]?.file).toContain(".secret.txt");
+		});
+
+		it("respects cwd paths that include a tilde", async () => {
+			const homeScopedDir = mkdtempSync(join(homedir(), "composer-search-"));
+			const fixture = join(homeScopedDir, "cwd-file.txt");
+			writeFileSync(fixture, "home-needle");
+			const tildePath = homeScopedDir.replace(homedir(), "~");
+
+			try {
+				const result = await searchTool.execute("search-call-4", {
+					pattern: "home-needle",
+					cwd: tildePath,
+					paths: ".",
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("cwd-file.txt");
+				expect(result.details).toMatchObject({ cwd: homeScopedDir });
+			} finally {
+				rmSync(homeScopedDir, { recursive: true, force: true });
+			}
 		});
 	});
 
