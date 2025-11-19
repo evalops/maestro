@@ -353,14 +353,39 @@ export class ComposerMessage extends LitElement {
 	}
 
 	render() {
+		// Check if message has thinking or tools
+		const hasThinking = (this as any).thinking && (this as any).thinking.length > 0;
+		const hasTools = this.tools && this.tools.length > 0;
+
 		return html`
 			<div class="message ${this.role}">
 				<div class="role-label">${this.role.toUpperCase()}</div>
 				<div class="content">
+					${hasThinking ? html`
+						<composer-thinking
+							.content=${(this as any).thinking}
+							.isStreaming=${false}
+						></composer-thinking>
+					` : ""}
+
 					${this.renderContent()}
+
+					${hasTools ? html`
+						${this.tools.map(tool => html`
+							<composer-tool-execution
+								.toolName=${tool.name}
+								.toolCallId=${tool.name + '-' + Date.now()}
+								.args=${tool.args || {}}
+								.result=${tool.result || null}
+								.isError=${tool.status === 'error'}
+								.isRunning=${tool.status === 'running' || tool.status === 'pending'}
+							></composer-tool-execution>
+						`)}
+					` : ""}
+
 					<div class="timestamp">
 						${this.formatTimestamp(this.timestamp)}
-						${this.tools.length > 0
+						${hasTools
 							? html`
 									<span class="tools-indicator">
 										${this.tools.length} TOOL${this.tools.length > 1 ? "S" : ""}

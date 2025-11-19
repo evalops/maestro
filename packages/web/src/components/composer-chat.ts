@@ -546,20 +546,104 @@ export class ComposerChat extends LitElement {
 			role: "assistant",
 			content: "",
 			timestamp: new Date().toISOString(),
+			tools: [],
+			thinking: "",
 		};
 		this.messages = [...this.messages, assistantMessage];
 
+		// Track active tool calls
+		const activeTools = new Map<string, any>();
+		const thinkingBlocks = new Map<number, string>();
+		let currentThinkingIndex: number | null = null;
+
 		try {
-			// Stream response
-			const stream = this.apiClient.chat({
+			// Stream response with FULL events
+			const stream = this.apiClient.chatWithEvents({
 				model: this.currentModel,
 				messages: this.messages.slice(0, -1), // Exclude placeholder
 				sessionId: this.currentSessionId || undefined,
 			});
 
-			for await (const chunk of stream) {
-				assistantMessage.content += chunk;
-				this.messages = [...this.messages]; // Trigger update
+			for await (const agentEvent of stream) {
+				// Handle different event types
+				switch (agentEvent.type) {
+					case "message_update":
+						if (agentEvent.assistantMessageEvent) {
+							const msgEvent = agentEvent.assistantMessageEvent;
+							
+							// Text deltas
+							if (msgEvent.type === "text_delta" && msgEvent.delta) {
+								assistantMessage.content += msgEvent.delta;
+								this.messages = [...this.messages];
+							}
+							
+							// Thinking deltas
+							else if (msgEvent.type === "thinking_start") {
+								currentThinkingIndex = msgEvent.contentIndex;
+								thinkingBlocks.set(msgEvent.contentIndex, "");
+							}
+							else if (msgEvent.type === "thinking_delta" && currentThinkingIndex !== null) {
+								const current = thinkingBlocks.get(currentThinkingIndex) || "";
+								thinkingBlocks.set(currentThinkingIndex, current + msgEvent.delta);
+								assistantMessage.thinking = Array.from(thinkingBlocks.values()).join("\n\n");
+								this.messages = [...this.messages];
+							}
+							else if (msgEvent.type === "thinking_end") {
+								currentThinkingIndex = null;
+							}
+							
+							// Tool call tracking
+							else if (msgEvent.type === "toolcall_end") {
+								const toolCall = msgEvent.toolCall;
+								if (!assistantMessage.tools) assistantMessage.tools = [];
+								assistantMessage.tools.push({
+									name: toolCall.name,
+									status: "pending",
+									args: toolCall.arguments,
+								});
+								activeTools.set(toolCall.id, {
+									name: toolCall.name,
+									args: toolCall.arguments,
+									index: assistantMessage.tools.length - 1,
+								});
+								this.messages = [...this.messages];
+							}
+						}
+						break;
+
+					case "tool_execution_start":
+						// Update tool status to running
+						const toolInfo = activeTools.get(agentEvent.toolCallId);
+						if (toolInfo && assistantMessage.tools) {
+							assistantMessage.tools[toolInfo.index].status = "running";
+							this.messages = [...this.messages];
+						}
+						break;
+
+					case "tool_execution_end":
+						// Update tool with result
+						const completedTool = activeTools.get(agentEvent.toolCallId);
+						if (completedTool && assistantMessage.tools) {
+							assistantMessage.tools[completedTool.index].status = agentEvent.isError ? "error" : "completed";
+							assistantMessage.tools[completedTool.index].result = agentEvent.result;
+							this.messages = [...this.messages];
+						}
+						activeTools.delete(agentEvent.toolCallId);
+						break;
+
+					case "message_end":
+						// Finalize assistant message
+						if (agentEvent.message.role === "assistant") {
+							assistantMessage.timestamp = new Date().toISOString();
+							this.messages = [...this.messages];
+						}
+						break;
+
+					case "agent_end":
+						// All done
+						break;
+				}
+
 				this.scrollToBottom();
 			}
 
