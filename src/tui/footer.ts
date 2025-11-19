@@ -1,7 +1,6 @@
 import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
-import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import {
 	buildStatsLine,
 	calculateFooterStats,

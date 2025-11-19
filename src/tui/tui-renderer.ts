@@ -1133,10 +1133,10 @@ export class TuiRenderer {
 	}
 
 	public refreshFooterHint(): void {
+		this.footer.setRuntimeBadges(this.buildRuntimeBadges());
 		if (this.isAgentRunning) {
 			return;
 		}
-		this.footer.setRuntimeBadges(this.buildRuntimeBadges());
 		const hints: string[] = [this.idleFooterHint];
 		if (this.compactionInProgress) {
 			hints.push("Compacting history…");
