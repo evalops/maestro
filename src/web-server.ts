@@ -31,6 +31,7 @@ import {
 } from "./models/registry.js";
 import { createAuthResolver } from "./providers/auth.js";
 import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
+import { recordSseSkip } from "./telemetry.js";
 import { codingTools } from "./tools/index.js";
 import { getUsageFilePath, getUsageSummary } from "./tracking/cost-tracker.js";
 import {
@@ -679,9 +680,14 @@ async function handleChat(req: any, res: any) {
 			const sseSession = new SseSession(
 				res,
 				(metrics) => {
-					console.debug("SSE writes skipped", {
-						...metrics,
-						context: metrics.context,
+					recordSseSkip(metrics.sent, metrics.skipped, {
+						requestId: metrics.context?.requestId,
+						modelKey: metrics.context?.modelKey,
+						sessionId: metrics.context?.sessionId,
+						lastError:
+							metrics.lastError instanceof Error
+								? metrics.lastError.message
+								: metrics.lastError,
 					});
 				},
 				{ requestId, modelKey },

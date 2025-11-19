@@ -419,6 +419,7 @@ export function convertComposerMessagesToApp(
 ): AppMessage[] {
 	const result: AppMessage[] = [];
 	for (const [index, message] of messages.entries()) {
+		// Preserve relative ordering by pushing each expanded block in sequence
 		result.push(...convertComposerMessageToApp(message, model, index));
 	}
 	return result;
