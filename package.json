@@ -52,7 +52,7 @@
     "dev:web": "npm run dev -w @evalops/composer-web",
     "dev:tui": "npm run dev -w @evalops/tui",
     "dev:packages": "concurrently --names \"tui,web\" --prefix-colors \"magenta,green\" \"npm run dev:tui\" \"npm run dev:web\"",
-    "build:all": "npm run build --workspaces --if-present && npm run build",
+    "build:all": "npm run build -w @evalops/tui && npm run build -w @evalops/composer-web && npm run build",
     "test:all": "npm run test && npm run test --workspaces --if-present"
   },
   "dependencies": {
