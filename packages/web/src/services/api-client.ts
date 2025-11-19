@@ -2,15 +2,14 @@
  * API Client for Composer Backend
  */
 
-export interface Message {
-	role: "user" | "assistant" | "system" | "tool";
-	content: string;
-	timestamp?: string;
-	tools?: Array<{ name: string; status: string; args?: any; result?: any }>;
-	thinking?: string;
-	isError?: boolean;
-	toolName?: string;
-}
+import type {
+	ComposerChatRequest,
+	ComposerMessage,
+	ComposerSession,
+	ComposerSessionSummary,
+} from "@evalops/contracts";
+
+export type Message = ComposerMessage;
 
 export interface AgentEvent {
 	type: string;
@@ -25,21 +24,11 @@ export interface Model {
 	maxOutputTokens?: number;
 }
 
-export interface Session {
-	id: string;
-	title: string;
-	messages: Message[];
-	createdAt: string;
-	updatedAt: string;
-	messageCount: number;
-}
+export type Session = ComposerSession;
 
-export interface ChatRequest {
-	model: string;
-	messages: Message[];
-	stream?: boolean;
-	sessionId?: string;
-}
+export type SessionSummary = ComposerSessionSummary;
+
+export type ChatRequest = ComposerChatRequest;
 
 export interface ChatResponse {
 	message: Message;
@@ -218,7 +207,7 @@ export class ApiClient {
 	/**
 	 * Get list of sessions
 	 */
-	async getSessions(): Promise<Session[]> {
+	async getSessions(): Promise<SessionSummary[]> {
 		try {
 			const response = await fetch(`${this.baseUrl}/api/sessions`);
 			if (!response.ok) return [];

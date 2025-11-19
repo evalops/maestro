@@ -34,6 +34,7 @@
     "directory": "packages/web"
   },
   "dependencies": {
+    "@evalops/contracts": "^0.10.0",
     "lit": "^3.2.1",
     "marked": "^17.0.0",
     "highlight.js": "^11.10.0"

@@ -8,6 +8,7 @@
 	"include": ["src/**/*.ts"],
 	"exclude": ["node_modules", "dist", "**/*.d.ts", "src/**/*.d.ts"],
 	"references": [
-		{ "path": "./packages/tui/tsconfig.build.json" }
+		{ "path": "./packages/tui/tsconfig.build.json" },
+		{ "path": "./packages/contracts/tsconfig.build.json" }
 	]
 }
