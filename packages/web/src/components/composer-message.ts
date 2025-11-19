@@ -338,60 +338,73 @@ export class ComposerMessage extends LitElement {
 				.replace(/\n/g, "<br>");
 			return html`<div class="bubble">${unsafeHTML(escaped)}</div>`;
 		}
-		
+
 		// Assistant messages support full markdown
 		const rendered = marked.parse(this.content, { async: false }) as string;
 		const sanitized = sanitizeHTML(rendered);
-		
+
 		// Add copy buttons to code blocks
 		const withCopyButtons = sanitized.replace(
 			/<pre><code/g,
-			'<pre><button class="copy-button" onclick="navigator.clipboard.writeText(this.parentElement.textContent)">Copy</button><code'
+			'<pre><button class="copy-button" onclick="navigator.clipboard.writeText(this.parentElement.textContent)">Copy</button><code',
 		);
-		
+
 		return html`<div class="bubble">${unsafeHTML(withCopyButtons)}</div>`;
 	}
 
 	render() {
 		// Check if message has thinking or tools
-		const hasThinking = (this as any).thinking && (this as any).thinking.length > 0;
+		const hasThinking =
+			(this as any).thinking && (this as any).thinking.length > 0;
 		const hasTools = this.tools && this.tools.length > 0;
 
 		return html`
 			<div class="message ${this.role}">
 				<div class="role-label">${this.role.toUpperCase()}</div>
 				<div class="content">
-					${hasThinking ? html`
+					${
+						hasThinking
+							? html`
 						<composer-thinking
 							.content=${(this as any).thinking}
 							.isStreaming=${false}
 						></composer-thinking>
-					` : ""}
+					`
+							: ""
+					}
 
 					${this.renderContent()}
 
-					${hasTools ? html`
-						${this.tools.map(tool => html`
+					${
+						hasTools
+							? html`
+						${this.tools.map(
+							(tool) => html`
 							<composer-tool-execution
 								.toolName=${tool.name}
-								.toolCallId=${tool.name + '-' + Date.now()}
+								.toolCallId=${`${tool.name}-${Date.now()}`}
 								.args=${tool.args || {}}
 								.result=${tool.result || null}
-								.isError=${tool.status === 'error'}
-								.isRunning=${tool.status === 'running' || tool.status === 'pending'}
+								.isError=${tool.status === "error"}
+								.isRunning=${tool.status === "running" || tool.status === "pending"}
 							></composer-tool-execution>
-						`)}
-					` : ""}
+						`,
+						)}
+					`
+							: ""
+					}
 
 					<div class="timestamp">
 						${this.formatTimestamp(this.timestamp)}
-						${hasTools
-							? html`
+						${
+							hasTools
+								? html`
 									<span class="tools-indicator">
 										${this.tools.length} TOOL${this.tools.length > 1 ? "S" : ""}
 									</span>
 							  `
-							: ""}
+								: ""
+						}
 					</div>
 				</div>
 			</div>

@@ -222,7 +222,8 @@ export class ComposerToolExecution extends LitElement {
 	private formatValue(value: any): string {
 		if (value === null || value === undefined) return "null";
 		if (typeof value === "string") return value;
-		if (typeof value === "number" || typeof value === "boolean") return String(value);
+		if (typeof value === "number" || typeof value === "boolean")
+			return String(value);
 		return JSON.stringify(value, null, 2);
 	}
 
@@ -274,7 +275,9 @@ export class ComposerToolExecution extends LitElement {
 		// Limit content length for display
 		const maxLength = 2000;
 		const truncated = content.length > maxLength;
-		const displayContent = truncated ? content.slice(0, maxLength) + "\n... (truncated)" : content;
+		const displayContent = truncated
+			? `${content.slice(0, maxLength)}\n... (truncated)`
+			: content;
 
 		return html`
 			<div class="tool-section">
@@ -282,18 +285,30 @@ export class ComposerToolExecution extends LitElement {
 				<div class="result-content ${isErrorResult ? "error" : ""}">
 					${displayContent}
 				</div>
-				${truncated ? html`
+				${
+					truncated
+						? html`
 					<button class="collapse-toggle" @click=${this.toggleCollapse}>
 						${this.collapsed ? "Show Less" : "Show Full Output"}
 					</button>
-				` : ""}
+				`
+						: ""
+				}
 			</div>
 		`;
 	}
 
 	render() {
-		const statusClass = this.isRunning ? "running" : this.isError ? "error" : "completed";
-		const statusText = this.isRunning ? "Running..." : this.isError ? "Error" : "Completed";
+		const statusClass = this.isRunning
+			? "running"
+			: this.isError
+				? "error"
+				: "completed";
+		const statusText = this.isRunning
+			? "Running..."
+			: this.isError
+				? "Error"
+				: "Completed";
 		const formattedArgs = this.formatArgs();
 
 		return html`
@@ -301,11 +316,12 @@ export class ComposerToolExecution extends LitElement {
 				<div class="tool-header">
 					<div class="tool-name">
 						<div class="tool-icon">
-							${this.isRunning 
-								? html`<div class="spinner"></div>` 
-								: this.isError 
-									? html`<span style="color: #f85149;">✕</span>`
-									: html`<span style="color: #3fb950;">✓</span>`
+							${
+								this.isRunning
+									? html`<div class="spinner"></div>`
+									: this.isError
+										? html`<span style="color: #f85149;">✕</span>`
+										: html`<span style="color: #3fb950;">✓</span>`
 							}
 						</div>
 						<span>${this.toolName}</span>
@@ -314,23 +330,31 @@ export class ComposerToolExecution extends LitElement {
 				</div>
 
 				<div class="tool-body">
-					${formattedArgs.length > 0 ? html`
+					${
+						formattedArgs.length > 0
+							? html`
 						<div class="tool-section">
 							<div class="section-label">Arguments</div>
 							<div class="args-grid">
-								${formattedArgs.map(arg => html`
+								${formattedArgs.map(
+									(arg) => html`
 									<div class="arg-key">${arg.key}:</div>
-									<div class="arg-value ${typeof arg.value === 'object' ? 'json' : ''}">
+									<div class="arg-value ${typeof arg.value === "object" ? "json" : ""}">
 										${this.formatValue(arg.value)}
 									</div>
-								`)}
+								`,
+								)}
 							</div>
 						</div>
-					` : ""}
+					`
+							: ""
+					}
 
 					${this.result ? this.renderResult() : ""}
 
-					${!this.isRunning ? html`
+					${
+						!this.isRunning
+							? html`
 						<div class="metadata">
 							<div class="metadata-item">
 								<span class="metadata-label">ID:</span>
@@ -341,7 +365,9 @@ export class ComposerToolExecution extends LitElement {
 								<span class="metadata-value">${this.formatDuration()}</span>
 							</div>
 						</div>
-					` : ""}
+					`
+							: ""
+					}
 				</div>
 			</div>
 		`;

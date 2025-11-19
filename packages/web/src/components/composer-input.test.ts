@@ -2,8 +2,8 @@
  * Tests for ComposerInput component
  */
 
-import { assert, describe, it, beforeEach } from "vitest";
 import { fixture, html, oneEvent } from "@open-wc/testing";
+import { assert, beforeEach, describe, it } from "vitest";
 import "./composer-input.js";
 import type { ComposerInput } from "./composer-input.js";
 
@@ -38,15 +38,21 @@ describe("ComposerInput", () => {
 		element = await fixture(html`<composer-input disabled></composer-input>`);
 		await element.updateComplete;
 
-		const textarea = element.shadowRoot?.querySelector("textarea") as HTMLTextAreaElement;
-		const button = element.shadowRoot?.querySelector("button") as HTMLButtonElement;
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
+		const button = element.shadowRoot?.querySelector(
+			"button",
+		) as HTMLButtonElement;
 		assert.ok(textarea?.disabled);
 		assert.ok(button?.disabled);
 	});
 
 	it("updates internal value on input", async () => {
 		await element.updateComplete;
-		const textarea = element.shadowRoot?.querySelector("textarea") as HTMLTextAreaElement;
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
 
 		textarea.value = "Hello";
 		textarea.dispatchEvent(new Event("input", { bubbles: true }));
@@ -57,8 +63,12 @@ describe("ComposerInput", () => {
 
 	it("dispatches submit event on button click", async () => {
 		await element.updateComplete;
-		const textarea = element.shadowRoot?.querySelector("textarea") as HTMLTextAreaElement;
-		const button = element.shadowRoot?.querySelector("button") as HTMLButtonElement;
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
+		const button = element.shadowRoot?.querySelector(
+			"button",
+		) as HTMLButtonElement;
 
 		// Set value
 		textarea.value = "Test message";
@@ -67,14 +77,16 @@ describe("ComposerInput", () => {
 
 		// Click button and wait for event
 		setTimeout(() => button.click());
-		const event = await oneEvent(element, "submit") as CustomEvent;
+		const event = (await oneEvent(element, "submit")) as CustomEvent;
 
 		assert.equal(event.detail.text, "Test message");
 	});
 
 	it("dispatches submit event on Enter key", async () => {
 		await element.updateComplete;
-		const textarea = element.shadowRoot?.querySelector("textarea") as HTMLTextAreaElement;
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
 
 		textarea.value = "Enter message";
 		textarea.dispatchEvent(new Event("input"));
@@ -88,14 +100,16 @@ describe("ComposerInput", () => {
 		});
 
 		setTimeout(() => textarea.dispatchEvent(enterEvent));
-		const event = await oneEvent(element, "submit") as CustomEvent;
+		const event = (await oneEvent(element, "submit")) as CustomEvent;
 
 		assert.equal(event.detail.text, "Enter message");
 	});
 
 	it("does not submit on Shift+Enter", async () => {
 		await element.updateComplete;
-		const textarea = element.shadowRoot?.querySelector("textarea") as HTMLTextAreaElement;
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
 
 		textarea.value = "Multiline\n";
 		textarea.dispatchEvent(new Event("input"));
@@ -120,8 +134,12 @@ describe("ComposerInput", () => {
 
 	it("clears input after submit", async () => {
 		await element.updateComplete;
-		const textarea = element.shadowRoot?.querySelector("textarea") as HTMLTextAreaElement;
-		const button = element.shadowRoot?.querySelector("button") as HTMLButtonElement;
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
+		const button = element.shadowRoot?.querySelector(
+			"button",
+		) as HTMLButtonElement;
 
 		textarea.value = "Clear this";
 		textarea.dispatchEvent(new Event("input"));
@@ -136,7 +154,9 @@ describe("ComposerInput", () => {
 
 	it("does not submit empty messages", async () => {
 		await element.updateComplete;
-		const button = element.shadowRoot?.querySelector("button") as HTMLButtonElement;
+		const button = element.shadowRoot?.querySelector(
+			"button",
+		) as HTMLButtonElement;
 
 		let submitted = false;
 		element.addEventListener("submit", () => {
@@ -151,15 +171,19 @@ describe("ComposerInput", () => {
 
 	it("trims whitespace from messages", async () => {
 		await element.updateComplete;
-		const textarea = element.shadowRoot?.querySelector("textarea") as HTMLTextAreaElement;
-		const button = element.shadowRoot?.querySelector("button") as HTMLButtonElement;
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
+		const button = element.shadowRoot?.querySelector(
+			"button",
+		) as HTMLButtonElement;
 
 		textarea.value = "  spaces  ";
 		textarea.dispatchEvent(new Event("input"));
 		await element.updateComplete;
 
 		setTimeout(() => button.click());
-		const event = await oneEvent(element, "submit") as CustomEvent;
+		const event = (await oneEvent(element, "submit")) as CustomEvent;
 
 		assert.equal(event.detail.text, "spaces");
 	});

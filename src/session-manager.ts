@@ -696,37 +696,39 @@ export class SessionManager {
 	/**
 	 * List all sessions in the session directory
 	 */
-	async listSessions(): Promise<Array<{
-		id: string;
-		title?: string;
-		createdAt: string;
-		updatedAt: string;
-		messageCount: number;
-	}>> {
+	async listSessions(): Promise<
+		Array<{
+			id: string;
+			title?: string;
+			createdAt: string;
+			updatedAt: string;
+			messageCount: number;
+		}>
+	> {
 		const files = readdirSync(this.sessionDir);
 		const sessions = [];
 
 		for (const file of files) {
-			if (!file.endsWith('.jsonl')) continue;
+			if (!file.endsWith(".jsonl")) continue;
 
 			const filePath = join(this.sessionDir, file);
 			const stats = statSync(filePath);
 
 			// Extract session ID from filename
 			const match = file.match(/_([a-f0-9-]+)\.jsonl$/);
-			const id = match ? match[1] : file.replace('.jsonl', '');
+			const id = match ? match[1] : file.replace(".jsonl", "");
 
 			// Count messages in the file
 			let messageCount = 0;
 			let title: string | undefined;
 			try {
-				const content = readFileSync(filePath, 'utf-8');
-				const lines = content.trim().split('\n').filter(Boolean);
+				const content = readFileSync(filePath, "utf-8");
+				const lines = content.trim().split("\n").filter(Boolean);
 				for (const line of lines) {
 					const entry = tryParseSessionEntry(line);
-					if (entry && entry.type === 'message') {
+					if (entry && entry.type === "message") {
 						messageCount++;
-					} else if (entry && entry.type === 'session_meta' && entry.summary) {
+					} else if (entry && entry.type === "session_meta" && entry.summary) {
 						title = entry.summary;
 					}
 				}
@@ -745,8 +747,9 @@ export class SessionManager {
 		}
 
 		// Sort by updated date, most recent first
-		return sessions.sort((a, b) => 
-			new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+		return sessions.sort(
+			(a, b) =>
+				new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
 		);
 	}
 
@@ -762,7 +765,7 @@ export class SessionManager {
 		messageCount: number;
 	} | null> {
 		const files = readdirSync(this.sessionDir);
-		const sessionFile = files.find(f => f.includes(sessionId));
+		const sessionFile = files.find((f) => f.includes(sessionId));
 
 		if (!sessionFile) {
 			return null;
@@ -770,19 +773,19 @@ export class SessionManager {
 
 		const filePath = join(this.sessionDir, sessionFile);
 		const stats = statSync(filePath);
-		const content = readFileSync(filePath, 'utf-8');
-		const lines = content.trim().split('\n').filter(Boolean);
-		
+		const content = readFileSync(filePath, "utf-8");
+		const lines = content.trim().split("\n").filter(Boolean);
+
 		const messages: AppMessage[] = [];
 		let title: string | undefined;
-		
+
 		for (const line of lines) {
 			const entry = tryParseSessionEntry(line);
 			if (!entry) continue;
-			
-			if (entry.type === 'session_meta' && entry.summary) {
+
+			if (entry.type === "session_meta" && entry.summary) {
 				title = entry.summary;
-			} else if (entry.type === 'message') {
+			} else if (entry.type === "message") {
 				// Convert session message to AppMessage
 				messages.push(entry.message);
 			}
@@ -810,7 +813,7 @@ export class SessionManager {
 		messageCount: number;
 	}> {
 		this.startFreshSession();
-		
+
 		// Write summary as title if provided
 		if (options?.title && this.enabled) {
 			const entry: SessionMetaEntry = {
@@ -837,7 +840,7 @@ export class SessionManager {
 	 */
 	async deleteSession(sessionId: string): Promise<void> {
 		const files = readdirSync(this.sessionDir);
-		const sessionFile = files.find(f => f.includes(sessionId));
+		const sessionFile = files.find((f) => f.includes(sessionId));
 
 		if (!sessionFile) {
 			throw new Error(`Session ${sessionId} not found`);

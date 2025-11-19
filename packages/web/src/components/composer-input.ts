@@ -207,11 +207,13 @@ export class ComposerInput extends LitElement {
 					maxlength=${this.maxLength}
 					rows="1"
 				></textarea>
-				${showCount
-					? html`<div class="char-count ${this.getCharCountClass()}">
+				${
+					showCount
+						? html`<div class="char-count ${this.getCharCountClass()}">
 							${charCount}/${this.maxLength}
 					  </div>`
-					: ""}
+						: ""
+				}
 				<div class="actions">
 					<button @click=${this.submit} ?disabled=${this.disabled || !this.value.trim()}>
 						SEND

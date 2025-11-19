@@ -100,7 +100,8 @@ export class ApiClient {
 							// Handle different event types from Agent
 							if (event.type === "done") {
 								return;
-							} else if (event.type === "content_block_delta" && event.text) {
+							}
+							if (event.type === "content_block_delta" && event.text) {
 								yield event.text;
 							} else if (event.type === "text_delta" && event.text) {
 								yield event.text;
@@ -121,7 +122,9 @@ export class ApiClient {
 	/**
 	 * Send a chat message and stream ALL agent events (text deltas, tool calls, thinking, etc.)
 	 */
-	async *chatWithEvents(request: ChatRequest): AsyncGenerator<AgentEvent, void, unknown> {
+	async *chatWithEvents(
+		request: ChatRequest,
+	): AsyncGenerator<AgentEvent, void, unknown> {
 		const response = await fetch(`${this.baseUrl}/api/chat`, {
 			method: "POST",
 			headers: {

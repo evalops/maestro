@@ -2,8 +2,8 @@
  * Tests for ComposerChat component
  */
 
-import { assert, describe, it, beforeEach, vi } from "vitest";
 import { fixture, html } from "@open-wc/testing";
+import { assert, beforeEach, describe, it, vi } from "vitest";
 import "./composer-chat.js";
 import type { ComposerChat } from "./composer-chat.js";
 
@@ -50,7 +50,8 @@ describe("ComposerChat", () => {
 
 	it("renders input container", async () => {
 		await element.updateComplete;
-		const inputContainer = element.shadowRoot?.querySelector(".input-container");
+		const inputContainer =
+			element.shadowRoot?.querySelector(".input-container");
 		assert.ok(inputContainer);
 		const input = inputContainer?.querySelector("composer-input");
 		assert.ok(input);

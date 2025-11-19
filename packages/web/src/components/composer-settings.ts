@@ -35,14 +35,20 @@ interface UsageSummary {
 		output: number;
 		cached: number;
 	};
-	byProvider: Record<string, {
-		cost: number;
-		calls: number;
-	}>;
-	byModel: Record<string, {
-		cost: number;
-		calls: number;
-	}>;
+	byProvider: Record<
+		string,
+		{
+			cost: number;
+			calls: number;
+		}
+	>;
+	byModel: Record<
+		string,
+		{
+			cost: number;
+			calls: number;
+		}
+	>;
 }
 
 interface ModelInfo {
@@ -378,15 +384,19 @@ export class ComposerSettings extends LitElement {
 	}
 
 	private close() {
-		this.dispatchEvent(new CustomEvent("close", { bubbles: true, composed: true }));
+		this.dispatchEvent(
+			new CustomEvent("close", { bubbles: true, composed: true }),
+		);
 	}
 
 	private selectModel(model: ModelInfo) {
-		this.dispatchEvent(new CustomEvent("model-select", {
-			detail: { model: `${model.provider}/${model.id}` },
-			bubbles: true,
-			composed: true,
-		}));
+		this.dispatchEvent(
+			new CustomEvent("model-select", {
+				detail: { model: `${model.provider}/${model.id}` },
+				bubbles: true,
+				composed: true,
+			}),
+		);
 		this.close();
 	}
 
@@ -410,7 +420,8 @@ export class ComposerSettings extends LitElement {
 	}
 
 	private renderWorkspaceTab() {
-		if (!this.status) return html`<div class="loading">Loading workspace status...</div>`;
+		if (!this.status)
+			return html`<div class="loading">Loading workspace status...</div>`;
 
 		return html`
 			<div class="section">
@@ -422,27 +433,37 @@ export class ComposerSettings extends LitElement {
 						<div class="info-label">CWD:</div>
 						<div class="info-value">${this.status.cwd}</div>
 
-						${this.status.git ? html`
+						${
+							this.status.git
+								? html`
 							<div class="info-label">Git Branch:</div>
 							<div class="info-value highlight">${this.status.git.branch}</div>
 
-							${this.status.git.status ? html`
+							${
+								this.status.git.status
+									? html`
 								<div class="info-label">Git Status:</div>
 								<div class="info-value">
-									${this.status.git.status.total === 0
-										? html`<span class="success">Clean</span>`
-										: html`
+									${
+										this.status.git.status.total === 0
+											? html`<span class="success">Clean</span>`
+											: html`
 											${this.status.git.status.modified > 0 ? html`<span class="badge">${this.status.git.status.modified} Modified</span>` : ""}
 											${this.status.git.status.added > 0 ? html`<span class="badge success">${this.status.git.status.added} Added</span>` : ""}
 											${this.status.git.status.deleted > 0 ? html`<span class="badge error">${this.status.git.status.deleted} Deleted</span>` : ""}
 											${this.status.git.status.untracked > 0 ? html`<span class="badge">${this.status.git.status.untracked} Untracked</span>` : ""}
-										`}
+										`
+									}
 								</div>
-							` : ""}
-						` : html`
+							`
+									: ""
+							}
+						`
+								: html`
 							<div class="info-label">Git:</div>
 							<div class="info-value">Not a git repository</div>
-						`}
+						`
+						}
 					</div>
 				</div>
 			</div>
@@ -494,19 +515,21 @@ export class ComposerSettings extends LitElement {
 			if (!byProvider.has(model.provider)) {
 				byProvider.set(model.provider, []);
 			}
-			byProvider.get(model.provider)!.push(model);
+			byProvider.get(model.provider)?.push(model);
 		}
 
 		return html`
-			${[...byProvider.entries()].map(([provider, models]) => html`
+			${[...byProvider.entries()].map(
+				([provider, models]) => html`
 				<div class="section">
 					<div class="section-header">
 						<h3>${provider.toUpperCase()} (${models.length})</h3>
 					</div>
 					<div class="section-content">
 						<div class="model-grid">
-							${models.map(model => {
-								const isSelected = this.currentModel === `${model.provider}/${model.id}`;
+							${models.map((model) => {
+								const isSelected =
+									this.currentModel === `${model.provider}/${model.id}`;
 								return html`
 									<div 
 										class="model-card ${isSelected ? "selected" : ""}"
@@ -537,7 +560,8 @@ export class ComposerSettings extends LitElement {
 						</div>
 					</div>
 				</div>
-			`)}
+			`,
+			)}
 		`;
 	}
 
@@ -562,41 +586,53 @@ export class ComposerSettings extends LitElement {
 				</div>
 			</div>
 
-			${Object.keys(this.usage.byProvider).length > 0 ? html`
+			${
+				Object.keys(this.usage.byProvider).length > 0
+					? html`
 				<div class="section">
 					<div class="section-header">
 						<h3>By Provider</h3>
 					</div>
 					<div class="section-content">
 						<div class="info-grid">
-							${Object.entries(this.usage.byProvider).map(([provider, stats]) => html`
+							${Object.entries(this.usage.byProvider).map(
+								([provider, stats]) => html`
 								<div class="info-label">${provider}:</div>
 								<div class="info-value">
 									${this.formatCost(stats.cost)} (${stats.calls} calls)
 								</div>
-							`)}
+							`,
+							)}
 						</div>
 					</div>
 				</div>
-			` : ""}
+			`
+					: ""
+			}
 
-			${Object.keys(this.usage.byModel).length > 0 ? html`
+			${
+				Object.keys(this.usage.byModel).length > 0
+					? html`
 				<div class="section">
 					<div class="section-header">
 						<h3>By Model</h3>
 					</div>
 					<div class="section-content">
 						<div class="info-grid">
-							${Object.entries(this.usage.byModel).map(([model, stats]) => html`
+							${Object.entries(this.usage.byModel).map(
+								([model, stats]) => html`
 								<div class="info-label">${model}:</div>
 								<div class="info-value">
 									${this.formatCost(stats.cost)} (${stats.calls} calls)
 								</div>
-							`)}
+							`,
+							)}
 						</div>
 					</div>
 				</div>
-			` : ""}
+			`
+					: ""
+			}
 		`;
 	}
 
@@ -610,9 +646,10 @@ export class ComposerSettings extends LitElement {
 			${this.error ? html`<div class="error-message">${this.error}</div>` : ""}
 
 			<div class="settings-content">
-				${this.loading 
-					? html`<div class="loading">Loading settings...</div>`
-					: html`
+				${
+					this.loading
+						? html`<div class="loading">Loading settings...</div>`
+						: html`
 						${this.renderWorkspaceTab()}
 						${this.renderModelsTab()}
 						${this.renderUsageTab()}

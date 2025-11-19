@@ -2,8 +2,8 @@
  * Tests for ComposerMessage component
  */
 
-import { assert, describe, it, beforeEach } from "vitest";
 import { fixture, html } from "@open-wc/testing";
+import { assert, beforeEach, describe, it } from "vitest";
 import "./composer-message.js";
 import type { ComposerMessage } from "./composer-message.js";
 

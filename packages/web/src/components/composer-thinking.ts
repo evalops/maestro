@@ -161,7 +161,7 @@ export class ComposerThinking extends LitElement {
 	private getSummary(): string {
 		if (!this.content) return "Thinking...";
 		const firstLine = this.content.split("\n")[0];
-		return firstLine.length > 80 ? firstLine.slice(0, 80) + "..." : firstLine;
+		return firstLine.length > 80 ? `${firstLine.slice(0, 80)}...` : firstLine;
 	}
 
 	render() {
@@ -179,15 +179,21 @@ export class ComposerThinking extends LitElement {
 					<div class="collapse-indicator">▼</div>
 				</div>
 
-				${this.collapsed && hasContent ? html`
+				${
+					this.collapsed && hasContent
+						? html`
 					<div class="thinking-summary">${this.getSummary()}</div>
-				` : ""}
+				`
+						: ""
+				}
 
 				<div class="thinking-content ${this.collapsed ? "collapsed" : ""}">
 					${this.content || "Generating reasoning..."}
 				</div>
 
-				${hasContent && !this.isStreaming ? html`
+				${
+					hasContent && !this.isStreaming
+						? html`
 					<div class="metadata">
 						<div class="metadata-item">
 							<span class="metadata-label">Length:</span>
@@ -198,7 +204,9 @@ export class ComposerThinking extends LitElement {
 							<span class="metadata-value">${this.formatTokenCount()}</span>
 						</div>
 					</div>
-				` : ""}
+				`
+						: ""
+				}
 			</div>
 		`;
 	}
