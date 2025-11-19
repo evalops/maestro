@@ -18,7 +18,7 @@
 
           src = ./.;
 
-          npmDepsHash = "sha256-CKjvjbH+Tdxyh/zj1Ly4pgVC9NlfxAMxooXQwN75SvM=";
+          npmDepsHash = "sha256-3iLbRUrQ+N74nZ52Ar/4gvdTiG00yguCqdSwkuHU/Vg=";
 
           nativeBuildInputs = with pkgs; [
             nodejs
