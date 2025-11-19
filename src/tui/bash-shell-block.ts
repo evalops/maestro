@@ -1,5 +1,5 @@
+import { Container, Spacer, Text, visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
-import { Container, Spacer, Text, visibleWidth } from "../tui-lib/index.js";
 
 type ShellBlockStatus = "pending" | "success" | "error";
 

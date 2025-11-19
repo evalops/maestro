@@ -1,10 +1,10 @@
 import chalk from "chalk";
 import { type Token, type Tokens, marked } from "marked";
+import { renderMermaidDiagram } from "../mermaid-renderer.js";
 import {
 	highlightCodeLines,
 	highlightInlineCode,
-} from "../../style/code-highlighter.js";
-import { renderMermaidDiagram } from "../../tui/mermaid-renderer.js";
+} from "../style/code-highlighter.js";
 import type { Component } from "../tui.js";
 import { visibleWidth } from "../utils.js";
 

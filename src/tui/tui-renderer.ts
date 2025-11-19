@@ -1,5 +1,15 @@
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
+import type { LargePasteEvent } from "@evalops/tui";
+import type { SlashCommand } from "@evalops/tui";
+import {
+	CombinedAutocompleteProvider,
+	Container,
+	ProcessTerminal,
+	Spacer,
+	TUI,
+	Text,
+} from "@evalops/tui";
 import chalk from "chalk";
 import type {
 	ActionApprovalDecision,
@@ -25,16 +35,6 @@ import {
 } from "../session-manager.js";
 import type { SessionManager } from "../session-manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
-import type { LargePasteEvent } from "../tui-lib/components/editor.js";
-import type { SlashCommand } from "../tui-lib/index.js";
-import {
-	CombinedAutocompleteProvider,
-	Container,
-	ProcessTerminal,
-	Spacer,
-	TUI,
-	Text,
-} from "../tui-lib/index.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
 import { BashModeView } from "./bash-mode-view.js";

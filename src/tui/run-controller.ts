@@ -1,4 +1,4 @@
-import type { TUI } from "../tui-lib/index.js";
+import type { TUI } from "@evalops/tui";
 import type { FooterComponent } from "./footer.js";
 import type { LoaderView } from "./loader-view.js";
 

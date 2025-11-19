@@ -2,7 +2,7 @@ import type {
 	AutocompleteItem,
 	CommandArgumentDefinition,
 	SlashCommand,
-} from "../../tui-lib/index.js";
+} from "@evalops/tui";
 
 export interface CommandExecutionContext<TArgs = Record<string, unknown>> {
 	command: SlashCommand;

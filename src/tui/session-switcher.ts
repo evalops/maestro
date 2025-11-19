@@ -1,5 +1,5 @@
+import { Container, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
-import { Container, Spacer, Text } from "../tui-lib/index.js";
 import type {
 	SessionDataProvider,
 	SessionItem,

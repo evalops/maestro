@@ -1,6 +1,6 @@
+import { type Component, Container, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { SessionManager } from "../session-manager.js";
-import { type Component, Container, Spacer, Text } from "../tui-lib/index.js";
 import { SessionDataProvider } from "./session-data-provider.js";
 import { SessionList } from "./session-list.js";
 

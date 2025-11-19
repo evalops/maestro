@@ -1,5 +1,5 @@
-import type { SlashCommand } from "../tui-lib/index.js";
-import type { Container, TUI } from "../tui-lib/index.js";
+import type { SlashCommand } from "@evalops/tui";
+import type { Container, TUI } from "@evalops/tui";
 import { CommandPaletteComponent } from "./command-palette.js";
 import type { CustomEditor } from "./custom-editor.js";
 

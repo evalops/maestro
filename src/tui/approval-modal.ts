@@ -1,6 +1,6 @@
+import { type Component, visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import type { ActionApprovalRequest } from "../agent/action-approval.js";
-import { type Component, visibleWidth } from "../tui-lib/index.js";
 
 interface ApprovalModalOptions {
 	request: ActionApprovalRequest;

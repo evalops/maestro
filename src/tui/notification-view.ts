@@ -1,6 +1,6 @@
+import type { Container, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import { badge, muted } from "../style/theme.js";
-import type { Container, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 
 interface NotificationViewOptions {
 	chatContainer: Container;

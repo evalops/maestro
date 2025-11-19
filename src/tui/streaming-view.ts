@@ -1,7 +1,7 @@
+import type { Container } from "@evalops/tui";
+import { Text } from "@evalops/tui";
 import type { AssistantMessage } from "../agent/types.js";
 import { toRenderableAssistantMessage } from "../conversation/render-model.js";
-import type { Container } from "../tui-lib/index.js";
-import { Text } from "../tui-lib/index.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import type { ToolOutputView } from "./tool-output-view.js";

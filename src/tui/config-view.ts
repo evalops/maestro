@@ -1,4 +1,6 @@
 import { homedir } from "node:os";
+import { Spacer, Text } from "@evalops/tui";
+import type { Container, TUI } from "@evalops/tui";
 import chalk from "chalk";
 import type {
 	ConfigInspection,
@@ -10,8 +12,6 @@ import {
 	validateConfig,
 } from "../models/registry.js";
 import { badge, muted, separator } from "../style/theme.js";
-import { Spacer, Text } from "../tui-lib/index.js";
-import type { Container, TUI } from "../tui-lib/index.js";
 import type { CommandExecutionContext } from "./commands/types.js";
 
 interface ConfigViewOptions {

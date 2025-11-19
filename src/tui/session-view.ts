@@ -1,3 +1,5 @@
+import type { Container, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import type { Agent } from "../agent/agent.js";
 import type {
 	AgentState,
@@ -18,8 +20,6 @@ import {
 	muted,
 	separator as themedSeparator,
 } from "../style/theme.js";
-import type { Container, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 import { normalizeUsage } from "./footer-utils.js";
 import type { SessionArtifacts, SessionContext } from "./session-context.js";
 import type {

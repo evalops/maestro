@@ -1,3 +1,5 @@
+import type { Container, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import {
 	badge,
@@ -6,8 +8,6 @@ import {
 	separator as themedSeparator,
 } from "../style/theme.js";
 import { clearUsage, getUsageSummary } from "../tracking/cost-tracker.js";
-import type { Container, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 import type { CommandExecutionContext } from "./commands/types.js";
 
 type CostPeriod = {

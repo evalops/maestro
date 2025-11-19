@@ -1,6 +1,6 @@
+import { Container, Markdown, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { RenderableAssistantMessage } from "../conversation/render-model.js";
-import { Container, Markdown, Spacer, Text } from "../tui-lib/index.js";
 
 const ASSISTANT_BORDER = "#fcd5ce";
 const ASSISTANT_LABEL = "#ffafcc";

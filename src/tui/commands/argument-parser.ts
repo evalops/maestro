@@ -1,8 +1,5 @@
+import type { CommandArgumentDefinition, SlashCommand } from "@evalops/tui";
 import chalk from "chalk";
-import type {
-	CommandArgumentDefinition,
-	SlashCommand,
-} from "../../tui-lib/index.js";
 
 export type CommandArgumentParseResult<T = Record<string, unknown>> =
 	| { ok: true; args: T }

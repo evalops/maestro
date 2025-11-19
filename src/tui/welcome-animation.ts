@@ -1,4 +1,4 @@
-import { Container, Text } from "../tui-lib/index.js";
+import { Container, Text } from "@evalops/tui";
 import { gradientColor } from "./welcome-colors.js";
 
 /**

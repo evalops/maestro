@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import type { Container, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import type { AppMessage } from "../agent/types.js";
@@ -11,8 +13,6 @@ import type { SessionModelMetadata } from "../session-manager.js";
 import { muted } from "../style/theme.js";
 import type { TelemetryStatus } from "../telemetry.js";
 import { getExaUsageSummary } from "../tools/exa-usage.js";
-import type { Container, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 import {
 	buildBugReport,
 	buildFeedbackTemplate,

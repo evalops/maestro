@@ -1,4 +1,4 @@
-import type { Container, TUI } from "../tui-lib/index.js";
+import type { Container, TUI } from "@evalops/tui";
 import type { CustomEditor } from "./custom-editor.js";
 import { ReportSelectorComponent, type ReportType } from "./report-selector.js";
 

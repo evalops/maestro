@@ -1,7 +1,5 @@
 import { statSync } from "node:fs";
 import { relative, resolve } from "node:path";
-import chalk from "chalk";
-import { badge, heading, muted } from "../style/theme.js";
 import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
@@ -9,7 +7,9 @@ import {
 	Spacer,
 	type TUI,
 	Text,
-} from "../tui-lib/index.js";
+} from "@evalops/tui";
+import chalk from "chalk";
+import { badge, heading, muted } from "../style/theme.js";
 import { BashShellBlock } from "./bash-shell-block.js";
 import type { CustomEditor } from "./custom-editor.js";
 import {

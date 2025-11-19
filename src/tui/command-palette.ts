@@ -1,10 +1,7 @@
+import type { SlashCommand } from "@evalops/tui";
+import { type SelectItem, SelectList } from "@evalops/tui";
+import { Container, Text } from "@evalops/tui";
 import chalk from "chalk";
-import type { SlashCommand } from "../tui-lib/autocomplete.js";
-import {
-	type SelectItem,
-	SelectList,
-} from "../tui-lib/components/select-list.js";
-import { Container, Text } from "../tui-lib/index.js";
 
 export class CommandPaletteComponent extends Container {
 	private list: SelectList;

@@ -1,32 +1,19 @@
-/**
- * @evalops/tui - Terminal UI Library
- *
- * Extracted from Composer CLI for reusability.
- * Components for building interactive terminal applications.
- */
-
-// Core types
-export interface Component {
-	render(width: number): string[];
-	handleInput?(data: string): void;
-}
-
-export interface Terminal {
-	width: number;
-	height: number;
-	write(data: string): void;
-	on(event: string, callback: (...args: any[]) => void): void;
-	removeListener(event: string, callback: (...args: any[]) => void): void;
-}
-
-// Re-export main TUI class (to be implemented)
-// export { TUI } from "./tui.js";
-
-// Re-export components (to be implemented)
-// export { Text } from "./components/text.js";
-// export { Input } from "./components/input.js";
-// export { Editor } from "./components/editor.js";
-// export { Loader } from "./components/loader.js";
-// export { SelectList } from "./components/select-list.js";
-// export { Spacer } from "./components/spacer.js";
-// export { Container } from "./components/container.js";
+export {
+	type AutocompleteItem,
+	type AutocompleteProvider,
+	CombinedAutocompleteProvider,
+	type SlashCommand,
+	type CommandArgumentDefinition,
+	type CommandArgumentType,
+} from "./autocomplete.js";
+export { Editor } from "./components/editor.js";
+export type { LargePasteEvent } from "./components/editor.js";
+export { Input } from "./components/input.js";
+export { Loader } from "./components/loader.js";
+export { Markdown } from "./components/markdown.js";
+export { type SelectItem, SelectList } from "./components/select-list.js";
+export { Spacer } from "./components/spacer.js";
+export { Text } from "./components/text.js";
+export { ProcessTerminal, type Terminal } from "./terminal.js";
+export { type Component, Container, TUI } from "./tui.js";
+export { visibleWidth } from "./utils.js";

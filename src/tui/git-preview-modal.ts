@@ -1,5 +1,5 @@
+import type { Component } from "@evalops/tui";
 import chalk from "chalk";
-import type { Component } from "../tui-lib/index.js";
 
 export type GitPreviewMode = "worktree" | "staged";
 

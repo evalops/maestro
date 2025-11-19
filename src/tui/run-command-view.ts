@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { AutocompleteItem } from "@evalops/tui";
+import { type Container, Spacer, type TUI, Text } from "@evalops/tui";
 import { badge, heading, muted } from "../style/theme.js";
-import type { AutocompleteItem } from "../tui-lib/index.js";
-import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
 import { runShellCommand } from "./run-shell-command.js";
 
 interface RunCommandViewOptions {
