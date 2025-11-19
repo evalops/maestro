@@ -607,8 +607,36 @@ export class ComposerChat extends LitElement {
 		this.currentSessionId = sessionId;
 		try {
 			const session = await this.apiClient.getSession(sessionId);
+			
+			// Transform messages: extract text from content blocks and convert toolCalls to tools
+			const transformedMessages = (session.messages || []).map((msg: any) => {
+				// If content is already a string, use it as-is
+				if (typeof msg.content === 'string') {
+					return msg;
+				}
+				
+				// If content is an array of blocks, extract text and tools
+				if (Array.isArray(msg.content)) {
+					const textBlocks = msg.content.filter((block: any) => block.type === 'text');
+					const toolBlocks = msg.content.filter((block: any) => block.type === 'toolCall');
+					
+					return {
+						...msg,
+						content: textBlocks.map((b: any) => b.text).join('\n\n'),
+						tools: toolBlocks.map((t: any) => ({
+							name: t.name,
+							status: 'completed',
+							args: t.arguments,
+							result: null,
+						})),
+					};
+				}
+				
+				return msg;
+			});
+			
 			// Create a new array reference to trigger Lit's reactivity
-			this.messages = [...(session.messages || [])];
+			this.messages = [...transformedMessages];
 			this.error = null;
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
