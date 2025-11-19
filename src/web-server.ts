@@ -213,7 +213,7 @@ class SseSession {
 	}
 
 	private notifySkip(): void {
-		if (this.skippedWrites === 0) return;
+		if (this.skippedWrites <= 1) return;
 		if (this.onSkip) {
 			this.onSkip({
 				sent: this.sentWrites,
