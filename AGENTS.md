@@ -2,9 +2,36 @@
 
 This document describes Composer's AI agent behavior, system prompts, and operational guidelines.
 
-## Overview
+## Repo Development Tips
 
-Composer is a deterministic coding agent that exposes all capabilities through explicit slash commands and git-aware helpers. The agent is designed to be transparent, reviewable, and scriptable without hidden heuristics or silent retries.
+## Repo Development Tips
+
+- Use `npx nx show projects` to see every workspace target instead of scanning directories manually.
+- Jump straight into a package with `npx nx graph --focus <project>` or `npx nx run <project>:build --skip-nx-cache` to verify the wiring.
+- Install only what you need by running `bun install` at the root (workspace-aware) or `bun install --filter <package>` inside a package for targeted debugging.
+- Scaffold new packages with `bun create vite <package> -- --template react-ts` and update the package `name` field plus `project.json` entry so Nx picks it up.
+- After moving files or changing imports, re-run `bunx biome check .` and `npx nx graph` to ensure Nx still resolves project boundaries.
+
+## Testing Instructions
+
+- Consult `.github/workflows` (notably `evals.yml`, `nx-ci.yml`, and `release.yml`) to mirror whatever CI will execute.
+- Root test + build entry point: `npx nx run composer:test --skip-nx-cache` (automatically builds `tui` and `composer-web`).
+- Package-specific commands:
+  - TUI: `bun run --filter @evalops/tui build` or `npx nx run tui:build`.
+  - Web: `bun run --filter @evalops/composer-web build` or `npx nx run composer-web:build`.
+  - Root lint: `bun run bun:lint` (runs Biome + eval verifier) and `npx nx run composer:lint` if you need the Nx target explicitly.
+- Use Vitest filters for targeted cases: `bunx vitest --run -t "<test name>"`.
+- Never merge without the full lint + test suite passing locally; match CI by running `bun run bun:lint && npx nx run composer:test --skip-nx-cache` before pushing.
+
+## Pull Request Requirements
+
+- Title format: `[composer] <short description>`.
+- Branch off `main`; never commit directly to `main` (protected by rules anyway).
+- Before opening a PR, run at minimum:
+  - `bun run bun:lint`
+  - `npx nx run composer:test --skip-nx-cache`
+  - Any touched package builds (e.g., `npx nx run tui:build`).
+- Include notes in the PR body if you have to skip a validator (e.g., `[skip ci]` or `[skip nix]`) and explain why.
 
 ## Core Principles
 
@@ -114,29 +141,6 @@ src/
 
 ## Agent Capabilities
 
-### Multi-Model Support
-
-Composer supports multiple LLM providers:
-
-- **Anthropic**: Claude Sonnet 4, Claude Opus, Claude Haiku
-- **OpenAI**: GPT-4, GPT-4 Turbo, GPT-3.5
-- **Google**: Gemini Pro, Gemini Flash
-- **xAI**: Grok
-- **Groq**: Llama 3, Mixtral
-- **Cerebras**: Fast inference models
-- **OpenRouter**: Access to multiple providers
-- **ZAI**: Custom models
-
-Switch models mid-session with `/model` command.
-
-### Thinking Modes
-
-For supported models (Claude Sonnet 4, GPT-5, Gemini 2.5), adjust reasoning level with `/thinking`:
-
-- **low**: Fast, minimal reasoning
-- **medium**: Balanced (default)
-- **high**: Deep reasoning for complex problems
-
 ### Context Management
 
 Composer automatically loads context files when starting new sessions:
@@ -198,44 +202,6 @@ The TUI includes an approval modal for high-risk operations:
 - Git force operations
 - System-level commands
 
-## Telemetry & Tracking
-
-### Cost Tracking
-
-Composer tracks API usage locally in `~/.composer/usage.json`:
-
-- Per-provider cost breakdowns
-- Token usage (input/output/cache)
-- Request counts
-- Time-based summaries
-
-View with `/cost` command:
-- `/cost today`: Today's usage
-- `/cost week`: Last 7 days
-- `/cost month`: Last 30 days
-- `/cost breakdown`: Provider/model details
-- `/cost clear`: Reset tracking data
-
-### Telemetry Events
-
-Enable with `COMPOSER_TELEMETRY=true`:
-
-```bash
-export COMPOSER_TELEMETRY=true
-export COMPOSER_TELEMETRY_FILE=~/.composer/telemetry.log  # optional
-export COMPOSER_TELEMETRY_ENDPOINT=https://example.com/hook  # optional
-export COMPOSER_TELEMETRY_SAMPLE=0.25  # sample rate (default: 1.0)
-```
-
-Events captured:
-- Tool name
-- Success/failure
-- Duration
-- Error messages (if any)
-- Context metadata
-
-View reports with `npm run telemetry:report`.
-
 ## Error Handling
 
 ### Tool Failures
@@ -262,113 +228,6 @@ Enable verbose logging:
 export COMPOSER_LOG_LEVEL=debug
 export COMPOSER_LOG_JSON=1  # JSON format for log aggregation
 ```
-
-## Advanced Usage
-
-### Custom Tools
-
-To extend Composer:
-
-1. Create a CLI tool (any language)
-2. Document it in a README
-3. Reference the README from `AGENT.md`
-4. Composer will read and understand the tool
-
-Example `AGENT.md` entry:
-
-```markdown
-## Custom Tools
-
-### Database Migration Tool
-
-Located at `./scripts/migrate.sh`. Usage:
-
-\`\`\`bash
-./scripts/migrate.sh up      # Apply pending migrations
-./scripts/migrate.sh down    # Rollback last migration
-./scripts/migrate.sh status  # Show migration status
-\`\`\`
-```
-
-### Scripting & Automation
-
-Run Composer headlessly:
-
-```bash
-# Single prompt
-composer "Create a React component Button with TypeScript"
-
-# With custom model
-composer --model gpt-4 "Refactor utils/helpers.ts for better readability"
-
-# JSON mode for parsing
-composer --mode json "List all TODO comments in src/" | jq '.todos[]'
-
-# From file
-cat prompts.txt | composer --no-session
-```
-
-### Integration with CI/CD
-
-Example GitHub Actions workflow:
-
-```yaml
-name: AI Code Review
-on: [pull_request]
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install Composer
-        run: npm install -g @evalops/composer
-      - name: Run Review
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          composer --no-session "Review the changes in this PR for potential issues"
-```
-
-## Performance Tuning
-
-### Reduce Context Size
-
-For large codebases, limit context:
-
-```markdown
-# AGENT.md
-
-## Relevant Files
-Focus only on:
-- src/components/**/*.tsx
-- src/utils/**/*.ts
-- Ignore: node_modules, dist, .git
-```
-
-### Batch Operations
-
-Use the `batch` tool for parallel execution:
-
-```json
-{
-  "tool": "batch",
-  "parameters": {
-    "operations": [
-      {"tool": "read", "parameters": {"path": "src/file1.ts"}},
-      {"tool": "read", "parameters": {"path": "src/file2.ts"}},
-      {"tool": "search", "parameters": {"pattern": "TODO"}}
-    ]
-  }
-}
-```
-
-### Model Selection
-
-Choose models based on task:
-- **Fast iterations**: Claude Haiku, GPT-3.5 Turbo
-- **Complex reasoning**: Claude Sonnet 4, GPT-4
-- **Code generation**: Claude Sonnet 4, GPT-4 Turbo
-- **Budget-friendly**: Groq Llama 3, Cerebras models
 
 ## Best Practices
 
@@ -477,18 +336,3 @@ When modifying agent behavior:
 3. Run `npm run verify` before committing
 4. Update `CHANGELOG.md`
 
-## Resources
-
-- [Feature Guide](docs/FEATURES.md) – TUI/CLI walkthrough
-- [Tools Reference](docs/TOOLS_REFERENCE.md) – Detailed tool documentation
-- [Safety & Approvals](docs/SAFETY.md) – Security guidelines
-- [Sessions](docs/SESSIONS.md) – JSONL format details
-- [Models](docs/MODELS.md) – Provider configuration
-
-## Version History
-
-- **v0.10.0**: Current version with full tool suite
-- **v0.9.0**: Added cost tracking and telemetry
-- **v0.8.0**: Introduced LSP support
-- **v0.7.0**: Multi-model provider support
-- **v0.6.0**: Initial public release
