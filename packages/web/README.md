@@ -1,181 +1,152 @@
-# @evalops/composer-web
+# Composer Web UI
 
-Web UI for Composer - A browser-based AI coding assistant interface.
+Beautiful, modern web interface for Composer AI coding assistant.
 
 ## Features
 
-- **Modern Web Components**: Built with Lit for lightweight, reusable components
-- **Real-time Streaming**: Live response streaming from LLM providers
-- **Syntax Highlighting**: Code blocks with highlight.js
-- **Markdown Rendering**: Rich text formatting with marked
-- **Model Selection**: Switch between different AI models
-- **Session Management**: Save and resume chat sessions
-- **Dark Theme**: Professional dark mode interface
+### 🎨 Beautiful Design
+- **Glass morphism effects** with backdrop blur and transparency
+- **Animated backgrounds** with gradient pulses
+- **Smooth animations** and micro-interactions
+- **Modern color palette** with consistent theming
+- **Responsive layout** that works on mobile and desktop
 
-## Installation
+### 💬 Session Management
+- **Session sidebar** showing all your conversations
+- **Create new sessions** with one click
+- **Resume previous sessions** from the sidebar
+- **Session metadata** showing date and message count
+- **Persistent history** across page reloads
+
+### ⚡ Enhanced Messages
+- **Rich markdown rendering** with syntax highlighting
+- **Code blocks** with copy-to-clipboard buttons
+- **Tool execution indicators** showing which tools were used
+- **Timestamp display** with smart formatting (e.g., "2h ago")
+- **Avatar bubbles** with gradient effects
+- **Hover animations** on message bubbles
+
+### ⌨️ Smart Input
+- **Auto-growing textarea** that expands as you type
+- **Character counter** that appears when needed
+- **Keyboard shortcuts**: Enter to send, Shift+Enter for new line
+- **Visual feedback** with focus states and animations
+- **Disabled state** while AI is thinking
+
+### 🤖 AI Integration
+- **Streaming responses** with real-time updates
+- **Model selector** in header
+- **Error handling** with beautiful error messages
+- **Loading states** with animated spinners
+- **Tool usage tracking** (coming soon)
+
+## Getting Started
+
+### Development
 
 ```bash
-npm install @evalops/composer-web
-```
+# From the root directory
+npm run web:dev
 
-## Quick Start
-
-### Standalone Application
-
-```bash
+# Or from the web package
+cd packages/web
 npm run dev
 ```
 
-Opens browser at http://localhost:3000
+This will start:
+- The web server on `http://localhost:8080`
+- Vite dev server with hot module reloading
 
-### Embedded in Your App
-
-```typescript
-import "@evalops/composer-web";
-
-// Add to your HTML
-<composer-chat api-endpoint="http://localhost:8080"></composer-chat>
-```
-
-## Components
-
-### `<composer-chat>`
-
-Main chat interface component.
-
-**Attributes:**
-- `api-endpoint` - Backend API URL
-- `model` - Default model to use
-- `theme` - Color theme (dark/light)
-
-**Example:**
-
-```html
-<composer-chat 
-  api-endpoint="http://localhost:8080"
-  model="claude-sonnet-4-5"
-  theme="dark">
-</composer-chat>
-```
-
-### `<composer-message>`
-
-Individual message display component.
-
-**Attributes:**
-- `role` - Message role (user/assistant/system)
-- `content` - Message text content
-- `timestamp` - ISO timestamp string
-
-### `<composer-input>`
-
-Message input component with keyboard shortcuts.
-
-**Features:**
-- Multi-line support (Shift+Enter)
-- File attachments
-- Command shortcuts (/)
-
-### `<model-selector>`
-
-Interactive model selection dialog.
-
-**Features:**
-- Filter by provider
-- Search models
-- Display model capabilities
-
-## Architecture
-
-```
-packages/web/
-├── src/
-│   ├── components/        # Web Components
-│   │   ├── composer-chat.ts
-│   │   ├── composer-message.ts
-│   │   ├── composer-input.ts
-│   │   └── model-selector.ts
-│   ├── services/          # API clients
-│   │   ├── api-client.ts
-│   │   └── websocket-client.ts
-│   ├── styles/            # Shared styles
-│   │   └── theme.css
-│   └── index.ts           # Entry point
-├── index.html             # Demo page
-└── vite.config.ts         # Build config
-```
-
-## Development
-
-### Run Development Server
+### Production Build
 
 ```bash
-npm run dev
-```
-
-### Build for Production
-
-```bash
+cd packages/web
 npm run build
 ```
 
-### Run Tests
+### Running the Server
 
 ```bash
-npm test
+# From root
+npm run web
+
+# Or with custom port
+PORT=3000 npm run web
 ```
 
-## Styling
+## Architecture
 
-Components use CSS custom properties for theming:
+### Components
+
+- **`composer-chat.ts`** - Main chat interface with sidebar and session management
+- **`composer-message.ts`** - Message display with markdown rendering and animations
+- **`composer-input.ts`** - Smart input field with auto-grow and shortcuts
+- **`model-selector.ts`** - Model selection dialog
+
+### Services
+
+- **`api-client.ts`** - HTTP client for backend API with session support
+
+### Styling
+
+All components use Lit's `css` tagged template literals for scoped styling. Key features:
+
+- CSS variables for theming
+- Animation keyframes for smooth transitions
+- Responsive design with mobile breakpoints
+- Custom scrollbar styling
+- Glass morphism effects with `backdrop-filter`
+
+## API Endpoints
+
+The web UI communicates with these backend endpoints:
+
+### Chat
+- `POST /api/chat` - Send a message and receive streaming response
+  ```json
+  {
+    "model": "claude-sonnet-4-5",
+    "messages": [...],
+    "sessionId": "optional-session-id"
+  }
+  ```
+
+### Models
+- `GET /api/models` - List available AI models
+- `GET /api/model` - Get current model
+- `POST /api/model` - Set current model
+
+### Sessions
+- `GET /api/sessions` - List all sessions
+- `GET /api/sessions/:id` - Get specific session
+- `POST /api/sessions` - Create new session
+- `DELETE /api/sessions/:id` - Delete session
+
+## Customization
+
+### Theming
+
+Edit CSS variables in `index.html`:
 
 ```css
-composer-chat {
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252526;
-  --text-primary: #d4d4d4;
-  --text-secondary: #969696;
-  --accent-color: #0e639c;
-  --border-color: #3e3e42;
+:root {
+  --bg-primary: #0a0e14;
+  --bg-secondary: #161b22;
+  --text-primary: #e6edf3;
+  --accent-color: #2f81f7;
+  /* ... more variables */
 }
 ```
 
-## API Integration
+### API Endpoint
 
-The web UI expects a backend API with these endpoints:
+Change the API endpoint in `index.html`:
 
-### POST /api/chat
-
-Send a message and receive streaming response.
-
-**Request:**
-```json
-{
-  "model": "claude-sonnet-4-5",
-  "messages": [
-    { "role": "user", "content": "Hello" }
-  ]
-}
-```
-
-**Response:**
-Server-sent events stream with JSON chunks.
-
-### GET /api/models
-
-List available models.
-
-**Response:**
-```json
-{
-  "models": [
-    {
-      "id": "claude-sonnet-4-5",
-      "provider": "anthropic",
-      "name": "Claude Sonnet 4.5"
-    }
-  ]
-}
+```html
+<composer-chat 
+    api-endpoint="http://your-api:8080"
+    model="your-model">
+</composer-chat>
 ```
 
 ## Browser Support
@@ -184,6 +155,43 @@ List available models.
 - Firefox 88+
 - Safari 14+
 
+Requires:
+- ES2020 features
+- CSS backdrop-filter
+- CSS custom properties
+- Web Components v1
+
+## Performance
+
+- **Code splitting** via Vite
+- **Lazy loading** of syntax highlighting
+- **Efficient re-renders** with Lit's reactive properties
+- **Virtual scrolling** for long conversations (coming soon)
+
+## Security
+
+- **XSS protection** via HTML sanitization
+- **CORS** enabled for local development
+- **Content Security Policy** recommended for production
+- **Input validation** on all user inputs
+
+## Roadmap
+
+- [ ] Dark/light theme toggle
+- [ ] Session search and filtering
+- [ ] Export sessions as Markdown/HTML
+- [ ] Voice input support
+- [ ] File upload for context
+- [ ] Collaborative sessions
+- [ ] Keyboard shortcuts panel
+- [ ] Accessibility improvements
+- [ ] Virtual scrolling for performance
+- [ ] Offline support with Service Worker
+
+## Contributing
+
+See the main [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
+
 ## License
 
-MIT - see LICENSE file for details.
+Same as main Composer project.

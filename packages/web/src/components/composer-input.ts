@@ -16,29 +16,29 @@ export class ComposerInput extends LitElement {
 			display: flex;
 			gap: 0.5rem;
 			align-items: flex-end;
+			position: relative;
 		}
 
 		textarea {
 			flex: 1;
-			min-height: 52px;
+			min-height: 42px;
 			max-height: 200px;
-			padding: 0.875rem 1rem;
-			border: 1.5px solid var(--border-color, #30363d);
-			border-radius: 8px;
-			background: var(--bg-primary, #0d1117);
-			color: var(--text-primary, #e6edf3);
-			font-family: inherit;
-			font-size: 0.9375rem;
-			resize: vertical;
+			padding: 0.625rem 0.875rem;
+			border: 1px solid #30363d;
+			border-radius: 2px;
+			background: #0a0e14;
+			color: #e6edf3;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+			font-size: 0.8rem;
+			resize: none;
 			outline: none;
-			transition: all 0.2s ease;
-			line-height: 1.5;
+			transition: all 0.15s;
+			line-height: 1.6;
 		}
 
 		textarea:focus {
-			border-color: var(--accent-color, #2f81f7);
-			box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.1);
-			background: var(--bg-secondary, #161b22);
+			border-color: #58a6ff;
+			background: #0d1117;
 		}
 
 		textarea:disabled {
@@ -47,30 +47,54 @@ export class ComposerInput extends LitElement {
 		}
 
 		textarea::placeholder {
-			color: var(--text-secondary, #969696);
+			color: #6e7681;
+		}
+
+		.char-count {
+			position: absolute;
+			bottom: 0.5rem;
+			right: 5rem;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.65rem;
+			color: #6e7681;
+			pointer-events: none;
+			opacity: 0;
+			transition: opacity 0.15s;
+			text-transform: uppercase;
+		}
+
+		textarea:focus + .char-count {
+			opacity: 1;
+		}
+
+		.char-count.warning {
+			color: #d29922;
+		}
+
+		.char-count.error {
+			color: #f85149;
 		}
 
 		button {
-			padding: 0.875rem 1.75rem;
-			background: linear-gradient(135deg, var(--accent-color, #2f81f7) 0%, var(--accent-hover, #539bf5) 100%);
-			color: white;
-			border: none;
-			border-radius: 8px;
-			font-size: 0.9375rem;
-			font-weight: 600;
+			padding: 0.625rem 1.25rem;
+			background: #21262d;
+			color: #e6edf3;
+			border: 1px solid #30363d;
+			border-radius: 2px;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.7rem;
+			font-weight: 700;
 			cursor: pointer;
-			transition: all 0.2s ease;
+			transition: all 0.15s;
 			white-space: nowrap;
-			box-shadow: 0 2px 8px rgba(47, 129, 247, 0.3);
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
 		}
 
 		button:hover:not(:disabled) {
-			transform: translateY(-1px);
-			box-shadow: 0 4px 12px rgba(47, 129, 247, 0.4);
-		}
-
-		button:active:not(:disabled) {
-			transform: translateY(0);
+			background: #30363d;
+			border-color: #58a6ff;
+			color: #58a6ff;
 		}
 
 		button:disabled {
@@ -79,14 +103,49 @@ export class ComposerInput extends LitElement {
 		}
 
 		.hint {
-			font-size: 0.75rem;
-			color: var(--text-secondary, #969696);
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.65rem;
+			color: #6e7681;
 			margin-top: 0.5rem;
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+		}
+
+		.hint kbd {
+			padding: 0.125rem 0.35rem;
+			background: #161b22;
+			border: 1px solid #30363d;
+			border-radius: 2px;
+			font-family: inherit;
+			font-size: 0.65rem;
+			font-weight: 600;
+		}
+
+		.actions {
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+		}
+
+		@media (max-width: 768px) {
+			textarea {
+				font-size: 16px; /* Prevent zoom on iOS */
+			}
+
+			button {
+				padding: 0.625rem 1rem;
+			}
+
+			.hint {
+				font-size: 0.6rem;
+			}
 		}
 	`;
 
 	@property({ type: Boolean }) disabled = false;
 	@state() private value = "";
+	private maxLength = 10000;
 
 	private handleInput(e: Event) {
 		const target = e.target as HTMLTextAreaElement;
@@ -94,7 +153,7 @@ export class ComposerInput extends LitElement {
 
 		// Auto-grow textarea
 		target.style.height = "auto";
-		target.style.height = `${target.scrollHeight}px`;
+		target.style.height = `${Math.min(target.scrollHeight, 240)}px`;
 	}
 
 	private handleKeyDown(e: KeyboardEvent) {
@@ -126,7 +185,17 @@ export class ComposerInput extends LitElement {
 		}
 	}
 
+	private getCharCountClass(): string {
+		const len = this.value.length;
+		if (len > this.maxLength * 0.9) return "error";
+		if (len > this.maxLength * 0.75) return "warning";
+		return "";
+	}
+
 	render() {
+		const charCount = this.value.length;
+		const showCount = charCount > this.maxLength * 0.5;
+
 		return html`
 			<div class="input-wrapper">
 				<textarea
@@ -134,15 +203,23 @@ export class ComposerInput extends LitElement {
 					@input=${this.handleInput}
 					@keydown=${this.handleKeyDown}
 					?disabled=${this.disabled}
-					placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
+					placeholder="> Type a message or use slash commands: /run /config /help"
+					maxlength=${this.maxLength}
 					rows="1"
 				></textarea>
-				<button @click=${this.submit} ?disabled=${this.disabled || !this.value.trim()}>
-					Send
-				</button>
+				${showCount
+					? html`<div class="char-count ${this.getCharCountClass()}">
+							${charCount}/${this.maxLength}
+					  </div>`
+					: ""}
+				<div class="actions">
+					<button @click=${this.submit} ?disabled=${this.disabled || !this.value.trim()}>
+						SEND
+					</button>
+				</div>
 			</div>
 			<div class="hint">
-				Press <strong>Enter</strong> to send, <strong>Shift+Enter</strong> for new line
+				<kbd>↵</kbd> send • <kbd>⇧</kbd> + <kbd>↵</kbd> newline
 			</div>
 		`;
 	}

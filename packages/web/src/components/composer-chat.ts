@@ -4,134 +4,453 @@
 
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { ApiClient, type Message } from "../services/api-client.js";
+import { ApiClient, type Message, type Session } from "../services/api-client.js";
 
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
 	static styles = css`
 		:host {
 			display: flex;
-			flex-direction: column;
 			height: 100%;
-			background: var(--bg-primary, #0d1117);
-			color: var(--text-primary, #e6edf3);
-			border-radius: 8px;
+			background: #0a0e14;
+			color: #e6edf3;
 			overflow: hidden;
-			box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+			font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+		}
+
+		/* Sidebar - compact, high-density */
+		.sidebar {
+			width: 260px;
+			background: #0d1117;
+			border-right: 1px solid #21262d;
+			display: flex;
+			flex-direction: column;
+			transition: transform 0.2s ease;
+		}
+
+		.sidebar.collapsed {
+			transform: translateX(-100%);
+		}
+
+		.sidebar-header {
+			padding: 0.75rem;
+			border-bottom: 1px solid #21262d;
+			background: #161b22;
+		}
+
+		.sidebar-header h2 {
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.7rem;
+			font-weight: 600;
+			margin: 0 0 0.625rem 0;
+			color: #8b949e;
+			text-transform: uppercase;
+			letter-spacing: 0.1em;
+		}
+
+		.new-session-btn {
+			width: 100%;
+			padding: 0.5rem 0.75rem;
+			background: #21262d;
+			color: #e6edf3;
+			border: 1px solid #30363d;
+			border-radius: 3px;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.75rem;
+			font-weight: 600;
+			cursor: pointer;
+			transition: all 0.15s;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			gap: 0.5rem;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+		}
+
+		.new-session-btn:hover {
+			background: #30363d;
+			border-color: #58a6ff;
+			color: #58a6ff;
+		}
+
+		.new-session-btn::before {
+			content: "+";
+			font-size: 1rem;
+		}
+
+		.sessions-list {
+			flex: 1;
+			overflow-y: auto;
+			padding: 0;
+		}
+
+		.session-item {
+			padding: 0.625rem 0.75rem;
+			border-bottom: 1px solid #21262d;
+			cursor: pointer;
+			transition: all 0.15s;
+			background: transparent;
+		}
+
+		.session-item:hover {
+			background: #161b22;
+			border-left: 2px solid #58a6ff;
+			padding-left: calc(0.75rem - 2px);
+		}
+
+		.session-item.active {
+			background: #1c2128;
+			border-left: 3px solid #58a6ff;
+			padding-left: calc(0.75rem - 3px);
+		}
+
+		.session-title {
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.8rem;
+			font-weight: 500;
+			margin-bottom: 0.25rem;
+			color: #e6edf3;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.session-meta {
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.65rem;
+			color: #6e7681;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+		}
+
+		/* Main content - instrument panel style */
+		.main-content {
+			flex: 1;
+			display: flex;
+			flex-direction: column;
+			position: relative;
 		}
 
 		.header {
+			display: grid;
+			grid-template-columns: auto 1fr auto;
+			align-items: center;
+			gap: 1rem;
+			padding: 0.625rem 1rem;
+			background: #0d1117;
+			border-bottom: 1px solid #21262d;
+			min-height: 44px;
+		}
+
+		.header-left {
 			display: flex;
 			align-items: center;
-			justify-content: space-between;
-			padding: 1.25rem 1.5rem;
-			border-bottom: 1px solid var(--border-color, #30363d);
-			background: var(--bg-secondary, #161b22);
-			backdrop-filter: blur(10px);
+			gap: 0.75rem;
+		}
+
+		.toggle-sidebar-btn {
+			width: 28px;
+			height: 28px;
+			padding: 0;
+			background: transparent;
+			border: 1px solid #30363d;
+			border-radius: 2px;
+			color: #8b949e;
+			cursor: pointer;
+			transition: all 0.15s;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.7rem;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.toggle-sidebar-btn:hover {
+			background: #21262d;
+			border-color: #58a6ff;
+			color: #58a6ff;
 		}
 
 		.header h1 {
-			font-size: 1.5rem;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.85rem;
 			font-weight: 700;
 			margin: 0;
-			background: linear-gradient(135deg, var(--accent-color, #2f81f7) 0%, var(--accent-hover, #539bf5) 100%);
-			-webkit-background-clip: text;
-			-webkit-text-fill-color: transparent;
-			background-clip: text;
+			color: #e6edf3;
+			letter-spacing: -0.02em;
+			text-transform: uppercase;
 		}
 
-		.model-info {
-			font-size: 0.875rem;
-			color: var(--text-secondary, #7d8590);
-			padding: 0.375rem 0.75rem;
-			background: var(--bg-tertiary, #21262d);
-			border-radius: 6px;
-			font-weight: 500;
+		.header h1::before {
+			content: "♪ ";
+			color: #58a6ff;
+			margin-right: 0.35rem;
 		}
 
+		.status-bar {
+			display: flex;
+			align-items: center;
+			gap: 0.75rem;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.7rem;
+			color: #6e7681;
+		}
+
+		.status-item {
+			display: flex;
+			align-items: center;
+			gap: 0.35rem;
+			padding: 0.25rem 0.5rem;
+			background: #161b22;
+			border: 1px solid #21262d;
+			border-radius: 2px;
+		}
+
+		.status-item.active {
+			border-color: #58a6ff;
+			color: #58a6ff;
+		}
+
+		.status-dot {
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			background: #3fb950;
+			animation: pulse 2s ease-in-out infinite;
+		}
+
+		@keyframes pulse {
+			0%, 100% { opacity: 1; }
+			50% { opacity: 0.4; }
+		}
+
+		.header-right {
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+		}
+
+		.model-selector {
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+			padding: 0.35rem 0.625rem;
+			background: #161b22;
+			border: 1px solid #30363d;
+			border-radius: 2px;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.7rem;
+			color: #e6edf3;
+			font-weight: 600;
+			cursor: pointer;
+			transition: all 0.15s;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+		}
+
+		.model-selector:hover {
+			background: #21262d;
+			border-color: #58a6ff;
+		}
+
+		.model-badge {
+			padding: 0.125rem 0.35rem;
+			background: #58a6ff;
+			border-radius: 2px;
+			font-size: 0.65rem;
+			font-weight: 700;
+			color: #0d1117;
+		}
+
+		.icon-btn {
+			width: 28px;
+			height: 28px;
+			padding: 0;
+			background: transparent;
+			border: 1px solid #30363d;
+			border-radius: 2px;
+			color: #8b949e;
+			cursor: pointer;
+			transition: all 0.15s;
+			font-size: 0.9rem;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.icon-btn:hover {
+			background: #21262d;
+			border-color: #58a6ff;
+			color: #58a6ff;
+		}
+
+		/* Messages - dense, terminal-like */
 		.messages {
 			flex: 1;
 			overflow-y: auto;
 			padding: 1rem;
 			display: flex;
 			flex-direction: column;
-			gap: 1rem;
-		}
-
-		.messages::-webkit-scrollbar {
-			width: 10px;
-		}
-
-		.messages::-webkit-scrollbar-track {
-			background: var(--bg-primary, #0d1117);
-		}
-
-		.messages::-webkit-scrollbar-thumb {
-			background: var(--border-color, #30363d);
-			border-radius: 5px;
-			transition: background 0.2s;
-		}
-
-		.messages::-webkit-scrollbar-thumb:hover {
-			background: #484f58;
+			gap: 1px;
+			background: #0a0e14;
 		}
 
 		.input-container {
-			border-top: 1px solid var(--border-color, #30363d);
-			padding: 1.25rem 1.5rem;
-			background: var(--bg-secondary, #161b22);
-			backdrop-filter: blur(10px);
+			border-top: 2px solid #21262d;
+			padding: 0.75rem 1rem;
+			background: #0d1117;
 		}
 
 		.error {
-			padding: 1rem 1.25rem;
-			background: rgba(248, 81, 73, 0.1);
+			padding: 0.625rem 0.875rem;
+			background: #1c2128;
 			color: #f85149;
-			border-radius: 8px;
-			margin: 1rem 1.5rem;
 			border-left: 3px solid #f85149;
-			font-size: 0.9375rem;
-			animation: slideIn 0.3s ease-out;
-		}
-
-		@keyframes slideIn {
-			from {
-				opacity: 0;
-				transform: translateX(-10px);
-			}
-			to {
-				opacity: 1;
-				transform: translateX(0);
-			}
+			margin: 0 1rem 0.5rem 1rem;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.75rem;
+			line-height: 1.5;
 		}
 
 		.loading {
 			display: flex;
 			align-items: center;
-			gap: 0.75rem;
-			padding: 1rem 1.25rem;
-			color: var(--text-secondary, #7d8590);
-			font-size: 0.9375rem;
-			animation: pulse 2s ease-in-out infinite;
+			gap: 0.625rem;
+			padding: 0.5rem 0.75rem;
+			background: #161b22;
+			border: 1px solid #30363d;
+			border-left: 3px solid #58a6ff;
+			color: #8b949e;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.75rem;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
 		}
 
 		.loading::before {
 			content: "";
-			width: 18px;
-			height: 18px;
-			border: 2.5px solid var(--border-color, #30363d);
-			border-top-color: var(--accent-color, #2f81f7);
+			width: 12px;
+			height: 12px;
+			border: 2px solid #30363d;
+			border-top-color: #58a6ff;
 			border-radius: 50%;
-			animation: spin 0.8s linear infinite;
+			animation: spin 0.6s linear infinite;
 		}
 
 		@keyframes spin {
 			to { transform: rotate(360deg); }
 		}
 
-		@keyframes pulse {
-			0%, 100% { opacity: 0.7; }
-			50% { opacity: 1; }
+		/* Empty state - workspace status panel */
+		.empty-state {
+			flex: 1;
+			display: grid;
+			grid-template-rows: auto 1fr;
+			padding: 0;
+			background: #0a0e14;
+		}
+
+		.workspace-panel {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+			gap: 1px;
+			background: #21262d;
+			border: 1px solid #21262d;
+			margin: 1rem;
+		}
+
+		.panel-section {
+			background: #0d1117;
+			padding: 0.875rem;
+			border: 1px solid #21262d;
+		}
+
+		.panel-section h3 {
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.65rem;
+			font-weight: 700;
+			color: #6e7681;
+			text-transform: uppercase;
+			letter-spacing: 0.1em;
+			margin: 0 0 0.625rem 0;
+		}
+
+		.panel-item {
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.75rem;
+			color: #e6edf3;
+			margin: 0.35rem 0;
+			line-height: 1.6;
+		}
+
+		.panel-item span {
+			color: #6e7681;
+			margin-right: 0.5rem;
+		}
+
+		.panel-item.active {
+			color: #58a6ff;
+		}
+
+		.tool-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+			gap: 0.5rem;
+			margin-top: 0.5rem;
+		}
+
+		.tool-badge {
+			padding: 0.375rem 0.5rem;
+			background: #161b22;
+			border: 1px solid #30363d;
+			border-radius: 2px;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.65rem;
+			color: #8b949e;
+			text-align: center;
+			transition: all 0.15s;
+		}
+
+		.tool-badge:hover {
+			border-color: #58a6ff;
+			color: #58a6ff;
+			cursor: pointer;
+		}
+
+		.command-hint {
+			padding: 0.875rem 1rem;
+			background: #0d1117;
+			border-top: 1px solid #21262d;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.7rem;
+			color: #6e7681;
+		}
+
+		.command-hint code {
+			color: #58a6ff;
+			background: #161b22;
+			padding: 0.125rem 0.35rem;
+			border-radius: 2px;
+			margin: 0 0.25rem;
+		}
+
+		@media (max-width: 768px) {
+			.sidebar {
+				position: absolute;
+				left: 0;
+				top: 0;
+				bottom: 0;
+				z-index: 10;
+			}
+
+			.status-bar {
+				display: none;
+			}
+
+			.workspace-panel {
+				grid-template-columns: 1fr;
+			}
 		}
 	`;
 
@@ -142,6 +461,9 @@ export class ComposerChat extends LitElement {
 	@state() private loading = false;
 	@state() private error: string | null = null;
 	@state() private currentModel = "";
+	@state() private sidebarOpen = true;
+	@state() private sessions: Session[] = [];
+	@state() private currentSessionId: string | null = null;
 
 	private apiClient!: ApiClient;
 
@@ -149,6 +471,7 @@ export class ComposerChat extends LitElement {
 		super.connectedCallback();
 		this.apiClient = new ApiClient(this.apiEndpoint);
 		this.loadCurrentModel();
+		this.loadSessions();
 	}
 
 	private async loadCurrentModel() {
@@ -158,6 +481,37 @@ export class ComposerChat extends LitElement {
 		} catch (e) {
 			console.error("Failed to load current model:", e);
 			this.currentModel = this.model;
+		}
+	}
+
+	private async loadSessions() {
+		try {
+			this.sessions = await this.apiClient.getSessions();
+		} catch (e) {
+			console.error("Failed to load sessions:", e);
+		}
+	}
+
+	private toggleSidebar() {
+		this.sidebarOpen = !this.sidebarOpen;
+	}
+
+	private async createNewSession() {
+		this.messages = [];
+		this.currentSessionId = null;
+		this.error = null;
+		await this.loadSessions();
+	}
+
+	private async selectSession(sessionId: string) {
+		this.currentSessionId = sessionId;
+		try {
+			const session = await this.apiClient.getSession(sessionId);
+			this.messages = session.messages || [];
+			this.error = null;
+			this.scrollToBottom();
+		} catch (e) {
+			this.error = e instanceof Error ? e.message : "Failed to load session";
 		}
 	}
 
@@ -190,6 +544,7 @@ export class ComposerChat extends LitElement {
 			const stream = this.apiClient.chat({
 				model: this.currentModel,
 				messages: this.messages.slice(0, -1), // Exclude placeholder
+				sessionId: this.currentSessionId || undefined,
 			});
 
 			for await (const chunk of stream) {
@@ -197,6 +552,9 @@ export class ComposerChat extends LitElement {
 				this.messages = [...this.messages]; // Trigger update
 				this.scrollToBottom();
 			}
+
+			// Refresh sessions list
+			await this.loadSessions();
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to send message";
 			this.messages = this.messages.slice(0, -1); // Remove placeholder
@@ -214,33 +572,155 @@ export class ComposerChat extends LitElement {
 		});
 	}
 
+	private formatSessionDate(date: string): string {
+		const d = new Date(date);
+		const now = new Date();
+		const diff = now.getTime() - d.getTime();
+		const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+		if (days === 0) return "Today";
+		if (days === 1) return "Yesterday";
+		if (days < 7) return `${days} days ago`;
+		return d.toLocaleDateString();
+	}
+
 	render() {
+		const cwd = "/Users/jonathan/codingagent"; // In real app, get from API
+		const tools = ["read", "write", "edit", "bash", "search", "diff", "gh_pr", "gh_issue"];
+		
 		return html`
-			<div class="header">
-				<h1>Composer</h1>
-				<div class="model-info">${this.currentModel}</div>
+			<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
+				<div class="sidebar-header">
+					<h2>Sessions</h2>
+					<button class="new-session-btn" @click=${this.createNewSession}>
+						New Chat
+					</button>
+				</div>
+				<div class="sessions-list">
+					${this.sessions.map(
+						(session) => html`
+							<div
+								class="session-item ${this.currentSessionId === session.id ? "active" : ""}"
+								@click=${() => this.selectSession(session.id)}
+							>
+								<div class="session-title">${session.title || "Untitled Session"}</div>
+								<div class="session-meta">
+									${this.formatSessionDate(session.updatedAt)} • ${session.messageCount || 0} msgs
+								</div>
+							</div>
+						`,
+					)}
+				</div>
 			</div>
 
-			${this.error ? html`<div class="error">${this.error}</div>` : ""}
+			<div class="main-content">
+				<div class="header">
+					<div class="header-left">
+						<button class="toggle-sidebar-btn" @click=${this.toggleSidebar}>
+							${this.sidebarOpen ? "◄" : "►"}
+						</button>
+						<h1>Composer</h1>
+					</div>
+					<div class="status-bar">
+						<div class="status-item active">
+							<span class="status-dot"></span>
+							<span>CONNECTED</span>
+						</div>
+						<div class="status-item">
+							<span>CWD:</span>
+							<span style="color: #58a6ff;">${cwd.split('/').pop()}</span>
+						</div>
+						<div class="status-item">
+							<span>MSGS:</span>
+							<span style="color: #e6edf3;">${this.messages.length}</span>
+						</div>
+					</div>
+					<div class="header-right">
+						<div class="model-selector">
+							<span class="model-badge">AI</span>
+							<span>${this.currentModel.split('/').pop()?.toUpperCase() || 'MODEL'}</span>
+						</div>
+						<button class="icon-btn" title="Settings">⚙</button>
+					</div>
+				</div>
 
-			<div class="messages">
-				${this.messages.map(
-					(msg) => html`
-						<composer-message
-							role=${msg.role}
-							content=${msg.content}
-							timestamp=${msg.timestamp || ""}
-						></composer-message>
-					`,
-				)}
-				${this.loading ? html`<div class="loading">Thinking...</div>` : ""}
-			</div>
+				${this.error ? html`<div class="error">${this.error}</div>` : ""}
 
-			<div class="input-container">
-				<composer-input
-					@submit=${this.handleSubmit}
-					?disabled=${this.loading}
-				></composer-input>
+				<div class="messages">
+					${this.messages.length === 0
+						? html`
+								<div class="empty-state">
+									<div class="workspace-panel">
+										<div class="panel-section">
+											<h3>Workspace</h3>
+											<div class="panel-item active">
+												<span>►</span>${cwd}
+											</div>
+											<div class="panel-item">
+												<span>GIT:</span>feat/concurrently-web-ui-tui
+											</div>
+											<div class="panel-item">
+												<span>FILES:</span>~34 modified
+											</div>
+										</div>
+										<div class="panel-section">
+											<h3>Model</h3>
+											<div class="panel-item active">
+												<span>►</span>${this.currentModel}
+											</div>
+											<div class="panel-item">
+												<span>CTX:</span>200k tokens
+											</div>
+											<div class="panel-item">
+												<span>MODE:</span>streaming
+											</div>
+										</div>
+										<div class="panel-section">
+											<h3>Session</h3>
+											<div class="panel-item">
+												<span>ID:</span>${this.currentSessionId?.slice(0, 8) || 'new'}
+											</div>
+											<div class="panel-item">
+												<span>MSGS:</span>0
+											</div>
+											<div class="panel-item">
+												<span>COST:</span>$0.00
+											</div>
+										</div>
+										<div class="panel-section">
+											<h3>Available Tools</h3>
+											<div class="tool-grid">
+												${tools.map(tool => html`
+													<div class="tool-badge">${tool}</div>
+												`)}
+											</div>
+										</div>
+									</div>
+									<div class="command-hint">
+										Type a message to start coding, or use slash commands:
+										<code>/run</code><code>/config</code><code>/help</code>
+									</div>
+								</div>
+						  `
+						: this.messages.map(
+								(msg) => html`
+									<composer-message
+										role=${msg.role}
+										content=${msg.content}
+										timestamp=${msg.timestamp || ""}
+										.tools=${msg.tools || []}
+									></composer-message>
+								`,
+						  )}
+					${this.loading ? html`<div class="loading">Processing...</div>` : ""}
+				</div>
+
+				<div class="input-container">
+					<composer-input
+						@submit=${this.handleSubmit}
+						?disabled=${this.loading}
+					></composer-input>
+				</div>
 			</div>
 		`;
 	}

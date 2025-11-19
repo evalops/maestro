@@ -6,6 +6,7 @@ export interface Message {
 	role: "user" | "assistant" | "system";
 	content: string;
 	timestamp?: string;
+	tools?: Array<{ name: string; status: string }>;
 }
 
 export interface Model {
@@ -16,10 +17,20 @@ export interface Model {
 	maxOutputTokens?: number;
 }
 
+export interface Session {
+	id: string;
+	title: string;
+	messages: Message[];
+	createdAt: string;
+	updatedAt: string;
+	messageCount: number;
+}
+
 export interface ChatRequest {
 	model: string;
 	messages: Message[];
 	stream?: boolean;
+	sessionId?: string;
 }
 
 export interface ChatResponse {
@@ -73,7 +84,7 @@ export class ApiClient {
 				for (const line of lines) {
 					if (line.startsWith("data: ")) {
 						const data = line.slice(6).trim();
-						if (!data) continue;
+						if (!data || data === "[DONE]") continue;
 
 						try {
 							const event = JSON.parse(data);
@@ -84,6 +95,8 @@ export class ApiClient {
 							} else if (event.type === "content_block_delta" && event.text) {
 								yield event.text;
 							} else if (event.type === "text_delta" && event.text) {
+								yield event.text;
+							} else if (event.type === "text" && event.text) {
 								yield event.text;
 							}
 						} catch (e) {
@@ -136,6 +149,63 @@ export class ApiClient {
 
 		if (!response.ok) {
 			throw new Error(`Failed to set model: ${response.statusText}`);
+		}
+	}
+
+	/**
+	 * Get list of sessions
+	 */
+	async getSessions(): Promise<Session[]> {
+		try {
+			const response = await fetch(`${this.baseUrl}/api/sessions`);
+			if (!response.ok) return [];
+			const data = await response.json();
+			return data.sessions || [];
+		} catch (e) {
+			console.error("Failed to fetch sessions:", e);
+			return [];
+		}
+	}
+
+	/**
+	 * Get a specific session
+	 */
+	async getSession(sessionId: string): Promise<Session> {
+		const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}`);
+		if (!response.ok) {
+			throw new Error(`Failed to fetch session: ${response.statusText}`);
+		}
+		return await response.json();
+	}
+
+	/**
+	 * Create a new session
+	 */
+	async createSession(title?: string): Promise<Session> {
+		const response = await fetch(`${this.baseUrl}/api/sessions`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ title }),
+		});
+
+		if (!response.ok) {
+			throw new Error(`Failed to create session: ${response.statusText}`);
+		}
+		return await response.json();
+	}
+
+	/**
+	 * Delete a session
+	 */
+	async deleteSession(sessionId: string): Promise<void> {
+		const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
+			method: "DELETE",
+		});
+
+		if (!response.ok) {
+			throw new Error(`Failed to delete session: ${response.statusText}`);
 		}
 	}
 }
