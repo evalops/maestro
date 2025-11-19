@@ -510,7 +510,7 @@ Use /diff <file> to inspect diffs.`;
 		return hints;
 	}
 
-	runGitCommand(args: string[]): {
+	protected runGitCommand(args: string[]): {
 		ok: boolean;
 		stdout: string;
 		stderr: string;
