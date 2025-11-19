@@ -11,7 +11,7 @@ Composer is a deterministic coding agent with multi-model support, featuring bot
 - [Sessions](docs/SESSIONS.md) – JSONL format, continuation/resume flags
 - [Prompt Queue](docs/PROMPT_QUEUE.md) – how prompts are queued and loader stages update
 - [Providers & Factory](docs/MODELS.md) – model registry resolution and factory sync
-- [CONTRIBUTING](CONTRIBUTING.md) – workflow, coding standards, release steps
+- [Contributing](CONTRIBUTING.md) – workflow, coding standards, release steps
 - [Changelog](CHANGELOG.md) – notable fixes and features per release
 
 ## Concept
