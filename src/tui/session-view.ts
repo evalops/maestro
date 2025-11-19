@@ -132,6 +132,11 @@ export class SessionView {
 			);
 		}
 
+		const recentContext = this.renderRecentContext();
+		if (recentContext) {
+			sections.push("", recentContext);
+		}
+
 		const artifactSection = this.renderArtifacts();
 		if (artifactSection) {
 			sections.push("", artifactSection);
@@ -385,6 +390,39 @@ ${muted("Use /sessions load <number> to switch.")}`;
 		}
 		return `${heading("Recent artifacts")}
 ${lines.join("\n")}`;
+	}
+
+	private renderRecentContext(): string | null {
+		const lastUser = this.options.sessionContext.getLastUserMessage();
+		const lastAssistant = this.options.sessionContext.getLastAssistantMessage();
+		const lastTools = this.options.sessionContext.getLastRunToolNames();
+		const items: string[] = [];
+		if (lastUser) {
+			items.push(`${badge("User", undefined, "info")} ${this.preview(lastUser)}`);
+		}
+		if (lastAssistant) {
+			items.push(
+				`${badge("Assistant", undefined, "info")} ${this.preview(lastAssistant)}`,
+			);
+		}
+		if (lastTools.length) {
+			items.push(
+				`${badge("Tools", undefined, "info")} ${lastTools.join(", ")}`,
+			);
+		}
+		if (!items.length) {
+			return null;
+		}
+		return `${heading("Recent context")}
+${items.join("\n")}`;
+	}
+
+	private preview(text: string, limit = 140): string {
+		const singleLine = text.replace(/\s+/g, " ").trim();
+		if (singleLine.length <= limit) {
+			return singleLine;
+		}
+		return `${singleLine.slice(0, limit - 1)}…`;
 	}
 
 	private getPersistedSessionPath(): string | null {
