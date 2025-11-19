@@ -1,4 +1,4 @@
-import type { SlashCommand } from "../../tui-lib/index.js";
+import type { SlashCommand } from "@evalops/tui";
 import { parseCommandArguments, shouldShowHelp } from "./argument-parser.js";
 import type {
 	CommandEntry,

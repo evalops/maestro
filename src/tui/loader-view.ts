@@ -1,5 +1,5 @@
-import type { Container } from "../tui-lib/index.js";
-import { Loader, type TUI } from "../tui-lib/index.js";
+import type { Container } from "@evalops/tui";
+import { Loader, type TUI } from "@evalops/tui";
 import type { FooterComponent } from "./footer.js";
 import { LoaderStageManager } from "./loader-stage-manager.js";
 

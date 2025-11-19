@@ -32,9 +32,11 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: brew install ripgrep
       - run: bun install
+      - run: bun install --cwd packages/tui
+      - run: bun install --cwd packages/web
+      - run: npm run build:all
       - run: bun run bun:lint
       - run: bun run bun:test
-      - run: bun run build
       - name: Run evals chunk
         env:
           COMPOSER_EVAL_CHUNK_COUNT: 2

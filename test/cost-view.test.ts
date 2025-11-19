@@ -1,7 +1,7 @@
+import { Text } from "@evalops/tui";
+import { Container, type TUI } from "@evalops/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UsageSummary } from "../src/tracking/cost-tracker.js";
-import { Text } from "../src/tui-lib/components/text.js";
-import { Container, type TUI } from "../src/tui-lib/tui.js";
 import type { CommandExecutionContext } from "../src/tui/commands/types.js";
 import { CostView } from "../src/tui/cost-view.js";
 
@@ -49,7 +49,7 @@ const makeSummary = (overrides: Partial<UsageSummary> = {}): UsageSummary => ({
 	...overrides,
 });
 
-describe("CostView", () => {
+describe.sequential("CostView", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockSummary.mockReturnValue(makeSummary());

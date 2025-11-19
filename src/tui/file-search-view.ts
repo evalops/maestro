@@ -1,6 +1,6 @@
+import type { Container, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
-import type { Container, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 import { getWorkspaceFiles } from "../workspace-files.js";
 import type { CustomEditor } from "./custom-editor.js";
 import { FileSearchComponent } from "./file-search.js";

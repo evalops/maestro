@@ -37,8 +37,41 @@ Developers who want deterministic, scriptable AI assistance with zero mystery me
 
 ## Installation
 
+### npm (Recommended)
+
 ```bash
 npm install -g @evalops/composer
+```
+
+### Alternative Methods
+
+#### Bun
+```bash
+bun install -g @evalops/composer
+```
+
+#### Nix (with flakes)
+```bash
+nix run github:evalops/composer-cli
+# Or add to your flake.nix
+```
+
+#### From Source
+```bash
+git clone https://github.com/evalops/composer-cli.git
+cd composer-cli
+npm install
+npm run build
+npm link
+```
+
+#### Binary Compilation (Bun)
+```bash
+git clone https://github.com/evalops/composer-cli.git
+cd composer-cli
+bun install
+npm run compile:binary
+# Binary available at dist/composer-bun
 ```
 
 ## Quick Start

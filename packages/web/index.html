@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Composer - AI Coding Assistant</title>
+    <meta name="description" content="Modern web interface for Composer AI coding assistant with session management, tool integration, and beautiful design">
+    
+    <!-- Preconnect to API -->
+    <link rel="preconnect" href="http://localhost:8080">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        :root {
+            /* High-contrast industrial palette inspired by TUI */
+            --bg-primary: #0a0e14;
+            --bg-secondary: #0d1117;
+            --bg-panel: #161b22;
+            --bg-panel-alt: #1c2128;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-tertiary: #6e7681;
+            --border-primary: #21262d;
+            --border-secondary: #30363d;
+            --accent-blue: #58a6ff;
+            --accent-cyan: #39c5cf;
+            --accent-purple: #bc8cff;
+            --accent-green: #3fb950;
+            --accent-yellow: #d29922;
+            --accent-red: #f85149;
+            
+            /* Monospace-first typography */
+            --font-mono: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+            --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+        }
+        
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        
+        composer-chat {
+            display: block;
+            width: 100%;
+            height: 100vh;
+        }
+
+        /* Loading screen */
+        .loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--bg-primary);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: fadeOut 0.3s ease-out 0.5s forwards;
+        }
+        
+        @keyframes fadeOut {
+            to {
+                opacity: 0;
+                visibility: hidden;
+            }
+        }
+        
+        .loading-spinner {
+            width: 32px;
+            height: 32px;
+            border: 2px solid var(--border-secondary);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-bottom: 1rem;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .loading-text {
+            font-family: var(--font-mono);
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        /* Minimal scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-secondary);
+            border-radius: 0;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-tertiary);
+        }
+        
+        ::selection {
+            background: rgba(88, 166, 255, 0.3);
+            color: var(--text-primary);
+        }
+        
+        *:focus {
+            outline: none;
+        }
+        
+        *:focus-visible {
+            outline: 1px solid var(--accent-blue);
+            outline-offset: -1px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading screen -->
+    <div class="loading-screen">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Loading Composer...</div>
+    </div>
+    
+    <!-- Main app -->
+    <composer-chat 
+        api-endpoint="http://localhost:8080"
+        model="claude-sonnet-4-5"
+        theme="dark">
+    </composer-chat>
+    
+    <script type="module" src="/src/index.ts"></script>
+</body>
+</html>

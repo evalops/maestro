@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
 import * as os from "node:os";
 import { dirname, join } from "node:path";
+import { type Container, Spacer, type TUI, Text } from "@evalops/tui";
 import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import type { SessionManager } from "../session-manager.js";
-import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
 import type { GitView } from "./git-view.js";
 import { TOOL_FAILURE_LOG_PATH } from "./tool-status-view.js";
 

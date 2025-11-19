@@ -1,4 +1,4 @@
-import type { SlashCommand } from "../tui-lib/index.js";
+import type { SlashCommand } from "@evalops/tui";
 import { createCommandRegistry } from "./commands/registry.js";
 import type {
 	CommandEntry,

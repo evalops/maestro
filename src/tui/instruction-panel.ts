@@ -1,6 +1,6 @@
+import type { Component } from "@evalops/tui";
+import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
-import type { Component } from "../tui-lib/index.js";
-import { visibleWidth } from "../tui-lib/index.js";
 
 export class InstructionPanelComponent implements Component {
 	private shortcuts = [

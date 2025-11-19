@@ -1,3 +1,4 @@
+import type { Container, TUI } from "@evalops/tui";
 import type { AgentState, AppMessage } from "../agent/types.js";
 import {
 	createRenderableMessage,
@@ -5,7 +6,6 @@ import {
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
 } from "../conversation/render-model.js";
-import type { Container, TUI } from "../tui-lib/index.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";

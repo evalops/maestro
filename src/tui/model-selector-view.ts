@@ -1,7 +1,7 @@
+import type { Container, TUI } from "@evalops/tui";
 import type { Agent } from "../agent/agent.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { SessionManager } from "../session-manager.js";
-import type { Container, TUI } from "../tui-lib/index.js";
 import type { CustomEditor } from "./custom-editor.js";
 import { ModelSelectorComponent } from "./model-selector.js";
 

@@ -1,14 +1,14 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { Container, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { Agent } from "../agent/agent.js";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import { importFactoryConfig } from "../factory/index.js";
 import { reloadModelConfig } from "../models/registry.js";
 import type { SessionManager } from "../session-manager.js";
-import type { Container, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 
 interface ImportExportViewOptions {
 	agent: Agent;

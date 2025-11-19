@@ -1,9 +1,6 @@
+import { type SelectItem, SelectList } from "@evalops/tui";
+import { Container, Text } from "@evalops/tui";
 import chalk from "chalk";
-import {
-	type SelectItem,
-	SelectList,
-} from "../tui-lib/components/select-list.js";
-import { Container, Text } from "../tui-lib/index.js";
 
 export class FileSearchComponent extends Container {
 	private list: SelectList;

@@ -1,6 +1,6 @@
+import type { Container, SlashCommand, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
-import type { Container, SlashCommand, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 
 interface InfoViewOptions {
 	chatContainer: Container;

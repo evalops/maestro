@@ -1,4 +1,4 @@
-import type { TUI } from "../tui-lib/index.js";
+import type { TUI } from "@evalops/tui";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 
 interface ToolOutputViewOptions {

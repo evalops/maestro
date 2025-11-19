@@ -2,7 +2,11 @@
   "name": "@evalops/composer",
   "description": "Composer CLI by EvalOps with rich tooling for AI-assisted development",
   "version": "0.10.0",
+  "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "bin": {
     "composer": "dist/cli.js"
   },
@@ -18,6 +22,8 @@
     "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "start": "node --enable-source-maps dist/cli.js",
     "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
+    "test:watch": "vitest --watch",
     "lint": "biome check .",
     "format": "biome format .",
     "check": "npm run lint && tsc --noEmit",
@@ -28,6 +34,8 @@
     "bun:install": "bun install",
     "bun:cli": "bun run ./src/cli.ts",
     "bun:watch": "bun run --watch ./src/cli.ts",
+    "web": "node dist/web-server.js",
+    "web:dev": "concurrently --names \"server,ui\" --prefix-colors \"blue,green\" \"tsx --watch src/web-server.ts\" \"bun run dev:web\"",
     "bun:lint": "bunx biome check .",
     "bun:test": "bunx vitest --run",
     "bun:check": "bun run bun:lint && bunx tsc --noEmit",
@@ -39,9 +47,18 @@
     "verify": "npm run format && npm run lint && npm run test && npm run build && npm run smoke && npm run telemetry:report",
     "smoke": "node scripts/smoke-cli.js",
     "factory:import": "npm run build && node dist/scripts/import-factory-config.js",
-    "factory:export": "npm run build && node dist/scripts/export-factory-config.js"
+    "factory:export": "npm run build && node dist/scripts/export-factory-config.js",
+    "version:patch": "node scripts/version.js patch",
+    "version:minor": "node scripts/version.js minor",
+    "version:major": "node scripts/version.js major",
+    "dev:web": "bun run --filter @evalops/composer-web dev",
+    "dev:tui": "bun run --filter @evalops/tui dev",
+    "dev:packages": "concurrently --names \"tui,web\" --prefix-colors \"magenta,green\" \"bun run dev:tui\" \"bun run dev:web\"",
+    "build:all": "bun run --filter @evalops/tui build && bun run --filter @evalops/composer-web build && bun run build",
+    "test:all": "npm run test && npm run test --workspaces --if-present"
   },
   "dependencies": {
+    "@evalops/tui": "^0.10.0",
     "@google/genai": "^1.29.1",
     "@sinclair/typebox": "^0.33.0",
     "ajv": "^8.17.1",
@@ -63,6 +80,7 @@
     "@types/diff": "^7.0.2",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24.3.0",
+    "concurrently": "^9.2.1",
     "husky": "^9.1.7",
     "typescript": "^5.7.3",
     "vitest": "^3.2.4"

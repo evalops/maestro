@@ -1,6 +1,6 @@
+import { Text } from "@evalops/tui";
+import { Container, type TUI } from "@evalops/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Text } from "../src/tui-lib/components/text.js";
-import { Container, type TUI } from "../src/tui-lib/tui.js";
 import { TelemetryView } from "../src/tui/telemetry-view.js";
 
 type TelemetryCommandContext = Parameters<

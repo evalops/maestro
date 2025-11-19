@@ -1,3 +1,4 @@
+import type { Container, TUI } from "@evalops/tui";
 import type { Agent } from "../agent/agent.js";
 import type { AppMessage, AssistantMessage, Message } from "../agent/types.js";
 import {
@@ -9,7 +10,6 @@ import {
 	renderMessageToPlainText,
 } from "../conversation/render-model.js";
 import type { SessionManager } from "../session-manager.js";
-import type { Container, TUI } from "../tui-lib/index.js";
 import type { FooterComponent } from "./footer.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 

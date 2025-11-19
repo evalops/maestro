@@ -1,6 +1,6 @@
+import type { Container, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
-import type { Container, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 import { type UpdateCheckResult, checkForUpdate } from "../update/check.js";
 
 interface UpdateViewOptions {

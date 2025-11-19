@@ -1,3 +1,5 @@
+import { Spacer, Text } from "@evalops/tui";
+import type { Container, TUI } from "@evalops/tui";
 import {
 	badge,
 	heading,
@@ -10,8 +12,6 @@ import {
 	setTelemetryRuntimeOverride,
 } from "../telemetry.js";
 import type { TelemetryStatus } from "../telemetry.js";
-import { Spacer, Text } from "../tui-lib/index.js";
-import type { Container, TUI } from "../tui-lib/index.js";
 import type { CommandExecutionContext } from "./commands/types.js";
 
 interface TelemetryViewOptions {

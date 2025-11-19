@@ -1,6 +1,6 @@
+import { Input } from "@evalops/tui";
+import type { Component } from "@evalops/tui";
 import chalk from "chalk";
-import { Input } from "../tui-lib/index.js";
-import type { Component } from "../tui-lib/index.js";
 import type { SessionItem } from "./session-data-provider.js";
 
 export class SessionList implements Component {

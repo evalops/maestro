@@ -168,3 +168,218 @@ export function clearUsage(): void {
 export function getUsageFilePath(): string {
 	return USAGE_FILE;
 }
+
+/**
+ * Export usage data to CSV format
+ */
+export function exportUsageToCSV(options?: {
+	since?: number;
+	until?: number;
+	provider?: string;
+	model?: string;
+}): string {
+	const entries = loadUsage();
+
+	// Filter entries
+	const filtered = entries.filter((entry) => {
+		if (options?.since && entry.timestamp < options.since) return false;
+		if (options?.until && entry.timestamp > options.until) return false;
+		if (options?.provider && entry.provider !== options.provider) return false;
+		if (options?.model && entry.model !== options.model) return false;
+		return true;
+	});
+
+	// CSV header
+	const lines = [
+		"Timestamp,Date,Provider,Model,Tokens Input,Tokens Output,Tokens Cache Read,Tokens Cache Write,Total Tokens,Cost (USD)",
+	];
+
+	// CSV rows
+	for (const entry of filtered) {
+		const date = new Date(entry.timestamp).toISOString();
+		const totalTokens =
+			entry.tokensInput +
+			entry.tokensOutput +
+			(entry.tokensCacheRead || 0) +
+			(entry.tokensCacheWrite || 0);
+
+		lines.push(
+			[
+				entry.timestamp,
+				date,
+				entry.provider,
+				entry.model,
+				entry.tokensInput,
+				entry.tokensOutput,
+				entry.tokensCacheRead || 0,
+				entry.tokensCacheWrite || 0,
+				totalTokens,
+				entry.cost.toFixed(6),
+			].join(","),
+		);
+	}
+
+	return lines.join("\n");
+}
+
+/**
+ * Export usage data to JSON format
+ */
+export function exportUsageToJSON(options?: {
+	since?: number;
+	until?: number;
+	provider?: string;
+	model?: string;
+	pretty?: boolean;
+}): string {
+	const entries = loadUsage();
+
+	// Filter entries
+	const filtered = entries.filter((entry) => {
+		if (options?.since && entry.timestamp < options.since) return false;
+		if (options?.until && entry.timestamp > options.until) return false;
+		if (options?.provider && entry.provider !== options.provider) return false;
+		if (options?.model && entry.model !== options.model) return false;
+		return true;
+	});
+
+	// Get summary
+	const summary = getUsageSummary(options);
+
+	const exportData = {
+		exportedAt: new Date().toISOString(),
+		filters: options || {},
+		summary,
+		entries: filtered.map((entry) => ({
+			...entry,
+			date: new Date(entry.timestamp).toISOString(),
+			totalTokens:
+				entry.tokensInput +
+				entry.tokensOutput +
+				(entry.tokensCacheRead || 0) +
+				(entry.tokensCacheWrite || 0),
+		})),
+	};
+
+	return options?.pretty
+		? JSON.stringify(exportData, null, 2)
+		: JSON.stringify(exportData);
+}
+
+/**
+ * Compare usage across providers
+ */
+export interface ProviderComparison {
+	provider: string;
+	totalCost: number;
+	totalRequests: number;
+	totalTokens: number;
+	avgCostPerRequest: number;
+	avgCostPerToken: number;
+	models: Record<
+		string,
+		{
+			cost: number;
+			requests: number;
+			tokens: number;
+		}
+	>;
+}
+
+export function compareProviders(options?: {
+	since?: number;
+	until?: number;
+}): ProviderComparison[] {
+	const summary = getUsageSummary(options);
+	const comparisons: ProviderComparison[] = [];
+
+	for (const [provider, data] of Object.entries(summary.byProvider)) {
+		// Get models for this provider
+		const providerModels: Record<
+			string,
+			{ cost: number; requests: number; tokens: number }
+		> = {};
+		for (const [modelKey, modelData] of Object.entries(summary.byModel)) {
+			if (modelKey.startsWith(`${provider}/`)) {
+				const modelName = modelKey.split("/")[1];
+				providerModels[modelName] = modelData;
+			}
+		}
+
+		comparisons.push({
+			provider,
+			totalCost: data.cost,
+			totalRequests: data.requests,
+			totalTokens: data.tokens,
+			avgCostPerRequest: data.requests > 0 ? data.cost / data.requests : 0,
+			avgCostPerToken: data.tokens > 0 ? data.cost / data.tokens : 0,
+			models: providerModels,
+		});
+	}
+
+	// Sort by total cost descending
+	return comparisons.sort((a, b) => b.totalCost - a.totalCost);
+}
+
+/**
+ * Get usage trends over time
+ */
+export interface UsageTrend {
+	date: string; // ISO date string (YYYY-MM-DD)
+	cost: number;
+	requests: number;
+	tokens: number;
+}
+
+export function getUsageTrends(options: {
+	since: number;
+	until: number;
+	granularity: "day" | "week" | "month";
+}): UsageTrend[] {
+	const entries = loadUsage().filter(
+		(entry) =>
+			entry.timestamp >= options.since && entry.timestamp <= options.until,
+	);
+
+	const grouped = new Map<
+		string,
+		{ cost: number; requests: number; tokens: number }
+	>();
+
+	for (const entry of entries) {
+		const date = new Date(entry.timestamp);
+		let key: string;
+
+		switch (options.granularity) {
+			case "day":
+				key = date.toISOString().split("T")[0];
+				break;
+			case "week": {
+				const weekStart = new Date(date);
+				weekStart.setDate(date.getDate() - date.getDay());
+				key = weekStart.toISOString().split("T")[0];
+				break;
+			}
+			case "month":
+				key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
+				break;
+		}
+
+		const existing = grouped.get(key) || { cost: 0, requests: 0, tokens: 0 };
+		const tokens =
+			entry.tokensInput +
+			entry.tokensOutput +
+			(entry.tokensCacheRead || 0) +
+			(entry.tokensCacheWrite || 0);
+
+		grouped.set(key, {
+			cost: existing.cost + entry.cost,
+			requests: existing.requests + 1,
+			tokens: existing.tokens + tokens,
+		});
+	}
+
+	return Array.from(grouped.entries())
+		.map(([date, data]) => ({ date, ...data }))
+		.sort((a, b) => a.date.localeCompare(b.date));
+}

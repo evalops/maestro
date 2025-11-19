@@ -1,3 +1,4 @@
+import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import type { AgentState, AssistantMessage, Usage } from "../agent/types.js";
 import {
@@ -7,7 +8,6 @@ import {
 	themePalette,
 	separator as themedSeparator,
 } from "../style/theme.js";
-import { visibleWidth } from "../tui-lib/index.js";
 
 export interface FooterStats {
 	totalInput: number;

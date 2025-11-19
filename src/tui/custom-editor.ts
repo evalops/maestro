@@ -1,4 +1,4 @@
-import { Editor } from "../tui-lib/index.js";
+import { Editor } from "@evalops/tui";
 
 /**
  * Custom editor that handles Escape and Ctrl+C keys for Composer

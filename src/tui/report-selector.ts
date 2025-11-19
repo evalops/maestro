@@ -1,10 +1,10 @@
-import chalk from "chalk";
 import {
 	type Component,
 	Container,
 	type SelectItem,
 	SelectList,
-} from "../tui-lib/index.js";
+} from "@evalops/tui";
+import chalk from "chalk";
 
 type ReportType = "bug" | "feedback";
 

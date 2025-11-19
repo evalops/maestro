@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import * as os from "node:os";
 import { dirname } from "node:path";
+import type { Container, TUI } from "@evalops/tui";
+import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
@@ -11,8 +13,6 @@ import {
 } from "../conversation/render-model.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import type { SessionManager } from "../session-manager.js";
-import type { Container, TUI } from "../tui-lib/index.js";
-import { Spacer, Text } from "../tui-lib/index.js";
 import type { GitView } from "./git-view.js";
 import { TOOL_FAILURE_LOG_PATH } from "./tool-status-view.js";
 import type { ToolStatusView } from "./tool-status-view.js";

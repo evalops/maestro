@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { type Container, Spacer, type TUI, Text } from "@evalops/tui";
 import type { AgentState } from "../agent/types.js";
 import {
 	badge,
@@ -9,7 +10,6 @@ import {
 	muted,
 	separator as themedSeparator,
 } from "../style/theme.js";
-import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
 
 export const TOOL_FAILURE_LOG_PATH = join(
 	homedir(),
