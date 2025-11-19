@@ -69,6 +69,10 @@ function createSessionView(messages: AssistantMessage[]): SessionView {
 		requestRender: vi.fn(),
 	} as unknown as TUI;
 
+	const sessionContext = {
+		getArtifacts: () => ({}),
+	} as any;
+
 	return new SessionView({
 		agent,
 		sessionManager,
@@ -80,6 +84,7 @@ function createSessionView(messages: AssistantMessage[]): SessionView {
 		applyLoadedSessionContext: vi.fn(),
 		showInfoMessage: vi.fn(),
 		onSessionLoaded: vi.fn(),
+		sessionContext,
 	});
 }
 

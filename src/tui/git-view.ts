@@ -20,6 +20,7 @@ interface GitViewOptions {
 
 export class GitView {
 	private lastNotifiedChanges: string[] = [];
+	private lastTodoFingerprint = "";
 	private previewModal: GitPreviewModal | null = null;
 	private previewEntries: GitStatusEntry[] = [];
 	private previewSelection = 0;
@@ -403,6 +404,7 @@ Reverted changes in:
 				.filter((line) => line.length > 0 && !line.startsWith("##"));
 			if (lines.length === 0) {
 				this.lastNotifiedChanges = [];
+				this.lastTodoFingerprint = "";
 				return;
 			}
 			const normalized = lines.slice().sort();
@@ -423,9 +425,62 @@ Reverted changes in:
 - ${previewTargets}
 Use /diff <file> to inspect diffs.`;
 			this.options.showToast(message, "info");
+			this.maybeSuggestPlanUpdates();
 		} catch {
 			// ignore git errors
 		}
+	}
+
+	private maybeSuggestPlanUpdates(): void {
+		const hints = this.findTodoHints();
+		if (!hints.length) {
+			this.lastTodoFingerprint = "";
+			return;
+		}
+		const fingerprint = hints.join("|");
+		if (fingerprint === this.lastTodoFingerprint) {
+			return;
+		}
+		this.lastTodoFingerprint = fingerprint;
+		const preview = hints
+			.slice(0, 3)
+			.map((line) => `- ${line}`)
+			.join("\n");
+		const suffix =
+			hints.length > 3
+				? `\n… plus ${hints.length - 3} more TODO${hints.length - 3 === 1 ? "" : "s"}`
+				: "";
+		this.options.showToast(
+			`TODO updates detected:\n${preview}${suffix}\nUse /plan add <goal> :: <task> to track follow-ups.`,
+			"info",
+		);
+	}
+
+	private findTodoHints(): string[] {
+		const diff = this.runGitCommand(["diff", "--unified=0"]);
+		if (!diff.ok || !diff.stdout) {
+			return [];
+		}
+		const lines = diff.stdout.split("\n");
+		const hints: string[] = [];
+		let currentFile = "";
+		for (const line of lines) {
+			if (line.startsWith("+++ b/")) {
+				currentFile = line.slice(6).trim();
+				continue;
+			}
+			if (!currentFile) {
+				continue;
+			}
+			if (line.startsWith("+")) {
+				const content = line.slice(1);
+				if (/TODO|FIXME|BUG:?/i.test(content)) {
+					const snippet = content.trim().slice(0, 120);
+					hints.push(`${currentFile}: ${snippet}`);
+				}
+			}
+		}
+		return hints;
 	}
 
 	runGitCommand(args: string[]): {

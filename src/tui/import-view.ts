@@ -17,6 +17,7 @@ interface ImportExportViewOptions {
 	ui: TUI;
 	showInfoMessage: (message: string) => void;
 	applyLoadedSessionContext: () => void;
+	recordShareArtifact: (filePath: string) => void;
 }
 
 export class ImportExportView {
@@ -130,6 +131,7 @@ export class ImportExportView {
 				this.options.agent.state,
 				outputPath,
 			);
+			this.options.recordShareArtifact(filePath);
 			const fileUrl = `file://${filePath}`;
 			this.options.chatContainer.addChild(new Spacer(1));
 			this.options.chatContainer.addChild(

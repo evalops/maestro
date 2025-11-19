@@ -314,6 +314,7 @@ export class TuiRenderer {
 					`Loaded session ${sessionInfo.id} (${sessionInfo.messageCount} messages).`,
 				);
 			},
+			sessionContext: this.sessionContext,
 		});
 		this.sessionSwitcherView = new SessionSwitcherView({
 			sessionDataProvider: this.sessionDataProvider,
@@ -388,6 +389,8 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
+			recordShareArtifact: (filePath) =>
+				this.sessionContext.recordShareArtifact(filePath),
 		});
 		this.feedbackView = new FeedbackView({
 			agent: this.agent,
@@ -613,9 +616,12 @@ export class TuiRenderer {
 		this.notificationView.showInfo(
 			`Context ${percentLabel}% full – compacting history before sending prompt…`,
 		);
-		await this.runCompactionTask(() =>
+		const compacted = await this.runCompactionTask(() =>
 			this.conversationCompactor.compactHistory(),
 		);
+		if (compacted) {
+			this.recordCompactionDelta(stats, "auto");
+		}
 	}
 
 	async init(): Promise<void> {
@@ -774,9 +780,13 @@ export class TuiRenderer {
 			this.notificationView.showInfo("Already compacting history…");
 			return;
 		}
-		await this.runCompactionTask(() =>
+		const beforeStats = calculateFooterStats(this.agent.state);
+		const compacted = await this.runCompactionTask(() =>
 			this.conversationCompactor.compactHistory(),
 		);
+		if (compacted) {
+			this.recordCompactionDelta(beforeStats, "manual");
+		}
 	}
 
 	private handleReportCommand(context: CommandExecutionContext): void {
@@ -819,6 +829,10 @@ export class TuiRenderer {
 	private handlePromptQueueEvent(event: PromptQueueEvent): void {
 		if (!this.promptQueue) {
 			return;
+		}
+		if (event.type === "error") {
+			const message = this.describeError(event.error);
+			this.showError(`Prompt #${event.entry.id} failed: ${message}`);
 		}
 		if (event.type === "enqueue" && !event.willRunImmediately) {
 			this.notificationView.showInfo(
@@ -943,6 +957,7 @@ export class TuiRenderer {
 		}
 		this.sessionManager.startFreshSession();
 		this.agent.clearMessages();
+		this.sessionContext.resetArtifacts();
 		this.toolOutputView.clearTrackedComponents();
 		this.chatContainer.clear();
 		this.planView.syncHintWithStore();
@@ -1108,6 +1123,7 @@ export class TuiRenderer {
 
 	showError(errorMessage: string): void {
 		this.notificationView.showError(errorMessage);
+		this.provideFailureHints(errorMessage);
 	}
 
 	public refreshFooterHint(): void {
@@ -1189,6 +1205,52 @@ export class TuiRenderer {
 		this.contextWarningLevel = nextLevel;
 	}
 
+	private recordCompactionDelta(
+		before: FooterStats,
+		trigger: "auto" | "manual",
+	): void {
+		const after = calculateFooterStats(this.agent.state);
+		if (after.contextTokens === before.contextTokens) {
+			return;
+		}
+		this.sessionContext.recordCompactionArtifact({
+			beforeTokens: before.contextTokens,
+			afterTokens: after.contextTokens,
+			trigger,
+		});
+		const beforeLabel = formatTokenCount(before.contextTokens);
+		const afterLabel = formatTokenCount(after.contextTokens);
+		const prefix = trigger === "auto" ? "Auto-" : "";
+		this.notificationView.showInfo(
+			`${prefix}compact reduced context ${beforeLabel} → ${afterLabel}.`,
+		);
+	}
+
+	private describeError(error: unknown): string {
+		if (error instanceof Error) {
+			return error.message;
+		}
+		return String(error ?? "Unknown error");
+	}
+
+	private provideFailureHints(message: string): void {
+		const normalized = message.toLowerCase();
+		const hints: string[] = [];
+		if (/(api key|credential|unauthorized|forbidden|token)/.test(normalized)) {
+			hints.push("Check credentials with /diag keys");
+		}
+		if (/(context|token|length|window)/.test(normalized)) {
+			hints.push("Use /compact or /share to trim history");
+		}
+		if (/(tool|bash|edit|read)/.test(normalized)) {
+			hints.push("Inspect failures via /tools failures");
+		}
+		if (!hints.length) {
+			return;
+		}
+		this.notificationView.showInfo(`Hint: ${hints.join(" • ")}`);
+	}
+
 	private async handleLargePaste(event: LargePasteEvent): Promise<void> {
 		if (!event.content.trim()) {
 			return;
@@ -1235,6 +1297,12 @@ export class TuiRenderer {
 					`Summarized pasted block (~${event.lineCount} lines)`,
 					"success",
 				);
+				this.sessionContext.recordPasteSummaryArtifact({
+					placeholder: event.marker,
+					lineCount: event.lineCount,
+					charCount: event.charCount,
+					summaryPreview: summaryText.split("\n")[0]?.slice(0, 120) ?? "",
+				});
 			} else {
 				this.notificationView.showInfo(
 					"Generated paste summary but it was no longer needed.",
@@ -1279,6 +1347,7 @@ export class TuiRenderer {
 	}
 
 	private applyLoadedSessionContext(): void {
+		this.sessionContext.resetArtifacts();
 		const thinking = this.sessionManager.loadThinkingLevel();
 		if (thinking) {
 			this.agent.setThinkingLevel(thinking as ThinkingLevel);

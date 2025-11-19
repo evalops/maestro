@@ -15,6 +15,7 @@ import {
 import type { Container, TUI } from "../tui-lib/index.js";
 import { Spacer, Text } from "../tui-lib/index.js";
 import { normalizeUsage } from "./footer-utils.js";
+import type { SessionArtifacts, SessionContext } from "./session-context.js";
 import type {
 	SessionDataProvider,
 	SessionItem,
@@ -31,6 +32,7 @@ interface SessionViewOptions {
 	applyLoadedSessionContext: () => void;
 	showInfoMessage: (message: string) => void;
 	onSessionLoaded: (session: { id: string; messageCount: number }) => void;
+	sessionContext: SessionContext;
 }
 
 export class SessionView {
@@ -125,6 +127,11 @@ export class SessionView {
 					`  ${labeledValue("Total", totalCost.toFixed(4))}`,
 				].join("\n"),
 			);
+		}
+
+		const artifactSection = this.renderArtifacts();
+		if (artifactSection) {
+			sections.push("", artifactSection);
 		}
 
 		const info = sections.join("\n");
@@ -282,5 +289,52 @@ ${muted("Use /sessions load <number> to switch.")}`;
 		this.options.showInfoMessage(
 			"Usage: /sessions [list|load <number>|favorite <number>|unfavorite <number>|summarize <number>]",
 		);
+	}
+
+	private renderArtifacts(): string | null {
+		const artifacts: SessionArtifacts =
+			this.options.sessionContext.getArtifacts();
+		const lines: string[] = [];
+		if (artifacts.lastShare) {
+			lines.push(
+				`${badge("Share", undefined, "info")} ${labeledValue(
+					"File",
+					artifacts.lastShare.filePath,
+				)} ${muted(new Date(artifacts.lastShare.timestamp).toLocaleString())}`,
+			);
+		}
+		if (artifacts.lastCompaction) {
+			const { beforeTokens, afterTokens, trigger, timestamp } =
+				artifacts.lastCompaction;
+			lines.push(
+				`${badge("Compaction", undefined, "warn")} ${labeledValue(
+					"Before→After",
+					`${beforeTokens.toLocaleString()} → ${afterTokens.toLocaleString()}`,
+				)} ${labeledValue("Trigger", trigger)} ${muted(
+					new Date(timestamp).toLocaleString(),
+				)}`,
+			);
+		}
+		if (artifacts.lastPasteSummary) {
+			const { placeholder, lineCount, charCount, summaryPreview, timestamp } =
+				artifacts.lastPasteSummary;
+			const previewLine = summaryPreview ? `${muted(summaryPreview)}` : "";
+			lines.push(
+				`${badge("Paste", undefined, "info")} ${labeledValue(
+					"Marker",
+					placeholder,
+				)} ${labeledValue(
+					"Size",
+					`~${lineCount} lines / ${charCount} chars`,
+				)} ${muted(new Date(timestamp).toLocaleString())}${
+					previewLine ? `\n${previewLine}` : ""
+				}`,
+			);
+		}
+		if (!lines.length) {
+			return null;
+		}
+		return `${heading("Recent artifacts")}
+${lines.join("\n")}`;
 	}
 }
