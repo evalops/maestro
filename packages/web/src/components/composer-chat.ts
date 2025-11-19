@@ -4,14 +4,22 @@
 
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { ApiClient, type Message, type Session } from "../services/api-client.js";
+import {
+	ApiClient,
+	type Message,
+	type Session,
+} from "../services/api-client.js";
+import "./composer-message.js";
+import "./composer-input.js";
+import "./composer-settings.js";
 
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
 	static styles = css`
 		:host {
-			display: flex;
-			height: 100%;
+			display: flex !important;
+			height: 100% !important;
+			width: 100% !important;
 			background: #0a0e14;
 			color: #e6edf3;
 			overflow: hidden;
@@ -114,6 +122,7 @@ export class ComposerChat extends LitElement {
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
+			pointer-events: none;
 		}
 
 		.session-meta {
@@ -122,6 +131,7 @@ export class ComposerChat extends LitElement {
 			color: #6e7681;
 			text-transform: uppercase;
 			letter-spacing: 0.05em;
+			pointer-events: none;
 		}
 
 		/* Main content - instrument panel style */
@@ -130,6 +140,8 @@ export class ComposerChat extends LitElement {
 			display: flex;
 			flex-direction: column;
 			position: relative;
+			min-width: 0; /* Fix flex shrinking issue */
+			width: 100%; /* Ensure it takes available space */
 		}
 
 		.header {
@@ -294,6 +306,7 @@ export class ComposerChat extends LitElement {
 			flex-direction: column;
 			gap: 1px;
 			background: #0a0e14;
+			min-height: 0; /* Fix flexbox overflow issue */
 		}
 
 		.input-container {
@@ -398,6 +411,82 @@ export class ComposerChat extends LitElement {
 			grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
 			gap: 0.5rem;
 			margin-top: 0.5rem;
+		}
+
+		.session-gallery {
+			margin: 1.5rem;
+			background: #0d1117;
+			border: 1px solid #21262d;
+			border-radius: 4px;
+			padding: 1.25rem;
+			box-shadow: 0 20px 35px rgba(0, 0, 0, 0.35);
+		}
+
+		.session-gallery-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: baseline;
+			margin-bottom: 1rem;
+			gap: 1rem;
+			flex-wrap: wrap;
+		}
+
+		.session-gallery-header h3 {
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.75rem;
+			letter-spacing: 0.1em;
+			text-transform: uppercase;
+			color: #8b949e;
+			margin: 0;
+		}
+
+		.session-gallery-header span {
+			font-size: 0.75rem;
+			color: #6e7681;
+		}
+
+		.session-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+			gap: 0.75rem;
+		}
+
+		.session-card {
+			background: #0a0e14;
+			border: 1px solid #21262d;
+			border-radius: 4px;
+			padding: 0.85rem 1rem;
+			text-align: left;
+			cursor: pointer;
+			transition: all 0.15s ease;
+			color: #e6edf3;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+		}
+
+		.session-card:hover {
+			border-color: #58a6ff;
+			box-shadow: 0 10px 25px rgba(88, 166, 255, 0.12);
+			transform: translateY(-1px);
+		}
+
+		.session-card:focus-visible {
+			outline: 2px solid #58a6ff;
+			outline-offset: 2px;
+		}
+
+		.session-card-title {
+			font-size: 0.85rem;
+			font-weight: 600;
+			margin-bottom: 0.35rem;
+			color: #e6edf3;
+		}
+
+		.session-card-meta {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.35rem;
+			font-size: 0.7rem;
+			color: #8b949e;
 		}
 
 		.tool-badge {
@@ -510,6 +599,7 @@ export class ComposerChat extends LitElement {
 		this.messages = [];
 		this.currentSessionId = null;
 		this.error = null;
+		this.requestUpdate(); // Force update
 		await this.loadSessions();
 	}
 
@@ -517,10 +607,14 @@ export class ComposerChat extends LitElement {
 		this.currentSessionId = sessionId;
 		try {
 			const session = await this.apiClient.getSession(sessionId);
-			this.messages = session.messages || [];
+			// Create a new array reference to trigger Lit's reactivity
+			this.messages = [...(session.messages || [])];
 			this.error = null;
+			this.requestUpdate(); // Force update
+			await this.updateComplete; // Wait for render
 			this.scrollToBottom();
 		} catch (e) {
+			console.error("Failed to load session:", e);
 			this.error = e instanceof Error ? e.message : "Failed to load session";
 		}
 	}
@@ -570,28 +664,34 @@ export class ComposerChat extends LitElement {
 					case "message_update":
 						if (agentEvent.assistantMessageEvent) {
 							const msgEvent = agentEvent.assistantMessageEvent;
-							
+
 							// Text deltas
 							if (msgEvent.type === "text_delta" && msgEvent.delta) {
 								assistantMessage.content += msgEvent.delta;
 								this.messages = [...this.messages];
 							}
-							
+
 							// Thinking deltas
 							else if (msgEvent.type === "thinking_start") {
 								currentThinkingIndex = msgEvent.contentIndex;
 								thinkingBlocks.set(msgEvent.contentIndex, "");
-							}
-							else if (msgEvent.type === "thinking_delta" && currentThinkingIndex !== null) {
+							} else if (
+								msgEvent.type === "thinking_delta" &&
+								currentThinkingIndex !== null
+							) {
 								const current = thinkingBlocks.get(currentThinkingIndex) || "";
-								thinkingBlocks.set(currentThinkingIndex, current + msgEvent.delta);
-								assistantMessage.thinking = Array.from(thinkingBlocks.values()).join("\n\n");
+								thinkingBlocks.set(
+									currentThinkingIndex,
+									current + msgEvent.delta,
+								);
+								assistantMessage.thinking = Array.from(
+									thinkingBlocks.values(),
+								).join("\n\n");
 								this.messages = [...this.messages];
-							}
-							else if (msgEvent.type === "thinking_end") {
+							} else if (msgEvent.type === "thinking_end") {
 								currentThinkingIndex = null;
 							}
-							
+
 							// Tool call tracking
 							else if (msgEvent.type === "toolcall_end") {
 								const toolCall = msgEvent.toolCall;
@@ -611,7 +711,7 @@ export class ComposerChat extends LitElement {
 						}
 						break;
 
-					case "tool_execution_start":
+					case "tool_execution_start": {
 						// Update tool status to running
 						const toolInfo = activeTools.get(agentEvent.toolCallId);
 						if (toolInfo && assistantMessage.tools) {
@@ -619,17 +719,21 @@ export class ComposerChat extends LitElement {
 							this.messages = [...this.messages];
 						}
 						break;
+					}
 
-					case "tool_execution_end":
+					case "tool_execution_end": {
 						// Update tool with result
 						const completedTool = activeTools.get(agentEvent.toolCallId);
 						if (completedTool && assistantMessage.tools) {
-							assistantMessage.tools[completedTool.index].status = agentEvent.isError ? "error" : "completed";
-							assistantMessage.tools[completedTool.index].result = agentEvent.result;
+							assistantMessage.tools[completedTool.index].status =
+								agentEvent.isError ? "error" : "completed";
+							assistantMessage.tools[completedTool.index].result =
+								agentEvent.result;
 							this.messages = [...this.messages];
 						}
 						activeTools.delete(agentEvent.toolCallId);
 						break;
+					}
 
 					case "message_end":
 						// Finalize assistant message
@@ -680,8 +784,20 @@ export class ComposerChat extends LitElement {
 
 	render() {
 		const cwd = "/Users/jonathan/codingagent"; // In real app, get from API
-		const tools = ["read", "write", "edit", "bash", "search", "diff", "gh_pr", "gh_issue"];
-		
+		const tools = [
+			"read",
+			"write",
+			"edit",
+			"bash",
+			"search",
+			"diff",
+			"gh_pr",
+			"gh_issue",
+		];
+		const showSessionGallery =
+			this.messages.length === 0 && this.sessions.length > 0;
+		const recentSessions = showSessionGallery ? this.sessions.slice(0, 8) : [];
+
 		return html`
 			<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
 				<div class="sidebar-header">
@@ -722,7 +838,7 @@ export class ComposerChat extends LitElement {
 						</div>
 						<div class="status-item">
 							<span>CWD:</span>
-							<span style="color: #58a6ff;">${cwd.split('/').pop()}</span>
+							<span style="color: #58a6ff;">${cwd.split("/").pop()}</span>
 						</div>
 						<div class="status-item">
 							<span>MSGS:</span>
@@ -732,7 +848,7 @@ export class ComposerChat extends LitElement {
 					<div class="header-right">
 						<div class="model-selector" @click=${this.toggleSettings}>
 							<span class="model-badge">AI</span>
-							<span>${this.currentModel.split('/').pop()?.toUpperCase() || 'MODEL'}</span>
+							<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
 						</div>
 						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>⚙</button>
 					</div>
@@ -741,8 +857,9 @@ export class ComposerChat extends LitElement {
 				${this.error ? html`<div class="error">${this.error}</div>` : ""}
 
 				<div class="messages">
-					${this.messages.length === 0
-						? html`
+					${
+						this.messages.length === 0
+							? html`
 								<div class="empty-state">
 									<div class="workspace-panel">
 										<div class="panel-section">
@@ -772,7 +889,7 @@ export class ComposerChat extends LitElement {
 										<div class="panel-section">
 											<h3>Session</h3>
 											<div class="panel-item">
-												<span>ID:</span>${this.currentSessionId?.slice(0, 8) || 'new'}
+												<span>ID:</span>${this.currentSessionId?.slice(0, 8) || "new"}
 											</div>
 											<div class="panel-item">
 												<span>MSGS:</span>0
@@ -784,20 +901,54 @@ export class ComposerChat extends LitElement {
 										<div class="panel-section">
 											<h3>Available Tools</h3>
 											<div class="tool-grid">
-												${tools.map(tool => html`
+												${tools.map(
+													(tool) => html`
 													<div class="tool-badge">${tool}</div>
-												`)}
+												`,
+												)}
 											</div>
 										</div>
 									</div>
+									${
+										showSessionGallery
+											? html`
+											<div class="session-gallery" aria-live="polite">
+												<div class="session-gallery-header">
+													<h3>Resume a Session</h3>
+													<span>Select a recent Composer run to continue.</span>
+												</div>
+												<div class="session-grid">
+													${recentSessions.map(
+														(session) => html`
+															<button
+																type="button"
+																class="session-card"
+																@click=${() => this.selectSession(session.id)}
+															>
+																<div class="session-card-title">
+																	${session.title || `Session ${session.id?.slice(0, 8) || ""}`}
+																</div>
+																<div class="session-card-meta">
+																	<span>${session.messageCount || 0} msgs</span>
+																	<span>•</span>
+																	<span>Updated ${this.formatSessionDate(session.updatedAt)}</span>
+																</div>
+															</button>
+													`,
+													)}
+												</div>
+											</div>
+										`
+											: ""
+									}
 									<div class="command-hint">
 										Type a message to start coding, or use slash commands:
 										<code>/run</code><code>/config</code><code>/help</code>
 									</div>
 								</div>
 						  `
-						: this.messages.map(
-								(msg) => html`
+							: this.messages.map(
+									(msg) => html`
 									<composer-message
 										role=${msg.role}
 										content=${msg.content}
@@ -805,7 +956,8 @@ export class ComposerChat extends LitElement {
 										.tools=${msg.tools || []}
 									></composer-message>
 								`,
-						  )}
+								)
+					}
 					${this.loading ? html`<div class="loading">Processing...</div>` : ""}
 				</div>
 
@@ -817,7 +969,9 @@ export class ComposerChat extends LitElement {
 				</div>
 			</div>
 
-			${this.settingsOpen ? html`
+			${
+				this.settingsOpen
+					? html`
 				<div style="position: absolute; top: 0; right: 0; width: 500px; height: 100%; background: #0a0e14; border-left: 2px solid #21262d; z-index: 100;">
 					<composer-settings
 						.apiClient=${this.apiClient}
@@ -826,7 +980,9 @@ export class ComposerChat extends LitElement {
 						@model-select=${this.handleModelSelect}
 					></composer-settings>
 				</div>
-			` : ""}
+			`
+					: ""
+			}
 		`;
 	}
 }

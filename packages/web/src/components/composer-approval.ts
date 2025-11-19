@@ -222,27 +222,35 @@ export class ComposerApproval extends LitElement {
 
 	@property({ type: Object }) request: ApprovalRequest | null = null;
 
+	private handleKeyDownRef = (event: KeyboardEvent) =>
+		this.handleKeyDown(event);
+
 	private formatValue(value: any): string {
 		if (value === null || value === undefined) return "null";
 		if (typeof value === "string") return value;
-		if (typeof value === "number" || typeof value === "boolean") return String(value);
+		if (typeof value === "number" || typeof value === "boolean")
+			return String(value);
 		return JSON.stringify(value, null, 2);
 	}
 
 	private handleApprove() {
-		this.dispatchEvent(new CustomEvent("approve", {
-			detail: { toolCallId: this.request?.toolCallId },
-			bubbles: true,
-			composed: true,
-		}));
+		this.dispatchEvent(
+			new CustomEvent("approve", {
+				detail: { toolCallId: this.request?.toolCallId },
+				bubbles: true,
+				composed: true,
+			}),
+		);
 	}
 
 	private handleDeny() {
-		this.dispatchEvent(new CustomEvent("deny", {
-			detail: { toolCallId: this.request?.toolCallId },
-			bubbles: true,
-			composed: true,
-		}));
+		this.dispatchEvent(
+			new CustomEvent("deny", {
+				detail: { toolCallId: this.request?.toolCallId },
+				bubbles: true,
+				composed: true,
+			}),
+		);
 	}
 
 	private handleKeyDown(e: KeyboardEvent) {
@@ -255,12 +263,12 @@ export class ComposerApproval extends LitElement {
 
 	connectedCallback() {
 		super.connectedCallback();
-		window.addEventListener("keydown", this.handleKeyDown.bind(this));
+		window.addEventListener("keydown", this.handleKeyDownRef);
 	}
 
 	disconnectedCallback() {
 		super.disconnectedCallback();
-		window.removeEventListener("keydown", this.handleKeyDown.bind(this));
+		window.removeEventListener("keydown", this.handleKeyDownRef);
 	}
 
 	render() {
@@ -285,23 +293,33 @@ export class ComposerApproval extends LitElement {
 							<div class="section-label">Tool</div>
 							<div class="tool-info">
 								<div class="tool-name">${this.request.toolName}</div>
-								${argEntries.length > 0 ? html`
+								${
+									argEntries.length > 0
+										? html`
 									<div class="args-grid">
-										${argEntries.map(([key, value]) => html`
+										${argEntries.map(
+											([key, value]) => html`
 											<div class="arg-key">${key}:</div>
 											<div class="arg-value">${this.formatValue(value)}</div>
-										`)}
+										`,
+										)}
 									</div>
-								` : ""}
+								`
+										: ""
+								}
 							</div>
 						</div>
 
-						${this.request.reason ? html`
+						${
+							this.request.reason
+								? html`
 							<div class="section">
 								<div class="section-label">Warning</div>
 								<div class="reason-box">${this.request.reason}</div>
 							</div>
-						` : ""}
+						`
+								: ""
+						}
 					</div>
 
 					<div class="approval-actions">
