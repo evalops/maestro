@@ -458,4 +458,13 @@ Use /preview <file> to inspect diffs.`;
 		if (!status.ok) return undefined;
 		return status.stdout.trim() || "clean";
 	}
+
+	getCurrentCommit(): string | undefined {
+		const result = this.runGitCommand(["rev-parse", "--short", "HEAD"]);
+		if (!result.ok) {
+			return undefined;
+		}
+		const value = result.stdout.trim();
+		return value.length > 0 ? value : undefined;
+	}
 }
