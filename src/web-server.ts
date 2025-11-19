@@ -99,10 +99,15 @@ function handleModels(res: any) {
 		id: m.id,
 		provider: m.provider,
 		name: m.name || m.id,
+		api: m.api,
+		contextWindow: m.contextWindow,
+		maxTokens: m.maxTokens,
+		cost: m.cost,
 		capabilities: {
 			streaming: true,
 			tools: true,
-			vision: false,
+			vision: m.input?.includes("image") || false,
+			reasoning: m.reasoning || false,
 		},
 	}));
 
@@ -111,6 +116,161 @@ function handleModels(res: any) {
 		...CORS_HEADERS,
 	});
 	res.end(JSON.stringify({ models: modelList }));
+}
+
+/**
+ * Handle /api/status - Get server and workspace status
+ */
+function handleStatus(res: any) {
+	const { execSync } = require("node:child_process");
+	const { existsSync } = require("node:fs");
+	const { join } = require("node:path");
+	const cwd = process.cwd();
+	
+	let gitBranch = null;
+	let gitStatus = null;
+	try {
+		gitBranch = execSync("git rev-parse --abbrev-ref HEAD", { 
+			cwd, 
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "ignore"]
+		}).trim();
+		
+		const status = execSync("git status --porcelain", {
+			cwd,
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "ignore"]
+		});
+		const lines = status.trim().split("\n").filter(Boolean);
+		gitStatus = {
+			modified: lines.filter((l: string) => l.startsWith(" M")).length,
+			added: lines.filter((l: string) => l.startsWith("A ")).length,
+			deleted: lines.filter((l: string) => l.startsWith(" D")).length,
+			untracked: lines.filter((l: string) => l.startsWith("??")).length,
+			total: lines.length,
+		};
+	} catch (e) {
+		// Not a git repository or git not available
+	}
+	
+	const hasAgentMd = existsSync(join(cwd, "AGENT.md"));
+	const hasClaudeMd = existsSync(join(cwd, "CLAUDE.md"));
+	
+	const status = {
+		cwd,
+		git: gitBranch ? { branch: gitBranch, status: gitStatus } : null,
+		context: {
+			agentMd: hasAgentMd,
+			claudeMd: hasClaudeMd,
+		},
+		server: {
+			uptime: process.uptime(),
+			version: process.version,
+		},
+	};
+	
+	res.writeHead(200, {
+		"Content-Type": "application/json",
+		...CORS_HEADERS,
+	});
+	res.end(JSON.stringify(status));
+}
+
+/**
+ * Handle /api/config - Get and update configuration
+ */
+async function handleConfig(req: any, res: any) {
+	const { getComposerCustomConfig, getCustomConfigPath, reloadModelConfig } = require("./models/registry.js");
+	const { readFileSync, writeFileSync } = require("node:fs");
+	
+	if (req.method === "GET") {
+		try {
+			const config = getComposerCustomConfig();
+			const configPath = getCustomConfigPath();
+			
+			res.writeHead(200, {
+				"Content-Type": "application/json",
+				...CORS_HEADERS,
+			});
+			res.end(JSON.stringify({ config, configPath }));
+		} catch (error) {
+			res.writeHead(500, {
+				"Content-Type": "application/json",
+				...CORS_HEADERS,
+			});
+			res.end(JSON.stringify({
+				error: error instanceof Error ? error.message : "Failed to load config",
+			}));
+		}
+	} else if (req.method === "POST") {
+		let body = "";
+		req.on("data", (chunk: Buffer) => {
+			body += chunk.toString();
+		});
+		
+		req.on("end", async () => {
+			try {
+				const { config } = JSON.parse(body);
+				const configPath = getCustomConfigPath();
+				
+				// Write new config
+				writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+				
+				// Reload registry
+				await reloadModelConfig();
+				
+				res.writeHead(200, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({ success: true }));
+			} catch (error) {
+				res.writeHead(500, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({
+					error: error instanceof Error ? error.message : "Failed to save config",
+				}));
+			}
+		});
+	}
+}
+
+/**
+ * Handle /api/usage - Get cost tracking and usage statistics
+ */
+function handleUsage(req: any, res: any) {
+	const { getUsageSummary, getUsageFilePath } = require("./tracking/cost-tracker.js");
+	const { existsSync, readFileSync } = require("node:fs");
+	const { parse } = require("node:url");
+	
+	try {
+		const parsedUrl = parse(req.url, true);
+		const { since, until } = parsedUrl.query;
+		
+		const options: any = {};
+		if (since) options.since = Number.parseInt(since as string, 10);
+		if (until) options.until = Number.parseInt(until as string, 10);
+		
+		const summary = getUsageSummary(options);
+		const usageFile = getUsageFilePath();
+		const hasData = existsSync(usageFile);
+		
+		res.writeHead(200, {
+			"Content-Type": "application/json",
+			...CORS_HEADERS,
+		});
+		res.end(JSON.stringify({ summary, hasData }));
+	} catch (error) {
+		res.writeHead(500, {
+			"Content-Type": "application/json",
+			...CORS_HEADERS,
+		});
+		res.end(JSON.stringify({
+			error: error instanceof Error ? error.message : "Failed to get usage data",
+		}));
+	}
 }
 
 /**
@@ -209,13 +369,91 @@ async function handleChat(req: any, res: any) {
 /**
  * Handle /api/sessions - List and manage sessions
  */
-function handleSessions(req: any, res: any) {
-	// TODO: Implement session listing
-	res.writeHead(200, {
-		"Content-Type": "application/json",
-		...CORS_HEADERS,
-	});
-	res.end(JSON.stringify({ sessions: [] }));
+async function handleSessions(req: any, res: any, pathname: string) {
+	const sessionManager = new SessionManager(true);
+	
+	try {
+		// GET /api/sessions - List all sessions
+		if (req.method === "GET" && pathname === "/api/sessions") {
+			const sessions = await sessionManager.listSessions();
+			const sessionList = sessions.map(s => ({
+				id: s.id,
+				title: s.title || `Session ${s.id.slice(0, 8)}`,
+				createdAt: s.createdAt || new Date().toISOString(),
+				updatedAt: s.updatedAt || new Date().toISOString(),
+				messageCount: s.messageCount || 0,
+				messages: [],
+			}));
+			
+			res.writeHead(200, {
+				"Content-Type": "application/json",
+				...CORS_HEADERS,
+			});
+			res.end(JSON.stringify({ sessions: sessionList }));
+		}
+		// GET /api/sessions/:id - Get specific session
+		else if (req.method === "GET" && pathname.startsWith("/api/sessions/")) {
+			const sessionId = pathname.replace("/api/sessions/", "");
+			const session = await sessionManager.loadSession(sessionId);
+			
+			if (!session) {
+				res.writeHead(404, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({ error: "Session not found" }));
+				return;
+			}
+			
+			res.writeHead(200, {
+				"Content-Type": "application/json",
+				...CORS_HEADERS,
+			});
+			res.end(JSON.stringify(session));
+		}
+		// POST /api/sessions - Create new session
+		else if (req.method === "POST" && pathname === "/api/sessions") {
+			let body = "";
+			req.on("data", (chunk: Buffer) => {
+				body += chunk.toString();
+			});
+			
+			req.on("end", async () => {
+				const { title } = JSON.parse(body || "{}");
+				const session = await sessionManager.createSession({ title });
+				
+				res.writeHead(201, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify(session));
+			});
+		}
+		// DELETE /api/sessions/:id - Delete session
+		else if (req.method === "DELETE" && pathname.startsWith("/api/sessions/")) {
+			const sessionId = pathname.replace("/api/sessions/", "");
+			await sessionManager.deleteSession(sessionId);
+			
+			res.writeHead(204, CORS_HEADERS);
+			res.end();
+		}
+		else {
+			res.writeHead(404, {
+				"Content-Type": "application/json",
+				...CORS_HEADERS,
+			});
+			res.end(JSON.stringify({ error: "Not found" }));
+		}
+	} catch (error) {
+		console.error("Session error:", error);
+		res.writeHead(500, {
+			"Content-Type": "application/json",
+			...CORS_HEADERS,
+		});
+		res.end(JSON.stringify({
+			error: error instanceof Error ? error.message : "Internal server error",
+		}));
+	}
 }
 
 /**
@@ -289,10 +527,16 @@ async function handleRequest(req: any, res: any) {
 	// API routes
 	if (pathname === "/api/models" && req.method === "GET") {
 		handleModels(res);
+	} else if (pathname === "/api/status" && req.method === "GET") {
+		handleStatus(res);
+	} else if (pathname === "/api/config" && (req.method === "GET" || req.method === "POST")) {
+		await handleConfig(req, res);
+	} else if (pathname === "/api/usage" && req.method === "GET") {
+		handleUsage(req, res);
 	} else if (pathname === "/api/chat" && req.method === "POST") {
 		await handleChat(req, res);
-	} else if (pathname === "/api/sessions" && req.method === "GET") {
-		handleSessions(req, res);
+	} else if (pathname.startsWith("/api/sessions")) {
+		await handleSessions(req, res, pathname);
 	}
 	// Static files
 	else {

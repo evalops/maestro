@@ -464,6 +464,7 @@ export class ComposerChat extends LitElement {
 	@state() private sidebarOpen = true;
 	@state() private sessions: Session[] = [];
 	@state() private currentSessionId: string | null = null;
+	@state() private settingsOpen = false;
 
 	private apiClient!: ApiClient;
 
@@ -494,6 +495,15 @@ export class ComposerChat extends LitElement {
 
 	private toggleSidebar() {
 		this.sidebarOpen = !this.sidebarOpen;
+	}
+
+	private toggleSettings() {
+		this.settingsOpen = !this.settingsOpen;
+	}
+
+	private handleModelSelect(event: CustomEvent) {
+		this.currentModel = event.detail.model;
+		// You could also call an API to persist the model selection
 	}
 
 	private async createNewSession() {
@@ -636,11 +646,11 @@ export class ComposerChat extends LitElement {
 						</div>
 					</div>
 					<div class="header-right">
-						<div class="model-selector">
+						<div class="model-selector" @click=${this.toggleSettings}>
 							<span class="model-badge">AI</span>
 							<span>${this.currentModel.split('/').pop()?.toUpperCase() || 'MODEL'}</span>
 						</div>
-						<button class="icon-btn" title="Settings">⚙</button>
+						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>⚙</button>
 					</div>
 				</div>
 
@@ -722,6 +732,17 @@ export class ComposerChat extends LitElement {
 					></composer-input>
 				</div>
 			</div>
+
+			${this.settingsOpen ? html`
+				<div style="position: absolute; top: 0; right: 0; width: 500px; height: 100%; background: #0a0e14; border-left: 2px solid #21262d; z-index: 100;">
+					<composer-settings
+						.apiClient=${this.apiClient}
+						.currentModel=${this.currentModel}
+						@close=${this.toggleSettings}
+						@model-select=${this.handleModelSelect}
+					></composer-settings>
+				</div>
+			` : ""}
 		`;
 	}
 }

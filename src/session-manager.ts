@@ -6,6 +6,7 @@ import {
 	readFileSync,
 	readdirSync,
 	statSync,
+	unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -21,6 +22,9 @@ import type { RegisteredModel } from "./models/registry.js";
 import {
 	type ModelChangeEntry,
 	type SessionEntry,
+	type SessionHeaderEntry,
+	type SessionMessageEntry,
+	type SessionMetaEntry,
 	type SessionMetadata,
 	type ThinkingLevelChangeEntry,
 	tryParseSessionEntry,
@@ -192,11 +196,6 @@ export type {
 	SessionMessageEntry,
 	SessionMetaEntry,
 	SessionToolInfo,
-} from "./session-manager-types.js";
-import type {
-	SessionHeaderEntry,
-	SessionMessageEntry,
-	SessionMetaEntry,
 } from "./session-manager-types.js";
 
 type PendingSessionEntry =
@@ -692,5 +691,159 @@ export class SessionManager {
 		const assistantMessages = messages.filter((m) => m.role === "assistant");
 
 		return userMessages.length >= 1 && assistantMessages.length >= 1;
+	}
+
+	/**
+	 * List all sessions in the session directory
+	 */
+	async listSessions(): Promise<Array<{
+		id: string;
+		title?: string;
+		createdAt: string;
+		updatedAt: string;
+		messageCount: number;
+	}>> {
+		const files = readdirSync(this.sessionDir);
+		const sessions = [];
+
+		for (const file of files) {
+			if (!file.endsWith('.jsonl')) continue;
+
+			const filePath = join(this.sessionDir, file);
+			const stats = statSync(filePath);
+
+			// Extract session ID from filename
+			const match = file.match(/_([a-f0-9-]+)\.jsonl$/);
+			const id = match ? match[1] : file.replace('.jsonl', '');
+
+			// Count messages in the file
+			let messageCount = 0;
+			let title: string | undefined;
+			try {
+				const content = readFileSync(filePath, 'utf-8');
+				const lines = content.trim().split('\n').filter(Boolean);
+				for (const line of lines) {
+					const entry = tryParseSessionEntry(line);
+					if (entry && entry.type === 'message') {
+						messageCount++;
+					} else if (entry && entry.type === 'session_meta' && entry.summary) {
+						title = entry.summary;
+					}
+				}
+			} catch (e) {
+				// Skip files that can't be read
+				continue;
+			}
+
+			sessions.push({
+				id,
+				title,
+				createdAt: stats.birthtime.toISOString(),
+				updatedAt: stats.mtime.toISOString(),
+				messageCount,
+			});
+		}
+
+		// Sort by updated date, most recent first
+		return sessions.sort((a, b) => 
+			new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+		);
+	}
+
+	/**
+	 * Load a session by ID
+	 */
+	async loadSession(sessionId: string): Promise<{
+		id: string;
+		title?: string;
+		messages: AppMessage[];
+		createdAt: string;
+		updatedAt: string;
+		messageCount: number;
+	} | null> {
+		const files = readdirSync(this.sessionDir);
+		const sessionFile = files.find(f => f.includes(sessionId));
+
+		if (!sessionFile) {
+			return null;
+		}
+
+		const filePath = join(this.sessionDir, sessionFile);
+		const stats = statSync(filePath);
+		const content = readFileSync(filePath, 'utf-8');
+		const lines = content.trim().split('\n').filter(Boolean);
+		
+		const messages: AppMessage[] = [];
+		let title: string | undefined;
+		
+		for (const line of lines) {
+			const entry = tryParseSessionEntry(line);
+			if (!entry) continue;
+			
+			if (entry.type === 'session_meta' && entry.summary) {
+				title = entry.summary;
+			} else if (entry.type === 'message') {
+				// Convert session message to AppMessage
+				messages.push(entry.message);
+			}
+		}
+
+		return {
+			id: sessionId,
+			title,
+			messages,
+			createdAt: stats.birthtime.toISOString(),
+			updatedAt: stats.mtime.toISOString(),
+			messageCount: messages.length,
+		};
+	}
+
+	/**
+	 * Create a new session
+	 */
+	async createSession(options?: { title?: string }): Promise<{
+		id: string;
+		title?: string;
+		messages: AppMessage[];
+		createdAt: string;
+		updatedAt: string;
+		messageCount: number;
+	}> {
+		this.startFreshSession();
+		
+		// Write summary as title if provided
+		if (options?.title && this.enabled) {
+			const entry: SessionMetaEntry = {
+				type: "session_meta",
+				timestamp: new Date().toISOString(),
+				summary: options.title,
+			};
+			this.writer?.write(entry);
+		}
+
+		const now = new Date().toISOString();
+		return {
+			id: this.sessionId,
+			title: options?.title,
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			messageCount: 0,
+		};
+	}
+
+	/**
+	 * Delete a session
+	 */
+	async deleteSession(sessionId: string): Promise<void> {
+		const files = readdirSync(this.sessionDir);
+		const sessionFile = files.find(f => f.includes(sessionId));
+
+		if (!sessionFile) {
+			throw new Error(`Session ${sessionId} not found`);
+		}
+
+		const filePath = join(this.sessionDir, sessionFile);
+		unlinkSync(filePath);
 	}
 }
