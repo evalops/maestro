@@ -25,6 +25,7 @@ describe("AboutView", () => {
 			ui: { requestRender: () => {} } as any,
 			version: "0.10.0",
 			telemetryStatus: () => "enabled",
+			getApprovalMode: () => "auto",
 		});
 		const card = about.buildAboutCard();
 		expect(card).toContain("composer about");

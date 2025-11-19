@@ -71,6 +71,9 @@ function createSessionView(messages: AssistantMessage[]): SessionView {
 
 	const sessionContext = {
 		getArtifacts: () => ({}),
+		getLastUserMessage: () => undefined,
+		getLastAssistantMessage: () => undefined,
+		getLastRunToolNames: () => [],
 	} as any;
 
 	return new SessionView({

@@ -100,6 +100,16 @@ const baseInput: DiagnosticsInput = {
 			},
 		],
 	},
+	context: {
+		systemPromptPreview: "You are a helpful assistant",
+		systemPromptLength: 27,
+		contextFiles: [{ path: "/tmp/AGENTS.md", lines: 3 }],
+	},
+	runtime: {
+		safeMode: false,
+		approvalMode: "auto",
+		pendingToolCount: 1,
+	},
 };
 
 describe("formatDiagnosticsReport", () => {
@@ -115,6 +125,11 @@ describe("formatDiagnosticsReport", () => {
 			health: undefined,
 			lspDiagnostics: {},
 			pendingTools: [],
+			runtime: {
+				safeMode: false,
+				approvalMode: "auto",
+				pendingToolCount: 0,
+			},
 			telemetry: {
 				enabled: false,
 				reason: "disabled",

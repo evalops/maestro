@@ -339,6 +339,7 @@ export class TuiRenderer {
 			toolStatusView: this.toolStatusView,
 			gitView: this.gitView,
 			todoStorePath: TODO_STORE_PATH,
+			getApprovalMode: () => this.approvalService.getMode(),
 		});
 		this.fileSearchView = new FileSearchView({
 			editor: this.editor,
@@ -400,6 +401,7 @@ export class TuiRenderer {
 			toolStatusView: this.toolStatusView,
 			gitView: this.gitView,
 			version: this.version,
+			getApprovalMode: () => this.approvalService.getMode(),
 		});
 		this.aboutView = new AboutView({
 			agent: this.agent,
@@ -409,6 +411,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			version: this.version,
 			telemetryStatus: () => this.describeTelemetryStatus(),
+			getApprovalMode: () => this.approvalService.getMode(),
 		});
 		this.infoView = new InfoView({
 			chatContainer: this.chatContainer,

@@ -5,6 +5,7 @@ import { type Container, Spacer, type TUI, Text } from "@evalops/tui";
 import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
+import { loadProjectContextFiles } from "../cli/system-prompt.js";
 import type { SessionManager } from "../session-manager.js";
 import type { GitView } from "./git-view.js";
 import { TOOL_FAILURE_LOG_PATH } from "./tool-status-view.js";
@@ -17,6 +18,7 @@ interface AboutViewOptions {
 	ui: TUI;
 	version: string;
 	telemetryStatus: () => string;
+	getApprovalMode?: () => string;
 }
 
 export class AboutView {
@@ -43,6 +45,7 @@ export class AboutView {
 			this.buildEnvSection(),
 			this.buildGitSection(),
 			this.buildPathSection(),
+			this.buildContextSection(),
 			this.buildAttachmentSection(),
 		]
 			.filter(Boolean)
@@ -70,12 +73,16 @@ export class AboutView {
 		const sessionId = this.options.sessionManager.getSessionId();
 		const safeMode = process.env.COMPOSER_SAFE_MODE === "1" ? "on" : "off";
 		const pendingTools = this.options.agent.state.pendingToolCalls?.size ?? 0;
+		const approvalMode = this.options.getApprovalMode
+			? this.options.getApprovalMode()
+			: "unknown";
 		const lines = [
 			`${this.badge("version")}${this.options.version}`,
 			`${this.badge("model")}${model}`,
 			`${this.badge("session")}${sessionId}`,
 			`${this.badge("telemetry")}${this.options.telemetryStatus()}`,
 			`${this.badge("safe-mode")}${safeMode}`,
+			`${this.badge("approvals")}${approvalMode}`,
 			`${this.badge("pending")}${pendingTools} tools`,
 		];
 		return this.section("status", lines);
@@ -151,6 +158,19 @@ export class AboutView {
 			"\n",
 		);
 		return `${this.section("attachments", displayLines)}\n${this.section("tar", tarLines)}`;
+	}
+
+	private buildContextSection(): string {
+		const systemPrompt = this.options.agent.state.systemPrompt || "";
+		const files = loadProjectContextFiles();
+		const promptLine = systemPrompt
+			? `${this.badge("prompt")}${systemPrompt.length.toLocaleString()} chars`
+			: `${this.badge("prompt")}${chalk.dim("none loaded")}`;
+		const fileLines =
+			files.length > 0
+				? files.map((file) => `- ${file.path}`)
+				: [chalk.dim("(no AGENTS/CLAUDE files found)")];
+		return this.section("context", [promptLine, ...fileLines]);
 	}
 
 	private section(title: string, lines: string[]): string {

@@ -4,6 +4,7 @@ import { Spacer, Text } from "@evalops/tui";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import type { AppMessage } from "../agent/types.js";
+import { loadProjectContextFiles } from "../cli/system-prompt.js";
 import { buildConversationModel } from "../conversation/render-model.js";
 import { collectDiagnostics as collectLspDiagnostics } from "../lsp/index.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
@@ -18,7 +19,10 @@ import {
 	buildFeedbackTemplate,
 	buildStatusSnapshot,
 } from "./diagnostics-templates.js";
-import { formatDiagnosticsReport } from "./diagnostics.js";
+import {
+	type DiagnosticsInput,
+	formatDiagnosticsReport,
+} from "./diagnostics.js";
 import type { GitView } from "./git-view.js";
 import {
 	type HealthSnapshot,
@@ -43,6 +47,7 @@ interface DiagnosticsViewOptions {
 	toolStatusView: ToolStatusView;
 	gitView: GitView;
 	todoStorePath: string;
+	getApprovalMode: () => string;
 }
 
 export class DiagnosticsView {
@@ -168,6 +173,8 @@ ${copyNote}`;
 			explicitApiKey: this.options.explicitApiKey,
 			health,
 			lspDiagnostics,
+			context: this.buildPromptContext(),
+			runtime: this.buildRuntimeSection(),
 		});
 
 		const shouldCopy = /copy|share/.test(commandText.split(/\s+/)[1] ?? "");
@@ -188,6 +195,38 @@ ${copyNote}`;
 	private resolveApiKey(): ApiKeyLookupResult {
 		const provider = this.options.agent.state.model.provider;
 		return lookupApiKey(provider, this.options.explicitApiKey);
+	}
+
+	private buildPromptContext(): DiagnosticsInput["context"] {
+		const systemPrompt = this.options.agent.state.systemPrompt || "";
+		const contextFiles = loadProjectContextFiles().map((file) => ({
+			path: file.path,
+			lines: file.content.split(/\r?\n/).length,
+		}));
+		return {
+			systemPromptPreview: this.truncate(systemPrompt, 360),
+			systemPromptLength: systemPrompt.length,
+			contextFiles,
+		};
+	}
+
+	private truncate(value: string, max: number): string {
+		if (value.length <= max) {
+			return value;
+		}
+		return `${value.slice(0, max).trimEnd()}…`;
+	}
+
+	private buildRuntimeSection(): DiagnosticsInput["runtime"] {
+		const safeMode = process.env.COMPOSER_SAFE_MODE === "1";
+		const approvalMode = this.options.getApprovalMode();
+		const pendingToolCount =
+			this.options.agent.state.pendingToolCalls?.size ?? undefined;
+		return {
+			safeMode,
+			approvalMode,
+			pendingToolCount,
+		};
 	}
 
 	private buildHealthSnapshot(): HealthSnapshot {

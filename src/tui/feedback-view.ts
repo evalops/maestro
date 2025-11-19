@@ -5,8 +5,10 @@ import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import clipboard from "clipboardy";
+import type { ApprovalMode } from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
 import type { AppMessage, ToolResultMessage } from "../agent/types.js";
+import { loadProjectContextFiles } from "../cli/system-prompt.js";
 import {
 	buildConversationModel,
 	isRenderableAssistantMessage,
@@ -25,6 +27,7 @@ interface FeedbackViewOptions {
 	toolStatusView: ToolStatusView;
 	gitView: GitView;
 	version: string;
+	getApprovalMode: () => ApprovalMode;
 }
 
 export class FeedbackView {
@@ -41,9 +44,11 @@ export class FeedbackView {
 				existsSync(TOOL_FAILURE_LOG_PATH)
 					? { label: "Tool failures log", path: TOOL_FAILURE_LOG_PATH }
 					: null,
+				...this.buildContextFileAttachments(),
 			].filter((value): value is { label: string; path: string } =>
 				Boolean(value),
 			),
+			this.buildRuntimeFlagsLine(),
 		);
 
 		const gitStatus =
@@ -77,6 +82,7 @@ export class FeedbackView {
 			`Tools: ${toolsLine}`,
 			`Env: ${envSummary}`,
 			`Git: ${gitBranch} @ ${gitCommit} (dirty: ${gitDirty})`,
+			this.buildRuntimeFlagsLine(),
 		].join("\n");
 
 		const sections: string[] = [
@@ -115,7 +121,7 @@ export class FeedbackView {
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
 		const snapshot = this.collectHealthSnapshot();
-		const plain = `Composer feedback\nVersion: ${this.options.version}\nSession: ${sessionId}\nSession file: ${sessionFile}\nModel: ${model}\nTool failures: ${snapshot.toolFailures}\n\nWhat happened?\n\nWhat did you expect instead?\n\nAnything else we should know?`;
+		const plain = `Composer feedback\nVersion: ${this.options.version}\nSession: ${sessionId}\nSession file: ${sessionFile}\nModel: ${model}\nTool failures: ${snapshot.toolFailures}\nFlags: ${this.buildRuntimeFlagsLine()}\n\nWhat happened?\n\nWhat did you expect instead?\n\nAnything else we should know?`;
 
 		const copied = this.copyTextToClipboard(plain);
 		const body = `${chalk.bold("Feedback template")}\n${plain}\n\n${
@@ -126,6 +132,27 @@ export class FeedbackView {
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(body, 1, 0));
 		this.options.ui.requestRender();
+	}
+
+	private buildContextFileAttachments(): Array<{
+		label: string;
+		path: string;
+	}> {
+		const files = loadProjectContextFiles();
+		if (!files.length) {
+			return [];
+		}
+		return files.map((file) => ({
+			label: "Context file",
+			path: file.path,
+		}));
+	}
+
+	private buildRuntimeFlagsLine(): string {
+		const safeMode = process.env.COMPOSER_SAFE_MODE === "1" ? "on" : "off";
+		const approvalMode = this.options.getApprovalMode();
+		const queueCount = this.options.agent.state.pendingToolCalls?.size ?? 0;
+		return `safe-mode ${safeMode}, approvals ${approvalMode}, pending tools ${queueCount}`;
 	}
 
 	private buildToolFailureSummary(): string | undefined {
@@ -248,6 +275,7 @@ export class FeedbackView {
 
 	private buildAttachmentSection(
 		entries: Array<{ label: string; path: string }>,
+		runtimeFlags?: string,
 	): string {
 		if (entries.length === 0) {
 			return `${chalk.bold("Send these files")}
@@ -261,7 +289,11 @@ ${chalk.dim("Session artifacts will appear once persisted.")}`;
 ${bulletLines}
 
 ${chalk.bold("Quick tar command")}
-${tarCommand}`;
+${tarCommand}${
+	runtimeFlags
+		? `\n\n${chalk.bold("Runtime flags")}\n${chalk.dim(runtimeFlags)}`
+		: ""
+}`;
 	}
 
 	private buildTarCommand(paths: string[]): string {
