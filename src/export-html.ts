@@ -315,6 +315,16 @@ function formatToolExecution(
 		}
 	}
 
+	if (result?.images?.length) {
+		const imageItems = result.images
+			.map(
+				(image, index) =>
+					`<div class="attachment-item">🖼 ${escapeHtml(image.mimeType || "image")} <span>Image ${index + 1}</span></div>`,
+			)
+			.join("");
+		html += `<div class="attachment-list">${imageItems}</div>`;
+	}
+
 	return { html, bgColor };
 }
 

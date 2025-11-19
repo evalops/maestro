@@ -1,9 +1,13 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentState } from "../src/agent/types.js";
 import { buildConversationModel } from "../src/conversation/render-model.js";
+process.env.TZ = "UTC";
+
+const normalizeWhitespace = (input: string): string =>
+	input.replace(/\s+/g, " ").trim();
 import {
 	exportSessionToHtml,
 	exportSessionToText,
@@ -100,6 +104,53 @@ describe("exporters", () => {
 		expect(text).toContain("User:\nlist files");
 		expect(text).toContain("[tool call] bash");
 		expect(text).toContain("[tool result] bash");
+	});
+
+	it("renders attachments, thinking, and multiple tool calls in HTML", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2024-02-02T12:00:00Z"));
+		const sessionFile = createTempSessionFile(richSessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const htmlPath = join(dirname(sessionFile), "rich.html");
+		const outputPath = await exportSessionToHtml(
+			manager,
+			buildAgentState(),
+			htmlPath,
+		);
+		const html = readFileSync(outputPath, "utf8");
+		vi.useRealTimers();
+		const attachmentSection = normalizeWhitespace(
+			html.match(
+				/<div class="user-message">[\s\S]*?<div class="attachment-list">[\s\S]*?<\/div>\s*<\/div>/,
+			)?.[0] ?? "",
+		);
+		expect(attachmentSection).toMatchInlineSnapshot(
+			`"<div class=\"user-message\"><div>See attachment for context</div><div class=\"attachment-list\"><div class=\"attachment-item\">📎 design.png <span>image/png</span></div></div>"`,
+		);
+		const bashSection = normalizeWhitespace(
+			html.match(
+				/<div class="tool-command">\$ npm run test<\/div>[\s\S]*?<div class="attachment-list">[\s\S]*?<\/div>/,
+			)?.[0] ?? "",
+		);
+		expect(bashSection).toMatchInlineSnapshot(
+			`"<div class=\"tool-command\">$ npm run test</div><div class=\"tool-output\"><div>All tests passing</div></div><div class=\"attachment-list\"><div class=\"attachment-item\">🖼 image/png <span>Image 1</span></div>"`,
+		);
+	});
+
+	it("exports attachments and tool images in text transcript", async () => {
+		const sessionFile = createTempSessionFile(richSessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const textPath = join(dirname(sessionFile), "rich.txt");
+		const outputPath = await exportSessionToText(
+			manager,
+			buildAgentState(),
+			textPath,
+		);
+		const text = readFileSync(outputPath, "utf8");
+		expect(text).toContain("[attachment] design.png (image/png)");
+		expect(text).toContain("[tool call] read");
+		expect(text).toContain("Tool bash (tool-3):");
+		expect(text).toContain("[image] image/png");
 	});
 
 	it("renders attachments, thinking, and multiple tool calls in HTML", async () => {

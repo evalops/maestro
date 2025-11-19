@@ -9,7 +9,12 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentState } from "./agent/types.js";
+import type { AgentState, AppMessage } from "./agent/types.js";
+import {
+	buildConversationModel,
+	isRenderableUserMessage,
+	renderMessageToPlainText,
+} from "./conversation/render-model.js";
 import { getRegisteredModels } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
 
@@ -624,10 +629,9 @@ export class SessionManager {
 					let sessionId = "";
 					let created = stats.birthtime;
 					let messageCount = 0;
-					let firstMessage = "";
-					const allMessages: string[] = [];
 					let summary: string | undefined;
 					let favorite = false;
+					const appMessages: AppMessage[] = [];
 
 					for (const line of lines) {
 						try {
@@ -638,24 +642,9 @@ export class SessionManager {
 								created = new Date(entry.timestamp);
 							}
 
-							if (entry.type === "message") {
+							if (entry.type === "message" && entry.message) {
 								messageCount++;
-								if (
-									entry.message.role === "user" ||
-									entry.message.role === "assistant"
-								) {
-									const textContent = entry.message.content
-										.filter((c: any) => c.type === "text")
-										.map((c: any) => c.text)
-										.join(" ");
-
-									if (textContent) {
-										allMessages.push(textContent);
-										if (!firstMessage && entry.message.role === "user") {
-											firstMessage = textContent;
-										}
-									}
-								}
+								appMessages.push(entry.message as AppMessage);
 							}
 
 							if (entry.type === "session_meta") {
@@ -671,6 +660,17 @@ export class SessionManager {
 						}
 					}
 
+					const renderables = buildConversationModel(appMessages);
+					const firstRenderableUser = renderables.find((renderable) =>
+						isRenderableUserMessage(renderable),
+					);
+					const firstMessage = firstRenderableUser
+						? renderMessageToPlainText(firstRenderableUser)
+						: "";
+					const allMessagesText = renderables
+						.map((renderable) => renderMessageToPlainText(renderable))
+						.filter(Boolean)
+						.join(" ");
 					const derivedSummary = summary || firstMessage || "(no summary)";
 
 					sessions.push({
@@ -683,7 +683,7 @@ export class SessionManager {
 						firstMessage: firstMessage || "(no messages)",
 						summary: derivedSummary,
 						favorite,
-						allMessagesText: allMessages.join(" "),
+						allMessagesText,
 					});
 				} catch (error) {
 					console.error(`Failed to read session file ${file}:`, error);

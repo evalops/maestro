@@ -1,9 +1,11 @@
 import type { Agent } from "../agent/agent.js";
-import type {
-	AgentState,
-	AppMessage,
-	AssistantMessage,
-} from "../agent/types.js";
+import type { AgentState, AppMessage, AssistantMessage } from "../agent/types.js";
+import {
+	buildConversationModel,
+	isRenderableAssistantMessage,
+	isRenderableToolResultMessage,
+	isRenderableUserMessage,
+} from "../conversation/render-model.js";
 import type { SessionManager } from "../session-manager.js";
 import {
 	badge,
@@ -42,24 +44,20 @@ export class SessionView {
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		const state = this.options.agent.state;
 
-		const userMessages = state.messages.filter((m) => m.role === "user").length;
-		const assistantMessages = state.messages.filter(
-			(m) => m.role === "assistant",
+		const renderables = buildConversationModel(state.messages as AppMessage[]);
+		const userMessages = renderables.filter((message) =>
+			isRenderableUserMessage(message),
 		).length;
-		const toolResults = state.messages.filter(
-			(m) => m.role === "toolResult",
+		const assistantMessages = renderables.filter((message) =>
+			isRenderableAssistantMessage(message),
 		).length;
-		const totalMessages = state.messages.length;
-
-		let toolCalls = 0;
-		for (const message of state.messages) {
-			if (message.role === "assistant") {
-				const assistantMsg = message as AssistantMessage;
-				toolCalls += assistantMsg.content.filter(
-					(c) => c.type === "toolCall",
-				).length;
-			}
-		}
+		const toolResults = renderables.filter((message) =>
+			isRenderableToolResultMessage(message),
+		).length;
+		const totalMessages = renderables.length;
+		const toolCalls = renderables
+			.filter((message) => isRenderableAssistantMessage(message))
+			.reduce((sum, message) => sum + message.toolCalls.length, 0);
 
 		let totalInput = 0;
 		let totalOutput = 0;
