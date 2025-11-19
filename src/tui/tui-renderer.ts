@@ -931,6 +931,7 @@ export class TuiRenderer {
 				`Switched approval mode to ${arg}.`,
 				"success",
 			);
+			this.refreshFooterHint();
 		}
 		const pending = this.approvalService.getPendingRequests();
 		const pendingSummary = pending.length
@@ -1137,13 +1138,6 @@ export class TuiRenderer {
 		}
 		this.footer.setRuntimeBadges(this.buildRuntimeBadges());
 		const hints: string[] = [this.idleFooterHint];
-		if (this.queuedPromptCount > 0) {
-			const queueLabel =
-				this.queuedPromptCount === 1
-					? "1 prompt queued"
-					: `${this.queuedPromptCount} prompts queued`;
-			hints.push(queueLabel);
-		}
 		if (this.compactionInProgress) {
 			hints.push("Compacting history…");
 		}
