@@ -22,7 +22,7 @@
             "scripts/run-read-tool.js",
             "README.md"
         ],
-        "expectedRegex": "Composer CLI by EvalOps"
+        "expectedRegex": "Composer by EvalOps"
     },
     {
         "name": "write tool writes file",
