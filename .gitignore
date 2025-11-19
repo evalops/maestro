@@ -1,6 +1,7 @@
 # Build output
 dist/
 node_modules/
+.nx/
 
 # External checkouts
 .external/

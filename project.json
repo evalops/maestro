@@ -1,0 +1,44 @@
+{
+	"name": "composer",
+	"projectType": "application",
+	"root": ".",
+	"sourceRoot": "src",
+	"implicitDependencies": ["composer-web", "tui"],
+	"targets": {
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run build",
+				"forwardAllArgs": true
+			}
+		},
+		"build:all": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run build:all",
+				"forwardAllArgs": true
+			}
+		},
+		"lint": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run bun:lint",
+				"forwardAllArgs": true
+			}
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run bun:test",
+				"forwardAllArgs": true
+			}
+		},
+		"evals": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run bun:evals",
+				"forwardAllArgs": true
+			}
+		}
+	}
+}
