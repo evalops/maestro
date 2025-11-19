@@ -2,8 +2,12 @@
     "extends": "./tsconfig.base.json",
 	"compilerOptions": {
 		"outDir": "./dist",
-		"rootDir": "./src"
+		"rootDir": "./src",
+		"composite": true
 	},
 	"include": ["src/**/*.ts"],
-	"exclude": ["node_modules", "dist", "**/*.d.ts", "src/**/*.d.ts"]
+	"exclude": ["node_modules", "dist", "**/*.d.ts", "src/**/*.d.ts"],
+	"references": [
+		{ "path": "./packages/tui/tsconfig.build.json" }
+	]
 }
