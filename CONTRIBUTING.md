@@ -1,6 +1,6 @@
 # Contributing Guide
 
-Thanks for helping build Composer CLI! This document covers the workflow we
+Thanks for helping build Composer! This document covers the workflow we
 expect before opening a PR.
 
 ## Prerequisites
@@ -11,7 +11,7 @@ expect before opening a PR.
 
 ## Development Workflow
 
-1. **Fork & clone** – `git clone https://github.com/evalops/composer-cli.git`
+1. **Fork & clone** – `git clone https://github.com/evalops/composer.git`
 2. **Install deps** – `npm install` (or `bun install`)
 3. **Create a branch** – `git checkout -b feature/my-change`
 4. **Implement + document** – update code + relevant docs (README, docs/*.md, AGENTS.md)
