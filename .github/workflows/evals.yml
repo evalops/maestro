@@ -34,7 +34,7 @@ jobs:
       - run: bun install
       - run: bun install --cwd packages/tui
       - run: bun install --cwd packages/web
-      - run: bun run build:all
+      - run: npm run build:all
       - run: bun run bun:lint
       - run: bun run bun:test
       - name: Run evals chunk
