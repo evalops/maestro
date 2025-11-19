@@ -7,6 +7,8 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     testTimeout: 30000, // 30 seconds for API calls
     setupFiles: ['test/setup/suppress-warnings.ts', 'test/setup/todo-store.ts'],
-    fileParallelism: false, // Disable parallel file execution to avoid cost-tracking conflicts
+    // Disable parallel file execution because cost-tracking tests share ~/.composer/usage.json
+    // This is the correct solution for integration tests that test actual file I/O
+    fileParallelism: false,
   }
 });
