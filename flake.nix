@@ -18,7 +18,7 @@
 
           src = ./.;
 
-          npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Will be updated by nix
+          npmDepsHash = "sha256-CKjvjbH+Tdxyh/zj1Ly4pgVC9NlfxAMxooXQwN75SvM=";
 
           nativeBuildInputs = with pkgs; [
             nodejs
@@ -27,7 +27,13 @@
 
           buildPhase = ''
             runHook preBuild
+            
+            # Build workspace packages first (TUI must be built before root)
+            npm run build --workspace=@evalops/tui
+            
+            # Build root package
             npm run build
+            
             runHook postBuild
           '';
 
@@ -36,10 +42,15 @@
             
             mkdir -p $out/bin $out/lib/node_modules/@evalops/composer
             
-            # Copy built files
+            # Copy built files (root package)
             cp -r dist $out/lib/node_modules/@evalops/composer/
             cp -r node_modules $out/lib/node_modules/@evalops/composer/
             cp package.json $out/lib/node_modules/@evalops/composer/
+            
+            # Copy workspace packages with their built artifacts
+            mkdir -p $out/lib/node_modules/@evalops/composer/packages
+            cp -r packages/tui $out/lib/node_modules/@evalops/composer/packages/
+            cp -r packages/web $out/lib/node_modules/@evalops/composer/packages/
             
             # Create wrapper script
             makeWrapper ${nodejs}/bin/node $out/bin/composer \
