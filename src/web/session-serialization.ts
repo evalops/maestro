@@ -316,11 +316,12 @@ export function convertComposerMessageToApp(
 		const results: AppMessage[] = [assistantMessage];
 
 		if (message.tools?.length) {
+			const baseContentLength = assistantMessage.content.length;
 			message.tools.forEach((tool, toolIndex) => {
 				const normalizedCall = normalizeToolCall(
 					tool,
 					index,
-					assistantMessage.content.length + toolIndex,
+					baseContentLength + toolIndex,
 				);
 				assistantMessage.content.push(normalizedCall);
 				results.push(
