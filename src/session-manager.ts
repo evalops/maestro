@@ -10,12 +10,12 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentState, AppMessage } from "./agent/types.js";
+import { SESSION_CONFIG } from "./config/constants.js";
 import {
 	buildConversationModel,
 	isRenderableUserMessage,
 	renderMessageToPlainText,
 } from "./conversation/render-model.js";
-import { SESSION_CONFIG } from "./config/constants.js";
 import { getRegisteredModels } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {

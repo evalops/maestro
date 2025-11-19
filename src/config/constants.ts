@@ -13,7 +13,7 @@ import { join } from "node:path";
  */
 export const SESSION_CONFIG = {
 	/** Number of entries to buffer before flushing to disk */
-	WRITE_BATCH_SIZE: parseInt(
+	WRITE_BATCH_SIZE: Number.parseInt(
 		process.env.COMPOSER_SESSION_BATCH_SIZE ?? "25",
 		10,
 	),
@@ -33,12 +33,12 @@ export const SESSION_CONFIG = {
  */
 export const TOOL_CONFIG = {
 	/** Default timeout for bash commands (in milliseconds) */
-	BASH_DEFAULT_TIMEOUT_MS: parseInt(
+	BASH_DEFAULT_TIMEOUT_MS: Number.parseInt(
 		process.env.COMPOSER_BASH_TIMEOUT_MS ?? "90000",
 		10,
 	),
 	/** Default timeout for individual tools in batch (in milliseconds) */
-	BATCH_TOOL_TIMEOUT_MS: parseInt(
+	BATCH_TOOL_TIMEOUT_MS: Number.parseInt(
 		process.env.COMPOSER_BATCH_TIMEOUT_MS ?? "30000",
 		10,
 	),
@@ -80,12 +80,12 @@ export const PATHS = {
  */
 export const API_CONFIG = {
 	/** Request timeout for LLM API calls (in milliseconds) */
-	REQUEST_TIMEOUT_MS: parseInt(
+	REQUEST_TIMEOUT_MS: Number.parseInt(
 		process.env.COMPOSER_API_TIMEOUT_MS ?? "120000",
 		10,
 	),
 	/** Telemetry sampling rate (0-1) */
-	TELEMETRY_SAMPLE_RATE: parseFloat(
+	TELEMETRY_SAMPLE_RATE: Number.parseFloat(
 		process.env.COMPOSER_TELEMETRY_SAMPLE ?? "1.0",
 	),
 } as const;
@@ -95,12 +95,12 @@ export const API_CONFIG = {
  */
 export const LIMITS = {
 	/** Maximum file size to read (in bytes) */
-	MAX_FILE_SIZE_BYTES: parseInt(
+	MAX_FILE_SIZE_BYTES: Number.parseInt(
 		process.env.COMPOSER_MAX_FILE_SIZE ?? "10485760", // 10MB
 		10,
 	),
 	/** Maximum number of search results */
-	MAX_SEARCH_RESULTS: parseInt(
+	MAX_SEARCH_RESULTS: Number.parseInt(
 		process.env.COMPOSER_MAX_SEARCH_RESULTS ?? "1000",
 		10,
 	),
