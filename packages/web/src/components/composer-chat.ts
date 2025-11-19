@@ -610,9 +610,14 @@ export class ComposerChat extends LitElement {
 			
 			// Transform messages: extract text from content blocks and convert toolCalls to tools
 			const transformedMessages = (session.messages || []).map((msg: any) => {
+				// Convert timestamp from number to ISO string if needed
+				const timestamp = typeof msg.timestamp === 'number' 
+					? new Date(msg.timestamp).toISOString() 
+					: msg.timestamp || new Date().toISOString();
+				
 				// If content is already a string, use it as-is
 				if (typeof msg.content === 'string') {
-					return msg;
+					return { ...msg, timestamp };
 				}
 				
 				// If content is an array of blocks, extract text and tools
@@ -622,6 +627,7 @@ export class ComposerChat extends LitElement {
 					
 					return {
 						...msg,
+						timestamp,
 						content: textBlocks.map((b: any) => b.text).join('\n\n'),
 						tools: toolBlocks.map((t: any) => ({
 							name: t.name,
@@ -632,7 +638,7 @@ export class ComposerChat extends LitElement {
 					};
 				}
 				
-				return msg;
+				return { ...msg, timestamp };
 			});
 			
 			// Create a new array reference to trigger Lit's reactivity
