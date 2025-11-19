@@ -420,8 +420,13 @@ export async function main(args: string[]) {
 		}
 	}
 
+	let agentsInitPrompt: string | null = null;
+	let agentsInitPath: string | null = null;
+
 	if (parsed.command === "agents") {
-		const { handleAgentsInit } = await import("./cli/commands/agents.js");
+		const { buildAgentsInitPrompt, handleAgentsInit } = await import(
+			"./cli/commands/agents.js"
+		);
 		if (parsed.subcommand && parsed.subcommand !== "init") {
 			console.error(
 				chalk.red(
@@ -433,17 +438,11 @@ export async function main(args: string[]) {
 		try {
 			const targetArg = parsed.messages[0];
 			const filePath = handleAgentsInit(targetArg, { force: parsed.force });
-			const cwd = process.cwd();
-			const relativePath = filePath.startsWith(cwd)
-				? `.${filePath.slice(cwd.length)}` || "."
-				: filePath;
-			console.log(chalk.green(`Created ${relativePath}`));
-			console.log(
-				chalk.dim(
-					"Update the file with project-specific guidance before your next session.",
-				),
-			);
-			return;
+			agentsInitPath = filePath;
+			agentsInitPrompt = buildAgentsInitPrompt(filePath);
+			if (parsed.messages.length === 0) {
+				parsed.messages = [agentsInitPrompt];
+			}
 		} catch (error) {
 			const message =
 				error instanceof Error
@@ -687,7 +686,19 @@ export async function main(args: string[]) {
 	});
 
 	// Route to appropriate mode
-	if (mode === "rpc") {
+	if (agentsInitPrompt) {
+		const cwd = process.cwd();
+		const targetPath = agentsInitPath ?? "AGENTS.md";
+		const displayPath =
+			targetPath.startsWith(cwd) && targetPath !== cwd
+				? `.${targetPath.slice(cwd.length)}`
+				: targetPath;
+		const runMode: Extract<Mode, "text" | "json"> =
+			mode === "rpc" ? "text" : mode;
+		console.log(chalk.green(`Drafting AGENTS.md at ${displayPath}...`));
+		await runSingleShotMode(agent, sessionManager, [agentsInitPrompt], runMode);
+		console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
+	} else if (mode === "rpc") {
 		// RPC mode - headless operation
 		await runRpcMode(agent, sessionManager);
 	} else if (isInteractive) {

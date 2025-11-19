@@ -2,7 +2,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { handleAgentsInit } from "../src/cli/commands/agents.js";
+import {
+	buildAgentsInitPrompt,
+	handleAgentsInit,
+} from "../src/cli/commands/agents.js";
 
 describe("handleAgentsInit", () => {
 	let tmpDir: string;
@@ -25,7 +28,7 @@ describe("handleAgentsInit", () => {
 		const path = handleAgentsInit(tmpDir);
 		expect(path).toBe(join(tmpDir, "AGENTS.md"));
 		const contents = readFileSync(path, "utf-8");
-		expect(contents).toContain("AGENTS instructions for");
+		expect(contents).toContain("# Repository Guidelines");
 	});
 
 	it("allows targeting a specific file path", () => {
@@ -41,5 +44,12 @@ describe("handleAgentsInit", () => {
 		expect(() => handleAgentsInit(path)).toThrow(/already exists/i);
 		const forcedPath = handleAgentsInit(path, { force: true });
 		expect(forcedPath).toBe(path);
+	});
+
+	it("builds a generation prompt with the target path", () => {
+		const target = join(tmpDir, "AGENTS.md");
+		const prompt = buildAgentsInitPrompt(target);
+		expect(prompt).toContain("AGENTS.md");
+		expect(prompt).toContain("Repository Guidelines");
 	});
 });
