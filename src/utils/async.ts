@@ -14,6 +14,13 @@ export class TimeoutError extends Error {
 }
 
 /**
+ * Sleep for specified milliseconds
+ */
+export function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Execute a promise with a timeout
  */
 export async function withTimeout<T>(

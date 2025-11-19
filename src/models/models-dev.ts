@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { safeJsonParse } from "../utils/json.js";
 
 /**
  * Models.dev integration
@@ -69,7 +70,12 @@ function readCache(): ModelsDev | null {
 		}
 
 		const data = readFileSync(CACHE_FILE, "utf-8");
-		const parsed = JSON.parse(data);
+		const result = safeJsonParse<ModelsDev>(data, "models.dev cache");
+
+		if (!result.success) {
+			console.warn("[Models.dev] Cache corrupted:", result.error.message);
+			return null;
+		}
 
 		// Check cache age
 		const stats = statSync(CACHE_FILE);
@@ -80,7 +86,7 @@ function readCache(): ModelsDev | null {
 			return null;
 		}
 
-		return parsed as ModelsDev;
+		return result.data;
 	} catch (error) {
 		console.warn("[Models.dev] Failed to read cache:", error);
 		return null;

@@ -1,9 +1,9 @@
 import { EventEmitter } from "node:events";
 import { extname, resolve } from "node:path";
+import { sleep } from "../utils/async.js";
 import type { LspClient } from "./client.js";
 import { spawnLspClient } from "./spawn.js";
 import type { LspServerConfig, RootResolver } from "./types.js";
-import { sleep } from "./utils.js";
 
 const DEFAULT_ROOT_RESOLVER_TIMEOUT_MS = 2000;
 

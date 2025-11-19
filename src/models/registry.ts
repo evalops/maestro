@@ -10,6 +10,7 @@ import {
 	printParseErrorCode,
 } from "jsonc-parser";
 import type { Api, Model, Provider } from "../agent/types.js";
+import { parseJsonOr, safeJsonParse } from "../utils/json.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
 
@@ -805,7 +806,15 @@ function buildFactoryData(): {
 		if (!raw) {
 			return null;
 		}
-		const parsed = JSON.parse(raw) as FactoryConfigFile;
+		const result = safeJsonParse<FactoryConfigFile>(raw, ".factory.json");
+		if (!result.success) {
+			console.warn(
+				"[Custom Models] Failed to parse .factory.json:",
+				result.error.message,
+			);
+			return null;
+		}
+		const parsed = result.data;
 		if (!parsed.custom_models?.length) {
 			return null;
 		}
@@ -933,7 +942,7 @@ function readFactorySettingsModel(): string | null {
 	}
 	try {
 		const sanitized = stripJsonComments(raw);
-		const parsed = JSON.parse(sanitized);
+		const parsed = parseJsonOr<{ model?: string }>(sanitized, {});
 		if (parsed && typeof parsed.model === "string" && parsed.model.trim()) {
 			return parsed.model.trim();
 		}

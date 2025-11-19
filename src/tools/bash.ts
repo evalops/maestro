@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
+import { requireNonEmpty, sanitizeString } from "../utils/validation.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
 function getShellConfig(): { shell: string; args: string[] } {
@@ -99,6 +100,49 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
 		}>((resolve, reject) => {
+			// Validate command input
+			try {
+				requireNonEmpty(command, "command");
+
+				// Sanitize command to prevent control character injection
+				const sanitizedCommand = sanitizeString(command, { maxLength: 100000 });
+				if (sanitizedCommand !== command) {
+					reject(new Error("Command contains invalid control characters"));
+					return;
+				}
+
+				// Validate working directory if provided
+				if (cwd !== undefined) {
+					requireNonEmpty(cwd, "cwd");
+					const sanitizedCwd = sanitizeString(cwd, { maxLength: 4096 });
+					if (sanitizedCwd !== cwd) {
+						reject(new Error("Working directory contains invalid characters"));
+						return;
+					}
+				}
+
+				// Validate environment variables
+				if (env) {
+					for (const [key, value] of Object.entries(env)) {
+						requireNonEmpty(key, "environment variable key");
+						const sanitizedKey = sanitizeString(key, { maxLength: 256 });
+						const sanitizedValue = sanitizeString(value, { maxLength: 32768 });
+
+						if (sanitizedKey !== key || sanitizedValue !== value) {
+							reject(
+								new Error(
+									`Environment variable ${key} contains invalid characters`,
+								),
+							);
+							return;
+						}
+					}
+				}
+			} catch (error) {
+				reject(error);
+				return;
+			}
+
 			const { shell, args } = getShellConfig();
 			const resolvedCwd = cwd ? resolvePath(expandUserPath(cwd)) : undefined;
 			if (resolvedCwd && !existsSync(resolvedCwd)) {

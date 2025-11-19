@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseJsonOr } from "../utils/json.js";
 
 /**
  * Cost tracking for API usage
@@ -52,7 +53,7 @@ function loadUsage(): UsageEntry[] {
 		}
 
 		const data = readFileSync(USAGE_FILE, "utf-8");
-		return JSON.parse(data) as UsageEntry[];
+		return parseJsonOr<UsageEntry[]>(data, []);
 	} catch (error) {
 		console.warn("[Cost Tracking] Failed to load usage data:", error);
 		return [];

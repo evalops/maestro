@@ -30,10 +30,3 @@ export function uriToPath(uri: string): string {
 	}
 	return uri;
 }
-
-/**
- * Sleep for specified milliseconds
- */
-export function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}

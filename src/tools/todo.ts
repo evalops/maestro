@@ -6,6 +6,7 @@ import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { setPlanSatisfied } from "../safety/safe-mode.js";
+import { safeJsonParse } from "../utils/json.js";
 import { createTool } from "./tool-dsl.js";
 
 const sectionDivider = "─".repeat(40);
@@ -150,7 +151,11 @@ const parseItemsInput = (
 	input: Static<typeof itemsInputSchema>,
 ): Array<Static<typeof todoItemSchema>> => {
 	if (typeof input === "string") {
-		const parsed = JSON.parse(input);
+		const result = safeJsonParse<unknown>(input, "TODO items");
+		if (!result.success) {
+			throw new Error(`Invalid JSON: ${result.error.message}`);
+		}
+		const parsed = result.data;
 		if (!Array.isArray(parsed)) {
 			throw new Error("items JSON must be an array");
 		}
@@ -200,8 +205,12 @@ async function ensureParentDirectory(filePath: string) {
 async function loadStore(): Promise<TodoStore> {
 	try {
 		const raw = await readFile(defaultStorePath, "utf-8");
-		const parsed = JSON.parse(raw) as TodoStore;
-		return parsed;
+		const result = safeJsonParse<TodoStore>(raw, "TODO store");
+		if (!result.success) {
+			console.warn("[TODO] Corrupted store file:", result.error.message);
+			return {};
+		}
+		return result.data;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") {
 			return {};

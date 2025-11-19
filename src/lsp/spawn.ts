@@ -6,9 +6,9 @@ import {
 	StreamMessageWriter,
 	createMessageConnection,
 } from "vscode-jsonrpc/node.js";
+import { sleep } from "../utils/async.js";
 import { LspClient } from "./client.js";
 import type { LspServerConfig } from "./types.js";
-import { sleep } from "./utils.js";
 
 /**
  * Wait for process to spawn successfully or fail
