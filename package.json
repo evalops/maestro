@@ -49,9 +49,9 @@
     "version:patch": "node scripts/version.js patch",
     "version:minor": "node scripts/version.js minor",
     "version:major": "node scripts/version.js major",
-    "dev:web": "npm run dev -w @evalops/composer-web",
-    "dev:tui": "npm run dev -w @evalops/tui",
-    "dev:packages": "concurrently --names \"tui,web\" --prefix-colors \"magenta,green\" \"npm run dev:tui\" \"npm run dev:web\"",
+    "dev:web": "bun run --filter @evalops/composer-web dev",
+    "dev:tui": "bun run --filter @evalops/tui dev",
+    "dev:packages": "concurrently --names \"tui,web\" --prefix-colors \"magenta,green\" \"bun run dev:tui\" \"bun run dev:web\"",
     "build:all": "bun run --filter @evalops/tui build && bun run --filter @evalops/composer-web build && bun run build",
     "test:all": "npm run test && npm run test --workspaces --if-present"
   },
