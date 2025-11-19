@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RegisteredModel } from "../src/models/registry.js";
-import { Text } from "../src/tui-lib/components/text.js";
-import { Container, type TUI } from "../src/tui-lib/tui.js";
+import { Text } from "@evalops/tui";
+import { Container, type TUI } from "@evalops/tui";
 import { OllamaView } from "../src/tui/ollama-view.js";
 
 vi.mock("node:child_process", () => {

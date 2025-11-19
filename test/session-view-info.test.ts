@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "../src/agent/agent.js";
 import type { AssistantMessage } from "../src/agent/types.js";
 import type { SessionManager } from "../src/session-manager.js";
-import type { Container, TUI } from "../src/tui-lib/index.js";
+import type { Container, TUI } from "@evalops/tui";
 import type {
 	SessionDataProvider,
 	SessionItem,
