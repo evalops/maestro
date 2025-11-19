@@ -55,7 +55,6 @@ interface CommandRegistryOptions {
 	handleNewChat: (context: CommandExecutionContext) => void;
 	handleInitAgents: (context: CommandExecutionContext) => void;
 	handleMcp: (context: CommandExecutionContext) => void;
-	handleSession: (context: CommandExecutionContext) => void;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
