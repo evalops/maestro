@@ -1,6 +1,6 @@
 {
   "name": "@evalops/composer",
-  "description": "Composer CLI by EvalOps with rich tooling for AI-assisted development",
+  "description": "Composer by EvalOps - Deterministic coding agent with TUI/CLI and Web UI for AI-assisted development",
   "version": "0.10.0",
   "private": true,
   "type": "module",
@@ -98,7 +98,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/evalops/composer-cli.git"
+    "url": "git+https://github.com/evalops/composer.git"
   },
   "engines": {
     "node": ">=20.0.0",

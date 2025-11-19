@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/evalops/composer-cli.git",
+    "url": "git+https://github.com/evalops/composer.git",
     "directory": "packages/web"
   },
   "dependencies": {

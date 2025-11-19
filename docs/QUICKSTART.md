@@ -1,7 +1,7 @@
 # Quickstart
 
-Composer CLI ships as a Node/Bun project. The steps below get a contributor
-from a fresh clone to running the CLI, TUI, and eval suite.
+Composer ships as a Node/Bun project. The steps below get a contributor
+from a fresh clone to running the CLI, TUI, Web UI, and eval suite.
 
 ## Prerequisites
 
@@ -12,8 +12,8 @@ from a fresh clone to running the CLI, TUI, and eval suite.
 ## Install
 
 ```bash
-git clone https://github.com/evalops/composer-cli.git
-cd composer-cli
+git clone https://github.com/evalops/composer.git
+cd composer
 npm install        # or: bun install
 ```
 

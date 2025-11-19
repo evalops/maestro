@@ -1,7 +1,7 @@
 {
   "name": "@evalops/tui",
   "version": "0.10.0",
-  "description": "Terminal UI library with differential rendering for Composer CLI",
+  "description": "Terminal UI library with differential rendering for Composer",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -31,7 +31,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/evalops/composer-cli.git",
+    "url": "git+https://github.com/evalops/composer.git",
     "directory": "packages/tui"
   },
   "engines": {

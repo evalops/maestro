@@ -1,6 +1,6 @@
-# Composer CLI by EvalOps
+# Composer by EvalOps
 
-Composer is a deterministic coding agent with multi-model support, powerful headless CLI, and scriptable automation.
+Composer is a deterministic coding agent with multi-model support, featuring both a powerful terminal interface (TUI/CLI) and a modern web UI for AI-assisted development.
 
 ## Documentation
 
@@ -17,6 +17,11 @@ Composer is a deterministic coding agent with multi-model support, powerful head
 ## Concept
 
 Composer exposes every capability through slash commands and git-aware helpers so you always know what changed and why. The agent is intentionally minimal: no hidden context juggling, no silent retries, just explicit tools you can chain together or script.
+
+Choose your interface:
+- **Terminal (TUI/CLI)**: Rich interactive terminal interface with keyboard shortcuts, file search, and command palette
+- **Web UI**: Modern browser-based interface for those who prefer a graphical environment
+- **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
 ## Who It's For
 
@@ -52,23 +57,23 @@ bun install -g @evalops/composer
 
 #### Nix (with flakes)
 ```bash
-nix run github:evalops/composer-cli
+nix run github:evalops/composer
 # Or add to your flake.nix
 ```
 
 #### From Source
 ```bash
-git clone https://github.com/evalops/composer-cli.git
-cd composer-cli
+git clone https://github.com/evalops/composer.git
+cd composer
 npm install
-npm run build
+npm run build:all  # Builds CLI, TUI, and Web UI
 npm link
 ```
 
 #### Binary Compilation (Bun)
 ```bash
-git clone https://github.com/evalops/composer-cli.git
-cd composer-cli
+git clone https://github.com/evalops/composer.git
+cd composer
 bun install
 npm run compile:binary
 # Binary available at dist/composer-bun
@@ -80,11 +85,15 @@ npm run compile:binary
 # Set your API key (see API Keys below)
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# Start the interactive CLI
+# Start the interactive terminal UI
 composer
+
+# Or start the web UI
+composer web
+# Then open http://localhost:3000 in your browser
 ```
 
-Once in the CLI, chat with the AI: `Create a simple Express server in src/server.ts`. Composer will read/write files and run shell commands via explicit slash commands.
+Once in the interface, chat with the AI: `Create a simple Express server in src/server.ts`. Composer will read/write files and run shell commands via explicit slash commands.
 
 ### API Keys
 
@@ -313,6 +322,28 @@ Composer does not implement MCP. To extend it:
 - **Command palette:** `Ctrl+K` opens a searchable list of slash commands.
 - **File search:** Type `@` (or `Ctrl+K` → File Search) for fuzzy find.
 - **Keyboard shortcuts:** `Ctrl+K`, `Ctrl+C`, Tab, Enter, Shift+Enter, arrow keys, `Ctrl+A/E`, etc.
+
+### Web UI
+
+Start the web interface for a browser-based experience:
+
+```bash
+composer web
+# Or with custom port
+composer web --port 3001
+```
+
+The web UI provides:
+- **Modern Interface**: Clean, responsive design optimized for AI-assisted development
+- **Real-time Updates**: Live streaming of AI responses and tool executions
+- **Session Management**: Load, save, and switch between sessions seamlessly
+- **All CLI Features**: Full access to slash commands, file operations, and git integration
+- **Multi-user Ready**: Run on a server and access from any device (authentication not included)
+
+Development mode (auto-reload):
+```bash
+npm run web:dev
+```
 
 ### CLI Options
 

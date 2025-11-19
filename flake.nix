@@ -1,5 +1,5 @@
 {
-  description = "Composer CLI - AI-assisted development tool";
+  description = "Composer - AI-assisted development tool with TUI/CLI and Web UI";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,7 +13,7 @@
         nodejs = pkgs.nodejs_20;
         
         composer = pkgs.buildNpmPackage rec {
-          pname = "composer-cli";
+          pname = "composer";
           version = "0.10.0";
 
           src = ./.;
@@ -60,8 +60,8 @@
           '';
 
           meta = with pkgs.lib; {
-            description = "Composer CLI by EvalOps with rich tooling for AI-assisted development";
-            homepage = "https://github.com/evalops/composer-cli";
+            description = "Composer by EvalOps - Deterministic coding agent with TUI/CLI and Web UI";
+            homepage = "https://github.com/evalops/composer";
             license = licenses.mit;
             maintainers = [ ];
             platforms = platforms.unix;
@@ -71,7 +71,7 @@
       in {
         packages = {
           default = composer;
-          composer-cli = composer;
+          composer = composer;
         };
 
         apps.default = {
@@ -89,16 +89,17 @@
           ];
 
           shellHook = ''
-            echo "Composer CLI development environment"
+            echo "Composer development environment"
             echo "Node: $(node --version)"
             echo "npm: $(npm --version)"
             echo ""
             echo "Available commands:"
-            echo "  npm install    - Install dependencies"
-            echo "  npm run build  - Build the project"
-            echo "  npm test       - Run tests"
-            echo "  npm run dev    - Watch mode"
-            echo "  npm run lint   - Run linter"
+            echo "  npm install      - Install dependencies"
+            echo "  npm run build:all - Build CLI, TUI, and Web UI"
+            echo "  npm test         - Run tests"
+            echo "  npm run dev      - Watch mode"
+            echo "  npm run web:dev  - Web UI dev mode"
+            echo "  npm run lint     - Run linter"
             echo ""
             
             # Set up development environment
