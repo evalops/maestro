@@ -811,6 +811,9 @@ describe("codingTools bundle", () => {
 			"websearch",
 			"codesearch",
 			"webfetch",
+			"gh_pr",
+			"gh_issue",
+			"gh_repo",
 		]);
 	});
 });

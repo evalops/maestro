@@ -110,8 +110,8 @@ describe("batch tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("All 3 tools executed successfully");
-			expect(output).toContain("✓ mock-success");
-			expect(output).toContain("✓ mock-slow");
+			expect(output).toContain("[OK] mock-success");
+			expect(output).toContain("[OK] mock-slow");
 			expect(output).toContain("Success with params");
 			expect(result.details).toMatchObject({
 				totalCalls: 3,
@@ -206,10 +206,10 @@ describe("batch tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("Executed 2/3 tools successfully. 1 failed");
-			expect(output).toContain("✓ mock-success");
-			expect(output).toContain("✗ mock-fail");
+			expect(output).toContain("[OK] mock-success");
+			expect(output).toContain("[ERROR] mock-fail");
 			expect(output).toContain("Error: Mock tool failure");
-			expect(output).toContain("✓ mock-slow");
+			expect(output).toContain("[OK] mock-slow");
 			expect(result.details).toMatchObject({
 				totalCalls: 3,
 				successful: 2,
@@ -372,7 +372,7 @@ describe("batch tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("All 3 tools executed successfully");
-			expect(output).toContain("✓ read");
+			expect(output).toContain("[OK] read");
 			expect(result.details?.successful).toBe(3);
 		});
 
@@ -392,9 +392,9 @@ describe("batch tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("All 3 tools executed successfully");
-			expect(output).toContain("✓ read");
-			expect(output).toContain("✓ list");
-			expect(output).toContain("✓ search");
+			expect(output).toContain("[OK] read");
+			expect(output).toContain("[OK] list");
+			expect(output).toContain("[OK] search");
 		});
 
 		it("handles mixed success/failure with real tools", async () => {
@@ -415,7 +415,7 @@ describe("batch tool", () => {
 			// Note: read tool returns error as text content, not as a thrown error
 			// So both calls appear successful but one contains error text
 			expect(output).toContain("All 2 tools executed successfully");
-			expect(output).toContain("✓ read");
+			expect(output).toContain("[OK] read");
 			expect(output).toContain("File not found");
 		});
 
@@ -432,7 +432,7 @@ describe("batch tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("All 3 tools executed successfully");
-			expect(output).toContain("✓ bash");
+			expect(output).toContain("[OK] bash");
 		});
 	});
 
@@ -463,8 +463,8 @@ describe("batch tool", () => {
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toMatch(/✓ mock-success \(\d+ms\)/);
-			expect(output).toMatch(/✓ mock-slow \(\d+ms\)/);
+			expect(output).toMatch(/\[OK\] mock-success \(\d+ms\)/);
+			expect(output).toMatch(/\[OK\] mock-slow \(\d+ms\)/);
 			expect(result.details?.results).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
@@ -560,7 +560,7 @@ describe("batch tool", () => {
 			// Batch catches tool errors and returns them as failed results
 			const output = getTextOutput(result);
 			expect(output).toContain("Executed 0/1 tools successfully. 1 failed");
-			expect(output).toContain("✗ mock-abortable");
+			expect(output).toContain("[ERROR] mock-abortable");
 			expect(output).toContain("Error: Operation aborted");
 			expect(result.details?.failed).toBe(1);
 		});

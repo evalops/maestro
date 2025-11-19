@@ -2,7 +2,7 @@
 
 exports[`buildConfigShowSections > handles empty collections 1`] = `
 "
-📋 Configuration Inspection
+Configuration Inspection
 
 
 Config Sources
@@ -13,7 +13,7 @@ No providers configured
 
 exports[`buildConfigShowSections > produces snapshot for populated inspection 1`] = `
 "
-📋 Configuration Inspection
+Configuration Inspection
 
 
 Config Sources
