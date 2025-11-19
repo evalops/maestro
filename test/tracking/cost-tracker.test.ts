@@ -156,10 +156,10 @@ describe.sequential("Enhanced Cost Tracking", () => {
 		});
 
 		it("should filter by time range", () => {
+			createSampleEntries();
+
 			const now = Date.now();
 			const hourAgo = now - 60 * 60 * 1000;
-
-			createSampleEntries();
 
 			const csv = exportUsageToCSV({ since: hourAgo, until: now });
 			const lines = csv.split("\n");
