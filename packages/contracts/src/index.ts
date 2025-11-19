@@ -23,6 +23,23 @@ export interface ComposerMessage {
 	tools?: ComposerToolCall[];
 	toolName?: string;
 	isError?: boolean;
+	usage?: ComposerUsage;
+}
+
+export interface ComposerUsageCost {
+	input: number;
+	output: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	total?: number;
+}
+
+export interface ComposerUsage {
+	input: number;
+	output: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: ComposerUsageCost;
 }
 
 export interface ComposerChatRequest {

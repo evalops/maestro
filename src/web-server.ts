@@ -75,14 +75,34 @@ const CORS_HEADERS = {
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
+interface SseContext {
+	sessionId?: string;
+	modelKey?: string;
+	requestId?: string;
+}
+
+type SseSkipListener = (metrics: {
+	sent: number;
+	skipped: number;
+	lastError?: unknown;
+	context?: SseContext;
+}) => void;
+
 class SseSession {
 	private closed = false;
 	private heartbeat?: NodeJS.Timeout;
 	private skippedWrites = 0;
 	private sentWrites = 0;
 	private lastError?: unknown;
-
-	constructor(private readonly res: any) {
+	private context: SseContext = {};
+	constructor(
+		private readonly res: any,
+		private readonly onSkip?: SseSkipListener,
+		context?: SseContext,
+	) {
+		if (context) {
+			this.context = context;
+		}
 		if (typeof res.flushHeaders === "function") {
 			try {
 				res.flushHeaders();
@@ -104,6 +124,7 @@ class SseSession {
 	private write(payload: string): boolean {
 		if (!this.canWrite()) {
 			this.skippedWrites++;
+			this.notifySkip();
 			return false;
 		}
 		try {
@@ -117,6 +138,7 @@ class SseSession {
 				"SSE write skipped after disconnect",
 				error instanceof Error ? error.message : error,
 			);
+			this.notifySkip();
 			return false;
 		}
 	}
@@ -174,6 +196,7 @@ class SseSession {
 				"SSE end skipped after disconnect",
 				error instanceof Error ? error.message : error,
 			);
+			this.notifySkip();
 		}
 	}
 
@@ -183,6 +206,22 @@ class SseSession {
 			skipped: this.skippedWrites,
 			lastError: this.lastError,
 		};
+	}
+
+	setContext(context: SseContext): void {
+		this.context = { ...this.context, ...context };
+	}
+
+	private notifySkip(): void {
+		if (this.skippedWrites === 0) return;
+		if (this.onSkip) {
+			this.onSkip({
+				sent: this.sentWrites,
+				skipped: this.skippedWrites,
+				lastError: this.lastError,
+				context: this.context,
+			});
+		}
 	}
 }
 
@@ -635,7 +674,18 @@ async function handleChat(req: any, res: any) {
 				...CORS_HEADERS,
 			});
 
-			const sseSession = new SseSession(res);
+			const requestId = Math.random().toString(36).slice(2);
+			const modelKey = `${registeredModel.provider}/${registeredModel.id}`;
+			const sseSession = new SseSession(
+				res,
+				(metrics) => {
+					console.debug("SSE writes skipped", {
+						...metrics,
+						context: metrics.context,
+					});
+				},
+				{ requestId, modelKey },
+			);
 			sseSession.startHeartbeat();
 			let cleanedUp = false;
 
@@ -646,7 +696,9 @@ async function handleChat(req: any, res: any) {
 					sessionManager.saveMessage(event.message);
 					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
 						sessionManager.startSession(agent.state);
-						sendSessionUpdate(sseSession, sessionManager.getSessionId());
+						const sessionId = sessionManager.getSessionId();
+						sendSessionUpdate(sseSession, sessionId);
+						sseSession.setContext({ sessionId });
 					}
 				}
 
