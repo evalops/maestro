@@ -38,6 +38,17 @@ function createAssistantMessage(
 }
 
 // Helper to create a mock agent state
+const ANSI_ESCAPE = String.fromCharCode(27);
+const ANSI_REGEX = new RegExp(`${ANSI_ESCAPE}\\[[0-9;]*m`, "g");
+
+function stripAnsi(value: string): string {
+	return value.replaceAll(ANSI_REGEX, "");
+}
+
+function statsLineFrom(rendered: string[]): string {
+	return stripAnsi(rendered[1] ?? "");
+}
+
 function createMockState(messages: any[], contextWindow = 200000): AgentState {
 	return {
 		messages,
@@ -81,7 +92,7 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			// Should show cumulative totals: 3500 input, 1750 output
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			expect(statsLine).toContain("3.5k"); // Input tokens
 			expect(statsLine).toContain("1.8k"); // Output tokens (rounded)
 		});
@@ -106,7 +117,7 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			expect(statsLine).toContain("2.0k"); // Input: 1000 + 1000
 			expect(statsLine).toContain("1.0k"); // Output: 500 + 500
 			expect(statsLine).toContain("8.0k"); // Cache read: 5000 + 3000
@@ -123,7 +134,7 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			// Last message input (10k) + all outputs (50k + 5k) = 65k / 200k = 32.5%
 			// But wait - aborted messages should be excluded from lastAssistant
 			// So: first message input (100k) + all outputs (50k + 5k) = 155k / 200k = 77.5%
@@ -143,7 +154,7 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			// (2k input + 90k cacheRead + 1k output) / 200k = 93k / 200k = 46.5%
 			expect(statsLine).toContain("93k/200k (46.5%)");
 			expect(statsLine).not.toContain("(1.5%)");
@@ -160,7 +171,7 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			expect(statsLine).toContain("21k"); // Total input: 21000
 			expect(statsLine).toContain("9.3k"); // Total output: 9300
 		});
@@ -175,7 +186,7 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			expect(statsLine).toContain("$0.579"); // 0.123 + 0.456
 		});
 	});
@@ -189,7 +200,7 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
 		});
 
@@ -201,7 +212,7 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			expect(statsLine).toContain("claude-sonnet-4");
 			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
 		});
@@ -216,7 +227,7 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(40); // Narrow width
 
-			const statsLine = rendered[1];
+			const statsLine = statsLineFrom(rendered);
 			// Should still contain composer branding even if model name is truncated
 			expect(statsLine).toContain("𝅘𝅥𝅮");
 		});

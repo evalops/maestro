@@ -1,0 +1,39 @@
+{
+	"extends": "nx/presets/npm.json",
+	"npmScope": "composer",
+	"tasksRunnerOptions": {
+		"default": {
+			"runner": "nx/tasks-runners/default",
+			"options": {
+				"cacheableOperations": ["build", "test", "lint", "evals"],
+				"parallel": true
+			}
+		}
+	},
+	"targetDefaults": {
+		"build": {
+			"dependsOn": ["^build"],
+			"outputs": ["{projectRoot}/dist"]
+		},
+		"test": {
+			"dependsOn": ["^build"]
+		},
+		"lint": {
+			"dependsOn": []
+		},
+		"evals": {
+			"dependsOn": ["build"]
+		}
+	},
+	"projects": {
+		"composer": {
+			"tags": []
+		},
+		"composer-web": {
+			"tags": []
+		},
+		"tui": {
+			"tags": []
+		}
+	}
+}
