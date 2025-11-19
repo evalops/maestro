@@ -49,7 +49,9 @@ export function expandUserPath(path: string): string {
 export function normalizePath(path: string): string {
 	const expanded = expandUserPath(path);
 	const normalized = normalize(expanded);
-	return isAbsolute(normalized) ? normalized : resolve(process.cwd(), normalized);
+	return isAbsolute(normalized)
+		? normalized
+		: resolve(process.cwd(), normalized);
 }
 
 /**
@@ -115,7 +117,11 @@ export async function validatePath(
 
 	// Check for path traversal
 	if (baseDir && isPathTraversal(normalizedPath, baseDir)) {
-		logger.warn("Path traversal attempt detected", { path, normalizedPath, baseDir });
+		logger.warn("Path traversal attempt detected", {
+			path,
+			normalizedPath,
+			baseDir,
+		});
 		throw new PathValidationError(
 			`Path traversal detected: ${path}`,
 			path,

@@ -16,7 +16,7 @@ import {
 	isRenderableUserMessage,
 } from "./conversation/render-model.js";
 import type {
-	SessionHeader,
+	SessionHeaderEntry,
 	SessionManager,
 	SessionToolInfo,
 } from "./session-manager.js";
@@ -30,7 +30,7 @@ const packageJson = JSON.parse(
 const VERSION = packageJson.version;
 
 interface SessionFileParseResult {
-	header: SessionHeader | null;
+	header: SessionHeaderEntry | null;
 	messages: AppMessage[];
 }
 
@@ -60,7 +60,7 @@ async function parseSessionFile(
 	sessionFile: string,
 ): Promise<SessionFileParseResult> {
 	const messages: AppMessage[] = [];
-	let header: SessionHeader | null = null;
+	let header: SessionHeaderEntry | null = null;
 	const stream = createReadStream(sessionFile, { encoding: "utf8" });
 	const rl = createInterface({
 		input: stream,
@@ -75,7 +75,7 @@ async function parseSessionFile(
 			try {
 				const entry = JSON.parse(trimmed);
 				if (entry.type === "session" && !header) {
-					header = entry as SessionHeader;
+					header = entry as SessionHeaderEntry;
 					continue;
 				}
 				if (entry.type === "message" && entry.message) {
@@ -428,7 +428,7 @@ export async function exportSessionToHtml(
 		.join("");
 	const toolListHtml = toolsToRender
 		.map(
-			(tool) =>
+			(tool: SessionToolInfo) =>
 				`<div class="tool-item"><span class="tool-item-name">${escapeHtml(tool.label ?? tool.name)}</span>${tool.description ? ` - ${escapeHtml(tool.description)}` : ""}</div>`,
 		)
 		.join("");

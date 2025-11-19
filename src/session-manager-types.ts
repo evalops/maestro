@@ -23,6 +23,14 @@ export interface SessionHeaderEntry extends BaseSessionEntry {
 	model: string;
 	modelMetadata?: SessionModelMetadata;
 	thinkingLevel: string;
+	systemPrompt?: string;
+	tools?: SessionToolInfo[];
+}
+
+export interface SessionToolInfo {
+	name: string;
+	label?: string;
+	description?: string;
 }
 
 /**
@@ -133,9 +141,7 @@ export function isModelChangeEntry(entry: unknown): entry is ModelChangeEntry {
 /**
  * Type guard to check if an entry is session metadata
  */
-export function isSessionMetaEntry(
-	entry: unknown,
-): entry is SessionMetaEntry {
+export function isSessionMetaEntry(entry: unknown): entry is SessionMetaEntry {
 	return (
 		typeof entry === "object" &&
 		entry !== null &&

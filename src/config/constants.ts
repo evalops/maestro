@@ -1,6 +1,6 @@
 /**
  * Centralized configuration constants for Composer CLI.
- * 
+ *
  * This module consolidates magic numbers, default values, and paths
  * to improve maintainability and allow environment-based overrides.
  */
@@ -61,11 +61,16 @@ export const TOOL_CONFIG = {
  */
 export const PATHS = {
 	/** Todo store file path */
-	TODO_STORE: process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json"),
+	TODO_STORE:
+		process.env.COMPOSER_TODO_FILE ??
+		join(homedir(), ".composer", "todos.json"),
 	/** Telemetry log file path */
-	TELEMETRY_LOG: process.env.COMPOSER_TELEMETRY_FILE ?? join(homedir(), ".composer", "telemetry.log"),
+	TELEMETRY_LOG:
+		process.env.COMPOSER_TELEMETRY_FILE ??
+		join(homedir(), ".composer", "telemetry.log"),
 	/** Cost tracking database path */
-	COST_DB: process.env.COMPOSER_COST_DB ?? join(homedir(), ".composer", "costs.db"),
+	COST_DB:
+		process.env.COMPOSER_COST_DB ?? join(homedir(), ".composer", "costs.db"),
 	/** Agent context files */
 	AGENT_CONTEXT_FILES: ["AGENT.md", "CLAUDE.md"] as const,
 } as const;
@@ -127,9 +132,26 @@ export const VALIDATION = {
 	BATCH_DISALLOWED_TOOLS: new Set(["batch", "edit", "write"]),
 	/** File extensions considered safe for reading */
 	SAFE_FILE_EXTENSIONS: new Set([
-		".ts", ".js", ".tsx", ".jsx", ".json", ".md", ".txt",
-		".yml", ".yaml", ".toml", ".xml", ".html", ".css",
-		".py", ".go", ".rs", ".java", ".c", ".cpp", ".h",
+		".ts",
+		".js",
+		".tsx",
+		".jsx",
+		".json",
+		".md",
+		".txt",
+		".yml",
+		".yaml",
+		".toml",
+		".xml",
+		".html",
+		".css",
+		".py",
+		".go",
+		".rs",
+		".java",
+		".c",
+		".cpp",
+		".h",
 	]),
 } as const;
 

@@ -84,7 +84,8 @@ Examples:
 			if (params.state) args.push("--state", params.state);
 			if (params.author) args.push("--author", params.author);
 			if (params.label?.length) args.push("--label", params.label.join(","));
-			if (params.milestone) args.push("--search", `milestone:"${params.milestone}"`);
+			if (params.milestone)
+				args.push("--search", `milestone:"${params.milestone}"`);
 			if (params.limit) args.push("--limit", String(params.limit));
 		} else if (params.action === "comment") {
 			if (!params.number || !params.body) {

@@ -53,7 +53,10 @@ class SessionFileWriter {
 				try {
 					writer.flushSync();
 				} catch (error) {
-					logger.error("Failed to flush session file on exit", error instanceof Error ? error : undefined);
+					logger.error(
+						"Failed to flush session file on exit",
+						error instanceof Error ? error : undefined,
+					);
 				}
 			}
 		});
@@ -81,7 +84,11 @@ class SessionFileWriter {
 		try {
 			appendFileSync(this.filePath, chunk);
 		} catch (error) {
-			logger.error("Failed to write session chunk", error instanceof Error ? error : undefined, { filePath: this.filePath });
+			logger.error(
+				"Failed to write session chunk",
+				error instanceof Error ? error : undefined,
+				{ filePath: this.filePath },
+			);
 			throw error;
 		}
 	}
@@ -167,12 +174,6 @@ function uuidv4(): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-export interface SessionToolInfo {
-	name: string;
-	label?: string;
-	description?: string;
-}
-
 export interface SessionModelMetadata {
 	provider: string;
 	modelId: string;
@@ -185,6 +186,12 @@ export interface SessionModelMetadata {
 	source?: "builtin" | "custom";
 }
 
+export type {
+	SessionHeaderEntry,
+	SessionMessageEntry,
+	SessionMetaEntry,
+	SessionToolInfo,
+} from "./session-manager-types.js";
 import type {
 	SessionHeaderEntry,
 	SessionMessageEntry,
@@ -594,35 +601,9 @@ export class SessionManager {
 							created = new Date(entry.timestamp);
 						}
 
-<<<<<<< HEAD
-							if (entry.type === "message" && entry.message) {
-								messageCount++;
-								appMessages.push(entry.message as AppMessage);
-=======
-						if (entry.type === "message") {
+						if (entry.type === "message" && entry.message) {
 							messageCount++;
-							const message = entry.message;
-							if (
-								message.role === "user" ||
-								message.role === "assistant"
-							) {
-								const textContent = Array.isArray(message.content)
-									? message.content
-											.filter((c) => c.type === "text")
-											.map((c) => "text" in c ? c.text : "")
-											.join(" ")
-									: typeof message.content === "string"
-										? message.content
-										: "";
-
-								if (textContent) {
-									allMessages.push(textContent);
-									if (!firstMessage && message.role === "user") {
-										firstMessage = textContent;
-									}
-								}
->>>>>>> 70ae7e5 (refactor: improve type safety and remove emoji)
-							}
+							appMessages.push(entry.message as AppMessage);
 						}
 
 						if (entry.type === "session_meta") {
@@ -661,11 +642,17 @@ export class SessionManager {
 						allMessagesText,
 					});
 				} catch (error) {
-					logger.error(`Failed to read session file ${file}`, error instanceof Error ? error : undefined);
+					logger.error(
+						`Failed to read session file ${file}`,
+						error instanceof Error ? error : undefined,
+					);
 				}
 			}
 		} catch (error) {
-			logger.error("Failed to load sessions", error instanceof Error ? error : undefined);
+			logger.error(
+				"Failed to load sessions",
+				error instanceof Error ? error : undefined,
+			);
 		}
 
 		return sessions;
