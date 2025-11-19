@@ -324,12 +324,7 @@ export function convertComposerMessageToApp(
 				);
 				assistantMessage.content.push(normalizedCall);
 				results.push(
-					normalizeToolResult(
-						tool,
-						normalizedCall,
-						message.timestamp,
-						context,
-					),
+					normalizeToolResult(tool, normalizedCall, message.timestamp, context),
 				);
 			});
 		}
