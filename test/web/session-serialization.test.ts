@@ -1,12 +1,16 @@
 import type { ComposerMessage } from "@evalops/contracts";
 import { describe, expect, it } from "vitest";
 import {
+	SessionSerializationError,
+	convertAppMessageToComposer,
 	convertAppMessagesToComposer,
+	convertComposerMessageToApp,
 	convertComposerMessagesToApp,
 } from "../../src/web/session-serialization.js";
 import type {
 	AppMessage,
 	AssistantMessage,
+	ToolCall,
 	ToolResultMessage,
 } from "../src/agent/types.js";
 import type { RegisteredModel } from "../src/models/registry.js";
@@ -127,5 +131,59 @@ describe("session serialization", () => {
 			type: "text",
 			text: '{"path":"composer.json"}',
 		});
+	});
+
+	it("summarizes image content when converting app messages", () => {
+		const userMessage: AppMessage = {
+			role: "user",
+			content: [
+				{
+					type: "image",
+					data: "base64",
+					mimeType: "image/png",
+				},
+			],
+			timestamp: Date.now(),
+		};
+
+		const composerMessage = convertAppMessageToComposer(userMessage);
+		expect(composerMessage.content).toContain("[image:image/png]");
+	});
+
+	it("throws descriptive errors for invalid composer timestamps", () => {
+		const composerMessage: ComposerMessage = {
+			role: "user",
+			content: "hello",
+			timestamp: "invalid-date",
+		};
+
+		expect(() =>
+			convertComposerMessageToApp(composerMessage, mockModel),
+		).toThrow(SessionSerializationError);
+	});
+
+	it("normalizes missing tool metadata when round-tripping", () => {
+		const composerMessage: ComposerMessage = {
+			role: "assistant",
+			content: "Tool work",
+			timestamp: new Date().toISOString(),
+			tools: [
+				{
+					name: "",
+					status: "completed",
+				},
+			],
+		};
+
+		const appMessages = convertComposerMessageToApp(composerMessage, mockModel);
+		expect(appMessages).toHaveLength(2);
+		const assistant = appMessages[0] as AssistantMessage;
+		const toolCall = assistant.content.find(
+			(part): part is ToolCall => part.type === "toolCall",
+		);
+		expect(toolCall?.name).toMatch(/tool_/);
+		expect(toolCall?.id).toMatch(/web-tool/);
+		const toolResult = appMessages[1] as ToolResultMessage;
+		expect(toolResult.toolName).toEqual(toolCall?.name);
 	});
 });

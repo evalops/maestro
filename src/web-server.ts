@@ -73,6 +73,8 @@ const CORS_HEADERS = {
 	"Access-Control-Max-Age": "86400",
 };
 
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
 /**
  * Server-Sent Events (SSE) streaming for chat responses
  */
@@ -84,6 +86,13 @@ function sendSSE(res: any, event: AgentEvent) {
 function sendSessionUpdate(res: any, sessionId: string) {
 	const payload = { type: "session_update", sessionId };
 	res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function startHeartbeat(res: any) {
+	return setInterval(() => {
+		if (res.writableEnded) return;
+		res.write('data: {"type":"heartbeat"}\n\n');
+	}, HEARTBEAT_INTERVAL_MS);
 }
 
 /**
@@ -524,6 +533,9 @@ async function handleChat(req: any, res: any) {
 				...CORS_HEADERS,
 			});
 
+			const heartbeatInterval = startHeartbeat(res);
+			let cleanedUp = false;
+
 			const unsubscribe = agent.subscribe((event: AgentEvent) => {
 				sendSSE(res, event);
 
@@ -541,9 +553,37 @@ async function handleChat(req: any, res: any) {
 				);
 			});
 
+			const handleConnectionClose = () => {
+				agent.abort();
+				void cleanup(true);
+			};
+
+			req.on("close", handleConnectionClose);
+			res.on("close", handleConnectionClose);
+
+			const cleanup = async (aborted = false) => {
+				if (cleanedUp) {
+					return;
+				}
+				cleanedUp = true;
+				clearInterval(heartbeatInterval);
+				req.off("close", handleConnectionClose);
+				res.off("close", handleConnectionClose);
+				unsubscribe();
+				await sessionManager.flush();
+				if (!res.writableEnded) {
+					if (aborted) {
+						res.write('data: {"type":"aborted"}\n\n');
+					}
+					res.end();
+				}
+			};
+
 			try {
 				await agent.prompt(userInput);
-				res.write("data: [DONE]\n\n");
+				if (!res.writableEnded) {
+					res.write("data: [DONE]\n\n");
+				}
 			} catch (error) {
 				console.error("Agent prompt error:", error);
 				sendSSE(res, {
@@ -551,9 +591,7 @@ async function handleChat(req: any, res: any) {
 					message: error instanceof Error ? error.message : "Unknown error",
 				} as any);
 			} finally {
-				unsubscribe();
-				await sessionManager.flush();
-				res.end();
+				await cleanup(false);
 			}
 		} catch (error) {
 			console.error("Chat error:", error);
