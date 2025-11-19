@@ -81,15 +81,17 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.message.user .avatar {
-			background: var(--accent-color, #0e639c);
+			background: linear-gradient(135deg, var(--accent-color, #2f81f7) 0%, var(--accent-hover, #539bf5) 100%);
 			color: white;
 			order: 2;
+			box-shadow: 0 2px 6px rgba(47, 129, 247, 0.4);
 		}
 
 		.message.assistant .avatar {
-			background: var(--bg-secondary, #252526);
-			color: var(--text-primary, #d4d4d4);
-			border: 1px solid var(--border-color, #3e3e42);
+			background: var(--bg-tertiary, #21262d);
+			color: var(--text-primary, #e6edf3);
+			border: 1px solid var(--border-color, #30363d);
+			box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 		}
 
 		.content {
@@ -109,13 +111,15 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.message.user .bubble {
-			background: var(--accent-color, #0e639c);
+			background: linear-gradient(135deg, var(--accent-color, #2f81f7) 0%, var(--accent-hover, #539bf5) 100%);
 			color: white;
+			box-shadow: 0 2px 8px rgba(47, 129, 247, 0.3);
 		}
 
 		.message.assistant .bubble {
-			background: var(--bg-secondary, #252526);
-			border: 1px solid var(--border-color, #3e3e42);
+			background: var(--bg-secondary, #161b22);
+			border: 1px solid var(--border-color, #30363d);
+			box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 		}
 
 		.timestamp {

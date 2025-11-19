@@ -39,6 +39,7 @@
     "highlight.js": "^11.10.0"
   },
   "devDependencies": {
+    "@open-wc/testing": "^4.0.0",
     "@types/node": "^24.3.0",
     "typescript": "^5.7.3",
     "vite": "^6.0.3",

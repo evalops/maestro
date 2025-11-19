@@ -34,6 +34,8 @@
     "bun:install": "bun install",
     "bun:cli": "bun run ./src/cli.ts",
     "bun:watch": "bun run --watch ./src/cli.ts",
+    "web": "node dist/web-server.js",
+    "web:dev": "concurrently --names \"server,ui\" --prefix-colors \"blue,green\" \"tsx --watch src/web-server.ts\" \"bun run dev:web\"",
     "bun:lint": "bunx biome check .",
     "bun:test": "bunx vitest --run",
     "bun:check": "bun run bun:lint && bunx tsc --noEmit",

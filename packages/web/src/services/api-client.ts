@@ -72,13 +72,19 @@ export class ApiClient {
 
 				for (const line of lines) {
 					if (line.startsWith("data: ")) {
-						const data = line.slice(6);
-						if (data === "[DONE]") return;
+						const data = line.slice(6).trim();
+						if (!data) continue;
 
 						try {
-							const parsed = JSON.parse(data);
-							if (parsed.content) {
-								yield parsed.content;
+							const event = JSON.parse(data);
+
+							// Handle different event types from Agent
+							if (event.type === "done") {
+								return;
+							} else if (event.type === "content_block_delta" && event.text) {
+								yield event.text;
+							} else if (event.type === "text_delta" && event.text) {
+								yield event.text;
 							}
 						} catch (e) {
 							console.warn("Failed to parse SSE data:", data);

@@ -20,22 +20,25 @@ export class ComposerInput extends LitElement {
 
 		textarea {
 			flex: 1;
-			min-height: 48px;
+			min-height: 52px;
 			max-height: 200px;
-			padding: 0.75rem;
-			border: 1px solid var(--border-color, #3e3e42);
-			border-radius: 6px;
-			background: var(--bg-primary, #1e1e1e);
-			color: var(--text-primary, #d4d4d4);
+			padding: 0.875rem 1rem;
+			border: 1.5px solid var(--border-color, #30363d);
+			border-radius: 8px;
+			background: var(--bg-primary, #0d1117);
+			color: var(--text-primary, #e6edf3);
 			font-family: inherit;
 			font-size: 0.9375rem;
 			resize: vertical;
 			outline: none;
-			transition: border-color 0.2s;
+			transition: all 0.2s ease;
+			line-height: 1.5;
 		}
 
 		textarea:focus {
-			border-color: var(--accent-color, #0e639c);
+			border-color: var(--accent-color, #2f81f7);
+			box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.1);
+			background: var(--bg-secondary, #161b22);
 		}
 
 		textarea:disabled {
@@ -48,20 +51,26 @@ export class ComposerInput extends LitElement {
 		}
 
 		button {
-			padding: 0.75rem 1.5rem;
-			background: var(--accent-color, #0e639c);
+			padding: 0.875rem 1.75rem;
+			background: linear-gradient(135deg, var(--accent-color, #2f81f7) 0%, var(--accent-hover, #539bf5) 100%);
 			color: white;
 			border: none;
-			border-radius: 6px;
+			border-radius: 8px;
 			font-size: 0.9375rem;
-			font-weight: 500;
+			font-weight: 600;
 			cursor: pointer;
-			transition: opacity 0.2s;
+			transition: all 0.2s ease;
 			white-space: nowrap;
+			box-shadow: 0 2px 8px rgba(47, 129, 247, 0.3);
 		}
 
 		button:hover:not(:disabled) {
-			opacity: 0.9;
+			transform: translateY(-1px);
+			box-shadow: 0 4px 12px rgba(47, 129, 247, 0.4);
+		}
+
+		button:active:not(:disabled) {
+			transform: translateY(0);
 		}
 
 		button:disabled {

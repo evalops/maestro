@@ -13,28 +13,40 @@ export class ComposerChat extends LitElement {
 			display: flex;
 			flex-direction: column;
 			height: 100%;
-			background: var(--bg-primary, #1e1e1e);
-			color: var(--text-primary, #d4d4d4);
+			background: var(--bg-primary, #0d1117);
+			color: var(--text-primary, #e6edf3);
+			border-radius: 8px;
+			overflow: hidden;
+			box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
 		}
 
 		.header {
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			padding: 1rem;
-			border-bottom: 1px solid var(--border-color, #3e3e42);
-			background: var(--bg-secondary, #252526);
+			padding: 1.25rem 1.5rem;
+			border-bottom: 1px solid var(--border-color, #30363d);
+			background: var(--bg-secondary, #161b22);
+			backdrop-filter: blur(10px);
 		}
 
 		.header h1 {
-			font-size: 1.25rem;
-			font-weight: 600;
+			font-size: 1.5rem;
+			font-weight: 700;
 			margin: 0;
+			background: linear-gradient(135deg, var(--accent-color, #2f81f7) 0%, var(--accent-hover, #539bf5) 100%);
+			-webkit-background-clip: text;
+			-webkit-text-fill-color: transparent;
+			background-clip: text;
 		}
 
 		.model-info {
 			font-size: 0.875rem;
-			color: var(--text-secondary, #969696);
+			color: var(--text-secondary, #7d8590);
+			padding: 0.375rem 0.75rem;
+			background: var(--bg-tertiary, #21262d);
+			border-radius: 6px;
+			font-weight: 500;
 		}
 
 		.messages {
@@ -47,52 +59,79 @@ export class ComposerChat extends LitElement {
 		}
 
 		.messages::-webkit-scrollbar {
-			width: 8px;
+			width: 10px;
 		}
 
 		.messages::-webkit-scrollbar-track {
-			background: var(--bg-primary, #1e1e1e);
+			background: var(--bg-primary, #0d1117);
 		}
 
 		.messages::-webkit-scrollbar-thumb {
-			background: var(--border-color, #3e3e42);
-			border-radius: 4px;
+			background: var(--border-color, #30363d);
+			border-radius: 5px;
+			transition: background 0.2s;
+		}
+
+		.messages::-webkit-scrollbar-thumb:hover {
+			background: #484f58;
 		}
 
 		.input-container {
-			border-top: 1px solid var(--border-color, #3e3e42);
-			padding: 1rem;
-			background: var(--bg-secondary, #252526);
+			border-top: 1px solid var(--border-color, #30363d);
+			padding: 1.25rem 1.5rem;
+			background: var(--bg-secondary, #161b22);
+			backdrop-filter: blur(10px);
 		}
 
 		.error {
-			padding: 1rem;
-			background: #5a1d1d;
-			color: #f48771;
-			border-radius: 4px;
-			margin: 0 1rem 1rem;
+			padding: 1rem 1.25rem;
+			background: rgba(248, 81, 73, 0.1);
+			color: #f85149;
+			border-radius: 8px;
+			margin: 1rem 1.5rem;
+			border-left: 3px solid #f85149;
+			font-size: 0.9375rem;
+			animation: slideIn 0.3s ease-out;
+		}
+
+		@keyframes slideIn {
+			from {
+				opacity: 0;
+				transform: translateX(-10px);
+			}
+			to {
+				opacity: 1;
+				transform: translateX(0);
+			}
 		}
 
 		.loading {
 			display: flex;
 			align-items: center;
-			gap: 0.5rem;
-			padding: 1rem;
-			color: var(--text-secondary, #969696);
+			gap: 0.75rem;
+			padding: 1rem 1.25rem;
+			color: var(--text-secondary, #7d8590);
+			font-size: 0.9375rem;
+			animation: pulse 2s ease-in-out infinite;
 		}
 
 		.loading::before {
 			content: "";
-			width: 16px;
-			height: 16px;
-			border: 2px solid var(--border-color, #3e3e42);
-			border-top-color: var(--accent-color, #0e639c);
+			width: 18px;
+			height: 18px;
+			border: 2.5px solid var(--border-color, #30363d);
+			border-top-color: var(--accent-color, #2f81f7);
 			border-radius: 50%;
-			animation: spin 1s linear infinite;
+			animation: spin 0.8s linear infinite;
 		}
 
 		@keyframes spin {
 			to { transform: rotate(360deg); }
+		}
+
+		@keyframes pulse {
+			0%, 100% { opacity: 0.7; }
+			50% { opacity: 1; }
 		}
 	`;
 
