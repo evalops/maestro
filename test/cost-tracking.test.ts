@@ -9,7 +9,7 @@ import {
 	trackUsage,
 } from "../src/tracking/cost-tracker.js";
 
-describe("Cost Tracking", () => {
+describe.sequential("Cost Tracking", () => {
 	const usageFile = getUsageFilePath();
 	let originalFileContent: string | null = null;
 

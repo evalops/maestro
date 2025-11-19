@@ -27,7 +27,7 @@ import {
 	trackUsage,
 } from "../../src/tracking/cost-tracker.js";
 
-describe("Enhanced Cost Tracking", () => {
+describe.sequential("Enhanced Cost Tracking", () => {
 	let testDir: string;
 	let originalEnv: string | undefined;
 
