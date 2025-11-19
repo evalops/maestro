@@ -23,17 +23,43 @@ export class ComposerToolExecution extends LitElement {
 		.tool-execution {
 			background: #0d1117;
 			border: 1px solid #30363d;
-			border-left: 3px solid #58a6ff;
-			border-radius: 2px;
+			border-left: 4px solid #58a6ff;
+			border-radius: 3px;
 			overflow: hidden;
+			position: relative;
+		}
+
+		.tool-execution::before {
+			content: '';
+			position: absolute;
+			left: 0;
+			top: 0;
+			bottom: 0;
+			width: 2px;
+			background: linear-gradient(180deg, 
+				rgba(88, 166, 255, 0.2) 0%, 
+				rgba(88, 166, 255, 0.05) 100%);
+			margin-left: 4px;
 		}
 
 		.tool-execution.error {
 			border-left-color: #f85149;
 		}
 
+		.tool-execution.error::before {
+			background: linear-gradient(180deg, 
+				rgba(248, 81, 73, 0.2) 0%, 
+				rgba(248, 81, 73, 0.05) 100%);
+		}
+
 		.tool-execution.completed {
 			border-left-color: #3fb950;
+		}
+
+		.tool-execution.completed::before {
+			background: linear-gradient(180deg, 
+				rgba(63, 185, 80, 0.2) 0%, 
+				rgba(63, 185, 80, 0.05) 100%);
 		}
 
 		.tool-header {
@@ -54,6 +80,46 @@ export class ComposerToolExecution extends LitElement {
 			color: #e6edf3;
 			text-transform: uppercase;
 			letter-spacing: 0.05em;
+			flex: 1;
+			min-width: 0;
+		}
+
+		.tool-glyph {
+			font-size: 0.9rem;
+			line-height: 1;
+			flex-shrink: 0;
+		}
+
+		.file-badge {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.25rem;
+			background: #161b22;
+			border: 1px solid #30363d;
+			border-radius: 3px;
+			padding: 0.15rem 0.4rem;
+			font-size: 0.7rem;
+			font-weight: 500;
+			color: #8b949e;
+			text-transform: none;
+			letter-spacing: 0;
+			max-width: 300px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			margin-left: 0.5rem;
+		}
+
+		.file-badge:hover {
+			background: #1c2128;
+			border-color: #58a6ff;
+			color: #58a6ff;
+			cursor: help;
+		}
+
+		.file-badge::before {
+			content: "📁";
+			font-size: 0.75rem;
 		}
 
 		.tool-icon {
@@ -219,6 +285,29 @@ export class ComposerToolExecution extends LitElement {
 
 	@state() private collapsed = false;
 
+	private getToolGlyph(toolName: string): string {
+		const glyphs: Record<string, string> = {
+			read: "📄",
+			write: "✏️",
+			edit: "📝",
+			bash: "⚡",
+			search: "🔍",
+			diff: "🔀",
+			list: "📋",
+			gh_pr: "🔀",
+			gh_issue: "🐛",
+			gh_repo: "📦",
+		};
+		return glyphs[toolName] || "🔧";
+	}
+
+	private getFilePathFromArgs(): string | null {
+		if (this.args?.path) return this.args.path;
+		if (this.args?.file_path) return this.args.file_path;
+		if (this.args?.filePath) return this.args.filePath;
+		return null;
+	}
+
 	private formatValue(value: any): string {
 		if (value === null || value === undefined) return "null";
 		if (typeof value === "string") return value;
@@ -324,7 +413,13 @@ export class ComposerToolExecution extends LitElement {
 										: html`<span style="color: #3fb950;">✓</span>`
 							}
 						</div>
+						<span class="tool-glyph">${this.getToolGlyph(this.toolName)}</span>
 						<span>${this.toolName}</span>
+						${
+							this.getFilePathFromArgs()
+								? html`<span class="file-badge" title="${this.getFilePathFromArgs()}">${this.getFilePathFromArgs()?.split("/").pop()}</span>`
+								: ""
+						}
 					</div>
 					<div class="tool-status ${statusClass}">${statusText}</div>
 				</div>

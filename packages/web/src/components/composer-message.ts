@@ -8,11 +8,9 @@ import { customElement, property } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { marked } from "marked";
 
-// Configure marked with sanitization enabled
+// Configure marked with code highlighting
 marked.setOptions({
-	mangle: false,
-	headerIds: false,
-	highlight: (code, lang) => {
+	highlight: (code: string, lang: string) => {
 		if (lang && hljs.getLanguage(lang)) {
 			try {
 				return hljs.highlight(code, { language: lang }).value;
@@ -22,7 +20,7 @@ marked.setOptions({
 		}
 		return hljs.highlightAuto(code).value;
 	},
-});
+} as any); // Type assertion needed for marked options compatibility
 
 // Sanitize HTML to prevent XSS attacks
 function sanitizeHTML(html: string): string {
@@ -30,13 +28,13 @@ function sanitizeHTML(html: string): string {
 	div.innerHTML = html;
 
 	// Remove any script tags or event handlers
-	const scripts = div.querySelectorAll("script");
+	const scripts = Array.from(div.querySelectorAll("script"));
 	for (const script of scripts) {
 		script.remove();
 	}
 
 	// Remove event handler attributes
-	const allElements = div.querySelectorAll("*");
+	const allElements = Array.from(div.querySelectorAll("*"));
 	for (const el of allElements) {
 		const attributes = Array.from(el.attributes);
 		for (const attr of attributes) {
@@ -288,7 +286,12 @@ export class ComposerMessage extends LitElement {
 	@property() role: "user" | "assistant" | "system" = "user";
 	@property() content = "";
 	@property() timestamp = "";
-	@property() tools: Array<{ name: string; status: string }> = [];
+	@property() tools: Array<{
+		name: string;
+		status: string;
+		args?: any;
+		result?: any;
+	}> = [];
 
 	private formatTimestamp(ts: string): string {
 		if (!ts) return "";

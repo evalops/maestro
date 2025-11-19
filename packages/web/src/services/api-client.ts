@@ -50,7 +50,7 @@ export interface ChatResponse {
 }
 
 export class ApiClient {
-	private baseUrl: string;
+	public readonly baseUrl: string;
 
 	constructor(baseUrl = "http://localhost:8080") {
 		this.baseUrl = baseUrl.replace(/\/$/, "");
