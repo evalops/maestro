@@ -338,19 +338,29 @@ async function handleChat(req: any, res: any) {
 			});
 
 			// Subscribe to agent events and stream them
-			agent.subscribe((event: AgentEvent) => {
+			const unsubscribe = agent.subscribe((event: AgentEvent) => {
 				sendSSE(res, event);
 			});
 
-			// Send user message
-			const userMessage = chatReq.messages[chatReq.messages.length - 1]?.content;
-			if (userMessage) {
-				await agent.prompt(userMessage);
-			}
+			try {
+				// Send user message
+				const userMessage = chatReq.messages[chatReq.messages.length - 1]?.content;
+				if (userMessage) {
+					await agent.prompt(userMessage);
+				}
 
-			// Send completion marker
-			res.write("data: [DONE]\n\n");
-			res.end();
+				// Send completion marker
+				res.write("data: [DONE]\n\n");
+			} catch (error) {
+				console.error("Agent prompt error:", error);
+				sendSSE(res, {
+					type: "error",
+					message: error instanceof Error ? error.message : "Unknown error",
+				} as any);
+			} finally {
+				unsubscribe();
+				res.end();
+			}
 		} catch (error) {
 			console.error("Chat error:", error);
 			res.writeHead(500, {

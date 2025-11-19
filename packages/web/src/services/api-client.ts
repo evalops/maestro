@@ -3,10 +3,18 @@
  */
 
 export interface Message {
-	role: "user" | "assistant" | "system";
+	role: "user" | "assistant" | "system" | "tool";
 	content: string;
 	timestamp?: string;
-	tools?: Array<{ name: string; status: string }>;
+	tools?: Array<{ name: string; status: string; args?: any; result?: any }>;
+	thinking?: string;
+	isError?: boolean;
+	toolName?: string;
+}
+
+export interface AgentEvent {
+	type: string;
+	[key: string]: any;
 }
 
 export interface Model {
@@ -49,7 +57,7 @@ export class ApiClient {
 	}
 
 	/**
-	 * Send a chat message and receive streaming response
+	 * Send a chat message and receive streaming response (text only - for backward compatibility)
 	 */
 	async *chat(request: ChatRequest): AsyncGenerator<string, void, unknown> {
 		const response = await fetch(`${this.baseUrl}/api/chat`, {
@@ -99,6 +107,58 @@ export class ApiClient {
 							} else if (event.type === "text" && event.text) {
 								yield event.text;
 							}
+						} catch (e) {
+							console.warn("Failed to parse SSE data:", data);
+						}
+					}
+				}
+			}
+		} finally {
+			reader.releaseLock();
+		}
+	}
+
+	/**
+	 * Send a chat message and stream ALL agent events (text deltas, tool calls, thinking, etc.)
+	 */
+	async *chatWithEvents(request: ChatRequest): AsyncGenerator<AgentEvent, void, unknown> {
+		const response = await fetch(`${this.baseUrl}/api/chat`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ ...request, stream: true }),
+		});
+
+		if (!response.ok) {
+			throw new Error(`API error: ${response.statusText}`);
+		}
+
+		const reader = response.body?.getReader();
+		if (!reader) {
+			throw new Error("No response body");
+		}
+
+		const decoder = new TextDecoder();
+		let buffer = "";
+
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split("\n");
+				buffer = lines.pop() || "";
+
+				for (const line of lines) {
+					if (line.startsWith("data: ")) {
+						const data = line.slice(6).trim();
+						if (!data || data === "[DONE]") continue;
+
+						try {
+							const event = JSON.parse(data) as AgentEvent;
+							yield event;
 						} catch (e) {
 							console.warn("Failed to parse SSE data:", data);
 						}
