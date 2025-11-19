@@ -111,6 +111,13 @@ describe("session serialization", () => {
 						toolCallId: "tool-2",
 					},
 				],
+				usage: {
+					input: 10,
+					output: 5,
+					cacheRead: 1,
+					cacheWrite: 0,
+					cost: { input: 0.01, output: 0.02, cacheRead: 0.001, total: 0.031 },
+				},
 			},
 		];
 
@@ -122,6 +129,8 @@ describe("session serialization", () => {
 		expect(appMessages).toHaveLength(2);
 		expect(appMessages[0].role).toBe("assistant");
 		const assistant = appMessages[0] as AssistantMessage;
+		expect(assistant.usage?.input).toBe(10);
+		expect(assistant.usage?.cost.total).toBeCloseTo(0.031);
 		expect(assistant.content?.some((part) => part.type === "thinking")).toBe(
 			true,
 		);
@@ -148,6 +157,49 @@ describe("session serialization", () => {
 
 		const composerMessage = convertAppMessageToComposer(userMessage);
 		expect(composerMessage.content).toContain("[image:image/png]");
+	});
+
+	it("round-trips assistant usage and preserves tool order", () => {
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{ type: "text", text: "First" },
+				{ type: "thinking", thinking: "Reasoning" },
+				{
+					type: "toolCall",
+					id: "tool-abc",
+					name: "alpha",
+					arguments: { a: 1 },
+				},
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4",
+			usage: {
+				input: 111,
+				output: 222,
+				cacheRead: 3,
+				cacheWrite: 4,
+				cost: {
+					input: 0.01,
+					output: 0.02,
+					cacheRead: 0.001,
+					cacheWrite: 0.002,
+					total: 0.033,
+				},
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+
+		const composer = convertAppMessagesToComposer([assistant]);
+		expect(composer[0].usage?.input).toBe(111);
+
+		const roundTrip = convertComposerMessagesToApp(composer, mockModel);
+		const roundAssistant = roundTrip[0] as AssistantMessage;
+		expect(roundAssistant.usage?.output).toBe(222);
+		const contentTypes = roundAssistant.content?.map((p) => p.type);
+		expect(contentTypes).toEqual(["thinking", "text", "toolCall"]);
 	});
 
 	it("throws descriptive errors for invalid composer timestamps", () => {

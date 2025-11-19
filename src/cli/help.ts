@@ -67,6 +67,10 @@ export function printHelp(version: string) {
   /session summary "<text>"         Save a manual summary for current session
   /sessions summarize <id>          Auto-summarize a saved session`,
 	)}`;
+	const sessionsDiscovery = `${sectionHeading("Session Commands")}${muted(
+		`  /session [info|favorite|unfavorite|summary "<text>"]
+  /sessions [list|load <id>|favorite <id>|unfavorite <id>|summarize <id>]`,
+	)}`;
 	const tools = `${sectionHeading("Available Tools")}${muted(
 		`  read   - Read file contents
   list   - List files in a directory
@@ -87,6 +91,7 @@ export function printHelp(version: string) {
 			env,
 			execSection,
 			sessionsSection,
+			sessionsDiscovery,
 			`${sectionHeading("Tips")}${badge(
 				"Need models?",
 				"composer models list",

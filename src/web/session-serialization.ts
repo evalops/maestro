@@ -1,4 +1,8 @@
-import type { ComposerMessage, ComposerToolCall } from "@evalops/contracts";
+import type {
+	ComposerMessage,
+	ComposerToolCall,
+	ComposerUsage,
+} from "@evalops/contracts";
 import type {
 	AppMessage,
 	AssistantMessage,
@@ -17,6 +21,31 @@ export interface SessionSerializationContext {
 	index?: number;
 	role?: string;
 	source?: SessionSerializationDirection;
+}
+
+function toComposerUsage(usage?: Usage): ComposerUsage | undefined {
+	if (!usage) return undefined;
+	return {
+		input: usage.input ?? 0,
+		output: usage.output ?? 0,
+		cacheRead: usage.cacheRead ?? 0,
+		cacheWrite: usage.cacheWrite ?? 0,
+		cost: usage.cost
+			? {
+					input: usage.cost.input ?? 0,
+					output: usage.cost.output ?? 0,
+					cacheRead: usage.cost.cacheRead ?? 0,
+					cacheWrite: usage.cost.cacheWrite ?? 0,
+					total: usage.cost.total ?? 0,
+				}
+			: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: 0,
+				},
+	};
 }
 
 export class SessionSerializationError extends Error {
@@ -198,6 +227,7 @@ export function convertAppMessageToComposer(
 			thinking: extractThinking(assistant.content),
 			timestamp,
 			tools: tools.length ? tools : undefined,
+			usage: toComposerUsage(assistant.usage),
 		};
 	}
 	if (message.role === "toolResult") {
@@ -288,47 +318,60 @@ export function convertComposerMessageToApp(
 	}
 
 	if (message.role === "assistant") {
-		const assistantMessage: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			usage: createEmptyUsage(),
-			stopReason: "stop",
-			timestamp: toTimestamp(message.timestamp, context),
-		};
-
+		const normalizedSequence: Array<TextContent | ThinkingContent | ToolCall> =
+			[];
 		if (message.thinking?.trim()) {
-			assistantMessage.content.push({
+			normalizedSequence.push({
 				type: "thinking",
 				thinking: message.thinking.trim(),
 			});
 		}
-
 		if (message.content) {
-			assistantMessage.content.push({
+			normalizedSequence.push({
 				type: "text",
 				text: message.content,
 			});
 		}
+		const tools = message.tools ?? [];
+		const baseContentLength = normalizedSequence.length;
+		const toolCalls: ToolCall[] = tools.map((tool, toolIndex) =>
+			normalizeToolCall(tool, index, baseContentLength + toolIndex),
+		);
+		normalizedSequence.push(...toolCalls);
+
+		const assistantMessage: AssistantMessage = {
+			role: "assistant",
+			content: normalizedSequence,
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: message.usage
+				? {
+						input: message.usage.input ?? 0,
+						output: message.usage.output ?? 0,
+						cacheRead: message.usage.cacheRead ?? 0,
+						cacheWrite: message.usage.cacheWrite ?? 0,
+						cost: {
+							input: message.usage.cost?.input ?? 0,
+							output: message.usage.cost?.output ?? 0,
+							cacheRead: message.usage.cost?.cacheRead ?? 0,
+							cacheWrite: message.usage.cost?.cacheWrite ?? 0,
+							total: message.usage.cost?.total ?? 0,
+						},
+					}
+				: createEmptyUsage(),
+			stopReason: "stop",
+			timestamp: toTimestamp(message.timestamp, context),
+		};
 
 		const results: AppMessage[] = [assistantMessage];
 
-		if (message.tools?.length) {
-			const baseContentLength = assistantMessage.content.length;
-			message.tools.forEach((tool, toolIndex) => {
-				const normalizedCall = normalizeToolCall(
-					tool,
-					index,
-					baseContentLength + toolIndex,
-				);
-				assistantMessage.content.push(normalizedCall);
-				results.push(
-					normalizeToolResult(tool, normalizedCall, message.timestamp, context),
-				);
-			});
-		}
+		tools.forEach((tool, toolIndex) => {
+			const normalizedCall = toolCalls[toolIndex];
+			results.push(
+				normalizeToolResult(tool, normalizedCall, message.timestamp, context),
+			);
+		});
 
 		return results;
 	}

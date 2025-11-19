@@ -14,11 +14,19 @@ The package emits ESM + declaration artifacts into `packages/contracts/dist`. Ro
 ## Usage
 
 ```ts
-import type { ComposerMessage } from "@evalops/contracts";
+import type { ComposerMessage, ComposerUsage } from "@evalops/contracts";
 
 const payload: ComposerMessage = {
 	role: "user",
 	content: "Hello Composer",
+};
+
+const usage: ComposerUsage = {
+	input: 1200,
+	output: 300,
+	cacheRead: 0,
+	cacheWrite: 0,
+	cost: { input: 0.01, output: 0.02, total: 0.03 },
 };
 ```
 
