@@ -57,7 +57,7 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
-				name: "plan",
+				name: "model",
 				description: "Select model (opens selector UI)",
 				usage: "/model",
 				tags: ["session"],
