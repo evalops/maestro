@@ -29,24 +29,26 @@ marked.setOptions({
 // Sanitize HTML to prevent XSS attacks
 // This allows only safe HTML tags from markdown rendering and code highlighting
 function sanitizeHTML(html: string): string {
-	const div = document.createElement('div');
+	const div = document.createElement("div");
 	div.innerHTML = html;
-	
+
 	// Remove any script tags or event handlers
-	const scripts = div.querySelectorAll('script');
-	scripts.forEach(script => script.remove());
-	
+	const scripts = div.querySelectorAll("script");
+	for (const script of scripts) {
+		script.remove();
+	}
+
 	// Remove event handler attributes
-	const allElements = div.querySelectorAll('*');
-	allElements.forEach(el => {
+	const allElements = div.querySelectorAll("*");
+	for (const el of allElements) {
 		const attributes = Array.from(el.attributes);
-		attributes.forEach(attr => {
-			if (attr.name.startsWith('on')) {
+		for (const attr of attributes) {
+			if (attr.name.startsWith("on")) {
 				el.removeAttribute(attr.name);
 			}
-		});
-	});
-	
+		}
+	}
+
 	return div.innerHTML;
 }
 
