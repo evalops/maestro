@@ -398,7 +398,9 @@ ${lines.join("\n")}`;
 		const lastTools = this.options.sessionContext.getLastRunToolNames();
 		const items: string[] = [];
 		if (lastUser) {
-			items.push(`${badge("User", undefined, "info")} ${this.preview(lastUser)}`);
+			items.push(
+				`${badge("User", undefined, "info")} ${this.preview(lastUser)}`,
+			);
 		}
 		if (lastAssistant) {
 			items.push(

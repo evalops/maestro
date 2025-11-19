@@ -4,13 +4,13 @@ import { Spacer, Text } from "@evalops/tui";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import type { AppMessage } from "../agent/types.js";
+import { loadProjectContextFiles } from "../cli/system-prompt.js";
 import { buildConversationModel } from "../conversation/render-model.js";
 import { collectDiagnostics as collectLspDiagnostics } from "../lsp/index.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
 import { lookupApiKey } from "../providers/api-keys.js";
 import type { SessionManager } from "../session-manager.js";
 import type { SessionModelMetadata } from "../session-manager.js";
-import { loadProjectContextFiles } from "../cli/system-prompt.js";
 import { muted } from "../style/theme.js";
 import type { TelemetryStatus } from "../telemetry.js";
 import { getExaUsageSummary } from "../tools/exa-usage.js";
@@ -20,8 +20,8 @@ import {
 	buildStatusSnapshot,
 } from "./diagnostics-templates.js";
 import {
-	formatDiagnosticsReport,
 	type DiagnosticsInput,
+	formatDiagnosticsReport,
 } from "./diagnostics.js";
 import type { GitView } from "./git-view.js";
 import {

@@ -5,14 +5,14 @@ import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import clipboard from "clipboardy";
+import type { ApprovalMode } from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
 import type { AppMessage, ToolResultMessage } from "../agent/types.js";
+import { loadProjectContextFiles } from "../cli/system-prompt.js";
 import {
 	buildConversationModel,
 	isRenderableAssistantMessage,
 } from "../conversation/render-model.js";
-import type { ApprovalMode } from "../agent/action-approval.js";
-import { loadProjectContextFiles } from "../cli/system-prompt.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import type { SessionManager } from "../session-manager.js";
 import type { GitView } from "./git-view.js";
@@ -134,7 +134,10 @@ export class FeedbackView {
 		this.options.ui.requestRender();
 	}
 
-	private buildContextFileAttachments(): Array<{ label: string; path: string }> {
+	private buildContextFileAttachments(): Array<{
+		label: string;
+		path: string;
+	}> {
 		const files = loadProjectContextFiles();
 		if (!files.length) {
 			return [];
@@ -287,10 +290,10 @@ ${bulletLines}
 
 ${chalk.bold("Quick tar command")}
 ${tarCommand}${
-		runtimeFlags
-			? `\n\n${chalk.bold("Runtime flags")}\n${chalk.dim(runtimeFlags)}`
-			: ""
-	}`;
+	runtimeFlags
+		? `\n\n${chalk.bold("Runtime flags")}\n${chalk.dim(runtimeFlags)}`
+		: ""
+}`;
 	}
 
 	private buildTarCommand(paths: string[]): string {
