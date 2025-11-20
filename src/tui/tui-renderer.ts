@@ -88,6 +88,7 @@ import { UpdateView } from "./update-view.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { handleAgentsInit } from "../cli/commands/agents.js";
+import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import { ApprovalController } from "./approval-controller.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -930,6 +931,7 @@ export class TuiRenderer {
 				`Switched approval mode to ${arg}.`,
 				"success",
 			);
+			this.refreshFooterHint();
 		}
 		const pending = this.approvalService.getPendingRequests();
 		const pendingSummary = pending.length
@@ -1131,17 +1133,11 @@ export class TuiRenderer {
 	}
 
 	public refreshFooterHint(): void {
+		this.footer.setRuntimeBadges(this.buildRuntimeBadges());
 		if (this.isAgentRunning) {
 			return;
 		}
 		const hints: string[] = [this.idleFooterHint];
-		if (this.queuedPromptCount > 0) {
-			const queueLabel =
-				this.queuedPromptCount === 1
-					? "1 prompt queued"
-					: `${this.queuedPromptCount} prompts queued`;
-			hints.push(queueLabel);
-		}
 		if (this.compactionInProgress) {
 			hints.push("Compacting history…");
 		}
@@ -1155,6 +1151,21 @@ export class TuiRenderer {
 			hints.push(`Plan ${this.planHint}`);
 		}
 		this.footer.setHint(hints.filter(Boolean).join(" • "));
+	}
+
+	private buildRuntimeBadges(): string[] {
+		const badges: string[] = [];
+		if (isSafeModeEnabled()) {
+			badges.push("safe:on");
+		}
+		const approvalMode = this.approvalService.getMode();
+		if (approvalMode && approvalMode !== "auto") {
+			badges.push(`approvals:${approvalMode}`);
+		}
+		if (this.queuedPromptCount > 0) {
+			badges.push(`queue:${this.queuedPromptCount}`);
+		}
+		return badges;
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {

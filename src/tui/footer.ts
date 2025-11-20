@@ -1,7 +1,6 @@
 import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
-import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import {
 	buildStatsLine,
 	calculateFooterStats,
@@ -15,16 +14,18 @@ export class FooterComponent {
 	private state: AgentState;
 	private activeStage: string | null = null;
 	private statusHint: string | null = null;
-	private safeModeIcon: string | null = null;
+	private runtimeBadges: string[] = [];
 
 	constructor(state: AgentState) {
 		this.state = state;
-		this.safeModeIcon = isSafeModeEnabled() ? "🛡️" : null;
 	}
 
 	updateState(state: AgentState): void {
 		this.state = state;
-		this.safeModeIcon = isSafeModeEnabled() ? "🛡️" : null;
+	}
+
+	setRuntimeBadges(badges: string[]): void {
+		this.runtimeBadges = badges;
 	}
 
 	setStage(stage: string | null): void {
@@ -73,8 +74,8 @@ export class FooterComponent {
 		if (this.activeStage) {
 			badges.push(chalk.hex("#f1c0e8")(this.activeStage));
 		}
-		if (this.safeModeIcon) {
-			badges.push(chalk.hex("#f472b6")(this.safeModeIcon));
+		for (const badge of this.runtimeBadges) {
+			badges.push(chalk.hex("#94a3b8")(badge));
 		}
 		if (badges.length === 0) {
 			return pathLine;
