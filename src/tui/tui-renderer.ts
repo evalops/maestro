@@ -138,6 +138,7 @@ export class TuiRenderer {
 	private startupContainer: Container;
 	private chatContainer: Container;
 	private statusContainer: Container;
+	private startupChangelogSummary?: string | null;
 	private editor: CustomEditor;
 	private editorContainer: Container; // Container to swap between editor and selector
 	private footer: FooterComponent;
@@ -213,6 +214,7 @@ export class TuiRenderer {
 	private contextWarningLevel: "none" | "warn" | "danger" = "none";
 	private modelScope: RegisteredModel[] = [];
 	private startupChangelog?: string | null;
+	private startupChangelogSummary?: string | null;
 	private updateNotice?: UpdateCheckResult | null;
 	private isCyclingModel = false;
 
@@ -225,6 +227,7 @@ export class TuiRenderer {
 		options: {
 			modelScope?: RegisteredModel[];
 			startupChangelog?: string | null;
+			startupChangelogSummary?: string | null;
 			updateNotice?: UpdateCheckResult | null;
 		} = {},
 	) {
@@ -234,6 +237,7 @@ export class TuiRenderer {
 		this.explicitApiKey = explicitApiKey;
 		this.modelScope = options.modelScope ?? [];
 		this.startupChangelog = options.startupChangelog;
+		this.startupChangelogSummary = options.startupChangelogSummary;
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal());
 		this.startupContainer = new Container();
@@ -714,6 +718,15 @@ export class TuiRenderer {
 			this.startupContainer.addChild(new Spacer(1));
 			this.startupContainer.addChild(
 				new Text(`${header}\n${this.startupChangelog}`, 1, 0),
+			);
+			announced = true;
+		} else if (this.startupChangelogSummary) {
+			const line = `${chalk.bold.cyan("What's new")}: ${
+				this.startupChangelogSummary
+			} ${chalk.dim("(see CHANGELOG.md)")}`;
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(
+				new Text(line.trim(), 1, 0),
 			);
 			announced = true;
 		}

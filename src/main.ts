@@ -51,8 +51,10 @@ import {
 	getChangelogPath,
 	getLatestEntry,
 	getNewEntries,
+	isChangelogHiddenFromEnv,
 	parseChangelog,
 	readLastShownChangelogVersion,
+	summarizeChangelogEntry,
 	writeLastShownChangelogVersion,
 } from "./update/changelog.js";
 import { type UpdateCheckResult, checkForUpdate } from "./update/check.js";
@@ -68,6 +70,7 @@ const VERSION = packageJson.version;
 interface InteractiveOptions {
 	modelScope?: RegisteredModel[];
 	startupChangelog?: string | null;
+	startupChangelogSummary?: string | null;
 	updateNotice?: UpdateCheckResult | null;
 }
 
@@ -702,19 +705,26 @@ export async function main(args: string[]) {
 	}
 
 	let startupChangelog: string | null = null;
+	let startupChangelogSummary: string | null = null;
 	let latestEntryVersion: string | null = null;
-	if (isFreshInteractiveSession) {
+	if (isFreshInteractiveSession && !isChangelogHiddenFromEnv()) {
 		const changelogEntries = parseChangelog(getChangelogPath());
 		const lastVersion = readLastShownChangelogVersion();
 		const latestEntry = lastVersion
 			? getLatestEntry(getNewEntries(changelogEntries, lastVersion))
 			: getLatestEntry(changelogEntries);
-		startupChangelog = latestEntry ? latestEntry.content.trim() : null;
-		latestEntryVersion = latestEntry
-			? formatChangelogVersion(latestEntry)
-			: null;
-		if (startupChangelog) {
-			writeLastShownChangelogVersion(latestEntryVersion ?? VERSION);
+		if (latestEntry) {
+			const versionLabel = formatChangelogVersion(latestEntry);
+			const summaryLine = summarizeChangelogEntry(latestEntry);
+			startupChangelogSummary = summaryLine
+				? `v${versionLabel} — ${summaryLine}`
+				: `v${versionLabel}`;
+			latestEntryVersion = versionLabel;
+			// Keep full text off the start screen, but allow future use.
+			startupChangelog = null;
+		}
+		if (latestEntryVersion) {
+			writeLastShownChangelogVersion(latestEntryVersion);
 		}
 	}
 
@@ -780,6 +790,7 @@ export async function main(args: string[]) {
 			{
 				modelScope: scopedModels,
 				startupChangelog,
+				startupChangelogSummary,
 				updateNotice,
 			},
 		);

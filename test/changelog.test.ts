@@ -6,8 +6,10 @@ import {
 	formatChangelogVersion,
 	getLatestEntry,
 	getNewEntries,
+	isChangelogHiddenFromEnv,
 	parseChangelog,
 	readLastShownChangelogVersion,
+	summarizeChangelogEntry,
 	writeLastShownChangelogVersion,
 } from "../src/update/changelog.js";
 
@@ -64,6 +66,41 @@ describe("changelog utilities", () => {
 		expect(
 			formatChangelogVersion({ major: 2, minor: 3, patch: 4, content: "" }),
 		).toBe("2.3.4");
+	});
+
+	it("summarizes the first meaningful line of an entry", () => {
+		const summary = summarizeChangelogEntry({
+			major: 1,
+			minor: 0,
+			patch: 0,
+			content: `## [1.0.0]
+
+- Added shiny thing
+- Fixed stuff`,
+		});
+		expect(summary).toBe("Added shiny thing");
+	});
+
+	it("skips summary when no meaningful lines exist", () => {
+		const summary = summarizeChangelogEntry({
+			major: 1,
+			minor: 0,
+			patch: 0,
+			content: "",
+		});
+		expect(summary).toBeNull();
+	});
+
+	it("respects COMPOSER_CHANGELOG hide values", () => {
+		expect(isChangelogHiddenFromEnv({ COMPOSER_CHANGELOG: "off" })).toBe(true);
+		expect(isChangelogHiddenFromEnv({ COMPOSER_CHANGELOG: "hidden" })).toBe(
+			true,
+		);
+		expect(isChangelogHiddenFromEnv({ COMPOSER_CHANGELOG: "false" })).toBe(
+			true,
+		);
+		expect(isChangelogHiddenFromEnv({ COMPOSER_CHANGELOG: "1" })).toBe(false);
+		expect(isChangelogHiddenFromEnv({})).toBe(false);
 	});
 
 	it("stores last shown version in override path", () => {
