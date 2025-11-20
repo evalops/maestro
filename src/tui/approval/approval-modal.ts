@@ -80,7 +80,9 @@ export class ApprovalModal implements Component {
 		if (typeof cmd !== "string" || cmd.trim().length === 0) {
 			return null;
 		}
-		return cmd.trim().split(/\r?\n/).slice(0, 6);
+		// Strip control characters (including ANSI escapes) to avoid terminal injection
+		const scrubbed = cmd.replace(/[^\x20-\x7e\r\n]/g, "");
+		return scrubbed.trim().split(/\r?\n/).slice(0, 6);
 	}
 
 	private pad(text: string, width: number): string {

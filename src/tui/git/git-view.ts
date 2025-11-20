@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { normalize, resolve } from "node:path";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
@@ -396,7 +397,10 @@ export class GitView {
 			this.options.showInfoMessage("Usage: /undo <file> [more files]");
 			return;
 		}
-		const targets = parts.slice(1).filter(Boolean);
+		const targets = parts
+			.slice(1)
+			.filter(Boolean)
+			.filter((path) => this.isSafePath(path));
 		if (!targets.length) {
 			this.options.showInfoMessage("Usage: /undo <file> [more files]");
 			return;
@@ -569,5 +573,15 @@ Use /diff <file> to inspect diffs.`;
 		}
 		const value = result.stdout.trim();
 		return value.length > 0 ? value : undefined;
+	}
+
+	private isSafePath(path: string): boolean {
+		if (!path.trim()) return false;
+		if (path.startsWith("/") || path.startsWith("~")) return false;
+		// Normalize to catch traversal segments
+		const normalized = normalize(path);
+		if (normalized.startsWith("..")) return false;
+		const resolved = resolve(process.cwd(), path);
+		return resolved.startsWith(process.cwd());
 	}
 }
