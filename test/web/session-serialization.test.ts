@@ -1,15 +1,15 @@
 import type { ComposerMessage } from "@evalops/contracts";
 import { describe, expect, it } from "vitest";
+import {
+	convertAppMessagesToComposer,
+	convertComposerMessagesToApp,
+} from "../../src/web/session-serialization.js";
 import type {
 	AppMessage,
 	AssistantMessage,
 	ToolResultMessage,
 } from "../src/agent/types.js";
 import type { RegisteredModel } from "../src/models/registry.js";
-import {
-	convertAppMessagesToComposer,
-	convertComposerMessagesToApp,
-} from "../../src/web/session-serialization.js";
 
 const mockUsage = () => ({
 	input: 0,
