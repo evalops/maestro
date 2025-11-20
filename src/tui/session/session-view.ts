@@ -21,7 +21,7 @@ import {
 	muted,
 	separator as themedSeparator,
 } from "../../style/theme.js";
-import { normalizeUsage } from "../footer-utils.js";
+import { normalizeUsage } from "../utils/footer-utils.js";
 import type { SessionArtifacts, SessionContext } from "./session-context.js";
 import type {
 	SessionDataProvider,

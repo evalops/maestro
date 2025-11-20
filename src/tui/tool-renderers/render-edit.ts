@@ -6,7 +6,7 @@ import {
 	formatSection,
 	generateDiff,
 	shortenPath,
-} from "../tool-text-utils.js";
+} from "../utils/tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class EditRenderer implements ToolRenderer {
