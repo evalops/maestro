@@ -5,7 +5,7 @@ import {
 	buildStatsLine,
 	calculateFooterStats,
 	formatPath,
-} from "./footer-utils.js";
+} from "./utils/footer-utils.js";
 
 /**
  * Footer component that shows pwd, token stats, and context usage

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildReviewPrompt } from "../src/tui/review-prompt.js";
+import { buildReviewPrompt } from "../src/tui/utils/commands/review-prompt.js";
 
 describe("buildReviewPrompt", () => {
 	it("includes repository context and truncates long sections", () => {

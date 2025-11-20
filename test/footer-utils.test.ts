@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentState, AssistantMessage } from "../src/agent/types.js";
-import { calculateFooterStats } from "../src/tui/footer-utils.js";
+import { calculateFooterStats } from "../src/tui/utils/footer-utils.js";
 
 const baseModel = {
 	id: "gpt-4o",

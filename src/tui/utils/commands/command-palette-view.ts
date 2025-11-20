@@ -1,7 +1,7 @@
 import type { SlashCommand } from "@evalops/tui";
 import type { Container, TUI } from "@evalops/tui";
+import type { CustomEditor } from "../../custom-editor.js";
 import { CommandPaletteComponent } from "./command-palette.js";
-import type { CustomEditor } from "./custom-editor.js";
 
 interface CommandPaletteViewOptions {
 	editor: CustomEditor;

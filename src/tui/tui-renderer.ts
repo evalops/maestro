@@ -38,8 +38,6 @@ import { getTelemetryStatus } from "../telemetry.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
 import { BashModeView } from "./bash-mode-view.js";
-import { CommandPaletteView } from "./command-palette-view.js";
-import { buildCommandRegistry } from "./command-registry-builder.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
 import type {
 	CommandEntry,
@@ -49,11 +47,6 @@ import { ConfigView } from "./config-view.js";
 import { CustomEditor } from "./custom-editor.js";
 import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
-import {
-	type FooterStats,
-	calculateFooterStats,
-	formatTokenCount,
-} from "./footer-utils.js";
 import { FooterComponent } from "./footer.js";
 import { GitView } from "./git/git-view.js";
 import { ImportExportView } from "./import-view.js";
@@ -85,12 +78,22 @@ import type { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
 import { UpdateView } from "./update-view.js";
+import { CommandPaletteView } from "./utils/commands/command-palette-view.js";
+import { buildCommandRegistry } from "./utils/commands/command-registry-builder.js";
+import {
+	REVIEW_INSTRUCTIONS,
+	buildReviewPrompt,
+} from "./utils/commands/review-prompt.js";
+import {
+	type FooterStats,
+	calculateFooterStats,
+	formatTokenCount,
+} from "./utils/footer-utils.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import { ApprovalController } from "./approval/approval-controller.js";
-import { REVIEW_INSTRUCTIONS, buildReviewPrompt } from "./review-prompt.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
@@ -505,7 +508,7 @@ export class TuiRenderer {
 		});
 
 		const registry = buildCommandRegistry({
-			getRunScriptCompletions: (prefix) =>
+			getRunScriptCompletions: (prefix: string) =>
 				this.runCommandView.getRunScriptCompletions(prefix),
 			createContext: (ctx) => this.createCommandContext(ctx),
 			showThinkingSelector: (_context) => this.thinkingSelectorView.show(),
