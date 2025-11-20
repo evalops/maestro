@@ -228,8 +228,10 @@ function buildSessionFileInfo(
 				}
 				break;
 			case "message":
-				messageCount++;
-				appMessages.push(entry.message as AppMessage);
+				if (entry.message) {
+					messageCount++;
+					appMessages.push(entry.message as AppMessage);
+				}
 				break;
 			case "session_meta":
 				if (typeof entry.summary === "string" && entry.summary.trim()) {
