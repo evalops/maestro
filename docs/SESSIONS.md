@@ -52,8 +52,11 @@ replays the stored messages into its state and restores model/thinking settings.
 ## Favorites & Summaries
 
 `session_meta` entries can include `favorite: true` or a `summary` string. Add
-these via future commands (planned `/session favorite`/`/session summary`), or
-edit the JSONL manually if needed.
+these without touching the JSONL by using:
+
+- `/session favorite` or `/session unfavorite` to toggle the active session
+- `/session summary "<text>"` to attach a manual blurb to the active session
+- `/sessions summarize <number>` to auto-summarize a saved session by index
 
 ## Cleaning Up
 

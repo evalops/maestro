@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import type { Agent } from "../agent/agent.js";
@@ -211,6 +212,52 @@ ${muted("Use /sessions load <number> to switch.")}`;
 		return true;
 	}
 
+	handleSessionCommand(text: string): void {
+		const parts = text.trim().split(/\s+/);
+		if (parts.length === 1 || parts[1] === "info") {
+			this.showSessionInfo();
+			return;
+		}
+
+		const action = parts[1];
+
+		if (["favorite", "fav", "star"].includes(action)) {
+			const sessionPath = this.getPersistedSessionPath();
+			if (!sessionPath) return;
+			this.options.sessionManager.setSessionFavorite(sessionPath, true);
+			this.options.sessionDataProvider.refresh();
+			this.options.showInfoMessage("Favorited current session.");
+			return;
+		}
+
+		if (["unfavorite", "unfav", "unstar"].includes(action)) {
+			const sessionPath = this.getPersistedSessionPath();
+			if (!sessionPath) return;
+			this.options.sessionManager.setSessionFavorite(sessionPath, false);
+			this.options.sessionDataProvider.refresh();
+			this.options.showInfoMessage("Removed favorite from current session.");
+			return;
+		}
+
+		if (action === "summary") {
+			const summary = parts.slice(2).join(" ").trim();
+			if (!summary) {
+				this.options.showInfoMessage("Usage: /session summary <text>");
+				return;
+			}
+			const sessionPath = this.getPersistedSessionPath();
+			if (!sessionPath) return;
+			this.options.sessionManager.saveSessionSummary(summary, sessionPath);
+			this.options.sessionDataProvider.refresh();
+			this.options.showInfoMessage("Saved session summary.");
+			return;
+		}
+
+		this.options.showInfoMessage(
+			"Usage: /session [info|favorite|unfavorite|summary <text>]",
+		);
+	}
+
 	handleSessionsCommand(text: string): void {
 		const parts = text.trim().split(/\s+/);
 		if (parts.length === 1) {
@@ -338,5 +385,16 @@ ${muted("Use /sessions load <number> to switch.")}`;
 		}
 		return `${heading("Recent artifacts")}
 ${lines.join("\n")}`;
+	}
+
+	private getPersistedSessionPath(): string | null {
+		const sessionPath = this.options.sessionManager.getSessionFile();
+		if (!sessionPath || !existsSync(sessionPath)) {
+			this.options.showInfoMessage(
+				"Session not yet persisted—send/receive a message before tagging it.",
+			);
+			return null;
+		}
+		return sessionPath;
 	}
 }

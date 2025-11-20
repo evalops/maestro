@@ -36,38 +36,37 @@ Developers who want deterministic, scriptable AI assistance with zero mystery me
 
 ### EvalOps Workflows
 
-- **Run automated evaluations:** `npm run evals` builds the CLI and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Composer into continuous evaluation pipelines.
+- **Run automated evaluations:** `npx nx run composer:evals --skip-nx-cache` builds the CLI/TUI/Web targets with Bun and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Composer into continuous evaluation pipelines.
 - **Customize scenarios:** add more entries to `evals/scenarios.json` to benchmark additional commands (each scenario can assert against stdout via regular expressions).
 - **Surface telemetry:** set `COMPOSER_TELEMETRY=true` (or point to a custom `COMPOSER_TELEMETRY_ENDPOINT`) to stream tool usage and evaluation outcomes into your EvalOps dashboards.
 
 ## Installation
 
-### npm (Recommended)
+### Bun (default)
+
+```bash
+bun install -g @evalops/composer
+```
+
+### npm (alternative)
 
 ```bash
 npm install -g @evalops/composer
 ```
 
-### Alternative Methods
-
-#### Bun
-```bash
-bun install -g @evalops/composer
-```
-
-#### Nix (with flakes)
+### Nix (with flakes)
 ```bash
 nix run github:evalops/composer
 # Or add to your flake.nix
 ```
 
-#### From Source
+### From Source (Bun + Nx)
 ```bash
 git clone https://github.com/evalops/composer.git
 cd composer
-npm install
-npm run build:all  # Builds CLI, TUI, and Web UI
-npm link
+bun install
+npx nx run composer:build:all --skip-nx-cache   # Builds CLI, TUI, Web
+npm link                                        # Optional: link the CLI locally
 ```
 
 #### Binary Compilation (Bun)
@@ -75,9 +74,17 @@ npm link
 git clone https://github.com/evalops/composer.git
 cd composer
 bun install
-npm run compile:binary
+bun run compile:binary
 # Binary available at dist/composer-bun
 ```
+
+### Workspace Commands (Bun + Nx)
+
+- Install deps: `bun install`
+- Lint + eval verifier: `bun run bun:lint`
+- Full test suite (builds TUI/Web): `npx nx run composer:test --skip-nx-cache`
+- Package builds: `bun run --filter @evalops/tui build` and `bun run --filter @evalops/composer-web build`
+- Targeted tests: `bunx vitest --run -t "<test name>"`
 
 ## Quick Start
 
@@ -165,7 +172,27 @@ List available slash commands.
 
 ### /session
 
-Display session information and statistics (file path, token counts, etc.).
+Display session information (file path, token counts, etc.), mark the current
+session as a favorite, or attach a manual summary without touching the JSONL.
+
+```
+/session                         # show session stats
+/session favorite                # star the current session
+/session unfavorite              # remove the star
+/session summary "Fixed build"   # add a manual summary entry
+```
+
+### /sessions
+
+List or load saved sessions by index and manage their metadata.
+
+```
+/sessions list text              # show the latest sessions inline
+/sessions load 2                 # load session #2
+/sessions favorite 1             # mark a saved session as favorite
+/sessions unfavorite 1           # remove a favorite flag
+/sessions summarize 3            # generate an AI summary for a session
+```
 
 ### /tools
 
@@ -415,10 +442,13 @@ No background bash APIs. Use `tmux`, `screen`, or your terminal emulator to watc
 Run the same validators Composer uses internally before submitting changes:
 
 ```bash
-npm install            # one-time
-npx biome check .      # lint/format
-npm test               # Vitest suite
-npm run evals          # optional EvalOps scenarios
+bun install                                  # one-time
+bunx biome check .                           # lint/format (Biome + eval verifier)
+npx nx run composer:test --skip-nx-cache     # builds TUI/Web + runs tests (mirrors CI)
+npx nx run composer:evals --skip-nx-cache    # optional EvalOps scenarios
+# If you touched a package directly, also build it:
+bun run --filter @evalops/tui build
+bun run --filter @evalops/composer-web build
 ```
 
 New slash commands or views should ship with tests in `test/`. Use the eval runner for larger feature work so telemetry scenarios stay honest.

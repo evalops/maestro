@@ -119,6 +119,45 @@ describe("SessionManager - Deferred Session Creation", () => {
 		});
 	});
 
+	describe("Session metadata cache", () => {
+		it("restores thinking level, model, and metadata across reloads", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const userMessage = createUserMessage("Track metadata changes");
+			state.messages.push(userMessage);
+
+			sessionManager.saveThinkingLevelChange("medium");
+			sessionManager.saveModelChange("openai/gpt-4o", {
+				provider: "openai",
+				modelId: "gpt-4o",
+				contextWindow: 128000,
+			});
+
+			sessionManager.startSession(state);
+			sessionManager.saveModelChange("anthropic/claude-sonnet-4", {
+				provider: "anthropic",
+				modelId: "claude-sonnet-4",
+				contextWindow: 200000,
+			});
+			sessionManager.saveThinkingLevelChange("high");
+			await sessionManager.flush();
+
+			const sessionPath = sessionManager.getSessionFile();
+			expect(existsSync(sessionPath)).toBe(true);
+
+			const reloaded = new SessionManager(false, sessionPath);
+			expect(reloaded.loadThinkingLevel()).toBe("high");
+			expect(reloaded.loadModel()).toBe("anthropic/claude-sonnet-4");
+			expect(reloaded.loadModelMetadata()).toEqual(
+				expect.objectContaining({
+					provider: "anthropic",
+					modelId: "claude-sonnet-4",
+					contextWindow: 200000,
+				}),
+			);
+		});
+	});
+
 	afterEach(() => {
 		// Restore original state
 		process.chdir(originalCwd);
