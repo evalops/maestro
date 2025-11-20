@@ -116,4 +116,17 @@ describe("GitView.getReviewContext", () => {
 		expect(ctx.worktreeDiff).toBe("");
 		expect(ctx.error).toContain("wt failed");
 	});
+
+	it("fails when a command has no output but non-zero exit", () => {
+		const view = new StubGitView({
+			"status -sb": { ok: true, stdout: "## main", stderr: "" },
+			"diff --stat": { ok: true, stdout: "stat", stderr: "" },
+			"diff --cached --unified=5": { ok: true, stdout: "cached", stderr: "" },
+			"diff --unified=5": { ok: false, stdout: "", stderr: "" },
+		});
+		const ctx = view.getReviewContext();
+		expect(ctx.ok).toBe(false);
+		expect(ctx.error).toContain("git diff --unified=5");
+		expect(ctx.worktreeDiff).toBe("");
+	});
 });
