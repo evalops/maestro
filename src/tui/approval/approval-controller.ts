@@ -3,7 +3,7 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 	ActionApprovalService,
-} from "../agent/action-approval.js";
+} from "../../agent/action-approval.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { NotificationView } from "../notification-view.js";
 import { ApprovalModal } from "./approval-modal.js";
