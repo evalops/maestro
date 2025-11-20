@@ -83,7 +83,7 @@ describe("GitView.getReviewContext", () => {
 		});
 		const ctx = view.getReviewContext();
 		expect(ctx.ok).toBe(false);
-		expect(ctx.diffStat).toContain("stat failed");
+		expect(ctx.diffStat).toBe("");
 		expect(ctx.error).toContain("stat failed");
 	});
 
@@ -100,7 +100,7 @@ describe("GitView.getReviewContext", () => {
 		});
 		const ctx = view.getReviewContext();
 		expect(ctx.ok).toBe(false);
-		expect(ctx.stagedDiff).toContain("cached failed");
+		expect(ctx.stagedDiff).toBe("");
 		expect(ctx.error).toContain("cached failed");
 	});
 
@@ -113,7 +113,7 @@ describe("GitView.getReviewContext", () => {
 		});
 		const ctx = view.getReviewContext();
 		expect(ctx.ok).toBe(false);
-		expect(ctx.worktreeDiff).toContain("wt failed");
+		expect(ctx.worktreeDiff).toBe("");
 		expect(ctx.error).toContain("wt failed");
 	});
 });
