@@ -18,7 +18,7 @@ interface AboutViewOptions {
 	ui: TUI;
 	version: string;
 	telemetryStatus: () => string;
-	getApprovalMode: () => string;
+	getApprovalMode?: () => string;
 }
 
 export class AboutView {
@@ -73,7 +73,9 @@ export class AboutView {
 		const sessionId = this.options.sessionManager.getSessionId();
 		const safeMode = process.env.COMPOSER_SAFE_MODE === "1" ? "on" : "off";
 		const pendingTools = this.options.agent.state.pendingToolCalls?.size ?? 0;
-		const approvalMode = this.options.getApprovalMode();
+		const approvalMode = this.options.getApprovalMode
+			? this.options.getApprovalMode()
+			: "unknown";
 		const lines = [
 			`${this.badge("version")}${this.options.version}`,
 			`${this.badge("model")}${model}`,
