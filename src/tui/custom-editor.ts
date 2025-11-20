@@ -8,8 +8,22 @@ export class CustomEditor extends Editor {
 	public onCtrlC?: () => void;
 	public onShortcut?: (shortcut: string) => boolean;
 	public onHistoryNavigate?: (direction: "prev" | "next") => boolean;
+	public onShiftTab?: () => void;
+	public onCtrlP?: () => void;
 
 	handleInput(data: string): void {
+		// Ctrl+P cycles models
+		if (data === "\x10" && this.onCtrlP) {
+			this.onCtrlP();
+			return;
+		}
+
+		// Shift+Tab cycles thinking levels
+		if (data === "\x1b[Z" && this.onShiftTab) {
+			this.onShiftTab();
+			return;
+		}
+
 		// Intercept Escape key - but only if autocomplete is NOT active
 		// (let parent handle escape for autocomplete cancellation)
 		if (data === "\x1b" && this.onEscape && !this.isShowingAutocomplete()) {

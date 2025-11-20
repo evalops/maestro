@@ -20,6 +20,7 @@ import {
 } from "./cli/system-prompt.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
+import type { RegisteredModel } from "./models/registry.js";
 import {
 	getCustomConfigPath,
 	getCustomProviderMetadata,
@@ -30,7 +31,7 @@ import {
 	resolveAlias,
 	resolveModel,
 } from "./models/registry.js";
-import type { RegisteredModel } from "./models/registry.js";
+import { resolveModelScope } from "./models/scope.js";
 import {
 	getEnvVarsForProvider,
 	isKnownProvider,
@@ -45,6 +46,14 @@ import { configureSafeMode } from "./safety/safe-mode.js";
 import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
+import {
+	getChangelogPath,
+	getNewEntries,
+	parseChangelog,
+	readLastShownChangelogVersion,
+	writeLastShownChangelogVersion,
+} from "./update/changelog.js";
+import { type UpdateCheckResult, checkForUpdate } from "./update/check.js";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -54,12 +63,19 @@ const packageJson = JSON.parse(
 );
 const VERSION = packageJson.version;
 
+interface InteractiveOptions {
+	modelScope?: RegisteredModel[];
+	startupChangelog?: string | null;
+	updateNotice?: UpdateCheckResult | null;
+}
+
 async function runInteractiveMode(
 	agent: Agent,
 	sessionManager: SessionManager,
 	version: string,
 	approvalService: ActionApprovalService,
 	explicitApiKey?: string,
+	options: InteractiveOptions = {},
 ): Promise<void> {
 	const renderer = new TuiRenderer(
 		agent,
@@ -67,6 +83,7 @@ async function runInteractiveMode(
 		version,
 		approvalService,
 		explicitApiKey,
+		options,
 	);
 	const runtime = new AgentRuntimeController({
 		agent,
@@ -595,6 +612,18 @@ export async function main(args: string[]) {
 	const mode = parsed.mode || "text";
 	const shouldPrintMessages = isInteractive || mode === "text";
 
+	let scopedModels: RegisteredModel[] = [];
+	if (parsed.models && parsed.models.length > 0) {
+		scopedModels = resolveModelScope(parsed.models);
+		if (scopedModels.length === 0 && shouldPrintMessages) {
+			console.log(
+				chalk.yellow(
+					`Warning: --models patterns (${parsed.models.join(", ")}) did not match any registered models`,
+				),
+			);
+		}
+	}
+
 	// Load previous messages if continuing or resuming
 	const shouldRestoreSession =
 		parsed.continue || parsed.resume || execResumeApplied;
@@ -657,6 +686,9 @@ export async function main(args: string[]) {
 	// (unless continuing/resuming, in which case it's already initialized)
 
 	// Log loaded context files (they're already in the system prompt)
+	const isFreshInteractiveSession =
+		isInteractive && !shouldRestoreSession && mode !== "rpc";
+
 	if (shouldPrintMessages && !parsed.continue && !parsed.resume) {
 		const contextFiles = loadProjectContextFiles();
 		if (contextFiles.length > 0) {
@@ -664,6 +696,48 @@ export async function main(args: string[]) {
 			for (const { path: filePath } of contextFiles) {
 				console.log(chalk.dim(`  - ${filePath}`));
 			}
+		}
+	}
+
+	let startupChangelog: string | null = null;
+	if (isFreshInteractiveSession) {
+		const changelogEntries = parseChangelog(getChangelogPath());
+		const lastVersion = readLastShownChangelogVersion();
+		if (!lastVersion) {
+			if (changelogEntries.length > 0) {
+				startupChangelog = changelogEntries
+					.map((entry) => entry.content)
+					.join("\n\n")
+					.trim();
+			}
+		} else {
+			const newEntries = getNewEntries(changelogEntries, lastVersion);
+			if (newEntries.length > 0) {
+				startupChangelog = newEntries
+					.map((entry) => entry.content)
+					.join("\n\n")
+					.trim();
+			}
+		}
+		if (startupChangelog) {
+			writeLastShownChangelogVersion(VERSION);
+		}
+	}
+
+	let updateNotice: UpdateCheckResult | null = null;
+	if (isFreshInteractiveSession) {
+		try {
+			updateNotice = await Promise.race([
+				checkForUpdate(VERSION),
+				new Promise<UpdateCheckResult | null>((resolve) =>
+					setTimeout(() => resolve(null), 1_000),
+				),
+			]);
+		} catch {
+			updateNotice = null;
+		}
+		if (updateNotice && !updateNotice.isUpdateAvailable) {
+			updateNotice = null;
 		}
 	}
 
@@ -709,6 +783,11 @@ export async function main(args: string[]) {
 			VERSION,
 			approvalService,
 			parsed.apiKey,
+			{
+				modelScope: scopedModels,
+				startupChangelog,
+				updateNotice,
+			},
 		);
 	} else if (parsed.command === "exec") {
 		await runExecCommand({
