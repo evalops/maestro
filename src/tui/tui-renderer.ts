@@ -838,14 +838,21 @@ export class TuiRenderer {
 		const hasDiff =
 			reviewContext.stagedDiff.trim().length > 0 ||
 			reviewContext.worktreeDiff.trim().length > 0;
-		const hasStat = reviewContext.diffStat.trim().length > 0;
-		if (!hasDiff && !hasStat) {
+		if (!hasDiff) {
 			this.notificationView.showInfo("Working tree clean. Nothing to review.");
 			return;
 		}
 
 		const prompt = buildReviewPrompt(reviewContext);
-		await this.agent.prompt(prompt);
+		try {
+			await this.agent.prompt(prompt);
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : String(error ?? "unknown");
+			this.notificationView.showError(
+				`/review failed to run: ${message.slice(0, 200)}`,
+			);
+		}
 	}
 
 	private async handleStatsCommand(

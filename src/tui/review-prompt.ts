@@ -45,6 +45,7 @@ Guidance:
 - Do NOT suggest fixes or use suggestion blocks.
 - If no issues, return an empty findings array but still fill overall_* fields.
 - Ignore trivial style unless it obscures behavior or violates repo standards.
+- Diffs may be truncated for length; [truncated …] markers mean omitted lines. Focus on available context.
 - Never wrap the JSON in fences or extra prose.`;
 
 export interface ReviewContext {
@@ -63,7 +64,9 @@ function truncateSection(text: string, limit = 15000): string {
 	if (trimmed.length <= limit) {
 		return trimmed;
 	}
-	return `${trimmed.slice(0, limit)}\n[truncated ${trimmed.length - limit} additional chars]`;
+	const cutoff = trimmed.lastIndexOf("\n", limit);
+	const safeCut = cutoff > 0 ? cutoff : limit;
+	return `${trimmed.slice(0, safeCut)}\n[truncated ${trimmed.length - safeCut} additional chars]`;
 }
 
 export function buildReviewPrompt(review: ReviewContext): string {

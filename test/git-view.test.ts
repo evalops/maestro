@@ -73,4 +73,44 @@ describe("GitView.getReviewContext", () => {
 		expect(ctx.ok).toBe(false);
 		expect(ctx.error).toContain("fatal");
 	});
+
+	it("surfaces diff stat failure output", () => {
+		const view = new StubGitView({
+			"status -sb": { ok: true, stdout: "## main", stderr: "" },
+			"diff --stat": { ok: false, stdout: "", stderr: "stat failed" },
+			"diff --cached --unified=5": { ok: true, stdout: "cached", stderr: "" },
+			"diff --unified=5": { ok: true, stdout: "worktree", stderr: "" },
+		});
+		const ctx = view.getReviewContext();
+		expect(ctx.ok).toBe(true);
+		expect(ctx.diffStat).toContain("stat failed");
+	});
+
+	it("returns staged diff failure output", () => {
+		const view = new StubGitView({
+			"status -sb": { ok: true, stdout: "## main", stderr: "" },
+			"diff --stat": { ok: true, stdout: "stat", stderr: "" },
+			"diff --cached --unified=5": {
+				ok: false,
+				stdout: "",
+				stderr: "cached failed",
+			},
+			"diff --unified=5": { ok: true, stdout: "worktree", stderr: "" },
+		});
+		const ctx = view.getReviewContext();
+		expect(ctx.ok).toBe(true);
+		expect(ctx.stagedDiff).toContain("cached failed");
+	});
+
+	it("returns worktree diff failure output", () => {
+		const view = new StubGitView({
+			"status -sb": { ok: true, stdout: "## main", stderr: "" },
+			"diff --stat": { ok: true, stdout: "stat", stderr: "" },
+			"diff --cached --unified=5": { ok: true, stdout: "cached", stderr: "" },
+			"diff --unified=5": { ok: false, stdout: "", stderr: "wt failed" },
+		});
+		const ctx = view.getReviewContext();
+		expect(ctx.ok).toBe(true);
+		expect(ctx.worktreeDiff).toContain("wt failed");
+	});
 });
