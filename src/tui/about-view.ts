@@ -45,6 +45,7 @@ export class AboutView {
 			this.buildEnvSection(),
 			this.buildGitSection(),
 			this.buildPathSection(),
+			this.buildSessionContextSection(),
 			this.buildContextSection(),
 			this.buildAttachmentSection(),
 		]
@@ -171,6 +172,18 @@ export class AboutView {
 				? files.map((file) => `- ${file.path}`)
 				: [chalk.dim("(no AGENTS/CLAUDE files found)")];
 		return this.section("context", [promptLine, ...fileLines]);
+	}
+
+	private buildSessionContextSection(): string {
+		const sessionId = this.options.sessionManager.getSessionId();
+		const sessionFile = this.options.sessionManager.getSessionFile();
+		const messageCount = this.options.agent.state.messages?.length ?? 0;
+		const lines = [
+			`${this.badge("id")}${sessionId ?? chalk.dim("(unset)")}`,
+			`${this.badge("file")}${sessionFile ?? chalk.dim("(pending)")}`,
+			`${this.badge("messages")}${messageCount}`,
+		];
+		return this.section("session", lines);
 	}
 
 	private section(title: string, lines: string[]): string {

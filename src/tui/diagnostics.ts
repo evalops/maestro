@@ -24,16 +24,7 @@ export interface DiagnosticsInput {
 		planPendingTasks?: number;
 	};
 	lspDiagnostics?: Record<string, LspDiagnostic[]>;
-	context?: {
-		systemPromptPreview?: string;
-		systemPromptLength?: number;
-		contextFiles?: Array<{ path: string; lines?: number }>;
-	};
-	runtime?: {
-		safeMode: boolean;
-		approvalMode?: string;
-		pendingToolCount?: number;
-	};
+	attachments?: string[];
 }
 
 function formatProviderSection(
@@ -170,6 +161,14 @@ function formatPendingToolsSection(
 	return `${chalk.bold("Pending Tools")}\n${items}`;
 }
 
+function formatAttachmentsSection(attachments?: string[]): string | null {
+	if (!attachments || attachments.length === 0) {
+		return null;
+	}
+	const items = attachments.map((item) => `- ${item}`).join("\n");
+	return `${chalk.bold("Attachments")}\n${items}`;
+}
+
 function formatHealthSection(
 	health?: DiagnosticsInput["health"],
 ): string | null {
@@ -246,62 +245,6 @@ function formatExaTimestamp(timestamp: number | string): string {
 	return `${iso.slice(11, 19)}Z`;
 }
 
-function formatPromptContextSection(
-	context?: DiagnosticsInput["context"],
-): string | null {
-	if (!context) return null;
-	const lines: string[] = [];
-	const promptLength = context.systemPromptLength ?? 0;
-	if (promptLength > 0) {
-		lines.push(
-			`${chalk.bold("System prompt")}: ${promptLength.toLocaleString()} chars`,
-		);
-		if (context.systemPromptPreview) {
-			lines.push(
-				`${chalk.dim("Preview")}: ${context.systemPromptPreview.replace(/\s+/g, " ").trim()}`,
-			);
-		}
-	}
-	const files = context.contextFiles ?? [];
-	if (files.length) {
-		lines.push(
-			[
-				chalk.bold("Context files"),
-				...files.map((file) => {
-					const suffix =
-						typeof file.lines === "number"
-							? chalk.dim(`(${file.lines} lines)`)
-							: "";
-					return `- ${file.path} ${suffix}`.trimEnd();
-				}),
-			].join("\n"),
-		);
-	}
-	if (!lines.length) {
-		return null;
-	}
-	return lines.join("\n");
-}
-
-function formatRuntimeSection(runtime?: DiagnosticsInput["runtime"]): string {
-	if (!runtime) {
-		return chalk.dim("Runtime: unavailable");
-	}
-	const flags: string[] = [];
-	flags.push(
-		`${chalk.bold("Runtime")}: safe-mode ${runtime.safeMode ? "on" : "off"}`,
-	);
-	flags.push(
-		runtime.approvalMode
-			? chalk.dim(`Approvals: ${runtime.approvalMode}`)
-			: chalk.dim("Approvals: unknown"),
-	);
-	if (typeof runtime.pendingToolCount === "number") {
-		flags.push(chalk.dim(`Pending tools: ${runtime.pendingToolCount}`));
-	}
-	return flags.join("\n");
-}
-
 export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	const sections: string[] = [];
 	sections.push(`${chalk.bold("Diagnostics")}`);
@@ -331,13 +274,11 @@ export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 		sections.push(lspSection);
 		sections.push("");
 	}
-	const promptSection = formatPromptContextSection(input.context);
-	if (promptSection) {
-		sections.push(promptSection);
+	const attachmentsSection = formatAttachmentsSection(input.attachments);
+	if (attachmentsSection) {
+		sections.push(attachmentsSection);
 		sections.push("");
 	}
-	sections.push(formatRuntimeSection(input.runtime));
-	sections.push("");
 	sections.push(formatPendingToolsSection(input.pendingTools));
 	return sections.join("\n");
 }

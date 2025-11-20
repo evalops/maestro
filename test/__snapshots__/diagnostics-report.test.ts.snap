@@ -24,15 +24,6 @@ Sample Rate: 0
 
 LSP: no diagnostics
 
-System prompt: 27 chars
-Preview: You are a helpful assistant
-Context files
-- /tmp/AGENTS.md (3 lines)
-
-Runtime: safe-mode off
-Approvals: auto
-Pending tools: 0
-
 Pending tools: none"
 `;
 
@@ -79,15 +70,6 @@ Pending tasks: 1
 LSP Diagnostics
 src/index.ts
 [WARN] Unused variable (1:5)
-
-System prompt: 27 chars
-Preview: You are a helpful assistant
-Context files
-- /tmp/AGENTS.md (3 lines)
-
-Runtime: safe-mode off
-Approvals: auto
-Pending tools: 1
 
 Pending Tools
 1. websearch (tool-1)"

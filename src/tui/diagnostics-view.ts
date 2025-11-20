@@ -19,10 +19,7 @@ import {
 	buildFeedbackTemplate,
 	buildStatusSnapshot,
 } from "./diagnostics-templates.js";
-import {
-	type DiagnosticsInput,
-	formatDiagnosticsReport,
-} from "./diagnostics.js";
+import { formatDiagnosticsReport } from "./diagnostics.js";
 import type { GitView } from "./git-view.js";
 import {
 	type HealthSnapshot,
@@ -47,7 +44,7 @@ interface DiagnosticsViewOptions {
 	toolStatusView: ToolStatusView;
 	gitView: GitView;
 	todoStorePath: string;
-	getApprovalMode: () => string;
+	getApprovalMode?: () => string;
 }
 
 export class DiagnosticsView {
@@ -157,8 +154,20 @@ ${copyNote}`;
 			this.currentApiKeyInfo = this.resolveApiKey();
 		}
 
+		const tokens = commandText.trim().split(/\s+/).slice(1);
+		const isShort = tokens.includes("short");
 		const health = this.buildHealthSnapshot();
 		const lspDiagnostics = await collectLspDiagnostics().catch(() => undefined);
+		const attachments = this.buildAttachmentList();
+
+		if (isShort) {
+			const short = this.buildShortDiagnostics({ health, attachments });
+			this.options.chatContainer.addChild(new Spacer(1));
+			this.options.chatContainer.addChild(new Text(short, 1, 0));
+			this.options.ui.requestRender();
+			return;
+		}
+
 		const report = formatDiagnosticsReport({
 			sessionId: this.options.sessionManager.getSessionId(),
 			sessionFile: this.options.sessionManager.getSessionFile(),
@@ -173,8 +182,7 @@ ${copyNote}`;
 			explicitApiKey: this.options.explicitApiKey,
 			health,
 			lspDiagnostics,
-			context: this.buildPromptContext(),
-			runtime: this.buildRuntimeSection(),
+			attachments,
 		});
 
 		const shouldCopy = /copy|share/.test(commandText.split(/\s+/)[1] ?? "");
@@ -197,36 +205,60 @@ ${copyNote}`;
 		return lookupApiKey(provider, this.options.explicitApiKey);
 	}
 
-	private buildPromptContext(): DiagnosticsInput["context"] {
-		const systemPrompt = this.options.agent.state.systemPrompt || "";
-		const contextFiles = loadProjectContextFiles().map((file) => ({
-			path: file.path,
-			lines: file.content.split(/\r?\n/).length,
-		}));
-		return {
-			systemPromptPreview: this.truncate(systemPrompt, 360),
-			systemPromptLength: systemPrompt.length,
-			contextFiles,
-		};
+	private buildShortDiagnostics({
+		health,
+		attachments,
+	}: {
+		health: HealthSnapshot;
+		attachments: string[];
+	}): string {
+		const model = this.options.agent.state.model
+			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
+			: "unknown";
+		const runtime = this.describeRuntime();
+		const attachLine = attachments.length
+			? attachments.map((entry) => `- ${entry}`).join("\n")
+			: muted("(no attachments found)");
+		const lines = [
+			"Diagnostics (short)",
+			`Model: ${model}`,
+			`Session: ${this.options.sessionManager.getSessionFile() ?? muted("(pending)")}`,
+			`Telemetry: ${this.telemetryStatus.enabled ? "enabled" : "disabled"}`,
+			`Runtime: ${runtime}`,
+			`Tool failures: ${health.toolFailures}${health.toolFailurePath ? ` (${health.toolFailurePath})` : ""}`,
+			`Git: ${health.gitStatus ?? muted("unavailable")}`,
+			health.planGoals !== undefined
+				? `Plans: ${health.planGoals} goals, ${health.planPendingTasks ?? 0} pending`
+				: undefined,
+			attachments.length ? "Attachments:" : undefined,
+			attachments.length ? attachLine : undefined,
+			muted("Use /diag for full report; add copy to copy to clipboard."),
+		].filter(Boolean) as string[];
+		return lines.join("\n");
 	}
 
-	private truncate(value: string, max: number): string {
-		if (value.length <= max) {
-			return value;
+	private buildAttachmentList(): string[] {
+		const entries: string[] = [];
+		const sessionFile = this.options.sessionManager.getSessionFile();
+		if (sessionFile) {
+			entries.push(sessionFile);
 		}
-		return `${value.slice(0, max).trimEnd()}…`;
+		if (existsSync(TOOL_FAILURE_LOG_PATH)) {
+			entries.push(TOOL_FAILURE_LOG_PATH);
+		}
+		for (const file of loadProjectContextFiles()) {
+			entries.push(file.path);
+		}
+		return entries;
 	}
 
-	private buildRuntimeSection(): DiagnosticsInput["runtime"] {
-		const safeMode = process.env.COMPOSER_SAFE_MODE === "1";
-		const approvalMode = this.options.getApprovalMode();
-		const pendingToolCount =
-			this.options.agent.state.pendingToolCalls?.size ?? undefined;
-		return {
-			safeMode,
-			approvalMode,
-			pendingToolCount,
-		};
+	private describeRuntime(): string {
+		const safeMode = process.env.COMPOSER_SAFE_MODE === "1" ? "on" : "off";
+		const approvalMode = this.options.getApprovalMode
+			? this.options.getApprovalMode()
+			: "unknown";
+		const pendingTools = this.options.agent.state.pendingToolCalls?.size ?? 0;
+		return `safe-mode ${safeMode}, approvals ${approvalMode}, pending tools ${pendingTools}`;
 	}
 
 	private buildHealthSnapshot(): HealthSnapshot {
