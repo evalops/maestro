@@ -1,6 +1,6 @@
 import type { TUI } from "@evalops/tui";
-import type { FooterComponent } from "./footer.js";
-import type { LoaderView } from "./loader-view.js";
+import type { FooterComponent } from "../footer.js";
+import type { LoaderView } from "../loader-view.js";
 
 interface RunControllerOptions {
 	loaderView: LoaderView;

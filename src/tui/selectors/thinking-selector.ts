@@ -5,7 +5,7 @@ import {
 	SelectList,
 } from "@evalops/tui";
 import chalk from "chalk";
-import type { ThinkingLevel } from "../agent/types.js";
+import type { ThinkingLevel } from "../../agent/types.js";
 
 /**
  * Dynamic border component that adjusts to viewport width

@@ -15,7 +15,7 @@ import type { CustomEditor } from "./custom-editor.js";
 import {
 	type ShellCommandResult,
 	runShellCommand,
-} from "./run-shell-command.js";
+} from "./run/run-shell-command.js";
 
 interface BashModeViewOptions {
 	chatContainer: Container;
