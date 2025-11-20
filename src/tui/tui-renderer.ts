@@ -508,7 +508,7 @@ export class TuiRenderer {
 		});
 
 		const registry = buildCommandRegistry({
-			getRunScriptCompletions: (prefix) =>
+			getRunScriptCompletions: (prefix: string) =>
 				this.runCommandView.getRunScriptCompletions(prefix),
 			createContext: (ctx) => this.createCommandContext(ctx),
 			showThinkingSelector: (_context) => this.thinkingSelectorView.show(),

@@ -1,10 +1,10 @@
 import type { SlashCommand } from "@evalops/tui";
-import { createCommandRegistry } from "./commands/registry.js";
+import { createCommandRegistry } from "../../commands/registry.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
 	RunScriptCompletionProvider,
-} from "./commands/types.js";
+} from "../../commands/types.js";
 
 interface CommandRegistryOptions {
 	getRunScriptCompletions: RunScriptCompletionProvider;

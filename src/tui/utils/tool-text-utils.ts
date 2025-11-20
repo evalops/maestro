@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import chalk from "chalk";
 import * as Diff from "diff";
-import { highlightCodeLines } from "../style/code-highlighter.js";
+import { highlightCodeLines } from "../../style/code-highlighter.js";
 
 export function shortenPath(path: string): string {
 	const home = os.homedir();
