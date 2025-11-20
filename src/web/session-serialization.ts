@@ -333,8 +333,9 @@ export function convertComposerMessageToApp(
 			});
 		}
 		const tools = message.tools ?? [];
+		const baseContentLength = normalizedSequence.length;
 		const toolCalls: ToolCall[] = tools.map((tool, toolIndex) =>
-			normalizeToolCall(tool, index, toolIndex),
+			normalizeToolCall(tool, index, baseContentLength + toolIndex),
 		);
 		normalizedSequence.push(...toolCalls);
 
