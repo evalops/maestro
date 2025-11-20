@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
+	type Stats,
 	appendFileSync,
 	existsSync,
 	mkdirSync,
@@ -29,7 +30,6 @@ import {
 	type ThinkingLevelChangeEntry,
 	tryParseSessionEntry,
 } from "./session-manager-types.js";
-import { parseJsonOr } from "./utils/json.js";
 import { createLogger } from "./utils/logger.js";
 
 const logger = createLogger("session-manager");
@@ -143,18 +143,9 @@ class SessionMetadataCache {
 	}
 
 	seedFromFile(filePath: string): void {
-		if (!existsSync(filePath)) {
-			return;
-		}
-		const contents = readFileSync(filePath, "utf8").trim();
-		if (!contents) {
-			return;
-		}
-		for (const line of contents.split("\n")) {
-			const entry = tryParseSessionEntry(line);
-			if (entry) {
-				this.apply(entry);
-			}
+		const entries = safeReadSessionEntries(filePath);
+		for (const entry of entries) {
+			this.apply(entry);
 		}
 	}
 
@@ -169,6 +160,112 @@ class SessionMetadataCache {
 	getModelMetadata(): SessionModelMetadata | undefined {
 		return this.metadata;
 	}
+}
+
+interface SessionFileInfo {
+	id: string;
+	created: Date;
+	messages: AppMessage[];
+	messageCount: number;
+	summary?: string;
+	favorite: boolean;
+	firstMessage: string;
+	allMessagesText: string;
+}
+
+function readSessionEntries(filePath: string): SessionEntry[] {
+	if (!existsSync(filePath)) {
+		return [];
+	}
+	const contents = readFileSync(filePath, "utf8").trim();
+	if (!contents) {
+		return [];
+	}
+
+	const entries: SessionEntry[] = [];
+	for (const line of contents.split("\n")) {
+		const entry = tryParseSessionEntry(line);
+		if (entry) {
+			entries.push(entry);
+		}
+	}
+	return entries;
+}
+
+function safeReadSessionEntries(
+	filePath: string,
+	onError?: (error: unknown) => void,
+): SessionEntry[] {
+	try {
+		return readSessionEntries(filePath);
+	} catch (error) {
+		onError?.(error);
+		return [];
+	}
+}
+
+function buildSessionFileInfo(
+	entries: SessionEntry[],
+	stats: Stats,
+): SessionFileInfo | null {
+	if (entries.length === 0) {
+		return null;
+	}
+
+	let sessionId = "";
+	let created = stats.birthtime;
+	let messageCount = 0;
+	let summary: string | undefined;
+	let favorite = false;
+	const appMessages: AppMessage[] = [];
+
+	for (const entry of entries) {
+		switch (entry.type) {
+			case "session":
+				if (!sessionId) {
+					sessionId = entry.id;
+					created = new Date(entry.timestamp);
+				}
+				break;
+			case "message":
+				messageCount++;
+				appMessages.push(entry.message as AppMessage);
+				break;
+			case "session_meta":
+				if (typeof entry.summary === "string" && entry.summary.trim()) {
+					summary = entry.summary;
+				}
+				if (typeof entry.favorite === "boolean") {
+					favorite = entry.favorite;
+				}
+				break;
+			default:
+				break;
+		}
+	}
+
+	const renderables = buildConversationModel(appMessages);
+	const firstRenderableUser = renderables.find((renderable) =>
+		isRenderableUserMessage(renderable),
+	);
+	const firstMessage = firstRenderableUser
+		? renderMessageToPlainText(firstRenderableUser)
+		: "";
+	const allMessagesText = renderables
+		.map((renderable) => renderMessageToPlainText(renderable))
+		.filter(Boolean)
+		.join(" ");
+
+	return {
+		id: sessionId || "unknown",
+		created,
+		messages: appMessages,
+		messageCount,
+		summary,
+		favorite,
+		firstMessage,
+		allMessagesText,
+	};
 }
 
 function uuidv4(): string {
@@ -331,7 +428,6 @@ export class SessionManager {
 			const files = readdirSync(this.sessionDir)
 				.filter((f) => f.endsWith(".jsonl"))
 				.map((f) => ({
-					name: f,
 					path: join(this.sessionDir, f),
 					mtime: statSync(join(this.sessionDir, f)).mtime,
 				}))
@@ -344,21 +440,12 @@ export class SessionManager {
 	}
 
 	private loadSessionId(): void {
-		if (!existsSync(this.sessionFile)) return;
+		const entries = safeReadSessionEntries(this.sessionFile);
+		const sessionEntry = entries.find(
+			(entry): entry is SessionHeaderEntry => entry.type === "session",
+		);
 
-		const lines = readFileSync(this.sessionFile, "utf8").trim().split("\n");
-		for (const line of lines) {
-			const entry = parseJsonOr<{
-				type?: string;
-				id?: string;
-			} | null>(line, null);
-
-			if (entry?.type === "session" && typeof entry.id === "string") {
-				this.sessionId = entry.id;
-				return;
-			}
-		}
-		this.sessionId = uuidv4();
+		this.sessionId = sessionEntry?.id ?? uuidv4();
 	}
 
 	startSession(state: AgentState): void {
@@ -409,11 +496,7 @@ export class SessionManager {
 			message,
 		};
 
-		if (!this.sessionInitialized) {
-			this.pendingMessages.push(entry);
-		} else {
-			this.writer?.write(entry);
-		}
+		this.queueEntry(entry);
 	}
 
 	saveThinkingLevelChange(thinkingLevel: string): void {
@@ -425,11 +508,7 @@ export class SessionManager {
 		};
 		this.metadataCache.apply(entry);
 
-		if (!this.sessionInitialized) {
-			this.pendingMessages.push(entry);
-		} else {
-			this.writer?.write(entry);
-		}
+		this.queueEntry(entry);
 	}
 
 	saveModelChange(model: string, metadata?: SessionModelMetadata): void {
@@ -442,11 +521,7 @@ export class SessionManager {
 		};
 		this.metadataCache.apply(entry);
 
-		if (!this.sessionInitialized) {
-			this.pendingMessages.push(entry);
-		} else {
-			this.writer?.write(entry);
-		}
+		this.queueEntry(entry);
 	}
 
 	private getLatestPendingThinkingLevel(): string | undefined {
@@ -474,6 +549,14 @@ export class SessionManager {
 	): SessionModelMetadata | undefined {
 		const registered = findRegisteredModel(modelKey);
 		return registered ? toSessionModelMetadata(registered) : undefined;
+	}
+
+	private queueEntry(entry: PendingSessionEntry): void {
+		if (!this.sessionInitialized) {
+			this.pendingMessages.push(entry);
+			return;
+		}
+		this.writer?.write(entry);
 	}
 
 	private appendSessionMetaEntry(
@@ -511,19 +594,10 @@ export class SessionManager {
 
 	loadMessages(): AppMessage[] {
 		this.writer?.flushSync();
-		if (!existsSync(this.sessionFile)) return [];
-
-		const messages: AppMessage[] = [];
-		const lines = readFileSync(this.sessionFile, "utf8").trim().split("\n");
-
-		for (const line of lines) {
-			const entry = tryParseSessionEntry(line);
-			if (entry && entry.type === "message") {
-				messages.push(entry.message);
-			}
-		}
-
-		return messages;
+		const entries = safeReadSessionEntries(this.sessionFile);
+		return entries
+			.filter((entry): entry is SessionMessageEntry => entry.type === "message")
+			.map((entry) => entry.message as AppMessage);
 	}
 
 	loadThinkingLevel(): string {
@@ -575,78 +649,32 @@ export class SessionManager {
 				.sort((a, b) => b.stats.mtime.getTime() - a.stats.mtime.getTime());
 
 			for (const fileEntry of files) {
-				const file = fileEntry.path;
-				const stats = fileEntry.stats;
-				try {
-					const content = readFileSync(file, "utf8");
-					const trimmed = content.trim();
-					if (!trimmed) {
-						continue;
-					}
-					const lines = trimmed.split("\n");
-
-					let sessionId = "";
-					let created = stats.birthtime;
-					let messageCount = 0;
-					let summary: string | undefined;
-					let favorite = false;
-					const appMessages: AppMessage[] = [];
-
-					for (const line of lines) {
-						const entry = tryParseSessionEntry(line);
-						if (!entry) continue;
-
-						if (entry.type === "session" && !sessionId) {
-							sessionId = entry.id;
-							created = new Date(entry.timestamp);
-						}
-
-						if (entry.type === "message" && entry.message) {
-							messageCount++;
-							appMessages.push(entry.message as AppMessage);
-						}
-
-						if (entry.type === "session_meta") {
-							if (typeof entry.summary === "string" && entry.summary.trim()) {
-								summary = entry.summary;
-							}
-							if (typeof entry.favorite === "boolean") {
-								favorite = entry.favorite;
-							}
-						}
-					}
-
-					const renderables = buildConversationModel(appMessages);
-					const firstRenderableUser = renderables.find((renderable) =>
-						isRenderableUserMessage(renderable),
-					);
-					const firstMessage = firstRenderableUser
-						? renderMessageToPlainText(firstRenderableUser)
-						: "";
-					const allMessagesText = renderables
-						.map((renderable) => renderMessageToPlainText(renderable))
-						.filter(Boolean)
-						.join(" ");
-					const derivedSummary = summary || firstMessage || "(no summary)";
-
-					sessions.push({
-						path: file,
-						id: sessionId || "unknown",
-						created,
-						modified: stats.mtime,
-						size: stats.size,
-						messageCount,
-						firstMessage: firstMessage || "(no messages)",
-						summary: derivedSummary,
-						favorite,
-						allMessagesText,
-					});
-				} catch (error) {
+				const { path: file, stats } = fileEntry;
+				const entries = safeReadSessionEntries(file, (error) => {
 					logger.error(
 						`Failed to read session file ${file}`,
 						error instanceof Error ? error : undefined,
 					);
+				});
+				const info = buildSessionFileInfo(entries, stats);
+				if (!info) {
+					continue;
 				}
+				const derivedSummary =
+					info.summary || info.firstMessage || "(no summary)";
+
+				sessions.push({
+					path: file,
+					id: info.id,
+					created: info.created,
+					modified: stats.mtime,
+					size: stats.size,
+					messageCount: info.messageCount,
+					firstMessage: info.firstMessage || "(no messages)",
+					summary: derivedSummary,
+					favorite: info.favorite,
+					allMessagesText: info.allMessagesText,
+				});
 			}
 		} catch (error) {
 			logger.error(
@@ -705,6 +733,7 @@ export class SessionManager {
 			messageCount: number;
 		}>
 	> {
+		this.writer?.flushSync();
 		const files = readdirSync(this.sessionDir);
 		const sessions = [];
 
@@ -714,36 +743,21 @@ export class SessionManager {
 			const filePath = join(this.sessionDir, file);
 			const stats = statSync(filePath);
 
-			// Extract session ID from filename
-			const match = file.match(/_([a-f0-9-]+)\.jsonl$/);
-			const id = match ? match[1] : file.replace(".jsonl", "");
-
-			// Count messages in the file
-			let messageCount = 0;
-			let title: string | undefined;
 			try {
-				const content = readFileSync(filePath, "utf-8");
-				const lines = content.trim().split("\n").filter(Boolean);
-				for (const line of lines) {
-					const entry = tryParseSessionEntry(line);
-					if (entry && entry.type === "message") {
-						messageCount++;
-					} else if (entry && entry.type === "session_meta" && entry.summary) {
-						title = entry.summary;
-					}
-				}
+				const entries = safeReadSessionEntries(filePath);
+				const info = buildSessionFileInfo(entries, stats);
+				if (!info) continue;
+
+				sessions.push({
+					id: info.id,
+					title: info.summary,
+					createdAt: info.created.toISOString(),
+					updatedAt: stats.mtime.toISOString(),
+					messageCount: info.messageCount,
+				});
 			} catch (e) {
 				// Skip files that can't be read
-				continue;
 			}
-
-			sessions.push({
-				id,
-				title,
-				createdAt: stats.birthtime.toISOString(),
-				updatedAt: stats.mtime.toISOString(),
-				messageCount,
-			});
 		}
 
 		// Sort by updated date, most recent first
@@ -764,6 +778,7 @@ export class SessionManager {
 		updatedAt: string;
 		messageCount: number;
 	} | null> {
+		this.writer?.flushSync();
 		const files = readdirSync(this.sessionDir);
 		const sessionFile = files.find((f) => f.includes(sessionId));
 
@@ -773,31 +788,19 @@ export class SessionManager {
 
 		const filePath = join(this.sessionDir, sessionFile);
 		const stats = statSync(filePath);
-		const content = readFileSync(filePath, "utf-8");
-		const lines = content.trim().split("\n").filter(Boolean);
-
-		const messages: AppMessage[] = [];
-		let title: string | undefined;
-
-		for (const line of lines) {
-			const entry = tryParseSessionEntry(line);
-			if (!entry) continue;
-
-			if (entry.type === "session_meta" && entry.summary) {
-				title = entry.summary;
-			} else if (entry.type === "message") {
-				// Convert session message to AppMessage
-				messages.push(entry.message);
-			}
+		const entries = safeReadSessionEntries(filePath);
+		const info = buildSessionFileInfo(entries, stats);
+		if (!info) {
+			return null;
 		}
 
 		return {
-			id: sessionId,
-			title,
-			messages,
-			createdAt: stats.birthtime.toISOString(),
+			id: info.id,
+			title: info.summary,
+			messages: info.messages,
+			createdAt: info.created.toISOString(),
 			updatedAt: stats.mtime.toISOString(),
-			messageCount: messages.length,
+			messageCount: info.messageCount,
 		};
 	}
 
