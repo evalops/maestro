@@ -138,7 +138,6 @@ export class TuiRenderer {
 	private startupContainer: Container;
 	private chatContainer: Container;
 	private statusContainer: Container;
-	private startupChangelogSummary?: string | null;
 	private editor: CustomEditor;
 	private editorContainer: Container; // Container to swap between editor and selector
 	private footer: FooterComponent;
@@ -725,9 +724,7 @@ export class TuiRenderer {
 				this.startupChangelogSummary
 			} ${chalk.dim("(see CHANGELOG.md)")}`;
 			this.startupContainer.addChild(new Spacer(1));
-			this.startupContainer.addChild(
-				new Text(line.trim(), 1, 0),
-			);
+			this.startupContainer.addChild(new Text(line.trim(), 1, 0));
 			announced = true;
 		}
 
