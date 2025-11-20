@@ -49,18 +49,17 @@ import { ConfigView } from "./config-view.js";
 import { CustomEditor } from "./custom-editor.js";
 import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
-import { FileSearchView } from "./file-search-view.js";
 import {
 	type FooterStats,
 	calculateFooterStats,
 	formatTokenCount,
 } from "./footer-utils.js";
 import { FooterComponent } from "./footer.js";
-import { GitView } from "./git-view.js";
+import { GitView } from "./git/git-view.js";
 import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
-import { LoaderView } from "./loader-view.js";
+import { LoaderView } from "./loader/loader-view.js";
 import { MessageView } from "./message-view.js";
 import { NotificationView } from "./notification-view.js";
 import { OllamaView } from "./ollama-view.js";
@@ -68,6 +67,7 @@ import { PlanView } from "./plan-view.js";
 import type { PromptQueue, PromptQueueEvent } from "./prompt-queue.js";
 import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
+import { FileSearchView } from "./search/file-search-view.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
 import { ThinkingSelectorView } from "./selectors/thinking-selector-view.js";
@@ -89,7 +89,7 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import { isSafeModeEnabled } from "../safety/safe-mode.js";
-import { ApprovalController } from "./approval-controller.js";
+import { ApprovalController } from "./approval/approval-controller.js";
 import { REVIEW_INSTRUCTIONS, buildReviewPrompt } from "./review-prompt.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");

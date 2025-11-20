@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GitView } from "../src/tui/git-view.js";
+import { GitView } from "../src/tui/git/git-view.js";
 
 type GitResult = { ok: boolean; stdout: string; stderr: string };
 

@@ -1,6 +1,6 @@
 import type { Container } from "@evalops/tui";
 import { Loader, type TUI } from "@evalops/tui";
-import type { FooterComponent } from "./footer.js";
+import type { FooterComponent } from "../footer.js";
 import { LoaderStageManager } from "./loader-stage-manager.js";
 
 interface LoaderViewOptions {

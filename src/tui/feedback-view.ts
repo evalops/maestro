@@ -15,7 +15,7 @@ import {
 } from "../conversation/render-model.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import type { SessionManager } from "../session/manager.js";
-import type { GitView } from "./git-view.js";
+import type { GitView } from "./git/git-view.js";
 import { TOOL_FAILURE_LOG_PATH } from "./tool-status-view.js";
 import type { ToolStatusView } from "./tool-status-view.js";
 

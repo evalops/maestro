@@ -1,4 +1,4 @@
-import { recordLoaderStage } from "../telemetry.js";
+import { recordLoaderStage } from "../../telemetry.js";
 
 interface LoaderStageEntry {
 	key: string;

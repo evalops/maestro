@@ -219,7 +219,8 @@ export class LoaderStageManager {
 			return 0.4;
 		}
 		if (this.toolStageMeta.has(stageKey)) {
-			return this.completedToolStages.has(stageKey) ? 0.75 : 0.5;
+			// Current tool stage should use in-progress partial value
+			return 0.5;
 		}
 		return 0.3;
 	}

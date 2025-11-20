@@ -14,7 +14,7 @@ import type { SessionModelMetadata } from "../../session/manager.js";
 import { muted } from "../../style/theme.js";
 import type { TelemetryStatus } from "../../telemetry.js";
 import { getExaUsageSummary } from "../../tools/exa-usage.js";
-import type { GitView } from "../git-view.js";
+import type { GitView } from "../git/git-view.js";
 import type { ToolExecutionComponent } from "../tool-execution.js";
 import {
 	TOOL_FAILURE_LOG_PATH,

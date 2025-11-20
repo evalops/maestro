@@ -3,10 +3,10 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 	ActionApprovalService,
-} from "../agent/action-approval.js";
+} from "../../agent/action-approval.js";
+import type { CustomEditor } from "../custom-editor.js";
+import type { NotificationView } from "../notification-view.js";
 import { ApprovalModal } from "./approval-modal.js";
-import type { CustomEditor } from "./custom-editor.js";
-import type { NotificationView } from "./notification-view.js";
 
 interface ApprovalControllerOptions {
 	approvalService: ActionApprovalService;
@@ -20,6 +20,7 @@ export class ApprovalController {
 	private queue: ActionApprovalRequest[] = [];
 	private active: ActionApprovalRequest | null = null;
 	private modal: ApprovalModal | null = null;
+	private processingNext = false;
 
 	constructor(private readonly options: ApprovalControllerOptions) {}
 
@@ -36,7 +37,7 @@ export class ApprovalController {
 			this.options.ui.requestRender();
 			return;
 		}
-		this.showNext();
+		this.scheduleNext();
 	}
 
 	resolve(
@@ -53,7 +54,16 @@ export class ApprovalController {
 			? "Approved high-risk action"
 			: "Denied high-risk action";
 		this.options.notificationView.showToast(message, tone as any);
-		this.showNext();
+		this.scheduleNext();
+	}
+
+	private scheduleNext(): void {
+		if (this.processingNext) return;
+		this.processingNext = true;
+		queueMicrotask(() => {
+			this.processingNext = false;
+			this.showNext();
+		});
 	}
 
 	private showNext(): void {
