@@ -47,7 +47,9 @@ import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 import {
+	formatChangelogVersion,
 	getChangelogPath,
+	getLatestEntry,
 	getNewEntries,
 	parseChangelog,
 	readLastShownChangelogVersion,
@@ -700,27 +702,19 @@ export async function main(args: string[]) {
 	}
 
 	let startupChangelog: string | null = null;
+	let latestEntryVersion: string | null = null;
 	if (isFreshInteractiveSession) {
 		const changelogEntries = parseChangelog(getChangelogPath());
 		const lastVersion = readLastShownChangelogVersion();
-		if (!lastVersion) {
-			if (changelogEntries.length > 0) {
-				startupChangelog = changelogEntries
-					.map((entry) => entry.content)
-					.join("\n\n")
-					.trim();
-			}
-		} else {
-			const newEntries = getNewEntries(changelogEntries, lastVersion);
-			if (newEntries.length > 0) {
-				startupChangelog = newEntries
-					.map((entry) => entry.content)
-					.join("\n\n")
-					.trim();
-			}
-		}
+		const latestEntry = lastVersion
+			? getLatestEntry(getNewEntries(changelogEntries, lastVersion))
+			: getLatestEntry(changelogEntries);
+		startupChangelog = latestEntry ? latestEntry.content.trim() : null;
+		latestEntryVersion = latestEntry
+			? formatChangelogVersion(latestEntry)
+			: null;
 		if (startupChangelog) {
-			writeLastShownChangelogVersion(VERSION);
+			writeLastShownChangelogVersion(latestEntryVersion ?? VERSION);
 		}
 	}
 
