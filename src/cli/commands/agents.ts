@@ -3,39 +3,38 @@ import { basename, dirname, join, resolve } from "node:path";
 
 const TEMPLATE = `# Repository Guidelines
 
-Applies to **{{PROJECT_NAME}}**. Keep this concise, actionable guide close when adding features or debugging.
+Use this as the contributor quickstart for **{{PROJECT_NAME}}**. Keep it concise, specific, and updated as the project evolves.
 
 ## Project Structure & Module Organization
-- Bun + Nx monorepo; list projects with \`npx nx show projects\`.
-- Runtime/CLI code in \`src/\`; apps and shared libs in \`packages/\`; tests co-located as \`*.test.ts\`.
-- Key config: \`nx.json\`, \`project.json\`, \`package.json\`, and CI specs under \`.github/workflows/\`.
+- Summarize top-level folders (e.g., \`src/\` for core code, \`tests/\` or \`__tests__/\` for suites, \`docs/\` for references, \`scripts/\` for tooling, \`packages/\` for monorepo packages, \`apps/\` for deployables, \`assets/\` for static files).
+- Note where configs live (\`package.json\`, \`tsconfig.json\`, bundler/tooling configs) and where CI definitions reside (typically \`.github/workflows/\`).
+- Call out any generated code or directories that should not be hand-edited.
 
 ## Build, Test, and Development Commands
-- Install deps: \`bun install\` (or \`bun install --filter <pkg>\` for a single package).
-- Lint: \`bun run bun:lint\`.
-- Full suite: \`npx nx run composer:test --skip-nx-cache\` (builds TUI + web).
-- Package builds: \`npx nx run tui:build\`, \`npx nx run composer-web:build\`.
-- Targeted tests: \`bunx vitest --run -t "<test name>"\`.
+- Install dependencies: \`npm install\` (or \`pnpm install\`, \`yarn install\`, \`bun install\` as applicable).
+- Start development: \`npm run dev\` (mention default port or entrypoint).
+- Build: \`npm run build\` (or \`make build\` for binaries/containers).
+- Quality gates: \`npm run lint\`, \`npm run format\`.
+- Tests: \`npm test\`, \`npm run test:unit\`, or \`npm run test:e2e\`. Include any required setup (e.g., \`docker compose up\` for services).
 
 ## Coding Style & Naming Conventions
-- TypeScript-first; prefer functional utilities and async/await; avoid implicit any.
-- Follow existing patterns in \`src/\` and \`packages/\`; keep imports relative within a package.
-- Formatting via Biome; descriptive names (command handlers \`handleX\`, components PascalCase).
+- Enforce formatter (Prettier/Biome) and linter (ESLint or project default); prefer 2-space indent and consistent semicolons per config.
+- Naming: camelCase for variables/functions, PascalCase for components/classes, SCREAMING_SNAKE_CASE for constants; keep file names predictable (e.g., \`feature-name.test.ts\`).
+- Favor small, focused modules and pure functions; document non-obvious behavior with brief comments.
 
 ## Testing Guidelines
-- Use Vitest; keep tests near sources as \`*.test.ts\`.
-- Cover error paths and CLI output; keep fixtures minimal and deterministic.
-- Run relevant \`nx run ...:test\` targets or focused Vitest commands locally.
+- Primary framework (e.g., Vitest/Jest); colocate tests as \`*.test.ts\` near sources or group under \`tests/\`.
+- Cover success, error, and boundary cases; keep fixtures deterministic and minimal.
+- For long suites, run focused tests: \`npm test -- <pattern>\`; add coverage goals if required.
 
 ## Commit & Pull Request Guidelines
-- Branch from main; never commit directly to main.
-- Commit titles: \`[composer] <imperative change>\`.
-- PRs: describe behavior change, link issues, note skipped checks, include screenshots for UI.
-- Before review: \`bun run bun:lint\`, \`npx nx run composer:test --skip-nx-cache\`, and build any touched packages.
+- Branch from \`main\`; use imperative commit subjects (e.g., \`Add auth middleware\`), optionally scoped.
+- PRs: describe behavior changes, link issues, note skipped checks, and attach screenshots for UI. Include validation steps a reviewer can run.
+- Run the project's lint/test/build commands expected by CI before requesting review.
 
 ## Security & Configuration Tips
-- Keep secrets out of logs; prefer local \`.env\` files.
-- Respect safe-mode flags; avoid destructive commands; favor documented Nx/Bun workflows over ad-hoc scripts.
+- Do not commit secrets; rely on local \`.env.local\` and checked-in \`.env.example\`.
+- Document new environment variables, migrations, and destructive scripts; prefer least-privilege defaults.
 `;
 
 function buildAgentsTemplate(projectName: string): string {
