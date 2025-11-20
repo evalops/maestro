@@ -655,31 +655,38 @@ export class SessionManager {
 
 			for (const fileEntry of files) {
 				const { path: file, stats } = fileEntry;
-				const entries = safeReadSessionEntries(file, (error) => {
+				try {
+					const entries = safeReadSessionEntries(file, (error) => {
+						logger.error(
+							`Failed to read session file ${file}`,
+							error instanceof Error ? error : undefined,
+						);
+					});
+					const info = buildSessionFileInfo(entries, stats);
+					if (!info) {
+						continue;
+					}
+					const derivedSummary =
+						info.summary || info.firstMessage || "(no summary)";
+
+					sessions.push({
+						path: file,
+						id: info.id,
+						created: info.created,
+						modified: stats.mtime,
+						size: stats.size,
+						messageCount: info.messageCount,
+						firstMessage: info.firstMessage || "(no messages)",
+						summary: derivedSummary,
+						favorite: info.favorite,
+						allMessagesText: info.allMessagesText,
+					});
+				} catch (error) {
 					logger.error(
-						`Failed to read session file ${file}`,
+						`Failed to process session file ${file}`,
 						error instanceof Error ? error : undefined,
 					);
-				});
-				const info = buildSessionFileInfo(entries, stats);
-				if (!info) {
-					continue;
 				}
-				const derivedSummary =
-					info.summary || info.firstMessage || "(no summary)";
-
-				sessions.push({
-					path: file,
-					id: info.id,
-					created: info.created,
-					modified: stats.mtime,
-					size: stats.size,
-					messageCount: info.messageCount,
-					firstMessage: info.firstMessage || "(no messages)",
-					summary: derivedSummary,
-					favorite: info.favorite,
-					allMessagesText: info.allMessagesText,
-				});
 			}
 		} catch (error) {
 			logger.error(
