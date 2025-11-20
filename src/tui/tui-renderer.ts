@@ -135,6 +135,7 @@ const TODO_STORE_PATH =
  */
 export class TuiRenderer {
 	private ui: TUI;
+	private startupContainer: Container;
 	private chatContainer: Container;
 	private statusContainer: Container;
 	private editor: CustomEditor;
@@ -235,6 +236,7 @@ export class TuiRenderer {
 		this.startupChangelog = options.startupChangelog;
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal());
+		this.startupContainer = new Container();
 		this.chatContainer = new Container();
 		this.statusContainer = new Container();
 		this.editor = new CustomEditor();
@@ -667,6 +669,7 @@ export class TuiRenderer {
 		this.welcomeAnimation = new WelcomeAnimation(() => this.ui.requestRender());
 		this.chatContainer.addChild(this.welcomeAnimation);
 
+		this.ui.addChild(this.startupContainer);
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(new Spacer(1));
@@ -682,6 +685,7 @@ export class TuiRenderer {
 	}
 
 	private renderStartupAnnouncements(): void {
+		this.startupContainer.clear();
 		let announced = false;
 		if (this.updateNotice) {
 			const latest = this.updateNotice.latestVersion ?? "";
@@ -700,15 +704,15 @@ export class TuiRenderer {
 			const message = [headline, currentLine, installLine, noteLine, sourceLine]
 				.filter(Boolean)
 				.join("\n");
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(message, 1, 0));
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(new Text(message, 1, 0));
 			announced = true;
 		}
 
 		if (this.startupChangelog) {
 			const header = chalk.bold.cyan("What's new");
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(
 				new Text(`${header}\n${this.startupChangelog}`, 1, 0),
 			);
 			announced = true;
@@ -721,13 +725,15 @@ export class TuiRenderer {
 				`${header}: ${names.join(", ")}`,
 				chalk.dim("Press Ctrl+P to cycle scoped models."),
 			];
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(scopeLines.join("\n"), 1, 0));
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(new Text(scopeLines.join("\n"), 1, 0));
 			announced = true;
 		}
 
 		if (announced) {
 			this.ui.requestRender();
+		} else {
+			this.startupContainer.clear();
 		}
 	}
 
@@ -1076,6 +1082,7 @@ export class TuiRenderer {
 		this.sessionContext.resetArtifacts();
 		this.toolOutputView.clearTrackedComponents();
 		this.chatContainer.clear();
+		this.startupContainer.clear();
 		this.planView.syncHintWithStore();
 		this.planHint = null;
 		this.footer.updateState(this.agent.state);
@@ -1326,7 +1333,7 @@ export class TuiRenderer {
 					model.id === current.id && model.provider === current.provider,
 			);
 			if (index === -1) {
-				index = 0;
+				index = -1;
 			}
 			const nextModel = candidates[(index + 1) % candidates.length];
 			this.agent.setModel(nextModel);
