@@ -6,8 +6,8 @@ import type { SessionManager } from "../src/session/manager.js";
 import type {
 	SessionDataProvider,
 	SessionItem,
-} from "../src/tui/session-data-provider.js";
-import { SessionView } from "../src/tui/session-view.js";
+} from "../src/tui/session/session-data-provider.js";
+import { SessionView } from "../src/tui/session/session-view.js";
 
 const baseModel = {
 	id: "gpt-4o-mini",

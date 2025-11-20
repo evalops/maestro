@@ -1,6 +1,6 @@
 import { ProcessTerminal, TUI } from "@evalops/tui";
 import type { SessionManager } from "../session/manager.js";
-import { SessionSelectorComponent } from "../tui/session-selector.js";
+import { SessionSelectorComponent } from "../tui/session/session-selector.js";
 
 export async function selectSession(
 	sessionManager: SessionManager,

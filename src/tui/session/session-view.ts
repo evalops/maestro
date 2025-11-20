@@ -1,27 +1,27 @@
 import { existsSync } from "node:fs";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
-import type { Agent } from "../agent/agent.js";
+import type { Agent } from "../../agent/agent.js";
 import type {
 	AgentState,
 	AppMessage,
 	AssistantMessage,
-} from "../agent/types.js";
+} from "../../agent/types.js";
 import {
 	buildConversationModel,
 	isRenderableAssistantMessage,
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
-} from "../conversation/render-model.js";
-import type { SessionManager } from "../session/manager.js";
+} from "../../conversation/render-model.js";
+import type { SessionManager } from "../../session/manager.js";
 import {
 	badge,
 	heading,
 	labeledValue,
 	muted,
 	separator as themedSeparator,
-} from "../style/theme.js";
-import { normalizeUsage } from "./footer-utils.js";
+} from "../../style/theme.js";
+import { normalizeUsage } from "../footer-utils.js";
 import type { SessionArtifacts, SessionContext } from "./session-context.js";
 import type {
 	SessionDataProvider,

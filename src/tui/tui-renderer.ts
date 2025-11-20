@@ -46,7 +46,6 @@ import type {
 	CommandExecutionContext,
 } from "./commands/types.js";
 import { ConfigView } from "./config-view.js";
-import { ConversationCompactor } from "./conversation-compactor.js";
 import { CostView } from "./cost-view.js";
 import { CustomEditor } from "./custom-editor.js";
 import { DiagnosticsView } from "./diagnostics-view.js";
@@ -73,11 +72,12 @@ import type { PromptQueue, PromptQueueEvent } from "./prompt-queue.js";
 import { ReportSelectorView } from "./report-selector-view.js";
 import { RunCommandView } from "./run-command-view.js";
 import { RunController } from "./run-controller.js";
-import { SessionContext } from "./session-context.js";
-import { SessionDataProvider } from "./session-data-provider.js";
-import { SessionSummaryController } from "./session-summary-controller.js";
-import { SessionSwitcherView } from "./session-switcher-view.js";
-import { SessionView } from "./session-view.js";
+import { ConversationCompactor } from "./session/conversation-compactor.js";
+import { SessionContext } from "./session/session-context.js";
+import { SessionDataProvider } from "./session/session-data-provider.js";
+import { SessionSummaryController } from "./session/session-summary-controller.js";
+import { SessionSwitcherView } from "./session/session-switcher-view.js";
+import { SessionView } from "./session/session-view.js";
 import { StreamingView } from "./streaming-view.js";
 import { TelemetryView } from "./telemetry-view.js";
 import { ThinkingSelectorView } from "./thinking-selector-view.js";
