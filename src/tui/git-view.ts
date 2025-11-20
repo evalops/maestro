@@ -347,19 +347,36 @@ export class GitView {
 		]);
 		const worktreeDiffResult = this.runGitCommand(["diff", "--unified=5"]);
 
+		const errors: string[] = [];
 		const normalize = (result: {
 			ok: boolean;
 			stdout: string;
 			stderr: string;
-		}) =>
-			result.ok
-				? result.stdout.trim()
-				: (result.stderr || result.stdout || "").trim();
+		}) => {
+			if (result.ok) {
+				return result.stdout.trim();
+			}
+			const msg = (result.stderr || result.stdout || "").trim();
+			if (msg) errors.push(msg);
+			return "";
+		};
 
 		const status = statusResult.stdout.trim();
 		const diffStat = normalize(diffStatResult);
 		const stagedDiff = normalize(stagedDiffResult);
 		const worktreeDiff = normalize(worktreeDiffResult);
+
+		if (errors.length > 0) {
+			return {
+				ok: false,
+				status,
+				diffStat,
+				stagedDiff,
+				worktreeDiff,
+				cwd,
+				error: errors.join("; "),
+			};
+		}
 
 		return {
 			ok: true,

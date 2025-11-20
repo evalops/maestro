@@ -82,8 +82,9 @@ describe("GitView.getReviewContext", () => {
 			"diff --unified=5": { ok: true, stdout: "worktree", stderr: "" },
 		});
 		const ctx = view.getReviewContext();
-		expect(ctx.ok).toBe(true);
+		expect(ctx.ok).toBe(false);
 		expect(ctx.diffStat).toContain("stat failed");
+		expect(ctx.error).toContain("stat failed");
 	});
 
 	it("returns staged diff failure output", () => {
@@ -98,8 +99,9 @@ describe("GitView.getReviewContext", () => {
 			"diff --unified=5": { ok: true, stdout: "worktree", stderr: "" },
 		});
 		const ctx = view.getReviewContext();
-		expect(ctx.ok).toBe(true);
+		expect(ctx.ok).toBe(false);
 		expect(ctx.stagedDiff).toContain("cached failed");
+		expect(ctx.error).toContain("cached failed");
 	});
 
 	it("returns worktree diff failure output", () => {
@@ -110,7 +112,8 @@ describe("GitView.getReviewContext", () => {
 			"diff --unified=5": { ok: false, stdout: "", stderr: "wt failed" },
 		});
 		const ctx = view.getReviewContext();
-		expect(ctx.ok).toBe(true);
+		expect(ctx.ok).toBe(false);
 		expect(ctx.worktreeDiff).toContain("wt failed");
+		expect(ctx.error).toContain("wt failed");
 	});
 });
