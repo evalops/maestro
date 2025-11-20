@@ -90,6 +90,7 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import { ApprovalController } from "./approval-controller.js";
+import { REVIEW_INSTRUCTIONS, buildReviewPrompt } from "./review-prompt.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
@@ -524,7 +525,7 @@ export class TuiRenderer {
 			handleReport: (context) => this.handleReportCommand(context),
 			handleAbout: (_context) => this.aboutView.handleAboutCommand(),
 			showStatus: (_context) => this.diagnosticsView.handleStatusCommand(),
-			handleReview: (_context) => this.gitView.handleReviewCommand(),
+			handleReview: (context) => this.handleReviewCommand(context),
 			handleUndo: (context) => this.gitView.handleUndoCommand(context.rawInput),
 			handleMention: (context) =>
 				this.fileSearchView.handleMentionCommand(context.rawInput),
@@ -816,6 +817,42 @@ export class TuiRenderer {
 			return;
 		}
 		this.reportSelectorView.show();
+	}
+
+	private async handleReviewCommand(
+		_context: CommandExecutionContext,
+	): Promise<void> {
+		if (this.isAgentRunning) {
+			this.notificationView.showInfo(
+				"Wait for the current run to finish before starting /review.",
+			);
+			return;
+		}
+		const reviewContext = this.gitView.getReviewContext();
+		if (!reviewContext.ok) {
+			this.notificationView.showError(
+				reviewContext.error ?? "Failed to collect git data for review.",
+			);
+			return;
+		}
+		const hasDiff =
+			reviewContext.stagedDiff.trim().length > 0 ||
+			reviewContext.worktreeDiff.trim().length > 0;
+		if (!hasDiff) {
+			this.notificationView.showInfo("Working tree clean. Nothing to review.");
+			return;
+		}
+
+		const prompt = buildReviewPrompt(reviewContext);
+		try {
+			await this.agent.prompt(prompt);
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : String(error ?? "unknown");
+			this.notificationView.showError(
+				`/review failed to run: ${message.slice(0, 200)}`,
+			);
+		}
 	}
 
 	private async handleStatsCommand(

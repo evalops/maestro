@@ -312,53 +312,82 @@ export class GitView {
 		});
 	}
 
-	handleReviewCommand(): void {
+	getReviewContext(): {
+		ok: boolean;
+		status: string;
+		diffStat: string;
+		stagedDiff: string;
+		worktreeDiff: string;
+		cwd: string;
+		error?: string;
+	} {
+		const cwd = process.cwd();
 		const statusResult = this.runGitCommand(["status", "-sb"]);
-		const diffResult = this.runGitCommand(["diff", "--stat"]);
-		const statusText = statusResult.ok
-			? statusResult.stdout.trim() || chalk.dim("Working tree clean.")
-			: chalk.red(
-					`git status failed: ${
-						statusResult.stderr.trim() ||
-						statusResult.stdout.trim() ||
-						"unknown error"
-					}`,
-				);
-		const diffLinesRaw = diffResult.ok
-			? diffResult.stdout.trim()
-			: chalk.red(
-					`git diff --stat failed: ${
-						diffResult.stderr.trim() ||
-						diffResult.stdout.trim() ||
-						"unknown error"
-					}`,
-				);
-		const diffLines = diffLinesRaw.split("\n");
-		const limit = 20;
-		const preview = diffLines.slice(0, limit).join("\n");
-		const remainder =
-			diffLines.length > limit
-				? `\n${chalk.dim(`(+${diffLines.length - limit} more lines)`)}`
-				: "";
-		const diffText =
-			diffLinesRaw.trim().length > 0
-				? `${preview}${remainder}`
-				: chalk.dim("No pending changes.");
+		if (!statusResult.ok) {
+			const error =
+				statusResult.stderr.trim() ||
+				statusResult.stdout.trim() ||
+				"git status failed";
+			return {
+				ok: false,
+				status: "",
+				diffStat: "",
+				stagedDiff: "",
+				worktreeDiff: "",
+				cwd,
+				error,
+			};
+		}
 
-		const message = `${chalk.bold("Review snapshot")}
-${chalk.dim("Git status")}:
-${statusText}
+		const diffStatResult = this.runGitCommand(["diff", "--stat"]);
+		const stagedDiffResult = this.runGitCommand([
+			"diff",
+			"--cached",
+			"--unified=5",
+		]);
+		const worktreeDiffResult = this.runGitCommand(["diff", "--unified=5"]);
 
-${chalk.dim("Diff stats")}:
-${diffText}
+		const errors: string[] = [];
+		const normalize = (
+			label: string,
+			result: { ok: boolean; stdout: string; stderr: string },
+		) => {
+			if (result.ok) {
+				return result.stdout.trim();
+			}
+			const msg = (result.stderr || result.stdout || "").trim();
+			errors.push(msg ? `${label}: ${msg}` : `${label}: (no output)`);
+			return "";
+		};
 
-${chalk.dim("Next steps")}:
-- Use /diff to open the interactive git panel
-- Use /plan to revisit saved goals
-- Use /status for a lightweight health check`;
-		this.options.chatContainer.addChild(new Spacer(1));
-		this.options.chatContainer.addChild(new Text(message, 1, 0));
-		this.options.ui.requestRender();
+		const status = statusResult.stdout.trim();
+		const diffStat = normalize("git diff --stat", diffStatResult);
+		const stagedDiff = normalize(
+			"git diff --cached --unified=5",
+			stagedDiffResult,
+		);
+		const worktreeDiff = normalize("git diff --unified=5", worktreeDiffResult);
+
+		if (errors.length > 0) {
+			return {
+				ok: false,
+				status,
+				diffStat,
+				stagedDiff,
+				worktreeDiff,
+				cwd,
+				error: errors.join("; "),
+			};
+		}
+
+		return {
+			ok: true,
+			status,
+			diffStat,
+			stagedDiff,
+			worktreeDiff,
+			cwd,
+		};
 	}
 
 	handleUndoCommand(text: string): void {
@@ -483,7 +512,7 @@ Use /diff <file> to inspect diffs.`;
 		return hints;
 	}
 
-	runGitCommand(args: string[]): {
+	protected runGitCommand(args: string[]): {
 		ok: boolean;
 		stdout: string;
 		stderr: string;
