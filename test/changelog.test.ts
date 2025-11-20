@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	formatChangelogVersion,
 	getLatestEntry,
 	getNewEntries,
 	parseChangelog,
@@ -37,6 +38,14 @@ describe("changelog utilities", () => {
 		expect(newer[0]?.content).toContain("0.2.0");
 	});
 
+	it("returns no new entries when last shown is the latest", () => {
+		const entries = [
+			{ major: 0, minor: 10, patch: 0, content: "0.10.0" },
+			{ major: 0, minor: 9, patch: 0, content: "0.9.0" },
+		];
+		expect(getNewEntries(entries, "0.10.0")).toHaveLength(0);
+	});
+
 	it("picks only the latest entry across multiple versions", () => {
 		const entries = [
 			{ major: 0, minor: 9, patch: 1, content: "0.9.1" },
@@ -49,6 +58,12 @@ describe("changelog utilities", () => {
 
 	it("returns null when no entries exist", () => {
 		expect(getLatestEntry([])).toBeNull();
+	});
+
+	it("formats changelog versions", () => {
+		expect(
+			formatChangelogVersion({ major: 2, minor: 3, patch: 4, content: "" }),
+		).toBe("2.3.4");
 	});
 
 	it("stores last shown version in override path", () => {

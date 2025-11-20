@@ -48,6 +48,7 @@ import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 import {
 	getChangelogPath,
+	formatChangelogVersion,
 	getLatestEntry,
 	getNewEntries,
 	parseChangelog,
@@ -701,6 +702,7 @@ export async function main(args: string[]) {
 	}
 
 	let startupChangelog: string | null = null;
+	let latestEntryVersion: string | null = null;
 	if (isFreshInteractiveSession) {
 		const changelogEntries = parseChangelog(getChangelogPath());
 		const lastVersion = readLastShownChangelogVersion();
@@ -708,8 +710,9 @@ export async function main(args: string[]) {
 			? getLatestEntry(getNewEntries(changelogEntries, lastVersion))
 			: getLatestEntry(changelogEntries);
 		startupChangelog = latestEntry ? latestEntry.content.trim() : null;
+		latestEntryVersion = latestEntry ? formatChangelogVersion(latestEntry) : null;
 		if (startupChangelog) {
-			writeLastShownChangelogVersion(VERSION);
+			writeLastShownChangelogVersion(latestEntryVersion ?? VERSION);
 		}
 	}
 

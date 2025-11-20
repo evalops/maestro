@@ -91,6 +91,10 @@ export function getLatestEntry(
 	);
 }
 
+export function formatChangelogVersion(entry: ChangelogEntry): string {
+	return `${entry.major}.${entry.minor}.${entry.patch}`;
+}
+
 export function getNewEntries(
 	entries: ChangelogEntry[],
 	lastVersion: string,
