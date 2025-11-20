@@ -1,10 +1,10 @@
-import type { Agent } from "../agent/agent.js";
-import type { AssistantMessage, Message } from "../agent/types.js";
+import type { Agent } from "../../agent/agent.js";
+import type { AssistantMessage, Message } from "../../agent/types.js";
 import {
 	type RegisteredModel,
 	getRegisteredModels,
-} from "../models/registry.js";
-import type { SessionManager } from "../session-manager.js";
+} from "../../models/registry.js";
+import type { SessionManager } from "../../session/manager.js";
 import type {
 	SessionDataProvider,
 	SessionItem,

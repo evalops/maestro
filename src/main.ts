@@ -42,7 +42,7 @@ import {
 } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
-import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
+import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 

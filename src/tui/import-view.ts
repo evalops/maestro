@@ -8,7 +8,7 @@ import type { Agent } from "../agent/agent.js";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import { importFactoryConfig } from "../factory/index.js";
 import { reloadModelConfig } from "../models/registry.js";
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session/manager.js";
 
 interface ImportExportViewOptions {
 	agent: Agent;

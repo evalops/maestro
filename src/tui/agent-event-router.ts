@@ -5,8 +5,8 @@ import type {
 } from "../agent/types.js";
 import type { LoaderView } from "./loader-view.js";
 import type { MessageView } from "./message-view.js";
-import type { RunController } from "./run-controller.js";
-import type { SessionContext } from "./session-context.js";
+import type { RunController } from "./run/run-controller.js";
+import type { SessionContext } from "./session/session-context.js";
 import type { StreamingView } from "./streaming-view.js";
 
 interface AgentEventRouterOptions {

@@ -19,7 +19,7 @@ import type {
 	SessionHeaderEntry,
 	SessionManager,
 	SessionToolInfo,
-} from "./session-manager.js";
+} from "./session/manager.js";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);

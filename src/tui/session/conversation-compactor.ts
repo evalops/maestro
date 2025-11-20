@@ -1,6 +1,10 @@
 import type { Container, TUI } from "@evalops/tui";
-import type { Agent } from "../agent/agent.js";
-import type { AppMessage, AssistantMessage, Message } from "../agent/types.js";
+import type { Agent } from "../../agent/agent.js";
+import type {
+	AppMessage,
+	AssistantMessage,
+	Message,
+} from "../../agent/types.js";
 import {
 	buildConversationModel,
 	createRenderableMessage,
@@ -8,10 +12,10 @@ import {
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
 	renderMessageToPlainText,
-} from "../conversation/render-model.js";
-import type { SessionManager } from "../session-manager.js";
-import type { FooterComponent } from "./footer.js";
-import type { ToolExecutionComponent } from "./tool-execution.js";
+} from "../../conversation/render-model.js";
+import type { SessionManager } from "../../session/manager.js";
+import type { FooterComponent } from "../footer.js";
+import type { ToolExecutionComponent } from "../tool-execution.js";
 
 interface ConversationCompactorOptions {
 	agent: Agent;

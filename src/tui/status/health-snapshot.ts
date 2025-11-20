@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import type { GitView } from "./git-view.js";
-import { loadTodoStore } from "./plan-view.js";
-import type { ToolStatusView } from "./tool-status-view.js";
-import { TOOL_FAILURE_LOG_PATH } from "./tool-status-view.js";
+import type { GitView } from "../git-view.js";
+import { loadTodoStore } from "../plan-view.js";
+import type { ToolStatusView } from "../tool-status-view.js";
+import { TOOL_FAILURE_LOG_PATH } from "../tool-status-view.js";
 
 export interface HealthSnapshot {
 	toolFailures: number;

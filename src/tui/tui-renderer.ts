@@ -32,8 +32,8 @@ import { getRegisteredModels } from "../models/registry.js";
 import {
 	type SessionModelMetadata,
 	toSessionModelMetadata,
-} from "../session-manager.js";
-import type { SessionManager } from "../session-manager.js";
+} from "../session/manager.js";
+import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
@@ -46,10 +46,7 @@ import type {
 	CommandExecutionContext,
 } from "./commands/types.js";
 import { ConfigView } from "./config-view.js";
-import { ConversationCompactor } from "./conversation-compactor.js";
-import { CostView } from "./cost-view.js";
 import { CustomEditor } from "./custom-editor.js";
-import { DiagnosticsView } from "./diagnostics-view.js";
 import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { FileSearchView } from "./file-search-view.js";
@@ -65,22 +62,25 @@ import { InfoView } from "./info-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
 import { LoaderView } from "./loader-view.js";
 import { MessageView } from "./message-view.js";
-import { ModelSelectorView } from "./model-selector-view.js";
 import { NotificationView } from "./notification-view.js";
 import { OllamaView } from "./ollama-view.js";
 import { PlanView } from "./plan-view.js";
 import type { PromptQueue, PromptQueueEvent } from "./prompt-queue.js";
-import { ReportSelectorView } from "./report-selector-view.js";
-import { RunCommandView } from "./run-command-view.js";
-import { RunController } from "./run-controller.js";
-import { SessionContext } from "./session-context.js";
-import { SessionDataProvider } from "./session-data-provider.js";
-import { SessionSummaryController } from "./session-summary-controller.js";
-import { SessionSwitcherView } from "./session-switcher-view.js";
-import { SessionView } from "./session-view.js";
+import { RunCommandView } from "./run/run-command-view.js";
+import { RunController } from "./run/run-controller.js";
+import { ModelSelectorView } from "./selectors/model-selector-view.js";
+import { ReportSelectorView } from "./selectors/report-selector-view.js";
+import { ThinkingSelectorView } from "./selectors/thinking-selector-view.js";
+import { ConversationCompactor } from "./session/conversation-compactor.js";
+import { SessionContext } from "./session/session-context.js";
+import { SessionDataProvider } from "./session/session-data-provider.js";
+import { SessionSummaryController } from "./session/session-summary-controller.js";
+import { SessionSwitcherView } from "./session/session-switcher-view.js";
+import { SessionView } from "./session/session-view.js";
+import { CostView } from "./status/cost-view.js";
+import { DiagnosticsView } from "./status/diagnostics-view.js";
+import { TelemetryView } from "./status/telemetry-view.js";
 import { StreamingView } from "./streaming-view.js";
-import { TelemetryView } from "./telemetry-view.js";
-import { ThinkingSelectorView } from "./thinking-selector-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";

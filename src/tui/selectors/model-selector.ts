@@ -1,7 +1,7 @@
 import { Container, Input, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
-import type { RegisteredModel } from "../models/registry.js";
-import { getRegisteredModels } from "../models/registry.js";
+import type { RegisteredModel } from "../../models/registry.js";
+import { getRegisteredModels } from "../../models/registry.js";
 
 /**
  * Component that renders a model selector with search

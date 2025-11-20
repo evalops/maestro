@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RegisteredModel } from "../src/models/registry.js";
-import { selectSummaryModel } from "../src/tui/session-summary-controller.js";
+import { selectSummaryModel } from "../src/tui/session/session-summary-controller.js";
 
 const baseModel = (overrides: Partial<RegisteredModel>): RegisteredModel => ({
 	providerName: overrides.providerName ?? overrides.provider ?? "anthropic",

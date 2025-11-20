@@ -1,5 +1,5 @@
-import { badge, heading, labeledValue, muted } from "../style/theme.js";
-import type { TelemetryStatus } from "../telemetry.js";
+import { badge, heading, labeledValue, muted } from "../../style/theme.js";
+import type { TelemetryStatus } from "../../telemetry.js";
 import type { HealthSnapshot } from "./health-snapshot.js";
 
 export interface BugReportInfo {

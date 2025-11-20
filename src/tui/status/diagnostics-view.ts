@@ -2,34 +2,34 @@ import { existsSync } from "node:fs";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import clipboard from "clipboardy";
-import type { Agent } from "../agent/agent.js";
-import type { AppMessage } from "../agent/types.js";
-import { loadProjectContextFiles } from "../cli/system-prompt.js";
-import { buildConversationModel } from "../conversation/render-model.js";
-import { collectDiagnostics as collectLspDiagnostics } from "../lsp/index.js";
-import type { ApiKeyLookupResult } from "../providers/api-keys.js";
-import { lookupApiKey } from "../providers/api-keys.js";
-import type { SessionManager } from "../session-manager.js";
-import type { SessionModelMetadata } from "../session-manager.js";
-import { muted } from "../style/theme.js";
-import type { TelemetryStatus } from "../telemetry.js";
-import { getExaUsageSummary } from "../tools/exa-usage.js";
+import type { Agent } from "../../agent/agent.js";
+import type { AppMessage } from "../../agent/types.js";
+import { loadProjectContextFiles } from "../../cli/system-prompt.js";
+import { buildConversationModel } from "../../conversation/render-model.js";
+import { collectDiagnostics as collectLspDiagnostics } from "../../lsp/index.js";
+import type { ApiKeyLookupResult } from "../../providers/api-keys.js";
+import { lookupApiKey } from "../../providers/api-keys.js";
+import type { SessionManager } from "../../session/manager.js";
+import type { SessionModelMetadata } from "../../session/manager.js";
+import { muted } from "../../style/theme.js";
+import type { TelemetryStatus } from "../../telemetry.js";
+import { getExaUsageSummary } from "../../tools/exa-usage.js";
+import type { GitView } from "../git-view.js";
+import type { ToolExecutionComponent } from "../tool-execution.js";
+import {
+	TOOL_FAILURE_LOG_PATH,
+	type ToolStatusView,
+} from "../tool-status-view.js";
 import {
 	buildBugReport,
 	buildFeedbackTemplate,
 	buildStatusSnapshot,
 } from "./diagnostics-templates.js";
 import { formatDiagnosticsReport } from "./diagnostics.js";
-import type { GitView } from "./git-view.js";
 import {
 	type HealthSnapshot,
 	collectHealthSnapshot,
 } from "./health-snapshot.js";
-import type { ToolExecutionComponent } from "./tool-execution.js";
-import {
-	TOOL_FAILURE_LOG_PATH,
-	type ToolStatusView,
-} from "./tool-status-view.js";
 
 interface DiagnosticsViewOptions {
 	agent: Agent;

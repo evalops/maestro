@@ -1,5 +1,5 @@
 import type { Container, TUI } from "@evalops/tui";
-import type { CustomEditor } from "./custom-editor.js";
+import type { CustomEditor } from "../custom-editor.js";
 import type {
 	SessionDataProvider,
 	SessionItem,
