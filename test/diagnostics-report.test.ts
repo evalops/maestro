@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { beforeAll, describe, expect, it } from "vitest";
-import { formatDiagnosticsReport } from "../src/tui/diagnostics.js";
-import type { DiagnosticsInput } from "../src/tui/diagnostics.js";
+import { formatDiagnosticsReport } from "../src/tui/status/diagnostics.js";
+import type { DiagnosticsInput } from "../src/tui/status/diagnostics.js";
 
 beforeAll(() => {
 	chalk.level = 0;

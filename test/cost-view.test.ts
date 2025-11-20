@@ -3,7 +3,7 @@ import { Container, type TUI } from "@evalops/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UsageSummary } from "../src/tracking/cost-tracker.js";
 import type { CommandExecutionContext } from "../src/tui/commands/types.js";
-import { CostView } from "../src/tui/cost-view.js";
+import { CostView } from "../src/tui/status/cost-view.js";
 
 vi.mock("../src/tracking/cost-tracker.js", () => ({
 	getUsageSummary: vi.fn(),
