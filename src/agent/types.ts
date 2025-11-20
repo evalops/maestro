@@ -263,6 +263,11 @@ export type AgentEvent =
 			messages: AppMessage[];
 	  }
 	| {
+			type: "status";
+			status: string;
+			details: Record<string, unknown>;
+	  }
+	| {
 			type: "turn_start";
 	  }
 	| {

@@ -1,31 +1,25 @@
 {
-  "name": "@evalops/contracts",
-  "version": "0.10.0",
-  "description": "Shared Composer contracts for frontend/backend integration",
-  "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./package.json": "./package.json"
-  },
-  "sideEffects": false,
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "clean": "rm -rf dist",
-    "build": "tsc -p tsconfig.build.json",
-    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput"
-  },
-  "keywords": [
-    "composer",
-    "contracts",
-    "evalops"
-  ],
-  "author": "EvalOps",
-  "license": "MIT"
+	"name": "@evalops/contracts",
+	"version": "0.10.0",
+	"description": "Shared Composer contracts for frontend/backend integration",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"sideEffects": false,
+	"files": ["dist"],
+	"scripts": {
+		"clean": "rm -rf dist",
+		"build": "tsc -p tsconfig.build.json",
+		"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput"
+	},
+	"keywords": ["composer", "contracts", "evalops"],
+	"author": "EvalOps",
+	"license": "MIT"
 }

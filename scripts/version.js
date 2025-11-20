@@ -7,19 +7,20 @@
  *   npm run version:major
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 
 const PACKAGE_JSON_PATH = join(process.cwd(), "package.json");
+const PACKAGES_DIR = join(process.cwd(), "packages");
 
-function readPackageJson() {
-	const content = readFileSync(PACKAGE_JSON_PATH, "utf-8");
+function readPackageJson(path) {
+	const content = readFileSync(path, "utf-8");
 	return JSON.parse(content);
 }
 
-function writePackageJson(pkg) {
-	writeFileSync(PACKAGE_JSON_PATH, JSON.stringify(pkg, null, 2) + "\n");
+function writePackageJson(path, pkg) {
+	writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
 }
 
 function bumpVersion(currentVersion, type) {
@@ -35,6 +36,44 @@ function bumpVersion(currentVersion, type) {
 			return `${major}.${minor}.${patch + 1}`;
 		default:
 			throw new Error(`Invalid bump type: ${type}`);
+	}
+}
+
+function getWorkspacePackages() {
+	const dirs = readdirSync(PACKAGES_DIR, { withFileTypes: true }).filter(
+		(entry) => entry.isDirectory(),
+	);
+
+	return dirs.map((dirent) => {
+		const path = join(PACKAGES_DIR, dirent.name, "package.json");
+		const data = readPackageJson(path);
+		return { name: data.name, path, data };
+	});
+}
+
+function updateInternalDependencies(pkg, version, internalNames) {
+	const setVersion = (section) => {
+		if (!section) {
+			return;
+		}
+
+		for (const dep of Object.keys(section)) {
+			if (internalNames.has(dep)) {
+				const next = `^${version}`;
+				if (section[dep] !== next) {
+					section[dep] = next;
+				}
+			}
+		}
+	};
+
+	setVersion(pkg.dependencies);
+	setVersion(pkg.devDependencies);
+}
+
+function writeAllPackages(packages) {
+	for (const pkg of packages) {
+		writePackageJson(pkg.path, pkg.data);
 	}
 }
 
@@ -77,16 +116,28 @@ function main() {
 		process.exit(1);
 	}
 
-	const pkg = readPackageJson();
-	const currentVersion = pkg.version;
+	const rootPkg = readPackageJson(PACKAGE_JSON_PATH);
+	const workspacePkgs = getWorkspacePackages();
+	const internalNames = new Set(workspacePkgs.map((pkg) => pkg.name));
+
+	const currentVersion = rootPkg.version;
 	const newVersion = bumpVersion(currentVersion, bumpType);
 
 	console.log(`🔼 Bumping version: ${currentVersion} → ${newVersion}`);
 
-	// Update package.json
-	pkg.version = newVersion;
-	writePackageJson(pkg);
+	// Update root package.json
+	rootPkg.version = newVersion;
+	updateInternalDependencies(rootPkg, newVersion, internalNames);
+	writePackageJson(PACKAGE_JSON_PATH, rootPkg);
 	console.log("✅ Updated package.json");
+
+	// Update workspace package.json files
+	for (const pkg of workspacePkgs) {
+		pkg.data.version = newVersion;
+		updateInternalDependencies(pkg.data, newVersion, internalNames);
+	}
+	writeAllPackages(workspacePkgs);
+	console.log("✅ Updated workspace package.json files");
 
 	// Update changelog
 	updateChangelog(newVersion);

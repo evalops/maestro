@@ -1,5 +1,12 @@
 import type { ComposerMessage } from "@evalops/contracts";
 import { describe, expect, it } from "vitest";
+import type {
+	AppMessage,
+	AssistantMessage,
+	ToolCall,
+	ToolResultMessage,
+} from "../../src/agent/types.js";
+import type { RegisteredModel } from "../../src/models/registry.js";
 import {
 	SessionSerializationError,
 	convertAppMessageToComposer,
@@ -7,13 +14,6 @@ import {
 	convertComposerMessageToApp,
 	convertComposerMessagesToApp,
 } from "../../src/web/session-serialization.js";
-import type {
-	AppMessage,
-	AssistantMessage,
-	ToolCall,
-	ToolResultMessage,
-} from "../src/agent/types.js";
-import type { RegisteredModel } from "../src/models/registry.js";
 
 const mockUsage = () => ({
 	input: 0,
@@ -131,9 +131,11 @@ describe("session serialization", () => {
 		const assistant = appMessages[0] as AssistantMessage;
 		expect(assistant.usage?.input).toBe(10);
 		expect(assistant.usage?.cost.total).toBeCloseTo(0.031);
-		expect(assistant.content?.some((part) => part.type === "thinking")).toBe(
-			true,
-		);
+		expect(
+			assistant.content?.some(
+				(part: AssistantMessage["content"][number]) => part.type === "thinking",
+			),
+		).toBe(true);
 		const toolResult = appMessages[1] as ToolResultMessage;
 		expect(toolResult.role).toBe("toolResult");
 		expect(toolResult.content[0]).toMatchObject({
@@ -198,7 +200,9 @@ describe("session serialization", () => {
 		const roundTrip = convertComposerMessagesToApp(composer, mockModel);
 		const roundAssistant = roundTrip[0] as AssistantMessage;
 		expect(roundAssistant.usage?.output).toBe(222);
-		const contentTypes = roundAssistant.content?.map((p) => p.type);
+		const contentTypes = roundAssistant.content?.map(
+			(p: AssistantMessage["content"][number]) => p.type,
+		);
 		expect(contentTypes).toEqual(["thinking", "text", "toolCall"]);
 	});
 

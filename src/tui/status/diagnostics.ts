@@ -25,6 +25,8 @@ export interface DiagnosticsInput {
 	};
 	lspDiagnostics?: Record<string, LspDiagnostic[]>;
 	attachments?: string[];
+	context?: string | null;
+	runtime?: Record<string, unknown> | null;
 }
 
 function formatProviderSection(
