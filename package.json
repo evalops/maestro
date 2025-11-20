@@ -19,9 +19,9 @@
     "clean": "rm -rf dist",
     "prepare": "husky",
     "install:local": "node ./scripts/install-client.js",
-    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "build": "tsc -b tsconfig.build.json && chmod +x dist/cli.js",
     "start": "node --enable-source-maps dist/cli.js",
-    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
     "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
     "test:watch": "vitest --watch",
     "lint": "biome check . && npm run lint:evals",
@@ -59,6 +59,7 @@
     "test:all": "npm run test && npm run test --workspaces --if-present"
   },
   "dependencies": {
+		"@evalops/contracts": "^0.10.0",
     "@evalops/tui": "^0.10.0",
     "@google/genai": "^1.29.1",
     "@sinclair/typebox": "^0.33.0",

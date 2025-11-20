@@ -8,6 +8,7 @@ import {
 	ApiClient,
 	type Message,
 	type Session,
+	type SessionSummary,
 } from "../services/api-client.js";
 import "./composer-message.js";
 import "./composer-input.js";
@@ -551,7 +552,7 @@ export class ComposerChat extends LitElement {
 	@state() private error: string | null = null;
 	@state() private currentModel = "";
 	@state() private sidebarOpen = true;
-	@state() private sessions: Session[] = [];
+	@state() private sessions: SessionSummary[] = [];
 	@state() private currentSessionId: string | null = null;
 	@state() private settingsOpen = false;
 
@@ -607,47 +608,8 @@ export class ComposerChat extends LitElement {
 		this.currentSessionId = sessionId;
 		try {
 			const session = await this.apiClient.getSession(sessionId);
-
-			// Transform messages: extract text from content blocks and convert toolCalls to tools
-			const transformedMessages = (session.messages || []).map((msg: any) => {
-				// Convert timestamp from number to ISO string if needed
-				const timestamp =
-					typeof msg.timestamp === "number"
-						? new Date(msg.timestamp).toISOString()
-						: msg.timestamp || new Date().toISOString();
-
-				// If content is already a string, use it as-is
-				if (typeof msg.content === "string") {
-					return { ...msg, timestamp };
-				}
-
-				// If content is an array of blocks, extract text and tools
-				if (Array.isArray(msg.content)) {
-					const textBlocks = msg.content.filter(
-						(block: any) => block.type === "text",
-					);
-					const toolBlocks = msg.content.filter(
-						(block: any) => block.type === "toolCall",
-					);
-
-					return {
-						...msg,
-						timestamp,
-						content: textBlocks.map((b: any) => b.text).join("\n\n"),
-						tools: toolBlocks.map((t: any) => ({
-							name: t.name,
-							status: "completed",
-							args: t.arguments,
-							result: null,
-						})),
-					};
-				}
-
-				return { ...msg, timestamp };
-			});
-
-			// Create a new array reference to trigger Lit's reactivity
-			this.messages = [...transformedMessages];
+			this.currentSessionId = session.id;
+			this.messages = [...session.messages];
 			this.error = null;
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
@@ -700,6 +662,12 @@ export class ComposerChat extends LitElement {
 			for await (const agentEvent of stream) {
 				// Handle different event types
 				switch (agentEvent.type) {
+					case "session_update":
+						if (agentEvent.sessionId) {
+							this.currentSessionId = agentEvent.sessionId;
+							this.requestUpdate();
+						}
+						break;
 					case "message_update":
 						if (agentEvent.assistantMessageEvent) {
 							const msgEvent = agentEvent.assistantMessageEvent;

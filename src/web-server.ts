@@ -7,18 +7,15 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath, parse } from "node:url";
+import type {
+	ComposerChatRequest,
+	ComposerMessage,
+	ComposerSession,
+	ComposerSessionSummary,
+} from "@evalops/contracts";
 import { ActionApprovalService } from "./agent/action-approval.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
-import type {
-	AgentEvent,
-	AppMessage,
-	AssistantMessage,
-	TextContent,
-	ThinkingContent,
-	ThinkingLevel,
-	ToolResultMessage,
-	Usage,
-} from "./agent/types.js";
+import type { AgentEvent, ThinkingLevel } from "./agent/types.js";
 import {
 	buildSystemPrompt,
 	loadProjectContextFiles,
@@ -33,9 +30,13 @@ import {
 	resolveModel,
 } from "./models/registry.js";
 import { createAuthResolver } from "./providers/auth.js";
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
 import { codingTools } from "./tools/index.js";
 import { getUsageFilePath, getUsageSummary } from "./tracking/cost-tracker.js";
+import {
+	convertAppMessagesToComposer,
+	convertComposerMessagesToApp,
+} from "./web/session-serialization.js";
 
 loadEnv();
 
@@ -43,161 +44,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 let currentModelKey: string | null = null;
-
-type WebMessageRole = "user" | "assistant" | "system" | "tool";
-
-interface WebToolCall {
-	name: string;
-	status: string;
-	args?: any;
-	result?: any;
-}
-
-interface WebMessage {
-	role: WebMessageRole;
-	content: string;
-	timestamp?: string;
-	thinking?: string;
-	tools?: WebToolCall[];
-	toolName?: string;
-	isError?: boolean;
-}
-
-interface ChatRequest {
-	model?: string;
-	messages: WebMessage[];
-	thinkingLevel?: ThinkingLevel;
-	sessionId?: string;
-}
-
-interface ChatResponse {
-	type: string;
-	data: any;
-}
-
-function parseTimestamp(input?: string): number {
-	if (!input) return Date.now();
-	const parsed = Date.parse(input);
-	return Number.isFinite(parsed) ? parsed : Date.now();
-}
-
-function createEmptyUsage(): Usage {
-	return {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		cost: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			total: 0,
-		},
-	};
-}
-
-function serializeToolContent(tool: WebToolCall): string {
-	if (typeof tool.result === "string") {
-		return tool.result;
-	}
-	if (tool.result && typeof tool.result === "object") {
-		return JSON.stringify(tool.result);
-	}
-	if (tool.args && typeof tool.args === "object") {
-		return JSON.stringify(tool.args);
-	}
-	return "";
-}
-
-function convertWebMessagesToAppMessages(
-	messages: WebMessage[],
-	model: RegisteredModel,
-): AppMessage[] {
-	const result: AppMessage[] = [];
-
-	for (const [index, message] of messages.entries()) {
-		if (message.role === "user") {
-			const userContent: TextContent = {
-				type: "text",
-				text: message.content ?? "",
-			};
-			result.push({
-				role: "user",
-				content: [userContent],
-				timestamp: parseTimestamp(message.timestamp),
-			});
-			continue;
-		}
-
-		if (message.role === "assistant") {
-			const contentParts: Array<TextContent | ThinkingContent> = [];
-			if (message.thinking?.trim()) {
-				contentParts.push({
-					type: "thinking",
-					thinking: message.thinking.trim(),
-				});
-			}
-			if (message.content?.length) {
-				contentParts.push({ type: "text", text: message.content });
-			}
-			if (contentParts.length === 0) {
-				continue;
-			}
-
-			const assistantMessage: AssistantMessage = {
-				role: "assistant",
-				content: contentParts,
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: createEmptyUsage(),
-				stopReason: "stop",
-				timestamp: parseTimestamp(message.timestamp),
-			};
-			result.push(assistantMessage);
-
-			if (message.tools?.length) {
-				for (const [toolIndex, tool] of message.tools.entries()) {
-					const toolResult: ToolResultMessage = {
-						role: "toolResult",
-						toolCallId: `web-tool-${index}-${toolIndex}`,
-						toolName: tool.name || "web_tool",
-						content: [
-							{
-								type: "text",
-								text: serializeToolContent(tool),
-							},
-						],
-						isError: tool.status === "error",
-						timestamp: parseTimestamp(message.timestamp),
-					};
-					result.push(toolResult);
-				}
-			}
-			continue;
-		}
-
-		if (message.role === "tool") {
-			const toolMessage: ToolResultMessage = {
-				role: "toolResult",
-				toolCallId: `web-tool-${index}`,
-				toolName: message.toolName || "web_tool",
-				content: [
-					{
-						type: "text",
-						text: message.content ?? "",
-					},
-				],
-				isError: Boolean(message.isError),
-				timestamp: parseTimestamp(message.timestamp),
-			};
-			result.push(toolMessage);
-		}
-	}
-
-	return result;
-}
 
 function getModelByKey(key: string | null): RegisteredModel | null {
 	if (!key) return null;
@@ -233,6 +79,11 @@ const CORS_HEADERS = {
 function sendSSE(res: any, event: AgentEvent) {
 	const data = JSON.stringify(event);
 	res.write(`data: ${data}\n\n`);
+}
+
+function sendSessionUpdate(res: any, sessionId: string) {
+	const payload = { type: "session_update", sessionId };
+	res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 /**
@@ -577,16 +428,12 @@ async function handleChat(req: any, res: any) {
 
 	req.on("end", async () => {
 		try {
-			const chatReq: ChatRequest = JSON.parse(body);
+			const chatReq: ComposerChatRequest = JSON.parse(body);
 
-			// Resolve model
 			const modelInput = chatReq.model || "claude-sonnet-4-5";
-
-			// Parse provider:model format
 			const [provider, modelId] = modelInput.includes(":")
 				? modelInput.split(":", 2)
 				: ["anthropic", modelInput];
-
 			const model = resolveModel(provider, modelId);
 			if (!model) {
 				res.writeHead(404, {
@@ -597,15 +444,19 @@ async function handleChat(req: any, res: any) {
 				return;
 			}
 
-			// Create session manager (disabled for web mode)
 			const sessionManager = new SessionManager(false);
+			if (chatReq.sessionId) {
+				const sessionFile = sessionManager.getSessionFileById(
+					chatReq.sessionId,
+				);
+				if (sessionFile) {
+					sessionManager.setSessionFile(sessionFile);
+				}
+			}
 
-			// Find the full RegisteredModel
-			const registeredModels = getRegisteredModels();
-			const registeredModel = registeredModels.find(
+			const registeredModel = getRegisteredModels().find(
 				(m) => m.provider === model.provider && m.id === model.id,
 			);
-
 			if (!registeredModel) {
 				res.writeHead(500, {
 					"Content-Type": "application/json",
@@ -615,7 +466,6 @@ async function handleChat(req: any, res: any) {
 				return;
 			}
 
-			// Create agent
 			const agent = await createAgent(
 				registeredModel,
 				sessionManager,
@@ -623,7 +473,7 @@ async function handleChat(req: any, res: any) {
 			);
 
 			const incomingMessages = Array.isArray(chatReq.messages)
-				? chatReq.messages
+				? (chatReq.messages as ComposerMessage[])
 				: [];
 			if (incomingMessages.length === 0) {
 				res.writeHead(400, {
@@ -657,7 +507,7 @@ async function handleChat(req: any, res: any) {
 			}
 
 			const historyMessages = incomingMessages.slice(0, -1);
-			const hydratedHistory = convertWebMessagesToAppMessages(
+			const hydratedHistory = convertComposerMessagesToApp(
 				historyMessages,
 				registeredModel,
 			);
@@ -667,7 +517,6 @@ async function handleChat(req: any, res: any) {
 				agent.clearMessages();
 			}
 
-			// Set up SSE streaming
 			res.writeHead(200, {
 				"Content-Type": "text/event-stream",
 				"Cache-Control": "no-cache",
@@ -675,16 +524,25 @@ async function handleChat(req: any, res: any) {
 				...CORS_HEADERS,
 			});
 
-			// Subscribe to agent events and stream them
 			const unsubscribe = agent.subscribe((event: AgentEvent) => {
 				sendSSE(res, event);
+
+				if (event.type === "message_end") {
+					sessionManager.saveMessage(event.message);
+					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
+						sessionManager.startSession(agent.state);
+						sendSessionUpdate(res, sessionManager.getSessionId());
+					}
+				}
+
+				sessionManager.updateSnapshot(
+					agent.state,
+					toSessionModelMetadata(registeredModel),
+				);
 			});
 
 			try {
-				// Send user message
 				await agent.prompt(userInput);
-
-				// Send completion marker
 				res.write("data: [DONE]\n\n");
 			} catch (error) {
 				console.error("Agent prompt error:", error);
@@ -694,6 +552,7 @@ async function handleChat(req: any, res: any) {
 				} as any);
 			} finally {
 				unsubscribe();
+				await sessionManager.flush();
 				res.end();
 			}
 		} catch (error) {
@@ -722,13 +581,12 @@ async function handleSessions(req: any, res: any, pathname: string) {
 		// GET /api/sessions - List all sessions
 		if (req.method === "GET" && pathname === "/api/sessions") {
 			const sessions = await sessionManager.listSessions();
-			const sessionList = sessions.map((s) => ({
+			const sessionList: ComposerSessionSummary[] = sessions.map((s) => ({
 				id: s.id,
 				title: s.title || `Session ${s.id.slice(0, 8)}`,
 				createdAt: s.createdAt || new Date().toISOString(),
 				updatedAt: s.updatedAt || new Date().toISOString(),
 				messageCount: s.messageCount || 0,
-				messages: [],
 			}));
 
 			res.writeHead(200, {
@@ -751,11 +609,20 @@ async function handleSessions(req: any, res: any, pathname: string) {
 				return;
 			}
 
+			const responseBody: ComposerSession = {
+				id: session.id,
+				title: session.title,
+				createdAt: session.createdAt,
+				updatedAt: session.updatedAt,
+				messageCount: session.messageCount,
+				messages: convertAppMessagesToComposer(session.messages || []),
+			};
+
 			res.writeHead(200, {
 				"Content-Type": "application/json",
 				...CORS_HEADERS,
 			});
-			res.end(JSON.stringify(session));
+			res.end(JSON.stringify(responseBody));
 		}
 		// POST /api/sessions - Create new session
 		else if (req.method === "POST" && pathname === "/api/sessions") {
@@ -767,12 +634,20 @@ async function handleSessions(req: any, res: any, pathname: string) {
 			req.on("end", async () => {
 				const { title } = JSON.parse(body || "{}");
 				const session = await sessionManager.createSession({ title });
+				const responseBody: ComposerSession = {
+					id: session.id,
+					title: session.title,
+					createdAt: session.createdAt,
+					updatedAt: session.updatedAt,
+					messageCount: session.messageCount,
+					messages: convertAppMessagesToComposer(session.messages || []),
+				};
 
 				res.writeHead(201, {
 					"Content-Type": "application/json",
 					...CORS_HEADERS,
 				});
-				res.end(JSON.stringify(session));
+				res.end(JSON.stringify(responseBody));
 			});
 		}
 		// DELETE /api/sessions/:id - Delete session
