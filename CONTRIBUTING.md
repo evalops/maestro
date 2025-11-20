@@ -5,22 +5,25 @@ expect before opening a PR.
 
 ## Prerequisites
 
-- Node.js 20+, npm 9+ (or Bun 1.1+)
+- Node.js 20+
+- Bun 1.1+ (preferred) or npm 9+
 - Git + GitHub account
 - Familiarity with TypeScript/ESM and modern CLIs
 
 ## Development Workflow
 
 1. **Fork & clone** – `git clone https://github.com/evalops/composer.git`
-2. **Install deps** – `npm install` (or `bun install`)
+2. **Install deps** – `bun install`
 3. **Create a branch** – `git checkout -b feature/my-change`
 4. **Implement + document** – update code + relevant docs (README, docs/*.md, AGENTS.md)
 5. **Run checks**:
    ```bash
-   npm run lint      # Biome linter
-   npm run test      # Vitest unit tests
-   npm run build     # TypeScript compilation
-   npm run evals     # End-to-end scenarios (optional)
+   bunx biome check .                            # Biome + eval verifier
+   npx nx run composer:test --skip-nx-cache      # Builds TUI/Web then runs tests (CI-equivalent)
+   npx nx run composer:evals --skip-nx-cache     # Optional eval scenarios
+   # If you touched specific packages, build them too:
+   bun run --filter @evalops/tui build
+   bun run --filter @evalops/composer-web build
    ```
    (CI runs these, but failing locally wastes review cycles.)
 6. **Commit** – descriptive message, e.g., `feat: add bash history`
@@ -35,13 +38,15 @@ expect before opening a PR.
 
 #### Watch Mode
 ```bash
-npm run dev          # TypeScript watch mode
-bun run bun:watch    # Bun watch mode
+bun run dev            # TypeScript watch mode
+bun run dev:tui        # TUI dev server
+bun run dev:web        # Web dev server
 ```
 
 #### Testing Individual Files
 ```bash
-npm test -- test/path/to/file.test.ts
+bunx vitest --run test/path/to/file.test.ts
+bunx vitest --run -t "specific test name"
 ```
 
 ## Code Style
@@ -61,16 +66,16 @@ npm test -- test/path/to/file.test.ts
 
 - Use Vitest for unit tests
 - End-to-end behaviors should be covered by `evals/scenarios.json`
-- When changing CLI output, update the expected regexes and re-run `npm run evals`
+- When changing CLI output, update the expected regexes and re-run `npx nx run composer:evals --skip-nx-cache`
 
 ## Releases
 
 Use the versioning scripts for consistent releases:
 
 ```bash
-npm run version:patch    # 0.10.0 -> 0.10.1
-npm run version:minor    # 0.10.0 -> 0.11.0
-npm run version:major    # 0.10.0 -> 1.0.0
+bun run version:patch    # 0.10.0 -> 0.10.1
+bun run version:minor    # 0.10.0 -> 0.11.0
+bun run version:major    # 0.10.0 -> 1.0.0
 ```
 
 These scripts automatically:

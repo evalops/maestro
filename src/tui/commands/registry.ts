@@ -57,7 +57,7 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
-				name: "plan",
+				name: "model",
 				description: "Select model (opens selector UI)",
 				usage: "/model",
 				tags: ["session"],
@@ -124,19 +124,23 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "session",
-				description: "Show session info and stats",
-				usage: "/session",
+				description:
+					"Show session info, mark favorite, or add a manual summary",
+				usage:
+					'/session [info|favorite|unfavorite|summary "text"] (defaults: info)',
 				tags: ["session"],
 			},
-			equals("session"),
-			handlers.sessionInfo,
+			withArgs("session"),
+			handlers.session,
 			createContext,
 		),
 		buildEntry(
 			{
 				name: "sessions",
-				description: "List or load recent sessions",
-				usage: "/sessions [list|load <id>]",
+				description:
+					"List, load, favorite, or summarize recent sessions by index",
+				usage:
+					"/sessions [list|load <id>|favorite <id>|unfavorite <id>|summarize <id>]",
 				tags: ["session"],
 			},
 			withArgs("sessions"),

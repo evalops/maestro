@@ -62,6 +62,11 @@ export function printHelp(version: string) {
     --resume <sessionId>        Resume a prior exec session by id
     --last                      Resume the most recent exec session`,
 	)}`;
+	const sessionsSection = `${sectionHeading("Session Metadata")}${muted(
+		`  /session favorite|unfavorite      Toggle favorite for current session
+  /session summary "<text>"         Save a manual summary for current session
+  /sessions summarize <id>          Auto-summarize a saved session`,
+	)}`;
 	const tools = `${sectionHeading("Available Tools")}${muted(
 		`  read   - Read file contents
   list   - List files in a directory
@@ -81,6 +86,7 @@ export function printHelp(version: string) {
 			examples,
 			env,
 			execSection,
+			sessionsSection,
 			`${sectionHeading("Tips")}${badge(
 				"Need models?",
 				"composer models list",

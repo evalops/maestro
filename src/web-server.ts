@@ -73,17 +73,128 @@ const CORS_HEADERS = {
 	"Access-Control-Max-Age": "86400",
 };
 
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
+class SseSession {
+	private closed = false;
+	private heartbeat?: NodeJS.Timeout;
+	private skippedWrites = 0;
+	private sentWrites = 0;
+	private lastError?: unknown;
+
+	constructor(private readonly res: any) {
+		if (typeof res.flushHeaders === "function") {
+			try {
+				res.flushHeaders();
+			} catch {
+				// Ignore flush errors; writes are still guarded
+			}
+		}
+	}
+
+	private canWrite(): boolean {
+		return (
+			!!this.res &&
+			this.res.writable !== false &&
+			!this.res.writableEnded &&
+			!this.res.destroyed
+		);
+	}
+
+	private write(payload: string): boolean {
+		if (!this.canWrite()) {
+			this.skippedWrites++;
+			return false;
+		}
+		try {
+			this.res.write(payload);
+			this.sentWrites++;
+			return true;
+		} catch (error) {
+			this.skippedWrites++;
+			this.lastError = error;
+			console.debug(
+				"SSE write skipped after disconnect",
+				error instanceof Error ? error.message : error,
+			);
+			return false;
+		}
+	}
+
+	sendEvent(event: AgentEvent): void {
+		const data = JSON.stringify(event);
+		this.write(`data: ${data}\n\n`);
+	}
+
+	sendSessionUpdate(sessionId: string): void {
+		const payload = { type: "session_update", sessionId };
+		this.write(`data: ${JSON.stringify(payload)}\n\n`);
+	}
+
+	sendHeartbeat(): void {
+		this.write('data: {"type":"heartbeat"}\n\n');
+	}
+
+	sendAborted(): void {
+		this.write('data: {"type":"aborted"}\n\n');
+	}
+
+	sendDone(): void {
+		this.write("data: [DONE]\n\n");
+	}
+
+	startHeartbeat(): void {
+		this.stopHeartbeat();
+		this.heartbeat = setInterval(
+			() => this.sendHeartbeat(),
+			HEARTBEAT_INTERVAL_MS,
+		);
+	}
+
+	stopHeartbeat(): void {
+		if (this.heartbeat) {
+			clearInterval(this.heartbeat);
+			this.heartbeat = undefined;
+		}
+	}
+
+	end(): void {
+		if (this.closed) return;
+		this.closed = true;
+		this.stopHeartbeat();
+		if (!this.canWrite()) {
+			return;
+		}
+		try {
+			this.res.end();
+		} catch (error) {
+			this.skippedWrites++;
+			this.lastError = error;
+			console.debug(
+				"SSE end skipped after disconnect",
+				error instanceof Error ? error.message : error,
+			);
+		}
+	}
+
+	getMetrics(): { sent: number; skipped: number; lastError?: unknown } {
+		return {
+			sent: this.sentWrites,
+			skipped: this.skippedWrites,
+			lastError: this.lastError,
+		};
+	}
+}
+
 /**
  * Server-Sent Events (SSE) streaming for chat responses
  */
-function sendSSE(res: any, event: AgentEvent) {
-	const data = JSON.stringify(event);
-	res.write(`data: ${data}\n\n`);
+function sendSSE(session: SseSession, event: AgentEvent) {
+	session.sendEvent(event);
 }
 
-function sendSessionUpdate(res: any, sessionId: string) {
-	const payload = { type: "session_update", sessionId };
-	res.write(`data: ${JSON.stringify(payload)}\n\n`);
+function sendSessionUpdate(session: SseSession, sessionId: string) {
+	session.sendSessionUpdate(sessionId);
 }
 
 /**
@@ -524,14 +635,18 @@ async function handleChat(req: any, res: any) {
 				...CORS_HEADERS,
 			});
 
+			const sseSession = new SseSession(res);
+			sseSession.startHeartbeat();
+			let cleanedUp = false;
+
 			const unsubscribe = agent.subscribe((event: AgentEvent) => {
-				sendSSE(res, event);
+				sendSSE(sseSession, event);
 
 				if (event.type === "message_end") {
 					sessionManager.saveMessage(event.message);
 					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
 						sessionManager.startSession(agent.state);
-						sendSessionUpdate(res, sessionManager.getSessionId());
+						sendSessionUpdate(sseSession, sessionManager.getSessionId());
 					}
 				}
 
@@ -541,19 +656,49 @@ async function handleChat(req: any, res: any) {
 				);
 			});
 
+			const handleConnectionClose = () => {
+				agent.abort();
+				void cleanup(true);
+			};
+
+			req.on("close", handleConnectionClose);
+			res.on("close", handleConnectionClose);
+
+			const cleanup = async (aborted = false) => {
+				if (cleanedUp) {
+					return;
+				}
+				cleanedUp = true;
+				sseSession.stopHeartbeat();
+				req.off("close", handleConnectionClose);
+				res.off("close", handleConnectionClose);
+				unsubscribe();
+				await sessionManager.flush();
+				if (!res.writableEnded) {
+					if (aborted) {
+						sseSession.sendAborted();
+					}
+					sseSession.end();
+				}
+				const metrics = sseSession.getMetrics();
+				if (metrics.skipped > 0) {
+					console.debug("SSE writes skipped after disconnect", metrics);
+				}
+			};
+
 			try {
 				await agent.prompt(userInput);
-				res.write("data: [DONE]\n\n");
+				if (!res.writableEnded) {
+					sseSession.sendDone();
+				}
 			} catch (error) {
 				console.error("Agent prompt error:", error);
-				sendSSE(res, {
+				sendSSE(sseSession, {
 					type: "error",
 					message: error instanceof Error ? error.message : "Unknown error",
 				} as any);
 			} finally {
-				unsubscribe();
-				await sessionManager.flush();
-				res.end();
+				await cleanup(false);
 			}
 		} catch (error) {
 			console.error("Chat error:", error);
@@ -805,3 +950,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 	const port = Number.parseInt(process.env.PORT || "8080", 10);
 	startWebServer(port);
 }
+
+export { SseSession };

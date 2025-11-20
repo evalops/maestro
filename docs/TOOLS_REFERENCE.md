@@ -67,9 +67,9 @@ clear error message in chat.
 
 | Command | Purpose |
 | ------- | ------- |
-| `npm run cli -- --help` | Display CLI/TUI usage. |
-| `npm run evals` | Run regression scenarios (helps when editing help text or tools). |
-| `npm run telemetry:report` | Summarize tool/agent telemetry logs. |
+| `bun run cli -- --help` | Display CLI/TUI usage. |
+| `npx nx run composer:evals --skip-nx-cache` | Run regression scenarios (helps when editing help text or tools). |
+| `bun run telemetry:report` | Summarize tool/agent telemetry logs. |
 
 ## Common Errors & Remedies
 

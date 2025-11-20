@@ -66,7 +66,7 @@ Build and run:
 
 ```bash
 # Build everything
-bun run build:all
+npx nx run composer:build:all --skip-nx-cache
 
 # Start web server
 bun run web

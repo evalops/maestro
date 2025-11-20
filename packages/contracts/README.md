@@ -1,0 +1,25 @@
+# @evalops/contracts
+
+Shared TypeScript definitions for Composer's frontend/backend contract.
+
+## Building locally
+
+```bash
+bun install
+bun run --filter @evalops/contracts build
+```
+
+The package emits ESM + declaration artifacts into `packages/contracts/dist`. Root builds (`npm run build` or `npm run build:all`) automatically invoke this step via TypeScript project references.
+
+## Usage
+
+```ts
+import type { ComposerMessage } from "@evalops/contracts";
+
+const payload: ComposerMessage = {
+	role: "user",
+	content: "Hello Composer",
+};
+```
+
+Consumers outside the monorepo can depend on `@evalops/contracts` once the package has been built/published; only the compiled `dist` folder is distributed.

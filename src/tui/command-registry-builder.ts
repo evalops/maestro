@@ -26,7 +26,7 @@ interface CommandRegistryOptions {
 	handleImportConfig: (
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
-	showSessionInfo: (context: CommandExecutionContext) => void;
+	handleSession: (context: CommandExecutionContext) => void;
 	handleSessions: (context: CommandExecutionContext) => void | Promise<void>;
 	handleAbout: (context: CommandExecutionContext) => void;
 	showStatus: (context: CommandExecutionContext) => void;
@@ -70,7 +70,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			shareSession: opts.handleShareSession,
 			tools: opts.handleTools,
 			importConfig: opts.handleImportConfig,
-			sessionInfo: opts.showSessionInfo,
+			session: opts.handleSession,
 			sessions: opts.handleSessions,
 			report: opts.handleReport,
 			about: opts.handleAbout,

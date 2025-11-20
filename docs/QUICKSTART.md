@@ -1,12 +1,12 @@
 # Quickstart
 
-Composer ships as a Node/Bun project. The steps below get a contributor
+Composer ships as a Bun + Nx workspace. The steps below get a contributor
 from a fresh clone to running the CLI, TUI, Web UI, and eval suite.
 
 ## Prerequisites
 
 - Node.js 20+ (the repo uses ES modules and top-level `await`)
-- npm 9+ (or Bun 1.1+ if you prefer `bun install`)
+- Bun 1.1+ (recommended) or npm 9+ for install
 - Git + a GitHub token if you plan to use the hosted evals/CI
 
 ## Install
@@ -14,7 +14,7 @@ from a fresh clone to running the CLI, TUI, Web UI, and eval suite.
 ```bash
 git clone https://github.com/evalops/composer.git
 cd composer
-npm install        # or: bun install
+bun install        # installs workspace deps with Bun
 ```
 
 Environment variables (API keys, etc.) can be stored in `.env` or exported in
@@ -23,14 +23,16 @@ your shell. See the CLI help output for the list of supported keys.
 ## Build & Run
 
 ```bash
-npm run build          # emits dist/cli.js
-npm run cli -- --help  # run the compiled CLI
+npx nx run composer:build --skip-nx-cache  # emits dist/cli.js via Bun
+bun run cli -- --help                      # run the compiled CLI
 ```
 
 During development you can use:
 
-- `npm run dev` – watch builds (tsc --watch)
-- `npm run cli -- --provider anthropic --model claude-sonnet-4-5 "hello"` – run
+- `npx nx run composer:test --skip-nx-cache` – mirrors CI by building TUI/Web before tests
+- `bun run --filter @evalops/tui build` / `bun run --filter @evalops/composer-web build` – package-specific builds
+- `bun run dev` – watch builds (tsc --watch)
+- `bun run cli -- --provider anthropic --model claude-sonnet-4-5 "hello"` – run
   the CLI directly from `dist/cli.js`
 
 ## Eval Suite
@@ -39,7 +41,7 @@ The eval runner ensures the CLI help text, tools, and telemetry commands behave
 as expected.
 
 ```bash
-npm run evals
+npx nx run composer:evals --skip-nx-cache
 ```
 
 It automatically rebuilds before executing scenarios. Keep the suite green
@@ -47,13 +49,15 @@ before pushing.
 
 ## Common Scripts
 
-| Command           | Description                                       |
-| ----------------- | ------------------------------------------------- |
-| `npm run lint`    | Biome lint/format checks                          |
-| `npm run test`    | Vitest suite                                      |
-| `npm run build`   | TypeScript build + mark CLI executable            |
-| `npm run evals`   | Build + run `scripts/run-evals.js` scenarios      |
-| `npm run dev`     | TypeScript watch mode (hot rebuild of `dist/`)    |
-| `npm run cli --`  | Convenience wrapper around `node dist/cli.js ...` |
+| Command                                            | Description                                                    |
+| -------------------------------------------------- | -------------------------------------------------------------- |
+| `bunx biome check .`                               | Biome lint/format checks                                       |
+| `npx nx run composer:test --skip-nx-cache`         | Build TUI/Web then run Vitest (CI equivalent)                  |
+| `npx nx run composer:build --skip-nx-cache`        | TypeScript build + mark CLI executable                         |
+| `npx nx run composer:evals --skip-nx-cache`        | Build + run `scripts/run-evals.js` scenarios                   |
+| `bun run --filter @evalops/tui build`              | Package-specific build for TUI                                 |
+| `bun run --filter @evalops/composer-web build`     | Package-specific build for Web UI                              |
+| `bun run dev`                                      | TypeScript watch mode (hot rebuild of `dist/`)                 |
+| `bun run cli --`                                   | Convenience wrapper around `node dist/cli.js ...` using Bun    |
 
 You’re ready to develop once lint/tests/evals pass locally.

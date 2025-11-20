@@ -513,7 +513,8 @@ export class TuiRenderer {
 				this.toolStatusView.handleToolsCommand(context.rawInput),
 			handleImportConfig: (context) =>
 				this.importExportView.handleImportCommand(context.rawInput),
-			showSessionInfo: (_context) => this.sessionView.showSessionInfo(),
+			handleSession: (context) =>
+				this.sessionView.handleSessionCommand(context.rawInput),
 			handleSessions: (context) =>
 				this.sessionView.handleSessionsCommand(context.rawInput),
 			handleReport: (context) => this.handleReportCommand(context),
