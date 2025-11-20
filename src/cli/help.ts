@@ -10,6 +10,7 @@ export function printHelp(version: string) {
 	const options = `${sectionHeading("Options")}${[
 		"--provider <name>       Provider name (default: anthropic)",
 		"--model <id>            Model ID (default: claude-sonnet-4-5)",
+		"--models <patterns>     Comma-separated patterns for Ctrl+P model cycling",
 		"--api-key <key>         API key (defaults to env vars)",
 		"--codex-api-key <key>   Codex/ChatGPT API token (defaults to CODEX_API_KEY)",
 		"--system-prompt <text>  System prompt (default: coding assistant prompt)",

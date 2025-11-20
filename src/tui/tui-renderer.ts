@@ -93,6 +93,7 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import { isSafeModeEnabled } from "../safety/safe-mode.js";
+import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -134,6 +135,7 @@ const TODO_STORE_PATH =
  */
 export class TuiRenderer {
 	private ui: TUI;
+	private startupContainer: Container;
 	private chatContainer: Container;
 	private statusContainer: Container;
 	private editor: CustomEditor;
@@ -209,6 +211,10 @@ export class TuiRenderer {
 	private compactionInProgress = false;
 	private pendingPasteSummaries = new Set<number>();
 	private contextWarningLevel: "none" | "warn" | "danger" = "none";
+	private modelScope: RegisteredModel[] = [];
+	private startupChangelog?: string | null;
+	private updateNotice?: UpdateCheckResult | null;
+	private isCyclingModel = false;
 
 	constructor(
 		agent: Agent,
@@ -216,17 +222,32 @@ export class TuiRenderer {
 		version: string,
 		approvalService: ActionApprovalService,
 		explicitApiKey?: string,
+		options: {
+			modelScope?: RegisteredModel[];
+			startupChangelog?: string | null;
+			updateNotice?: UpdateCheckResult | null;
+		} = {},
 	) {
 		this.agent = agent;
 		this.sessionManager = sessionManager;
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;
+		this.modelScope = options.modelScope ?? [];
+		this.startupChangelog = options.startupChangelog;
+		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal());
+		this.startupContainer = new Container();
 		this.chatContainer = new Container();
 		this.statusContainer = new Container();
 		this.editor = new CustomEditor();
 		this.editor.onLargePaste = (event) => {
 			void this.handleLargePaste(event);
+		};
+		this.editor.onShiftTab = () => {
+			this.cycleThinkingLevel();
+		};
+		this.editor.onCtrlP = () => {
+			void this.cycleModel();
 		};
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.editorContainer.addChild(this.editor); // Start with editor
@@ -648,6 +669,7 @@ export class TuiRenderer {
 		this.welcomeAnimation = new WelcomeAnimation(() => this.ui.requestRender());
 		this.chatContainer.addChild(this.welcomeAnimation);
 
+		this.ui.addChild(this.startupContainer);
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(new Spacer(1));
@@ -655,10 +677,64 @@ export class TuiRenderer {
 		this.refreshFooterHint();
 		this.ui.addChild(this.footer);
 		this.ui.setFocus(this.editor);
+		this.renderStartupAnnouncements();
 
 		// Start the UI
 		this.ui.start();
 		this.isInitialized = true;
+	}
+
+	private renderStartupAnnouncements(): void {
+		this.startupContainer.clear();
+		let announced = false;
+		if (this.updateNotice) {
+			const latest = this.updateNotice.latestVersion ?? "";
+			const current = this.updateNotice.currentVersion;
+			const notes = this.updateNotice.notes;
+			const source = this.updateNotice.sourceUrl;
+			const headline = chalk.hex("#f59e0b")(
+				`Update available: v${latest || "unknown"}`,
+			);
+			const currentLine = chalk.dim(`Current version: v${current}`);
+			const installLine = `${chalk.dim("Update with")} ${chalk.cyan(
+				"npm install -g @evalops/composer",
+			)}`;
+			const noteLine = notes ? chalk.dim(notes) : null;
+			const sourceLine = source ? chalk.dim(`Source: ${source}`) : null;
+			const message = [headline, currentLine, installLine, noteLine, sourceLine]
+				.filter(Boolean)
+				.join("\n");
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(new Text(message, 1, 0));
+			announced = true;
+		}
+
+		if (this.startupChangelog) {
+			const header = chalk.bold.cyan("What's new");
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(
+				new Text(`${header}\n${this.startupChangelog}`, 1, 0),
+			);
+			announced = true;
+		}
+
+		if (this.modelScope.length > 0) {
+			const names = this.modelScope.map((model) => model.name ?? model.id);
+			const header = chalk.bold("Model scope");
+			const scopeLines = [
+				`${header}: ${names.join(", ")}`,
+				chalk.dim("Press Ctrl+P to cycle scoped models."),
+			];
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(new Text(scopeLines.join("\n"), 1, 0));
+			announced = true;
+		}
+
+		if (announced) {
+			this.ui.requestRender();
+		} else {
+			this.startupContainer.clear();
+		}
 	}
 
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
@@ -1006,6 +1082,7 @@ export class TuiRenderer {
 		this.sessionContext.resetArtifacts();
 		this.toolOutputView.clearTrackedComponents();
 		this.chatContainer.clear();
+		this.startupContainer.clear();
 		this.planView.syncHintWithStore();
 		this.planHint = null;
 		this.footer.updateState(this.agent.state);
@@ -1205,7 +1282,75 @@ export class TuiRenderer {
 		if (this.queuedPromptCount > 0) {
 			badges.push(`queue:${this.queuedPromptCount}`);
 		}
+		const thinkingLevel = this.agent.state.thinkingLevel;
+		if (thinkingLevel && thinkingLevel !== "off") {
+			badges.push(`think:${thinkingLevel}`);
+		}
 		return badges;
+	}
+
+	private cycleThinkingLevel(): void {
+		const model = this.agent.state.model as RegisteredModel | undefined;
+		if (!model?.reasoning) {
+			this.notificationView.showInfo(
+				"Current model does not support thinking levels.",
+			);
+			return;
+		}
+		const levels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+		const current = this.agent.state.thinkingLevel || "off";
+		const index = levels.indexOf(current);
+		const nextLevel = levels[(index + 1) % levels.length];
+		this.agent.setThinkingLevel(nextLevel);
+		this.sessionManager.saveThinkingLevelChange(nextLevel);
+		this.notificationView.showInfo(`Thinking level: ${nextLevel}`);
+		this.refreshFooterHint();
+	}
+
+	private async cycleModel(): Promise<void> {
+		if (this.isCyclingModel) {
+			return;
+		}
+		this.isCyclingModel = true;
+		try {
+			const candidates =
+				this.modelScope.length > 0
+					? this.modelScope
+					: (getRegisteredModels() as RegisteredModel[]);
+			if (candidates.length === 0) {
+				this.notificationView.showInfo("No models available to cycle.");
+				return;
+			}
+			if (candidates.length === 1) {
+				this.notificationView.showInfo(
+					"Only one model in scope. Add more via --models to enable cycling.",
+				);
+				return;
+			}
+			const current = this.agent.state.model;
+			let index = candidates.findIndex(
+				(model) =>
+					model.id === current.id && model.provider === current.provider,
+			);
+			if (index === -1) {
+				index = -1;
+			}
+			const nextModel = candidates[(index + 1) % candidates.length];
+			this.agent.setModel(nextModel);
+			this.sessionManager.saveModelChange(
+				`${nextModel.provider}/${nextModel.id}`,
+				toSessionModelMetadata(nextModel),
+			);
+			const label = nextModel.name ?? nextModel.id;
+			this.notificationView.showToast(`Model: ${label}`, "success");
+			this.refreshFooterHint();
+		} catch (error) {
+			this.notificationView.showError(
+				`Failed to cycle model: ${this.describeError(error)}`,
+			);
+		} finally {
+			this.isCyclingModel = false;
+		}
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {

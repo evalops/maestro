@@ -27,6 +27,7 @@ export interface Args {
 	execOutputLast?: string;
 	execResumeId?: string;
 	execUseLast?: boolean;
+	models?: string[];
 	messages: string[];
 }
 
@@ -77,6 +78,14 @@ export function parseArgs(args: string[]): Args {
 			result.provider = args[++i];
 		} else if (arg === "--model" && i + 1 < args.length) {
 			result.model = args[++i];
+		} else if (arg === "--models" && i + 1 < args.length) {
+			const patterns = args[++i]
+				.split(",")
+				.map((value) => value.trim())
+				.filter((value) => value.length > 0);
+			if (patterns.length > 0) {
+				result.models = patterns;
+			}
 		} else if (arg === "--models-file" && i + 1 < args.length) {
 			result.modelsFile = args[++i];
 		} else if (arg === "--api-key" && i + 1 < args.length) {
