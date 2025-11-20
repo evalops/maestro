@@ -212,7 +212,6 @@ export class TuiRenderer {
 	private pendingPasteSummaries = new Set<number>();
 	private contextWarningLevel: "none" | "warn" | "danger" = "none";
 	private modelScope: RegisteredModel[] = [];
-	private startupChangelog?: string | null;
 	private startupChangelogSummary?: string | null;
 	private updateNotice?: UpdateCheckResult | null;
 	private isCyclingModel = false;
@@ -225,7 +224,6 @@ export class TuiRenderer {
 		explicitApiKey?: string,
 		options: {
 			modelScope?: RegisteredModel[];
-			startupChangelog?: string | null;
 			startupChangelogSummary?: string | null;
 			updateNotice?: UpdateCheckResult | null;
 		} = {},
@@ -235,7 +233,6 @@ export class TuiRenderer {
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;
 		this.modelScope = options.modelScope ?? [];
-		this.startupChangelog = options.startupChangelog;
 		this.startupChangelogSummary = options.startupChangelogSummary;
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal());
@@ -712,14 +709,7 @@ export class TuiRenderer {
 			announced = true;
 		}
 
-		if (this.startupChangelog) {
-			const header = chalk.bold.cyan("What's new");
-			this.startupContainer.addChild(new Spacer(1));
-			this.startupContainer.addChild(
-				new Text(`${header}\n${this.startupChangelog}`, 1, 0),
-			);
-			announced = true;
-		} else if (this.startupChangelogSummary) {
+		if (this.startupChangelogSummary) {
 			const line = `${chalk.bold.cyan("What's new")}: ${
 				this.startupChangelogSummary
 			} ${chalk.dim("(see CHANGELOG.md)")}`;

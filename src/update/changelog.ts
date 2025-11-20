@@ -95,10 +95,25 @@ export function formatChangelogVersion(entry: ChangelogEntry): string {
 export function summarizeChangelogEntry(entry: ChangelogEntry): string | null {
 	const lines = entry.content
 		.split("\n")
-		.map((line) => line.trim().replace(/^[#*-]\s*/, ""))
+		.map((line) => line.trim())
 		.filter(Boolean);
-	const summaryLine = lines.find((line) => !line.startsWith("#"));
-	return summaryLine ?? null;
+	for (const line of lines) {
+		if (line.startsWith("```")) {
+			continue;
+		}
+		const withoutHeading = line.replace(/^#+\s*/, "");
+		const withoutBullet = withoutHeading.replace(/^[-*+]\s*/, "");
+		const candidate = withoutBullet.trim();
+		if (
+			!candidate ||
+			candidate.startsWith("#") ||
+			/^\[?\d+\.\d+\.\d+/.test(candidate)
+		) {
+			continue;
+		}
+		return candidate;
+	}
+	return null;
 }
 
 const HIDE_VALUES = new Set(["0", "false", "off", "hide", "hidden", "skip"]);
