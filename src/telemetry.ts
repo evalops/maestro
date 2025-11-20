@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 type BaseTelemetryEvent = {
-	type: "tool-execution" | "evaluation" | "loader-stage";
+	type: "tool-execution" | "evaluation" | "loader-stage" | "sse";
 	timestamp: string;
 };
 
@@ -29,10 +29,19 @@ export interface LoaderStageTelemetry extends BaseTelemetryEvent {
 	metadata?: Record<string, unknown>;
 }
 
+export interface SseTelemetry extends BaseTelemetryEvent {
+	type: "sse";
+	event: "skip";
+	sent: number;
+	skipped: number;
+	metadata?: Record<string, unknown>;
+}
+
 type TelemetryEvent =
 	| ToolExecutionTelemetry
 	| EvaluationTelemetry
-	| LoaderStageTelemetry;
+	| LoaderStageTelemetry
+	| SseTelemetry;
 
 const telemetryFlag =
 	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
@@ -232,6 +241,21 @@ export function recordLoaderStage(
 		timestamp: new Date().toISOString(),
 		stage,
 		durationMs,
+		metadata,
+	});
+}
+
+export function recordSseSkip(
+	sent: number,
+	skipped: number,
+	metadata?: Record<string, unknown>,
+): void {
+	void recordTelemetry({
+		type: "sse",
+		event: "skip",
+		timestamp: new Date().toISOString(),
+		sent,
+		skipped,
 		metadata,
 	});
 }

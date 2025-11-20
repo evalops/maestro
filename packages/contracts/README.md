@@ -28,6 +28,8 @@ const usage: ComposerUsage = {
 	cacheWrite: 0,
 	cost: { input: 0.01, output: 0.02, total: 0.03 },
 };
+
+payload.usage = usage;
 ```
 
 Consumers outside the monorepo can depend on `@evalops/contracts` once the package has been built/published; only the compiled `dist` folder is distributed.

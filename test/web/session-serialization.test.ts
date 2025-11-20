@@ -163,8 +163,8 @@ describe("session serialization", () => {
 		const assistant: AssistantMessage = {
 			role: "assistant",
 			content: [
-				{ type: "text", text: "First" },
 				{ type: "thinking", thinking: "Reasoning" },
+				{ type: "text", text: "First" },
 				{
 					type: "toolCall",
 					id: "tool-abc",

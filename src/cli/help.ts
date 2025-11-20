@@ -69,7 +69,8 @@ export function printHelp(version: string) {
 	)}`;
 	const sessionsDiscovery = `${sectionHeading("Session Commands")}${muted(
 		`  /session [info|favorite|unfavorite|summary "<text>"]
-  /sessions [list|load <id>|favorite <id>|unfavorite <id>|summarize <id>]`,
+  /sessions [list|load <id>|favorite <id>|unfavorite <id>|summarize <id>]
+  (Also available via TUI command palette)`,
 	)}`;
 	const tools = `${sectionHeading("Available Tools")}${muted(
 		`  read   - Read file contents
