@@ -347,7 +347,11 @@ export class GitView {
 		]);
 		const worktreeDiffResult = this.runGitCommand(["diff", "--unified=5"]);
 
-		const normalize = (result: { ok: boolean; stdout: string; stderr: string }) =>
+		const normalize = (result: {
+			ok: boolean;
+			stdout: string;
+			stderr: string;
+		}) =>
 			result.ok
 				? result.stdout.trim()
 				: (result.stderr || result.stdout || "").trim();

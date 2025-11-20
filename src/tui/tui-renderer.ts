@@ -90,10 +90,7 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import { ApprovalController } from "./approval-controller.js";
-import {
-	REVIEW_INSTRUCTIONS,
-	buildReviewPrompt,
-} from "./review-prompt.js";
+import { REVIEW_INSTRUCTIONS, buildReviewPrompt } from "./review-prompt.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
@@ -843,9 +840,7 @@ export class TuiRenderer {
 			reviewContext.worktreeDiff.trim().length > 0;
 		const hasStat = reviewContext.diffStat.trim().length > 0;
 		if (!hasDiff && !hasStat) {
-			this.notificationView.showInfo(
-				"Working tree clean. Nothing to review.",
-			);
+			this.notificationView.showInfo("Working tree clean. Nothing to review.");
 			return;
 		}
 

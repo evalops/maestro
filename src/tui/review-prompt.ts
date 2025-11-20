@@ -66,9 +66,7 @@ function truncateSection(text: string, limit = 15000): string {
 	return `${trimmed.slice(0, limit)}\n[truncated ${trimmed.length - limit} additional chars]`;
 }
 
-export function buildReviewPrompt(
-	review: ReviewContext,
-): string {
+export function buildReviewPrompt(review: ReviewContext): string {
 	const status = truncateSection(review.status || "(no status)");
 	const diffStat = truncateSection(review.diffStat || "", 8000);
 	const staged = truncateSection(review.stagedDiff || "");
