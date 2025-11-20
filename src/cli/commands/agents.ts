@@ -37,6 +37,32 @@ Use this as the contributor quickstart for **{{PROJECT_NAME}}**. Keep it concise
 - Document new environment variables, migrations, and destructive scripts; prefer least-privilege defaults.
 `;
 
+const GENERATION_PROMPT = `Generate a file named AGENTS.md that serves as a contributor guide for this repository.
+
+Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section. Follow the outline below, but adapt as needed—add sections if relevant, and omit those that do not apply to this project.
+
+Document Requirements:
+- Title the document "Repository Guidelines".
+- Use Markdown headings (#, ##, etc.) for structure.
+- Keep the document concise; 200-400 words is optimal.
+- Keep explanations short, direct, and specific to this repository.
+- Provide examples where helpful (commands, directory paths, naming patterns).
+- Maintain a professional, instructional tone.
+
+Recommended Sections:
+- Project Structure & Module Organization: Outline where source code, tests, docs, configs, and assets live.
+- Build, Test, and Development Commands: List key commands for installing, building, testing, and running locally with short explanations.
+- Coding Style & Naming Conventions: Indentation rules, style preferences, naming patterns, formatting/linting tools.
+- Testing Guidelines: Frameworks, coverage expectations, naming conventions, and how to run tests.
+- Commit & Pull Request Guidelines: Commit message conventions, PR requirements (descriptions, linked issues, screenshots), and pre-review checks.
+- (Optional) Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions if applicable.
+
+Instructions:
+- Use the available tools to inspect this repository as needed (e.g., list directories, read configs, inspect scripts) before writing.
+- Overwrite the entire contents of AGENTS.md at the target path.
+- Keep output scoped to the single Markdown file; do not create extra files.
+- Write the final document directly to the AGENTS.md file and return a brief confirmation when done.`;
+
 function buildAgentsTemplate(projectName: string): string {
 	return TEMPLATE.replace(/{{PROJECT_NAME}}/g, projectName);
 }
@@ -54,6 +80,10 @@ function resolveTargetPath(targetPath?: string): string {
 		return resolved;
 	}
 	return join(resolved, "AGENTS.md");
+}
+
+export function buildAgentsInitPrompt(targetPath: string): string {
+	return `${GENERATION_PROMPT}\n\nTarget path: ${targetPath}`;
 }
 
 export function handleAgentsInit(
