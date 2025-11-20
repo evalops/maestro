@@ -83,12 +83,9 @@ export function getLatestEntry(
 	if (entries.length === 0) {
 		return null;
 	}
-	return entries.slice(1).reduce<ChangelogEntry>(
-		(latest, entry) => {
-			return compareEntry(entry, latest) > 0 ? entry : latest;
-		},
-		entries[0] as ChangelogEntry,
-	);
+	return entries.slice(1).reduce<ChangelogEntry>((latest, entry) => {
+		return compareEntry(entry, latest) > 0 ? entry : latest;
+	}, entries[0] as ChangelogEntry);
 }
 
 export function formatChangelogVersion(entry: ChangelogEntry): string {

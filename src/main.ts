@@ -47,8 +47,8 @@ import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { codingTools } from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 import {
-	getChangelogPath,
 	formatChangelogVersion,
+	getChangelogPath,
 	getLatestEntry,
 	getNewEntries,
 	parseChangelog,
@@ -710,7 +710,9 @@ export async function main(args: string[]) {
 			? getLatestEntry(getNewEntries(changelogEntries, lastVersion))
 			: getLatestEntry(changelogEntries);
 		startupChangelog = latestEntry ? latestEntry.content.trim() : null;
-		latestEntryVersion = latestEntry ? formatChangelogVersion(latestEntry) : null;
+		latestEntryVersion = latestEntry
+			? formatChangelogVersion(latestEntry)
+			: null;
 		if (startupChangelog) {
 			writeLastShownChangelogVersion(latestEntryVersion ?? VERSION);
 		}
