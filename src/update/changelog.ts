@@ -77,6 +77,20 @@ const compareEntry = (a: ChangelogEntry, b: ChangelogEntry): number => {
 	return a.patch - b.patch;
 };
 
+export function getLatestEntry(
+	entries: ChangelogEntry[],
+): ChangelogEntry | null {
+	if (entries.length === 0) {
+		return null;
+	}
+	return entries.slice(1).reduce<ChangelogEntry>(
+		(latest, entry) => {
+			return compareEntry(entry, latest) > 0 ? entry : latest;
+		},
+		entries[0] as ChangelogEntry,
+	);
+}
+
 export function getNewEntries(
 	entries: ChangelogEntry[],
 	lastVersion: string,
