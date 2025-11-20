@@ -4,7 +4,7 @@ import {
 	type RegisteredModel,
 	getRegisteredModels,
 } from "../models/registry.js";
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session/manager.js";
 import type {
 	SessionDataProvider,
 	SessionItem,

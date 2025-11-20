@@ -1,5 +1,5 @@
 export { main } from "./main.js";
-export { SessionManager } from "./session-manager.js";
+export { SessionManager } from "./session/manager.js";
 export {
 	bashTool,
 	codingTools,

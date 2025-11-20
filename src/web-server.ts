@@ -30,7 +30,7 @@ import {
 	resolveModel,
 } from "./models/registry.js";
 import { createAuthResolver } from "./providers/auth.js";
-import { SessionManager, toSessionModelMetadata } from "./session-manager.js";
+import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { recordSseSkip } from "./telemetry.js";
 import { codingTools } from "./tools/index.js";
 import { getUsageFilePath, getUsageSummary } from "./tracking/cost-tracker.js";

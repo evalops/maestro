@@ -9,7 +9,7 @@ import {
 	isRenderableUserMessage,
 	renderMessageToPlainText,
 } from "../conversation/render-model.js";
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session/manager.js";
 import type { FooterComponent } from "./footer.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 

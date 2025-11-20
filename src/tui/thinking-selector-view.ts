@@ -1,6 +1,6 @@
 import type { Container, TUI } from "@evalops/tui";
 import type { Agent } from "../agent/agent.js";
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session/manager.js";
 import type { CustomEditor } from "./custom-editor.js";
 import { ThinkingSelectorComponent } from "./thinking-selector.js";
 

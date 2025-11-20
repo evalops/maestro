@@ -3,8 +3,8 @@
  * Extracted to eliminate 'any' types and improve type safety.
  */
 
-import type { AppMessage } from "./agent/types.js";
-import type { SessionModelMetadata } from "./session-manager.js";
+import type { AppMessage } from "../agent/types.js";
+import type { SessionModelMetadata } from "./manager.js";
 
 /**
  * Base session entry

@@ -32,8 +32,8 @@ import { getRegisteredModels } from "../models/registry.js";
 import {
 	type SessionModelMetadata,
 	toSessionModelMetadata,
-} from "../session-manager.js";
-import type { SessionManager } from "../session-manager.js";
+} from "../session/manager.js";
+import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";

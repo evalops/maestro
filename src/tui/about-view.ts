@@ -6,7 +6,7 @@ import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import { loadProjectContextFiles } from "../cli/system-prompt.js";
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session/manager.js";
 import type { GitView } from "./git-view.js";
 import { TOOL_FAILURE_LOG_PATH } from "./tool-status-view.js";
 

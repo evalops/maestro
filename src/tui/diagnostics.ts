@@ -2,7 +2,7 @@ import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
 import type { LspDiagnostic } from "../lsp/index.js";
 import type { ApiKeyLookupResult } from "../providers/api-keys.js";
-import type { SessionModelMetadata } from "../session-manager.js";
+import type { SessionModelMetadata } from "../session/manager.js";
 import type { TelemetryStatus } from "../telemetry.js";
 import type { ExaUsageSummary } from "../tools/exa-usage.js";
 

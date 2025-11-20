@@ -11,15 +11,16 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentState, AppMessage } from "./agent/types.js";
-import { SESSION_CONFIG } from "./config/constants.js";
+import type { AgentState, AppMessage } from "../agent/types.js";
+import { SESSION_CONFIG } from "../config/constants.js";
 import {
 	buildConversationModel,
 	isRenderableUserMessage,
 	renderMessageToPlainText,
-} from "./conversation/render-model.js";
-import { getRegisteredModels } from "./models/registry.js";
-import type { RegisteredModel } from "./models/registry.js";
+} from "../conversation/render-model.js";
+import { getRegisteredModels } from "../models/registry.js";
+import type { RegisteredModel } from "../models/registry.js";
+import { createLogger } from "../utils/logger.js";
 import {
 	type ModelChangeEntry,
 	type SessionEntry,
@@ -29,8 +30,7 @@ import {
 	type SessionMetadata,
 	type ThinkingLevelChangeEntry,
 	tryParseSessionEntry,
-} from "./session-manager-types.js";
-import { createLogger } from "./utils/logger.js";
+} from "./types.js";
 
 const logger = createLogger("session-manager");
 
@@ -293,7 +293,7 @@ export type {
 	SessionMessageEntry,
 	SessionMetaEntry,
 	SessionToolInfo,
-} from "./session-manager-types.js";
+} from "./types.js";
 
 type PendingSessionEntry =
 	| SessionMessageEntry

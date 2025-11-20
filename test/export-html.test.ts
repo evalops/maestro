@@ -12,7 +12,7 @@ import {
 	exportSessionToHtml,
 	exportSessionToText,
 } from "../src/export-html.js";
-import { SessionManager } from "../src/session-manager.js";
+import { SessionManager } from "../src/session/manager.js";
 
 function createTempSessionFile(contents: string): string {
 	const dir = mkdtempSync(join(tmpdir(), "composer-export-"));

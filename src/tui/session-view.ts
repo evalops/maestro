@@ -13,7 +13,7 @@ import {
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
 } from "../conversation/render-model.js";
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session/manager.js";
 import {
 	badge,
 	heading,

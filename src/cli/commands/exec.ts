@@ -5,7 +5,7 @@ import type { ValidateFunction } from "ajv";
 import chalk from "chalk";
 import type { Agent } from "../../agent/agent.js";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
-import type { SessionManager } from "../../session-manager.js";
+import type { SessionManager } from "../../session/manager.js";
 
 const Ajv = (AjvModule as any).default || AjvModule;
 

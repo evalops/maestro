@@ -1,4 +1,4 @@
-import type { SessionManager } from "../session-manager.js";
+import type { SessionManager } from "../session/manager.js";
 
 export interface SessionItem {
 	path: string;
