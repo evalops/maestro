@@ -6,13 +6,13 @@ import {
 	labeledValue,
 	muted,
 	separator,
-} from "../style/theme.js";
+} from "../../style/theme.js";
 import {
 	getTelemetryStatus,
 	setTelemetryRuntimeOverride,
-} from "../telemetry.js";
-import type { TelemetryStatus } from "../telemetry.js";
-import type { CommandExecutionContext } from "./commands/types.js";
+} from "../../telemetry.js";
+import type { TelemetryStatus } from "../../telemetry.js";
+import type { CommandExecutionContext } from "../commands/types.js";
 
 interface TelemetryViewOptions {
 	chatContainer: Container;

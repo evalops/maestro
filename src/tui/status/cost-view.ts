@@ -6,9 +6,9 @@ import {
 	contextualBadge,
 	muted,
 	separator as themedSeparator,
-} from "../style/theme.js";
-import { clearUsage, getUsageSummary } from "../tracking/cost-tracker.js";
-import type { CommandExecutionContext } from "./commands/types.js";
+} from "../../style/theme.js";
+import { clearUsage, getUsageSummary } from "../../tracking/cost-tracker.js";
+import type { CommandExecutionContext } from "../commands/types.js";
 
 type CostPeriod = {
 	label: string;
@@ -34,7 +34,7 @@ export class CostView {
 		const tokens = context.argumentText
 			.trim()
 			.split(/\s+/)
-			.filter((token) => token.length > 0);
+			.filter((token: string) => token.length > 0);
 		const action = tokens[0]?.toLowerCase();
 		const remainder = action ? tokens.slice(1) : tokens;
 

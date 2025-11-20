@@ -46,9 +46,7 @@ import type {
 	CommandExecutionContext,
 } from "./commands/types.js";
 import { ConfigView } from "./config-view.js";
-import { CostView } from "./cost-view.js";
 import { CustomEditor } from "./custom-editor.js";
-import { DiagnosticsView } from "./diagnostics-view.js";
 import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { FileSearchView } from "./file-search-view.js";
@@ -78,8 +76,10 @@ import { SessionDataProvider } from "./session/session-data-provider.js";
 import { SessionSummaryController } from "./session/session-summary-controller.js";
 import { SessionSwitcherView } from "./session/session-switcher-view.js";
 import { SessionView } from "./session/session-view.js";
+import { CostView } from "./status/cost-view.js";
+import { DiagnosticsView } from "./status/diagnostics-view.js";
+import { TelemetryView } from "./status/telemetry-view.js";
 import { StreamingView } from "./streaming-view.js";
-import { TelemetryView } from "./telemetry-view.js";
 import { ThinkingSelectorView } from "./thinking-selector-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolOutputView } from "./tool-output-view.js";
