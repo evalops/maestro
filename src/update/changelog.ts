@@ -92,6 +92,40 @@ export function formatChangelogVersion(entry: ChangelogEntry): string {
 	return `${entry.major}.${entry.minor}.${entry.patch}`;
 }
 
+export function summarizeChangelogEntry(entry: ChangelogEntry): string | null {
+	const lines = entry.content
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+	for (const line of lines) {
+		if (line.startsWith("```")) {
+			continue;
+		}
+		const withoutHeading = line.replace(/^#+\s*/, "");
+		const withoutBullet = withoutHeading.replace(/^[-*+]\s*/, "");
+		const candidate = withoutBullet.trim();
+		if (
+			!candidate ||
+			candidate.startsWith("#") ||
+			/^\[?\d+\.\d+\.\d+/.test(candidate)
+		) {
+			continue;
+		}
+		return candidate;
+	}
+	return null;
+}
+
+const HIDE_VALUES = new Set(["0", "false", "off", "hide", "hidden", "skip"]);
+
+export function isChangelogHiddenFromEnv(env = process.env): boolean {
+	const value = env.COMPOSER_CHANGELOG;
+	if (!value) {
+		return false;
+	}
+	return HIDE_VALUES.has(value.toLowerCase().trim());
+}
+
 export function getNewEntries(
 	entries: ChangelogEntry[],
 	lastVersion: string,
