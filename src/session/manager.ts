@@ -598,7 +598,10 @@ export class SessionManager {
 		this.writer?.flushSync();
 		const entries = safeReadSessionEntries(this.sessionFile);
 		return entries
-			.filter((entry): entry is SessionMessageEntry => entry.type === "message")
+			.filter(
+				(entry): entry is SessionMessageEntry =>
+					entry.type === "message" && Boolean(entry.message),
+			)
 			.map((entry) => entry.message as AppMessage);
 	}
 
