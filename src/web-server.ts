@@ -75,25 +75,34 @@ const CORS_HEADERS = {
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
+function safeSseWrite(res: any, payload: string): void {
+	if (!res || res.writableEnded || res.destroyed) return;
+	try {
+		res.write(payload);
+	} catch (error) {
+		console.debug(
+			"SSE write skipped after disconnect",
+			error instanceof Error ? error.message : error,
+		);
+	}
+}
+
 /**
  * Server-Sent Events (SSE) streaming for chat responses
  */
 function sendSSE(res: any, event: AgentEvent) {
-	if (!res || res.writableEnded || res.destroyed) return;
 	const data = JSON.stringify(event);
-	res.write(`data: ${data}\n\n`);
+	safeSseWrite(res, `data: ${data}\n\n`);
 }
 
 function sendSessionUpdate(res: any, sessionId: string) {
-	if (!res || res.writableEnded || res.destroyed) return;
 	const payload = { type: "session_update", sessionId };
-	res.write(`data: ${JSON.stringify(payload)}\n\n`);
+	safeSseWrite(res, `data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function startHeartbeat(res: any) {
 	return setInterval(() => {
-		if (res.writableEnded) return;
-		res.write('data: {"type":"heartbeat"}\n\n');
+		safeSseWrite(res, 'data: {"type":"heartbeat"}\n\n');
 	}, HEARTBEAT_INTERVAL_MS);
 }
 
@@ -575,7 +584,7 @@ async function handleChat(req: any, res: any) {
 				await sessionManager.flush();
 				if (!res.writableEnded) {
 					if (aborted) {
-						res.write('data: {"type":"aborted"}\n\n');
+						safeSseWrite(res, 'data: {"type":"aborted"}\n\n');
 					}
 					res.end();
 				}
@@ -584,7 +593,7 @@ async function handleChat(req: any, res: any) {
 			try {
 				await agent.prompt(userInput);
 				if (!res.writableEnded) {
-					res.write("data: [DONE]\n\n");
+					safeSseWrite(res, "data: [DONE]\n\n");
 				}
 			} catch (error) {
 				console.error("Agent prompt error:", error);
