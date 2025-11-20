@@ -79,11 +79,13 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
  * Server-Sent Events (SSE) streaming for chat responses
  */
 function sendSSE(res: any, event: AgentEvent) {
+	if (!res || res.writableEnded || res.destroyed) return;
 	const data = JSON.stringify(event);
 	res.write(`data: ${data}\n\n`);
 }
 
 function sendSessionUpdate(res: any, sessionId: string) {
+	if (!res || res.writableEnded || res.destroyed) return;
 	const payload = { type: "session_update", sessionId };
 	res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
