@@ -36,6 +36,7 @@ import {
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
+
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
 import { BashModeView } from "./bash-mode-view.js";
@@ -64,6 +65,7 @@ import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
 import { FileSearchView } from "./search/file-search-view.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
+import { QueueModeSelectorView } from "./selectors/queue-mode-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
 import { ThinkingSelectorView } from "./selectors/thinking-selector-view.js";
 import { UserMessageSelectorView } from "./selectors/user-message-selector-view.js";
@@ -197,6 +199,7 @@ export class TuiRenderer {
 	private thinkingSelectorView: ThinkingSelectorView;
 	private modelSelectorView: ModelSelectorView;
 	private reportSelectorView: ReportSelectorView;
+	private queueModeSelectorView: QueueModeSelectorView;
 	private userMessageSelectorView: UserMessageSelectorView;
 	private notificationView: NotificationView;
 	private updateView: UpdateView;
@@ -496,6 +499,13 @@ export class TuiRenderer {
 			editorContainer: this.editorContainer,
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
+		});
+		this.queueModeSelectorView = new QueueModeSelectorView({
+			ui: this.ui,
+			editorContainer: this.editorContainer,
+			editor: this.editor,
+			notificationView: this.notificationView,
+			onModeSelected: (mode) => this.setQueueMode(mode),
 		});
 		this.reportSelectorView = new ReportSelectorView({
 			editor: this.editor,
@@ -1135,19 +1145,17 @@ export class TuiRenderer {
 		const [action, idText] = args.split(/\s+/, 2);
 		if (action === "mode") {
 			const mode = (idText ?? "").toLowerCase();
+			if (!mode) {
+				// No mode specified - show interactive selector
+				this.queueModeSelectorView.show(this.promptQueueMode);
+				return;
+			}
 			if (mode !== "one" && mode !== "all") {
 				context.showError('Mode must be "one" or "all".');
 				return;
 			}
+			// setQueueMode already calls showToast, persistUiState, and refreshFooterHint
 			this.setQueueMode(mode);
-			this.notificationView.showToast(
-				mode === "all"
-					? "Queue mode set to all: prompts will enqueue while the model is running."
-					: "Queue mode set to one: submissions pause until the current run finishes.",
-				"success",
-			);
-			this.renderQueueList();
-			this.refreshFooterHint();
 			return;
 		}
 		if (action === "cancel") {
@@ -1182,6 +1190,13 @@ export class TuiRenderer {
 			this.editor.disableSubmit = !this.queueEnabled;
 		}
 		this.persistUiState();
+		this.notificationView.showToast(
+			mode === "all"
+				? "Queue mode set to all: prompts will enqueue while the model is running."
+				: "Queue mode set to one: submissions pause until the current run finishes.",
+			"success",
+		);
+		this.refreshFooterHint();
 	}
 
 	private persistUiState(): void {
