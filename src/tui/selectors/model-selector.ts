@@ -1,7 +1,11 @@
 import { Container, Input, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { RegisteredModel } from "../../models/registry.js";
-import { getRegisteredModels } from "../../models/registry.js";
+import {
+	getRegisteredModels,
+	reloadModelConfig,
+} from "../../models/registry.js";
+import { lookupApiKey } from "../../providers/api-keys.js";
 
 /**
  * Component that renders a model selector with search
@@ -15,6 +19,8 @@ export class ModelSelectorComponent extends Container {
 	private currentModel: RegisteredModel;
 	private onSelectCallback: (model: RegisteredModel) => void;
 	private onCancelCallback: () => void;
+	private filteredForCredentials = false;
+	private credentialHints: string[] = [];
 
 	constructor(
 		currentModel: RegisteredModel,
@@ -59,16 +65,28 @@ export class ModelSelectorComponent extends Container {
 	}
 
 	private loadModels(): void {
+		// Always reload config so edits to models.json are visible
+		reloadModelConfig();
 		const models = getRegisteredModels();
-		models.sort((a, b) => {
+		const hints = new Set<string>();
+		const filtered = models.filter((model) => {
+			const result = this.isModelUsable(model);
+			if (!result.usable && result.hint) {
+				hints.add(result.hint);
+			}
+			return result.usable;
+		});
+		this.filteredForCredentials = filtered.length !== models.length;
+		this.credentialHints = Array.from(hints);
+		filtered.sort((a, b) => {
 			const aIsCurrent = this.currentModel?.id === a.id;
 			const bIsCurrent = this.currentModel?.id === b.id;
 			if (aIsCurrent && !bIsCurrent) return -1;
 			if (!aIsCurrent && bIsCurrent) return 1;
 			return a.providerName.localeCompare(b.providerName);
 		});
-		this.allModels = models;
-		this.filteredModels = models;
+		this.allModels = filtered;
+		this.filteredModels = filtered;
 	}
 
 	private filterModels(query: string): void {
@@ -97,6 +115,16 @@ export class ModelSelectorComponent extends Container {
 
 	private updateList(): void {
 		this.listContainer.clear();
+
+		if (this.filteredForCredentials && this.credentialHints.length > 0) {
+			const hintText = this.credentialHints
+				.map((hint) => `• ${hint}`)
+				.join("\n");
+			this.listContainer.addChild(
+				new Text(chalk.yellow(`Missing credentials:\n${hintText}`), 0, 0),
+			);
+			this.listContainer.addChild(new Spacer(1));
+		}
 
 		const maxVisible = 10;
 		const startIndex = Math.max(
@@ -147,7 +175,15 @@ export class ModelSelectorComponent extends Container {
 
 		if (this.filteredModels.length === 0) {
 			this.listContainer.addChild(
-				new Text(chalk.gray("  No matching models"), 0, 0),
+				new Text(
+					chalk.gray(
+						this.filteredForCredentials
+							? "  No models with configured credentials"
+							: "  No matching models",
+					),
+					0,
+					0,
+				),
 			);
 		}
 	}
@@ -190,5 +226,25 @@ export class ModelSelectorComponent extends Container {
 
 	getSearchInput(): Input {
 		return this.searchInput;
+	}
+
+	private isModelUsable(model: RegisteredModel): {
+		usable: boolean;
+		hint?: string;
+	} {
+		// Always allow local endpoints; otherwise require a key
+		if (model.isLocal) return { usable: true };
+		const apiKey = lookupApiKey(model.provider);
+		if (apiKey.source !== "missing") {
+			return { usable: true };
+		}
+		const envOptions =
+			apiKey.envVar && apiKey.envVar.length > 0
+				? [apiKey.envVar]
+				: apiKey.checkedEnvVars;
+		const envHint = envOptions?.length
+			? `Set ${envOptions.join(" or ")} for ${model.providerName ?? model.provider}`
+			: `Configure credentials for ${model.providerName ?? model.provider}`;
+		return { usable: false, hint: envHint };
 	}
 }

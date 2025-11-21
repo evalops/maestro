@@ -10,11 +10,18 @@ export class CustomEditor extends Editor {
 	public onHistoryNavigate?: (direction: "prev" | "next") => boolean;
 	public onShiftTab?: () => void;
 	public onCtrlP?: () => void;
+	public onCtrlO?: () => void;
 
 	handleInput(data: string): void {
 		// Ctrl+P cycles models
 		if (data === "\x10" && this.onCtrlP) {
 			this.onCtrlP();
+			return;
+		}
+
+		// Ctrl+O toggles tool output expansion
+		if (data === "\x0f" && this.onCtrlO) {
+			this.onCtrlO();
 			return;
 		}
 

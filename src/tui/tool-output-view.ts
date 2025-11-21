@@ -52,6 +52,28 @@ export class ToolOutputView {
 		);
 	}
 
+	setCompactMode(compact: boolean, silent = false): void {
+		this.compactToolOutputs = compact;
+		this.applyCompactModeToTools();
+		if (!silent) {
+			this.options.showInfoMessage(
+				compact
+					? "Tool outputs will collapse by default."
+					: "Tool outputs will show full content.",
+			);
+		}
+	}
+
+	toggleCompactMode(): boolean {
+		this.compactToolOutputs = !this.compactToolOutputs;
+		this.applyCompactModeToTools();
+		return this.compactToolOutputs;
+	}
+
+	isCompact(): boolean {
+		return this.compactToolOutputs;
+	}
+
 	private applyCompactModeToTools(): void {
 		for (const component of this.toolComponents) {
 			component.setCollapsed(this.compactToolOutputs);

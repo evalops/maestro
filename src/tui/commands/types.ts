@@ -47,6 +47,7 @@ export interface CommandHandlers {
 	compact(context: CommandExecutionContext): Promise<void> | void;
 	compactTools(context: CommandExecutionContext): void;
 	queue(context: CommandExecutionContext): Promise<void> | void;
+	branch(context: CommandExecutionContext): void;
 	quit(context: CommandExecutionContext): void;
 	approvals(context: CommandExecutionContext): void;
 	newChat(context: CommandExecutionContext): void;

@@ -149,9 +149,21 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "branch",
+				description:
+					"Create a new session from an earlier user message (keeps history up to that point)",
+				usage: "/branch [list|<user-message-number>]",
+				tags: ["session"],
+			},
+			withArgs("branch"),
+			handlers.branch,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "queue",
-				description: "List or cancel queued prompts",
-				usage: "/queue [list|cancel <id>]",
+				description: "List, cancel, or change queue mode",
+				usage: "/queue [list|cancel <id>|mode <one|all>]",
 				tags: ["session"],
 			},
 			withArgs("queue"),

@@ -50,6 +50,7 @@ interface CommandRegistryOptions {
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
 	handleQueue: (context: CommandExecutionContext) => void | Promise<void>;
+	handleBranch: (context: CommandExecutionContext) => void | Promise<void>;
 	handleQuit: (context: CommandExecutionContext) => void;
 	handleApprovals: (context: CommandExecutionContext) => void;
 	handleNewChat: (context: CommandExecutionContext) => void;
@@ -92,6 +93,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			compact: opts.handleCompact,
 			compactTools: opts.handleCompactTools,
 			queue: opts.handleQueue,
+			branch: opts.handleBranch,
 			quit: opts.handleQuit,
 			approvals: opts.handleApprovals,
 			newChat: opts.handleNewChat,

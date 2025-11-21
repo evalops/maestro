@@ -77,6 +77,7 @@ import { StreamingView } from "./streaming-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
+import { type UiState, loadUiState, saveUiState } from "./ui-state.js";
 import { UpdateView } from "./update-view.js";
 import { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildCommandRegistry } from "./utils/commands/command-registry-builder.js";
@@ -206,6 +207,9 @@ export class TuiRenderer {
 	private promptQueueUnsubscribe?: () => void;
 	private queuedPromptCount = 0;
 	private queueEnabled = false;
+	private promptQueueMode: "one" | "all" = "all";
+	private nextQueuedPreview: string | null = null;
+	private uiState: UiState = {};
 	private readonly minimalMode =
 		process.env.COMPOSER_TUI_MINIMAL === "1" ||
 		process.env.COMPOSER_TUI_MINIMAL?.toLowerCase() === "true" ||
@@ -238,6 +242,10 @@ export class TuiRenderer {
 			updateNotice?: UpdateCheckResult | null;
 		} = {},
 	) {
+		this.uiState = loadUiState();
+		if (this.uiState.queueMode) {
+			this.promptQueueMode = this.uiState.queueMode;
+		}
 		this.agent = agent;
 		this.sessionManager = sessionManager;
 		this.version = version;
@@ -259,6 +267,9 @@ export class TuiRenderer {
 		};
 		this.editor.onCtrlP = () => {
 			void this.cycleModel();
+		};
+		this.editor.onCtrlO = () => {
+			this.toggleToolOutputs();
 		};
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.editorContainer.addChild(this.editor); // Start with editor
@@ -397,6 +408,9 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
+		if (typeof this.uiState.compactTools === "boolean") {
+			this.toolOutputView.setCompactMode(this.uiState.compactTools, true);
+		}
 		this.messageView = new MessageView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -585,8 +599,9 @@ export class TuiRenderer {
 				this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
 			handleCompact: (_context) => this.handleCompactCommand(),
 			handleCompactTools: (context) =>
-				this.toolOutputView.handleCompactToolsCommand(context.rawInput),
+				this.handleCompactToolsCommand(context.rawInput),
 			handleQueue: (context) => this.handleQueueCommand(context),
+			handleBranch: (context) => this.handleBranchCommand(context),
 			handleQuit: (_context) => {
 				this.stop();
 				process.exit(0);
@@ -630,7 +645,7 @@ export class TuiRenderer {
 
 	attachPromptQueue(queue: PromptQueue): void {
 		this.promptQueue = queue;
-		this.queueEnabled = true;
+		this.queueEnabled = this.promptQueueMode === "all";
 		this.promptQueueUnsubscribe?.();
 		this.promptQueueUnsubscribe = queue.subscribe((event) =>
 			this.handlePromptQueueEvent(event),
@@ -902,6 +917,11 @@ export class TuiRenderer {
 		}
 	}
 
+	private handleCompactToolsCommand(rawInput: string): void {
+		this.toolOutputView.handleCompactToolsCommand(rawInput);
+		this.persistUiState();
+	}
+
 	private handleReportCommand(context: CommandExecutionContext): void {
 		const parsedType = context.parsedArgs?.type;
 		const inlineArg = context.argumentText.trim().split(/\s+/)[0] ?? "";
@@ -975,6 +995,16 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
+	private toggleToolOutputs(): void {
+		const compact = this.toolOutputView.toggleCompactMode();
+		this.notificationView.showToast(
+			compact ? "Tool outputs collapsed." : "Tool outputs expanded.",
+			"info",
+		);
+		this.refreshFooterHint();
+		this.persistUiState();
+	}
+
 	private handlePromptQueueEvent(event: PromptQueueEvent): void {
 		if (!this.promptQueue) {
 			return;
@@ -1020,10 +1050,13 @@ export class TuiRenderer {
 	private updateQueuedPromptCount(): void {
 		if (!this.promptQueue) {
 			this.queuedPromptCount = 0;
+			this.nextQueuedPreview = null;
 			return;
 		}
 		const snapshot = this.promptQueue.getSnapshot();
 		this.queuedPromptCount = snapshot.pending.length;
+		const next = snapshot.pending[0];
+		this.nextQueuedPreview = next ? this.formatQueuedText(next.text, 60) : null;
 	}
 
 	private handleQueueCommand(context: CommandExecutionContext): void {
@@ -1037,6 +1070,23 @@ export class TuiRenderer {
 			return;
 		}
 		const [action, idText] = args.split(/\s+/, 2);
+		if (action === "mode") {
+			const mode = (idText ?? "").toLowerCase();
+			if (mode !== "one" && mode !== "all") {
+				context.showError('Mode must be "one" or "all".');
+				return;
+			}
+			this.setQueueMode(mode);
+			this.notificationView.showToast(
+				mode === "all"
+					? "Queue mode set to all: prompts will enqueue while the model is running."
+					: "Queue mode set to one: submissions pause until the current run finishes.",
+				"success",
+			);
+			this.renderQueueList();
+			this.refreshFooterHint();
+			return;
+		}
 		if (action === "cancel") {
 			const id = Number.parseInt(idText ?? "", 10);
 			if (!Number.isFinite(id)) {
@@ -1060,6 +1110,94 @@ export class TuiRenderer {
 			return;
 		}
 		context.renderHelp();
+	}
+
+	private setQueueMode(mode: "one" | "all"): void {
+		this.promptQueueMode = mode;
+		this.queueEnabled = mode === "all";
+		if (this.isAgentRunning) {
+			this.editor.disableSubmit = !this.queueEnabled;
+		}
+		this.persistUiState();
+	}
+
+	private persistUiState(): void {
+		saveUiState({
+			queueMode: this.promptQueueMode,
+			compactTools: this.toolOutputView.isCompact(),
+		});
+	}
+
+	private handleBranchCommand(context: CommandExecutionContext): void {
+		if (this.isAgentRunning) {
+			context.showError(
+				"Wait for the current run to finish before branching the session.",
+			);
+			return;
+		}
+		const messages = this.agent.state.messages ?? [];
+		const userMessages = messages
+			.map((msg, index) => ({ msg, index }))
+			.filter(({ msg }) => (msg as any)?.role === "user");
+		if (userMessages.length === 0) {
+			context.showInfo("No user messages available to branch from yet.");
+			return;
+		}
+
+		const arg = context.argumentText.trim();
+		if (!arg || arg === "list") {
+			const lines: string[] = ["User messages (use /branch <number>):"];
+			userMessages.forEach(({ msg }, userIndex) => {
+				lines.push(
+					`${userIndex + 1}. ${this.extractUserTextPreview(msg as AppMessage)}`,
+				);
+			});
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+			this.ui.requestRender();
+			return;
+		}
+
+		const targetIndex = Number.parseInt(arg, 10);
+		if (!Number.isFinite(targetIndex) || targetIndex < 1) {
+			context.showError("Provide a valid user message number to branch from.");
+			return;
+		}
+		if (targetIndex > userMessages.length) {
+			context.showError(
+				`Only ${userMessages.length} user message${userMessages.length === 1 ? "" : "s"} available.`,
+			);
+			return;
+		}
+
+		const selection = userMessages[targetIndex - 1];
+		const slice = messages.slice(0, selection.index + 1);
+		const editorSeed = this.extractUserText(selection.msg as AppMessage);
+		this.resetConversation(
+			slice,
+			editorSeed,
+			`Branched from user message #${targetIndex}.`,
+		);
+	}
+
+	private extractUserText(message: AppMessage): string {
+		const content = (message as any).content;
+		if (typeof content === "string") {
+			return content;
+		}
+		if (Array.isArray(content)) {
+			const textBlock = content.find(
+				(block) => block && (block as any).type === "text",
+			) as { text?: string } | undefined;
+			return textBlock?.text ?? "";
+		}
+		return "";
+	}
+
+	private extractUserTextPreview(message: AppMessage): string {
+		const text = this.extractUserText(message).replace(/\s+/g, " ").trim();
+		if (!text) return "(empty)";
+		return text.length > 80 ? `${text.slice(0, 77)}…` : text;
 	}
 
 	private handleApprovalsCommand(context: CommandExecutionContext): void {
@@ -1105,6 +1243,14 @@ export class TuiRenderer {
 			);
 			return;
 		}
+		this.resetConversation([], undefined, "Started a new chat session.");
+	}
+
+	private resetConversation(
+		messages: AppMessage[],
+		editorSeed?: string,
+		toastMessage?: string,
+	): void {
 		this.sessionManager.startFreshSession();
 		this.agent.clearMessages();
 		this.sessionContext.resetArtifacts();
@@ -1113,10 +1259,20 @@ export class TuiRenderer {
 		this.startupContainer.clear();
 		this.planView.syncHintWithStore();
 		this.planHint = null;
+		for (const message of messages) {
+			this.agent.appendMessage(message);
+		}
 		this.footer.updateState(this.agent.state);
 		this.refreshFooterHint();
 		this.renderInitialMessages(this.agent.state);
-		this.notificationView.showToast("Started a new chat session.", "success");
+		if (editorSeed !== undefined) {
+			this.editor.setText(editorSeed);
+		} else {
+			this.clearEditor();
+		}
+		if (toastMessage) {
+			this.notificationView.showToast(toastMessage, "success");
+		}
 	}
 
 	private handleInitCommand(context: CommandExecutionContext): void {
@@ -1167,6 +1323,11 @@ export class TuiRenderer {
 		}
 		const snapshot = this.promptQueue.getSnapshot();
 		const lines: string[] = [];
+		const modeLabel =
+			this.promptQueueMode === "all"
+				? "all (submissions enqueue while running)"
+				: "one-at-a-time (submissions paused while running)";
+		lines.push(`Mode: ${modeLabel}`);
 		if (snapshot.active) {
 			lines.push(
 				`Active: #${snapshot.active.id} – ${this.formatQueuedText(snapshot.active.text)}`,
@@ -1181,19 +1342,21 @@ export class TuiRenderer {
 					`${index + 1}. #${entry.id} – ${this.formatQueuedText(entry.text)}`,
 				);
 			});
-			lines.push("Use /queue cancel <id> to remove a prompt.");
+			lines.push(
+				"Use /queue cancel <id> to remove a prompt. Use /queue mode <one|all> to change behavior.",
+			);
 		}
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
 		this.ui.requestRender();
 	}
 
-	private formatQueuedText(message: string): string {
+	private formatQueuedText(message: string, maxLength = 80): string {
 		const singleLine = message.replace(/\s+/g, " ").trim();
-		if (singleLine.length <= 80) {
+		if (singleLine.length <= maxLength) {
 			return singleLine || "(empty message)";
 		}
-		return `${singleLine.slice(0, 77)}…`;
+		return `${singleLine.slice(0, Math.max(0, maxLength - 1))}…`;
 	}
 
 	private createCommandContext({
@@ -1295,6 +1458,9 @@ export class TuiRenderer {
 		if (this.planHint) {
 			hints.push(`Plan ${this.planHint}`);
 		}
+		if (this.nextQueuedPreview && !this.isAgentRunning) {
+			hints.push(`Next queued: ${this.nextQueuedPreview}`);
+		}
 		this.footer.setHint(hints.filter(Boolean).join(" • "));
 	}
 
@@ -1307,8 +1473,13 @@ export class TuiRenderer {
 		if (approvalMode && approvalMode !== "auto") {
 			badges.push(`approvals:${approvalMode}`);
 		}
-		if (this.queuedPromptCount > 0) {
-			badges.push(`queue:${this.queuedPromptCount}`);
+		const queueLabel = `queue:${this.promptQueueMode}`;
+		if (this.promptQueue) {
+			if (this.queuedPromptCount > 0) {
+				badges.push(`${queueLabel}(${this.queuedPromptCount})`);
+			} else {
+				badges.push(queueLabel);
+			}
 		}
 		const thinkingLevel = this.agent.state.thinkingLevel;
 		if (thinkingLevel && thinkingLevel !== "off") {

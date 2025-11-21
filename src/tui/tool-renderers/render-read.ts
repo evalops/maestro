@@ -24,6 +24,10 @@ export class ReadRenderer implements ToolRenderer {
 		let text = `${chalk.hex("#7bc7ff")("[read]")} ${
 			path ? chalk.cyan(path) : chalk.dim("...")
 		}`;
+		const rangeLabel = this.formatRangeLabel(args, context.result?.details);
+		if (rangeLabel) {
+			text += chalk.dim(`:${rangeLabel}`);
+		}
 
 		if (context.collapsed) {
 			const summary = context.result
@@ -61,5 +65,42 @@ export class ReadRenderer implements ToolRenderer {
 		const textBlocks =
 			context.result.content?.filter((c: any) => c.type === "text") || [];
 		return textBlocks.map((c: any) => c.text).join("\n");
+	}
+
+	private formatRangeLabel(
+		args: Record<string, unknown>,
+		details?: unknown,
+	): string | null {
+		const detailRange = this.extractRangeFromDetails(details);
+		if (detailRange) {
+			return detailRange;
+		}
+		const offset = this.toNumber(args.offset);
+		const limit = this.toNumber(args.limit);
+		if (!offset && !limit) {
+			return null;
+		}
+		const start = offset ?? 1;
+		const end = limit ? start + limit - 1 : undefined;
+		return end ? `${start}-${end}` : `${start}+`;
+	}
+
+	private extractRangeFromDetails(details: unknown): string | null {
+		if (!details || typeof details !== "object") return null;
+		const start = this.toNumber((details as Record<string, unknown>).startLine);
+		const end = this.toNumber((details as Record<string, unknown>).endLine);
+		if (start && end) {
+			return `${start}-${end}`;
+		}
+		if (start) {
+			return `${start}+`;
+		}
+		return null;
+	}
+
+	private toNumber(value: unknown): number | undefined {
+		return typeof value === "number" && Number.isFinite(value)
+			? value
+			: undefined;
 	}
 }

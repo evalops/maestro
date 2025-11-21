@@ -11,6 +11,7 @@ import {
 	getRootPackagePath,
 	getWorkspacePackages,
 	loadRootPackage,
+	readPackageJson,
 	syncInternalDependencies,
 	verifyAlignedVersions,
 	writePackageJson,
