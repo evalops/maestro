@@ -57,6 +57,8 @@ interface CommandRegistryOptions {
 	handleNewChat: (context: CommandExecutionContext) => void;
 	handleInitAgents: (context: CommandExecutionContext) => void;
 	handleMcp: (context: CommandExecutionContext) => void;
+	handleLogin: (context: CommandExecutionContext) => void | Promise<void>;
+	handleLogout: (context: CommandExecutionContext) => void | Promise<void>;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -101,6 +103,8 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			newChat: opts.handleNewChat,
 			initAgents: opts.handleInitAgents,
 			mcp: opts.handleMcp,
+			login: opts.handleLogin,
+			logout: opts.handleLogout,
 		},
 		createContext: opts.createContext,
 	});

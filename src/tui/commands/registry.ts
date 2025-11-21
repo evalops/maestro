@@ -419,6 +419,52 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "login",
+				description: "Authenticate with Claude Pro/Max via OAuth",
+				usage: "/login [mode] or /login [provider:mode]",
+				tags: ["auth"],
+				arguments: [
+					{
+						name: "argument",
+						type: "string",
+						required: false,
+						description:
+							"Login mode (pro/console) or provider:mode format (e.g., anthropic:pro)",
+					},
+				],
+				examples: [
+					"/login",
+					"/login pro",
+					"/login console",
+					"/login anthropic:pro",
+				],
+			},
+			withArgs("login"),
+			handlers.login,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "logout",
+				description: "Remove stored Claude OAuth credentials",
+				usage: "/logout [provider]",
+				tags: ["auth"],
+				arguments: [
+					{
+						name: "provider",
+						type: "string",
+						required: false,
+						description: "OAuth provider to logout from (optional)",
+					},
+				],
+				examples: ["/logout", "/logout anthropic"],
+			},
+			withArgs("logout"),
+			handlers.logout,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "quit",
 				description: "Exit composer (same as ctrl+c twice)",
 				usage: "/quit",
