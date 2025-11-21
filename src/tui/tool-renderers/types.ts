@@ -1,7 +1,7 @@
 export interface ToolRenderArgs {
 	toolName: string;
-	args: any;
-	partialArgs?: any;
+	args: Record<string, unknown>;
+	partialArgs?: Record<string, unknown>;
 	result?: {
 		content: Array<{
 			type: string;
@@ -10,7 +10,7 @@ export interface ToolRenderArgs {
 			mimeType?: string;
 		}>;
 		isError: boolean;
-		details?: any;
+		details?: unknown;
 	};
 	collapsed: boolean;
 }

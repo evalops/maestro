@@ -10,6 +10,8 @@
  * - No global mutable state (except singleton manager)
  */
 
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { MessageConnection } from "vscode-jsonrpc";
 import { lspManager } from "./manager.js";
 import { SymbolKind } from "./types.js";
 import type {
@@ -104,7 +106,7 @@ export async function hover(
 	file: string,
 	line: number,
 	character: number,
-): Promise<any[]> {
+): Promise<unknown[]> {
 	const clients = await lspManager.getClientsForFile(file);
 	const uri = pathToUri(file);
 
@@ -140,11 +142,16 @@ export async function workspaceSymbol(query: string): Promise<LspSymbol[]> {
 		clients.map((client) =>
 			client.connection
 				.sendRequest("workspace/symbol", { query })
-				.then((symbols: any) =>
-					Array.isArray(symbols)
-						? symbols.filter((s: LspSymbol) => IMPORTANT_KINDS.includes(s.kind))
-						: [],
-				)
+				.then((symbols: unknown) => {
+					if (!Array.isArray(symbols)) return [];
+					return symbols.filter(
+						(symbol): symbol is LspSymbol =>
+							typeof symbol === "object" &&
+							symbol !== null &&
+							"kind" in symbol &&
+							IMPORTANT_KINDS.includes((symbol as LspSymbol).kind),
+					);
+				})
 				.catch(() => []),
 		),
 	);
@@ -167,7 +174,7 @@ export async function documentSymbol(
 				.sendRequest("textDocument/documentSymbol", {
 					textDocument: { uri },
 				})
-				.then((symbols: any) => (Array.isArray(symbols) ? symbols : []))
+				.then((symbols: unknown) => (Array.isArray(symbols) ? symbols : []))
 				.catch(() => []),
 		),
 	);
@@ -178,14 +185,27 @@ export async function documentSymbol(
 /**
  * Get all active clients (for testing/debugging)
  */
-export async function getClients(): Promise<any[]> {
-	return lspManager.getAllClients().map((client) => ({
-		id: client.id,
-		root: client.root,
-		initialized: client.initialized,
-		process: client.process,
-		connection: client.connection,
-		diagnostics: client.getAllDiagnostics(),
-		openFiles: new Map(client.openFiles),
-	}));
+export async function getClients(): Promise<
+	Array<{
+		id: string;
+		root: string;
+		initialized: boolean;
+		process: ChildProcessWithoutNullStreams;
+		connection: MessageConnection;
+		diagnostics: Map<string, LspDiagnostic[]>;
+		openFiles: Map<string, number>;
+	}>
+> {
+	return lspManager.getAllClients().map((client) => {
+		const diagnostics = client.getAllDiagnostics();
+		return {
+			id: client.id,
+			root: client.root,
+			initialized: client.initialized,
+			process: client.process,
+			connection: client.connection,
+			diagnostics,
+			openFiles: new Map(client.openFiles),
+		};
+	});
 }

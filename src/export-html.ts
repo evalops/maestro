@@ -139,6 +139,10 @@ function formatToolExecution(
 ): { html: string; bgColor: string } {
 	const toolName = toolCall.name;
 	const args = toolCall.arguments;
+	const getArg = (key: string): string => {
+		const value = args?.[key];
+		return typeof value === "string" ? value : "";
+	};
 	let html = "";
 	const isError = result?.raw.isError || false;
 	const bgColor = result
@@ -154,7 +158,7 @@ function formatToolExecution(
 
 	// Format based on tool type (matching TUI logic exactly)
 	if (toolName === "bash") {
-		const command = args?.command || "";
+		const command = getArg("command");
 		html = `<div class="tool-command">$ ${escapeHtml(command || "...")}</div>`;
 
 		if (result) {
@@ -192,7 +196,7 @@ function formatToolExecution(
 			}
 		}
 	} else if (toolName === "read") {
-		const path = shortenPath(args?.file_path || args?.path || "");
+		const path = shortenPath(getArg("file_path") || getArg("path"));
 		html = `<div class="tool-header"><span class="tool-name">read</span> <span class="tool-path">${escapeHtml(path || "...")}</span></div>`;
 
 		if (result) {
@@ -228,8 +232,8 @@ function formatToolExecution(
 			}
 		}
 	} else if (toolName === "write") {
-		const path = shortenPath(args?.file_path || args?.path || "");
-		const fileContent = args?.content || "";
+		const path = shortenPath(getArg("file_path") || getArg("path"));
+		const fileContent = getArg("content");
 		const lines = fileContent ? fileContent.split("\n") : [];
 		const totalLines = lines.length;
 
@@ -277,12 +281,19 @@ function formatToolExecution(
 			}
 		}
 	} else if (toolName === "edit") {
-		const path = shortenPath(args?.file_path || args?.path || "");
+		const path = shortenPath(getArg("file_path") || getArg("path"));
 		html = `<div class="tool-header"><span class="tool-name">edit</span> <span class="tool-path">${escapeHtml(path || "...")}</span></div>`;
 
 		// Show diff if available from result.details.diff
-		if (result?.raw.details?.diff) {
-			const diffLines = result.raw.details.diff.split("\n");
+		const diff =
+			typeof result?.raw.details === "object" &&
+			result.raw.details !== null &&
+			"diff" in result.raw.details &&
+			typeof (result.raw.details as { diff?: unknown }).diff === "string"
+				? (result.raw.details as { diff: string }).diff
+				: null;
+		if (diff) {
+			const diffLines = diff.split("\n");
 			html += '<div class="tool-diff">';
 			for (const line of diffLines) {
 				if (line.startsWith("+")) {

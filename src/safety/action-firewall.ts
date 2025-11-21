@@ -2,6 +2,7 @@ import type {
 	ActionApprovalContext,
 	ActionFirewallVerdict,
 } from "../agent/action-approval.js";
+export type { ActionApprovalContext } from "../agent/action-approval.js";
 
 export interface ActionFirewallRule {
 	id: string;
@@ -17,35 +18,76 @@ const diskZeroPattern = /dd\s+if=\/dev\/(?:zero|null)/i;
 const chmodZeroPattern = /chmod\s+0{3,4}\b/i;
 
 function isBashTool(context: ActionApprovalContext): boolean {
-	return (
-		context.toolName === "bash" && typeof context.args?.command === "string"
-	);
+	const command =
+		context.args &&
+		typeof context.args === "object" &&
+		"command" in context.args &&
+		typeof (context.args as { command?: unknown }).command === "string"
+			? (context.args as { command: string }).command
+			: null;
+	return context.toolName === "bash" && Boolean(command);
+}
+
+function getCommandArg(context: ActionApprovalContext): string | null {
+	if (
+		context.args &&
+		typeof context.args === "object" &&
+		"command" in context.args &&
+		typeof (context.args as { command?: unknown }).command === "string"
+	) {
+		return (context.args as { command: string }).command;
+	}
+	return null;
 }
 
 export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
 		id: "bash-rm-rf",
 		description: "High-risk recursive delete",
-		match: (ctx) => isBashTool(ctx) && rmRfPattern.test(ctx.args.command),
-		reason: (ctx) => `Potential destructive delete: ${ctx.args.command.trim()}`,
+		match: (ctx) => {
+			const command = getCommandArg(ctx);
+			return isBashTool(ctx) && !!command && rmRfPattern.test(command);
+		},
+		reason: (ctx) => {
+			const command = getCommandArg(ctx) ?? "";
+			return `Potential destructive delete: ${command.trim()}`;
+		},
 	},
 	{
 		id: "bash-mkfs",
 		description: "Filesystem formatting",
-		match: (ctx) => isBashTool(ctx) && mkfsPattern.test(ctx.args.command),
-		reason: (ctx) => `Detected mkfs invocation: ${ctx.args.command.trim()}`,
+		match: (ctx) => {
+			const command = getCommandArg(ctx);
+			return isBashTool(ctx) && !!command && mkfsPattern.test(command);
+		},
+		reason: (ctx) => {
+			const command = getCommandArg(ctx) ?? "";
+			return `Detected mkfs invocation: ${command.trim()}`;
+		},
 	},
 	{
 		id: "bash-disk-zero",
 		description: "Disk zeroing",
-		match: (ctx) => isBashTool(ctx) && diskZeroPattern.test(ctx.args.command),
-		reason: (ctx) => `Detected disk zeroing: ${ctx.args.command.trim()}`,
+		match: (ctx) => {
+			const command = getCommandArg(ctx);
+			return isBashTool(ctx) && !!command && diskZeroPattern.test(command);
+		},
+		reason: (ctx) => {
+			const command = getCommandArg(ctx) ?? "";
+			return `Detected disk zeroing: ${command.trim()}`;
+		},
 	},
 	{
 		id: "bash-chmod-000",
 		description: "Permission removal",
-		match: (ctx) => isBashTool(ctx) && chmodZeroPattern.test(ctx.args.command),
-		reason: (ctx) => `Detected chmod 000*: ${ctx.args.command.trim()}`,
+		match: (ctx) => {
+			const command = getCommandArg(ctx);
+			return isBashTool(ctx) && !!command && chmodZeroPattern.test(command);
+		},
+		reason: (ctx) => {
+			const command = getCommandArg(ctx) ?? "";
+			return `Detected chmod 000*: ${command.trim()}`;
+		},
 	},
 ];
 

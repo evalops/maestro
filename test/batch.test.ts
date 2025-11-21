@@ -79,11 +79,36 @@ const mockSummaryTool: AgentTool<any, any> = {
 	label: "mock-summary",
 	description: "A mock tool that returns a summary in details",
 	parameters: {} as any,
-	execute: async (_toolCallId, params) => ({
-		content: [{ type: "text", text: `Verbose output for ${params.id}` }],
-		details: { summary: `Summary for ${params.id}` },
-	}),
+	execute: async (_toolCallId, params) => {
+		const id =
+			typeof params.id === "string" ? params.id : String(params.id ?? "");
+		return {
+			content: [{ type: "text", text: `Verbose output for ${id}` }],
+			details: { summary: `Summary for ${id}` },
+		};
+	},
 };
+
+function getStringParam(params: Record<string, unknown>, key: string): string {
+	const value = params[key];
+	return typeof value === "string" ? value : String(value ?? "");
+}
+
+function getNumberParam(params: Record<string, unknown>, key: string): number {
+	const value = params[key];
+	return typeof value === "number" ? value : Number(value ?? 0);
+}
+
+type BatchResultDetails = {
+	results?: Array<Record<string, unknown>>;
+	successful?: number;
+	failed?: number;
+	discarded?: number;
+};
+
+function getBatchDetails(result: AgentToolResult<unknown>): BatchResultDetails {
+	return (result.details as BatchResultDetails) ?? {};
+}
 
 describe("batch tool", () => {
 	let testDir: string;
@@ -132,7 +157,8 @@ describe("batch tool", () => {
 
 				const output = getTextOutput(result);
 				expect(output).toContain("Timed out");
-				expect(result.details?.results?.[0]).toMatchObject({
+				const details = getBatchDetails(result);
+				expect(details.results?.[0]).toMatchObject({
 					success: false,
 					error: expect.stringContaining("Timed out"),
 				});
@@ -165,13 +191,13 @@ describe("batch tool", () => {
 					description: "Records start/finish events",
 					parameters: {} as any,
 					execute: async (_toolCallId, params) => {
-						events.push(`start-${params.id}`);
-						await new Promise((resolve) =>
-							setTimeout(resolve, params.delay ?? 0),
-						);
-						events.push(`finish-${params.id}`);
+						const id = getStringParam(params, "id");
+						const delay = getNumberParam(params, "delay");
+						events.push(`start-${id}`);
+						await new Promise((resolve) => setTimeout(resolve, delay));
+						events.push(`finish-${id}`);
 						return {
-							content: [{ type: "text", text: `done ${params.id}` }],
+							content: [{ type: "text", text: `done ${id}` }],
 						};
 					},
 				};
@@ -210,7 +236,8 @@ describe("batch tool", () => {
 			expect(output).toContain("[ERROR] mock-fail");
 			expect(output).toContain("Error: Mock tool failure");
 			expect(output).toContain("[OK] mock-slow");
-			expect(result.details).toMatchObject({
+			const details = getBatchDetails(result);
+			expect(details).toMatchObject({
 				totalCalls: 3,
 				successful: 2,
 				failed: 1,
@@ -232,8 +259,9 @@ describe("batch tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("Executed 2/4 tools successfully. 2 failed");
-			expect(result.details?.successful).toBe(2);
-			expect(result.details?.failed).toBe(2);
+			const details = getBatchDetails(result);
+			expect(details.successful).toBe(2);
+			expect(details.failed).toBe(2);
 		});
 	});
 
@@ -338,7 +366,8 @@ describe("batch tool", () => {
 			const output = getTextOutput(result);
 			expect(output).toContain("All 10 tools executed successfully");
 			expect(output).not.toContain("exceeded the 10-tool limit");
-			expect(result.details?.discarded).toBe(0);
+			const details = getBatchDetails(result);
+			expect(details.discarded).toBe(0);
 		});
 
 		it("requires at least 1 tool", async () => {
@@ -373,7 +402,8 @@ describe("batch tool", () => {
 			const output = getTextOutput(result);
 			expect(output).toContain("All 3 tools executed successfully");
 			expect(output).toContain("[OK] read");
-			expect(result.details?.successful).toBe(3);
+			const details = getBatchDetails(result);
+			expect(details.successful).toBe(3);
 		});
 
 		it("combines read, list, and search operations", async () => {
@@ -465,7 +495,8 @@ describe("batch tool", () => {
 			const output = getTextOutput(result);
 			expect(output).toMatch(/\[OK\] mock-success \(\d+ms\)/);
 			expect(output).toMatch(/\[OK\] mock-slow \(\d+ms\)/);
-			expect(result.details?.results).toEqual(
+			const details = getBatchDetails(result);
+			expect(details.results).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
 						tool: "mock-success",
@@ -517,7 +548,8 @@ describe("batch tool", () => {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("Summary for alpha");
-			expect(result.details?.results?.[0]?.summary).toBe("Summary for alpha");
+			const details = getBatchDetails(result);
+			expect(details.results?.[0]?.summary).toBe("Summary for alpha");
 		});
 	});
 
@@ -562,7 +594,8 @@ describe("batch tool", () => {
 			expect(output).toContain("Executed 0/1 tools successfully. 1 failed");
 			expect(output).toContain("[ERROR] mock-abortable");
 			expect(output).toContain("Error: Operation aborted");
-			expect(result.details?.failed).toBe(1);
+			const details = getBatchDetails(result);
+			expect(details.failed).toBe(1);
 		});
 	});
 
@@ -582,7 +615,8 @@ describe("batch tool", () => {
 				],
 			});
 
-			expect(result.details).toMatchObject({
+			const details = getBatchDetails(result);
+			expect(details).toMatchObject({
 				totalCalls: 3,
 				successful: 2,
 				failed: 1,

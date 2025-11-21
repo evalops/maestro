@@ -11,28 +11,47 @@ import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class EditRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
-		const path = shortenPath(
-			context.args?.file_path || context.args?.path || "",
-		);
+		const pathValue =
+			typeof context.args?.file_path === "string"
+				? context.args.file_path
+				: typeof context.args?.path === "string"
+					? context.args.path
+					: "";
+		const path = shortenPath(pathValue);
 		let text = `${chalk.hex("#fcd5ce")("[edit]")} ${
 			path ? chalk.cyan(path) : chalk.dim("...")
 		}`;
 
 		if (context.collapsed) {
 			const diffText =
-				context.result?.details?.diff || this.getTextOutput(context);
+				(typeof context.result?.details === "object" &&
+					context.result?.details !== null &&
+					"diff" in context.result.details &&
+					typeof (context.result.details as { diff?: unknown }).diff ===
+						"string" &&
+					(context.result.details as { diff: string }).diff) ||
+				this.getTextOutput(context);
 			text += `\n${chalk.dim(buildCollapsedSummary(diffText))}`;
 			return text;
 		}
 
 		const sections: string[] = [];
-		if (context.result?.details?.diff) {
-			const diffLines = highlightCodeLines(context.result.details.diff, "diff");
+		const details =
+			typeof context.result?.details === "object"
+				? (context.result.details as Record<string, unknown>)
+				: null;
+		const diffValue =
+			details && typeof details.diff === "string" ? details.diff : null;
+		if (diffValue) {
+			const diffLines = highlightCodeLines(diffValue, "diff");
 			const diffSection = formatSection("diff", diffLines);
 			if (diffSection) {
 				sections.push(diffSection);
 			}
-		} else if (context.args?.before && context.args?.after) {
+		} else if (
+			typeof context.args?.before === "string" &&
+			typeof context.args?.after === "string"
+		) {
 			const previewSection = formatSection(
 				"preview",
 				generateDiff(context.args.before, context.args.after).split("\n"),

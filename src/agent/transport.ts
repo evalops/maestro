@@ -393,7 +393,7 @@ export class ProviderTransport implements AgentTransport {
 						continue;
 					}
 
-					let validatedArgs: unknown;
+					let validatedArgs: Record<string, unknown>;
 					try {
 						validatedArgs = validateToolArguments(tool, toolCall);
 					} catch (error: unknown) {

@@ -105,33 +105,45 @@ function mergeDeep<T>(target: T, source: Partial<T>): T {
 	const output = { ...target };
 
 	if (isObject(target) && isObject(source)) {
-		for (const key of Object.keys(source)) {
-			const sourceValue = (source as any)[key];
-			const targetValue = (output as any)[key];
+		const sourceRecord = source as Record<string, unknown>;
+		const outputRecord = output as Record<string, unknown>;
+		for (const key of Object.keys(sourceRecord)) {
+			const sourceValue = sourceRecord[key];
+			const targetValue = outputRecord[key];
 
 			if (isObject(sourceValue) && isObject(targetValue)) {
-				(output as any)[key] = mergeDeep(targetValue, sourceValue);
+				outputRecord[key] = mergeDeep(targetValue, sourceValue);
 			} else if (Array.isArray(sourceValue) && Array.isArray(targetValue)) {
 				// For arrays, concatenate and dedupe by id if objects have id property
 				const merged = [...targetValue];
 				for (const item of sourceValue) {
-					if (item && typeof item === "object" && "id" in item) {
-						const existingIndex = merged.findIndex(
-							(m: any) => m?.id === item.id,
-						);
+					const itemId =
+						isObject(item) && "id" in item
+							? (item as { id?: unknown }).id
+							: undefined;
+					if (itemId !== undefined) {
+						const existingIndex = merged.findIndex((entry) => {
+							if (isObject(entry) && "id" in entry) {
+								return (entry as { id?: unknown }).id === itemId;
+							}
+							return false;
+						});
 						if (existingIndex >= 0) {
 							// Merge existing item
-							merged[existingIndex] = mergeDeep(merged[existingIndex], item);
+							merged[existingIndex] = mergeDeep(
+								merged[existingIndex] as object,
+								item as object,
+							) as (typeof targetValue)[number];
 						} else {
-							merged.push(item);
+							merged.push(item as (typeof targetValue)[number]);
 						}
 					} else {
-						merged.push(item);
+						merged.push(item as (typeof targetValue)[number]);
 					}
 				}
-				(output as any)[key] = merged;
+				outputRecord[key] = merged as unknown;
 			} else {
-				(output as any)[key] = sourceValue;
+				outputRecord[key] = sourceValue;
 			}
 		}
 	}

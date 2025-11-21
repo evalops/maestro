@@ -46,7 +46,7 @@ export interface ToolCall {
 	type: "toolCall";
 	id: string;
 	name: string;
-	arguments: Record<string, any>;
+	arguments: Record<string, unknown>;
 }
 
 export interface Usage {
@@ -83,7 +83,7 @@ export interface AssistantMessage {
 	timestamp: number;
 }
 
-export interface ToolResultMessage<TDetails = any> {
+export interface ToolResultMessage<TDetails = unknown> {
 	role: "toolResult";
 	toolCallId: string;
 	toolName: string;
@@ -103,7 +103,7 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 
 export interface AgentTool<
 	TParameters extends TSchema = TSchema,
-	TDetails = any,
+	TDetails = unknown,
 > {
 	name: string;
 	label?: string;
@@ -111,12 +111,12 @@ export interface AgentTool<
 	parameters: TParameters;
 	execute: (
 		toolCallId: string,
-		params: any,
+		params: Record<string, unknown>,
 		signal?: AbortSignal,
 	) => AgentToolResult<TDetails> | Promise<AgentToolResult<TDetails>>;
 }
 
-export interface AgentToolResult<TDetails = any> {
+export interface AgentToolResult<TDetails = unknown> {
 	content: (TextContent | ImageContent)[];
 	details?: TDetails;
 	isError?: boolean;
@@ -244,9 +244,9 @@ export interface PendingToolCall {
 
 export interface AgentState {
 	systemPrompt: string;
-	model: Model<any>;
+	model: Model<Api>;
 	thinkingLevel: ThinkingLevel;
-	tools: AgentTool<any>[];
+	tools: AgentTool[];
 	messages: AppMessage[];
 	isStreaming: boolean;
 	streamMessage: Message | null;
@@ -266,6 +266,10 @@ export type AgentEvent =
 			type: "status";
 			status: string;
 			details: Record<string, unknown>;
+	  }
+	| {
+			type: "error";
+			message: string;
 	  }
 	| {
 			type: "turn_start";
@@ -292,13 +296,13 @@ export type AgentEvent =
 			type: "tool_execution_start";
 			toolCallId: string;
 			toolName: string;
-			args: any;
+			args: Record<string, unknown>;
 	  }
 	| {
 			type: "tool_execution_end";
 			toolCallId: string;
 			toolName: string;
-			result: any;
+			result: ToolResultMessage;
 			isError: boolean;
 	  }
 	| {
@@ -318,8 +322,8 @@ export interface QueuedMessage<TOriginal = AppMessage> {
 
 export interface AgentRunConfig {
 	systemPrompt: string;
-	tools: AgentTool<any>[];
-	model: Model<any>;
+	tools: AgentTool[];
+	model: Model<Api>;
 	reasoning?: ReasoningEffort;
 	getQueuedMessages?: <T>() => Promise<QueuedMessage<T>[]>;
 }

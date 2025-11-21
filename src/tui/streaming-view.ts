@@ -32,8 +32,12 @@ export class StreamingView {
 		);
 		for (const content of message.content) {
 			if (content.type === "toolCall") {
-				this.ensureToolComponent(content.id, content.name, content.arguments);
-				this.updatePartialArgs(content.id, content.arguments);
+				this.ensureToolComponent(
+					content.id,
+					content.name,
+					content.arguments ?? {},
+				);
+				this.updatePartialArgs(content.id, content.arguments ?? {});
 			}
 		}
 	}
@@ -59,7 +63,11 @@ export class StreamingView {
 		this.streamingComponent = null;
 	}
 
-	ensureToolComponent(toolCallId: string, name: string, args: any): void {
+	ensureToolComponent(
+		toolCallId: string,
+		name: string,
+		args: Record<string, unknown>,
+	): void {
 		if (this.options.pendingTools.has(toolCallId)) {
 			const component = this.options.pendingTools.get(toolCallId);
 			component?.updateArgs(args);
@@ -72,7 +80,7 @@ export class StreamingView {
 		this.options.toolOutputView.registerToolComponent(component);
 	}
 
-	updatePartialArgs(toolCallId: string, args: any): void {
+	updatePartialArgs(toolCallId: string, args: Record<string, unknown>): void {
 		const component = this.options.pendingTools.get(toolCallId);
 		if (!component) return;
 		component.updatePartialArgs(args);

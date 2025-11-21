@@ -419,7 +419,7 @@ export async function handleConfigInit(): Promise<void> {
 		}
 
 		let useEnv = true;
-		let apiKeyField: Record<string, string> = {};
+		let apiKeyField: { apiKeyEnv?: string; apiKey?: string } = {};
 		if (requiresApiKey) {
 			console.log(
 				`\n${badge(
@@ -473,7 +473,7 @@ export async function handleConfigInit(): Promise<void> {
 		}
 
 		// Create config
-		const config: any = {
+		const config: LocalConfigFile = {
 			$schema: "https://composer-cli.dev/config.schema.json",
 			providers: [
 				{
@@ -527,7 +527,7 @@ You are a helpful AI coding assistant.
 		// Create .env.example if using environment variables
 		if (useEnv) {
 			const envExamplePath = join(process.cwd(), ".env.example");
-			const envVarName = (apiKeyField as any).apiKeyEnv;
+			const envVarName = apiKeyField.apiKeyEnv ?? "";
 			const envContent = existsSync(envExamplePath)
 				? `\n# Added by composer init\n${envVarName}=your-api-key-here\n`
 				: `# Composer Configuration\n${envVarName}=your-api-key-here\n`;
@@ -546,7 +546,7 @@ You are a helpful AI coding assistant.
 		console.log(muted("Next steps:"));
 
 		if (useEnv) {
-			const envVarName = (apiKeyField as any).apiKeyEnv;
+			const envVarName = apiKeyField.apiKeyEnv ?? "";
 			console.log(muted(`  1. Set ${envVarName} in your environment`));
 		}
 		if (createPrompts) {
@@ -608,7 +608,7 @@ interface LocalConfigFile {
 		id: string;
 		name: string;
 		api: string;
-		baseUrl: string;
+		baseUrl?: string;
 		models: Array<{
 			id: string;
 			name: string;
@@ -616,6 +616,7 @@ interface LocalConfigFile {
 			maxTokens: number;
 			input?: Array<"text" | "image">;
 		}>;
+		options?: Record<string, unknown>;
 	}>;
 }
 

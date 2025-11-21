@@ -7,21 +7,17 @@
  *   npm run version:major
  */
 
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+	getRootPackagePath,
+	getWorkspacePackages,
+	loadRootPackage,
+	syncInternalDependencies,
+	verifyAlignedVersions,
+	writePackageJson,
+} from "./workspace-utils.js";
 import { execSync } from "node:child_process";
-
-const PACKAGE_JSON_PATH = join(process.cwd(), "package.json");
-const PACKAGES_DIR = join(process.cwd(), "packages");
-
-function readPackageJson(path) {
-	const content = readFileSync(path, "utf-8");
-	return JSON.parse(content);
-}
-
-function writePackageJson(path, pkg) {
-	writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
-}
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 function bumpVersion(currentVersion, type) {
 	const parts = currentVersion.split(".").map(Number);
@@ -36,44 +32,6 @@ function bumpVersion(currentVersion, type) {
 			return `${major}.${minor}.${patch + 1}`;
 		default:
 			throw new Error(`Invalid bump type: ${type}`);
-	}
-}
-
-function getWorkspacePackages() {
-	const dirs = readdirSync(PACKAGES_DIR, { withFileTypes: true }).filter(
-		(entry) => entry.isDirectory(),
-	);
-
-	return dirs.map((dirent) => {
-		const path = join(PACKAGES_DIR, dirent.name, "package.json");
-		const data = readPackageJson(path);
-		return { name: data.name, path, data };
-	});
-}
-
-function updateInternalDependencies(pkg, version, internalNames) {
-	const setVersion = (section) => {
-		if (!section) {
-			return;
-		}
-
-		for (const dep of Object.keys(section)) {
-			if (internalNames.has(dep)) {
-				const next = `^${version}`;
-				if (section[dep] !== next) {
-					section[dep] = next;
-				}
-			}
-		}
-	};
-
-	setVersion(pkg.dependencies);
-	setVersion(pkg.devDependencies);
-}
-
-function writeAllPackages(packages) {
-	for (const pkg of packages) {
-		writePackageJson(pkg.path, pkg.data);
 	}
 }
 
@@ -104,7 +62,14 @@ function updatePackageLock(newVersion) {
 		execSync("npm install --package-lock-only", { stdio: "inherit" });
 		console.log("📦 Updated package-lock.json");
 	} catch (error) {
-		console.warn("⚠️  Could not update package-lock.json:", error.message);
+		const reason = error instanceof Error ? error.message : "unknown error";
+		throw new Error(`Failed to update package-lock.json: ${reason}`);
+	}
+}
+
+function restoreBackups(backups) {
+	for (const backup of backups) {
+		writePackageJson(backup.path, backup.original);
 	}
 }
 
@@ -116,8 +81,8 @@ function main() {
 		process.exit(1);
 	}
 
-	const rootPkg = readPackageJson(PACKAGE_JSON_PATH);
-	const workspacePkgs = getWorkspacePackages();
+	const rootPkg = loadRootPackage();
+	const workspacePkgs = getWorkspacePackages(rootPkg);
 	const internalNames = new Set(workspacePkgs.map((pkg) => pkg.name));
 
 	const currentVersion = rootPkg.version;
@@ -125,25 +90,46 @@ function main() {
 
 	console.log(`🔼 Bumping version: ${currentVersion} → ${newVersion}`);
 
-	// Update root package.json
+	// Prepare updated package data (in-memory)
 	rootPkg.version = newVersion;
-	updateInternalDependencies(rootPkg, newVersion, internalNames);
-	writePackageJson(PACKAGE_JSON_PATH, rootPkg);
-	console.log("✅ Updated package.json");
-
-	// Update workspace package.json files
+	syncInternalDependencies(rootPkg, newVersion, internalNames);
 	for (const pkg of workspacePkgs) {
 		pkg.data.version = newVersion;
-		updateInternalDependencies(pkg.data, newVersion, internalNames);
+		syncInternalDependencies(pkg.data, newVersion, internalNames);
 	}
-	writeAllPackages(workspacePkgs);
-	console.log("✅ Updated workspace package.json files");
 
-	// Update changelog
-	updateChangelog(newVersion);
+	// Verify consistency
+	verifyAlignedVersions(
+		[...workspacePkgs, { name: rootPkg.name, data: rootPkg }],
+		newVersion,
+	);
 
-	// Update package-lock.json
-	updatePackageLock(newVersion);
+	// Persist updates
+	const backups = [
+		{ path: getRootPackagePath(), original: loadRootPackage() },
+		...workspacePkgs.map((pkg) => ({
+			path: pkg.path,
+			original: readPackageJson(pkg.path),
+		})),
+	];
+
+	try {
+		writePackageJson(getRootPackagePath(), rootPkg);
+		for (const pkg of workspacePkgs) {
+			writePackageJson(pkg.path, pkg.data);
+		}
+		console.log("✅ Updated package.json files");
+
+		// Update changelog
+		updateChangelog(newVersion);
+
+		// Update package-lock.json
+		updatePackageLock(newVersion);
+	} catch (error) {
+		console.error("⚠️  Version bump failed, restoring package.json files");
+		restoreBackups(backups);
+		throw error;
+	}
 
 	console.log(`\n✨ Version bumped to ${newVersion}`);
 	console.log("\nNext steps:");

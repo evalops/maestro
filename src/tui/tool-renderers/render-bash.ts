@@ -13,7 +13,10 @@ export class BashRenderer implements ToolRenderer {
 		const args = context.result
 			? context.args
 			: (context.partialArgs ?? context.args);
-		const command = args?.command || "";
+		const command =
+			typeof args?.command === "string"
+				? args.command
+				: String(args?.command ?? "");
 		const text = chalk.hex("#eab676")("⟢ bash");
 		const commandLines = formatShellSnippet(command ? `$ ${command}` : "$ ...");
 		const sections: string[] = [];

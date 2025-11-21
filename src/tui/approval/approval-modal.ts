@@ -76,7 +76,14 @@ export class ApprovalModal implements Component {
 	}
 
 	private extractCommand(): string[] | null {
-		const cmd = this.options.request.args?.command;
+		const cmd =
+			this.options.request.args &&
+			typeof this.options.request.args === "object" &&
+			"command" in this.options.request.args &&
+			typeof (this.options.request.args as { command?: unknown }).command ===
+				"string"
+				? (this.options.request.args as { command: string }).command
+				: null;
 		if (typeof cmd !== "string" || cmd.trim().length === 0) {
 			return null;
 		}

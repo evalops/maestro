@@ -3,7 +3,7 @@ import type { AgentTool, AgentToolResult } from "../agent/types.js";
 import { createTool } from "./tool-dsl.js";
 
 export interface BatchAgentTool extends AgentTool {
-	setAvailableTools: (tools: AgentTool<any, any>[]) => void;
+	setAvailableTools: (tools: AgentTool[]) => void;
 }
 
 const DISALLOWED_TOOLS = new Set(["batch", "edit", "write"]);
@@ -41,7 +41,7 @@ const batchSchema = Type.Object({
 });
 
 interface BatchToolContext {
-	availableTools: Map<string, AgentTool<any, any>>;
+	availableTools: Map<string, AgentTool>;
 }
 
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
@@ -62,13 +62,11 @@ type BatchToolDetails = {
 	}>;
 };
 
-function buildToolMap(tools: AgentTool<any, any>[]): Map<string, AgentTool> {
+function buildToolMap(tools: AgentTool[]): Map<string, AgentTool> {
 	return new Map(tools.map((t) => [t.name, t]));
 }
 
-export function createBatchTool(
-	availableTools: AgentTool<any, any>[],
-): BatchAgentTool {
+export function createBatchTool(availableTools: AgentTool[]): BatchAgentTool {
 	let toolMap = buildToolMap(availableTools);
 
 	const batchTool = createTool<typeof batchSchema, BatchToolDetails>({
@@ -294,7 +292,7 @@ Example:
 		},
 	}) as BatchAgentTool;
 
-	batchTool.setAvailableTools = (tools: AgentTool<any, any>[]) => {
+	batchTool.setAvailableTools = (tools: AgentTool[]) => {
 		toolMap = buildToolMap(tools);
 	};
 

@@ -11,8 +11,8 @@ import {
 export class ToolExecutionComponent extends Container {
 	private contentText: Text;
 	private toolName: string;
-	private args: any;
-	private partialArgs: any;
+	private args: Record<string, unknown>;
+	private partialArgs: Record<string, unknown>;
 	private collapsed = false;
 	private pendingStatus: string | null = null;
 	private result?: {
@@ -23,12 +23,12 @@ export class ToolExecutionComponent extends Container {
 			mimeType?: string;
 		}>;
 		isError: boolean;
-		details?: any;
+		details?: unknown;
 	};
 
 	private renderer: ToolRenderer;
 
-	constructor(toolName: string, args: any) {
+	constructor(toolName: string, args: Record<string, unknown>) {
 		super();
 		this.toolName = toolName;
 		this.args = args;
@@ -62,13 +62,13 @@ export class ToolExecutionComponent extends Container {
 		return chalk.hex(accent)(`╰${"─".repeat(width - 2)}╯`);
 	}
 
-	updateArgs(args: any): void {
+	updateArgs(args: Record<string, unknown>): void {
 		this.args = args;
 		this.partialArgs = args;
 		this.updateDisplay();
 	}
 
-	updatePartialArgs(args: any): void {
+	updatePartialArgs(args: Record<string, unknown>): void {
 		this.partialArgs = args;
 		this.updateDisplay();
 	}
@@ -80,7 +80,7 @@ export class ToolExecutionComponent extends Container {
 			data?: string;
 			mimeType?: string;
 		}>;
-		details?: any;
+		details?: unknown;
 		isError: boolean;
 	}): void {
 		this.result = result;

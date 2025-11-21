@@ -3,6 +3,7 @@ import type {
 	AgentState,
 	AgentTool,
 	AgentTransport,
+	Api,
 	AppMessage,
 	AssistantMessage,
 	Attachment,
@@ -114,16 +115,23 @@ export class Agent {
 			opts.messageTransformer ??
 			((messages) => defaultMessageTransformer(messages));
 
+		const { systemPrompt, model, thinkingLevel, tools, ...restInitialState } =
+			opts.initialState ?? {};
+
 		this._state = {
-			systemPrompt: "",
-			model: null as any,
-			thinkingLevel: "off",
-			tools: [],
+			systemPrompt: systemPrompt ?? "",
+			model:
+				model ??
+				((): never => {
+					throw new Error("Agent requires an initial model");
+				})(),
+			thinkingLevel: thinkingLevel ?? "off",
+			tools: tools ?? [],
 			messages: [],
 			isStreaming: false,
 			streamMessage: null,
 			pendingToolCalls: new Map(),
-			...opts.initialState,
+			...restInitialState,
 		};
 	}
 
@@ -200,7 +208,7 @@ export class Agent {
 	 *
 	 * @param m - The model configuration
 	 */
-	setModel(m: Model<any>): void {
+	setModel(m: Model<Api>): void {
 		this._state.model = m;
 	}
 
@@ -218,7 +226,7 @@ export class Agent {
 	 *
 	 * @param t - Array of tool definitions with schemas and execute functions
 	 */
-	setTools(t: AgentTool<any>[]): void {
+	setTools(t: AgentTool[]): void {
 		this._state.tools = t;
 	}
 
@@ -343,11 +351,9 @@ export class Agent {
 
 			// Determine reasoning level
 			let reasoning: "low" | "medium" | "high" | undefined;
-			if (this._state.thinkingLevel !== "off" && this._state.model.reasoning) {
-				reasoning =
-					this._state.thinkingLevel === "minimal"
-						? "low"
-						: (this._state.thinkingLevel as any);
+			const level = this._state.thinkingLevel;
+			if (level !== "off" && this._state.model.reasoning) {
+				reasoning = level === "minimal" ? "low" : level;
 			}
 
 			const runConfig = {
@@ -444,7 +450,7 @@ export class Agent {
 		history: Message[],
 		prompt: string,
 		systemPrompt = "",
-		modelOverride?: Model<any>,
+		modelOverride?: Model<Api>,
 	): Promise<AssistantMessage> {
 		const summaryModel = modelOverride ?? this._state.model;
 		if (!summaryModel) {

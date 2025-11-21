@@ -1,13 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import AjvModule from "ajv";
-import type { ValidateFunction } from "ajv";
+import AjvModule, { type ValidateFunction } from "ajv";
 import chalk from "chalk";
 import type { Agent } from "../../agent/agent.js";
-import type { AgentEvent, AppMessage } from "../../agent/types.js";
+import type { AgentEvent, AppMessage, TextContent } from "../../agent/types.js";
 import type { SessionManager } from "../../session/manager.js";
-
-const Ajv = (AjvModule as any).default || AjvModule;
 
 export const EXEC_SESSION_SUMMARY_PREFIX = "[exec]";
 
@@ -82,22 +79,28 @@ function timestamp(): string {
 	return new Date().toISOString();
 }
 
+function isTextChunk(chunk: unknown): chunk is TextContent {
+	return (
+		typeof chunk === "object" &&
+		chunk !== null &&
+		"type" in chunk &&
+		(chunk as { type?: unknown }).type === "text" &&
+		"text" in chunk &&
+		typeof (chunk as { text?: unknown }).text === "string"
+	);
+}
+
 function extractText(message: AppMessage | undefined): string {
 	if (!message) {
 		return "";
 	}
-	const anyMessage = message as any;
-	if (Array.isArray(anyMessage.content)) {
-		const parts = anyMessage.content
-			.filter(
-				(chunk: any) =>
-					chunk?.type === "text" && typeof chunk.text === "string",
-			)
-			.map((chunk: any) => chunk.text as string);
+	const content = (message as { content?: unknown }).content;
+	if (Array.isArray(content)) {
+		const parts = content.filter(isTextChunk).map((chunk) => chunk.text);
 		return parts.join("");
 	}
-	if (typeof anyMessage.content === "string") {
-		return anyMessage.content as string;
+	if (typeof content === "string") {
+		return content;
 	}
 	return "";
 }
@@ -170,7 +173,18 @@ export async function runExecCommand(
 				return null;
 			}
 			const { schema, label } = resolveSchemaSource(options.outputSchema);
-			const ajv = new Ajv({ allErrors: true, strict: false });
+			const AjvCtor: new (options?: unknown) => unknown =
+				(
+					AjvModule as unknown as {
+						default?: new (options?: unknown) => unknown;
+					}
+				).default ??
+				(AjvModule as unknown as new (
+					options?: unknown,
+				) => unknown);
+			const ajv = new AjvCtor({ allErrors: true, strict: false }) as {
+				compile: (schema: unknown) => ValidateFunction;
+			};
 			const validate = ajv.compile(schema);
 			return { validate, label };
 		})();

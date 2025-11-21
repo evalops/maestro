@@ -1,4 +1,4 @@
-import AjvModule from "ajv";
+import AjvModule, { type ErrorObject } from "ajv";
 import addFormatsModule from "ajv-formats";
 import type { AgentTool, ToolCall } from "../types.js";
 
@@ -14,7 +14,7 @@ const isBrowserExtension =
 
 // Create a singleton AJV instance with formats (only if not in browser extension)
 // AJV requires 'unsafe-eval' CSP which is not allowed in Manifest V3
-let ajv: any = null;
+let ajv: ReturnType<typeof Ajv> | null = null;
 if (!isBrowserExtension) {
 	try {
 		ajv = new Ajv({
@@ -36,36 +36,45 @@ if (!isBrowserExtension) {
  * @throws Error with formatted message if validation fails
  */
 export function validateToolArguments(
-	tool: AgentTool<any>,
+	tool: AgentTool,
 	toolCall: ToolCall,
-): any {
+): Record<string, unknown> {
 	// Skip validation in browser extension environment (CSP restrictions prevent AJV from working)
 	if (!ajv || isBrowserExtension) {
 		// Trust the LLM's output without validation
 		// Browser extensions can't use AJV due to Manifest V3 CSP restrictions
-		return toolCall.arguments;
+		return isRecord(toolCall.arguments) ? toolCall.arguments : {};
 	}
 
 	// Compile the schema
-	const validate = ajv.compile(tool.parameters);
+	const validate = ajv.compile(tool.parameters) as {
+		(data: unknown): boolean;
+		errors?: ErrorObject[] | null;
+	};
 
 	// Validate the arguments
 	if (validate(toolCall.arguments)) {
-		return toolCall.arguments;
+		return isRecord(toolCall.arguments) ? toolCall.arguments : {};
 	}
 
 	// Format validation errors nicely
 	const errors =
-		validate.errors
-			?.map((err: any) => {
-				const path = err.instancePath
-					? err.instancePath.substring(1)
-					: err.params.missingProperty || "root";
-				return `  - ${path}: ${err.message}`;
+		(validate.errors ?? [])
+			.map((err) => {
+				const path =
+					err.instancePath && err.instancePath.length > 1
+						? err.instancePath.substring(1)
+						: (err.params as { missingProperty?: string }).missingProperty ||
+							"root";
+				return `  - ${path}: ${err.message ?? "invalid value"}`;
 			})
 			.join("\n") || "Unknown validation error";
 
 	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`;
 
 	throw new Error(errorMessage);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

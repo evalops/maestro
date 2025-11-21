@@ -14,8 +14,17 @@ export class WriteRenderer implements ToolRenderer {
 		const args = context.result
 			? context.args
 			: (context.partialArgs ?? context.args);
-		const path = shortenPath(args?.file_path || args?.path || "");
-		const fileContent = args?.content || "";
+		const pathValue =
+			typeof args?.file_path === "string"
+				? args.file_path
+				: typeof args?.path === "string"
+					? args.path
+					: "";
+		const path = shortenPath(pathValue);
+		const fileContent =
+			typeof args?.content === "string"
+				? args.content
+				: String(args?.content ?? "");
 		const lines = fileContent ? fileContent.split("\n") : [];
 		const totalLines = lines.length;
 

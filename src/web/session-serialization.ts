@@ -210,11 +210,14 @@ export function convertAppMessageToComposer(
 	index = 0,
 ): ComposerMessage {
 	const context = buildContext("app->composer", index, message.role);
-	const timestamp = toIsoString((message as any).timestamp, context);
+	const timestamp = toIsoString(
+		"timestamp" in message ? message.timestamp : undefined,
+		context,
+	);
 	if (message.role === "user") {
 		return {
 			role: "user",
-			content: extractTextContent((message as any).content),
+			content: extractTextContent(message.content),
 			timestamp,
 		};
 	}
@@ -271,12 +274,12 @@ function normalizeToolCall(
 	const name = tool.name?.trim() || `tool_${messageIndex}_${contentIndex}`;
 	const toolCallId =
 		tool.toolCallId || `web-tool-${messageIndex}-${contentIndex}`;
-	const args = isRecord(tool.args) ? tool.args : {};
+	const args: Record<string, unknown> = isRecord(tool.args) ? tool.args : {};
 	return {
 		type: "toolCall",
 		id: toolCallId,
 		name,
-		arguments: args as Record<string, any>,
+		arguments: args,
 	};
 }
 

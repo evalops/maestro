@@ -3,7 +3,7 @@ export type ApprovalMode = "auto" | "prompt" | "fail";
 export interface ActionApprovalRequest {
 	id: string;
 	toolName: string;
-	args: any;
+	args: unknown;
 	reason: string;
 }
 
@@ -15,7 +15,7 @@ export interface ActionApprovalDecision {
 
 export interface ActionApprovalContext {
 	toolName: string;
-	args: any;
+	args: unknown;
 }
 
 export type ActionFirewallVerdict =

@@ -4,8 +4,12 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
-import { dirname, join } from "node:path";
+import {
+	type IncomingMessage,
+	type ServerResponse,
+	createServer,
+} from "node:http";
+import { dirname, join, normalize } from "node:path";
 import { fileURLToPath, parse } from "node:url";
 import type {
 	ComposerChatRequest,
@@ -67,14 +71,16 @@ function getActiveModel(): RegisteredModel | null {
 /**
  * CORS headers for web requests
  */
+const ALLOWED_ORIGIN = process.env.COMPOSER_WEB_ORIGIN || "*";
 const CORS_HEADERS = {
-	"Access-Control-Allow-Origin": "*",
+	"Access-Control-Allow-Origin": ALLOWED_ORIGIN,
 	"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 	"Access-Control-Allow-Headers": "Content-Type, Authorization",
 	"Access-Control-Max-Age": "86400",
 };
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
+const MAX_BODY_BYTES = 1_000_000;
 
 interface SseContext {
 	sessionId?: string;
@@ -89,6 +95,13 @@ type SseSkipListener = (metrics: {
 	context?: SseContext;
 }) => void;
 
+type SseResponse = Pick<
+	ServerResponse<IncomingMessage>,
+	"write" | "end" | "writable" | "writableEnded" | "destroyed"
+> & {
+	flushHeaders?: () => void;
+};
+
 class SseSession {
 	private closed = false;
 	private heartbeat?: NodeJS.Timeout;
@@ -97,7 +110,7 @@ class SseSession {
 	private lastError?: unknown;
 	private context: SseContext = {};
 	constructor(
-		private readonly res: any,
+		private readonly res: SseResponse,
 		private readonly onSkip?: SseSkipListener,
 		context?: SseContext,
 	) {
@@ -279,7 +292,7 @@ async function createAgent(
 /**
  * Handle /api/models - List available models
  */
-function handleModels(res: any) {
+function handleModels(res: ServerResponse) {
 	const models = getRegisteredModels();
 	const modelList = models.map((m) => ({
 		id: m.id,
@@ -307,7 +320,7 @@ function handleModels(res: any) {
 /**
  * Handle /api/status - Get server and workspace status
  */
-function handleStatus(res: any) {
+function handleStatus(res: ServerResponse) {
 	const cwd = process.cwd();
 
 	let gitBranch = null;
@@ -362,7 +375,7 @@ function handleStatus(res: any) {
 /**
  * Handle /api/config - Get and update configuration
  */
-async function handleConfig(req: any, res: any) {
+async function handleConfig(req: IncomingMessage, res: ServerResponse) {
 	if (req.method === "GET") {
 		try {
 			const config = getComposerCustomConfig();
@@ -389,6 +402,14 @@ async function handleConfig(req: any, res: any) {
 		let body = "";
 		req.on("data", (chunk: Buffer) => {
 			body += chunk.toString();
+			if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+				res.writeHead(413, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({ error: "Payload too large" }));
+				req.destroy();
+			}
 		});
 
 		req.on("end", async () => {
@@ -426,14 +447,17 @@ async function handleConfig(req: any, res: any) {
 /**
  * Handle /api/usage - Get cost tracking and usage statistics
  */
-function handleUsage(req: any, res: any) {
+function handleUsage(req: IncomingMessage, res: ServerResponse) {
 	try {
-		const parsedUrl = parse(req.url, true);
+		const parsedUrl = parse(req.url ?? "/", true);
 		const { since, until } = parsedUrl.query;
 
-		const options: any = {};
-		if (since) options.since = Number.parseInt(since as string, 10);
-		if (until) options.until = Number.parseInt(until as string, 10);
+		const options: {
+			since?: number;
+			until?: number;
+		} = {};
+		if (since) options.since = Number.parseInt(String(since), 10);
+		if (until) options.until = Number.parseInt(String(until), 10);
 
 		const summary = getUsageSummary(options);
 		const usageFile = getUsageFilePath();
@@ -458,7 +482,7 @@ function handleUsage(req: any, res: any) {
 	}
 }
 
-function respondWithModel(res: any, model: RegisteredModel) {
+function respondWithModel(res: ServerResponse, model: RegisteredModel) {
 	res.writeHead(200, {
 		"Content-Type": "application/json",
 		...CORS_HEADERS,
@@ -475,7 +499,7 @@ function respondWithModel(res: any, model: RegisteredModel) {
 	);
 }
 
-async function handleModel(req: any, res: any) {
+async function handleModel(req: IncomingMessage, res: ServerResponse) {
 	if (req.method === "GET") {
 		const model = getActiveModel();
 		if (!model) {
@@ -494,6 +518,14 @@ async function handleModel(req: any, res: any) {
 		let body = "";
 		req.on("data", (chunk: Buffer) => {
 			body += chunk.toString();
+			if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+				res.writeHead(413, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({ error: "Payload too large" }));
+				req.destroy();
+			}
 		});
 
 		req.on("end", () => {
@@ -571,10 +603,18 @@ async function handleModel(req: any, res: any) {
 /**
  * Handle /api/chat - Stream chat responses
  */
-async function handleChat(req: any, res: any) {
+async function handleChat(req: IncomingMessage, res: ServerResponse) {
 	let body = "";
 	req.on("data", (chunk: Buffer) => {
 		body += chunk.toString();
+		if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+			res.writeHead(413, {
+				"Content-Type": "application/json",
+				...CORS_HEADERS,
+			});
+			res.end(JSON.stringify({ error: "Payload too large" }));
+			req.destroy();
+		}
 	});
 
 	req.on("end", async () => {
@@ -754,7 +794,7 @@ async function handleChat(req: any, res: any) {
 				sendSSE(sseSession, {
 					type: "error",
 					message: error instanceof Error ? error.message : "Unknown error",
-				} as any);
+				});
 			} finally {
 				await cleanup(false);
 			}
@@ -777,8 +817,13 @@ async function handleChat(req: any, res: any) {
 /**
  * Handle /api/sessions - List and manage sessions
  */
-async function handleSessions(req: any, res: any, pathname: string) {
+async function handleSessions(
+	req: IncomingMessage,
+	res: ServerResponse,
+	pathname: string,
+) {
 	const sessionManager = new SessionManager(true);
+	const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 
 	try {
 		// GET /api/sessions - List all sessions
@@ -801,6 +846,14 @@ async function handleSessions(req: any, res: any, pathname: string) {
 		// GET /api/sessions/:id - Get specific session
 		else if (req.method === "GET" && pathname.startsWith("/api/sessions/")) {
 			const sessionId = pathname.replace("/api/sessions/", "");
+			if (!sessionIdPattern.test(sessionId)) {
+				res.writeHead(400, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({ error: "Invalid session id" }));
+				return;
+			}
 			const session = await sessionManager.loadSession(sessionId);
 
 			if (!session) {
@@ -832,6 +885,14 @@ async function handleSessions(req: any, res: any, pathname: string) {
 			let body = "";
 			req.on("data", (chunk: Buffer) => {
 				body += chunk.toString();
+				if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+					res.writeHead(413, {
+						"Content-Type": "application/json",
+						...CORS_HEADERS,
+					});
+					res.end(JSON.stringify({ error: "Payload too large" }));
+					req.destroy();
+				}
 			});
 
 			req.on("end", async () => {
@@ -856,6 +917,14 @@ async function handleSessions(req: any, res: any, pathname: string) {
 		// DELETE /api/sessions/:id - Delete session
 		else if (req.method === "DELETE" && pathname.startsWith("/api/sessions/")) {
 			const sessionId = pathname.replace("/api/sessions/", "");
+			if (!sessionIdPattern.test(sessionId)) {
+				res.writeHead(400, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({ error: "Invalid session id" }));
+				return;
+			}
 			await sessionManager.deleteSession(sessionId);
 
 			res.writeHead(204, CORS_HEADERS);
@@ -884,7 +953,7 @@ async function handleSessions(req: any, res: any, pathname: string) {
 /**
  * Serve static files from web package
  */
-function serveStatic(pathname: string, res: any) {
+function serveStatic(pathname: string, res: ServerResponse) {
 	// Map paths to files
 	const webRoot = join(__dirname, "../packages/web");
 	let filePath: string;
@@ -896,6 +965,13 @@ function serveStatic(pathname: string, res: any) {
 		filePath = join(webRoot, pathname);
 	} else {
 		filePath = join(webRoot, pathname);
+	}
+
+	const normalizedPath = normalize(filePath);
+	if (!normalizedPath.startsWith(webRoot)) {
+		res.writeHead(403, { "Content-Type": "text/plain" });
+		res.end("Forbidden");
+		return;
 	}
 
 	if (!existsSync(filePath)) {
@@ -933,7 +1009,7 @@ function serveStatic(pathname: string, res: any) {
 /**
  * Main request handler
  */
-async function handleRequest(req: any, res: any) {
+async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	const parsedUrl = parse(req.url || "/", true);
 	const pathname = parsedUrl.pathname || "/";
 

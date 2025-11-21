@@ -32,7 +32,7 @@ export interface RenderableAssistantMessage {
 export interface RenderableToolCall {
 	id: string;
 	name: string;
-	arguments: Record<string, any>;
+	arguments: Record<string, unknown>;
 }
 
 export interface RenderableToolResultMessage {
@@ -42,7 +42,7 @@ export interface RenderableToolResultMessage {
 	textContent: string;
 	images: RenderableImageContent[];
 	isError: boolean;
-	details?: any;
+	details?: unknown;
 	raw: ToolResultMessage;
 }
 

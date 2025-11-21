@@ -2,12 +2,14 @@ import {
 	type Content,
 	FinishReason,
 	FunctionCallingConfigMode,
+	type FunctionDeclaration,
 	type GenerateContentConfig,
 	type GenerateContentParameters,
 	GoogleGenAI,
 	type Part,
 } from "@google/genai";
 import type {
+	AgentTool,
 	AssistantMessage,
 	AssistantMessageEvent,
 	Context,
@@ -17,6 +19,7 @@ import type {
 	StreamOptions,
 	TextContent,
 	ThinkingContent,
+	Tool,
 	ToolCall,
 } from "../types.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
@@ -30,6 +33,10 @@ export interface GoogleOptions extends StreamOptions {
 
 // Counter for generating unique tool call IDs
 let toolCallCounter = 0;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 /**
  * Google Gemini provider with thinking support and caching.
@@ -187,7 +194,9 @@ export async function* streamGoogle(
 							type: "toolCall",
 							id: toolCallId,
 							name: part.functionCall.name || "",
-							arguments: part.functionCall.args as Record<string, any>,
+							arguments: isRecord(part.functionCall.args)
+								? part.functionCall.args
+								: {},
 						};
 
 						// Note: Validation happens in the agent executor, not during streaming
@@ -216,7 +225,10 @@ export async function* streamGoogle(
 
 			if (candidate?.finishReason) {
 				partial.stopReason = mapStopReason(candidate.finishReason);
-				if (partial.content.some((b) => b.type === "toolCall")) {
+				if (
+					partial.stopReason === "stop" &&
+					partial.content.some((b) => b.type === "toolCall")
+				) {
 					partial.stopReason = "toolUse";
 				}
 			}
@@ -273,11 +285,21 @@ export async function* streamGoogle(
 			}
 		}
 
-		yield {
-			type: "done",
-			reason: partial.stopReason as any,
-			message: partial,
-		};
+		const stopReason = partial.stopReason;
+		if (stopReason === "error" || stopReason === "aborted") {
+			yield { type: "error", reason: stopReason, error: partial };
+		} else {
+			yield {
+				type: "done",
+				reason:
+					stopReason === "length"
+						? "length"
+						: stopReason === "toolUse"
+							? "toolUse"
+							: "stop",
+				message: partial,
+			};
+		}
 	} catch (error: unknown) {
 		if (error instanceof Error && error.name === "AbortError") {
 			partial.stopReason = "aborted";
@@ -312,7 +334,9 @@ function buildParams(
 			systemInstruction: sanitizeSurrogates(context.systemPrompt),
 		}),
 		...(context.tools &&
-			context.tools.length > 0 && { tools: convertTools(context.tools) }),
+			context.tools.length > 0 && {
+				tools: convertTools(context.tools) as GenerateContentConfig["tools"],
+			}),
 	};
 
 	if (context.tools && context.tools.length > 0 && options.toolChoice) {
@@ -420,7 +444,7 @@ function convertMessages(
 			// Extract text and image content
 			const textResult = msg.content
 				.filter((c) => c.type === "text")
-				.map((c) => (c as any).text)
+				.map((c) => ("text" in c ? c.text : ""))
 				.join("\n");
 			const imageBlocks = model.input.includes("image")
 				? msg.content.filter((c) => c.type === "image")
@@ -447,10 +471,20 @@ function convertMessages(
 
 			// Add any images as inlineData parts
 			for (const imageBlock of imageBlocks) {
+				const mimeType =
+					"type" in imageBlock &&
+					imageBlock.type === "image" &&
+					imageBlock.mimeType
+						? imageBlock.mimeType
+						: "application/octet-stream";
+				const data =
+					"type" in imageBlock && imageBlock.type === "image" && imageBlock.data
+						? imageBlock.data
+						: "";
 				parts.push({
 					inlineData: {
-						mimeType: (imageBlock as any).mimeType,
-						data: (imageBlock as any).data,
+						mimeType,
+						data,
 					},
 				});
 			}
@@ -465,14 +499,16 @@ function convertMessages(
 	return contents;
 }
 
-function convertTools(tools: any[]): any[] | undefined {
+function convertTools(
+	tools: Tool[],
+): Array<{ functionDeclarations: FunctionDeclaration[] }> | undefined {
 	if (tools.length === 0) return undefined;
 	return [
 		{
 			functionDeclarations: tools.map((tool) => ({
 				name: tool.name,
 				description: tool.description,
-				parameters: tool.parameters as any,
+				parameters: tool.parameters as FunctionDeclaration["parameters"],
 			})),
 		},
 	];

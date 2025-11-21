@@ -10,7 +10,7 @@ import type {
 
 export interface MockToolOperation {
 	name: string;
-	args: Record<string, any> | (() => Record<string, any>);
+	args: Record<string, unknown> | (() => Record<string, unknown>);
 	id?: string;
 	onResult?: (result: ToolResultMessage) => void;
 	error?: string;
@@ -42,7 +42,7 @@ export class MockToolTransport implements AgentTransport {
 			throwIfAborted();
 			const resolvedArgs =
 				typeof operation.args === "function"
-					? (operation.args as () => Record<string, any>)()
+					? (operation.args as () => Record<string, unknown>)()
 					: operation.args;
 			const toolCallId = operation.id ?? randomUUID();
 			const toolCallMessage = this.createToolCall(
@@ -153,7 +153,7 @@ export class MockToolTransport implements AgentTransport {
 	private createToolCall(
 		toolCallId: string,
 		operation: MockToolOperation,
-		args: Record<string, any>,
+		args: Record<string, unknown>,
 	): AssistantMessage {
 		return {
 			role: "assistant",
