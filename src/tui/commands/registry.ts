@@ -306,6 +306,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "changelog",
+				description: "Display full version history",
+				usage: "/changelog",
+				tags: ["system"],
+			},
+			equals("changelog"),
+			handlers.changelog,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "telemetry",
 				description: "Show telemetry status or toggle runtime overrides",
 				usage: "/telemetry [status|on|off|reset]",

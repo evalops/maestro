@@ -5,6 +5,7 @@ import type { SlashCommand } from "@evalops/tui";
 import {
 	CombinedAutocompleteProvider,
 	Container,
+	Markdown,
 	ProcessTerminal,
 	Spacer,
 	TUI,
@@ -38,6 +39,7 @@ import { getTelemetryStatus } from "../telemetry.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
 import { BashModeView } from "./bash-mode-view.js";
+import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
 import type {
 	CommandEntry,
@@ -188,6 +190,7 @@ export class TuiRenderer {
 	private messageView: MessageView;
 	private feedbackView: FeedbackView;
 	private aboutView: AboutView;
+	private changelogView: ChangelogView;
 	private infoView: InfoView;
 	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
@@ -466,6 +469,11 @@ export class TuiRenderer {
 			telemetryStatus: () => this.describeTelemetryStatus(),
 			getApprovalMode: () => this.approvalService.getMode(),
 		});
+		this.changelogView = new ChangelogView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showError: (message: string) => this.notificationView.showError(message),
+		});
 		this.infoView = new InfoView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -582,6 +590,8 @@ export class TuiRenderer {
 				this.fileSearchView.handleMentionCommand(context.rawInput),
 			showHelp: (_context) => this.infoView.showHelp(),
 			handleUpdate: (_context) => this.updateView.handleUpdateCommand(),
+			handleChangelog: (_context) =>
+				this.changelogView.handleChangelogCommand(),
 			handleConfig: (context) => this.configView.handleConfigCommand(context),
 			handleCost: (context) => this.costView.handleCostCommand(context),
 			handleTelemetry: (context) =>
