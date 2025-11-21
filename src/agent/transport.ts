@@ -5,6 +5,7 @@ import type { ActionApprovalService } from "./action-approval.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamGoogle } from "./providers/google.js";
 import { streamOpenAI } from "./providers/openai.js";
+import { validateToolArguments } from "./providers/validation.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
@@ -144,6 +145,7 @@ export class ProviderTransport implements AgentTransport {
 			let currentAssistantMessage: AssistantMessage | null = null;
 			let completedAssistantMessage: AssistantMessage | null = null;
 			const toolCallsToExecute: Array<{
+				type: "toolCall";
 				id: string;
 				name: string;
 				arguments: any;
@@ -186,7 +188,10 @@ export class ProviderTransport implements AgentTransport {
 					if (currentAssistantMessage) {
 						yield { type: "message_start", message: currentAssistantMessage };
 					}
-				} else if (
+					continue;
+				}
+
+				if (
 					event.type === "text_delta" ||
 					event.type === "thinking_delta" ||
 					event.type === "toolcall_delta"
@@ -198,13 +203,20 @@ export class ProviderTransport implements AgentTransport {
 							assistantMessageEvent: event,
 						};
 					}
-				} else if (event.type === "toolcall_end") {
+					continue;
+				}
+
+				if (event.type === "toolcall_end") {
 					toolCallsToExecute.push({
+						type: "toolCall",
 						id: event.toolCall.id,
 						name: event.toolCall.name,
 						arguments: event.toolCall.arguments,
 					});
-				} else if (event.type === "done") {
+					continue;
+				}
+
+				if (event.type === "done") {
 					if (currentAssistantMessage) {
 						completedAssistantMessage = currentAssistantMessage;
 						yield { type: "message_end", message: currentAssistantMessage };
@@ -229,7 +241,10 @@ export class ProviderTransport implements AgentTransport {
 						}
 					}
 					pendingNextTurn = toolCallsToExecute.length > 0;
-				} else if (event.type === "error") {
+					continue;
+				}
+
+				if (event.type === "error") {
 					completedAssistantMessage = event.error;
 					if (currentAssistantMessage) {
 						yield { type: "message_end", message: currentAssistantMessage };
@@ -378,9 +393,37 @@ export class ProviderTransport implements AgentTransport {
 						continue;
 					}
 
+					let validatedArgs: unknown;
+					try {
+						validatedArgs = validateToolArguments(tool, toolCall);
+					} catch (error: unknown) {
+						const validationErrorResult: ToolResultMessage = {
+							role: "toolResult",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							content: [
+								{
+									type: "text",
+									text: error instanceof Error ? error.message : String(error),
+								},
+							],
+							isError: true,
+							timestamp: Date.now(),
+						};
+						for (const event of emitToolResult(
+							validationErrorResult,
+							toolCall.id,
+							toolCall.name,
+							true,
+						)) {
+							yield event;
+						}
+						continue;
+					}
+
 					const executionPromise: Promise<ToolExecutionOutcome> =
 						Promise.resolve()
-							.then(() => tool.execute(toolCall.id, toolCall.arguments, signal))
+							.then(() => tool.execute(toolCall.id, validatedArgs, signal))
 							.then((result) => ({
 								message: {
 									role: "toolResult" as const,
