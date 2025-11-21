@@ -60,11 +60,24 @@ export class PromptQueue {
 		return entry;
 	}
 
+	cancelAll(): QueuedPrompt[] {
+		const cancelled = [...this.pending];
+		this.pending = [];
+		for (const entry of cancelled) {
+			this.emit({ type: "cancel", entry });
+		}
+		return cancelled;
+	}
+
 	getSnapshot(): PromptQueueSnapshot {
 		return {
 			active: this.active ?? undefined,
 			pending: [...this.pending],
 		};
+	}
+
+	clearActive(): void {
+		this.active = null;
 	}
 
 	subscribe(listener: (event: PromptQueueEvent) => void): () => void {

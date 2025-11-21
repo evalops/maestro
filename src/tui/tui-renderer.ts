@@ -873,6 +873,39 @@ export class TuiRenderer {
 		if (this.onInterruptCallback) {
 			this.onInterruptCallback();
 		}
+		this.restoreQueuedPromptIfAny();
+	}
+
+	private restoreQueuedPromptIfAny(): void {
+		if (!this.promptQueue) {
+			return;
+		}
+		const snapshot = this.promptQueue.getSnapshot();
+		// Bring active back plus pending onto the editor, newest last
+		const messages: string[] = [];
+		if (snapshot.active) {
+			messages.push(snapshot.active.text);
+		}
+		for (const entry of snapshot.pending) {
+			messages.push(entry.text);
+		}
+		if (!messages.length) {
+			return;
+		}
+		const restored = messages.join("\n\n");
+		this.promptQueue.clearActive?.();
+		this.promptQueue.cancelAll?.();
+		this.editor.setText(restored);
+		this.notificationView.showToast(
+			`Restored ${messages.length} queued prompt${messages.length === 1 ? "" : "s"} to the editor.`,
+			"info",
+		);
+		this.promptQueueUnsubscribe?.();
+		this.promptQueueUnsubscribe = this.promptQueue.subscribe((event) =>
+			this.handlePromptQueueEvent(event),
+		);
+		this.updateQueuedPromptCount();
+		this.refreshFooterHint();
 	}
 
 	private clearInterruptArm(): void {
@@ -1146,15 +1179,7 @@ export class TuiRenderer {
 
 		const arg = context.argumentText.trim();
 		if (!arg || arg === "list") {
-			const lines: string[] = ["User messages (use /branch <number>):"];
-			userMessages.forEach(({ msg }, userIndex) => {
-				lines.push(
-					`${userIndex + 1}. ${this.extractUserTextPreview(msg as AppMessage)}`,
-				);
-			});
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-			this.ui.requestRender();
+			this.renderBranchList(userMessages);
 			return;
 		}
 
@@ -1178,6 +1203,31 @@ export class TuiRenderer {
 			editorSeed,
 			`Branched from user message #${targetIndex}.`,
 		);
+	}
+
+	private renderBranchList(
+		userMessages: Array<{ msg: AppMessage; index: number }>,
+	): void {
+		const lines: string[] = ["User messages (use /branch <number>):"];
+		userMessages.forEach(({ msg }, userIndex) => {
+			const created = this.getMessageTimestamp(msg);
+			const preview = this.extractUserTextPreview(msg as AppMessage);
+			const meta = created ? ` • ${created}` : "";
+			lines.push(`${userIndex + 1}. ${preview}${meta}`);
+		});
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private getMessageTimestamp(message: AppMessage): string | null {
+		const ts = (message as any)?.timestamp;
+		if (!ts || typeof ts !== "number") return null;
+		try {
+			return new Date(ts).toLocaleString();
+		} catch {
+			return null;
+		}
 	}
 
 	private extractUserText(message: AppMessage): string {
