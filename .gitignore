@@ -15,3 +15,4 @@ node_modules/
 # Misc artifacts
 out.html
 tmp/
+*.tsbuildinfo
