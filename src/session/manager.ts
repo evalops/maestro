@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	renameSync,
 	statSync,
 	unlinkSync,
 } from "node:fs";
@@ -731,6 +732,76 @@ export class SessionManager {
 		const assistantMessages = messages.filter((m) => m.role === "assistant");
 
 		return userMessages.length >= 1 && assistantMessages.length >= 1;
+	}
+
+	/**
+	 * Create a branched session from a specific message index.
+	 * Returns the new session file path.
+	 * @param state - Current agent state
+	 * @param branchFromIndex - Index of the last message to include in the branch (exclusive)
+	 */
+	createBranchedSession(state: AgentState, branchFromIndex: number): string {
+		// Validate branchFromIndex bounds
+		if (branchFromIndex < 0 || branchFromIndex > state.messages.length) {
+			throw new Error(
+				`Invalid branchFromIndex: ${branchFromIndex}. Must be between 0 and ${state.messages.length}`,
+			);
+		}
+
+		// Create a new session ID for the branch
+		const newSessionId = uuidv4();
+		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+		const newSessionFile = join(
+			this.sessionDir,
+			`${timestamp}_${newSessionId}.jsonl`,
+		);
+		const tempFile = `${newSessionFile}.tmp`;
+
+		// Use transactional write (temp file + atomic rename)
+		try {
+			// Write session header
+			const modelKey = state.model
+				? `${state.model.provider}/${state.model.id}`
+				: "unknown/unknown";
+			const entry: SessionHeaderEntry = {
+				type: "session",
+				id: newSessionId,
+				timestamp: new Date().toISOString(),
+				cwd: process.cwd(),
+				model: modelKey,
+				modelMetadata: this.lastModelMetadata,
+				thinkingLevel: state.thinkingLevel,
+			};
+			appendFileSync(tempFile, `${JSON.stringify(entry)}\n`);
+
+			// Write messages up to (but not including) the branch point
+			if (branchFromIndex > 0) {
+				const messagesToWrite = state.messages.slice(0, branchFromIndex);
+				for (const message of messagesToWrite) {
+					const messageEntry: SessionMessageEntry = {
+						type: "message",
+						timestamp: new Date().toISOString(),
+						message,
+					};
+					appendFileSync(tempFile, `${JSON.stringify(messageEntry)}\n`);
+				}
+			}
+
+			// Atomic rename to final location
+			renameSync(tempFile, newSessionFile);
+		} catch (error) {
+			// Cleanup temp file on failure
+			try {
+				if (existsSync(tempFile)) {
+					unlinkSync(tempFile);
+				}
+			} catch (_cleanupError) {
+				// Ignore cleanup errors
+			}
+			throw error;
+		}
+
+		return newSessionFile;
 	}
 
 	/**

@@ -394,6 +394,7 @@ export function createCommandRegistry({
 			handlers.mcp,
 			createContext,
 		),
+
 		buildEntry(
 			{
 				name: "compact",

@@ -66,6 +66,7 @@ import { FileSearchView } from "./search/file-search-view.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
 import { ThinkingSelectorView } from "./selectors/thinking-selector-view.js";
+import { UserMessageSelectorView } from "./selectors/user-message-selector-view.js";
 import { ConversationCompactor } from "./session/conversation-compactor.js";
 import { SessionContext } from "./session/session-context.js";
 import { SessionDataProvider } from "./session/session-data-provider.js";
@@ -196,6 +197,7 @@ export class TuiRenderer {
 	private thinkingSelectorView: ThinkingSelectorView;
 	private modelSelectorView: ModelSelectorView;
 	private reportSelectorView: ReportSelectorView;
+	private userMessageSelectorView: UserMessageSelectorView;
 	private notificationView: NotificationView;
 	private updateView: UpdateView;
 	private configView: ConfigView;
@@ -505,6 +507,28 @@ export class TuiRenderer {
 				} else {
 					this.feedbackView.handleFeedbackCommand();
 				}
+			},
+		});
+		this.userMessageSelectorView = new UserMessageSelectorView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			notificationView: this.notificationView,
+			onBranchCreated: () => {
+				// Complete UI cleanup after branching (same as resetConversation)
+				this.sessionContext.resetArtifacts();
+				this.toolOutputView.clearTrackedComponents();
+				this.chatContainer.clear();
+				this.startupContainer.clear();
+				this.planView.syncHintWithStore();
+				this.planHint = null;
+				this.footer.updateState(this.agent.state);
+				this.refreshFooterHint();
+				this.renderInitialMessages(this.agent.state);
+				this.ui.requestRender();
 			},
 		});
 		this.conversationCompactor = new ConversationCompactor({
@@ -1184,7 +1208,12 @@ export class TuiRenderer {
 		}
 
 		const arg = context.argumentText.trim();
-		if (!arg || arg === "list") {
+		if (!arg) {
+			// No argument - show interactive selector
+			this.userMessageSelectorView.show();
+			return;
+		}
+		if (arg === "list") {
 			this.renderBranchList(userMessages);
 			return;
 		}
@@ -1202,12 +1231,12 @@ export class TuiRenderer {
 		}
 
 		const selection = userMessages[targetIndex - 1];
-		const slice = messages.slice(0, selection.index + 1);
+		const slice = messages.slice(0, selection.index);
 		const editorSeed = this.extractUserText(selection.msg as AppMessage);
 		this.resetConversation(
 			slice,
 			editorSeed,
-			`Branched from user message #${targetIndex}.`,
+			`Branched to new session before user message #${targetIndex}.`,
 		);
 	}
 
