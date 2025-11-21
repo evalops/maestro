@@ -175,6 +175,27 @@ Sessions are stored as **JSONL** at `~/.composer/agent/sessions/`.
 
 -----
 
+## 6\. Implementation Patterns
+
+### Event Suppression Pattern
+
+When implementing event-emitting classes, the **silent mode** parameter pattern can suppress events during internal state operations. See [`docs/patterns/event-suppression.md`](./docs/patterns/event-suppression.md) for detailed guidelines.
+
+**Quick Reference:**
+```typescript
+// ✅ Use silent mode for internal cleanup
+queue.cancelAll({ silent: true });
+
+// ❌ Don't unsubscribe/resubscribe
+this.unsubscribe();
+queue.cancelAll();
+this.resubscribe();
+```
+
+_Note: Currently used only in PromptQueue. Document additional patterns here as the codebase evolves._
+
+-----
+
 ### Troubleshooting
 
   * **Auth Error:** Check `echo $ANTHROPIC_API_KEY` and run `composer --diag`.
