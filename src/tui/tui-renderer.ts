@@ -893,12 +893,8 @@ export class TuiRenderer {
 			return;
 		}
 		const restored = messages.join("\n\n");
-		this.promptQueueUnsubscribe?.();
-		this.promptQueue.cancelAll?.();
+		this.promptQueue.cancelAll?.({ silent: true });
 		this.promptQueue.clearActive?.();
-		this.promptQueueUnsubscribe = this.promptQueue.subscribe((event) =>
-			this.handlePromptQueueEvent(event),
-		);
 		this.editor.setText(restored);
 		this.notificationView.showToast(
 			`Restored ${messages.length} queued prompt${messages.length === 1 ? "" : "s"} to the editor.`,

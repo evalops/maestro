@@ -60,11 +60,20 @@ export class PromptQueue {
 		return entry;
 	}
 
-	cancelAll(): QueuedPrompt[] {
+	/**
+	 * Cancel all pending prompts in the queue.
+	 * @param options.silent - When true, suppresses cancel event emissions.
+	 *                        Useful for internal state cleanup (e.g., interrupt restore)
+	 *                        where external notifications are not needed.
+	 * @returns Array of cancelled prompt entries
+	 */
+	cancelAll(options?: { silent?: boolean }): QueuedPrompt[] {
 		const cancelled = [...this.pending];
 		this.pending = [];
-		for (const entry of cancelled) {
-			this.emit({ type: "cancel", entry });
+		if (!options?.silent) {
+			for (const entry of cancelled) {
+				this.emit({ type: "cancel", entry });
+			}
 		}
 		return cancelled;
 	}
@@ -76,6 +85,10 @@ export class PromptQueue {
 		};
 	}
 
+	/**
+	 * Clears the currently active prompt without emitting events.
+	 * Note: This method does not emit events by design.
+	 */
 	clearActive(): void {
 		this.active = null;
 	}

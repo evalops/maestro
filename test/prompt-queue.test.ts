@@ -58,4 +58,72 @@ describe("PromptQueue", () => {
 		const snapshot = queue.getSnapshot();
 		expect(snapshot.pending.length).toBe(0);
 	});
+
+	it("emits cancel events by default when calling cancelAll", async () => {
+		// Use a blocking runner so prompts stay in pending
+		let resolve: () => void;
+		const blocker = new Promise<void>((r) => {
+			resolve = r;
+		});
+		const queue = new PromptQueue(async () => {
+			await blocker;
+		});
+		const cancelEvents: string[] = [];
+		queue.subscribe((event) => {
+			if (event.type === "cancel") {
+				cancelEvents.push(event.entry.text);
+			}
+		});
+		queue.enqueue("first"); // This starts running immediately
+		queue.enqueue("second"); // This stays pending
+		queue.enqueue("third"); // This stays pending
+		queue.cancelAll(); // Should cancel pending only
+		expect(cancelEvents).toEqual(["second", "third"]);
+		resolve?.(); // Unblock the runner
+	});
+
+	it("suppresses cancel events when silent mode is enabled", () => {
+		const queue = new PromptQueue(async () => {});
+		const cancelEvents: string[] = [];
+		queue.subscribe((event) => {
+			if (event.type === "cancel") {
+				cancelEvents.push(event.entry.text);
+			}
+		});
+		queue.enqueue("first");
+		queue.enqueue("second");
+		queue.enqueue("third");
+		queue.cancelAll({ silent: true });
+		expect(cancelEvents).toEqual([]);
+	});
+
+	it("returns cancelled entries even in silent mode", () => {
+		// Use a blocking runner so prompts stay in pending
+		let resolve: () => void;
+		const blocker = new Promise<void>((r) => {
+			resolve = r;
+		});
+		const queue = new PromptQueue(async () => {
+			await blocker;
+		});
+		queue.enqueue("first"); // This starts running immediately
+		queue.enqueue("second"); // This stays pending
+		const cancelled = queue.cancelAll({ silent: true });
+		expect(cancelled.length).toBe(1); // Only pending are cancelled
+		expect(cancelled.map((e) => e.text)).toEqual(["second"]);
+		resolve?.(); // Unblock the runner
+	});
+
+	it("clearActive does not emit events", () => {
+		const queue = new PromptQueue(async () => {});
+		const events: string[] = [];
+		queue.subscribe((event) => {
+			events.push(event.type);
+		});
+		queue.enqueue("first");
+		// Wait for it to start processing
+		queue.clearActive();
+		// Only enqueue and start events should be emitted, no cancel/finish
+		expect(events).toEqual(["enqueue", "start"]);
+	});
 });
