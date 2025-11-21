@@ -11,6 +11,11 @@ This document defines the operational parameters for **Composer**. It serves two
 
 **Context:** This repository uses a **Bun + Nx** monorepo structure. Strict adherence to the build pipeline is required.
 
+**On first user message (do this in order):**
+- Read the root `README.md` fully.
+- Ask which package(s) to work on.
+- Read the chosen package README(s) fully: `packages/ai/README.md`, `packages/tui/README.md`, `packages/agent/README.md`, `packages/coding-agent/README.md`, `packages/pods/README.md`, `packages/web-ui/README.md`.
+
 ### 🛠 Workspace Management
 
 | Action | Command | Context |
@@ -20,6 +25,7 @@ This document defines the operational parameters for **Composer**. It serves two
 | **Install Root** | `bun install` | Workspace-aware installation. |
 | **Install Pkg** | `bun install --filter <package>` | Targeted debugging inside a package. |
 | **Check Deps** | `bunx biome check .` | Run after moving files/changing imports. |
+| **Type Safety** | n/a | Avoid `any`; locate or define proper types (check `node_modules`) before falling back. |
 
 ### Build & Test Workflows
 
@@ -27,8 +33,9 @@ This document defines the operational parameters for **Composer**. It serves two
 
 #### Root Commands
 
-  * **Full Test Suite:** `npx nx run composer:test --skip-nx-cache` (Builds `tui` + `composer-web` automatically).
-  * **Linting:** `bun run bun:lint` (Biome + Eval Verifier).
+  * **Full Test Suite:** `npx nx run composer:test --skip-nx-cache` (Builds `tui` + `composer-web` automatically). Run after every code change.
+  * **Linting:** `bun run bun:lint` (Biome + Eval Verifier). Run after every code change.
+  * **Runtime Commands:** Avoid long-lived `dev`/watch servers (e.g., `npm run dev`) unless the user explicitly requests them.
 
 #### Package-Specific Commands
 
@@ -172,6 +179,7 @@ Sessions are stored as **JSONL** at `~/.composer/agent/sessions/`.
     git add -p    # Stage granularly
     ```
 4.  **Tool Usage:** Do not ask Composer to manually read files one by one. It has `batch` capabilities for reading—encourage it to use them.
+5.  **Response Style:** Keep answers concise; avoid inline dynamic imports unless absolutely necessary.
 
 -----
 
