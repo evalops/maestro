@@ -622,6 +622,7 @@ export class TuiRenderer {
 				this.sessionView.handleSessionsCommand(context.rawInput),
 			handleReport: (context) => this.handleReportCommand(context),
 			handleAbout: (_context) => this.aboutView.handleAboutCommand(),
+			handleClear: async (_context) => await this.handleClearCommand(),
 			showStatus: (_context) => this.diagnosticsView.handleStatusCommand(),
 			handleReview: (context) => this.handleReviewCommand(context),
 			handleUndo: (context) => this.gitView.handleUndoCommand(context.rawInput),
@@ -1000,6 +1001,91 @@ export class TuiRenderer {
 	private handleCompactToolsCommand(rawInput: string): void {
 		this.toolOutputView.handleCompactToolsCommand(rawInput);
 		this.persistUiState();
+	}
+
+	private clearInProgress = false;
+
+	private async handleClearCommand(): Promise<void> {
+		// Prevent concurrent clear operations
+		if (this.clearInProgress) {
+			return;
+		}
+		this.clearInProgress = true;
+
+		try {
+			// Abort any in-flight agent work
+			this.agent.abort();
+			await this.agent.waitForIdle();
+
+			// Reset agent running state (abort doesn't emit agent_end)
+			this.isAgentRunning = false;
+
+			// Cancel any queued prompts
+			this.promptQueue?.cancelAll?.({ silent: true });
+			this.nextQueuedPreview = null;
+			this.updateQueuedPromptCount();
+
+			// Stop loading animation if present
+			this.loaderView.stop();
+			this.statusContainer.clear();
+
+			// Reset agent and session
+			this.agent.reset();
+			this.sessionManager.reset();
+
+			// Reset session artifacts and tool tracking
+			this.sessionContext.resetArtifacts();
+			this.toolOutputView.clearTrackedComponents();
+
+			// Clear all UI containers
+			this.chatContainer.clear();
+			this.startupContainer.clear();
+
+			// Reset plan state
+			this.planView.syncHintWithStore();
+			this.planHint = null;
+
+			// Clear editor input
+			this.editor.setText("");
+
+			// Clear pending tools
+			this.pendingTools.clear();
+
+			// Clear interrupt state if armed
+			if (this.interruptArmed) {
+				if (this.interruptTimeout) {
+					clearTimeout(this.interruptTimeout);
+				}
+				this.interruptArmed = false;
+				this.interruptTimeout = null;
+			}
+
+			// Reset message view state and render initial messages
+			this.renderInitialMessages(this.agent.state);
+
+			// Update footer and refresh hints
+			this.footer.updateState(this.agent.state);
+			this.refreshFooterHint();
+
+			// Show success confirmation
+			this.notificationView.showToast(
+				"Context cleared - started fresh session",
+				"success",
+			);
+		} catch (error) {
+			// On error, ensure UI is in a consistent state
+			this.loaderView.stop();
+			this.statusContainer.clear();
+
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(
+				new Text(`✗ Error clearing context: ${errorMsg}`, 1, 1),
+			);
+		} finally {
+			this.clearInProgress = false;
+			this.ui.requestRender();
+		}
 	}
 
 	private handleReportCommand(context: CommandExecutionContext): void {

@@ -426,6 +426,27 @@ export class SessionManager {
 		this.initializeWriter();
 	}
 
+	/**
+	 * Reset session state for /clear command - clears pending messages and starts new session
+	 */
+	reset(): void {
+		// Dispose of old writer
+		this.writer?.flushSync();
+		this.writer?.dispose();
+		this.writer = undefined;
+
+		// Clear state
+		this.pendingMessages = [];
+		this.sessionInitialized = false;
+		this.metadataCache = new SessionMetadataCache();
+		this.agentSnapshot = undefined;
+		this.lastModelMetadata = undefined;
+
+		// Start new session
+		this.initNewSession();
+		this.initializeWriter();
+	}
+
 	private findMostRecentlyModifiedSession(): string | null {
 		try {
 			const files = readdirSync(this.sessionDir)

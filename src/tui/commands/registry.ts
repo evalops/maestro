@@ -183,6 +183,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "clear",
+				description: "Clear context and start a fresh session",
+				usage: "/clear",
+				tags: ["session"],
+			},
+			equals("clear"),
+			handlers.clear,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "plan",
 				description: "Show saved plans/checklists",
 				usage: "/plan [id]",

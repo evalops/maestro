@@ -29,6 +29,7 @@ interface CommandRegistryOptions {
 	handleSession: (context: CommandExecutionContext) => void;
 	handleSessions: (context: CommandExecutionContext) => void | Promise<void>;
 	handleAbout: (context: CommandExecutionContext) => void;
+	handleClear: (context: CommandExecutionContext) => Promise<void> | void;
 	showStatus: (context: CommandExecutionContext) => void;
 	handleReview: (context: CommandExecutionContext) => void;
 	handleUndo: (context: CommandExecutionContext) => void | Promise<void>;
@@ -78,6 +79,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			sessions: opts.handleSessions,
 			report: opts.handleReport,
 			about: opts.handleAbout,
+			clear: opts.handleClear,
 			status: opts.showStatus,
 			review: opts.handleReview,
 			undoChanges: opts.handleUndo,

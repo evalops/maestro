@@ -103,6 +103,8 @@ export class Agent {
 		messages: AppMessage[],
 	) => Message[] | Promise<Message[]>;
 	private messageQueue: Array<QueuedMessage<AppMessage>> = [];
+	private runningPrompt?: Promise<void>;
+	private resolveRunningPrompt?: () => void;
 
 	/**
 	 * Creates a new Agent instance.
@@ -279,6 +281,31 @@ export class Agent {
 	}
 
 	/**
+	 * Returns a promise that resolves when the current prompt completes.
+	 * Returns immediately resolved promise if no prompt is running.
+	 */
+	waitForIdle(): Promise<void> {
+		return this.runningPrompt ?? Promise.resolve();
+	}
+
+	/**
+	 * Clear all messages and state. Call abort() first if a prompt is in flight.
+	 */
+	reset(): void {
+		this._state.messages = [];
+		this._state.isStreaming = false;
+		this._state.streamMessage = null;
+		this._state.pendingToolCalls.clear();
+		this._state.error = undefined;
+		this.messageQueue = [];
+		this.abortController = undefined;
+		this.runningPrompt = undefined;
+		this.resolveRunningPrompt = undefined;
+		// Note: Do NOT clear listeners - they contain the TUI subscription
+		// and must persist across resets for UI updates to work
+	}
+
+	/**
 	 * Sends a prompt to the model and processes the response, including tool calls.
 	 *
 	 * This is the main entry point for interacting with the agent. It handles:
@@ -303,6 +330,18 @@ export class Agent {
 	 * ```
 	 */
 	async prompt(input: string, attachments?: Attachment[]): Promise<void> {
+		// Prevent concurrent prompts
+		if (this.runningPrompt) {
+			throw new Error(
+				"A prompt is already in progress. Wait for it to complete before starting another.",
+			);
+		}
+
+		// Set up running prompt tracking
+		this.runningPrompt = new Promise<void>((resolve) => {
+			this.resolveRunningPrompt = resolve;
+		});
+
 		// Build user message content as array (matching Mario's implementation)
 		const content: Array<TextContent | ImageContent> = [
 			{ type: "text", text: input },
@@ -410,6 +449,10 @@ export class Agent {
 			if (this.abortController === abortController) {
 				this.abortController = undefined;
 			}
+			// Clean up running prompt tracking
+			this.resolveRunningPrompt?.();
+			this.runningPrompt = undefined;
+			this.resolveRunningPrompt = undefined;
 			if (this._state.pendingToolCalls.size > 0) {
 				const reason = aborted
 					? "Error: Operation aborted"

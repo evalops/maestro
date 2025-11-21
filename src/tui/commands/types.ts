@@ -29,6 +29,7 @@ export interface CommandHandlers {
 	sessions(context: CommandExecutionContext): void;
 	report(context: CommandExecutionContext): void;
 	about(context: CommandExecutionContext): void;
+	clear(context: CommandExecutionContext): Promise<void> | void;
 	status(context: CommandExecutionContext): void;
 	review(context: CommandExecutionContext): void;
 	undoChanges(context: CommandExecutionContext): void;
