@@ -197,12 +197,20 @@ export class TuiRenderer {
 	private configView: ConfigView;
 	private costView: CostView;
 	private runController: RunController;
+	private readonly focusEditor = (): void => {
+		this.ui.setFocus(this.editor);
+	};
 	private agentEventRouter!: AgentEventRouter;
 	private sessionContext = new SessionContext();
 	private promptQueue?: PromptQueue;
 	private promptQueueUnsubscribe?: () => void;
 	private queuedPromptCount = 0;
 	private queueEnabled = false;
+	private readonly minimalMode =
+		process.env.COMPOSER_TUI_MINIMAL === "1" ||
+		process.env.COMPOSER_TUI_MINIMAL?.toLowerCase() === "true" ||
+		typeof process.env.SSH_TTY === "string" ||
+		typeof process.env.SSH_CONNECTION === "string";
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
 	private approvalService: ActionApprovalService;
@@ -212,6 +220,7 @@ export class TuiRenderer {
 	private pendingPasteSummaries = new Set<number>();
 	private contextWarningLevel: "none" | "warn" | "danger" = "none";
 	private modelScope: RegisteredModel[] = [];
+	private startupChangelog?: string | null;
 	private startupChangelogSummary?: string | null;
 	private updateNotice?: UpdateCheckResult | null;
 	private isCyclingModel = false;
@@ -224,6 +233,7 @@ export class TuiRenderer {
 		explicitApiKey?: string,
 		options: {
 			modelScope?: RegisteredModel[];
+			startupChangelog?: string | null;
 			startupChangelogSummary?: string | null;
 			updateNotice?: UpdateCheckResult | null;
 		} = {},
@@ -233,6 +243,7 @@ export class TuiRenderer {
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;
 		this.modelScope = options.modelScope ?? [];
+		this.startupChangelog = options.startupChangelog;
 		this.startupChangelogSummary = options.startupChangelogSummary;
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal());
@@ -302,10 +313,12 @@ export class TuiRenderer {
 			setEditorDisabled: (disabled) => {
 				this.editor.disableSubmit = disabled && !this.queueEnabled;
 			},
+			focusEditor: () => this.focusEditor(),
 			clearEditor: () => this.clearEditor(),
 			stopRenderer: () => this.stop(),
 			refreshFooterHint: () => this.refreshFooterHint(),
 			notifyFileChanges: () => this.gitView.notifyFileChanges(),
+			inMinimalMode: () => this.isMinimalMode(),
 		});
 		this.toolStatusView = new ToolStatusView({
 			chatContainer: this.chatContainer,
@@ -665,9 +678,13 @@ export class TuiRenderer {
 		this.ui.addChild(headerPanel);
 		this.ui.addChild(new Spacer(1));
 
-		// Show welcome animation initially
-		this.welcomeAnimation = new WelcomeAnimation(() => this.ui.requestRender());
-		this.chatContainer.addChild(this.welcomeAnimation);
+		// Show welcome animation initially (can be disabled in minimal mode)
+		if (!this.isMinimalMode()) {
+			this.welcomeAnimation = new WelcomeAnimation(() =>
+				this.ui.requestRender(),
+			);
+			this.chatContainer.addChild(this.welcomeAnimation);
+		}
 
 		this.ui.addChild(this.startupContainer);
 		this.ui.addChild(this.chatContainer);
@@ -709,12 +726,21 @@ export class TuiRenderer {
 			announced = true;
 		}
 
-		if (this.startupChangelogSummary) {
+		if (this.startupChangelog) {
+			const header = chalk.bold.cyan("What's new");
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(
+				new Text(`${header}\n${this.startupChangelog}`, 1, 0),
+			);
+			announced = true;
+		} else if (this.startupChangelogSummary) {
 			const line = `${chalk.bold.cyan("What's new")}: ${
 				this.startupChangelogSummary
 			} ${chalk.dim("(see CHANGELOG.md)")}`;
 			this.startupContainer.addChild(new Spacer(1));
 			this.startupContainer.addChild(new Text(line.trim(), 1, 0));
+			const hintLine = chalk.dim("Hints: /changelog /model /thinking");
+			this.startupContainer.addChild(new Text(hintLine, 1, 0));
 			announced = true;
 		}
 
@@ -817,7 +843,9 @@ export class TuiRenderer {
 		if (this.interruptTimeout) {
 			clearTimeout(this.interruptTimeout);
 		}
-		this.notificationView.showInfo("Press Esc again within 5s to interrupt.");
+		if (!this.isMinimalMode()) {
+			this.notificationView.showInfo("Press Esc again within 5s to interrupt.");
+		}
 		this.footer.setHint("Esc again within 5s to interrupt");
 		this.interruptTimeout = setTimeout(() => {
 			this.clearInterruptArm();
@@ -1564,6 +1592,10 @@ export class TuiRenderer {
 				}
 			}
 		}
+	}
+
+	private isMinimalMode(): boolean {
+		return this.minimalMode;
 	}
 
 	stop(): void {

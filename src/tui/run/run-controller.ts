@@ -8,10 +8,12 @@ interface RunControllerOptions {
 	ui: TUI;
 	workingHint: string;
 	setEditorDisabled: (disabled: boolean) => void;
+	focusEditor: () => void;
 	clearEditor: () => void;
 	stopRenderer: () => void;
 	refreshFooterHint: () => void;
 	notifyFileChanges: () => void;
+	inMinimalMode: () => boolean;
 }
 
 export class RunController {
@@ -22,7 +24,9 @@ export class RunController {
 	handleAgentStart(): void {
 		this.options.setEditorDisabled(true);
 		this.options.loaderView.start();
-		this.options.footer.setHint(this.options.workingHint);
+		if (!this.options.inMinimalMode()) {
+			this.options.footer.setHint(this.options.workingHint);
+		}
 		this.options.ui.requestRender();
 	}
 
@@ -33,6 +37,7 @@ export class RunController {
 		this.options.notifyFileChanges();
 		this.options.refreshFooterHint();
 		this.options.ui.requestRender();
+		this.options.focusEditor();
 	}
 
 	handleCtrlC(): void {
@@ -42,6 +47,7 @@ export class RunController {
 			process.exit(0);
 		}
 		this.options.clearEditor();
+		this.options.focusEditor();
 		this.lastCtrlCTime = now;
 	}
 }

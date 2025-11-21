@@ -90,6 +90,7 @@ export class StreamingView {
 
 	forceStopStreaming(): void {
 		if (!this.streamingComponent) return;
+		// Remove the in-progress assistant block to avoid stale content when force-stopping.
 		this.options.chatContainer.removeChild(this.streamingComponent);
 		this.streamingComponent = null;
 	}
