@@ -1,6 +1,7 @@
 import type { Container, TUI } from "@evalops/tui";
 import { Markdown, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
+import { getMarkdownTheme } from "../theme/theme.js";
 import { getChangelogPath, parseChangelog } from "../update/changelog.js";
 
 interface ChangelogViewOptions {
@@ -33,7 +34,15 @@ export class ChangelogView {
 			);
 			this.options.chatContainer.addChild(new Spacer(1));
 			this.options.chatContainer.addChild(
-				new Markdown(changelogMarkdown, undefined, undefined, undefined, 1, 0),
+				new Markdown(
+					changelogMarkdown,
+					undefined,
+					undefined,
+					undefined,
+					1,
+					0,
+					getMarkdownTheme(),
+				),
 			);
 			this.options.chatContainer.addChild(new Spacer(1));
 			this.options.ui.requestRender();

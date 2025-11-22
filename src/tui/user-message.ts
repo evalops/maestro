@@ -1,5 +1,6 @@
 import { Container, Markdown, Spacer, Text, visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
+import { getMarkdownTheme } from "../theme/theme.js";
 
 const USER_BORDER = "#6e7fff";
 const USER_LABEL = "#c7d2fe";
@@ -28,7 +29,15 @@ export class UserMessageComponent extends Container {
 			),
 		);
 
-		this.markdown = new Markdown(text, undefined, undefined, USER_FILL, 1, 0);
+		this.markdown = new Markdown(
+			text,
+			undefined,
+			undefined,
+			USER_FILL,
+			1,
+			0,
+			getMarkdownTheme(),
+		);
 		this.addChild(this.markdown);
 		this.addChild(new Text(this.buildBottomLine(panelWidth), 1, 0));
 	}

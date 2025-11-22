@@ -16,6 +16,23 @@ import chalk from "chalk";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function getBuiltinThemeCandidateDirs(): string[] {
+	const candidates = [
+		__dirname,
+		path.resolve(__dirname, "..", "..", "src", "theme"),
+		path.resolve(process.cwd(), "src", "theme"),
+	];
+	const seen = new Set<string>();
+	const dirs: string[] = [];
+	for (const dir of candidates) {
+		const normalized = path.resolve(dir);
+		if (seen.has(normalized)) continue;
+		seen.add(normalized);
+		dirs.push(normalized);
+	}
+	return dirs;
+}
+
 // ============================================================================
 // Types & Schema
 // ============================================================================
@@ -88,6 +105,138 @@ const ThemeJsonSchema = Type.Object({
 type ThemeJson = Static<typeof ThemeJsonSchema>;
 
 const validateThemeJson = TypeCompiler.Compile(ThemeJsonSchema);
+
+const EMBEDDED_THEMES: Record<"dark" | "light", ThemeJson> = {
+	dark: {
+		$schema: "./theme-schema.json",
+		name: "dark",
+		vars: {
+			cyan: "#00d7ff",
+			blue: "#5f87ff",
+			green: "#b5bd68",
+			red: "#cc6666",
+			yellow: "#ffff00",
+			gray: "#808080",
+			dimGray: "#666666",
+			darkGray: "#505050",
+			accent: "#8abeb7",
+			userMsgBg: "#343541",
+			toolPendingBg: "#282832",
+			toolSuccessBg: "#283228",
+			toolErrorBg: "#3c2828",
+		},
+		colors: {
+			accent: "accent",
+			border: "blue",
+			borderAccent: "cyan",
+			borderMuted: "darkGray",
+			success: "green",
+			error: "red",
+			warning: "yellow",
+			muted: "gray",
+			dim: "dimGray",
+			text: "",
+			userMessageBg: "userMsgBg",
+			userMessageText: "",
+			toolPendingBg: "toolPendingBg",
+			toolSuccessBg: "toolSuccessBg",
+			toolErrorBg: "toolErrorBg",
+			toolTitle: "",
+			toolOutput: "gray",
+			mdHeading: "#f0c674",
+			mdLink: "#81a2be",
+			mdLinkUrl: "dimGray",
+			mdCode: "accent",
+			mdCodeBlock: "green",
+			mdCodeBlockBorder: "gray",
+			mdQuote: "#7dd3fc",
+			mdQuoteBorder: "#38bdf8",
+			mdHr: "gray",
+			mdListBullet: "accent",
+			toolDiffAdded: "green",
+			toolDiffRemoved: "red",
+			toolDiffContext: "gray",
+			syntaxComment: "gray",
+			syntaxKeyword: "cyan",
+			syntaxFunction: "blue",
+			syntaxVariable: "",
+			syntaxString: "green",
+			syntaxNumber: "yellow",
+			syntaxType: "cyan",
+			syntaxOperator: "",
+			syntaxPunctuation: "gray",
+			thinkingOff: "darkGray",
+			thinkingMinimal: "#6e6e6e",
+			thinkingLow: "#5f87af",
+			thinkingMedium: "#81a2be",
+			thinkingHigh: "#b294bb",
+		},
+	},
+	light: {
+		$schema: "./theme-schema.json",
+		name: "light",
+		vars: {
+			teal: "#5f8787",
+			blue: "#5f87af",
+			green: "#87af87",
+			red: "#af5f5f",
+			yellow: "#d7af5f",
+			mediumGray: "#6c6c6c",
+			dimGray: "#8a8a8a",
+			lightGray: "#b0b0b0",
+			userMsgBg: "#e8e8e8",
+			toolPendingBg: "#e8e8f0",
+			toolSuccessBg: "#e8f0e8",
+			toolErrorBg: "#f0e8e8",
+		},
+		colors: {
+			accent: "teal",
+			border: "blue",
+			borderAccent: "teal",
+			borderMuted: "lightGray",
+			success: "green",
+			error: "red",
+			warning: "yellow",
+			muted: "mediumGray",
+			dim: "dimGray",
+			text: "",
+			userMessageBg: "userMsgBg",
+			userMessageText: "",
+			toolPendingBg: "toolPendingBg",
+			toolSuccessBg: "toolSuccessBg",
+			toolErrorBg: "toolErrorBg",
+			toolTitle: "",
+			toolOutput: "mediumGray",
+			mdHeading: "yellow",
+			mdLink: "blue",
+			mdLinkUrl: "dimGray",
+			mdCode: "teal",
+			mdCodeBlock: "green",
+			mdCodeBlockBorder: "mediumGray",
+			mdQuote: "mediumGray",
+			mdQuoteBorder: "mediumGray",
+			mdHr: "mediumGray",
+			mdListBullet: "green",
+			toolDiffAdded: "green",
+			toolDiffRemoved: "red",
+			toolDiffContext: "mediumGray",
+			syntaxComment: "mediumGray",
+			syntaxKeyword: "teal",
+			syntaxFunction: "blue",
+			syntaxVariable: "",
+			syntaxString: "green",
+			syntaxNumber: "yellow",
+			syntaxType: "teal",
+			syntaxOperator: "",
+			syntaxPunctuation: "mediumGray",
+			thinkingOff: "lightGray",
+			thinkingMinimal: "#9e9e9e",
+			thinkingLow: "#5f87af",
+			thinkingMedium: "#5f8787",
+			thinkingHigh: "#875f87",
+		},
+	},
+};
 
 export type ThemeColor =
 	| "accent"
@@ -338,11 +487,18 @@ let BUILTIN_THEMES: Record<string, ThemeJson> | undefined;
 
 function getBuiltinThemes(): Record<string, ThemeJson> {
 	if (!BUILTIN_THEMES) {
-		const darkPath = path.join(__dirname, "dark.json");
-		const lightPath = path.join(__dirname, "light.json");
+		const loadBuiltinTheme = (name: "dark" | "light"): ThemeJson => {
+			for (const dir of getBuiltinThemeCandidateDirs()) {
+				const themePath = path.join(dir, `${name}.json`);
+				if (fs.existsSync(themePath)) {
+					return JSON.parse(fs.readFileSync(themePath, "utf-8")) as ThemeJson;
+				}
+			}
+			return EMBEDDED_THEMES[name];
+		};
 		BUILTIN_THEMES = {
-			dark: JSON.parse(fs.readFileSync(darkPath, "utf-8")) as ThemeJson,
-			light: JSON.parse(fs.readFileSync(lightPath, "utf-8")) as ThemeJson,
+			dark: loadBuiltinTheme("dark"),
+			light: loadBuiltinTheme("light"),
 		};
 	}
 	return BUILTIN_THEMES;
@@ -448,7 +604,16 @@ function getDefaultTheme(): string {
 // Global Theme Instance
 // ============================================================================
 
-export let theme: Theme;
+function loadInitialTheme(): Theme {
+	try {
+		return loadTheme("dark");
+	} catch (error) {
+		return createTheme(EMBEDDED_THEMES.dark, detectColorMode());
+	}
+}
+
+// Initialize theme with dark as default
+export let theme: Theme = loadInitialTheme();
 let currentThemeName: string | undefined;
 let themeWatcher: fs.FSWatcher | undefined;
 let onThemeChangeCallback: (() => void) | undefined;

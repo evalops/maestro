@@ -8,6 +8,8 @@ import {
 import type { Component } from "../tui.js";
 import { visibleWidth } from "../utils.js";
 
+const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`);
+
 /**
  * Theme functions for markdown elements.
  * Each function takes text and returns styled text with ANSI codes.
@@ -61,6 +63,33 @@ export class Markdown implements Component {
 	private cachedLines?: string[];
 
 	private theme?: MarkdownTheme;
+	private applyTheme<K extends keyof MarkdownTheme>(
+		key: K,
+		text: string,
+		defaultStyle: (text: string) => string,
+	): string {
+		if (this.theme) {
+			return this.theme[key](text);
+		}
+		return defaultStyle(text);
+	}
+
+	private preserveSyntaxColors(
+		text: string,
+		applyTheme?: (text: string) => string,
+		fallback?: (text: string) => string,
+	): string {
+		if (ANSI_ESCAPE_REGEX.test(text)) {
+			return text;
+		}
+		if (applyTheme) {
+			return applyTheme(text);
+		}
+		if (fallback) {
+			return fallback(text);
+		}
+		return text;
+	}
 
 	constructor(
 		text = "",
@@ -221,13 +250,22 @@ export class Markdown implements Component {
 				const headingLevel = token.depth;
 				const headingPrefix = `${"#".repeat(headingLevel)} `;
 				const headingText = this.renderInlineTokens(token.tokens || []);
-				if (headingLevel === 1) {
-					lines.push(chalk.bold.underline.yellow(headingText));
-				} else if (headingLevel === 2) {
-					lines.push(chalk.bold.yellow(headingText));
-				} else {
-					lines.push(chalk.bold(headingPrefix + headingText));
-				}
+				const headingContent =
+					headingLevel <= 2 ? headingText : headingPrefix + headingText;
+				const headingLine = this.applyTheme(
+					"heading",
+					headingContent,
+					(text) => {
+						if (headingLevel === 1) {
+							return chalk.bold.underline.yellow(text);
+						}
+						if (headingLevel === 2) {
+							return chalk.bold.yellow(text);
+						}
+						return chalk.bold(text);
+					},
+				);
+				lines.push(headingLine);
 				lines.push(""); // Add spacing after headings
 				break;
 			}
@@ -254,12 +292,23 @@ export class Markdown implements Component {
 					}
 				}
 				const highlighted = highlightCodeLines(token.text, token.lang);
+				const theme = this.theme;
 				const label = token.lang || "";
-				lines.push(chalk.gray(`\`\`\`${label}`));
+				lines.push(
+					this.applyTheme("codeBlockBorder", `\`\`\`${label}`, (text) =>
+						chalk.gray(text),
+					),
+				);
 				for (const codeLine of highlighted) {
-					lines.push(chalk.dim("  ") + codeLine);
+					const styledLine = this.preserveSyntaxColors(
+						codeLine,
+						theme ? (value) => theme.codeBlock(value) : undefined,
+					);
+					lines.push(chalk.dim("  ") + styledLine);
 				}
-				lines.push(chalk.gray("```"));
+				lines.push(
+					this.applyTheme("codeBlockBorder", "```", (text) => chalk.gray(text)),
+				);
 				lines.push("");
 				break;
 			}
@@ -281,13 +330,23 @@ export class Markdown implements Component {
 				const quoteText = this.renderInlineTokens(token.tokens || []);
 				const quoteLines = quoteText.split("\n");
 				for (const quoteLine of quoteLines) {
-					lines.push(chalk.gray("│ ") + chalk.italic(quoteLine));
+					const border = this.applyTheme("quoteBorder", "│ ", (text) =>
+						chalk.gray(text),
+					);
+					const text = this.applyTheme("quote", quoteLine, (value) =>
+						chalk.italic(value),
+					);
+					lines.push(border + text);
 				}
 				lines.push(""); // Add spacing after blockquotes
 				break;
 			}
 			case "hr":
-				lines.push(chalk.gray("─".repeat(Math.min(width, 80))));
+				lines.push(
+					this.applyTheme("hr", "─".repeat(Math.min(width, 80)), (text) =>
+						chalk.gray(text),
+					),
+				);
 				lines.push(""); // Add spacing after horizontal rules
 				break;
 			case "html":
@@ -318,22 +377,46 @@ export class Markdown implements Component {
 					}
 					break;
 				case "strong":
-					result += chalk.bold(this.renderInlineTokens(token.tokens || []));
+					result += this.applyTheme(
+						"bold",
+						this.renderInlineTokens(token.tokens || []),
+						(text) => chalk.bold(text),
+					);
 					break;
-				case "em":
-					result += chalk.italic(this.renderInlineTokens(token.tokens || []));
+				case "em": {
+					const text = this.renderInlineTokens(token.tokens || []);
+					result += this.applyTheme("italic", text, (value) =>
+						chalk.italic(value),
+					);
 					break;
-				case "codespan":
-					result += highlightInlineCode(token.text);
+				}
+				case "codespan": {
+					const highlighted = highlightInlineCode(token.text);
+					const theme = this.theme;
+					const styledInline = this.preserveSyntaxColors(
+						highlighted,
+						theme ? (value) => theme.code(value) : undefined,
+					);
+					result += styledInline;
 					break;
+				}
 				case "link": {
 					const linkText = this.renderInlineTokens(token.tokens || []);
 					// If link text matches href, only show the link once
 					if (linkText === token.href) {
-						result += chalk.underline.blue(linkText);
+						result += this.applyTheme("link", linkText, (text) =>
+							chalk.underline.blue(text),
+						);
 					} else {
-						result +=
-							chalk.underline.blue(linkText) + chalk.gray(` (${token.href})`);
+						const renderedLink = this.applyTheme("link", linkText, (text) =>
+							chalk.underline.blue(text),
+						);
+						const renderedUrl = this.applyTheme(
+							"linkUrl",
+							` (${token.href})`,
+							(text) => chalk.gray(text),
+						);
+						result += renderedLink + renderedUrl;
 					}
 					break;
 				}
@@ -341,8 +424,10 @@ export class Markdown implements Component {
 					result += "\n";
 					break;
 				case "del":
-					result += chalk.strikethrough(
+					result += this.applyTheme(
+						"strikethrough",
 						this.renderInlineTokens(token.tokens || []),
+						(text) => chalk.strikethrough(text),
 					);
 					break;
 				default:
@@ -450,7 +535,7 @@ export class Markdown implements Component {
 	 * Render a list with proper nesting support
 	 */
 	private renderList(token: Tokens.List, depth: number): string[] {
-		const lines = [];
+		const lines: string[] = [];
 		const indent = "  ".repeat(depth);
 		const startIndex = (() => {
 			if (typeof token.start === "number" && Number.isFinite(token.start)) {
@@ -468,79 +553,87 @@ export class Markdown implements Component {
 			const item = token.items[i];
 			const checkbox = item.task ? (item.checked ? "[x] " : "[ ] ") : "";
 			const marker = token.ordered ? `${startIndex + i}. ` : "- ";
-			// Process item tokens to handle nested lists
-			const itemLines = this.renderListItem(item.tokens || [], depth);
-			if (itemLines.length > 0) {
-				// First line - check if it's a nested list (contains cyan ANSI code for bullets)
-				const firstLine = itemLines[0];
-				const isNestedList = firstLine.includes("\x1b[36m"); // cyan color code
-				if (isNestedList) {
-					// This is a nested list, just add it as-is (already has full indent)
-					lines.push(firstLine);
+			const bullet = this.applyTheme("listBullet", marker + checkbox, (text) =>
+				chalk.cyan(text),
+			);
+			const itemLines = this.renderListItem(item.tokens || [], depth + 1);
+			let renderedFirstLine = false;
+			for (const line of itemLines) {
+				if (!renderedFirstLine && !line.nested) {
+					lines.push(indent + bullet + line.content);
+					renderedFirstLine = true;
+					continue;
+				}
+				if (!renderedFirstLine && line.nested) {
+					lines.push(indent + bullet);
+					renderedFirstLine = true;
+				}
+				if (line.nested) {
+					lines.push(line.content);
 				} else {
-					lines.push(indent + chalk.cyan(marker + checkbox) + firstLine);
+					lines.push(`${indent}  ${line.content}`);
 				}
-				// Rest of the lines
-				for (let j = 1; j < itemLines.length; j++) {
-					const line = itemLines[j];
-					const isNestedListLine = line.includes("\x1b[36m"); // cyan bullet color
-					if (isNestedListLine) {
-						// Nested list line - already has full indent
-						lines.push(line);
-					} else {
-						// Regular content - add parent indent + 2 spaces for continuation
-						lines.push(`${indent}  ${line}`);
-					}
-				}
-			} else {
-				lines.push(indent + chalk.cyan(marker + checkbox));
+			}
+			if (!renderedFirstLine) {
+				lines.push(indent + bullet);
 			}
 		}
 		return lines;
 	}
-	/**
-	 * Render list item tokens, handling nested lists
-	 * Returns lines WITHOUT the parent indent (renderList will add it)
-	 */
-	private renderListItem(tokens: Token[], parentDepth: number): string[] {
-		const lines = [];
+
+	private renderListItem(
+		tokens: Token[],
+		depth: number,
+	): { content: string; nested: boolean }[] {
+		const lines: { content: string; nested: boolean }[] = [];
 		for (const token of tokens) {
 			if (
 				token.type === "list" &&
 				"items" in token &&
 				Array.isArray(token.items)
 			) {
-				// Nested list - render with one additional indent level
-				// These lines will have their own indent, so we just add them as-is
-				const nestedLines = this.renderList(
-					token as Tokens.List,
-					parentDepth + 1,
-				);
-				lines.push(...nestedLines);
+				const nestedLines = this.renderList(token as Tokens.List, depth);
+				for (const line of nestedLines) {
+					lines.push({ content: line, nested: true });
+				}
 			} else if (token.type === "text") {
-				// Text content (may have inline tokens)
 				const text =
 					token.tokens && token.tokens.length > 0
 						? this.renderInlineTokens(token.tokens)
 						: token.text || "";
-				lines.push(text);
+				lines.push({ content: text, nested: false });
 			} else if (token.type === "paragraph") {
-				// Paragraph in list item
 				const text = this.renderInlineTokens(token.tokens || []);
-				lines.push(text);
+				lines.push({ content: text, nested: false });
 			} else if (token.type === "code") {
-				// Code block in list item
-				lines.push(chalk.gray(`\`\`\`${token.lang || ""}`));
+				lines.push({
+					content: this.applyTheme(
+						"codeBlockBorder",
+						`\`\`\`${token.lang || ""}`,
+						(text) => chalk.gray(text),
+					),
+					nested: false,
+				});
 				const codeLines = token.text.split("\n");
+				const theme = this.theme;
 				for (const codeLine of codeLines) {
-					lines.push(chalk.dim("  ") + chalk.green(codeLine));
+					const styledLine = this.preserveSyntaxColors(
+						codeLine,
+						theme ? (value) => theme.codeBlock(value) : undefined,
+						(value) => chalk.green(value),
+					);
+					lines.push({ content: chalk.dim("  ") + styledLine, nested: false });
 				}
-				lines.push(chalk.gray("```"));
+				lines.push({
+					content: this.applyTheme("codeBlockBorder", "```", (text) =>
+						chalk.gray(text),
+					),
+					nested: false,
+				});
 			} else {
-				// Other token types - try to render as inline
 				const text = this.renderInlineTokens([token]);
 				if (text) {
-					lines.push(text);
+					lines.push({ content: text, nested: false });
 				}
 			}
 		}

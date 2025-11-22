@@ -2,6 +2,7 @@ import { Container, Markdown, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { RenderableAssistantMessage } from "../conversation/render-model.js";
 import { italic } from "../style/theme.js";
+import { getMarkdownTheme } from "../theme/theme.js";
 
 const ASSISTANT_BORDER = "#fcd5ce";
 const ASSISTANT_LABEL = "#ffafcc";
@@ -54,14 +55,30 @@ export class AssistantMessageComponent extends Container {
 
 		for (const text of message.textBlocks) {
 			this.contentContainer.addChild(
-				new Markdown(text, undefined, undefined, ASSISTANT_FILL, 1, 0),
+				new Markdown(
+					text,
+					undefined,
+					undefined,
+					ASSISTANT_FILL,
+					1,
+					0,
+					getMarkdownTheme(),
+				),
 			);
 		}
 
 		for (const thinking of message.thinkingBlocks) {
 			const thinkingText = italic(thinking);
 			this.contentContainer.addChild(
-				new Markdown(thinkingText, undefined, undefined, undefined, 1, 0),
+				new Markdown(
+					thinkingText,
+					undefined,
+					undefined,
+					undefined,
+					1,
+					0,
+					getMarkdownTheme(),
+				),
 			);
 			this.contentContainer.addChild(new Spacer(1));
 		}
