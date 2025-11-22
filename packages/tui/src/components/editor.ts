@@ -167,6 +167,7 @@ export class Editor implements Component {
 				// Only pass arrow keys to the list, not Enter/Tab (we handle those directly)
 				if (data === "\x1b[A" || data === "\x1b[B") {
 					this.autocompleteList.handleInput(data);
+					return;
 				}
 				// If Tab or Enter was pressed, apply the selection
 				if (data === "\t" || data === "\r") {

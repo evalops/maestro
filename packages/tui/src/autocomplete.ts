@@ -3,6 +3,11 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import mimeTypes from "mime-types";
 
+/**
+ * Delimiters used for extracting paths from text
+ */
+const PATH_DELIMITERS = [" ", "\t", '"', "'", "="] as const;
+
 export interface AutocompleteItem {
 	value: string;
 	label: string;
@@ -275,20 +280,14 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		if (atMatch) {
 			return atMatch[0]; // Return the full @path pattern
 		}
-		// Match paths - including those ending with /, ~/, or any word at end for forced extraction
-		// This regex captures:
-		// - Paths starting from beginning of line or after space/quote/equals
-		// - Optional ./ or ../ or ~/ prefix (including the trailing slash for ~/)
-		// - The path itself (can include / in the middle)
-		// - For forced extraction, capture any word at the end
-		const matches = text.match(
-			/(?:^|[\s"'=])((?:~\/|\.{0,2}\/?)?(?:[^\s"'=]*\/?)*[^\s"'=]*)$/,
+		// Simple approach: find the last whitespace/delimiter and extract the word after it
+		// This avoids catastrophic backtracking from nested quantifiers
+		const lastDelimiterIndex = Math.max(
+			...PATH_DELIMITERS.map((delim) => text.lastIndexOf(delim)),
 		);
-		if (!matches) {
-			// If forced extraction and no matches, return empty string to trigger from current dir
-			return forceExtract ? "" : null;
-		}
-		const pathPrefix = matches[1] || "";
+
+		const pathPrefix =
+			lastDelimiterIndex === -1 ? text : text.slice(lastDelimiterIndex + 1);
 		// For forced extraction (Tab key), always return something
 		if (forceExtract) {
 			return pathPrefix;
@@ -302,9 +301,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		) {
 			return pathPrefix;
 		}
-		// Return empty string only if we're at the beginning of the line or after a space
+		// Return empty string only if we're at the beginning of the line or after a space/tab
 		// (not after quotes or other delimiters that don't suggest file paths)
-		if (pathPrefix === "" && (text === "" || text.endsWith(" "))) {
+		if (
+			pathPrefix === "" &&
+			(text === "" || text.endsWith(" ") || text.endsWith("\t"))
+		) {
 			return pathPrefix;
 		}
 		return null;
