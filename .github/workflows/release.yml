@@ -182,17 +182,16 @@ jobs:
           path: ${{ steps.pack.outputs.tarball }}
 
       - name: Publish to npm
-        if: secrets.NPM_TOKEN != ''
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN secret not configured; skipping npm publish"
+            exit 0
+          fi
           printf "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n" > "$HOME/.npmrc"
           npm publish "${{ steps.pack.outputs.tarball }}" --access public
-
-      - name: Warn when NPM_TOKEN missing
-        if: secrets.NPM_TOKEN == ''
-        run: echo "NPM_TOKEN secret not configured; skipping npm publish"
 
       - name: Sync Hopper version metadata
         env:
