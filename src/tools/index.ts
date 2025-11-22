@@ -1,3 +1,4 @@
+import { backgroundTasksTool } from "./background-tasks.js";
 // Shell execution (bash -lc) with support for cwd tracking during bash mode
 import { bashTool } from "./bash.js";
 // Parallel tool execution for reads/searches/listings
@@ -26,6 +27,7 @@ import { websearchTool } from "./websearch.js";
 import { writeTool } from "./write.js";
 
 export { bashTool } from "./bash.js";
+export { backgroundTasksTool } from "./background-tasks.js";
 export { createBatchTool } from "./batch.js";
 export { codesearchTool } from "./codesearch.js";
 export { diffTool } from "./diff.js";
@@ -48,6 +50,7 @@ const allTools = [
 	searchTool,
 	diffTool,
 	bashTool,
+	backgroundTasksTool,
 	editTool,
 	writeTool,
 	todoTool,
@@ -68,6 +71,7 @@ export const codingTools = [
 	searchTool,
 	diffTool,
 	bashTool,
+	backgroundTasksTool,
 	editTool,
 	writeTool,
 	todoTool,

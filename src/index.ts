@@ -2,6 +2,7 @@ export { main } from "./main.js";
 export { SessionManager } from "./session/manager.js";
 export {
 	bashTool,
+	backgroundTasksTool,
 	codingTools,
 	editTool,
 	readTool,

@@ -811,6 +811,7 @@ describe("codingTools bundle", () => {
 			"search",
 			"diff",
 			"bash",
+			"background_tasks",
 			"edit",
 			"write",
 			"todo",

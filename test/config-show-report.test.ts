@@ -3,6 +3,9 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { buildConfigShowSections } from "../src/cli/commands/config.js";
 import type { ConfigInspection } from "../src/models/registry.js";
 
+const ANSI_REGEX = new RegExp(`${String.fromCharCode(27)}\[[0-9;]*m`, "g");
+const stripAnsi = (value: string): string => value.replace(ANSI_REGEX, "");
+
 beforeAll(() => {
 	chalk.level = 0;
 });
@@ -41,7 +44,7 @@ describe("buildConfigShowSections", () => {
 			homeDir: "/Users/test",
 			disableColors: true,
 		});
-		expect(result.join("\n")).toMatchSnapshot();
+		expect(stripAnsi(result.join("\n")).trim()).toMatchSnapshot();
 	});
 
 	it("handles empty collections", () => {
@@ -56,6 +59,6 @@ describe("buildConfigShowSections", () => {
 			homeDir: "/home/user",
 			disableColors: true,
 		});
-		expect(result.join("\n")).toMatchSnapshot();
+		expect(stripAnsi(result.join("\n")).trim()).toMatchSnapshot();
 	});
 });

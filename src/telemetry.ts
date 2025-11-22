@@ -3,7 +3,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 type BaseTelemetryEvent = {
-	type: "tool-execution" | "evaluation" | "loader-stage" | "sse";
+	type:
+		| "tool-execution"
+		| "evaluation"
+		| "loader-stage"
+		| "sse"
+		| "background-task";
 	timestamp: string;
 };
 
@@ -37,11 +42,38 @@ export interface SseTelemetry extends BaseTelemetryEvent {
 	metadata?: Record<string, unknown>;
 }
 
+type BackgroundTaskStatusTelemetry =
+	| "running"
+	| "restarting"
+	| "failed"
+	| "exited"
+	| "stopped";
+
+export interface BackgroundTaskTelemetry extends BaseTelemetryEvent {
+	type: "background-task";
+	event: "started" | "restarted" | "exited" | "failed" | "stopped";
+	taskId: string;
+	status: BackgroundTaskStatusTelemetry;
+	command: string;
+	shellMode: "shell" | "exec";
+	cwd?: string;
+	restartAttempts: number;
+	logTruncated: boolean;
+	exitCode?: number | null;
+	signal?: string | null;
+	resourceUsage?: {
+		maxRssKb?: number;
+		userMs?: number;
+		systemMs?: number;
+	};
+}
+
 type TelemetryEvent =
 	| ToolExecutionTelemetry
 	| EvaluationTelemetry
 	| LoaderStageTelemetry
-	| SseTelemetry;
+	| SseTelemetry
+	| BackgroundTaskTelemetry;
 
 const telemetryFlag =
 	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
@@ -272,4 +304,14 @@ export function logToolFailure(
 		timestamp: new Date().toISOString(),
 	};
 	void appendToolFailure(JSON.stringify(payload));
+}
+
+export function recordBackgroundTaskEvent(
+	event: Omit<BackgroundTaskTelemetry, "type" | "timestamp">,
+): void {
+	void recordTelemetry({
+		...event,
+		type: "background-task",
+		timestamp: new Date().toISOString(),
+	});
 }

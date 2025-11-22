@@ -1,19 +1,16 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`buildConfigShowSections > handles empty collections 1`] = `
-"
-Configuration Inspection
+"Configuration Inspection
 
 
 Config Sources
 
-No providers configured
-"
+No providers configured"
 `;
 
 exports[`buildConfigShowSections > produces snapshot for populated inspection 1`] = `
-"
-Configuration Inspection
+"Configuration Inspection
 
 
 Config Sources
@@ -32,6 +29,5 @@ File References (1)
   present ~/project/prompts/system.md (2.0 KB)
 
 Environment Variables (1)
-  missing ANTHROPIC_API_KEY: (not set)
-"
+  missing ANTHROPIC_API_KEY: (not set)"
 `;

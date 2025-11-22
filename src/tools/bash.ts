@@ -1,61 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
-import { requireNonEmpty, sanitizeString } from "../utils/validation.js";
-import { createTool, expandUserPath } from "./tool-dsl.js";
-
-function getShellConfig(): { shell: string; args: string[] } {
-	if (process.platform === "win32") {
-		const paths: string[] = [];
-		const programFiles = process.env.ProgramFiles;
-		if (programFiles) {
-			paths.push(`${programFiles}\\Git\\bin\\bash.exe`);
-		}
-		const programFilesX86 = process.env["ProgramFiles(x86)"];
-		if (programFilesX86) {
-			paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
-		}
-
-		for (const path of paths) {
-			if (existsSync(path)) {
-				return { shell: path, args: ["-c"] };
-			}
-		}
-
-		throw new Error(
-			`Git Bash not found. Please install Git for Windows from https://git-scm.com/download/win\nSearched in:\n${paths
-				.map((p) => `  ${p}`)
-				.join("\n")}`,
-		);
-	}
-
-	return { shell: "sh", args: ["-c"] };
-}
-
-function killProcessTree(pid: number): void {
-	if (process.platform === "win32") {
-		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-				stdio: "ignore",
-				detached: true,
-			});
-		} catch {
-			// ignore
-		}
-		return;
-	}
-
-	try {
-		process.kill(-pid, "SIGKILL");
-	} catch {
-		try {
-			process.kill(pid, "SIGKILL");
-		} catch {
-			// already exited
-		}
-	}
-}
+import {
+	getShellConfig,
+	killProcessTree,
+	validateShellParams,
+} from "./shell-utils.js";
+import { createTool } from "./tool-dsl.js";
 
 const bashSchema = Type.Object({
 	command: Type.String({
@@ -100,55 +50,15 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
 		}>((resolve, reject) => {
-			// Validate command input
+			let resolvedCwd: string | undefined;
 			try {
-				requireNonEmpty(command, "command");
-
-				// Sanitize command to prevent control character injection
-				const sanitizedCommand = sanitizeString(command, { maxLength: 100000 });
-				if (sanitizedCommand !== command) {
-					reject(new Error("Command contains invalid control characters"));
-					return;
-				}
-
-				// Validate working directory if provided
-				if (cwd !== undefined) {
-					requireNonEmpty(cwd, "cwd");
-					const sanitizedCwd = sanitizeString(cwd, { maxLength: 4096 });
-					if (sanitizedCwd !== cwd) {
-						reject(new Error("Working directory contains invalid characters"));
-						return;
-					}
-				}
-
-				// Validate environment variables
-				if (env) {
-					for (const [key, value] of Object.entries(env)) {
-						requireNonEmpty(key, "environment variable key");
-						const sanitizedKey = sanitizeString(key, { maxLength: 256 });
-						const sanitizedValue = sanitizeString(value, { maxLength: 32768 });
-
-						if (sanitizedKey !== key || sanitizedValue !== value) {
-							reject(
-								new Error(
-									`Environment variable ${key} contains invalid characters`,
-								),
-							);
-							return;
-						}
-					}
-				}
+				({ resolvedCwd } = validateShellParams(command, cwd, env));
 			} catch (error) {
 				reject(error);
 				return;
 			}
 
 			const { shell, args } = getShellConfig();
-			const resolvedCwd = cwd ? resolvePath(expandUserPath(cwd)) : undefined;
-			if (resolvedCwd && !existsSync(resolvedCwd)) {
-				reject(new Error(`Working directory not found: ${cwd}`));
-				return;
-			}
 			const mergedEnv = { ...process.env, ...env } as Record<string, string>;
 			const child = spawn(shell, [...args, command], {
 				detached: true,

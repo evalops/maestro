@@ -49,6 +49,7 @@ import {
 	createAuthResolver,
 } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
+import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { codingTools } from "./tools/index.js";
@@ -322,6 +323,7 @@ export async function main(args: string[]) {
 	}
 
 	configureSafeMode(true);
+	registerBackgroundTaskShutdownHooks();
 
 	// Bootstrap LSP with workspace root resolver and config overrides
 	await bootstrapLsp();
