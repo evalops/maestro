@@ -17,36 +17,60 @@ const mkfsPattern = /\bmkfs\b|\bmkfs\.[a-z0-9]+/i;
 const diskZeroPattern = /dd\s+if=\/dev\/(?:zero|null)/i;
 const chmodZeroPattern = /chmod\s+0{3,4}\b/i;
 
-function isBashTool(context: ActionApprovalContext): boolean {
-	const command =
-		context.args &&
-		typeof context.args === "object" &&
-		"command" in context.args &&
-		typeof (context.args as { command?: unknown }).command === "string"
-			? (context.args as { command: string }).command
-			: null;
-	return context.toolName === "bash" && Boolean(command);
+function getArgsObject(
+	context: ActionApprovalContext,
+): Record<string, unknown> | null {
+	return context.args && typeof context.args === "object"
+		? (context.args as Record<string, unknown>)
+		: null;
+}
+
+function getStringArg(
+	context: ActionApprovalContext,
+	key: string,
+): string | null {
+	const args = getArgsObject(context);
+	if (!args) {
+		return null;
+	}
+	const value = args[key];
+	return typeof value === "string" ? value : null;
+}
+
+function getBooleanArg(
+	context: ActionApprovalContext,
+	key: string,
+): boolean | null {
+	const args = getArgsObject(context);
+	if (!args) {
+		return null;
+	}
+	const value = args[key];
+	return typeof value === "boolean" ? value : null;
 }
 
 function getCommandArg(context: ActionApprovalContext): string | null {
-	if (
-		context.args &&
-		typeof context.args === "object" &&
-		"command" in context.args &&
-		typeof (context.args as { command?: unknown }).command === "string"
-	) {
-		return (context.args as { command: string }).command;
+	return getStringArg(context, "command");
+}
+
+function isBackgroundTaskShellStart(context: ActionApprovalContext): boolean {
+	if (context.toolName !== "background_tasks") {
+		return false;
 	}
-	return null;
+	const action = getStringArg(context, "action");
+	if (action !== "start") {
+		return false;
+	}
+	return getBooleanArg(context, "shell") === true;
 }
 
 export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
-		id: "bash-rm-rf",
+		id: "command-rm-rf",
 		description: "High-risk recursive delete",
 		match: (ctx) => {
 			const command = getCommandArg(ctx);
-			return isBashTool(ctx) && !!command && rmRfPattern.test(command);
+			return !!command && rmRfPattern.test(command);
 		},
 		reason: (ctx) => {
 			const command = getCommandArg(ctx) ?? "";
@@ -54,11 +78,11 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		},
 	},
 	{
-		id: "bash-mkfs",
+		id: "command-mkfs",
 		description: "Filesystem formatting",
 		match: (ctx) => {
 			const command = getCommandArg(ctx);
-			return isBashTool(ctx) && !!command && mkfsPattern.test(command);
+			return !!command && mkfsPattern.test(command);
 		},
 		reason: (ctx) => {
 			const command = getCommandArg(ctx) ?? "";
@@ -66,11 +90,11 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		},
 	},
 	{
-		id: "bash-disk-zero",
+		id: "command-disk-zero",
 		description: "Disk zeroing",
 		match: (ctx) => {
 			const command = getCommandArg(ctx);
-			return isBashTool(ctx) && !!command && diskZeroPattern.test(command);
+			return !!command && diskZeroPattern.test(command);
 		},
 		reason: (ctx) => {
 			const command = getCommandArg(ctx) ?? "";
@@ -78,16 +102,23 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		},
 	},
 	{
-		id: "bash-chmod-000",
+		id: "command-chmod-000",
 		description: "Permission removal",
 		match: (ctx) => {
 			const command = getCommandArg(ctx);
-			return isBashTool(ctx) && !!command && chmodZeroPattern.test(command);
+			return !!command && chmodZeroPattern.test(command);
 		},
 		reason: (ctx) => {
 			const command = getCommandArg(ctx) ?? "";
 			return `Detected chmod 000*: ${command.trim()}`;
 		},
+	},
+	{
+		id: "background-shell-mode",
+		description: "Shell mode background tasks",
+		match: (ctx) => isBackgroundTaskShellStart(ctx),
+		reason: () =>
+			"Background task shell mode requires manual approval (pipes, redirects, and globbing are high risk)",
 	},
 ];
 
