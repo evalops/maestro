@@ -17,23 +17,29 @@ import type {
 	ComposerSession,
 	ComposerSessionSummary,
 } from "@evalops/contracts";
-import { ActionApprovalService } from "./agent/action-approval.js";
-import { Agent, ProviderTransport } from "./agent/index.js";
-import type { AgentEvent, ThinkingLevel } from "./agent/types.js";
 import {
-	buildSystemPrompt,
-	loadProjectContextFiles,
-} from "./cli/system-prompt.js";
+	ActionApprovalService,
+	type ApprovalMode,
+} from "./agent/action-approval.js";
+import { Agent, ProviderTransport } from "./agent/index.js";
+import type { AgentEvent, Provider, ThinkingLevel } from "./agent/types.js";
+import { buildSystemPrompt } from "./cli/system-prompt.js";
 import { loadEnv } from "./load-env.js";
 import {
 	type RegisteredModel,
 	getComposerCustomConfig,
 	getCustomConfigPath,
+	getFactoryDefaultModelSelection,
 	getRegisteredModels,
 	reloadModelConfig,
-	resolveModel,
+	resolveAlias,
 } from "./models/registry.js";
-import { createAuthResolver } from "./providers/auth.js";
+import { getEnvVarsForProvider } from "./providers/api-keys.js";
+import {
+	type AuthCredential,
+	type AuthMode,
+	createAuthResolver,
+} from "./providers/auth.js";
 import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { recordSseSkip } from "./telemetry.js";
 import { codingTools } from "./tools/index.js";
@@ -44,6 +50,219 @@ import {
 } from "./web/session-serialization.js";
 
 loadEnv();
+
+class ApiError extends Error {
+	constructor(
+		public statusCode: number,
+		message: string,
+	) {
+		super(message);
+	}
+}
+
+interface ModelSelection {
+	provider: string;
+	modelId: string;
+}
+
+interface ParsedModelInput {
+	provider?: string;
+	modelId?: string;
+}
+
+function normalizeApprovalMode(value?: string | null): ApprovalMode {
+	const normalized = value?.trim().toLowerCase();
+	if (
+		normalized === "auto" ||
+		normalized === "prompt" ||
+		normalized === "fail"
+	) {
+		return normalized;
+	}
+	return "prompt";
+}
+
+function normalizeAuthMode(value?: string | null): AuthMode {
+	const normalized = value?.trim().toLowerCase();
+	if (
+		normalized === "auto" ||
+		normalized === "api-key" ||
+		normalized === "chatgpt" ||
+		normalized === "claude"
+	) {
+		return normalized;
+	}
+	return "auto";
+}
+
+const DEFAULT_APPROVAL_MODE = normalizeApprovalMode(
+	process.env.COMPOSER_APPROVAL_MODE,
+);
+const AUTH_MODE = normalizeAuthMode(process.env.COMPOSER_AUTH_MODE);
+const CODEX_TOKEN = process.env.CODEX_API_KEY?.trim();
+const authResolver = createAuthResolver({
+	mode: AUTH_MODE,
+	codexApiKey: CODEX_TOKEN,
+	codexSource: CODEX_TOKEN ? "env" : undefined,
+});
+
+const DEFAULT_PROVIDER = "anthropic";
+const DEFAULT_MODEL_ID = "claude-sonnet-4-5";
+
+async function ensureCredential(provider: string): Promise<AuthCredential> {
+	const credential = await authResolver(provider);
+	if (credential) {
+		return credential;
+	}
+	throw new ApiError(401, buildMissingCredentialMessage(provider));
+}
+
+function logMissingCredentialHints(provider: string): void {
+	const envVars = getEnvVarsForProvider(provider);
+	const hints: string[] = [`Missing credentials for provider "${provider}".`];
+	if (envVars.length > 0) {
+		hints.push(
+			`Populate ${envVars.join(" or ")} or configure a custom provider secret before retrying.`,
+		);
+	}
+	if (provider === "anthropic") {
+		hints.push(
+			"Run `composer anthropic login` to provision OAuth credentials.",
+		);
+	} else if (provider === "openai") {
+		hints.push("Set OPENAI_API_KEY or configure ChatGPT/Codex credentials.");
+	}
+	console.warn(hints.join(" "));
+}
+
+function buildMissingCredentialMessage(provider: string): string {
+	logMissingCredentialHints(provider);
+	return `Credentials are required for provider "${provider}".`;
+}
+
+function parseModelInput(modelInput?: string | null): ParsedModelInput {
+	const normalized = modelInput?.trim();
+	if (!normalized) {
+		return {};
+	}
+
+	const delimiter = normalized.includes(":")
+		? ":"
+		: normalized.includes("/")
+			? "/"
+			: null;
+
+	if (!delimiter) {
+		return { modelId: normalized };
+	}
+
+	const parts = normalized.split(delimiter);
+	if (parts.length !== 2) {
+		throw new ApiError(400, `Invalid model format: "${normalized}"`);
+	}
+
+	const [providerPart, modelPart] = parts;
+	const provider = providerPart?.trim() || undefined;
+	const modelId = modelPart?.trim() || undefined;
+	return { provider, modelId };
+}
+
+function resolveModelAlias(parts: ParsedModelInput): ParsedModelInput {
+	if (!parts.modelId) {
+		return parts;
+	}
+	const alias = resolveAlias(parts.modelId);
+	if (!alias) {
+		return parts;
+	}
+	if (parts.provider && parts.provider !== alias.provider) {
+		throw new ApiError(
+			400,
+			`Alias "${parts.modelId}" maps to ${alias.provider}/${alias.modelId}, but provider "${parts.provider}" was requested`,
+		);
+	}
+	return { provider: alias.provider, modelId: alias.modelId };
+}
+
+function determineModelSelection(modelInput?: string | null): ModelSelection {
+	let parts = parseModelInput(modelInput);
+	parts = resolveModelAlias(parts);
+
+	if (parts.provider && !parts.modelId) {
+		throw new ApiError(400, "Model id is required when specifying a provider");
+	}
+
+	if (!parts.provider && parts.modelId) {
+		parts.provider = DEFAULT_PROVIDER;
+	}
+
+	if (!parts.provider && !parts.modelId) {
+		const factoryDefault = getFactoryDefaultModelSelection();
+		if (factoryDefault) {
+			return {
+				provider: factoryDefault.provider,
+				modelId: factoryDefault.modelId,
+			};
+		}
+		return {
+			provider: DEFAULT_PROVIDER,
+			modelId: DEFAULT_MODEL_ID,
+		};
+	}
+
+	const finalProvider = parts.provider;
+	const finalModelId = parts.modelId;
+	if (!finalProvider || !finalModelId) {
+		throw new ApiError(400, "Model selection is incomplete");
+	}
+
+	return {
+		provider: finalProvider,
+		modelId: finalModelId,
+	};
+}
+
+function getRegisteredModelOrThrow(selection: ModelSelection): RegisteredModel {
+	const registeredModel = getRegisteredModels().find(
+		(entry) =>
+			entry.provider === selection.provider && entry.id === selection.modelId,
+	);
+	if (!registeredModel) {
+		throw new ApiError(
+			404,
+			`Model ${selection.provider}/${selection.modelId} not found in registry`,
+		);
+	}
+	return registeredModel;
+}
+
+function respondWithApiError(
+	res: ServerResponse,
+	error: unknown,
+	fallbackStatus = 500,
+): boolean {
+	if (error instanceof ApiError) {
+		res.writeHead(error.statusCode, {
+			"Content-Type": "application/json",
+			...CORS_HEADERS,
+		});
+		res.end(JSON.stringify({ error: error.message }));
+		return true;
+	}
+	if (fallbackStatus) {
+		res.writeHead(fallbackStatus, {
+			"Content-Type": "application/json",
+			...CORS_HEADERS,
+		});
+		res.end(
+			JSON.stringify({
+				error: error instanceof Error ? error.message : "Internal server error",
+			}),
+		);
+		return true;
+	}
+	return false;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -255,32 +474,21 @@ function sendSessionUpdate(session: SseSession, sessionId: string) {
  */
 async function createAgent(
 	registeredModel: RegisteredModel,
-	sessionManager: SessionManager,
 	thinkingLevel: ThinkingLevel = "off",
+	approvalMode: ApprovalMode = DEFAULT_APPROVAL_MODE,
 ): Promise<Agent> {
-	const authResolver = createAuthResolver({ mode: "auto" });
-
-	// ProviderTransport takes options, not model directly
 	const transport = new ProviderTransport({
 		getAuthContext: async (provider: string) => authResolver(provider),
+		approvalService: new ActionApprovalService(approvalMode),
 	});
 
-	// Load system prompt from context files
-	const contextFiles = loadProjectContextFiles();
-	let systemPrompt = "";
-	for (const file of contextFiles) {
-		systemPrompt += `\n\n${file.content}`;
-	}
-	systemPrompt = systemPrompt.trim();
-
-	// Create approval service (auto-approve for web mode)
-	const approvalService = new ActionApprovalService("auto");
+	const systemPrompt = buildSystemPrompt();
 
 	const agent = new Agent({
 		transport,
 		initialState: {
 			systemPrompt,
-			model: registeredModel, // Pass the full RegisteredModel which extends Model<Api>
+			model: registeredModel,
 			thinkingLevel,
 			tools: codingTools,
 		},
@@ -528,7 +736,7 @@ async function handleModel(req: IncomingMessage, res: ServerResponse) {
 			}
 		});
 
-		req.on("end", () => {
+		req.on("end", async () => {
 			try {
 				const payload = JSON.parse(body || "{}");
 				const modelInput = (payload.model || "").trim();
@@ -541,53 +749,15 @@ async function handleModel(req: IncomingMessage, res: ServerResponse) {
 					return;
 				}
 
-				const [providerPart, modelPart] = modelInput.includes(":")
-					? modelInput.split(":", 2)
-					: modelInput.includes("/")
-						? modelInput.split("/", 2)
-						: ["anthropic", modelInput];
-				const provider = providerPart || "anthropic";
-				const modelId = modelPart || modelInput;
-
-				const resolved = resolveModel(provider, modelId);
-				if (!resolved) {
-					res.writeHead(404, {
-						"Content-Type": "application/json",
-						...CORS_HEADERS,
-					});
-					res.end(
-						JSON.stringify({
-							error: `Model ${provider}/${modelId} not found`,
-						}),
-					);
-					return;
-				}
-
-				const registeredModel = getRegisteredModels().find(
-					(entry) =>
-						entry.provider === resolved.provider && entry.id === resolved.id,
-				);
-				if (!registeredModel) {
-					res.writeHead(500, {
-						"Content-Type": "application/json",
-						...CORS_HEADERS,
-					});
-					res.end(JSON.stringify({ error: "Model not properly registered" }));
-					return;
-				}
-
+				const selection = determineModelSelection(modelInput);
+				const registeredModel = getRegisteredModelOrThrow(selection);
+				await ensureCredential(registeredModel.provider);
 				currentModelKey = `${registeredModel.provider}/${registeredModel.id}`;
 				respondWithModel(res, registeredModel);
 			} catch (error) {
-				res.writeHead(400, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(
-					JSON.stringify({
-						error: error instanceof Error ? error.message : "Invalid payload",
-					}),
-				);
+				if (respondWithApiError(res, error, 400)) {
+					return;
+				}
 			}
 		});
 		return;
@@ -621,20 +791,6 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
 		try {
 			const chatReq: ComposerChatRequest = JSON.parse(body);
 
-			const modelInput = chatReq.model || "claude-sonnet-4-5";
-			const [provider, modelId] = modelInput.includes(":")
-				? modelInput.split(":", 2)
-				: ["anthropic", modelInput];
-			const model = resolveModel(provider, modelId);
-			if (!model) {
-				res.writeHead(404, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: `Model ${modelInput} not found` }));
-				return;
-			}
-
 			const sessionManager = new SessionManager(false);
 			if (chatReq.sessionId) {
 				const sessionFile = sessionManager.getSessionFileById(
@@ -645,22 +801,13 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
 				}
 			}
 
-			const registeredModel = getRegisteredModels().find(
-				(m) => m.provider === model.provider && m.id === model.id,
-			);
-			if (!registeredModel) {
-				res.writeHead(500, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: "Model not properly registered" }));
-				return;
-			}
-
+			const selection = determineModelSelection(chatReq.model);
+			const registeredModel = getRegisteredModelOrThrow(selection);
+			await ensureCredential(registeredModel.provider);
 			const agent = await createAgent(
 				registeredModel,
-				sessionManager,
 				chatReq.thinkingLevel || "off",
+				DEFAULT_APPROVAL_MODE,
 			);
 
 			const incomingMessages = Array.isArray(chatReq.messages)
@@ -800,16 +947,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
 			}
 		} catch (error) {
 			console.error("Chat error:", error);
-			res.writeHead(500, {
-				"Content-Type": "application/json",
-				...CORS_HEADERS,
-			});
-			res.end(
-				JSON.stringify({
-					error:
-						error instanceof Error ? error.message : "Internal server error",
-				}),
-			);
+			respondWithApiError(res, error, 500);
 		}
 	});
 }
