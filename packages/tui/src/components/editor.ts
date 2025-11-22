@@ -1,7 +1,12 @@
 import chalk from "chalk";
 import type { AutocompleteProvider } from "../autocomplete.js";
 import type { Component } from "../tui.js";
-import { SelectList } from "./select-list.js";
+import { SelectList, type SelectListTheme } from "./select-list.js";
+
+export interface EditorTheme {
+	borderColor: (str: string) => string;
+	selectList: SelectListTheme;
+}
 
 export interface LargePasteEvent {
 	pasteId: number;

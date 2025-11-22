@@ -17,6 +17,9 @@ export const themePalette = {
 	warning: "#ffb347",
 	danger: "#ff8c69",
 	info: "#c3b8ff",
+	// Italic styling colors - soft cyan for contemplative/secondary content
+	italic: "#7dd3fc", // Primary italic text (thinking blocks, emphasis)
+	italicBorder: "#38bdf8", // Borders for italic content (blockquotes)
 } as const;
 
 export type BadgeVariant = "info" | "success" | "warn" | "danger";
@@ -108,4 +111,20 @@ export function highlightValue(value: string): string {
 
 export function toneColor(variant: BadgeVariant = "info"): string {
 	return badgeColors[variant];
+}
+
+/**
+ * Apply italic styling with the theme's italic color.
+ * Use for thinking blocks, quoted content, and emphasis.
+ */
+export function italic(text: string): string {
+	return chalk.hex(themePalette.italic).italic(text);
+}
+
+/**
+ * Apply italic styling with a custom color.
+ * Use sparingly - prefer the themed italic() function.
+ */
+export function italicWithColor(text: string, color: string): string {
+	return chalk.hex(color).italic(text);
 }

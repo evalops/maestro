@@ -9,7 +9,7 @@ import {
 	Text,
 } from "@evalops/tui";
 import chalk from "chalk";
-import { badge, heading, muted } from "../style/theme.js";
+import { badge, heading, italic, muted } from "../style/theme.js";
 import { BashShellBlock } from "./bash-shell-block.js";
 import type { CustomEditor } from "./custom-editor.js";
 import {
@@ -150,9 +150,9 @@ ${muted("Back to normal chat.")}`,
 		);
 		block.setStatus(result.success ? "success" : "error");
 		if (result.cwdChanged) {
-			const cwdLine = chalk
-				.hex("#a5b4fc")
-				.italic(`cwd → ${this.formatDisplayPath(this.currentCwd)}`);
+			const cwdLine = italic(
+				`cwd → ${this.formatDisplayPath(this.currentCwd)}`,
+			);
 			block.setBody(
 				`${promptLine}\n${cwdLine}\n${body || muted("(no output)")}\n\n${statusLine}`,
 			);

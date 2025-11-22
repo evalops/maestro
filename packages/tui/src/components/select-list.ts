@@ -1,9 +1,18 @@
 import chalk from "chalk";
 import type { Component } from "../tui.js";
+
 export interface SelectItem {
 	value: string;
 	label: string;
 	description?: string;
+}
+
+export interface SelectListTheme {
+	selectedPrefix: (text: string) => string;
+	selectedText: (text: string) => string;
+	description: (text: string) => string;
+	scrollInfo: (text: string) => string;
+	noMatch: (text: string) => string;
 }
 
 export class SelectList implements Component {

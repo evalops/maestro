@@ -8,6 +8,27 @@ import {
 import type { Component } from "../tui.js";
 import { visibleWidth } from "../utils.js";
 
+/**
+ * Theme functions for markdown elements.
+ * Each function takes text and returns styled text with ANSI codes.
+ */
+export interface MarkdownTheme {
+	heading: (text: string) => string;
+	link: (text: string) => string;
+	linkUrl: (text: string) => string;
+	code: (text: string) => string;
+	codeBlock: (text: string) => string;
+	codeBlockBorder: (text: string) => string;
+	quote: (text: string) => string;
+	quoteBorder: (text: string) => string;
+	hr: (text: string) => string;
+	listBullet: (text: string) => string;
+	bold: (text: string) => string;
+	italic: (text: string) => string;
+	strikethrough: (text: string) => string;
+	underline: (text: string) => string;
+}
+
 type Color =
 	| "black"
 	| "red"
@@ -39,6 +60,8 @@ export class Markdown implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
+	private theme?: MarkdownTheme;
+
 	constructor(
 		text = "",
 		bgColor?: Color,
@@ -46,6 +69,7 @@ export class Markdown implements Component {
 		customBgRgb?: { r: number; g: number; b: number },
 		paddingX = 1,
 		paddingY = 1,
+		theme?: MarkdownTheme,
 	) {
 		this.text = text;
 		this.bgColor = bgColor;
@@ -53,6 +77,7 @@ export class Markdown implements Component {
 		this.customBgRgb = customBgRgb;
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
+		this.theme = theme;
 	}
 	setText(text: string): void {
 		this.text = text;
