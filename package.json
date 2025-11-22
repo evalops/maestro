@@ -19,7 +19,7 @@
     "clean": "rm -rf dist",
     "prepare": "husky",
     "install:local": "node ./scripts/install-client.js",
-    "build": "tsc -b tsconfig.build.json && chmod +x dist/cli.js",
+    "build": "tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --outfile dist/cli.js && chmod +x dist/cli.js",
     "start": "node --enable-source-maps dist/cli.js",
     "dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
     "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
@@ -56,7 +56,7 @@
     "dev:web": "bun run --filter @evalops/composer-web dev",
     "dev:tui": "bun run --filter @evalops/tui dev",
     "dev:packages": "concurrently --names \"tui,web\" --prefix-colors \"magenta,green\" \"bun run dev:tui\" \"bun run dev:web\"",
-    "build:all": "bun run --filter @evalops/tui build && bun run --filter @evalops/composer-web build && bun run build",
+    "build:all": "bun run --filter @evalops/contracts build && bun run --filter @evalops/tui build && bun run --filter @evalops/composer-web build && bun run build && bun run --filter @evalops/ai build",
     "test:all": "npm run test && npm run test --workspaces --if-present"
   },
   "dependencies": {

@@ -153,7 +153,9 @@ const parseItemsInput = (
 	if (typeof input === "string") {
 		const result = safeJsonParse<unknown>(input, "TODO items");
 		if (!result.success) {
-			throw new Error(`Invalid JSON: ${result.error.message}`);
+			throw new Error(
+				`Invalid JSON: ${"error" in result ? result.error.message : "Unknown error"}`,
+			);
 		}
 		const parsed = result.data;
 		if (!Array.isArray(parsed)) {
@@ -207,7 +209,10 @@ async function loadStore(): Promise<TodoStore> {
 		const raw = await readFile(defaultStorePath, "utf-8");
 		const result = safeJsonParse<TodoStore>(raw, "TODO store");
 		if (!result.success) {
-			console.warn("[TODO] Corrupted store file:", result.error.message);
+			console.warn(
+				"[TODO] Corrupted store file:",
+				"error" in result ? result.error.message : "Unknown error",
+			);
 			return {};
 		}
 		return result.data;

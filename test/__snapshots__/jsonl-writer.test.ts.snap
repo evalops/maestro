@@ -1,0 +1,18 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`JsonlEventWriter adapter > emits deltas, completions, tool calls, and tool results 1`] = `
+"{"type":"turn","phase":"start","role":"assistant","turnId":"turn-1","timestamp":"2025-01-01T00:00:00.000Z"}
+{"type":"item","subtype":"message_delta","turnId":"turn-1","timestamp":"2025-01-01T00:00:00.000Z","data":{"text":"he"}}
+{"type":"item","subtype":"tool_call","timestamp":"2025-01-01T00:00:00.000Z","data":{"toolCallId":"call-1","toolName":"write_file","args":{"path":"a.ts"}}}
+{"type":"item","subtype":"tool_result","timestamp":"2025-01-01T00:00:00.000Z","data":{"toolCallId":"call-1","toolName":"write_file","result":{"role":"toolResult","toolCallId":"call-1","toolName":"write_file","content":[{"type":"text","text":"ok"}],"isError":false,"timestamp":1733000000000},"isError":false}}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","timestamp":"2025-01-01T00:00:00.000Z","data":{"text":"hello"}}
+{"type":"turn","phase":"end","turnId":"turn-1","role":"assistant","timestamp":"2025-01-01T00:00:00.000Z"}
+"
+`;
+
+exports[`JsonlEventWriter adapter > emits user turns via helper 1`] = `
+"{"type":"turn","phase":"start","turnId":"turn-1","role":"user","timestamp":"2025-01-01T00:00:00.000Z","text":"hello"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","timestamp":"2025-01-01T00:00:00.000Z","data":{"text":"hello"}}
+{"type":"turn","phase":"end","turnId":"turn-1","role":"user","timestamp":"2025-01-01T00:00:00.000Z"}
+"
+`;

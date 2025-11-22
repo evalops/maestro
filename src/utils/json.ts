@@ -147,7 +147,7 @@ export function parseJsonLines<T = unknown>(
 		if (result.success) {
 			results.push(result.data);
 		} else if (!skipErrors) {
-			throw result.error;
+			throw "error" in result ? result.error : new Error("Parse error");
 		}
 	}
 

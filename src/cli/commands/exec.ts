@@ -3,8 +3,15 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import AjvModule, { type ValidateFunction } from "ajv";
 import chalk from "chalk";
 import type { Agent } from "../../agent/agent.js";
-import type { AgentEvent, AppMessage, TextContent } from "../../agent/types.js";
+import type { AgentEvent } from "../../agent/types.js";
 import type { SessionManager } from "../../session/manager.js";
+import {
+	JsonlEventWriter,
+	createAgentJsonlAdapter,
+	emitThreadEnd,
+	emitThreadStart,
+	emitUserTurn as emitUserTurnEvent,
+} from "../jsonl-writer.js";
 
 export const EXEC_SESSION_SUMMARY_PREFIX = "[exec]";
 
@@ -18,92 +25,7 @@ interface ExecCommandOptions {
 	outputLastMessage?: string;
 }
 
-type ExecEvent =
-	| {
-			type: "thread";
-			phase: "start" | "end";
-			threadId: string;
-			sessionId?: string;
-			timestamp: string;
-			sandbox?: string;
-			cwd?: string;
-	  }
-	| {
-			type: "turn";
-			phase: "start" | "end";
-			turnId: string;
-			role: "user" | "assistant" | "tool";
-			timestamp: string;
-			text?: string;
-	  }
-	| {
-			type: "item";
-			subtype:
-				| "message_delta"
-				| "message_complete"
-				| "tool_call"
-				| "tool_result"
-				| "approval";
-			turnId?: string;
-			timestamp: string;
-			data?: unknown;
-	  }
-	| {
-			type: "error";
-			message: string;
-			timestamp: string;
-			stack?: string;
-	  }
-	| {
-			type: "done";
-			status: "ok" | "error";
-			timestamp: string;
-			sessionId?: string;
-	  };
-
-class ExecEventWriter {
-	constructor(
-		private readonly enabled: boolean,
-		private readonly stream: NodeJS.WritableStream = process.stdout,
-	) {}
-
-	emit(event: ExecEvent): void {
-		if (!this.enabled) {
-			return;
-		}
-		this.stream.write(`${JSON.stringify(event)}\n`);
-	}
-}
-
-function timestamp(): string {
-	return new Date().toISOString();
-}
-
-function isTextChunk(chunk: unknown): chunk is TextContent {
-	return (
-		typeof chunk === "object" &&
-		chunk !== null &&
-		"type" in chunk &&
-		(chunk as { type?: unknown }).type === "text" &&
-		"text" in chunk &&
-		typeof (chunk as { text?: unknown }).text === "string"
-	);
-}
-
-function extractText(message: AppMessage | undefined): string {
-	if (!message) {
-		return "";
-	}
-	const content = (message as { content?: unknown }).content;
-	if (Array.isArray(content)) {
-		const parts = content.filter(isTextChunk).map((chunk) => chunk.text);
-		return parts.join("");
-	}
-	if (typeof content === "string") {
-		return content;
-	}
-	return "";
-}
+const timestamp = (): string => new Date().toISOString();
 
 function buildSummary(prompts: string[], status: "ok" | "error"): string {
 	const baseSource =
@@ -149,23 +71,18 @@ export async function runExecCommand(
 	if (!prompts.length) {
 		throw new Error("composer exec requires at least one prompt");
 	}
-	const writer = new ExecEventWriter(options.jsonl ?? false);
 	const threadId = options.sessionManager.getSessionId();
-	writer.emit({
-		type: "thread",
-		phase: "start",
-		threadId,
-		sessionId: threadId,
-		timestamp: timestamp(),
-		sandbox: options.sandboxMode,
+	const jsonlWriter = new JsonlEventWriter(options.jsonl ?? false);
+	emitThreadStart(jsonlWriter, threadId, {
+		sandboxMode: options.sandboxMode,
 		cwd: process.cwd(),
+		sessionId: threadId,
 	});
 
 	let turnCounter = 0;
 	const nextTurnId = () => `turn-${++turnCounter}`;
-	let currentAssistantTurn: string | null = null;
-	let lastAssistantText = "";
 	let runStatus: "ok" | "error" = "ok";
+	const adapter = createAgentJsonlAdapter(jsonlWriter, nextTurnId);
 
 	const schemaValidator: { validate: ValidateFunction; label: string } | null =
 		(() => {
@@ -190,132 +107,11 @@ export async function runExecCommand(
 		})();
 
 	options.agent.subscribe((event: AgentEvent) => {
-		switch (event.type) {
-			case "message_start": {
-				currentAssistantTurn = nextTurnId();
-				writer.emit({
-					type: "turn",
-					phase: "start",
-					role: "assistant",
-					turnId: currentAssistantTurn,
-					timestamp: timestamp(),
-				});
-				break;
-			}
-			case "message_update": {
-				if (!currentAssistantTurn) {
-					currentAssistantTurn = nextTurnId();
-					writer.emit({
-						type: "turn",
-						phase: "start",
-						role: "assistant",
-						turnId: currentAssistantTurn,
-						timestamp: timestamp(),
-					});
-				}
-				writer.emit({
-					type: "item",
-					subtype: "message_delta",
-					turnId: currentAssistantTurn,
-					timestamp: timestamp(),
-					data: { text: extractText(event.message) },
-				});
-				break;
-			}
-			case "message_end": {
-				lastAssistantText = extractText(event.message);
-				const turnId = currentAssistantTurn ?? nextTurnId();
-				writer.emit({
-					type: "item",
-					subtype: "message_complete",
-					turnId,
-					timestamp: timestamp(),
-					data: { text: lastAssistantText },
-				});
-				writer.emit({
-					type: "turn",
-					phase: "end",
-					turnId,
-					role: "assistant",
-					timestamp: timestamp(),
-				});
-				currentAssistantTurn = null;
-				break;
-			}
-			case "tool_execution_start": {
-				writer.emit({
-					type: "item",
-					subtype: "tool_call",
-					timestamp: timestamp(),
-					data: {
-						toolCallId: event.toolCallId,
-						toolName: event.toolName,
-						args: event.args,
-					},
-				});
-				break;
-			}
-			case "tool_execution_end": {
-				writer.emit({
-					type: "item",
-					subtype: "tool_result",
-					timestamp: timestamp(),
-					data: {
-						toolCallId: event.toolCallId,
-						toolName: event.toolName,
-						result: event.result,
-						isError: event.isError,
-					},
-				});
-				break;
-			}
-			case "action_approval_required": {
-				writer.emit({
-					type: "item",
-					subtype: "approval",
-					timestamp: timestamp(),
-					data: { request: event.request },
-				});
-				break;
-			}
-			case "action_approval_resolved": {
-				writer.emit({
-					type: "item",
-					subtype: "approval",
-					timestamp: timestamp(),
-					data: { request: event.request, decision: event.decision },
-				});
-				break;
-			}
-			default:
-				break;
-		}
+		adapter.handle(event);
 	});
 
 	const emitUserTurn = (text: string) => {
-		const turnId = nextTurnId();
-		writer.emit({
-			type: "turn",
-			phase: "start",
-			turnId,
-			role: "user",
-			timestamp: timestamp(),
-			text,
-		});
-		writer.emit({
-			type: "item",
-			subtype: "message_complete",
-			turnId,
-			timestamp: timestamp(),
-			data: { text },
-		});
-		writer.emit({
-			type: "turn",
-			phase: "end",
-			turnId,
-			role: "user",
-			timestamp: timestamp(),
-		});
+		emitUserTurnEvent(jsonlWriter, nextTurnId, text);
 	};
 
 	let executedPrompts = 0;
@@ -333,6 +129,7 @@ export async function runExecCommand(
 		if (executedPrompts === 0) {
 			throw new Error("composer exec requires at least one non-empty prompt");
 		}
+		const lastAssistantText = adapter.getLastAssistantText();
 		if (!lastAssistantText) {
 			throw new Error("The assistant did not produce a response.");
 		}
@@ -376,7 +173,7 @@ export async function runExecCommand(
 		}
 	} catch (error) {
 		runStatus = "error";
-		writer.emit({
+		jsonlWriter.emit({
 			type: "error",
 			message: (error as Error).message,
 			timestamp: timestamp(),
@@ -384,14 +181,8 @@ export async function runExecCommand(
 		});
 		throw error;
 	} finally {
-		writer.emit({
-			type: "thread",
-			phase: "end",
-			threadId,
-			sessionId: threadId,
-			timestamp: timestamp(),
-		});
-		writer.emit({
+		emitThreadEnd(jsonlWriter, threadId, runStatus, threadId);
+		jsonlWriter.emit({
 			type: "done",
 			status: runStatus,
 			timestamp: timestamp(),

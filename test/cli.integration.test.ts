@@ -149,6 +149,7 @@ describe("CLI integration", () => {
 	const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
 	const originalLog = console.log;
 	const originalError = console.error;
+	const originalStdoutWrite = process.stdout.write;
 	let output: string[];
 	let tempAgentDir: string;
 
@@ -173,11 +174,17 @@ describe("CLI integration", () => {
 		console.error = (...args: unknown[]) => {
 			output.push(args.map((arg) => String(arg)).join(" "));
 		};
+		// Mock stdout.write to capture JSONL output
+		process.stdout.write = ((chunk: any) => {
+			output.push(String(chunk));
+			return true;
+		}) as any;
 	});
 
 	afterEach(() => {
 		console.log = originalLog;
 		console.error = originalError;
+		process.stdout.write = originalStdoutWrite;
 		if (originalEnv === undefined) {
 			// biome-ignore lint/performance/noDelete: restoring env var state
 			delete process.env.ANTHROPIC_API_KEY;
@@ -222,9 +229,14 @@ describe("CLI integration", () => {
 
 	it("emits JSON events in json mode", async () => {
 		await main(["--mode", "json", "hello"]);
-		expect(output.some((line) => line.includes('"type":"message_end"'))).toBe(
-			true,
+		// Should emit JSONL events like thread_start, turn, item, thread_end
+		const hasJsonlEvents = output.some(
+			(line) =>
+				line.includes('"type":"thread"') ||
+				line.includes('"type":"turn"') ||
+				line.includes('"type":"item"'),
 		);
+		expect(hasJsonlEvents).toBe(true);
 	});
 
 	it("prints models list command output", async () => {

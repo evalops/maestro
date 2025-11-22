@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -19,6 +19,23 @@ try {
 	recordEvaluationResult = telemetryModule.recordEvaluationResult;
 } catch (_error) {
 	// Telemetry not available (likely not built yet) – proceed without it.
+}
+
+async function ensureBuild() {
+	console.log("[evals] ensuring dist via npm run build:all");
+	await new Promise((resolve, reject) => {
+		const child = spawn("npm", ["run", "build:all"], {
+			cwd: projectRoot,
+			stdio: "inherit",
+		});
+		child.on("exit", (code) => {
+			if (code === 0) {
+				resolve();
+			} else {
+				reject(new Error(`npm run build exited with ${code}`));
+			}
+		});
+	});
 }
 
 async function runScenario(scenario) {
@@ -95,6 +112,8 @@ async function runScenario(scenario) {
 }
 
 async function main() {
+	await ensureBuild();
+
 	let scenarios;
 	try {
 		scenarios = JSON.parse(await readFile(scenariosPath, "utf-8"));

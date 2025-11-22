@@ -293,7 +293,7 @@ export async function callExa<T>(
 
 			if (!result.success) {
 				throw new Error(
-					`Failed to parse Exa response: ${result.error.message}`,
+					`Failed to parse Exa response: ${"error" in result ? result.error.message : "Unknown error"}`,
 				);
 			}
 

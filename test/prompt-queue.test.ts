@@ -61,7 +61,7 @@ describe("PromptQueue", () => {
 
 	it("emits cancel events by default when calling cancelAll", async () => {
 		// Use a blocking runner so prompts stay in pending
-		let resolve: () => void;
+		let resolve!: () => void;
 		const blocker = new Promise<void>((r) => {
 			resolve = r;
 		});
@@ -99,7 +99,7 @@ describe("PromptQueue", () => {
 
 	it("returns cancelled entries even in silent mode", () => {
 		// Use a blocking runner so prompts stay in pending
-		let resolve: () => void;
+		let resolve!: () => void;
 		const blocker = new Promise<void>((r) => {
 			resolve = r;
 		});

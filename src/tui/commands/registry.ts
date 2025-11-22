@@ -509,7 +509,9 @@ function executeCommand(
 	const parseResult = parseCommandArguments(argumentText, command.arguments);
 	if (!parseResult.ok) {
 		const context = createContext({ command, rawInput, argumentText });
-		context.showError(parseResult.errors.join(" "));
+		context.showError(
+			"errors" in parseResult ? parseResult.errors.join(" ") : "Parse error",
+		);
 		context.renderHelp();
 		return;
 	}

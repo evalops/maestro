@@ -13,6 +13,13 @@ import {
 	runExecCommand,
 } from "./cli/commands/exec.js";
 import { printHelp } from "./cli/help.js";
+import {
+	JsonlEventWriter,
+	createAgentJsonlAdapter,
+	emitThreadEnd,
+	emitThreadStart,
+	emitUserTurn as emitUserTurnEvent,
+} from "./cli/jsonl-writer.js";
 import { selectSession } from "./cli/session.js";
 import {
 	buildSystemPrompt,
@@ -116,32 +123,55 @@ async function runInteractiveMode(
 
 async function runSingleShotMode(
 	agent: Agent,
-	_sessionManager: SessionManager,
+	sessionManager: SessionManager,
 	messages: string[],
 	mode: Extract<Mode, "text" | "json">,
 ): Promise<void> {
-	if (mode === "json") {
-		// Subscribe to all events and output as JSON
+	const threadId = sessionManager.getSessionId();
+	const jsonlWriter =
+		mode === "json" ? new JsonlEventWriter(true, process.stdout) : null;
+	const nextTurnId = (() => {
+		let counter = 0;
+		return () => `turn-${++counter}`;
+	})();
+	const adapter =
+		jsonlWriter && createAgentJsonlAdapter(jsonlWriter, nextTurnId);
+
+	if (jsonlWriter) {
+		emitThreadStart(jsonlWriter, threadId, { sessionId: threadId });
 		agent.subscribe((event) => {
-			// Output event as JSON (same format as session manager)
-			console.log(JSON.stringify(event));
+			adapter?.handle(event);
 		});
 	}
 
-	for (const message of messages) {
-		await agent.prompt(message);
-	}
+	try {
+		for (const message of messages) {
+			if (jsonlWriter) {
+				emitUserTurnEvent(jsonlWriter, nextTurnId, message);
+			}
+			await agent.prompt(message);
+		}
 
-	// In text mode, only output the final assistant message
-	if (mode === "text") {
-		const lastMessage = agent.state.messages[agent.state.messages.length - 1];
-		if (lastMessage.role === "assistant") {
-			for (const content of lastMessage.content) {
-				if (content.type === "text") {
-					console.log(content.text);
+		// In text mode, only output the final assistant message
+		if (mode === "text") {
+			const lastMessage = agent.state.messages[agent.state.messages.length - 1];
+			if (lastMessage.role === "assistant") {
+				for (const content of lastMessage.content) {
+					if (content.type === "text") {
+						console.log(content.text);
+					}
 				}
 			}
 		}
+
+		if (jsonlWriter) {
+			emitThreadEnd(jsonlWriter, threadId, "ok", threadId);
+		}
+	} catch (error) {
+		if (jsonlWriter) {
+			emitThreadEnd(jsonlWriter, threadId, "error", threadId);
+		}
+		throw error;
 	}
 }
 

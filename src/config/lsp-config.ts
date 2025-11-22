@@ -57,7 +57,9 @@ function loadRawConfig(): LspConfig {
 		const result = safeJsonParse<{ lsp?: LspConfig }>(raw, "LSP config");
 
 		if (!result.success) {
-			throw new Error(`Failed to parse config: ${result.error.message}`);
+			throw new Error(
+				`Failed to parse config: ${"error" in result ? result.error.message : "Unknown error"}`,
+			);
 		}
 
 		const data = result.data;

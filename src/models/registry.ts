@@ -822,7 +822,7 @@ function buildFactoryData(): {
 		if (!result.success) {
 			console.warn(
 				"[Custom Models] Failed to parse .factory.json:",
-				result.error.message,
+				"error" in result ? result.error.message : "Unknown error",
 			);
 			return null;
 		}

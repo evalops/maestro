@@ -202,7 +202,12 @@ export function createJsonTool<Schema extends TSchema, Details = undefined>(
 ) {
 	return createTool<Schema, Details>({
 		...options,
-		run: async (params, context) => {
+		run: async (
+			params,
+			context,
+		): Promise<
+			ToolResponseBuilder<Details> | AgentToolResult<Details> | undefined
+		> => {
 			const result = await options.run(params, context);
 			if (
 				result === undefined ||
@@ -211,7 +216,9 @@ export function createJsonTool<Schema extends TSchema, Details = undefined>(
 			) {
 				return result;
 			}
-			return context.respond.json(result);
+			return context.respond.json(
+				result,
+			) as unknown as AgentToolResult<Details>;
 		},
 	});
 }
