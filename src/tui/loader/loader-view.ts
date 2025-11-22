@@ -27,7 +27,9 @@ export class LoaderView {
 		this.idlePlaceholder = new Spacer(1);
 		this.setIdlePlaceholder();
 		this.stageManager = new LoaderStageManager({
-			setFooterStage: (label) => this.options.footer.setStage(label),
+			setFooterStage: (label) => {
+				this.options.footer.setStage(label);
+			},
 			setFooterHint: (hint) => this.options.footer.setHint(hint),
 			onStageChanged: (label, index, total) => {
 				this.handleStageChanged(label, index, total);

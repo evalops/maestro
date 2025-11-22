@@ -60,8 +60,10 @@ import { LoaderView } from "./loader/loader-view.js";
 import { MessageView } from "./message-view.js";
 import { NotificationView } from "./notification-view.js";
 import { OllamaView } from "./ollama-view.js";
-import { PlanView } from "./plan-view.js";
+import { PlanPanelModal } from "./plan-panel-modal.js";
+import { PlanView, type TodoStore, loadTodoStore } from "./plan-view.js";
 import type { PromptQueue, PromptQueueEvent } from "./prompt-queue.js";
+import { QueuePanelModal } from "./queue-panel-modal.js";
 import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
 import { FileSearchView } from "./search/file-search-view.js";
@@ -77,6 +79,7 @@ import { SessionDataProvider } from "./session/session-data-provider.js";
 import { SessionSummaryController } from "./session/session-summary-controller.js";
 import { SessionSwitcherView } from "./session/session-switcher-view.js";
 import { SessionView } from "./session/session-view.js";
+import { StatusRailComponent } from "./status-rail.js";
 import { CostView } from "./status/cost-view.js";
 import { DiagnosticsView } from "./status/diagnostics-view.js";
 import { TelemetryView } from "./status/telemetry-view.js";
@@ -206,7 +209,13 @@ export class TuiRenderer {
 	private oauthLogoutView?: OAuthSelectorView;
 	private queueModeSelectorView: QueueModeSelectorView;
 	private userMessageSelectorView: UserMessageSelectorView;
+	private queuePanelModal?: QueuePanelModal;
+	private planPanelModal?: PlanPanelModal;
+	private queuePanelVisible = false;
+	private planPanelVisible = false;
 	private notificationView: NotificationView;
+	private statusRail: StatusRailComponent;
+	private statusRailContainer: Container;
 	private updateView: UpdateView;
 	private configView: ConfigView;
 	private costView: CostView;
@@ -276,9 +285,15 @@ export class TuiRenderer {
 		this.startupContainer = new Container();
 		this.chatContainer = new Container();
 		this.statusContainer = new Container();
+		this.statusRail = new StatusRailComponent();
+		this.statusRailContainer = new Container();
+		this.statusRailContainer.addChild(this.statusRail);
 		this.editor = new CustomEditor();
 		this.editor.onLargePaste = (event) => {
 			void this.handleLargePaste(event);
+		};
+		this.editor.onTyping = () => {
+			this.handleEditorTyping();
 		};
 		this.editor.onShiftTab = () => {
 			this.cycleThinkingLevel();
@@ -295,6 +310,7 @@ export class TuiRenderer {
 		this.notificationView = new NotificationView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
+			statusRail: this.statusRail,
 		});
 		this.approvalController = new ApprovalController({
 			approvalService,
@@ -318,6 +334,7 @@ export class TuiRenderer {
 				this.planHint = hint;
 				this.refreshFooterHint();
 			},
+			onStoreChanged: (store) => this.handlePlanStoreChanged(store),
 		});
 		this.planView.syncHintWithStore();
 		this.runCommandView = new RunCommandView({
@@ -551,6 +568,50 @@ export class TuiRenderer {
 				this.ui.requestRender();
 			},
 		});
+		this.queuePanelModal = new QueuePanelModal({
+			onClose: () => {
+				this.queuePanelVisible = false;
+				this.editorContainer.clear();
+				this.editorContainer.addChild(this.editor);
+				this.ui.setFocus(this.editor);
+				this.ui.requestRender();
+			},
+			onCancel: (id) => {
+				if (this.promptQueue) {
+					const removed = this.promptQueue.cancel(id);
+					if (removed) {
+						this.notificationView.showToast(
+							`Cancelled queued prompt #${id}`,
+							"success",
+						);
+						this.updateQueuedPromptCount();
+						this.refreshQueuePanel();
+						this.refreshFooterHint();
+					}
+				}
+			},
+			onToggleMode: () => {
+				const newMode = this.promptQueueMode === "all" ? "one" : "all";
+				this.setQueueMode(newMode);
+				this.refreshQueuePanel();
+			},
+		});
+		this.planPanelModal = new PlanPanelModal({
+			onClose: () => {
+				this.planPanelVisible = false;
+				this.editorContainer.clear();
+				this.editorContainer.addChild(this.editor);
+				this.ui.setFocus(this.editor);
+				this.ui.requestRender();
+			},
+			onNavigate: (delta) => {
+				this.planPanelModal?.navigateTasks(delta);
+				this.ui.requestRender();
+			},
+			onToggleComplete: () => {
+				this.handlePlanPanelToggleComplete();
+			},
+		});
 		this.conversationCompactor = new ConversationCompactor({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -642,8 +703,7 @@ export class TuiRenderer {
 			handleTelemetry: (context) =>
 				this.telemetryView.handleTelemetryCommand(context),
 			handleStats: (context) => this.handleStatsCommand(context),
-			handlePlan: (context) =>
-				this.planView.handlePlanCommand(context.rawInput),
+			handlePlan: (context) => this.handlePlanCommand(context),
 			handlePreview: (context) =>
 				this.gitView.handlePreviewCommand(context.rawInput),
 			handleRun: (context) =>
@@ -762,6 +822,7 @@ export class TuiRenderer {
 		this.ui.addChild(this.startupContainer);
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.statusContainer);
+		this.ui.addChild(this.statusRailContainer);
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(this.editorContainer); // Use container that can hold editor or selector
 		this.refreshFooterHint();
@@ -1264,6 +1325,7 @@ export class TuiRenderer {
 			);
 		}
 		this.updateQueuedPromptCount();
+		this.refreshQueuePanel();
 		if (!this.isAgentRunning) {
 			this.refreshFooterHint();
 		}
@@ -1306,7 +1368,8 @@ export class TuiRenderer {
 		}
 		const args = context.argumentText.trim();
 		if (!args || args === "list") {
-			this.renderQueueList();
+			// Show modal instead of rendering to chat
+			this.showQueuePanel();
 			return;
 		}
 		const [action, idText] = args.split(/\s+/, 2);
@@ -1340,7 +1403,6 @@ export class TuiRenderer {
 				`Cancelled queued prompt #${id}`,
 				"success",
 			);
-			this.renderQueueList();
 			this.updateQueuedPromptCount();
 			if (!this.isAgentRunning) {
 				this.refreshFooterHint();
@@ -1348,6 +1410,85 @@ export class TuiRenderer {
 			return;
 		}
 		context.renderHelp();
+	}
+
+	private showQueuePanel(): void {
+		if (!this.promptQueue || !this.queuePanelModal) {
+			return;
+		}
+		const snapshot = this.promptQueue.getSnapshot();
+		this.queuePanelModal.setData(
+			snapshot.active ?? null,
+			snapshot.pending,
+			this.promptQueueMode,
+		);
+		this.queuePanelVisible = true;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.queuePanelModal);
+		this.ui.setFocus(this.queuePanelModal);
+		this.ui.requestRender();
+	}
+
+	private refreshQueuePanel(): void {
+		if (!this.promptQueue || !this.queuePanelModal) {
+			return;
+		}
+		const snapshot = this.promptQueue.getSnapshot();
+		this.queuePanelModal.setData(
+			snapshot.active ?? null,
+			snapshot.pending,
+			this.promptQueueMode,
+		);
+		if (this.queuePanelVisible) {
+			this.ui.requestRender();
+		}
+	}
+
+	private handlePlanCommand(context: CommandExecutionContext): void {
+		const args = context.argumentText.trim();
+		if (!args || args === "list") {
+			// Show modal instead of rendering to chat
+			this.showPlanPanel();
+			return;
+		}
+		// Delegate to plan view for other commands (new, add, complete, etc.)
+		this.planView.handlePlanCommand(context.rawInput);
+	}
+
+	private showPlanPanel(): void {
+		if (!this.planPanelModal) {
+			return;
+		}
+		const store = loadTodoStore(TODO_STORE_PATH);
+		this.planPanelModal.setData(store);
+		this.planPanelVisible = true;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.planPanelModal);
+		this.ui.setFocus(this.planPanelModal);
+		this.ui.requestRender();
+	}
+
+	private handlePlanStoreChanged(store: TodoStore): void {
+		if (!this.planPanelModal) {
+			return;
+		}
+		this.planPanelModal.setData(store);
+		if (this.planPanelVisible) {
+			this.ui.requestRender();
+		}
+	}
+
+	private handlePlanPanelToggleComplete(): void {
+		if (!this.planPanelModal) {
+			return;
+		}
+		const selectedGoal = this.planPanelModal.getSelectedGoal();
+		const selectedTask = this.planPanelModal.getSelectedTask();
+		if (!selectedGoal || !selectedTask) {
+			this.notificationView.showInfo("Select a task to toggle.");
+			return;
+		}
+		this.planView.toggleTaskCompletion(selectedGoal.key, selectedTask.id);
 	}
 
 	private setQueueMode(mode: "one" | "all"): void {
@@ -1714,7 +1855,22 @@ export class TuiRenderer {
 		if (this.isAgentRunning) {
 			return;
 		}
-		const hints: string[] = [this.idleFooterHint];
+		const hints: string[] = [
+			this.idleFooterHint,
+			...this.buildOperationalHints(),
+		];
+		if (this.planHint) {
+			hints.push(`Plan ${this.planHint}`);
+		}
+		const queueHint = this.buildQueueHint();
+		if (queueHint) {
+			hints.push(queueHint);
+		}
+		this.footer.setHint(hints.filter(Boolean).join(" • "));
+	}
+
+	private buildOperationalHints(): string[] {
+		const hints: string[] = [];
 		if (this.compactionInProgress) {
 			hints.push("Compacting history…");
 		}
@@ -1724,13 +1880,28 @@ export class TuiRenderer {
 		if (this.bashModeView?.isActive()) {
 			hints.push("Bash mode active — type exit to leave");
 		}
-		if (this.planHint) {
-			hints.push(`Plan ${this.planHint}`);
+		return hints;
+	}
+
+	private handleEditorTyping(): void {
+		if (!this.statusRail.hasToasts()) {
+			return;
 		}
-		if (this.nextQueuedPreview && !this.isAgentRunning) {
-			hints.push(`Next queued: ${this.nextQueuedPreview}`);
+		this.statusRail.clearToasts();
+		this.ui.requestRender();
+	}
+
+	private buildQueueHint(): string | null {
+		if (this.isAgentRunning) {
+			return null;
 		}
-		this.footer.setHint(hints.filter(Boolean).join(" • "));
+		if (this.nextQueuedPreview) {
+			return `Next queued: ${this.nextQueuedPreview}`;
+		}
+		if (this.queuedPromptCount > 0) {
+			return `${this.queuedPromptCount} queued ${this.queuedPromptCount === 1 ? "prompt" : "prompts"}`;
+		}
+		return null;
 	}
 
 	private buildRuntimeBadges(): string[] {

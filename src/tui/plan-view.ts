@@ -51,6 +51,7 @@ export interface PlanViewOptions {
 	ui: TUI;
 	showInfoMessage: (message: string) => void;
 	setPlanHint: (hint: string | null) => void;
+	onStoreChanged?: (store: TodoStore) => void;
 }
 
 export class PlanView {
@@ -92,6 +93,14 @@ export class PlanView {
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(content, 1, 0));
 		this.options.ui.requestRender();
+	}
+
+	private notifyStoreChanged(store: TodoStore): void {
+		if (!this.options.onStoreChanged) {
+			return;
+		}
+		const snapshot: TodoStore = JSON.parse(JSON.stringify(store));
+		this.options.onStoreChanged(snapshot);
 	}
 
 	private extractArgs(text: string): string {
@@ -157,6 +166,7 @@ export class PlanView {
 			updatedAt: new Date().toISOString(),
 		};
 		saveTodoStore(this.options.filePath, store);
+		this.notifyStoreChanged(store);
 		this.options.showInfoMessage(`Created plan "${name}".`);
 		this.options.setPlanHint(`${name}: no tasks yet`);
 		this.showGoalDetail(store, name);
@@ -188,6 +198,7 @@ export class PlanView {
 		});
 		entry.updatedAt = new Date().toISOString();
 		saveTodoStore(this.options.filePath, store);
+		this.notifyStoreChanged(store);
 		this.options.showInfoMessage(`Added task to "${goalKey}".`);
 		this.showGoalDetail(store, goalKey);
 	}
@@ -218,6 +229,7 @@ export class PlanView {
 		task.status = "completed";
 		entry.updatedAt = new Date().toISOString();
 		saveTodoStore(this.options.filePath, store);
+		this.notifyStoreChanged(store);
 		this.options.showInfoMessage(`Marked task as completed in "${goalKey}".`);
 		this.showGoalDetail(store, goalKey);
 	}
@@ -243,6 +255,7 @@ export class PlanView {
 				delete store[key];
 			}
 			saveTodoStore(this.options.filePath, store);
+			this.notifyStoreChanged(store);
 			this.options.showInfoMessage(`Cleared all ${count} plan(s).`);
 			this.options.setPlanHint(null);
 			this.showTextBlock(
@@ -260,6 +273,7 @@ export class PlanView {
 
 		delete store[goalKey];
 		saveTodoStore(this.options.filePath, store);
+		this.notifyStoreChanged(store);
 		this.options.showInfoMessage(`Deleted plan "${goalKey}".`);
 		this.options.setPlanHint(calculatePlanHint(store));
 
@@ -272,6 +286,45 @@ export class PlanView {
 				"No plans found. Use /plan new <goal> to start a checklist.",
 			);
 		}
+	}
+
+	public toggleTaskCompletion(goalKey: string, taskId: string): void {
+		const store = loadTodoStore(this.options.filePath);
+		const entry = store[goalKey];
+		if (!entry) {
+			this.options.showInfoMessage(`Plan "${goalKey}" no longer exists.`);
+			return;
+		}
+		const task = entry.items.find((item) => item.id === taskId);
+		if (!task) {
+			this.options.showInfoMessage("Selected task was not found.");
+			return;
+		}
+		const statusCycle: PlanStatusKey[] = [
+			"pending",
+			"in_progress",
+			"completed",
+		];
+		const currentStatus = (task.status ?? "pending") as PlanStatusKey;
+		const currentIndex = statusCycle.indexOf(currentStatus);
+		const nextStatus =
+			statusCycle[(currentIndex + 1) % statusCycle.length] ?? "pending";
+		task.status = nextStatus;
+		entry.updatedAt = new Date().toISOString();
+		saveTodoStore(this.options.filePath, store);
+		this.notifyStoreChanged(store);
+		this.options.setPlanHint(calculatePlanHint(store));
+		const message = (() => {
+			switch (nextStatus) {
+				case "in_progress":
+					return `Marked task as in progress in "${goalKey}".`;
+				case "completed":
+					return `Marked task as complete in "${goalKey}".`;
+				default:
+					return `Reopened task in "${goalKey}".`;
+			}
+		})();
+		this.options.showInfoMessage(message);
 	}
 
 	private resolveTask(entry: TodoGoalEntry, ref: string): TodoItem | undefined {

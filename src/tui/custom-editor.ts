@@ -11,6 +11,7 @@ export class CustomEditor extends Editor {
 	public onShiftTab?: () => void;
 	public onCtrlP?: () => void;
 	public onCtrlO?: () => void;
+	public onTyping?: () => void;
 
 	handleInput(data: string): void {
 		// Ctrl+P cycles models
@@ -74,7 +75,31 @@ export class CustomEditor extends Editor {
 			}
 		}
 
+		if (this.isPrintableInput(data) && this.onTyping) {
+			this.onTyping();
+		}
+
 		// Pass to parent for normal handling
 		super.handleInput(data);
+	}
+
+	private isPrintableInput(data: string): boolean {
+		if (!data) {
+			return false;
+		}
+		// Ignore escape/control sequences that begin with ESC
+		if (data.startsWith("\x1b")) {
+			return false;
+		}
+		for (const char of data) {
+			const codePoint = char.codePointAt(0);
+			if (codePoint === undefined) {
+				continue;
+			}
+			if (codePoint >= 0x20 && codePoint !== 0x7f) {
+				return true;
+			}
+		}
+		return false;
 	}
 }
