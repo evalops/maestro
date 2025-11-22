@@ -65,6 +65,7 @@ import {
 	writeLastShownChangelogVersion,
 } from "./update/changelog.js";
 import { type UpdateCheckResult, checkForUpdate } from "./update/check.js";
+import { isInsideGitRepository } from "./utils/git.js";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -651,6 +652,20 @@ export async function main(args: string[]) {
 	const isInteractive = parsed.messages.length === 0;
 	const mode = parsed.mode || "text";
 	const shouldPrintMessages = isInteractive || mode === "text";
+
+	const isGitRepository = isInsideGitRepository();
+
+	if (
+		approvalModeOverride === "auto" &&
+		!isGitRepository &&
+		shouldPrintMessages
+	) {
+		console.log(
+			chalk.yellow(
+				"Auto approval is enabled outside a git repository. Changes will not be version controlled.",
+			),
+		);
+	}
 
 	let scopedModels: RegisteredModel[] = [];
 	if (parsed.models && parsed.models.length > 0) {
