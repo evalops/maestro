@@ -11,6 +11,10 @@ on:
         description: "Semver (with or without leading v) to release"
         required: true
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   validate-trigger:
     runs-on: ubuntu-latest

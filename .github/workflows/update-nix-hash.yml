@@ -8,6 +8,9 @@ on:
       - 'package-lock.json'
       - 'bun.lockb'
 
+permissions:
+  contents: write
+
 jobs:
   update-hash:
     runs-on: ubuntu-latest
