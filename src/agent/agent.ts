@@ -142,7 +142,7 @@ export class Agent {
 	 *
 	 * @returns The current state including messages, model, tools, and streaming status
 	 */
-	get state(): AgentState {
+	get state(): Readonly<AgentState> {
 		return this._state;
 	}
 
@@ -238,7 +238,7 @@ export class Agent {
 	 * @param ms - New message array
 	 */
 	replaceMessages(ms: AppMessage[]): void {
-		this._state.messages = ms;
+		this._state.messages = ms.slice();
 	}
 
 	/**
@@ -247,7 +247,7 @@ export class Agent {
 	 * @param m - Message to append
 	 */
 	appendMessage(m: AppMessage): void {
-		this._state.messages.push(m);
+		this._state.messages = [...this._state.messages, m];
 	}
 
 	/**
@@ -371,7 +371,7 @@ export class Agent {
 			timestamp: Date.now(),
 		};
 
-		this._state.messages.push(userMessage);
+		this._state.messages = [...this._state.messages, userMessage];
 		this._state.isStreaming = true;
 
 		const abortController = new AbortController();
@@ -417,7 +417,7 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
-					this._state.messages.push(event.message);
+					this._state.messages = [...this._state.messages, event.message];
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
 					this._state.pendingToolCalls.set(event.toolCallId, {
@@ -477,7 +477,7 @@ export class Agent {
 				isError: true,
 				timestamp: Date.now(),
 			};
-			this._state.messages.push(abortedResult);
+			this._state.messages = [...this._state.messages, abortedResult];
 			this.emit({
 				type: "tool_execution_end",
 				toolCallId,

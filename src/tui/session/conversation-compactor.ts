@@ -42,7 +42,11 @@ export class ConversationCompactor {
 			return;
 		}
 
-		const boundary = Math.max(0, messages.length - keepCount);
+		let boundary = Math.max(0, messages.length - keepCount);
+		boundary = this.adjustBoundaryForToolResults(
+			messages as Message[],
+			boundary,
+		);
 		const older = messages.slice(0, boundary);
 		if (!older.length) {
 			this.options.showInfoMessage("No earlier messages to compact.");
@@ -191,5 +195,49 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
 	private truncateText(text: string, limit = 160): string {
 		if (text.length <= limit) return text;
 		return `${text.slice(0, limit - 1).trim()}…`;
+	}
+
+	private adjustBoundaryForToolResults(
+		messages: Message[],
+		boundary: number,
+	): number {
+		let adjusted = boundary;
+		const seenToolCalls = new Set<string>();
+		const missingToolCalls = new Set<string>();
+		// Tool executions in Composer always follow the pattern: assistant toolCall content
+		// followed by a separate toolResult message. We rely on that ordering when walking
+		// backwards from the boundary; if we encounter a toolResult whose toolCall was trimmed,
+		// we pull the boundary back until the originating assistant message is kept.
+		const processAssistantMessage = (message: Message) => {
+			if (message.role !== "assistant") return;
+			for (const part of message.content ?? []) {
+				if (part?.type === "toolCall") {
+					seenToolCalls.add(part.id);
+					if (missingToolCalls.has(part.id)) {
+						missingToolCalls.delete(part.id);
+					}
+				}
+			}
+		};
+		const processToolResultMessage = (message: Message) => {
+			if (message.role !== "toolResult") return;
+			if (!seenToolCalls.has(message.toolCallId)) {
+				missingToolCalls.add(message.toolCallId);
+			}
+		};
+
+		for (const message of messages.slice(adjusted)) {
+			processAssistantMessage(message);
+			processToolResultMessage(message);
+		}
+
+		while (missingToolCalls.size > 0 && adjusted > 0) {
+			adjusted -= 1;
+			const candidate = messages[adjusted];
+			processAssistantMessage(candidate);
+			processToolResultMessage(candidate);
+		}
+
+		return adjusted;
 	}
 }
