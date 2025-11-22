@@ -11,6 +11,38 @@ slash commands) are validated before execution. Defaults (e.g., `write.backup`,
 `search.context` alongside `beforeContext`/`afterContext`) are rejected with a
 clear error message in chat.
 
+## Error Handling for Tool Authors
+
+When implementing tools using the `createTool` DSL, use `respond.error()` to signal failures:
+
+```typescript
+export const myTool = createTool({
+  name: "my-tool",
+  schema: mySchema,
+  async run(params, { respond }) {
+    try {
+      // Tool logic here
+      const result = await doSomething(params);
+      return respond.text(result);
+    } catch (error) {
+      // Use respond.error() - it throws a ToolError
+      return respond.error("Operation failed", { 
+        code: 500,
+        // Sensitive paths like absolutePath, fullPath, realPath are sanitized
+        context: "additional info"
+      });
+    }
+  }
+});
+```
+
+**Key Points:**
+- `respond.error(message, details?)` throws a `ToolError` exception
+- The transport layer catches it and sets `isError: true` on the result
+- Error details are automatically sanitized to remove sensitive paths (`absolutePath`, `fullPath`, `realPath`)
+- Agents can distinguish between successful tool calls and errors for proper retry logic
+- Never return error text as successful content - always use `respond.error()`
+
 ## Built-in Tools
 
 | Tool | Description | Key Options / Notes |

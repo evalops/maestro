@@ -113,6 +113,15 @@ describe("Composer Tools", () => {
 			expect(parsed[0]).toHaveProperty("type");
 			expect(parsed[0]).toHaveProperty("size");
 		});
+
+		it("should handle errors in directory access", async () => {
+			// Use an invalid path that will cause an error
+			const invalidPath = "\0invalid";
+
+			await expect(
+				listTool.execute("list-call-5", { path: invalidPath }),
+			).rejects.toThrow(/Listing.*failed/);
+		});
 	});
 
 	describe("read tool", () => {
@@ -137,10 +146,9 @@ describe("Composer Tools", () => {
 		it("should handle non-existent files", async () => {
 			const testFile = join(testDir, "nonexistent.txt");
 
-			const result = await readTool.execute("test-call-2", { path: testFile });
-
-			expect(getTextOutput(result)).toContain("Error");
-			expect(getTextOutput(result)).toContain("File not found");
+			await expect(
+				readTool.execute("test-call-2", { path: testFile }),
+			).rejects.toThrow("File not found");
 		});
 
 		it("should truncate files exceeding line limit", async () => {
@@ -227,14 +235,12 @@ describe("Composer Tools", () => {
 			const testFile = join(testDir, "short.txt");
 			writeFileSync(testFile, "Line 1\nLine 2\nLine 3");
 
-			const result = await readTool.execute("test-call-8", {
-				path: testFile,
-				offset: 100,
-			});
-			const output = getTextOutput(result);
-
-			expect(output).toContain("Error: Offset 100 is beyond end of file");
-			expect(output).toContain("3 lines total");
+			await expect(
+				readTool.execute("test-call-8", {
+					path: testFile,
+					offset: 100,
+				}),
+			).rejects.toThrow(/Offset 100 is beyond end of file.*3 lines total/);
 		});
 
 		it("should show both truncation notices when applicable", async () => {

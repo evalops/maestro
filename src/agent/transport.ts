@@ -1,5 +1,6 @@
 import type { AuthCredential } from "../providers/auth.js";
 import { defaultActionFirewall } from "../safety/action-firewall.js";
+import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import type { ActionApprovalService } from "./action-approval.js";
 import { streamAnthropic } from "./providers/anthropic.js";
@@ -444,9 +445,14 @@ export class ProviderTransport implements AgentTransport {
 									content: [
 										{
 											type: "text",
-											text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+											text:
+												error instanceof Error
+													? error.message
+													: `Error: ${String(error)}`,
 										},
 									],
+									details:
+										error instanceof ToolError ? error.toolDetails : undefined,
 									isError: true,
 									timestamp: Date.now(),
 								},

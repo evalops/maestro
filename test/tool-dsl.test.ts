@@ -111,9 +111,41 @@ describe("createTool DSL", () => {
 
 	it("emits standardized error responses", () => {
 		const builder = new ToolResponseBuilder<{ code: number }>();
-		builder.error("File not found", { code: 404 });
-		const result = builder.build();
-		expect(result.content[0]).toMatchObject({ text: "Error: File not found" });
-		expect(result.details).toEqual({ code: 404 });
+		try {
+			builder.error("File not found", { code: 404 });
+			throw new Error("Expected error to be thrown");
+		} catch (error: any) {
+			expect(error.message).toBe("Error: File not found");
+			expect(error.toolDetails).toEqual({ code: 404 });
+		}
+	});
+
+	it("sanitizes sensitive path information from error details", () => {
+		const builder = new ToolResponseBuilder<{
+			code: number;
+			absolutePath?: string;
+			fullPath?: string;
+			realPath?: string;
+			safePath?: string;
+		}>();
+		try {
+			builder.error("Access denied", {
+				code: 403,
+				absolutePath: "/home/user/secret",
+				fullPath: "/home/user/secret/file.txt",
+				realPath: "/mnt/secure/data",
+				safePath: "public/file.txt",
+			});
+			throw new Error("Expected error to be thrown");
+		} catch (error: any) {
+			expect(error.message).toBe("Error: Access denied");
+			// Sensitive paths should be removed
+			expect(error.toolDetails).not.toHaveProperty("absolutePath");
+			expect(error.toolDetails).not.toHaveProperty("fullPath");
+			expect(error.toolDetails).not.toHaveProperty("realPath");
+			// Non-sensitive properties should remain
+			expect(error.toolDetails).toHaveProperty("code", 403);
+			expect(error.toolDetails).toHaveProperty("safePath", "public/file.txt");
+		}
 	});
 });

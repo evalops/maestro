@@ -7,6 +7,43 @@ import type {
 } from "../agent/types.js";
 import { createTypeboxTool } from "./typebox-tool.js";
 
+/**
+ * Sanitize error details to prevent exposing sensitive file system paths
+ */
+function sanitizeErrorDetails(details: unknown): unknown {
+	if (!details || typeof details !== "object") {
+		return details;
+	}
+
+	const sanitized = { ...details } as Record<string, unknown>;
+
+	// Remove or redact potentially sensitive path information
+	const sensitiveKeys = ["absolutePath", "fullPath", "realPath"];
+	for (const key of sensitiveKeys) {
+		if (key in sanitized) {
+			delete sanitized[key];
+		}
+	}
+
+	return sanitized;
+}
+
+/**
+ * Custom error class for tool execution errors with optional details
+ */
+export class ToolError<Details = unknown> extends Error {
+	public readonly toolDetails?: Details;
+
+	constructor(message: string, details?: Details) {
+		super(message);
+		this.name = "ToolError";
+		// Sanitize details to prevent exposing internal paths
+		this.toolDetails = (
+			details !== undefined ? sanitizeErrorDetails(details) : undefined
+		) as Details;
+	}
+}
+
 export class ToolResponseBuilder<Details> {
 	private contents: (TextContent | ImageContent)[] = [];
 	private details: Details | undefined;
@@ -39,13 +76,9 @@ export class ToolResponseBuilder<Details> {
 		return this;
 	}
 
-	error(message: string, details?: Details): this {
+	error(message: string, details?: Details): never {
 		const prefix = message.startsWith("Error:") ? message : `Error: ${message}`;
-		this.text(prefix);
-		if (details !== undefined) {
-			this.detail(details);
-		}
-		return this;
+		throw new ToolError(prefix, details);
 	}
 
 	detail(value: Details): this {

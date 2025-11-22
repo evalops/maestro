@@ -442,10 +442,10 @@ describe("batch tool", () => {
 			});
 
 			const output = getTextOutput(result);
-			// Note: read tool returns error as text content, not as a thrown error
-			// So both calls appear successful but one contains error text
-			expect(output).toContain("All 2 tools executed successfully");
+			// Now that read tool throws on error, batch should catch and report it
+			expect(output).toContain("Executed 1/2 tools successfully");
 			expect(output).toContain("[OK] read");
+			expect(output).toContain("[ERROR] read");
 			expect(output).toContain("File not found");
 		});
 
