@@ -1,3 +1,7 @@
+import {
+	STAGE_DISPLAY_LABELS,
+	formatWorkingStageLabel,
+} from "../utils/stage-labels.js";
 import { LoaderStageTelemetry } from "./loader-stage-telemetry.js";
 
 interface LoaderStageEntry {
@@ -7,6 +11,7 @@ interface LoaderStageEntry {
 
 interface LoaderStageManagerOptions {
 	setFooterStage: (label: string | null) => void;
+	setFooterHint?: (hint: string | null) => void;
 	onStageChanged: (label: string, index: number, total: number) => void;
 	onProgressChanged: (value: number | null) => void;
 }
@@ -20,6 +25,10 @@ export class LoaderStageManager {
 	private currentStageKey: string | null = null;
 	private streamingActive = false;
 	private telemetry: LoaderStageTelemetry;
+	private dreamingTimeout: NodeJS.Timeout | null = null;
+	private dreamingActive = false;
+	private readonly dreamingDelayMs = 5000;
+	private readonly dreamingHint = "composer is pondering a haiku…";
 
 	constructor(private readonly options: LoaderStageManagerOptions) {
 		this.telemetry = new LoaderStageTelemetry();
@@ -61,7 +70,7 @@ export class LoaderStageManager {
 			respondingIndex === -1 ? this.stages.length : respondingIndex;
 		this.stages.splice(insertIndex, 0, {
 			key: toolCallId,
-			label: `Working · ${toolName}`,
+			label: formatWorkingStageLabel(toolName),
 		});
 		const group = this.toolStagesByName.get(toolName) ?? [];
 		group.push(toolCallId);
@@ -93,14 +102,16 @@ export class LoaderStageManager {
 		}
 		this.options.onProgressChanged(1);
 		this.options.setFooterStage(null);
+		this.clearDreamingState(false);
 		this.currentStageKey = null;
 	}
 
 	private resetTracking(): void {
 		this.telemetry.finalize(this.stages);
+		this.clearDreamingState(false);
 		this.stages = [
-			{ key: "planning", label: "Thinking" },
-			{ key: "responding", label: "Responding" },
+			{ key: "planning", label: STAGE_DISPLAY_LABELS.thinking },
+			{ key: "responding", label: STAGE_DISPLAY_LABELS.responding },
 		];
 		this.toolStageMeta.clear();
 		this.toolStagesByName.clear();
@@ -112,6 +123,7 @@ export class LoaderStageManager {
 
 	private clearTracking(): void {
 		this.telemetry.finalize(this.stages);
+		this.clearDreamingState(false);
 		this.stages = [];
 		this.toolStageMeta.clear();
 		this.toolStagesByName.clear();
@@ -146,15 +158,20 @@ export class LoaderStageManager {
 		}
 		this.options.onStageChanged(stage.label, index + 1, this.stages.length);
 		this.options.setFooterStage(stage.label);
+		if (key === "planning") {
+			this.scheduleDreaming();
+		} else {
+			this.clearDreamingState();
+		}
 		this.refreshProgress();
 	}
 
 	private formatStageLabel(key: string): string {
-		if (key === "planning") return "Thinking";
-		if (key === "responding") return "Responding";
+		if (key === "planning") return STAGE_DISPLAY_LABELS.thinking;
+		if (key === "responding") return STAGE_DISPLAY_LABELS.responding;
 		const toolMeta = this.toolStageMeta.get(key);
 		if (toolMeta) {
-			return `Working · ${toolMeta.toolName}`;
+			return formatWorkingStageLabel(toolMeta.toolName);
 		}
 		return key;
 	}
@@ -164,10 +181,7 @@ export class LoaderStageManager {
 		if (!entries || entries.length === 0) return;
 		const total = entries.length;
 		entries.forEach((key, index) => {
-			const label =
-				total > 1
-					? `Working · ${toolName} (${index + 1}/${total})`
-					: `Working · ${toolName}`;
+			const label = formatWorkingStageLabel(toolName, index + 1, total);
 			this.renameStage(key, label);
 		});
 	}
@@ -223,5 +237,35 @@ export class LoaderStageManager {
 			return 0.5;
 		}
 		return 0.3;
+	}
+
+	private scheduleDreaming(): void {
+		if (this.dreamingActive || this.dreamingTimeout) {
+			return;
+		}
+		this.dreamingTimeout = setTimeout(() => {
+			this.dreamingTimeout = null;
+			if (this.currentStageKey !== "planning") {
+				return;
+			}
+			this.dreamingActive = true;
+			this.renameStage("planning", STAGE_DISPLAY_LABELS.dreaming);
+			this.options.setFooterHint?.(this.dreamingHint);
+		}, this.dreamingDelayMs);
+	}
+
+	private clearDreamingState(resetLabel = true): void {
+		if (this.dreamingTimeout) {
+			clearTimeout(this.dreamingTimeout);
+			this.dreamingTimeout = null;
+		}
+		if (!this.dreamingActive) {
+			return;
+		}
+		this.dreamingActive = false;
+		if (resetLabel) {
+			this.renameStage("planning", STAGE_DISPLAY_LABELS.thinking);
+		}
+		this.options.setFooterHint?.(null);
 	}
 }

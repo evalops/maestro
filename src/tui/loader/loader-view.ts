@@ -1,6 +1,10 @@
 import type { Container } from "@evalops/tui";
 import { Loader, Spacer, type TUI } from "@evalops/tui";
 import type { FooterComponent } from "../footer.js";
+import {
+	STAGE_DISPLAY_LABELS,
+	detectStageKind,
+} from "../utils/stage-labels.js";
 import { LoaderStageManager } from "./loader-stage-manager.js";
 
 interface LoaderViewOptions {
@@ -24,6 +28,7 @@ export class LoaderView {
 		this.setIdlePlaceholder();
 		this.stageManager = new LoaderStageManager({
 			setFooterStage: (label) => this.options.footer.setStage(label),
+			setFooterHint: (hint) => this.options.footer.setHint(hint),
 			onStageChanged: (label, index, total) => {
 				this.handleStageChanged(label, index, total);
 			},
@@ -47,7 +52,7 @@ export class LoaderView {
 			this.hasActiveTurn = false;
 		}
 		this.stageManager.stop();
-		this.mountLoader("Thinking");
+		this.mountLoader(STAGE_DISPLAY_LABELS.thinking);
 		this.stageManager.start();
 		this.hasActiveTurn = true;
 	}
@@ -139,7 +144,7 @@ export class LoaderView {
 	}
 
 	private isRespondingLabel(label: string): boolean {
-		return label.trim().toLowerCase().startsWith("responding");
+		return detectStageKind(label) === "responding";
 	}
 
 	private mountLoader(initialStage: string): void {

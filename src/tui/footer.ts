@@ -10,37 +10,11 @@ import {
 } from "./utils/footer-utils.js";
 import type { FooterMode, FooterStats } from "./utils/footer-utils.js";
 import { shimmerText } from "./utils/shimmer.js";
-import type { ShimmerOptions } from "./utils/shimmer.js";
-
-const SHIMMER_STAGE_OPTIONS: Record<string, ShimmerOptions> = {
-	responding: {
-		padding: 2,
-		bandWidth: 2,
-		sweepSeconds: 2.1,
-		intensityScale: 0.65,
-		baseColor: "#f5cbe6",
-		highlightColor: "#ffffff",
-		bold: false,
-	},
-	thinking: {
-		padding: 2,
-		bandWidth: 2.5,
-		sweepSeconds: 2.4,
-		intensityScale: 0.55,
-		baseColor: "#cbd5f5",
-		highlightColor: "#ffffff",
-		bold: false,
-	},
-	working: {
-		padding: 2,
-		bandWidth: 1.8,
-		sweepSeconds: 1.6,
-		intensityScale: 0.75,
-		baseColor: "#fde68a",
-		highlightColor: "#fff7ed",
-		bold: false,
-	},
-};
+import {
+	STAGE_SHIMMER_OPTIONS,
+	detectStageKind,
+	normalizeStageLabel,
+} from "./utils/stage-labels.js";
 
 /**
  * Footer component that shows pwd, token stats, and context usage
@@ -135,15 +109,14 @@ export class FooterComponent {
 	}
 
 	private renderStageLabel(label: string): string {
-		const trimmed = label.trim();
+		const trimmed = normalizeStageLabel(label);
 		if (!trimmed) return "";
-		const normalized = trimmed.toLowerCase();
-		for (const [stage, options] of Object.entries(SHIMMER_STAGE_OPTIONS)) {
-			if (normalized.startsWith(stage)) {
-				return shimmerText(trimmed.toUpperCase(), options);
-			}
+		const kind = detectStageKind(trimmed);
+		const display = trimmed.toUpperCase();
+		if (kind) {
+			return shimmerText(display, STAGE_SHIMMER_OPTIONS[kind]);
 		}
-		return chalk.hex("#f1c0e8")(trimmed.toUpperCase());
+		return chalk.hex("#f1c0e8")(display);
 	}
 
 	private renderSoloFooter(stats: FooterStats, width: number): string[] {
