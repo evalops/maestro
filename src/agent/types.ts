@@ -224,7 +224,13 @@ export interface Attachment {
 	preview?: string;
 }
 
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
+export type ThinkingLevel =
+	| "off"
+	| "minimal"
+	| "low"
+	| "medium"
+	| "high"
+	| "max";
 
 export type UserMessageWithAttachments = UserMessage & {
 	attachments?: Attachment[];
@@ -261,6 +267,7 @@ export type AgentEvent =
 	| {
 			type: "agent_end";
 			messages: AppMessage[];
+			aborted?: boolean;
 	  }
 	| {
 			type: "status";

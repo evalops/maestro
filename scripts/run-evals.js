@@ -40,6 +40,10 @@ async function ensureBuild() {
 
 async function runScenario(scenario) {
 	const env = { ...process.env, ...scenario.env };
+	// Force monochrome output for snapshot-friendly eval assertions
+	if (env.COMPOSER_NO_COLOR === undefined) {
+		env.COMPOSER_NO_COLOR = "1";
+	}
 	const args = Array.isArray(scenario.args) ? [...scenario.args] : [];
 	const messages = Array.isArray(scenario.messages)
 		? [...scenario.messages]

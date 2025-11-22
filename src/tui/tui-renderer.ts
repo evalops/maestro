@@ -1091,7 +1091,7 @@ export class TuiRenderer {
 			this.agent.abort();
 			await this.agent.waitForIdle();
 
-			// Reset agent running state (abort doesn't emit agent_end)
+			// Reset running flag immediately so the UI reflects idle state while agent_end propagates
 			this.isAgentRunning = false;
 
 			// Cancel any queued prompts

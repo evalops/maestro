@@ -11,6 +11,7 @@ import type {
 	Message,
 	Model,
 	QueuedMessage,
+	ReasoningEffort,
 	TextContent,
 	ThinkingLevel,
 	ToolResultMessage,
@@ -56,6 +57,24 @@ function defaultMessageTransformer(messages: AppMessage[]): Message[] {
 
 			return { ...rest, content } as Message;
 		});
+}
+
+function mapThinkingLevel(level: ThinkingLevel): ReasoningEffort | undefined {
+	switch (level) {
+		case "off":
+			return undefined;
+		case "minimal":
+			return "minimal";
+		case "low":
+			return "low";
+		case "medium":
+			return "medium";
+		case "high":
+		case "max":
+			return "high";
+		default:
+			return undefined;
+	}
 }
 
 /**
@@ -217,7 +236,7 @@ export class Agent {
 	/**
 	 * Sets the thinking/reasoning level for extended reasoning models.
 	 *
-	 * @param l - Thinking level: "off", "low", "medium", "high", "max"
+	 * @param l - Thinking level: "off", "minimal", "low", "medium", "high", "max"
 	 */
 	setThinkingLevel(l: ThinkingLevel): void {
 		this._state.thinkingLevel = l;
@@ -342,31 +361,9 @@ export class Agent {
 			this.resolveRunningPrompt = resolve;
 		});
 
-		// Build user message content as array (matching Mario's implementation)
-		const content: Array<TextContent | ImageContent> = [
-			{ type: "text", text: input },
-		];
-
-		if (attachments && attachments.length > 0) {
-			for (const a of attachments) {
-				if (a.type === "image") {
-					content.push({
-						type: "image",
-						data: a.content,
-						mimeType: a.mimeType,
-					});
-				} else if (a.type === "document" && a.extractedText) {
-					content.push({
-						type: "text",
-						text: `\n\n[Document: ${a.fileName}]\n${a.extractedText}`,
-					});
-				}
-			}
-		}
-
 		const userMessage: UserMessageWithAttachments = {
 			role: "user",
-			content,
+			content: input,
 			attachments: attachments?.length ? attachments : undefined,
 			timestamp: Date.now(),
 		};
@@ -382,18 +379,15 @@ export class Agent {
 		let aborted = false;
 
 		try {
-			// Transform messages if needed
-			let messagesToSend: Message[] = this._state.messages;
-			if (this.messageTransformer) {
-				messagesToSend = await this.messageTransformer(this._state.messages);
-			}
+			const messagesToSend = await this.messageTransformer(
+				this._state.messages,
+			);
 
 			// Determine reasoning level
-			let reasoning: "low" | "medium" | "high" | undefined;
 			const level = this._state.thinkingLevel;
-			if (level !== "off" && this._state.model.reasoning) {
-				reasoning = level === "minimal" ? "low" : level;
-			}
+			const reasoning = this._state.model.reasoning
+				? mapThinkingLevel(level)
+				: undefined;
 
 			const runConfig = {
 				systemPrompt: this._state.systemPrompt,
@@ -431,11 +425,6 @@ export class Agent {
 					this.emit(event);
 				}
 			}
-
-			this.emit({
-				type: "agent_end",
-				messages: this._state.messages,
-			});
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === "AbortError") {
 				aborted = true;
@@ -459,6 +448,12 @@ export class Agent {
 					: "Error: Tool execution did not complete";
 				this.resolvePendingToolCalls(reason);
 			}
+
+			this.emit({
+				type: "agent_end",
+				messages: this._state.messages,
+				aborted,
+			});
 		}
 	}
 

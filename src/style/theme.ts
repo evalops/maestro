@@ -1,4 +1,45 @@
-import chalk from "chalk";
+import chalk, { Chalk } from "chalk";
+
+type OptionalBool = boolean | undefined;
+
+function parseEnvFlag(value?: string | null): OptionalBool {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	const normalized = value.trim().toLowerCase();
+	if (["1", "true", "yes", "on"].includes(normalized)) {
+		return true;
+	}
+	if (["0", "false", "no", "off"].includes(normalized)) {
+		return false;
+	}
+	return undefined;
+}
+
+const isStdoutTTY = Boolean(process.stdout?.isTTY);
+
+const envForceColor = parseEnvFlag(process.env.COMPOSER_FORCE_COLOR);
+const envNoColor = parseEnvFlag(process.env.COMPOSER_NO_COLOR);
+const globalNoColor = process.env.NO_COLOR !== undefined ? true : undefined;
+const globalForceColor = parseEnvFlag(process.env.FORCE_COLOR);
+const resolvedNoColor = envNoColor ?? globalNoColor;
+
+const resolvedForceColor = envForceColor ?? globalForceColor;
+
+let shouldUseColor: boolean;
+if (resolvedNoColor === true) {
+	shouldUseColor = false;
+} else if (resolvedForceColor === true) {
+	shouldUseColor = true;
+} else if (resolvedForceColor === false) {
+	shouldUseColor = false;
+} else {
+	shouldUseColor = isStdoutTTY;
+}
+
+const chalkTheme = new Chalk({
+	level: shouldUseColor ? chalk.level : 0,
+});
 
 export const themePalette = {
 	text: "#e2e8f0",
@@ -33,7 +74,7 @@ const badgeColors: Record<BadgeVariant, string> = {
 
 export function sectionHeading(label: string, icon = ""): string {
 	const prefix = icon ? `${icon} ` : "";
-	return chalk.hex(themePalette.text).bold(`\n${prefix}${label}\n`);
+	return chalkTheme.hex(themePalette.text).bold(`\n${prefix}${label}\n`);
 }
 
 export function badge(
@@ -43,23 +84,23 @@ export function badge(
 ): string {
 	const color = badgeColors[variant];
 	const content = value ? `${label}: ${value}` : label;
-	return chalk.hex(color).bold(content);
+	return chalkTheme.hex(color).bold(content);
 }
 
 export function separator(spacing = "  ·  "): string {
-	return chalk.hex(themePalette.separator)(spacing);
+	return chalkTheme.hex(themePalette.separator)(spacing);
 }
 
 export function muted(text: string): string {
-	return chalk.hex(themePalette.muted)(text);
+	return chalkTheme.hex(themePalette.muted)(text);
 }
 
 export function heading(label: string): string {
-	return chalk.hex(themePalette.text).bold(label);
+	return chalkTheme.hex(themePalette.text).bold(label);
 }
 
 export function labeledValue(label: string, value: string): string {
-	return `${chalk.hex(themePalette.muted)(`${label}:`)} ${value}`;
+	return `${chalkTheme.hex(themePalette.muted)(`${label}:`)} ${value}`;
 }
 
 export function metricStat(
@@ -67,7 +108,7 @@ export function metricStat(
 	color: string,
 	value: string,
 ): string {
-	return `${chalk.hex(color)(glyph)} ${chalk
+	return `${chalkTheme.hex(color)(glyph)} ${chalkTheme
 		.hex(themePalette.metric)
 		.bold(value)}`;
 }
@@ -87,11 +128,11 @@ export function contextualBadge(
 }
 
 export const brand = {
-	glyph: (): string => chalk.hex(themePalette.brandGlyph)("𝅘𝅥𝅮"),
-	text: (): string => chalk.hex(themePalette.brand).bold("composer"),
+	glyph: (): string => chalkTheme.hex(themePalette.brandGlyph)("𝅘𝅥𝅮"),
+	text: (): string => chalkTheme.hex(themePalette.brand).bold("composer"),
 	signature(modelName?: string, compact = false): string {
 		const tone = modelName
-			? `${chalk.hex(themePalette.model)(modelName)} `
+			? `${chalkTheme.hex(themePalette.model)(modelName)} `
 			: "";
 		const glyph = this.glyph();
 		const name = compact ? "" : ` ${this.text()}`;
@@ -100,13 +141,13 @@ export const brand = {
 };
 
 export const infoGlyph = {
-	success: () => chalk.hex(themePalette.success)("[OK]"),
-	warn: () => chalk.hex(themePalette.warning)("[WARN]"),
-	danger: () => chalk.hex(themePalette.danger)("[ERROR]"),
+	success: () => chalkTheme.hex(themePalette.success)("[OK]"),
+	warn: () => chalkTheme.hex(themePalette.warning)("[WARN]"),
+	danger: () => chalkTheme.hex(themePalette.danger)("[ERROR]"),
 };
 
 export function highlightValue(value: string): string {
-	return chalk.hex(themePalette.text).bold(value);
+	return chalkTheme.hex(themePalette.text).bold(value);
 }
 
 export function toneColor(variant: BadgeVariant = "info"): string {
@@ -118,7 +159,7 @@ export function toneColor(variant: BadgeVariant = "info"): string {
  * Use for thinking blocks, quoted content, and emphasis.
  */
 export function italic(text: string): string {
-	return chalk.hex(themePalette.italic).italic(text);
+	return chalkTheme.hex(themePalette.italic).italic(text);
 }
 
 /**
@@ -126,5 +167,5 @@ export function italic(text: string): string {
  * Use sparingly - prefer the themed italic() function.
  */
 export function italicWithColor(text: string, color: string): string {
-	return chalk.hex(color).italic(text);
+	return chalkTheme.hex(color).italic(text);
 }
