@@ -3,6 +3,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
 	type IncomingMessage,
@@ -100,6 +101,16 @@ const DEFAULT_APPROVAL_MODE = normalizeApprovalMode(
 );
 const AUTH_MODE = normalizeAuthMode(process.env.COMPOSER_AUTH_MODE);
 const CODEX_TOKEN = process.env.CODEX_API_KEY?.trim();
+const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
+const DEFAULT_WEB_ORIGIN =
+	process.env.COMPOSER_WEB_ORIGIN?.trim() || "http://localhost:4173";
+
+if (!WEB_API_KEY) {
+	console.warn(
+		"[composer:web] COMPOSER_WEB_API_KEY is not set; API routes are running without authentication",
+	);
+}
+
 const authResolver = createAuthResolver({
 	mode: AUTH_MODE,
 	codexApiKey: CODEX_TOKEN,
@@ -138,6 +149,97 @@ function logMissingCredentialHints(provider: string): void {
 function buildMissingCredentialMessage(provider: string): string {
 	logMissingCredentialHints(provider);
 	return `Credentials are required for provider "${provider}".`;
+}
+
+function getRequestToken(req: IncomingMessage): string | null {
+	const authHeader = req.headers.authorization;
+	if (authHeader?.startsWith("Bearer ")) {
+		return authHeader.slice(7).trim() || null;
+	}
+	const apiKeyHeader = req.headers["x-composer-api-key"];
+	if (Array.isArray(apiKeyHeader)) {
+		return apiKeyHeader[0]?.trim() || null;
+	}
+	if (typeof apiKeyHeader === "string") {
+		return apiKeyHeader.trim() || null;
+	}
+	return null;
+}
+
+function secureCompare(value: string, secret: string): boolean {
+	const hashProvided = createHash("sha256").update(value).digest();
+	const hashSecret = createHash("sha256").update(secret).digest();
+	return timingSafeEqual(hashProvided, hashSecret);
+}
+
+function authenticateRequest(
+	req: IncomingMessage,
+	res: ServerResponse,
+): boolean {
+	if (!WEB_API_KEY) {
+		return true;
+	}
+	const provided = getRequestToken(req);
+	if (!provided || !secureCompare(provided, WEB_API_KEY)) {
+		if (!res.writableEnded) {
+			res.writeHead(401, {
+				"Content-Type": "application/json",
+				...CORS_HEADERS,
+			});
+			res.end(JSON.stringify({ error: "Unauthorized" }));
+		}
+		return false;
+	}
+	return true;
+}
+
+function sendJson(res: ServerResponse, status: number, payload: unknown): void {
+	if (res.writableEnded) return;
+	res.writeHead(status, {
+		"Content-Type": "application/json",
+		...CORS_HEADERS,
+	});
+	res.end(JSON.stringify(payload));
+}
+
+function readRequestBody(
+	req: IncomingMessage,
+	limit = MAX_BODY_BYTES,
+): Promise<string> {
+	return new Promise((resolve, reject) => {
+		let total = 0;
+		const chunks: Buffer[] = [];
+		req.on("data", (chunk: Buffer) => {
+			const nextTotal = total + chunk.length;
+			if (nextTotal > limit) {
+				req.removeAllListeners("data");
+				req.removeAllListeners("end");
+				req.destroy();
+				reject(new ApiError(413, "Payload too large"));
+				return;
+			}
+			total = nextTotal;
+			chunks.push(chunk);
+		});
+		req.on("end", () => {
+			resolve(Buffer.concat(chunks).toString());
+		});
+		req.on("error", (error) => {
+			reject(error);
+		});
+	});
+}
+
+async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
+	const raw = await readRequestBody(req);
+	if (!raw) {
+		return {} as T;
+	}
+	try {
+		return JSON.parse(raw) as T;
+	} catch (error) {
+		throw new ApiError(400, "Invalid JSON payload");
+	}
 }
 
 function parseModelInput(modelInput?: string | null): ParsedModelInput {
@@ -242,23 +344,13 @@ function respondWithApiError(
 	fallbackStatus = 500,
 ): boolean {
 	if (error instanceof ApiError) {
-		res.writeHead(error.statusCode, {
-			"Content-Type": "application/json",
-			...CORS_HEADERS,
-		});
-		res.end(JSON.stringify({ error: error.message }));
+		sendJson(res, error.statusCode, { error: error.message });
 		return true;
 	}
 	if (fallbackStatus) {
-		res.writeHead(fallbackStatus, {
-			"Content-Type": "application/json",
-			...CORS_HEADERS,
+		sendJson(res, fallbackStatus, {
+			error: error instanceof Error ? error.message : "Internal server error",
 		});
-		res.end(
-			JSON.stringify({
-				error: error instanceof Error ? error.message : "Internal server error",
-			}),
-		);
 		return true;
 	}
 	return false;
@@ -290,13 +382,18 @@ function getActiveModel(): RegisteredModel | null {
 /**
  * CORS headers for web requests
  */
-const ALLOWED_ORIGIN = process.env.COMPOSER_WEB_ORIGIN || "*";
-const CORS_HEADERS = {
+const ALLOWED_ORIGIN = DEFAULT_WEB_ORIGIN;
+const CORS_HEADERS: Record<string, string> = {
 	"Access-Control-Allow-Origin": ALLOWED_ORIGIN,
 	"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-	"Access-Control-Allow-Headers": "Content-Type, Authorization",
+	"Access-Control-Allow-Headers":
+		"Content-Type, Authorization, X-Composer-Api-Key, X-Composer-Approval-Mode",
 	"Access-Control-Max-Age": "86400",
 };
+
+if (ALLOWED_ORIGIN !== "*") {
+	CORS_HEADERS["Access-Control-Allow-Credentials"] = "true";
+}
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_BODY_BYTES = 1_000_000;
@@ -518,66 +615,59 @@ function handleModels(res: ServerResponse) {
 		},
 	}));
 
-	res.writeHead(200, {
-		"Content-Type": "application/json",
-		...CORS_HEADERS,
-	});
-	res.end(JSON.stringify({ models: modelList }));
+	sendJson(res, 200, { models: modelList });
 }
 
 /**
  * Handle /api/status - Get server and workspace status
  */
 function handleStatus(res: ServerResponse) {
-	const cwd = process.cwd();
-
-	let gitBranch = null;
-	let gitStatus = null;
 	try {
-		gitBranch = execSync("git rev-parse --abbrev-ref HEAD", {
-			cwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "ignore"],
-		}).trim();
+		const cwd = process.cwd();
 
-		const status = execSync("git status --porcelain", {
+		let gitBranch = null;
+		let gitStatus = null;
+		try {
+			gitBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+				cwd,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "ignore"],
+			}).trim();
+
+			const status = execSync("git status --porcelain", {
+				cwd,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "ignore"],
+			});
+			const lines = status.trim().split("\n").filter(Boolean);
+			gitStatus = {
+				modified: lines.filter((l: string) => l.startsWith(" M")).length,
+				added: lines.filter((l: string) => l.startsWith("A ")).length,
+				deleted: lines.filter((l: string) => l.startsWith(" D")).length,
+				untracked: lines.filter((l: string) => l.startsWith("??")).length,
+				total: lines.length,
+			};
+		} catch (e) {
+			// Not a git repository or git not available
+		}
+
+		const status = {
 			cwd,
-			encoding: "utf-8",
-			stdio: ["pipe", "pipe", "ignore"],
-		});
-		const lines = status.trim().split("\n").filter(Boolean);
-		gitStatus = {
-			modified: lines.filter((l: string) => l.startsWith(" M")).length,
-			added: lines.filter((l: string) => l.startsWith("A ")).length,
-			deleted: lines.filter((l: string) => l.startsWith(" D")).length,
-			untracked: lines.filter((l: string) => l.startsWith("??")).length,
-			total: lines.length,
+			git: gitBranch ? { branch: gitBranch, status: gitStatus } : null,
+			context: {
+				agentMd: existsSync(join(cwd, "AGENT.md")),
+				claudeMd: existsSync(join(cwd, "CLAUDE.md")),
+			},
+			server: {
+				uptime: process.uptime(),
+				version: process.version,
+			},
 		};
-	} catch (e) {
-		// Not a git repository or git not available
+
+		sendJson(res, 200, status);
+	} catch (error) {
+		respondWithApiError(res, error, 500);
 	}
-
-	const hasAgentMd = existsSync(join(cwd, "AGENT.md"));
-	const hasClaudeMd = existsSync(join(cwd, "CLAUDE.md"));
-
-	const status = {
-		cwd,
-		git: gitBranch ? { branch: gitBranch, status: gitStatus } : null,
-		context: {
-			agentMd: hasAgentMd,
-			claudeMd: hasClaudeMd,
-		},
-		server: {
-			uptime: process.uptime(),
-			version: process.version,
-		},
-	};
-
-	res.writeHead(200, {
-		"Content-Type": "application/json",
-		...CORS_HEADERS,
-	});
-	res.end(JSON.stringify(status));
 }
 
 /**
@@ -588,67 +678,20 @@ async function handleConfig(req: IncomingMessage, res: ServerResponse) {
 		try {
 			const config = getComposerCustomConfig();
 			const configPath = getCustomConfigPath();
-
-			res.writeHead(200, {
-				"Content-Type": "application/json",
-				...CORS_HEADERS,
-			});
-			res.end(JSON.stringify({ config, configPath }));
+			sendJson(res, 200, { config, configPath });
 		} catch (error) {
-			res.writeHead(500, {
-				"Content-Type": "application/json",
-				...CORS_HEADERS,
-			});
-			res.end(
-				JSON.stringify({
-					error:
-						error instanceof Error ? error.message : "Failed to load config",
-				}),
-			);
+			respondWithApiError(res, error, 500);
 		}
 	} else if (req.method === "POST") {
-		let body = "";
-		req.on("data", (chunk: Buffer) => {
-			body += chunk.toString();
-			if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-				res.writeHead(413, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: "Payload too large" }));
-				req.destroy();
-			}
-		});
-
-		req.on("end", async () => {
-			try {
-				const { config } = JSON.parse(body);
-				const configPath = getCustomConfigPath();
-
-				// Write new config
-				writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
-
-				// Reload registry
-				await reloadModelConfig();
-
-				res.writeHead(200, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ success: true }));
-			} catch (error) {
-				res.writeHead(500, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(
-					JSON.stringify({
-						error:
-							error instanceof Error ? error.message : "Failed to save config",
-					}),
-				);
-			}
-		});
+		try {
+			const { config } = await readJsonBody<{ config: unknown }>(req);
+			const configPath = getCustomConfigPath();
+			writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+			await reloadModelConfig();
+			sendJson(res, 200, { success: true });
+		} catch (error) {
+			respondWithApiError(res, error, 500);
+		}
 	}
 }
 
@@ -671,40 +714,21 @@ function handleUsage(req: IncomingMessage, res: ServerResponse) {
 		const usageFile = getUsageFilePath();
 		const hasData = existsSync(usageFile);
 
-		res.writeHead(200, {
-			"Content-Type": "application/json",
-			...CORS_HEADERS,
-		});
-		res.end(JSON.stringify({ summary, hasData }));
+		sendJson(res, 200, { summary, hasData });
 	} catch (error) {
-		res.writeHead(500, {
-			"Content-Type": "application/json",
-			...CORS_HEADERS,
-		});
-		res.end(
-			JSON.stringify({
-				error:
-					error instanceof Error ? error.message : "Failed to get usage data",
-			}),
-		);
+		respondWithApiError(res, error, 500);
 	}
 }
 
 function respondWithModel(res: ServerResponse, model: RegisteredModel) {
-	res.writeHead(200, {
-		"Content-Type": "application/json",
-		...CORS_HEADERS,
+	sendJson(res, 200, {
+		id: model.id,
+		provider: model.provider,
+		name: model.name,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+		reasoning: model.reasoning,
 	});
-	res.end(
-		JSON.stringify({
-			id: model.id,
-			provider: model.provider,
-			name: model.name,
-			contextWindow: model.contextWindow,
-			maxTokens: model.maxTokens,
-			reasoning: model.reasoning,
-		}),
-	);
 }
 
 async function handleModel(req: IncomingMessage, res: ServerResponse) {
@@ -723,43 +747,22 @@ async function handleModel(req: IncomingMessage, res: ServerResponse) {
 	}
 
 	if (req.method === "POST") {
-		let body = "";
-		req.on("data", (chunk: Buffer) => {
-			body += chunk.toString();
-			if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-				res.writeHead(413, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: "Payload too large" }));
-				req.destroy();
+		try {
+			const payload = await readJsonBody<{ model?: string }>(req);
+			const modelInput = (payload.model || "").trim();
+			if (!modelInput) {
+				sendJson(res, 400, { error: "Model is required" });
+				return;
 			}
-		});
 
-		req.on("end", async () => {
-			try {
-				const payload = JSON.parse(body || "{}");
-				const modelInput = (payload.model || "").trim();
-				if (!modelInput) {
-					res.writeHead(400, {
-						"Content-Type": "application/json",
-						...CORS_HEADERS,
-					});
-					res.end(JSON.stringify({ error: "Model is required" }));
-					return;
-				}
-
-				const selection = determineModelSelection(modelInput);
-				const registeredModel = getRegisteredModelOrThrow(selection);
-				await ensureCredential(registeredModel.provider);
-				currentModelKey = `${registeredModel.provider}/${registeredModel.id}`;
-				respondWithModel(res, registeredModel);
-			} catch (error) {
-				if (respondWithApiError(res, error, 400)) {
-					return;
-				}
-			}
-		});
+			const selection = determineModelSelection(modelInput);
+			const registeredModel = getRegisteredModelOrThrow(selection);
+			await ensureCredential(registeredModel.provider);
+			currentModelKey = `${registeredModel.provider}/${registeredModel.id}`;
+			respondWithModel(res, registeredModel);
+		} catch (error) {
+			respondWithApiError(res, error, 400);
+		}
 		return;
 	}
 
@@ -774,182 +777,173 @@ async function handleModel(req: IncomingMessage, res: ServerResponse) {
  * Handle /api/chat - Stream chat responses
  */
 async function handleChat(req: IncomingMessage, res: ServerResponse) {
-	let body = "";
-	req.on("data", (chunk: Buffer) => {
-		body += chunk.toString();
-		if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-			res.writeHead(413, {
-				"Content-Type": "application/json",
-				...CORS_HEADERS,
-			});
-			res.end(JSON.stringify({ error: "Payload too large" }));
-			req.destroy();
+	try {
+		const chatReq = await readJsonBody<ComposerChatRequest>(req);
+
+		const sessionManager = new SessionManager(false);
+		if (chatReq.sessionId) {
+			const sessionFile = sessionManager.getSessionFileById(chatReq.sessionId);
+			if (sessionFile) {
+				sessionManager.setSessionFile(sessionFile);
+			}
 		}
-	});
 
-	req.on("end", async () => {
+		const selection = determineModelSelection(chatReq.model);
+		const registeredModel = getRegisteredModelOrThrow(selection);
+		await ensureCredential(registeredModel.provider);
+		const headerApproval = (() => {
+			const header = req.headers["x-composer-approval-mode"];
+			const raw = Array.isArray(header) ? header[0] : header;
+			const normalized = raw?.trim().toLowerCase();
+			if (
+				normalized === "auto" ||
+				normalized === "prompt" ||
+				normalized === "fail"
+			) {
+				return normalized as ApprovalMode;
+			}
+			return undefined;
+		})();
+		const effectiveApproval = (() => {
+			if (!headerApproval) {
+				return DEFAULT_APPROVAL_MODE;
+			}
+			if (headerApproval === "auto" && DEFAULT_APPROVAL_MODE !== "auto") {
+				return DEFAULT_APPROVAL_MODE;
+			}
+			return headerApproval;
+		})();
+		const agent = await createAgent(
+			registeredModel,
+			chatReq.thinkingLevel || "off",
+			effectiveApproval,
+		);
+
+		const incomingMessages = Array.isArray(chatReq.messages)
+			? (chatReq.messages as ComposerMessage[])
+			: [];
+		if (incomingMessages.length === 0) {
+			sendJson(res, 400, { error: "No messages supplied" });
+			return;
+		}
+
+		const latestMessage = incomingMessages[incomingMessages.length - 1];
+		if (!latestMessage || latestMessage.role !== "user") {
+			sendJson(res, 400, { error: "Last message must be a user message" });
+			return;
+		}
+
+		const userInput = (latestMessage.content ?? "").trim();
+		if (!userInput) {
+			sendJson(res, 400, { error: "User message cannot be empty" });
+			return;
+		}
+
+		const historyMessages = incomingMessages.slice(0, -1);
+		const hydratedHistory = convertComposerMessagesToApp(
+			historyMessages,
+			registeredModel,
+		);
+		if (hydratedHistory.length > 0) {
+			agent.replaceMessages(hydratedHistory);
+		} else {
+			agent.clearMessages();
+		}
+
+		res.writeHead(200, {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+			...CORS_HEADERS,
+		});
+
+		const requestId = Math.random().toString(36).slice(2);
+		const modelKey = `${registeredModel.provider}/${registeredModel.id}`;
+		const sseSession = new SseSession(
+			res,
+			(metrics) => {
+				recordSseSkip(metrics.sent, metrics.skipped, {
+					requestId: metrics.context?.requestId,
+					modelKey: metrics.context?.modelKey,
+					sessionId: metrics.context?.sessionId,
+					lastError:
+						metrics.lastError instanceof Error
+							? metrics.lastError.message
+							: metrics.lastError,
+				});
+			},
+			{ requestId, modelKey },
+		);
+		sseSession.startHeartbeat();
+		let cleanedUp = false;
+
+		const unsubscribe = agent.subscribe((event: AgentEvent) => {
+			sendSSE(sseSession, event);
+
+			if (event.type === "message_end") {
+				sessionManager.saveMessage(event.message);
+				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
+					sessionManager.startSession(agent.state);
+					const sessionId = sessionManager.getSessionId();
+					sendSessionUpdate(sseSession, sessionId);
+					sseSession.setContext({ sessionId });
+				}
+			}
+
+			sessionManager.updateSnapshot(
+				agent.state,
+				toSessionModelMetadata(registeredModel),
+			);
+		});
+
+		const handleConnectionClose = () => {
+			agent.abort();
+			void cleanup(true);
+		};
+
+		req.on("close", handleConnectionClose);
+		res.on("close", handleConnectionClose);
+
+		const cleanup = async (aborted = false) => {
+			if (cleanedUp) {
+				return;
+			}
+			cleanedUp = true;
+			sseSession.stopHeartbeat();
+			req.off("close", handleConnectionClose);
+			res.off("close", handleConnectionClose);
+			unsubscribe();
+			await sessionManager.flush();
+			if (!res.writableEnded) {
+				if (aborted) {
+					sseSession.sendAborted();
+				}
+				sseSession.end();
+			}
+			const metrics = sseSession.getMetrics();
+			if (metrics.skipped > 0) {
+				console.debug("SSE writes skipped after disconnect", metrics);
+			}
+		};
+
 		try {
-			const chatReq: ComposerChatRequest = JSON.parse(body);
-
-			const sessionManager = new SessionManager(false);
-			if (chatReq.sessionId) {
-				const sessionFile = sessionManager.getSessionFileById(
-					chatReq.sessionId,
-				);
-				if (sessionFile) {
-					sessionManager.setSessionFile(sessionFile);
-				}
-			}
-
-			const selection = determineModelSelection(chatReq.model);
-			const registeredModel = getRegisteredModelOrThrow(selection);
-			await ensureCredential(registeredModel.provider);
-			const agent = await createAgent(
-				registeredModel,
-				chatReq.thinkingLevel || "off",
-				DEFAULT_APPROVAL_MODE,
-			);
-
-			const incomingMessages = Array.isArray(chatReq.messages)
-				? (chatReq.messages as ComposerMessage[])
-				: [];
-			if (incomingMessages.length === 0) {
-				res.writeHead(400, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: "No messages supplied" }));
-				return;
-			}
-
-			const latestMessage = incomingMessages[incomingMessages.length - 1];
-			if (!latestMessage || latestMessage.role !== "user") {
-				res.writeHead(400, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(
-					JSON.stringify({ error: "Last message must be a user message" }),
-				);
-				return;
-			}
-
-			const userInput = (latestMessage.content ?? "").trim();
-			if (!userInput) {
-				res.writeHead(400, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: "User message cannot be empty" }));
-				return;
-			}
-
-			const historyMessages = incomingMessages.slice(0, -1);
-			const hydratedHistory = convertComposerMessagesToApp(
-				historyMessages,
-				registeredModel,
-			);
-			if (hydratedHistory.length > 0) {
-				agent.replaceMessages(hydratedHistory);
-			} else {
-				agent.clearMessages();
-			}
-
-			res.writeHead(200, {
-				"Content-Type": "text/event-stream",
-				"Cache-Control": "no-cache",
-				Connection: "keep-alive",
-				...CORS_HEADERS,
-			});
-
-			const requestId = Math.random().toString(36).slice(2);
-			const modelKey = `${registeredModel.provider}/${registeredModel.id}`;
-			const sseSession = new SseSession(
-				res,
-				(metrics) => {
-					recordSseSkip(metrics.sent, metrics.skipped, {
-						requestId: metrics.context?.requestId,
-						modelKey: metrics.context?.modelKey,
-						sessionId: metrics.context?.sessionId,
-						lastError:
-							metrics.lastError instanceof Error
-								? metrics.lastError.message
-								: metrics.lastError,
-					});
-				},
-				{ requestId, modelKey },
-			);
-			sseSession.startHeartbeat();
-			let cleanedUp = false;
-
-			const unsubscribe = agent.subscribe((event: AgentEvent) => {
-				sendSSE(sseSession, event);
-
-				if (event.type === "message_end") {
-					sessionManager.saveMessage(event.message);
-					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-						sessionManager.startSession(agent.state);
-						const sessionId = sessionManager.getSessionId();
-						sendSessionUpdate(sseSession, sessionId);
-						sseSession.setContext({ sessionId });
-					}
-				}
-
-				sessionManager.updateSnapshot(
-					agent.state,
-					toSessionModelMetadata(registeredModel),
-				);
-			});
-
-			const handleConnectionClose = () => {
-				agent.abort();
-				void cleanup(true);
-			};
-
-			req.on("close", handleConnectionClose);
-			res.on("close", handleConnectionClose);
-
-			const cleanup = async (aborted = false) => {
-				if (cleanedUp) {
-					return;
-				}
-				cleanedUp = true;
-				sseSession.stopHeartbeat();
-				req.off("close", handleConnectionClose);
-				res.off("close", handleConnectionClose);
-				unsubscribe();
-				await sessionManager.flush();
-				if (!res.writableEnded) {
-					if (aborted) {
-						sseSession.sendAborted();
-					}
-					sseSession.end();
-				}
-				const metrics = sseSession.getMetrics();
-				if (metrics.skipped > 0) {
-					console.debug("SSE writes skipped after disconnect", metrics);
-				}
-			};
-
-			try {
-				await agent.prompt(userInput);
-				if (!res.writableEnded) {
-					sseSession.sendDone();
-				}
-			} catch (error) {
-				console.error("Agent prompt error:", error);
-				sendSSE(sseSession, {
-					type: "error",
-					message: error instanceof Error ? error.message : "Unknown error",
-				});
-			} finally {
-				await cleanup(false);
+			await agent.prompt(userInput);
+			if (!res.writableEnded) {
+				sseSession.sendDone();
 			}
 		} catch (error) {
-			console.error("Chat error:", error);
-			respondWithApiError(res, error, 500);
+			console.error("Agent prompt error:", error);
+			sendSSE(sseSession, {
+				type: "error",
+				message: error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			await cleanup(false);
 		}
-	});
+	} catch (error) {
+		console.error("Chat error:", error);
+		respondWithApiError(res, error, 500);
+	}
 }
 
 /**
@@ -975,31 +969,19 @@ async function handleSessions(
 				messageCount: s.messageCount || 0,
 			}));
 
-			res.writeHead(200, {
-				"Content-Type": "application/json",
-				...CORS_HEADERS,
-			});
-			res.end(JSON.stringify({ sessions: sessionList }));
+			sendJson(res, 200, { sessions: sessionList });
 		}
 		// GET /api/sessions/:id - Get specific session
 		else if (req.method === "GET" && pathname.startsWith("/api/sessions/")) {
 			const sessionId = pathname.replace("/api/sessions/", "");
 			if (!sessionIdPattern.test(sessionId)) {
-				res.writeHead(400, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: "Invalid session id" }));
+				sendJson(res, 400, { error: "Invalid session id" });
 				return;
 			}
 			const session = await sessionManager.loadSession(sessionId);
 
 			if (!session) {
-				res.writeHead(404, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: "Session not found" }));
+				sendJson(res, 404, { error: "Session not found" });
 				return;
 			}
 
@@ -1012,55 +994,28 @@ async function handleSessions(
 				messages: convertAppMessagesToComposer(session.messages || []),
 			};
 
-			res.writeHead(200, {
-				"Content-Type": "application/json",
-				...CORS_HEADERS,
-			});
-			res.end(JSON.stringify(responseBody));
+			sendJson(res, 200, responseBody);
 		}
 		// POST /api/sessions - Create new session
 		else if (req.method === "POST" && pathname === "/api/sessions") {
-			let body = "";
-			req.on("data", (chunk: Buffer) => {
-				body += chunk.toString();
-				if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-					res.writeHead(413, {
-						"Content-Type": "application/json",
-						...CORS_HEADERS,
-					});
-					res.end(JSON.stringify({ error: "Payload too large" }));
-					req.destroy();
-				}
-			});
+			const { title } = await readJsonBody<{ title?: string }>(req);
+			const session = await sessionManager.createSession({ title });
+			const responseBody: ComposerSession = {
+				id: session.id,
+				title: session.title,
+				createdAt: session.createdAt,
+				updatedAt: session.updatedAt,
+				messageCount: session.messageCount,
+				messages: convertAppMessagesToComposer(session.messages || []),
+			};
 
-			req.on("end", async () => {
-				const { title } = JSON.parse(body || "{}");
-				const session = await sessionManager.createSession({ title });
-				const responseBody: ComposerSession = {
-					id: session.id,
-					title: session.title,
-					createdAt: session.createdAt,
-					updatedAt: session.updatedAt,
-					messageCount: session.messageCount,
-					messages: convertAppMessagesToComposer(session.messages || []),
-				};
-
-				res.writeHead(201, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify(responseBody));
-			});
+			sendJson(res, 201, responseBody);
 		}
 		// DELETE /api/sessions/:id - Delete session
 		else if (req.method === "DELETE" && pathname.startsWith("/api/sessions/")) {
 			const sessionId = pathname.replace("/api/sessions/", "");
 			if (!sessionIdPattern.test(sessionId)) {
-				res.writeHead(400, {
-					"Content-Type": "application/json",
-					...CORS_HEADERS,
-				});
-				res.end(JSON.stringify({ error: "Invalid session id" }));
+				sendJson(res, 400, { error: "Invalid session id" });
 				return;
 			}
 			await sessionManager.deleteSession(sessionId);
@@ -1076,15 +1031,7 @@ async function handleSessions(
 		}
 	} catch (error) {
 		console.error("Session error:", error);
-		res.writeHead(500, {
-			"Content-Type": "application/json",
-			...CORS_HEADERS,
-		});
-		res.end(
-			JSON.stringify({
-				error: error instanceof Error ? error.message : "Internal server error",
-			}),
-		);
+		respondWithApiError(res, error, 500);
 	}
 }
 
@@ -1158,6 +1105,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 		res.writeHead(204, CORS_HEADERS);
 		res.end();
 		return;
+	}
+
+	if (pathname.startsWith("/api")) {
+		if (!authenticateRequest(req, res)) {
+			return;
+		}
 	}
 
 	// API routes
