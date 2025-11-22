@@ -2,6 +2,12 @@ import chalk from "chalk";
 import type { TUI } from "../tui.js";
 import { Text } from "./text.js";
 
+type LoaderMode = "default" | "compact";
+
+interface LoaderOptions {
+	mode?: LoaderMode;
+}
+
 /**
  * Loader component that shows a two-line animation with spinner and progress pulse
  */
@@ -22,11 +28,14 @@ export class Loader extends Text {
 	private hint: string | null = null;
 	private progressPercent: number | null = null;
 	private title: string | null = null;
+	private readonly mode: LoaderMode;
+	private readonly compactSegments = 10;
 
-	constructor(ui: TUI, message = "Loading...") {
+	constructor(ui: TUI, message = "Loading...", options: LoaderOptions = {}) {
 		super("", 1, 0);
 		this.message = message;
 		this.ui = ui;
+		this.mode = options.mode ?? "default";
 		this.start();
 	}
 
@@ -100,7 +109,7 @@ export class Loader extends Text {
 	}
 
 	private formatHint(): string {
-		if (!this.hint) return "";
+		if (this.mode === "compact" || !this.hint) return "";
 		return chalk.gray(this.hint);
 	}
 
@@ -132,7 +141,57 @@ export class Loader extends Text {
 		return `${chalk.gray("·· ")}${dots.join(" ")}${chalk.gray(" ··")}`;
 	}
 
+	private formatCompactStage(): string {
+		const trimmed = this.message.trim();
+		if (!trimmed) return "";
+		return chalk.hex("#f1c0e8")(trimmed.toUpperCase());
+	}
+
+	private formatCompactStepInfo(): string {
+		if (!this.stageInfo) return "";
+		const { step, total } = this.stageInfo;
+		const safeStep = Math.max(1, Math.min(step, total));
+		return chalk.hex("#94a3b8")(`step ${safeStep}/${total}`);
+	}
+
+	private buildCompactProgressLine(): string {
+		if (this.progressPercent === null) {
+			return "";
+		}
+		const filledUnits = Math.round(this.progressPercent * this.compactSegments);
+		const parts: string[] = [];
+		for (let index = 0; index < this.compactSegments; index++) {
+			const color = index < filledUnits ? "#f1c0e8" : "#334155";
+			const glyph = index < filledUnits ? "━" : "─";
+			parts.push(chalk.hex(color)(glyph));
+		}
+		const percent = `${Math.round(this.progressPercent * 100)}%`.padStart(
+			4,
+			" ",
+		);
+		return `${chalk.gray("progress")} ${parts.join("")}${chalk.gray(` ${percent}`)}`;
+	}
+
+	private renderCompact(): void {
+		const primaryParts = [
+			this.formatCompactStage(),
+			this.formatCompactStepInfo(),
+		].filter((part): part is string => Boolean(part));
+		const lineOne = primaryParts.join(chalk.gray("  ")).trim();
+		const lineTwo = this.buildCompactProgressLine();
+		const secondaryLine = lineTwo || "";
+		this.setText(`${lineOne}
+${secondaryLine}`);
+		if (this.ui) {
+			this.ui.requestRender();
+		}
+	}
+
 	private updateDisplay(): void {
+		if (this.mode === "compact") {
+			this.renderCompact();
+			return;
+		}
 		const spinner = this.spinnerFrames[this.progressOffset];
 		const spinnerGlyph = chalk.hex(spinner.color)(spinner.glyph);
 		const titlePart = this.title

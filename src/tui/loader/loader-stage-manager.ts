@@ -61,7 +61,7 @@ export class LoaderStageManager {
 			respondingIndex === -1 ? this.stages.length : respondingIndex;
 		this.stages.splice(insertIndex, 0, {
 			key: toolCallId,
-			label: `Tool · ${toolName}`,
+			label: `Working · ${toolName}`,
 		});
 		const group = this.toolStagesByName.get(toolName) ?? [];
 		group.push(toolCallId);
@@ -99,7 +99,7 @@ export class LoaderStageManager {
 	private resetTracking(): void {
 		this.telemetry.finalize(this.stages);
 		this.stages = [
-			{ key: "planning", label: "Planning" },
+			{ key: "planning", label: "Thinking" },
 			{ key: "responding", label: "Responding" },
 		];
 		this.toolStageMeta.clear();
@@ -150,11 +150,11 @@ export class LoaderStageManager {
 	}
 
 	private formatStageLabel(key: string): string {
-		if (key === "planning") return "Planning";
+		if (key === "planning") return "Thinking";
 		if (key === "responding") return "Responding";
 		const toolMeta = this.toolStageMeta.get(key);
 		if (toolMeta) {
-			return `Tool · ${toolMeta.toolName}`;
+			return `Working · ${toolMeta.toolName}`;
 		}
 		return key;
 	}
@@ -166,8 +166,8 @@ export class LoaderStageManager {
 		entries.forEach((key, index) => {
 			const label =
 				total > 1
-					? `Tool · ${toolName} (${index + 1}/${total})`
-					: `Tool · ${toolName}`;
+					? `Working · ${toolName} (${index + 1}/${total})`
+					: `Working · ${toolName}`;
 			this.renameStage(key, label);
 		});
 	}

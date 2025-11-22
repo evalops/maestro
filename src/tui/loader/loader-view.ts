@@ -25,9 +25,7 @@ export class LoaderView {
 		this.stageManager = new LoaderStageManager({
 			setFooterStage: (label) => this.options.footer.setStage(label),
 			onStageChanged: (label, index, total) => {
-				if (this.loader) {
-					this.loader.setStage(label, index, total);
-				}
+				this.handleStageChanged(label, index, total);
 			},
 			onProgressChanged: (value) => {
 				if (this.loader) {
@@ -49,11 +47,7 @@ export class LoaderView {
 			this.hasActiveTurn = false;
 		}
 		this.stageManager.stop();
-		this.clearStatus();
-		this.loader = new Loader(this.options.ui, "Planning");
-		this.loader.setHint("(esc to interrupt)");
-		this.loader.setTitle("Active tasks");
-		this.options.statusContainer.addChild(this.loader);
+		this.mountLoader("Thinking");
 		this.stageManager.start();
 		this.hasActiveTurn = true;
 	}
@@ -69,19 +63,21 @@ export class LoaderView {
 	}
 
 	beginTurn(): void {
-		if (!this.loader) {
-			return;
-		}
 		this.stageManager.start();
 		this.hasActiveTurn = true;
 	}
 
 	completeTurn(): void {
-		if (!this.loader || !this.hasActiveTurn) {
+		if (!this.hasActiveTurn) {
 			return;
 		}
 		this.stageManager.completeTurn();
 		this.hasActiveTurn = false;
+		if (this.loader) {
+			this.loader.stop();
+			this.loader = null;
+			this.setIdlePlaceholder();
+		}
 	}
 
 	setStreamingActive(active: boolean): void {
@@ -93,7 +89,6 @@ export class LoaderView {
 	}
 
 	registerToolStage(toolCallId: string, toolName: string): void {
-		if (!this.loader) return;
 		this.stageManager.registerToolStage(toolCallId, toolName);
 	}
 
@@ -118,5 +113,43 @@ export class LoaderView {
 
 	private clearStatus(): void {
 		this.options.statusContainer.clear();
+	}
+
+	private handleStageChanged(
+		label: string,
+		index: number,
+		total: number,
+	): void {
+		if (this.isRespondingLabel(label)) {
+			this.hideLoaderForResponding();
+			return;
+		}
+		if (!this.loader) {
+			this.mountLoader(label);
+		}
+		this.loader?.setStage(label, index, total);
+	}
+
+	private hideLoaderForResponding(): void {
+		if (this.loader) {
+			this.loader.stop();
+			this.loader = null;
+		}
+		this.setIdlePlaceholder();
+	}
+
+	private isRespondingLabel(label: string): boolean {
+		return label.trim().toLowerCase().startsWith("responding");
+	}
+
+	private mountLoader(initialStage: string): void {
+		if (this.loader) {
+			this.loader.stop();
+		}
+		this.clearStatus();
+		this.loader = new Loader(this.options.ui, initialStage, {
+			mode: "compact",
+		});
+		this.options.statusContainer.addChild(this.loader);
 	}
 }

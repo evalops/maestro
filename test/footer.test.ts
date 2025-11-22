@@ -204,6 +204,41 @@ describe("FooterComponent", () => {
 			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
 		});
 
+		it("shimmers responding stage badge", () => {
+			const state = createMockState([
+				createAssistantMessage({ input: 1000, output: 500 }),
+			]);
+			const footer = new FooterComponent(state);
+			footer.setStage("  Responding   ");
+			const rendered = footer.render(120);
+			const pathLine = stripAnsi(rendered[0] ?? "");
+			expect(pathLine).toContain("RESPONDING");
+			expect(pathLine).not.toContain("⟡");
+		});
+
+		it("shimmers thinking stage badge", () => {
+			const state = createMockState([
+				createAssistantMessage({ input: 1000, output: 500 }),
+			]);
+			const footer = new FooterComponent(state);
+			footer.setStage("Thinking");
+			const rendered = footer.render(120);
+			const pathLine = stripAnsi(rendered[0] ?? "");
+			expect(pathLine).toContain("THINKING");
+		});
+
+		it("shimmers working stage badge with tool detail", () => {
+			const state = createMockState([
+				createAssistantMessage({ input: 1000, output: 500 }),
+			]);
+			const footer = new FooterComponent(state);
+			footer.setStage("Working · search (1/2)");
+			const rendered = footer.render(120);
+			const pathLine = stripAnsi(rendered[0] ?? "");
+			expect(pathLine).toContain("WORKING");
+			expect(pathLine).toContain("SEARCH (1/2)");
+		});
+
 		it("should show model name next to composer branding", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),

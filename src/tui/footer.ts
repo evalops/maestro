@@ -9,6 +9,38 @@ import {
 	resolveFooterHint,
 } from "./utils/footer-utils.js";
 import type { FooterMode, FooterStats } from "./utils/footer-utils.js";
+import { shimmerText } from "./utils/shimmer.js";
+import type { ShimmerOptions } from "./utils/shimmer.js";
+
+const SHIMMER_STAGE_OPTIONS: Record<string, ShimmerOptions> = {
+	responding: {
+		padding: 2,
+		bandWidth: 2,
+		sweepSeconds: 2.1,
+		intensityScale: 0.65,
+		baseColor: "#f5cbe6",
+		highlightColor: "#ffffff",
+		bold: false,
+	},
+	thinking: {
+		padding: 2,
+		bandWidth: 2.5,
+		sweepSeconds: 2.4,
+		intensityScale: 0.55,
+		baseColor: "#cbd5f5",
+		highlightColor: "#ffffff",
+		bold: false,
+	},
+	working: {
+		padding: 2,
+		bandWidth: 1.8,
+		sweepSeconds: 1.6,
+		intensityScale: 0.75,
+		baseColor: "#fde68a",
+		highlightColor: "#fff7ed",
+		bold: false,
+	},
+};
 
 /**
  * Footer component that shows pwd, token stats, and context usage
@@ -82,7 +114,7 @@ export class FooterComponent {
 		const pathLine = chalk.gray(formatPath(process.cwd(), width));
 		const badges: string[] = [];
 		if (this.activeStage) {
-			badges.push(chalk.hex("#f1c0e8")(this.activeStage));
+			badges.push(this.renderStageLabel(this.activeStage));
 		}
 		for (const badge of this.runtimeBadges) {
 			badges.push(chalk.hex("#94a3b8")(badge));
@@ -100,6 +132,18 @@ export class FooterComponent {
 			return pathLine;
 		}
 		return `${pathLine}  ${trimmedSuffix}`;
+	}
+
+	private renderStageLabel(label: string): string {
+		const trimmed = label.trim();
+		if (!trimmed) return "";
+		const normalized = trimmed.toLowerCase();
+		for (const [stage, options] of Object.entries(SHIMMER_STAGE_OPTIONS)) {
+			if (normalized.startsWith(stage)) {
+				return shimmerText(trimmed.toUpperCase(), options);
+			}
+		}
+		return chalk.hex("#f1c0e8")(trimmed.toUpperCase());
 	}
 
 	private renderSoloFooter(stats: FooterStats, width: number): string[] {
