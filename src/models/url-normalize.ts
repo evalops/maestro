@@ -36,6 +36,32 @@ export function normalizeLLMBaseUrl(
 	const hasPath = (pathname: string): boolean =>
 		pathname.endsWith(desiredPath) || pathname.includes(`${desiredPath}/`);
 
+	const isPrivateIp = (host: string): boolean => {
+		// Only check IPv4 literals; hostnames are allowed (DNS resolution not performed here).
+		const ipv4Match = host.match(/^\d+\.\d+\.\d+\.\d+$/);
+		if (!ipv4Match) return false;
+		const octets = host.split(".").map(Number);
+		if (
+			octets.length !== 4 ||
+			octets.some((n) => Number.isNaN(n) || n < 0 || n > 255)
+		) {
+			return false;
+		}
+		const [a, b] = octets;
+		return (
+			// 10.0.0.0/8
+			a === 10 ||
+			// 172.16.0.0/12
+			(a === 172 && b >= 16 && b <= 31) ||
+			// 192.168.0.0/16
+			(a === 192 && b === 168) ||
+			// loopback 127.0.0.0/8
+			a === 127 ||
+			// link-local 169.254.0.0/16
+			(a === 169 && b === 254)
+		);
+	};
+
 	const isSafeHttpUrl = (value: string): boolean => {
 		try {
 			const parsed = new URL(value);
@@ -53,8 +79,11 @@ export function normalizeLLMBaseUrl(
 			}
 			return url.toString();
 		} catch {
+			// Fallback string check: ensure desiredPath appears after a slash, not in hostname
 			const includesQueryPath = urlStr.includes(`${desiredPath}?`);
-			return hasPath(urlStr) || includesQueryPath
+			const pathIndex = urlStr.indexOf(desiredPath);
+			const looksLikePath = pathIndex > 0 && urlStr[pathIndex - 1] === "/";
+			return (hasPath(urlStr) && looksLikePath) || includesQueryPath
 				? urlStr
 				: `${trimTrailingSlash(urlStr)}${desiredPath}`;
 		}
@@ -65,12 +94,24 @@ export function normalizeLLMBaseUrl(
 
 		// Proxy form: https://proxy/?url=<encoded-upstream>
 		if (parsed.searchParams.has("url")) {
-			const upstream = parsed.searchParams.get("url") ?? "";
-			if (!upstream || !isSafeHttpUrl(upstream)) {
-				return baseUrl; // leave untouched if upstream missing/unsafe
+			const upstreamRaw = parsed.searchParams.get("url");
+			if (!upstreamRaw || upstreamRaw.trim() === "") {
+				return baseUrl; // invalid proxy config
 			}
-			const normalizedUpstream = appendPath(upstream);
-			if (normalizedUpstream === upstream) {
+
+			let upstream: URL;
+			try {
+				upstream = new URL(upstreamRaw);
+			} catch {
+				return baseUrl; // malformed upstream
+			}
+
+			if (!isSafeHttpUrl(upstreamRaw) || isPrivateIp(upstream.hostname)) {
+				return baseUrl; // block unsafe protocols/private IPs
+			}
+
+			const normalizedUpstream = appendPath(upstreamRaw);
+			if (normalizedUpstream === upstreamRaw) {
 				return baseUrl; // already normalized
 			}
 			parsed.searchParams.set("url", normalizedUpstream);
