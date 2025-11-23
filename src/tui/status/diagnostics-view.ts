@@ -227,6 +227,9 @@ ${copyNote}`;
 			`Runtime: ${runtime}`,
 			`Tool failures: ${health.toolFailures}${health.toolFailurePath ? ` (${health.toolFailurePath})` : ""}`,
 			`Git: ${health.gitStatus ?? muted("unavailable")}`,
+			health.backgroundTasks
+				? `Background tasks: ${this.summarizeBackgroundTasks(health.backgroundTasks)}`
+				: undefined,
 			health.planGoals !== undefined
 				? `Plans: ${health.planGoals} goals, ${health.planPendingTasks ?? 0} pending`
 				: undefined,
@@ -235,6 +238,22 @@ ${copyNote}`;
 			muted("Use /diag for full report; add copy to copy to clipboard."),
 		].filter(Boolean) as string[];
 		return lines.join("\n");
+	}
+
+	private summarizeBackgroundTasks(
+		state: HealthSnapshot["backgroundTasks"],
+	): string {
+		if (!state) {
+			return "none running";
+		}
+		const parts = [`${state.running}/${state.total} running`];
+		if (state.restarting > 0) {
+			parts.push(`${state.restarting} restarting`);
+		}
+		if (state.failed > 0) {
+			parts.push(`${state.failed} failed`);
+		}
+		return parts.join(", ");
 	}
 
 	private buildAttachmentList(): string[] {

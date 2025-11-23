@@ -36,6 +36,10 @@ import {
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
+import {
+	type BackgroundTaskNotification,
+	backgroundTaskManager,
+} from "../tools/background-tasks.js";
 
 import { getChangelogPath, parseChangelog } from "../update/changelog.js";
 import { AboutView } from "./about-view.js";
@@ -214,6 +218,7 @@ export class TuiRenderer {
 	private queuePanelVisible = false;
 	private planPanelVisible = false;
 	private notificationView: NotificationView;
+	private backgroundTaskNotificationCleanup?: () => void;
 	private statusRail: StatusRailComponent;
 	private statusRailContainer: Container;
 	private updateView: UpdateView;
@@ -312,6 +317,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			statusRail: this.statusRail,
 		});
+		this.registerBackgroundTaskNotifications();
 		this.approvalController = new ApprovalController({
 			approvalService,
 			ui: this.ui,
@@ -2222,10 +2228,34 @@ export class TuiRenderer {
 		return this.minimalMode;
 	}
 
+	private registerBackgroundTaskNotifications(): void {
+		if (this.backgroundTaskNotificationCleanup) {
+			return;
+		}
+		const handler = (payload: BackgroundTaskNotification) => {
+			const tone = payload.level === "warn" ? "warn" : "info";
+			const reason = payload.reason ? ` (${payload.reason})` : "";
+			const command =
+				payload.command.length > 40
+					? `${payload.command.slice(0, 37)}…`
+					: payload.command;
+			this.notificationView.showToast(
+				`Background task ${payload.taskId} ${payload.message} – ${command}${reason}`,
+				tone,
+			);
+		};
+		backgroundTaskManager.on("notification", handler);
+		this.backgroundTaskNotificationCleanup = () => {
+			backgroundTaskManager.off("notification", handler);
+		};
+	}
+
 	stop(): void {
 		this.loaderView.stop();
 		this.promptQueueUnsubscribe?.();
 		this.promptQueueUnsubscribe = undefined;
+		this.backgroundTaskNotificationCleanup?.();
+		this.backgroundTaskNotificationCleanup = undefined;
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;

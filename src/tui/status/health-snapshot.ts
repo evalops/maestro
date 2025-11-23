@@ -1,8 +1,13 @@
 import { existsSync } from "node:fs";
+
+import {
+	type BackgroundTaskHealth,
+	backgroundTaskManager,
+} from "../../tools/background-tasks.js";
 import type { GitView } from "../git/git-view.js";
 import { loadTodoStore } from "../plan-view.js";
-import type { ToolStatusView } from "../tool-status-view.js";
 import { TOOL_FAILURE_LOG_PATH } from "../tool-status-view.js";
+import type { ToolStatusView } from "../tool-status-view.js";
 
 export interface HealthSnapshot {
 	toolFailures: number;
@@ -10,6 +15,7 @@ export interface HealthSnapshot {
 	gitStatus?: string;
 	planGoals?: number;
 	planPendingTasks?: number;
+	backgroundTasks?: BackgroundTaskHealth | null;
 }
 
 interface HealthSnapshotOptions {
@@ -42,5 +48,9 @@ export function collectHealthSnapshot(
 		gitStatus,
 		planGoals: Object.keys(store).length,
 		planPendingTasks: pending,
+		backgroundTasks: backgroundTaskManager.getHealthSnapshot({
+			maxEntries: 3,
+			logLines: 2,
+		}),
 	};
 }

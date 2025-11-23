@@ -1,5 +1,9 @@
 import { badge, heading, labeledValue, muted } from "../../style/theme.js";
 import type { TelemetryStatus } from "../../telemetry.js";
+import type {
+	BackgroundTaskHealth,
+	BackgroundTaskHealthEntry,
+} from "../../tools/background-tasks.js";
 import type { HealthSnapshot } from "./health-snapshot.js";
 
 export interface BugReportInfo {
@@ -86,14 +90,24 @@ export function buildStatusSnapshot(info: StatusSnapshotInfo): string {
 		labeledValue("Thinking", info.thinkingLevel),
 		telemetryLine,
 		labeledValue("Git", gitLine),
+		labeledValue(
+			"Background tasks",
+			formatBackgroundTaskOverview(info.health.backgroundTasks),
+		),
 		labeledValue("Plans", planLine),
 		labeledValue("Tool failures", toolLine),
 		labeledValue("Session", sessionLine),
 	];
 
-	return `${heading("Status snapshot")}
-${rows.join("\n")}
+	const backgroundDetails = formatBackgroundTaskDetails(
+		info.health.backgroundTasks,
+	);
+	const detailSection = backgroundDetails
+		? `\n${heading("Background task details")}\n${backgroundDetails}\n`
+		: "";
 
+	return `${heading("Status snapshot")}
+${rows.join("\n")}${detailSection}
 ${muted("Use /diag for a full diagnostic report.")}`;
 }
 
@@ -112,4 +126,54 @@ ${muted("What happened?")}
 ${muted("What did you expect instead?")}
 
 ${muted("Anything else we should know?")}`;
+}
+
+function formatBackgroundTaskOverview(
+	state?: BackgroundTaskHealth | null,
+): string {
+	if (!state) {
+		return muted("none running");
+	}
+	const parts = [badge("total", `${state.total}`, "info")];
+	parts.push(
+		badge(
+			"running",
+			`${state.running}`,
+			state.running > 0 ? "success" : "info",
+		),
+	);
+	if (state.restarting > 0) {
+		parts.push(badge("restarting", `${state.restarting}`, "warn"));
+	}
+	if (state.failed > 0) {
+		parts.push(badge("failed", `${state.failed}`, "danger"));
+	}
+	if (state.truncated) {
+		parts.push(muted("showing latest"));
+	}
+	return parts.join(" ");
+}
+
+function formatBackgroundTaskDetails(
+	state?: BackgroundTaskHealth | null,
+): string | null {
+	if (!state || state.entries.length === 0) {
+		return null;
+	}
+	const lines = state.entries.map((entry) => formatBackgroundTaskDetail(entry));
+	if (state.truncated) {
+		lines.push(muted("…additional tasks hidden"));
+	}
+	return lines.join("\n");
+}
+
+function formatBackgroundTaskDetail(entry: BackgroundTaskHealthEntry): string {
+	const issues = entry.issues.length
+		? ` ${muted(entry.issues.join("; "))}`
+		: "";
+	const logLine = entry.lastLogLine ? `\n  ${muted(entry.lastLogLine)}` : "";
+	const restartLine = entry.restarts
+		? ` ${muted(`restarts ${entry.restarts}`)}`
+		: "";
+	return `- ${entry.summary}${restartLine}${issues}${logLine}`;
 }

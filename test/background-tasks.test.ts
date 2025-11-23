@@ -1,4 +1,10 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	backgroundTaskManager,
 	backgroundTasksTool,
+	evaluateResourceLimitBreach,
 	extractProcStatFields,
 } from "../src/tools/background-tasks.js";
 
@@ -337,6 +344,24 @@ describe("backgroundTasksTool", () => {
 		expect(fields?.[12]).toBe("200");
 	});
 
+	it("evaluates resource limit breaches", () => {
+		const memoryBreach = evaluateResourceLimitBreach(
+			{ maxRssKb: 512, userMs: 10, systemMs: 5 },
+			{ maxRssKb: 128, maxCpuMs: 1_000 },
+		);
+		expect(memoryBreach).toMatchObject({ kind: "memory" });
+		const cpuBreach = evaluateResourceLimitBreach(
+			{ userMs: 600, systemMs: 600 },
+			{ maxRssKb: 0, maxCpuMs: 1_000 },
+		);
+		expect(cpuBreach).toMatchObject({ kind: "cpu" });
+		const noBreach = evaluateResourceLimitBreach(
+			{ maxRssKb: 10, userMs: 50, systemMs: 25 },
+			{ maxRssKb: 1_024, maxCpuMs: 5_000 },
+		);
+		expect(noBreach).toBeNull();
+	});
+
 	it("stopTask reports stopped=false for completed tasks", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-stop-finished", {
 			action: "start",
@@ -392,5 +417,52 @@ describe("backgroundTasksTool", () => {
 			internalManager.cleanupTimers = originalTimers;
 			rmSync(zombieLog, { force: true });
 		}
+	});
+
+	it("provides task health snapshots with log previews", async () => {
+		const startResult = await backgroundTasksTool.execute("bg-health", {
+			action: "start",
+			command:
+				"node -e \"console.log('health-check'); setTimeout(() => {}, 2000)\"",
+		});
+		const taskId = (startResult.details as any)?.id as string;
+		await waitForCondition(
+			() => backgroundTaskManager.getTask(taskId)?.status === "running",
+		);
+		await waitForCondition(() => {
+			const preview = backgroundTaskManager.getHealthSnapshot({
+				maxEntries: 1,
+				logLines: 1,
+			});
+			return (preview?.entries[0]?.lastLogLine ?? "").includes("health-check");
+		});
+		const snapshot = backgroundTaskManager.getHealthSnapshot({
+			maxEntries: 1,
+			logLines: 1,
+		});
+		expect(snapshot).toBeTruthy();
+		expect(snapshot?.entries[0]?.lastLogLine ?? "").toContain("health-check");
+		await backgroundTaskManager.stopTask(taskId);
+	});
+
+	it("rotates logs into archived segments", async () => {
+		const startResult = await backgroundTasksTool.execute("bg-rotate", {
+			action: "start",
+			command:
+				"node -e \"const chunk = 'A'.repeat(2048); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 4) { clearInterval(timer); process.exit(0); } }, 20);\"",
+			limits: { logSizeLimit: 1024, logSegments: 2 },
+		});
+		const taskId = (startResult.details as any)?.id as string;
+		await waitForCondition(() => {
+			const task = backgroundTaskManager.getTask(taskId);
+			return task?.status === "exited" || task?.status === "failed";
+		});
+		const task = backgroundTaskManager.getTask(taskId);
+		expect(task).toBeTruthy();
+		if (task?.logPath) {
+			const archived = `${task.logPath}.1.gz`;
+			expect(existsSync(archived)).toBe(true);
+		}
+		await backgroundTaskManager.stopTask(taskId);
 	});
 });

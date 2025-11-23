@@ -4,6 +4,7 @@ import {
 	spawn,
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
 	closeSync,
 	createReadStream,
@@ -38,12 +39,28 @@ import { ToolError, createTool, expandUserPath } from "./tool-dsl.js";
 import type { ToolResponseBuilder } from "./tool-dsl.js";
 
 const LOG_TAIL_BYTES = 200_000;
+const DEFAULT_RSS_KB = readNonNegativeInt(
+	"COMPOSER_BACKGROUND_TASK_MAX_RSS_KB",
+	768 * 1024,
+);
+const DEFAULT_CPU_MS = readNonNegativeInt(
+	"COMPOSER_BACKGROUND_TASK_MAX_CPU_MS",
+	10 * 60 * 1000,
+);
 const CLOCK_TICKS_PER_SECOND = (() => {
 	const raw = process.env.COMPOSER_BACKGROUND_TASK_TICKS;
 	const parsed = Number.parseInt(raw ?? "100", 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : 100;
 })();
 const RESOURCE_POLL_INTERVAL_MS = 200;
+const TASK_NOTIFICATION_ENABLED = readBooleanEnv(
+	"COMPOSER_BACKGROUND_TASK_NOTIFY",
+	false,
+);
+const RESTART_NOTIFY_THRESHOLD = readThresholdEnv(
+	"COMPOSER_BACKGROUND_TASK_NOTIFY_RESTARTS",
+	2,
+);
 
 type ChildProcessWithUsage = ChildProcess & {
 	resourceUsage?: () => {
@@ -52,6 +69,48 @@ type ChildProcessWithUsage = ChildProcess & {
 		systemCPUTime: number;
 	};
 };
+
+function readBooleanEnv(name: string, fallback = false): boolean {
+	const raw = process.env[name];
+	if (!raw) {
+		return fallback;
+	}
+	const normalized = raw.trim().toLowerCase();
+	if (["1", "true", "yes", "on"].includes(normalized)) {
+		return true;
+	}
+	if (["0", "false", "no", "off"].includes(normalized)) {
+		return false;
+	}
+	return fallback;
+}
+
+function readNonNegativeInt(envName: string, fallback: number): number {
+	const raw = process.env[envName];
+	if (!raw) {
+		return fallback;
+	}
+	const parsed = Number.parseInt(raw, 10);
+	if (Number.isNaN(parsed) || parsed < 0) {
+		return fallback;
+	}
+	return parsed;
+}
+
+function readThresholdEnv(envName: string, fallback: number): number {
+	const raw = process.env[envName];
+	if (!raw) {
+		return fallback;
+	}
+	const parsed = Number.parseInt(raw, 10);
+	if (Number.isNaN(parsed)) {
+		return fallback;
+	}
+	if (parsed <= 0) {
+		return Number.POSITIVE_INFINITY;
+	}
+	return parsed;
+}
 
 function readPositiveInt(
 	envName: string,
@@ -97,7 +156,7 @@ type BackgroundTaskStatus =
 	| "failed"
 	| "restarting";
 
-interface TaskResourceUsage {
+export interface TaskResourceUsage {
 	userMs?: number;
 	systemMs?: number;
 	maxRssKb?: number;
@@ -123,6 +182,7 @@ interface RestartPolicy {
 	strategy: "fixed" | "exponential";
 	maxDelayMs: number;
 	jitterRatio: number;
+	nextNotifyAttempt?: number;
 }
 
 interface BackgroundTask {
@@ -147,6 +207,8 @@ interface BackgroundTask {
 	resourceUsage?: TaskResourceUsage;
 	usageMonitor?: NodeJS.Timeout | null;
 	limits: TaskRuntimeLimits;
+	terminatingForLimits?: boolean;
+	failureReason?: string;
 }
 
 interface TaskStartOptions {
@@ -168,16 +230,57 @@ interface BackgroundTaskLimits {
 	logSizeLimit: number;
 	retentionMs: number;
 	logSegments: number;
+	maxRssKb?: number;
+	maxCpuMs?: number;
 }
 
 type TaskLimitOverrides = Partial<
-	Pick<BackgroundTaskLimits, "logSizeLimit" | "logSegments" | "retentionMs">
+	Pick<
+		BackgroundTaskLimits,
+		"logSizeLimit" | "logSegments" | "retentionMs" | "maxRssKb" | "maxCpuMs"
+	>
 >;
 
 interface TaskRuntimeLimits {
 	logSizeLimit: number;
 	logSegments: number;
 	retentionMs: number;
+	maxRssKb?: number;
+	maxCpuMs?: number;
+}
+
+export interface BackgroundTaskNotification {
+	taskId: string;
+	status: BackgroundTaskStatus;
+	command: string;
+	kind: "restart" | "failure" | "limit";
+	message: string;
+	level: "info" | "warn";
+	attempts?: number;
+	maxAttempts?: number;
+	reason?: string;
+}
+
+export interface BackgroundTaskHealthEntry {
+	id: string;
+	status: BackgroundTaskStatus;
+	summary: string;
+	command: string;
+	restarts?: string;
+	issues: string[];
+	lastLogLine?: string;
+	logTruncated?: boolean;
+	durationSeconds: number;
+}
+
+export interface BackgroundTaskHealth {
+	total: number;
+	running: number;
+	restarting: number;
+	failed: number;
+	entries: BackgroundTaskHealthEntry[];
+	truncated: boolean;
+	notificationsEnabled: boolean;
 }
 
 function formatTaskSummary(task: BackgroundTask): string {
@@ -243,23 +346,155 @@ function formatUsageSummary(usage?: TaskResourceUsage): string | null {
 	return parts.length > 0 ? parts.join(" ") : null;
 }
 
-class BackgroundTaskManager {
+export interface ResourceLimitBreach {
+	kind: "memory" | "cpu";
+	limit: number;
+	actual: number;
+}
+
+export function evaluateResourceLimitBreach(
+	usage: TaskResourceUsage | undefined,
+	limits: Pick<TaskRuntimeLimits, "maxRssKb" | "maxCpuMs">,
+): ResourceLimitBreach | null {
+	if (!usage) {
+		return null;
+	}
+	const rssLimit = limits.maxRssKb ?? 0;
+	const cpuLimit = limits.maxCpuMs ?? 0;
+	if (rssLimit > 0 && (usage.maxRssKb ?? 0) > rssLimit) {
+		return {
+			kind: "memory",
+			limit: rssLimit,
+			actual: usage.maxRssKb ?? 0,
+		};
+	}
+	const totalCpu = (usage.userMs ?? 0) + (usage.systemMs ?? 0);
+	if (cpuLimit > 0 && totalCpu > cpuLimit) {
+		return {
+			kind: "cpu",
+			limit: cpuLimit,
+			actual: totalCpu,
+		};
+	}
+	return null;
+}
+
+class BackgroundTaskManager extends EventEmitter {
 	private limits: BackgroundTaskLimits;
 	private readonly defaultLimits: BackgroundTaskLimits;
 	private tasks = new Map<string, BackgroundTask>();
 	private cleanupTimers = new Map<string, NodeJS.Timeout>();
 	private logDir: string | null = null;
 	private logDirBase: string | null = null;
+	private notificationBucket = new Map<
+		string,
+		{ count: number; reset: number }
+	>();
 
 	constructor() {
+		super();
 		const initialLimits: BackgroundTaskLimits = {
 			maxTasks: MAX_CONCURRENT_TASKS,
 			logSizeLimit: MAX_LOG_FILE_BYTES,
 			retentionMs: TASK_RETENTION_MS,
 			logSegments: MAX_LOG_SEGMENTS,
+			maxRssKb: DEFAULT_RSS_KB,
+			maxCpuMs: DEFAULT_CPU_MS,
 		};
 		this.limits = initialLimits;
 		this.defaultLimits = { ...initialLimits };
+	}
+
+	private shouldNotify(): boolean {
+		return TASK_NOTIFICATION_ENABLED || this.listenerCount("notification") > 0;
+	}
+
+	private shouldEmitNotification(taskId: string): boolean {
+		const now = Date.now();
+		const bucket = this.notificationBucket.get(taskId);
+		if (!bucket || now > bucket.reset) {
+			this.notificationBucket.set(taskId, { count: 1, reset: now + 60_000 });
+			return true;
+		}
+		if (bucket.count >= 10) {
+			return false;
+		}
+		bucket.count += 1;
+		return true;
+	}
+
+	private emitTaskNotification(payload: BackgroundTaskNotification): void {
+		if (!this.shouldNotify() || !this.shouldEmitNotification(payload.taskId)) {
+			return;
+		}
+		this.emit("notification", payload);
+		if (TASK_NOTIFICATION_ENABLED) {
+			const prefix = payload.level === "warn" ? "[bg-task warn]" : "[bg-task]";
+			console.warn(
+				`${prefix} ${payload.taskId} ${payload.message}${payload.reason ? ` (${payload.reason})` : ""}`,
+			);
+		}
+	}
+
+	private maybeNotifyRestart(
+		task: BackgroundTask,
+		policy: RestartPolicy,
+	): void {
+		if (!Number.isFinite(RESTART_NOTIFY_THRESHOLD)) {
+			return;
+		}
+		const nextNotify = policy.nextNotifyAttempt ?? RESTART_NOTIFY_THRESHOLD;
+		if (policy.attempts < nextNotify) {
+			return;
+		}
+		this.emitTaskNotification({
+			taskId: task.id,
+			status: task.status,
+			command: task.command,
+			kind: "restart",
+			level: "warn",
+			attempts: policy.attempts,
+			maxAttempts: policy.maxAttempts,
+			message: `restarting (${policy.attempts}/${policy.maxAttempts})`,
+			reason:
+				task.exitCode !== undefined
+					? `last exit ${task.exitCode}`
+					: task.signal
+						? `signal ${task.signal}`
+						: undefined,
+		});
+		const next = nextNotify * 2;
+		if (!Number.isFinite(next) || next > policy.maxAttempts) {
+			policy.nextNotifyAttempt = Number.POSITIVE_INFINITY;
+		} else {
+			policy.nextNotifyAttempt = next;
+		}
+	}
+
+	private notifyFailure(
+		task: BackgroundTask,
+		code: number | null,
+		signal: NodeJS.Signals | null,
+	): void {
+		if (task.failureReason) {
+			return;
+		}
+		const parts: string[] = [];
+		if (code !== null && code !== undefined) {
+			parts.push(`exit ${code}`);
+		}
+		if (signal) {
+			parts.push(`signal ${signal}`);
+		}
+		this.emitTaskNotification({
+			taskId: task.id,
+			status: task.status,
+			command: task.command,
+			kind: "failure",
+			level: "warn",
+			reason: parts.join(", ") || undefined,
+			message: "failed without restart",
+		});
 	}
 
 	configureLimits(overrides: Partial<BackgroundTaskLimits>): void {
@@ -276,6 +511,10 @@ class BackgroundTaskManager {
 		const limit = overrides?.logSizeLimit;
 		const segments = overrides?.logSegments;
 		const retention = overrides?.retentionMs;
+		const rssLimit = overrides?.maxRssKb ?? defaults.maxRssKb ?? 0;
+		const cpuLimit = overrides?.maxCpuMs ?? defaults.maxCpuMs ?? 0;
+		const maxRssCap = 4 * 1024 * 1024; // 4 GB
+		const maxCpuCap = 24 * 60 * 60 * 1000; // 24h
 		return {
 			logSizeLimit: Math.min(
 				Math.max(limit ?? defaults.logSizeLimit, 0),
@@ -286,6 +525,8 @@ class BackgroundTaskManager {
 				Math.max(retention ?? defaults.retentionMs, 1_000),
 				24 * 60 * 60 * 1000,
 			),
+			maxRssKb: Math.min(Math.max(rssLimit, 0), maxRssCap),
+			maxCpuMs: Math.min(Math.max(cpuLimit, 0), maxCpuCap),
 		};
 	}
 
@@ -308,7 +549,7 @@ class BackgroundTaskManager {
 				: delayMs * 8;
 		const maxDelayMs = Math.min(Math.max(rawMaxDelay, delayMs), 10 * 60 * 1000);
 		const jitterRatio = Math.min(Math.max(restart.jitterRatio ?? 0, 0), 1);
-		return {
+		const policy: RestartPolicy = {
 			maxAttempts,
 			delayMs,
 			attempts: 0,
@@ -316,6 +557,10 @@ class BackgroundTaskManager {
 			maxDelayMs,
 			jitterRatio,
 		};
+		if (Number.isFinite(RESTART_NOTIFY_THRESHOLD)) {
+			policy.nextNotifyAttempt = RESTART_NOTIFY_THRESHOLD;
+		}
+		return policy;
 	}
 
 	private createChildProcess(task: BackgroundTask): ChildProcess {
@@ -350,6 +595,7 @@ class BackgroundTaskManager {
 		const child = this.createChildProcess(task);
 		this.attachLogging(child, task);
 		task.process = child;
+		task.failureReason = undefined;
 		task.pid = child.pid ?? undefined;
 		this.startUsageMonitor(task);
 		task.status = "running";
@@ -384,6 +630,11 @@ class BackgroundTaskManager {
 		task.pid = undefined;
 		this.stopUsageMonitor(task);
 		this.captureResourceUsage(task, child);
+		task.terminatingForLimits = false;
+		const forcedFailure = Boolean(task.failureReason);
+		if (forcedFailure) {
+			this.disableRestart(task);
+		}
 		if (task.stopRequested) {
 			task.status = "stopped";
 			task.finishedAt = Date.now();
@@ -392,7 +643,7 @@ class BackgroundTaskManager {
 			resolve();
 			return;
 		}
-		if (code === 0) {
+		if (!forcedFailure && code === 0) {
 			task.status = "exited";
 			task.finishedAt = Date.now();
 			this.scheduleCleanup(task);
@@ -400,7 +651,7 @@ class BackgroundTaskManager {
 			resolve();
 			return;
 		}
-		if (this.scheduleRestart(task)) {
+		if (!forcedFailure && this.scheduleRestart(task)) {
 			resolve();
 			return;
 		}
@@ -408,6 +659,9 @@ class BackgroundTaskManager {
 		task.finishedAt = Date.now();
 		this.scheduleCleanup(task);
 		this.emitTaskTelemetry(task, "failed");
+		if (!forcedFailure) {
+			this.notifyFailure(task, code, signal);
+		}
 		resolve();
 	}
 
@@ -424,7 +678,12 @@ class BackgroundTaskManager {
 		task.pid = undefined;
 		this.stopUsageMonitor(task);
 		this.captureResourceUsage(task, child);
-		if (this.scheduleRestart(task)) {
+		task.terminatingForLimits = false;
+		const forcedFailure = Boolean(task.failureReason);
+		if (forcedFailure) {
+			this.disableRestart(task);
+		}
+		if (!forcedFailure && this.scheduleRestart(task)) {
 			resolve();
 			return;
 		}
@@ -432,6 +691,9 @@ class BackgroundTaskManager {
 		task.finishedAt = Date.now();
 		this.scheduleCleanup(task);
 		this.emitTaskTelemetry(task, "failed");
+		if (!forcedFailure) {
+			this.notifyFailure(task, null, null);
+		}
 		resolve();
 	}
 
@@ -464,6 +726,7 @@ class BackgroundTaskManager {
 		} catch {
 			// Ignore metrics errors
 		}
+		this.enforceRuntimeLimits(task);
 	}
 
 	private scheduleRestart(task: BackgroundTask): boolean {
@@ -477,6 +740,7 @@ class BackgroundTaskManager {
 		policy.attempts += 1;
 		task.status = "restarting";
 		this.emitTaskTelemetry(task, "restarted");
+		this.maybeNotifyRestart(task, policy);
 		this.cancelRestart(task);
 		const delay = this.computeRestartDelay(policy);
 		task.restartTimer = setTimeout(() => {
@@ -564,6 +828,52 @@ class BackgroundTaskManager {
 		if (usage.systemMs !== undefined) {
 			target.systemMs = Math.max(target.systemMs ?? 0, usage.systemMs);
 		}
+		this.enforceRuntimeLimits(task);
+	}
+
+	private enforceRuntimeLimits(task: BackgroundTask): void {
+		if (!task.resourceUsage || task.terminatingForLimits) {
+			return;
+		}
+		const breach = evaluateResourceLimitBreach(task.resourceUsage, task.limits);
+		if (!breach || task.failureReason) {
+			return;
+		}
+		const describe =
+			breach.kind === "memory"
+				? `${(breach.actual / 1024).toFixed(1)}MB > ${(breach.limit / 1024).toFixed(1)}MB`
+				: `${Math.round(breach.actual)}ms > ${Math.round(breach.limit)}ms`;
+		task.failureReason = `Resource limit (${breach.kind} ${describe})`;
+		task.terminatingForLimits = true;
+		this.disableRestart(task);
+		if (!task.pid) {
+			return;
+		}
+		try {
+			killProcessTree(task.pid);
+		} catch (error) {
+			const errMessage =
+				error instanceof Error ? error.message : "Failed to terminate process";
+			this.emitTaskNotification({
+				taskId: task.id,
+				status: task.status,
+				command: task.command,
+				kind: "limit",
+				level: "warn",
+				reason: `${task.failureReason}; kill error: ${errMessage}`,
+				message: "resource limit hit but termination failed",
+			});
+			return;
+		}
+		this.emitTaskNotification({
+			taskId: task.id,
+			status: task.status,
+			command: task.command,
+			kind: "limit",
+			level: "warn",
+			reason: task.failureReason,
+			message: "exceeded resource limits; terminating",
+		});
 	}
 
 	private readUsageFromProc(pid: number): TaskResourceUsage | null {
@@ -861,6 +1171,18 @@ class BackgroundTaskManager {
 		return tail.join("\n");
 	}
 
+	private previewLogLine(
+		task: BackgroundTask,
+		lines: number,
+	): string | undefined {
+		const text = this.tailLog(task, lines).trim();
+		if (!text || text === "No logs available.") {
+			return undefined;
+		}
+		const entries = text.split(/\r?\n/).filter(Boolean);
+		return entries[entries.length - 1];
+	}
+
 	private async waitForCompletion(
 		task: BackgroundTask,
 		timeoutMs: number,
@@ -917,6 +1239,61 @@ class BackgroundTaskManager {
 	getTask(id: string): BackgroundTask | undefined {
 		this.cleanupExpiredTasks();
 		return this.tasks.get(id);
+	}
+
+	getHealthSnapshot(options?: {
+		maxEntries?: number;
+		logLines?: number;
+	}): BackgroundTaskHealth | null {
+		const tasks = this.getTasks();
+		if (tasks.length === 0) {
+			return null;
+		}
+		const maxEntries = Math.max(1, options?.maxEntries ?? 3);
+		const logLines = Math.max(1, options?.logLines ?? 1);
+		const sorted = [...tasks].sort((a, b) => b.startedAt - a.startedAt);
+		const entries = sorted.slice(0, maxEntries).map((task) => {
+			const issues: string[] = [];
+			if (task.failureReason) {
+				issues.push(task.failureReason);
+			}
+			if (
+				task.restartPolicy &&
+				Number.isFinite(RESTART_NOTIFY_THRESHOLD) &&
+				task.restartPolicy.attempts >= RESTART_NOTIFY_THRESHOLD
+			) {
+				issues.push(
+					`Restart attempts ${task.restartPolicy.attempts}/${task.restartPolicy.maxAttempts}`,
+				);
+			}
+			if (task.logTruncated) {
+				issues.push("Logs truncated");
+			}
+			const restarts = task.restartPolicy
+				? `${task.restartPolicy.attempts}/${task.restartPolicy.maxAttempts}`
+				: undefined;
+			const durationMs = (task.finishedAt ?? Date.now()) - task.startedAt;
+			return {
+				id: task.id,
+				status: task.status,
+				summary: formatTaskSummary(task),
+				command: task.command,
+				restarts,
+				issues,
+				lastLogLine: this.previewLogLine(task, logLines),
+				logTruncated: task.logTruncated ?? false,
+				durationSeconds: Math.max(1, Math.round(durationMs / 1000)),
+			};
+		});
+		return {
+			total: tasks.length,
+			running: tasks.filter((task) => task.status === "running").length,
+			restarting: tasks.filter((task) => task.status === "restarting").length,
+			failed: tasks.filter((task) => task.status === "failed").length,
+			entries,
+			truncated: tasks.length > entries.length,
+			notificationsEnabled: TASK_NOTIFICATION_ENABLED,
+		};
 	}
 
 	async stopTask(
@@ -1232,6 +1609,22 @@ const backgroundTaskSchema = Type.Union([
 						maximum: 24 * 60 * 60 * 1000,
 					}),
 				),
+				maxRssKb: Type.Optional(
+					Type.Integer({
+						description:
+							"Maximum resident set size in kilobytes before the task is terminated (0 disables).",
+						minimum: 0,
+						maximum: 4 * 1024 * 1024,
+					}),
+				),
+				maxCpuMs: Type.Optional(
+					Type.Integer({
+						description:
+							"Maximum combined user+system CPU time in milliseconds before termination (0 disables).",
+						minimum: 0,
+						maximum: 24 * 60 * 60 * 1000,
+					}),
+				),
 			}),
 		),
 	}),
@@ -1294,6 +1687,7 @@ function buildTaskDetail(task: BackgroundTask) {
 		restartDelayMs: task.restartPolicy?.delayMs ?? null,
 		limits: task.limits,
 		resourceUsage: task.resourceUsage ?? null,
+		failureReason: task.failureReason ?? null,
 	};
 }
 

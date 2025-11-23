@@ -43,6 +43,7 @@ import {
 } from "./providers/auth.js";
 import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { recordSseSkip } from "./telemetry.js";
+import { backgroundTaskManager } from "./tools/background-tasks.js";
 import { codingTools } from "./tools/index.js";
 import { getUsageFilePath, getUsageSummary } from "./tracking/cost-tracker.js";
 import {
@@ -662,6 +663,10 @@ function handleStatus(res: ServerResponse) {
 				uptime: process.uptime(),
 				version: process.version,
 			},
+			backgroundTasks: backgroundTaskManager.getHealthSnapshot({
+				maxEntries: 5,
+				logLines: 2,
+			}),
 		};
 
 		sendJson(res, 200, status);
