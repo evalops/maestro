@@ -35,6 +35,9 @@ export async function handleConfig(
 			) {
 				throw new ApiError(400, "Config must be a JSON object");
 			}
+			if (containsPollutionKeys(config)) {
+				throw new ApiError(400, "Config contains forbidden keys");
+			}
 			const configPath = getCustomConfigPath();
 			writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 			await reloadModelConfig();
@@ -43,4 +46,18 @@ export async function handleConfig(
 			respondWithApiError(res, error, 500, cors);
 		}
 	}
+}
+
+const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function containsPollutionKeys(value: unknown): boolean {
+	if (value === null || typeof value !== "object") return false;
+	if (Array.isArray(value))
+		return value.some((entry) => containsPollutionKeys(entry));
+
+	for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+		if (FORBIDDEN_KEYS.has(key)) return true;
+		if (containsPollutionKeys(val)) return true;
+	}
+	return false;
 }
