@@ -1,7 +1,7 @@
 import {
 	existsSync,
 	mkdirSync,
-	rmdirSync,
+	rmSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -46,7 +46,7 @@ describe("Config Features", () => {
 
 		// Cleanup test directory
 		try {
-			rmdirSync(testDir, { recursive: true });
+			rmSync(testDir, { recursive: true, force: true });
 		} catch (e) {
 			// Ignore cleanup errors
 		}

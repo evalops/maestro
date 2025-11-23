@@ -14,15 +14,37 @@ import { getRegisteredModels } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
 
 class SessionFileWriter {
+	private static readonly writers = new Set<SessionFileWriter>();
+	private static beforeExitRegistered = false;
+
 	private buffer: string[] = [];
 
 	constructor(
 		private readonly filePath: string,
 		private readonly batchSize = 25,
 	) {
+		SessionFileWriter.registerBeforeExit();
+		SessionFileWriter.writers.add(this);
+	}
+
+	private static registerBeforeExit(): void {
+		if (this.beforeExitRegistered) {
+			return;
+		}
+		this.beforeExitRegistered = true;
 		process.once("beforeExit", () => {
-			void this.flush();
+			for (const writer of this.writers) {
+				try {
+					writer.flushSync();
+				} catch (error) {
+					console.error("Failed to flush session file", error);
+				}
+			}
 		});
+	}
+
+	dispose(): void {
+		SessionFileWriter.writers.delete(this);
 	}
 
 	write(entry: unknown): void {
@@ -251,6 +273,8 @@ export class SessionManager {
 	/** Disable session saving (for --no-session mode) */
 	disable() {
 		this.enabled = false;
+		this.writer?.flushSync();
+		this.writer?.dispose();
 		this.writer = undefined;
 		this.pendingMessages = [];
 	}
@@ -295,6 +319,7 @@ export class SessionManager {
 			return;
 		}
 		this.writer?.flushSync();
+		this.writer?.dispose();
 		this.writer = undefined;
 		this.pendingMessages = [];
 		this.sessionInitialized = false;
