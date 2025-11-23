@@ -2,8 +2,16 @@ import { statSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import chalk from "chalk";
 import { badge, heading, muted } from "../style/theme.js";
-import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
+import {
+	type AutocompleteProvider,
+	CombinedAutocompleteProvider,
+	type Container,
+	Spacer,
+	type TUI,
+	Text,
+} from "../tui-lib/index.js";
 import { BashShellBlock } from "./bash-shell-block.js";
+import type { CustomEditor } from "./custom-editor.js";
 import {
 	type ShellCommandResult,
 	runShellCommand,
@@ -14,6 +22,8 @@ interface BashModeViewOptions {
 	ui: TUI;
 	showInfoMessage: (message: string) => void;
 	onStateChange: (active: boolean) => void;
+	editor: CustomEditor;
+	defaultAutocomplete: AutocompleteProvider;
 }
 
 /**
@@ -25,6 +35,13 @@ export class BashModeView {
 	private currentCwd: string;
 	private readonly projectRoot: string;
 	private readonly homeDir: string;
+	private readonly defaultAutocomplete: AutocompleteProvider;
+	private bashAutocomplete?: CombinedAutocompleteProvider;
+	private history: string[] = [];
+	private historyIndex: number | null = null;
+	private draftCommand = "";
+	private pendingDraft: string | null = null;
+	private applyingHistory = false;
 	private static readonly EXIT_COMMANDS = new Set(["exit", "quit", "leave"]);
 
 	constructor(private readonly options: BashModeViewOptions) {
@@ -32,6 +49,10 @@ export class BashModeView {
 		const rawHome = process.env.HOME ?? process.cwd();
 		this.homeDir = this.normalizePath(rawHome);
 		this.currentCwd = this.projectRoot;
+		this.defaultAutocomplete = options.defaultAutocomplete;
+		this.options.editor.onHistoryNavigate = (direction) =>
+			this.handleHistoryNavigate(direction);
+		this.options.editor.onChange = (text) => this.handleEditorChange(text);
 	}
 
 	isActive(): boolean {
@@ -48,7 +69,7 @@ export class BashModeView {
 			this.renderSystemMessage(
 				`${heading("Bash mode enabled")}
 ${muted(`cwd ${this.formatDisplayPath(this.currentCwd)}`)}
-${muted("Type exit to return to chat.")}`,
+${muted("Shift+Enter inserts a newline. Type exit to return to chat.")}`,
 			);
 			const command = rawInput.slice(1).trim();
 			if (!command) {
@@ -78,6 +99,8 @@ ${muted("Type exit to return to chat.")}`,
 		}
 		this.currentCwd = this.projectRoot;
 		this.active = true;
+		this.options.editor.setLargePasteMode("verbatim");
+		this.enableBashAutocomplete();
 		this.options.onStateChange(true);
 		this.options.showInfoMessage("Entered bash mode. Type exit to leave.");
 	}
@@ -87,6 +110,9 @@ ${muted("Type exit to return to chat.")}`,
 			return;
 		}
 		this.active = false;
+		this.resetHistoryNavigation(true);
+		this.options.editor.setLargePasteMode("placeholder");
+		this.disableBashAutocomplete();
 		this.renderSystemMessage(
 			`${heading("Exited bash mode")}
 ${muted("Back to normal chat.")}`,
@@ -102,6 +128,7 @@ ${muted("Back to normal chat.")}`,
 	}
 
 	private async executeCommand(command: string): Promise<void> {
+		this.recordHistory(command);
 		const promptLine = this.formatPrompt(command);
 		const block = new BashShellBlock(
 			this.formatDisplayPath(this.currentCwd),
@@ -131,6 +158,7 @@ ${muted("Back to normal chat.")}`,
 			);
 		}
 		this.options.ui.requestRender();
+		this.resetHistoryNavigation(true);
 	}
 
 	private async runCommandOrBuiltin(
@@ -207,6 +235,7 @@ ${muted("Back to normal chat.")}`,
 		const normalized = this.normalizePath(resolvedPath);
 		const changed = normalized !== this.currentCwd;
 		this.currentCwd = normalized;
+		this.bashAutocomplete?.setBasePath(this.currentCwd);
 		return changed;
 	}
 
@@ -241,5 +270,92 @@ ${muted("Back to normal chat.")}`,
 			return "/";
 		}
 		return path.replace(/\/+$/u, "");
+	}
+
+	private recordHistory(command: string): void {
+		const text = command.trim();
+		if (!text) {
+			return;
+		}
+		if (this.history[this.history.length - 1] === command) {
+			return;
+		}
+		this.history.push(command);
+		if (this.history.length > 100) {
+			this.history.shift();
+		}
+	}
+
+	private handleHistoryNavigate(direction: "prev" | "next"): boolean {
+		if (!this.active || !this.history.length) {
+			return false;
+		}
+		if (direction === "prev") {
+			if (this.historyIndex === null) {
+				this.pendingDraft = this.draftCommand;
+				this.historyIndex = this.history.length - 1;
+			} else if (this.historyIndex > 0) {
+				this.historyIndex--;
+			}
+		} else {
+			if (this.historyIndex === null) {
+				return false;
+			}
+			if (this.historyIndex === this.history.length - 1) {
+				this.historyIndex = null;
+				this.applyHistoryText(this.pendingDraft ?? "");
+				this.pendingDraft = null;
+				return true;
+			}
+			this.historyIndex++;
+		}
+		if (this.historyIndex !== null) {
+			this.applyHistoryText(this.history[this.historyIndex]);
+		}
+		return true;
+	}
+
+	private applyHistoryText(text: string): void {
+		this.applyingHistory = true;
+		this.options.editor.setText(text);
+		this.applyingHistory = false;
+		this.draftCommand = text;
+	}
+
+	private handleEditorChange(text: string): void {
+		this.draftCommand = text;
+		if (!this.active || this.applyingHistory) {
+			return;
+		}
+		this.resetHistoryNavigation();
+	}
+
+	private resetHistoryNavigation(clearDraft = false): void {
+		this.historyIndex = null;
+		this.pendingDraft = null;
+		if (clearDraft) {
+			this.draftCommand = "";
+		}
+	}
+
+	private enableBashAutocomplete(): void {
+		if (!this.bashAutocomplete) {
+			this.bashAutocomplete = new CombinedAutocompleteProvider(
+				[],
+				this.currentCwd,
+			);
+			this.options.editor.setAutocompleteProvider(this.bashAutocomplete);
+		} else {
+			this.bashAutocomplete.setBasePath(this.currentCwd);
+		}
+	}
+
+	private disableBashAutocomplete(): void {
+		if (!this.bashAutocomplete) {
+			this.options.editor.setAutocompleteProvider(this.defaultAutocomplete);
+			return;
+		}
+		this.options.editor.setAutocompleteProvider(this.defaultAutocomplete);
+		this.bashAutocomplete = undefined;
 	}
 }

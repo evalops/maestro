@@ -134,6 +134,9 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		this.commands = commands;
 		this.basePath = basePath;
 	}
+	setBasePath(basePath: string): void {
+		this.basePath = basePath;
+	}
 	getSuggestions(
 		lines: string[],
 		cursorLine: number,

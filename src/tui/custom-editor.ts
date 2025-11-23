@@ -7,6 +7,7 @@ export class CustomEditor extends Editor {
 	public onEscape?: () => void;
 	public onCtrlC?: () => void;
 	public onShortcut?: (shortcut: string) => boolean;
+	public onHistoryNavigate?: (direction: "prev" | "next") => boolean;
 
 	handleInput(data: string): void {
 		// Intercept Escape key - but only if autocomplete is NOT active
@@ -36,6 +37,20 @@ export class CustomEditor extends Editor {
 		if (data === "\x03" && this.onCtrlC) {
 			this.onCtrlC();
 			return;
+		}
+
+		if (data === "\x1b[A" && this.onHistoryNavigate) {
+			const handled = this.onHistoryNavigate("prev");
+			if (handled) {
+				return;
+			}
+		}
+
+		if (data === "\x1b[B" && this.onHistoryNavigate) {
+			const handled = this.onHistoryNavigate("next");
+			if (handled) {
+				return;
+			}
 		}
 
 		// Pass to parent for normal handling

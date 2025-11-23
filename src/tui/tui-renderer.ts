@@ -236,12 +236,6 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
-		this.bashModeView = new BashModeView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			onStateChange: () => this.refreshFooterHint(),
-		});
 		this.gitView = new GitView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -517,6 +511,14 @@ export class TuiRenderer {
 			process.cwd(),
 		);
 		this.editor.setAutocompleteProvider(autocompleteProvider);
+		this.bashModeView = new BashModeView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			onStateChange: () => this.refreshFooterHint(),
+			editor: this.editor,
+			defaultAutocomplete: autocompleteProvider,
+		});
 		new EditorView({
 			editor: this.editor,
 			getCommandEntries: () => this.commandEntries,

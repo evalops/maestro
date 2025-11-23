@@ -26,6 +26,7 @@ export class Editor implements Component {
 	private pasteCounter = 0;
 	private pasteBuffer = "";
 	private isInPaste = false;
+	private largePasteMode: "placeholder" | "verbatim" = "placeholder";
 
 	onSubmit?: (text: string) => void;
 	onChange?: (text: string) => void;
@@ -365,6 +366,9 @@ export class Editor implements Component {
 		}
 	}
 	// All the editor methods from before...
+	setLargePasteMode(mode: "placeholder" | "verbatim"): void {
+		this.largePasteMode = mode;
+	}
 	private insertCharacter(char: string): void {
 		const line = this.state.lines[this.state.cursorLine] || "";
 		const before = line.slice(0, this.state.cursorCol);
@@ -416,7 +420,8 @@ export class Editor implements Component {
 		const pastedLines = filteredText.split("\n");
 		// Check if this is a large paste (> 10 lines or > 1000 characters)
 		const totalChars = filteredText.length;
-		if (pastedLines.length > 10 || totalChars > 1000) {
+		const isLargePaste = pastedLines.length > 10 || totalChars > 1000;
+		if (isLargePaste && this.largePasteMode === "placeholder") {
 			// Store the paste and insert a marker
 			this.pasteCounter++;
 			const pasteId = this.pasteCounter;
