@@ -35,13 +35,19 @@ export interface ChatDeps {
 	defaultApprovalMode: string;
 	defaultProvider: string;
 	defaultModelId: string;
+	onComplete?: () => void;
 }
 
 export async function handleChat(
 	req: IncomingMessage,
 	res: ServerResponse,
 	cors: Record<string, string>,
-	{ createAgent, getRegisteredModel, defaultApprovalMode }: ChatDeps,
+	{
+		createAgent,
+		getRegisteredModel,
+		defaultApprovalMode,
+		onComplete,
+	}: ChatDeps,
 ) {
 	try {
 		const chatReq = (await parseAndValidateJson<ChatRequestInput>(
@@ -210,5 +216,7 @@ export async function handleChat(
 	} catch (error) {
 		console.error("Chat error:", error);
 		respondWithApiError(res, error, 500, cors);
+	} finally {
+		if (typeof onComplete === "function") onComplete();
 	}
 }

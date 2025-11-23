@@ -6,6 +6,7 @@ import {
 	reloadModelConfig,
 } from "../../models/registry.js";
 import {
+	ApiError,
 	readJsonBody,
 	respondWithApiError,
 	sendJson,
@@ -27,6 +28,13 @@ export async function handleConfig(
 	} else if (req.method === "POST") {
 		try {
 			const { config } = await readJsonBody<{ config: unknown }>(req);
+			if (
+				config === null ||
+				typeof config !== "object" ||
+				Array.isArray(config)
+			) {
+				throw new ApiError(400, "Config must be a JSON object");
+			}
 			const configPath = getCustomConfigPath();
 			writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 			await reloadModelConfig();
