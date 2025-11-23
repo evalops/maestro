@@ -14,6 +14,321 @@ export interface OpenAIOptions extends StreamOptions {
 	reasoningEffort?: "minimal" | "low" | "medium" | "high";
 }
 
+async function* streamResponsesApi(
+	model: Model<"openai-responses">,
+	context: Context,
+	options: OpenAIOptions,
+	messages: OpenAIMessage[],
+): AsyncGenerator<AssistantMessageEvent, void, unknown> {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+		Authorization: `Bearer ${options.apiKey}`,
+		...options.headers,
+	};
+
+	// Responses API accepts "input" with content parts; we only send text parts to stay compatible.
+	const input = messages.map((msg) => {
+		const parts: Array<{ type: "input_text"; text: string }> = [];
+		if (typeof msg.content === "string") {
+			parts.push({ type: "input_text", text: msg.content });
+		} else {
+			for (const c of msg.content) {
+				if ((c as any).text) {
+					parts.push({ type: "input_text", text: (c as any).text });
+				}
+			}
+		}
+		return { role: msg.role, content: parts };
+	});
+
+	const requestBody: any = {
+		model: model.id,
+		input,
+		stream: true,
+		tools:
+			context.tools?.map((tool) => ({
+				type: "function",
+				function: {
+					name: tool.name,
+					description: tool.description,
+					parameters: tool.parameters,
+				},
+			})) ?? [],
+	};
+
+	if (options.maxTokens !== undefined) {
+		requestBody.max_output_tokens = options.maxTokens;
+	}
+
+	if (options.reasoningEffort && model.reasoning) {
+		requestBody.reasoning = { effort: options.reasoningEffort };
+	}
+
+	const targetUrl = normalizeLLMBaseUrl(
+		model.baseUrl,
+		model.provider,
+		model.api,
+	);
+
+	const response = await fetch(targetUrl, {
+		method: "POST",
+		headers,
+		body: JSON.stringify(requestBody),
+		signal: options.signal,
+	});
+
+	if (!response.ok) {
+		const errorText = await response.text();
+		throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
+	}
+	if (!response.body) throw new Error("Response body is null");
+
+	const partial: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+	yield { type: "start", partial };
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+
+	const ensureTextBlock = (): { idx: number; created: boolean } => {
+		const block = partial.content.find((c) => c.type === "text");
+		if (!block) {
+			const idx = partial.content.length;
+			partial.content.push({ type: "text", text: "" });
+			return { idx, created: true };
+		}
+		return { idx: partial.content.indexOf(block), created: false };
+	};
+
+	const toolState = new Map<
+		string,
+		{ name?: string; args: string; outputIndex: number }
+	>();
+
+	const updateCosts = () => {
+		partial.usage.cost = {
+			input: (partial.usage.input * model.cost.input) / 1_000_000,
+			output: (partial.usage.output * model.cost.output) / 1_000_000,
+			cacheRead: (partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
+			cacheWrite: 0,
+			total: 0,
+		};
+		partial.usage.cost.total =
+			partial.usage.cost.input +
+			partial.usage.cost.output +
+			partial.usage.cost.cacheRead;
+	};
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			const lines = buffer.split("\n");
+			buffer = lines.pop() || "";
+
+			for (const line of lines) {
+				if (!line.trim() || !line.startsWith("data: ")) continue;
+				const data = line.slice(6);
+				if (data === "[DONE]") continue;
+
+				let event: any;
+				try {
+					event = JSON.parse(data);
+				} catch (e) {
+					console.warn("Failed to parse OpenAI Responses event", e);
+					continue;
+				}
+
+				switch (event.type) {
+					case "response.output_text.delta": {
+						const { idx, created } = ensureTextBlock();
+						if (created) {
+							yield { type: "text_start", contentIndex: idx, partial };
+						}
+						(partial.content[idx] as any).text += event.delta || "";
+						yield {
+							type: "text_delta",
+							contentIndex: idx,
+							delta: event.delta || "",
+							partial,
+						};
+						break;
+					}
+					case "response.output_text.done": {
+						const { idx, created } = ensureTextBlock();
+						if (created) {
+							yield { type: "text_start", contentIndex: idx, partial };
+						}
+						yield {
+							type: "text_end",
+							contentIndex: idx,
+							content: (partial.content[idx] as any).text,
+							partial,
+						};
+						break;
+					}
+					case "response.function_call_arguments.delta": {
+						const id = event.item_id as string;
+						const state = toolState.get(id) ?? {
+							name: undefined,
+							args: "",
+							outputIndex: event.output_index ?? 0,
+						};
+						state.args += event.delta || "";
+						state.outputIndex = event.output_index ?? state.outputIndex;
+						toolState.set(id, state);
+
+						while (partial.content.length <= state.outputIndex) {
+							partial.content.push({
+								type: "toolCall",
+								id: "",
+								name: "",
+								arguments: {},
+							});
+						}
+						const block = partial.content[state.outputIndex];
+						if (block.type === "toolCall" && !block.id) {
+							block.id = id;
+							yield {
+								type: "toolcall_start",
+								contentIndex: state.outputIndex,
+								partial,
+							};
+						}
+						if (block.type === "toolCall") {
+							block.arguments = parseStreamingJson(state.args);
+							yield {
+								type: "toolcall_delta",
+								contentIndex: state.outputIndex,
+								delta: event.delta || "",
+								partial,
+							};
+						}
+						break;
+					}
+					case "response.function_call_arguments.done": {
+						const id = event.item_id as string;
+						const state = toolState.get(id) ?? {
+							name: event.name,
+							args: event.arguments || "{}",
+							outputIndex: event.output_index ?? 0,
+						};
+						state.name = event.name || state.name;
+						state.args = event.arguments || state.args;
+						state.outputIndex = event.output_index ?? state.outputIndex;
+						toolState.set(id, state);
+
+						while (partial.content.length <= state.outputIndex) {
+							partial.content.push({
+								type: "toolCall",
+								id: "",
+								name: "",
+								arguments: {},
+							});
+						}
+						const block = partial.content[state.outputIndex];
+						if (block.type === "toolCall") {
+							block.id = id;
+							block.name = state.name || "";
+							try {
+								block.arguments = JSON.parse(state.args);
+							} catch {
+								block.arguments = parseStreamingJson(state.args);
+							}
+							yield {
+								type: "toolcall_end",
+								contentIndex: state.outputIndex,
+								toolCall: block,
+								partial,
+							};
+						}
+						break;
+					}
+					case "response.completed": {
+						const usage = event.response?.usage;
+						if (usage) {
+							partial.usage.input = usage.input_tokens || 0;
+							partial.usage.output =
+								(usage.output_tokens || 0) +
+								(usage.output_tokens_details?.reasoning_tokens || 0);
+							updateCosts();
+						}
+						partial.stopReason = "stop";
+						break;
+					}
+					case "response.failed": {
+						partial.stopReason = "error";
+						partial.errorMessage = event.response?.error?.message;
+						break;
+					}
+					case "response.done": {
+						for (let i = 0; i < partial.content.length; i++) {
+							const block = partial.content[i];
+							if (block.type === "toolCall") {
+								yield {
+									type: "toolcall_end",
+									contentIndex: i,
+									toolCall: block,
+									partial,
+								};
+							} else if (block.type === "text") {
+								yield {
+									type: "text_end",
+									contentIndex: i,
+									content: block.text,
+									partial,
+								};
+							}
+						}
+
+						const usage = event.response?.usage;
+						if (usage) {
+							partial.usage.input = usage.input_tokens || 0;
+							partial.usage.output =
+								(usage.output_tokens || 0) +
+								(usage.output_tokens_details?.reasoning_tokens || 0);
+							updateCosts();
+						}
+						partial.stopReason =
+							event.response?.status === "completed" ? "stop" : "error";
+						yield {
+							type: "done",
+							reason: partial.stopReason as any,
+							message: partial,
+						};
+						break;
+					}
+					default:
+						break;
+				}
+			}
+		}
+	} catch (error: unknown) {
+		if (error instanceof Error && error.name === "AbortError") {
+			partial.stopReason = "aborted";
+			yield { type: "error", reason: "aborted", error: partial };
+		} else {
+			throw error;
+		}
+	}
+}
+
 interface OpenAIMessage {
 	role: "system" | "user" | "assistant" | "tool";
 	content:
@@ -47,16 +362,10 @@ export function resolveOpenAIUrlForTest(
 }
 
 export async function* streamOpenAI(
-	model: Model<"openai-completions">,
+	model: Model<"openai-responses" | "openai-completions">,
 	context: Context,
 	options: OpenAIOptions,
 ): AsyncGenerator<AssistantMessageEvent, void, unknown> {
-	if (model.api !== "openai-completions") {
-		throw new Error(
-			`streamOpenAI does not support api ${model.api}; only openai-completions is implemented`,
-		);
-	}
-
 	const apiKey = options.apiKey;
 	if (!apiKey) {
 		throw new Error("API key is required for OpenAI");
@@ -143,6 +452,15 @@ export async function* streamOpenAI(
 				content,
 			});
 		}
+	}
+
+	if (model.api === "openai-responses") {
+		return yield* streamResponsesApi(
+			model as Model<"openai-responses">,
+			context,
+			options,
+			messages,
+		);
 	}
 
 	const requestBody: any = {
