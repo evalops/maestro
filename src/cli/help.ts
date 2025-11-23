@@ -38,7 +38,7 @@ export function printHelp(version: string) {
   # Use different model
   composer --provider openai --model gpt-4o-mini "Help me refactor this code"`,
 	)}`;
-	const env = `${sectionHeading("Environment Variables")}${muted(
+	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key
   OPENAI_API_KEY          - OpenAI API key
   ANTHROPIC_API_KEY       - Anthropic API key
