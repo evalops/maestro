@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import type { LargePasteEvent } from "@evalops/tui";
@@ -31,6 +32,7 @@ import type {
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import {
+	getBackgroundSettingsPath,
 	getBackgroundTaskSettings,
 	subscribeBackgroundTaskSettings,
 	updateBackgroundTaskSettings,
@@ -1465,6 +1467,22 @@ export class TuiRenderer {
 				? Math.min(Math.max(limitArg, 1), 50)
 				: 10;
 			this.renderBackgroundHistory(limit);
+			return;
+		}
+		if (action === "path") {
+			const path = getBackgroundSettingsPath();
+			const exists = existsSync(path);
+			this.notificationView.showInfo(
+				[
+					`Background settings file: ${path}`,
+					exists
+						? "File exists and will be hot-reloaded on change."
+						: "File not found yet (it will be created on first toggle).",
+					process.env.COMPOSER_BACKGROUND_SETTINGS
+						? "Overridden via COMPOSER_BACKGROUND_SETTINGS."
+						: "Using default location under ~/.composer/agent/.",
+				].join("\n"),
+			);
 			return;
 		}
 		context.renderHelp();

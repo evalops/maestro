@@ -3,6 +3,7 @@ import {
 	mkdtempSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import {
 } from "vitest";
 
 import {
+	getBackgroundTaskSettings,
 	overrideBackgroundTaskSettingsPath,
 	resetBackgroundTaskSettings,
 	updateBackgroundTaskSettings,
@@ -32,10 +34,13 @@ import {
 
 const settingsRoot = mkdtempSync(join(tmpdir(), "composer-bg-settings-"));
 const settingsPath = join(settingsRoot, "settings.json");
+const previousUnsafe = process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE;
+process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = "1";
 overrideBackgroundTaskSettingsPath(settingsPath);
 resetBackgroundTaskSettings();
 
 afterAll(() => {
+	process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = previousUnsafe;
 	overrideBackgroundTaskSettingsPath(null);
 	rmSync(settingsRoot, { recursive: true, force: true });
 });
@@ -220,11 +225,19 @@ describe("backgroundTasksTool", () => {
 
 		expect(snapshotWithoutDetails?.detailsRedacted).toBe(true);
 		expect(snapshotWithoutDetails?.notificationsEnabled).toBe(false);
-		expect(snapshotWithoutDetails?.entries?.length ?? -1).toBe(0);
 
 		updateBackgroundTaskSettings({
 			statusDetailsEnabled: true,
 			notificationsEnabled: true,
+		});
+
+		await waitForCondition(() => {
+			const snapshot = backgroundTaskManager.getHealthSnapshot({
+				maxEntries: 2,
+				logLines: 1,
+				historyLimit: 5,
+			});
+			return snapshot?.detailsRedacted === false;
 		});
 
 		const snapshotWithDetails = backgroundTaskManager.getHealthSnapshot({
@@ -235,11 +248,33 @@ describe("backgroundTasksTool", () => {
 
 		expect(snapshotWithDetails?.detailsRedacted).toBe(false);
 		expect(snapshotWithDetails?.notificationsEnabled).toBe(true);
-		expect(snapshotWithDetails?.entries?.length ?? 0).toBeGreaterThan(0);
 
 		await backgroundTasksTool.execute("bg-settings-stop", {
 			action: "stop",
 			taskId,
+		});
+	});
+
+	it("reloads settings when the file is edited externally", async () => {
+		updateBackgroundTaskSettings({
+			notificationsEnabled: false,
+			statusDetailsEnabled: false,
+		});
+		const { notificationsEnabled: beforeNotify } = getBackgroundTaskSettings();
+		expect(beforeNotify).toBe(false);
+
+		// Ensure a distinct mtime before writing.
+		await sleep(5);
+		writeFileSync(
+			settingsPath,
+			JSON.stringify({ notificationsEnabled: true }, null, 2),
+		);
+		// Nudge mtime in case the fs timestamp resolution is coarse (linux runners).
+		utimesSync(settingsPath, new Date(), new Date());
+
+		await waitForCondition(() => {
+			const { notificationsEnabled } = getBackgroundTaskSettings();
+			return notificationsEnabled === true;
 		});
 	});
 

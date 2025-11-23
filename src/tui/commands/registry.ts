@@ -241,13 +241,15 @@ export function createCommandRegistry({
 				name: "background",
 				description:
 					"Configure background task notifications and status redaction",
-				usage: "/background [status|notify <on|off>|details <on|off>|history]",
+				usage:
+					"/background [status|notify <on|off>|details <on|off>|history|path]",
 				tags: ["diagnostics"],
 				examples: [
 					"/background",
 					"/background notify on",
 					"/background details on",
 					"/background history",
+					"/background path",
 				],
 			},
 			withArgs("background"),

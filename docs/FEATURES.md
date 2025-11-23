@@ -88,4 +88,4 @@ power-user features quickly.
 - User controls live in `~/.composer/agent/background-settings.json` (or a custom path via `COMPOSER_BACKGROUND_SETTINGS`). Keys:
   - `notificationsEnabled` – emit TUI notifications for restarts/failures.
   - `statusDetailsEnabled` – include per-task summaries and history in health snapshots.
-  The file is created on first use and re-read whenever Composer updates the settings.
+  The file is created on first use and re-read whenever Composer updates the settings or when it detects that the file changed on disk (manual edits apply without restart). Secrets in summaries/log previews are passed through Composer’s secret redactor, but avoid placing raw tokens in command strings where possible.
