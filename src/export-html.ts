@@ -409,6 +409,7 @@ export async function exportSessionToHtml(
 	state: AgentState,
 	outputPath?: string,
 ): Promise<string> {
+	await sessionManager.flush();
 	const sessionFile = sessionManager.getSessionFile();
 	const timestamp = new Date().toISOString();
 	const { header: sessionHeader, messages } =
@@ -785,6 +786,7 @@ export async function exportSessionToText(
 	_state: AgentState,
 	outputPath?: string,
 ): Promise<string> {
+	await sessionManager.flush();
 	const sessionFile = sessionManager.getSessionFile();
 	const timestamp = new Date().toISOString();
 	const resolvedOutputPath = (() => {

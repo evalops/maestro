@@ -184,4 +184,26 @@ describe("exporters", () => {
 		expect(text).toContain("[tool result] read");
 		expect(text).toContain("[image] image/png");
 	});
+
+	it("flushes session manager before exporting HTML", async () => {
+		const sessionFile = createTempSessionFile(sessionJson);
+		const flushSpy = vi.fn().mockResolvedValue(undefined);
+		const manager = {
+			flush: flushSpy,
+			getSessionFile: () => sessionFile,
+		} as unknown as SessionManager;
+		await exportSessionToHtml(manager, buildAgentState());
+		expect(flushSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("flushes session manager before exporting text", async () => {
+		const sessionFile = createTempSessionFile(sessionJson);
+		const flushSpy = vi.fn().mockResolvedValue(undefined);
+		const manager = {
+			flush: flushSpy,
+			getSessionFile: () => sessionFile,
+		} as unknown as SessionManager;
+		await exportSessionToText(manager, buildAgentState());
+		expect(flushSpy).toHaveBeenCalledTimes(1);
+	});
 });

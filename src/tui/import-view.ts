@@ -1,6 +1,13 @@
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import {
+	dirname,
+	isAbsolute,
+	join,
+	normalize,
+	relative,
+	resolve,
+} from "node:path";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
@@ -21,11 +28,23 @@ interface ImportExportViewOptions {
 }
 
 export class ImportExportView {
+	private readonly allowedExportRoots: string[] = Array.from(
+		new Set([
+			normalize(resolve(process.cwd())),
+			normalize(homedir()),
+			normalize(join(homedir(), ".composer")),
+			normalize(tmpdir()),
+		]),
+	);
+
 	constructor(private readonly options: ImportExportViewOptions) {}
 
 	private expandPath(input: string): string {
 		if (!input) {
 			return input;
+		}
+		if (input === "~") {
+			return homedir();
 		}
 		if (input.startsWith("~/")) {
 			return join(homedir(), input.slice(2));
@@ -33,23 +52,58 @@ export class ImportExportView {
 		return resolve(process.cwd(), input);
 	}
 
+	private resolveExportPath(input: string): string {
+		const expanded = this.expandPath(input);
+		const resolvedPath = normalize(resolve(expanded));
+		if (!this.isAllowedExportPath(resolvedPath)) {
+			throw new Error(
+				`Export path must be inside one of: ${this.allowedExportRoots.join(
+					", ",
+				)}.`,
+			);
+		}
+		return resolvedPath;
+	}
+
+	private isAllowedExportPath(targetPath: string): boolean {
+		return this.allowedExportRoots.some((root) => {
+			const relativePath = relative(root, targetPath);
+			return (
+				relativePath === "" ||
+				(!relativePath.startsWith("..") && !isAbsolute(relativePath))
+			);
+		});
+	}
+
 	async handleExportCommand(text: string): Promise<void> {
-		const parts = text.split(/\s+/);
+		const tokens = text.trim().split(/\s+/).filter(Boolean);
+		if (tokens[0]?.startsWith("/")) {
+			tokens.shift();
+		}
 		let mode: "html" | "text" = "html";
-		let outputPath: string | undefined;
-		if (parts.length > 1) {
-			if (
-				parts[1].toLowerCase() === "lite" ||
-				parts[1].toLowerCase() === "text"
-			) {
+		let outputToken: string | undefined;
+		for (const token of tokens) {
+			const normalized = token.toLowerCase();
+			if (normalized === "html") {
+				mode = "html";
+				continue;
+			}
+			if (normalized === "text" || normalized === "lite") {
 				mode = "text";
-				outputPath = parts[2];
-			} else {
-				outputPath = parts[1];
+				continue;
+			}
+			if (!outputToken) {
+				outputToken = token;
 			}
 		}
 
 		try {
+			const outputPath = outputToken
+				? this.resolveExportPath(outputToken)
+				: undefined;
+			if (outputPath) {
+				mkdirSync(dirname(outputPath), { recursive: true });
+			}
 			let filePath: string;
 			if (mode === "text") {
 				filePath = await exportSessionToText(
@@ -114,20 +168,20 @@ export class ImportExportView {
 		const customTarget = parts[1];
 		const baseDir = join(homedir(), ".composer", "share");
 		let outputPath: string;
-		if (customTarget) {
-			outputPath = this.expandPath(customTarget);
-			mkdirSync(dirname(outputPath), { recursive: true });
-		} else {
-			mkdirSync(baseDir, { recursive: true });
-			const timestamp = new Date()
-				.toISOString()
-				.replace(/[:.]/g, "-")
-				.replace("T", "_")
-				.replace("Z", "");
-			outputPath = join(baseDir, `composer-share-${timestamp}.html`);
-		}
-
 		try {
+			if (customTarget) {
+				outputPath = this.resolveExportPath(customTarget);
+				mkdirSync(dirname(outputPath), { recursive: true });
+			} else {
+				mkdirSync(baseDir, { recursive: true });
+				const timestamp = new Date()
+					.toISOString()
+					.replace(/[:.]/g, "-")
+					.replace("T", "_")
+					.replace("Z", "");
+				outputPath = join(baseDir, `composer-share-${timestamp}.html`);
+			}
+
 			const filePath = await exportSessionToHtml(
 				this.options.sessionManager,
 				this.options.agent.state,
