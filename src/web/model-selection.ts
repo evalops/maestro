@@ -22,25 +22,33 @@ export function parseModelInput(modelInput?: string | null): ParsedModelInput {
 		return {};
 	}
 
-	const delimiter = normalized.includes(":")
-		? ":"
-		: normalized.includes("/")
-			? "/"
-			: null;
-
-	if (!delimiter) {
-		return { modelId: normalized };
+	// Prefer explicit provider delimiter ":"
+	if (normalized.includes(":")) {
+		const parts = normalized.split(":");
+		if (parts.length !== 2) {
+			throw new ApiError(400, `Invalid model format: "${normalized}"`);
+		}
+		const [providerPart, modelPart] = parts;
+		return {
+			provider: providerPart?.trim() || undefined,
+			modelId: modelPart?.trim() || undefined,
+		};
 	}
 
-	const parts = normalized.split(delimiter);
-	if (parts.length !== 2) {
-		throw new ApiError(400, `Invalid model format: "${normalized}"`);
+	// Only treat "/" as provider delimiter when the prefix matches a known provider.
+	if (normalized.includes("/")) {
+		const [possibleProvider, ...rest] = normalized.split("/");
+		if (providerExists(possibleProvider)) {
+			const modelId = rest.join("/").trim();
+			return {
+				provider: possibleProvider.trim() || undefined,
+				modelId: modelId || undefined,
+			};
+		}
 	}
 
-	const [providerPart, modelPart] = parts;
-	const provider = providerPart?.trim() || undefined;
-	const modelId = modelPart?.trim() || undefined;
-	return { provider, modelId };
+	// Otherwise it's a bare model id (which may itself contain "/")
+	return { modelId: normalized };
 }
 
 function resolveModelAlias(parts: ParsedModelInput): ParsedModelInput {
@@ -58,6 +66,13 @@ function resolveModelAlias(parts: ParsedModelInput): ParsedModelInput {
 		);
 	}
 	return { provider: alias.provider, modelId: alias.modelId };
+}
+
+function providerExists(name: string | undefined): boolean {
+	if (!name) return false;
+	const trimmed = name.trim();
+	if (!trimmed) return false;
+	return getRegisteredModels().some((m) => m.provider === trimmed);
 }
 
 export function determineModelSelection(
