@@ -9,6 +9,7 @@ import {
 	parse as parseJsonc,
 	printParseErrorCode,
 } from "jsonc-parser";
+import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
@@ -227,6 +228,8 @@ const configPath = (): string =>
 const FACTORY_HOME = process.env.FACTORY_HOME ?? join(homedir(), ".factory");
 const FACTORY_CONFIG_PATH = join(FACTORY_HOME, "config.json");
 const FACTORY_SETTINGS_PATH = join(FACTORY_HOME, "settings.json");
+const FACTORY_KEYS_PATH = join(FACTORY_HOME, "keys.json");
+const COMPOSER_KEYS_PATH = join(homedir(), ".composer", "keys.json");
 
 let cachedConfig: CustomModelConfig | null = null;
 let cachedProviders: RegisteredModel[] | null = null;
@@ -759,6 +762,7 @@ interface FactoryModelEntry {
 
 interface FactoryConfigFile {
 	custom_models?: FactoryModelEntry[];
+	api_keys?: Record<string, string>;
 }
 
 const FACTORY_API_MAP: Record<string, Api> = {
@@ -825,6 +829,7 @@ function buildFactoryData(): {
 		if (!parsed.custom_models?.length) {
 			return null;
 		}
+		const factoryKeys = parsed.api_keys ?? {};
 		const providers: CustomProvider[] = [];
 		const modelProviderMap = new Map<string, string>();
 		const providerKeyMap = new Map<string, CustomProvider>();
@@ -843,7 +848,11 @@ function buildFactoryData(): {
 				api,
 			);
 
-			const uniqueKey = `${entry.provider ?? "factory"}|${normalizedBaseUrl}|${entry.api_key ?? ""}`;
+			const inlineKey = entry.api_key;
+			const storedKey =
+				factoryKeys[entry.provider ?? "factory"] ??
+				getStoredCredentials(entry.provider ?? "factory").apiKey;
+			const uniqueKey = `${entry.provider ?? "factory"}|${normalizedBaseUrl}|${inlineKey ?? storedKey ?? ""}`;
 			let provider = providerKeyMap.get(uniqueKey);
 			if (!provider) {
 				const sanitized = sanitizeId(entry.provider ?? "factory");
@@ -858,7 +867,7 @@ function buildFactoryData(): {
 					name: deriveProviderName(entry.provider, normalizedBaseUrl),
 					api: deriveProviderApi(entry.provider),
 					baseUrl: normalizedBaseUrl,
-					apiKey: entry.api_key,
+					apiKey: inlineKey ?? storedKey,
 					models: [],
 				};
 				providerKeyMap.set(uniqueKey, provider);

@@ -109,7 +109,10 @@ Once in the interface, chat with the AI: `Create a simple Express server in src/
 
 ### API Keys
 
-Composer supports multiple LLM providers. Set the environment variable for the provider you want to use:
+Composer supports multiple LLM providers. You can supply keys in three ways (priority order):
+
+1) **Per-run flags/env**: set the environment variable for your provider (below) or pass `--api-key` when invoking `composer run`/`composer web`.
+2) **Provider-specific env vars** (recommended):
 
 ```bash
 # Anthropic (Claude)
@@ -141,6 +144,19 @@ export ZAI_API_KEY=...
 # Exa (for web search tools - optional)
 export EXA_API_KEY=...  # Get yours at https://dashboard.exa.ai/api-keys
 ```
+
+3) **Local key store**: add entries to `~/.composer/keys.json`:
+
+```json
+{
+  "openai": { "apiKey": "sk-..." },
+  "openrouter": { "apiKey": "sk-or-..." },
+  "anthropic": { "apiKey": "sk-ant-...", "authType": "api-key" },
+  "anthropic-oauth": { "apiKey": "Bearer eyJ..." } // supports OAuth tokens
+}
+```
+
+Keys in the key store are loaded automatically if a provider env var is missing.
 
 ## Providers
 
