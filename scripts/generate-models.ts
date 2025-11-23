@@ -12,6 +12,8 @@ import {
 	statSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { normalizeLLMBaseUrl } from "../src/models/url-normalize.js";
+import type { Api } from "../src/agent/types.js";
 
 type ModelsDev = {
 	[providerId: string]: {
@@ -77,6 +79,20 @@ function apiFor(providerId: string, modelApi?: string): string {
 
 function baseUrlFor(providerId: string): string {
 	return BASE_URLS[providerId] ?? "https://api.openai.com/v1";
+}
+
+function enforceEndpoint(baseUrl: string, providerId: string, api: string): string {
+	const normalized = normalizeLLMBaseUrl(baseUrl, providerId, api as Api);
+	if (
+		(api === "openai-responses" || api === "openai-completions") &&
+		!normalized.includes("/responses") &&
+		!normalized.includes("/chat/completions")
+	) {
+		throw new Error(
+			`Normalized baseUrl missing expected endpoint for provider ${providerId}: ${normalized}`,
+		);
+	}
+	return normalized;
 }
 
 const CACHE_PATH = join(process.cwd(), ".cache", "models-dev.json");
@@ -160,7 +176,7 @@ async function main() {
 				name: model.name,
 				api,
 				provider: providerId,
-				baseUrl: providerBase,
+				baseUrl: enforceEndpoint(providerBase, providerId, api),
 				reasoning: Boolean(model.reasoning ?? false),
 				toolUse: Boolean(model.tool_call ?? false),
 				input: normalizedInput,

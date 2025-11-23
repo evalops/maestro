@@ -82,6 +82,18 @@ function buildEntries(
 }
 
 describe("parseStatusOutput fuzz", () => {
+	it("handles rename paths containing question marks and multibyte chars", () => {
+		const raw =
+			"2 R. N... 100644 100644 100644 deadbeef deadbeef R042 café?.js\0src/old?name.js\0";
+		const parsed = parseStatusOutput(raw);
+		const rename = parsed.files.find((f) => f.kind === "rename");
+		expect(rename).toMatchObject({
+			path: "café?.js",
+			origPath: "src/old?name.js",
+			score: 42,
+		});
+	});
+
 	it("handles rename old paths that start with status-like prefixes", () => {
 		const raw =
 			"2 R. N... 100644 100644 100644 deadbeef deadbeef R000 !\0! !\0" +

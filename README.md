@@ -91,6 +91,12 @@ bun run compile:binary
 - It commits the new `npmDepsHash` and force-pushes to the `ci/update-nix-hash` branch (no PR is created). If you need the updated hash, merge or cherry-pick that branch.
 - If the workflow fails, rerun after rebasing onto `main`; org PR permissions are no longer required because no PR is opened automatically.
 
+### Composer 2.9 security blocking (heads-up)
+- Composer 2.9 (released November 19, 2025) now blocks insecure/abandoned versions by default during `update`/`require`, separate from `composer audit`.
+- Disable blocking with `--no-security-blocking` or `"config": { "audit": { "block-insecure": false } }`; `--no-audit` / `COMPOSER_NO_AUDIT` only disables the audit report, not blocking.
+- Use `"audit.ignore"` entries with `apply: "audit" | "block" | "all"` to scope ignores; advisory IDs (or CVE IDs since 2.9.2) work for both audit and blocking.
+- If you must allow abandoned packages, set `"audit": { "block-abandoned": false }` or add `"ignore-abandoned"` entries (also supports `apply` scoping).
+
 ## Quick Start
 
 ```bash
