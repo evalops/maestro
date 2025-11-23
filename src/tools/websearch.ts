@@ -17,6 +17,7 @@ interface ExaSearchResponse {
 	requestId: string;
 	results: ExaSearchResult[];
 	resolvedSearchType?: string;
+	context?: string;
 	costDollars?: {
 		total: number;
 	};
@@ -33,7 +34,7 @@ const websearchSchema = Type.Object({
 			description: "Number of results to return (max varies by type)",
 			minimum: 1,
 			maximum: 100,
-			default: 10,
+			default: 5,
 		}),
 	),
 	type: Type.Optional(
@@ -85,13 +86,20 @@ const websearchSchema = Type.Object({
 	text: Type.Optional(
 		Type.Boolean({
 			description: "Return full page text content in markdown format",
-			default: false,
+			default: true,
 		}),
 	),
 	summary: Type.Optional(
 		Type.Boolean({
 			description: "Return AI-generated summary of each result",
 			default: false,
+		}),
+	),
+	context: Type.Optional(
+		Type.Boolean({
+			description:
+				"Return LLM-optimized context string combining all results (recommended for RAG). Better than individual text for LLM consumption.",
+			default: true,
 		}),
 	),
 	startPublishedDate: Type.Optional(
@@ -124,7 +132,7 @@ export const websearchTool = createTypeboxTool({
 
 		const requestBody: Record<string, unknown> = {
 			query: params.query,
-			numResults: params.numResults ?? 10,
+			numResults: params.numResults ?? 5,
 			type: params.type ?? "auto",
 		};
 
@@ -139,10 +147,15 @@ export const websearchTool = createTypeboxTool({
 			requestBody.endPublishedDate = params.endPublishedDate;
 
 		// Configure contents retrieval
-		if (params.text || params.summary) {
+		const shouldGetText = params.text ?? true;
+		const shouldGetSummary = params.summary ?? false;
+		const shouldGetContext = params.context ?? true;
+
+		if (shouldGetText || shouldGetSummary || shouldGetContext) {
 			requestBody.contents = {
-				text: params.text ?? false,
-				summary: params.summary ?? false,
+				text: shouldGetText,
+				summary: shouldGetSummary,
+				context: shouldGetContext,
 			};
 		}
 
@@ -177,6 +190,15 @@ export const websearchTool = createTypeboxTool({
 			);
 		}
 		outputLines.push("");
+
+		// If context string is available, use it (LLM-optimized)
+		if (data.context) {
+			outputLines.push("LLM-Optimized Context:");
+			outputLines.push("─".repeat(80));
+			outputLines.push(data.context);
+			outputLines.push("─".repeat(80));
+			outputLines.push("");
+		}
 
 		for (let i = 0; i < data.results.length; i++) {
 			const result = data.results[i];
@@ -222,6 +244,7 @@ export const websearchTool = createTypeboxTool({
 				resolvedSearchType: data.resolvedSearchType,
 				resultsCount: data.results.length,
 				costDollars: data.costDollars?.total,
+				context: data.context,
 				results: data.results,
 			},
 		};

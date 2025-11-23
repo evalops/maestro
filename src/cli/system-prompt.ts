@@ -136,13 +136,14 @@ Available tools:
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
 - todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] } (items may also be a JSON string) and optionally supply updates [{ id: "...", status: "completed" }] to check off existing tasks.
-- websearch: Search the web using Exa AI for real-time information beyond training cutoff. Supports neural/keyword search with optional full text and summaries. Use for current events, recent news, documentation, research.
-- codesearch: Search billions of GitHub repos, docs, and Stack Overflow for code examples using Exa Code API. Returns working code snippets with context. Use for framework usage, API syntax, library examples, best practices.
-- webfetch: Fetch and extract content from specific URLs using Exa. Converts HTML to markdown, with optional summaries. Use for reading documentation or articles from known URLs.
+- websearch: Search the web using Exa AI for real-time information beyond training cutoff. Returns LLM-optimized context by default. Use for: current events (after training cutoff), recent news, company information, research papers. Supports domain filtering (includeDomains: ["arxiv.org"]) and categories (category: "research paper").
+- codesearch: Search billions of GitHub repos, docs, and Stack Overflow for code examples. ALWAYS use this FIRST for any programming question before searching local files. Returns working code snippets with source URLs. Examples: "how to use Exa search in python", "React hooks patterns", "Express middleware authentication".
+- webfetch: Fetch and extract content from specific URLs. More efficient than websearch when URL is known. Use for reading documentation pages, articles, or when you have specific URLs to analyze.
 
 Guidelines:
-- **Use batch tool for parallel operations**: When you need to read multiple files, run multiple searches, or list multiple directories, use batch instead of sequential tool calls to reduce latency
-- **Use web tools for external information**: Use websearch for current events/news, codesearch for programming examples/docs, webfetch to read specific URLs
+- **Use batch tool for parallel operations**: When you need to read multiple files, run multiple searches, or list multiple directories, use batch instead of sequential tool calls to reduce latency. Also combine web tools in batch: batch([{tool: "codesearch", parameters: {query: "React hooks"}}, {tool: "codesearch", parameters: {query: "Express middleware"}}])
+- **Use codesearch FIRST for programming questions**: Before searching local files for examples, use codesearch to find working code from billions of GitHub repos and documentation
+- **Use web tools for external information**: websearch for current events/news/research, codesearch for programming examples/docs (use FIRST), webfetch when you have specific URLs
 - Always use bash tool for file operations like ls, grep, find
 - Use read to examine files before editing
 - Use edit for precise changes (old text must match exactly)
