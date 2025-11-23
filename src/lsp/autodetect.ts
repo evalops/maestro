@@ -25,10 +25,10 @@ const VUE_FILES = ["vue.config.js", "nuxt.config.ts", "nuxt.config.js"];
 async function nearestRoot(
 	targets: string[],
 	start: string,
-	stop: string,
+	stop?: string,
 ): Promise<string | null> {
 	let dir = start;
-	const stopDir = stop;
+	const boundary = stop ?? null;
 	while (true) {
 		for (const target of targets) {
 			const candidate = join(dir, target);
@@ -36,36 +36,35 @@ async function nearestRoot(
 				return dirname(candidate);
 			}
 		}
-		if (dir === stopDir) return null;
+		if (boundary && dir === boundary) return null;
 		const parent = dirname(dir);
-		if (parent === dir) return null;
+		if (parent === dir) return null; // filesystem root
 		dir = parent;
 	}
 }
 
 async function detectTypescriptRoot(cwd: string): Promise<string | null> {
-	return nearestRoot(LOCKFILES, cwd, process.cwd());
+	return nearestRoot(LOCKFILES, cwd);
 }
 
 async function detectVueRoot(cwd: string): Promise<string | null> {
-	return nearestRoot([...LOCKFILES, ...VUE_FILES], cwd, process.cwd());
+	return nearestRoot([...LOCKFILES, ...VUE_FILES], cwd);
 }
 
 async function detectGoRoot(cwd: string): Promise<string | null> {
-	const work = await nearestRoot(["go.work"], cwd, process.cwd());
+	const work = await nearestRoot(["go.work"], cwd);
 	if (work) return work;
-	return nearestRoot(["go.mod", "go.sum"], cwd, process.cwd());
+	return nearestRoot(["go.mod", "go.sum"], cwd);
 }
 
 async function detectRustRoot(cwd: string): Promise<string | null> {
-	return nearestRoot(["Cargo.toml"], cwd, process.cwd());
+	return nearestRoot(["Cargo.toml"], cwd);
 }
 
 async function detectPyRoot(cwd: string): Promise<string | null> {
 	return nearestRoot(
 		["pyproject.toml", "poetry.lock", "requirements.txt"],
 		cwd,
-		process.cwd(),
 	);
 }
 
@@ -80,15 +79,18 @@ async function detectEslintRoot(cwd: string): Promise<string | null> {
 			...LOCKFILES,
 		],
 		cwd,
-		process.cwd(),
 	);
 }
 
 function hasBin(bin: string): boolean {
 	const pathVar = process.env.PATH ?? "";
-	for (const dir of pathVar.split(process.platform === "win32" ? ";" : ":")) {
+	const delimiter = process.platform === "win32" ? ";" : ":";
+	const suffixes = process.platform === "win32" ? ["", ".cmd", ".exe"] : [""];
+	for (const dir of pathVar.split(delimiter)) {
 		if (!dir) continue;
-		if (existsSync(join(dir, bin))) return true;
+		for (const suffix of suffixes) {
+			if (existsSync(join(dir, `${bin}${suffix}`))) return true;
+		}
 	}
 	return false;
 }

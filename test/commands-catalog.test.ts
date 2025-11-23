@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	loadCommandCatalog,
+	parseCommandArgs,
 	renderCommandPrompt,
 	validateCommandArgs,
 } from "../src/commands/catalog.js";
@@ -64,5 +65,23 @@ describe("command catalog", () => {
 		expect(validation).toBeNull();
 		const rendered = renderCommandPrompt(cmd, { name: "Ava" });
 		expect(rendered).toBe("Hi Ava");
+	});
+
+	it("parses args with embedded equals and escapes template keys", () => {
+		const args = parseCommandArgs([
+			"url=https://example.com?foo=bar=baz",
+			"user.name=first.last",
+		]);
+		expect(args.url).toBe("https://example.com?foo=bar=baz");
+		const cmd = {
+			name: "test",
+			prompt: "User: {{user.name}} at {{url}}",
+			source: "",
+			args: [],
+		};
+		const rendered = renderCommandPrompt(cmd, args);
+		expect(rendered).toBe(
+			"User: first.last at https://example.com?foo=bar=baz",
+		);
 	});
 });

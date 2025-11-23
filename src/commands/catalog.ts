@@ -15,6 +15,9 @@ export interface ResolvedCommand extends CommandDefinition {
 
 const HOME_DIR = join(homedir(), ".composer", "commands");
 
+const escapeRegExp = (value: string): string =>
+	value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 function readJsonIfExists(path: string): unknown | null {
 	if (!existsSync(path)) return null;
 	try {
@@ -35,6 +38,18 @@ function listCommandFiles(dir: string): string[] {
 	} catch {
 		return [];
 	}
+}
+
+export function parseCommandArgs(tokens: string[]): Record<string, string> {
+	const args: Record<string, string> = {};
+	for (const token of tokens) {
+		const eqIndex = token.indexOf("=");
+		if (eqIndex <= 0) continue; // skip missing key or value-less tokens
+		const key = token.slice(0, eqIndex);
+		const value = token.slice(eqIndex + 1);
+		args[key] = value;
+	}
+	return args;
 }
 
 export function loadCommandCatalog(workspaceDir: string): ResolvedCommand[] {
@@ -72,7 +87,8 @@ export function renderCommandPrompt(
 ): string {
 	let prompt = command.prompt;
 	for (const [key, value] of Object.entries(args)) {
-		prompt = prompt.replace(new RegExp(`{{${key}}}`, "g"), value);
+		const pattern = new RegExp(`{{${escapeRegExp(key)}}}`, "g");
+		prompt = prompt.replace(pattern, value);
 	}
 	return prompt;
 }

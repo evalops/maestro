@@ -65,6 +65,22 @@ function makeEditContext(): ActionApprovalContext {
 	return { toolName: "edit", args: { path: "file.txt" } };
 }
 
+function makeTodoContext(): ActionApprovalContext {
+	return { toolName: "todo", args: { items: [] } };
+}
+
+function makeGhPrContext(action: string): ActionApprovalContext {
+	return { toolName: "gh_pr", args: { action } };
+}
+
+function makeGhIssueContext(action: string): ActionApprovalContext {
+	return { toolName: "gh_issue", args: { action } };
+}
+
+function makeBatchContext(): ActionApprovalContext {
+	return { toolName: "batch", args: { tasks: [] } };
+}
+
 function makeWorkflowContext(
 	toolName: string,
 	pendingPii: Array<{ id: string; label: string; redacted?: boolean }>,
@@ -147,6 +163,22 @@ describe("ActionFirewall", () => {
 
 			const editVerdict = defaultActionFirewall.evaluate(makeEditContext());
 			expect(editVerdict.action).toBe("require_approval");
+
+			const todoVerdict = defaultActionFirewall.evaluate(makeTodoContext());
+			expect(todoVerdict.action).toBe("require_approval");
+
+			const ghPrVerdict = defaultActionFirewall.evaluate(
+				makeGhPrContext("create"),
+			);
+			expect(ghPrVerdict.action).toBe("require_approval");
+
+			const ghIssueVerdict = defaultActionFirewall.evaluate(
+				makeGhIssueContext("create"),
+			);
+			expect(ghIssueVerdict.action).toBe("require_approval");
+
+			const batchVerdict = defaultActionFirewall.evaluate(makeBatchContext());
+			expect(batchVerdict.action).toBe("require_approval");
 
 			const bgVerdict = defaultActionFirewall.evaluate(
 				makeShellBackgroundTaskContext("echo"),

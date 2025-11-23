@@ -115,6 +115,16 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			if (process.env.COMPOSER_PLAN_MODE !== "1") return false;
 			const name = ctx.toolName;
 			if (name === "write" || name === "edit" || name === "bash") return true;
+			if (name === "todo") return true;
+			if (name === "batch") return true;
+			if (name === "gh_pr") {
+				const action = getStringArg(ctx, "action");
+				return !action || !["list", "view", "checks", "diff"].includes(action);
+			}
+			if (name === "gh_issue") {
+				const action = getStringArg(ctx, "action");
+				return !action || !["list", "view"].includes(action);
+			}
 			if (name === "background_tasks") {
 				const args = getArgsObject(ctx);
 				const action = args?.action;
