@@ -4,6 +4,7 @@ import {
 	ChatRequestSchema,
 	ModelSetSchema,
 } from "../src/web/validation.js";
+const { version } = JSON.parse(readFileSync("package.json", "utf8"));
 
 type Route = { method: string; path: string };
 
