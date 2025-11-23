@@ -34,9 +34,16 @@ export function normalizeLLMBaseUrl(
 			: "/chat/completions";
 
 	const hasPath = (pathname: string): boolean =>
-		pathname.endsWith(desiredPath) ||
-		pathname.includes(`${desiredPath}/`) ||
-		pathname.includes(`${desiredPath}?`);
+		pathname.endsWith(desiredPath) || pathname.includes(`${desiredPath}/`);
+
+	const isSafeHttpUrl = (value: string): boolean => {
+		try {
+			const parsed = new URL(value);
+			return parsed.protocol === "http:" || parsed.protocol === "https:";
+		} catch {
+			return false;
+		}
+	};
 
 	const appendPath = (urlStr: string): string => {
 		try {
@@ -58,9 +65,12 @@ export function normalizeLLMBaseUrl(
 		// Proxy form: https://proxy/?url=<encoded-upstream>
 		if (parsed.searchParams.has("url")) {
 			const upstream = parsed.searchParams.get("url") ?? "";
+			if (!upstream || !isSafeHttpUrl(upstream)) {
+				return baseUrl; // leave untouched if upstream missing/unsafe
+			}
 			const normalizedUpstream = appendPath(upstream);
 			if (normalizedUpstream === upstream) {
-				return baseUrl;
+				return baseUrl; // already normalized
 			}
 			parsed.searchParams.set("url", normalizedUpstream);
 			return parsed.toString();

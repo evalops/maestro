@@ -1,3 +1,4 @@
+import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
@@ -32,54 +33,6 @@ interface OpenAIMessage {
 	}>;
 }
 
-function resolveOpenAIUrl(
-	baseUrl: string,
-	api: "openai-responses" | "openai-completions",
-): string {
-	const desiredPath =
-		api === "openai-responses" ? "/responses" : "/chat/completions";
-
-	const hasEndpoint = (url: string): boolean =>
-		url.endsWith(desiredPath) ||
-		url.includes(`${desiredPath}/`) ||
-		url.includes(`${desiredPath}?`);
-
-	const appendPath = (url: string): string => {
-		if (hasEndpoint(url)) return url;
-		try {
-			const parsed = new URL(url);
-			parsed.pathname = `${parsed.pathname.replace(/\/$/, "")}${desiredPath}`;
-			return parsed.toString();
-		} catch {
-			return `${url.replace(/\/$/, "")}${desiredPath}`;
-		}
-	};
-
-	try {
-		const url = new URL(baseUrl);
-
-		// Proxy form: https://proxy/?url=<encoded-upstream>
-		if (url.searchParams.has("url")) {
-			const upstream = url.searchParams.get("url") ?? ""; // already decoded by URLSearchParams
-			const normalizedUpstream = appendPath(upstream);
-			if (normalizedUpstream === upstream) {
-				return baseUrl; // already had endpoint
-			}
-			url.searchParams.set("url", normalizedUpstream);
-			return url.toString();
-		}
-
-		// Non-proxy: mutate pathname directly to avoid putting path after query
-		if (!hasEndpoint(url.pathname)) {
-			url.pathname = `${url.pathname.replace(/\/$/, "")}${desiredPath}`;
-		}
-		return url.toString();
-	} catch {
-		// Fallback for malformed URLs
-		return appendPath(baseUrl);
-	}
-}
-
 /**
  * OpenAI/OpenRouter provider with automatic prompt caching (no explicit cache_control needed).
  * Caching is automatic for prompts >= 1024 tokens.
@@ -90,7 +43,7 @@ export function resolveOpenAIUrlForTest(
 	baseUrl: string,
 	api: "openai-responses" | "openai-completions",
 ): string {
-	return resolveOpenAIUrl(baseUrl, api);
+	return normalizeLLMBaseUrl(baseUrl, "openai", api);
 }
 
 export async function* streamOpenAI(
@@ -225,7 +178,11 @@ export async function* streamOpenAI(
 		...options.headers,
 	};
 
-	const targetUrl = resolveOpenAIUrl(model.baseUrl, model.api);
+	const targetUrl = normalizeLLMBaseUrl(
+		model.baseUrl,
+		model.provider,
+		model.api,
+	);
 
 	const response = await fetch(targetUrl, {
 		method: "POST",
