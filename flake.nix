@@ -22,6 +22,7 @@
 
           nativeBuildInputs = with pkgs; [
             nodejs
+            bun
             makeWrapper
           ];
 
@@ -82,6 +83,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             nodejs
+            bun
             nodePackages.npm
             nodePackages.typescript
             git
