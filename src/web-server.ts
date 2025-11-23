@@ -3,14 +3,13 @@
  */
 
 import { execSync } from "node:child_process";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import {
 	type IncomingMessage,
 	type ServerResponse,
 	createServer,
 } from "node:http";
-import { dirname, join, normalize } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, parse } from "node:url";
 import type {
 	ComposerChatRequest,
@@ -30,10 +29,8 @@ import {
 	type RegisteredModel,
 	getComposerCustomConfig,
 	getCustomConfigPath,
-	getFactoryDefaultModelSelection,
 	getRegisteredModels,
 	reloadModelConfig,
-	resolveAlias,
 } from "./models/registry.js";
 import { getEnvVarsForProvider } from "./providers/api-keys.js";
 import {
@@ -47,30 +44,25 @@ import { backgroundTaskManager } from "./tools/background-tasks.js";
 import { codingTools } from "./tools/index.js";
 import { getUsageFilePath, getUsageSummary } from "./tracking/cost-tracker.js";
 import {
+	determineModelSelection,
+	getRegisteredModelOrThrow,
+} from "./web/model-selection.js";
+import { type Route, createRequestHandler } from "./web/router.js";
+import {
+	ApiError,
+	authenticateRequest,
+	createCorsHeaders,
+	respondWithApiError,
+	sendJson,
+} from "./web/server-utils.js";
+import {
 	convertAppMessagesToComposer,
 	convertComposerMessagesToApp,
 } from "./web/session-serialization.js";
+import { SseSession, sendSSE, sendSessionUpdate } from "./web/sse-session.js";
+import { serveStatic } from "./web/static-server.js";
 
 loadEnv();
-
-class ApiError extends Error {
-	constructor(
-		public statusCode: number,
-		message: string,
-	) {
-		super(message);
-	}
-}
-
-interface ModelSelection {
-	provider: string;
-	modelId: string;
-}
-
-interface ParsedModelInput {
-	provider?: string;
-	modelId?: string;
-}
 
 function normalizeApprovalMode(value?: string | null): ApprovalMode {
 	const normalized = value?.trim().toLowerCase();
@@ -152,57 +144,6 @@ function buildMissingCredentialMessage(provider: string): string {
 	return `Credentials are required for provider "${provider}".`;
 }
 
-function getRequestToken(req: IncomingMessage): string | null {
-	const authHeader = req.headers.authorization;
-	if (authHeader?.startsWith("Bearer ")) {
-		return authHeader.slice(7).trim() || null;
-	}
-	const apiKeyHeader = req.headers["x-composer-api-key"];
-	if (Array.isArray(apiKeyHeader)) {
-		return apiKeyHeader[0]?.trim() || null;
-	}
-	if (typeof apiKeyHeader === "string") {
-		return apiKeyHeader.trim() || null;
-	}
-	return null;
-}
-
-function secureCompare(value: string, secret: string): boolean {
-	const hashProvided = createHash("sha256").update(value).digest();
-	const hashSecret = createHash("sha256").update(secret).digest();
-	return timingSafeEqual(hashProvided, hashSecret);
-}
-
-function authenticateRequest(
-	req: IncomingMessage,
-	res: ServerResponse,
-): boolean {
-	if (!WEB_API_KEY) {
-		return true;
-	}
-	const provided = getRequestToken(req);
-	if (!provided || !secureCompare(provided, WEB_API_KEY)) {
-		if (!res.writableEnded) {
-			res.writeHead(401, {
-				"Content-Type": "application/json",
-				...CORS_HEADERS,
-			});
-			res.end(JSON.stringify({ error: "Unauthorized" }));
-		}
-		return false;
-	}
-	return true;
-}
-
-function sendJson(res: ServerResponse, status: number, payload: unknown): void {
-	if (res.writableEnded) return;
-	res.writeHead(status, {
-		"Content-Type": "application/json",
-		...CORS_HEADERS,
-	});
-	res.end(JSON.stringify(payload));
-}
-
 function readRequestBody(
 	req: IncomingMessage,
 	limit = MAX_BODY_BYTES,
@@ -243,122 +184,9 @@ async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 	}
 }
 
-function parseModelInput(modelInput?: string | null): ParsedModelInput {
-	const normalized = modelInput?.trim();
-	if (!normalized) {
-		return {};
-	}
-
-	const delimiter = normalized.includes(":")
-		? ":"
-		: normalized.includes("/")
-			? "/"
-			: null;
-
-	if (!delimiter) {
-		return { modelId: normalized };
-	}
-
-	const parts = normalized.split(delimiter);
-	if (parts.length !== 2) {
-		throw new ApiError(400, `Invalid model format: "${normalized}"`);
-	}
-
-	const [providerPart, modelPart] = parts;
-	const provider = providerPart?.trim() || undefined;
-	const modelId = modelPart?.trim() || undefined;
-	return { provider, modelId };
-}
-
-function resolveModelAlias(parts: ParsedModelInput): ParsedModelInput {
-	if (!parts.modelId) {
-		return parts;
-	}
-	const alias = resolveAlias(parts.modelId);
-	if (!alias) {
-		return parts;
-	}
-	if (parts.provider && parts.provider !== alias.provider) {
-		throw new ApiError(
-			400,
-			`Alias "${parts.modelId}" maps to ${alias.provider}/${alias.modelId}, but provider "${parts.provider}" was requested`,
-		);
-	}
-	return { provider: alias.provider, modelId: alias.modelId };
-}
-
-function determineModelSelection(modelInput?: string | null): ModelSelection {
-	let parts = parseModelInput(modelInput);
-	parts = resolveModelAlias(parts);
-
-	if (parts.provider && !parts.modelId) {
-		throw new ApiError(400, "Model id is required when specifying a provider");
-	}
-
-	if (!parts.provider && parts.modelId) {
-		parts.provider = DEFAULT_PROVIDER;
-	}
-
-	if (!parts.provider && !parts.modelId) {
-		const factoryDefault = getFactoryDefaultModelSelection();
-		if (factoryDefault) {
-			return {
-				provider: factoryDefault.provider,
-				modelId: factoryDefault.modelId,
-			};
-		}
-		return {
-			provider: DEFAULT_PROVIDER,
-			modelId: DEFAULT_MODEL_ID,
-		};
-	}
-
-	const finalProvider = parts.provider;
-	const finalModelId = parts.modelId;
-	if (!finalProvider || !finalModelId) {
-		throw new ApiError(400, "Model selection is incomplete");
-	}
-
-	return {
-		provider: finalProvider,
-		modelId: finalModelId,
-	};
-}
-
-function getRegisteredModelOrThrow(selection: ModelSelection): RegisteredModel {
-	const registeredModel = getRegisteredModels().find(
-		(entry) =>
-			entry.provider === selection.provider && entry.id === selection.modelId,
-	);
-	if (!registeredModel) {
-		throw new ApiError(
-			404,
-			`Model ${selection.provider}/${selection.modelId} not found in registry`,
-		);
-	}
-	return registeredModel;
-}
-
-function respondWithApiError(
-	res: ServerResponse,
-	error: unknown,
-	fallbackStatus = 500,
-): boolean {
-	if (error instanceof ApiError) {
-		sendJson(res, error.statusCode, { error: error.message });
-		return true;
-	}
-	if (fallbackStatus) {
-		sendJson(res, fallbackStatus, {
-			error: error instanceof Error ? error.message : "Internal server error",
-		});
-		return true;
-	}
-	return false;
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const WEB_ROOT = join(__dirname, "../packages/web");
 
 let currentModelKey: string | null = null;
 
@@ -380,192 +208,87 @@ function getActiveModel(): RegisteredModel | null {
 	return models[0] ?? null;
 }
 
+const routes: Route[] = [
+	{
+		method: "GET",
+		path: "/api/models",
+		handler: (_req, res) => handleModels(res),
+	},
+	{
+		method: "GET",
+		path: "/api/status",
+		handler: (_req, res) => handleStatus(res),
+	},
+	{
+		method: "GET",
+		path: "/api/config",
+		handler: (req, res) => handleConfig(req, res),
+	},
+	{
+		method: "POST",
+		path: "/api/config",
+		handler: (req, res) => handleConfig(req, res),
+	},
+	{
+		method: "GET",
+		path: "/api/usage",
+		handler: (req, res) => handleUsage(req, res),
+	},
+	{
+		method: "GET",
+		path: "/api/model",
+		handler: (req, res) => handleModel(req, res),
+	},
+	{
+		method: "POST",
+		path: "/api/model",
+		handler: (req, res) => handleModel(req, res),
+	},
+	{
+		method: "POST",
+		path: "/api/chat",
+		handler: (req, res) => handleChat(req, res),
+	},
+	{
+		method: "GET",
+		path: "/api/sessions",
+		handler: (req, res) => handleSessions(req, res),
+	},
+	{
+		method: "POST",
+		path: "/api/sessions",
+		handler: (req, res) => handleSessions(req, res),
+	},
+	{
+		method: "GET",
+		path: "/api/sessions/:id",
+		handler: (req, res, params) => handleSessions(req, res, params),
+	},
+	{
+		method: "DELETE",
+		path: "/api/sessions/:id",
+		handler: (req, res, params) => handleSessions(req, res, params),
+	},
+];
+
 /**
  * CORS headers for web requests
  */
 const ALLOWED_ORIGIN = DEFAULT_WEB_ORIGIN;
-const CORS_HEADERS: Record<string, string> = {
-	"Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-	"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-	"Access-Control-Allow-Headers":
-		"Content-Type, Authorization, X-Composer-Api-Key, X-Composer-Approval-Mode",
-	"Access-Control-Max-Age": "86400",
-};
-
-if (ALLOWED_ORIGIN !== "*") {
-	CORS_HEADERS["Access-Control-Allow-Credentials"] = "true";
-}
+const CORS_HEADERS = createCorsHeaders(ALLOWED_ORIGIN);
+const router = createRequestHandler(routes, (req, res, pathname) => {
+	if (pathname.startsWith("/api")) {
+		sendJson(res, 404, { error: "Not found" }, CORS_HEADERS);
+		return;
+	}
+	serveStatic(pathname, req, res, {
+		webRoot: WEB_ROOT,
+		corsHeaders: CORS_HEADERS,
+	});
+});
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_BODY_BYTES = 1_000_000;
-
-interface SseContext {
-	sessionId?: string;
-	modelKey?: string;
-	requestId?: string;
-}
-
-type SseSkipListener = (metrics: {
-	sent: number;
-	skipped: number;
-	lastError?: unknown;
-	context?: SseContext;
-}) => void;
-
-type SseResponse = Pick<
-	ServerResponse<IncomingMessage>,
-	"write" | "end" | "writable" | "writableEnded" | "destroyed"
-> & {
-	flushHeaders?: () => void;
-};
-
-class SseSession {
-	private closed = false;
-	private heartbeat?: NodeJS.Timeout;
-	private skippedWrites = 0;
-	private sentWrites = 0;
-	private lastError?: unknown;
-	private context: SseContext = {};
-	constructor(
-		private readonly res: SseResponse,
-		private readonly onSkip?: SseSkipListener,
-		context?: SseContext,
-	) {
-		if (context) {
-			this.context = context;
-		}
-		if (typeof res.flushHeaders === "function") {
-			try {
-				res.flushHeaders();
-			} catch {
-				// Ignore flush errors; writes are still guarded
-			}
-		}
-	}
-
-	private canWrite(): boolean {
-		return (
-			!!this.res &&
-			this.res.writable !== false &&
-			!this.res.writableEnded &&
-			!this.res.destroyed
-		);
-	}
-
-	private write(payload: string): boolean {
-		if (!this.canWrite()) {
-			this.skippedWrites++;
-			this.notifySkip();
-			return false;
-		}
-		try {
-			this.res.write(payload);
-			this.sentWrites++;
-			return true;
-		} catch (error) {
-			this.skippedWrites++;
-			this.lastError = error;
-			console.debug(
-				"SSE write skipped after disconnect",
-				error instanceof Error ? error.message : error,
-			);
-			this.notifySkip();
-			return false;
-		}
-	}
-
-	sendEvent(event: AgentEvent): void {
-		const data = JSON.stringify(event);
-		this.write(`data: ${data}\n\n`);
-	}
-
-	sendSessionUpdate(sessionId: string): void {
-		const payload = { type: "session_update", sessionId };
-		this.write(`data: ${JSON.stringify(payload)}\n\n`);
-	}
-
-	sendHeartbeat(): void {
-		this.write('data: {"type":"heartbeat"}\n\n');
-	}
-
-	sendAborted(): void {
-		this.write('data: {"type":"aborted"}\n\n');
-	}
-
-	sendDone(): void {
-		this.write("data: [DONE]\n\n");
-	}
-
-	startHeartbeat(): void {
-		this.stopHeartbeat();
-		this.heartbeat = setInterval(
-			() => this.sendHeartbeat(),
-			HEARTBEAT_INTERVAL_MS,
-		);
-	}
-
-	stopHeartbeat(): void {
-		if (this.heartbeat) {
-			clearInterval(this.heartbeat);
-			this.heartbeat = undefined;
-		}
-	}
-
-	end(): void {
-		if (this.closed) return;
-		this.closed = true;
-		this.stopHeartbeat();
-		if (!this.canWrite()) {
-			return;
-		}
-		try {
-			this.res.end();
-		} catch (error) {
-			this.skippedWrites++;
-			this.lastError = error;
-			console.debug(
-				"SSE end skipped after disconnect",
-				error instanceof Error ? error.message : error,
-			);
-			this.notifySkip();
-		}
-	}
-
-	getMetrics(): { sent: number; skipped: number; lastError?: unknown } {
-		return {
-			sent: this.sentWrites,
-			skipped: this.skippedWrites,
-			lastError: this.lastError,
-		};
-	}
-
-	setContext(context: SseContext): void {
-		this.context = { ...this.context, ...context };
-	}
-
-	private notifySkip(): void {
-		if (this.skippedWrites <= 1) return;
-		if (this.onSkip) {
-			this.onSkip({
-				sent: this.sentWrites,
-				skipped: this.skippedWrites,
-				lastError: this.lastError,
-				context: this.context,
-			});
-		}
-	}
-}
-
-/**
- * Server-Sent Events (SSE) streaming for chat responses
- */
-function sendSSE(session: SseSession, event: AgentEvent) {
-	session.sendEvent(event);
-}
-
-function sendSessionUpdate(session: SseSession, sessionId: string) {
-	session.sendSessionUpdate(sessionId);
-}
 
 /**
  * Create and configure Composer agent
@@ -616,7 +339,7 @@ function handleModels(res: ServerResponse) {
 		},
 	}));
 
-	sendJson(res, 200, { models: modelList });
+	sendJson(res, 200, { models: modelList }, CORS_HEADERS);
 }
 
 /**
@@ -672,9 +395,9 @@ function handleStatus(res: ServerResponse) {
 			lastLatencyMs: Date.now() - startedAt,
 		};
 
-		sendJson(res, 200, status);
+		sendJson(res, 200, status, CORS_HEADERS);
 	} catch (error) {
-		respondWithApiError(res, error, 500);
+		respondWithApiError(res, error, 500, CORS_HEADERS);
 	}
 }
 
@@ -686,9 +409,9 @@ async function handleConfig(req: IncomingMessage, res: ServerResponse) {
 		try {
 			const config = getComposerCustomConfig();
 			const configPath = getCustomConfigPath();
-			sendJson(res, 200, { config, configPath });
+			sendJson(res, 200, { config, configPath }, CORS_HEADERS);
 		} catch (error) {
-			respondWithApiError(res, error, 500);
+			respondWithApiError(res, error, 500, CORS_HEADERS);
 		}
 	} else if (req.method === "POST") {
 		try {
@@ -696,9 +419,9 @@ async function handleConfig(req: IncomingMessage, res: ServerResponse) {
 			const configPath = getCustomConfigPath();
 			writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
 			await reloadModelConfig();
-			sendJson(res, 200, { success: true });
+			sendJson(res, 200, { success: true }, CORS_HEADERS);
 		} catch (error) {
-			respondWithApiError(res, error, 500);
+			respondWithApiError(res, error, 500, CORS_HEADERS);
 		}
 	}
 }
@@ -761,31 +484,41 @@ function handleUsage(req: IncomingMessage, res: ServerResponse) {
 			return mapped;
 		};
 
-		sendJson(res, 200, {
-			summary: {
-				...summary,
-				totalTokensDetailed: totals,
-				totalTokensBreakdown: totals,
-				totalCachedTokens: totals.cacheRead + totals.cacheWrite,
-				byProvider: mapBreakdowns(summary.byProvider),
-				byModel: mapBreakdowns(summary.byModel),
+		sendJson(
+			res,
+			200,
+			{
+				summary: {
+					...summary,
+					totalTokensDetailed: totals,
+					totalTokensBreakdown: totals,
+					totalCachedTokens: totals.cacheRead + totals.cacheWrite,
+					byProvider: mapBreakdowns(summary.byProvider),
+					byModel: mapBreakdowns(summary.byModel),
+				},
+				hasData,
 			},
-			hasData,
-		});
+			CORS_HEADERS,
+		);
 	} catch (error) {
-		respondWithApiError(res, error, 500);
+		respondWithApiError(res, error, 500, CORS_HEADERS);
 	}
 }
 
 function respondWithModel(res: ServerResponse, model: RegisteredModel) {
-	sendJson(res, 200, {
-		id: model.id,
-		provider: model.provider,
-		name: model.name,
-		contextWindow: model.contextWindow,
-		maxTokens: model.maxTokens,
-		reasoning: model.reasoning,
-	});
+	sendJson(
+		res,
+		200,
+		{
+			id: model.id,
+			provider: model.provider,
+			name: model.name,
+			contextWindow: model.contextWindow,
+			maxTokens: model.maxTokens,
+			reasoning: model.reasoning,
+		},
+		CORS_HEADERS,
+	);
 }
 
 async function handleModel(req: IncomingMessage, res: ServerResponse) {
@@ -808,17 +541,21 @@ async function handleModel(req: IncomingMessage, res: ServerResponse) {
 			const payload = await readJsonBody<{ model?: string }>(req);
 			const modelInput = (payload.model || "").trim();
 			if (!modelInput) {
-				sendJson(res, 400, { error: "Model is required" });
+				sendJson(res, 400, { error: "Model is required" }, CORS_HEADERS);
 				return;
 			}
 
-			const selection = determineModelSelection(modelInput);
+			const selection = determineModelSelection(
+				modelInput,
+				DEFAULT_PROVIDER,
+				DEFAULT_MODEL_ID,
+			);
 			const registeredModel = getRegisteredModelOrThrow(selection);
 			await ensureCredential(registeredModel.provider);
 			currentModelKey = `${registeredModel.provider}/${registeredModel.id}`;
 			respondWithModel(res, registeredModel);
 		} catch (error) {
-			respondWithApiError(res, error, 400);
+			respondWithApiError(res, error, 400, CORS_HEADERS);
 		}
 		return;
 	}
@@ -845,7 +582,11 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
 			}
 		}
 
-		const selection = determineModelSelection(chatReq.model);
+		const selection = determineModelSelection(
+			chatReq.model,
+			DEFAULT_PROVIDER,
+			DEFAULT_MODEL_ID,
+		);
 		const registeredModel = getRegisteredModelOrThrow(selection);
 		await ensureCredential(registeredModel.provider);
 		const headerApproval = (() => {
@@ -880,19 +621,29 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
 			? (chatReq.messages as ComposerMessage[])
 			: [];
 		if (incomingMessages.length === 0) {
-			sendJson(res, 400, { error: "No messages supplied" });
+			sendJson(res, 400, { error: "No messages supplied" }, CORS_HEADERS);
 			return;
 		}
 
 		const latestMessage = incomingMessages[incomingMessages.length - 1];
 		if (!latestMessage || latestMessage.role !== "user") {
-			sendJson(res, 400, { error: "Last message must be a user message" });
+			sendJson(
+				res,
+				400,
+				{ error: "Last message must be a user message" },
+				CORS_HEADERS,
+			);
 			return;
 		}
 
 		const userInput = (latestMessage.content ?? "").trim();
 		if (!userInput) {
-			sendJson(res, 400, { error: "User message cannot be empty" });
+			sendJson(
+				res,
+				400,
+				{ error: "User message cannot be empty" },
+				CORS_HEADERS,
+			);
 			return;
 		}
 
@@ -999,7 +750,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
 		}
 	} catch (error) {
 		console.error("Chat error:", error);
-		respondWithApiError(res, error, 500);
+		respondWithApiError(res, error, 500, CORS_HEADERS);
 	}
 }
 
@@ -1009,14 +760,15 @@ async function handleChat(req: IncomingMessage, res: ServerResponse) {
 async function handleSessions(
 	req: IncomingMessage,
 	res: ServerResponse,
-	pathname: string,
+	params: { id?: string } = {},
 ) {
 	const sessionManager = new SessionManager(true);
 	const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
+	const sessionId = params.id;
 
 	try {
 		// GET /api/sessions - List all sessions
-		if (req.method === "GET" && pathname === "/api/sessions") {
+		if (req.method === "GET" && !sessionId) {
 			const sessions = await sessionManager.listSessions();
 			const sessionList: ComposerSessionSummary[] = sessions.map((s) => ({
 				id: s.id,
@@ -1026,19 +778,18 @@ async function handleSessions(
 				messageCount: s.messageCount || 0,
 			}));
 
-			sendJson(res, 200, { sessions: sessionList });
+			sendJson(res, 200, { sessions: sessionList }, CORS_HEADERS);
 		}
 		// GET /api/sessions/:id - Get specific session
-		else if (req.method === "GET" && pathname.startsWith("/api/sessions/")) {
-			const sessionId = pathname.replace("/api/sessions/", "");
+		else if (req.method === "GET" && sessionId) {
 			if (!sessionIdPattern.test(sessionId)) {
-				sendJson(res, 400, { error: "Invalid session id" });
+				sendJson(res, 400, { error: "Invalid session id" }, CORS_HEADERS);
 				return;
 			}
 			const session = await sessionManager.loadSession(sessionId);
 
 			if (!session) {
-				sendJson(res, 404, { error: "Session not found" });
+				sendJson(res, 404, { error: "Session not found" }, CORS_HEADERS);
 				return;
 			}
 
@@ -1051,10 +802,10 @@ async function handleSessions(
 				messages: convertAppMessagesToComposer(session.messages || []),
 			};
 
-			sendJson(res, 200, responseBody);
+			sendJson(res, 200, responseBody, CORS_HEADERS);
 		}
 		// POST /api/sessions - Create new session
-		else if (req.method === "POST" && pathname === "/api/sessions") {
+		else if (req.method === "POST" && !sessionId) {
 			const { title } = await readJsonBody<{ title?: string }>(req);
 			const session = await sessionManager.createSession({ title });
 			const responseBody: ComposerSession = {
@@ -1066,13 +817,12 @@ async function handleSessions(
 				messages: convertAppMessagesToComposer(session.messages || []),
 			};
 
-			sendJson(res, 201, responseBody);
+			sendJson(res, 201, responseBody, CORS_HEADERS);
 		}
 		// DELETE /api/sessions/:id - Delete session
-		else if (req.method === "DELETE" && pathname.startsWith("/api/sessions/")) {
-			const sessionId = pathname.replace("/api/sessions/", "");
+		else if (req.method === "DELETE" && sessionId) {
 			if (!sessionIdPattern.test(sessionId)) {
-				sendJson(res, 400, { error: "Invalid session id" });
+				sendJson(res, 400, { error: "Invalid session id" }, CORS_HEADERS);
 				return;
 			}
 			await sessionManager.deleteSession(sessionId);
@@ -1088,63 +838,7 @@ async function handleSessions(
 		}
 	} catch (error) {
 		console.error("Session error:", error);
-		respondWithApiError(res, error, 500);
-	}
-}
-
-/**
- * Serve static files from web package
- */
-function serveStatic(pathname: string, res: ServerResponse) {
-	// Map paths to files
-	const webRoot = join(__dirname, "../packages/web");
-	let filePath: string;
-
-	if (pathname === "/" || pathname === "") {
-		filePath = join(webRoot, "index.html");
-	} else if (pathname.startsWith("/src/")) {
-		// Serve source files for dev mode
-		filePath = join(webRoot, pathname);
-	} else {
-		filePath = join(webRoot, pathname);
-	}
-
-	const normalizedPath = normalize(filePath);
-	if (!normalizedPath.startsWith(webRoot)) {
-		res.writeHead(403, { "Content-Type": "text/plain" });
-		res.end("Forbidden");
-		return;
-	}
-
-	if (!existsSync(filePath)) {
-		res.writeHead(404, { "Content-Type": "text/plain" });
-		res.end("Not Found");
-		return;
-	}
-
-	// Determine content type
-	const ext = filePath.split(".").pop();
-	const contentTypes: Record<string, string> = {
-		html: "text/html",
-		js: "application/javascript",
-		ts: "application/typescript",
-		css: "text/css",
-		json: "application/json",
-	};
-
-	const contentType = contentTypes[ext || ""] || "text/plain";
-
-	try {
-		const content = readFileSync(filePath);
-		res.writeHead(200, {
-			"Content-Type": contentType,
-			...CORS_HEADERS,
-		});
-		res.end(content);
-	} catch (error) {
-		console.error("Error serving file:", error);
-		res.writeHead(500, { "Content-Type": "text/plain" });
-		res.end("Internal Server Error");
+		respondWithApiError(res, error, 500, CORS_HEADERS);
 	}
 }
 
@@ -1165,34 +859,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	}
 
 	if (pathname.startsWith("/api")) {
-		if (!authenticateRequest(req, res)) {
+		if (!authenticateRequest(req, res, CORS_HEADERS, WEB_API_KEY)) {
 			return;
 		}
 	}
 
-	// API routes
-	if (pathname === "/api/models" && req.method === "GET") {
-		handleModels(res);
-	} else if (pathname === "/api/model") {
-		await handleModel(req, res);
-	} else if (pathname === "/api/status" && req.method === "GET") {
-		handleStatus(res);
-	} else if (
-		pathname === "/api/config" &&
-		(req.method === "GET" || req.method === "POST")
-	) {
-		await handleConfig(req, res);
-	} else if (pathname === "/api/usage" && req.method === "GET") {
-		handleUsage(req, res);
-	} else if (pathname === "/api/chat" && req.method === "POST") {
-		await handleChat(req, res);
-	} else if (pathname.startsWith("/api/sessions")) {
-		await handleSessions(req, res, pathname);
-	}
-	// Static files
-	else {
-		serveStatic(pathname, res);
-	}
+	await router(req, res, pathname);
 }
 
 /**
