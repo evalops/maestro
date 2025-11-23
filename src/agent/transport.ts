@@ -141,6 +141,7 @@ export class ProviderTransport implements AgentTransport {
 						type: "message_end",
 						message: currentAssistantMessage,
 					};
+				}
 
 				hasMoreToolCalls = toolCallsToExecute.length > 0;
 
@@ -235,22 +236,21 @@ export class ProviderTransport implements AgentTransport {
 						}
 					}
 
-					allMessages.push(currentAssistantMessage);
+					if (currentAssistantMessage) {
+						allMessages.push(currentAssistantMessage);
+					}
 					allMessages.push(...toolResults);
-				} else {
-					break;
 				}
+			} else if (event.type === "error") {
+				if (currentAssistantMessage) {
+					yield {
+						type: "message_end",
+						message: currentAssistantMessage,
+					};
+				}
+				hasMoreToolCalls = false;
 			}
-		} else if (event.type === "error") {
-			if (currentAssistantMessage) {
-				yield {
-					type: "message_end",
-					message: currentAssistantMessage,
-				};
-			}
-			hasMoreToolCalls = false;
 		}
-	}
-}
+		}
 	}
 }
