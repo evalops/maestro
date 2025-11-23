@@ -5,12 +5,13 @@ import { getStoredCredentials } from "../../src/agent/keys.js";
 
 const tempDir = join(process.cwd(), ".tmp-keys-test");
 const tempFile = join(tempDir, "keys.json");
-const tempFactoryConfig = join(tempDir, "factory-config.json");
+const tempFactoryConfig = join(tempDir, "config.json");
 
 describe("getStoredCredentials", () => {
 	beforeEach(() => {
 		mkdirSync(tempDir, { recursive: true });
 		process.env.COMPOSER_KEYS_PATH = tempFile;
+		process.env.FACTORY_HOME = tempDir;
 	});
 
 	afterEach(() => {

@@ -56,7 +56,7 @@ export interface ProviderTransportOptions {
 const PROVIDER_ENV_VARS: Record<string, string[]> = {
 	openai: ["OPENAI_API_KEY"],
 	openrouter: ["OPENROUTER_API_KEY"],
-	anthropic: ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"],
+	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
 	groq: ["GROQ_API_KEY"],
 	gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
 	google: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
@@ -66,11 +66,20 @@ const PROVIDER_ENV_VARS: Record<string, string[]> = {
 	exa: ["EXA_API_KEY"],
 };
 
-function resolveEnvApiKey(provider: string): string | undefined {
+function resolveEnvCredential(provider: string): AuthCredential | undefined {
 	const vars = PROVIDER_ENV_VARS[provider] ?? [];
 	for (const name of vars) {
 		const value = process.env[name];
-		if (value) return value;
+		if (!value) continue;
+		const isAnthropicOAuth =
+			provider === "anthropic" && name === "ANTHROPIC_OAUTH_TOKEN";
+		return {
+			provider,
+			token: value,
+			type: isAnthropicOAuth ? "anthropic-oauth" : "api-key",
+			source: isAnthropicOAuth ? "anthropic_oauth_env" : "env",
+			envVar: name,
+		};
 	}
 	return undefined;
 }
@@ -174,14 +183,9 @@ export class ProviderTransport implements AgentTransport {
 			}
 		}
 		if (!credential) {
-			const envKey = resolveEnvApiKey(model.provider);
-			if (envKey) {
-				credential = {
-					provider: model.provider,
-					token: envKey,
-					type: "api-key",
-					source: "env",
-				};
+			const envCredential = resolveEnvCredential(model.provider);
+			if (envCredential) {
+				credential = envCredential;
 			}
 		}
 

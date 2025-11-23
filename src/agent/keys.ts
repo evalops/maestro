@@ -14,12 +14,19 @@ const DEFAULT_KEYS_PATH = join(
 	"keys.json",
 );
 const PROJECT_KEYS_PATH = join(process.cwd(), ".composer", "keys.json");
-const FACTORY_HOME = process.env.FACTORY_HOME ?? join(process.env.HOME ?? "", ".factory");
-const FACTORY_KEYS_PATH = join(FACTORY_HOME, "keys.json");
-const FACTORY_CONFIG_PATH = join(FACTORY_HOME, "config.json");
+
+function getFactoryPaths(): { keysPath: string; configPath: string } {
+	const factoryHome =
+		process.env.FACTORY_HOME ?? join(process.env.HOME ?? "", ".factory");
+	return {
+		keysPath: join(factoryHome, "keys.json"),
+		configPath: join(factoryHome, "config.json"),
+	};
+}
 
 function loadStore(pathOverride?: string): KeyStore {
-	const path = pathOverride ?? process.env.COMPOSER_KEYS_PATH ?? DEFAULT_KEYS_PATH;
+	const path =
+		pathOverride ?? process.env.COMPOSER_KEYS_PATH ?? DEFAULT_KEYS_PATH;
 	if (!existsSync(path)) return {};
 	try {
 		const raw = readFileSync(path, "utf8");
@@ -34,15 +41,17 @@ export function getStoredCredentials(providerId: string): {
 	apiKey?: string;
 	authType?: StoredKey["authType"];
 } {
-	const stores = [loadStore(DEFAULT_KEYS_PATH), loadStore(PROJECT_KEYS_PATH)];
+	const stores = [loadStore(), loadStore(PROJECT_KEYS_PATH)];
 
 	// Factory keys.json (if present)
-	stores.push(loadStore(FACTORY_KEYS_PATH));
+	const { keysPath: factoryKeysPath, configPath: factoryConfigPath } =
+		getFactoryPaths();
+	stores.push(loadStore(factoryKeysPath));
 
 	// Factory config.json (api_keys map or custom_models api_key)
-	if (existsSync(FACTORY_CONFIG_PATH)) {
+	if (existsSync(factoryConfigPath)) {
 		try {
-			const raw = readFileSync(FACTORY_CONFIG_PATH, "utf8");
+			const raw = readFileSync(factoryConfigPath, "utf8");
 			const parsed = JSON.parse(raw) as {
 				api_keys?: Record<string, string>;
 				custom_models?: Array<{ provider?: string; api_key?: string }>;
