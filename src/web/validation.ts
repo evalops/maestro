@@ -50,7 +50,9 @@ export async function parseAndValidateJson<T>(
 	if (!validate(parsed)) {
 		const message =
 			validate.errors
-				?.map((err: ErrorObject) => `${err.instancePath || "body"} ${err.message}`)
+				?.map(
+					(err: ErrorObject) => `${err.instancePath || "body"} ${err.message}`,
+				)
 				.join("; ") || "Invalid request body";
 		throw new ApiError(400, message);
 	}
