@@ -158,6 +158,15 @@ export EXA_API_KEY=...  # Get yours at https://dashboard.exa.ai/api-keys
 
 Keys in the key store are loaded automatically if a provider env var is missing.
 
+### Provider presets
+
+`composer config init` includes curated presets you can pick interactively or via `--preset <id>`:
+
+- anthropic, openai, groq, openrouter, google-gemini, vertex-ai (ADC), bedrock
+- mistral, lmstudio (local), ollama (local)
+
+For key-based providers, set the matching env var before running (e.g., `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`). Bedrock and Vertex rely on platform credentials/ADC; local providers skip API keys.
+
 ## Providers
 
 Composer supports Anthropic, OpenAI, Google (Gemini), xAI (Grok), Groq, Cerebras, OpenRouter, and ZAI. Set the appropriate API key environment variable (see API Keys section), then use `--provider` and `--model` flags to select your provider and model. Sessions remember the provider/model pair for seamless continuations.

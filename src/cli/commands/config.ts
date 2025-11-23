@@ -17,6 +17,111 @@ import {
 	separator as themedSeparator,
 } from "../../style/theme.js";
 
+import type { Api } from "../../agent/types.js";
+import { getEnvVarsForProvider } from "../../providers/api-keys.js";
+
+type ProviderPreset = {
+	id: string;
+	name: string;
+	api: Api;
+	defaultModel: string;
+	baseUrl?: string;
+	requiresApiKey: boolean;
+	apiKeyEnv?: string;
+	note?: string;
+};
+
+export const PROVIDER_PRESETS: ProviderPreset[] = [
+	{
+		id: "anthropic",
+		name: "Anthropic (Claude)",
+		api: "anthropic-messages",
+		defaultModel: "claude-3-7-sonnet-20250219",
+		baseUrl: "https://api.anthropic.com",
+		requiresApiKey: true,
+		apiKeyEnv: "ANTHROPIC_API_KEY",
+	},
+	{
+		id: "openai",
+		name: "OpenAI (Responses)",
+		api: "openai-responses",
+		defaultModel: "gpt-4o-mini",
+		baseUrl: "https://api.openai.com/v1",
+		requiresApiKey: true,
+		apiKeyEnv: "OPENAI_API_KEY",
+	},
+	{
+		id: "groq",
+		name: "Groq",
+		api: "openai-completions",
+		defaultModel: "llama-3.3-70b-versatile",
+		baseUrl: "https://api.groq.com/openai/v1",
+		requiresApiKey: true,
+		apiKeyEnv: "GROQ_API_KEY",
+	},
+	{
+		id: "openrouter",
+		name: "OpenRouter",
+		api: "openai-completions",
+		defaultModel: "openai/o4-mini",
+		baseUrl: "https://openrouter.ai/api/v1",
+		requiresApiKey: true,
+		apiKeyEnv: "OPENROUTER_API_KEY",
+		note: "Supports many upstreams; accepts OpenAI-compatible keys",
+	},
+	{
+		id: "google-gemini",
+		name: "Google Gemini API",
+		api: "google-generative-ai",
+		defaultModel: "gemini-2.0-flash",
+		baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+		requiresApiKey: true,
+		apiKeyEnv: "GEMINI_API_KEY",
+	},
+	{
+		id: "vertex-ai",
+		name: "Google Vertex AI (Claude/Gemini)",
+		api: "anthropic-messages",
+		defaultModel: "claude-3-7-sonnet@20250219",
+		baseUrl: "https://us-central1-aiplatform.googleapis.com/v1beta1",
+		requiresApiKey: false,
+		note: "Uses ADC; set GOOGLE_APPLICATION_CREDENTIALS or gcloud login",
+	},
+	{
+		id: "bedrock",
+		name: "AWS Bedrock",
+		api: "openai-completions",
+		defaultModel: "anthropic.claude-3-7-sonnet-20250219-v1:0",
+		requiresApiKey: false,
+		note: "Uses AWS credentials + region envs",
+	},
+	{
+		id: "mistral",
+		name: "Mistral",
+		api: "openai-responses",
+		defaultModel: "mistral-large-latest",
+		baseUrl: "https://api.mistral.ai/v1",
+		requiresApiKey: true,
+		apiKeyEnv: "MISTRAL_API_KEY",
+	},
+	{
+		id: "lmstudio",
+		name: "LM Studio (local)",
+		api: "openai-responses",
+		defaultModel: "lmstudio/gemma-3n",
+		baseUrl: "http://127.0.0.1:1234/v1",
+		requiresApiKey: false,
+	},
+	{
+		id: "ollama",
+		name: "Ollama (local)",
+		api: "openai-responses",
+		defaultModel: "ollama/llama3.2",
+		baseUrl: "http://localhost:11434/v1",
+		requiresApiKey: false,
+	},
+];
+
 export interface ConfigShowRenderOptions {
 	hierarchy: string[];
 	homeDir?: string;
@@ -369,76 +474,59 @@ export async function handleConfigInit(): Promise<void> {
 			}
 		}
 
+		// Optional flag: --preset <id> to skip menu
+		const args = process.argv.slice(2);
+		const presetFlagIndex = args.findIndex(
+			(arg) => arg === "--preset" || arg === "-p",
+		);
+		const presetId =
+			presetFlagIndex >= 0 ? (args[presetFlagIndex + 1] ?? "") : "";
+
 		// Step 1: Choose provider
 		console.log(`\n${badge("1. Choose your provider", undefined, "info")}`);
-		console.log("  1) Anthropic (Claude)");
-		console.log("  2) OpenAI (GPT)");
-		console.log("  3) AWS Bedrock");
-		console.log("  4) Google Vertex AI");
-		console.log("  5) LM Studio (local)");
-		console.log("  6) Ollama (local)");
+		PROVIDER_PRESETS.forEach((preset, idx) => {
+			const note = preset.note ? chalk.dim(` — ${preset.note}`) : "";
+			console.log(`  ${idx + 1}) ${preset.name}${note}`);
+		});
 
-		const providerChoice = await rl.question(chalk.cyan("\nProvider (1-6): "));
-
-		let providerId: string;
-		let providerName: string;
-		let baseUrl: string | undefined;
-		let apiType: string;
-		let defaultModel: string;
-		let requiresApiKey = true;
-
-		switch (providerChoice.trim()) {
-			case "1":
-				providerId = "anthropic";
-				providerName = "Anthropic";
-				baseUrl = "https://api.anthropic.com";
-				apiType = "anthropic-messages";
-				defaultModel = "claude-sonnet-4-5";
-				break;
-			case "2":
-				providerId = "openai";
-				providerName = "OpenAI";
-				baseUrl = "https://api.openai.com/v1/chat/completions";
-				apiType = "openai-responses";
-				defaultModel = "gpt-4";
-				break;
-			case "3":
-				providerId = "bedrock";
-				providerName = "AWS Bedrock";
-				// baseUrl will be auto-generated from AWS_REGION
-				apiType = "anthropic-messages";
-				defaultModel = "anthropic.claude-sonnet-4-5-v1:0";
-				break;
-			case "4":
-				providerId = "vertex-ai";
-				providerName = "Google Vertex AI";
-				apiType = "anthropic-messages";
-				defaultModel = "claude-sonnet-4-5@20250929";
-				break;
-			case "5":
-				providerId = "lmstudio";
-				providerName = "LM Studio (local)";
-				baseUrl = "http://127.0.0.1:1234/v1";
-				apiType = "openai-responses";
-				defaultModel = "lmstudio/gemma-3n";
-				requiresApiKey = false;
-				break;
-			case "6":
-				providerId = "ollama";
-				providerName = "Ollama (local)";
-				baseUrl = "http://localhost:11434/v1";
-				apiType = "openai-responses";
-				defaultModel = "ollama/llama3.1";
-				requiresApiKey = false;
-				break;
-			default:
-				console.log(chalk.red("\nInvalid choice. Defaulting to Anthropic."));
-				providerId = "anthropic";
-				providerName = "Anthropic";
-				baseUrl = "https://api.anthropic.com";
-				apiType = "anthropic-messages";
-				defaultModel = "claude-sonnet-4-5";
+		let preset: ProviderPreset | undefined;
+		if (presetId) {
+			const found = PROVIDER_PRESETS.find(
+				(p) => p.id.toLowerCase() === presetId.toLowerCase(),
+			);
+			if (!found) {
+				console.log(
+					chalk.yellow(
+						`\nUnknown preset "${presetId}", falling back to menu selection.`,
+					),
+				);
+			} else {
+				preset = found;
+				console.log(chalk.green(`\nUsing preset: ${preset.name}`));
+			}
 		}
+
+		if (!preset) {
+			const providerChoice = await rl.question(
+				chalk.cyan(`\nProvider (1-${PROVIDER_PRESETS.length}): `),
+			);
+
+			const presetIndex =
+				Number.parseInt(providerChoice.trim(), 10) - 1 >= 0 &&
+				Number.parseInt(providerChoice.trim(), 10) - 1 < PROVIDER_PRESETS.length
+					? Number.parseInt(providerChoice.trim(), 10) - 1
+					: 0;
+			preset = PROVIDER_PRESETS[presetIndex] ?? PROVIDER_PRESETS[0];
+		}
+
+		const {
+			id: providerId,
+			name: providerName,
+			baseUrl,
+			api: apiType,
+		} = preset;
+		const { defaultModel } = preset;
+		const requiresApiKey = preset.requiresApiKey;
 
 		let useEnv = true;
 		let apiKeyField: { apiKeyEnv?: string; apiKey?: string } = {};
@@ -457,9 +545,10 @@ export async function handleConfigInit(): Promise<void> {
 			useEnv = keyChoice.trim() !== "2";
 
 			if (useEnv) {
-				const envVarName = `${providerId
-					.toUpperCase()
-					.replace(/-/g, "_")}_API_KEY`;
+				const fallbackEnv =
+					getEnvVarsForProvider(providerId)[0] ??
+					`${providerId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+				const envVarName = preset.apiKeyEnv ?? fallbackEnv;
 				apiKeyField = { apiKeyEnv: envVarName };
 				console.log(chalk.dim(`\nUsing environment variable: ${envVarName}`));
 			} else {
