@@ -14,6 +14,354 @@ export interface OpenAIOptions extends StreamOptions {
 	reasoningEffort?: "minimal" | "low" | "medium" | "high";
 }
 
+async function* streamResponsesApi(
+	model: Model<"openai-responses">,
+	context: Context,
+	options: OpenAIOptions,
+	messages: OpenAIMessage[],
+): AsyncGenerator<AssistantMessageEvent, void, unknown> {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+		Authorization: `Bearer ${options.apiKey}`,
+		...options.headers,
+	};
+
+	// Responses API accepts "input" with content parts; we only send text parts to stay compatible.
+	const input = messages.map((msg) => {
+		const parts: Array<{ type: "input_text"; text: string }> = [];
+		if (typeof msg.content === "string") {
+			parts.push({ type: "input_text", text: msg.content });
+		} else {
+			for (const c of msg.content) {
+				if ((c as any).text) {
+					parts.push({ type: "input_text", text: (c as any).text });
+				}
+			}
+		}
+		return { role: msg.role, content: parts };
+	});
+
+	const requestBody: any = {
+		model: model.id,
+		input,
+		stream: true,
+		tools:
+			context.tools?.map((tool) => ({
+				type: "function",
+				function: {
+					name: tool.name,
+					description: tool.description,
+					parameters: tool.parameters,
+				},
+			})) ?? [],
+	};
+
+	if (options.maxTokens !== undefined) {
+		requestBody.max_output_tokens = options.maxTokens;
+	}
+
+	if (options.reasoningEffort && model.reasoning) {
+		requestBody.reasoning = { effort: options.reasoningEffort };
+	}
+
+	const targetUrl = normalizeLLMBaseUrl(
+		model.baseUrl,
+		model.provider,
+		model.api,
+	);
+
+	const response = await fetch(targetUrl, {
+		method: "POST",
+		headers,
+		body: JSON.stringify(requestBody),
+		signal: options.signal,
+	});
+
+	if (!response.ok) {
+		const errorText = await response.text();
+		throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
+	}
+	if (!response.body) throw new Error("Response body is null");
+
+	const partial: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+	yield { type: "start", partial };
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	const toolArgBuffers = new Map<number, string>();
+	const toolEnded = new Set<number>();
+	const textEnded = new Set<number>();
+
+	const ensureTextBlock = (
+		targetIndex: number,
+	): { idx: number; created: boolean } => {
+		while (partial.content.length <= targetIndex) {
+			partial.content.push({ type: "text", text: "" });
+		}
+		const block = partial.content[targetIndex];
+		if (block.type !== "text") {
+			partial.content[targetIndex] = { type: "text", text: "" };
+			return { idx: targetIndex, created: true };
+		}
+		return { idx: targetIndex, created: block.text.length === 0 };
+	};
+
+	const toolState = new Map<
+		string,
+		{ name?: string; args: string; outputIndex: number }
+	>();
+
+	const updateCosts = () => {
+		partial.usage.cost = {
+			input: (partial.usage.input * model.cost.input) / 1_000_000,
+			output: (partial.usage.output * model.cost.output) / 1_000_000,
+			cacheRead: (partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
+			cacheWrite: 0,
+			total: 0,
+		};
+		partial.usage.cost.total =
+			partial.usage.cost.input +
+			partial.usage.cost.output +
+			partial.usage.cost.cacheRead;
+	};
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			const lines = buffer.split("\n");
+			buffer = lines.pop() || "";
+
+			for (const line of lines) {
+				if (!line.trim() || !line.startsWith("data: ")) continue;
+				const data = line.slice(6);
+				if (data === "[DONE]") continue;
+
+				let event: any;
+				try {
+					event = JSON.parse(data);
+				} catch (e) {
+					console.warn("Failed to parse OpenAI Responses event", e);
+					continue;
+				}
+
+				switch (event.type) {
+					case "response.output_text.delta": {
+						const contentIdx = event.content_index ?? 0;
+						const { idx, created } = ensureTextBlock(contentIdx);
+						if (created) {
+							yield { type: "text_start", contentIndex: idx, partial };
+						}
+						(partial.content[idx] as any).text += event.delta || "";
+						yield {
+							type: "text_delta",
+							contentIndex: idx,
+							delta: event.delta || "",
+							partial,
+						};
+						break;
+					}
+					case "response.output_text.done": {
+						const contentIdx = event.content_index ?? 0;
+						const { idx, created } = ensureTextBlock(contentIdx);
+						if (created) {
+							yield { type: "text_start", contentIndex: idx, partial };
+						}
+						yield {
+							type: "text_end",
+							contentIndex: idx,
+							content: (partial.content[idx] as any).text,
+							partial,
+						};
+						textEnded.add(idx);
+						break;
+					}
+					case "response.function_call_arguments.delta": {
+						const callId =
+							(event.call_id as string) || (event.item_id as string);
+						const state = toolState.get(callId) ?? {
+							name: undefined,
+							args: "",
+							outputIndex: event.output_index ?? 0,
+						};
+						state.args += event.delta || "";
+						state.outputIndex = event.output_index ?? state.outputIndex;
+						toolState.set(callId, state);
+
+						while (partial.content.length <= state.outputIndex) {
+							partial.content.push({
+								type: "toolCall",
+								id: "",
+								name: "",
+								arguments: {},
+							});
+						}
+						const block = partial.content[state.outputIndex];
+						if (block.type === "toolCall" && !block.id) {
+							block.id = callId;
+							yield {
+								type: "toolcall_start",
+								contentIndex: state.outputIndex,
+								partial,
+							};
+						}
+						if (block.type === "toolCall") {
+							block.arguments = parseStreamingJson(state.args);
+							yield {
+								type: "toolcall_delta",
+								contentIndex: state.outputIndex,
+								delta: event.delta || "",
+								partial,
+							};
+						}
+						break;
+					}
+					case "response.function_call_arguments.done": {
+						const callId =
+							(event.call_id as string) || (event.item_id as string);
+						const state = toolState.get(callId) ?? {
+							name: event.name,
+							args: event.arguments || "{}",
+							outputIndex: event.output_index ?? 0,
+						};
+						state.name = event.name || state.name;
+						state.args = event.arguments || state.args;
+						state.outputIndex = event.output_index ?? state.outputIndex;
+						toolState.set(callId, state);
+
+						while (partial.content.length <= state.outputIndex) {
+							partial.content.push({
+								type: "toolCall",
+								id: "",
+								name: "",
+								arguments: {},
+							});
+						}
+						const block = partial.content[state.outputIndex];
+						if (block.type === "toolCall") {
+							if (!block.id) {
+								block.id = callId;
+								yield {
+									type: "toolcall_start",
+									contentIndex: state.outputIndex,
+									partial,
+								};
+							}
+							block.id = callId;
+							block.name = state.name || "";
+							try {
+								block.arguments = JSON.parse(state.args);
+							} catch {
+								block.arguments = parseStreamingJson(state.args);
+							}
+							yield {
+								type: "toolcall_end",
+								contentIndex: state.outputIndex,
+								toolCall: block,
+								partial,
+							};
+							toolEnded.add(state.outputIndex);
+						}
+						break;
+					}
+					case "response.completed": {
+						const usage = event.response?.usage;
+						if (usage) {
+							partial.usage.input = usage.input_tokens || 0;
+							partial.usage.output =
+								(usage.output_tokens || 0) +
+								(usage.output_tokens_details?.reasoning_tokens || 0);
+							updateCosts();
+						}
+						partial.stopReason = "stop";
+						break;
+					}
+					case "response.failed": {
+						partial.stopReason = "error";
+						partial.errorMessage = event.response?.error?.message;
+						break;
+					}
+					case "response.done": {
+						for (let i = 0; i < partial.content.length; i++) {
+							const block = partial.content[i];
+							if (block.type === "toolCall" && !toolEnded.has(i)) {
+								yield {
+									type: "toolcall_end",
+									contentIndex: i,
+									toolCall: block,
+									partial,
+								};
+								toolEnded.add(i);
+							} else if (block.type === "text" && !textEnded.has(i)) {
+								yield {
+									type: "text_end",
+									contentIndex: i,
+									content: block.text,
+									partial,
+								};
+								textEnded.add(i);
+							}
+						}
+
+						const usage = event.response?.usage;
+						if (usage) {
+							partial.usage.input = usage.input_tokens || 0;
+							partial.usage.output =
+								(usage.output_tokens || 0) +
+								(usage.output_tokens_details?.reasoning_tokens || 0);
+							updateCosts();
+						}
+						const status = event.response?.status;
+						partial.stopReason =
+							status === "completed"
+								? "stop"
+								: status === "failed"
+									? "error"
+									: status === "cancelled"
+										? "aborted"
+										: "error";
+						yield {
+							type: "done",
+							reason: partial.stopReason as any,
+							message: partial,
+						};
+						break;
+					}
+					default:
+						break;
+				}
+			}
+		}
+	} catch (error: unknown) {
+		if (error instanceof Error && error.name === "AbortError") {
+			partial.stopReason = "aborted";
+			yield { type: "error", reason: "aborted", error: partial };
+		} else {
+			throw error;
+		}
+	} finally {
+		toolState.clear();
+		toolArgBuffers.clear();
+	}
+}
+
 interface OpenAIMessage {
 	role: "system" | "user" | "assistant" | "tool";
 	content:
@@ -139,10 +487,19 @@ export async function* streamOpenAI(
 		}
 	}
 
+	if (model.api === "openai-responses") {
+		return yield* streamResponsesApi(
+			model as Model<"openai-responses">,
+			context,
+			options,
+			messages,
+		);
+	}
+
 	const requestBody: any = {
 		model: model.id,
 		messages,
-		max_tokens: options.maxTokens || model.maxTokens,
+		max_tokens: options.maxTokens ?? model.maxTokens,
 		stream: true,
 		stream_options: { include_usage: true },
 	};
@@ -228,6 +585,24 @@ export async function* streamOpenAI(
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
+	const toolArgBuffers = new Map<number, string>();
+	let cacheAdjusted = false;
+	const textEnded = new Set<number>();
+	const toolEnded = new Set<number>();
+
+	const updateCosts = () => {
+		partial.usage.cost = {
+			input: (partial.usage.input * model.cost.input) / 1_000_000,
+			output: (partial.usage.output * model.cost.output) / 1_000_000,
+			cacheRead: (partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
+			cacheWrite: 0, // OpenAI doesn't charge for cache writes
+			total: 0,
+		};
+		partial.usage.cost.total =
+			partial.usage.cost.input +
+			partial.usage.cost.output +
+			partial.usage.cost.cacheRead;
+	};
 
 	try {
 		while (true) {
@@ -256,12 +631,18 @@ export async function* streamOpenAI(
 								(event.usage.completion_tokens || 0) +
 								(event.usage.completion_tokens_details?.reasoning_tokens || 0);
 							// OpenAI caching: cached_tokens in prompt_tokens_details
-							if (event.usage.prompt_tokens_details?.cached_tokens) {
+							if (
+								event.usage.prompt_tokens_details?.cached_tokens &&
+								!cacheAdjusted
+							) {
 								partial.usage.cacheRead =
 									event.usage.prompt_tokens_details.cached_tokens;
-								// Adjust input tokens to not double count
+								// Adjust input tokens to not double count (only once)
 								partial.usage.input -= partial.usage.cacheRead;
+								cacheAdjusted = true;
 							}
+
+							updateCosts();
 						}
 						continue;
 					}
@@ -269,22 +650,47 @@ export async function* streamOpenAI(
 					const delta = choice.delta;
 
 					if (delta.content) {
-						// Find or create text content block
-						let textBlock = partial.content.find((c) => c.type === "text");
-						if (!textBlock) {
-							const idx = partial.content.length;
-							textBlock = { type: "text", text: "" };
-							partial.content.push(textBlock);
-							yield { type: "text_start", contentIndex: idx, partial };
+						const contentDelta = Array.isArray(delta.content)
+							? delta.content
+									.map((part: unknown) => {
+										if (typeof part === "string")
+											return sanitizeSurrogates(part);
+										if (
+											part &&
+											typeof part === "object" &&
+											"text" in part &&
+											typeof (part as any).text === "string"
+										) {
+											return sanitizeSurrogates((part as any).text);
+										}
+										console.warn("Unsupported OpenAI content part", part);
+										return "";
+									})
+									.filter((s: string) => s.length > 0)
+									.join("")
+							: sanitizeSurrogates(delta.content);
+
+						if (contentDelta && contentDelta.length > 0) {
+							// Find or create text content block
+							let textBlock = partial.content.find((c) => c.type === "text");
+							if (!textBlock) {
+								const idx = partial.content.length;
+								textBlock = { type: "text", text: "" };
+								partial.content.push(textBlock);
+								yield { type: "text_start", contentIndex: idx, partial };
+							}
+							const idx = partial.content.indexOf(textBlock);
+							textBlock.text += contentDelta;
+							if (!textEnded.has(idx)) {
+								// will mark ended on text_end
+							}
+							yield {
+								type: "text_delta",
+								contentIndex: idx,
+								delta: contentDelta,
+								partial,
+							};
 						}
-						const idx = partial.content.indexOf(textBlock);
-						textBlock.text += delta.content;
-						yield {
-							type: "text_delta",
-							contentIndex: idx,
-							delta: delta.content,
-							partial,
-						};
 					}
 
 					// Handle reasoning/thinking content
@@ -335,9 +741,7 @@ export async function* streamOpenAI(
 									id: "",
 									name: "",
 									arguments: {},
-									// Track partial JSON string for progressive parsing
-									partialArgs: "",
-								} as any);
+								});
 							}
 
 							const block = partial.content[idx];
@@ -351,19 +755,14 @@ export async function* streamOpenAI(
 
 							if (toolCall.function?.arguments) {
 								const argsDelta = toolCall.function.arguments;
-
-								// Accumulate partial JSON string
-								if (!(block as any).partialArgs) {
-									(block as any).partialArgs = "";
-								}
-								(block as any).partialArgs += argsDelta;
+								const existing = toolArgBuffers.get(idx) ?? "";
+								const combined = existing + argsDelta;
+								toolArgBuffers.set(idx, combined);
 
 								// Parse streaming JSON progressively
 								// This allows UI to show partial arguments like file paths
 								// before the complete JSON arrives
-								block.arguments = parseStreamingJson(
-									(block as any).partialArgs,
-								);
+								block.arguments = parseStreamingJson(combined);
 
 								yield {
 									type: "toolcall_delta",
@@ -390,15 +789,14 @@ export async function* streamOpenAI(
 							const block = partial.content[i];
 							if (block.type === "toolCall") {
 								// Final parse of accumulated JSON
-								const partialArgs = (block as any).partialArgs || "{}";
+								const partialArgs = toolArgBuffers.get(i) || "{}";
 								try {
 									block.arguments = JSON.parse(partialArgs);
 								} catch {
 									// Fall back to partial parse result
 									block.arguments = parseStreamingJson(partialArgs);
 								}
-								// Clean up temporary field
-								(block as any).partialArgs = undefined;
+								toolArgBuffers.delete(i);
 
 								yield {
 									type: "toolcall_end",
@@ -413,6 +811,7 @@ export async function* streamOpenAI(
 									content: block.text,
 									partial,
 								};
+								textEnded.add(i);
 							} else if (block.type === "thinking") {
 								yield {
 									type: "thinking_end",
@@ -423,19 +822,8 @@ export async function* streamOpenAI(
 							}
 						}
 
-						// Calculate costs
-						partial.usage.cost = {
-							input: (partial.usage.input * model.cost.input) / 1_000_000,
-							output: (partial.usage.output * model.cost.output) / 1_000_000,
-							cacheRead:
-								(partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
-							cacheWrite: 0, // OpenAI doesn't charge for cache writes
-							total: 0,
-						};
-						partial.usage.cost.total =
-							partial.usage.cost.input +
-							partial.usage.cost.output +
-							partial.usage.cost.cacheRead;
+						// Calculate costs one last time (in case no usage block arrived)
+						updateCosts();
 
 						yield {
 							type: "done",

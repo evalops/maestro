@@ -246,8 +246,8 @@ export class ProviderTransport implements AgentTransport {
 					thinking: cfg.reasoning,
 				});
 			} else if (
-				model.api === "openai-responses" ||
-				model.api === "openai-completions"
+				model.api === "openai-completions" ||
+				model.api === "openai-responses"
 			) {
 				stream = streamOpenAI(model as any, currentContext, {
 					...streamOptions,

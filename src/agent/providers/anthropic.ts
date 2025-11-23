@@ -14,6 +14,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types.js";
+import { parseStreamingJson } from "./json-parse.js";
 import { transformMessages } from "./transform-messages.js";
 
 export interface AnthropicOptions extends StreamOptions {
@@ -336,6 +337,7 @@ export async function* streamAnthropic(
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
+	const toolArgBuffers = new Map<number, string>();
 
 	try {
 		while (true) {
@@ -413,15 +415,11 @@ export async function* streamAnthropic(
 							block?.type === "toolCall"
 						) {
 							const partialJson = delta.partial_json || "";
-							(block as any).partialJson =
-								((block as any).partialJson || "") + partialJson;
+							const existing = toolArgBuffers.get(idx) ?? "";
+							const combined = existing + partialJson;
+							toolArgBuffers.set(idx, combined);
 
-							// Try to parse accumulated JSON
-							try {
-								block.arguments = JSON.parse((block as any).partialJson);
-							} catch {
-								// Not complete JSON yet, keep accumulating
-							}
+							block.arguments = parseStreamingJson(combined);
 
 							yield {
 								type: "toolcall_delta",
@@ -449,6 +447,16 @@ export async function* streamAnthropic(
 								partial,
 							};
 						} else if (block?.type === "toolCall") {
+							const buf = toolArgBuffers.get(idx) ?? "";
+							if (buf.length > 0) {
+								try {
+									block.arguments = JSON.parse(buf);
+								} catch {
+									block.arguments = parseStreamingJson(buf);
+								}
+							}
+							toolArgBuffers.delete(idx);
+
 							yield {
 								type: "toolcall_end",
 								contentIndex: idx,
@@ -510,6 +518,8 @@ export async function* streamAnthropic(
 		} else {
 			throw error;
 		}
+	} finally {
+		toolArgBuffers.clear();
 	}
 }
 
