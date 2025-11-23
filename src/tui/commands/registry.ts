@@ -238,6 +238,24 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "background",
+				description:
+					"Configure background task notifications and status redaction",
+				usage: "/background [status|notify <on|off>|details <on|off>|history]",
+				tags: ["diagnostics"],
+				examples: [
+					"/background",
+					"/background notify on",
+					"/background details on",
+					"/background history",
+				],
+			},
+			withArgs("background"),
+			handlers.background,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "review",
 				description: "Summarize git status and diff stats",
 				usage: "/review",

@@ -8,14 +8,37 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 
+import {
+	overrideBackgroundTaskSettingsPath,
+	resetBackgroundTaskSettings,
+	updateBackgroundTaskSettings,
+} from "../src/runtime/background-settings.js";
 import {
 	backgroundTaskManager,
 	backgroundTasksTool,
 	evaluateResourceLimitBreach,
 	extractProcStatFields,
 } from "../src/tools/background-tasks.js";
+
+const settingsRoot = mkdtempSync(join(tmpdir(), "composer-bg-settings-"));
+const settingsPath = join(settingsRoot, "settings.json");
+overrideBackgroundTaskSettingsPath(settingsPath);
+resetBackgroundTaskSettings();
+
+afterAll(() => {
+	overrideBackgroundTaskSettingsPath(null);
+	rmSync(settingsRoot, { recursive: true, force: true });
+});
 
 function getTextOutput(result: any): string {
 	return (
@@ -72,6 +95,8 @@ describe("backgroundTasksTool", () => {
 	let logDir: string;
 
 	beforeEach(() => {
+		resetBackgroundTaskSettings();
+		updateBackgroundTaskSettings({ statusDetailsEnabled: true });
 		logDir = mkdtempSync(join(tmpdir(), "composer-bg-"));
 		process.env.COMPOSER_BACKGROUND_LOG_DIR = logDir;
 		backgroundTaskManager.resetLimits();
@@ -443,6 +468,74 @@ describe("backgroundTasksTool", () => {
 		expect(snapshot).toBeTruthy();
 		expect(snapshot?.entries[0]?.lastLogLine ?? "").toContain("health-check");
 		await backgroundTaskManager.stopTask(taskId);
+	});
+
+	it("redacts sensitive tokens in log previews", async () => {
+		const startResult = await backgroundTasksTool.execute("bg-redact", {
+			action: "start",
+			command:
+				"node -e \"console.log('sk-secret-1234567890abcdef1234567890'); setTimeout(() => {}, 2000)\"",
+		});
+		const taskId = (startResult.details as any)?.id as string;
+		await waitForCondition(() => {
+			const snapshot = backgroundTaskManager.getHealthSnapshot({
+				maxEntries: 1,
+				logLines: 1,
+			});
+			return Boolean(snapshot?.entries[0]?.lastLogLine);
+		});
+		const snapshot = backgroundTaskManager.getHealthSnapshot({
+			maxEntries: 1,
+			logLines: 1,
+		});
+		const preview = snapshot?.entries[0]?.lastLogLine ?? "";
+		expect(preview).toContain("[secret:");
+		expect(preview).not.toContain("sk-secret-1234567890abcdef1234567890");
+		await backgroundTaskManager.stopTask(taskId);
+	});
+
+	it("hides task details when status details are disabled", async () => {
+		updateBackgroundTaskSettings({ statusDetailsEnabled: false });
+		const startResult = await backgroundTasksTool.execute("bg-redacted", {
+			action: "start",
+			command: "node -e \"console.log('one'); setTimeout(() => {}, 2000)\"",
+		});
+		const taskId = (startResult.details as any)?.id as string;
+		await waitForCondition(() => {
+			const snapshot = backgroundTaskManager.getHealthSnapshot({
+				maxEntries: 1,
+				logLines: 1,
+			});
+			return Boolean(snapshot);
+		});
+		const snapshot = backgroundTaskManager.getHealthSnapshot({
+			maxEntries: 1,
+			logLines: 1,
+		});
+		expect(snapshot).toBeTruthy();
+		expect(snapshot?.detailsRedacted).toBe(true);
+		expect(snapshot?.entries.length).toBe(0);
+		await backgroundTaskManager.stopTask(taskId);
+		updateBackgroundTaskSettings({ statusDetailsEnabled: true });
+	});
+
+	it("returns history even when no tasks remain", async () => {
+		const startResult = await backgroundTasksTool.execute("bg-history", {
+			action: "start",
+			command: "node -e \"console.log('history');\"",
+		});
+		const taskId = (startResult.details as any)?.id as string;
+		await waitForCondition(() => {
+			const task = backgroundTaskManager.getTask(taskId);
+			return task?.status === "exited" || task?.status === "failed";
+		});
+		await backgroundTaskManager.stopTask(taskId);
+		backgroundTaskManager.clear();
+		const snapshot = backgroundTaskManager.getHealthSnapshot({
+			historyLimit: 5,
+		});
+		expect(snapshot).toBeTruthy();
+		expect(snapshot?.history.length ?? 0).toBeGreaterThan(0);
 	});
 
 	it("rotates logs into archived segments", async () => {

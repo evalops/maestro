@@ -2,6 +2,11 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import {
+	sanitizeOptionalWithStaticMask,
+	sanitizeWithStaticMask,
+} from "./utils/secret-redactor.js";
+
 type BaseTelemetryEvent = {
 	type:
 		| "tool-execution"
@@ -66,6 +71,12 @@ export interface BackgroundTaskTelemetry extends BaseTelemetryEvent {
 		userMs?: number;
 		systemMs?: number;
 	};
+	failureReason?: string;
+	limitBreach?: {
+		kind: "memory" | "cpu";
+		limit: number;
+		actual: number;
+	};
 }
 
 type TelemetryEvent =
@@ -120,6 +131,8 @@ const samplingRate = parseSamplingRate();
 
 const defaultTelemetryFile = join(homedir(), ".composer", "telemetry.log");
 const toolFailureLogFile = join(homedir(), ".composer", "tool-failures.log");
+const BACKGROUND_TASK_HISTORY_LIMIT = 50;
+const backgroundTaskHistory: BackgroundTaskTelemetry[] = [];
 
 export interface TelemetryStatus {
 	enabled: boolean;
@@ -217,6 +230,34 @@ async function persistTelemetry(event: TelemetryEvent) {
 	await Promise.all(tasks);
 }
 
+function cloneBackgroundTaskTelemetry(
+	event: BackgroundTaskTelemetry,
+): BackgroundTaskTelemetry {
+	return {
+		...event,
+		resourceUsage: event.resourceUsage ? { ...event.resourceUsage } : undefined,
+		limitBreach: event.limitBreach ? { ...event.limitBreach } : undefined,
+	};
+}
+
+function recordBackgroundHistory(event: BackgroundTaskTelemetry): void {
+	backgroundTaskHistory.push(cloneBackgroundTaskTelemetry(event));
+	if (backgroundTaskHistory.length > BACKGROUND_TASK_HISTORY_LIMIT) {
+		backgroundTaskHistory.shift();
+	}
+}
+
+export function getBackgroundTaskHistory(
+	limit = 10,
+): BackgroundTaskTelemetry[] {
+	if (limit <= 0) {
+		return [];
+	}
+	return backgroundTaskHistory
+		.slice(-limit)
+		.map((entry) => cloneBackgroundTaskTelemetry(entry));
+}
+
 export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	if (!telemetryEnabled || samplingRate === 0) {
 		return;
@@ -309,9 +350,15 @@ export function logToolFailure(
 export function recordBackgroundTaskEvent(
 	event: Omit<BackgroundTaskTelemetry, "type" | "timestamp">,
 ): void {
-	void recordTelemetry({
+	const sanitizedCommand = sanitizeWithStaticMask(event.command);
+	const sanitizedFailure = sanitizeOptionalWithStaticMask(event.failureReason);
+	const payload: BackgroundTaskTelemetry = {
 		...event,
+		command: sanitizedCommand,
+		failureReason: sanitizedFailure,
 		type: "background-task",
 		timestamp: new Date().toISOString(),
-	});
+	};
+	recordBackgroundHistory(payload);
+	void recordTelemetry(payload);
 }

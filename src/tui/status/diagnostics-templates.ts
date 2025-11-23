@@ -105,9 +105,15 @@ export function buildStatusSnapshot(info: StatusSnapshotInfo): string {
 	const detailSection = backgroundDetails
 		? `\n${heading("Background task details")}\n${backgroundDetails}\n`
 		: "";
+	const historySection = formatBackgroundTaskHistory(
+		info.health.backgroundTasks,
+	);
+	const historyBlock = historySection
+		? `\n${heading("Background task history")}\n${historySection}\n`
+		: "";
 
 	return `${heading("Status snapshot")}
-${rows.join("\n")}${detailSection}
+${rows.join("\n")}${detailSection}${historyBlock}
 ${muted("Use /diag for a full diagnostic report.")}`;
 }
 
@@ -151,13 +157,24 @@ function formatBackgroundTaskOverview(
 	if (state.truncated) {
 		parts.push(muted("showing latest"));
 	}
+	if (state.detailsRedacted) {
+		parts.push(muted("details off"));
+	}
 	return parts.join(" ");
 }
 
 function formatBackgroundTaskDetails(
 	state?: BackgroundTaskHealth | null,
 ): string | null {
-	if (!state || state.entries.length === 0) {
+	if (!state) {
+		return null;
+	}
+	if (state.detailsRedacted) {
+		return muted(
+			"Background task details disabled. Enable with /background details on.",
+		);
+	}
+	if (state.entries.length === 0) {
 		return null;
 	}
 	const lines = state.entries.map((entry) => formatBackgroundTaskDetail(entry));
@@ -176,4 +193,25 @@ function formatBackgroundTaskDetail(entry: BackgroundTaskHealthEntry): string {
 		? ` ${muted(`restarts ${entry.restarts}`)}`
 		: "";
 	return `- ${entry.summary}${restartLine}${issues}${logLine}`;
+}
+
+function formatBackgroundTaskHistory(
+	state?: BackgroundTaskHealth | null,
+): string | null {
+	if (!state || state.detailsRedacted || state.history.length === 0) {
+		return null;
+	}
+	const lines = state.history.map((entry) => {
+		const timestamp = new Date(entry.timestamp).toLocaleTimeString();
+		const reason = entry.failureReason
+			? ` ${muted(entry.failureReason)}`
+			: entry.limitBreach
+				? ` ${muted(`limit ${entry.limitBreach.kind}`)}`
+				: "";
+		return `- ${timestamp} [${entry.event}] ${entry.taskId} – ${entry.command}${reason}`;
+	});
+	if (state.historyTruncated) {
+		lines.push(muted("…additional events hidden"));
+	}
+	return lines.join("\n");
 }

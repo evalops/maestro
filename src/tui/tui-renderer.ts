@@ -31,6 +31,11 @@ import type {
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import {
+	getBackgroundTaskSettings,
+	subscribeBackgroundTaskSettings,
+	updateBackgroundTaskSettings,
+} from "../runtime/background-settings.js";
+import {
 	type SessionModelMetadata,
 	toSessionModelMetadata,
 } from "../session/manager.js";
@@ -169,6 +174,8 @@ export class TuiRenderer {
 	private pendingTools = new Map<string, ToolExecutionComponent>();
 	private explicitApiKey?: string;
 	private telemetryStatus = getTelemetryStatus();
+	private backgroundSettings = getBackgroundTaskSettings();
+	private backgroundSettingsUnsubscribe?: () => void;
 	private currentModelMetadata?: SessionModelMetadata;
 
 	// Track if this is the first user message (to skip spacer)
@@ -283,6 +290,11 @@ export class TuiRenderer {
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;
 		this.modelScope = options.modelScope ?? [];
+		this.backgroundSettingsUnsubscribe = subscribeBackgroundTaskSettings(
+			(settings) => {
+				this.backgroundSettings = settings;
+			},
+		);
 		this.startupChangelog = options.startupChangelog;
 		this.startupChangelogSummary = options.startupChangelogSummary;
 		this.updateNotice = options.updateNotice;
@@ -718,6 +730,7 @@ export class TuiRenderer {
 				this.ollamaView.handleOllamaCommand(context.rawInput),
 			handleDiagnostics: (context) =>
 				this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
+			handleBackground: (context) => this.handleBackgroundCommand(context),
 			handleCompact: (_context) => this.handleCompactCommand(),
 			handleFooter: (context) => this.handleFooterCommand(context),
 			handleCompactTools: (context) =>
@@ -1416,6 +1429,127 @@ export class TuiRenderer {
 			return;
 		}
 		context.renderHelp();
+	}
+
+	private handleBackgroundCommand(context: CommandExecutionContext): void {
+		const tokens = context.argumentText
+			.trim()
+			.split(/\s+/)
+			.filter((token) => token.length > 0);
+		const action = tokens[0]?.toLowerCase() ?? "status";
+		if (action === "status") {
+			this.renderBackgroundStatus();
+			return;
+		}
+		if (action === "notify" || action === "details") {
+			const toggle = this.parseToggle(tokens[1]);
+			if (toggle === null) {
+				context.showError("Provide 'on' or 'off'.");
+				return;
+			}
+			updateBackgroundTaskSettings(
+				action === "notify"
+					? { notificationsEnabled: toggle }
+					: { statusDetailsEnabled: toggle },
+			);
+			this.notificationView.showInfo(
+				action === "notify"
+					? `Background task notifications ${toggle ? "enabled" : "disabled"}.`
+					: `Background task details ${toggle ? "enabled" : "disabled"}.`,
+			);
+			return;
+		}
+		if (action === "history") {
+			const limitArg = tokens[1] ? Number.parseInt(tokens[1], 10) : 10;
+			const limit = Number.isFinite(limitArg)
+				? Math.min(Math.max(limitArg, 1), 50)
+				: 10;
+			this.renderBackgroundHistory(limit);
+			return;
+		}
+		context.renderHelp();
+	}
+
+	private parseToggle(value?: string): boolean | null {
+		if (!value) {
+			return null;
+		}
+		const normalized = value.toLowerCase();
+		if (["on", "true", "enable", "enabled", "yes"].includes(normalized)) {
+			return true;
+		}
+		if (["off", "false", "disable", "disabled", "no"].includes(normalized)) {
+			return false;
+		}
+		return null;
+	}
+
+	private renderBackgroundStatus(): void {
+		const snapshot = backgroundTaskManager.getHealthSnapshot({
+			maxEntries: 1,
+			logLines: 1,
+			historyLimit: 3,
+		});
+		const lines = [chalk.bold("Background tasks")];
+		lines.push(
+			`Notifications: ${this.backgroundSettings.notificationsEnabled ? chalk.green("on") : chalk.red("off")}`,
+			`Status details: ${this.backgroundSettings.statusDetailsEnabled ? chalk.green("on") : chalk.red("off")}`,
+		);
+		if (snapshot) {
+			lines.push(
+				`Running: ${snapshot.running}/${snapshot.total} · Failed: ${snapshot.failed}`,
+				`Details: ${snapshot.detailsRedacted ? "redacted" : "visible"}`,
+			);
+		} else {
+			lines.push("No recent background activity.");
+		}
+		lines.push(
+			"Use /background notify <on|off> or /background details <on|off>.",
+		);
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private renderBackgroundHistory(limit: number): void {
+		if (!this.backgroundSettings.statusDetailsEnabled) {
+			this.notificationView.showInfo(
+				"Enable /background details on to inspect task history.",
+			);
+			return;
+		}
+		const snapshot = backgroundTaskManager.getHealthSnapshot({
+			maxEntries: 1,
+			logLines: 1,
+			historyLimit: limit,
+		});
+		const history = snapshot?.history ?? [];
+		this.chatContainer.addChild(new Spacer(1));
+		if (history.length === 0) {
+			this.chatContainer.addChild(
+				new Text("No background task history found.", 1, 0),
+			);
+			this.ui.requestRender();
+			return;
+		}
+		const lines = history.map((entry) => {
+			const stamp = new Date(entry.timestamp).toLocaleTimeString();
+			const reason = entry.failureReason
+				? ` ${chalk.dim(entry.failureReason)}`
+				: entry.limitBreach
+					? ` ${chalk.dim(`limit ${entry.limitBreach.kind}`)}`
+					: "";
+			return `${stamp} ${entry.event} ${entry.taskId} – ${entry.command}${reason}`;
+		});
+		if (snapshot?.historyTruncated) {
+			lines.push(
+				chalk.dim(
+					"…additional events hidden; pass /background history <n> for more.",
+				),
+			);
+		}
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
 	}
 
 	private showQueuePanel(): void {
@@ -2233,6 +2367,9 @@ export class TuiRenderer {
 			return;
 		}
 		const handler = (payload: BackgroundTaskNotification) => {
+			if (!this.backgroundSettings.notificationsEnabled) {
+				return;
+			}
 			const tone = payload.level === "warn" ? "warn" : "info";
 			const reason = payload.reason ? ` (${payload.reason})` : "";
 			const command =
@@ -2256,6 +2393,8 @@ export class TuiRenderer {
 		this.promptQueueUnsubscribe = undefined;
 		this.backgroundTaskNotificationCleanup?.();
 		this.backgroundTaskNotificationCleanup = undefined;
+		this.backgroundSettingsUnsubscribe?.();
+		this.backgroundSettingsUnsubscribe = undefined;
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;

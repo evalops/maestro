@@ -3,7 +3,7 @@ import {
 	type SpawnOptions,
 	spawn,
 } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
 	closeSync,
@@ -20,15 +20,24 @@ import {
 	unlinkSync,
 } from "node:fs";
 import os from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGzip, gunzipSync } from "node:zlib";
 
 import { Type } from "@sinclair/typebox";
 
-import { recordBackgroundTaskEvent } from "../telemetry.js";
+import {
+	type BackgroundTaskSettings,
+	getBackgroundTaskSettings,
+	subscribeBackgroundTaskSettings,
+} from "../runtime/background-settings.js";
+import {
+	getBackgroundTaskHistory,
+	recordBackgroundTaskEvent,
+} from "../telemetry.js";
 import { safejoin } from "../utils/path-validation.js";
+import { redactSecrets } from "../utils/secret-redactor.js";
 import {
 	getShellConfig,
 	killProcessTree,
@@ -53,10 +62,6 @@ const CLOCK_TICKS_PER_SECOND = (() => {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : 100;
 })();
 const RESOURCE_POLL_INTERVAL_MS = 200;
-const TASK_NOTIFICATION_ENABLED = readBooleanEnv(
-	"COMPOSER_BACKGROUND_TASK_NOTIFY",
-	false,
-);
 const RESTART_NOTIFY_THRESHOLD = readThresholdEnv(
 	"COMPOSER_BACKGROUND_TASK_NOTIFY_RESTARTS",
 	2,
@@ -148,7 +153,6 @@ const MAX_LOG_SEGMENTS = readPositiveInt(
 	2,
 	0,
 );
-
 type BackgroundTaskStatus =
 	| "running"
 	| "stopped"
@@ -209,6 +213,7 @@ interface BackgroundTask {
 	limits: TaskRuntimeLimits;
 	terminatingForLimits?: boolean;
 	failureReason?: string;
+	lastLimitBreach?: ResourceLimitBreach;
 }
 
 interface TaskStartOptions {
@@ -273,6 +278,24 @@ export interface BackgroundTaskHealthEntry {
 	durationSeconds: number;
 }
 
+type BackgroundTaskHistoryEvent =
+	| "started"
+	| "restarted"
+	| "exited"
+	| "failed"
+	| "stopped";
+
+export interface BackgroundTaskHistoryEntry {
+	event: BackgroundTaskHistoryEvent;
+	taskId: string;
+	status: BackgroundTaskStatus;
+	command: string;
+	timestamp: string;
+	restartAttempts: number;
+	failureReason?: string;
+	limitBreach?: ResourceLimitBreach;
+}
+
 export interface BackgroundTaskHealth {
 	total: number;
 	running: number;
@@ -281,6 +304,9 @@ export interface BackgroundTaskHealth {
 	entries: BackgroundTaskHealthEntry[];
 	truncated: boolean;
 	notificationsEnabled: boolean;
+	detailsRedacted: boolean;
+	history: BackgroundTaskHistoryEntry[];
+	historyTruncated: boolean;
 }
 
 function formatTaskSummary(task: BackgroundTask): string {
@@ -390,6 +416,18 @@ class BackgroundTaskManager extends EventEmitter {
 		string,
 		{ count: number; reset: number }
 	>();
+	private settings: BackgroundTaskSettings;
+	private unsubscribeSettings?: () => void;
+	private secretCounter = 0;
+
+	private ensureSettingsSubscription(): void {
+		if (this.unsubscribeSettings) {
+			return;
+		}
+		this.unsubscribeSettings = subscribeBackgroundTaskSettings((next) => {
+			this.settings = next;
+		});
+	}
 
 	constructor() {
 		super();
@@ -403,10 +441,12 @@ class BackgroundTaskManager extends EventEmitter {
 		};
 		this.limits = initialLimits;
 		this.defaultLimits = { ...initialLimits };
+		this.settings = getBackgroundTaskSettings();
+		this.ensureSettingsSubscription();
 	}
 
 	private shouldNotify(): boolean {
-		return TASK_NOTIFICATION_ENABLED || this.listenerCount("notification") > 0;
+		return this.settings.notificationsEnabled;
 	}
 
 	private shouldEmitNotification(taskId: string): boolean {
@@ -428,7 +468,7 @@ class BackgroundTaskManager extends EventEmitter {
 			return;
 		}
 		this.emit("notification", payload);
-		if (TASK_NOTIFICATION_ENABLED) {
+		if (this.settings.notificationsEnabled) {
 			const prefix = payload.level === "warn" ? "[bg-task warn]" : "[bg-task]";
 			console.warn(
 				`${prefix} ${payload.taskId} ${payload.message}${payload.reason ? ` (${payload.reason})` : ""}`,
@@ -596,6 +636,7 @@ class BackgroundTaskManager extends EventEmitter {
 		this.attachLogging(child, task);
 		task.process = child;
 		task.failureReason = undefined;
+		task.lastLimitBreach = undefined;
 		task.pid = child.pid ?? undefined;
 		this.startUsageMonitor(task);
 		task.status = "running";
@@ -843,7 +884,8 @@ class BackgroundTaskManager extends EventEmitter {
 			breach.kind === "memory"
 				? `${(breach.actual / 1024).toFixed(1)}MB > ${(breach.limit / 1024).toFixed(1)}MB`
 				: `${Math.round(breach.actual)}ms > ${Math.round(breach.limit)}ms`;
-		task.failureReason = `Resource limit (${breach.kind} ${describe})`;
+		this.setFailureReason(task, `Resource limit (${breach.kind} ${describe})`);
+		task.lastLimitBreach = breach;
 		task.terminatingForLimits = true;
 		this.disableRestart(task);
 		if (!task.pid) {
@@ -944,11 +986,13 @@ class BackgroundTaskManager extends EventEmitter {
 		task: BackgroundTask,
 		event: "started" | "restarted" | "exited" | "failed" | "stopped",
 	): void {
+		const failureReason = this.sanitizeFailureReason(task.failureReason);
+		const command = this.sanitizeLogSnippet(task.command);
 		recordBackgroundTaskEvent({
 			event,
 			taskId: task.id,
 			status: task.status,
-			command: task.command,
+			command,
 			shellMode: task.shellMode,
 			cwd: task.cwd,
 			restartAttempts: task.restartPolicy?.attempts ?? 0,
@@ -956,6 +1000,8 @@ class BackgroundTaskManager extends EventEmitter {
 			exitCode: task.exitCode ?? undefined,
 			signal: task.signal ?? undefined,
 			resourceUsage: task.resourceUsage,
+			failureReason,
+			limitBreach: task.lastLimitBreach,
 		});
 	}
 
@@ -1180,7 +1226,54 @@ class BackgroundTaskManager extends EventEmitter {
 			return undefined;
 		}
 		const entries = text.split(/\r?\n/).filter(Boolean);
-		return entries[entries.length - 1];
+		return this.sanitizeLogSnippet(entries[entries.length - 1]);
+	}
+
+	private sanitizeLogSnippet(value: string): string {
+		if (!value) {
+			return value;
+		}
+		return redactSecrets(value, (secret) => this.maskSecret(secret));
+	}
+
+	private sanitizeFailureReason(reason?: string | null): string | undefined {
+		if (!reason) {
+			return undefined;
+		}
+		return this.sanitizeLogSnippet(reason);
+	}
+
+	private setFailureReason(task: BackgroundTask, reason: string): void {
+		task.failureReason = this.sanitizeLogSnippet(reason);
+	}
+
+	private maskSecret(_raw: string): string {
+		this.secretCounter += 1;
+		const token = randomBytes(4).toString("hex");
+		return `[secret:${this.secretCounter.toString(36)}-${token}]`;
+	}
+
+	private summarizeCommand(command: string): string {
+		const trimmed = command.trim();
+		const limit = 80;
+		const buffer = 64;
+		const sliceEnd =
+			trimmed.length <= limit
+				? trimmed.length
+				: Math.min(trimmed.length, limit + buffer);
+		const window = trimmed.slice(0, sliceEnd);
+		const sanitized = this.sanitizeLogSnippet(window);
+		if (sanitized.length <= limit) {
+			return sanitized;
+		}
+		const truncated = sanitized.slice(0, limit - 1);
+		const lastOpen = truncated.lastIndexOf("[secret");
+		const lastClose = truncated.lastIndexOf("]");
+		const safeSlice =
+			lastOpen !== -1 && (lastClose === -1 || lastClose < lastOpen)
+				? truncated.slice(0, lastOpen)
+				: truncated;
+		return `${safeSlice}…`;
 	}
 
 	private async waitForCompletion(
@@ -1201,6 +1294,7 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	start(command: string, options: TaskStartOptions = {}): BackgroundTask {
+		this.ensureSettingsSubscription();
 		this.cleanupExpiredTasks();
 		this.enforceCapacity();
 		const { cwd, env, useShell = false, restart } = options;
@@ -1244,55 +1338,79 @@ class BackgroundTaskManager extends EventEmitter {
 	getHealthSnapshot(options?: {
 		maxEntries?: number;
 		logLines?: number;
+		historyLimit?: number;
 	}): BackgroundTaskHealth | null {
+		this.ensureSettingsSubscription();
 		const tasks = this.getTasks();
-		if (tasks.length === 0) {
-			return null;
-		}
 		const maxEntries = Math.max(1, options?.maxEntries ?? 3);
 		const logLines = Math.max(1, options?.logLines ?? 1);
+		const includeDetails = this.settings.statusDetailsEnabled;
+		const historyLimit = Math.max(1, options?.historyLimit ?? 10);
+		const rawHistory = includeDetails
+			? getBackgroundTaskHistory(historyLimit)
+			: [];
+		if (tasks.length === 0 && rawHistory.length === 0) {
+			return null;
+		}
 		const sorted = [...tasks].sort((a, b) => b.startedAt - a.startedAt);
-		const entries = sorted.slice(0, maxEntries).map((task) => {
-			const issues: string[] = [];
-			if (task.failureReason) {
-				issues.push(task.failureReason);
-			}
-			if (
-				task.restartPolicy &&
-				Number.isFinite(RESTART_NOTIFY_THRESHOLD) &&
-				task.restartPolicy.attempts >= RESTART_NOTIFY_THRESHOLD
-			) {
-				issues.push(
-					`Restart attempts ${task.restartPolicy.attempts}/${task.restartPolicy.maxAttempts}`,
-				);
-			}
-			if (task.logTruncated) {
-				issues.push("Logs truncated");
-			}
-			const restarts = task.restartPolicy
-				? `${task.restartPolicy.attempts}/${task.restartPolicy.maxAttempts}`
-				: undefined;
-			const durationMs = (task.finishedAt ?? Date.now()) - task.startedAt;
-			return {
-				id: task.id,
-				status: task.status,
-				summary: formatTaskSummary(task),
-				command: task.command,
-				restarts,
-				issues,
-				lastLogLine: this.previewLogLine(task, logLines),
-				logTruncated: task.logTruncated ?? false,
-				durationSeconds: Math.max(1, Math.round(durationMs / 1000)),
-			};
-		});
+		const detailedEntries = includeDetails
+			? sorted.slice(0, maxEntries).map((task) => {
+					const issues: string[] = [];
+					if (task.failureReason) {
+						issues.push(task.failureReason);
+					}
+					if (
+						task.restartPolicy &&
+						Number.isFinite(RESTART_NOTIFY_THRESHOLD) &&
+						task.restartPolicy.attempts >= RESTART_NOTIFY_THRESHOLD
+					) {
+						issues.push(
+							`Restart attempts ${task.restartPolicy.attempts}/${task.restartPolicy.maxAttempts}`,
+						);
+					}
+					if (task.logTruncated) {
+						issues.push("Logs truncated");
+					}
+					const restarts = task.restartPolicy
+						? `${task.restartPolicy.attempts}/${task.restartPolicy.maxAttempts}`
+						: undefined;
+					const durationMs = (task.finishedAt ?? Date.now()) - task.startedAt;
+					return {
+						id: task.id,
+						status: task.status,
+						summary: this.sanitizeLogSnippet(formatTaskSummary(task)),
+						command: this.summarizeCommand(task.command),
+						restarts,
+						issues,
+						lastLogLine: this.previewLogLine(task, logLines),
+						logTruncated: task.logTruncated ?? false,
+						durationSeconds: Math.max(1, Math.round(durationMs / 1000)),
+					};
+				})
+			: [];
+		const history: BackgroundTaskHistoryEntry[] = rawHistory.map((entry) => ({
+			event: entry.event,
+			taskId: entry.taskId,
+			status: entry.status as BackgroundTaskStatus,
+			command: this.summarizeCommand(entry.command),
+			timestamp: entry.timestamp,
+			restartAttempts: entry.restartAttempts,
+			failureReason: entry.failureReason
+				? this.sanitizeLogSnippet(entry.failureReason)
+				: undefined,
+			limitBreach: entry.limitBreach,
+		}));
 		return {
 			total: tasks.length,
 			running: tasks.filter((task) => task.status === "running").length,
 			restarting: tasks.filter((task) => task.status === "restarting").length,
 			failed: tasks.filter((task) => task.status === "failed").length,
-			entries,
-			truncated: tasks.length > entries.length,
-			notificationsEnabled: TASK_NOTIFICATION_ENABLED,
+			entries: detailedEntries,
+			truncated: includeDetails && tasks.length > detailedEntries.length,
+			notificationsEnabled: this.settings.notificationsEnabled,
+			detailsRedacted: !includeDetails,
+			history,
+			historyTruncated: includeDetails && rawHistory.length === historyLimit,
 		};
 	}
 
@@ -1331,6 +1449,8 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	clear(): void {
+		this.unsubscribeSettings?.();
+		this.unsubscribeSettings = undefined;
 		for (const id of [...this.tasks.keys()]) {
 			this.removeTask(id, true);
 		}
@@ -1451,7 +1571,7 @@ class RotatingLogWriter extends Writable {
 				remainingBuffer.length > remainingCapacity
 					? remainingBuffer.subarray(0, remainingCapacity)
 					: remainingBuffer;
-			await fsPromises.appendFile(this.logPath, slice);
+			await this.appendToLog(slice);
 			this.currentSize += slice.length;
 			remainingBuffer = remainingBuffer.subarray(slice.length);
 		}
@@ -1502,10 +1622,24 @@ class RotatingLogWriter extends Writable {
 
 	private async ensureLogFileExists(): Promise<void> {
 		try {
+			await fsPromises.mkdir(dirname(this.logPath), { recursive: true });
 			const handle = await fsPromises.open(this.logPath, "a");
 			await handle.close();
 		} catch (error) {
 			console.warn("Failed to initialize background task log", error);
+		}
+	}
+
+	private async appendToLog(slice: Buffer): Promise<void> {
+		try {
+			await fsPromises.appendFile(this.logPath, slice);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				await this.ensureLogFileExists();
+				await fsPromises.appendFile(this.logPath, slice);
+				return;
+			}
+			throw error;
 		}
 	}
 
