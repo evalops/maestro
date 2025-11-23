@@ -55,7 +55,10 @@ export function parseArgs(args: string[]): Args {
 			result.safeMode = true;
 		} else if (!arg.startsWith("-")) {
 			// Handle commands: "config", "models", "cost", etc.
-			if (!result.command && (arg === "config" || arg === "models" || arg === "cost")) {
+			if (
+				!result.command &&
+				(arg === "config" || arg === "models" || arg === "cost")
+			) {
 				result.command = arg;
 				// Check for subcommand
 				if (i + 1 < args.length && !args[i + 1].startsWith("-")) {

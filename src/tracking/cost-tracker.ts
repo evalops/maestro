@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -24,16 +24,22 @@ export interface UsageSummary {
 	totalCost: number;
 	totalRequests: number;
 	totalTokens: number;
-	byProvider: Record<string, {
-		cost: number;
-		requests: number;
-		tokens: number;
-	}>;
-	byModel: Record<string, {
-		cost: number;
-		requests: number;
-		tokens: number;
-	}>;
+	byProvider: Record<
+		string,
+		{
+			cost: number;
+			requests: number;
+			tokens: number;
+		}
+	>;
+	byModel: Record<
+		string,
+		{
+			cost: number;
+			requests: number;
+			tokens: number;
+		}
+	>;
 }
 
 /**
@@ -44,7 +50,7 @@ function loadUsage(): UsageEntry[] {
 		if (!existsSync(USAGE_FILE)) {
 			return [];
 		}
-		
+
 		const data = readFileSync(USAGE_FILE, "utf-8");
 		return JSON.parse(data) as UsageEntry[];
 	} catch (error) {
@@ -62,7 +68,7 @@ function saveUsage(entries: UsageEntry[]): void {
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true });
 		}
-		
+
 		writeFileSync(USAGE_FILE, JSON.stringify(entries, null, 2));
 	} catch (error) {
 		console.warn("[Cost Tracking] Failed to save usage data:", error);
@@ -74,17 +80,17 @@ function saveUsage(entries: UsageEntry[]): void {
  */
 export function trackUsage(entry: Omit<UsageEntry, "timestamp">): void {
 	const entries = loadUsage();
-	
+
 	entries.push({
 		...entry,
 		timestamp: Date.now(),
 	});
-	
+
 	// Keep only last 10,000 entries (prevent file from growing too large)
 	if (entries.length > 10000) {
 		entries.splice(0, entries.length - 10000);
 	}
-	
+
 	saveUsage(entries);
 }
 
@@ -98,16 +104,16 @@ export function getUsageSummary(options?: {
 	model?: string;
 }): UsageSummary {
 	const entries = loadUsage();
-	
+
 	// Filter entries
-	const filtered = entries.filter(entry => {
+	const filtered = entries.filter((entry) => {
 		if (options?.since && entry.timestamp < options.since) return false;
 		if (options?.until && entry.timestamp > options.until) return false;
 		if (options?.provider && entry.provider !== options.provider) return false;
 		if (options?.model && entry.model !== options.model) return false;
 		return true;
 	});
-	
+
 	// Calculate summary
 	const summary: UsageSummary = {
 		totalCost: 0,
@@ -116,14 +122,17 @@ export function getUsageSummary(options?: {
 		byProvider: {},
 		byModel: {},
 	};
-	
+
 	for (const entry of filtered) {
-		const tokens = entry.tokensInput + entry.tokensOutput + 
-			(entry.tokensCacheRead || 0) + (entry.tokensCacheWrite || 0);
-		
+		const tokens =
+			entry.tokensInput +
+			entry.tokensOutput +
+			(entry.tokensCacheRead || 0) +
+			(entry.tokensCacheWrite || 0);
+
 		summary.totalCost += entry.cost;
 		summary.totalTokens += tokens;
-		
+
 		// By provider
 		if (!summary.byProvider[entry.provider]) {
 			summary.byProvider[entry.provider] = { cost: 0, requests: 0, tokens: 0 };
@@ -131,7 +140,7 @@ export function getUsageSummary(options?: {
 		summary.byProvider[entry.provider].cost += entry.cost;
 		summary.byProvider[entry.provider].requests += 1;
 		summary.byProvider[entry.provider].tokens += tokens;
-		
+
 		// By model
 		const modelKey = `${entry.provider}/${entry.model}`;
 		if (!summary.byModel[modelKey]) {
@@ -141,7 +150,7 @@ export function getUsageSummary(options?: {
 		summary.byModel[modelKey].requests += 1;
 		summary.byModel[modelKey].tokens += tokens;
 	}
-	
+
 	return summary;
 }
 

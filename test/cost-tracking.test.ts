@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	trackUsage,
-	getUsageSummary,
-	clearUsage,
-	getUsageFilePath,
 	type UsageEntry,
 	type UsageSummary,
+	clearUsage,
+	getUsageFilePath,
+	getUsageSummary,
+	trackUsage,
 } from "../src/tracking/cost-tracker";
 
 describe("Cost Tracking", () => {
@@ -16,9 +16,9 @@ describe("Cost Tracking", () => {
 	beforeEach(() => {
 		// Backup existing usage file if it exists
 		if (existsSync(usageFile)) {
-			originalFileContent = require("fs").readFileSync(usageFile, "utf-8");
+			originalFileContent = readFileSync(usageFile, "utf-8");
 		}
-		
+
 		// Start with clean slate
 		clearUsage();
 	});
@@ -26,7 +26,7 @@ describe("Cost Tracking", () => {
 	afterEach(() => {
 		// Restore original file
 		if (originalFileContent) {
-			require("fs").writeFileSync(usageFile, originalFileContent);
+			writeFileSync(usageFile, originalFileContent);
 		} else if (existsSync(usageFile)) {
 			unlinkSync(usageFile);
 		}
@@ -110,8 +110,7 @@ describe("Cost Tracking", () => {
 			});
 
 			// Simulate yesterday's usage by hacking the file
-			const fs = require("fs");
-			const entries = JSON.parse(fs.readFileSync(usageFile, "utf-8"));
+			const entries = JSON.parse(readFileSync(usageFile, "utf-8"));
 			entries.push({
 				timestamp: now - oneDayMs,
 				provider: "anthropic",
@@ -120,7 +119,7 @@ describe("Cost Tracking", () => {
 				tokensOutput: 250,
 				cost: 0.002,
 			});
-			fs.writeFileSync(usageFile, JSON.stringify(entries));
+			writeFileSync(usageFile, JSON.stringify(entries));
 		});
 
 		it("should summarize all usage", () => {
@@ -131,7 +130,7 @@ describe("Cost Tracking", () => {
 
 		it("should filter by time range", () => {
 			const now = Date.now();
-			const twelveHoursAgo = now - (12 * 60 * 60 * 1000);
+			const twelveHoursAgo = now - 12 * 60 * 60 * 1000;
 
 			const summary = getUsageSummary({ since: twelveHoursAgo });
 			expect(summary.totalRequests).toBe(1); // Only today's
@@ -151,7 +150,7 @@ describe("Cost Tracking", () => {
 			const summary = getUsageSummary({ provider: "anthropic" });
 			expect(summary.totalRequests).toBe(2);
 			expect(Object.keys(summary.byProvider)).toHaveLength(1);
-			expect(summary.byProvider["anthropic"]).toBeDefined();
+			expect(summary.byProvider.anthropic).toBeDefined();
 		});
 
 		it("should filter by model", () => {
@@ -170,17 +169,20 @@ describe("Cost Tracking", () => {
 			});
 
 			const summary = getUsageSummary();
-			expect(summary.byProvider["anthropic"]).toBeDefined();
-			expect(summary.byProvider["openai"]).toBeDefined();
-			expect(summary.byProvider["anthropic"].requests).toBe(2);
-			expect(summary.byProvider["openai"].requests).toBe(1);
+			expect(summary.byProvider.anthropic).toBeDefined();
+			expect(summary.byProvider.openai).toBeDefined();
+			expect(summary.byProvider.anthropic.requests).toBe(2);
+			expect(summary.byProvider.openai.requests).toBe(1);
 		});
 
 		it("should break down by model", () => {
 			const summary = getUsageSummary();
 			expect(summary.byModel["anthropic/claude-sonnet-4-5"]).toBeDefined();
 			expect(summary.byModel["anthropic/claude-haiku"]).toBeDefined();
-			expect(summary.byModel["anthropic/claude-sonnet-4-5"].cost).toBeCloseTo(0.01, 5);
+			expect(summary.byModel["anthropic/claude-sonnet-4-5"].cost).toBeCloseTo(
+				0.01,
+				5,
+			);
 		});
 	});
 
@@ -218,9 +220,8 @@ describe("Cost Tracking", () => {
 			});
 
 			expect(existsSync(usageFile)).toBe(true);
-			
-			const fs = require("fs");
-			const entries = JSON.parse(fs.readFileSync(usageFile, "utf-8"));
+
+			const entries = JSON.parse(readFileSync(usageFile, "utf-8"));
 			expect(Array.isArray(entries)).toBe(true);
 			expect(entries[0]).toHaveProperty("timestamp");
 			expect(entries[0]).toHaveProperty("provider");

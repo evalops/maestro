@@ -1,6 +1,6 @@
+import { trackUsage } from "../tracking/cost-tracker.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamOpenAI } from "./providers/openai.js";
-import { trackUsage } from "../tracking/cost-tracker.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
@@ -21,14 +21,24 @@ export interface ProviderTransportOptions {
  * Calculate cost in USD based on token usage
  */
 function calculateCost(
-	usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number },
-	costConfig: { input: number; output: number; cacheRead: number; cacheWrite: number }
+	usage: {
+		input?: number;
+		output?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+	},
+	costConfig: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+	},
 ): number {
 	const inputCost = (usage.input || 0) * costConfig.input;
 	const outputCost = (usage.output || 0) * costConfig.output;
 	const cacheReadCost = (usage.cacheRead || 0) * costConfig.cacheRead;
 	const cacheWriteCost = (usage.cacheWrite || 0) * costConfig.cacheWrite;
-	
+
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
 
@@ -157,14 +167,12 @@ export class ProviderTransport implements AgentTransport {
 							type: "message_end",
 							message: currentAssistantMessage,
 						};
-						
+
 						// Track usage and cost
 						if (currentAssistantMessage.usage) {
 							const usage = currentAssistantMessage.usage;
-							const cost = model.cost 
-								? calculateCost(usage, model.cost)
-								: 0;
-							
+							const cost = model.cost ? calculateCost(usage, model.cost) : 0;
+
 							try {
 								trackUsage({
 									provider: model.provider,

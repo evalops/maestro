@@ -19,8 +19,8 @@ import {
 	getRegisteredModels,
 	getSupportedProviders,
 	reloadModelConfig,
-	resolveModel,
 	resolveAlias,
+	resolveModel,
 } from "./models/registry.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
@@ -177,12 +177,9 @@ export async function main(args: string[]) {
 
 	// Handle config commands
 	if (parsed.command === "config") {
-		const { 
-			handleConfigValidate, 
-			handleConfigShow, 
-			handleConfigInit 
-		} = await import("./cli/commands/config.js");
-		
+		const { handleConfigValidate, handleConfigShow, handleConfigInit } =
+			await import("./cli/commands/config.js");
+
 		switch (parsed.subcommand) {
 			case "validate":
 				await handleConfigValidate();
@@ -194,23 +191,30 @@ export async function main(args: string[]) {
 				await handleConfigInit();
 				return;
 			default:
-				console.error(chalk.red(`Unknown config subcommand: ${parsed.subcommand || "(none)"}`));
+				console.error(
+					chalk.red(
+						`Unknown config subcommand: ${parsed.subcommand || "(none)"}`,
+					),
+				);
 				console.log(chalk.dim("\nAvailable commands:"));
-				console.log(chalk.dim("  composer config validate  - Validate configuration"));
-				console.log(chalk.dim("  composer config show      - Show configuration details"));
-				console.log(chalk.dim("  composer config init      - Initialize configuration"));
+				console.log(
+					chalk.dim("  composer config validate  - Validate configuration"),
+				);
+				console.log(
+					chalk.dim("  composer config show      - Show configuration details"),
+				);
+				console.log(
+					chalk.dim("  composer config init      - Initialize configuration"),
+				);
 				process.exit(1);
 		}
 	}
 
 	// Handle cost commands
 	if (parsed.command === "cost") {
-		const { 
-			handleCostSummary, 
-			handleCostClear, 
-			handleCostBreakdown 
-		} = await import("./cli/commands/cost.js");
-		
+		const { handleCostSummary, handleCostClear, handleCostBreakdown } =
+			await import("./cli/commands/cost.js");
+
 		switch (parsed.subcommand) {
 			case "clear":
 				await handleCostClear();
@@ -230,15 +234,33 @@ export async function main(args: string[]) {
 				await handleCostSummary("today");
 				return;
 			default:
-				console.error(chalk.red(`Unknown cost subcommand: ${parsed.subcommand}`));
+				console.error(
+					chalk.red(`Unknown cost subcommand: ${parsed.subcommand}`),
+				);
 				console.log(chalk.dim("\nAvailable commands:"));
-				console.log(chalk.dim("  composer cost [today]     - Show today's costs (default)"));
-				console.log(chalk.dim("  composer cost yesterday   - Show yesterday's costs"));
-				console.log(chalk.dim("  composer cost week        - Show last 7 days"));
-				console.log(chalk.dim("  composer cost month       - Show last 30 days"));
-				console.log(chalk.dim("  composer cost all         - Show all time costs"));
-				console.log(chalk.dim("  composer cost breakdown   - Detailed breakdown"));
-				console.log(chalk.dim("  composer cost clear       - Clear usage data"));
+				console.log(
+					chalk.dim(
+						"  composer cost [today]     - Show today's costs (default)",
+					),
+				);
+				console.log(
+					chalk.dim("  composer cost yesterday   - Show yesterday's costs"),
+				);
+				console.log(
+					chalk.dim("  composer cost week        - Show last 7 days"),
+				);
+				console.log(
+					chalk.dim("  composer cost month       - Show last 30 days"),
+				);
+				console.log(
+					chalk.dim("  composer cost all         - Show all time costs"),
+				);
+				console.log(
+					chalk.dim("  composer cost breakdown   - Detailed breakdown"),
+				);
+				console.log(
+					chalk.dim("  composer cost clear       - Clear usage data"),
+				);
 				process.exit(1);
 		}
 	}
@@ -280,7 +302,9 @@ export async function main(args: string[]) {
 		if (resolved) {
 			provider = resolved.provider;
 			modelId = resolved.modelId;
-			console.log(chalk.dim(`Using alias: ${parsed.model} → ${provider}/${modelId}`));
+			console.log(
+				chalk.dim(`Using alias: ${parsed.model} → ${provider}/${modelId}`),
+			);
 		}
 	}
 
