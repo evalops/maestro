@@ -182,12 +182,6 @@ export interface ProviderMetadata {
 	baseUrl?: string;
 }
 
-export interface StoredCredential {
-	provider: string;
-	apiKey?: string;
-	authType?: "api-key" | "chatgpt" | "anthropic-oauth";
-}
-
 /**
  * Config file paths in order of precedence (last wins)
  */
