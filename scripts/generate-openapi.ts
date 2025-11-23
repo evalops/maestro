@@ -37,7 +37,7 @@ function extractRoutes(sourcePath: string): Route[] {
 						method = prop.initializer.text.toLowerCase();
 					}
 					if (key === "path" && ts.isStringLiteral(prop.initializer)) {
-						path = prop.initializer.text;
+						path = prop.initializer.text.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
 					}
 				}
 				if (method && path) {
