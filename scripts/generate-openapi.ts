@@ -4,7 +4,13 @@ import {
 	ChatRequestSchema,
 	ModelSetSchema,
 } from "../src/web/validation.js";
-const { version } = JSON.parse(readFileSync("package.json", "utf8"));
+let version = "0.0.0";
+try {
+	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+	version = pkg.version ?? version;
+} catch (err) {
+	console.error("Failed to read package.json for version; defaulting to 0.0.0", err);
+}
 
 type Route = { method: string; path: string };
 
@@ -334,8 +340,13 @@ function buildSpec(routes: Route[]) {
 function main() {
 	const routes = extractRoutes("src/web-server.ts");
 	const spec = buildSpec(routes);
-	writeFileSync("openapi.json", JSON.stringify(spec, null, 2), "utf8");
-	console.log(`Generated openapi.json with ${routes.length} routes.`);
+	try {
+		writeFileSync("openapi.json", JSON.stringify(spec, null, 2), "utf8");
+		console.log(`Generated openapi.json with ${routes.length} routes.`);
+	} catch (err) {
+		console.error("Failed to write openapi.json", err);
+		process.exitCode = 1;
+	}
 }
 
 main();
