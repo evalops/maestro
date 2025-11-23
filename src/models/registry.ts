@@ -181,6 +181,58 @@ export interface ProviderMetadata {
 	baseUrl?: string;
 }
 
+export interface StoredCredential {
+	provider: string;
+	apiKey?: string;
+	authType?: "api-key" | "chatgpt" | "anthropic-oauth";
+}
+
+export interface StoredCredential {
+	provider: string;
+	apiKey?: string;
+	authType?: "api-key" | "chatgpt" | "anthropic-oauth";
+}
+
+function loadStoredCredentials(): StoredCredential[] {
+	if (cachedCredentials) return cachedCredentials;
+
+	const paths: string[] = [];
+	if (process.env.COMPOSER_KEYS_PATH) {
+		paths.push(resolve(process.env.COMPOSER_KEYS_PATH));
+	} else {
+		paths.push(COMPOSER_KEYS_PATH);
+		const projectKeys = join(process.cwd(), ".composer", "keys.json");
+		if (existsSync(projectKeys)) paths.push(projectKeys);
+	}
+
+	if (process.env.FACTORY_KEYS_PATH) {
+		paths.push(resolve(process.env.FACTORY_KEYS_PATH));
+	} else {
+		paths.push(FACTORY_KEYS_PATH);
+	}
+
+	const creds: StoredCredential[] = [];
+	for (const path of paths) {
+		if (!existsSync(path)) continue;
+		try {
+			const raw = readFileSync(path, "utf8");
+			const parsed = JSON.parse(raw) as Record<string, any>;
+			for (const [provider, value] of Object.entries(parsed)) {
+				creds.push({
+					provider,
+					apiKey: (value as any)?.apiKey,
+					authType: (value as any)?.authType,
+				});
+			}
+		} catch {
+			// ignore malformed files
+		}
+	}
+
+	cachedCredentials = creds;
+	return creds;
+}
+
 /**
  * Config file paths in order of precedence (last wins)
  */
@@ -227,6 +279,8 @@ const configPath = (): string =>
 const FACTORY_HOME = process.env.FACTORY_HOME ?? join(homedir(), ".factory");
 const FACTORY_CONFIG_PATH = join(FACTORY_HOME, "config.json");
 const FACTORY_SETTINGS_PATH = join(FACTORY_HOME, "settings.json");
+const FACTORY_KEYS_PATH = join(FACTORY_HOME, "keys.json");
+const COMPOSER_KEYS_PATH = join(homedir(), ".composer", "keys.json");
 
 let cachedConfig: CustomModelConfig | null = null;
 let cachedProviders: RegisteredModel[] | null = null;
@@ -236,6 +290,7 @@ let factoryDataCache:
 	| null
 	| undefined;
 const fileSnapshots = new Map<string, { mtimeMs: number; data: string }>();
+let cachedCredentials: StoredCredential[] | null = null;
 
 /**
  * Provider-specific configuration loaders
@@ -759,6 +814,7 @@ interface FactoryModelEntry {
 
 interface FactoryConfigFile {
 	custom_models?: FactoryModelEntry[];
+	api_keys?: Record<string, string>;
 }
 
 const FACTORY_API_MAP: Record<string, Api> = {
@@ -825,6 +881,8 @@ function buildFactoryData(): {
 		if (!parsed.custom_models?.length) {
 			return null;
 		}
+		const factoryKeys = parsed.api_keys ?? {};
+		const storedCreds = loadStoredCredentials();
 		const providers: CustomProvider[] = [];
 		const modelProviderMap = new Map<string, string>();
 		const providerKeyMap = new Map<string, CustomProvider>();
@@ -843,7 +901,12 @@ function buildFactoryData(): {
 				api,
 			);
 
-			const uniqueKey = `${entry.provider ?? "factory"}|${normalizedBaseUrl}|${entry.api_key ?? ""}`;
+			const inlineKey = entry.api_key;
+			const storedKey =
+				factoryKeys[entry.provider ?? "factory"] ??
+				storedCreds.find((c) => c.provider === (entry.provider ?? "factory"))
+					?.apiKey;
+			const uniqueKey = `${entry.provider ?? "factory"}|${normalizedBaseUrl}|${inlineKey ?? storedKey ?? ""}`;
 			let provider = providerKeyMap.get(uniqueKey);
 			if (!provider) {
 				const sanitized = sanitizeId(entry.provider ?? "factory");
@@ -858,7 +921,7 @@ function buildFactoryData(): {
 					name: deriveProviderName(entry.provider, normalizedBaseUrl),
 					api: deriveProviderApi(entry.provider),
 					baseUrl: normalizedBaseUrl,
-					apiKey: entry.api_key,
+					apiKey: inlineKey ?? storedKey,
 					models: [],
 				};
 				providerKeyMap.set(uniqueKey, provider);
