@@ -1,0 +1,165 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver (with or without leading v) to release"
+        required: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_version: ${{ steps.meta.outputs.release_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: meta
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RAW_TAG="${{ github.event.inputs.version }}"
+          else
+            RAW_TAG="$GITHUB_REF_NAME"
+          fi
+
+          if [[ -z "$RAW_TAG" ]]; then
+            echo "::error::Release version is required" >&2
+            exit 1
+          fi
+
+          if [[ "$RAW_TAG" != v* ]]; then
+            RAW_TAG="v${RAW_TAG}"
+          fi
+
+          if ! [[ "$RAW_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag must follow semver (vX.Y.Z)" >&2
+            exit 1
+          fi
+
+          VERSION="${RAW_TAG#v}"
+
+          echo "release_tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag from workflow dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.release_tag }}"
+          git fetch --tags --force
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+  quality-gate:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            chunkIndex: 1
+          - os: ubuntu-latest
+            chunkIndex: 2
+          - os: macos-latest
+            chunkIndex: 1
+          - os: macos-latest
+            chunkIndex: 2
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.1.31
+
+      - name: Install ripgrep (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Install ripgrep (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install ripgrep
+
+      - run: bun install
+      - run: bun run bun:lint
+      - run: bun run bun:test
+      - run: bun run build
+      - name: Run evals chunk
+        env:
+          COMPOSER_EVAL_CHUNK_COUNT: 2
+          COMPOSER_EVAL_CHUNK_INDEX: ${{ matrix.chunkIndex }}
+        run: bun run bun:evals
+
+  publish:
+    needs:
+      - prepare
+      - quality-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.1.31
+
+      - run: bun install
+      - run: bun run build
+
+      - name: Verify NPM token is present
+        run: |
+          if [[ -z "${NPM_TOKEN}" ]]; then
+            echo "::error::NPM_TOKEN secret is not configured" >&2
+            exit 1
+          fi
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - id: pack
+        run: |
+          set -euo pipefail
+          PACK_JSON=$(npm pack --json)
+          echo "$PACK_JSON"
+          FILE=$(echo "$PACK_JSON" | jq -r '.[0].filename')
+          echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
+          path: ${{ steps.pack.outputs.tarball }}
+
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n" > "$HOME/.npmrc"
+          npm publish "${{ steps.pack.outputs.tarball }}" --access public
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          name: Composer CLI ${{ needs.prepare.outputs.release_version }}
+          generate_release_notes: true
+          files: ${{ steps.pack.outputs.tarball }}
