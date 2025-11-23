@@ -1,3 +1,4 @@
+import { envApiKeyMap } from "../providers/api-keys.js";
 import type { AuthCredential } from "../providers/auth.js";
 import {
 	HUMAN_EGRESS_PII_RULE_ID,
@@ -53,21 +54,8 @@ export interface ProviderTransportOptions {
 	maxConcurrentToolExecutions?: number;
 }
 
-const PROVIDER_ENV_VARS: Record<string, string[]> = {
-	openai: ["OPENAI_API_KEY"],
-	openrouter: ["OPENROUTER_API_KEY"],
-	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
-	groq: ["GROQ_API_KEY"],
-	gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-	google: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-	cerebras: ["CEREBRAS_API_KEY"],
-	zai: ["ZAI_API_KEY"],
-	xai: ["XAI_API_KEY"],
-	exa: ["EXA_API_KEY"],
-};
-
 function resolveEnvCredential(provider: string): AuthCredential | undefined {
-	const vars = PROVIDER_ENV_VARS[provider] ?? [];
+	const vars = envApiKeyMap[provider as keyof typeof envApiKeyMap] ?? [];
 	for (const name of vars) {
 		const value = process.env[name];
 		if (!value) continue;

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 type StoredKey = {
 	apiKey?: string;
@@ -24,10 +25,20 @@ function getFactoryPaths(): { keysPath: string; configPath: string } {
 	};
 }
 
-function loadStore(pathOverride?: string): KeyStore {
-	const path =
+function sanitizePath(pathOverride?: string): string | undefined {
+	const candidate =
 		pathOverride ?? process.env.COMPOSER_KEYS_PATH ?? DEFAULT_KEYS_PATH;
-	if (!existsSync(path)) return {};
+	if (!candidate) return undefined;
+	const resolved = resolve(candidate);
+	const allowedRoots = [homedir(), process.cwd()].map((p) => resolve(p));
+	const isAllowed = allowedRoots.some((root) => resolved.startsWith(root));
+	if (!isAllowed) return undefined;
+	return resolved;
+}
+
+function loadStore(pathOverride?: string): KeyStore {
+	const path = sanitizePath(pathOverride);
+	if (!path || !existsSync(path)) return {};
 	try {
 		const raw = readFileSync(path, "utf8");
 		const parsed = JSON.parse(raw) as KeyStore;

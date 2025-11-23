@@ -156,7 +156,7 @@ export EXA_API_KEY=...  # Get yours at https://dashboard.exa.ai/api-keys
 }
 ```
 
-Keys in the key store are loaded automatically if a provider env var is missing. Use `composer keys list` to view loaded providers and redacted key status, and `composer keys set <provider>` to add/update interactively (writes to `~/.composer/keys.json`).
+Keys in the key store are loaded automatically if a provider env var is missing.
 
 ## Providers
 
