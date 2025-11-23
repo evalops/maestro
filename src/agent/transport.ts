@@ -96,26 +96,40 @@ function calculateCost(
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
 
-function stableStringify(value: unknown): string {
+function stableStringify(
+	value: unknown,
+	maxDepth = 50,
+	maxLength = 10_000,
+): string {
 	const seen = new WeakSet();
-	const sorter = (input: any): any => {
+	const sorter = (input: any, depth = 0): any => {
+		if (depth > maxDepth) return "[Max Depth]";
 		if (input === null || typeof input !== "object") return input;
 		if (seen.has(input)) return "[Circular]";
 		seen.add(input);
 		let output: any;
 		if (Array.isArray(input)) {
-			output = input.map(sorter);
+			output = input.map((item) => sorter(item, depth + 1));
 		} else {
 			const sortedKeys = Object.keys(input).sort();
 			output = {};
 			for (const key of sortedKeys) {
-				output[key] = sorter(input[key]);
+				output[key] = sorter(input[key], depth + 1);
 			}
 		}
 		seen.delete(input);
 		return output;
 	};
-	return JSON.stringify(sorter(value));
+	try {
+		const result = JSON.stringify(sorter(value));
+		if (result.length > maxLength) {
+			return "[SerializationError: Signature too large]";
+		}
+		return result;
+	} catch (error: any) {
+		const message = error?.message || "unknown";
+		return `[SerializationError: ${message}]`;
+	}
 }
 
 function formatPendingPii(snapshot: WorkflowStateSnapshot): string {
@@ -153,7 +167,10 @@ export class ProviderTransport implements AgentTransport {
 	private workflowState = new WorkflowStateTracker();
 	private warnedAboutWorkflowConcurrency = false;
 	private recentToolCalls: Array<{ name: string; signature: string }> = [];
+	private recentToolTimestamps = new Map<string, number[]>();
 	private static readonly DOOM_LOOP_THRESHOLD = 3;
+	private static readonly TOOL_RATE_WINDOW_MS = 10_000;
+	private static readonly TOOL_RATE_LIMIT = 5;
 
 	constructor(private options: ProviderTransportOptions = {}) {}
 
@@ -471,6 +488,32 @@ export class ProviderTransport implements AgentTransport {
 							timestamp: Date.now(),
 						};
 						for (const evt of emitToolResult(doomMessage, toolCall, true)) {
+							yield evt;
+						}
+						continue;
+					}
+					const now = Date.now();
+					const timestamps = this.recentToolTimestamps.get(toolCall.name) ?? [];
+					const recent = timestamps.filter(
+						(ts) => now - ts < ProviderTransport.TOOL_RATE_WINDOW_MS,
+					);
+					recent.push(now);
+					this.recentToolTimestamps.set(toolCall.name, recent);
+					if (recent.length > ProviderTransport.TOOL_RATE_LIMIT) {
+						const rateMessage: ToolResultMessage = {
+							role: "toolResult",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							content: [
+								{
+									type: "text",
+									text: `Blocked "${toolCall.name}" due to rate limit: >${ProviderTransport.TOOL_RATE_LIMIT} calls in ${ProviderTransport.TOOL_RATE_WINDOW_MS / 1000}s window.`,
+								},
+							],
+							isError: true,
+							timestamp: now,
+						};
+						for (const evt of emitToolResult(rateMessage, toolCall, true)) {
 							yield evt;
 						}
 						continue;
