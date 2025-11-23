@@ -20,6 +20,21 @@ import {
 export interface ConfigShowRenderOptions {
 	hierarchy: string[];
 	homeDir?: string;
+	disableColors?: boolean;
+}
+
+// Adapted from ansi-regex (MIT) to cover CSI and OSC escape sequences.
+const ANSI_STRING_TERMINATORS = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
+const ANSI_OSC_SEQUENCE = `(?:\\u001B\\][\\s\\S]*?${ANSI_STRING_TERMINATORS})`;
+const ANSI_CSI_SEQUENCE =
+	"[\\u001B\\u009B][[\\]()#;?]*(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]";
+const ANSI_ESCAPE_SEQUENCE = new RegExp(
+	`${ANSI_OSC_SEQUENCE}|${ANSI_CSI_SEQUENCE}`,
+	"g",
+);
+
+function stripAnsi(value: string): string {
+	return value.replace(ANSI_ESCAPE_SEQUENCE, "");
 }
 
 export function buildConfigShowSections(
@@ -116,6 +131,9 @@ export function buildConfigShowSections(
 		output.push("");
 	}
 
+	if (options.disableColors) {
+		return output.map((line) => stripAnsi(line));
+	}
 	return output;
 }
 
@@ -306,7 +324,11 @@ export async function handleConfigShow(): Promise<void> {
 	if (layoutPref === "legacy") {
 		renderConfigShowLegacy(inspection, hierarchy, homeDir);
 	} else {
-		const lines = buildConfigShowSections(inspection, { hierarchy, homeDir });
+		const lines = buildConfigShowSections(inspection, {
+			hierarchy,
+			homeDir,
+			disableColors: !process.stdout.isTTY,
+		});
 		for (const line of lines) {
 			console.log(line);
 		}

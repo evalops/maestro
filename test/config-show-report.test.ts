@@ -39,6 +39,7 @@ describe("buildConfigShowSections", () => {
 		const result = buildConfigShowSections(sampleInspection, {
 			hierarchy: ["/Users/test/.composer/config.json"],
 			homeDir: "/Users/test",
+			disableColors: true,
 		});
 		expect(result.join("\n")).toMatchSnapshot();
 	});
@@ -53,6 +54,7 @@ describe("buildConfigShowSections", () => {
 		const result = buildConfigShowSections(emptyInspection, {
 			hierarchy: [],
 			homeDir: "/home/user",
+			disableColors: true,
 		});
 		expect(result.join("\n")).toMatchSnapshot();
 	});

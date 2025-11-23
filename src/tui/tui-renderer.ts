@@ -1822,19 +1822,32 @@ export class TuiRenderer {
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {
-		if ((message as AssistantMessage).content) {
-			const content = (message as AssistantMessage).content;
-			const textParts = content
-				.filter((chunk) => chunk.type === "text")
-				.map((chunk) => (chunk as any).text as string);
-			if (textParts.length) {
-				return textParts.join("\n");
+		const rawContent = (message as { content?: unknown }).content;
+		if (typeof rawContent === "string") {
+			return rawContent;
+		}
+		if (!Array.isArray(rawContent)) {
+			return "";
+		}
+		const textParts: string[] = [];
+		for (const chunk of rawContent as Array<Record<string, unknown>>) {
+			const typedChunk = chunk as {
+				type?: unknown;
+				text?: unknown;
+				thinking?: unknown;
+			};
+			const type =
+				typeof typedChunk.type === "string" ? typedChunk.type : undefined;
+			if (type === "text" && typeof typedChunk.text === "string") {
+				textParts.push(typedChunk.text);
+			} else if (
+				type === "thinking" &&
+				typeof typedChunk.thinking === "string"
+			) {
+				textParts.push(typedChunk.thinking);
 			}
 		}
-		if (typeof (message as any).content === "string") {
-			return (message as any).content as string;
-		}
-		return "";
+		return textParts.join("\n");
 	}
 
 	private maybeShowContextWarning(stats: FooterStats): void {
