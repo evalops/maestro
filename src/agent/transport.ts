@@ -102,13 +102,18 @@ function stableStringify(value: unknown): string {
 		if (input === null || typeof input !== "object") return input;
 		if (seen.has(input)) return "[Circular]";
 		seen.add(input);
-		if (Array.isArray(input)) return input.map(sorter);
-		const sortedKeys = Object.keys(input).sort();
-		const result: Record<string, unknown> = {};
-		for (const key of sortedKeys) {
-			result[key] = sorter(input[key]);
+		let output: any;
+		if (Array.isArray(input)) {
+			output = input.map(sorter);
+		} else {
+			const sortedKeys = Object.keys(input).sort();
+			output = {};
+			for (const key of sortedKeys) {
+				output[key] = sorter(input[key]);
+			}
 		}
-		return result;
+		seen.delete(input);
+		return output;
 	};
 	return JSON.stringify(sorter(value));
 }
