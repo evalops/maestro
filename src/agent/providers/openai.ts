@@ -787,7 +787,7 @@ export async function* streamOpenAI(
 						// Finalize all content blocks
 						for (let i = 0; i < partial.content.length; i++) {
 							const block = partial.content[i];
-							if (block.type === "toolCall") {
+							if (block.type === "toolCall" && !toolEnded.has(i)) {
 								// Final parse of accumulated JSON
 								const partialArgs = toolArgBuffers.get(i) || "{}";
 								try {
@@ -804,6 +804,7 @@ export async function* streamOpenAI(
 									toolCall: block,
 									partial,
 								};
+								toolEnded.add(i);
 							} else if (block.type === "text") {
 								yield {
 									type: "text_end",
