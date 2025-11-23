@@ -52,6 +52,7 @@ import { ConversationCompactor } from "./conversation-compactor.js";
 import { MessageView } from "./message-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { InfoView } from "./info-view.js";
+import { ToolOutputView } from "./tool-output-view.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -96,8 +97,7 @@ export class TuiRenderer {
 	private readonly idleFooterHint =
 		"Try /help for commands or /tools for status";
 	private planHint: string | null = null;
-	private compactToolOutputs = false;
-	private toolComponents = new Set<ToolExecutionComponent>();
+    private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
 	private lastUserMessageText?: string;
 	private lastAssistantMessageText?: string;
@@ -176,7 +176,7 @@ export class TuiRenderer {
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
 			showInfoMessage: (message) => this.showInfoMessage(message),
 			onSessionLoaded: (sessionInfo) => {
-				this.toolComponents.clear();
+		this.toolOutputView.clearTrackedComponents();
 				this.renderInitialMessages(this.agent.state);
 				this.footer.updateState(this.agent.state);
 				this.showInfoMessage(
@@ -211,13 +211,18 @@ export class TuiRenderer {
 			ui: this.ui,
 			getCommands: () => this.slashCommands,
 		});
-		this.messageView = new MessageView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			toolComponents: this.toolComponents,
-			pendingTools: this.pendingTools,
-			registerToolComponent: (component) => this.registerToolComponent(component),
-		});
+        this.toolOutputView = new ToolOutputView({
+            ui: this.ui,
+            showInfoMessage: (message) => this.showInfoMessage(message),
+        });
+        this.messageView = new MessageView({
+            chatContainer: this.chatContainer,
+            ui: this.ui,
+            toolComponents: this.toolOutputView.getTrackedComponents(),
+            pendingTools: this.pendingTools,
+            registerToolComponent: (component) =>
+                this.toolOutputView.registerToolComponent(component),
+        });
 		this.importExportView = new ImportExportView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -240,17 +245,17 @@ export class TuiRenderer {
 			getLastAssistantMessage: () => this.lastAssistantMessageText,
 			getLastRunToolNames: () => this.lastRunToolNames,
 		});
-		this.conversationCompactor = new ConversationCompactor({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			footer: this.footer,
-			idleHint: this.idleFooterHint,
-			toolComponents: this.toolComponents,
-			renderMessages: () => this.renderInitialMessages(this.agent.state),
-			showInfoMessage: (message) => this.showInfoMessage(message),
-		});
+        this.conversationCompactor = new ConversationCompactor({
+            agent: this.agent,
+            sessionManager: this.sessionManager,
+            chatContainer: this.chatContainer,
+            ui: this.ui,
+            footer: this.footer,
+            idleHint: this.idleFooterHint,
+            toolComponents: this.toolOutputView.getTrackedComponents(),
+            renderMessages: () => this.renderInitialMessages(this.agent.state),
+            showInfoMessage: (message) => this.showInfoMessage(message),
+        });
 
 		const commandRegistry = createCommandRegistry({
 			getRunScriptCompletions: (prefix) =>
@@ -277,7 +282,8 @@ export class TuiRenderer {
 				diagnostics: (input) =>
 					this.diagnosticsView.handleDiagnosticsCommand(input),
 				compact: () => this.handleCompactCommand(),
-				compactTools: (input) => this.handleCompactToolsCommand(input),
+				compactTools: (input) =>
+					this.toolOutputView.handleCompactToolsCommand(input),
 				quit: () => {
 					this.stop();
 					process.exit(0);
@@ -434,9 +440,9 @@ export class TuiRenderer {
 									content.name,
 									content.arguments,
 								);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-								this.registerToolComponent(component);
+				this.chatContainer.addChild(component);
+				this.pendingTools.set(content.id, component);
+				this.toolOutputView.registerToolComponent(component);
 							} else {
 								// Update existing component with latest arguments as they stream
 								const component = this.pendingTools.get(content.id);
@@ -516,9 +522,9 @@ export class TuiRenderer {
 						event.toolName,
 						event.args,
 					);
-					this.chatContainer.addChild(component);
-					this.pendingTools.set(event.toolCallId, component);
-					this.registerToolComponent(component);
+			this.chatContainer.addChild(component);
+			this.pendingTools.set(event.toolCallId, component);
+			this.toolOutputView.registerToolComponent(component);
 					this.ui.requestRender();
 				}
 				break;
@@ -767,50 +773,11 @@ export class TuiRenderer {
 		}
 	}
 
-	private handleCompactToolsCommand(text: string): void {
-		const parts = text.trim().split(/\s+/);
-		let nextState = this.compactToolOutputs;
-		if (parts.length === 1) {
-			nextState = !nextState;
-		} else {
-			const arg = parts[1].toLowerCase();
-			if (arg === "on" || arg === "true") {
-				nextState = true;
-			} else if (arg === "off" || arg === "false") {
-				nextState = false;
-			} else if (arg === "toggle") {
-				nextState = !nextState;
-			} else {
-				this.showInfoMessage("Usage: /compact-tools [on|off|toggle]");
-				return;
-			}
-		}
-		this.compactToolOutputs = nextState;
-		this.applyCompactModeToTools();
-		this.showInfoMessage(
-			nextState
-				? "Tool outputs will collapse by default."
-				: "Tool outputs will show full content.",
-		);
-	}
-
 	stop(): void {
 		this.loaderView.stop();
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;
 		}
-	}
-
-	private registerToolComponent(component: ToolExecutionComponent): void {
-		this.toolComponents.add(component);
-		component.setCollapsed(this.compactToolOutputs);
-	}
-
-	private applyCompactModeToTools(): void {
-		for (const component of this.toolComponents) {
-			component.setCollapsed(this.compactToolOutputs);
-		}
-		this.ui.requestRender();
 	}
 }
