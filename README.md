@@ -86,6 +86,11 @@ bun run compile:binary
 - Package builds: `bun run --filter @evalops/tui build` and `bun run --filter @evalops/composer-web build`
 - Targeted tests: `bunx vitest --run -t "<test name>"`
 
+### Nix hash auto-update (CI)
+- The `Update Nix Hash` workflow runs on pushes to `main` that touch `bun.lockb`, `package.json`, or `package-lock.json`.
+- It commits the new `npmDepsHash` and force-pushes to the `ci/update-nix-hash` branch (no PR is created). If you need the updated hash, merge or cherry-pick that branch.
+- If the workflow fails, rerun after rebasing onto `main`; org PR permissions are no longer required because no PR is opened automatically.
+
 ## Quick Start
 
 ```bash
