@@ -1879,7 +1879,7 @@ export class TuiRenderer {
 			return;
 		}
 		const prompt = renderCommandPrompt(cmd, args);
-		this.editor.setContent(prompt);
+		this.editor.setText(prompt);
 		this.notificationView.showToast(
 			`Inserted command "${cmd.name}" into the composer. Edit then submit.`,
 			"info",
