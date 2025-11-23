@@ -38,8 +38,15 @@ export async function handleConfig(
 			if (containsPollutionKeys(config)) {
 				throw new ApiError(400, "Config contains forbidden keys");
 			}
+			if (isTooDeep(config, MAX_CONFIG_DEPTH)) {
+				throw new ApiError(400, "Config is too deeply nested");
+			}
+			const serialized = JSON.stringify(config);
+			if (Buffer.byteLength(serialized, "utf8") > MAX_CONFIG_BYTES) {
+				throw new ApiError(413, "Config exceeds maximum allowed size");
+			}
 			const configPath = getCustomConfigPath();
-			writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+			writeFileSync(configPath, serialized, "utf-8");
 			await reloadModelConfig();
 			sendJson(res, 200, { success: true }, cors);
 		} catch (error) {
@@ -49,6 +56,8 @@ export async function handleConfig(
 }
 
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const MAX_CONFIG_BYTES = 256 * 1024; // 256 KB
+const MAX_CONFIG_DEPTH = 20;
 
 function containsPollutionKeys(value: unknown): boolean {
 	if (value === null || typeof value !== "object") return false;
@@ -58,6 +67,18 @@ function containsPollutionKeys(value: unknown): boolean {
 	for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
 		if (FORBIDDEN_KEYS.has(key)) return true;
 		if (containsPollutionKeys(val)) return true;
+	}
+	return false;
+}
+
+function isTooDeep(value: unknown, maxDepth: number, depth = 0): boolean {
+	if (depth > maxDepth) return true;
+	if (value === null || typeof value !== "object") return false;
+	if (Array.isArray(value)) {
+		return value.some((entry) => isTooDeep(entry, maxDepth, depth + 1));
+	}
+	for (const val of Object.values(value as Record<string, unknown>)) {
+		if (isTooDeep(val, maxDepth, depth + 1)) return true;
 	}
 	return false;
 }
