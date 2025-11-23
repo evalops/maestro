@@ -1,5 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import ts from "typescript";
+import {
+	ChatRequestSchema,
+	ModelSetSchema,
+} from "../src/web/validation.js";
 
 type Route = { method: string; path: string };
 
@@ -48,36 +52,280 @@ function extractRoutes(sourcePath: string): Route[] {
 	return routes;
 }
 
-function buildSpec(routes: Route[]) {
+function buildComponents() {
+	const schemas: Record<string, unknown> = {
+		ChatRequest: ChatRequestSchema,
+		ModelSetRequest: ModelSetSchema,
+		ChatMessage: {
+			type: "object",
+			required: ["role"],
+			properties: {
+				role: { type: "string" },
+				content: { type: "string", nullable: true },
+			},
+		},
+		ModelEntry: {
+			type: "object",
+			required: ["id", "provider", "api"],
+			properties: {
+				id: { type: "string" },
+				provider: { type: "string" },
+				name: { type: "string" },
+				api: { type: "string" },
+				contextWindow: { type: "integer" },
+				maxTokens: { type: "integer" },
+				cost: { type: "object", additionalProperties: true },
+				capabilities: {
+					type: "object",
+					properties: {
+						streaming: { type: "boolean" },
+						tools: { type: "boolean" },
+						vision: { type: "boolean" },
+						reasoning: { type: "boolean" },
+					},
+				},
+			},
+		},
+		ModelsResponse: {
+			type: "object",
+			properties: {
+				models: {
+					type: "array",
+					items: { $ref: "#/components/schemas/ModelEntry" },
+				},
+			},
+		},
+		ModelSelectionResponse: {
+			type: "object",
+			required: ["id", "provider"],
+			properties: {
+				id: { type: "string" },
+				provider: { type: "string" },
+				name: { type: "string" },
+				contextWindow: { type: "integer" },
+				maxTokens: { type: "integer" },
+				reasoning: { type: "boolean" },
+			},
+		},
+		ConfigWriteRequest: {
+			type: "object",
+			required: ["config"],
+			properties: { config: { type: "object" } },
+			additionalProperties: true,
+		},
+		ConfigResponse: {
+			type: "object",
+			properties: {
+				config: { type: "object" },
+				configPath: { type: "string" },
+			},
+		},
+		StatusResponse: {
+			type: "object",
+			properties: {
+				cwd: { type: "string" },
+				git: {
+					type: "object",
+					properties: {
+						branch: { type: "string" },
+						status: { type: "object" },
+					},
+				},
+				context: {
+					type: "object",
+					properties: {
+						agentMd: { type: "boolean" },
+						claudeMd: { type: "boolean" },
+					},
+				},
+				server: {
+					type: "object",
+					properties: {
+						uptime: { type: "number" },
+						version: { type: "string" },
+						staticCacheMaxAgeSeconds: { type: "number" },
+					},
+				},
+				backgroundTasks: { type: "object" },
+				lastUpdated: { type: "number" },
+				lastLatencyMs: { type: "number" },
+			},
+		},
+	};
+
+	return {
+		securitySchemes: {
+			ComposerApiKey: {
+				type: "apiKey",
+				in: "header",
+				name: "x-composer-api-key",
+				description:
+					"Value of COMPOSER_WEB_API_KEY. Authorization: Bearer <key> is also accepted.",
+			},
+		},
+		schemas,
+	};
+}
+
+function buildPaths(routes: Route[]) {
 	const paths: Record<string, any> = {};
-	for (const { method, path } of routes) {
-		const lower = method.toLowerCase();
+
+	const ensure = (path: string) => {
 		if (!paths[path]) paths[path] = {};
-		paths[path][lower] = {
+		return paths[path];
+	};
+
+	for (const { method, path } of routes) {
+		const node = ensure(path);
+		node[method] = node[method] || {
 			summary: "Auto-generated from route definition",
 			responses: { 200: { description: "OK" } },
 		};
 	}
 
+	// Enrich known endpoints
+	if (paths["/api/chat"]?.post) {
+		paths["/api/chat"].post = {
+			summary: "Send a chat request (SSE)",
+			description: "Streams SSE events; final marker is [DONE].",
+			security: [{ ComposerApiKey: [] }],
+			requestBody: {
+				required: true,
+				content: {
+					"application/json": {
+						schema: { $ref: "#/components/schemas/ChatRequest" },
+					},
+				},
+			},
+			responses: {
+				200: { description: "SSE stream", content: { "text/event-stream": {} } },
+				400: { description: "Invalid request" },
+				401: { description: "Unauthorized" },
+			},
+		};
+	}
+
+	if (paths["/api/models"]?.get) {
+		paths["/api/models"].get.responses = {
+			200: {
+				description: "Registered models",
+				content: {
+					"application/json": {
+						schema: { $ref: "#/components/schemas/ModelsResponse" },
+					},
+				},
+			},
+		};
+	}
+
+	if (paths["/api/model"]) {
+		const base = {
+			security: [{ ComposerApiKey: [] }],
+			responses: {
+				200: {
+					description: "Current model selection",
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/ModelSelectionResponse" },
+						},
+					},
+				},
+			},
+		};
+		if (paths["/api/model"].get) {
+			paths["/api/model"].get = { ...base, summary: "Get active model" };
+		}
+		if (paths["/api/model"].post) {
+			paths["/api/model"].post = {
+				...base,
+				summary: "Set active model",
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/ModelSetRequest" },
+						},
+					},
+				},
+				responses: {
+					...base.responses,
+					400: { description: "Invalid model selection" },
+					404: { description: "Model not found" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/config"]) {
+		if (paths["/api/config"].get) {
+			paths["/api/config"].get = {
+				summary: "Get custom config",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Config payload",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/ConfigResponse" },
+							},
+						},
+					},
+				},
+			};
+		}
+		if (paths["/api/config"].post) {
+			paths["/api/config"].post = {
+				summary: "Write custom config",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/ConfigWriteRequest" },
+						},
+					},
+				},
+				responses: {
+					200: { description: "Config persisted" },
+					400: { description: "Invalid config" },
+					413: { description: "Payload too large" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/status"]?.get) {
+		paths["/api/status"].get = {
+			summary: "Server status",
+			security: [{ ComposerApiKey: [] }],
+			responses: {
+				200: {
+					description: "Status payload",
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/StatusResponse" },
+						},
+					},
+				},
+			},
+		};
+	}
+
+	return paths;
+}
+
+function buildSpec(routes: Route[]) {
 	return {
 		openapi: "3.1.0",
 		info: {
 			title: "Composer Web API",
 			version: "0.10.0",
 			description:
-				"Auto-generated from src/web-server.ts routes. Extend components/schemas as needed.",
+				"Auto-generated from src/web-server.ts routes. Components seeded from runtime schemas.",
 		},
 		servers: [{ url: "http://localhost:8080" }],
-		paths,
-		components: {
-			securitySchemes: {
-				ComposerApiKey: {
-					type: "apiKey",
-					in: "header",
-					name: "x-composer-api-key",
-				},
-			},
-		},
+		paths: buildPaths(routes),
+		components: buildComponents(),
 	};
 }
 
