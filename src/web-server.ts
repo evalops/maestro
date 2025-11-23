@@ -290,7 +290,7 @@ const routes: Route[] = [
 	{
 		method: "POST",
 		path: "/api/chat",
-		handler: (req, res) => {
+		handler: async (req, res) => {
 			const lease = sseLimiter.tryAcquire();
 			if (!lease) {
 				sendJson(
@@ -301,7 +301,7 @@ const routes: Route[] = [
 				);
 				return;
 			}
-			handleChat(req, res, CORS_HEADERS, {
+			return handleChat(req, res, CORS_HEADERS, {
 				createAgent: async (model, thinking, approval) =>
 					createAgent(
 						model,
