@@ -12,6 +12,8 @@ import {
 	statSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { normalizeLLMBaseUrl } from "../src/models/url-normalize.js";
+import type { Api } from "../src/agent/types.js";
 
 type ModelsDev = {
 	[providerId: string]: {
@@ -79,8 +81,34 @@ function baseUrlFor(providerId: string): string {
 	return BASE_URLS[providerId] ?? "https://api.openai.com/v1";
 }
 
+export function enforceEndpoint(
+	baseUrl: string,
+	providerId: string,
+	api: string,
+): string {
+	const normalized = normalizeLLMBaseUrl(baseUrl, providerId, api as Api);
+
+	const hasResponses = normalized.includes("/responses");
+	const hasCompletions = normalized.includes("/chat/completions");
+
+	if (api === "openai-responses" && (!hasResponses || hasCompletions)) {
+		throw new Error(
+			`Normalized baseUrl missing /responses for provider ${providerId}: ${normalized}`,
+		);
+	}
+	if (api === "openai-completions" && (!hasCompletions || hasResponses)) {
+		throw new Error(
+			`Normalized baseUrl missing /chat/completions for provider ${providerId}: ${normalized}`,
+		);
+	}
+
+	return normalized;
+}
+
 const CACHE_PATH = join(process.cwd(), ".cache", "models-dev.json");
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+const MODELS_DEV_URL = "https://models.dev/api.json";
+const ALLOWED_MODEL_HOSTS = new Set(["models.dev", "www.models.dev"]);
 
 function readCache(): ModelsDev | null {
 	if (!existsSync(CACHE_PATH)) return null;
@@ -107,16 +135,30 @@ function writeCache(data: ModelsDev) {
 async function fetchModelsDev(): Promise<ModelsDev> {
 	const cached = readCache();
 	if (cached) {
-		const age = Date.now() - (existsSync(CACHE_PATH) ? statSync(CACHE_PATH).mtimeMs : 0);
+		const age =
+			Date.now() - (existsSync(CACHE_PATH) ? statSync(CACHE_PATH).mtimeMs : 0);
 		if (age < CACHE_MAX_AGE_MS) {
 			console.log("[generate-models] using cached models.dev data");
 			return cached;
 		}
 	}
 
-	const res = await fetch("https://models.dev/api.json", {
+	const parsedUrl = new URL(MODELS_DEV_URL);
+	if (!ALLOWED_MODEL_HOSTS.has(parsedUrl.hostname)) {
+		throw new Error(
+			`Blocked registry host ${parsedUrl.hostname}; allowed: ${[
+				...ALLOWED_MODEL_HOSTS,
+			].join(", ")}`,
+		);
+	}
+
+	const res = await fetch(parsedUrl.toString(), {
 		signal: AbortSignal.timeout(15000),
 		headers: { "User-Agent": "composer-generator" },
+		integrity:
+			process.env.MODELS_DEV_SRI && process.env.MODELS_DEV_SRI.length > 0
+				? process.env.MODELS_DEV_SRI
+				: undefined,
 	});
 	if (!res.ok) {
 		if (cached) {
@@ -160,7 +202,7 @@ async function main() {
 				name: model.name,
 				api,
 				provider: providerId,
-				baseUrl: providerBase,
+				baseUrl: enforceEndpoint(providerBase, providerId, api),
 				reasoning: Boolean(model.reasoning ?? false),
 				toolUse: Boolean(model.tool_call ?? false),
 				input: normalizedInput,
