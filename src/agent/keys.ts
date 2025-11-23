@@ -52,7 +52,7 @@ export function getStoredCredentials(providerId: string): {
 	apiKey?: string;
 	authType?: StoredKey["authType"];
 } {
-	const stores = [loadStore(), loadStore(PROJECT_KEYS_PATH)];
+	const stores = [loadStore(PROJECT_KEYS_PATH), loadStore()];
 
 	// Factory keys.json (if present)
 	const { keysPath: factoryKeysPath, configPath: factoryConfigPath } =
