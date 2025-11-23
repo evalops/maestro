@@ -5,6 +5,7 @@ import { join, normalize, resolve } from "node:path";
 interface ServeStaticOptions {
 	webRoot: string;
 	corsHeaders?: Record<string, string>;
+	maxAgeSeconds?: number;
 }
 
 export function serveStatic(
@@ -13,7 +14,7 @@ export function serveStatic(
 	res: ServerResponse,
 	options: ServeStaticOptions,
 ) {
-	const { webRoot, corsHeaders } = options;
+	const { webRoot, corsHeaders, maxAgeSeconds = 0 } = options;
 	const safeRoot = resolve(webRoot);
 	let filePath: string;
 
@@ -69,6 +70,9 @@ export function serveStatic(
 			"Content-Type": contentType,
 			"Content-Length": stats.size,
 			ETag: etag,
+			...(maxAgeSeconds > 0
+				? { "Cache-Control": `public, max-age=${maxAgeSeconds}` }
+				: { "Cache-Control": "no-cache" }),
 			...(corsHeaders || {}),
 		});
 

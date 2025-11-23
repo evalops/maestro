@@ -24,6 +24,49 @@ export function createCorsHeaders(origin: string): Record<string, string> {
 	return headers;
 }
 
+export async function readRequestBody(
+	req: IncomingMessage,
+	limit = 1_000_000,
+): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		let total = 0;
+		const chunks: Buffer[] = [];
+		req.on("data", (chunk: Buffer) => {
+			const nextTotal = total + chunk.length;
+			if (nextTotal > limit) {
+				req.removeAllListeners("data");
+				req.removeAllListeners("end");
+				req.destroy();
+				reject(new ApiError(413, "Payload too large"));
+				return;
+			}
+			total = nextTotal;
+			chunks.push(chunk);
+		});
+		req.on("end", () => {
+			resolve(Buffer.concat(chunks));
+		});
+		req.on("error", (error) => {
+			reject(error);
+		});
+	});
+}
+
+export async function readJsonBody<T>(
+	req: IncomingMessage,
+	limit = 1_000_000,
+): Promise<T> {
+	const raw = await readRequestBody(req, limit);
+	if (!raw.length) {
+		return {} as T;
+	}
+	try {
+		return JSON.parse(raw.toString()) as T;
+	} catch {
+		throw new ApiError(400, "Invalid JSON payload");
+	}
+}
+
 export function sendJson(
 	res: ServerResponse,
 	status: number,
