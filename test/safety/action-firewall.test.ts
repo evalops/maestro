@@ -12,7 +12,8 @@ const withPlanMode = (fn: () => void) => {
 		fn();
 	} finally {
 		if (prev === undefined) {
-			process.env.COMPOSER_PLAN_MODE = undefined;
+			// biome-ignore lint/performance/noDelete: need to fully unset env var
+			delete process.env.COMPOSER_PLAN_MODE;
 		} else {
 			process.env.COMPOSER_PLAN_MODE = prev;
 		}

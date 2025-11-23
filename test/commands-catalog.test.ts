@@ -18,30 +18,38 @@ describe("command catalog", () => {
 		const work = tempDir();
 		const prevHome = process.env.HOME;
 		process.env.HOME = home;
-		const homeDir = join(home, ".composer", "commands");
-		mkdirSync(homeDir, { recursive: true });
-		writeFileSync(
-			join(homeDir, "cmd.json"),
-			JSON.stringify({
-				name: "hello",
-				prompt: "Hi {{name}}",
-				description: "home",
-			}),
-		);
-		const wsDir = join(work, ".composer", "commands");
-		mkdirSync(wsDir, { recursive: true });
-		writeFileSync(
-			join(wsDir, "cmd.json"),
-			JSON.stringify({
-				name: "hello",
-				prompt: "Yo {{name}}",
-				description: "ws",
-			}),
-		);
-		const catalog = loadCommandCatalog(work);
-		expect(catalog).toHaveLength(1);
-		expect(catalog[0].prompt).toContain("Yo");
-		process.env.HOME = prevHome;
+		try {
+			const homeDir = join(home, ".composer", "commands");
+			mkdirSync(homeDir, { recursive: true });
+			writeFileSync(
+				join(homeDir, "cmd.json"),
+				JSON.stringify({
+					name: "hello",
+					prompt: "Hi {{name}}",
+					description: "home",
+				}),
+			);
+			const wsDir = join(work, ".composer", "commands");
+			mkdirSync(wsDir, { recursive: true });
+			writeFileSync(
+				join(wsDir, "cmd.json"),
+				JSON.stringify({
+					name: "hello",
+					prompt: "Yo {{name}}",
+					description: "ws",
+				}),
+			);
+			const catalog = loadCommandCatalog(work);
+			expect(catalog).toHaveLength(1);
+			expect(catalog[0].prompt).toContain("Yo");
+		} finally {
+			if (prevHome === undefined) {
+				// biome-ignore lint/performance/noDelete: need to unset env var
+				delete process.env.HOME;
+			} else {
+				process.env.HOME = prevHome;
+			}
+		}
 	});
 
 	it("renders prompt with args and validates required args", () => {

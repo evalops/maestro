@@ -1870,8 +1870,10 @@ export class TuiRenderer {
 		}
 		const args: Record<string, string> = {};
 		for (const token of rest) {
-			const [k, v] = token.split("=");
-			if (k && v !== undefined) args[k] = v;
+			const [k, ...restVals] = token.split("=");
+			if (k && restVals.length > 0) {
+				args[k] = restVals.join("=");
+			}
 		}
 		const validation = validateCommandArgs(cmd, args);
 		if (validation) {
