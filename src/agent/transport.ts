@@ -96,6 +96,23 @@ function calculateCost(
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
 
+function stableStringify(value: unknown): string {
+	const seen = new WeakSet();
+	const sorter = (input: any): any => {
+		if (input === null || typeof input !== "object") return input;
+		if (seen.has(input)) return "[Circular]";
+		seen.add(input);
+		if (Array.isArray(input)) return input.map(sorter);
+		const sortedKeys = Object.keys(input).sort();
+		const result: Record<string, unknown> = {};
+		for (const key of sortedKeys) {
+			result[key] = sorter(input[key]);
+		}
+		return result;
+	};
+	return JSON.stringify(sorter(value));
+}
+
 function formatPendingPii(snapshot: WorkflowStateSnapshot): string {
 	if (snapshot.pendingPii.length === 0) {
 		return "(none tracked)";
@@ -130,6 +147,8 @@ function buildPiiPolicyResult(
 export class ProviderTransport implements AgentTransport {
 	private workflowState = new WorkflowStateTracker();
 	private warnedAboutWorkflowConcurrency = false;
+	private recentToolCalls: Array<{ name: string; signature: string }> = [];
+	private static readonly DOOM_LOOP_THRESHOLD = 3;
 
 	constructor(private options: ProviderTransportOptions = {}) {}
 
@@ -143,6 +162,7 @@ export class ProviderTransport implements AgentTransport {
 		let model = cfg.model;
 		const firewall = defaultActionFirewall;
 		this.workflowState.reset();
+		this.recentToolCalls = [];
 
 		let credential: AuthCredential | undefined;
 		if (this.options.getAuthContext) {
@@ -421,6 +441,43 @@ export class ProviderTransport implements AgentTransport {
 				};
 
 				for (const toolCall of toolCallsToExecute) {
+					const signature = stableStringify(toolCall.arguments);
+					this.recentToolCalls.push({ name: toolCall.name, signature });
+					if (
+						this.recentToolCalls.length >
+						ProviderTransport.DOOM_LOOP_THRESHOLD + 2
+					) {
+						this.recentToolCalls.shift();
+					}
+					const tail = this.recentToolCalls.slice(
+						-ProviderTransport.DOOM_LOOP_THRESHOLD,
+					);
+					const doomLoop =
+						tail.length === ProviderTransport.DOOM_LOOP_THRESHOLD &&
+						tail.every(
+							(entry) =>
+								entry.name === toolCall.name && entry.signature === signature,
+						);
+					if (doomLoop) {
+						const doomMessage: ToolResultMessage = {
+							role: "toolResult",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							content: [
+								{
+									type: "text",
+									text: `Blocked "${toolCall.name}" to prevent a possible doom loop: same tool invoked ${ProviderTransport.DOOM_LOOP_THRESHOLD} times with identical arguments.`,
+								},
+							],
+							isError: true,
+							timestamp: Date.now(),
+						};
+						for (const evt of emitToolResult(doomMessage, toolCall, true)) {
+							yield evt;
+						}
+						continue;
+					}
+
 					yield {
 						type: "tool_execution_start",
 						toolCallId: toolCall.id,
