@@ -1,8 +1,20 @@
 import type { AuthCredential } from "../providers/auth.js";
-import { defaultActionFirewall } from "../safety/action-firewall.js";
+import {
+	HUMAN_EGRESS_PII_RULE_ID,
+	defaultActionFirewall,
+} from "../safety/action-firewall.js";
+import {
+	WorkflowStateError,
+	WorkflowStateTracker,
+	applyWorkflowStateHooks,
+	isWorkflowTrackedTool,
+} from "../safety/workflow-state.js";
 import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
-import type { ActionApprovalService } from "./action-approval.js";
+import type {
+	ActionApprovalService,
+	WorkflowStateSnapshot,
+} from "./action-approval.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamGoogle } from "./providers/google.js";
 import { streamOpenAI } from "./providers/openai.js";
@@ -14,6 +26,7 @@ import type {
 	AppMessage,
 	AssistantMessage,
 	Message,
+	ToolCall,
 	ToolResultMessage,
 } from "./types.js";
 
@@ -23,8 +36,7 @@ interface ToolExecutionOutcome {
 }
 
 interface PendingExecution {
-	toolCallId: string;
-	toolName: string;
+	toolCall: ToolCall;
 	promise: Promise<ToolExecutionOutcome>;
 }
 
@@ -64,7 +76,41 @@ function calculateCost(
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
 
+function formatPendingPii(snapshot: WorkflowStateSnapshot): string {
+	if (snapshot.pendingPii.length === 0) {
+		return "(none tracked)";
+	}
+	return snapshot.pendingPii
+		.map(
+			(artifact) =>
+				`• ${artifact.label} (artifact: ${artifact.id}, source: ${artifact.sourceToolCallId})`,
+		)
+		.join("\n");
+}
+
+function buildPiiPolicyResult(
+	toolCall: ToolCall,
+	snapshot: WorkflowStateSnapshot,
+): ToolResultMessage {
+	const artifactSummary = formatPendingPii(snapshot);
+	const orphanedSummary = snapshot.orphanedRedactions.length
+		? `Orphaned redaction attempts: ${snapshot.orphanedRedactions.join(", ")}`
+		: "";
+	const guidanceText = `Policy block: unredacted PII is still pending, so "${toolCall.name}" cannot run.\n\nArtifacts requiring redaction:\n${artifactSummary}\n\n${orphanedSummary ? `${orphanedSummary}\n\n` : ""}Next steps: run \`redact_transcript\` (or your workflow's redaction tool) for each artifact above, then retry the egress action.`;
+	return {
+		role: "toolResult",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		content: [{ type: "text", text: guidanceText }],
+		isError: true,
+		timestamp: Date.now(),
+	};
+}
+
 export class ProviderTransport implements AgentTransport {
+	private workflowState = new WorkflowStateTracker();
+	private warnedAboutWorkflowConcurrency = false;
+
 	constructor(private options: ProviderTransportOptions = {}) {}
 
 	async *run(
@@ -76,6 +122,7 @@ export class ProviderTransport implements AgentTransport {
 		const { systemPrompt, tools } = cfg;
 		let model = cfg.model;
 		const firewall = defaultActionFirewall;
+		this.workflowState.reset();
 
 		let credential: AuthCredential | undefined;
 		if (this.options.getAuthContext) {
@@ -145,12 +192,7 @@ export class ProviderTransport implements AgentTransport {
 
 			let currentAssistantMessage: AssistantMessage | null = null;
 			let completedAssistantMessage: AssistantMessage | null = null;
-			const toolCallsToExecute: Array<{
-				type: "toolCall";
-				id: string;
-				name: string;
-				arguments: any;
-			}> = [];
+			const toolCallsToExecute: ToolCall[] = [];
 			let toolResults: ToolResultMessage[] = [];
 			let pendingNextTurn = false;
 			let encounteredError = false;
@@ -208,11 +250,16 @@ export class ProviderTransport implements AgentTransport {
 				}
 
 				if (event.type === "toolcall_end") {
+					const rawArgs = event.toolCall.arguments;
+					const normalizedArgs =
+						rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+							? (rawArgs as Record<string, unknown>)
+							: {};
 					toolCallsToExecute.push({
 						type: "toolCall",
 						id: event.toolCall.id,
 						name: event.toolCall.name,
-						arguments: event.toolCall.arguments,
+						arguments: normalizedArgs,
 					});
 					continue;
 				}
@@ -259,29 +306,68 @@ export class ProviderTransport implements AgentTransport {
 			if (toolCallsToExecute.length > 0) {
 				toolResults = [];
 				const pendingExecutions: PendingExecution[] = [];
-				const concurrencyLimit = Math.max(
-					1,
-					this.options.maxConcurrentToolExecutions ?? 2,
+				const configuredConcurrency =
+					this.options.maxConcurrentToolExecutions ?? 2;
+				const hasWorkflowTrackedTool = toolCallsToExecute.some((call) =>
+					isWorkflowTrackedTool(call.name),
 				);
+				const requiresSerializedTurn =
+					hasWorkflowTrackedTool && toolCallsToExecute.length > 1;
+				let concurrencyLimit = configuredConcurrency;
+				if (configuredConcurrency > 1 && requiresSerializedTurn) {
+					concurrencyLimit = 1;
+					if (!this.warnedAboutWorkflowConcurrency) {
+						console.warn(
+							"[provider-transport] WorkflowStateTracker currently requires serialized tool execution; maxConcurrentToolExecutions has been capped at 1 until invariants support parallelism.",
+						);
+						this.warnedAboutWorkflowConcurrency = true;
+					}
+				}
 
+				const buildExecutionEvents = (
+					toolCall: ToolCall,
+					message: ToolResultMessage,
+					isError: boolean,
+				): AgentEvent[] => [
+					{ type: "message_start", message } as AgentEvent,
+					{ type: "message_end", message } as AgentEvent,
+					{
+						type: "tool_execution_end",
+						toolCallId: toolCall.id,
+						toolName: toolCall.name,
+						result: message,
+						isError,
+					} as AgentEvent,
+				];
 				const emitToolResult = (
 					message: ToolResultMessage,
-					toolCallId: string,
-					toolName: string,
+					toolCall: ToolCall,
 					isError: boolean,
 				) => {
-					toolResults.push(message);
-					return [
-						{ type: "message_start", message } as AgentEvent,
-						{ type: "message_end", message } as AgentEvent,
-						{
-							type: "tool_execution_end",
-							toolCallId,
-							toolName,
+					try {
+						applyWorkflowStateHooks({
+							toolCall,
 							result: message,
+							tracker: this.workflowState,
 							isError,
-						} as AgentEvent,
-					];
+						});
+						toolResults.push(message);
+						return buildExecutionEvents(toolCall, message, isError);
+					} catch (error) {
+						if (error instanceof WorkflowStateError) {
+							const workflowErrorResult: ToolResultMessage = {
+								role: "toolResult",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								content: [{ type: "text", text: error.message }],
+								isError: true,
+								timestamp: Date.now(),
+							};
+							toolResults.push(workflowErrorResult);
+							return buildExecutionEvents(toolCall, workflowErrorResult, true);
+						}
+						throw error;
+					}
 				};
 
 				const scheduleResolveIfNeeded = async (): Promise<AgentEvent[]> => {
@@ -292,8 +378,7 @@ export class ProviderTransport implements AgentTransport {
 					const outcome = resolved.outcome;
 					return emitToolResult(
 						outcome.message,
-						resolved.toolCallId,
-						resolved.toolName,
+						resolved.execution.toolCall,
 						outcome.isError,
 					);
 				};
@@ -308,10 +393,27 @@ export class ProviderTransport implements AgentTransport {
 
 					let approvalAllowed = true;
 					let approvalReason: string | undefined;
+					const workflowSnapshot = this.workflowState.snapshot();
 					const verdict = firewall.evaluate({
 						toolName: toolCall.name,
 						args: toolCall.arguments,
+						metadata: {
+							workflowState: workflowSnapshot,
+						},
 					});
+					if (
+						verdict.action === "require_approval" &&
+						verdict.ruleId === HUMAN_EGRESS_PII_RULE_ID
+					) {
+						const policyResult = buildPiiPolicyResult(
+							toolCall,
+							workflowSnapshot,
+						);
+						for (const event of emitToolResult(policyResult, toolCall, true)) {
+							yield event;
+						}
+						continue;
+					}
 					if (verdict.action === "require_approval") {
 						const approvalService = this.options.approvalService;
 						if (approvalService) {
@@ -357,12 +459,7 @@ export class ProviderTransport implements AgentTransport {
 							isError: true,
 							timestamp: Date.now(),
 						};
-						for (const event of emitToolResult(
-							deniedResult,
-							toolCall.id,
-							toolCall.name,
-							true,
-						)) {
+						for (const event of emitToolResult(deniedResult, toolCall, true)) {
 							yield event;
 						}
 						continue;
@@ -383,12 +480,7 @@ export class ProviderTransport implements AgentTransport {
 							isError: true,
 							timestamp: Date.now(),
 						};
-						for (const event of emitToolResult(
-							errorResult,
-							toolCall.id,
-							toolCall.name,
-							true,
-						)) {
+						for (const event of emitToolResult(errorResult, toolCall, true)) {
 							yield event;
 						}
 						continue;
@@ -413,8 +505,7 @@ export class ProviderTransport implements AgentTransport {
 						};
 						for (const event of emitToolResult(
 							validationErrorResult,
-							toolCall.id,
-							toolCall.name,
+							toolCall,
 							true,
 						)) {
 							yield event;
@@ -460,8 +551,7 @@ export class ProviderTransport implements AgentTransport {
 							}));
 
 					pendingExecutions.push({
-						toolCallId: toolCall.id,
-						toolName: toolCall.name,
+						toolCall,
 						promise: executionPromise,
 					});
 					const events = await scheduleResolveIfNeeded();
@@ -475,8 +565,7 @@ export class ProviderTransport implements AgentTransport {
 					const outcome = resolved.outcome;
 					for (const event of emitToolResult(
 						outcome.message,
-						resolved.toolCallId,
-						resolved.toolName,
+						resolved.execution.toolCall,
 						outcome.isError,
 					)) {
 						yield event;
@@ -541,8 +630,7 @@ export class ProviderTransport implements AgentTransport {
 async function waitForNextExecution(
 	pendingExecutions: PendingExecution[],
 ): Promise<{
-	toolCallId: string;
-	toolName: string;
+	execution: PendingExecution;
 	outcome: ToolExecutionOutcome;
 }> {
 	const race = await Promise.race(
@@ -555,8 +643,7 @@ async function waitForNextExecution(
 		pendingExecutions.splice(index, 1);
 	}
 	return {
-		toolCallId: race.entry.toolCallId,
-		toolName: race.entry.toolName,
+		execution: race.entry,
 		outcome: race.outcome,
 	};
 }

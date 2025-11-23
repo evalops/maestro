@@ -13,9 +13,24 @@ export interface ActionApprovalDecision {
 	resolvedBy: "policy" | "user";
 }
 
+export interface WorkflowStateSnapshot {
+	pendingPii: Array<{
+		id: string;
+		label: string;
+		sourceToolCallId: string;
+		redacted: boolean;
+		parents?: string[];
+	}>;
+	orphanedRedactions: string[];
+}
+
 export interface ActionApprovalContext {
 	toolName: string;
 	args: unknown;
+	metadata?: {
+		/** Snapshot of per-run workflow state used by safety policies. */
+		workflowState?: WorkflowStateSnapshot;
+	};
 }
 
 export type ActionFirewallVerdict =

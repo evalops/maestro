@@ -1,8 +1,10 @@
 import type {
 	ActionApprovalContext,
 	ActionFirewallVerdict,
+	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
+import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 
 export interface ActionFirewallRule {
 	id: string;
@@ -16,6 +18,8 @@ const rmRfPattern =
 const mkfsPattern = /\bmkfs\b|\bmkfs\.[a-z0-9]+/i;
 const diskZeroPattern = /dd\s+if=\/dev\/(?:zero|null)/i;
 const chmodZeroPattern = /chmod\s+0{3,4}\b/i;
+const untaggedEgressWarnings = new Set<string>();
+export const HUMAN_EGRESS_PII_RULE_ID = "pii-redaction-before-human-egress";
 
 function getArgsObject(
 	context: ActionApprovalContext,
@@ -62,6 +66,44 @@ function isBackgroundTaskShellStart(context: ActionApprovalContext): boolean {
 		return false;
 	}
 	return getBooleanArg(context, "shell") === true;
+}
+
+function getWorkflowState(
+	context: ActionApprovalContext,
+): WorkflowStateSnapshot | null {
+	return context.metadata?.workflowState ?? null;
+}
+
+function getPendingUnredactedPii(
+	context: ActionApprovalContext,
+): WorkflowStateSnapshot["pendingPii"] {
+	const snapshot = getWorkflowState(context);
+	if (!snapshot) {
+		return [];
+	}
+	return snapshot.pendingPii.filter((artifact) => artifact.redacted !== true);
+}
+
+function warnUntaggedEgress(toolName: string): void {
+	if (untaggedEgressWarnings.has(toolName)) {
+		return;
+	}
+	untaggedEgressWarnings.add(toolName);
+	console.warn(
+		`[action-firewall] Untagged egress-like tool "${toolName}" encountered; treating it as human-facing until TOOL_TAGS is updated.`,
+	);
+}
+
+function isHumanFacingTool(toolName: string): boolean {
+	const toolTags = TOOL_TAGS[toolName];
+	if (toolTags?.egress === "human") {
+		return true;
+	}
+	if (!toolTags && looksLikeEgress(toolName)) {
+		warnUntaggedEgress(toolName);
+		return true;
+	}
+	return false;
 }
 
 export const defaultFirewallRules: ActionFirewallRule[] = [
@@ -119,6 +161,28 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		match: (ctx) => isBackgroundTaskShellStart(ctx),
 		reason: () =>
 			"Background task shell mode requires manual approval (pipes, redirects, and globbing are high risk)",
+	},
+	{
+		id: HUMAN_EGRESS_PII_RULE_ID,
+		description: "PII must be redacted before human-facing tools execute",
+		match: (ctx) => {
+			if (!isHumanFacingTool(ctx.toolName)) {
+				return false;
+			}
+			const pending = getPendingUnredactedPii(ctx);
+			return pending.length > 0;
+		},
+		reason: (ctx) => {
+			const pending = getPendingUnredactedPii(ctx);
+			const offenders =
+				pending
+					.map(
+						(artifact) =>
+							`${artifact.label} (artifact: ${artifact.id}, source: ${artifact.sourceToolCallId})`,
+					)
+					.join("; ") || "unredacted artifacts";
+			return `Unredacted PII (${offenders}) detected before executing human-facing tool "${ctx.toolName}". Run your redaction tool on the listed artifacts, then retry.`;
+		},
 	},
 ];
 

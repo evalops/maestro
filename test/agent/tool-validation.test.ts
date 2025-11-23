@@ -191,4 +191,31 @@ describe("ProviderTransport tool validation", () => {
 			"stream invoked twice (tool turn + normal turn)",
 		).toBe(2);
 	});
+
+	it("treats array arguments as invalid input", async () => {
+		openaiMock.__setNextToolArgs([
+			{ path: "/tmp/file.ts" },
+		] as unknown as Record<string, any>);
+
+		const events: any[] = [];
+		for await (const event of transport.run(
+			[createUserMessage()],
+			createUserMessage(),
+			{
+				systemPrompt: "",
+				tools: [tool],
+				model,
+				reasoning: undefined,
+			},
+		)) {
+			events.push(event);
+		}
+
+		const endEvent = events.find((e) => e.type === "tool_execution_end") as any;
+		expect(endEvent).toBeDefined();
+		expect(endEvent.isError).toBe(true);
+		expect(executeSpy).not.toHaveBeenCalled();
+		const resultContent = (endEvent.result.content[0] as any).text;
+		expect(resultContent).toContain("path");
+	});
 });

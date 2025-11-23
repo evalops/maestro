@@ -42,6 +42,27 @@ function makeCustomCommandContext(command: string): ActionApprovalContext {
 	};
 }
 
+function makeWorkflowContext(
+	toolName: string,
+	pendingPii: Array<{ id: string; label: string; redacted?: boolean }>,
+): ActionApprovalContext {
+	return {
+		toolName,
+		args: {},
+		metadata: {
+			workflowState: {
+				pendingPii: pendingPii.map((item) => ({
+					id: item.id,
+					label: item.label,
+					sourceToolCallId: item.id,
+					redacted: item.redacted ?? false,
+				})),
+				orphanedRedactions: [],
+			},
+		},
+	};
+}
+
 describe("ActionFirewall", () => {
 	it("requires approval for dangerous rm -rf patterns", () => {
 		const verdict = defaultActionFirewall.evaluate(
@@ -89,5 +110,44 @@ describe("ActionFirewall", () => {
 			makeCustomCommandContext("mkfs.ext4 /dev/sda"),
 		);
 		expect(verdict.action).toBe("require_approval");
+	});
+
+	it("requires approval when human egress sees unredacted PII", () => {
+		const verdict = defaultActionFirewall.evaluate(
+			makeWorkflowContext("handoff_to_human", [
+				{ id: "transcript", label: "Case-742" },
+			]),
+		);
+		expect(verdict.action).toBe("require_approval");
+		expect(verdict).toMatchObject({
+			reason: expect.stringContaining("Case-742"),
+		});
+	});
+
+	it("allows human egress once all PII is redacted", () => {
+		const verdict = defaultActionFirewall.evaluate(
+			makeWorkflowContext("handoff_to_human", []),
+		);
+		expect(verdict.action).toBe("allow");
+	});
+
+	it("fails closed for untagged egress-like tool names", () => {
+		const verdict = defaultActionFirewall.evaluate(
+			makeWorkflowContext("send_status_update", [
+				{ id: "pii-2", label: "Account Plan" },
+			]),
+		);
+		expect(verdict.action).toBe("require_approval");
+	});
+
+	it("leaves legacy rules unchanged when workflow metadata is present", () => {
+		const verdict = defaultActionFirewall.evaluate({
+			toolName: "bash",
+			args: { command: "echo ok" },
+			metadata: {
+				workflowState: { pendingPii: [], orphanedRedactions: [] },
+			},
+		});
+		expect(verdict.action).toBe("allow");
 	});
 });
