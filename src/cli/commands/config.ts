@@ -112,7 +112,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		id: "ollama",
 		name: "Ollama (local)",
 		api: "openai-responses",
-		defaultModel: "llama3.2",
+		defaultModel: "ollama/llama3.2",
 		baseUrl: "http://localhost:11434/v1",
 		requiresApiKey: false,
 	},
