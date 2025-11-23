@@ -1,5 +1,8 @@
 import type { WorkflowStateSnapshot } from "../agent/action-approval.js";
 import type { ToolCall, ToolResultMessage } from "../agent/types.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("safety:workflow-state");
 
 export class WorkflowStateError extends Error {
 	constructor(message: string) {
@@ -54,7 +57,7 @@ export class WorkflowStateTracker
 		if (!removed) {
 			this.orphanedRedactions.add(params.artifactId);
 			const message = `Attempted to redact unknown artifact "${params.artifactId}". Ensure collect and redact tooling share artifact ids.`;
-			console.warn(`[workflow-state] ${message}`);
+			logger.warn(message, { artifactId: params.artifactId });
 			if (!params.allowMissing) {
 				throw new WorkflowStateError(message);
 			}

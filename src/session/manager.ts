@@ -591,7 +591,10 @@ export class SessionManager {
 		try {
 			appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
 		} catch (error) {
-			console.error("Failed to append session metadata", error);
+			logger.error(
+				"Failed to append session metadata",
+				error instanceof Error ? error : new Error(String(error)),
+			);
 		}
 	}
 

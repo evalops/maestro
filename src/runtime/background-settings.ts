@@ -10,7 +10,10 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import { createLogger } from "../utils/logger.js";
 import { expandUserPath, safejoin } from "../utils/path-validation.js";
+
+const logger = createLogger("runtime:background-settings");
 
 export interface BackgroundTaskSettings {
 	notificationsEnabled: boolean;
@@ -59,9 +62,9 @@ function resolveEnvPath(raw: string): string | null {
 		}
 		return safejoin(SETTINGS_ROOT, expanded);
 	} catch (error) {
-		console.warn("Ignoring unsafe COMPOSER_BACKGROUND_SETTINGS path", {
+		logger.warn("Ignoring unsafe COMPOSER_BACKGROUND_SETTINGS path", {
 			path: trimmed,
-			error,
+			error: error instanceof Error ? error.message : String(error),
 		});
 		return null;
 	}
@@ -140,8 +143,8 @@ function loadSettings(retry = 0): {
 			size: after.size,
 		};
 	} catch (error) {
-		console.warn("Failed to load background settings; using defaults", {
-			error,
+		logger.warn("Failed to load background settings; using defaults", {
+			error: error instanceof Error ? error.message : String(error),
 		});
 		return { settings: { ...DEFAULT_SETTINGS }, mtime: null, size: null };
 	}
@@ -152,7 +155,10 @@ function emit(settings: BackgroundTaskSettings): void {
 		try {
 			listener({ ...settings });
 		} catch (error) {
-			console.error("Background task settings listener error", error);
+			logger.error(
+				"Background task settings listener error",
+				error instanceof Error ? error : new Error(String(error)),
+			);
 		}
 	}
 }
@@ -171,12 +177,14 @@ function ensureWatcher(): void {
 			settingsSize = null;
 		});
 		watcher.on("error", (error) => {
-			console.warn("Background settings watcher error", { error });
+			logger.warn("Background settings watcher error", {
+				error: error instanceof Error ? error.message : String(error),
+			});
 			watcher = null;
 		});
 	} catch (error) {
-		console.warn("Unable to watch background settings; falling back to stat", {
-			error,
+		logger.warn("Unable to watch background settings; falling back to stat", {
+			error: error instanceof Error ? error.message : String(error),
 		});
 		watcher = null;
 	}
@@ -215,8 +223,8 @@ function maybeReloadSettingsFromDisk(): void {
 		settingsSize = loaded.size ?? currentSize;
 		emit(settingsCache);
 	} catch (error) {
-		console.warn("Failed to reload background settings; keeping cache", {
-			error,
+		logger.warn("Failed to reload background settings; keeping cache", {
+			error: error instanceof Error ? error.message : String(error),
 		});
 	}
 }
@@ -289,7 +297,7 @@ export function overrideBackgroundTaskSettingsPath(path: string | null): void {
 		const withinRoot =
 			resolved === SETTINGS_ROOT || resolved.startsWith(`${SETTINGS_ROOT}/`);
 		if (!withinRoot && !allowUnsafeOverride) {
-			console.warn(
+			logger.warn(
 				"Ignoring unsafe background settings override outside composer directory",
 				{ path },
 			);
@@ -302,15 +310,18 @@ export function overrideBackgroundTaskSettingsPath(path: string | null): void {
 				safejoin(SETTINGS_ROOT, resolved);
 				settingsPathOverride = resolved;
 			} catch (error) {
-				console.warn(
+				logger.warn(
 					"Ignoring unsafe background settings override outside composer directory",
-					{ path, error },
+					{
+						path,
+						error: error instanceof Error ? error.message : String(error),
+					},
 				);
 				return;
 			}
 		}
 	} catch {
-		console.warn("Ignoring invalid background settings override path", {
+		logger.warn("Ignoring invalid background settings override path", {
 			path,
 		});
 		return;

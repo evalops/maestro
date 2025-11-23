@@ -7,6 +7,9 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("oauth:storage");
 
 export interface OAuthCredentials {
 	type: "oauth";
@@ -55,7 +58,9 @@ function loadStorage(): OAuthStorageFormat {
 		const content = readFileSync(filePath, "utf-8");
 		return JSON.parse(content);
 	} catch (error) {
-		console.error(`Warning: Failed to load OAuth credentials: ${error}`);
+		logger.warn("Failed to load OAuth credentials", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return {};
 	}
 }

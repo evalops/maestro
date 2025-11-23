@@ -11,12 +11,15 @@ import {
 	ResourceListChangedNotificationSchema,
 	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { createLogger } from "../utils/logger.js";
 import type {
 	McpConfig,
 	McpManagerStatus,
 	McpServerConfig,
 	McpServerStatus,
 } from "./types.js";
+
+const logger = createLogger("mcp:manager");
 
 export interface McpToolCallResult {
 	content: Array<{
@@ -125,14 +128,14 @@ export class McpClientManager extends EventEmitter {
 			if (transportType === "http" || transportType === "sse") {
 				// HTTP/SSE transport
 				if (!config.url) {
-					console.warn(`[mcp] No URL specified for HTTP server ${name}`);
+					logger.warn("No URL specified for HTTP server", { name });
 					return;
 				}
 				transport = new SSEClientTransport(new URL(config.url));
 			} else {
 				// Default to stdio transport
 				if (!config.command) {
-					console.warn(`[mcp] No command specified for ${name}`);
+					logger.warn("No command specified for server", { name });
 					return;
 				}
 
@@ -192,7 +195,11 @@ export class McpClientManager extends EventEmitter {
 			this.emit("connected", { name, tools: tools.length, isReconnect });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			console.error(`[mcp] Failed to connect to ${name}:`, message);
+			logger.error(
+				"Failed to connect to server",
+				error instanceof Error ? error : new Error(message),
+				{ name },
+			);
 			this.emit("error", { name, error: message });
 
 			// Schedule reconnection for non-reconnect attempts
@@ -204,9 +211,7 @@ export class McpClientManager extends EventEmitter {
 
 	private scheduleReconnect(config: McpServerConfig, attempt: number): void {
 		if (attempt >= MAX_RECONNECT_ATTEMPTS) {
-			console.warn(
-				`[mcp] Max reconnection attempts reached for ${config.name}`,
-			);
+			logger.warn("Max reconnection attempts reached", { name: config.name });
 			return;
 		}
 
@@ -312,10 +317,10 @@ export class McpClientManager extends EventEmitter {
 						});
 					}
 				} catch (error) {
-					const msg = error instanceof Error ? error.message : String(error);
-					console.error(
-						`[mcp] Failed to refresh tools for ${serverName}:`,
-						msg,
+					logger.error(
+						"Failed to refresh tools",
+						error instanceof Error ? error : new Error(String(error)),
+						{ serverName },
 					);
 				}
 			},
@@ -335,10 +340,10 @@ export class McpClientManager extends EventEmitter {
 						});
 					}
 				} catch (error) {
-					const msg = error instanceof Error ? error.message : String(error);
-					console.error(
-						`[mcp] Failed to refresh resources for ${serverName}:`,
-						msg,
+					logger.error(
+						"Failed to refresh resources",
+						error instanceof Error ? error : new Error(String(error)),
+						{ serverName },
 					);
 				}
 			},
@@ -358,10 +363,10 @@ export class McpClientManager extends EventEmitter {
 						});
 					}
 				} catch (error) {
-					const msg = error instanceof Error ? error.message : String(error);
-					console.error(
-						`[mcp] Failed to refresh prompts for ${serverName}:`,
-						msg,
+					logger.error(
+						"Failed to refresh prompts",
+						error instanceof Error ? error : new Error(String(error)),
+						{ serverName },
 					);
 				}
 			},
@@ -411,14 +416,20 @@ export class McpClientManager extends EventEmitter {
 		try {
 			await server.client.close();
 		} catch (error) {
-			console.warn(`[mcp] Error closing client for ${name}:`, error);
+			logger.warn("Error closing client", {
+				name,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 
 		// Also close the transport to clean up underlying resources
 		try {
 			await server.transport.close();
 		} catch (error) {
-			console.warn(`[mcp] Error closing transport for ${name}:`, error);
+			logger.warn("Error closing transport", {
+				name,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 
 		this.servers.delete(name);

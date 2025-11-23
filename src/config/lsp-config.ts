@@ -5,7 +5,10 @@ import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import type { LspServerConfig } from "../lsp/index.js";
 import { safeJsonParse } from "../utils/json.js";
+import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
+
+const logger = createLogger("config:lsp");
 
 const CONFIG_PATH = join(homedir(), ".composer", "config.json");
 
@@ -89,7 +92,10 @@ function loadRawConfig(): LspConfig {
 		cachedConfig = data.lsp;
 		return cachedConfig;
 	} catch (error) {
-		console.error("[lsp-config] Failed to parse", error);
+		logger.error(
+			"Failed to parse config",
+			error instanceof Error ? error : new Error(String(error)),
+		);
 		cachedConfig = { enabled: true };
 		return cachedConfig;
 	}

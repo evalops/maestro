@@ -4,8 +4,11 @@ import type {
 	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
+import { createLogger } from "../utils/logger.js";
 import { checkPolicy } from "./policy.js";
 import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
+
+const logger = createLogger("safety:action-firewall");
 
 export interface ActionFirewallRule {
 	id: string;
@@ -90,8 +93,9 @@ function warnUntaggedEgress(toolName: string): void {
 		return;
 	}
 	untaggedEgressWarnings.add(toolName);
-	console.warn(
-		`[action-firewall] Untagged egress-like tool "${toolName}" encountered; treating it as human-facing until TOOL_TAGS is updated.`,
+	logger.warn(
+		"Untagged egress-like tool encountered; treating as human-facing until TOOL_TAGS is updated",
+		{ toolName },
 	);
 }
 

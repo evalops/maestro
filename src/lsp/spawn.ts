@@ -7,8 +7,11 @@ import {
 	createMessageConnection,
 } from "vscode-jsonrpc/node.js";
 import { sleep } from "../utils/async.js";
+import { createLogger } from "../utils/logger.js";
 import { LspClient } from "./client.js";
 import type { LspServerConfig } from "./types.js";
+
+const logger = createLogger("lsp:spawn");
 
 /**
  * Wait for process to spawn successfully or fail
@@ -43,13 +46,13 @@ export async function spawnLspClient(
 
 		// Setup error handler
 		proc.on("error", (err) => {
-			console.error(`[lsp] Failed to spawn ${server.id}:`, err);
+			logger.error("Failed to spawn", err, { id: server.id });
 		});
 
 		// Prevent unhandled pipe errors
 		proc.stdin.on("error", (err: NodeJS.ErrnoException) => {
 			if (err.code !== "EPIPE") {
-				console.error(`[lsp] stdin error for ${server.id}:`, err);
+				logger.error("stdin error", err, { id: server.id });
 			}
 		});
 
@@ -76,7 +79,11 @@ export async function spawnLspClient(
 
 		return client;
 	} catch (error) {
-		console.error(`[lsp] Failed to start ${server.id}:`, error);
+		logger.error(
+			"Failed to start",
+			error instanceof Error ? error : new Error(String(error)),
+			{ id: server.id },
+		);
 		return undefined;
 	}
 }

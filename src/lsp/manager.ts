@@ -1,9 +1,12 @@
 import { EventEmitter } from "node:events";
 import { extname, resolve } from "node:path";
 import { sleep } from "../utils/async.js";
+import { createLogger } from "../utils/logger.js";
 import type { LspClient } from "./client.js";
 import { spawnLspClient } from "./spawn.js";
 import type { LspServerConfig, RootResolver } from "./types.js";
+
+const logger = createLogger("lsp:manager");
 
 const DEFAULT_ROOT_RESOLVER_TIMEOUT_MS = 2000;
 
@@ -159,7 +162,11 @@ export class LspClientManager extends EventEmitter {
 
 			return client;
 		} catch (error) {
-			console.error(`[lsp] Failed to spawn ${server.id}:`, error);
+			logger.error(
+				"Failed to spawn",
+				error instanceof Error ? error : new Error(String(error)),
+				{ id: server.id },
+			);
 			this.markBroken(key);
 			return undefined;
 		} finally {
@@ -218,11 +225,15 @@ export class LspClientManager extends EventEmitter {
 			return result ?? undefined;
 		} catch (error) {
 			if (error instanceof RootResolverTimeoutError) {
-				console.warn(
-					`[lsp] root resolver ${label} timed out after ${error.timeoutMs}ms`,
-				);
+				logger.warn("Root resolver timed out", {
+					label,
+					timeoutMs: error.timeoutMs,
+				});
 			} else {
-				console.warn(`[lsp] root resolver ${label} failed:`, error);
+				logger.warn("Root resolver failed", {
+					label,
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 			return undefined;
 		}

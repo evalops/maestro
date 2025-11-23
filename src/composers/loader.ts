@@ -3,7 +3,10 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
 import yaml from "js-yaml";
+import { createLogger } from "../utils/logger.js";
 import type { ComposerConfig, LoadedComposer } from "./types.js";
+
+const logger = createLogger("composers:loader");
 
 const PERSONAL_DIR = join(homedir(), ".composer", "composers");
 const PROJECT_DIR_NAME = ".composer/composers";
@@ -69,7 +72,10 @@ function parseComposerFile(
 			filePath,
 		};
 	} catch (error) {
-		console.warn(`[composers] Failed to parse ${filePath}:`, error);
+		logger.warn("Failed to parse composer file", {
+			filePath,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
 }
@@ -99,7 +105,7 @@ function loadFromDirectory(
 				const resolvedPath = realpathSync(filePath);
 				const resolvedDir = realpathSync(dir);
 				if (!resolvedPath.startsWith(resolvedDir)) {
-					console.warn(`[composers] Rejected path traversal attempt: ${file}`);
+					logger.warn("Rejected path traversal attempt", { file });
 					continue;
 				}
 			} catch {

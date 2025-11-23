@@ -13,7 +13,10 @@ import { Type } from "@sinclair/typebox";
 import { minimatch } from "minimatch";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
 import { safeJsonParse } from "../utils/json.js";
+import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
+
+const logger = createLogger("safety:policy");
 
 export interface EnterprisePolicy {
 	orgId?: string;
@@ -162,7 +165,10 @@ export function loadPolicy(force = false): EnterprisePolicy | null {
 		// Parse error - throw to block access (fail closed)
 		throw new Error(`JSON parse error: ${result.error.message}`);
 	} catch (error) {
-		console.error("Critical: Failed to load enterprise policy:", error);
+		logger.error(
+			"Critical: Failed to load enterprise policy",
+			error instanceof Error ? error : new Error(String(error)),
+		);
 		// Throw to ensure we fail closed (block access) rather than treating as no policy
 		throw error;
 	}
@@ -765,9 +771,10 @@ export async function checkPolicy(context: ActionApprovalContext): Promise<{
 		context.user?.orgId &&
 		policy.orgId !== context.user.orgId
 	) {
-		console.warn(
-			`[Policy] Org mismatch: Policy=${policy.orgId}, User=${context.user.orgId}. Action blocked.`,
-		);
+		logger.warn("Org mismatch, action blocked", {
+			policyOrgId: policy.orgId,
+			userOrgId: context.user.orgId,
+		});
 		return {
 			allowed: false,
 			reason: `Organization mismatch: This machine is managed by ${policy.orgId}, but you are signed in to ${context.user.orgId}.`,

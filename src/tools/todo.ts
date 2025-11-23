@@ -7,7 +7,10 @@ import type { Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { setPlanSatisfied } from "../safety/safe-mode.js";
 import { safeJsonParse } from "../utils/json.js";
+import { createLogger } from "../utils/logger.js";
 import { createTool } from "./tool-dsl.js";
+
+const logger = createLogger("tools:todo");
 
 export type { NormalizedTodo, TodoStore, StatusKey };
 
@@ -211,10 +214,9 @@ export async function loadStore(): Promise<TodoStore> {
 		const raw = await readFile(defaultStorePath, "utf-8");
 		const result = safeJsonParse<TodoStore>(raw, "TODO store");
 		if (!result.success) {
-			console.warn(
-				"[TODO] Corrupted store file:",
-				"error" in result ? result.error.message : "Unknown error",
-			);
+			logger.warn("Corrupted store file", {
+				error: "error" in result ? result.error.message : "Unknown error",
+			});
 			return {};
 		}
 		return result.data;

@@ -3,9 +3,12 @@ import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import type { MessageConnection } from "vscode-jsonrpc/node.js";
 import { sleep } from "../utils/async.js";
+import { createLogger } from "../utils/logger.js";
 import { languageIdFromFile } from "./language.js";
 import type { LspDiagnostic, LspServerConfig } from "./types.js";
 import { isConnectionDead, pathToUri } from "./utils.js";
+
+const logger = createLogger("lsp:client");
 
 export class LspClient extends EventEmitter {
 	public readonly id: string;
@@ -65,7 +68,11 @@ export class LspClient extends EventEmitter {
 		});
 
 		this.connection.onError((error) => {
-			console.error(`[lsp] Connection error for ${this.id}:`, error);
+			logger.error(
+				"Connection error",
+				error instanceof Error ? error : new Error(String(error)),
+				{ id: this.id },
+			);
 			this.disposeConnection();
 			this._dead = true;
 			this.emit("error", error);

@@ -13,9 +13,12 @@ import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { PolicyError, checkModelPolicy } from "../safety/policy.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
+import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
 import { normalizeLLMBaseUrl } from "./url-normalize.js";
+
+const logger = createLogger("models:registry");
 
 const COST_DEFAULT = {
 	input: 0,
@@ -356,9 +359,9 @@ function substituteEnvVars(text: string): string {
 	return text.replace(/\{env:([^}]+)\}/g, (match, varName) => {
 		const value = process.env[varName];
 		if (value === undefined) {
-			console.warn(
-				`[Config Warning] Environment variable ${varName} is not set, using empty string`,
-			);
+			logger.warn("Environment variable not set, using empty string", {
+				varName,
+			});
 			return "";
 		}
 		return value;
@@ -552,8 +555,9 @@ function validateBaseUrl(baseUrl: string, providerId: string, api?: Api): void {
 				!baseUrl.includes("/v1/messages") &&
 				!baseUrl.includes("/v1/complete")
 			) {
-				console.warn(
-					`[Config Warning] Anthropic base URL should end with /v1/messages. Got: ${baseUrl}. Auto-normalizing to include /v1/messages.`,
+				logger.warn(
+					"Anthropic base URL should end with /v1/messages, auto-normalizing",
+					{ baseUrl },
 				);
 			}
 		}
@@ -561,8 +565,9 @@ function validateBaseUrl(baseUrl: string, providerId: string, api?: Api): void {
 
 	if (providerId.includes("bedrock") || providerId.includes("aws")) {
 		if (baseUrl.includes("bedrock.") && !baseUrl.includes("bedrock-runtime.")) {
-			console.warn(
-				`[Config Warning] AWS Bedrock URL should use 'bedrock-runtime', not 'bedrock'. Got: ${baseUrl}. Auto-normalizing to bedrock-runtime.`,
+			logger.warn(
+				"AWS Bedrock URL should use 'bedrock-runtime', auto-normalizing",
+				{ baseUrl },
 			);
 		}
 	}
@@ -572,9 +577,9 @@ function validateBaseUrl(baseUrl: string, providerId: string, api?: Api): void {
 			baseUrl.includes("aiplatform.googleapis.com") &&
 			!baseUrl.includes("/v1/")
 		) {
-			console.warn(
-				`[Config Warning] Google Vertex AI URLs should include full path with /v1/. Got: ${baseUrl}. You may need to specify the full endpoint including project and location.`,
-			);
+			logger.warn("Google Vertex AI URLs should include full path with /v1/", {
+				baseUrl,
+			});
 		}
 	}
 }
@@ -831,10 +836,9 @@ function buildFactoryData(): {
 		}
 		const result = safeJsonParse<FactoryConfigFile>(raw, ".factory.json");
 		if (!result.success) {
-			console.warn(
-				"[Custom Models] Failed to parse .factory.json:",
-				"error" in result ? result.error.message : "Unknown error",
-			);
+			logger.warn("Failed to parse .factory.json", {
+				error: "error" in result ? result.error.message : "Unknown error",
+			});
 			return null;
 		}
 		const parsed = result.data;
@@ -1300,9 +1304,10 @@ export function resolveAlias(
 	// Parse format: "provider/modelId"
 	const parts = target.split("/");
 	if (parts.length !== 2) {
-		console.warn(
-			`[Config Warning] Invalid alias target "${target}". Expected format: "provider/modelId"`,
-		);
+		logger.warn("Invalid alias target, expected format: provider/modelId", {
+			target,
+			alias,
+		});
 		return null;
 	}
 

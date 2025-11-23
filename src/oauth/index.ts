@@ -1,4 +1,5 @@
 import type { AnthropicLoginMode } from "../providers/anthropic-auth.js";
+import { createLogger } from "../utils/logger.js";
 import {
 	loginAnthropic,
 	migrateAnthropicCredentials,
@@ -11,6 +12,8 @@ import {
 	removeOAuthCredentials,
 	saveOAuthCredentials,
 } from "./storage.js";
+
+const logger = createLogger("oauth");
 
 // Re-export for convenience
 export { listOAuthProvidersFromStorage as listOAuthProviders };
@@ -144,7 +147,11 @@ export async function getOAuthToken(
 		try {
 			return await refreshToken(provider);
 		} catch (error) {
-			console.error(`Failed to refresh OAuth token for ${provider}:`, error);
+			logger.error(
+				"Failed to refresh OAuth token",
+				error instanceof Error ? error : new Error(String(error)),
+				{ provider },
+			);
 			// Remove invalid credentials
 			removeOAuthCredentials(provider);
 			return null;

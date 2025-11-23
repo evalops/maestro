@@ -5,7 +5,10 @@ import {
 	generateAnthropicLoginUrl,
 	refreshAnthropicOAuthToken,
 } from "../providers/anthropic-auth.js";
+import { createLogger } from "../utils/logger.js";
 import { type OAuthCredentials, saveOAuthCredentials } from "./storage.js";
+
+const logger = createLogger("oauth:anthropic");
 
 /**
  * Login to Anthropic via OAuth
@@ -105,7 +108,10 @@ export async function migrateAnthropicCredentials(): Promise<boolean> {
 
 		return true;
 	} catch (error) {
-		console.error("Failed to migrate Anthropic OAuth credentials:", error);
+		logger.error(
+			"Failed to migrate Anthropic OAuth credentials",
+			error instanceof Error ? error : new Error(String(error)),
+		);
 		return false;
 	}
 }

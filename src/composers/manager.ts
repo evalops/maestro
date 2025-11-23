@@ -7,8 +7,11 @@ import {
 	resolveAlias,
 	resolveModel,
 } from "../models/registry.js";
+import { createLogger } from "../utils/logger.js";
 import { getComposerByName, loadComposers } from "./loader.js";
 import type { ComposerState, LoadedComposer } from "./types.js";
+
+const logger = createLogger("composers:manager");
 
 export interface ComposerManagerEvents {
 	activated: (composer: LoadedComposer) => void;
@@ -228,14 +231,13 @@ export class ComposerManager extends EventEmitter {
 				if (resolvedModel) {
 					this.agent.setModel(resolvedModel);
 				} else {
-					console.warn(
-						`[composer] Model '${composer.model}' not found in registry`,
-					);
+					logger.warn("Model not found in registry", { model: composer.model });
 				}
 			} catch (e) {
-				console.warn(
-					`[composer] Failed to resolve model '${composer.model}': ${e}`,
-				);
+				logger.warn("Failed to resolve model", {
+					model: composer.model,
+					error: e instanceof Error ? e.message : String(e),
+				});
 			}
 		}
 

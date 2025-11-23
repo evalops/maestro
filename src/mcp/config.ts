@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createLogger } from "../utils/logger.js";
 import type { McpConfig, McpServerConfig } from "./types.js";
+
+const logger = createLogger("mcp:config");
 
 const GLOBAL_CONFIG_PATH = join(homedir(), ".composer", "mcp.json");
 const PROJECT_CONFIG_NAME = ".composer/mcp.json";
@@ -15,7 +18,10 @@ function parseConfigFile(path: string): McpConfig | null {
 		const parsed = JSON.parse(content);
 		return validateConfig(parsed);
 	} catch (error) {
-		console.warn(`[mcp] Failed to parse config at ${path}:`, error);
+		logger.warn("Failed to parse config", {
+			path,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
 }

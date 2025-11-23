@@ -9,6 +9,9 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { safeJsonParse } from "../utils/json.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("models:models-dev");
 
 /**
  * Models.dev integration
@@ -73,7 +76,7 @@ function readCache(): ModelsDev | null {
 		const result = safeJsonParse<ModelsDev>(data, "models.dev cache");
 
 		if (!result.success) {
-			console.warn("[Models.dev] Cache corrupted:", result.error.message);
+			logger.warn("Cache corrupted", { error: result.error.message });
 			return null;
 		}
 
@@ -88,7 +91,9 @@ function readCache(): ModelsDev | null {
 
 		return result.data;
 	} catch (error) {
-		console.warn("[Models.dev] Failed to read cache:", error);
+		logger.warn("Failed to read cache", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
 }
@@ -104,9 +109,11 @@ function writeCache(data: ModelsDev): void {
 		}
 
 		writeFileSync(CACHE_FILE, JSON.stringify(data, null, 2), "utf-8");
-		console.log("[Models.dev] Cache updated");
+		logger.debug("Cache updated");
 	} catch (error) {
-		console.warn("[Models.dev] Failed to write cache:", error);
+		logger.warn("Failed to write cache", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 }
 
@@ -115,7 +122,7 @@ function writeCache(data: ModelsDev): void {
  */
 async function fetchFromApi(): Promise<ModelsDev | null> {
 	try {
-		console.log("[Models.dev] Fetching from API...");
+		logger.debug("Fetching from API...");
 
 		const response = await fetch(MODELS_DEV_URL, {
 			signal: AbortSignal.timeout(10000), // 10 second timeout
@@ -125,12 +132,12 @@ async function fetchFromApi(): Promise<ModelsDev | null> {
 		});
 
 		if (!response.ok) {
-			console.warn(`[Models.dev] API returned ${response.status}`);
+			logger.warn("API returned error status", { status: response.status });
 			return null;
 		}
 
 		const data = (await response.json()) as ModelsDev;
-		console.log(`[Models.dev] Fetched ${Object.keys(data).length} providers`);
+		logger.debug("Fetched providers", { count: Object.keys(data).length });
 
 		// Cache the fresh data
 		writeCache(data);
@@ -138,7 +145,9 @@ async function fetchFromApi(): Promise<ModelsDev | null> {
 
 		return data;
 	} catch (error) {
-		console.warn("[Models.dev] Failed to fetch from API:", error);
+		logger.warn("Failed to fetch from API", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
 }
@@ -189,12 +198,14 @@ export function clearModelsDevCache(): void {
 	try {
 		if (existsSync(CACHE_FILE)) {
 			unlinkSync(CACHE_FILE);
-			console.log("[Models.dev] Cache cleared");
+			logger.debug("Cache cleared");
 		}
 		cachedData = null;
 		lastFetchTime = 0;
 	} catch (error) {
-		console.warn("[Models.dev] Failed to clear cache:", error);
+		logger.warn("Failed to clear cache", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 }
 

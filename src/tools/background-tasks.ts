@@ -1682,7 +1682,9 @@ class RotatingLogWriter extends Writable {
 		}
 		this.failed = true;
 		this.markTruncated();
-		console.warn("Failed to write background task logs", error);
+		this.logger.warn("Failed to write background task logs", {
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 }
 
