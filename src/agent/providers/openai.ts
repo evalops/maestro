@@ -104,6 +104,9 @@ async function* streamResponsesApi(
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
+	const toolArgBuffers = new Map<number, string>();
+	const toolEnded = new Set<number>();
+	const textEnded = new Set<number>();
 
 	const ensureTextBlock = (
 		targetIndex: number,
@@ -187,6 +190,7 @@ async function* streamResponsesApi(
 							content: (partial.content[idx] as any).text,
 							partial,
 						};
+						textEnded.add(idx);
 						break;
 					}
 					case "response.function_call_arguments.delta": {
@@ -252,6 +256,14 @@ async function* streamResponsesApi(
 						}
 						const block = partial.content[state.outputIndex];
 						if (block.type === "toolCall") {
+							if (!block.id) {
+								block.id = callId;
+								yield {
+									type: "toolcall_start",
+									contentIndex: state.outputIndex,
+									partial,
+								};
+							}
 							block.id = callId;
 							block.name = state.name || "";
 							try {
@@ -265,6 +277,7 @@ async function* streamResponsesApi(
 								toolCall: block,
 								partial,
 							};
+							toolEnded.add(state.outputIndex);
 						}
 						break;
 					}
@@ -288,20 +301,22 @@ async function* streamResponsesApi(
 					case "response.done": {
 						for (let i = 0; i < partial.content.length; i++) {
 							const block = partial.content[i];
-							if (block.type === "toolCall") {
+							if (block.type === "toolCall" && !toolEnded.has(i)) {
 								yield {
 									type: "toolcall_end",
 									contentIndex: i,
 									toolCall: block,
 									partial,
 								};
-							} else if (block.type === "text") {
+								toolEnded.add(i);
+							} else if (block.type === "text" && !textEnded.has(i)) {
 								yield {
 									type: "text_end",
 									contentIndex: i,
 									content: block.text,
 									partial,
 								};
+								textEnded.add(i);
 							}
 						}
 
@@ -341,6 +356,9 @@ async function* streamResponsesApi(
 		} else {
 			throw error;
 		}
+	} finally {
+		toolState.clear();
+		toolArgBuffers.clear();
 	}
 }
 
@@ -567,7 +585,10 @@ export async function* streamOpenAI(
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
-	const partialToolArgs = new Map<number, string>();
+	const toolArgBuffers = new Map<number, string>();
+	let cacheAdjusted = false;
+	const textEnded = new Set<number>();
+	const toolEnded = new Set<number>();
 
 	const updateCosts = () => {
 		partial.usage.cost = {
@@ -610,11 +631,15 @@ export async function* streamOpenAI(
 								(event.usage.completion_tokens || 0) +
 								(event.usage.completion_tokens_details?.reasoning_tokens || 0);
 							// OpenAI caching: cached_tokens in prompt_tokens_details
-							if (event.usage.prompt_tokens_details?.cached_tokens) {
+							if (
+								event.usage.prompt_tokens_details?.cached_tokens &&
+								!cacheAdjusted
+							) {
 								partial.usage.cacheRead =
 									event.usage.prompt_tokens_details.cached_tokens;
-								// Adjust input tokens to not double count
+								// Adjust input tokens to not double count (only once)
 								partial.usage.input -= partial.usage.cacheRead;
+								cacheAdjusted = true;
 							}
 
 							updateCosts();
@@ -628,15 +653,22 @@ export async function* streamOpenAI(
 						const contentDelta = Array.isArray(delta.content)
 							? delta.content
 									.map((part: unknown) => {
-										if (typeof part === "string") return part;
-										if (part && typeof part === "object" && "text" in part) {
-											return (part as { text?: string }).text || "";
+										if (typeof part === "string")
+											return sanitizeSurrogates(part);
+										if (
+											part &&
+											typeof part === "object" &&
+											"text" in part &&
+											typeof (part as any).text === "string"
+										) {
+											return sanitizeSurrogates((part as any).text);
 										}
 										console.warn("Unsupported OpenAI content part", part);
 										return "";
 									})
+									.filter((s: string) => s.length > 0)
 									.join("")
-							: delta.content;
+							: sanitizeSurrogates(delta.content);
 
 						if (contentDelta && contentDelta.length > 0) {
 							// Find or create text content block
@@ -649,6 +681,9 @@ export async function* streamOpenAI(
 							}
 							const idx = partial.content.indexOf(textBlock);
 							textBlock.text += contentDelta;
+							if (!textEnded.has(idx)) {
+								// will mark ended on text_end
+							}
 							yield {
 								type: "text_delta",
 								contentIndex: idx,
@@ -720,9 +755,9 @@ export async function* streamOpenAI(
 
 							if (toolCall.function?.arguments) {
 								const argsDelta = toolCall.function.arguments;
-								const existing = partialToolArgs.get(idx) ?? "";
+								const existing = toolArgBuffers.get(idx) ?? "";
 								const combined = existing + argsDelta;
-								partialToolArgs.set(idx, combined);
+								toolArgBuffers.set(idx, combined);
 
 								// Parse streaming JSON progressively
 								// This allows UI to show partial arguments like file paths
@@ -754,14 +789,14 @@ export async function* streamOpenAI(
 							const block = partial.content[i];
 							if (block.type === "toolCall") {
 								// Final parse of accumulated JSON
-								const partialArgs = partialToolArgs.get(i) || "{}";
+								const partialArgs = toolArgBuffers.get(i) || "{}";
 								try {
 									block.arguments = JSON.parse(partialArgs);
 								} catch {
 									// Fall back to partial parse result
 									block.arguments = parseStreamingJson(partialArgs);
 								}
-								partialToolArgs.delete(i);
+								toolArgBuffers.delete(i);
 
 								yield {
 									type: "toolcall_end",
@@ -776,6 +811,7 @@ export async function* streamOpenAI(
 									content: block.text,
 									partial,
 								};
+								textEnded.add(i);
 							} else if (block.type === "thinking") {
 								yield {
 									type: "thinking_end",
