@@ -80,3 +80,12 @@ path/content being written) so you can audit actions before they complete.
 
 Keep this guide handy when onboarding teammates so they can discover the TUI’s
 power-user features quickly.
+
+## Background Tasks
+
+- Run long commands with `/background_tasks action=start …`; check `/background_tasks action=list` or `/background_tasks action=logs` without leaving chat.
+- Health telemetry now feeds the status rail and diagnostics view, showing recent failures, restarts, and limit breaches.
+- User controls live in `~/.composer/agent/background-settings.json` (or a custom path via `COMPOSER_BACKGROUND_SETTINGS`). Keys:
+  - `notificationsEnabled` – emit TUI notifications for restarts/failures.
+  - `statusDetailsEnabled` – include per-task summaries and history in health snapshots.
+  The file is created on first use and re-read whenever Composer updates the settings.

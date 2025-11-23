@@ -196,6 +196,53 @@ describe("backgroundTasksTool", () => {
 		}
 	});
 
+	it("refreshes health snapshots when background settings change", async () => {
+		updateBackgroundTaskSettings({
+			statusDetailsEnabled: false,
+			notificationsEnabled: false,
+		});
+
+		const startResult = await backgroundTasksTool.execute(
+			"bg-settings-toggle",
+			{
+				action: "start",
+				command: 'node -e "setTimeout(() => {}, 2000)"',
+			},
+		);
+		const taskId = (startResult.details as any)?.id as string;
+		expect(taskId).toBeTruthy();
+
+		const snapshotWithoutDetails = backgroundTaskManager.getHealthSnapshot({
+			maxEntries: 2,
+			logLines: 1,
+			historyLimit: 5,
+		});
+
+		expect(snapshotWithoutDetails?.detailsRedacted).toBe(true);
+		expect(snapshotWithoutDetails?.notificationsEnabled).toBe(false);
+		expect(snapshotWithoutDetails?.entries?.length ?? -1).toBe(0);
+
+		updateBackgroundTaskSettings({
+			statusDetailsEnabled: true,
+			notificationsEnabled: true,
+		});
+
+		const snapshotWithDetails = backgroundTaskManager.getHealthSnapshot({
+			maxEntries: 2,
+			logLines: 1,
+			historyLimit: 5,
+		});
+
+		expect(snapshotWithDetails?.detailsRedacted).toBe(false);
+		expect(snapshotWithDetails?.notificationsEnabled).toBe(true);
+		expect(snapshotWithDetails?.entries?.length ?? 0).toBeGreaterThan(0);
+
+		await backgroundTasksTool.execute("bg-settings-stop", {
+			action: "stop",
+			taskId,
+		});
+	});
+
 	it("restarts failing tasks when restart policy is configured", async () => {
 		const flagPath = join(logDir, "restart-flag.txt");
 		const flagLiteral = JSON.stringify(flagPath).replace(/"/g, '\\"');
