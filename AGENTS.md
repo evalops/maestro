@@ -137,7 +137,64 @@ src/
 | Tool | Description | Best Practices |
 | :--- | :--- | :--- |
 | **bash** | Shell execution. | Use absolute paths. Quote special chars. |
+| **background_tasks** | Long-running processes. | Use for dev servers, watch mode. Always `list` before starting duplicates. |
 | **batch** | Parallel execution (1-10). | **Read-only operations only.** Never batch mutations. |
+
+### 🔄 Background Task Management
+
+The `background_tasks` tool manages long-running processes across agent interactions:
+
+**Actions:**
+- `start` - Launch a background command with optional restart policy
+- `stop` - Terminate a running task by ID
+- `list` - View all active tasks with status and resource usage
+- `logs` - Tail task output (default 40 lines, max 200)
+
+**Parameters for `start`:**
+- `command` (required) - Command to run in the background
+- `shell` (optional) - Set `true` for shell mode (enables pipes/redirects like `cmd1 | cmd2`)
+- `cwd` (optional) - Working directory for the command
+- `env` (optional) - Additional environment variables
+- `restart` (optional) - Auto-restart policy with:
+  - `maxAttempts` (1-5) - Maximum restart attempts on failure
+  - `delayMs` (50-60000) - Delay between restart attempts
+  - `strategy` - `"fixed"` or `"exponential"` backoff
+  - `maxDelayMs` - Upper bound for exponential backoff
+  - `jitterRatio` (0-1) - Random jitter for restart delays
+
+**Use Cases:**
+- Development servers (`npm run dev`, `bun dev`, `vite`)
+- File watchers (TypeScript compiler, Vitest, nodemon)
+- Tunnel/proxy services (ngrok, localtunnel)
+- Long-running build processes
+
+**Best Practices:**
+1. **Always `list` before starting** to avoid duplicate processes
+2. **Use `shell: true` for pipes/redirects** (e.g., `npm run dev | tee output.log`)
+3. **Check logs regularly** for errors using the `logs` action
+4. **Stop tasks when done** - they'll auto-cleanup on Composer exit, but explicit stops are cleaner
+5. **Use restart policies for resilient services** - ideal for dev servers that should recover from crashes
+6. **Direct execution is safer** - omit `shell` parameter for simple commands without pipes
+
+**Example Workflow:**
+```bash
+# Check for existing tasks
+background_tasks action=list
+
+# Start a dev server with auto-restart
+background_tasks action=start command="npm run dev" cwd="./packages/web" restart={"maxAttempts": 3, "delayMs": 1000, "strategy": "exponential"}
+
+# View recent logs
+background_tasks action=logs taskId="<id>" lines=20
+
+# Stop the task
+background_tasks action=stop taskId="<id>"
+```
+
+**Log Storage:**
+- Logs persist to `~/.composer/logs/background-<taskId>.log`
+- Log files are truncated at 5MB to prevent disk space issues
+- Use `logs` action to tail recent output without reading the entire file
 
 -----
 

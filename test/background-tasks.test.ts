@@ -231,7 +231,6 @@ describe("backgroundTasksTool", () => {
 	});
 
 	it("caps log file size across restarts", async () => {
-		backgroundTaskManager.configureLimits({ logSizeLimit: 512 });
 		const flagPath = join(logDir, "restart-log-flag.txt");
 		const flagLiteral = JSON.stringify(flagPath).replace(/"/g, '\\"');
 		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; const chunk = 'B'.repeat(4096); process.stdout.write(chunk); if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, 2000); }"`;
@@ -239,6 +238,7 @@ describe("backgroundTasksTool", () => {
 			action: "start",
 			command,
 			restart: { maxAttempts: 1, delayMs: 50 },
+			limits: { logSizeLimit: 512, logSegments: 1 },
 		});
 		const taskId = (startResult.details as any)?.id as string;
 
@@ -272,11 +272,11 @@ describe("backgroundTasksTool", () => {
 	});
 
 	it("handles zero log size limit without hanging", async () => {
-		backgroundTaskManager.configureLimits({ logSizeLimit: 0 });
 		const startResult = await backgroundTasksTool.execute("bg-zero-limit", {
 			action: "start",
 			command:
 				"node -e \"process.stdout.write('hello world'); setTimeout(() => {}, 1000);\"",
+			limits: { logSizeLimit: 0 },
 		});
 		const taskId = (startResult.details as any)?.id as string;
 		await waitForCondition(
@@ -289,6 +289,21 @@ describe("backgroundTasksTool", () => {
 		expect(logs).toContain("No logs available.");
 		expect(logs).toContain("Log output truncated at 0 KB.");
 		await backgroundTaskManager.stopTask(taskId);
+	});
+
+	it("honors per-task retention overrides", async () => {
+		const startResult = await backgroundTasksTool.execute("bg-retention", {
+			action: "start",
+			command: 'node -e "setTimeout(() => {}, 2000)"',
+			limits: { retentionMs: 1_000 },
+		});
+		const taskId = (startResult.details as any)?.id as string;
+		await backgroundTaskManager.stopTask(taskId);
+		await waitForCondition(
+			() => backgroundTaskManager.getTask(taskId) === undefined,
+			40,
+			100,
+		);
 	});
 
 	it("supports exponential restart strategy with jitter", () => {
@@ -357,6 +372,11 @@ describe("backgroundTasksTool", () => {
 			logPath: zombieLog,
 			process: {} as unknown,
 			completion: Promise.resolve(),
+			limits: {
+				logSizeLimit: 0,
+				logSegments: 0,
+				retentionMs: 1_000,
+			},
 		};
 		internalManager.tasks = new Map([[zombieTask.id, zombieTask]]);
 		internalManager.cleanupTimers = new Map();

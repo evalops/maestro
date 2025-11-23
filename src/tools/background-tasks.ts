@@ -5,9 +5,11 @@ import {
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
-	appendFileSync,
 	closeSync,
+	createReadStream,
+	createWriteStream,
 	existsSync,
+	promises as fsPromises,
 	mkdirSync,
 	openSync,
 	readFileSync,
@@ -15,11 +17,12 @@ import {
 	renameSync,
 	statSync,
 	unlinkSync,
-	writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { Writable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createGzip, gunzipSync } from "node:zlib";
 
 import { Type } from "@sinclair/typebox";
 
@@ -143,6 +146,7 @@ interface BackgroundTask {
 	restartTimer?: NodeJS.Timeout | null;
 	resourceUsage?: TaskResourceUsage;
 	usageMonitor?: NodeJS.Timeout | null;
+	limits: TaskRuntimeLimits;
 }
 
 interface TaskStartOptions {
@@ -156,6 +160,7 @@ interface TaskStartOptions {
 		maxDelayMs?: number;
 		jitterRatio?: number;
 	};
+	limits?: TaskLimitOverrides;
 }
 
 interface BackgroundTaskLimits {
@@ -163,6 +168,16 @@ interface BackgroundTaskLimits {
 	logSizeLimit: number;
 	retentionMs: number;
 	logSegments: number;
+}
+
+type TaskLimitOverrides = Partial<
+	Pick<BackgroundTaskLimits, "logSizeLimit" | "logSegments" | "retentionMs">
+>;
+
+interface TaskRuntimeLimits {
+	logSizeLimit: number;
+	logSegments: number;
+	retentionMs: number;
 }
 
 function formatTaskSummary(task: BackgroundTask): string {
@@ -253,6 +268,25 @@ class BackgroundTaskManager {
 
 	resetLimits(): void {
 		this.limits = { ...this.defaultLimits };
+	}
+
+	private resolveTaskLimits(overrides?: TaskLimitOverrides): TaskRuntimeLimits {
+		const defaults = this.limits;
+		const maxBytes = 50 * 1024 * 1024;
+		const limit = overrides?.logSizeLimit;
+		const segments = overrides?.logSegments;
+		const retention = overrides?.retentionMs;
+		return {
+			logSizeLimit: Math.min(
+				Math.max(limit ?? defaults.logSizeLimit, 0),
+				maxBytes,
+			),
+			logSegments: Math.min(Math.max(segments ?? defaults.logSegments, 0), 10),
+			retentionMs: Math.min(
+				Math.max(retention ?? defaults.retentionMs, 1_000),
+				24 * 60 * 60 * 1000,
+			),
+		};
 	}
 
 	private normalizeRestartOptions(
@@ -353,7 +387,7 @@ class BackgroundTaskManager {
 		if (task.stopRequested) {
 			task.status = "stopped";
 			task.finishedAt = Date.now();
-			this.scheduleCleanup(task.id);
+			this.scheduleCleanup(task);
 			this.emitTaskTelemetry(task, "stopped");
 			resolve();
 			return;
@@ -361,7 +395,7 @@ class BackgroundTaskManager {
 		if (code === 0) {
 			task.status = "exited";
 			task.finishedAt = Date.now();
-			this.scheduleCleanup(task.id);
+			this.scheduleCleanup(task);
 			this.emitTaskTelemetry(task, "exited");
 			resolve();
 			return;
@@ -372,7 +406,7 @@ class BackgroundTaskManager {
 		}
 		task.status = "failed";
 		task.finishedAt = Date.now();
-		this.scheduleCleanup(task.id);
+		this.scheduleCleanup(task);
 		this.emitTaskTelemetry(task, "failed");
 		resolve();
 	}
@@ -396,7 +430,7 @@ class BackgroundTaskManager {
 		}
 		task.status = "failed";
 		task.finishedAt = Date.now();
-		this.scheduleCleanup(task.id);
+		this.scheduleCleanup(task);
 		this.emitTaskTelemetry(task, "failed");
 		resolve();
 	}
@@ -616,70 +650,46 @@ class BackgroundTaskManager {
 	}
 
 	private attachLogging(child: ChildProcess, task: BackgroundTask): void {
-		const limit = this.limits.logSizeLimit;
-		const dropAllChunks = limit <= 0;
 		let existingSize = 0;
 		try {
-			const stats = statSync(task.logPath);
-			existingSize = stats.size;
+			existingSize = statSync(task.logPath).size;
 		} catch {
 			// File may not exist yet
 		}
-		let bytesWritten = 0;
-		if (!dropAllChunks && existingSize >= limit) {
-			const rotated = this.rotateLogIfPossible(task.logPath);
-			task.logTruncated = true;
-			if (rotated) {
-				existingSize = 0;
-			}
-		}
-		bytesWritten = Math.min(existingSize, limit);
-
-		const writeChunk = (chunk: Buffer | string) => {
-			if (dropAllChunks) {
+		const writer = new RotatingLogWriter({
+			limit: task.limits.logSizeLimit,
+			segments: task.limits.logSegments,
+			logPath: task.logPath,
+			existingSize,
+			markTruncated: () => {
 				task.logTruncated = true;
+			},
+			shiftArchives: () => this.shiftArchivedLogs(task),
+			archivedPath: (index) => this.getArchivedLogPath(task.logPath, index),
+		});
+
+		let closed = false;
+		const closeStream = () => {
+			if (closed) {
 				return;
 			}
-			let buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
-			while (buffer.length > 0) {
-				if (bytesWritten >= limit) {
-					const rotated = this.rotateLogIfPossible(task.logPath);
-					bytesWritten = 0;
-					task.logTruncated = true;
-					if (!rotated) {
-						return;
-					}
-				}
-				const remaining = Math.max(0, limit - bytesWritten);
-				if (remaining === 0) {
-					task.logTruncated = true;
-					break;
-				}
-				const slice =
-					buffer.length > remaining ? buffer.subarray(0, remaining) : buffer;
-				if (slice.length > 0) {
-					try {
-						appendFileSync(task.logPath, slice);
-					} catch {
-						task.logTruncated = true;
-						return;
-					}
-					bytesWritten += slice.length;
-				}
-				buffer = buffer.subarray(slice.length);
-			}
+			closed = true;
+			writer.end();
 		};
 
 		const attach = (source?: NodeJS.ReadableStream | null) => {
-			source?.on("data", writeChunk);
+			if (!source) {
+				return;
+			}
+			source.pipe(writer, { end: false });
+			source.on("error", () => {
+				task.logTruncated = true;
+				closeStream();
+			});
 		};
 
 		attach(child.stdout);
 		attach(child.stderr);
-
-		const closeStream = () => {
-			// No persistent stream handle to close, but keep hook for parity
-		};
 
 		child.once("exit", closeStream);
 		child.once("error", closeStream);
@@ -689,27 +699,9 @@ class BackgroundTaskManager {
 		return `${logPath}.${index}.gz`;
 	}
 
-	private rotateLogIfPossible(logPath: string): boolean {
-		if (this.limits.logSegments <= 0) {
-			return false;
-		}
-		if (!existsSync(logPath)) {
-			return true;
-		}
-		try {
-			this.shiftArchivedLogs(logPath);
-			const content = readFileSync(logPath);
-			const compressed = gzipSync(content);
-			writeFileSync(this.getArchivedLogPath(logPath, 1), compressed);
-			unlinkSync(logPath);
-			return true;
-		} catch {
-			return false;
-		}
-	}
-
-	private shiftArchivedLogs(logPath: string): void {
-		const max = this.limits.logSegments;
+	private shiftArchivedLogs(task: BackgroundTask): void {
+		const logPath = task.logPath;
+		const max = task.limits.logSegments;
 		for (let index = max; index >= 1; index -= 1) {
 			const currentPath = this.getArchivedLogPath(logPath, index);
 			if (!existsSync(currentPath)) {
@@ -728,8 +720,9 @@ class BackgroundTaskManager {
 		}
 	}
 
-	private deleteArchivedLogs(logPath: string): void {
-		const max = Math.max(this.limits.logSegments + 5, 5);
+	private deleteArchivedLogs(task: BackgroundTask): void {
+		const logPath = task.logPath;
+		const max = Math.max(task.limits.logSegments + 5, 5);
 		for (let index = 1; index <= max; index += 1) {
 			const archived = this.getArchivedLogPath(logPath, index);
 			if (existsSync(archived)) {
@@ -774,16 +767,16 @@ class BackgroundTaskManager {
 		}
 	}
 
-	private scheduleCleanup(id: string): void {
-		if (this.cleanupTimers.has(id)) {
+	private scheduleCleanup(task: BackgroundTask): void {
+		if (this.cleanupTimers.has(task.id)) {
 			return;
 		}
 		const timer = setTimeout(() => {
-			this.cleanupTimers.delete(id);
-			this.removeTask(id);
-		}, this.limits.retentionMs);
+			this.cleanupTimers.delete(task.id);
+			this.removeTask(task.id);
+		}, task.limits.retentionMs);
 		timer.unref();
-		this.cleanupTimers.set(id, timer);
+		this.cleanupTimers.set(task.id, timer);
 	}
 
 	private clearCleanupTimer(id: string): void {
@@ -811,7 +804,7 @@ class BackgroundTaskManager {
 		} catch {
 			// Ignore cleanup errors
 		}
-		this.deleteArchivedLogs(task.logPath);
+		this.deleteArchivedLogs(task);
 	}
 
 	private cleanupExpiredTasks(force = false): void {
@@ -826,16 +819,17 @@ class BackgroundTaskManager {
 			if (
 				force ||
 				!task.finishedAt ||
-				now - task.finishedAt >= this.limits.retentionMs
+				now - task.finishedAt >= task.limits.retentionMs
 			) {
 				this.removeTask(id, true);
 			}
 		}
 	}
 
-	private tailLog(logPath: string, lines: number): string {
+	private tailLog(task: BackgroundTask, lines: number): string {
+		const logPath = task.logPath;
 		const segments: string[] = [];
-		for (let index = this.limits.logSegments; index >= 1; index -= 1) {
+		for (let index = task.limits.logSegments; index >= 1; index -= 1) {
 			const archivedPath = this.getArchivedLogPath(logPath, index);
 			if (existsSync(archivedPath)) {
 				const text = this.trimLogText(this.readLogSegment(archivedPath));
@@ -891,6 +885,7 @@ class BackgroundTaskManager {
 		const id = this.generateTaskId();
 		const { resolvedCwd } = validateShellParams(command, cwd, env);
 		const logPath = this.createLogPath(id);
+		const taskLimits = this.resolveTaskLimits(options.limits);
 		const task: BackgroundTask = {
 			id,
 			command,
@@ -906,6 +901,7 @@ class BackgroundTaskManager {
 			restartPolicy: this.normalizeRestartOptions(restart),
 			restartTimer: null,
 			logTruncated: false,
+			limits: taskLimits,
 		};
 
 		this.tasks.set(id, task);
@@ -936,7 +932,7 @@ class BackgroundTaskManager {
 			this.stopUsageMonitor(task);
 			task.status = "stopped";
 			task.finishedAt = Date.now();
-			this.scheduleCleanup(id);
+			this.scheduleCleanup(task);
 			return { task, stopped: true };
 		}
 		if (task.status !== "running") {
@@ -973,17 +969,186 @@ class BackgroundTaskManager {
 		if (!task) {
 			throw new ToolError(`Task not found or logs expired: ${taskId}`);
 		}
-		const text = this.tailLog(task.logPath, lines);
+		const text = this.tailLog(task, lines);
 		if (!task.logTruncated) {
 			return text;
 		}
-		const limitKb = Math.round(this.limits.logSizeLimit / 1024);
+		const limitKb = Math.round(task.limits.logSizeLimit / 1024);
 		const notice = `Log output truncated at ${limitKb} KB.`;
 		return `${text}\n\n${notice}`;
 	}
 }
 
 export const backgroundTaskManager = new BackgroundTaskManager();
+
+type RotatingLogWriterOptions = {
+	limit: number;
+	segments: number;
+	logPath: string;
+	existingSize: number;
+	markTruncated: () => void;
+	shiftArchives: () => void;
+	archivedPath: (index: number) => string;
+};
+
+class RotatingLogWriter extends Writable {
+	private readonly limit: number;
+	private readonly segments: number;
+	private readonly logPath: string;
+	private currentSize: number;
+	private readonly markTruncated: () => void;
+	private readonly shiftArchives: () => void;
+	private readonly archivedPath: (index: number) => string;
+	private writeQueue: Promise<void>;
+	private readonly dropAll: boolean;
+	private readonly ready: Promise<void>;
+	private failed = false;
+
+	constructor(options: RotatingLogWriterOptions) {
+		super({ decodeStrings: true });
+		this.limit = Math.max(options.limit, 0);
+		this.segments = Math.max(options.segments, 0);
+		this.logPath = options.logPath;
+		this.currentSize = Math.min(options.existingSize, this.limit);
+		this.markTruncated = options.markTruncated;
+		this.shiftArchives = options.shiftArchives;
+		this.archivedPath = options.archivedPath;
+		this.dropAll = this.limit === 0;
+		this.ready = this.initialize();
+		this.writeQueue = this.ready;
+	}
+
+	_write(
+		chunk: Buffer | string,
+		encoding: BufferEncoding,
+		callback: (error?: Error | null) => void,
+	): void {
+		if (this.dropAll || this.failed) {
+			this.markTruncated();
+			callback();
+			return;
+		}
+		const buffer = Buffer.isBuffer(chunk)
+			? chunk
+			: Buffer.from(chunk, encoding);
+		this.writeQueue = this.writeQueue.then(() => this.writeBuffer(buffer));
+		this.writeQueue.then(
+			() => callback(),
+			(error) => {
+				this.handleWriteError(error);
+				callback();
+			},
+		);
+	}
+
+	_final(callback: (error?: Error | null) => void): void {
+		this.writeQueue.then(
+			() => callback(),
+			(error) => callback(error),
+		);
+	}
+
+	private async writeBuffer(buffer: Buffer): Promise<void> {
+		if (this.dropAll || this.failed) {
+			if (buffer.length > 0) {
+				this.markTruncated();
+			}
+			return;
+		}
+		let remainingBuffer = buffer;
+		while (remainingBuffer.length > 0) {
+			if (this.currentSize >= this.limit) {
+				const rotated = await this.rotate();
+				if (!rotated) {
+					this.markTruncated();
+					return;
+				}
+				continue;
+			}
+			const remainingCapacity = this.limit - this.currentSize;
+			if (remainingCapacity <= 0) {
+				this.markTruncated();
+				return;
+			}
+			const slice =
+				remainingBuffer.length > remainingCapacity
+					? remainingBuffer.subarray(0, remainingCapacity)
+					: remainingBuffer;
+			await fsPromises.appendFile(this.logPath, slice);
+			this.currentSize += slice.length;
+			remainingBuffer = remainingBuffer.subarray(slice.length);
+		}
+	}
+
+	private async rotate(): Promise<boolean> {
+		if (this.segments <= 0) {
+			return false;
+		}
+		try {
+			await this.shiftArchivesAsync();
+			const tmpPath = this.getTempArchivePath();
+			try {
+				await fsPromises.rename(this.logPath, tmpPath);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+					await this.ensureLogFileExists();
+					this.currentSize = 0;
+					return true;
+				}
+				throw error;
+			}
+			await this.ensureLogFileExists();
+			const destination = this.archivedPath(1);
+			await pipeline(
+				createReadStream(tmpPath),
+				createGzip(),
+				createWriteStream(destination),
+			);
+			await fsPromises.unlink(tmpPath).catch(() => {});
+			this.currentSize = 0;
+			return true;
+		} catch (error) {
+			this.handleWriteError(error);
+			return false;
+		}
+	}
+
+	private async initialize(): Promise<void> {
+		await this.ensureLogFileExists();
+		if (this.dropAll) {
+			return;
+		}
+		if (this.limit > 0 && this.currentSize >= this.limit) {
+			await this.rotate();
+		}
+	}
+
+	private async ensureLogFileExists(): Promise<void> {
+		try {
+			const handle = await fsPromises.open(this.logPath, "a");
+			await handle.close();
+		} catch (error) {
+			console.warn("Failed to initialize background task log", error);
+		}
+	}
+
+	private getTempArchivePath(): string {
+		return `${this.logPath}.rotating-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	}
+
+	private async shiftArchivesAsync(): Promise<void> {
+		await Promise.resolve(this.shiftArchives());
+	}
+
+	private handleWriteError(error: unknown): void {
+		if (this.failed) {
+			return;
+		}
+		this.failed = true;
+		this.markTruncated();
+		console.warn("Failed to write background task logs", error);
+	}
+}
 
 const backgroundTaskSchema = Type.Union([
 	Type.Object({
@@ -1037,6 +1202,34 @@ const backgroundTaskSchema = Type.Union([
 						description: "Random jitter ratio applied to restart delays (0-1)",
 						minimum: 0,
 						maximum: 1,
+					}),
+				),
+			}),
+		),
+		limits: Type.Optional(
+			Type.Object({
+				logSizeLimit: Type.Optional(
+					Type.Integer({
+						description:
+							"Per-task log size limit in bytes (overrides default). Minimum 0, maximum 50MB.",
+						minimum: 0,
+						maximum: 50 * 1024 * 1024,
+					}),
+				),
+				logSegments: Type.Optional(
+					Type.Integer({
+						description:
+							"Number of gzip-compressed log segments to retain when rotating.",
+						minimum: 0,
+						maximum: 10,
+					}),
+				),
+				retentionMs: Type.Optional(
+					Type.Integer({
+						description:
+							"Milliseconds to retain finished task metadata and logs before cleanup.",
+						minimum: 1_000,
+						maximum: 24 * 60 * 60 * 1000,
 					}),
 				),
 			}),
@@ -1099,6 +1292,7 @@ function buildTaskDetail(task: BackgroundTask) {
 		restartAttempts: task.restartPolicy?.attempts ?? 0,
 		restartMaxAttempts: task.restartPolicy?.maxAttempts ?? 0,
 		restartDelayMs: task.restartPolicy?.delayMs ?? null,
+		limits: task.limits,
 		resourceUsage: task.resourceUsage ?? null,
 	};
 }
@@ -1118,6 +1312,7 @@ export const backgroundTasksTool = createTool<
 				env: params.env,
 				useShell: params.shell ?? false,
 				restart: params.restart,
+				limits: params.limits,
 			});
 			respond
 				.text(

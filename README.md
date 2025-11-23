@@ -300,6 +300,7 @@ Composer ships with core tools for file operations, git, web search, and GitHub 
 **Git & Version Control:**
 - **diff** – Inspect git diffs (working tree, staged index, revision ranges).
 - **bash** – Execute bash commands with optional timeouts.
+- **background_tasks** – Run long-running processes in the background with lifecycle management.
 
 **Task Management:**
 - **todo** – Manage TodoWrite-style checklists (`~/.composer/todos.json`).
@@ -433,9 +434,42 @@ Composer runs with full trust: no prompts for permission, no command filtering, 
 
 Composer will not grow built-in sub-agents. If you need delegation, spawn another `composer` process or write a small helper tool + README the agent can call. Direct execution with full context beats lossy hand-offs.
 
-### Background Bash
+### Background Tasks
 
-No background bash APIs. Use `tmux`, `screen`, or your terminal emulator to watch long-running commands (and intervene if needed).
+Composer supports managed background processes via the `background_tasks` tool:
+- **Start/stop** long-running commands (dev servers, watchers, tunnels)
+- **View logs** and task status with real-time monitoring
+- **Auto-restart** on failure with configurable retry policies
+- **Clean shutdown** on exit with automatic cleanup
+
+Actions available:
+- `start` – Launch a background command with optional restart policy
+- `stop` – Terminate a running task by ID
+- `list` – View all active background tasks
+- `logs` – Tail task output (default 40 lines, max 200)
+
+Example workflow:
+```bash
+# Start a dev server
+composer "Start the dev server in the background"
+# Agent uses: background_tasks action=start command="npm run dev"
+
+# Make code changes, then check logs
+composer "Show me the last 20 lines of the dev server logs"
+
+# Stop when done
+composer "Stop all background tasks"
+```
+
+Features:
+- **Shell mode** – Use `shell: true` for pipes/redirects (e.g., `cmd1 | cmd2`)
+- **Working directory** – Set custom `cwd` per task
+- **Environment variables** – Pass custom `env` vars
+- **Restart policies** – Configure max attempts, delays, exponential backoff, and jitter
+- **Log management** – Stores logs to `~/.composer/logs/` for persistence
+- **Resource tracking** – Monitor CPU and memory usage
+
+For interactive monitoring outside Composer, use `tmux` or `screen`.
 
 ## Contributing
 

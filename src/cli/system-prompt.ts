@@ -140,6 +140,7 @@ Available tools:
 - search: Search files with ripgrep (pattern, glob, context options)
 - diff: Inspect git diffs (workspace, staged, or revision ranges)
 - bash: Execute bash commands (ls, grep, find, etc.)
+- background_tasks: Launch and manage long-running commands asynchronously. Supports actions start/list/logs/stop plus per-task \`restart\` policies and \`limits\` (logSizeLimit/logSegments/retentionMs) so you can tune logging, retention, and restart behavior for each job.
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
 - todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] } (items may also be a JSON string) and optionally supply updates [{ id: "...", status: "completed" }] to check off existing tasks.
