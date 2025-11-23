@@ -13,11 +13,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bashTool } from "../src/tools/bash.js";
 import { diffTool } from "../src/tools/diff.js";
+import { parseStatusOutput } from "../src/tools/diff.js";
 import { editTool } from "../src/tools/edit.js";
-import { codingTools } from "../src/tools/index.js";
+import { batchTool, codingTools } from "../src/tools/index.js";
 import { listTool } from "../src/tools/list.js";
 import { readTool } from "../src/tools/read.js";
 import { searchTool } from "../src/tools/search.js";
+import { statusTool } from "../src/tools/status.js";
 import { todoTool } from "../src/tools/todo.js";
 import { writeTool } from "../src/tools/write.js";
 
@@ -565,6 +567,263 @@ describe("Composer Tools", () => {
 				}),
 			);
 		});
+
+		it("shows structured git status with untracked files", async () => {
+			const statusFile = `tmp-diff-status-${Date.now()}.txt`;
+			const statusPath = join(process.cwd(), statusFile);
+			writeFileSync(statusPath, "status test\n");
+
+			const result = await statusTool.execute("status-1", {
+				paths: statusFile,
+			});
+
+			const parsed = (result.details as any)?.status ?? {};
+
+			expect(getTextOutput(result)).toContain("Branch:");
+			expect(parsed.files).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ kind: "untracked", path: statusFile }),
+				]),
+			);
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("git status --porcelain=v2 -z -b"),
+					status: parsed,
+				}),
+			);
+
+			rmSync(statusPath, { force: true });
+		});
+
+		it("omits branch summary flag when disabled", async () => {
+			const result = await statusTool.execute("status-2", {
+				branchSummary: false,
+			});
+
+			const parsed = (result.details as any)?.status ?? {};
+
+			expect(parsed.branch).toBeUndefined();
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("git status --porcelain=v2 -z"),
+				}),
+			);
+			expect((result.details as any).command).not.toContain("-b");
+		});
+
+		it("captures rename entries in status mode", async () => {
+			const originalCwd = process.cwd();
+			const tempRepo = mkdtempSync(join(tmpdir(), "composer-rename-"));
+			process.chdir(tempRepo);
+			try {
+				execSync("git init -q");
+				execSync("git config user.email test@example.com");
+				execSync("git config user.name tester");
+				writeFileSync("old.txt", "rename me\n");
+				execSync("git add old.txt");
+				execSync("git commit -q -m init");
+				execSync("git mv old.txt new.txt");
+
+				const result = await statusTool.execute("status-rename", {});
+
+				const parsed = (result.details as any)?.status ?? {};
+				const renameEntry = parsed.files.find(
+					(f: any) =>
+						f.kind === "rename" &&
+						f.path === "new.txt" &&
+						f.origPath === "old.txt",
+				);
+
+				expect(renameEntry).toBeDefined();
+				expect(renameEntry?.score).toBe(100);
+				expect((result.details as any).command).toContain(
+					"git status --porcelain=v2 -z -b",
+				);
+			} finally {
+				process.chdir(originalCwd);
+				execSync(`rm -rf "${tempRepo}"`);
+			}
+		});
+
+		it("preserves consecutive spaces in rename paths", async () => {
+			const originalCwd = process.cwd();
+			const tempRepo = mkdtempSync(join(tmpdir(), "composer-rename-spaces-"));
+			process.chdir(tempRepo);
+			try {
+				execSync("git init -q");
+				execSync("git config user.email test@example.com");
+				execSync("git config user.name tester");
+				const oldPath = "old  name.txt";
+				const newPath = "new  name.txt";
+				writeFileSync(oldPath, "rename me\n");
+				execSync(`git add "${oldPath}"`);
+				execSync("git commit -q -m init");
+				execSync(`git mv "${oldPath}" "${newPath}"`);
+
+				const result = await statusTool.execute("status-rename-spaces", {});
+				const parsed = (result.details as any)?.status ?? {};
+				const renameEntry = parsed.files.find(
+					(f: any) =>
+						f.kind === "rename" && f.path === newPath && f.origPath === oldPath,
+				);
+
+				expect(renameEntry).toBeDefined();
+			} finally {
+				process.chdir(originalCwd);
+				execSync(`rm -rf "${tempRepo}"`);
+			}
+		});
+
+		it("parses unmerged entries", async () => {
+			const originalCwd = process.cwd();
+			const tempRepo = mkdtempSync(join(tmpdir(), "composer-unmerged-"));
+			process.chdir(tempRepo);
+			try {
+				execSync("git init -q");
+				execSync("git config user.email test@example.com");
+				execSync("git config user.name tester");
+				writeFileSync("file.txt", "base\n");
+				execSync("git add file.txt");
+				execSync("git commit -q -m base");
+				const baseBranch = execSync("git rev-parse --abbrev-ref HEAD")
+					.toString()
+					.trim();
+				execSync("git checkout -b branch-a");
+				writeFileSync("file.txt", "branch-a\n");
+				execSync("git commit -am change-a");
+				execSync(`git checkout ${baseBranch}`);
+				writeFileSync("file.txt", "branch-main\n");
+				execSync("git commit -am change-main");
+				try {
+					execSync("git merge branch-a", { stdio: "ignore" });
+				} catch {
+					// expected merge conflict
+				}
+
+				const result = await statusTool.execute("status-unmerged", {});
+
+				const parsed = (result.details as any)?.status ?? {};
+				const unmerged = parsed.files.find((f: any) => f.kind === "unmerged");
+				expect(unmerged).toBeDefined();
+			} finally {
+				process.chdir(originalCwd);
+				execSync(`rm -rf "${tempRepo}"`);
+			}
+		});
+
+		it("parses ignored entries", async () => {
+			const originalCwd = process.cwd();
+			const tempRepo = mkdtempSync(join(tmpdir(), "composer-ignored-"));
+			process.chdir(tempRepo);
+			try {
+				execSync("git init -q");
+				writeFileSync(".gitignore", "*.log\n");
+				writeFileSync("app.log", "ignore me\n");
+
+				const result = await statusTool.execute("status-ignored", {
+					includeIgnored: true,
+				});
+
+				const parsed = (result.details as any)?.status ?? {};
+				const ignored = parsed.files.find(
+					(f: any) => f.kind === "ignored" && f.path === "app.log",
+				);
+				expect(ignored).toBeDefined();
+			} finally {
+				process.chdir(originalCwd);
+				execSync(`rm -rf "${tempRepo}"`);
+			}
+		});
+
+		it("handles detached HEAD branch info", async () => {
+			const originalCwd = process.cwd();
+			const tempRepo = mkdtempSync(join(tmpdir(), "composer-detached-"));
+			process.chdir(tempRepo);
+			try {
+				execSync("git init -q");
+				execSync("git config user.email test@example.com");
+				execSync("git config user.name tester");
+				writeFileSync("file.txt", "base\n");
+				execSync("git add file.txt");
+				execSync("git commit -q -m base");
+				execSync("git checkout HEAD~0 --detach", { stdio: "ignore" });
+
+				const result = await statusTool.execute("status-detached", {});
+
+				expect(getTextOutput(result)).toContain("Branch: (detached)");
+			} finally {
+				process.chdir(originalCwd);
+				execSync(`rm -rf "${tempRepo}"`);
+			}
+		});
+
+		it("parses filenames with spaces", async () => {
+			const originalCwd = process.cwd();
+			const tempRepo = mkdtempSync(join(tmpdir(), "composer-spaces-"));
+			process.chdir(tempRepo);
+			try {
+				execSync("git init -q");
+				writeFileSync("file with space.txt", "hi\n");
+
+				const result = await statusTool.execute("status-spaces", {
+					paths: "file with space.txt",
+				});
+
+				const parsed = (result.details as any)?.status ?? {};
+				const entry = parsed.files.find(
+					(f: any) => f.path === "file with space.txt",
+				);
+				expect(entry).toBeDefined();
+			} finally {
+				process.chdir(originalCwd);
+				execSync(`rm -rf "${tempRepo}"`);
+			}
+		});
+
+		it("throws on unknown status entries", () => {
+			expect(() => parseStatusOutput("X mystery\0")).toThrow();
+		});
+
+		it("parses copy entries (parser)", () => {
+			const raw =
+				"2 C. N... 100644 100644 100644 45b983be 45b983be C050 new.txt\0old.txt\0";
+			const parsed = parseStatusOutput(raw);
+			const entry = parsed.files.find((f: any) => f.path === "new.txt");
+			expect(entry).toEqual(
+				expect.objectContaining({
+					kind: "rename",
+					origPath: "old.txt",
+					score: 50,
+					isCopy: true,
+				}),
+			);
+		});
+
+		it("reports branch names with special characters", async () => {
+			const originalCwd = process.cwd();
+			const tempRepo = mkdtempSync(join(tmpdir(), "composer-branchchars-"));
+			process.chdir(tempRepo);
+			try {
+				execSync("git init -q");
+				execSync("git config user.email test@example.com");
+				execSync("git config user.name tester");
+				execSync("git checkout -b feature.with+chars");
+				writeFileSync("file.txt", "hi\n");
+
+				const result = await statusTool.execute("status-branchchars", {});
+
+				expect(getTextOutput(result)).toContain("feature.with+chars");
+			} finally {
+				process.chdir(originalCwd);
+				execSync(`rm -rf "${tempRepo}"`);
+			}
+		});
+
+		it("throws on malformed type1 entry", () => {
+			expect(() => parseStatusOutput("1 X \0")).toThrow();
+		});
+
+		// diff tool no longer supports status mode
 	});
 
 	describe("search tool", () => {
@@ -818,9 +1077,23 @@ describe("codingTools bundle", () => {
 			"websearch",
 			"codesearch",
 			"webfetch",
+			"status",
 			"gh_pr",
 			"gh_issue",
 			"gh_repo",
 		]);
+	});
+
+	it("makes status available through batch", async () => {
+		const result = await batchTool.execute("batch-status", {
+			toolCalls: [{ tool: "status", parameters: {} }],
+			mode: "serial",
+		});
+
+		const details = result.details as any;
+		expect(details?.results?.[0]).toMatchObject({
+			tool: "status",
+			success: true,
+		});
 	});
 });

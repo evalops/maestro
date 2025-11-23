@@ -17,6 +17,7 @@ import { listTool } from "./list.js";
 import { readTool } from "./read.js";
 // Ripgrep-style search
 import { searchTool } from "./search.js";
+import { statusTool } from "./status.js";
 // TodoWrite checklist helper
 import { todoTool } from "./todo.js";
 // Exa web content fetching (optional - requires EXA_API_KEY)
@@ -39,6 +40,7 @@ export { todoTool } from "./todo.js";
 export { webfetchTool } from "./webfetch.js";
 export { websearchTool } from "./websearch.js";
 export { writeTool } from "./write.js";
+export { statusTool } from "./status.js";
 export { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 
 // Create batch tool with all available tools (excluding batch itself)
@@ -57,6 +59,7 @@ const allTools = [
 	websearchTool,
 	codesearchTool,
 	webfetchTool,
+	statusTool,
 	ghPrTool,
 	ghIssueTool,
 	ghRepoTool,
@@ -78,6 +81,7 @@ export const codingTools = [
 	websearchTool,
 	codesearchTool,
 	webfetchTool,
+	statusTool,
 	// GitHub CLI tools
 	ghPrTool,
 	ghIssueTool,

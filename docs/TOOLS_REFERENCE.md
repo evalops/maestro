@@ -52,7 +52,8 @@ export const myTool = createTool({
 | `read` | Reads file contents with syntax-aware chunking. | Accepts `path`, optional `startLine`/`endLine`. Errors with "File not found". |
 | `list` | Lists files in a directory (non-recursive by default). | Supports glob filters and depth. Used for context discovery. |
 | `search` | Ripgrep-style text search. | Args mirror `rg` (`pattern`, `path`, `glob`). Output includes file:line matches. |
-| `diff` | Wrapper around `git diff`. | Modes: workspace, staged, or custom ranges. Highlights hunks for the agent. |
+| `diff` | Wrapper around `git diff`. | Modes: workspace, staged, or custom ranges. Also supports `mode: "status"` (legacy) but prefer the dedicated `status` tool. |
+| `status` | Structured `git status` (porcelain v2). | Options: `branchSummary` (-b), `includeIgnored` (`--ignored=matching`), `paths`. Returns parsed status in details + summary text. |
 | `bash` | Executes shell commands (`bash -lc`). | Runs from repo root; stdout/stderr streamed. In bash mode, `cd` is handled internally. |
 | `edit` | Structured find/replace writer. | Accepts `path`, `find`, `replace`. Ensures replacements align with expected text. |
 | `write` | Writes or overwrites files. | Takes `path` + `contents`. Creates directories automatically. |

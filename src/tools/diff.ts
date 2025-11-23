@@ -20,6 +20,9 @@ const pathInputSchema = Type.Optional(
 
 const diffSchema = Type.Intersect([
 	Type.Object({
+		mode: Type.Optional(
+			Type.Literal("diff", { description: "Show patch output (default)." }),
+		),
 		staged: Type.Optional(
 			Type.Boolean({
 				description:
@@ -63,7 +66,10 @@ const diffSchema = Type.Intersect([
 	}),
 	Type.Object(
 		{},
-		{ description: "Cannot request both name-only and word-diff output." },
+		{
+			description:
+				"Cannot request both name-only and word-diff output (diff mode only).",
+		},
 	),
 ]);
 
@@ -74,7 +80,7 @@ function normalizePaths(paths: string | string[] | undefined): string[] {
 	return Array.isArray(paths) ? paths : [paths];
 }
 
-async function runGitDiff(
+async function runGitCommand(
 	args: string[],
 	signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -112,7 +118,7 @@ async function runGitDiff(
 	});
 }
 
-type DiffToolDetails = { command: string };
+type DiffToolDetails = { command: string; status?: ParsedStatus };
 
 export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 	name: "diff",
@@ -121,13 +127,29 @@ export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 		"Inspect git diffs with optional staging, revision, and path filters.",
 	schema: diffSchema,
 	async run(params, { signal, respond }) {
-		const { staged, range, context, stat, wordDiff, nameOnly, paths } = params;
+		const {
+			mode = "diff",
+			staged,
+			range,
+			context,
+			stat,
+			wordDiff,
+			nameOnly,
+			paths,
+		} = params;
 
 		if (wordDiff && nameOnly) {
 			throw new Error("Cannot request both name-only and word-diff output.");
 		}
 
 		const pathArgs = normalizePaths(paths);
+
+		if (mode !== "diff") {
+			throw new Error(
+				"Only diff mode is supported. Use the status tool for git status.",
+			);
+		}
+
 		const args = ["diff"];
 
 		if (!wordDiff) {
@@ -164,7 +186,7 @@ export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 
 		let result: { stdout: string; stderr: string; exitCode: number };
 		try {
-			result = await runGitDiff(args, signal);
+			result = await runGitCommand(args, signal);
 		} catch (error) {
 			const reason =
 				error instanceof Error
@@ -193,3 +215,182 @@ export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 		return respond.text(output).detail({ command: commandSummary });
 	},
 });
+
+export type ParsedStatus = {
+	branch?: {
+		head?: string;
+		upstream?: string;
+		oid?: string;
+		ahead?: number;
+		behind?: number;
+	};
+	files: Array<
+		| {
+				kind: "change" | "rename" | "unmerged";
+				path: string;
+				indexStatus?: string;
+				worktreeStatus?: string;
+				score?: number;
+				origPath?: string;
+				isCopy?: boolean;
+		  }
+		| { kind: "untracked" | "ignored"; path: string }
+		| { kind: "unknown"; raw: string }
+	>;
+};
+
+const statusMap: Record<string, string> = {
+	" ": "unmodified",
+	M: "modified",
+	A: "added",
+	D: "deleted",
+	R: "renamed",
+	C: "copied",
+	U: "unmerged",
+};
+
+function mapStatusChar(char: string | undefined): string | undefined {
+	if (!char) return undefined;
+	return statusMap[char] ?? char;
+}
+
+export function parseStatusOutput(raw: string): ParsedStatus {
+	const entries = raw.split("\0").filter((line) => line.length > 0);
+	const parsed: ParsedStatus = { files: [] };
+	const headerPattern = /^(?:[12u!?] |# )/;
+
+	let i = 0;
+	while (i < entries.length) {
+		const entry = entries[i];
+
+		if (entry.startsWith("# branch.")) {
+			parsed.branch ??= {};
+			if (entry.startsWith("# branch.oid ")) {
+				parsed.branch.oid = entry.slice("# branch.oid ".length).trim();
+				i += 1;
+				continue;
+			}
+			if (entry.startsWith("# branch.head ")) {
+				parsed.branch.head = entry.slice("# branch.head ".length).trim();
+				i += 1;
+				continue;
+			}
+			if (entry.startsWith("# branch.upstream ")) {
+				parsed.branch.upstream = entry
+					.slice("# branch.upstream ".length)
+					.trim();
+				i += 1;
+				continue;
+			}
+			if (entry.startsWith("# branch.ab ")) {
+				const parts = entry.slice("# branch.ab ".length).trim().split(" ");
+				const ahead = Number.parseInt(parts[0]?.replace("+", ""), 10);
+				const behind = Number.parseInt(parts[1]?.replace("-", ""), 10);
+				parsed.branch.ahead = Number.isNaN(ahead) ? undefined : ahead;
+				parsed.branch.behind = Number.isNaN(behind) ? undefined : behind;
+				i += 1;
+				continue;
+			}
+			i += 1;
+			continue;
+		}
+
+		if (entry.startsWith("1 ")) {
+			const match = entry.match(
+				/^1\s+(\S{2})\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/,
+			);
+			if (!match) {
+				throw new Error(`Malformed type1 entry: ${entry}`);
+			}
+			const xy = match[1];
+			parsed.files.push({
+				kind: "change",
+				path: match[2],
+				indexStatus: mapStatusChar(xy[0]),
+				worktreeStatus: mapStatusChar(xy[1]),
+			});
+			i += 1;
+			continue;
+		}
+
+		if (entry.startsWith("2 ")) {
+			const rename = parseRenameEntry(entry, entries[i + 1], headerPattern);
+			if (!rename) {
+				throw new Error(`Malformed type2 entry: ${entry}`);
+			}
+			parsed.files.push(rename.file);
+			i += rename.consumed;
+			continue;
+		}
+
+		if (entry.startsWith("u ")) {
+			const match = entry.match(
+				/^u\s+(\S{2})\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/,
+			);
+			if (!match) {
+				throw new Error(`Malformed unmerged entry: ${entry}`);
+			}
+			const xy = match[1];
+			parsed.files.push({
+				kind: "unmerged",
+				path: match[2],
+				indexStatus: mapStatusChar(xy[0]),
+				worktreeStatus: mapStatusChar(xy[1]),
+			});
+			i += 1;
+			continue;
+		}
+
+		if (entry.startsWith("? ")) {
+			parsed.files.push({ kind: "untracked", path: entry.slice(2) });
+			i += 1;
+			continue;
+		}
+
+		if (entry.startsWith("! ")) {
+			parsed.files.push({ kind: "ignored", path: entry.slice(2) });
+			i += 1;
+			continue;
+		}
+
+		throw new Error(`Unrecognized porcelain v2 entry: ${entry}`);
+	}
+
+	return parsed;
+}
+
+function parseRenameEntry(
+	entry: string,
+	nextEntry: string | undefined,
+	headerPattern: RegExp,
+): { file: ParsedStatus["files"][number]; consumed: number } | undefined {
+	// Format: 2 <xy> <sub> <mH> <mI> <mW> <hH> <hI> <hW> <score> <path>
+	// Some porcelain v2 outputs omit one of the hash slots; allow 5-7 tokens between <sub> and <score>.
+	const match = entry.match(/^2\s+(\S{2})\s+(?:\S+\s+){5,7}([RC]\d+)\s+(.+)$/);
+	if (!match) return undefined;
+
+	const xy = match[1];
+	const scoreToken = match[2];
+	const score =
+		scoreToken && /^[RC]\d+$/.test(scoreToken)
+			? Number.parseInt(scoreToken.slice(1), 10)
+			: Number.NaN;
+	const isCopy = scoreToken?.startsWith("C") ?? false;
+	const path = match[3];
+	const origPathCandidate =
+		nextEntry && !headerPattern.test(nextEntry) ? nextEntry : undefined;
+	const consumed = origPathCandidate ? 2 : 1;
+
+	return {
+		file: {
+			kind: "rename",
+			path,
+			origPath: origPathCandidate,
+			score: Number.isNaN(score) ? undefined : score,
+			indexStatus: mapStatusChar(xy[0]),
+			worktreeStatus: mapStatusChar(xy[1]),
+			isCopy,
+		},
+		consumed,
+	};
+}
