@@ -17,10 +17,23 @@ export const CONTEXT_DANGER_THRESHOLD = 90;
 const MIN_PADDING = 2;
 const MODEL_BRAND_SEPARATOR_WIDTH = 1;
 const MIN_MODEL_LABEL_CHARS = 3;
+const BADGE_ZONE_MIN_WIDTH = 15;
+const PATH_ZONE_MIN_WIDTH = 20;
+const BADGE_ZONE_PERCENT = 0.25;
+const TRUNCATION_ELLIPSIS = "…";
 
 export const FOOTER_MIN_PADDING = MIN_PADDING;
 export const FOOTER_MIN_MODEL_LABEL_CHARS = MIN_MODEL_LABEL_CHARS;
 export const FOOTER_MODEL_BRAND_SEPARATOR_WIDTH = MODEL_BRAND_SEPARATOR_WIDTH;
+
+const ANSI_STRING_TERMINATORS = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
+const ANSI_OSC_SEQUENCE = `(?:\\u001B\\][\\s\\S]*?${ANSI_STRING_TERMINATORS})`;
+const ANSI_CSI_SEQUENCE =
+	"[\\u001B\\u009B][[\\]()#;?]*(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]";
+const ANSI_ESCAPE_SEQUENCE = new RegExp(
+	`${ANSI_OSC_SEQUENCE}|${ANSI_CSI_SEQUENCE}`,
+	"g",
+);
 
 export type FooterMode = "ensemble" | "solo";
 
@@ -35,6 +48,24 @@ export interface FooterStats {
 	contextPercent: number;
 	lastAssistant?: AssistantMessage;
 }
+
+export type HintType = "context" | "plan" | "queue" | "bash" | "custom";
+
+export interface FooterHint {
+	type: HintType;
+	message: string;
+	priority: number; // Higher = more important
+}
+
+export type StageKind = "thinking" | "working" | "responding" | "dreaming";
+
+// Static color-coded badges for stages (no shimmer)
+const STAGE_COLORS: Record<StageKind, string> = {
+	thinking: themePalette.info, // soft purple
+	working: "#fbbf24", // amber
+	responding: "#f472b6", // pink
+	dreaming: "#c084fc", // purple
+} as const;
 
 export function formatModelLabel(
 	state: Pick<AgentState, "model" | "thinkingLevel">,
@@ -150,19 +181,181 @@ export function formatTokenCount(count: number): string {
 	return `${Math.round(count / 1000)}k`;
 }
 
-export function formatPath(path: string, width: number): string {
+export function formatPath(path: string, width: number, minWidth = 20): string {
+	const usableWidth = Math.max(1, Math.floor(width));
+	const clampedMinWidth = Math.min(
+		Math.max(1, Math.floor(minWidth)),
+		usableWidth,
+	);
 	const home = process.env.HOME || process.env.USERPROFILE;
 	let pwd = path;
 	if (home && pwd.startsWith(home)) {
 		pwd = `~${pwd.slice(home.length)}`;
 	}
-	const maxPathLength = Math.max(20, width - 10);
+	const maxPathLength = Math.max(clampedMinWidth, usableWidth - 10);
 	if (visibleWidth(pwd) <= maxPathLength) {
 		return pwd;
 	}
-	const start = pwd.slice(0, Math.floor(maxPathLength / 2) - 2);
-	const end = pwd.slice(-(Math.floor(maxPathLength / 2) - 1));
+	if (maxPathLength <= 3) {
+		return pwd.slice(0, maxPathLength);
+	}
+	const start = pwd.slice(0, Math.max(0, Math.floor(maxPathLength / 2) - 2));
+	const end = pwd.slice(-Math.max(0, Math.floor(maxPathLength / 2) - 1));
 	return `${start}...${end}`;
+}
+
+/**
+ * Render a static, color-coded stage badge (no shimmer)
+ */
+export function renderStaticStageBadge(label: string): string {
+	const trimmed = label.trim();
+	const normalized = trimmed.toLowerCase();
+	if (!normalized) return "";
+
+	const [firstWord] = normalized.split(/\s+/u);
+	let kind: StageKind | undefined;
+	switch (firstWord) {
+		case "thinking":
+			kind = "thinking";
+			break;
+		case "working":
+			kind = "working";
+			break;
+		case "responding":
+			kind = "responding";
+			break;
+		case "dreaming":
+			kind = "dreaming";
+			break;
+		default:
+			kind = undefined;
+	}
+
+	const color = kind ? STAGE_COLORS[kind] : themePalette.muted;
+	return chalk.hex(color).bold(trimmed || label);
+}
+
+/**
+ * Render runtime badge with distinct styling (not gray)
+ */
+export function renderRuntimeBadge(badge: string): string {
+	// Runtime badges like "queue:all(3)", "safe-mode", etc.
+	// Use a distinct color to make them stand out
+	return chalk.hex("#94e2d5").bold(badge); // mint color for visibility
+}
+
+function matchAnsiSequence(
+	value: string,
+	startIndex: number,
+): { sequence: string; nextIndex: number } | null {
+	ANSI_ESCAPE_SEQUENCE.lastIndex = startIndex;
+	const match = ANSI_ESCAPE_SEQUENCE.exec(value);
+	if (match && match.index === startIndex) {
+		return { sequence: match[0], nextIndex: ANSI_ESCAPE_SEQUENCE.lastIndex };
+	}
+	return null;
+}
+
+function truncateAnsiToWidth(value: string, maxWidth: number): string {
+	if (!value || maxWidth <= 0) {
+		return "";
+	}
+	if (visibleWidth(value) <= maxWidth) {
+		return value;
+	}
+	let width = 0;
+	let index = 0;
+	let result = "";
+	while (index < value.length && width < maxWidth) {
+		const ansiMatch = matchAnsiSequence(value, index);
+		if (ansiMatch) {
+			result += ansiMatch.sequence;
+			index = ansiMatch.nextIndex;
+			continue;
+		}
+		const codePoint = value.codePointAt(index);
+		if (codePoint === undefined) {
+			break;
+		}
+		const char = String.fromCodePoint(codePoint);
+		const charWidth = visibleWidth(char);
+		if (charWidth === 0) {
+			result += char;
+			index += char.length;
+			continue;
+		}
+		if (width + charWidth > maxWidth) {
+			break;
+		}
+		width += charWidth;
+		result += char;
+		index += char.length;
+	}
+	return result;
+}
+
+/**
+ * Merge and prioritize multiple hints
+ */
+export function mergeHints(
+	stats: FooterStats,
+	hints: FooterHint[],
+	width: number,
+): string | null {
+	const allHints: FooterHint[] = [...hints];
+
+	// Add context hint if needed
+	const shouldWarn =
+		stats.contextWindow > 0 && stats.contextPercent >= CONTEXT_HINT_THRESHOLD;
+	if (shouldWarn) {
+		allHints.push({
+			type: "context",
+			message: `Context ${stats.contextPercent.toFixed(1)}% – run /compact to summarize`,
+			priority: 100, // High priority
+		});
+	}
+
+	if (allHints.length === 0) return null;
+
+	// Sort by priority (highest first)
+	allHints.sort((a, b) => b.priority - a.priority);
+
+	// Try to fit multiple hints with icons
+	const hintIcons: Record<HintType, string> = {
+		context: "⚠",
+		plan: "📋",
+		queue: "⏳",
+		bash: "⚙",
+		custom: "ℹ",
+	};
+
+	const formatted: string[] = [];
+	let currentWidth = 0;
+
+	for (const hint of allHints) {
+		const icon = hintIcons[hint.type];
+		const text = `${icon} ${hint.message}`;
+		const textWidth = visibleWidth(text);
+
+		if (formatted.length === 0) {
+			// Always include the highest priority hint
+			formatted.push(text);
+			currentWidth = textWidth;
+		} else {
+			// Try to add additional hints if they fit
+			const separator = "  ";
+			const needed = currentWidth + visibleWidth(separator) + textWidth;
+			if (needed <= width - 10) {
+				// Leave some margin
+				formatted.push(text);
+				currentWidth = needed;
+			} else {
+				break; // No more space
+			}
+		}
+	}
+
+	return formatted.join("  ");
 }
 
 function buildContextBadge(stats: FooterStats): string {
@@ -270,39 +463,53 @@ export function buildStatsLine(
 		brand: composerBrand,
 		glyph: composerGlyph,
 	} = composeBrandLabel(modelLabel);
-	let rightSide = `${toned} ${composerBrand}`;
 
 	const statsLeftWidth = visibleWidth(statsLeft);
-	const rightWidth = visibleWidth(rightSide);
-	const totalNeeded = statsLeftWidth + MIN_PADDING + rightWidth;
 
-	if (totalNeeded > width) {
-		const brandWidth = visibleWidth(composerBrand);
-		const availableForModel =
-			width -
-			statsLeftWidth -
-			MIN_PADDING -
-			brandWidth -
-			MODEL_BRAND_SEPARATOR_WIDTH;
-		if (availableForModel > MIN_MODEL_LABEL_CHARS) {
-			const truncated = truncateModelLabel(modelLabel, availableForModel);
-			const tonedTruncated = chalk.hex(themePalette.model)(truncated);
-			rightSide = `${tonedTruncated} ${composerBrand}`;
-		} else if (width - statsLeftWidth - MIN_PADDING >= brandWidth) {
-			rightSide = composerBrand;
-		} else {
-			const fallbackSpace = width - statsLeftWidth - MIN_PADDING;
-			rightSide = fallbackSpace > 0 ? composerBrand : composerGlyph;
-		}
+	// Improved truncation priorities:
+	// 1. Try: stats + model + brand
+	// 2. Try: stats + model (drop brand)
+	// 3. Try: stats + truncated model (drop brand)
+	// 4. Fallback: stats only
+
+	// Priority 1: Full layout (stats + model + brand)
+	let rightSide = `${toned} ${composerBrand}`;
+	let rightWidth = visibleWidth(rightSide);
+	let totalNeeded = statsLeftWidth + MIN_PADDING + rightWidth;
+
+	if (totalNeeded <= width) {
+		// Everything fits!
+		const padding = " ".repeat(
+			Math.max(0, width - statsLeftWidth - rightWidth),
+		);
+		return statsLeft + padding + rightSide;
 	}
 
-	if (!rightSide) {
-		return statsLeft;
+	// Priority 2: stats + model (drop brand to preserve model label)
+	rightSide = toned;
+	rightWidth = visibleWidth(rightSide);
+	totalNeeded = statsLeftWidth + MIN_PADDING + rightWidth;
+
+	if (totalNeeded <= width) {
+		const padding = " ".repeat(
+			Math.max(0, width - statsLeftWidth - rightWidth),
+		);
+		return statsLeft + padding + rightSide;
 	}
-	const padding = " ".repeat(
-		Math.max(0, width - statsLeftWidth - visibleWidth(rightSide)),
-	);
-	return statsLeft + padding + rightSide;
+
+	// Priority 3: stats + truncated model (still no brand)
+	const availableForModel = width - statsLeftWidth - MIN_PADDING;
+	if (availableForModel > MIN_MODEL_LABEL_CHARS) {
+		const truncated = truncateModelLabel(modelLabel, availableForModel);
+		const tonedTruncated = chalk.hex(themePalette.model)(truncated);
+		const padding = " ".repeat(
+			Math.max(0, width - statsLeftWidth - visibleWidth(tonedTruncated)),
+		);
+		return statsLeft + padding + tonedTruncated;
+	}
+
+	// Priority 4: stats only (model doesn't fit)
+	return statsLeft;
 }
 
 export function buildSoloStatsLine(
@@ -350,4 +557,66 @@ export function buildSoloStatsLine(
 		return statsLeft + padding + truncated;
 	}
 	return statsLeft;
+}
+
+/**
+ * Build a 2-zone footer layout for badges + cwd path
+ */
+export function buildBadgeAndPathLine(
+	cwd: string,
+	stageLabel: string | null,
+	runtimeBadges: string[],
+	width: number,
+): string {
+	if (width < 40) {
+		return chalk.gray(formatPath(cwd, width));
+	}
+
+	const badgesBudget = Math.max(
+		BADGE_ZONE_MIN_WIDTH,
+		Math.floor(width * BADGE_ZONE_PERCENT),
+	);
+	const badgeParts: string[] = [];
+	if (stageLabel) {
+		badgeParts.push(renderStaticStageBadge(stageLabel));
+	}
+	for (const rb of runtimeBadges) {
+		badgeParts.push(renderRuntimeBadge(rb));
+	}
+	const badgeZone = formatBadgeZone(badgeParts, badgesBudget);
+	const hasBadges = badgeZone.length > 0;
+	const separator = hasBadges ? "  " : "";
+	const badgeZoneWidth = hasBadges ? visibleWidth(badgeZone) : 0;
+	const separatorWidth = hasBadges ? visibleWidth(separator) : 0;
+	const availableForPath = Math.max(0, width - badgeZoneWidth - separatorWidth);
+	const desiredPathWidth = Math.max(PATH_ZONE_MIN_WIDTH, width - badgesBudget);
+	const pathBudget = Math.min(desiredPathWidth, availableForPath);
+	if (pathBudget <= 0) {
+		return badgeZone;
+	}
+	const minPathWidth = Math.min(PATH_ZONE_MIN_WIDTH, pathBudget);
+	const pathFormatted = formatPath(cwd, pathBudget, minPathWidth);
+	const pathZone = chalk.gray(pathFormatted);
+	return `${badgeZone}${separator}${pathZone}`;
+}
+
+function formatBadgeZone(badgeParts: string[], budget: number): string {
+	if (badgeParts.length === 0 || budget <= 0) {
+		return "";
+	}
+	const joined = badgeParts.join(" ");
+	if (visibleWidth(joined) <= budget) {
+		return joined;
+	}
+	if (budget <= 1) {
+		return TRUNCATION_ELLIPSIS.slice(0, budget);
+	}
+	const truncated = truncateAnsiToWidth(
+		joined,
+		Math.max(0, budget - 1),
+	).trimEnd();
+	if (!truncated) {
+		return TRUNCATION_ELLIPSIS;
+	}
+	return `${truncated}${TRUNCATION_ELLIPSIS}`;
 }

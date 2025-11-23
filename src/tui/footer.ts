@@ -2,19 +2,21 @@ import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
 import {
+	buildBadgeAndPathLine,
 	buildSoloStatsLine,
 	buildStatsLine,
 	calculateFooterStats,
 	formatPath,
-	resolveFooterHint,
+	mergeHints,
 } from "./utils/footer-utils.js";
-import type { FooterMode, FooterStats } from "./utils/footer-utils.js";
-import { shimmerText } from "./utils/shimmer.js";
-import {
-	STAGE_SHIMMER_OPTIONS,
-	detectStageKind,
-	normalizeStageLabel,
-} from "./utils/stage-labels.js";
+import type {
+	FooterHint,
+	FooterMode,
+	FooterStats,
+} from "./utils/footer-utils.js";
+
+// Re-export FooterHint for external use
+export type { FooterHint, HintType } from "./utils/footer-utils.js";
 
 /**
  * Footer component that shows pwd, token stats, and context usage
@@ -22,7 +24,7 @@ import {
 export class FooterComponent {
 	private state: AgentState;
 	private activeStage: string | null = null;
-	private statusHint: string | null = null;
+	private hints: FooterHint[] = [];
 	private runtimeBadges: string[] = [];
 	private mode: FooterMode;
 
@@ -44,7 +46,24 @@ export class FooterComponent {
 	}
 
 	setHint(hint: string | null): void {
-		this.statusHint = hint;
+		// Legacy method - convert single hint to hints array
+		if (hint) {
+			this.hints = [{ type: "custom", message: hint, priority: 150 }];
+		} else {
+			this.hints = [];
+		}
+	}
+
+	setHints(hints: FooterHint[]): void {
+		this.hints = hints;
+	}
+
+	addHint(hint: FooterHint): void {
+		this.hints.push(hint);
+	}
+
+	clearHints(): void {
+		this.hints = [];
 	}
 
 	setMode(mode: FooterMode): void {
@@ -60,14 +79,23 @@ export class FooterComponent {
 		if (this.mode === "solo") {
 			return this.renderSoloFooter(stats, width);
 		}
-		const pathLine = this.renderPathLine(width);
+
+		// Use new 3-zone layout
+		const pathLine = buildBadgeAndPathLine(
+			process.cwd(),
+			this.activeStage,
+			this.runtimeBadges,
+			width,
+		);
 		const statsLine = buildStatsLine(stats, width, this.state);
 
 		const lines = [pathLine, chalk.gray(statsLine)];
-		const hintSource = resolveFooterHint(stats, this.statusHint);
-		if (hintSource) {
-			const hintLabel = this.truncateToWidth(`tip: ${hintSource}`, width);
-			lines.push(chalk.hex("#94a3b8")(hintLabel));
+
+		// Use new multi-hint system
+		const mergedHint = mergeHints(stats, this.hints, width);
+		if (mergedHint) {
+			const truncated = this.truncateToWidth(mergedHint, width);
+			lines.push(chalk.hex("#94a3b8")(truncated));
 		}
 
 		return lines;
@@ -82,41 +110,6 @@ export class FooterComponent {
 			result = result.slice(0, -1);
 		}
 		return `${result.trimEnd()}…`;
-	}
-
-	private renderPathLine(width: number): string {
-		const pathLine = chalk.gray(formatPath(process.cwd(), width));
-		const badges: string[] = [];
-		if (this.activeStage) {
-			badges.push(this.renderStageLabel(this.activeStage));
-		}
-		for (const badge of this.runtimeBadges) {
-			badges.push(chalk.hex("#94a3b8")(badge));
-		}
-		if (badges.length === 0) {
-			return pathLine;
-		}
-		const suffix = badges.join("  ");
-		const available = Math.max(0, width - visibleWidth(pathLine) - 2);
-		if (available <= 0) {
-			return pathLine;
-		}
-		const trimmedSuffix = this.truncateToWidth(suffix, available);
-		if (!trimmedSuffix) {
-			return pathLine;
-		}
-		return `${pathLine}  ${trimmedSuffix}`;
-	}
-
-	private renderStageLabel(label: string): string {
-		const trimmed = normalizeStageLabel(label);
-		if (!trimmed) return "";
-		const kind = detectStageKind(trimmed);
-		const display = trimmed.toUpperCase();
-		if (kind) {
-			return shimmerText(display, STAGE_SHIMMER_OPTIONS[kind]);
-		}
-		return chalk.hex("#f1c0e8")(display);
 	}
 
 	private renderSoloFooter(stats: FooterStats, width: number): string[] {

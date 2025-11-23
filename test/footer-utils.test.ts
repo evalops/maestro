@@ -4,6 +4,7 @@ import type { AgentState, AssistantMessage } from "../src/agent/types.js";
 import type { FooterStats } from "../src/tui/utils/footer-utils.js";
 import {
 	FOOTER_MIN_PADDING,
+	buildBadgeAndPathLine,
 	buildSoloStatsLine,
 	calculateFooterStats,
 	formatModelLabel,
@@ -187,5 +188,31 @@ describe("buildSoloStatsLine", () => {
 		const truncated = truncateModelLabel(modelLabel, availableForRight);
 		const result = stripAnsi(buildSoloStatsLine(stats, width, state));
 		expect(result.endsWith(truncated)).toBe(true);
+	});
+});
+
+describe("buildBadgeAndPathLine", () => {
+	it("keeps combined badges and path within the provided width", () => {
+		const width = 48;
+		const line = buildBadgeAndPathLine(
+			"/Users/test/projects/myproject",
+			"Working — executing an extremely long task description",
+			["queue:all(9)", "safe:on", "think:high", "approvals:manual"],
+			width,
+		);
+		const plain = stripAnsi(line);
+		expect(visibleWidth(plain)).toBeLessThanOrEqual(width);
+	});
+
+	it("respects width when falling back to path-only rendering", () => {
+		const width = 32;
+		const line = buildBadgeAndPathLine(
+			"/Users/test/projects/myproject",
+			"Working",
+			["queue:all(3)", "safe:on"],
+			width,
+		);
+		const plain = stripAnsi(line);
+		expect(visibleWidth(plain)).toBeLessThanOrEqual(width);
 	});
 });

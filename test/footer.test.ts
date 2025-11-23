@@ -204,7 +204,7 @@ describe("FooterComponent", () => {
 			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
 		});
 
-		it("shimmers responding stage badge", () => {
+		it("shows static responding stage badge", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),
 			]);
@@ -212,11 +212,10 @@ describe("FooterComponent", () => {
 			footer.setStage("  Responding   ");
 			const rendered = footer.render(120);
 			const pathLine = stripAnsi(rendered[0] ?? "");
-			expect(pathLine).toContain("RESPONDING");
-			expect(pathLine).not.toContain("⟡");
+			expect(pathLine).toContain("Responding");
 		});
 
-		it("shimmers thinking stage badge", () => {
+		it("shows static thinking stage badge", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),
 			]);
@@ -224,10 +223,10 @@ describe("FooterComponent", () => {
 			footer.setStage("Thinking");
 			const rendered = footer.render(120);
 			const pathLine = stripAnsi(rendered[0] ?? "");
-			expect(pathLine).toContain("THINKING");
+			expect(pathLine).toContain("Thinking");
 		});
 
-		it("shimmers working stage badge with tool detail", () => {
+		it("shows static working stage badge with tool detail", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),
 			]);
@@ -235,11 +234,11 @@ describe("FooterComponent", () => {
 			footer.setStage("Working · search (1/2)");
 			const rendered = footer.render(120);
 			const pathLine = stripAnsi(rendered[0] ?? "");
-			expect(pathLine).toContain("WORKING");
-			expect(pathLine).toContain("SEARCH (1/2)");
+			expect(pathLine).toContain("Working");
+			expect(pathLine).toContain("search (1/2)");
 		});
 
-		it("shimmers dreaming stage badge", () => {
+		it("shows static dreaming stage badge", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),
 			]);
@@ -247,7 +246,7 @@ describe("FooterComponent", () => {
 			footer.setStage("Dreaming");
 			const rendered = footer.render(120);
 			const pathLine = stripAnsi(rendered[0] ?? "");
-			expect(pathLine).toContain("DREAMING");
+			expect(pathLine).toContain("Dreaming");
 		});
 
 		it("should show model name next to composer branding", () => {
@@ -263,7 +262,7 @@ describe("FooterComponent", () => {
 			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
 		});
 
-		it("should truncate model name if width is too small", () => {
+		it("should prioritize model name over brand when width is too small", () => {
 			const state = createMockState(
 				[createAssistantMessage({ input: 1000, output: 500 })],
 				200000,
@@ -271,11 +270,11 @@ describe("FooterComponent", () => {
 			state.model.id = "very-long-model-name-that-wont-fit";
 
 			const footer = new FooterComponent(state);
-			const rendered = footer.render(40); // Narrow width
+			const rendered = footer.render(60); // Narrow width
 
 			const statsLine = statsLineFrom(rendered);
-			// Should still contain composer branding even if model name is truncated
-			expect(statsLine).toContain("𝅘𝅥𝅮");
+			// Should contain model name but may drop brand to preserve it
+			expect(statsLine).toContain("very-long");
 		});
 
 		it("should show pwd with home directory as ~", () => {
