@@ -807,7 +807,6 @@ export async function* streamOpenAI(
 								};
 								toolEnded.add(i);
 								toolArgBuffers.delete(i);
-								toolEnded.delete(i); // release tracker entry after finalization
 							} else if (block.type === "text" && !textEnded.has(i)) {
 								yield {
 									type: "text_end",
@@ -816,7 +815,6 @@ export async function* streamOpenAI(
 									partial,
 								};
 								textEnded.add(i);
-								textEnded.delete(i); // release tracker entry after finalization
 							} else if (block.type === "thinking" && !thinkingEnded.has(i)) {
 								yield {
 									type: "thinking_end",
@@ -825,7 +823,6 @@ export async function* streamOpenAI(
 									partial,
 								};
 								thinkingEnded.add(i);
-								thinkingEnded.delete(i); // release tracker entry after finalization
 							}
 						}
 
