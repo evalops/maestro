@@ -11,9 +11,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-4vcpu-ubuntu-2404
             chunkIndex: 1
-          - os: ubuntu-latest
+          - os: blacksmith-4vcpu-ubuntu-2404
             chunkIndex: 2
           - os: macos-latest
             chunkIndex: 1

@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   validate-trigger:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
@@ -41,7 +41,7 @@ jobs:
   skip-when-no-tag:
     if: ${{ needs.validate-trigger.outputs.should_run == 'false' }}
     needs: validate-trigger
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Skip release workflow
         run: |
@@ -50,7 +50,7 @@ jobs:
   prepare:
     if: ${{ needs.validate-trigger.outputs.should_run == 'true' }}
     needs: validate-trigger
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       release_tag: ${{ steps.meta.outputs.release_tag }}
       release_version: ${{ steps.meta.outputs.release_version }}
@@ -110,9 +110,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: blacksmith-4vcpu-ubuntu-2404
             chunkIndex: 1
-          - os: ubuntu-latest
+          - os: blacksmith-4vcpu-ubuntu-2404
             chunkIndex: 2
           - os: macos-latest
             chunkIndex: 1
@@ -152,7 +152,7 @@ jobs:
     needs:
       - prepare
       - quality-gate
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
         with:
