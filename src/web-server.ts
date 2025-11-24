@@ -7,6 +7,7 @@ import {
 	type ServerResponse,
 	createServer,
 } from "node:http";
+import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath, parse } from "node:url";
 import {
@@ -14,13 +15,12 @@ import {
 	type ApprovalMode,
 } from "./agent/action-approval.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
-import type { Provider, ThinkingLevel } from "./agent/types.js";
+import type { ThinkingLevel } from "./agent/types.js";
 import { buildSystemPrompt } from "./cli/system-prompt.js";
 import { loadEnv } from "./load-env.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
 	getFactoryDefaultModelSelection,
-	getRegisteredModels,
 	reloadModelConfig,
 } from "./models/registry.js";
 import { getEnvVarsForProvider } from "./providers/api-keys.js";
@@ -29,18 +29,16 @@ import {
 	type AuthMode,
 	createAuthResolver,
 } from "./providers/auth.js";
+import { recordApiRequest } from "./telemetry.js";
 import { codingTools } from "./tools/index.js";
-import { handleChat } from "./web/handlers/chat.js";
-import { handleConfig } from "./web/handlers/config.js";
-import { handleModel, handleModels } from "./web/handlers/models.js";
-import { handleSessions } from "./web/handlers/sessions.js";
-import { handleStatus } from "./web/handlers/status.js";
-import { handleUsage } from "./web/handlers/usage.js";
+import type { WebServerContext } from "./web/app-context.js";
+import { logRequest, logStartup } from "./web/logger.js";
 import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
 } from "./web/model-selection.js";
-import { type Route, createRequestHandler } from "./web/router.js";
+import { createRequestHandler } from "./web/router.js";
+import { createRoutes } from "./web/routes.js";
 import {
 	ApiError,
 	authenticateRequest,
@@ -226,128 +224,54 @@ const WEB_ROOT = join(__dirname, "../packages/web");
 const ALLOWED_ORIGIN = DEFAULT_WEB_ORIGIN;
 const CORS_HEADERS = createCorsHeaders(ALLOWED_ORIGIN);
 
-const routes: Route[] = [
-	{
-		method: "GET",
-		path: "/api/models",
-		handler: (_req, res) => handleModels(res, CORS_HEADERS),
-	},
-	{
-		method: "GET",
-		path: "/api/status",
-		handler: (_req, res) =>
-			handleStatus(res, CORS_HEADERS, { staticCacheMaxAge: STATIC_MAX_AGE }),
-	},
-	{
-		method: "GET",
-		path: "/api/config",
-		handler: (req, res) => handleConfig(req, res, CORS_HEADERS),
-	},
-	{
-		method: "POST",
-		path: "/api/config",
-		handler: (req, res) => handleConfig(req, res, CORS_HEADERS),
-	},
-	{
-		method: "GET",
-		path: "/api/usage",
-		handler: (req, res) => handleUsage(req, res, CORS_HEADERS),
-	},
-	{
-		method: "GET",
-		path: "/api/model",
-		handler: async (req, res) =>
-			handleModel(
-				req,
-				res,
-				CORS_HEADERS,
-				{
-					...getCurrentSelection(),
-				},
-				ensureCredential,
-				(model) => {
-					modelSelectionStore.set(model);
-				},
-			),
-	},
-	{
-		method: "POST",
-		path: "/api/model",
-		handler: async (req, res) =>
-			handleModel(
-				req,
-				res,
-				CORS_HEADERS,
-				{
-					...getCurrentSelection(),
-				},
-				ensureCredential,
-				(model) => {
-					modelSelectionStore.set(model);
-				},
-			),
-	},
-	{
-		method: "POST",
-		path: "/api/chat",
-		handler: async (req, res) => {
-			return handleChat(req, res, CORS_HEADERS, {
-				createAgent: async (model, thinking, approval) =>
-					createAgent(
-						model,
-						thinking as ThinkingLevel,
-						approval as ApprovalMode,
-					),
-				getRegisteredModel,
-				defaultApprovalMode: DEFAULT_APPROVAL_MODE,
-				defaultProvider: DEFAULT_PROVIDER,
-				defaultModelId: DEFAULT_MODEL_ID,
-				acquireSse: () => sseLimiter.tryAcquire(),
-				releaseSse: (token) => sseLimiter.release(token),
-			});
-		},
-	},
-	{
-		method: "GET",
-		path: "/api/sessions",
-		handler: (req, res) => handleSessions(req, res, {}, CORS_HEADERS),
-	},
-	{
-		method: "POST",
-		path: "/api/sessions",
-		handler: (req, res) => handleSessions(req, res, {}, CORS_HEADERS),
-	},
-	{
-		method: "GET",
-		path: "/api/sessions/:id",
-		handler: (req, res, params) =>
-			handleSessions(req, res, params, CORS_HEADERS),
-	},
-	{
-		method: "DELETE",
-		path: "/api/sessions/:id",
-		handler: (req, res, params) =>
-			handleSessions(req, res, params, CORS_HEADERS),
-	},
-];
+const context: WebServerContext = {
+	corsHeaders: CORS_HEADERS,
+	staticMaxAge: STATIC_MAX_AGE,
+	defaultApprovalMode: DEFAULT_APPROVAL_MODE,
+	defaultProvider: DEFAULT_PROVIDER,
+	defaultModelId: DEFAULT_MODEL_ID,
+	createAgent,
+	getRegisteredModel,
+	getCurrentSelection,
+	ensureCredential,
+	setModelSelection: (model) => modelSelectionStore.set(model),
+	acquireSse: () => sseLimiter.tryAcquire(),
+	releaseSse: (token) => sseLimiter.release(token),
+};
 
-const router = createRequestHandler(routes, (req, res, pathname) => {
-	if (pathname.startsWith("/api")) {
-		sendJson(res, 404, { error: "Not found" }, CORS_HEADERS);
-		return;
-	}
-	serveStatic(pathname, req, res, {
-		webRoot: WEB_ROOT,
-		corsHeaders: CORS_HEADERS,
-		maxAgeSeconds: STATIC_MAX_AGE,
-	});
-});
+const routes = createRoutes(context);
+
+const router = createRequestHandler(
+	routes,
+	(req, res, pathname) => {
+		if (pathname.startsWith("/api")) {
+			sendJson(res, 404, { error: "Not found" }, CORS_HEADERS);
+			return;
+		}
+		serveStatic(pathname, req, res, {
+			webRoot: WEB_ROOT,
+			corsHeaders: CORS_HEADERS,
+			maxAgeSeconds: STATIC_MAX_AGE,
+		});
+	},
+	CORS_HEADERS,
+);
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse) {
+	const start = performance.now();
 	const parsedUrl = parse(req.url || "/", true);
 	const pathname = parsedUrl.pathname || "/";
 
-	console.log(`${req.method} ${pathname}`);
+	res.on("finish", () => {
+		const duration = performance.now() - start;
+		logRequest(req, res.statusCode, start);
+		recordApiRequest(
+			req.method || "UNKNOWN",
+			pathname,
+			res.statusCode,
+			duration,
+		);
+	});
 
 	// CORS preflight
 	if (req.method === "OPTIONS") {
@@ -369,20 +293,27 @@ export async function startWebServer(port = 8080) {
 	await reloadModelConfig();
 
 	const server = createServer(handleRequest);
+	const sockets = new Set<Socket>();
+
+	server.on("connection", (socket) => {
+		sockets.add(socket);
+		socket.on("close", () => {
+			sockets.delete(socket);
+		});
+	});
 
 	server.listen(port, () => {
-		console.log(`
-🌐 Composer Web Server started!
-
-   Local:   http://localhost:${port}
-   API:     http://localhost:${port}/api
-   
-Ready to accept requests...
-		`);
+		logStartup(port);
 	});
 
 	process.on("SIGINT", () => {
 		console.log("\nShutting down server...");
+
+		// Close all open sockets
+		for (const socket of sockets) {
+			socket.destroy();
+		}
+
 		server.close(() => {
 			console.log("Server closed");
 			process.exit(0);

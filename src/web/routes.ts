@@ -1,11 +1,13 @@
-import type { Route } from "./router.js";
+import type { ApprovalMode } from "../agent/action-approval.js";
+import type { ThinkingLevel } from "../agent/types.js";
+import type { WebServerContext } from "./app-context.js";
 import { handleChat } from "./handlers/chat.js";
 import { handleConfig } from "./handlers/config.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handleSessions } from "./handlers/sessions.js";
 import { handleStatus } from "./handlers/status.js";
 import { handleUsage } from "./handlers/usage.js";
-import type { WebServerContext } from "./app-context.js";
+import type { Route } from "./router.js";
 
 export function createRoutes(context: WebServerContext): Route[] {
 	const { corsHeaders } = context;
@@ -70,7 +72,12 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/api/chat",
 			handler: async (req, res) => {
 				return handleChat(req, res, corsHeaders, {
-					createAgent: context.createAgent,
+					createAgent: async (model, thinking, approval) =>
+						context.createAgent(
+							model,
+							thinking as ThinkingLevel,
+							approval as ApprovalMode,
+						),
 					getRegisteredModel: context.getRegisteredModel,
 					defaultApprovalMode: context.defaultApprovalMode,
 					defaultProvider: context.defaultProvider,
@@ -104,4 +111,3 @@ export function createRoutes(context: WebServerContext): Route[] {
 		},
 	];
 }
-
