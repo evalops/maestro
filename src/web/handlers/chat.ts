@@ -1,13 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
-import type { AgentState } from "../../agent/types.js";
-import type { RegisteredModel } from "../../models/registry.js";
+import type { SessionManager } from "../../session/manager.js"; // Import type only if not used as value
 import {
-	SessionManager,
+	SessionManager as SessionManagerImpl, // Rename value import
 	toSessionModelMetadata,
 } from "../../session/manager.js";
 import { recordSseSkip } from "../../telemetry.js";
-import { respondWithApiError, sendJson } from "../server-utils.js";
+import type { WebServerContext } from "../app-context.js";
+import { getAgentCircuitBreaker } from "../circuit-breaker.js";
+import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
 import {
@@ -16,44 +17,22 @@ import {
 	parseAndValidateJson,
 } from "../validation.js";
 
-export interface ChatDeps {
-	createAgent: (
-		registeredModel: RegisteredModel,
-		thinkingLevel: string,
-		approvalMode: string,
-	) => Promise<{
-		subscribe: (fn: (event: any) => void) => () => void;
-		replaceMessages: (msgs: any[]) => void;
-		clearMessages: () => void;
-		prompt: (input: string) => Promise<void>;
-		abort: () => void;
-		state: AgentState;
-	}>;
-	getRegisteredModel: (
-		input: string | null | undefined,
-	) => Promise<RegisteredModel>;
-	defaultApprovalMode: string;
-	defaultProvider: string;
-	defaultModelId: string;
-	onComplete?: () => void;
-	acquireSse?: () => symbol | null;
-	releaseSse?: (token: symbol | null) => void;
-}
-
 export async function handleChat(
 	req: IncomingMessage,
 	res: ServerResponse,
-	cors: Record<string, string>,
-	{
+	context: WebServerContext,
+) {
+	const {
 		createAgent,
 		getRegisteredModel,
 		defaultApprovalMode,
-		onComplete,
 		acquireSse,
 		releaseSse,
-	}: ChatDeps,
-) {
+		corsHeaders: cors,
+	} = context;
+
 	let sseLease: symbol | null = null;
+
 	try {
 		const chatReq = (await parseAndValidateJson<ChatRequestInput>(
 			req,
@@ -64,7 +43,7 @@ export async function handleChat(
 			? (chatReq.messages as ComposerMessage[])
 			: [];
 		if (incomingMessages.length === 0) {
-			sendJson(res, 400, { error: "No messages supplied" }, cors);
+			sendJson(res, 400, { error: "No messages supplied" }, cors, req);
 			return;
 		}
 
@@ -75,25 +54,32 @@ export async function handleChat(
 				400,
 				{ error: "Last message must be a user message" },
 				cors,
+				req,
 			);
 			return;
 		}
 
 		const userInput = (latestMessage.content ?? "").trim();
 		if (!userInput) {
-			sendJson(res, 400, { error: "User message cannot be empty" }, cors);
+			sendJson(res, 400, { error: "User message cannot be empty" }, cors, req);
 			return;
 		}
 
 		if (acquireSse) {
 			sseLease = acquireSse();
 			if (!sseLease) {
-				sendJson(res, 429, { error: "Too many active SSE connections" }, cors);
+				sendJson(
+					res,
+					429,
+					{ error: "Too many active SSE connections" },
+					cors,
+					req,
+				);
 				return;
 			}
 		}
 
-		const sessionManager = new SessionManager(false);
+		const sessionManager = new SessionManagerImpl(false);
 		if (chatReq.sessionId) {
 			const sessionFile = sessionManager.getSessionFileById(chatReq.sessionId);
 			if (sessionFile) {
@@ -213,7 +199,11 @@ export async function handleChat(
 		};
 
 		try {
-			await agent.prompt(userInput);
+			// Wrap agent.prompt in a circuit breaker
+			const breaker = getAgentCircuitBreaker(registeredModel.provider);
+
+			await breaker.execute(() => agent.prompt(userInput));
+
 			if (!res.writableEnded) {
 				sseSession.sendDone();
 			}
@@ -228,11 +218,10 @@ export async function handleChat(
 		}
 	} catch (error) {
 		console.error("Chat error:", error);
-		respondWithApiError(res, error, 500, cors);
+		respondWithApiError(res, error, 500, cors, req);
 	} finally {
 		if (sseLease && releaseSse) {
 			releaseSse(sseLease);
 		}
-		if (typeof onComplete === "function") onComplete();
 	}
 }

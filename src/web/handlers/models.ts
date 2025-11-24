@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getRegisteredModels } from "../../models/registry.js";
 import type { RegisteredModel } from "../../models/registry.js";
-import type { AuthCredential } from "../../providers/auth.js";
+import type { WebServerContext } from "../app-context.js";
 import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
@@ -13,7 +13,8 @@ import {
 	parseAndValidateJson,
 } from "../validation.js";
 
-export function handleModels(
+export async function handleModels(
+	_req: IncomingMessage,
 	res: ServerResponse,
 	cors: Record<string, string>,
 ) {
@@ -34,13 +35,14 @@ export function handleModels(
 		},
 	}));
 
-	sendJson(res, 200, { models: modelList }, cors);
+	sendJson(res, 200, { models: modelList }, cors, _req);
 }
 
 function respondWithModel(
 	res: ServerResponse,
 	model: RegisteredModel,
 	cors: Record<string, string>,
+	req?: IncomingMessage,
 ) {
 	sendJson(
 		res,
@@ -54,17 +56,23 @@ function respondWithModel(
 			reasoning: model.reasoning,
 		},
 		cors,
+		req,
 	);
 }
 
 export async function handleModel(
 	req: IncomingMessage,
 	res: ServerResponse,
-	cors: Record<string, string>,
-	defaults: { provider: string; modelId: string },
-	ensureCredential: (provider: string) => Promise<AuthCredential>,
-	onSelect?: (model: RegisteredModel) => void,
+	context: WebServerContext,
 ) {
+	const {
+		corsHeaders: cors,
+		getCurrentSelection,
+		ensureCredential,
+		setModelSelection: onSelect,
+	} = context;
+	const defaults = getCurrentSelection();
+
 	if (req.method === "GET") {
 		const models = getRegisteredModels();
 		const active =
@@ -80,30 +88,27 @@ export async function handleModel(
 			res.end(JSON.stringify({ error: "No models registered" }));
 			return;
 		}
-		respondWithModel(res, active, cors);
+		respondWithModel(res, active, cors, req);
 		return;
 	}
 
 	if (req.method === "POST") {
-		try {
-			const payload = await parseAndValidateJson<ModelSetInput>(
-				req,
-				ModelSetSchema,
-			);
-			const modelInput = payload.model.trim();
+		// Remove try/catch, let router handle it
+		const payload = await parseAndValidateJson<ModelSetInput>(
+			req,
+			ModelSetSchema,
+		);
+		const modelInput = payload.model.trim();
 
-			const selection = determineModelSelection(
-				modelInput,
-				defaults.provider,
-				defaults.modelId,
-			);
-			const registeredModel = getRegisteredModelOrThrow(selection);
-			await ensureCredential(registeredModel.provider);
-			if (onSelect) onSelect(registeredModel);
-			respondWithModel(res, registeredModel, cors);
-		} catch (error) {
-			respondWithApiError(res, error, 400, cors);
-		}
+		const selection = determineModelSelection(
+			modelInput,
+			defaults.provider,
+			defaults.modelId,
+		);
+		const registeredModel = getRegisteredModelOrThrow(selection);
+		await ensureCredential(registeredModel.provider);
+		if (onSelect) onSelect(registeredModel);
+		respondWithModel(res, registeredModel, cors, req);
 		return;
 	}
 

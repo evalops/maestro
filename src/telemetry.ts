@@ -13,9 +13,19 @@ type BaseTelemetryEvent = {
 		| "evaluation"
 		| "loader-stage"
 		| "sse"
-		| "background-task";
+		| "background-task"
+		| "api-request";
 	timestamp: string;
 };
+
+export interface ApiRequestTelemetry extends BaseTelemetryEvent {
+	type: "api-request";
+	method: string;
+	path: string;
+	statusCode: number;
+	durationMs: number;
+	metadata?: Record<string, unknown>;
+}
 
 export interface ToolExecutionTelemetry extends BaseTelemetryEvent {
 	type: "tool-execution";
@@ -84,7 +94,8 @@ type TelemetryEvent =
 	| EvaluationTelemetry
 	| LoaderStageTelemetry
 	| SseTelemetry
-	| BackgroundTaskTelemetry;
+	| BackgroundTaskTelemetry
+	| ApiRequestTelemetry;
 
 const telemetryFlag =
 	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
@@ -361,4 +372,22 @@ export function recordBackgroundTaskEvent(
 	};
 	recordBackgroundHistory(payload);
 	void recordTelemetry(payload);
+}
+
+export function recordApiRequest(
+	method: string,
+	path: string,
+	statusCode: number,
+	durationMs: number,
+	metadata?: Record<string, unknown>,
+): void {
+	void recordTelemetry({
+		type: "api-request",
+		timestamp: new Date().toISOString(),
+		method,
+		path,
+		statusCode,
+		durationMs,
+		metadata,
+	});
 }

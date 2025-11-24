@@ -78,8 +78,9 @@ export function handleUsage(
 				hasData,
 			},
 			cors,
+			req,
 		);
 	} catch (error) {
-		respondWithApiError(res, error, 500, cors);
+		respondWithApiError(res, error, 500, cors, req);
 	}
 }
