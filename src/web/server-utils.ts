@@ -1,5 +1,10 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { pipeline } from "node:stream";
+import { promisify } from "node:util";
+import { createDeflate, createGzip } from "node:zlib";
+
+const pipe = promisify(pipeline);
 
 export class ApiError extends Error {
 	constructor(
@@ -74,11 +79,42 @@ export function sendJson(
 	corsHeaders?: Record<string, string>,
 ): void {
 	if (res.writableEnded) return;
-	res.writeHead(status, {
+
+	const body = JSON.stringify(payload);
+	const headers: Record<string, string | number> = {
 		"Content-Type": "application/json",
 		...(corsHeaders || {}),
-	});
-	res.end(JSON.stringify(payload));
+	};
+
+	// Check for compression support
+	// Note: In a real production setup, Nginx/Cloudflare usually handles this.
+	// But for a self-contained server, we do it here.
+	const req = (res as any).req as IncomingMessage; // Access request from response
+	const acceptEncoding = req?.headers["accept-encoding"] || "";
+
+	// Only compress if larger than 1KB
+	if (body.length > 1024) {
+		if (acceptEncoding.includes("gzip")) {
+			headers["Content-Encoding"] = "gzip";
+			res.writeHead(status, headers);
+			const gzip = createGzip();
+			gzip.pipe(res);
+			gzip.end(body);
+			return;
+		}
+
+		if (acceptEncoding.includes("deflate")) {
+			headers["Content-Encoding"] = "deflate";
+			res.writeHead(status, headers);
+			const deflate = createDeflate();
+			deflate.pipe(res);
+			deflate.end(body);
+			return;
+		}
+	}
+
+	res.writeHead(status, headers);
+	res.end(body);
 }
 
 export function secureCompare(value: string, secret: string): boolean {

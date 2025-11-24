@@ -7,7 +7,8 @@ import { handleModel, handleModels } from "./handlers/models.js";
 import { handleSessions } from "./handlers/sessions.js";
 import { handleStatus } from "./handlers/status.js";
 import { handleUsage } from "./handlers/usage.js";
-import { getStatsSnapshot } from "./logger.js";
+import { getPrometheusMetrics } from "./logger.js";
+import { requestTracker } from "./request-tracker.js";
 import type { Route } from "./router.js";
 import { sendJson } from "./server-utils.js";
 
@@ -15,6 +16,44 @@ export function createRoutes(context: WebServerContext): Route[] {
 	const { corsHeaders } = context;
 
 	return [
+		{
+			method: "GET",
+			path: "/healthz",
+			handler: (_req, res) => {
+				// Simple liveness check
+				res.writeHead(200, { "Content-Type": "text/plain" });
+				res.end("ok");
+			},
+		},
+		{
+			method: "GET",
+			path: "/debug/z",
+			handler: (_req, res) => {
+				// Statusz: Deep introspection for debugging (Borg style)
+				// Intentionally requires internal access or auth in real prod, open here for local
+				const activeRequests = requestTracker.getSnapshot().map((req) => ({
+					...req,
+					durationMs: performance.now() - req.startTime,
+				}));
+
+				const longRunning = requestTracker.getLongRunning(5000).map((req) => ({
+					...req,
+					durationMs: performance.now() - req.startTime,
+				}));
+
+				sendJson(
+					res,
+					200,
+					{
+						activeRequests,
+						longRunning,
+						totalActive: activeRequests.length,
+						totalLongRunning: longRunning.length,
+					},
+					corsHeaders,
+				);
+			},
+		},
 		{
 			method: "GET",
 			path: "/api/models",
@@ -73,7 +112,13 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "GET",
 			path: "/api/metrics",
 			handler: (_req, res) => {
-				sendJson(res, 200, getStatsSnapshot(), corsHeaders);
+				// Expose Prometheus compatible metrics
+				const metrics = getPrometheusMetrics();
+				res.writeHead(200, {
+					"Content-Type": "text/plain; version=0.0.4",
+					...corsHeaders,
+				});
+				res.end(metrics);
 			},
 		},
 		{

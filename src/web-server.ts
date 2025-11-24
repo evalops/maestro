@@ -2,6 +2,7 @@
  * Web server for Composer - HTTP/SSE API used by the web UI
  */
 
+import { randomBytes } from "node:crypto";
 import {
 	type IncomingMessage,
 	type ServerResponse,
@@ -34,6 +35,7 @@ import { codingTools } from "./tools/index.js";
 import type { WebServerContext } from "./web/app-context.js";
 import {
 	isOverloaded,
+	logError,
 	logRequest,
 	logStartup,
 	startStatsCollection,
@@ -43,10 +45,13 @@ import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
 } from "./web/model-selection.js";
+import { RateLimiter } from "./web/rate-limiter.js";
 import {
 	type RequestContext,
+	parseTraceParent,
 	requestContextStorage,
 } from "./web/request-context.js";
+import { requestTracker } from "./web/request-tracker.js";
 import { createRequestHandler } from "./web/router.js";
 import { createRoutes } from "./web/routes.js";
 import {
@@ -61,6 +66,23 @@ import { serveStatic } from "./web/static-server.js";
 export { SseSession } from "./web/sse-session.js";
 
 loadEnv();
+
+// Global crash handlers
+process.on("uncaughtException", (error) => {
+	logError(error);
+	console.error("FATAL: Uncaught Exception. Exiting...");
+	process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+	logError(
+		reason instanceof Error
+			? reason
+			: new Error(`Unhandled Rejection: ${String(reason)}`),
+	);
+	console.error("FATAL: Unhandled Rejection. Exiting...");
+	process.exit(1);
+});
 
 function normalizeApprovalMode(value?: string | null): ApprovalMode {
 	const normalized = value?.trim().toLowerCase();
@@ -103,6 +125,10 @@ const STATIC_MAX_AGE =
 	) || 60;
 const MAX_SSE_CONNECTIONS =
 	Number.parseInt(process.env.COMPOSER_MAX_SSE_CONNECTIONS || "100", 10) || 100;
+const REQUEST_TIMEOUT_MS =
+	Number.parseInt(process.env.COMPOSER_REQUEST_TIMEOUT_MS || "60000", 10) ||
+	60000;
+
 const sseLimiter = {
 	active: 0,
 	max: MAX_SSE_CONNECTIONS,
@@ -267,26 +293,80 @@ const router = createRequestHandler(
 	CORS_HEADERS,
 );
 
+// Active request tracking for graceful shutdown and debugging
+const rateLimiter = new RateLimiter({ windowMs: 60000, max: 1000 }); // 1000 requests per minute per IP
+
+function getClientIp(req: IncomingMessage): string {
+	const forwarded = req.headers["x-forwarded-for"];
+	if (typeof forwarded === "string") {
+		return forwarded.split(",")[0].trim();
+	}
+	return req.socket.remoteAddress || "unknown";
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	const start = performance.now();
 	const parsedUrl = parse(req.url || "/", true);
 	const pathname = parsedUrl.pathname || "/";
 	const requestId = Math.random().toString(36).substring(2, 15);
 
+	// Parse W3C Trace Context
+	// traceparent: 00-traceid-spanid-flags
+	const traceParent = req.headers.traceparent as string | undefined;
+	const { traceId, parentSpanId } = parseTraceParent(traceParent);
+	const spanId = randomBytes(8).toString("hex"); // New span for this service
+
+	// Attach request to response for easy access in helpers
+	(res as any).req = req;
+
+	// Set a hard timeout for processing
+	// Skip for SSE endpoints which are meant to be long-lived
+	if (!pathname.startsWith("/api/chat")) {
+		res.setTimeout(REQUEST_TIMEOUT_MS, () => {
+			if (!res.writableEnded) {
+				logError(`Request timeout for ${pathname} [${requestId}]`);
+				res.writeHead(504, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({ error: "Gateway Timeout" }));
+				res.destroy();
+			}
+		});
+	}
+
 	const context: RequestContext = {
 		requestId,
+		traceId,
+		spanId,
 		startTime: start,
 		method: req.method || "GET",
 		url: pathname,
 	};
 
+	// Track request for introspection (Channelz) and graceful shutdown
+	requestTracker.track(req, {
+		id: requestId,
+		method: req.method || "GET",
+		url: pathname,
+		startTime: start,
+		userAgent: req.headers["user-agent"],
+	});
+
+	res.on("close", () => {
+		requestTracker.untrack(req);
+	});
+
 	requestContextStorage.run(context, async () => {
-		// Load shedding check
+		// 1. Criticality-Aware Load Shedding (Global health)
+		// We prioritize /healthz, /api/metrics, and existing SSE connections
+		// We drop new /api/chat requests if overloaded
 		if (
 			isOverloaded() &&
 			pathname !== "/healthz" &&
 			pathname !== "/api/metrics"
 		) {
+			// Drop non-critical traffic
 			res.writeHead(503, {
 				"Content-Type": "application/json",
 				"Retry-After": "5",
@@ -298,6 +378,34 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 			return;
 		}
 
+		// 2. Rate limiting check (Per-client fairness)
+		// Skip for static assets/health checks to avoid blocking legitimate browser behavior
+		if (pathname.startsWith("/api")) {
+			const ip = getClientIp(req);
+			const { allowed, remaining, reset } = rateLimiter.check(ip);
+
+			if (!allowed) {
+				res.writeHead(429, {
+					"Content-Type": "application/json",
+					"X-RateLimit-Limit": "1000",
+					"X-RateLimit-Remaining": "0",
+					"X-RateLimit-Reset": Math.ceil(reset / 1000).toString(),
+					"Retry-After": Math.ceil((reset - Date.now()) / 1000).toString(),
+					...CORS_HEADERS,
+				});
+				res.end(
+					JSON.stringify({ error: "Too Many Requests: Rate limit exceeded" }),
+				);
+				// Log the rejection immediately as it won't go through the router
+				logRequest(req, 429, start);
+				return;
+			}
+			// Add rate limit headers to successful responses too
+			res.setHeader("X-RateLimit-Limit", "1000");
+			res.setHeader("X-RateLimit-Remaining", remaining.toString());
+			res.setHeader("X-RateLimit-Reset", Math.ceil(reset / 1000).toString());
+		}
+
 		res.on("finish", () => {
 			const duration = performance.now() - start;
 			logRequest(req, res.statusCode, start);
@@ -306,7 +414,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				pathname,
 				res.statusCode,
 				duration,
-				{ requestId },
+				{ requestId, traceId, spanId },
 			);
 		});
 
@@ -345,19 +453,38 @@ export async function startWebServer(port = 8080) {
 		startStatsCollection();
 	});
 
-	process.on("SIGINT", () => {
-		console.log("\nShutting down server...");
+	process.on("SIGINT", async () => {
+		console.log("\nSIGINT received. Starting graceful shutdown...");
 		stopStatsCollection();
 
-		// Close all open sockets
-		for (const socket of sockets) {
-			socket.destroy();
-		}
+		// Stop accepting new connections
+		server.close();
 
-		server.close(() => {
-			console.log("Server closed");
+		// Drain existing requests
+		const activeCount = requestTracker.getCount();
+		if (activeCount > 0) {
+			console.log(`Waiting for ${activeCount} active requests to complete...`);
+			const drainTimeout = setTimeout(() => {
+				console.log("Drain timeout reached. Forcing shutdown...");
+				for (const socket of sockets) {
+					socket.destroy();
+				}
+				process.exit(0);
+			}, 10000); // 10s drain timeout
+
+			// Poll for drain
+			const checkDrain = setInterval(() => {
+				if (requestTracker.getCount() === 0) {
+					clearInterval(checkDrain);
+					clearTimeout(drainTimeout);
+					console.log("All requests completed. Exiting.");
+					process.exit(0);
+				}
+			}, 100);
+		} else {
+			console.log("No active requests. Exiting.");
 			process.exit(0);
-		});
+		}
 	});
 
 	return server;

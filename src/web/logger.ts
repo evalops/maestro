@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import { monitorEventLoopDelay } from "node:perf_hooks";
+import v8 from "node:v8";
 import {
 	type RequestContext,
 	requestContextStorage,
@@ -27,7 +28,12 @@ const LOAD_SHEDDING_THRESHOLD_MS =
 		10,
 	) || 200;
 
-const HISTOGRAM_SIZE = 100;
+// Dapper-style Sampling: Default to 100% in dev, configurable in prod
+const LOG_SAMPLE_RATE = Number.parseFloat(
+	process.env.COMPOSER_LOG_SAMPLE_RATE || "1.0",
+);
+
+const HISTOGRAM_SIZE = 1000;
 
 function colorize(text: string | number, color: string): string {
 	if (LOG_FORMAT === "json") return String(text);
@@ -84,13 +90,12 @@ class Histogram {
 	add(value: number) {
 		this.values.push(value);
 		if (this.values.length > this.maxSize) {
-			this.values.shift(); // Keep simple sliding window
+			this.values.shift();
 		}
 	}
 
 	getPercentile(percentile: number): number {
 		if (this.values.length === 0) return 0;
-		// Sort copy to avoid mutating data
 		const sorted = [...this.values].sort((a, b) => a - b);
 		const index = Math.ceil((percentile / 100) * sorted.length) - 1;
 		return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
@@ -101,22 +106,76 @@ class Histogram {
 const loopMonitor = monitorEventLoopDelay({ resolution: 10 });
 loopMonitor.enable();
 
-// Request stats tracking
+// --- Prometheus / Borgmon Style Metrics ---
+
+interface Counter {
+	name: string;
+	help: string;
+	values: Map<string, number>; // labelString -> value
+}
+
+interface Gauge {
+	name: string;
+	help: string;
+	value: number;
+}
+
+const registry = {
+	counters: new Map<string, Counter>(),
+	gauges: new Map<string, Gauge>(),
+};
+
+function getCounter(name: string, help: string): Counter {
+	if (!registry.counters.has(name)) {
+		registry.counters.set(name, { name, help, values: new Map() });
+	}
+	// biome-ignore lint/style/noNonNullAssertion: we just set it if it was missing
+	return registry.counters.get(name)!;
+}
+
+function incCounter(name: string, labels: Record<string, string>, value = 1) {
+	// Simple label serialization: method="GET",status="200"
+	const labelKey = Object.entries(labels)
+		.sort(([k1], [k2]) => k1.localeCompare(k2))
+		.map(([k, v]) => `${k}="${v}"`)
+		.join(",");
+
+	const counter = getCounter(name, "Dynamic counter"); // Help text is simplified here
+	const current = counter.values.get(labelKey) || 0;
+	counter.values.set(labelKey, current + value);
+}
+
+// Initialize standard counters
+getCounter("http_requests_total", "Total number of HTTP requests");
+getCounter(
+	"http_request_duration_seconds_sum",
+	"Total duration of HTTP requests",
+);
+getCounter(
+	"http_request_duration_seconds_count",
+	"Count of HTTP requests for duration",
+);
+
+// --- End Metrics ---
+
+// Request stats tracking (Internal snapshot)
 export interface RequestStats {
 	total: number;
 	errors: number;
+	rateLimited: number;
 	totalDuration: number;
 	startTime: number;
 	requestsPerSecond: number;
 	latencyP50: number;
 	latencyP95: number;
 	latencyP99: number;
-	eventLoopLag: number; // Current event loop lag in ms
+	eventLoopLag: number;
 }
 
 const stats: RequestStats = {
 	total: 0,
 	errors: 0,
+	rateLimited: 0,
 	totalDuration: 0,
 	startTime: Date.now(),
 	requestsPerSecond: 0,
@@ -135,6 +194,7 @@ export function startStatsCollection() {
 	stats.startTime = Date.now();
 	stats.total = 0;
 	stats.errors = 0;
+	stats.rateLimited = 0;
 	stats.totalDuration = 0;
 	stats.requestsPerSecond = 0;
 
@@ -142,7 +202,6 @@ export function startStatsCollection() {
 
 	statsInterval = setInterval(() => {
 		const now = Date.now();
-		// Calculate RPS for this interval
 		const currentTotal = stats.total;
 		const diff = currentTotal - lastTotal;
 		const rps = diff / 5; // 5 seconds interval
@@ -152,9 +211,8 @@ export function startStatsCollection() {
 		stats.latencyP50 = latencyHistogram.getPercentile(50);
 		stats.latencyP95 = latencyHistogram.getPercentile(95);
 		stats.latencyP99 = latencyHistogram.getPercentile(99);
-
-		// Convert nanoseconds to milliseconds
 		stats.eventLoopLag = loopMonitor.mean / 1_000_000;
+
 		loopMonitor.reset();
 	}, 5000);
 }
@@ -168,7 +226,6 @@ export function stopStatsCollection() {
 }
 
 export function isOverloaded(): boolean {
-	// Check if event loop lag exceeds threshold
 	return loopMonitor.mean / 1_000_000 > LOAD_SHEDDING_THRESHOLD_MS;
 }
 
@@ -176,16 +233,115 @@ export function getStatsSnapshot(): RequestStats {
 	return { ...stats };
 }
 
+export function getPrometheusMetrics(): string {
+	const lines: string[] = [];
+
+	// Counters
+	for (const counter of registry.counters.values()) {
+		lines.push(`# HELP ${counter.name} ${counter.help}`);
+		lines.push(`# TYPE ${counter.name} counter`);
+		for (const [labels, value] of counter.values.entries()) {
+			lines.push(`${counter.name}{${labels}} ${value}`);
+		}
+	}
+
+	// Process metrics
+	lines.push("# HELP process_event_loop_lag_seconds Average event loop lag");
+	lines.push("# TYPE process_event_loop_lag_seconds gauge");
+	lines.push(`process_event_loop_lag_seconds ${stats.eventLoopLag / 1000}`);
+
+	lines.push("# HELP http_requests_per_second Current RPS");
+	lines.push("# TYPE http_requests_per_second gauge");
+	lines.push(`http_requests_per_second ${stats.requestsPerSecond}`);
+
+	// Memory metrics
+	const heapStats = v8.getHeapStatistics();
+	lines.push("# HELP nodejs_heap_size_total_bytes Total heap size");
+	lines.push("# TYPE nodejs_heap_size_total_bytes gauge");
+	lines.push(`nodejs_heap_size_total_bytes ${heapStats.total_heap_size}`);
+
+	lines.push("# HELP nodejs_heap_size_used_bytes Used heap size");
+	lines.push("# TYPE nodejs_heap_size_used_bytes gauge");
+	lines.push(`nodejs_heap_size_used_bytes ${heapStats.used_heap_size}`);
+
+	return lines.join("\n");
+}
+
 export function getStatsSummary(): string {
 	const rps = stats.requestsPerSecond.toFixed(2);
 	const p99 = stats.latencyP99.toFixed(0);
 	const errorRate =
 		stats.total > 0 ? ((stats.errors / stats.total) * 100).toFixed(1) : "0.0";
+	const rateLimitCount = stats.rateLimited;
 	const lag = stats.eventLoopLag.toFixed(1);
 
-	// Compact summary
-	// RPS: 12.50 | P99: 120ms | Err: 0.0% | Lag: 5.2ms
-	return `${colorize("RPS:", DIM)} ${colorize(rps, CYAN)} | ${colorize("P99:", DIM)} ${colorize(`${p99}ms`, CYAN)} | ${colorize("Err:", DIM)} ${colorize(`${errorRate}%`, stats.errors > 0 ? RED : GREEN)} | ${colorize("Lag:", DIM)} ${colorize(`${lag}ms`, stats.eventLoopLag > 50 ? YELLOW : GREEN)}`;
+	return `${colorize("RPS:", DIM)} ${colorize(rps, CYAN)} | ${colorize("P99:", DIM)} ${colorize(`${p99}ms`, CYAN)} | ${colorize("Err:", DIM)} ${colorize(`${errorRate}%`, stats.errors > 0 ? RED : GREEN)} | ${colorize("RL:", DIM)} ${colorize(rateLimitCount, rateLimitCount > 0 ? YELLOW : DIM)} | ${colorize("Lag:", DIM)} ${colorize(`${lag}ms`, stats.eventLoopLag > 50 ? YELLOW : GREEN)}`;
+}
+
+// CLFK: Capture call site location
+function getCallSite() {
+	const oldPrepareStackTrace = Error.prepareStackTrace;
+	try {
+		Error.prepareStackTrace = (_, stack) => stack;
+		const err = new Error();
+		const stack = err.stack as unknown as NodeJS.CallSite[];
+
+		// Walk up the stack to find the caller outside of this file
+		for (const frame of stack) {
+			const fileName = frame.getFileName();
+			// Skip internal node modules and this file
+			if (
+				fileName &&
+				!fileName.startsWith("node:") &&
+				!fileName.includes("logger.ts")
+			) {
+				return {
+					file: fileName.split("/").pop(), // Just basename for cleaner logs
+					line: frame.getLineNumber(),
+					function: frame.getFunctionName() || "<anonymous>",
+				};
+			}
+		}
+	} catch {
+		// Fallback if something goes wrong
+	} finally {
+		Error.prepareStackTrace = oldPrepareStackTrace;
+	}
+	return undefined;
+}
+
+export function logError(error: Error | string) {
+	const message = error instanceof Error ? error.message : String(error);
+	const stack = error instanceof Error ? error.stack : undefined;
+	const store = requestContextStorage.getStore();
+	const requestId = store?.requestId;
+	const traceId = store?.traceId;
+	const callSite = getCallSite();
+
+	if (LOG_FORMAT === "json") {
+		console.error(
+			JSON.stringify({
+				timestamp: new Date().toISOString(),
+				level: "error",
+				message,
+				stack,
+				requestId,
+				traceId,
+				source: callSite,
+			}),
+		);
+		return;
+	}
+
+	const sourceInfo = callSite
+		? ` ${colorize(`(${callSite.file}:${callSite.line})`, DIM)}`
+		: "";
+	console.error(
+		`${colorize(`[ERROR${requestId ? ` ${requestId.slice(0, 8)}` : ""}]`, RED)}${sourceInfo} ${message}`,
+	);
+	if (stack) {
+		console.error(colorize(stack, DIM));
+	}
 }
 
 export function logRequest(
@@ -198,20 +354,48 @@ export function logRequest(
 
 	const store = requestContextStorage.getStore();
 	const requestId = store?.requestId || "unknown";
+	const traceId = store?.traceId;
 	const shortId = requestId.slice(0, 8);
 
-	// Update stats
+	// Update internal stats
 	stats.total++;
 	stats.totalDuration += duration;
 	if (statusCode >= 400) stats.errors++;
+	if (statusCode === 429) stats.rateLimited++;
+
+	// Update Prometheus metrics
+	const method = req.method || "UNKNOWN";
+	const url = req.url || "/";
+	const route = url.split("?")[0];
+
+	incCounter("http_requests_total", {
+		method,
+		route,
+		status: statusCode.toString(),
+	});
+	incCounter(
+		"http_request_duration_seconds_sum",
+		{ method, route },
+		duration / 1000,
+	);
+	incCounter("http_request_duration_seconds_count", { method, route });
+
+	// SAMPLING LOGIC
+	// Always log errors (>= 400) or if sampled in
+	const isError = statusCode >= 400;
+	const shouldLog = isError || Math.random() < LOG_SAMPLE_RATE;
+
+	if (!shouldLog) {
+		return;
+	}
 
 	if (LOG_FORMAT === "json") {
 		console.log(
 			JSON.stringify({
 				timestamp: new Date().toISOString(),
-				level:
-					statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info",
+				level: isError ? (statusCode >= 500 ? "error" : "warn") : "info",
 				requestId,
+				traceId,
 				method: req.method,
 				url: req.url,
 				statusCode,
@@ -220,22 +404,22 @@ export function logRequest(
 				metrics: {
 					eventLoopLag: loopMonitor.mean / 1_000_000,
 					p99: stats.latencyP99,
+					rateLimited: stats.rateLimited,
 				},
 			}),
 		);
 		return;
 	}
 
-	const method = formatMethod(req.method);
-	const status = formatStatus(statusCode);
-	const durationText = formatDuration(start);
-	const url = req.url || "/";
+	const methodStr = formatMethod(req.method);
+	const statusStr = formatStatus(statusCode);
+	const durationStr = formatDuration(start);
 
 	// Add stats to the log line
 	const statsSummary = getStatsSummary();
 
 	console.log(
-		`${colorize(`[${shortId}]`, DIM)} ${method} ${status} ${durationText} ${url.padEnd(40)} ${statsSummary}`,
+		`${colorize(`[${shortId}]`, DIM)} ${methodStr} ${statusStr} ${durationStr} ${url.padEnd(40)} ${statsSummary}`,
 	);
 }
 
