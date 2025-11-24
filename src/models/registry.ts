@@ -9,6 +9,7 @@ import {
 	parse as parseJsonc,
 	printParseErrorCode,
 } from "jsonc-parser";
+import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
@@ -187,52 +188,6 @@ export interface StoredCredential {
 	authType?: "api-key" | "chatgpt" | "anthropic-oauth";
 }
 
-export interface StoredCredential {
-	provider: string;
-	apiKey?: string;
-	authType?: "api-key" | "chatgpt" | "anthropic-oauth";
-}
-
-function loadStoredCredentials(): StoredCredential[] {
-	if (cachedCredentials) return cachedCredentials;
-
-	const paths: string[] = [];
-	if (process.env.COMPOSER_KEYS_PATH) {
-		paths.push(resolve(process.env.COMPOSER_KEYS_PATH));
-	} else {
-		paths.push(COMPOSER_KEYS_PATH);
-		const projectKeys = join(process.cwd(), ".composer", "keys.json");
-		if (existsSync(projectKeys)) paths.push(projectKeys);
-	}
-
-	if (process.env.FACTORY_KEYS_PATH) {
-		paths.push(resolve(process.env.FACTORY_KEYS_PATH));
-	} else {
-		paths.push(FACTORY_KEYS_PATH);
-	}
-
-	const creds: StoredCredential[] = [];
-	for (const path of paths) {
-		if (!existsSync(path)) continue;
-		try {
-			const raw = readFileSync(path, "utf8");
-			const parsed = JSON.parse(raw) as Record<string, any>;
-			for (const [provider, value] of Object.entries(parsed)) {
-				creds.push({
-					provider,
-					apiKey: (value as any)?.apiKey,
-					authType: (value as any)?.authType,
-				});
-			}
-		} catch {
-			// ignore malformed files
-		}
-	}
-
-	cachedCredentials = creds;
-	return creds;
-}
-
 /**
  * Config file paths in order of precedence (last wins)
  */
@@ -290,7 +245,6 @@ let factoryDataCache:
 	| null
 	| undefined;
 const fileSnapshots = new Map<string, { mtimeMs: number; data: string }>();
-let cachedCredentials: StoredCredential[] | null = null;
 
 /**
  * Provider-specific configuration loaders
@@ -760,7 +714,6 @@ export function getRegisteredModels(): RegisteredModel[] {
 export function reloadModelConfig(): void {
 	cachedConfig = null;
 	cachedProviders = null;
-	cachedCredentials = null;
 	customProviderMetadata.clear();
 	factoryDataCache = undefined;
 	fileSnapshots.delete(configPath());
@@ -883,7 +836,6 @@ function buildFactoryData(): {
 			return null;
 		}
 		const factoryKeys = parsed.api_keys ?? {};
-		const storedCreds = loadStoredCredentials();
 		const providers: CustomProvider[] = [];
 		const modelProviderMap = new Map<string, string>();
 		const providerKeyMap = new Map<string, CustomProvider>();
@@ -905,8 +857,7 @@ function buildFactoryData(): {
 			const inlineKey = entry.api_key;
 			const storedKey =
 				factoryKeys[entry.provider ?? "factory"] ??
-				storedCreds.find((c) => c.provider === (entry.provider ?? "factory"))
-					?.apiKey;
+				getStoredCredentials(entry.provider ?? "factory").apiKey;
 			const uniqueKey = `${entry.provider ?? "factory"}|${normalizedBaseUrl}|${inlineKey ?? storedKey ?? ""}`;
 			let provider = providerKeyMap.get(uniqueKey);
 			if (!provider) {
