@@ -348,6 +348,7 @@ export class PlanView {
 
 		saveTodoStore(this.options.filePath, store);
 		this.notifyStoreChanged(store);
+		this.options.setPlanHint(calculatePlanHint(store));
 	}
 
 	private resolveTask(entry: TodoGoalEntry, ref: string): TodoItem | undefined {

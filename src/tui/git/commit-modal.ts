@@ -41,7 +41,7 @@ export class CommitModal implements Component {
 
 		// Render editor content (it usually returns an array of lines)
 		// We need to give it space.
-		const editorLines = this.editor.render(width - 4);
+		const editorLines = this.editor.render(width - 4, { hideBorders: true });
 		for (const line of editorLines) {
 			lines.push(
 				`${theme.fg("borderAccent", "│ ")}${line}${theme.fg("borderAccent", " │")}`,
