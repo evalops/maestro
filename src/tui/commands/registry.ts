@@ -419,6 +419,19 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "footer",
+				description:
+					"Switch between Ensemble (rich) and Solo (minimal) footer styles",
+				usage: "/footer [ensemble|solo]",
+				tags: ["ui"],
+				examples: ["/footer", "/footer solo", "/footer ensemble"],
+			},
+			withArgs("footer"),
+			handlers.footer,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "compact-tools",
 				description: "Toggle folding of tool outputs",
 				usage: "/compact-tools [on|off]",

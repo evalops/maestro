@@ -9,6 +9,21 @@ import {
 	separator as themedSeparator,
 } from "../../style/theme.js";
 
+export const CONTEXT_HINT_THRESHOLD = 70;
+export const CONTEXT_HINT_WARN_GAP = 5;
+export const CONTEXT_WARN_THRESHOLD =
+	CONTEXT_HINT_THRESHOLD + CONTEXT_HINT_WARN_GAP;
+export const CONTEXT_DANGER_THRESHOLD = 90;
+const MIN_PADDING = 2;
+const MODEL_BRAND_SEPARATOR_WIDTH = 1;
+const MIN_MODEL_LABEL_CHARS = 3;
+
+export const FOOTER_MIN_PADDING = MIN_PADDING;
+export const FOOTER_MIN_MODEL_LABEL_CHARS = MIN_MODEL_LABEL_CHARS;
+export const FOOTER_MODEL_BRAND_SEPARATOR_WIDTH = MODEL_BRAND_SEPARATOR_WIDTH;
+
+export type FooterMode = "ensemble" | "solo";
+
 export interface FooterStats {
 	totalInput: number;
 	totalOutput: number;
@@ -19,6 +34,29 @@ export interface FooterStats {
 	contextWindow: number;
 	contextPercent: number;
 	lastAssistant?: AssistantMessage;
+}
+
+export function formatModelLabel(
+	state: Pick<AgentState, "model" | "thinkingLevel">,
+): string {
+	const modelId = state.model?.id ?? "no-model";
+	if (!state.model?.reasoning) {
+		return modelId;
+	}
+	const thinkingLevel = state.thinkingLevel || "off";
+	return thinkingLevel === "off" ? modelId : `${modelId} • ${thinkingLevel}`;
+}
+
+export function resolveFooterHint(
+	stats: FooterStats,
+	explicitHint?: string | null,
+): string | null {
+	const shouldWarn =
+		stats.contextWindow > 0 && stats.contextPercent >= CONTEXT_HINT_THRESHOLD;
+	if (shouldWarn) {
+		return `Context ${stats.contextPercent.toFixed(1)}% – run /compact to summarize`;
+	}
+	return explicitHint ?? null;
 }
 
 export function calculateFooterStats(state: AgentState): FooterStats {
@@ -127,10 +165,61 @@ export function formatPath(path: string, width: number): string {
 	return `${start}...${end}`;
 }
 
+function buildContextBadge(stats: FooterStats): string {
+	const contextValue = Number.isFinite(stats.contextPercent)
+		? stats.contextPercent
+		: 0;
+	const variant =
+		contextValue >= CONTEXT_DANGER_THRESHOLD
+			? "danger"
+			: contextValue >= CONTEXT_WARN_THRESHOLD
+				? "warn"
+				: "info";
+	const tokensLabel = stats.contextWindow
+		? `${formatTokenCount(stats.contextTokens)}/${formatTokenCount(stats.contextWindow)}`
+		: formatTokenCount(stats.contextTokens);
+	const contextLabel = `ctx ${tokensLabel} (${contextValue.toFixed(1)}%)`;
+	return badge(contextLabel, undefined, variant);
+}
+
+function colorizeContextPercent(value: number): string {
+	const label = `${value.toFixed(1)}%`;
+	if (value >= CONTEXT_DANGER_THRESHOLD) {
+		return chalk.hex(themePalette.danger)(label);
+	}
+	if (value >= CONTEXT_WARN_THRESHOLD) {
+		return chalk.hex(themePalette.warning)(label);
+	}
+	return chalk.hex(themePalette.muted)(label);
+}
+
+function composeBrandLabel(modelLabel: string): {
+	toned: string;
+	brand: string;
+	glyph: string;
+} {
+	const tonedModel = chalk.hex(themePalette.model)(modelLabel);
+	const glyph = brand.glyph();
+	const brandLabel = `${glyph} ${brand.text()}`;
+	return { toned: tonedModel, brand: brandLabel, glyph };
+}
+
+export function truncateModelLabel(label: string, targetWidth: number): string {
+	if (targetWidth <= 0) return "";
+	if (visibleWidth(label) <= targetWidth) {
+		return label;
+	}
+	let result = label;
+	while (visibleWidth(result) > targetWidth && result.length > 0) {
+		result = result.slice(0, -1);
+	}
+	return result.trimEnd();
+}
+
 export function buildStatsLine(
 	stats: FooterStats,
 	width: number,
-	modelName: string,
+	state: Pick<AgentState, "model" | "thinkingLevel">,
 ): string {
 	const statsParts: string[] = [];
 	if (stats.totalInput)
@@ -172,46 +261,37 @@ export function buildStatsLine(
 				.bold(stats.totalCost.toFixed(3))}`,
 		);
 
-	const contextValue = Number.isFinite(stats.contextPercent)
-		? stats.contextPercent
-		: 0;
-	const warnThreshold = 75;
-	const dangerThreshold = 90;
-	const variant =
-		contextValue >= dangerThreshold
-			? "danger"
-			: contextValue >= warnThreshold
-				? "warn"
-				: "info";
-	const tokensLabel = stats.contextWindow
-		? `${formatTokenCount(stats.contextTokens)}/${formatTokenCount(stats.contextWindow)}`
-		: formatTokenCount(stats.contextTokens);
-	const contextLabel = `ctx ${tokensLabel} (${contextValue.toFixed(1)}%)`;
-	statsParts.push(badge(contextLabel, undefined, variant));
-
+	statsParts.push(buildContextBadge(stats));
 	const separator = themedSeparator();
 	const statsLeft = statsParts.join(separator);
-	const composerGlyph = brand.glyph();
-	const composerBrand = `${composerGlyph} ${brand.text()}`;
-	const tonedModel = chalk.hex(themePalette.model)(modelName);
-	let rightSide = `${tonedModel} ${composerBrand}`;
+	const modelLabel = formatModelLabel(state);
+	const {
+		toned,
+		brand: composerBrand,
+		glyph: composerGlyph,
+	} = composeBrandLabel(modelLabel);
+	let rightSide = `${toned} ${composerBrand}`;
 
 	const statsLeftWidth = visibleWidth(statsLeft);
 	const rightWidth = visibleWidth(rightSide);
-	const minPadding = 2;
-	const totalNeeded = statsLeftWidth + minPadding + rightWidth;
+	const totalNeeded = statsLeftWidth + MIN_PADDING + rightWidth;
 
 	if (totalNeeded > width) {
 		const brandWidth = visibleWidth(composerBrand);
 		const availableForModel =
-			width - statsLeftWidth - minPadding - brandWidth - 1;
-		if (availableForModel > 3) {
-			const truncated = modelName.substring(0, availableForModel);
-			rightSide = `${truncated} ${composerBrand}`;
-		} else if (width - statsLeftWidth - minPadding >= brandWidth) {
+			width -
+			statsLeftWidth -
+			MIN_PADDING -
+			brandWidth -
+			MODEL_BRAND_SEPARATOR_WIDTH;
+		if (availableForModel > MIN_MODEL_LABEL_CHARS) {
+			const truncated = truncateModelLabel(modelLabel, availableForModel);
+			const tonedTruncated = chalk.hex(themePalette.model)(truncated);
+			rightSide = `${tonedTruncated} ${composerBrand}`;
+		} else if (width - statsLeftWidth - MIN_PADDING >= brandWidth) {
 			rightSide = composerBrand;
 		} else {
-			const fallbackSpace = width - statsLeftWidth - minPadding;
+			const fallbackSpace = width - statsLeftWidth - MIN_PADDING;
 			rightSide = fallbackSpace > 0 ? composerBrand : composerGlyph;
 		}
 	}
@@ -223,4 +303,51 @@ export function buildStatsLine(
 		Math.max(0, width - statsLeftWidth - visibleWidth(rightSide)),
 	);
 	return statsLeft + padding + rightSide;
+}
+
+export function buildSoloStatsLine(
+	stats: FooterStats,
+	width: number,
+	state: Pick<AgentState, "model" | "thinkingLevel">,
+): string {
+	const statsParts: string[] = [];
+	if (stats.totalInput)
+		statsParts.push(`↑${formatTokenCount(stats.totalInput)}`);
+	if (stats.totalOutput)
+		statsParts.push(`↓${formatTokenCount(stats.totalOutput)}`);
+	if (stats.totalCacheRead)
+		statsParts.push(`R${formatTokenCount(stats.totalCacheRead)}`);
+	if (stats.totalCacheWrite)
+		statsParts.push(`W${formatTokenCount(stats.totalCacheWrite)}`);
+	if (stats.totalCost) statsParts.push(`$${stats.totalCost.toFixed(3)}`);
+
+	const contextValue = Number.isFinite(stats.contextPercent)
+		? stats.contextPercent
+		: 0;
+	statsParts.push(colorizeContextPercent(contextValue));
+	const statsLeft = statsParts.join(" ");
+	const rightSide = formatModelLabel(state);
+	if (!rightSide) {
+		return statsLeft;
+	}
+	const statsLeftWidth = visibleWidth(statsLeft);
+	const rightWidth = visibleWidth(rightSide);
+	const totalNeeded = statsLeftWidth + MIN_PADDING + rightWidth;
+
+	if (totalNeeded <= width) {
+		const padding = " ".repeat(
+			Math.max(MIN_PADDING, width - statsLeftWidth - rightWidth),
+		);
+		return statsLeft + padding + rightSide;
+	}
+
+	const availableForRight = width - statsLeftWidth - MIN_PADDING;
+	if (availableForRight > MIN_MODEL_LABEL_CHARS) {
+		const truncated = truncateModelLabel(rightSide, availableForRight);
+		const padding = " ".repeat(
+			Math.max(MIN_PADDING, width - statsLeftWidth - visibleWidth(truncated)),
+		);
+		return statsLeft + padding + truncated;
+	}
+	return statsLeft;
 }

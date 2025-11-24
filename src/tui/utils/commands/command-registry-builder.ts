@@ -48,6 +48,7 @@ interface CommandRegistryOptions {
 	handleOllama: (context: CommandExecutionContext) => void | Promise<void>;
 	handleDiagnostics: (context: CommandExecutionContext) => void | Promise<void>;
 	handleCompact: (context: CommandExecutionContext) => void | Promise<void>;
+	handleFooter: (context: CommandExecutionContext) => void | Promise<void>;
 	handleCompactTools: (
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
@@ -97,6 +98,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			ollama: opts.handleOllama,
 			diagnostics: opts.handleDiagnostics,
 			compact: opts.handleCompact,
+			footer: opts.handleFooter,
 			compactTools: opts.handleCompactTools,
 			queue: opts.handleQueue,
 			branch: opts.handleBranch,

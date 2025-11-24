@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { FooterMode } from "./utils/footer-utils.js";
 
 export type QueueMode = "one" | "all";
 
 export interface UiState {
 	queueMode?: QueueMode;
 	compactTools?: boolean;
+	footerMode?: FooterMode;
 }
 
 const UI_STATE_PATH =
@@ -28,6 +30,10 @@ export function loadUiState(): UiState {
 			compactTools:
 				typeof parsed.compactTools === "boolean"
 					? parsed.compactTools
+					: undefined,
+			footerMode:
+				parsed.footerMode === "ensemble" || parsed.footerMode === "solo"
+					? parsed.footerMode
 					: undefined,
 		};
 	} catch {

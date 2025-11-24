@@ -93,6 +93,7 @@ import {
 	buildReviewPrompt,
 } from "./utils/commands/review-prompt.js";
 import {
+	type FooterMode,
 	type FooterStats,
 	calculateFooterStats,
 	formatTokenCount,
@@ -222,6 +223,7 @@ export class TuiRenderer {
 	private promptQueueMode: "one" | "all" = "all";
 	private nextQueuedPreview: string | null = null;
 	private uiState: UiState = {};
+	private footerMode: FooterMode = "ensemble";
 	private readonly minimalMode =
 		process.env.COMPOSER_TUI_MINIMAL === "1" ||
 		process.env.COMPOSER_TUI_MINIMAL?.toLowerCase() === "true" ||
@@ -259,6 +261,9 @@ export class TuiRenderer {
 		if (this.uiState.queueMode) {
 			this.promptQueueMode = this.uiState.queueMode;
 		}
+		if (this.uiState.footerMode) {
+			this.footerMode = this.uiState.footerMode;
+		}
 		this.agent = agent;
 		this.sessionManager = sessionManager;
 		this.version = version;
@@ -286,7 +291,7 @@ export class TuiRenderer {
 		};
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.editorContainer.addChild(this.editor); // Start with editor
-		this.footer = new FooterComponent(agent.state);
+		this.footer = new FooterComponent(agent.state, this.footerMode);
 		this.notificationView = new NotificationView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -648,6 +653,7 @@ export class TuiRenderer {
 			handleDiagnostics: (context) =>
 				this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
 			handleCompact: (_context) => this.handleCompactCommand(),
+			handleFooter: (context) => this.handleFooterCommand(context),
 			handleCompactTools: (context) =>
 				this.handleCompactToolsCommand(context.rawInput),
 			handleQueue: (context) => this.handleQueueCommand(context),
@@ -998,6 +1004,74 @@ export class TuiRenderer {
 		}
 	}
 
+	private handleFooterCommand(context: CommandExecutionContext): void {
+		const tokens = context.argumentText
+			.trim()
+			.toLowerCase()
+			.split(/\s+/)
+			.filter((token) => token.length > 0);
+
+		if (tokens.length === 0 || tokens[0] === "help") {
+			context.showInfo(
+				`Footer mode is ${this.describeFooterMode(this.footerMode)}. Use "/footer ensemble" for the full Composer Ensemble or "/footer solo" for the minimal Solo style.`,
+			);
+			return;
+		}
+
+		let candidate = tokens[0];
+		if (candidate === "mode" || candidate === "set" || candidate === "style") {
+			candidate = tokens[1] ?? "";
+		}
+		const parsed = this.parseFooterMode(candidate);
+		if (!parsed) {
+			context.showError(
+				"Footer mode must be either 'ensemble' (rich) or 'solo' (minimal).",
+			);
+			return;
+		}
+		if (parsed === this.footerMode) {
+			context.showInfo(
+				`Footer already using ${this.describeFooterMode(parsed)} mode.`,
+			);
+			return;
+		}
+		this.setFooterMode(parsed);
+		context.showInfo(
+			`Footer switched to ${this.describeFooterMode(parsed)} mode.`,
+		);
+	}
+
+	private setFooterMode(mode: FooterMode): void {
+		this.footerMode = mode;
+		this.footer.setMode(mode);
+		this.persistUiState({ footerMode: mode });
+		if (!this.isAgentRunning) {
+			this.refreshFooterHint();
+		}
+		this.ui.requestRender();
+	}
+
+	private parseFooterMode(value: string): FooterMode | null {
+		switch (value) {
+			case "ensemble":
+			case "rich":
+			case "classic":
+			case "full":
+				return "ensemble";
+			case "solo":
+			case "minimal":
+			case "lean":
+			case "lite":
+				return "solo";
+			default:
+				return null;
+		}
+	}
+
+	private describeFooterMode(mode: FooterMode): string {
+		return mode === "ensemble" ? "Ensemble (rich)" : "Solo (minimal)";
+	}
+
 	private handleCompactToolsCommand(rawInput: string): void {
 		this.toolOutputView.handleCompactToolsCommand(rawInput);
 		this.persistUiState();
@@ -1292,10 +1366,12 @@ export class TuiRenderer {
 		this.refreshFooterHint();
 	}
 
-	private persistUiState(): void {
+	private persistUiState(extra?: Partial<UiState>): void {
 		saveUiState({
 			queueMode: this.promptQueueMode,
 			compactTools: this.toolOutputView.isCompact(),
+			footerMode: this.footerMode,
+			...extra,
 		});
 	}
 

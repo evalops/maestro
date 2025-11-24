@@ -315,4 +315,27 @@ describe("FooterComponent", () => {
 			// Should not crash, even if truncated
 		});
 	});
+
+	describe("Solo mode", () => {
+		it("renders minimal stats without composer branding", () => {
+			const state = createMockState([
+				createAssistantMessage({ input: 1000, output: 500 }),
+			]);
+			const footer = new FooterComponent(state, "solo");
+			const rendered = footer.render(120);
+			const statsLine = statsLineFrom(rendered);
+			expect(statsLine).not.toContain("composer");
+			expect(rendered).toHaveLength(2);
+		});
+
+		it("omits hint line when in solo mode", () => {
+			const state = createMockState([
+				createAssistantMessage({ input: 50000, output: 10000 }),
+			]);
+			const footer = new FooterComponent(state, "solo");
+			footer.setHint("High context");
+			const rendered = footer.render(120);
+			expect(rendered).toHaveLength(2);
+		});
+	});
 });

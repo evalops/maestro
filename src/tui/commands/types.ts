@@ -47,6 +47,7 @@ export interface CommandHandlers {
 	ollama(context: CommandExecutionContext): Promise<void> | void;
 	diagnostics(context: CommandExecutionContext): void;
 	compact(context: CommandExecutionContext): Promise<void> | void;
+	footer(context: CommandExecutionContext): void;
 	compactTools(context: CommandExecutionContext): void;
 	queue(context: CommandExecutionContext): Promise<void> | void;
 	branch(context: CommandExecutionContext): void;

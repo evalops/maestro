@@ -2,10 +2,13 @@ import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
 import {
+	buildSoloStatsLine,
 	buildStatsLine,
 	calculateFooterStats,
 	formatPath,
+	resolveFooterHint,
 } from "./utils/footer-utils.js";
+import type { FooterMode, FooterStats } from "./utils/footer-utils.js";
 
 /**
  * Footer component that shows pwd, token stats, and context usage
@@ -15,9 +18,11 @@ export class FooterComponent {
 	private activeStage: string | null = null;
 	private statusHint: string | null = null;
 	private runtimeBadges: string[] = [];
+	private mode: FooterMode;
 
-	constructor(state: AgentState) {
+	constructor(state: AgentState, mode: FooterMode = "ensemble") {
 		this.state = state;
+		this.mode = mode;
 	}
 
 	updateState(state: AgentState): void {
@@ -36,24 +41,29 @@ export class FooterComponent {
 		this.statusHint = hint;
 	}
 
+	setMode(mode: FooterMode): void {
+		this.mode = mode;
+	}
+
+	getMode(): FooterMode {
+		return this.mode;
+	}
+
 	render(width: number): string[] {
 		const stats = calculateFooterStats(this.state);
+		if (this.mode === "solo") {
+			return this.renderSoloFooter(stats, width);
+		}
 		const pathLine = this.renderPathLine(width);
-		const statsLine = buildStatsLine(stats, width, this.state.model.id);
+		const statsLine = buildStatsLine(stats, width, this.state);
 
 		const lines = [pathLine, chalk.gray(statsLine)];
-		const contextValue = stats.contextPercent;
-		const highContextHint =
-			stats.contextWindow > 0 && contextValue >= 70
-				? `Context ${contextValue.toFixed(1)}% – run /compact to summarize`
-				: null;
-		const hintSource = highContextHint || this.statusHint;
+		const hintSource = resolveFooterHint(stats, this.statusHint);
 		if (hintSource) {
 			const hintLabel = this.truncateToWidth(`tip: ${hintSource}`, width);
 			lines.push(chalk.hex("#94a3b8")(hintLabel));
 		}
 
-		// Return lines with optional hint
 		return lines;
 	}
 
@@ -90,5 +100,11 @@ export class FooterComponent {
 			return pathLine;
 		}
 		return `${pathLine}  ${trimmedSuffix}`;
+	}
+
+	private renderSoloFooter(stats: FooterStats, width: number): string[] {
+		const pathLine = chalk.gray(formatPath(process.cwd(), width));
+		const statsLine = buildSoloStatsLine(stats, width, this.state);
+		return [pathLine, chalk.gray(statsLine)];
 	}
 }
