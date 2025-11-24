@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import type { Component } from "../tui.js";
+import { wrapAnsiLines } from "../utils.js";
 
 export interface SelectItem {
 	value: string;
@@ -142,7 +143,7 @@ export class SelectList implements Component {
 			const scrollInfo = chalk.gray(truncated);
 			lines.push(scrollInfo);
 		}
-		return lines;
+		return wrapAnsiLines(lines, width);
 	}
 	handleInput(keyData: string): void {
 		// Up arrow

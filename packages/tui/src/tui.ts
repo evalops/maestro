@@ -2,76 +2,7 @@
  * Minimal TUI implementation with differential rendering
  */
 import type { Terminal } from "./terminal.js";
-import { visibleWidth } from "./utils.js";
-
-const ANSI_ESCAPE_RESET = "\x1b[0m";
-const ANSI_ESCAPE_PATTERN = new RegExp(
-	`${String.fromCharCode(27)}\\[[0-9;?]*[ -\\/]*[@-~]`,
-	"y",
-);
-
-function wrapLineToWidth(line: string, width: number): string[] {
-	if (!line || width <= 0) return [""];
-	if (visibleWidth(line) <= width) return [line];
-
-	const wrapped: string[] = [];
-	const activeAnsiCodes: string[] = [];
-	let currentLine = "";
-	let currentLength = 0;
-
-	for (let i = 0; i < line.length; ) {
-		ANSI_ESCAPE_PATTERN.lastIndex = i;
-		const ansiMatch = ANSI_ESCAPE_PATTERN.exec(line);
-		if (ansiMatch && ansiMatch.index === i) {
-			const ansiCode = ansiMatch[0];
-			currentLine += ansiCode;
-			if (ansiCode.endsWith("m")) {
-				if (ansiCode === "\x1b[0m" || ansiCode === "\x1b[m") {
-					activeAnsiCodes.length = 0;
-				} else {
-					activeAnsiCodes.push(ansiCode);
-				}
-			}
-			i = ANSI_ESCAPE_PATTERN.lastIndex;
-			continue;
-		}
-
-		const codePoint = line.codePointAt(i);
-		if (codePoint === undefined) break;
-		const char = String.fromCodePoint(codePoint);
-		const charWidth = visibleWidth(char);
-
-		if (currentLength + charWidth > width) {
-			// Close current line before adding more characters
-			if (activeAnsiCodes.length > 0) {
-				wrapped.push(`${currentLine}${ANSI_ESCAPE_RESET}`);
-				currentLine = activeAnsiCodes.join("");
-			} else {
-				wrapped.push(currentLine);
-				currentLine = "";
-			}
-			currentLength = 0;
-		}
-
-		currentLine += char;
-		currentLength += charWidth;
-		i += char.length;
-	}
-
-	if (currentLine) {
-		wrapped.push(currentLine);
-	}
-
-	return wrapped.length > 0 ? wrapped : [""];
-}
-
-function wrapLinesToWidth(lines: string[], width: number): string[] {
-	const wrapped: string[] = [];
-	for (const line of lines) {
-		wrapped.push(...wrapLineToWidth(line ?? "", width));
-	}
-	return wrapped;
-}
+import { visibleWidth, wrapAnsiLines } from "./utils.js";
 
 /**
  * Component interface - all components must implement this
@@ -177,7 +108,7 @@ export class TUI extends Container {
 		const height = this.terminal.rows;
 
 		// Render all components to get new lines
-		const newLines = wrapLinesToWidth(this.render(width), width);
+		const newLines = wrapAnsiLines(this.render(width), width);
 
 		// Width changed - need full re-render
 		const widthChanged =
