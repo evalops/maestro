@@ -6,6 +6,6 @@ export default defineConfig({
     environment: 'node',
     include: ['test/**/*.test.ts'],
     testTimeout: 30000, // 30 seconds for API calls
-    setupFiles: ['test/setup/suppress-warnings.ts'],
+    setupFiles: ['test/setup/suppress-warnings.ts', 'test/setup/todo-store.ts'],
   }
 });
