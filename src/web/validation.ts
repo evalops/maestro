@@ -1,11 +1,17 @@
 import type { IncomingMessage } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
-import Ajv from "ajv";
+import AjvPkg, { type ErrorObject } from "ajv";
 import addFormats from "ajv-formats";
 import { ApiError, readRequestBody } from "./server-utils.js";
 
-const ajv = new Ajv({ allErrors: true, strict: false });
-addFormats(ajv);
+type AjvConstructor = new (...args: any[]) => import("ajv").default;
+const AjvCtor: AjvConstructor = (AjvPkg as any).default ?? AjvPkg;
+const ajvInstance: import("ajv").default = new AjvCtor({
+	allErrors: true,
+	strict: false,
+});
+const addFormatsFn = (addFormats as any).default ?? addFormats;
+addFormatsFn(ajvInstance);
 
 export const ChatRequestSchema = Type.Object({
 	messages: Type.Array(
@@ -40,13 +46,13 @@ export async function parseAndValidateJson<T>(
 	} catch {
 		throw new ApiError(400, "Invalid JSON payload");
 	}
-	const validate = ajv.compile<T>(schema as any);
+	const validate = ajvInstance.compile<T>(schema as any);
 	if (!validate(parsed)) {
 		const message =
 			validate.errors
-				?.map((err) => `${err.instancePath || "body"} ${err.message}`)
+				?.map((err: ErrorObject) => `${err.instancePath || "body"} ${err.message}`)
 				.join("; ") || "Invalid request body";
 		throw new ApiError(400, message);
 	}
-	return parsed;
+	return parsed as T;
 }
