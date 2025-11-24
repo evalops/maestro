@@ -5,6 +5,7 @@ export interface ShellCommandResult {
 	code: number;
 	stdout: string;
 	stderr: string;
+	cwdChanged?: boolean;
 }
 
 export interface ShellCommandOptions {

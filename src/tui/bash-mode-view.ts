@@ -1,7 +1,9 @@
 import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
+import chalk from "chalk";
 import { badge, heading, muted } from "../style/theme.js";
 import { type Container, Spacer, type TUI, Text } from "../tui-lib/index.js";
+import { BashShellBlock } from "./bash-shell-block.js";
 import {
 	type ShellCommandResult,
 	runShellCommand,
@@ -20,10 +22,17 @@ interface BashModeViewOptions {
  */
 export class BashModeView {
 	private active = false;
-	private currentCwd = process.cwd();
+	private currentCwd: string;
+	private readonly projectRoot: string;
+	private readonly homeDir: string;
 	private static readonly EXIT_COMMANDS = new Set(["exit", "quit", "leave"]);
 
-	constructor(private readonly options: BashModeViewOptions) {}
+	constructor(private readonly options: BashModeViewOptions) {
+		this.projectRoot = this.normalizePath(process.cwd());
+		const rawHome = process.env.HOME ?? process.cwd();
+		this.homeDir = this.normalizePath(rawHome);
+		this.currentCwd = this.projectRoot;
+	}
 
 	isActive(): boolean {
 		return this.active;
@@ -38,6 +47,7 @@ export class BashModeView {
 			this.enterBashMode();
 			this.renderSystemMessage(
 				`${heading("Bash mode enabled")}
+${muted(`cwd ${this.formatDisplayPath(this.currentCwd)}`)}
 ${muted("Type exit to return to chat.")}`,
 			);
 			const command = rawInput.slice(1).trim();
@@ -66,7 +76,7 @@ ${muted("Type exit to return to chat.")}`,
 		if (this.active) {
 			return;
 		}
-		this.currentCwd = process.cwd();
+		this.currentCwd = this.projectRoot;
 		this.active = true;
 		this.options.onStateChange(true);
 		this.options.showInfoMessage("Entered bash mode. Type exit to leave.");
@@ -92,10 +102,13 @@ ${muted("Back to normal chat.")}`,
 	}
 
 	private async executeCommand(command: string): Promise<void> {
-		const prompt = heading(`[bash]$ ${command}`);
-		this.options.chatContainer.addChild(new Spacer(1));
-		const outputComponent = new Text(`${prompt}\n${muted("Running…")}`, 1, 0);
-		this.options.chatContainer.addChild(outputComponent);
+		const promptLine = this.formatPrompt(command);
+		const block = new BashShellBlock(
+			this.formatDisplayPath(this.currentCwd),
+			`${promptLine}\n${muted("Running…")}`,
+		);
+		block.setStatus("pending");
+		this.options.chatContainer.addChild(block);
 		this.options.ui.requestRender();
 
 		const result = await this.runCommandOrBuiltin(command);
@@ -105,9 +118,18 @@ ${muted("Back to normal chat.")}`,
 			result.success ? "success" : "danger",
 		);
 		const body = [result.stdout, result.stderr].filter(Boolean).join("\n");
-		outputComponent.setText(
-			`${prompt}\n${body || muted("(no output)")}\n\n${statusLine}`,
+		block.setBody(
+			`${promptLine}\n${body || muted("(no output)")}\n\n${statusLine}`,
 		);
+		block.setStatus(result.success ? "success" : "error");
+		if (result.cwdChanged) {
+			const cwdLine = chalk
+				.hex("#a5b4fc")
+				.italic(`cwd → ${this.formatDisplayPath(this.currentCwd)}`);
+			block.setBody(
+				`${promptLine}\n${cwdLine}\n${body || muted("(no output)")}\n\n${statusLine}`,
+			);
+		}
 		this.options.ui.requestRender();
 	}
 
@@ -121,18 +143,21 @@ ${muted("Back to normal chat.")}`,
 		return await runShellCommand(command, { cwd: this.currentCwd });
 	}
 
-	private handleBuiltin(command: string): ShellCommandResult | null {
+	private handleBuiltin(
+		command: string,
+	): (ShellCommandResult & { cwdChanged?: boolean }) | null {
 		const cdMatch = command.match(/^cd(?:\s+(.*))?$/);
 		if (!cdMatch) {
 			return null;
 		}
 		try {
-			this.changeDirectory(cdMatch[1]);
+			const changed = this.changeDirectory(cdMatch[1]);
 			return {
 				success: true,
 				code: 0,
 				stdout: "",
 				stderr: "",
+				cwdChanged: changed,
 			};
 		} catch (error) {
 			return {
@@ -145,7 +170,7 @@ ${muted("Back to normal chat.")}`,
 		}
 	}
 
-	private changeDirectory(rawTarget?: string): void {
+	private changeDirectory(rawTarget?: string): boolean {
 		const target = rawTarget?.trim() ?? "";
 		let resolvedPath: string;
 		let displayTarget = target || "~";
@@ -179,6 +204,42 @@ ${muted("Back to normal chat.")}`,
 					: `cd: ${displayTarget}: unknown error`,
 			);
 		}
-		this.currentCwd = resolvedPath;
+		const normalized = this.normalizePath(resolvedPath);
+		const changed = normalized !== this.currentCwd;
+		this.currentCwd = normalized;
+		return changed;
+	}
+
+	private formatPrompt(command: string): string {
+		const cwdLabel = chalk
+			.hex("#38bdf8")
+			.bold(`[${this.formatDisplayPath(this.currentCwd)}]$`);
+		const cmd = chalk.hex("#e2e8f0")(command);
+		return `${cwdLabel} ${cmd}`.trim();
+	}
+
+	private formatDisplayPath(path: string): string {
+		const normalized = this.normalizePath(path);
+		const relToRoot = relative(this.projectRoot, normalized);
+		if (!relToRoot || relToRoot === "") {
+			return ".";
+		}
+		if (!relToRoot.startsWith("..")) {
+			return relToRoot;
+		}
+		if (normalized === this.homeDir) {
+			return "~";
+		}
+		if (normalized.startsWith(`${this.homeDir}/`)) {
+			return `~/${normalized.slice(this.homeDir.length + 1)}`;
+		}
+		return normalized;
+	}
+
+	private normalizePath(path: string): string {
+		if (path === "/") {
+			return "/";
+		}
+		return path.replace(/\/+$/u, "");
 	}
 }
