@@ -53,7 +53,10 @@ export class ToolExecutionComponent extends Container {
 		const label = this.toolName.toUpperCase();
 		const width = 60;
 		const dashCount = Math.max(0, width - (label.length + 4));
-		return theme.fg("borderMuted", `╭ ${theme.bold(label)} ${"─".repeat(dashCount)}╮`);
+		return theme.fg(
+			"borderMuted",
+			`╭ ${theme.bold(label)} ${"─".repeat(dashCount)}╮`,
+		);
 	}
 
 	private buildBottomLine(): string {
@@ -108,7 +111,10 @@ export class ToolExecutionComponent extends Container {
 		if (!this.pendingStatus) {
 			return body;
 		}
-		const banner = theme.fg("warning", `⚠ ${this.pendingStatus.trim() || "Awaiting approval"}`);
+		const banner = theme.fg(
+			"warning",
+			`⚠ ${this.pendingStatus.trim() || "Awaiting approval"}`,
+		);
 		return `${banner}\n\n${body}`;
 	}
 

@@ -60,7 +60,9 @@ export class AssistantMessageComponent extends Container {
 		const hasToolCalls = message.toolCalls.length > 0;
 		if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
-				this.contentContainer.addChild(new Text(theme.fg("error", "Aborted"), 1, 0));
+				this.contentContainer.addChild(
+					new Text(theme.fg("error", "Aborted"), 1, 0),
+				);
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(

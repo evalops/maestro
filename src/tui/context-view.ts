@@ -1,7 +1,14 @@
 import type { Component } from "@evalops/tui";
+import type {
+	AgentState,
+	AssistantMessage,
+	ToolResultMessage,
+} from "../agent/types.js";
 import { theme } from "../theme/theme.js";
-import type { AgentState, AssistantMessage, ToolResultMessage } from "../agent/types.js";
-import { calculateFooterStats, formatTokenCount } from "./utils/footer-utils.js";
+import {
+	calculateFooterStats,
+	formatTokenCount,
+} from "./utils/footer-utils.js";
 import { centerText, padLine, truncateText } from "./utils/text-formatting.js";
 
 interface ContextViewOptions {
@@ -50,7 +57,10 @@ export class ContextView implements Component {
 
 		// Render Items
 		const maxDisplay = 15;
-		const visibleItems = items.slice(this.scrollOffset, this.scrollOffset + maxDisplay);
+		const visibleItems = items.slice(
+			this.scrollOffset,
+			this.scrollOffset + maxDisplay,
+		);
 
 		for (const item of visibleItems) {
 			const typeIcon = this.getTypeIcon(item.type);
@@ -99,17 +109,22 @@ export class ContextView implements Component {
 			this.options.onClose();
 			return;
 		}
-		if (data === "\x1b[A") { // Up
+		if (data === "\x1b[A") {
+			// Up
 			this.scrollOffset = Math.max(0, this.scrollOffset - 1);
 			return;
 		}
-		if (data === "\x1b[B") { // Down
+		if (data === "\x1b[B") {
+			// Down
 			this.scrollOffset = Math.max(0, this.scrollOffset + 1);
 			return;
 		}
 	}
 
-	private analyzeContext(state: AgentState, totalTokens: number): ContextItem[] {
+	private analyzeContext(
+		state: AgentState,
+		totalTokens: number,
+	): ContextItem[] {
 		const items: ContextItem[] = [];
 		// Estimate tokens: roughly chars / 4
 		const estimate = (text: string) => Math.ceil(text.length / 4);
@@ -146,7 +161,7 @@ export class ContextView implements Component {
 				const assistantMsg = msg as AssistantMessage;
 				// Use actual usage if available
 				const actualTokens = assistantMsg.usage
-					? assistantMsg.usage.output ?? 0
+					? (assistantMsg.usage.output ?? 0)
 					: tokens;
 				items.push({
 					label: "Assistant Response",
@@ -170,11 +185,16 @@ export class ContextView implements Component {
 
 	private getTypeIcon(type: ContextItem["type"]): string {
 		switch (type) {
-			case "system": return "⚙";
-			case "user": return "👤";
-			case "assistant": return "🤖";
-			case "tool": return "🛠";
-			case "file": return "📄";
+			case "system":
+				return "⚙";
+			case "user":
+				return "👤";
+			case "assistant":
+				return "🤖";
+			case "tool":
+				return "🛠";
+			case "file":
+				return "📄";
 		}
 	}
 }

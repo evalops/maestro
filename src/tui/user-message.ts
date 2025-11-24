@@ -19,7 +19,10 @@ export class UserMessageComponent extends Container {
 
 		// Metadata line
 		const ts = timestamp ? new Date(timestamp) : new Date();
-		const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		const timeStr = ts.toLocaleTimeString([], {
+			hour: "2-digit",
+			minute: "2-digit",
+		});
 		const header = `${theme.fg("accent", "YOU")} ${theme.fg("muted", `· ${timeStr}`)}`;
 		this.addChild(new Text(header, 1, 0));
 

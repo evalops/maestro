@@ -1,6 +1,6 @@
 import chalk from "chalk";
-import { theme } from "../../theme/theme.js";
 import { highlightCodeLines } from "../../style/code-highlighter.js";
+import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
 	formatDetailSections,

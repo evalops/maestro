@@ -27,7 +27,10 @@ export class InstructionPanelComponent implements Component {
 		const titleLine = `${theme.fg("borderAccent", "│ ")}${theme.bold(
 			theme.fg("text", title),
 		)}${theme.fg("borderAccent", " │")}`;
-		const separator = theme.fg("borderAccent", `├${"─".repeat(panelWidth - 2)}┤`);
+		const separator = theme.fg(
+			"borderAccent",
+			`├${"─".repeat(panelWidth - 2)}┤`,
+		);
 		const keyWidth = Math.min(16, Math.max(10, Math.floor(innerWidth * 0.4)));
 		const descWidth = Math.max(8, innerWidth - keyWidth - 1);
 		const rows = this.shortcuts.map(({ keys, desc }) => {

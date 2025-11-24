@@ -141,7 +141,8 @@ export class PlanPanelModal implements Component {
 			);
 			const counts = this.countTodoStatuses(selectedGoal.entry.items);
 			const statsLine = padLine(
-				theme.fg("dim",
+				theme.fg(
+					"dim",
 					`Stats: ${counts.completed} completed · ${counts.in_progress} in progress · ${counts.pending} pending`,
 				),
 				width - 4,

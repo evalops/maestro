@@ -34,23 +34,23 @@ export class CommitModal implements Component {
 		lines.push(theme.fg("borderAccent", `├${"─".repeat(width - 2)}┤`));
 
 		// Render editor content (it usually returns an array of lines)
-        // We need to give it space.
-        const editorLines = this.editor.render(width - 4);
-        for (const line of editorLines) {
-             lines.push(
-                `${theme.fg("borderAccent", "│ ")}${line}${theme.fg("borderAccent", " │")}`,
-            );
-        }
+		// We need to give it space.
+		const editorLines = this.editor.render(width - 4);
+		for (const line of editorLines) {
+			lines.push(
+				`${theme.fg("borderAccent", "│ ")}${line}${theme.fg("borderAccent", " │")}`,
+			);
+		}
 
-        // Pad to minimum height if needed
-        const minHeight = 5;
-        if (editorLines.length < minHeight) {
-             for (let i = 0; i < minHeight - editorLines.length; i++) {
-                lines.push(
-                    `${theme.fg("borderAccent", "│ ")}${" ".repeat(width - 4)}${theme.fg("borderAccent", " │")}`,
-                );
-            }
-        }
+		// Pad to minimum height if needed
+		const minHeight = 5;
+		if (editorLines.length < minHeight) {
+			for (let i = 0; i < minHeight - editorLines.length; i++) {
+				lines.push(
+					`${theme.fg("borderAccent", "│ ")}${" ".repeat(width - 4)}${theme.fg("borderAccent", " │")}`,
+				);
+			}
+		}
 
 		// Bottom separator
 		lines.push(theme.fg("borderAccent", `├${"─".repeat(width - 2)}┤`));
@@ -72,4 +72,3 @@ export class CommitModal implements Component {
 		this.editor.handleInput(data);
 	}
 }
-

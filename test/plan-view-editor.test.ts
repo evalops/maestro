@@ -29,7 +29,7 @@ describe("PlanView editor functionality", () => {
 			},
 			showInfoMessage: vi.fn(),
 			setPlanHint: vi.fn(),
-            onStoreChanged: vi.fn(),
+			onStoreChanged: vi.fn(),
 		};
 
 		planView = new PlanView(mockOptions);
@@ -40,9 +40,9 @@ describe("PlanView editor functionality", () => {
 	});
 
 	it("moves a task up", () => {
-        const id1 = randomUUID();
-        const id2 = randomUUID();
-        const id3 = randomUUID();
+		const id1 = randomUUID();
+		const id2 = randomUUID();
+		const id3 = randomUUID();
 		const store: TodoStore = {
 			"My Goal": {
 				goal: "My Goal",
@@ -59,17 +59,17 @@ describe("PlanView editor functionality", () => {
 		planView.moveTask("My Goal", id2, "up");
 
 		const updated = loadTodoStore(planFilePath);
-        const items = updated["My Goal"].items;
-        expect(items[0].id).toBe(id2);
-        expect(items[1].id).toBe(id1);
-        expect(items[2].id).toBe(id3);
-        expect(mockOptions.onStoreChanged).toHaveBeenCalled();
+		const items = updated["My Goal"].items;
+		expect(items[0].id).toBe(id2);
+		expect(items[1].id).toBe(id1);
+		expect(items[2].id).toBe(id3);
+		expect(mockOptions.onStoreChanged).toHaveBeenCalled();
 	});
 
 	it("moves a task down", () => {
-        const id1 = randomUUID();
-        const id2 = randomUUID();
-        const id3 = randomUUID();
+		const id1 = randomUUID();
+		const id2 = randomUUID();
+		const id3 = randomUUID();
 		const store: TodoStore = {
 			"My Goal": {
 				goal: "My Goal",
@@ -86,16 +86,16 @@ describe("PlanView editor functionality", () => {
 		planView.moveTask("My Goal", id2, "down");
 
 		const updated = loadTodoStore(planFilePath);
-        const items = updated["My Goal"].items;
-        expect(items[0].id).toBe(id1);
-        expect(items[1].id).toBe(id3);
-        expect(items[2].id).toBe(id2);
-        expect(mockOptions.onStoreChanged).toHaveBeenCalled();
+		const items = updated["My Goal"].items;
+		expect(items[0].id).toBe(id1);
+		expect(items[1].id).toBe(id3);
+		expect(items[2].id).toBe(id2);
+		expect(mockOptions.onStoreChanged).toHaveBeenCalled();
 	});
 
-    it("does nothing if moving out of bounds", () => {
-        const id1 = randomUUID();
-        const id2 = randomUUID();
+	it("does nothing if moving out of bounds", () => {
+		const id1 = randomUUID();
+		const id2 = randomUUID();
 		const store: TodoStore = {
 			"My Goal": {
 				goal: "My Goal",
@@ -108,15 +108,14 @@ describe("PlanView editor functionality", () => {
 		};
 		saveTodoStore(planFilePath, store);
 
-        // Move top task up
+		// Move top task up
 		planView.moveTask("My Goal", id1, "up");
-        let updated = loadTodoStore(planFilePath);
-        expect(updated["My Goal"].items[0].id).toBe(id1);
+		let updated = loadTodoStore(planFilePath);
+		expect(updated["My Goal"].items[0].id).toBe(id1);
 
-        // Move bottom task down
-        planView.moveTask("My Goal", id2, "down");
-        updated = loadTodoStore(planFilePath);
-        expect(updated["My Goal"].items[1].id).toBe(id2);
-    });
+		// Move bottom task down
+		planView.moveTask("My Goal", id2, "down");
+		updated = loadTodoStore(planFilePath);
+		expect(updated["My Goal"].items[1].id).toBe(id2);
+	});
 });
-
