@@ -101,13 +101,14 @@ export class ComposerMessage extends LitElement {
 			display: inline-block;
 			margin-left: 0.75rem;
 			padding: 0.125rem 0.35rem;
-			background: #21262d;
-			border: 1px solid #30363d;
-			border-radius: 2px;
+			background: #0b1016;
+			border: 1px solid #252b33;
+			border-radius: 4px;
 			font-size: 0.6rem;
 			font-weight: 700;
 			color: #8b949e;
 			text-transform: uppercase;
+			letter-spacing: 0.04em;
 		}
 
 		/* Markdown styles */
@@ -228,10 +229,10 @@ export class ComposerMessage extends LitElement {
 			top: 0.5rem;
 			right: 0.5rem;
 			padding: 0.375rem 0.75rem;
-			background: rgba(88, 166, 255, 0.2);
-			border: 1px solid rgba(88, 166, 255, 0.3);
-			border-radius: 6px;
-			color: #58a6ff;
+			background: #0b1016;
+			border: 1px solid #252b33;
+			border-radius: 4px;
+			color: #cde5ff;
 			font-size: 0.75rem;
 			font-weight: 600;
 			cursor: pointer;

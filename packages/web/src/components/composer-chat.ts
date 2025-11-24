@@ -316,9 +316,9 @@ export class ComposerChat extends LitElement {
 			bottom: 16px;
 			right: 16px;
 			padding: 0.75rem 1rem;
-			border-radius: 6px;
-			background: #161b22;
-			border: 1px solid #30363d;
+			border-radius: 4px;
+			background: #0b1016;
+			border: 1px solid #252b33;
 			color: #e6edf3;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 			font-size: 0.75rem;
@@ -362,7 +362,7 @@ export class ComposerChat extends LitElement {
 		.model-badge {
 			padding: 0.125rem 0.35rem;
 			background: #58a6ff;
-			border-radius: 2px;
+			border-radius: 4px;
 			font-size: 0.65rem;
 			font-weight: 700;
 			color: #0d1117;
@@ -454,8 +454,9 @@ export class ComposerChat extends LitElement {
 
 		.banner {
 			padding: 0.6rem 1rem;
-			background: #1c2128;
-			border-bottom: 1px solid #30363d;
+			background: #0b1016;
+			border-bottom: 1px solid #252b33;
+			border-radius: 4px;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 			font-size: 0.75rem;
 			color: #f2f2f2;

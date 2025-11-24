@@ -46,8 +46,8 @@ export class ComposerSettings extends LitElement {
 			height: 28px;
 			padding: 0;
 			background: transparent;
-			border: 1px solid #30363d;
-			border-radius: 2px;
+			border: 1px solid #252b33;
+			border-radius: 4px;
 			color: #8b949e;
 			cursor: pointer;
 			transition: all 0.15s;
@@ -72,14 +72,14 @@ export class ComposerSettings extends LitElement {
 		.section {
 			margin-bottom: 1.5rem;
 			background: #0d1117;
-			border: 1px solid #21262d;
-			border-radius: 2px;
+			border: 1px solid #252b33;
+			border-radius: 4px;
 		}
 
 		.section-header {
 			padding: 0.625rem 0.875rem;
 			background: #161b22;
-			border-bottom: 1px solid #21262d;
+			border-bottom: 1px solid #252b33;
 		}
 
 		.section-header h3 {
@@ -134,9 +134,9 @@ export class ComposerSettings extends LitElement {
 		.badge {
 			display: inline-block;
 			padding: 0.125rem 0.35rem;
-			background: #161b22;
-			border: 1px solid #30363d;
-			border-radius: 2px;
+			background: #0b1016;
+			border: 1px solid #252b33;
+			border-radius: 4px;
 			font-size: 0.65rem;
 			font-weight: 700;
 			color: #8b949e;
@@ -162,8 +162,8 @@ export class ComposerSettings extends LitElement {
 
 		.model-card {
 			background: #161b22;
-			border: 1px solid #30363d;
-			border-radius: 2px;
+			border: 1px solid #252b33;
+			border-radius: 4px;
 			padding: 0.75rem;
 			transition: all 0.15s;
 			cursor: pointer;

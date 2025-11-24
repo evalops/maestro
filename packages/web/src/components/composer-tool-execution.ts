@@ -30,7 +30,7 @@ export class ComposerToolExecution extends LitElement {
 			background: #0d1117;
 			border: 1px solid #30363d;
 			border-left: 4px solid #58a6ff;
-			border-radius: 3px;
+			border-radius: 4px;
 			overflow: hidden;
 			position: relative;
 		}
@@ -100,9 +100,9 @@ export class ComposerToolExecution extends LitElement {
 			display: inline-flex;
 			align-items: center;
 			gap: 0.25rem;
-			background: #161b22;
-			border: 1px solid #30363d;
-			border-radius: 3px;
+			background: #0b1016;
+			border: 1px solid #252b33;
+			border-radius: 4px;
 			padding: 0.15rem 0.4rem;
 			font-size: 0.7rem;
 			font-weight: 500;
@@ -175,7 +175,7 @@ export class ComposerToolExecution extends LitElement {
 	.tool-summary {
 		padding: 0.5rem 0.75rem;
 		border-top: 1px solid #21262d;
-		background: #0a0e14;
+		background: #0b1016;
 		font-size: 0.7rem;
 		color: #8b949e;
 		display: flex;
@@ -226,7 +226,7 @@ export class ComposerToolExecution extends LitElement {
 		.result-content {
 			background: #0a0e14;
 			border: 1px solid #21262d;
-			border-radius: 2px;
+			border-radius: 4px;
 			padding: 0.625rem;
 			font-size: 0.75rem;
 			line-height: 1.6;
@@ -252,11 +252,11 @@ export class ComposerToolExecution extends LitElement {
 		.copy-result {
 			margin-top: 0.35rem;
 			background: transparent;
-			border: 1px solid #30363d;
+			border: 1px solid #252b33;
 			color: #8b949e;
 			padding: 0.25rem 0.5rem;
 			font-size: 0.65rem;
-			border-radius: 3px;
+			border-radius: 4px;
 			cursor: pointer;
 		}
 
