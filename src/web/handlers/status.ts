@@ -1,11 +1,12 @@
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import type { ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
 export function handleStatus(
+	req: IncomingMessage,
 	res: ServerResponse,
 	cors: Record<string, string>,
 	options: { staticCacheMaxAge?: number } = {},
@@ -60,8 +61,8 @@ export function handleStatus(
 			lastLatencyMs: Date.now() - startedAt,
 		};
 
-		sendJson(res, 200, status, cors);
+		sendJson(res, 200, status, cors, req);
 	} catch (error) {
-		respondWithApiError(res, error, 500, cors);
+		respondWithApiError(res, error, 500, cors, req);
 	}
 }

@@ -21,7 +21,7 @@ export async function handleConfig(
 		// Let router handle errors
 		const config = getComposerCustomConfig();
 		const configPath = getCustomConfigPath();
-		sendJson(res, 200, { config, configPath }, cors);
+		sendJson(res, 200, { config, configPath }, cors, req);
 	} else if (req.method === "POST") {
 		// Let router handle errors
 		const { config } = await readJsonBody<{ config: unknown }>(req);
@@ -45,7 +45,7 @@ export async function handleConfig(
 		const configPath = getCustomConfigPath();
 		writeFileSync(configPath, serialized, "utf-8");
 		await reloadModelConfig();
-		sendJson(res, 200, { success: true }, cors);
+		sendJson(res, 200, { success: true }, cors, req);
 	}
 }
 

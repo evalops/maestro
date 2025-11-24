@@ -1,0 +1,100 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { handleConfig } from "../../src/web/handlers/config.js";
+import { handleStatus } from "../../src/web/handlers/status.js";
+import { handleUsage } from "../../src/web/handlers/usage.js";
+import * as serverUtils from "../../src/web/server-utils.js";
+
+const cors = {};
+
+function createRes() {
+	return {
+		writableEnded: false,
+		headersSent: false,
+		writeHead: vi.fn(),
+		end: vi.fn(),
+	};
+}
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+describe("handler compression forwarding", () => {
+	it("handleStatus forwards req to respondWithApiError on failure", async () => {
+		const req: any = {
+			method: "GET",
+			url: "/api/status",
+			headers: { "accept-encoding": "gzip" },
+		};
+		const res: any = createRes();
+
+		const sendJsonSpy = vi
+			.spyOn(serverUtils, "sendJson")
+			.mockImplementation(() => {
+				throw new Error("boom");
+			});
+		const errorSpy = vi
+			.spyOn(serverUtils, "respondWithApiError")
+			.mockImplementation(() => true);
+
+		handleStatus(req, res, cors);
+
+		expect(sendJsonSpy).toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith(
+			res,
+			expect.any(Error),
+			500,
+			cors,
+			req,
+		);
+	});
+
+	it("handleUsage forwards req to respondWithApiError on failure", () => {
+		const req: any = {
+			method: "GET",
+			url: "/api/usage",
+			headers: { "accept-encoding": "gzip" },
+		};
+		const res: any = createRes();
+
+		vi.spyOn(serverUtils, "sendJson").mockImplementation(() => {
+			throw new Error("fail");
+		});
+		const errorSpy = vi
+			.spyOn(serverUtils, "respondWithApiError")
+			.mockImplementation(() => true);
+
+		handleUsage(req, res, cors);
+
+		expect(errorSpy).toHaveBeenCalledWith(
+			res,
+			expect.any(Error),
+			500,
+			cors,
+			req,
+		);
+	});
+
+	it("handleConfig forwards req to sendJson for compression negotiation", async () => {
+		const req: any = {
+			method: "GET",
+			url: "/api/config",
+			headers: { "accept-encoding": "gzip" },
+		};
+		const res: any = createRes();
+
+		const sendJsonSpy = vi
+			.spyOn(serverUtils, "sendJson")
+			.mockImplementation(() => {});
+
+		await handleConfig(req, res, cors);
+
+		expect(sendJsonSpy).toHaveBeenCalledWith(
+			res,
+			200,
+			expect.anything(),
+			cors,
+			req,
+		);
+	});
+});

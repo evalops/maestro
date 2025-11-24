@@ -63,8 +63,8 @@ export function createRoutes(context: WebServerContext): Route[] {
 		{
 			method: "GET",
 			path: "/api/status",
-			handler: (_req, res) =>
-				handleStatus(res, corsHeaders, {
+			handler: (req, res) =>
+				handleStatus(req, res, corsHeaders, {
 					staticCacheMaxAge: context.staticMaxAge,
 				}),
 		},
