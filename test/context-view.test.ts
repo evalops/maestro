@@ -77,4 +77,29 @@ describe("ContextView", () => {
 		// Since we scroll 1 item, Message 1 should be visible.
 		expect(lines.some((l) => l.includes("Message 1"))).toBe(true);
 	});
+
+	it("assistant items show full token contribution (input + output + cacheRead)", () => {
+		const state: AgentState = {
+			messages: [
+				{
+					role: "assistant",
+					content: "Hi",
+					usage: {
+						input: 100,
+						output: 50,
+						cacheRead: 25,
+						cacheWrite: 0,
+						cost: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					},
+				},
+			],
+			model: { id: "gpt-4", contextWindow: 1000, reasoning: false },
+			status: "ready",
+		} as unknown as AgentState;
+
+		const view = new ContextView({ state, onClose: vi.fn() });
+		const lines = view.render(80);
+		// 100 + 50 + 25 = 175
+		expect(lines.some((l) => l.includes("175"))).toBe(true);
+	});
 });

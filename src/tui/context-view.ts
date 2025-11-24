@@ -8,6 +8,7 @@ import { theme } from "../theme/theme.js";
 import {
 	calculateFooterStats,
 	formatTokenCount,
+	normalizeUsage,
 } from "./utils/footer-utils.js";
 import { centerText, padLine, truncateText } from "./utils/text-formatting.js";
 
@@ -184,8 +185,9 @@ export class ContextView implements Component {
 				const assistantMsg = msg as AssistantMessage;
 				// Use actual usage if available
 				const hasUsage = !!assistantMsg.usage;
-				const actualTokens = assistantMsg.usage
-					? (assistantMsg.usage.output ?? 0)
+				const usage = normalizeUsage(assistantMsg.usage);
+				const actualTokens = hasUsage
+					? usage.input + usage.cacheRead + usage.output
 					: tokens;
 				items.push({
 					label: hasUsage ? "Assistant Response" : "Assistant Response (est.)",

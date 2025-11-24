@@ -109,10 +109,8 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 	}
 
 	let lastSuccessfulUsage: Usage | undefined;
-	let additionalOutput = 0;
 
 	// Iterate backwards to find the last successful assistant message (anchor)
-	// and accumulate output tokens from any subsequent (aborted) messages
 	for (let i = state.messages.length - 1; i >= 0; i--) {
 		const msg = state.messages[i];
 		if (msg.role === "assistant") {
@@ -121,20 +119,16 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 				lastSuccessfulUsage = normalizeUsage(assistantMsg.usage);
 				break;
 			}
-			// For aborted messages, we only count their output towards the current context
-			// We ignore their input because it might be unreliable or partial
-			additionalOutput += assistantMsg.usage?.output ?? 0;
 		}
 	}
 
-	// Calculate context percentage: last successful turn's total + subsequent outputs
+	// Calculate context percentage: last successful turn's total
 	const contextTokens = lastSuccessfulUsage
 		? Math.max(
 				0,
 				lastSuccessfulUsage.input +
 					lastSuccessfulUsage.cacheRead +
-					lastSuccessfulUsage.output +
-					additionalOutput,
+					lastSuccessfulUsage.output,
 			)
 		: 0;
 
