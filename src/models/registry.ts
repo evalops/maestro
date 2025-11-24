@@ -13,6 +13,7 @@ import type { Api, Model, Provider } from "../agent/types.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
+import { normalizeLLMBaseUrl } from "./url-normalize.js";
 
 const COST_DEFAULT = {
 	input: 0,
@@ -584,15 +585,6 @@ function normalizeBaseUrl(
 	// Validate first (logs warnings)
 	validateBaseUrl(baseUrl, providerId, api);
 
-	// Anthropic direct API
-	if (
-		(providerId === "anthropic" || api === "anthropic-messages") &&
-		normalized.includes("api.anthropic.com") &&
-		!normalized.includes("/v1/messages")
-	) {
-		normalized = `${normalized.replace(/\/$/, "")}/v1/messages`;
-	}
-
 	// AWS Bedrock
 	if (providerId.includes("bedrock") || providerId.includes("aws")) {
 		if (
@@ -613,6 +605,9 @@ function normalizeBaseUrl(
 			normalized = normalized.replace(/\/$/, "");
 		}
 	}
+
+	// Apply shared Anthropic/OpenAI normalization
+	normalized = normalizeLLMBaseUrl(normalized, providerId, api);
 
 	return normalized;
 }

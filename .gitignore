@@ -21,3 +21,4 @@ src/**/*.d.ts.map
 src/**/*.js
 src/**/*.js.map
 session.txt
+.cache/

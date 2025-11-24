@@ -202,6 +202,7 @@ export interface Model<TApi extends Api> {
 	provider: Provider;
 	baseUrl: string;
 	reasoning: boolean;
+	toolUse?: boolean;
 	input: ("text" | "image")[];
 	cost: {
 		input: number;

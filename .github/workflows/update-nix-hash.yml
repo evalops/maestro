@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   update-hash:
@@ -46,8 +47,15 @@ jobs:
         run: |
           sed -i "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"${{ steps.hash.outputs.new_hash }}\"|" flake.nix
 
-      - name: Commit and push if changed
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git diff --quiet && git diff --staged --quiet || (git add flake.nix && git commit -m "chore: update Nix hash [skip ci]" && git push)
+      - name: Create or update hash PR
+        if: steps.hash.outputs.new_hash != ''
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          add-paths: flake.nix
+          commit-message: "chore: update Nix hash [skip ci]"
+          title: "chore: update Nix hash"
+          body: |
+            Automated update of npmDepsHash from CI.
+          branch: ci/update-nix-hash
+          delete-branch: true

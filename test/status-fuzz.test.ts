@@ -82,6 +82,16 @@ function buildEntries(
 }
 
 describe("parseStatusOutput fuzz", () => {
+	it("handles rename old paths that start with status-like prefixes", () => {
+		const raw =
+			"2 R. N... 100644 100644 100644 deadbeef deadbeef R000 !\0! !\0" +
+			"1 M. N... 100644 100644 100644 deadbeef deadbeef file.txt\0";
+		const parsed = parseStatusOutput(raw);
+		expect(parsed.files).toHaveLength(2);
+		const rename = parsed.files.find((f) => f.kind === "rename");
+		expect(rename).toMatchObject({ path: "!", origPath: "! !", score: 0 });
+	});
+
 	it("never throws on generated valid entries and preserves paths", () => {
 		fc.assert(
 			fc.property(

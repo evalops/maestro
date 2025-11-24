@@ -362,7 +362,7 @@ export function parseStatusOutput(raw: string): ParsedStatus {
 function parseRenameEntry(
 	entry: string,
 	nextEntry: string | undefined,
-	headerPattern: RegExp,
+	_headerPattern: RegExp,
 ): { file: ParsedStatus["files"][number]; consumed: number } | undefined {
 	// Format: 2 <xy> <sub> <mH> <mI> <mW> <hH> <hI> <hW> <score> <path>
 	// Some porcelain v2 outputs omit one of the hash slots; allow 5-7 tokens between <sub> and <score>.
@@ -377,9 +377,11 @@ function parseRenameEntry(
 			: Number.NaN;
 	const isCopy = scoreToken?.startsWith("C") ?? false;
 	const path = match[3];
-	const origPathCandidate =
-		nextEntry && !headerPattern.test(nextEntry) ? nextEntry : undefined;
-	const consumed = origPathCandidate ? 2 : 1;
+	// The next porcelain entry is always the original path, even if it starts
+	// with characters like "! " that look like another entry prefix. Preserve
+	// it as-is to avoid misclassifying paths that start with header markers.
+	const origPathCandidate = nextEntry;
+	const consumed = nextEntry ? 2 : 1;
 
 	return {
 		file: {

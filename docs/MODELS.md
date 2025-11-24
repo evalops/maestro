@@ -61,6 +61,24 @@ map injects defaults:
 | `groq`     | Auto-enables when `GROQ_API_KEY` is present                   |
 | ...        | (See `src/models/registry.ts` for the full list)              |
 
+## Built-in Overlays (Responses API)
+
+Composer seeds a few Responses-capable models that aren’t yet emitted by the
+generator, so you can use them out of the box:
+
+- **OpenRouter (Responses API):** `openai/o4`, `openai/o4-mini`, and their
+  `:online` variants, all routed to `https://openrouter.ai/api/v1/responses`.
+- **OpenAI Codex (Responses API):** `gpt-5.1-codex-max`, `gpt-5.1-codex`,
+  `gpt-5.1-codex-mini`, `gpt-5-codex-mini`, routed to
+  `https://api.openai.com/v1/responses`.
+- **Groq (Responses API):** `openai/gpt-oss-20b`, `openai/gpt-oss-120b`,
+  routed via Groq’s OpenAI-compatible endpoint
+  `https://api.groq.com/openai/v1/responses`.
+
+To add more Responses-capable models (or override these), drop them into
+`.composer/config.json` with `api: "openai-responses"`; Composer will normalize
+the base URL to `/responses` automatically.
+
 ## Factory Commands
 
 - `/import factory` or `npm run factory:import` – copies `~/.factory` config +

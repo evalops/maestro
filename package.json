@@ -30,6 +30,7 @@
     "check": "npm run lint && npm run check --workspaces --if-present && tsc --noEmit",
     "evals": "npm run build && node scripts/run-evals.js",
     "telemetry:report": "node scripts/telemetry-report.js",
+    "generate-models": "bun scripts/generate-models.ts",
     "test": "vitest --run",
     "prepublishOnly": "npm run clean && npm run build",
     "bun:install": "bun install",

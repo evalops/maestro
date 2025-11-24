@@ -32,13 +32,69 @@ interface OpenAIMessage {
 	}>;
 }
 
+function resolveOpenAIUrl(
+	baseUrl: string,
+	api: "openai-responses" | "openai-completions",
+): string {
+	const desiredPath =
+		api === "openai-responses" ? "/responses" : "/chat/completions";
+
+	const hasEndpoint = (url: string): boolean =>
+		url.endsWith(desiredPath) ||
+		url.includes(`${desiredPath}/`) ||
+		url.includes(`${desiredPath}?`);
+
+	const appendPath = (url: string): string => {
+		if (hasEndpoint(url)) return url;
+		try {
+			const parsed = new URL(url);
+			parsed.pathname = `${parsed.pathname.replace(/\/$/, "")}${desiredPath}`;
+			return parsed.toString();
+		} catch {
+			return `${url.replace(/\/$/, "")}${desiredPath}`;
+		}
+	};
+
+	try {
+		const url = new URL(baseUrl);
+
+		// Proxy form: https://proxy/?url=<encoded-upstream>
+		if (url.searchParams.has("url")) {
+			const upstream = url.searchParams.get("url") ?? ""; // already decoded by URLSearchParams
+			const normalizedUpstream = appendPath(upstream);
+			if (normalizedUpstream === upstream) {
+				return baseUrl; // already had endpoint
+			}
+			url.searchParams.set("url", normalizedUpstream);
+			return url.toString();
+		}
+
+		// Non-proxy: mutate pathname directly to avoid putting path after query
+		if (!hasEndpoint(url.pathname)) {
+			url.pathname = `${url.pathname.replace(/\/$/, "")}${desiredPath}`;
+		}
+		return url.toString();
+	} catch {
+		// Fallback for malformed URLs
+		return appendPath(baseUrl);
+	}
+}
+
 /**
  * OpenAI/OpenRouter provider with automatic prompt caching (no explicit cache_control needed).
  * Caching is automatic for prompts >= 1024 tokens.
  * Structure prompts with static content at the beginning for best cache hit rates.
  */
+// Exported for tests
+export function resolveOpenAIUrlForTest(
+	baseUrl: string,
+	api: "openai-responses" | "openai-completions",
+): string {
+	return resolveOpenAIUrl(baseUrl, api);
+}
+
 export async function* streamOpenAI(
-	model: Model<"openai-responses">,
+	model: Model<"openai-responses" | "openai-completions">,
 	context: Context,
 	options: OpenAIOptions,
 ): AsyncGenerator<AssistantMessageEvent, void, unknown> {
@@ -169,7 +225,9 @@ export async function* streamOpenAI(
 		...options.headers,
 	};
 
-	const response = await fetch(model.baseUrl, {
+	const targetUrl = resolveOpenAIUrl(model.baseUrl, model.api);
+
+	const response = await fetch(targetUrl, {
 		method: "POST",
 		headers,
 		body: JSON.stringify(requestBody),
@@ -188,7 +246,7 @@ export async function* streamOpenAI(
 	const partial: AssistantMessage = {
 		role: "assistant",
 		content: [],
-		api: "openai-responses",
+		api: model.api,
 		provider: model.provider,
 		model: model.id,
 		usage: {
