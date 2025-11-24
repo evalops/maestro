@@ -28,30 +28,55 @@ async function writeFileAtomically(
 
 /** Diff support lives in diff-utils for reuse */
 
+const editOperationSchema = Type.Object({
+	oldText: Type.String({
+		description: "Exact text to find and replace",
+		minLength: 1,
+	}),
+	newText: Type.Optional(
+		Type.String({
+			description: "Replacement text (omit or empty string to delete)",
+			default: "",
+		}),
+	),
+});
+
 const editSchema = Type.Object({
 	path: Type.String({
 		description: "Path to the file to edit (relative or absolute)",
 		minLength: 1,
 	}),
-	oldText: Type.String({
-		description: "Exact text to find and replace (must match exactly)",
-		minLength: 1,
-	}),
-	newText: Type.String({
-		description: "New text to replace the old text with",
-		default: "",
-	}),
+	oldText: Type.Optional(
+		Type.String({
+			description: "Exact text to find and replace (must match exactly)",
+			minLength: 1,
+		}),
+	),
+	newText: Type.Optional(
+		Type.String({
+			description: "New text to replace the old text with",
+			default: "",
+		}),
+	),
+	edits: Type.Optional(
+		Type.Array(editOperationSchema, {
+			description:
+				"Multiple edits to apply sequentially (alternative to oldText/newText)",
+			minItems: 1,
+			maxItems: 50,
+		}),
+	),
 	replaceAll: Type.Optional(
 		Type.Boolean({
 			description:
-				"Replace all occurrences (useful for variable renaming). Cannot be used with occurrence.",
+				"Replace all occurrences (useful for variable renaming). Cannot be used with occurrence or edits.",
 			default: false,
 		}),
 	),
 	occurrence: Type.Optional(
 		Type.Integer({
 			description:
-				"Which occurrence of the text to replace (1-based). Cannot be used with replaceAll.",
+				"Which occurrence of the text to replace (1-based). Cannot be used with replaceAll or edits.",
 			minimum: 1,
 			default: 1,
 		}),
@@ -66,6 +91,7 @@ const editSchema = Type.Object({
 
 type EditToolDetails = {
 	diff: string;
+	editsApplied?: number;
 	validators?: ValidatorRunResult[];
 };
 
@@ -76,18 +102,20 @@ export const editTool = createTool<typeof editSchema, EditToolDetails>({
 
 Parameters:
 - path: File path
-- oldText: Exact text to find (must be unique unless using replaceAll)
-- newText: Replacement (use "" to delete)
-- replaceAll: Replace all occurrences (default: false). Useful for variable renaming.
-- occurrence: Which match (default: 1). Cannot be used with replaceAll.
+- oldText/newText: Single edit (text to find and replacement)
+- edits: Array of {oldText, newText} for multiple sequential edits (1-50)
+- replaceAll: Replace all occurrences (default: false). For single edit only.
+- occurrence: Which match (default: 1). For single edit only.
 - dryRun: Preview only (default: false)
+
+Use either oldText/newText OR edits array, not both.
 
 Best practices:
 - Read file first to verify exact formatting
 - Include context (5-10 lines) for uniqueness
 - Match indentation style (tabs vs spaces)
 - Use dryRun for complex edits
-- Use replaceAll for variable renaming or bulk replacements
+- Use edits array for multiple related changes (atomic)
 
 If "not found", read file to check actual content.`,
 	schema: editSchema,
@@ -96,6 +124,7 @@ If "not found", read file to check actual content.`,
 			path,
 			oldText,
 			newText,
+			edits,
 			replaceAll = false,
 			occurrence = 1,
 			dryRun = false,
@@ -104,23 +133,35 @@ If "not found", read file to check actual content.`,
 	) {
 		requirePlanCheck("edit");
 
-		// Defense in depth: validate oldText is not empty (schema has minLength: 1)
-		if (!oldText || oldText.length === 0) {
-			throw new Error("oldText cannot be empty");
-		}
-
-		if (replaceAll && occurrence !== 1) {
-			throw new Error(
-				"Cannot use both replaceAll and occurrence parameters. Use replaceAll=true to replace all, or occurrence=N to replace a specific one.",
-			);
-		}
-
 		const absolutePath = resolvePath(expandUserPath(path));
 		const throwIfAborted = () => {
 			if (signal?.aborted) {
 				throw new Error("Operation aborted");
 			}
 		};
+
+		// Validate mutually exclusive parameters
+		const hasSingleEdit = oldText !== undefined;
+		// newText with non-empty value alongside edits array is an error
+		// (empty string is allowed as it's the default and harmless)
+		const hasExplicitNewText = newText !== undefined && newText !== "";
+		const hasMultiEdit = edits !== undefined && edits.length > 0;
+
+		if ((hasSingleEdit || hasExplicitNewText) && hasMultiEdit) {
+			throw new Error(
+				"Cannot use both oldText/newText and edits array. Use one or the other.",
+			);
+		}
+
+		if (!hasSingleEdit && !hasMultiEdit) {
+			throw new Error("Must provide either oldText/newText or edits array.");
+		}
+
+		if (hasMultiEdit && (replaceAll || occurrence !== 1)) {
+			throw new Error(
+				"Cannot use replaceAll or occurrence with edits array. These options only apply to single edits.",
+			);
+		}
 
 		try {
 			await access(absolutePath, constants.R_OK | constants.W_OK);
@@ -129,66 +170,108 @@ If "not found", read file to check actual content.`,
 		}
 
 		throwIfAborted();
-		const content = await readFile(absolutePath, "utf-8");
+		const originalContent = await readFile(absolutePath, "utf-8");
 		throwIfAborted();
-
-		const exactMatches = findExactMatches(content, oldText);
-		if (exactMatches.length === 0) {
-			const approx = findApproximateMatches(content, oldText);
-			const suggestion = approx.length
-				? `\n\nPossible matches:\n${approx
-						.slice(0, 3)
-						.map(formatMatchPreview)
-						.join("\n")}`
-				: `\n\nTip: double-check whitespace/newlines via /diff ${path}`;
-			throw new Error(
-				`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.${suggestion}`,
-			);
-		}
 
 		let newContent: string;
 		let replacementCount: number;
 
-		// Safety limit to prevent DoS from excessive replacements
-		const MAX_REPLACEMENTS = 10000;
+		if (hasMultiEdit) {
+			// Multi-edit mode: apply edits sequentially
+			let content = originalContent;
+			let editsApplied = 0;
 
-		if (replaceAll) {
-			// Check replacement count before proceeding
-			if (exactMatches.length > MAX_REPLACEMENTS) {
-				throw new Error(
-					`Too many replacements: found ${exactMatches.length} occurrences (max ${MAX_REPLACEMENTS}). Use a more specific search pattern.`,
-				);
+			for (const [index, edit] of edits.entries()) {
+				const matches = findExactMatches(content, edit.oldText);
+				if (matches.length === 0) {
+					const approx = findApproximateMatches(content, edit.oldText);
+					const suggestion = approx.length
+						? `\n\nPossible matches:\n${approx.slice(0, 3).map(formatMatchPreview).join("\n")}`
+						: "";
+					throw new Error(
+						`Edit #${index + 1}: Could not find text after ${editsApplied} prior edit(s).${suggestion}`,
+					);
+				}
+				if (matches.length > 1) {
+					throw new Error(
+						`Edit #${index + 1}: Found ${matches.length} matches for oldText. Provide more context to uniquely identify the target. Matches at lines: ${matches.map((m) => m.line).join(", ")}`,
+					);
+				}
+				const matchIndex = matches[0]?.index ?? 0;
+
+				content =
+					content.slice(0, matchIndex) +
+					(edit.newText ?? "") +
+					content.slice(matchIndex + edit.oldText.length);
+				editsApplied++;
+				throwIfAborted();
 			}
 
-			// Use native replaceAll for better memory efficiency
-			newContent = content.replaceAll(oldText, newText);
-			replacementCount = exactMatches.length;
+			newContent = content;
+			replacementCount = editsApplied;
 		} else {
-			// Replace single occurrence
-			if (occurrence > exactMatches.length) {
+			// Single edit mode (original behavior)
+			if (!oldText || oldText.length === 0) {
+				throw new Error("oldText cannot be empty");
+			}
+
+			if (replaceAll && occurrence !== 1) {
 				throw new Error(
-					`Only ${exactMatches.length} occurrence(s) found in ${path}, but occurrence #${occurrence} was requested`,
+					"Cannot use both replaceAll and occurrence parameters.",
 				);
 			}
 
-			const targetMatch = exactMatches[occurrence - 1];
-			const matchIndex = targetMatch.index ?? 0;
-			newContent =
-				content.slice(0, matchIndex) +
-				newText +
-				content.slice(matchIndex + oldText.length);
-			replacementCount = 1;
+			const exactMatches = findExactMatches(originalContent, oldText);
+			if (exactMatches.length === 0) {
+				const approx = findApproximateMatches(originalContent, oldText);
+				const suggestion = approx.length
+					? `\n\nPossible matches:\n${approx.slice(0, 3).map(formatMatchPreview).join("\n")}`
+					: `\n\nTip: double-check whitespace/newlines via /diff ${path}`;
+				throw new Error(
+					`Could not find the exact text in ${path}.${suggestion}`,
+				);
+			}
+
+			const MAX_REPLACEMENTS = 10000;
+
+			if (replaceAll) {
+				if (exactMatches.length > MAX_REPLACEMENTS) {
+					throw new Error(
+						`Too many replacements: ${exactMatches.length} (max ${MAX_REPLACEMENTS}).`,
+					);
+				}
+				newContent = originalContent.replaceAll(oldText, newText ?? "");
+				replacementCount = exactMatches.length;
+			} else {
+				if (occurrence > exactMatches.length) {
+					throw new Error(
+						`Only ${exactMatches.length} occurrence(s) found, but #${occurrence} requested.`,
+					);
+				}
+				const targetMatch = exactMatches[occurrence - 1];
+				const matchIndex = targetMatch.index ?? 0;
+				newContent =
+					originalContent.slice(0, matchIndex) +
+					(newText ?? "") +
+					originalContent.slice(matchIndex + oldText.length);
+				replacementCount = 1;
+			}
 		}
 
-		const diff = generateDiffString(content, newContent);
+		const diff = generateDiffString(originalContent, newContent);
 
 		if (dryRun) {
-			const modeDesc = replaceAll
-				? `all ${exactMatches.length} occurrence(s)`
-				: `occurrence #${occurrence}`;
+			const modeDesc = hasMultiEdit
+				? `${replacementCount} edit(s)`
+				: replaceAll
+					? "all occurrences"
+					: `occurrence #${occurrence}`;
 			return respond
 				.text(`Dry run: preview for ${path} (${modeDesc}). No changes written.`)
-				.detail({ diff });
+				.detail({
+					diff,
+					editsApplied: hasMultiEdit ? replacementCount : undefined,
+				});
 		}
 
 		await writeFileAtomically(absolutePath, newContent);
@@ -200,23 +283,23 @@ If "not found", read file to check actual content.`,
 				lspDiagnostics,
 			);
 		} catch (validatorError) {
-			await writeFileAtomically(absolutePath, content);
+			await writeFileAtomically(absolutePath, originalContent);
 			throw validatorError;
 		}
 
 		throwIfAborted();
 
-		const resultMessage = replaceAll
-			? `Successfully replaced all ${replacementCount} occurrence(s) in ${path}.`
-			: `Successfully replaced ${oldText.length} characters with ${newText.length} characters in ${path}${
-					exactMatches.length > 1
-						? ` (occurrence #${occurrence} of ${exactMatches.length})`
-						: ""
-				}.`;
+		const resultMessage = hasMultiEdit
+			? `Successfully applied ${replacementCount} edit(s) to ${path}.`
+			: replaceAll
+				? `Successfully replaced all ${replacementCount} occurrence(s) in ${path}.`
+				: `Successfully edited ${path}.`;
 
-		return respond
-			.text(resultMessage)
-			.detail({ diff, validators: validatorSummaries });
+		return respond.text(resultMessage).detail({
+			diff,
+			editsApplied: hasMultiEdit ? replacementCount : undefined,
+			validators: validatorSummaries,
+		});
 	},
 });
 

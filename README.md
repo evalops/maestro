@@ -25,7 +25,7 @@ Choose your interface:
 
 ## Who It's For
 
-Developers who want deterministic, scriptable AI assistance with zero mystery meat. You value explicit commands over hidden heuristics, git-friendly edits over magical patches, and the ability to reason about every action Composer takes. If you prefer tight control, fast iteration, and the option to automate everything, you're in the right place.
+Developers who want deterministic, scriptable AI assistance with full transparency. You value explicit commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to reason about every action Composer takes. If you prefer tight control, fast iteration, and the option to automate everything, you're in the right place.
 
 ### Design Principles
 
@@ -500,11 +500,27 @@ Use Composer's CLI commands to inspect your model registry:
 
 ### Adding Your Own Tools
 
-Composer does not implement MCP. To extend it:
+Composer supports the **Model Context Protocol (MCP)** for tool extensibility. Configure MCP servers in `~/.composer/mcp.json` or `.composer/mcp.json`:
 
-1. Create a simple CLI tool (any language).
-2. Document it in a README.
-3. Tell the agent to read that README (or reference it from `AGENT.md`).
+```json
+{
+  "servers": [
+    {
+      "name": "my-tools",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["path/to/mcp-server.js"]
+    }
+  ]
+}
+```
+
+MCP tools appear as `mcp_<server>_<tool>` and are automatically available to the agent. Use `/mcp` to view connected servers.
+
+**Alternative:** For simple extensions without MCP:
+1. Create a CLI tool (any language)
+2. Document it in a README
+3. Reference it from `AGENT.md` so the agent knows to use `bash` to call it
 
 ### Editor Features
 

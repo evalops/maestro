@@ -76,7 +76,7 @@
             "node",
             "scripts/run-edit-tool.js"
         ],
-        "expectedRegex": "Successfully replaced \\d+ characters with \\d+ characters in .*/evals/edit-test\\.txt\\."
+        "expectedRegex": "Successfully edited .*/evals/edit-test\\.txt\\."
     },
     {
         "name": "todo tool creates list",

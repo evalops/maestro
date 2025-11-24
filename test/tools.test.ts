@@ -441,7 +441,7 @@ describe("Composer Tools", () => {
 				newText: "testing",
 			});
 
-			expect(getTextOutput(result)).toContain("Successfully replaced");
+			expect(getTextOutput(result)).toContain("Successfully edited");
 			expect(result.details).toBeDefined();
 			expect(result.details?.diff).toBe("-1 Hello, world!\n+1 Hello, testing!");
 		});
@@ -550,7 +550,7 @@ describe("Composer Tools", () => {
 			});
 
 			expect(getTextOutput(result)).toContain("Dry run");
-			expect(getTextOutput(result)).toContain("all 3 occurrence(s)");
+			expect(getTextOutput(result)).toContain("all occurrences");
 			const onDisk = readFileSync(testFile, "utf-8");
 			expect(onDisk).toBe("cat cat dog cat");
 		});
@@ -598,6 +598,76 @@ describe("Composer Tools", () => {
 					replaceAll: true,
 				}),
 			).rejects.toThrow("Too many replacements");
+		});
+
+		it("supports edits array for multiple sequential edits", async () => {
+			const testFile = join(testDir, "edit-multi.txt");
+			writeFileSync(testFile, "const foo = 1;\nconst bar = 2;\nconst baz = 3;");
+			const result = await editTool.execute("test-call-multi-edit", {
+				path: testFile,
+				edits: [
+					{ oldText: "const foo = 1", newText: "const foo = 10" },
+					{ oldText: "const bar = 2", newText: "const bar = 20" },
+				],
+			});
+			const updated = readFileSync(testFile, "utf-8");
+			expect(updated).toBe("const foo = 10;\nconst bar = 20;\nconst baz = 3;");
+			expect(getTextOutput(result)).toContain("2 edit(s)");
+			expect(result.details?.editsApplied).toBe(2);
+		});
+
+		it("edits array fails atomically if any edit fails", async () => {
+			const testFile = join(testDir, "edit-multi-fail.txt");
+			writeFileSync(testFile, "alpha\nbeta\ngamma");
+			await expect(
+				editTool.execute("test-call-multi-fail", {
+					path: testFile,
+					edits: [
+						{ oldText: "alpha", newText: "ALPHA" },
+						{ oldText: "nonexistent", newText: "X" },
+					],
+				}),
+			).rejects.toThrow("Edit #2");
+			// File should remain unchanged since the operation failed
+			const onDisk = readFileSync(testFile, "utf-8");
+			expect(onDisk).toBe("alpha\nbeta\ngamma");
+		});
+
+		it("rejects mixing oldText with edits array", async () => {
+			const testFile = join(testDir, "edit-mixed.txt");
+			writeFileSync(testFile, "test");
+			await expect(
+				editTool.execute("test-call-mixed", {
+					path: testFile,
+					oldText: "test",
+					newText: "TEST",
+					edits: [{ oldText: "test", newText: "TEST" }],
+				}),
+			).rejects.toThrow("Cannot use both");
+		});
+
+		it("edits array allows omitting newText for deletions", async () => {
+			const testFile = join(testDir, "edit-delete.txt");
+			writeFileSync(testFile, "keep DELETE keep");
+			const result = await editTool.execute("test-call-delete", {
+				path: testFile,
+				edits: [{ oldText: "DELETE " }],
+			});
+			const updated = readFileSync(testFile, "utf-8");
+			expect(updated).toBe("keep keep");
+			expect(getTextOutput(result)).toContain("1 edit(s)");
+		});
+
+		it("rejects newText provided with edits array", async () => {
+			const testFile = join(testDir, "edit-newtext-edits.txt");
+			writeFileSync(testFile, "test");
+			await expect(
+				editTool.execute("test-call-newtext-edits", {
+					path: testFile,
+					newText: "ignored",
+					edits: [{ oldText: "test", newText: "TEST" }],
+				}),
+			).rejects.toThrow("Cannot use both");
 		});
 	});
 

@@ -117,7 +117,7 @@ src/
 | :--- | :--- | :--- |
 | **read** | Read text/images. | Supports offset/limit for large files. |
 | **write** | Create/Overwrite files. | Auto-creates parent directories. |
-| **edit** | Exact text replacement. | Fails if multiple matches found. |
+| **edit** | Exact text replacement. | Supports `edits` array for multiple sequential edits. |
 | **list** | List directory contents. | Uses glob filtering. |
 | **search** | Ripgrep-backed search. | Supports regex. |
 | **diff** | Inspect git changes. | View working tree, staged, or revisions. |
@@ -195,6 +195,66 @@ background_tasks action=stop taskId="<id>"
 - Logs persist to `~/.composer/logs/background-<taskId>.log`
 - Log files are truncated at 5MB to prevent disk space issues
 - Use `logs` action to tail recent output without reading the entire file
+
+### 🔌 Model Context Protocol (MCP)
+
+Composer supports MCP servers for extending tool capabilities. MCP tools are dynamically loaded and exposed to the agent with the prefix `mcp_<server>_<tool>`.
+
+**Configuration Files:**
+- Global: `~/.composer/mcp.json`
+- Project: `.composer/mcp.json` (overrides global by server name)
+
+**Config Formats:**
+
+```json
+// Composer native format
+{
+  "servers": [
+    {
+      "name": "my-server",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["path/to/server.js"],
+      "env": {"API_KEY": "..."},
+      "cwd": "/optional/working/dir"
+    }
+  ]
+}
+
+// Claude Desktop format (also supported)
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "node",
+      "args": ["path/to/server.js"]
+    }
+  }
+}
+```
+
+**Transport Types:**
+- `stdio` (default) - Spawns a child process, communicates via stdin/stdout
+- `http` / `sse` - Connects to a remote MCP server via HTTP/SSE
+
+**Slash Commands:**
+- `/mcp` - Show configured MCP servers and their connection status
+
+**Security Notes:**
+- MCP servers do NOT inherit `process.env` by default (prevents API key leakage)
+- Only essential env vars are passed: `PATH`, `HOME`, `USER`, `SHELL`, `TERM`
+- Explicitly configure required env vars in the server config
+
+**Example: Context7 for Library Docs:**
+```json
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    }
+  }
+}
+```
 
 -----
 
