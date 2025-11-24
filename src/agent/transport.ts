@@ -160,6 +160,12 @@ export class ProviderTransport implements AgentTransport {
 			}
 		}
 		if (!credential) {
+			const envCredential = resolveEnvCredential(model.provider);
+			if (envCredential) {
+				credential = envCredential;
+			}
+		}
+		if (!credential) {
 			const stored = getStoredCredentials(model.provider);
 			if (stored.apiKey) {
 				credential = {
@@ -168,12 +174,6 @@ export class ProviderTransport implements AgentTransport {
 					type: stored.authType ?? "api-key",
 					source: "custom_literal",
 				};
-			}
-		}
-		if (!credential) {
-			const envCredential = resolveEnvCredential(model.provider);
-			if (envCredential) {
-				credential = envCredential;
 			}
 		}
 
