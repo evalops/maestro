@@ -52,9 +52,7 @@ const entryTemplate = fc.oneof(
 	renameEntry,
 );
 
-function buildEntries(
-	entries: Array<any>,
-): string[] {
+function buildEntries(entries: Array<any>): string[] {
 	const lines: string[] = [];
 	for (const entry of entries) {
 		switch (entry.kind) {
