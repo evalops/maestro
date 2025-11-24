@@ -8,6 +8,7 @@ import { respondWithApiError, sendJson } from "../server-utils.js";
 export function handleStatus(
 	res: ServerResponse,
 	cors: Record<string, string>,
+	options: { staticCacheMaxAge?: number } = {},
 ) {
 	try {
 		const startedAt = Date.now();
@@ -49,6 +50,7 @@ export function handleStatus(
 			server: {
 				uptime: process.uptime(),
 				version: process.version,
+				staticCacheMaxAgeSeconds: options.staticCacheMaxAge,
 			},
 			backgroundTasks: backgroundTaskManager.getHealthSnapshot({
 				maxEntries: 5,

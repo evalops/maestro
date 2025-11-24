@@ -7,6 +7,11 @@ import {
 	getRegisteredModelOrThrow,
 } from "../model-selection.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
+import {
+	type ModelSetInput,
+	ModelSetSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 export function handleModels(
 	res: ServerResponse,
@@ -81,18 +86,11 @@ export async function handleModel(
 
 	if (req.method === "POST") {
 		try {
-			const chunks: Buffer[] = [];
-			for await (const chunk of req) {
-				chunks.push(Buffer.from(chunk));
-			}
-			const payload = JSON.parse(Buffer.concat(chunks).toString()) as {
-				model?: string;
-			};
-			const modelInput = (payload.model || "").trim();
-			if (!modelInput) {
-				sendJson(res, 400, { error: "Model is required" }, cors);
-				return;
-			}
+			const payload = await parseAndValidateJson<ModelSetInput>(
+				req,
+				ModelSetSchema,
+			);
+			const modelInput = payload.model.trim();
 
 			const selection = determineModelSelection(
 				modelInput,

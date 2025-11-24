@@ -7,13 +7,14 @@ import {
 	toSessionModelMetadata,
 } from "../../session/manager.js";
 import { recordSseSkip } from "../../telemetry.js";
-import {
-	readJsonBody,
-	respondWithApiError,
-	sendJson,
-} from "../server-utils.js";
+import { respondWithApiError, sendJson } from "../server-utils.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
+import {
+	type ChatRequestInput,
+	ChatRequestSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 export interface ChatDeps {
 	createAgent: (
@@ -43,7 +44,10 @@ export async function handleChat(
 	{ createAgent, getRegisteredModel, defaultApprovalMode }: ChatDeps,
 ) {
 	try {
-		const chatReq = await readJsonBody<ComposerChatRequest>(req);
+		const chatReq = (await parseAndValidateJson<ChatRequestInput>(
+			req,
+			ChatRequestSchema,
+		)) as ComposerChatRequest;
 
 		const incomingMessages = Array.isArray(chatReq.messages)
 			? (chatReq.messages as ComposerMessage[])

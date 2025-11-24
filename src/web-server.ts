@@ -203,7 +203,8 @@ const routes: Route[] = [
 	{
 		method: "GET",
 		path: "/api/status",
-		handler: (_req, res) => handleStatus(res, CORS_HEADERS),
+		handler: (_req, res) =>
+			handleStatus(res, CORS_HEADERS, { staticCacheMaxAge: STATIC_MAX_AGE }),
 	},
 	{
 		method: "GET",
