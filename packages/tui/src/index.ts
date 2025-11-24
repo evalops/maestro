@@ -20,13 +20,13 @@ export interface Terminal {
 }
 
 // Re-export main TUI class (to be implemented)
-export { TUI } from "./tui.js";
+// export { TUI } from "./tui.js";
 
 // Re-export components (to be implemented)
-export { Text } from "./components/text.js";
-export { Input } from "./components/input.js";
-export { Editor } from "./components/editor.js";
-export { Loader } from "./components/loader.js";
-export { SelectList } from "./components/select-list.js";
-export { Spacer } from "./components/spacer.js";
-export { Container } from "./components/container.js";
+// export { Text } from "./components/text.js";
+// export { Input } from "./components/input.js";
+// export { Editor } from "./components/editor.js";
+// export { Loader } from "./components/loader.js";
+// export { SelectList } from "./components/select-list.js";
+// export { Spacer } from "./components/spacer.js";
+// export { Container } from "./components/container.js";

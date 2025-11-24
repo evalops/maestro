@@ -8,6 +8,8 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	renameSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { access } from "node:fs/promises";
@@ -269,13 +271,11 @@ export function writeTextFileAtomic(
 	try {
 		writeTextFile(tempPath, content, { encoding });
 		// Rename is atomic on most filesystems
-		const { renameSync } = require("node:fs");
 		renameSync(tempPath, path);
 	} catch (error) {
 		// Clean up temp file if it exists
 		try {
 			if (fileExists(tempPath)) {
-				const { unlinkSync } = require("node:fs");
 				unlinkSync(tempPath);
 			}
 		} catch {

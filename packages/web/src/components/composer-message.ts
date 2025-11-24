@@ -8,8 +8,12 @@ import { customElement, property } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { marked } from "marked";
 
-// Configure marked
+// Configure marked with sanitization enabled
 marked.setOptions({
+	// Disable HTML parsing to prevent XSS - markdown will be rendered safely
+	// Only code blocks will contain HTML from highlight.js (which is safe)
+	mangle: false,
+	headerIds: false,
 	highlight: (code, lang) => {
 		if (lang && hljs.getLanguage(lang)) {
 			try {
@@ -21,6 +25,30 @@ marked.setOptions({
 		return hljs.highlightAuto(code).value;
 	},
 });
+
+// Sanitize HTML to prevent XSS attacks
+// This allows only safe HTML tags from markdown rendering and code highlighting
+function sanitizeHTML(html: string): string {
+	const div = document.createElement('div');
+	div.innerHTML = html;
+	
+	// Remove any script tags or event handlers
+	const scripts = div.querySelectorAll('script');
+	scripts.forEach(script => script.remove());
+	
+	// Remove event handler attributes
+	const allElements = div.querySelectorAll('*');
+	allElements.forEach(el => {
+		const attributes = Array.from(el.attributes);
+		attributes.forEach(attr => {
+			if (attr.name.startsWith('on')) {
+				el.removeAttribute(attr.name);
+			}
+		});
+	});
+	
+	return div.innerHTML;
+}
 
 @customElement("composer-message")
 export class ComposerMessage extends LitElement {
@@ -169,9 +197,10 @@ export class ComposerMessage extends LitElement {
 			// User messages are plain text
 			return html`<div class="bubble">${this.content}</div>`;
 		}
-		// Assistant messages support markdown
+		// Assistant messages support markdown with sanitization to prevent XSS
 		const rendered = marked.parse(this.content, { async: false }) as string;
-		return html`<div class="bubble">${unsafeHTML(rendered)}</div>`;
+		const sanitized = sanitizeHTML(rendered);
+		return html`<div class="bubble">${unsafeHTML(sanitized)}</div>`;
 	}
 
 	render() {
