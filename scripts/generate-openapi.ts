@@ -60,7 +60,7 @@ function extractRoutes(sourcePath: string): Route[] {
 }
 
 function buildComponents() {
-	const schemas: Record<string, unknown> = {
+const schemas: Record<string, unknown> = {
 		ChatRequest: ChatRequestSchema,
 		ModelSetRequest: ModelSetSchema,
 		ChatMessage: {
@@ -127,8 +127,8 @@ function buildComponents() {
 				configPath: { type: "string" },
 			},
 		},
-		StatusResponse: {
-			type: "object",
+	StatusResponse: {
+		type: "object",
 			properties: {
 				cwd: { type: "string" },
 				git: {
@@ -157,8 +157,33 @@ function buildComponents() {
 				lastUpdated: { type: "number" },
 				lastLatencyMs: { type: "number" },
 			},
+	},
+	Session: {
+		type: "object",
+		properties: {
+			id: { type: "string" },
+			name: { type: "string" },
+			createdAt: { type: "string", format: "date-time" },
+			updatedAt: { type: "string", format: "date-time" },
 		},
-	};
+	},
+	SessionsResponse: {
+		type: "object",
+		properties: {
+			sessions: {
+				type: "array",
+				items: { $ref: "#/components/schemas/Session" },
+			},
+		},
+	},
+	ErrorResponse: {
+		type: "object",
+		properties: {
+			error: { type: "string" },
+			details: { type: "string" },
+		},
+	},
+};
 
 	return {
 		securitySchemes: {
@@ -204,6 +229,11 @@ function buildPaths(routes: Route[]) {
 		// keep parameters if already enriched
 		if (params.length) {
 			target[method].parameters = params;
+		}
+		if (normalizedPath.startsWith("/api")) {
+			target[method].security = target[method].security || [
+				{ ComposerApiKey: [] },
+			];
 		}
 	}
 

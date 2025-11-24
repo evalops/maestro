@@ -26,7 +26,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/api/status": {
@@ -110,7 +115,12 @@
           "200": {
             "description": "OK"
           }
-        }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/api/model": {
@@ -214,7 +224,12 @@
           "200": {
             "description": "OK"
           }
-        }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       },
       "post": {
         "summary": "Auto-generated from route definition",
@@ -223,7 +238,12 @@
           "200": {
             "description": "OK"
           }
-        }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/api/sessions/{id}": {
@@ -243,7 +263,12 @@
           "200": {
             "description": "OK"
           }
-        }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       },
       "delete": {
         "summary": "Auto-generated from route definition",
@@ -261,7 +286,12 @@
           "200": {
             "description": "OK"
           }
-        }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     }
   },
@@ -496,6 +526,47 @@
           },
           "lastLatencyMs": {
             "type": "number"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SessionsResponse": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
           }
         }
       }
