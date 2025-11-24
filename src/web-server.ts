@@ -360,7 +360,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 					...CORS_HEADERS,
 				});
 				res.end(JSON.stringify({ error: "Gateway Timeout" }));
-				res.destroy();
 			}
 		}, REQUEST_TIMEOUT_MS);
 
