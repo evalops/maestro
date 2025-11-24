@@ -88,7 +88,7 @@ export function createRequestHandler(
 				await fallback(req, res, pathname);
 			}
 		} catch (error) {
-			respondWithApiError(res, error, 500, corsHeaders);
+			respondWithApiError(res, error, 500, corsHeaders, req);
 		}
 	};
 }
