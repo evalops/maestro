@@ -474,6 +474,9 @@ export async function startWebServer(port = 8080) {
 
 	const server = createServer(handleRequest);
 	const sockets = new Set<Socket>();
+	let shuttingDown = false;
+	let drainTimeout: NodeJS.Timeout | null = null;
+	let drainInterval: NodeJS.Timeout | null = null;
 
 	server.on("connection", (socket) => {
 		sockets.add(socket);
@@ -488,6 +491,8 @@ export async function startWebServer(port = 8080) {
 	});
 
 	process.on("SIGINT", async () => {
+		if (shuttingDown) return;
+		shuttingDown = true;
 		console.log("\nSIGINT received. Starting graceful shutdown...");
 		stopStatsCollection();
 
@@ -498,7 +503,7 @@ export async function startWebServer(port = 8080) {
 		const activeCount = requestTracker.getCount();
 		if (activeCount > 0) {
 			console.log(`Waiting for ${activeCount} active requests to complete...`);
-			const drainTimeout = setTimeout(() => {
+			drainTimeout = setTimeout(() => {
 				console.log("Drain timeout reached. Forcing shutdown...");
 				for (const socket of sockets) {
 					socket.destroy();
@@ -507,10 +512,10 @@ export async function startWebServer(port = 8080) {
 			}, 10000); // 10s drain timeout
 
 			// Poll for drain
-			const checkDrain = setInterval(() => {
+			drainInterval = setInterval(() => {
 				if (requestTracker.getCount() === 0) {
-					clearInterval(checkDrain);
-					clearTimeout(drainTimeout);
+					if (drainInterval) clearInterval(drainInterval);
+					if (drainTimeout) clearTimeout(drainTimeout);
 					console.log("All requests completed. Exiting.");
 					process.exit(0);
 				}
