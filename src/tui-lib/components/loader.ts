@@ -8,28 +8,12 @@ import { Text } from "./text.js";
 export class Loader extends Text {
 	private message: string;
 	private spinnerFrames = [
-		{ glyph: "◴", color: "#f1c0e8" },
-		{ glyph: "◷", color: "#d0bfff" },
-		{ glyph: "◶", color: "#a5b4fc" },
-		{ glyph: "◵", color: "#c4b5fd" },
+		{ glyph: "●", color: "#a5b4fc" },
+		{ glyph: "●", color: "#c4b5fd" },
+		{ glyph: "●", color: "#f1c0e8" },
+		{ glyph: "●", color: "#c4b5fd" },
 	];
-	private progressWave = [
-		"▁",
-		"▂",
-		"▃",
-		"▄",
-		"▅",
-		"▆",
-		"▇",
-		"█",
-		"▇",
-		"▆",
-		"▅",
-		"▄",
-		"▃",
-		"▂",
-	];
-	private currentFrame = 0;
+	private progressDots = [0, 1, 2];
 	private progressOffset = 0;
 	private intervalId: NodeJS.Timeout | null = null;
 	private ui: TUI;
@@ -53,11 +37,10 @@ export class Loader extends Text {
 	start(): void {
 		this.updateDisplay();
 		this.intervalId = setInterval(() => {
-			this.currentFrame = (this.currentFrame + 1) % this.spinnerFrames.length;
 			this.progressOffset =
-				(this.progressOffset + 1) % this.progressWave.length;
+				(this.progressOffset + 1) % this.progressDots.length;
 			this.updateDisplay();
-		}, 80);
+		}, 150);
 	}
 
 	stop(): void {
@@ -124,34 +107,33 @@ export class Loader extends Text {
 	private buildProgressLine(): string {
 		if (this.progressPercent !== null) {
 			const filledUnits = Math.round(this.progressPercent * this.segments);
-			const accentColors = ["#a5b4fc", "#c4b5fd", "#f1c0e8"];
+			const accentColors = ["#94a3b8", "#a5b4fc", "#c4b5fd"];
 			const blocks: string[] = [];
 			for (let i = 0; i < this.segments; i++) {
 				const color = accentColors[i % accentColors.length];
-				const char = i < filledUnits ? "█" : "░";
-				const tint = i < filledUnits ? color : "#334155";
+				const char = i < filledUnits ? "━" : "─";
+				const tint = i < filledUnits ? color : "#475569";
 				blocks.push(chalk.hex(tint)(char));
 			}
 			const percentText = `${Math.round(this.progressPercent * 100)}%`.padStart(
 				4,
 				" ",
 			);
-			return `${chalk.gray("[")}${blocks.join("")}${chalk.gray("]")} ${chalk.gray(percentText)}`;
+			return `${chalk.gray("⟪")}${blocks.join("")}${chalk.gray("⟫")} ${chalk.gray(percentText)}`;
 		}
 
-		const accentColors = ["#f1c0e8", "#d8b4fe", "#a5b4fc"];
-		const blocks = [] as string[];
-		for (let i = 0; i < this.segments; i++) {
-			const waveIndex = (this.progressOffset + i) % this.progressWave.length;
-			const char = this.progressWave[waveIndex];
-			const color = accentColors[waveIndex % accentColors.length];
-			blocks.push(chalk.hex(color)(char));
-		}
-		return `${chalk.gray("[")}${blocks.join("")}${chalk.gray("]")}`;
+		const baseColor = "#475569";
+		const accentColor = "#c4b5fd";
+		const dots = this.progressDots.map((dotIndex) => {
+			const isActive =
+				(this.progressOffset + dotIndex) % this.progressDots.length === 0;
+			return isActive ? chalk.hex(accentColor)("●") : chalk.hex(baseColor)("●");
+		});
+		return `${chalk.gray("·· ")}${dots.join(" ")}${chalk.gray(" ··")}`;
 	}
 
 	private updateDisplay(): void {
-		const spinner = this.spinnerFrames[this.currentFrame];
+		const spinner = this.spinnerFrames[this.progressOffset];
 		const spinnerGlyph = chalk.hex(spinner.color)(spinner.glyph);
 		const titlePart = this.title
 			? `${chalk.hex("#b3b8ff")(this.title.toUpperCase())} `
