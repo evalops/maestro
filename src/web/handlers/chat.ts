@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
+import type { AgentState } from "../../agent/types.js";
 import type { RegisteredModel } from "../../models/registry.js";
 import {
 	SessionManager,
@@ -25,7 +26,7 @@ export interface ChatDeps {
 		clearMessages: () => void;
 		prompt: (input: string) => Promise<void>;
 		abort: () => void;
-		state: { messages: any[] };
+		state: AgentState;
 	}>;
 	getRegisteredModel: (
 		input: string | null | undefined,
