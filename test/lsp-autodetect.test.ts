@@ -50,11 +50,16 @@ describe("detectLspServers", () => {
 			mkdirSync(dirPath, { recursive: true });
 		}
 		writeFileSync(join(workspace, "package-lock.json"), "{}");
+		const fakeBinDir = tempDir();
+		const fakeTs = join(fakeBinDir, "typescript-language-server");
+		writeFileSync(fakeTs, "#!/bin/sh\nexit 0\n");
+		chmodSync(fakeTs, 0o755);
 		const prevCwd = process.cwd();
 		const prevPath = process.env.PATH;
 		try {
 			process.chdir(project);
-			process.env.PATH = prevPath ?? "";
+			const delimiter = process.platform === "win32" ? ";" : ":";
+			process.env.PATH = `${fakeBinDir}${delimiter}${prevPath ?? ""}`;
 			const detections = await detectLspServers(deep);
 			expect(detections.find((d) => d.serverId === "typescript")?.root).toBe(
 				workspace,
