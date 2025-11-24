@@ -95,7 +95,19 @@ const STATIC_MAX_AGE =
 	) || 60;
 const MAX_SSE_CONNECTIONS =
 	Number.parseInt(process.env.COMPOSER_MAX_SSE_CONNECTIONS || "100", 10) || 100;
-let activeSseConnections = 0;
+const sseLimiter = {
+	active: 0,
+	max: MAX_SSE_CONNECTIONS,
+	tryAcquire(): symbol | null {
+		if (this.active >= this.max) return null;
+		this.active += 1;
+		return Symbol("sse-lease");
+	},
+	release(token: symbol | null) {
+		if (!token) return;
+		if (this.active > 0) this.active -= 1;
+	},
+};
 
 if (!WEB_API_KEY) {
 	console.warn(
@@ -279,7 +291,8 @@ const routes: Route[] = [
 		method: "POST",
 		path: "/api/chat",
 		handler: (req, res) => {
-			if (activeSseConnections >= MAX_SSE_CONNECTIONS) {
+			const lease = sseLimiter.tryAcquire();
+			if (!lease) {
 				sendJson(
 					res,
 					429,
@@ -288,7 +301,6 @@ const routes: Route[] = [
 				);
 				return;
 			}
-			activeSseConnections += 1;
 			handleChat(req, res, CORS_HEADERS, {
 				createAgent: async (model, thinking, approval) =>
 					createAgent(
@@ -301,7 +313,7 @@ const routes: Route[] = [
 				defaultProvider: DEFAULT_PROVIDER,
 				defaultModelId: DEFAULT_MODEL_ID,
 				onComplete: () => {
-					activeSseConnections = Math.max(0, activeSseConnections - 1);
+					sseLimiter.release(lease);
 				},
 			});
 		},
