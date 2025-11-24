@@ -23,7 +23,7 @@ Type `/` in the editor to see completions. Common commands:
 - `/queue` – inspect/cancel queued prompts when the agent is busy
 - `/run <script>` – run `npm run <script>` and stream the output in chat
 - `/sessions` – list or load session transcripts
-- `/why` – quick explanation of the agent’s last decision
+- `/report` – collect info for bug reports or feedback
 
 Commands are discoverable via Ctrl+K (palette) or the inline autocomplete list.
 
@@ -75,7 +75,7 @@ path/content being written) so you can audit actions before they complete.
 
 - `npm run telemetry:report` (or `/telemetry`) summarizes tool success rates per
   log file.
-- `/diagnostics` aggregates pending tool approvals, git status, telemetry state,
+- `/diag` (or `/diagnostics`) aggregates pending tool approvals, git status, telemetry state,
   and model configuration in a single panel.
 
 Keep this guide handy when onboarding teammates so they can discover the TUI’s

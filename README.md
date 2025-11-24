@@ -248,9 +248,13 @@ Inspect plans created via the `todo` tool. Show all goals or a specific one.
 /plan clear all                         # delete all plans
 ```
 
-### /preview
+### /diff
 
-Preview a git diff without leaving the TUI.
+Show git diff for a file without leaving the TUI.
+
+```
+/diff <path>
+```
 
 ### /run
 
@@ -260,13 +264,15 @@ Execute project scripts (delegates to `npm run`).
 
 Display provider/API key diagnostics plus telemetry/health info. Append `copy` to send the report to your clipboard.
 
-### /bug
+### /report
 
-Copy session details and log paths for bug reports.
+Collect info for bug reports or general feedback.
 
-### /why
-
-Summarize the most recent user question, assistant reply, and tools invoked.
+```
+/report
+/report bug
+/report feedback
+```
 
 ### /status
 
@@ -280,9 +286,137 @@ Print a review-friendly snapshot of `git status` plus `git diff --stat` before d
 
 Discard working tree changes in one or more files via git checkout.
 
-### /feedback
+### /new
 
-Copy a feedback template (session/model metadata included) to your clipboard.
+Start a fresh chat session.
+
+### /share
+
+Generate a self-contained HTML share link.
+
+```
+/share [output.html]
+```
+
+### /branch
+
+Create a new session from an earlier user message (keeps history up to that point).
+
+```
+/branch [list|<user-message-number>]
+```
+
+### /queue
+
+List, cancel, or change queue mode when the agent is busy.
+
+```
+/queue [list|cancel <id>|mode <one|all>]
+```
+
+### /about
+
+Show Composer build, environment, and git info.
+
+### /clear
+
+Clear context and start a fresh session.
+
+### /init
+
+Create or overwrite AGENTS.md scaffolding for this repo.
+
+```
+/init [path]
+```
+
+### /background
+
+Configure background task notifications and status redaction.
+
+```
+/background [status|notify <on|off>|details <on|off>|history|path]
+```
+
+### /approvals
+
+Show approval status or switch between auto/prompt/fail modes.
+
+```
+/approvals [auto|prompt|fail]
+```
+
+### /ollama
+
+Control local Ollama models (list, pull, ps).
+
+```
+/ollama [list|pull <model>|ps]
+```
+
+### /update
+
+Check for Composer CLI updates.
+
+### /changelog
+
+Display full version history.
+
+### /telemetry
+
+Show telemetry status or toggle runtime overrides.
+
+```
+/telemetry [status|on|off|reset]
+```
+
+### /mcp
+
+Show configured Model Context Protocol servers.
+
+### /compact
+
+Summarize older messages to reclaim context.
+
+### /footer
+
+Switch between Ensemble (rich) and Solo (minimal) footer styles.
+
+```
+/footer [ensemble|solo]
+```
+
+### /compact-tools
+
+Toggle folding of tool outputs.
+
+```
+/compact-tools [on|off]
+```
+
+### /login
+
+Authenticate with Claude Pro/Max via OAuth.
+
+```
+/login [mode]
+/login [provider:mode]
+/login pro
+/login console
+/login anthropic:pro
+```
+
+### /logout
+
+Remove stored Claude OAuth credentials.
+
+```
+/logout [provider]
+```
+
+### /quit
+
+Exit composer (same as ctrl+c twice). Alias: `/exit`.
 
 ### /mention
 
