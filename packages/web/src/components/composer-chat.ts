@@ -1268,7 +1268,7 @@ export class ComposerChat extends LitElement {
 						}
 			</div>
 			<div class="header-right">
-				<div class="model-selector" @click=${this.toggleSettings}>
+				<div class="model-selector" @click=${this.openModelSelector}>
 					<span class="model-badge">AI</span>
 					<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
 						</div>
