@@ -179,8 +179,10 @@ describe("PII invariant workflow story", () => {
 			args: {},
 			metadata: { workflowState: tracker.snapshot() },
 		});
-		expect(requireVerdict.action).toBe("require_approval");
-		expect((requireVerdict as any).reason).toContain("Case-742");
+		expect(requireVerdict).toMatchObject({
+			action: "require_approval",
+			reason: expect.stringContaining("Case-742"),
+		});
 
 		const redact = makeToolCall("redact_transcript", "call-2", {
 			artifactId: collect.id,
