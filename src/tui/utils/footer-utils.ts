@@ -118,12 +118,12 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 				(m as AssistantMessage).stopReason !== "aborted",
 		) as AssistantMessage | undefined;
 
-	// Calculate context percentage: last turn's input (fresh + cached) + all accumulated outputs
+	// Calculate context percentage: last turn's input (fresh + cached) + last turn's output
 	// This represents the actual conversation size, not the sum of all API calls
 	const lastUsage = normalizeUsage(lastAssistant?.usage);
 	const contextTokens = Math.max(
 		0,
-		lastUsage.input + lastUsage.cacheRead + totalOutput,
+		lastUsage.input + lastUsage.cacheRead + lastUsage.output,
 	);
 	const contextWindow = state.model.contextWindow ?? 0;
 	const contextPercent =
