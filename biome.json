@@ -2,7 +2,12 @@
 	"$schema": "https://biomejs.dev/schemas/1.9.3/schema.json",
 	"files": {
 		"include": ["src", "test", "packages", "docs"],
-		"ignore": ["dist", "node_modules", ".external"]
+		"ignore": [
+			"dist",
+			"node_modules",
+			".external",
+			"src/models/models.generated.ts"
+		]
 	},
 	"formatter": {
 		"enabled": true
