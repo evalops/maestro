@@ -16,7 +16,9 @@ export interface LargePasteEvent {
 	marker: string;
 }
 
-export type TextEditorConfig = Record<string, unknown>;
+export type TextEditorConfig = Record<string, unknown> & {
+	placeholder?: string;
+};
 
 interface EditorState {
 	lines: string[];
@@ -31,6 +33,7 @@ export class Editor implements Component {
 		cursorCol: 0,
 	};
 	private config: TextEditorConfig = {};
+	public placeholder?: string;
 	private autocompleteProvider?: AutocompleteProvider;
 	private autocompleteList?: SelectList;
 	private isAutocompleting = false;
@@ -51,62 +54,97 @@ export class Editor implements Component {
 	constructor(config?: TextEditorConfig) {
 		if (config) {
 			this.config = { ...this.config, ...config };
+			if (config.placeholder) {
+				this.placeholder = config.placeholder;
+			}
 		}
 	}
 	configure(config: Partial<TextEditorConfig>): void {
 		this.config = { ...this.config, ...config };
+		if (config.placeholder) {
+			this.placeholder = config.placeholder;
+		}
 	}
 	setAutocompleteProvider(provider: AutocompleteProvider): void {
 		this.autocompleteProvider = provider;
 	}
-	render(width: number): string[] {
+	render(width: number, options: { hideBorders?: boolean } = {}): string[] {
 		const horizontal = chalk.gray("─");
 		// Layout the text - use full width
 		const layoutLines = this.layoutText(width);
 		const result = [];
 		// Render top border
-		result.push(horizontal.repeat(width));
+		if (!options.hideBorders) {
+			result.push(horizontal.repeat(width));
+		}
 		// Render each layout line
 		for (const layoutLine of layoutLines) {
 			let displayText = layoutLine.text;
 			let visibleLength = layoutLine.text.length;
+
+			// Apply placeholder styling if needed
+			if (layoutLine.isPlaceholder) {
+				displayText = chalk.gray(displayText);
+			}
+
 			// Add cursor if this line has it
 			if (layoutLine.hasCursor && layoutLine.cursorPos !== undefined) {
-				const before = displayText.slice(0, layoutLine.cursorPos);
-				const after = displayText.slice(layoutLine.cursorPos);
-				if (after.length > 0) {
-					// Cursor is on a character - replace it with highlighted version
-					const cursor = `\x1b[7m${after[0]}\x1b[0m`;
-					const restAfter = after.slice(1);
-					displayText = before + cursor + restAfter;
-					// visibleLength stays the same - we're replacing, not adding
-				} else {
-					// Cursor is at the end - check if we have room for the space
-					if (layoutLine.text.length < width) {
-						// We have room - add highlighted space
+				const before = layoutLine.text.slice(0, layoutLine.cursorPos);
+				const after = layoutLine.text.slice(layoutLine.cursorPos);
+
+				// Re-construct display text with cursor logic
+				// Note: complex if placeholder is already colored, but placeholder usually doesn't have cursor in middle
+				// For placeholder, cursor is usually at 0.
+
+				if (layoutLine.isPlaceholder) {
+					// Cursor at 0 for placeholder
+					if (after.length > 0) {
+						const cursor = `\x1b[7m${after[0]}\x1b[0m`;
+						const restAfter = after.slice(1);
+						// We need to apply gray to non-cursor parts
+						displayText = chalk.gray(before) + cursor + chalk.gray(restAfter);
+					} else {
+						// Empty placeholder? Should not happen if text present
 						const cursor = "\x1b[7m \x1b[0m";
 						displayText = before + cursor;
-						// visibleLength increases by 1 - we're adding a space
-						visibleLength = layoutLine.text.length + 1;
+					}
+				} else {
+					if (after.length > 0) {
+						// Cursor is on a character - replace it with highlighted version
+						const cursor = `\x1b[7m${after[0]}\x1b[0m`;
+						const restAfter = after.slice(1);
+						displayText = before + cursor + restAfter;
+						// visibleLength stays the same - we're replacing, not adding
 					} else {
-						// Line is at full width - use reverse video on last character if possible
-						// or just show cursor at the end without adding space
-						if (before.length > 0) {
-							const lastChar = before[before.length - 1];
-							const cursor = `\x1b[7m${lastChar}\x1b[0m`;
-							displayText = before.slice(0, -1) + cursor;
+						// Cursor is at the end - check if we have room for the space
+						if (layoutLine.text.length < width) {
+							// We have room - add highlighted space
+							const cursor = "\x1b[7m \x1b[0m";
+							displayText = before + cursor;
+							// visibleLength increases by 1 - we're adding a space
+							visibleLength = layoutLine.text.length + 1;
+						} else {
+							// Line is at full width - use reverse video on last character if possible
+							// or just show cursor at the end without adding space
+							if (before.length > 0) {
+								const lastChar = before[before.length - 1];
+								const cursor = `\x1b[7m${lastChar}\x1b[0m`;
+								displayText = before.slice(0, -1) + cursor;
+							}
+							// visibleLength stays the same
 						}
-						// visibleLength stays the same
 					}
 				}
 			}
 			// Calculate padding based on actual visible length
 			const padding = " ".repeat(Math.max(0, width - visibleLength));
-			// Render the line (no side borders, just horizontal lines above and below)
+			// Render the line (no side borders, just horizontal lines above and below if not hidden)
 			result.push(displayText + padding);
 		}
 		// Render bottom border
-		result.push(horizontal.repeat(width));
+		if (!options.hideBorders) {
+			result.push(horizontal.repeat(width));
+		}
 		// Add autocomplete list if active
 		if (this.isAutocompleting && this.autocompleteList) {
 			const autocompleteResult = this.autocompleteList.render(width);
@@ -315,20 +353,32 @@ export class Editor implements Component {
 			this.insertCharacter(data);
 		}
 	}
-	private layoutText(
-		contentWidth: number,
-	): Array<{ text: string; hasCursor: boolean; cursorPos?: number }> {
+	private layoutText(contentWidth: number): Array<{
+		text: string;
+		hasCursor: boolean;
+		cursorPos?: number;
+		isPlaceholder?: boolean;
+	}> {
 		const layoutLines = [];
 		if (
 			this.state.lines.length === 0 ||
 			(this.state.lines.length === 1 && this.state.lines[0] === "")
 		) {
 			// Empty editor
-			layoutLines.push({
-				text: "",
-				hasCursor: true,
-				cursorPos: 0,
-			});
+			if (this.placeholder) {
+				layoutLines.push({
+					text: this.placeholder,
+					hasCursor: true,
+					cursorPos: 0,
+					isPlaceholder: true,
+				});
+			} else {
+				layoutLines.push({
+					text: "",
+					hasCursor: true,
+					cursorPos: 0,
+				});
+			}
 			return layoutLines;
 		}
 		// Process each logical line

@@ -9,7 +9,7 @@ Launch the TUI by running `composer` with no messages (or `npm run cli --` from
 source). The layout is split into four areas:
 
 1. **Chat timeline** – user/assistant messages, tool outputs, and system notes.
-2. **Status rail** – shows the current loader stage (Planning → Tool → Responding),
+2. **Status indicators** – shows the current loader stage (Planning → Tool → Responding),
    streaming deltas, and a subtle three-dot activity indicator.
 3. **Editor input** – multi-line editor with autocomplete, slash command hints,
    and keyboard shortcuts (Ctrl+K palette, `@` file search, Shift+Enter newline).
@@ -84,7 +84,7 @@ power-user features quickly.
 ## Background Tasks
 
 - Run long commands with `/background_tasks action=start …`; check `/background_tasks action=list` or `/background_tasks action=logs` without leaving chat.
-- Health telemetry now feeds the status rail and diagnostics view, showing recent failures, restarts, and limit breaches.
+- Health telemetry now feeds the footer and diagnostics view, showing recent failures, restarts, and limit breaches.
 - User controls live in `~/.composer/agent/background-settings.json` (or a custom path via `COMPOSER_BACKGROUND_SETTINGS`). Keys:
   - `notificationsEnabled` – emit TUI notifications for restarts/failures.
   - `statusDetailsEnabled` – include per-task summaries and history in health snapshots.

@@ -1,10 +1,9 @@
-import type { Container, TUI } from "@evalops/tui";
-import type { CustomEditor } from "../custom-editor.js";
+import type { TUI } from "@evalops/tui";
+import type { ModalManager } from "../modal-manager.js";
 import { ReportSelectorComponent, type ReportType } from "./report-selector.js";
 
 interface ReportSelectorViewOptions {
-	editor: CustomEditor;
-	editorContainer: Container;
+	modalManager: ModalManager;
 	ui: TUI;
 	onSelect: (type: ReportType) => void;
 }
@@ -29,20 +28,15 @@ export class ReportSelectorView {
 				this.options.ui.requestRender();
 			},
 		);
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.selector);
-		this.options.ui.setFocus(this.selector.getSelectList());
-		this.options.ui.requestRender();
+		this.options.modalManager.push(this.selector);
 	}
 
 	private hide(): void {
 		if (!this.selector) {
 			return;
 		}
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.options.editor);
+		this.options.modalManager.pop();
 		this.selector = null;
-		this.options.ui.setFocus(this.options.editor);
 	}
 }
 

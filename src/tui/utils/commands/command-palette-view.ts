@@ -1,11 +1,12 @@
 import type { SlashCommand } from "@evalops/tui";
 import type { Container, TUI } from "@evalops/tui";
 import type { CustomEditor } from "../../custom-editor.js";
+import type { ModalManager } from "../../modal-manager.js";
 import { CommandPaletteComponent } from "./command-palette.js";
 
 interface CommandPaletteViewOptions {
 	editor: CustomEditor;
-	editorContainer: Container;
+	modalManager: ModalManager;
 	ui: TUI;
 	getCommands: () => SlashCommand[];
 }
@@ -32,18 +33,12 @@ export class CommandPaletteView {
 			},
 			() => this.hideCommandPalette(),
 		);
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.commandPalette);
-		this.options.ui.setFocus(this.commandPalette);
-		this.options.ui.requestRender();
+		this.options.modalManager.push(this.commandPalette);
 	}
 
 	hideCommandPalette(): void {
 		if (!this.commandPalette) return;
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.options.editor);
+		this.options.modalManager.pop();
 		this.commandPalette = null;
-		this.options.ui.setFocus(this.options.editor);
-		this.options.ui.requestRender();
 	}
 }

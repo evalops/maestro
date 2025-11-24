@@ -1,12 +1,12 @@
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import { badge, muted } from "../style/theme.js";
-import type { StatusRailComponent } from "./status-rail.js";
+import type { FooterComponent } from "./footer.js";
 
 interface NotificationViewOptions {
 	chatContainer: Container;
 	ui: TUI;
-	statusRail?: StatusRailComponent;
+	footer: FooterComponent;
 }
 
 export class NotificationView {
@@ -20,43 +20,23 @@ export class NotificationView {
 	}
 
 	showError(errorMessage: string): void {
-		// Errors go to status rail for visibility
-		if (this.options.statusRail) {
-			this.options.statusRail.addToast(errorMessage, "danger");
-			this.options.ui.requestRender();
-		} else {
-			// Fallback to chat if status rail not available
-			this.options.chatContainer.addChild(new Spacer(1));
-			const label = badge("Error", undefined, "danger");
-			this.options.chatContainer.addChild(
-				new Text(`${label} ${errorMessage}`, 1, 0),
-			);
-			this.options.ui.requestRender();
-		}
+		// Errors go to footer toast for visibility
+		this.options.footer.setToast(errorMessage, "danger");
+		this.options.ui.requestRender();
 	}
 
 	showToast(
 		text: string,
 		tone: "info" | "warn" | "success" = "info",
-		shortcut?: string,
+		_shortcut?: string,
 	): void {
-		// Toasts go to status rail for persistent visibility
-		if (this.options.statusRail) {
-			this.options.statusRail.addToast(text, tone, shortcut);
-			this.options.ui.requestRender();
-		} else {
-			// Fallback to chat if status rail not available
-			const toneLabel =
-				tone === "warn"
-					? badge("Warning", undefined, "warn")
-					: tone === "success"
-						? badge("Success", undefined, "success")
-						: badge("Info", undefined, "info");
-			this.options.chatContainer.addChild(new Spacer(1));
-			this.options.chatContainer.addChild(
-				new Text(`${toneLabel} ${text}`, 1, 0),
-			);
-			this.options.ui.requestRender();
-		}
+		// Toasts go to footer for persistent visibility (until timeout)
+		// Map 'info' tone to 'info' or 'success' depending on context if needed,
+		// but FooterComponent supports 'info' | 'warn' | 'success' | 'danger'.
+		// The shortcut arg is ignored as footer doesn't display it explicitly yet,
+		// or we could append it.
+		const message = _shortcut ? `${text} (${_shortcut})` : text;
+		this.options.footer.setToast(message, tone === "info" ? "info" : tone);
+		this.options.ui.requestRender();
 	}
 }

@@ -327,6 +327,30 @@ export class PlanView {
 		this.options.showInfoMessage(message);
 	}
 
+	public moveTask(
+		goalKey: string,
+		taskId: string,
+		direction: "up" | "down",
+	): void {
+		const store = loadTodoStore(this.options.filePath);
+		const entry = store[goalKey];
+		if (!entry) return;
+
+		const index = entry.items.findIndex((item) => item.id === taskId);
+		if (index === -1) return;
+
+		const newIndex = direction === "up" ? index - 1 : index + 1;
+		if (newIndex < 0 || newIndex >= entry.items.length) return;
+
+		const [item] = entry.items.splice(index, 1);
+		entry.items.splice(newIndex, 0, item);
+		entry.updatedAt = new Date().toISOString();
+
+		saveTodoStore(this.options.filePath, store);
+		this.notifyStoreChanged(store);
+		this.options.setPlanHint(calculatePlanHint(store));
+	}
+
 	private resolveTask(entry: TodoGoalEntry, ref: string): TodoItem | undefined {
 		const numeric = Number.parseInt(ref, 10);
 		if (

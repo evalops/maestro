@@ -137,8 +137,8 @@ describe("FooterComponent", () => {
 			const statsLine = statsLineFrom(rendered);
 			// Last message input (10k) + all outputs (50k + 5k) = 65k / 200k = 32.5%
 			// But wait - aborted messages should be excluded from lastAssistant
-			// So: first message input (100k) + all outputs (50k + 5k) = 155k / 200k = 77.5%
-			expect(statsLine).toContain("77.5%");
+			// So: first message input (100k) + output (50k) = 150k / 200k = 75.0%
+			expect(statsLine).toContain("75.0%");
 		});
 
 		it("should include cache reads when computing context percentage", () => {

@@ -46,7 +46,6 @@ export interface FooterStats {
 	contextTokens: number;
 	contextWindow: number;
 	contextPercent: number;
-	lastAssistant?: AssistantMessage;
 }
 
 export type HintType = "context" | "plan" | "queue" | "bash" | "custom";
@@ -109,22 +108,30 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 		}
 	}
 
-	const lastAssistant = state.messages
-		.slice()
-		.reverse()
-		.find(
-			(m) =>
-				m.role === "assistant" &&
-				(m as AssistantMessage).stopReason !== "aborted",
-		) as AssistantMessage | undefined;
+	let lastSuccessfulUsage: Usage | undefined;
 
-	// Calculate context percentage: last turn's input (fresh + cached) + all accumulated outputs
-	// This represents the actual conversation size, not the sum of all API calls
-	const lastUsage = normalizeUsage(lastAssistant?.usage);
-	const contextTokens = Math.max(
-		0,
-		lastUsage.input + lastUsage.cacheRead + totalOutput,
-	);
+	// Iterate backwards to find the last successful assistant message (anchor)
+	for (let i = state.messages.length - 1; i >= 0; i--) {
+		const msg = state.messages[i];
+		if (msg.role === "assistant") {
+			const assistantMsg = msg as AssistantMessage;
+			if (assistantMsg.stopReason !== "aborted") {
+				lastSuccessfulUsage = normalizeUsage(assistantMsg.usage);
+				break;
+			}
+		}
+	}
+
+	// Calculate context percentage: last successful turn's total
+	const contextTokens = lastSuccessfulUsage
+		? Math.max(
+				0,
+				lastSuccessfulUsage.input +
+					lastSuccessfulUsage.cacheRead +
+					lastSuccessfulUsage.output,
+			)
+		: 0;
+
 	const contextWindow = state.model.contextWindow ?? 0;
 	const contextPercent =
 		contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
@@ -138,7 +145,6 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 		contextTokens,
 		contextWindow,
 		contextPercent,
-		lastAssistant,
 	};
 }
 

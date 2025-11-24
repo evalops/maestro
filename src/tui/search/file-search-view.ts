@@ -2,12 +2,13 @@ import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { CustomEditor } from "../custom-editor.js";
+import type { ModalManager } from "../modal-manager.js";
 import { getWorkspaceFiles } from "../utils/workspace-files.js";
 import { FileSearchComponent } from "./file-search.js";
 
 interface FileSearchViewOptions {
 	editor: CustomEditor;
-	editorContainer: Container;
+	modalManager: ModalManager;
 	chatContainer: Container;
 	ui: TUI;
 	showInfoMessage: (message: string) => void;
@@ -37,20 +38,14 @@ export class FileSearchView {
 			},
 			() => this.hideFileSearch(),
 		);
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.fileSearchComponent);
-		this.options.ui.setFocus(this.fileSearchComponent);
-		this.options.ui.requestRender();
+		this.options.modalManager.push(this.fileSearchComponent);
 		return true;
 	}
 
 	hideFileSearch(): void {
 		if (!this.fileSearchComponent) return;
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.options.editor);
+		this.options.modalManager.pop();
 		this.fileSearchComponent = null;
-		this.options.ui.setFocus(this.options.editor);
-		this.options.ui.requestRender();
 	}
 
 	handleMentionCommand(text: string): void {

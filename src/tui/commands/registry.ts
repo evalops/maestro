@@ -25,14 +25,24 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "zen",
-				description:
-					"Toggle Zen Mode (hides header, ensures minimal footer, keeps status rail)",
+				description: "Toggle Zen Mode (hides header, ensures minimal footer)",
 				usage: "/zen [on|off]",
 				tags: ["ui"],
 				examples: ["/zen", "/zen on", "/zen off"],
 			},
 			withArgs("zen"),
 			handlers.zen,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "context",
+				description: "Visualize context usage (tokens per message/file)",
+				usage: "/context",
+				tags: ["diagnostics", "usage"],
+			},
+			equals("context"),
+			handlers.context,
 			createContext,
 		),
 		buildEntry(

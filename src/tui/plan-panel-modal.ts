@@ -1,5 +1,6 @@
 import type { Component } from "@evalops/tui";
 import chalk from "chalk";
+import { theme } from "../theme/theme.js";
 import type { TodoGoalEntry, TodoItem } from "./plan-view.js";
 import { centerText, padLine, truncateText } from "./utils/text-formatting.js";
 
@@ -13,6 +14,7 @@ interface PlanPanelModalOptions {
 	onClose: () => void;
 	onNavigate: (delta: number) => void;
 	onToggleComplete: () => void;
+	onMoveTask: (direction: "up" | "down") => void;
 }
 
 export class PlanPanelModal implements Component {
@@ -45,24 +47,24 @@ export class PlanPanelModal implements Component {
 		const borderColor = "#8b5cf6";
 
 		// Top border
-		lines.push(chalk.hex(borderColor)(`╭${"─".repeat(width - 2)}╮`));
+		lines.push(theme.fg("borderAccent", `╭${"─".repeat(width - 2)}╮`));
 
 		// Title
 		const title = centerText("PLANS", width - 4);
 		lines.push(
-			`${chalk.hex(borderColor)("│ ")}${chalk.hex("#e2e8f0").bold(title)}${chalk.hex(borderColor)(" │")}`,
+			`${theme.fg("borderAccent", "│ ")}${theme.bold(theme.fg("text", title))}${theme.fg("borderAccent", " │")}`,
 		);
 
 		// Separator
-		lines.push(chalk.hex(borderColor)(`├${"─".repeat(width - 2)}┤`));
+		lines.push(theme.fg("borderAccent", `├${"─".repeat(width - 2)}┤`));
 
 		if (this.goals.length === 0) {
 			const emptyLine = padLine(
-				chalk.dim("No plans found. Use /plan new <goal> to create one."),
+				theme.fg("dim", "No plans found. Use /plan new <goal> to create one."),
 				width - 4,
 			);
 			lines.push(
-				`${chalk.hex(borderColor)("│ ")}${emptyLine}${chalk.hex(borderColor)(" │")}`,
+				`${theme.fg("borderAccent", "│ ")}${emptyLine}${theme.fg("borderAccent", " │")}`,
 			);
 		} else {
 			const selectedGoal = this.goals[this.selectedGoalIndex];
@@ -72,24 +74,24 @@ export class PlanPanelModal implements Component {
 				const counts = this.countTodoStatuses(g.entry.items);
 				const progress = `${counts.completed}/${g.entry.items.length}`;
 				if (idx === this.selectedGoalIndex) {
-					return chalk.hex("#60a5fa").bold(`[${g.key} ${progress}]`);
+					return theme.bold(theme.fg("accent", `[${g.key} ${progress}]`));
 				}
-				return chalk.dim(`${g.key} ${progress}`);
+				return theme.fg("dim", `${g.key} ${progress}`);
 			});
 			const tabsLine = padLine(goalTabs.join(" · "), width - 4);
 			lines.push(
-				`${chalk.hex(borderColor)("│ ")}${tabsLine}${chalk.hex(borderColor)(" │")}`,
+				`${theme.fg("borderAccent", "│ ")}${tabsLine}${theme.fg("borderAccent", " │")}`,
 			);
 
 			lines.push(
-				`${chalk.hex(borderColor)("│ ")}${" ".repeat(width - 4)}${chalk.hex(borderColor)(" │")}`,
+				`${theme.fg("borderAccent", "│ ")}${" ".repeat(width - 4)}${theme.fg("borderAccent", " │")}`,
 			);
 
 			// Show tasks for selected goal
 			if (selectedGoal.entry.items.length === 0) {
-				const emptyLine = padLine(chalk.dim("No tasks yet."), width - 4);
+				const emptyLine = padLine(theme.fg("dim", "No tasks yet."), width - 4);
 				lines.push(
-					`${chalk.hex(borderColor)("│ ")}${emptyLine}${chalk.hex(borderColor)(" │")}`,
+					`${theme.fg("borderAccent", "│ ")}${emptyLine}${theme.fg("borderAccent", " │")}`,
 				);
 			} else {
 				const maxDisplay = 10;
@@ -109,61 +111,62 @@ export class PlanPanelModal implements Component {
 					const task = visible[i];
 					const actualIndex = start + i;
 					const isSelected = actualIndex === this.selectedTaskIndex;
-					const prefix = isSelected ? chalk.cyan("► ") : "  ";
+					const prefix = isSelected ? theme.fg("accent", "► ") : "  ";
 					const status = this.getStatusSymbol(task);
 					const content = truncateText(task.content, width - 12);
 					const taskLine = padLine(
-						`${prefix}${status} ${chalk.hex("#94a3b8")(content)}`,
+						`${prefix}${status} ${theme.fg("text", content)}`,
 						width - 4,
 					);
 					lines.push(
-						`${chalk.hex(borderColor)("│ ")}${taskLine}${chalk.hex(borderColor)(" │")}`,
+						`${theme.fg("borderAccent", "│ ")}${taskLine}${theme.fg("borderAccent", " │")}`,
 					);
 				}
 
 				if (selectedGoal.entry.items.length > maxDisplay) {
 					const remainingCount = selectedGoal.entry.items.length - maxDisplay;
 					const moreLabel = padLine(
-						chalk.dim(`... and ${remainingCount} more`),
+						theme.fg("dim", `... and ${remainingCount} more`),
 						width - 4,
 					);
 					lines.push(
-						`${chalk.hex(borderColor)("│ ")}${moreLabel}${chalk.hex(borderColor)(" │")}`,
+						`${theme.fg("borderAccent", "│ ")}${moreLabel}${theme.fg("borderAccent", " │")}`,
 					);
 				}
 			}
 
 			// Summary stats
 			lines.push(
-				`${chalk.hex(borderColor)("│ ")}${" ".repeat(width - 4)}${chalk.hex(borderColor)(" │")}`,
+				`${theme.fg("borderAccent", "│ ")}${" ".repeat(width - 4)}${theme.fg("borderAccent", " │")}`,
 			);
 			const counts = this.countTodoStatuses(selectedGoal.entry.items);
 			const statsLine = padLine(
-				chalk.dim(
+				theme.fg(
+					"dim",
 					`Stats: ${counts.completed} completed · ${counts.in_progress} in progress · ${counts.pending} pending`,
 				),
 				width - 4,
 			);
 			lines.push(
-				`${chalk.hex(borderColor)("│ ")}${statsLine}${chalk.hex(borderColor)(" │")}`,
+				`${theme.fg("borderAccent", "│ ")}${statsLine}${theme.fg("borderAccent", " │")}`,
 			);
 		}
 
 		// Bottom separator
-		lines.push(chalk.hex(borderColor)(`├${"─".repeat(width - 2)}┤`));
+		lines.push(theme.fg("borderAccent", `├${"─".repeat(width - 2)}┤`));
 
 		// Help text
 		const helpText =
 			this.goals.length > 0
-				? "[↑/↓] navigate  [←/→] switch goals  [space] toggle  [esc] close"
+				? "[↑/↓] navigate  [shift+↑/↓] move  [←/→] switch goals  [space] toggle  [esc] close"
 				: "[esc] close";
 		const helpLine = centerText(helpText, width - 4);
 		lines.push(
-			`${chalk.hex(borderColor)("│ ")}${chalk.dim(helpLine)}${chalk.hex(borderColor)(" │")}`,
+			`${theme.fg("borderAccent", "│ ")}${theme.fg("dim", helpLine)}${theme.fg("borderAccent", " │")}`,
 		);
 
 		// Bottom border
-		lines.push(chalk.hex(borderColor)(`╰${"─".repeat(width - 2)}╯`));
+		lines.push(theme.fg("borderAccent", `╰${"─".repeat(width - 2)}╯`));
 
 		return lines;
 	}
@@ -182,6 +185,16 @@ export class PlanPanelModal implements Component {
 		if (data === "\x1b[B") {
 			// Down arrow
 			this.options.onNavigate(1);
+			return;
+		}
+		if (data === "\x1b[1;2A" || data === "K") {
+			// Shift+Up or K
+			this.options.onMoveTask("up");
+			return;
+		}
+		if (data === "\x1b[1;2B" || data === "J") {
+			// Shift+Down or J
+			this.options.onMoveTask("down");
 			return;
 		}
 		if (data === "\x1b[C") {
@@ -235,11 +248,11 @@ export class PlanPanelModal implements Component {
 
 		switch (status) {
 			case "completed":
-				return chalk.green(symbol);
+				return theme.fg("success", symbol);
 			case "in_progress":
-				return chalk.yellow(symbol);
+				return theme.fg("warning", symbol);
 			default:
-				return chalk.dim(symbol);
+				return theme.fg("dim", symbol);
 		}
 	}
 

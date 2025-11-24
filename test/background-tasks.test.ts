@@ -502,8 +502,9 @@ describe("backgroundTasksTool", () => {
 			startedAt: Date.now(),
 			status: "running" as const,
 			logPath: zombieLog,
-			process: {} as unknown,
+			process: {} as any,
 			completion: Promise.resolve(),
+			shellMode: "exec" as const,
 			limits: {
 				logSizeLimit: 0,
 				logSegments: 0,

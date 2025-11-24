@@ -62,6 +62,7 @@ export interface CommandHandlers {
 	login(context: CommandExecutionContext): void | Promise<void>;
 	logout(context: CommandExecutionContext): void | Promise<void>;
 	zen(context: CommandExecutionContext): void;
+	context(context: CommandExecutionContext): void;
 }
 
 export interface CommandEntry {

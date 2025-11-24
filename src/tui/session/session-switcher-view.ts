@@ -1,5 +1,6 @@
 import type { Container, TUI } from "@evalops/tui";
 import type { CustomEditor } from "../custom-editor.js";
+import type { ModalManager } from "../modal-manager.js";
 import type {
 	SessionDataProvider,
 	SessionItem,
@@ -8,8 +9,7 @@ import { SessionSwitcherComponent } from "./session-switcher.js";
 
 interface SessionSwitcherViewOptions {
 	sessionDataProvider: SessionDataProvider;
-	editor: CustomEditor;
-	editorContainer: Container;
+	modalManager: ModalManager;
 	ui: TUI;
 	showInfoMessage: (text: string) => void;
 	loadSession: (session: SessionItem) => boolean;
@@ -48,20 +48,14 @@ export class SessionSwitcherView {
 				this.options.ui.requestRender();
 			},
 		});
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.switcher);
-		this.options.ui.setFocus(this.switcher);
-		this.options.ui.requestRender();
+		this.options.modalManager.push(this.switcher);
 	}
 
 	private hide(): void {
 		if (!this.switcher) {
 			return;
 		}
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.options.editor);
-		this.options.ui.setFocus(this.options.editor);
+		this.options.modalManager.pop();
 		this.switcher = null;
-		this.options.ui.requestRender();
 	}
 }

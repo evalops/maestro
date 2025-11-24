@@ -1,5 +1,5 @@
 import { Container, Spacer, Text } from "@evalops/tui";
-import chalk from "chalk";
+import { theme } from "../theme/theme.js";
 import {
 	type ToolRenderer,
 	createToolRenderer,
@@ -35,8 +35,8 @@ export class ToolExecutionComponent extends Container {
 		this.partialArgs = args;
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(this.buildTopLine(), 1, 0));
-		// Content with colored background and padding
-		this.contentText = new Text("", 1, 1, { r: 34, g: 36, b: 48 });
+		// Content
+		this.contentText = new Text("", 1, 1);
 		this.addChild(this.contentText);
 		this.addChild(new Text(this.buildBottomLine(), 1, 0));
 		this.renderer = createToolRenderer(this.toolName);
@@ -50,16 +50,17 @@ export class ToolExecutionComponent extends Container {
 
 	private buildTopLine(): string {
 		const label = this.toolName.toUpperCase();
-		const accent = "#475569";
-		const width = 50;
+		const width = 60;
 		const dashCount = Math.max(0, width - (label.length + 4));
-		return chalk.hex(accent)(`╭ ${label} ${"─".repeat(dashCount)}╮`);
+		return theme.fg(
+			"borderMuted",
+			`╭ ${theme.bold(label)} ${"─".repeat(dashCount)}╮`,
+		);
 	}
 
 	private buildBottomLine(): string {
-		const accent = "#475569";
-		const width = 50;
-		return chalk.hex(accent)(`╰${"─".repeat(width - 2)}╯`);
+		const width = 60;
+		return theme.fg("borderMuted", `╰${"─".repeat(width - 2)}╯`);
 	}
 
 	updateArgs(args: Record<string, unknown>): void {
@@ -93,13 +94,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
-		const bgColor = this.result
-			? this.result.isError
-				? { r: 68, g: 36, b: 44 }
-				: { r: 36, g: 52, b: 42 }
-			: { r: 34, g: 36, b: 48 };
-
-		this.contentText.setCustomBgRgb(bgColor);
+		// We rely on ANSI colors in the text itself rather than background fill
+		// for a cleaner look
 		this.contentText.setText(this.formatToolExecution());
 	}
 
@@ -114,7 +110,8 @@ export class ToolExecutionComponent extends Container {
 		if (!this.pendingStatus) {
 			return body;
 		}
-		const banner = chalk.hex("#fbbf24")(
+		const banner = theme.fg(
+			"warning",
 			`⚠ ${this.pendingStatus.trim() || "Awaiting approval"}`,
 		);
 		return `${banner}\n\n${body}`;
