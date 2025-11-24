@@ -861,10 +861,6 @@ export class TuiRenderer {
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.statusRailContainer);
 
-		// Always attach status rail (it auto-hides when empty)
-		// This ensures security notifications are never suppressed.
-		this.statusRailContainer.addChild(this.statusRail);
-
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(this.editorContainer); // Use container that can hold editor or selector
 		this.refreshFooterHint();
