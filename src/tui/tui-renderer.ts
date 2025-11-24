@@ -12,7 +12,7 @@ import type {
 	ToolResultMessage,
 } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
-import { getRegisteredModels, reloadModelConfig } from "../models/registry.js";
+import { getRegisteredModels } from "../models/registry.js";
 import {
 	type SessionModelMetadata,
 	toSessionModelMetadata,
@@ -50,6 +50,8 @@ import { ImportExportView } from "./import-view.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { ConversationCompactor } from "./conversation-compactor.js";
 import { MessageView } from "./message-view.js";
+import { FeedbackView } from "./feedback-view.js";
+import { InfoView } from "./info-view.js";
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -113,6 +115,8 @@ export class TuiRenderer {
 	private fileSearchView: FileSearchView;
 	private conversationCompactor: ConversationCompactor;
 	private messageView: MessageView;
+	private feedbackView: FeedbackView;
+	private infoView: InfoView;
 
 	constructor(
 		agent: Agent,
@@ -222,6 +226,20 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.showInfoMessage(message),
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
 		});
+		this.feedbackView = new FeedbackView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+		});
+		this.infoView = new InfoView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			getSlashCommands: () => this.slashCommands,
+			getLastUserMessage: () => this.lastUserMessageText,
+			getLastAssistantMessage: () => this.lastAssistantMessageText,
+			getLastRunToolNames: () => this.lastRunToolNames,
+		});
 		this.conversationCompactor = new ConversationCompactor({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -245,17 +263,17 @@ export class TuiRenderer {
 				importConfig: (input) => this.importExportView.handleImportCommand(input),
 				sessionInfo: () => this.sessionView.showSessionInfo(),
 				sessions: (input) => this.sessionView.handleSessionsCommand(input),
-				reportBug: () => this.diagnosticsView.handleBugCommand(),
+				reportBug: () => this.feedbackView.handleBugCommand(),
 				status: () => this.diagnosticsView.handleStatusCommand(),
 				review: () => this.gitView.handleReviewCommand(),
 				undoChanges: (input) => this.gitView.handleUndoCommand(input),
-				shareFeedback: () => this.diagnosticsView.handleFeedbackCommand(),
+				shareFeedback: () => this.feedbackView.handleFeedbackCommand(this.version),
 				mention: (input) => this.fileSearchView.handleMentionCommand(input),
-				help: () => this.handleHelpCommand(),
+				help: () => this.infoView.showHelp(),
 				plan: (input) => this.planView.handlePlanCommand(input),
 				preview: (input) => this.gitView.handlePreviewCommand(input),
 				run: (input) => this.runCommandView.handleRunCommand(input),
-				why: () => this.handleWhyCommand(),
+				why: () => this.infoView.showWhySummary(),
 				diagnostics: (input) =>
 					this.diagnosticsView.handleDiagnosticsCommand(input),
 				compact: () => this.handleCompactCommand(),
@@ -710,41 +728,6 @@ export class TuiRenderer {
 					: chalk.hex("#38bdf8");
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(color(`ℹ ${text}`), 1, 0));
-		this.ui.requestRender();
-	}
-
-	public handleHelpCommand(): void {
-		const lines = this.slashCommands.map(
-			(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
-		);
-		const text = `${chalk.bold("Slash commands")}
-${lines.join("\n")}`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(text, 1, 0));
-		this.ui.requestRender();
-	}
-
-	public handleWhyCommand(): void {
-		const user = this.lastUserMessageText
-			? this.lastUserMessageText
-			: chalk.dim("No recent user question recorded.");
-		const response = this.lastAssistantMessageText
-			? this.lastAssistantMessageText
-			: chalk.dim("No assistant response yet.");
-		const tools = this.lastRunToolNames.length
-			? this.lastRunToolNames.join(", ")
-			: chalk.dim("none");
-		const text = `${chalk.bold("Why summary")}
-${chalk.dim("Last question")}:
-${user}
-
-${chalk.dim("Tools invoked")}:
-${tools}
-
-${chalk.dim("Assistant reply")}:
-${response}`;
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(text, 1, 0));
 		this.ui.requestRender();
 	}
 
