@@ -102,6 +102,22 @@ function makeWorkflowContext(
 	};
 }
 
+function makeMcpToolContext(
+	toolName: string,
+	annotations?: {
+		readOnlyHint?: boolean;
+		destructiveHint?: boolean;
+		idempotentHint?: boolean;
+		openWorldHint?: boolean;
+	},
+): ActionApprovalContext {
+	return {
+		toolName,
+		args: {},
+		metadata: annotations ? { annotations } : undefined,
+	};
+}
+
 describe("ActionFirewall", () => {
 	it("requires approval for dangerous rm -rf patterns", () => {
 		const verdict = defaultActionFirewall.evaluate(
@@ -224,5 +240,78 @@ describe("ActionFirewall", () => {
 			},
 		});
 		expect(verdict.action).toBe("allow");
+	});
+
+	describe("MCP tool annotations", () => {
+		it("requires approval for MCP tools with destructiveHint=true", () => {
+			const verdict = defaultActionFirewall.evaluate(
+				makeMcpToolContext("mcp_server_delete_file", {
+					destructiveHint: true,
+				}),
+			);
+			expect(verdict.action).toBe("require_approval");
+			expect(verdict).toMatchObject({
+				ruleId: "mcp-destructive-tool",
+				reason: expect.stringContaining("destructive"),
+			});
+		});
+
+		it("allows MCP tools with destructiveHint=false", () => {
+			const verdict = defaultActionFirewall.evaluate(
+				makeMcpToolContext("mcp_server_read_file", {
+					destructiveHint: false,
+				}),
+			);
+			expect(verdict.action).toBe("allow");
+		});
+
+		it("allows MCP tools with no annotations", () => {
+			const verdict = defaultActionFirewall.evaluate(
+				makeMcpToolContext("mcp_server_list_files"),
+			);
+			expect(verdict.action).toBe("allow");
+		});
+
+		it("allows MCP tools with readOnlyHint=true even if destructiveHint=true", () => {
+			// readOnlyHint takes precedence - tool is safe
+			const verdict = defaultActionFirewall.evaluate(
+				makeMcpToolContext("mcp_server_safe_delete", {
+					readOnlyHint: true,
+					destructiveHint: true,
+				}),
+			);
+			expect(verdict.action).toBe("allow");
+		});
+
+		it("does not apply MCP annotation rule to non-MCP tools", () => {
+			const verdict = defaultActionFirewall.evaluate({
+				toolName: "bash",
+				args: { command: "echo safe" },
+				metadata: {
+					annotations: { destructiveHint: true },
+				},
+			});
+			// Should not trigger MCP rule (bash doesn't start with mcp_)
+			expect(verdict.action).toBe("allow");
+		});
+
+		it("allows MCP tools with only readOnlyHint=true", () => {
+			const verdict = defaultActionFirewall.evaluate(
+				makeMcpToolContext("mcp_server_query", {
+					readOnlyHint: true,
+				}),
+			);
+			expect(verdict.action).toBe("allow");
+		});
+
+		it("allows MCP tools with idempotentHint and openWorldHint", () => {
+			const verdict = defaultActionFirewall.evaluate(
+				makeMcpToolContext("mcp_server_fetch", {
+					idempotentHint: true,
+					openWorldHint: true,
+				}),
+			);
+			expect(verdict.action).toBe("allow");
+		});
 	});
 });

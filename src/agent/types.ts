@@ -101,6 +101,17 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	parameters: TParameters;
 }
 
+export interface ToolAnnotations {
+	/** If true, the tool does not modify its environment */
+	readOnlyHint?: boolean;
+	/** If true, the tool may perform destructive updates */
+	destructiveHint?: boolean;
+	/** If true, calling repeatedly with same args has no additional effect */
+	idempotentHint?: boolean;
+	/** If true, the tool interacts with external systems */
+	openWorldHint?: boolean;
+}
+
 export interface AgentTool<
 	TParameters extends TSchema = TSchema,
 	TDetails = unknown,
@@ -109,6 +120,8 @@ export interface AgentTool<
 	label?: string;
 	description: string;
 	parameters: TParameters;
+	/** Tool behavior hints from MCP annotations */
+	annotations?: ToolAnnotations;
 	execute: (
 		toolCallId: string,
 		params: Record<string, unknown>,

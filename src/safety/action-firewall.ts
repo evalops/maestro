@@ -106,7 +106,30 @@ function isHumanFacingTool(toolName: string): boolean {
 	return false;
 }
 
+function getAnnotations(context: ActionApprovalContext) {
+	return context.metadata?.annotations;
+}
+
+function isMcpTool(toolName: string): boolean {
+	return toolName.startsWith("mcp_");
+}
+
 export const defaultFirewallRules: ActionFirewallRule[] = [
+	// MCP tool annotations rule - require approval for destructive MCP tools
+	{
+		id: "mcp-destructive-tool",
+		description: "MCP tools marked as destructive require approval",
+		match: (ctx) => {
+			if (!isMcpTool(ctx.toolName)) return false;
+			const annotations = getAnnotations(ctx);
+			// Require approval if destructiveHint is true and readOnlyHint is not true
+			return (
+				annotations?.destructiveHint === true && !annotations?.readOnlyHint
+			);
+		},
+		reason: (ctx) =>
+			`MCP tool "${ctx.toolName}" is marked as destructive and requires approval`,
+	},
 	{
 		id: "plan-mode-confirm",
 		description:

@@ -3,7 +3,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
+import {
+	LoggingMessageNotificationSchema,
+	type Tool as McpTool,
+	ProgressNotificationSchema,
+	PromptListChangedNotificationSchema,
+	ResourceListChangedNotificationSchema,
+	ToolListChangedNotificationSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import type {
 	McpConfig,
 	McpManagerStatus,
@@ -178,6 +185,10 @@ export class McpClientManager extends EventEmitter {
 				reconnectAttempts: 0,
 			});
 
+			// Set up notification handlers after adding to servers map
+			// to avoid race condition where notifications arrive before server is tracked
+			this.setupNotificationHandlers(client, name);
+
 			this.emit("connected", { name, tools: tools.length, isReconnect });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -284,6 +295,104 @@ export class McpClientManager extends EventEmitter {
 		} catch {
 			return [];
 		}
+	}
+
+	private setupNotificationHandlers(client: Client, serverName: string): void {
+		// Tool list changes - refresh tools when server notifies
+		client.setNotificationHandler(
+			ToolListChangedNotificationSchema,
+			async () => {
+				try {
+					const server = this.servers.get(serverName);
+					if (server) {
+						server.tools = await this.fetchTools(client);
+						this.emit("tools_changed", {
+							name: serverName,
+							tools: server.tools,
+						});
+					}
+				} catch (error) {
+					const msg = error instanceof Error ? error.message : String(error);
+					console.error(
+						`[mcp] Failed to refresh tools for ${serverName}:`,
+						msg,
+					);
+				}
+			},
+		);
+
+		// Resource list changes
+		client.setNotificationHandler(
+			ResourceListChangedNotificationSchema,
+			async () => {
+				try {
+					const server = this.servers.get(serverName);
+					if (server) {
+						server.resources = await this.fetchResources(client);
+						this.emit("resources_changed", {
+							name: serverName,
+							resources: server.resources,
+						});
+					}
+				} catch (error) {
+					const msg = error instanceof Error ? error.message : String(error);
+					console.error(
+						`[mcp] Failed to refresh resources for ${serverName}:`,
+						msg,
+					);
+				}
+			},
+		);
+
+		// Prompt list changes
+		client.setNotificationHandler(
+			PromptListChangedNotificationSchema,
+			async () => {
+				try {
+					const server = this.servers.get(serverName);
+					if (server) {
+						server.prompts = await this.fetchPrompts(client);
+						this.emit("prompts_changed", {
+							name: serverName,
+							prompts: server.prompts,
+						});
+					}
+				} catch (error) {
+					const msg = error instanceof Error ? error.message : String(error);
+					console.error(
+						`[mcp] Failed to refresh prompts for ${serverName}:`,
+						msg,
+					);
+				}
+			},
+		);
+
+		// Progress notifications for long-running operations
+		client.setNotificationHandler(
+			ProgressNotificationSchema,
+			(notification) => {
+				this.emit("progress", {
+					name: serverName,
+					progressToken: notification.params.progressToken,
+					progress: notification.params.progress,
+					total: notification.params.total,
+					message: notification.params.message,
+				});
+			},
+		);
+
+		// Logging messages from MCP servers
+		client.setNotificationHandler(
+			LoggingMessageNotificationSchema,
+			(notification) => {
+				this.emit("log", {
+					name: serverName,
+					level: notification.params.level,
+					logger: notification.params.logger,
+					data: notification.params.data,
+				});
+			},
+		);
 	}
 
 	private async disconnectServer(name: string): Promise<void> {

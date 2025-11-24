@@ -30,6 +30,13 @@ export interface ActionApprovalContext {
 	metadata?: {
 		/** Snapshot of per-run workflow state used by safety policies. */
 		workflowState?: WorkflowStateSnapshot;
+		/** Tool annotations from MCP for approval decisions */
+		annotations?: {
+			readOnlyHint?: boolean;
+			destructiveHint?: boolean;
+			idempotentHint?: boolean;
+			openWorldHint?: boolean;
+		};
 	};
 }
 

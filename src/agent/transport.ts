@@ -536,11 +536,14 @@ export class ProviderTransport implements AgentTransport {
 					let approvalAllowed = true;
 					let approvalReason: string | undefined;
 					const workflowSnapshot = this.workflowState.snapshot();
+					// Look up tool to get annotations for firewall decisions
+					const toolDef = tools.find((t) => t.name === toolCall.name);
 					const verdict = firewall.evaluate({
 						toolName: toolCall.name,
 						args: toolCall.arguments,
 						metadata: {
 							workflowState: workflowSnapshot,
+							annotations: toolDef?.annotations,
 						},
 					});
 					if (
@@ -607,8 +610,8 @@ export class ProviderTransport implements AgentTransport {
 						continue;
 					}
 
-					const tool = tools.find((t) => t.name === toolCall.name);
-					if (!tool) {
+					// Use toolDef from earlier lookup
+					if (!toolDef) {
 						const errorResult: ToolResultMessage = {
 							role: "toolResult",
 							toolCallId: toolCall.id,
@@ -627,6 +630,7 @@ export class ProviderTransport implements AgentTransport {
 						}
 						continue;
 					}
+					const tool = toolDef;
 
 					let validatedArgs: Record<string, unknown>;
 					try {

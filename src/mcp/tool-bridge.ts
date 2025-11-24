@@ -58,12 +58,30 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 		? convertJsonSchemaToTypebox(mcpTool.inputSchema)
 		: Type.Object({});
 
+	// Extract MCP tool annotations for approval decisions
+	const mcpAnnotations = mcpTool.annotations as
+		| {
+				readOnlyHint?: boolean;
+				destructiveHint?: boolean;
+				idempotentHint?: boolean;
+				openWorldHint?: boolean;
+		  }
+		| undefined;
+
 	return createTool<typeof schema, McpToolDetails>({
 		name: toolName,
 		label: `${serverName}/${mcpTool.name}`,
 		description:
 			mcpTool.description ?? `MCP tool from ${serverName}: ${mcpTool.name}`,
 		schema,
+		annotations: mcpAnnotations
+			? {
+					readOnlyHint: mcpAnnotations.readOnlyHint,
+					destructiveHint: mcpAnnotations.destructiveHint,
+					idempotentHint: mcpAnnotations.idempotentHint,
+					openWorldHint: mcpAnnotations.openWorldHint,
+				}
+			: undefined,
 		async run(params, { respond }) {
 			const result = await mcpManager.callTool(
 				serverName,

@@ -1,7 +1,8 @@
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ToolAnnotations } from "../src/agent/types.js";
 import { loadMcpConfig } from "../src/mcp/config.js";
 import { McpClientManager } from "../src/mcp/manager.js";
 
@@ -298,5 +299,72 @@ describe("MCP client manager", () => {
 	it("getServer returns undefined for unknown server", () => {
 		const manager = new McpClientManager();
 		expect(manager.getServer("unknown")).toBeUndefined();
+	});
+
+	describe("event emissions", () => {
+		it("has typed event emitter methods", () => {
+			const manager = new McpClientManager();
+
+			// Verify event emitter methods exist and are typed
+			expect(typeof manager.on).toBe("function");
+			expect(typeof manager.off).toBe("function");
+			expect(typeof manager.emit).toBe("function");
+
+			// Can register handlers for all event types
+			const connectedHandler = vi.fn();
+			const disconnectedHandler = vi.fn();
+			const errorHandler = vi.fn();
+			const toolsChangedHandler = vi.fn();
+			const resourcesChangedHandler = vi.fn();
+			const promptsChangedHandler = vi.fn();
+			const progressHandler = vi.fn();
+			const logHandler = vi.fn();
+
+			manager.on("connected", connectedHandler);
+			manager.on("disconnected", disconnectedHandler);
+			manager.on("error", errorHandler);
+			manager.on("tools_changed", toolsChangedHandler);
+			manager.on("resources_changed", resourcesChangedHandler);
+			manager.on("prompts_changed", promptsChangedHandler);
+			manager.on("progress", progressHandler);
+			manager.on("log", logHandler);
+
+			// Clean up
+			manager.off("connected", connectedHandler);
+			manager.off("disconnected", disconnectedHandler);
+			manager.off("error", errorHandler);
+			manager.off("tools_changed", toolsChangedHandler);
+			manager.off("resources_changed", resourcesChangedHandler);
+			manager.off("prompts_changed", promptsChangedHandler);
+			manager.off("progress", progressHandler);
+			manager.off("log", logHandler);
+		});
+	});
+});
+
+describe("MCP tool annotations", () => {
+	it("ToolAnnotations interface has all MCP spec fields", () => {
+		const annotations: ToolAnnotations = {
+			readOnlyHint: true,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false,
+		};
+
+		expect(annotations.readOnlyHint).toBe(true);
+		expect(annotations.destructiveHint).toBe(false);
+		expect(annotations.idempotentHint).toBe(true);
+		expect(annotations.openWorldHint).toBe(false);
+	});
+
+	it("ToolAnnotations allows partial definitions", () => {
+		const readOnly: ToolAnnotations = { readOnlyHint: true };
+		const destructive: ToolAnnotations = { destructiveHint: true };
+		const empty: ToolAnnotations = {};
+
+		expect(readOnly.readOnlyHint).toBe(true);
+		expect(readOnly.destructiveHint).toBeUndefined();
+		expect(destructive.destructiveHint).toBe(true);
+		expect(Object.keys(empty)).toHaveLength(0);
 	});
 });

@@ -674,6 +674,31 @@ export async function main(args: string[]) {
 			}
 		});
 
+		// Listen for tool list changes to update agent tools dynamically
+		// Debounced to handle rapid concurrent updates from multiple servers
+		let toolsChangedTimeout: ReturnType<typeof setTimeout> | null = null;
+		mcpManager.on("tools_changed", () => {
+			if (toolsChangedTimeout) clearTimeout(toolsChangedTimeout);
+			toolsChangedTimeout = setTimeout(() => {
+				toolsChangedTimeout = null;
+				const mcpTools = getAllMcpTools();
+				const updatedTools = [...codingTools, ...mcpTools];
+				agent.setTools(updatedTools);
+				composerManager.updateBaseTools(updatedTools);
+			}, 100);
+		});
+
+		// Clear pending timeout only when all servers have disconnected
+		mcpManager.on("disconnected", () => {
+			const hasConnectedServers = mcpManager
+				.getStatus()
+				.servers.some((s) => s.connected);
+			if (!hasConnectedServers && toolsChangedTimeout) {
+				clearTimeout(toolsChangedTimeout);
+				toolsChangedTimeout = null;
+			}
+		});
+
 		mcpManager.configure(mcpConfig).catch((err) => {
 			console.warn("[mcp] Failed to initialize MCP servers:", err);
 		});

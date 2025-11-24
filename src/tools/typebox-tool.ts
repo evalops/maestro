@@ -2,7 +2,11 @@ import { performance } from "node:perf_hooks";
 import type { Static, TSchema } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
 import type { ErrorObject } from "ajv";
-import type { AgentTool, AgentToolResult } from "../agent/types.js";
+import type {
+	AgentTool,
+	AgentToolResult,
+	ToolAnnotations,
+} from "../agent/types.js";
 import { logToolFailure, recordToolExecution } from "../telemetry.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 
@@ -15,6 +19,7 @@ interface CreateTypeboxToolOptions<Schema extends TSchema, Details> {
 	label: string;
 	description: string;
 	schema: Schema;
+	annotations?: ToolAnnotations;
 	maxRetries?: number;
 	retryDelayMs?: number;
 	shouldRetry?: (error: unknown) => boolean;
@@ -37,6 +42,7 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 		label: options.label,
 		description: options.description,
 		parameters,
+		annotations: options.annotations,
 		execute: async (toolCallId, params, signal) => {
 			let parsedParams: Static<Schema>;
 			const input =
