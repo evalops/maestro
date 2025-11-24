@@ -1,0 +1,504 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Composer Web API",
+    "version": "0.10.0",
+    "description": "Auto-generated from src/web-server.ts routes. Components seeded from runtime schemas."
+  },
+  "servers": [
+    {
+      "url": "https://api.example.com"
+    }
+  ],
+  "paths": {
+    "/api/models": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Registered models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/status": {
+      "get": {
+        "summary": "Server status",
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "summary": "Get custom config",
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Config payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Write custom config",
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigWriteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Config persisted"
+          },
+          "400": {
+            "description": "Invalid config"
+          },
+          "413": {
+            "description": "Payload too large"
+          }
+        }
+      }
+    },
+    "/api/usage": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/model": {
+      "get": {
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current model selection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelSelectionResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get active model"
+      },
+      "post": {
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current model selection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelSelectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid model selection"
+          },
+          "404": {
+            "description": "Model not found"
+          }
+        },
+        "summary": "Set active model",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelSetRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "summary": "Send a chat request (SSE)",
+        "description": "Streams SSE events; final marker is [DONE].",
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/sessions": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/sessions/{id}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ComposerApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-composer-api-key",
+        "description": "Value of COMPOSER_WEB_API_KEY. Authorization: Bearer <key> is also accepted."
+      }
+    },
+    "schemas": {
+      "ChatRequest": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "role"
+              ]
+            }
+          },
+          "model": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "thinkingLevel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messages"
+        ]
+      },
+      "ModelSetRequest": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "model"
+        ]
+      },
+      "ChatMessage": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ModelEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "api"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "api": {
+            "type": "string"
+          },
+          "contextWindow": {
+            "type": "integer"
+          },
+          "maxTokens": {
+            "type": "integer"
+          },
+          "cost": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "streaming": {
+                "type": "boolean"
+              },
+              "tools": {
+                "type": "boolean"
+              },
+              "vision": {
+                "type": "boolean"
+              },
+              "reasoning": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "ModelsResponse": {
+        "type": "object",
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelEntry"
+            }
+          }
+        }
+      },
+      "ModelSelectionResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "contextWindow": {
+            "type": "integer"
+          },
+          "maxTokens": {
+            "type": "integer"
+          },
+          "reasoning": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ConfigWriteRequest": {
+        "type": "object",
+        "required": [
+          "config"
+        ],
+        "properties": {
+          "config": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": true
+      },
+      "ConfigResponse": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object"
+          },
+          "configPath": {
+            "type": "string"
+          }
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "properties": {
+          "cwd": {
+            "type": "string"
+          },
+          "git": {
+            "type": "object",
+            "properties": {
+              "branch": {
+                "type": "string"
+              },
+              "status": {
+                "type": "object"
+              }
+            }
+          },
+          "context": {
+            "type": "object",
+            "properties": {
+              "agentMd": {
+                "type": "boolean"
+              },
+              "claudeMd": {
+                "type": "boolean"
+              }
+            }
+          },
+          "server": {
+            "type": "object",
+            "properties": {
+              "uptime": {
+                "type": "number"
+              },
+              "version": {
+                "type": "string"
+              },
+              "staticCacheMaxAgeSeconds": {
+                "type": "number"
+              }
+            }
+          },
+          "backgroundTasks": {
+            "type": "object"
+          },
+          "lastUpdated": {
+            "type": "number"
+          },
+          "lastLatencyMs": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  }
+}
