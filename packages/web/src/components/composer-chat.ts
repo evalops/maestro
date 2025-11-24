@@ -41,10 +41,6 @@ export class ComposerChat extends LitElement {
 			color: var(--text-primary, #f4f4f5);
 			overflow: hidden;
 			font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
-			--icon-btn-size: 32px;
-			--icon-btn-font-size: 0.9rem;
-			--icon-btn-border-color: transparent;
-			--icon-btn-hover: var(--bg-panel, #27272a);
 		}
 
 		/* Sidebar - Solid & Matte */
@@ -226,6 +222,7 @@ export class ComposerChat extends LitElement {
 			display: flex;
 			align-items: center;
 			gap: 0.5rem;
+			flex-wrap: nowrap;
 			font-family: var(--font-mono);
 			font-size: 0.7rem;
 			color: var(--text-secondary, #a1a1aa);
@@ -252,6 +249,13 @@ export class ComposerChat extends LitElement {
 			border-color: rgba(59, 130, 246, 0.3);
 			background: rgba(59, 130, 246, 0.05);
 			color: var(--accent-blue, #3b82f6);
+		}
+
+		.header-right {
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+			flex-wrap: nowrap;
 		}
 
 		.pill {
@@ -345,28 +349,29 @@ export class ComposerChat extends LitElement {
 
 		/* Icon Buttons - Minimal */
 		.icon-btn {
-			width: var(--icon-btn-size);
-			height: var(--icon-btn-size);
+			width: var(--control-icon-size, 26px);
+			height: var(--control-icon-size, 26px);
 			padding: 0;
 			background: transparent;
-			border: none;
-			border-radius: 6px;
+			border: 1px solid var(--border-color, #30363d);
+			border-radius: 4px;
 			color: var(--text-secondary, #a1a1aa);
 			cursor: pointer;
 			transition: all 0.2s;
-			display: inline-flex;
+			display: flex;
 			align-items: center;
 			justify-content: center;
 		}
 
 		.icon-btn:hover {
-			background: var(--bg-panel, #27272a);
+			background: var(--control-hover-bg, color-mix(in srgb, var(--accent-color, #2f81f7) 14%, transparent));
+			border-color: var(--border-color, #30363d);
 			color: var(--text-primary, #f4f4f5);
 		}
 
 		.icon-btn.active {
-			background: var(--accent-blue-dim);
-			color: var(--accent-blue, #3b82f6);
+			background: color-mix(in srgb, var(--accent-color, #2f81f7) 18%, transparent);
+			color: var(--accent-color, #2f81f7);
 		}
 
 		.icon {
