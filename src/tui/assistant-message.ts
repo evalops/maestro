@@ -1,5 +1,4 @@
 import { Container, Markdown, Spacer, Text } from "@evalops/tui";
-import chalk from "chalk";
 import type { RenderableAssistantMessage } from "../conversation/render-model.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
@@ -8,7 +7,6 @@ import { getMarkdownTheme, theme } from "../theme/theme.js";
  */
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
-	private panelWidth = 64;
 
 	constructor(message?: RenderableAssistantMessage) {
 		super();

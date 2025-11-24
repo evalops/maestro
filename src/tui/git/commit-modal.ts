@@ -13,10 +13,16 @@ export class CommitModal implements Component {
 
 	constructor(private readonly options: CommitModalOptions) {
 		this.editor = new CustomEditor();
+		this.editor.placeholder = "Enter commit message (required)";
 		this.editor.onSubmit = (text) => {
-			if (text.trim()) {
-				this.options.onSubmit(text);
+			const trimmed = text.trim();
+			if (!trimmed) {
+				// Visual feedback for empty input?
+				// CustomEditor doesn't expose error state yet, but we can shake/flash or just ignore.
+				// For now, we just ignore. The placeholder signals it's required.
+				return;
 			}
+			this.options.onSubmit(trimmed);
 		};
 		this.editor.setText(""); // Ensure empty start
 	}

@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,

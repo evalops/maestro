@@ -25,8 +25,23 @@ interface ContextItem {
 
 export class ContextView implements Component {
 	private scrollOffset = 0;
+	private cachedItems: ContextItem[] = [];
+	private lastStateRef: AgentState | null = null;
 
 	constructor(private readonly options: ContextViewOptions) {}
+
+	private getItems(): ContextItem[] {
+		if (this.options.state === this.lastStateRef && this.cachedItems.length > 0) {
+			return this.cachedItems;
+		}
+		const stats = calculateFooterStats(this.options.state);
+		this.cachedItems = this.analyzeContext(
+			this.options.state,
+			stats.contextTokens,
+		);
+		this.lastStateRef = this.options.state;
+		return this.cachedItems;
+	}
 
 	render(width: number): string[] {
 		const lines: string[] = [];
@@ -44,7 +59,7 @@ export class ContextView implements Component {
 		lines.push(theme.fg("borderAccent", `├${"─".repeat(width - 2)}┤`));
 
 		const stats = calculateFooterStats(this.options.state);
-		const items = this.analyzeContext(this.options.state, stats.contextTokens);
+		const items = this.getItems();
 
 		// Stats Summary
 		const summary = `Total: ${formatTokenCount(stats.contextTokens)} / ${formatTokenCount(stats.contextWindow)} (${stats.contextPercent.toFixed(1)}%)`;
@@ -109,6 +124,11 @@ export class ContextView implements Component {
 			this.options.onClose();
 			return;
 		}
+
+		const maxDisplay = 15;
+		const items = this.getItems();
+		const maxOffset = Math.max(0, items.length - maxDisplay);
+
 		if (data === "\x1b[A") {
 			// Up
 			this.scrollOffset = Math.max(0, this.scrollOffset - 1);
@@ -116,7 +136,7 @@ export class ContextView implements Component {
 		}
 		if (data === "\x1b[B") {
 			// Down
-			this.scrollOffset = Math.max(0, this.scrollOffset + 1);
+			this.scrollOffset = Math.min(maxOffset, this.scrollOffset + 1);
 			return;
 		}
 	}
@@ -133,7 +153,7 @@ export class ContextView implements Component {
 		if (state.systemPrompt) {
 			const tokens = estimate(state.systemPrompt);
 			items.push({
-				label: "System Prompt",
+				label: "System Prompt (est.)",
 				tokens,
 				percent: totalTokens > 0 ? (tokens / totalTokens) * 100 : 0,
 				type: "system",
@@ -152,7 +172,7 @@ export class ContextView implements Component {
 				}
 
 				items.push({
-					label,
+					label: `${label} (est.)`,
 					tokens,
 					percent: totalTokens > 0 ? (tokens / totalTokens) * 100 : 0,
 					type: "user",
@@ -160,11 +180,12 @@ export class ContextView implements Component {
 			} else if (msg.role === "assistant") {
 				const assistantMsg = msg as AssistantMessage;
 				// Use actual usage if available
+				const hasUsage = !!assistantMsg.usage;
 				const actualTokens = assistantMsg.usage
 					? (assistantMsg.usage.output ?? 0)
 					: tokens;
 				items.push({
-					label: "Assistant Response",
+					label: hasUsage ? "Assistant Response" : "Assistant Response (est.)",
 					tokens: actualTokens,
 					percent: totalTokens > 0 ? (actualTokens / totalTokens) * 100 : 0,
 					type: "assistant",
@@ -172,7 +193,7 @@ export class ContextView implements Component {
 			} else if (msg.role === "toolResult") {
 				// Tool result
 				items.push({
-					label: `Tool Output (${(msg as ToolResultMessage).toolName})`,
+					label: `Tool Output (${(msg as ToolResultMessage).toolName}) (est.)`,
 					tokens,
 					percent: totalTokens > 0 ? (tokens / totalTokens) * 100 : 0,
 					type: "tool",

@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import { highlightCodeLines } from "../../style/code-highlighter.js";
 import { theme } from "../../theme/theme.js";
 import {

@@ -1,5 +1,4 @@
 import { Container, Spacer, Text } from "@evalops/tui";
-import chalk from "chalk";
 import { theme } from "../theme/theme.js";
 import {
 	type ToolRenderer,
