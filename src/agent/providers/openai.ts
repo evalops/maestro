@@ -806,7 +806,6 @@ export async function* streamOpenAI(
 									partial,
 								};
 								toolEnded.add(i);
-								toolArgBuffers.delete(i);
 							} else if (block.type === "text" && !textEnded.has(i)) {
 								yield {
 									type: "text_end",

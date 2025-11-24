@@ -442,16 +442,9 @@ export class ProviderTransport implements AgentTransport {
 
 				for (const toolCall of toolCallsToExecute) {
 					const signature = stableStringify(toolCall.arguments);
-					this.recentToolCalls.push({ name: toolCall.name, signature });
-					if (
-						this.recentToolCalls.length >
-						ProviderTransport.DOOM_LOOP_THRESHOLD + 2
-					) {
-						this.recentToolCalls.shift();
-					}
-					const tail = this.recentToolCalls.slice(
-						-ProviderTransport.DOOM_LOOP_THRESHOLD,
-					);
+					const tail = this.recentToolCalls
+						.concat({ name: toolCall.name, signature })
+						.slice(-ProviderTransport.DOOM_LOOP_THRESHOLD);
 					const doomLoop =
 						tail.length === ProviderTransport.DOOM_LOOP_THRESHOLD &&
 						tail.every(
@@ -476,6 +469,13 @@ export class ProviderTransport implements AgentTransport {
 							yield evt;
 						}
 						continue;
+					}
+					this.recentToolCalls.push({ name: toolCall.name, signature });
+					if (
+						this.recentToolCalls.length >
+						ProviderTransport.DOOM_LOOP_THRESHOLD + 2
+					) {
+						this.recentToolCalls.shift();
 					}
 
 					yield {
