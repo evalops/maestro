@@ -3,7 +3,7 @@ import { normalize, resolve } from "node:path";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
-import type { CustomEditor } from "../custom-editor.js";
+import type { ModalManager } from "../modal-manager.js";
 import { CommitModal } from "./commit-modal.js";
 import {
 	GitPreviewModal,
@@ -16,8 +16,7 @@ interface GitViewOptions {
 	ui: TUI;
 	showInfoMessage: (message: string) => void;
 	showToast: (message: string, tone?: "info" | "warn" | "success") => void;
-	editor: CustomEditor;
-	editorContainer: Container;
+	modalManager: ModalManager;
 }
 
 export class GitView {
@@ -51,18 +50,14 @@ export class GitView {
 				onToggleMode: () => void this.togglePreviewMode(),
 				onCommit: () => this.openCommitModal(),
 			});
-			this.options.editorContainer.clear();
-			this.options.editorContainer.addChild(this.previewModal);
-			this.options.ui.setFocus(this.previewModal);
+			this.options.modalManager.push(this.previewModal);
 		}
 		await this.refreshPreviewEntries(target);
 	}
 
 	private closePreviewModal(): void {
 		if (!this.previewModal) return;
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.options.editor);
-		this.options.ui.setFocus(this.options.editor);
+		this.options.modalManager.pop();
 		this.previewModal = null;
 		this.previewEntries = [];
 	}
@@ -72,20 +67,12 @@ export class GitView {
 			onSubmit: (message) => void this.performCommit(message),
 			onCancel: () => this.closeCommitModal(),
 		});
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.commitModal);
-		this.options.ui.setFocus(this.commitModal);
+		this.options.modalManager.push(this.commitModal);
 	}
 
 	private closeCommitModal(): void {
 		this.commitModal = null;
-		if (this.previewModal) {
-			this.options.editorContainer.clear();
-			this.options.editorContainer.addChild(this.previewModal);
-			this.options.ui.setFocus(this.previewModal);
-		} else {
-			this.closePreviewModal();
-		}
+		this.options.modalManager.pop();
 	}
 
 	private async performCommit(message: string): Promise<void> {

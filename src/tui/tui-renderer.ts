@@ -124,6 +124,7 @@ import { handleAgentsInit } from "../cli/commands/agents.js";
 import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
+import { ModalManager } from "./modal-manager.js";
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
@@ -221,7 +222,6 @@ export class TuiRenderer {
 	private aboutView: AboutView;
 	private changelogView: ChangelogView;
 	private contextView?: ContextView;
-	private contextViewVisible = false;
 	private infoView: InfoView;
 	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
@@ -233,8 +233,6 @@ export class TuiRenderer {
 	private userMessageSelectorView: UserMessageSelectorView;
 	private queuePanelModal?: QueuePanelModal;
 	private planPanelModal?: PlanPanelModal;
-	private queuePanelVisible = false;
-	private planPanelVisible = false;
 	private notificationView: NotificationView;
 	private backgroundTaskNotificationCleanup?: () => void;
 	private updateView: UpdateView;
@@ -274,6 +272,7 @@ export class TuiRenderer {
 	private updateNotice?: UpdateCheckResult | null;
 	private isCyclingModel = false;
 	private isOAuthFlowActive = false;
+	private modalManager: ModalManager;
 
 	constructor(
 		agent: Agent,
@@ -334,6 +333,11 @@ export class TuiRenderer {
 		};
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.editorContainer.addChild(this.editor); // Start with editor
+		this.modalManager = new ModalManager(
+			this.editorContainer,
+			this.ui,
+			this.editor,
+		);
 		this.footer = new FooterComponent(agent.state, this.footerMode);
 		this.notificationView = new NotificationView({
 			chatContainer: this.chatContainer,
@@ -377,8 +381,7 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			showToast: (message, tone) =>
 				this.notificationView.showToast(message, tone),
-			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 		});
 		this.runController = new RunController({
 			loaderView: this.loaderView,
@@ -432,8 +435,7 @@ export class TuiRenderer {
 		});
 		this.sessionSwitcherView = new SessionSwitcherView({
 			sessionDataProvider: this.sessionDataProvider,
-			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			loadSession: (session) => this.sessionView.loadSessionFromItem(session),
@@ -457,14 +459,14 @@ export class TuiRenderer {
 		});
 		this.fileSearchView = new FileSearchView({
 			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.commandPaletteView = new CommandPaletteView({
 			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 			ui: this.ui,
 			getCommands: () => this.slashCommands,
 		});
@@ -543,29 +545,25 @@ export class TuiRenderer {
 		this.thinkingSelectorView = new ThinkingSelectorView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
-			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.modelSelectorView = new ModelSelectorView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
-			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		this.queueModeSelectorView = new QueueModeSelectorView({
 			ui: this.ui,
-			editorContainer: this.editorContainer,
-			editor: this.editor,
+			modalManager: this.modalManager,
 			notificationView: this.notificationView,
 			onModeSelected: (mode) => this.setQueueMode(mode),
 		});
 		this.reportSelectorView = new ReportSelectorView({
-			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 			ui: this.ui,
 			onSelect: (type) => {
 				if (type === "bug") {
@@ -579,8 +577,7 @@ export class TuiRenderer {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			editor: this.editor,
-			editorContainer: this.editorContainer,
-			chatContainer: this.chatContainer,
+			modalManager: this.modalManager,
 			ui: this.ui,
 			notificationView: this.notificationView,
 			onBranchCreated: () => {
@@ -599,11 +596,7 @@ export class TuiRenderer {
 		});
 		this.queuePanelModal = new QueuePanelModal({
 			onClose: () => {
-				this.queuePanelVisible = false;
-				this.editorContainer.clear();
-				this.editorContainer.addChild(this.editor);
-				this.ui.setFocus(this.editor);
-				this.ui.requestRender();
+				this.modalManager.pop();
 			},
 			onCancel: (id) => {
 				if (this.promptQueue) {
@@ -627,11 +620,7 @@ export class TuiRenderer {
 		});
 		this.planPanelModal = new PlanPanelModal({
 			onClose: () => {
-				this.planPanelVisible = false;
-				this.editorContainer.clear();
-				this.editorContainer.addChild(this.editor);
-				this.ui.setFocus(this.editor);
-				this.ui.requestRender();
+				this.modalManager.pop();
 			},
 			onNavigate: (delta) => {
 				this.planPanelModal?.navigateTasks(delta);
@@ -1165,28 +1154,11 @@ export class TuiRenderer {
 	}
 
 	private handleContextCommand(_context: CommandExecutionContext): void {
-		if (this.contextViewVisible) {
-			this.closeContextView();
-			return;
-		}
-		this.contextViewVisible = true;
-		this.contextView = new ContextView({
+		const contextView = new ContextView({
 			state: this.agent.state,
-			onClose: () => this.closeContextView(),
+			onClose: () => this.modalManager.pop(),
 		});
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.contextView);
-		this.ui.setFocus(this.contextView);
-		this.ui.requestRender();
-	}
-
-	private closeContextView(): void {
-		this.contextViewVisible = false;
-		this.contextView = undefined;
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
-		this.ui.setFocus(this.editor);
-		this.ui.requestRender();
+		this.modalManager.push(contextView);
 	}
 
 	private handleFooterCommand(context: CommandExecutionContext): void {
@@ -1694,11 +1666,7 @@ export class TuiRenderer {
 			snapshot.pending,
 			this.promptQueueMode,
 		);
-		this.queuePanelVisible = true;
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.queuePanelModal);
-		this.ui.setFocus(this.queuePanelModal);
-		this.ui.requestRender();
+		this.modalManager.push(this.queuePanelModal);
 	}
 
 	private refreshQueuePanel(): void {
@@ -1711,7 +1679,7 @@ export class TuiRenderer {
 			snapshot.pending,
 			this.promptQueueMode,
 		);
-		if (this.queuePanelVisible) {
+		if (this.modalManager.getActiveModal() === this.queuePanelModal) {
 			this.ui.requestRender();
 		}
 	}
@@ -1733,11 +1701,7 @@ export class TuiRenderer {
 		}
 		const store = loadTodoStore(TODO_STORE_PATH);
 		this.planPanelModal.setData(store);
-		this.planPanelVisible = true;
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.planPanelModal);
-		this.ui.setFocus(this.planPanelModal);
-		this.ui.requestRender();
+		this.modalManager.push(this.planPanelModal);
 	}
 
 	private handlePlanStoreChanged(store: TodoStore): void {
@@ -1745,7 +1709,7 @@ export class TuiRenderer {
 			return;
 		}
 		this.planPanelModal.setData(store);
-		if (this.planPanelVisible) {
+		if (this.modalManager.getActiveModal() === this.planPanelModal) {
 			this.ui.requestRender();
 		}
 	}
@@ -2706,8 +2670,7 @@ export class TuiRenderer {
 		// Multiple providers - show selector
 		// Always create new selector to avoid stale closure over selectedMode and context
 		this.oauthLoginView = new OAuthSelectorView({
-			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 			ui: this.ui,
 			mode: "login",
 			onProviderSelected: async (providerId) => {
@@ -2912,8 +2875,7 @@ export class TuiRenderer {
 		// Multiple providers - show selector
 		// Always create new selector to avoid stale closure over context
 		this.oauthLogoutView = new OAuthSelectorView({
-			editor: this.editor,
-			editorContainer: this.editorContainer,
+			modalManager: this.modalManager,
 			ui: this.ui,
 			mode: "logout",
 			onProviderSelected: async (providerId) => {

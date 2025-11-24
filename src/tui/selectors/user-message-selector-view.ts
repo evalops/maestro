@@ -1,8 +1,8 @@
-import type { Container, TUI } from "@evalops/tui";
+import type { TUI } from "@evalops/tui";
 import type { Agent } from "../../agent/agent.js";
-import type { AppMessage } from "../../agent/types.js";
 import type { SessionManager } from "../../session/manager.js";
 import type { CustomEditor } from "../custom-editor.js";
+import type { ModalManager } from "../modal-manager.js";
 import type { NotificationView } from "../notification-view.js";
 import {
 	type UserMessageItem,
@@ -13,8 +13,7 @@ interface UserMessageSelectorViewOptions {
 	agent: Agent;
 	sessionManager: SessionManager;
 	editor: CustomEditor;
-	editorContainer: Container;
-	chatContainer: Container;
+	modalManager: ModalManager;
 	ui: TUI;
 	notificationView: NotificationView;
 	onBranchCreated: () => void;
@@ -76,10 +75,7 @@ export class UserMessageSelectorView {
 			() => this.hide(),
 		);
 
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.selector);
-		this.options.ui.setFocus(this.selector.getMessageList());
-		this.options.ui.requestRender();
+		this.options.modalManager.push(this.selector);
 	}
 
 	private handleBranch(messageIndex: number): void {
@@ -154,9 +150,7 @@ export class UserMessageSelectorView {
 		if (!this.selector) {
 			return;
 		}
-		this.options.editorContainer.clear();
-		this.options.editorContainer.addChild(this.options.editor);
+		this.options.modalManager.pop();
 		this.selector = null;
-		this.options.ui.setFocus(this.options.editor);
 	}
 }

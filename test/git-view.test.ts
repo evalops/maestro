@@ -10,8 +10,7 @@ class StubGitView extends GitView {
 			ui: { setFocus: () => {}, requestRender: () => {} } as any,
 			showInfoMessage: () => {},
 			showToast: () => {},
-			editor: {} as any,
-			editorContainer: { addChild: () => {}, clear: () => {} } as any,
+			modalManager: { push: () => {}, pop: () => {} } as any,
 		});
 	}
 
