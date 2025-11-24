@@ -36,8 +36,7 @@ export function loadUiState(): UiState {
 				parsed.footerMode === "ensemble" || parsed.footerMode === "solo"
 					? parsed.footerMode
 					: undefined,
-			zenMode:
-				typeof parsed.zenMode === "boolean" ? parsed.zenMode : undefined,
+			zenMode: typeof parsed.zenMode === "boolean" ? parsed.zenMode : undefined,
 		};
 	} catch {
 		return {};

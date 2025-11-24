@@ -1154,10 +1154,17 @@ export class TuiRenderer {
 			context.showInfo("Zen mode disabled.");
 			return;
 		}
-		context.showError('Usage: /zen [on|off]');
+		context.showError("Usage: /zen [on|off]");
 	}
 
 	private handleFooterCommand(context: CommandExecutionContext): void {
+		if (this.zenMode) {
+			context.showInfo(
+				'Footer mode is controlled by Zen mode. Turn Zen off with "/zen off" to change the footer style.',
+			);
+			return;
+		}
+
 		const tokens = context.argumentText
 			.trim()
 			.toLowerCase()
@@ -1195,6 +1202,10 @@ export class TuiRenderer {
 	}
 
 	private setFooterMode(mode: FooterMode): void {
+		if (this.zenMode) {
+			// Zen mode owns the footer; ignore external mode changes
+			return;
+		}
 		this.footerMode = mode;
 		this.footer.setMode(mode);
 		this.persistUiState({ footerMode: mode });
