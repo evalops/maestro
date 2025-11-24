@@ -46,7 +46,6 @@ export interface FooterStats {
 	contextTokens: number;
 	contextWindow: number;
 	contextPercent: number;
-	lastAssistant?: AssistantMessage;
 }
 
 export type HintType = "context" | "plan" | "queue" | "bash" | "custom";
@@ -109,22 +108,36 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 		}
 	}
 
-	const lastAssistant = state.messages
-		.slice()
-		.reverse()
-		.find(
-			(m) =>
-				m.role === "assistant" &&
-				(m as AssistantMessage).stopReason !== "aborted",
-		) as AssistantMessage | undefined;
+	let lastSuccessfulUsage: Usage | undefined;
+	let additionalOutput = 0;
 
-	// Calculate context percentage: last turn's input (fresh + cached) + last turn's output
-	// This represents the actual conversation size, not the sum of all API calls
-	const lastUsage = normalizeUsage(lastAssistant?.usage);
-	const contextTokens = Math.max(
-		0,
-		lastUsage.input + lastUsage.cacheRead + lastUsage.output,
-	);
+	// Iterate backwards to find the last successful assistant message (anchor)
+	// and accumulate output tokens from any subsequent (aborted) messages
+	for (let i = state.messages.length - 1; i >= 0; i--) {
+		const msg = state.messages[i];
+		if (msg.role === "assistant") {
+			const assistantMsg = msg as AssistantMessage;
+			if (assistantMsg.stopReason !== "aborted") {
+				lastSuccessfulUsage = normalizeUsage(assistantMsg.usage);
+				break;
+			}
+			// For aborted messages, we only count their output towards the current context
+			// We ignore their input because it might be unreliable or partial
+			additionalOutput += assistantMsg.usage?.output ?? 0;
+		}
+	}
+
+	// Calculate context percentage: last successful turn's total + subsequent outputs
+	const contextTokens = lastSuccessfulUsage
+		? Math.max(
+				0,
+				lastSuccessfulUsage.input +
+					lastSuccessfulUsage.cacheRead +
+					lastSuccessfulUsage.output +
+					additionalOutput,
+			)
+		: 0;
+
 	const contextWindow = state.model.contextWindow ?? 0;
 	const contextPercent =
 		contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
@@ -138,7 +151,6 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 		contextTokens,
 		contextWindow,
 		contextPercent,
-		lastAssistant,
 	};
 }
 
