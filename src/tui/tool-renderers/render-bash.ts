@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
 	formatDetailSections,
@@ -17,7 +18,7 @@ export class BashRenderer implements ToolRenderer {
 			typeof args?.command === "string"
 				? args.command
 				: String(args?.command ?? "");
-		const text = chalk.hex("#eab676")("⟢ bash");
+		const text = theme.fg("accent", "⟢ bash");
 		const commandLines = formatShellSnippet(command ? `$ ${command}` : "$ ...");
 		const sections: string[] = [];
 		if (commandLines.length) {
@@ -29,17 +30,17 @@ export class BashRenderer implements ToolRenderer {
 				? this.getTextOutput(context)
 				: command;
 			const summary = buildCollapsedSummary(summarySource);
-			return `${text}\n${chalk.dim(summary)}`;
+			return `${text}\n${theme.fg("dim", summary)}`;
 		}
 
 		if (context.result) {
 			const output = this.getTextOutput(context).trim();
 			if (output) {
 				const { lines, remaining } = summarizeLines(output, 5);
-				const dimmed = lines.map((line) => chalk.dim(line));
+				const dimmed = lines.map((line) => theme.fg("dim", line));
 				sections.push(formatSection("output", dimmed));
 				if (remaining > 0) {
-					sections.push(chalk.dim(`  ... (${remaining} more lines)`));
+					sections.push(theme.fg("dim", `  ... (${remaining} more lines)`));
 				}
 			}
 		}
@@ -52,7 +53,7 @@ export class BashRenderer implements ToolRenderer {
 		}
 
 		if (sections.length === 0) {
-			return `${text}\n${chalk.dim("waiting for output...")}`;
+			return `${text}\n${theme.fg("dim", "waiting for output...")}`;
 		}
 
 		return `${text}\n\n${sections.filter(Boolean).join("\n\n")}`;

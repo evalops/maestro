@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { theme } from "../../theme/theme.js";
 import { highlightCodeLines } from "../../style/code-highlighter.js";
 import {
 	buildCollapsedSummary,
@@ -18,8 +19,8 @@ export class EditRenderer implements ToolRenderer {
 					? context.args.path
 					: "";
 		const path = shortenPath(pathValue);
-		let text = `${chalk.hex("#fcd5ce")("[edit]")} ${
-			path ? chalk.cyan(path) : chalk.dim("...")
+		let text = `${theme.fg("accent", "[edit]")} ${
+			path ? theme.fg("dim", path) : theme.fg("dim", "...")
 		}`;
 
 		if (context.collapsed) {
@@ -31,7 +32,7 @@ export class EditRenderer implements ToolRenderer {
 						"string" &&
 					(context.result.details as { diff: string }).diff) ||
 				this.getTextOutput(context);
-			text += `\n${chalk.dim(buildCollapsedSummary(diffText))}`;
+			text += `\n${theme.fg("dim", buildCollapsedSummary(diffText))}`;
 			return text;
 		}
 
@@ -65,7 +66,7 @@ export class EditRenderer implements ToolRenderer {
 		if (message) {
 			const messageSection = formatSection(
 				"result",
-				message.split("\n").map((line) => chalk.dim(line)),
+				message.split("\n").map((line) => theme.fg("dim", line)),
 			);
 			if (messageSection) {
 				sections.push(messageSection);

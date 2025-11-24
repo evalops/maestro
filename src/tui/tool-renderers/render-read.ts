@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
 	formatDetailSections,
@@ -21,32 +22,32 @@ export class ReadRenderer implements ToolRenderer {
 					? args.path
 					: "";
 		const path = shortenPath(pathValue);
-		let text = `${chalk.hex("#7bc7ff")("[read]")} ${
-			path ? chalk.cyan(path) : chalk.dim("...")
+		let text = `${theme.fg("accent", "[read]")} ${
+			path ? theme.fg("dim", path) : theme.fg("dim", "...")
 		}`;
 		const rangeLabel = this.formatRangeLabel(args, context.result?.details);
 		if (rangeLabel) {
-			text += chalk.dim(`:${rangeLabel}`);
+			text += theme.fg("dim", `:${rangeLabel}`);
 		}
 
 		if (context.collapsed) {
 			const summary = context.result
 				? buildCollapsedSummary(this.getTextOutput(context))
 				: "output hidden: awaiting result";
-			return `${text}\n${chalk.dim(summary)}`;
+			return `${text}\n${theme.fg("dim", summary)}`;
 		}
 
 		if (context.result) {
 			const output = this.getTextOutput(context);
 			const { lines, remaining } = summarizeLines(output, 10);
 			const displayLines = lines.map((line: string) =>
-				chalk.dim(replaceTabs(line)),
+				theme.fg("dim", replaceTabs(line)),
 			);
 			if (displayLines.length) {
 				text += `\n\n${formatSection("content", displayLines)}`;
 			}
 			if (remaining > 0) {
-				text += chalk.dim(`\n... (${remaining} more lines)`);
+				text += theme.fg("dim", `\n... (${remaining} more lines)`);
 			}
 
 			const detailSections = formatDetailSections(context.result.details, {

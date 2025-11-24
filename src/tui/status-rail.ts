@@ -1,5 +1,6 @@
 import type { Component } from "@evalops/tui";
 import chalk from "chalk";
+import { theme } from "../theme/theme.js";
 import { centerText, padLine, truncateText } from "./utils/text-formatting.js";
 
 export interface Toast {
@@ -73,21 +74,20 @@ export class StatusRailComponent implements Component {
 		}
 
 		const lines: string[] = [];
-		const borderColor = "#1f2937";
 		const innerWidth = Math.max(1, width - 4);
-		const emptyRow = `${chalk.hex(borderColor)("│ ")}${" ".repeat(innerWidth)}${chalk.hex(borderColor)(" │")}`;
+		const emptyRow = `${theme.fg("border", "│ ")}${" ".repeat(innerWidth)}${theme.fg("border", " │")}`;
 
 		// Top border
-		lines.push(chalk.hex(borderColor)(`╭${"─".repeat(width - 2)}╮`));
+		lines.push(theme.fg("border", `╭${"─".repeat(width - 2)}╮`));
 
 		// Header
 		const header = centerText("STATUS", innerWidth);
 		lines.push(
-			`${chalk.hex(borderColor)("│ ")}${chalk.hex("#94a3b8").bold(header)}${chalk.hex(borderColor)(" │")}`,
+			`${theme.fg("border", "│ ")}${theme.bold(theme.fg("muted", header))}${theme.fg("border", " │")}`,
 		);
 
 		// Separator
-		lines.push(chalk.hex(borderColor)(`├${"─".repeat(width - 2)}┤`));
+		lines.push(theme.fg("border", `├${"─".repeat(width - 2)}┤`));
 
 		lines.push(emptyRow);
 
@@ -99,15 +99,15 @@ export class StatusRailComponent implements Component {
 				minute: "2-digit",
 			}).format(new Date(toast.timestamp));
 			const header = padLine(
-				truncateText(`${badge} ${chalk.dim(timestamp)}`, innerWidth),
+				truncateText(`${badge} ${theme.fg("dim", timestamp)}`, innerWidth),
 				innerWidth,
 			);
 			const shortcutSuffix = toast.shortcut
-				? chalk.dim(` (${toast.shortcut})`)
+				? theme.fg("dim", ` (${toast.shortcut})`)
 				: "";
 			const body = padLine(
 				truncateText(
-					chalk.hex("#e2e8f0")(toast.message) + shortcutSuffix,
+					theme.fg("text", toast.message) + shortcutSuffix,
 					innerWidth,
 				),
 				innerWidth,
@@ -119,10 +119,10 @@ export class StatusRailComponent implements Component {
 			const headerLine = renderedToasts[i];
 			const bodyLine = renderedToasts[i + 1];
 			lines.push(
-				`${chalk.hex(borderColor)("│ ")}${headerLine}${chalk.hex(borderColor)(" │")}`,
+				`${theme.fg("border", "│ ")}${headerLine}${theme.fg("border", " │")}`,
 			);
 			lines.push(
-				`${chalk.hex(borderColor)("│ ")}${bodyLine}${chalk.hex(borderColor)(" │")}`,
+				`${theme.fg("border", "│ ")}${bodyLine}${theme.fg("border", " │")}`,
 			);
 			const isLastToast = i + 2 >= renderedToasts.length;
 			if (!isLastToast) {
@@ -133,7 +133,7 @@ export class StatusRailComponent implements Component {
 		lines.push(emptyRow);
 
 		// Bottom border
-		lines.push(chalk.hex(borderColor)(`╰${"─".repeat(width - 2)}╯`));
+		lines.push(theme.fg("border", `╰${"─".repeat(width - 2)}╯`));
 
 		return lines;
 	}
@@ -141,13 +141,13 @@ export class StatusRailComponent implements Component {
 	private getToneBadge(tone: Toast["tone"]): string {
 		switch (tone) {
 			case "info":
-				return chalk.bgHex("#3b82f6").hex("#f1f5f9")(" Info ");
+				return theme.fg("accent", " Info ");
 			case "warn":
-				return chalk.bgHex("#f59e0b").hex("#1e293b")(" Warning ");
+				return theme.fg("warning", " Warning ");
 			case "success":
-				return chalk.bgHex("#10b981").hex("#f1f5f9")(" Success ");
+				return theme.fg("success", " Success ");
 			case "danger":
-				return chalk.bgHex("#ef4444").hex("#f1f5f9")(" Error ");
+				return theme.fg("error", " Error ");
 		}
 	}
 }

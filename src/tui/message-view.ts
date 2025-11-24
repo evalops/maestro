@@ -34,6 +34,7 @@ export class MessageView {
 				const userComponent = new UserMessageComponent(
 					renderable.text,
 					this.isFirstUserMessage,
+					renderable.raw.timestamp,
 				);
 				this.options.chatContainer.addChild(userComponent);
 				this.isFirstUserMessage = false;

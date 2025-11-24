@@ -1,10 +1,5 @@
 import { Container, Markdown, Spacer, Text, visibleWidth } from "@evalops/tui";
-import chalk from "chalk";
-import { getMarkdownTheme } from "../theme/theme.js";
-
-const USER_BORDER = "#6e7fff";
-const USER_LABEL = "#c7d2fe";
-const USER_FILL = { r: 26, g: 28, b: 38 };
+import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 /**
  * Component that renders a user message styled as a rounded card.
@@ -12,7 +7,7 @@ const USER_FILL = { r: 26, g: 28, b: 38 };
 export class UserMessageComponent extends Container {
 	private markdown: Markdown;
 
-	constructor(text: string, isFirst: boolean) {
+	constructor(text: string, isFirst: boolean, timestamp?: number) {
 		super();
 
 		if (!isFirst) {
@@ -21,19 +16,18 @@ export class UserMessageComponent extends Container {
 
 		const panelWidth = this.computePanelWidth(text);
 		this.addChild(new Text(this.buildTopLine(panelWidth), 1, 0));
-		this.addChild(
-			new Text(
-				`${chalk.hex(USER_LABEL).bold("YOU")} ${chalk.dim("· message")}`,
-				1,
-				0,
-			),
-		);
+
+		// Metadata line
+		const ts = timestamp ? new Date(timestamp) : new Date();
+		const timeStr = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		const header = `${theme.fg("accent", "YOU")} ${theme.fg("muted", `· ${timeStr}`)}`;
+		this.addChild(new Text(header, 1, 0));
 
 		this.markdown = new Markdown(
 			text,
 			undefined,
 			undefined,
-			USER_FILL,
+			undefined, // Let markdown handle its own background or inherit
 			1,
 			0,
 			getMarkdownTheme(),
@@ -53,11 +47,11 @@ export class UserMessageComponent extends Container {
 
 	private buildTopLine(width: number): string {
 		const dash = width - 2;
-		return chalk.hex(USER_BORDER)(`╭${"─".repeat(dash)}╮`);
+		return theme.fg("border", `╭${"─".repeat(dash)}╮`);
 	}
 
 	private buildBottomLine(width: number): string {
 		const dash = width - 2;
-		return chalk.hex(USER_BORDER)(`╰${"─".repeat(dash)}╯`);
+		return theme.fg("border", `╰${"─".repeat(dash)}╯`);
 	}
 }

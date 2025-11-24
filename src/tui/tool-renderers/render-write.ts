@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
 	formatDetailSections,
@@ -28,27 +29,27 @@ export class WriteRenderer implements ToolRenderer {
 		const lines = fileContent ? fileContent.split("\n") : [];
 		const totalLines = lines.length;
 
-		let text = `${chalk.hex("#adf7b6")("[write]")} ${
-			path ? chalk.cyan(path) : chalk.dim("...")
+		let text = `${theme.fg("accent", "[write]")} ${
+			path ? theme.fg("dim", path) : theme.fg("dim", "...")
 		}`;
 		if (totalLines > 10) {
 			text += ` (${totalLines} lines)`;
 		}
 
 		if (context.collapsed) {
-			return `${text}\n${chalk.dim(buildCollapsedSummary(fileContent))}`;
+			return `${text}\n${theme.fg("dim", buildCollapsedSummary(fileContent))}`;
 		}
 
 		if (fileContent) {
 			const { lines: preview, remaining } = summarizeLines(fileContent, 10);
 			const formatted = preview.map((line: string) =>
-				chalk.dim(replaceTabs(line)),
+				theme.fg("dim", replaceTabs(line)),
 			);
 			if (formatted.length) {
 				text += `\n\n${formatSection("content", formatted)}`;
 			}
 			if (remaining > 0) {
-				text += chalk.dim(`\n... (${remaining} more lines)`);
+				text += theme.fg("dim", `\n... (${remaining} more lines)`);
 			}
 		}
 
