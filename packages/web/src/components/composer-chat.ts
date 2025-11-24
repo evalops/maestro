@@ -227,7 +227,7 @@ export class ComposerChat extends LitElement {
 		.status-bar {
 			display: flex;
 			align-items: center;
-			gap: 0.4rem;
+			gap: 0.35rem;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 			font-size: 0.7rem;
 			color: #6e7681;
@@ -242,17 +242,17 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			gap: 0.25rem;
 			padding: 0.2rem 0.45rem;
-			background: #0d1117;
-			border: 1px solid #21262d;
-			border-radius: 999px;
+			background: #0b1016;
+			border: 1px solid #252b33;
+			border-radius: 4px;
 			font-size: 0.64rem;
-			box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+			letter-spacing: 0.02em;
 		}
 
 			.status-item.active {
-				border-color: #58a6ff;
-				color: #58a6ff;
-				background: rgba(88, 166, 255, 0.08);
+				border-color: #3a82c2;
+				color: #d7e7ff;
+				background: rgba(88, 166, 255, 0.05);
 			}
 
 		.pill {
@@ -260,12 +260,13 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			gap: 0.25rem;
 			padding: 0.1rem 0.4rem;
-			background: #0d1117;
-			border: 1px solid #30363d;
-			border-radius: 999px;
+			background: #0b1016;
+			border: 1px solid #252b33;
+			border-radius: 4px;
 			color: #e6edf3;
 			font-weight: 600;
 			font-size: 0.7rem;
+			letter-spacing: 0.01em;
 		}
 
 		.pill.warning {
@@ -279,9 +280,9 @@ export class ComposerChat extends LitElement {
 		}
 
 			.status-dot {
-				width: 6px;
-				height: 6px;
-				border-radius: 50%;
+				width: 8px;
+				height: 8px;
+				border-radius: 2px;
 				background: #3fb950;
 				animation: pulse 2s ease-in-out infinite;
 			}
