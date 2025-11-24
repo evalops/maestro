@@ -17,10 +17,13 @@ import {
 	separator as themedSeparator,
 } from "../../style/theme.js";
 
+import type { Api } from "../../agent/types.js";
+import { getEnvVarsForProvider } from "../../providers/api-keys.js";
+
 type ProviderPreset = {
 	id: string;
 	name: string;
-	api: string;
+	api: Api;
 	defaultModel: string;
 	baseUrl?: string;
 	requiresApiKey: boolean;
@@ -79,7 +82,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		id: "vertex-ai",
 		name: "Google Vertex AI (Claude/Gemini)",
 		api: "anthropic-messages",
-		defaultModel: "claude-3-7-sonnet-20250219",
+		defaultModel: "claude-3-7-sonnet@20250219",
 		requiresApiKey: false,
 		note: "Uses ADC; set GOOGLE_APPLICATION_CREDENTIALS or gcloud login",
 	},
@@ -541,9 +544,10 @@ export async function handleConfigInit(): Promise<void> {
 			useEnv = keyChoice.trim() !== "2";
 
 			if (useEnv) {
-				const envVarName =
-					preset.apiKeyEnv ??
+				const fallbackEnv =
+					getEnvVarsForProvider(providerId)[0] ??
 					`${providerId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+				const envVarName = preset.apiKeyEnv ?? fallbackEnv;
 				apiKeyField = { apiKeyEnv: envVarName };
 				console.log(chalk.dim(`\nUsing environment variable: ${envVarName}`));
 			} else {
