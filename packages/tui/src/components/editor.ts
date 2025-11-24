@@ -68,13 +68,15 @@ export class Editor implements Component {
 	setAutocompleteProvider(provider: AutocompleteProvider): void {
 		this.autocompleteProvider = provider;
 	}
-	render(width: number): string[] {
+	render(width: number, options: { hideBorders?: boolean } = {}): string[] {
 		const horizontal = chalk.gray("─");
 		// Layout the text - use full width
 		const layoutLines = this.layoutText(width);
 		const result = [];
 		// Render top border
-		result.push(horizontal.repeat(width));
+		if (!options.hideBorders) {
+			result.push(horizontal.repeat(width));
+		}
 		// Render each layout line
 		for (const layoutLine of layoutLines) {
 			let displayText = layoutLine.text;
@@ -136,11 +138,13 @@ export class Editor implements Component {
 			}
 			// Calculate padding based on actual visible length
 			const padding = " ".repeat(Math.max(0, width - visibleLength));
-			// Render the line (no side borders, just horizontal lines above and below)
+			// Render the line (no side borders, just horizontal lines above and below if not hidden)
 			result.push(displayText + padding);
 		}
 		// Render bottom border
-		result.push(horizontal.repeat(width));
+		if (!options.hideBorders) {
+			result.push(horizontal.repeat(width));
+		}
 		// Add autocomplete list if active
 		if (this.isAutocompleting && this.autocompleteList) {
 			const autocompleteResult = this.autocompleteList.render(width);
