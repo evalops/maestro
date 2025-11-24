@@ -26,7 +26,7 @@ export function createCommandRegistry({
 			{
 				name: "zen",
 				description:
-					"Toggle Zen Mode (hides header, status rail, and sets minimal footer)",
+					"Toggle Zen Mode (hides header, ensures minimal footer, keeps status rail)",
 				usage: "/zen [on|off]",
 				tags: ["ui"],
 				examples: ["/zen", "/zen on", "/zen off"],

@@ -1136,7 +1136,17 @@ export class TuiRenderer {
 
 	private handleZenCommand(context: CommandExecutionContext): void {
 		const arg = context.argumentText.trim().toLowerCase();
-		if (!arg || arg === "on") {
+		if (!arg) {
+			const newState = !this.zenMode;
+			this.setZenMode(newState);
+			context.showInfo(
+				newState
+					? "Zen mode enabled. Distractions removed."
+					: "Zen mode disabled.",
+			);
+			return;
+		}
+		if (arg === "on") {
 			if (this.zenMode) {
 				context.showInfo("Zen mode is already on.");
 				return;
