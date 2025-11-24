@@ -55,6 +55,7 @@
     "version:major": "node scripts/version.js major",
     "version:sync": "node scripts/sync-versions.js",
     "openapi:generate": "bun scripts/generate-openapi.ts",
+    "openapi:serve": "bun scripts/serve-openapi.ts",
     "dev:web": "bun run --filter @evalops/composer-web dev",
     "dev:tui": "bun run --filter @evalops/tui dev",
     "dev:packages": "concurrently --names \"tui,web\" --prefix-colors \"magenta,green\" \"bun run dev:tui\" \"bun run dev:web\"",
