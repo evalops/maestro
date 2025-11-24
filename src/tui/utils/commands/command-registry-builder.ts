@@ -62,6 +62,7 @@ interface CommandRegistryOptions {
 	handleNewChat: (context: CommandExecutionContext) => void;
 	handleInitAgents: (context: CommandExecutionContext) => void;
 	handleMcp: (context: CommandExecutionContext) => void;
+	handleComposer: (context: CommandExecutionContext) => void;
 	handleLogin: (context: CommandExecutionContext) => void | Promise<void>;
 	handleLogout: (context: CommandExecutionContext) => void | Promise<void>;
 	handleZen: (context: CommandExecutionContext) => void;
@@ -114,6 +115,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			newChat: opts.handleNewChat,
 			initAgents: opts.handleInitAgents,
 			mcp: opts.handleMcp,
+			composer: opts.handleComposer,
 			login: opts.handleLogin,
 			logout: opts.handleLogout,
 			planMode: opts.handlePlanMode,

@@ -470,6 +470,24 @@ export function createCommandRegistry({
 			handlers.mcp,
 			createContext,
 		),
+		buildEntry(
+			{
+				name: "composer",
+				description: "Manage custom composer configurations",
+				usage: "/composer [list|<name>|activate <name>|deactivate]",
+				tags: ["config"],
+				examples: [
+					"/composer",
+					"/composer list",
+					"/composer code-reviewer",
+					"/composer activate code-reviewer",
+					"/composer deactivate",
+				],
+			},
+			withArgs("composer"),
+			handlers.composer,
+			createContext,
+		),
 
 		buildEntry(
 			{

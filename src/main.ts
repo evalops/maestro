@@ -25,8 +25,12 @@ import {
 	buildSystemPrompt,
 	loadProjectContextFiles,
 } from "./cli/system-prompt.js";
+import { composerManager } from "./composers/index.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
+import { loadMcpConfig } from "./mcp/config.js";
+import { mcpManager } from "./mcp/manager.js";
+import { getAllMcpTools } from "./mcp/tool-bridge.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
 	getCustomConfigPath,
@@ -637,18 +641,43 @@ export async function main(args: string[]) {
 	})();
 	const approvalService = new ActionApprovalService(approvalModeOverride);
 
+	// Build initial tools list (MCP tools added dynamically after connection)
+	const allTools = [...codingTools];
+
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
 			model,
 			thinkingLevel: "off",
-			tools: codingTools,
+			tools: allTools,
 		},
 		transport: new ProviderTransport({
 			getAuthContext: (providerName) => requireCredential(providerName, false),
 			approvalService,
 		}),
 	});
+
+	// Initialize composer manager with base config first
+	composerManager.initialize(agent, systemPrompt, allTools, process.cwd());
+
+	// Initialize MCP servers (non-blocking) and update agent tools when connected
+	const mcpConfig = loadMcpConfig(process.cwd());
+	if (mcpConfig.servers.length > 0) {
+		// Listen for MCP server connections to add their tools
+		mcpManager.on("connected", () => {
+			const mcpTools = getAllMcpTools();
+			if (mcpTools.length > 0) {
+				const updatedTools = [...codingTools, ...mcpTools];
+				agent.setTools(updatedTools);
+				// Update composer manager's base tools (preserves active composer state)
+				composerManager.updateBaseTools(updatedTools);
+			}
+		});
+
+		mcpManager.configure(mcpConfig).catch((err) => {
+			console.warn("[mcp] Failed to initialize MCP servers:", err);
+		});
+	}
 
 	// Determine mode early to know if we should print messages
 	const isInteractive = parsed.messages.length === 0;

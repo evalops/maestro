@@ -59,6 +59,7 @@ export interface CommandHandlers {
 	newChat(context: CommandExecutionContext): void;
 	initAgents(context: CommandExecutionContext): void;
 	mcp(context: CommandExecutionContext): void;
+	composer(context: CommandExecutionContext): void;
 	login(context: CommandExecutionContext): void | Promise<void>;
 	logout(context: CommandExecutionContext): void | Promise<void>;
 	zen(context: CommandExecutionContext): void;

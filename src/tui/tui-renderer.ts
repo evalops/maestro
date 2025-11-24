@@ -54,6 +54,8 @@ import {
 	backgroundTaskManager,
 } from "../tools/background-tasks.js";
 
+import { composerManager, loadComposers } from "../composers/index.js";
+import { mcpManager } from "../mcp/index.js";
 import { getChangelogPath, parseChangelog } from "../update/changelog.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
@@ -752,6 +754,7 @@ export class TuiRenderer {
 			handleNewChat: (context) => this.handleNewChatCommand(context),
 			handleInitAgents: (context) => this.handleInitCommand(context),
 			handleMcp: (context) => this.handleMcpCommand(context),
+			handleComposer: (context) => this.handleComposerCommand(context),
 			handleZen: (context) => this.handleZenCommand(context),
 			handleContext: (context) => this.handleContextCommand(context),
 		});
@@ -2042,11 +2045,141 @@ export class TuiRenderer {
 	}
 
 	private handleMcpCommand(_context: CommandExecutionContext): void {
-		const lines = [
-			"Model Context Protocol",
-			"No MCP servers are configured yet.",
-			"Add them to your Composer config once MCP support lands, or set the MCP_* environment variables when running under Codex.",
-		];
+		const status = mcpManager.getStatus();
+		const lines: string[] = ["Model Context Protocol", ""];
+
+		if (status.servers.length === 0) {
+			lines.push(
+				"No MCP servers configured.",
+				"",
+				"Add servers to ~/.composer/mcp.json or .composer/mcp.json:",
+				"",
+				'  { "mcpServers": { "my-server": { "command": "npx", "args": ["-y", "@example/mcp-server"] } } }',
+			);
+		} else {
+			for (const server of status.servers) {
+				const statusIcon = server.connected ? chalk.green("●") : chalk.red("○");
+				lines.push(`${statusIcon} ${server.name}`);
+				if (server.connected) {
+					if (server.tools.length > 0) {
+						lines.push(
+							`    Tools: ${server.tools.map((t) => t.name).join(", ")}`,
+						);
+					}
+					if (server.resources.length > 0) {
+						lines.push(`    Resources: ${server.resources.length}`);
+					}
+					if (server.prompts.length > 0) {
+						lines.push(`    Prompts: ${server.prompts.join(", ")}`);
+					}
+				} else {
+					lines.push(`    ${chalk.dim("Not connected")}`);
+				}
+			}
+		}
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleComposerCommand(context: CommandExecutionContext): void {
+		const args = context.rawInput.replace(/^\/composer\s*/, "").trim();
+		const parts = args.split(/\s+/);
+		const subcommand = parts[0]?.toLowerCase() || "";
+		const composerName = parts.slice(1).join(" ");
+
+		const lines: string[] = [];
+		const composers = loadComposers(process.cwd());
+		const state = composerManager.getState();
+
+		if (subcommand === "activate" && composerName) {
+			const success = composerManager.activate(composerName, process.cwd());
+			if (success) {
+				const newState = composerManager.getState();
+				lines.push(`Activated composer: ${newState.active?.name}`);
+				lines.push(`Description: ${newState.active?.description}`);
+				if (newState.active?.tools?.length) {
+					lines.push(
+						`Tools restricted to: ${newState.active.tools.join(", ")}`,
+					);
+				}
+				if (newState.active?.model) {
+					lines.push(`Model: ${newState.active.model}`);
+				}
+			} else {
+				lines.push(`Failed to activate composer '${composerName}'.`);
+				lines.push("Use /composer list to see available composers.");
+			}
+		} else if (subcommand === "deactivate") {
+			if (state.active) {
+				const name = state.active.name;
+				composerManager.deactivate();
+				lines.push(`Deactivated composer: ${name}`);
+				lines.push("Restored to default configuration.");
+			} else {
+				lines.push("No composer is currently active.");
+			}
+		} else if (subcommand === "list" || subcommand === "") {
+			// List all composers
+			lines.push("Custom Composers", "");
+
+			if (state.active) {
+				lines.push(`Active: ${state.active.name}`, "");
+			}
+
+			if (composers.length === 0) {
+				lines.push(
+					"No composers configured.",
+					"",
+					"Create composers in ~/.composer/composers/ or .composer/composers/",
+					"",
+					"Example composer.yaml:",
+					"  name: code-reviewer",
+					"  description: Reviews code for best practices",
+					"  systemPrompt: |",
+					"    You are a code reviewer focused on...",
+					"  tools: [read, search, diff]",
+				);
+			} else {
+				for (const composer of composers) {
+					const sourceIcon = composer.source === "project" ? "📁" : "🏠";
+					const activeMarker =
+						state.active?.name === composer.name ? " (active)" : "";
+					lines.push(`${sourceIcon} ${composer.name}${activeMarker}`);
+					lines.push(`    ${composer.description}`);
+				}
+			}
+		} else {
+			// Treat as composer name - show details
+			const composer = composers.find((c) => c.name === subcommand);
+			if (composer) {
+				lines.push(`Name: ${composer.name}`);
+				lines.push(`Description: ${composer.description}`);
+				lines.push(`Source: ${composer.source} (${composer.filePath})`);
+				if (composer.model) {
+					lines.push(`Model: ${composer.model}`);
+				}
+				if (composer.tools?.length) {
+					lines.push(`Tools: ${composer.tools.join(", ")}`);
+				}
+				if (composer.systemPrompt) {
+					lines.push("", "System Prompt:", composer.systemPrompt.slice(0, 500));
+				}
+				if (state.active?.name === composer.name) {
+					lines.push("", "(currently active)");
+				}
+			} else {
+				lines.push(`Composer '${subcommand}' not found.`);
+				lines.push("");
+				lines.push("Usage:");
+				lines.push("  /composer              - List available composers");
+				lines.push("  /composer <name>       - Show composer details");
+				lines.push("  /composer activate <name> - Activate a composer");
+				lines.push("  /composer deactivate   - Deactivate current composer");
+			}
+		}
+
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
 		this.ui.requestRender();
