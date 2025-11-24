@@ -1,4 +1,5 @@
 import type { Agent } from "../agent/agent.js";
+import { composerManager } from "../composers/index.js";
 import { PromptQueue } from "../tui/prompt-queue.js";
 import type { TuiRenderer } from "../tui/tui-renderer.js";
 
@@ -19,6 +20,16 @@ export class AgentRuntimeController {
 				if (this.renderer?.ensureContextBudgetBeforePrompt) {
 					await this.renderer.ensureContextBudgetBeforePrompt();
 				}
+
+				// Check if prompt matches any composer triggers (only if no composer active)
+				const composerState = composerManager.getState();
+				if (!composerState.active) {
+					const triggered = composerManager.checkTriggers(text, process.cwd());
+					if (triggered) {
+						composerManager.activate(triggered.name, process.cwd());
+					}
+				}
+
 				await this.options.agent.prompt(text);
 			},
 			(error) => {

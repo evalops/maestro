@@ -237,6 +237,10 @@ export class TuiRenderer {
 	private planPanelModal?: PlanPanelModal;
 	private notificationView: NotificationView;
 	private backgroundTaskNotificationCleanup?: () => void;
+	private mcpConnectedHandler?: (data: { name: string; tools: number }) => void;
+	private mcpDisconnectedHandler?: (data: { name: string }) => void;
+	private composerActivatedHandler?: (composer: { name: string }) => void;
+	private composerDeactivatedHandler?: (composer: { name: string }) => void;
 	private updateView: UpdateView;
 	private configView: ConfigView;
 	private costView: CostView;
@@ -788,6 +792,42 @@ export class TuiRenderer {
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
 		});
+
+		// Listen for MCP server connections to show notifications
+		this.mcpConnectedHandler = ({ name, tools }) => {
+			this.notificationView.showToast(
+				`MCP server "${name}" connected (${tools} tools)`,
+				"success",
+			);
+			this.refreshFooterHint();
+		};
+		this.mcpDisconnectedHandler = ({ name }) => {
+			this.notificationView.showToast(
+				`MCP server "${name}" disconnected`,
+				"warn",
+			);
+			this.refreshFooterHint();
+		};
+		mcpManager.on("connected", this.mcpConnectedHandler);
+		mcpManager.on("disconnected", this.mcpDisconnectedHandler);
+
+		// Listen for composer activation changes
+		this.composerActivatedHandler = (composer) => {
+			this.notificationView.showToast(
+				`Composer "${composer.name}" activated`,
+				"success",
+			);
+			this.refreshFooterHint();
+		};
+		this.composerDeactivatedHandler = (composer) => {
+			this.notificationView.showToast(
+				`Composer "${composer.name}" deactivated`,
+				"info",
+			);
+			this.refreshFooterHint();
+		};
+		composerManager.on("activated", this.composerActivatedHandler);
+		composerManager.on("deactivated", this.composerDeactivatedHandler);
 	}
 
 	attachPromptQueue(queue: PromptQueue): void {
@@ -2044,7 +2084,21 @@ export class TuiRenderer {
 		}
 	}
 
-	private handleMcpCommand(_context: CommandExecutionContext): void {
+	private handleMcpCommand(context: CommandExecutionContext): void {
+		const args = context.rawInput.replace(/^\/mcp\s*/, "").trim();
+		const parts = args.split(/\s+/);
+		const subcommand = parts[0]?.toLowerCase() || "";
+
+		if (subcommand === "resources") {
+			this.handleMcpResourcesCommand(parts.slice(1));
+			return;
+		}
+		if (subcommand === "prompts") {
+			this.handleMcpPromptsCommand(parts.slice(1));
+			return;
+		}
+
+		// Default: show status
 		const status = mcpManager.getStatus();
 		const lines: string[] = ["Model Context Protocol", ""];
 
@@ -2076,6 +2130,133 @@ export class TuiRenderer {
 					lines.push(`    ${chalk.dim("Not connected")}`);
 				}
 			}
+			lines.push("");
+			lines.push(chalk.dim("Subcommands: /mcp resources, /mcp prompts"));
+		}
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleMcpResourcesCommand(args: string[]): void {
+		const status = mcpManager.getStatus();
+		const lines: string[] = ["MCP Resources", ""];
+
+		// /mcp resources [server] [uri] - read a specific resource
+		if (args.length >= 2) {
+			const serverName = args[0];
+			const uri = args.slice(1).join(" ");
+			const server = status.servers.find((s) => s.name === serverName);
+			if (!server?.connected) {
+				lines.push(`Server '${serverName}' not connected`);
+			} else {
+				mcpManager
+					.readResource(serverName, uri)
+					.then((result) => {
+						const resourceLines = [`Resource: ${uri}`, ""];
+						for (const content of result.contents) {
+							if (content.text) {
+								resourceLines.push(content.text);
+							} else if (content.blob) {
+								resourceLines.push(
+									`[Binary data: ${content.mimeType || "unknown type"}]`,
+								);
+							}
+						}
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(
+							new Text(resourceLines.join("\n"), 1, 0),
+						);
+						this.ui.requestRender();
+					})
+					.catch((err: unknown) => {
+						const message = err instanceof Error ? err.message : String(err);
+						this.notificationView.showError(
+							`Failed to read resource: ${message}`,
+						);
+					});
+				return;
+			}
+		} else {
+			// List all resources from all servers
+			let hasResources = false;
+			for (const server of status.servers) {
+				if (!server.connected || server.resources.length === 0) continue;
+				hasResources = true;
+				lines.push(`${chalk.bold(server.name)}:`);
+				for (const uri of server.resources) {
+					lines.push(`  ${uri}`);
+				}
+				lines.push("");
+			}
+			if (!hasResources) {
+				lines.push("No resources available from connected servers.");
+			}
+			lines.push("");
+			lines.push(chalk.dim("Usage: /mcp resources <server> <uri>"));
+		}
+
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleMcpPromptsCommand(args: string[]): void {
+		const status = mcpManager.getStatus();
+		const lines: string[] = ["MCP Prompts", ""];
+
+		// /mcp prompts [server] [name] - get a specific prompt
+		if (args.length >= 2) {
+			const serverName = args[0];
+			const promptName = args[1];
+			const server = status.servers.find((s) => s.name === serverName);
+			if (!server?.connected) {
+				lines.push(`Server '${serverName}' not connected`);
+			} else if (!server.prompts.includes(promptName)) {
+				lines.push(
+					`Prompt '${promptName}' not found on server '${serverName}'`,
+				);
+			} else {
+				mcpManager
+					.getPrompt(serverName, promptName)
+					.then((result) => {
+						const promptLines = [`Prompt: ${promptName}`, ""];
+						if (result.description) {
+							promptLines.push(`Description: ${result.description}`, "");
+						}
+						for (const msg of result.messages) {
+							promptLines.push(`[${msg.role}]`);
+							promptLines.push(msg.content);
+							promptLines.push("");
+						}
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(new Text(promptLines.join("\n"), 1, 0));
+						this.ui.requestRender();
+					})
+					.catch((err: unknown) => {
+						const message = err instanceof Error ? err.message : String(err);
+						this.notificationView.showError(`Failed to get prompt: ${message}`);
+					});
+				return;
+			}
+		} else {
+			// List all prompts from all servers
+			let hasPrompts = false;
+			for (const server of status.servers) {
+				if (!server.connected || server.prompts.length === 0) continue;
+				hasPrompts = true;
+				lines.push(`${chalk.bold(server.name)}:`);
+				for (const prompt of server.prompts) {
+					lines.push(`  ${prompt}`);
+				}
+				lines.push("");
+			}
+			if (!hasPrompts) {
+				lines.push("No prompts available from connected servers.");
+			}
+			lines.push("");
+			lines.push(chalk.dim("Usage: /mcp prompts <server> <name>"));
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
@@ -2382,6 +2563,21 @@ export class TuiRenderer {
 		const thinkingLevel = this.agent.state.thinkingLevel;
 		if (thinkingLevel && thinkingLevel !== "off") {
 			badges.push(`think:${thinkingLevel}`);
+		}
+		// MCP servers status
+		const mcpStatus = mcpManager.getStatus();
+		const connectedMcp = mcpStatus.servers.filter((s) => s.connected).length;
+		if (connectedMcp > 0) {
+			const totalTools = mcpStatus.servers.reduce(
+				(sum, s) => sum + s.tools.length,
+				0,
+			);
+			badges.push(`mcp:${connectedMcp}(${totalTools})`);
+		}
+		// Active composer
+		const composerState = composerManager.getState();
+		if (composerState.active) {
+			badges.push(`composer:${composerState.active.name}`);
 		}
 		return badges;
 	}
@@ -2713,6 +2909,23 @@ export class TuiRenderer {
 		this.backgroundTaskNotificationCleanup = undefined;
 		this.backgroundSettingsUnsubscribe?.();
 		this.backgroundSettingsUnsubscribe = undefined;
+		// Clean up MCP and composer event listeners
+		if (this.mcpConnectedHandler) {
+			mcpManager.off("connected", this.mcpConnectedHandler);
+			this.mcpConnectedHandler = undefined;
+		}
+		if (this.mcpDisconnectedHandler) {
+			mcpManager.off("disconnected", this.mcpDisconnectedHandler);
+			this.mcpDisconnectedHandler = undefined;
+		}
+		if (this.composerActivatedHandler) {
+			composerManager.off("activated", this.composerActivatedHandler);
+			this.composerActivatedHandler = undefined;
+		}
+		if (this.composerDeactivatedHandler) {
+			composerManager.off("deactivated", this.composerDeactivatedHandler);
+			this.composerDeactivatedHandler = undefined;
+		}
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;

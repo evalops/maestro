@@ -382,6 +382,70 @@ export class McpClientManager extends EventEmitter {
 	isConnected(name: string): boolean {
 		return this.servers.has(name);
 	}
+
+	/**
+	 * Read a resource from an MCP server
+	 */
+	async readResource(
+		serverName: string,
+		uri: string,
+	): Promise<{
+		contents: Array<{
+			uri: string;
+			text?: string;
+			blob?: string;
+			mimeType?: string;
+		}>;
+	}> {
+		const server = this.servers.get(serverName);
+		if (!server) {
+			throw new Error(`MCP server '${serverName}' not connected`);
+		}
+
+		const result = await server.client.readResource({ uri });
+		return {
+			contents: result.contents.map((c) => ({
+				uri: c.uri,
+				text: "text" in c ? c.text : undefined,
+				blob: "blob" in c ? c.blob : undefined,
+				mimeType: c.mimeType,
+			})),
+		};
+	}
+
+	/**
+	 * Get a prompt from an MCP server
+	 */
+	async getPrompt(
+		serverName: string,
+		promptName: string,
+		args?: Record<string, string>,
+	): Promise<{
+		description?: string;
+		messages: Array<{ role: string; content: string }>;
+	}> {
+		const server = this.servers.get(serverName);
+		if (!server) {
+			throw new Error(`MCP server '${serverName}' not connected`);
+		}
+
+		const result = await server.client.getPrompt({
+			name: promptName,
+			arguments: args,
+		});
+		return {
+			description: result.description,
+			messages: result.messages.map((m) => ({
+				role: m.role,
+				content:
+					typeof m.content === "string"
+						? m.content
+						: m.content.type === "text"
+							? m.content.text
+							: "[non-text content]",
+			})),
+		};
+	}
 }
 
 // Singleton instance
