@@ -291,16 +291,6 @@ const routes: Route[] = [
 		method: "POST",
 		path: "/api/chat",
 		handler: async (req, res) => {
-			const lease = sseLimiter.tryAcquire();
-			if (!lease) {
-				sendJson(
-					res,
-					429,
-					{ error: "Too many active SSE connections" },
-					CORS_HEADERS,
-				);
-				return;
-			}
 			return handleChat(req, res, CORS_HEADERS, {
 				createAgent: async (model, thinking, approval) =>
 					createAgent(
@@ -312,9 +302,8 @@ const routes: Route[] = [
 				defaultApprovalMode: DEFAULT_APPROVAL_MODE,
 				defaultProvider: DEFAULT_PROVIDER,
 				defaultModelId: DEFAULT_MODEL_ID,
-				onComplete: () => {
-					sseLimiter.release(lease);
-				},
+				acquireSse: () => sseLimiter.tryAcquire(),
+				releaseSse: (token) => sseLimiter.release(token),
 			});
 		},
 	},

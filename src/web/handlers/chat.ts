@@ -36,6 +36,8 @@ export interface ChatDeps {
 	defaultProvider: string;
 	defaultModelId: string;
 	onComplete?: () => void;
+	acquireSse?: () => symbol | null;
+	releaseSse?: (token: symbol | null) => void;
 }
 
 export async function handleChat(
@@ -47,8 +49,11 @@ export async function handleChat(
 		getRegisteredModel,
 		defaultApprovalMode,
 		onComplete,
+		acquireSse,
+		releaseSse,
 	}: ChatDeps,
 ) {
+	let sseLease: symbol | null = null;
 	try {
 		const chatReq = (await parseAndValidateJson<ChatRequestInput>(
 			req,
@@ -78,6 +83,14 @@ export async function handleChat(
 		if (!userInput) {
 			sendJson(res, 400, { error: "User message cannot be empty" }, cors);
 			return;
+		}
+
+		if (acquireSse) {
+			sseLease = acquireSse();
+			if (!sseLease) {
+				sendJson(res, 429, { error: "Too many active SSE connections" }, cors);
+				return;
+			}
 		}
 
 		const sessionManager = new SessionManager(false);
@@ -217,6 +230,9 @@ export async function handleChat(
 		console.error("Chat error:", error);
 		respondWithApiError(res, error, 500, cors);
 	} finally {
+		if (sseLease && releaseSse) {
+			releaseSse(sseLease);
+		}
 		if (typeof onComplete === "function") onComplete();
 	}
 }
