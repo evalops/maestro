@@ -5,43 +5,53 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Composer - AI Coding Assistant</title>
     <meta name="description" content="Modern web interface for Composer AI coding assistant with session management, tool integration, and beautiful design">
-    
+
     <!-- Preconnect to API -->
     <link rel="preconnect" href="http://localhost:8080">
-    
+
     <!-- Favicon -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2358a6ff'/></svg>">
-    
+
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         :root {
-            /* High-contrast industrial palette inspired by TUI */
-            --bg-primary: #0a0e14;
-            --bg-secondary: #0d1117;
-            --bg-panel: #161b22;
-            --bg-panel-alt: #1c2128;
-            --text-primary: #e6edf3;
-            --text-secondary: #8b949e;
-            --text-tertiary: #6e7681;
-            --border-primary: #21262d;
-            --border-secondary: #30363d;
-            --accent-blue: #58a6ff;
-            --accent-cyan: #39c5cf;
-            --accent-purple: #bc8cff;
-            --accent-green: #3fb950;
-            --accent-yellow: #d29922;
-            --accent-red: #f85149;
-            
-            /* Monospace-first typography */
-            --font-mono: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
-            --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+            /* Matte Pro Theme - Enterprise Lean */
+            --bg-primary: #09090b; /* Zinc 950 */
+            --bg-secondary: #18181b; /* Zinc 900 */
+            --bg-panel: #27272a; /* Zinc 800 */
+            --bg-panel-alt: #3f3f46; /* Zinc 700 */
+
+            --text-primary: #f4f4f5; /* Zinc 100 */
+            --text-secondary: #a1a1aa; /* Zinc 400 */
+            --text-tertiary: #71717a; /* Zinc 500 */
+
+            --border-primary: #27272a; /* Zinc 800 */
+            --border-secondary: #3f3f46; /* Zinc 700 */
+
+            /* Refined Accents */
+            --accent-blue: #3b82f6; /* Blue 500 */
+            --accent-blue-dim: rgba(59, 130, 246, 0.1);
+            --accent-cyan: #06b6d4; /* Cyan 500 */
+            --accent-purple: #8b5cf6; /* Violet 500 */
+            --accent-green: #10b981; /* Emerald 500 */
+            --accent-yellow: #f59e0b; /* Amber 500 */
+            --accent-red: #ef4444; /* Red 500 */
+
+            /* Typography */
+            --font-mono: 'JetBrains Mono', 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+            /* Shadows - subtle & sharp */
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
         }
-        
+
         body {
             font-family: var(--font-sans);
             background: var(--bg-primary);
@@ -50,8 +60,9 @@
             overflow: hidden;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+            selection-background-color: var(--accent-blue-dim);
         }
-        
+
         composer-chat {
             display: block;
             width: 100%;
@@ -73,14 +84,14 @@
             z-index: 1000;
             animation: fadeOut 0.3s ease-out 0.5s forwards;
         }
-        
+
         @keyframes fadeOut {
             to {
                 opacity: 0;
                 visibility: hidden;
             }
         }
-        
+
         .loading-spinner {
             width: 32px;
             height: 32px;
@@ -90,11 +101,11 @@
             animation: spin 0.6s linear infinite;
             margin-bottom: 1rem;
         }
-        
+
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
-        
+
         .loading-text {
             font-family: var(--font-mono);
             color: var(--text-secondary);
@@ -121,16 +132,16 @@
         ::-webkit-scrollbar-thumb:hover {
             background: var(--text-tertiary);
         }
-        
+
         ::selection {
             background: rgba(88, 166, 255, 0.3);
             color: var(--text-primary);
         }
-        
+
         *:focus {
             outline: none;
         }
-        
+
         *:focus-visible {
             outline: 1px solid var(--accent-blue);
             outline-offset: -1px;
@@ -143,14 +154,14 @@
         <div class="loading-spinner"></div>
         <div class="loading-text">Loading Composer...</div>
     </div>
-    
+
     <!-- Main app -->
-    <composer-chat 
+    <composer-chat
         api-endpoint="http://localhost:8080"
         model="claude-sonnet-4-5"
         theme="dark">
     </composer-chat>
-    
+
     <script type="module" src="/src/index.ts"></script>
 </body>
 </html>

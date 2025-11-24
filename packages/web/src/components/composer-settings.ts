@@ -18,27 +18,26 @@ export class ComposerSettings extends LitElement {
 			display: flex;
 			flex-direction: column;
 			height: 100%;
-			background: #0a0e14;
-			color: #e6edf3;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			background: var(--bg-primary);
+			color: var(--text-primary);
+			font-family: var(--font-sans);
 		}
 
 		.settings-header {
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			padding: 0.75rem 1rem;
-			border-bottom: 2px solid #21262d;
-			background: #0d1117;
+			padding: 1.25rem 1.5rem;
+			border-bottom: 1px solid var(--border-primary);
+			background: var(--bg-primary);
 		}
 
 		.settings-header h2 {
-			font-size: 0.85rem;
-			font-weight: 700;
+			font-size: 0.9rem;
+			font-weight: 600;
 			margin: 0;
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
-			color: #e6edf3;
+			color: var(--text-primary);
+			letter-spacing: -0.01em;
 		}
 
 		.close-btn {
@@ -46,11 +45,11 @@ export class ComposerSettings extends LitElement {
 			height: 28px;
 			padding: 0;
 			background: transparent;
-			border: 1px solid #30363d;
-			border-radius: 2px;
-			color: #8b949e;
+			border: 1px solid var(--border-primary);
+			border-radius: 6px;
+			color: var(--text-secondary);
 			cursor: pointer;
-			transition: all 0.15s;
+			transition: all 0.2s;
 			font-size: 0.9rem;
 			display: flex;
 			align-items: center;
@@ -58,212 +57,225 @@ export class ComposerSettings extends LitElement {
 		}
 
 		.close-btn:hover {
-			background: #21262d;
-			border-color: #58a6ff;
-			color: #58a6ff;
+			background: var(--bg-panel);
+			color: var(--text-primary);
+			border-color: var(--border-secondary);
 		}
 
 		.settings-content {
 			flex: 1;
 			overflow-y: auto;
-			padding: 1rem;
+			padding: 1.5rem;
 		}
 
 		.section {
-			margin-bottom: 1.5rem;
-			background: #0d1117;
-			border: 1px solid #21262d;
-			border-radius: 2px;
+			margin-bottom: 2rem;
+			background: var(--bg-secondary);
+			border: 1px solid var(--border-primary);
+			border-radius: 8px;
+			overflow: hidden;
 		}
 
 		.section-header {
-			padding: 0.625rem 0.875rem;
-			background: #161b22;
-			border-bottom: 1px solid #21262d;
+			padding: 0.75rem 1rem;
+			background: var(--bg-panel);
+			border-bottom: 1px solid var(--border-primary);
 		}
 
 		.section-header h3 {
+			font-family: var(--font-mono);
 			font-size: 0.7rem;
-			font-weight: 700;
+			font-weight: 600;
 			margin: 0;
-			color: #8b949e;
+			color: var(--text-secondary);
 			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			letter-spacing: 0.05em;
 		}
 
 		.section-content {
-			padding: 0.875rem;
+			padding: 1rem;
 		}
 
 		.info-grid {
 			display: grid;
 			grid-template-columns: auto 1fr;
-			gap: 0.5rem 1rem;
-			font-size: 0.75rem;
+			gap: 0.75rem 1.5rem;
+			font-size: 0.8rem;
 			line-height: 1.6;
 		}
 
 		.info-label {
-			color: #6e7681;
+			font-family: var(--font-mono);
+			color: var(--text-tertiary);
+			font-size: 0.7rem;
 			text-transform: uppercase;
-			font-size: 0.65rem;
 			letter-spacing: 0.05em;
+			padding-top: 0.15em;
 		}
 
 		.info-value {
-			color: #e6edf3;
+			color: var(--text-primary);
 			word-break: break-all;
+			font-family: var(--font-mono);
 		}
 
 		.info-value.highlight {
-			color: #58a6ff;
+			color: var(--accent-blue);
 		}
 
 		.info-value.success {
-			color: #3fb950;
+			color: var(--accent-green);
 		}
 
 		.info-value.warning {
-			color: #d29922;
+			color: var(--accent-yellow);
 		}
 
 		.info-value.error {
-			color: #f85149;
+			color: var(--accent-red);
 		}
 
 		.badge {
 			display: inline-block;
-			padding: 0.125rem 0.35rem;
-			background: #161b22;
-			border: 1px solid #30363d;
-			border-radius: 2px;
+			padding: 0.15rem 0.4rem;
+			background: var(--bg-panel);
+			border: 1px solid var(--border-primary);
+			border-radius: 4px;
 			font-size: 0.65rem;
-			font-weight: 700;
-			color: #8b949e;
+			font-weight: 600;
+			color: var(--text-secondary);
 			text-transform: uppercase;
 			margin-right: 0.35rem;
+			font-family: var(--font-mono);
 		}
 
 		.badge.active {
-			border-color: #58a6ff;
-			color: #58a6ff;
+			background: var(--accent-blue-dim);
+			color: var(--accent-blue);
+			border-color: transparent;
 		}
 
 		.badge.success {
-			border-color: #3fb950;
-			color: #3fb950;
+			background: rgba(16, 185, 129, 0.1);
+			color: var(--accent-green);
+			border-color: transparent;
+		}
+
+		.badge.error {
+			background: rgba(239, 68, 68, 0.1);
+			color: var(--accent-red);
+			border-color: transparent;
 		}
 
 		.model-grid {
 			display: grid;
 			grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-			gap: 0.75rem;
+			gap: 1rem;
 		}
 
 		.model-card {
-			background: #161b22;
-			border: 1px solid #30363d;
-			border-radius: 2px;
-			padding: 0.75rem;
-			transition: all 0.15s;
+			background: var(--bg-primary);
+			border: 1px solid var(--border-primary);
+			border-radius: 6px;
+			padding: 1rem;
+			transition: all 0.2s;
 			cursor: pointer;
 		}
 
 		.model-card:hover {
-			border-color: #58a6ff;
-			background: #1c2128;
+			border-color: var(--accent-blue);
+			transform: translateY(-1px);
+			box-shadow: var(--shadow-sm);
 		}
 
 		.model-card.selected {
-			border-color: #58a6ff;
-			border-width: 2px;
-			padding: calc(0.75rem - 1px);
+			border-color: var(--accent-blue);
+			background: var(--accent-blue-dim);
 		}
 
 		.model-name {
-			font-size: 0.8rem;
+			font-size: 0.9rem;
 			font-weight: 600;
-			color: #e6edf3;
-			margin-bottom: 0.35rem;
+			color: var(--text-primary);
+			margin-bottom: 0.25rem;
+			font-family: var(--font-sans);
 		}
 
 		.model-provider {
-			font-size: 0.65rem;
-			color: #8b949e;
+			font-size: 0.7rem;
+			color: var(--text-tertiary);
 			text-transform: uppercase;
 			letter-spacing: 0.05em;
-			margin-bottom: 0.5rem;
+			margin-bottom: 0.75rem;
+			font-family: var(--font-mono);
 		}
 
 		.model-stats {
-			display: grid;
-			grid-template-columns: repeat(2, 1fr);
+			display: flex;
+			flex-wrap: wrap;
 			gap: 0.35rem;
-			font-size: 0.65rem;
-			margin-top: 0.5rem;
-		}
-
-		.model-stat {
-			color: #6e7681;
-		}
-
-		.model-stat span {
-			color: #e6edf3;
+			margin-top: 0.75rem;
 		}
 
 		.usage-stats {
 			display: grid;
 			grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-			gap: 0.75rem;
-			margin-bottom: 1rem;
+			gap: 1rem;
+			margin-bottom: 1.5rem;
 		}
 
 		.stat-card {
-			background: #161b22;
-			border: 1px solid #30363d;
-			border-radius: 2px;
-			padding: 0.625rem;
+			background: var(--bg-secondary);
+			border: 1px solid var(--border-primary);
+			border-radius: 8px;
+			padding: 1rem;
 			text-align: center;
 		}
 
 		.stat-value {
-			font-size: 1.25rem;
+			font-size: 1.5rem;
 			font-weight: 700;
-			color: #58a6ff;
-			margin-bottom: 0.25rem;
+			color: var(--text-primary);
+			margin-bottom: 0.35rem;
+			font-family: var(--font-mono);
+			letter-spacing: -0.03em;
 		}
 
 		.stat-label {
-			font-size: 0.65rem;
-			color: #6e7681;
+			font-size: 0.7rem;
+			color: var(--text-secondary);
 			text-transform: uppercase;
 			letter-spacing: 0.05em;
+			font-family: var(--font-mono);
 		}
 
 		.empty-state {
 			text-align: center;
-			padding: 2rem 1rem;
-			color: #6e7681;
-			font-size: 0.75rem;
+			padding: 3rem 1rem;
+			color: var(--text-tertiary);
+			font-size: 0.8rem;
+			font-family: var(--font-mono);
 		}
 
 		.loading {
 			text-align: center;
-			padding: 2rem 1rem;
-			color: #6e7681;
-			font-size: 0.75rem;
+			padding: 3rem 1rem;
+			color: var(--text-tertiary);
+			font-size: 0.8rem;
 			text-transform: uppercase;
 			letter-spacing: 0.05em;
+			font-family: var(--font-mono);
 		}
 
 		.error-message {
-			background: #1c2128;
-			border-left: 3px solid #f85149;
-			padding: 0.625rem 0.875rem;
+			background: rgba(239, 68, 68, 0.1);
+			border-left: 3px solid var(--accent-red);
+			padding: 0.75rem 1rem;
 			margin-bottom: 1rem;
-			font-size: 0.75rem;
-			color: #f85149;
+			font-size: 0.8rem;
+			color: var(--accent-red);
 			line-height: 1.5;
+			font-family: var(--font-mono);
 		}
 
 		@media (max-width: 768px) {
@@ -471,7 +483,7 @@ export class ComposerSettings extends LitElement {
 								const isSelected =
 									this.currentModel === `${model.provider}/${model.id}`;
 								return html`
-									<div 
+									<div
 										class="model-card ${isSelected ? "selected" : ""}"
 										@click=${() => this.selectModel(model)}
 									>

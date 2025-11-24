@@ -6,6 +6,7 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
 	ApiClient,
+	type ComposerToolCall,
 	type Message,
 	type Model,
 	type Session,
@@ -24,6 +25,11 @@ const MODELS_CACHE_KEY = "composer_models_cache";
 const USAGE_CACHE_KEY = "composer_usage_cache";
 const MODEL_OVERRIDE_KEY = "composer_model_override";
 
+interface ExtendedToolCall extends ComposerToolCall {
+	startTime?: number;
+	endTime?: number;
+}
+
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
 	static styles = css`
@@ -31,20 +37,25 @@ export class ComposerChat extends LitElement {
 			display: flex !important;
 			height: 100% !important;
 			width: 100% !important;
-			background: #0a0e14;
-			color: #e6edf3;
+			background: var(--bg-primary, #09090b);
+			color: var(--text-primary, #f4f4f5);
 			overflow: hidden;
-			font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+			font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+			--icon-btn-size: 32px;
+			--icon-btn-font-size: 0.9rem;
+			--icon-btn-border-color: transparent;
+			--icon-btn-hover: var(--bg-panel, #27272a);
 		}
 
-		/* Sidebar - compact, high-density */
+		/* Sidebar - Solid & Matte */
 		.sidebar {
-			width: 260px;
-			background: #0d1117;
-			border-right: 1px solid #21262d;
+			width: 280px;
+			background: var(--bg-primary, #09090b);
+			border-right: 1px solid var(--border-primary, #27272a);
 			display: flex;
 			flex-direction: column;
-			transition: transform 0.2s ease;
+			transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+			z-index: 20;
 		}
 
 		.sidebar.collapsed {
@@ -52,116 +63,116 @@ export class ComposerChat extends LitElement {
 		}
 
 		.sidebar-header {
-			padding: 0.75rem;
-			border-bottom: 1px solid #21262d;
-			background: #161b22;
-		}
-
-		.sidebar-header {
-			padding: 0.6rem 0.75rem;
-			border-bottom: 1px solid #21262d;
-			background: #161b22;
+			padding: 1.25rem 1rem 0.75rem;
 			display: flex;
 			flex-direction: column;
-			gap: 0.35rem;
+			gap: 0.75rem;
 		}
 
 		.sidebar-header h2 {
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.7rem;
+			font-family: var(--font-sans);
+			font-size: 0.75rem;
 			font-weight: 600;
 			margin: 0;
-			color: #8b949e;
+			color: var(--text-tertiary, #71717a);
 			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			letter-spacing: 0.05em;
+			padding-left: 0.25rem;
 		}
 
 		.new-session-btn {
 			width: 100%;
-			padding: 0.5rem 0.75rem;
-			background: #21262d;
-			color: #e6edf3;
-			border: 1px solid #30363d;
-			border-radius: 3px;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.75rem;
-			font-weight: 600;
+			padding: 0.6rem 0.75rem;
+			background: var(--accent-blue, #3b82f6);
+			color: white;
+			border: none;
+			border-radius: 6px;
+			font-family: var(--font-sans);
+			font-size: 0.85rem;
+			font-weight: 500;
 			cursor: pointer;
-			transition: all 0.15s;
+			transition: all 0.2s ease;
 			display: flex;
 			align-items: center;
 			justify-content: center;
 			gap: 0.5rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			box-shadow: var(--shadow-md, 0 4px 6px -1px rgba(0, 0, 0, 0.1));
 		}
 
 		.new-session-btn:hover {
-			background: #30363d;
-			border-color: #58a6ff;
-			color: #58a6ff;
+			background: #2563eb; /* Blue 600 */
+			transform: translateY(-1px);
+			box-shadow: var(--shadow-lg, 0 10px 15px -3px rgba(0, 0, 0, 0.1));
 		}
 
-		.new-session-btn::before {
-			content: "+";
-			font-size: 1rem;
+		.new-session-btn:active {
+			transform: translateY(0);
 		}
 
 		.sessions-list {
 			flex: 1;
 			overflow-y: auto;
-			padding: 0;
+			padding: 0.5rem 0.5rem;
 		}
 
-			.session-item {
-				padding: 0.55rem 0.75rem;
-				border-bottom: 1px solid #21262d;
-				cursor: pointer;
-				transition: all 0.15s;
-				background: transparent;
-			}
+		.session-item {
+			padding: 0.75rem 0.75rem;
+			margin-bottom: 2px;
+			border-radius: 6px;
+			cursor: pointer;
+			transition: all 0.15s ease;
+			background: transparent;
+			border: 1px solid transparent;
+			position: relative;
+			overflow: hidden;
+		}
 
 		.session-item:hover {
-			background: #161b22;
-			border-left: 2px solid #58a6ff;
-			padding-left: calc(0.75rem - 2px);
+			background: var(--bg-panel, #27272a);
 		}
 
 		.session-item.active {
-			background: #1c2128;
-			border-left: 3px solid #58a6ff;
-			padding-left: calc(0.75rem - 3px);
+			background: var(--bg-panel, #27272a);
+			border-color: var(--border-secondary, #3f3f46);
 		}
 
-			.session-title {
-				font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-				font-size: 0.78rem;
-				font-weight: 500;
-				margin-bottom: 0.1rem;
-				color: #e6edf3;
-				white-space: nowrap;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				pointer-events: none;
+		.session-item.active::before {
+			content: "";
+			position: absolute;
+			left: 0;
+			top: 50%;
+			transform: translateY(-50%);
+			height: 16px;
+			width: 3px;
+			background: var(--accent-blue, #3b82f6);
+			border-radius: 0 4px 4px 0;
+		}
+
+		.session-title {
+			font-family: var(--font-sans);
+			font-size: 0.85rem;
+			font-weight: 500;
+			margin-bottom: 0.25rem;
+			color: var(--text-primary, #f4f4f5);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
 		}
 
 		.session-meta {
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.65rem;
-			color: #6e7681;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
-			pointer-events: none;
+			font-family: var(--font-sans);
+			font-size: 0.7rem;
+			color: var(--text-tertiary, #71717a);
 		}
 
-		/* Main content - instrument panel style */
+		/* Main Content - Clean & Spacious */
 		.main-content {
 			flex: 1;
 			display: flex;
 			flex-direction: column;
 			position: relative;
-			min-width: 0; /* Fix flex shrinking issue */
-			width: 100%; /* Ensure it takes available space */
+			min-width: 0;
+			background: var(--bg-primary, #09090b);
 		}
 
 		.header {
@@ -169,10 +180,11 @@ export class ComposerChat extends LitElement {
 			grid-template-columns: auto 1fr auto;
 			align-items: center;
 			gap: 1rem;
-			padding: 0.625rem 1rem;
-			background: #0d1117;
-			border-bottom: 1px solid #21262d;
-			min-height: 44px;
+			padding: 0.75rem 1.5rem;
+			background: var(--bg-primary, #09090b); /* Seamless header */
+			border-bottom: 1px solid var(--border-primary, #27272a);
+			min-height: 56px;
+			z-index: 10;
 		}
 
 		.header-left {
@@ -182,466 +194,327 @@ export class ComposerChat extends LitElement {
 		}
 
 		.toggle-sidebar-btn {
-			width: 28px;
-			height: 28px;
+			width: 32px;
+			height: 32px;
 			padding: 0;
 			background: transparent;
-			border: 1px solid #30363d;
-			border-radius: 2px;
-			color: #8b949e;
+			border: none;
+			border-radius: 6px;
+			color: var(--text-secondary, #a1a1aa);
 			cursor: pointer;
-			transition: all 0.15s;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.7rem;
+			transition: all 0.2s;
 			display: flex;
 			align-items: center;
 			justify-content: center;
 		}
 
 		.toggle-sidebar-btn:hover {
-			background: #21262d;
-			border-color: #58a6ff;
-			color: #58a6ff;
+			background: var(--bg-panel, #27272a);
+			color: var(--text-primary, #f4f4f5);
 		}
 
 		.header h1 {
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.85rem;
-			font-weight: 700;
+			font-family: var(--font-sans);
+			font-size: 1rem;
+			font-weight: 600;
 			margin: 0;
-			color: #e6edf3;
-			letter-spacing: -0.02em;
-			text-transform: uppercase;
-		}
-
-		.header h1::before {
-			content: "♪ ";
-			color: #58a6ff;
-			margin-right: 0.35rem;
+			color: var(--text-primary, #f4f4f5);
+			letter-spacing: -0.01em;
 		}
 
 		.status-bar {
 			display: flex;
 			align-items: center;
-			gap: 0.4rem;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			gap: 0.5rem;
+			font-family: var(--font-mono);
 			font-size: 0.7rem;
-			color: #6e7681;
-		}
-
-		.muted {
-			color: #6e7681;
+			color: var(--text-secondary, #a1a1aa);
 		}
 
 		.status-item {
 			display: flex;
 			align-items: center;
-			gap: 0.25rem;
-			padding: 0.2rem 0.45rem;
-			background: #0d1117;
-			border: 1px solid #21262d;
-			border-radius: 999px;
-			font-size: 0.64rem;
-			box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+			gap: 0.4rem;
+			padding: 0.25rem 0.5rem;
+			background: var(--bg-secondary, #18181b);
+			border: 1px solid var(--border-primary, #27272a);
+			border-radius: 6px;
+			font-size: 0.7rem;
+			font-weight: 500;
+			transition: border-color 0.2s;
 		}
 
-			.status-item.active {
-				border-color: #58a6ff;
-				color: #58a6ff;
-				background: rgba(88, 166, 255, 0.08);
-			}
+		.status-item:hover {
+			border-color: var(--border-secondary, #3f3f46);
+		}
+
+		.status-item.active {
+			border-color: rgba(59, 130, 246, 0.3);
+			background: rgba(59, 130, 246, 0.05);
+			color: var(--accent-blue, #3b82f6);
+		}
 
 		.pill {
 			display: inline-flex;
 			align-items: center;
 			gap: 0.25rem;
 			padding: 0.1rem 0.4rem;
-			background: #0d1117;
-			border: 1px solid #30363d;
-			border-radius: 999px;
-			color: #e6edf3;
+			background: var(--bg-panel, #27272a);
+			border-radius: 4px;
+			color: var(--text-primary, #f4f4f5);
 			font-weight: 600;
 			font-size: 0.7rem;
 		}
 
 		.pill.warning {
-			border-color: #d29922;
-			color: #d29922;
+			background: rgba(245, 158, 11, 0.1);
+			color: var(--accent-yellow, #f59e0b);
 		}
 
 		.pill.success {
-			border-color: #3fb950;
-			color: #3fb950;
+			background: rgba(16, 185, 129, 0.1);
+			color: var(--accent-green, #10b981);
 		}
 
-			.status-dot {
-				width: 6px;
-				height: 6px;
-				border-radius: 50%;
-				background: #3fb950;
-				animation: pulse 2s ease-in-out infinite;
-			}
-
-			.status-dot.offline {
-				background: #f85149;
-				animation: none;
-			}
-
-			.status-dot.warning {
-				background: #d29922;
-			}
-
-			.status-dot.success {
-				background: #3fb950;
-			}
-
-		@keyframes pulse {
-			0%, 100% { opacity: 1; }
-			50% { opacity: 0.4; }
+		.status-dot {
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			background: var(--accent-green, #10b981);
+			box-shadow: 0 0 8px var(--accent-green);
 		}
 
-		.header-right {
+		.status-dot.offline {
+			background: var(--accent-red, #ef4444);
+			box-shadow: none;
+		}
+
+		/* Messages - Elegant & Readable */
+		.messages {
+			flex: 1;
+			overflow-y: auto;
+			padding: 2rem;
 			display: flex;
-			align-items: center;
+			flex-direction: column;
+			gap: 1.5rem;
+			background: var(--bg-primary, #09090b);
+			scroll-behavior: smooth;
+		}
+
+		.messages.compact {
+			padding: 1rem;
 			gap: 0.5rem;
 		}
 
-		.toast {
-			position: fixed;
-			bottom: 16px;
-			right: 16px;
-			padding: 0.75rem 1rem;
-			border-radius: 6px;
-			background: #161b22;
-			border: 1px solid #30363d;
-			color: #e6edf3;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.75rem;
-			box-shadow: 0 10px 25px rgba(0,0,0,0.4);
-			z-index: 300;
-			animation: fadeIn 0.2s ease;
+		.input-container {
+			padding: 1.5rem 2rem;
+			background: linear-gradient(to top, var(--bg-primary) 80%, transparent);
+			position: sticky;
+			bottom: 0;
+			z-index: 15;
 		}
 
-		.toast.success { border-color: #3fb950; color: #c2f5cd; }
-		.toast.error { border-color: #f85149; color: #fca5a5; }
-		.toast.info { border-color: #58a6ff; color: #cde5ff; }
-
-		@keyframes fadeIn {
-			from { opacity: 0; transform: translateY(6px); }
-			to { opacity: 1; transform: translateY(0); }
-		}
-
+		/* Model Selector - Refined */
 		.model-selector {
 			display: flex;
 			align-items: center;
-			gap: 0.5rem;
-			padding: 0.35rem 0.625rem;
-			background: #161b22;
-			border: 1px solid #30363d;
-			border-radius: 2px;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.7rem;
-			color: #e6edf3;
-			font-weight: 600;
+			gap: 0.6rem;
+			padding: 0.35rem 0.75rem;
+			background: var(--bg-secondary, #18181b);
+			border: 1px solid var(--border-primary, #27272a);
+			border-radius: 20px;
+			font-family: var(--font-sans);
+			font-size: 0.75rem;
+			color: var(--text-primary, #f4f4f5);
+			font-weight: 500;
 			cursor: pointer;
-			transition: all 0.15s;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			transition: all 0.2s;
 		}
 
 		.model-selector:hover {
-			background: #21262d;
-			border-color: #58a6ff;
+			background: var(--bg-panel, #27272a);
+			border-color: var(--border-secondary, #3f3f46);
 		}
 
 		.model-badge {
-			padding: 0.125rem 0.35rem;
-			background: #58a6ff;
-			border-radius: 2px;
-			font-size: 0.65rem;
-			font-weight: 700;
-			color: #0d1117;
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			background: var(--accent-blue, #3b82f6);
 		}
 
-	.icon-btn {
-		width: 26px;
-		height: 26px;
-		padding: 0;
-		background: transparent;
-			border: 1px solid #30363d;
-			border-radius: 999px;
-			color: #8b949e;
+		/* Icon Buttons - Minimal */
+		.icon-btn {
+			width: var(--icon-btn-size);
+			height: var(--icon-btn-size);
+			padding: 0;
+			background: transparent;
+			border: none;
+			border-radius: 6px;
+			color: var(--text-secondary, #a1a1aa);
 			cursor: pointer;
-			transition: all 0.15s;
-			font-size: 0.9rem;
-			display: flex;
+			transition: all 0.2s;
+			display: inline-flex;
 			align-items: center;
 			justify-content: center;
 		}
 
-	.icon-btn:hover {
-		background: #21262d;
-		border-color: #58a6ff;
-		color: #58a6ff;
-	}
-
-	.icon-btn:focus-visible,
-	.toggle-sidebar-btn:focus-visible,
-	.new-session-btn:focus-visible {
-		outline: 2px solid #58a6ff;
-		outline-offset: 2px;
-	}
-
-	.icon-btn.active {
-		border-color: #58a6ff;
-		color: #58a6ff;
-		background: rgba(88, 166, 255, 0.08);
-	}
-
-		/* Messages - dense, terminal-like */
-	.messages {
-		flex: 1;
-		overflow-y: auto;
-		padding: 1rem;
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-		background: #0a0e14;
-		min-height: 0; /* Fix flexbox overflow issue */
-	}
-
-	.messages.compact {
-		padding: 0.5rem;
-		gap: 0;
-	}
-
-		.input-container {
-			border-top: 2px solid #21262d;
-			padding: 0.75rem 1rem;
-			background: #0d1117;
+		.icon-btn:hover {
+			background: var(--bg-panel, #27272a);
+			color: var(--text-primary, #f4f4f5);
 		}
 
-		.error {
-			padding: 0.625rem 0.875rem;
-			background: #1c2128;
-			color: #f85149;
-			border-left: 3px solid #f85149;
-			margin: 0 1rem 0.5rem 1rem;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.75rem;
-			line-height: 1.5;
+		.icon-btn.active {
+			background: var(--accent-blue-dim);
+			color: var(--accent-blue, #3b82f6);
 		}
 
-		.banner {
-			padding: 0.6rem 1rem;
-			background: #1c2128;
-			border-bottom: 1px solid #30363d;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.75rem;
-			color: #f2f2f2;
+		.icon {
+			width: 16px;
+			height: 16px;
+			stroke: currentColor;
+			fill: none;
+			stroke-width: 1.5;
+			stroke-linecap: round;
+			stroke-linejoin: round;
+			pointer-events: none;
+		}
+
+		/* Toast - Modern */
+		.toast {
+			position: fixed;
+			bottom: 24px;
+			right: 24px;
+			padding: 0.75rem 1.25rem;
+			border-radius: 8px;
+			background: var(--bg-panel, #27272a);
+			border: 1px solid var(--border-secondary, #3f3f46);
+			color: var(--text-primary, #f4f4f5);
+			font-family: var(--font-sans);
+			font-size: 0.85rem;
+			box-shadow: var(--shadow-lg);
+			z-index: 300;
 			display: flex;
 			align-items: center;
-			gap: 0.5rem;
+			gap: 0.75rem;
+			animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 		}
 
-		.banner.offline {
-			border-left: 3px solid #f85149;
+		@keyframes slideUp {
+			from { opacity: 0; transform: translateY(10px); }
+			to { opacity: 1; transform: translateY(0); }
 		}
 
-		.banner.retry {
-			border-left: 3px solid #d29922;
-		}
+		.toast.success { border-left: 3px solid var(--accent-green); }
+		.toast.error { border-left: 3px solid var(--accent-red); }
+		.toast.info { border-left: 3px solid var(--accent-blue); }
 
-		.loading {
-			display: flex;
-			align-items: center;
-			gap: 0.625rem;
-			padding: 0.5rem 0.75rem;
-			background: #161b22;
-			border: 1px solid #30363d;
-			border-left: 3px solid #58a6ff;
-			color: #8b949e;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.75rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
-		}
-
-		.loading::before {
-			content: "";
-			width: 12px;
-			height: 12px;
-			border: 2px solid #30363d;
-			border-top-color: #58a6ff;
-			border-radius: 50%;
-			animation: spin 0.6s linear infinite;
-		}
-
-		@keyframes spin {
-			to { transform: rotate(360deg); }
-		}
-
-		/* Empty state - workspace status panel */
+		/* Empty State - Elegant */
 		.empty-state {
 			flex: 1;
-			display: grid;
-			grid-template-rows: auto 1fr;
-			padding: 0;
-			background: #0a0e14;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			padding: 2rem;
+			background: radial-gradient(circle at center, var(--bg-secondary) 0%, var(--bg-primary) 70%);
 		}
 
 		.workspace-panel {
 			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-			gap: 1px;
-			background: #21262d;
-			border: 1px solid #21262d;
-			margin: 1rem;
+			grid-template-columns: repeat(3, 1fr);
+			gap: 1.5rem;
+			background: transparent;
+			border: none;
+			margin: 2rem 0;
+			width: 100%;
+			max-width: 800px;
 		}
 
 		.panel-section {
-			background: #0d1117;
-			padding: 0.875rem;
-			border: 1px solid #21262d;
+			background: var(--glass-bg);
+			padding: 1.25rem;
+			border: 1px solid var(--glass-border);
+			border-radius: 12px;
+			backdrop-filter: blur(8px);
 		}
 
 		.panel-section h3 {
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.65rem;
-			font-weight: 700;
-			color: #6e7681;
+			font-family: var(--font-mono);
+			font-size: 0.7rem;
+			font-weight: 600;
+			color: var(--text-secondary);
 			text-transform: uppercase;
 			letter-spacing: 0.1em;
-			margin: 0 0 0.625rem 0;
+			margin: 0 0 1rem 0;
 		}
 
 		.panel-item {
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.75rem;
-			color: #e6edf3;
-			margin: 0.35rem 0;
-			line-height: 1.6;
+			font-family: var(--font-mono);
+			font-size: 0.8rem;
+			color: var(--text-primary);
+			margin: 0.5rem 0;
+			display: flex;
+			align-items: center;
 		}
 
 		.panel-item span {
-			color: #6e7681;
-			margin-right: 0.5rem;
-		}
-
-		.panel-item.active {
-			color: #58a6ff;
+			color: var(--text-tertiary);
+			margin-right: 0.75rem;
+			min-width: 3rem;
 		}
 
 		.session-gallery {
-			margin: 1.5rem;
-			background: #0d1117;
-			border: 1px solid #21262d;
-			border-radius: 4px;
-			padding: 1.25rem;
-			box-shadow: 0 20px 35px rgba(0, 0, 0, 0.35);
-		}
-
-		.session-gallery-header {
-			display: flex;
-			justify-content: space-between;
-			align-items: baseline;
-			margin-bottom: 1rem;
-			gap: 1rem;
-			flex-wrap: wrap;
-		}
-
-		.session-gallery-header h3 {
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.75rem;
-			letter-spacing: 0.1em;
-			text-transform: uppercase;
-			color: #8b949e;
-			margin: 0;
-		}
-
-		.session-gallery-header span {
-			font-size: 0.75rem;
-			color: #6e7681;
+			margin-top: 2rem;
+			width: 100%;
+			max-width: 800px;
+			background: transparent;
+			border: none;
+			box-shadow: none;
+			padding: 0;
 		}
 
 		.session-grid {
 			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-			gap: 0.75rem;
+			grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+			gap: 1rem;
 		}
 
 		.session-card {
-			background: #0a0e14;
-			border: 1px solid #21262d;
-			border-radius: 4px;
-			padding: 0.85rem 1rem;
+			background: var(--bg-secondary);
+			border: 1px solid var(--border-primary);
+			border-radius: 8px;
+			padding: 1.25rem;
 			text-align: left;
 			cursor: pointer;
-			transition: all 0.15s ease;
-			color: #e6edf3;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+			color: var(--text-primary);
 		}
 
 		.session-card:hover {
-			border-color: #58a6ff;
-			box-shadow: 0 10px 25px rgba(88, 166, 255, 0.12);
-			transform: translateY(-1px);
-		}
-
-		.session-card:focus-visible {
-			outline: 2px solid #58a6ff;
-			outline-offset: 2px;
+			border-color: var(--accent-blue);
+			transform: translateY(-2px);
+			box-shadow: var(--shadow-md);
 		}
 
 		.session-card-title {
-			font-size: 0.85rem;
+			font-family: var(--font-sans);
+			font-size: 0.95rem;
 			font-weight: 600;
-			margin-bottom: 0.35rem;
-			color: #e6edf3;
+			margin-bottom: 0.5rem;
 		}
 
-		.session-card-meta {
-			display: flex;
-			flex-wrap: wrap;
-			gap: 0.35rem;
-			font-size: 0.7rem;
-			color: #8b949e;
-		}
-
-		/* Hide the legacy command hint that duplicated the slash-command prompt. */
-		.command-hint {
-			display: none !important;
-		}
-
-	@media (max-width: 768px) {
-		.sidebar {
-			position: absolute;
-			left: 0;
-			top: 0;
-				bottom: 0;
-				z-index: 10;
+		/* Responsive */
+		@media (max-width: 768px) {
+			.sidebar {
+				position: absolute;
+				height: 100%;
+				box-shadow: var(--shadow-xl);
 			}
-
-			.status-bar {
-				display: none;
-			}
-
 			.workspace-panel {
-			grid-template-columns: 1fr;
+				grid-template-columns: 1fr;
+			}
 		}
-	}
-
-	:host([reduced-motion]) .status-dot {
-		animation: none;
-	}
-
-	:host([reduced-motion]) .toast {
-		animation: none;
-	}
-
-	:host([reduced-motion]) .loading::before {
-		animation: none;
-	}
 	`;
 
 	@property() apiEndpoint = "";
@@ -859,6 +732,37 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
+	private renderIcon(
+		name:
+			| "chevron-left"
+			| "chevron-right"
+			| "info"
+			| "refresh"
+			| "globe"
+			| "settings"
+			| "grid"
+			| "reduce"
+			| "close",
+	) {
+		const paths: Record<string, string> = {
+			"chevron-left": "M15 18l-6-6 6-6",
+			"chevron-right": "M9 6l6 6-6 6",
+			info: "M12 12v4m0-8h.01M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z",
+			refresh:
+				"M4.93 4.93A10 10 0 0 1 19.07 5M20 9v-4h-4M19.07 19.07A10 10 0 0 1 4.93 19M4 15v4h4",
+			globe:
+				"M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0 0c3 0 5-4 5-9s-2-9-5-9-5 4-5 9 2 9 5 9Zm0 0c2.5 0 4.5-4 4.5-9S14.5 3 12 3 7.5 7 7.5 12 9.5 21 12 21Zm0-9h9M3 12h9",
+			settings:
+				"M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.63a1 1 0 0 0 0-1.74l-1.17-.68a1 1 0 0 1-.46-.86l.05-1.35a1 1 0 0 0-1.17-1.01l-1.35.23a1 1 0 0 1-.9-.26L13.2 6a1 1 0 0 0-1.4 0l-.9.9a1 1 0 0 1-.9.26l-1.35-.23a1 1 0 0 0-1.17 1.01l.05 1.35a1 1 0 0 1-.46.86l-1.17.68a1 1 0 0 0 0 1.74l1.17.68a1 1 0 0 1 .46.86l-.05 1.35a1 1 0 0 0 1.17 1.01l1.35-.23a1 1 0 0 1 .9.26l.9.9a1 1 0 0 0 1.4 0l.9-.9a1 1 0 0 1 .9-.26l1.35.23a1 1 0 0 0 1.17-1.01l-.05-1.35a1 1 0 0 1 .46-.86Z",
+			grid: "M4 4h7v7H4Zm9 0h7v7h-7ZM4 13h7v7H4Zm9 7v-7h7v7Z",
+			reduce: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Zm-5-9h10",
+			close: "M18 6 6 18M6 6l12 12",
+		};
+		return html`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+			<path d=${paths[name]}></path>
+		</svg>`;
+	}
+
 	private toggleSidebar() {
 		this.sidebarOpen = !this.sidebarOpen;
 	}
@@ -1046,12 +950,13 @@ export class ComposerChat extends LitElement {
 							else if (msgEvent.type === "toolcall_end") {
 								const toolCall = msgEvent.toolCall;
 								if (!assistantMessage.tools) assistantMessage.tools = [];
-								assistantMessage.tools.push({
-									id: toolCall.id,
+								const extendedTool: ExtendedToolCall = {
+									toolCallId: toolCall.id,
 									name: toolCall.name,
 									status: "pending",
 									args: toolCall.arguments,
-								});
+								};
+								assistantMessage.tools.push(extendedTool);
 								activeTools.set(toolCall.id, {
 									name: toolCall.name,
 									args: toolCall.arguments,
@@ -1066,8 +971,11 @@ export class ComposerChat extends LitElement {
 						// Update tool status to running
 						const toolInfo = activeTools.get(agentEvent.toolCallId);
 						if (toolInfo && assistantMessage.tools) {
-							assistantMessage.tools[toolInfo.index].status = "running";
-							assistantMessage.tools[toolInfo.index].startTime = Date.now();
+							const tool = assistantMessage.tools[
+								toolInfo.index
+							] as ExtendedToolCall;
+							tool.status = "running";
+							tool.startTime = Date.now();
 							this.messages = [...this.messages];
 						}
 						break;
@@ -1077,11 +985,12 @@ export class ComposerChat extends LitElement {
 						// Update tool with result
 						const completedTool = activeTools.get(agentEvent.toolCallId);
 						if (completedTool && assistantMessage.tools) {
-							assistantMessage.tools[completedTool.index].status =
-								agentEvent.isError ? "error" : "completed";
-							assistantMessage.tools[completedTool.index].result =
-								agentEvent.result;
-							assistantMessage.tools[completedTool.index].endTime = Date.now();
+							const tool = assistantMessage.tools[
+								completedTool.index
+							] as ExtendedToolCall;
+							tool.status = agentEvent.isError ? "error" : "completed";
+							tool.result = agentEvent.result;
+							tool.endTime = Date.now();
 							this.messages = [...this.messages];
 						}
 						activeTools.delete(agentEvent.toolCallId);
@@ -1189,8 +1098,10 @@ export class ComposerChat extends LitElement {
 			: "n/a";
 		const totalCost =
 			this.usage && typeof this.usage.totalCost === "number"
-				? `$${this.usage.totalCost.toFixed(2)}`
-				: "$0.00";
+				? this.usage.totalCost > 0
+					? `$${this.usage.totalCost.toFixed(2)}`
+					: null
+				: null;
 		const isOnline = Boolean(this.status) && this.clientOnline;
 		const latency = this.status?.lastLatencyMs || null;
 		const taskHealth = (this.status as any)?.backgroundTasks as
@@ -1288,7 +1199,7 @@ export class ComposerChat extends LitElement {
 									this.deleteSession(session.id);
 								}}
 							>
-								✕
+								${this.renderIcon("close")}
 							</button>
 							</div>
 						`,
@@ -1299,8 +1210,8 @@ export class ComposerChat extends LitElement {
 			<div class="main-content">
 		<div class="header">
 			<div class="header-left">
-				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar}>
-					${this.sidebarOpen ? "◄" : "►"}
+				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar} title=${this.sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}>
+					${this.sidebarOpen ? this.renderIcon("chevron-left") : this.renderIcon("chevron-right")}
 				</button>
 				<h1>Composer</h1>
 			</div>
@@ -1318,7 +1229,7 @@ export class ComposerChat extends LitElement {
 									? html`<span class="muted" title=${latencyLabel}>${Math.round(latency)}ms</span>`
 									: ""
 							}
-							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>ⓘ</button>
+							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>${this.renderIcon("info")}</button>
 						</div>
 						<div class="status-item">
 							<span>CWD</span>
@@ -1326,9 +1237,9 @@ export class ComposerChat extends LitElement {
 						</div>
 						${
 							this.status?.git
-								? html`<div class="status-item" title=${gitStatus}>
+								? html`<div class="status-item" title=${gitSummary}>
 									<span>GIT</span>
-									<span class="pill ${gitStatus === "n/a" || gitStatus === "" ? "" : "warning"}">${gitBranch}</span>
+									<span class="pill ${this.status.git.status.modified || this.status.git.status.added || this.status.git.status.deleted ? "warning" : "success"}">${gitBranch}</span>
 								</div>`
 								: ""
 						}
@@ -1346,7 +1257,7 @@ export class ComposerChat extends LitElement {
 							<span>MSGS</span>
 							<span class="muted">${this.messages.length}</span>
 						</div>
-						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>↻</button>
+						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>${this.renderIcon("refresh")}</button>
 						${
 							lastUpdated
 								? html`<span class="status-item" title="Last API refresh">
@@ -1357,14 +1268,14 @@ export class ComposerChat extends LitElement {
 						}
 			</div>
 			<div class="header-right">
-				<div class="model-selector" @click=${this.toggleSettings}>
+				<div class="model-selector" @click=${this.openModelSelector}>
 					<span class="model-badge">AI</span>
 					<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
 						</div>
-						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>🌐</button>
-						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>⚙</button>
-						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>▥</button>
-						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>◌</button>
+						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${this.renderIcon("globe")}</button>
+						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
+						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
+						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
 					</div>
 				</div>
 
@@ -1413,9 +1324,13 @@ export class ComposerChat extends LitElement {
 											<div class="panel-item">
 												<span>MSGS:</span>0
 											</div>
-											<div class="panel-item">
-												<span>COST:</span>$0.00
-											</div>
+											${
+												totalCost
+													? html`<div class="panel-item">
+														<span>COST:</span>${totalCost}
+													</div>`
+													: ""
+											}
 										</div>
 									</div>
 									${
@@ -1501,7 +1416,7 @@ export class ComposerChat extends LitElement {
 						<div style="position: fixed; top: 64px; right: 12px; width: 260px; background: #0d1117; border: 1px solid #30363d; padding: 0.75rem; z-index: 120; box-shadow: 0 10px 24px rgba(0,0,0,0.4); font-family: 'SF Mono','Menlo','Monaco', monospace; font-size: 0.75rem; color: #e6edf3;">
 							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
 								<span style="color:#6e7681; letter-spacing:0.05em;">API HEALTH</span>
-								<button class="icon-btn" @click=${this.closeHealth}>✕</button>
+								<button class="icon-btn" @click=${this.closeHealth}>${this.renderIcon("close")}</button>
 							</div>
 							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Base:</span> ${this.apiClient.baseUrl}</div>
 							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Latency:</span> ${latency ? `${Math.round(latency)}ms` : "n/a"}</div>
@@ -1528,7 +1443,7 @@ export class ComposerChat extends LitElement {
 						<div style="position: fixed; top: 30%; left: 50%; transform: translateX(-50%); width: 420px; background: #0d1117; border: 1px solid #30363d; padding: 1rem; z-index: 140; box-shadow: 0 18px 40px rgba(0,0,0,0.5); font-family: 'SF Mono','Menlo','Monaco', monospace; font-size: 0.78rem; color: #e6edf3;">
 							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
 								<span style="letter-spacing:0.08em; color:#8b949e;">Keyboard shortcuts</span>
-								<button class="icon-btn" @click=${this.closeShortcuts}>✕</button>
+								<button class="icon-btn" @click=${this.closeShortcuts}>${this.renderIcon("close")}</button>
 							</div>
 						<div style="display:grid; grid-template-columns: auto 1fr; gap: 0.35rem 0.75rem;">
 							<span class="pill">Enter</span><span>Send message</span>
