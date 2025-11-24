@@ -65,6 +65,7 @@ import type {
 	CommandExecutionContext,
 } from "./commands/types.js";
 import { ConfigView } from "./config-view.js";
+import { ContextView } from "./context-view.js";
 import { CustomEditor } from "./custom-editor.js";
 import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
@@ -220,6 +221,8 @@ export class TuiRenderer {
 	private feedbackView: FeedbackView;
 	private aboutView: AboutView;
 	private changelogView: ChangelogView;
+	private contextView?: ContextView;
+	private contextViewVisible = false;
 	private infoView: InfoView;
 	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
@@ -643,6 +646,9 @@ export class TuiRenderer {
 			onToggleComplete: () => {
 				this.handlePlanPanelToggleComplete();
 			},
+			onMoveTask: (direction) => {
+				this.handlePlanPanelMoveTask(direction);
+			},
 		});
 		this.conversationCompactor = new ConversationCompactor({
 			agent: this.agent,
@@ -764,6 +770,7 @@ export class TuiRenderer {
 			handleInitAgents: (context) => this.handleInitCommand(context),
 			handleMcp: (context) => this.handleMcpCommand(context),
 			handleZen: (context) => this.handleZenCommand(context),
+			handleContext: (context) => this.handleContextCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -1165,6 +1172,31 @@ export class TuiRenderer {
 			return;
 		}
 		context.showError("Usage: /zen [on|off]");
+	}
+
+	private handleContextCommand(_context: CommandExecutionContext): void {
+		if (this.contextViewVisible) {
+			this.closeContextView();
+			return;
+		}
+		this.contextViewVisible = true;
+		this.contextView = new ContextView({
+			state: this.agent.state,
+			onClose: () => this.closeContextView(),
+		});
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.contextView);
+		this.ui.setFocus(this.contextView);
+		this.ui.requestRender();
+	}
+
+	private closeContextView(): void {
+		this.contextViewVisible = false;
+		this.contextView = undefined;
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.editor);
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
 	}
 
 	private handleFooterCommand(context: CommandExecutionContext): void {
@@ -1739,6 +1771,23 @@ export class TuiRenderer {
 			return;
 		}
 		this.planView.toggleTaskCompletion(selectedGoal.key, selectedTask.id);
+	}
+
+	private handlePlanPanelMoveTask(direction: "up" | "down"): void {
+		if (!this.planPanelModal) {
+			return;
+		}
+		const selectedGoal = this.planPanelModal.getSelectedGoal();
+		const selectedTask = this.planPanelModal.getSelectedTask();
+		if (!selectedGoal || !selectedTask) {
+			return;
+		}
+		// Move the task in the store
+		this.planView.moveTask(selectedGoal.key, selectedTask.id, direction);
+
+		// Adjust selection to follow the moved task
+		const delta = direction === "up" ? -1 : 1;
+		this.planPanelModal.navigateTasks(delta);
 	}
 
 	private setQueueMode(mode: "one" | "all"): void {

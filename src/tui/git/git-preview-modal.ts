@@ -18,6 +18,7 @@ interface GitPreviewModalOptions {
 	onUnstage: () => void;
 	onRefresh: () => void;
 	onToggleMode: () => void;
+	onCommit: () => void;
 }
 
 export class GitPreviewModal implements Component {
@@ -81,7 +82,7 @@ export class GitPreviewModal implements Component {
 		lines.push("");
 		lines.push(
 			chalk.dim(
-				"[↑/↓] select  [enter] toggle staged/worktree  [s] stage  [u] unstage  [r] refresh  [esc] close",
+				"[↑/↓] select  [enter] toggle staged/worktree  [s] stage  [u] unstage  [c] commit  [r] refresh  [esc] close",
 			),
 		);
 		return lines;
@@ -106,6 +107,10 @@ export class GitPreviewModal implements Component {
 		}
 		if (data === "u" || data === "U") {
 			this.options.onUnstage();
+			return;
+		}
+		if (data === "c" || data === "C") {
+			this.options.onCommit();
 			return;
 		}
 		if (data === "r" || data === "R") {

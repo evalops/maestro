@@ -4,6 +4,7 @@ import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { CustomEditor } from "../custom-editor.js";
+import { CommitModal } from "./commit-modal.js";
 import {
 	GitPreviewModal,
 	type GitPreviewMode,
@@ -23,6 +24,7 @@ export class GitView {
 	private lastNotifiedChanges: string[] = [];
 	private lastTodoFingerprint = "";
 	private previewModal: GitPreviewModal | null = null;
+	private commitModal: CommitModal | null = null;
 	private previewEntries: GitStatusEntry[] = [];
 	private previewSelection = 0;
 	private previewMode: GitPreviewMode = "worktree";
@@ -47,6 +49,7 @@ export class GitView {
 				onUnstage: () => void this.unstageSelectedEntry(),
 				onRefresh: () => void this.refreshPreviewEntries(),
 				onToggleMode: () => void this.togglePreviewMode(),
+				onCommit: () => this.openCommitModal(),
 			});
 			this.options.editorContainer.clear();
 			this.options.editorContainer.addChild(this.previewModal);
@@ -62,6 +65,38 @@ export class GitView {
 		this.options.ui.setFocus(this.options.editor);
 		this.previewModal = null;
 		this.previewEntries = [];
+	}
+
+	private openCommitModal(): void {
+		this.commitModal = new CommitModal({
+			onSubmit: (message) => void this.performCommit(message),
+			onCancel: () => this.closeCommitModal(),
+		});
+		this.options.editorContainer.clear();
+		this.options.editorContainer.addChild(this.commitModal);
+		this.options.ui.setFocus(this.commitModal);
+	}
+
+	private closeCommitModal(): void {
+		this.commitModal = null;
+		if (this.previewModal) {
+			this.options.editorContainer.clear();
+			this.options.editorContainer.addChild(this.previewModal);
+			this.options.ui.setFocus(this.previewModal);
+		} else {
+			this.closePreviewModal();
+		}
+	}
+
+	private async performCommit(message: string): Promise<void> {
+		const result = await this.runGitAsync(["commit", "-m", message]);
+		if (!result.success) {
+			this.options.showInfoMessage(result.stderr || "Commit failed");
+			return;
+		}
+		this.options.showToast("Committed changes.", "success");
+		this.closeCommitModal();
+		await this.refreshPreviewEntries();
 	}
 
 	private async refreshPreviewEntries(targetPath?: string): Promise<void> {

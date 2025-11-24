@@ -65,6 +65,7 @@ interface CommandRegistryOptions {
 	handleLogin: (context: CommandExecutionContext) => void | Promise<void>;
 	handleLogout: (context: CommandExecutionContext) => void | Promise<void>;
 	handleZen: (context: CommandExecutionContext) => void;
+	handleContext: (context: CommandExecutionContext) => void;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -117,6 +118,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			logout: opts.handleLogout,
 			planMode: opts.handlePlanMode,
 			zen: opts.handleZen,
+			context: opts.handleContext,
 		},
 		createContext: opts.createContext,
 	});

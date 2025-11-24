@@ -37,6 +37,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "context",
+				description: "Visualize context usage (tokens per message/file)",
+				usage: "/context",
+				tags: ["diagnostics", "usage"],
+			},
+			equals("context"),
+			handlers.context,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "approvals",
 				description:
 					"Show approval status or switch between auto/prompt/fail modes",
