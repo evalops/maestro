@@ -223,6 +223,9 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			gap: 0.5rem;
 			flex-wrap: nowrap;
+			white-space: nowrap;
+			overflow-x: auto;
+			padding-bottom: 2px;
 			font-family: var(--font-mono);
 			font-size: 0.7rem;
 			color: var(--text-secondary, #a1a1aa);
@@ -256,6 +259,7 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			gap: 0.5rem;
 			flex-wrap: nowrap;
+			white-space: nowrap;
 		}
 
 		.pill {
