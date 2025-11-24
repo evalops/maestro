@@ -345,7 +345,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 		let timeout: NodeJS.Timeout;
 
 		timeout = setTimeout(() => {
-			if (!res.writableEnded) {
+			if (!res.headersSent && !res.writableEnded) {
 				requestContextStorage.run(context, () => {
 					logError(`Request timeout for ${pathname} [${requestId}]`);
 					const duration = performance.now() - start;
