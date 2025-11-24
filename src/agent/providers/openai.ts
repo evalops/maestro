@@ -589,6 +589,7 @@ export async function* streamOpenAI(
 	let cacheAdjusted = false;
 	const textEnded = new Set<number>();
 	const toolEnded = new Set<number>();
+	const thinkingEnded = new Set<number>();
 
 	const updateCosts = () => {
 		partial.usage.cost = {
@@ -787,7 +788,7 @@ export async function* streamOpenAI(
 						// Finalize all content blocks
 						for (let i = 0; i < partial.content.length; i++) {
 							const block = partial.content[i];
-							if (block.type === "toolCall") {
+							if (block.type === "toolCall" && !toolEnded.has(i)) {
 								// Final parse of accumulated JSON
 								const partialArgs = toolArgBuffers.get(i) || "{}";
 								try {
@@ -804,7 +805,8 @@ export async function* streamOpenAI(
 									toolCall: block,
 									partial,
 								};
-							} else if (block.type === "text") {
+								toolEnded.add(i);
+							} else if (block.type === "text" && !textEnded.has(i)) {
 								yield {
 									type: "text_end",
 									contentIndex: i,
@@ -812,13 +814,14 @@ export async function* streamOpenAI(
 									partial,
 								};
 								textEnded.add(i);
-							} else if (block.type === "thinking") {
+							} else if (block.type === "thinking" && !thinkingEnded.has(i)) {
 								yield {
 									type: "thinking_end",
 									contentIndex: i,
 									content: block.thinking,
 									partial,
 								};
+								thinkingEnded.add(i);
 							}
 						}
 
