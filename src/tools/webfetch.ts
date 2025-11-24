@@ -1,12 +1,13 @@
 import { Type } from "@sinclair/typebox";
+import { callExa } from "./exa-client.js";
 import {
 	ExaHighlightsOptionSchema,
 	ExaSummaryOptionSchema,
 	ExaTextOptionSchema,
 	buildContentsOptions,
 } from "./exa-contents.js";
-import { createExaTool } from "./exa-tool.js";
 import type { ExaContentsResponse } from "./exa-types.js";
+import { createTool } from "./tool-dsl.js";
 
 const webfetchSchema = Type.Object({
 	urls: Type.Union(
@@ -30,15 +31,19 @@ const webfetchSchema = Type.Object({
 	highlights: Type.Optional(ExaHighlightsOptionSchema),
 });
 
-export const webfetchTool = createExaTool({
+export interface WebfetchDetails {
+	resultsCount: number;
+	errors?: string[];
+	results: ExaContentsResponse["results"];
+}
+
+export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 	name: "webfetch",
 	label: "webfetch",
 	description:
 		"Fetch and extract content from specific URLs using Exa. Converts HTML to clean markdown, optionally returns summaries and highlights. Use for: reading documentation, fetching article content, extracting information from known URLs.",
 	schema: webfetchSchema,
-	endpoint: "/contents",
-	operation: "contents",
-	buildRequest: (params) => {
+	run: async (params, { respond }) => {
 		const urls = Array.isArray(params.urls) ? params.urls : [params.urls];
 		const contents = buildContentsOptions(
 			{
@@ -52,9 +57,12 @@ export const webfetchTool = createExaTool({
 		if (contents) {
 			requestBody.contents = contents;
 		}
-		return requestBody;
-	},
-	mapResponse: (data: ExaContentsResponse) => {
+
+		const data = await callExa<ExaContentsResponse>("/contents", requestBody, {
+			toolName: "webfetch",
+			operation: "contents",
+		});
+
 		const errors: string[] = [];
 		if (data.statuses) {
 			for (const status of data.statuses) {
@@ -66,57 +74,54 @@ export const webfetchTool = createExaTool({
 			}
 		}
 
-		const outputLines: string[] = [];
-
 		if (errors.length > 0) {
-			outputLines.push("⚠️  Some URLs failed to fetch:");
+			respond.text("⚠️  Some URLs failed to fetch:");
 			for (const error of errors) {
-				outputLines.push(`   ${error}`);
+				respond.text(`   ${error}`);
 			}
-			outputLines.push("");
+			respond.text("");
 		}
 
-		outputLines.push(`Fetched ${data.results.length} URL(s)`);
-		outputLines.push("");
+		respond.text(`Fetched ${data.results.length} URL(s)`);
+		respond.text("");
 
 		for (let i = 0; i < data.results.length; i++) {
 			const result = data.results[i];
-			outputLines.push(`${i + 1}. ${result.title || result.url}`);
-			outputLines.push(`   URL: ${result.url}`);
+			respond.text(`${i + 1}. ${result.title || result.url}`);
+			respond.text(`   URL: ${result.url}`);
 
 			if (result.summary) {
-				outputLines.push(`   Summary: ${result.summary}`);
-				outputLines.push("");
+				respond.text(`   Summary: ${result.summary}`);
+				respond.text("");
 			}
 
 			if (result.highlights && result.highlights.length > 0) {
-				outputLines.push("   Highlights:");
+				respond.text("   Highlights:");
 				for (const highlight of result.highlights) {
-					outputLines.push(`     - ${highlight}`);
+					respond.text(`     - ${highlight}`);
 				}
-				outputLines.push("");
+				respond.text("");
 			}
 
 			if (result.text) {
-				outputLines.push("   Content:");
-				outputLines.push(`   ${"─".repeat(78)}`);
+				respond.text("   Content:");
+				respond.text(`   ${"─".repeat(78)}`);
 				const textLines = result.text.split("\n");
 				for (const line of textLines) {
-					outputLines.push(`   ${line}`);
+					respond.text(`   ${line}`);
 				}
-				outputLines.push(`   ${"─".repeat(78)}`);
+				respond.text(`   ${"─".repeat(78)}`);
 			}
 
-			outputLines.push("");
+			respond.text("");
 		}
 
-		return {
-			content: [{ type: "text", text: outputLines.join("\n") }],
-			details: {
-				resultsCount: data.results.length,
-				errors: errors.length > 0 ? errors : undefined,
-				results: data.results,
-			},
-		};
+		respond.detail({
+			resultsCount: data.results.length,
+			errors: errors.length > 0 ? errors : undefined,
+			results: data.results,
+		});
+
+		return respond;
 	},
 });

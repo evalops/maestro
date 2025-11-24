@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import {
 	ToolResponseBuilder,
 	createJsonTool,
-	createLegacyTool,
 	createTextTool,
 	createTool,
 	expandUserPath,
@@ -59,16 +58,6 @@ const codeTool = createTool({
 	run: (_params, { respond }) => respond.code("ts", "const x = 42;"),
 });
 
-const legacyTool = createLegacyTool({
-	name: "legacy",
-	description: "Legacy adapter",
-	schema: Type.Object({}),
-	legacyExecute: async () => ({
-		content: [{ type: "text", text: "legacy" }],
-		details: { mode: "legacy" },
-	}),
-});
-
 describe("createTool DSL", () => {
 	it("builds response via context builder", async () => {
 		const result = await echoTool.execute("call-1", { text: "hello" });
@@ -107,12 +96,6 @@ describe("createTool DSL", () => {
 			result.content[0].type === "text" ? result.content[0].text : "";
 		expect(text).toContain("```ts");
 		expect(text).toContain("const x = 42;");
-	});
-
-	it("adapts legacy execute functions", async () => {
-		const result = await legacyTool.execute("call-7", {});
-		expect(result.content[0]).toMatchObject({ text: "legacy" });
-		expect(result.details).toEqual({ mode: "legacy" });
 	});
 
 	it("expands user paths", () => {

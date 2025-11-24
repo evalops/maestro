@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
-import { normalizeCostDollars } from "./exa-client.js";
-import { createExaTool } from "./exa-tool.js";
+import { callExa, normalizeCostDollars } from "./exa-client.js";
 import type { ExaContextResponse } from "./exa-types.js";
+import { createTool } from "./tool-dsl.js";
 
 const codesearchSchema = Type.Object({
 	query: Type.String({
@@ -28,46 +28,63 @@ const codesearchSchema = Type.Object({
 	),
 });
 
-export const codesearchTool = createExaTool({
+export interface CodesearchDetails {
+	requestId: string;
+	query: string;
+	resultsCount: number;
+	outputTokens: number;
+	searchTime: number;
+	costDollars: number;
+	response: string;
+}
+
+export const codesearchTool = createTool<
+	typeof codesearchSchema,
+	CodesearchDetails
+>({
 	name: "codesearch",
 	label: "codesearch",
 	description:
 		"Search billions of GitHub repos, documentation, and Stack Overflow for code examples and programming context using Exa Code API. Returns token-efficient, working code examples. Use for: framework usage, API syntax, library examples, best practices, setup instructions.",
 	schema: codesearchSchema,
-	endpoint: "/context",
-	operation: "context",
-	buildRequest: (params) => ({
-		query: params.query,
-		tokensNum: params.tokensNum ?? "dynamic",
-	}),
-	mapResponse: (data: ExaContextResponse) => {
+	run: async (params, { respond }) => {
+		const data = await callExa<ExaContextResponse>(
+			"/context",
+			{
+				query: params.query,
+				tokensNum: params.tokensNum ?? "dynamic",
+			},
+			{
+				toolName: "codesearch",
+				operation: "context",
+			},
+		);
+
 		const costTotal = normalizeCostDollars(data.costDollars) ?? 0;
 
-		const outputLines: string[] = [];
-		outputLines.push(`Query: "${data.query}"`);
-		outputLines.push(
+		respond.text(`Query: "${data.query}"`);
+		respond.text(
 			`Results: ${data.resultsCount} sources, ${data.outputTokens} tokens`,
 		);
-		outputLines.push(
+		respond.text(
 			`Search time: ${(data.searchTime / 1000).toFixed(2)}s, Cost: $${costTotal.toFixed(4)}`,
 		);
-		outputLines.push("");
-		outputLines.push("Code Examples and Context:");
-		outputLines.push("─".repeat(80));
-		outputLines.push("");
-		outputLines.push(data.response);
+		respond.text("");
+		respond.text("Code Examples and Context:");
+		respond.text("─".repeat(80));
+		respond.text("");
+		respond.text(data.response);
 
-		return {
-			content: [{ type: "text", text: outputLines.join("\n") }],
-			details: {
-				requestId: data.requestId,
-				query: data.query,
-				resultsCount: data.resultsCount,
-				outputTokens: data.outputTokens,
-				searchTime: data.searchTime,
-				costDollars: costTotal,
-				response: data.response,
-			},
-		};
+		respond.detail({
+			requestId: data.requestId,
+			query: data.query,
+			resultsCount: data.resultsCount,
+			outputTokens: data.outputTokens,
+			searchTime: data.searchTime,
+			costDollars: costTotal,
+			response: data.response,
+		});
+
+		return respond;
 	},
 });

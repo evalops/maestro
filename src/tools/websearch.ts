@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { normalizeCostDollars } from "./exa-client.js";
+import { callExa, normalizeCostDollars } from "./exa-client.js";
 import {
 	ExaContextOptionSchema,
 	ExaHighlightsOptionSchema,
@@ -7,8 +7,8 @@ import {
 	ExaTextOptionSchema,
 	buildContentsOptions,
 } from "./exa-contents.js";
-import { createExaTool } from "./exa-tool.js";
 import type { ExaSearchResponse } from "./exa-types.js";
+import { createTool } from "./tool-dsl.js";
 
 const websearchSchema = Type.Object({
 	query: Type.String({
@@ -120,15 +120,25 @@ const websearchSchema = Type.Object({
 	),
 });
 
-export const websearchTool = createExaTool({
+export interface WebsearchDetails {
+	requestId: string;
+	resolvedSearchType: string;
+	resultsCount: number;
+	costDollars: number | null;
+	context?: string;
+	results: ExaSearchResponse["results"];
+}
+
+export const websearchTool = createTool<
+	typeof websearchSchema,
+	WebsearchDetails
+>({
 	name: "websearch",
 	label: "websearch",
 	description:
 		"Search the web using Exa AI for real-time information beyond training cutoff. Supports semantic (neural) and keyword search with optional full text and summaries. Use for: recent news, documentation, research papers, current events.",
 	schema: websearchSchema,
-	endpoint: "/search",
-	operation: "search",
-	buildRequest: (params) => {
+	run: async (params, { respond }) => {
 		const requestBody: Record<string, unknown> = {
 			query: params.query,
 			numResults: params.numResults ?? 5,
@@ -164,47 +174,47 @@ export const websearchTool = createExaTool({
 			requestBody.subpages = params.subpages;
 		}
 
-		return requestBody;
-	},
-	mapResponse: (data: ExaSearchResponse, params) => {
-		const outputLines: string[] = [];
-		outputLines.push(`Query: "${params.query}"`);
-		outputLines.push(
+		const data = await callExa<ExaSearchResponse>("/search", requestBody, {
+			toolName: "websearch",
+			operation: "search",
+		});
+
+		respond.text(`Query: "${params.query}"`);
+		respond.text(
 			`Search type: ${data.resolvedSearchType || params.type || "auto"}`,
 		);
-		outputLines.push(`Found ${data.results.length} results`);
+		respond.text(`Found ${data.results.length} results`);
+
 		const totalCost = normalizeCostDollars(data.costDollars);
 		if (typeof totalCost === "number") {
-			outputLines.push(
-				`Cost: $${totalCost.toFixed(4)} (charged to Exa account)`,
-			);
+			respond.text(`Cost: $${totalCost.toFixed(4)} (charged to Exa account)`);
 		}
-		outputLines.push("");
+		respond.text("");
 
 		if (data.context) {
-			outputLines.push("LLM-Optimized Context:");
-			outputLines.push("─".repeat(80));
-			outputLines.push(data.context);
-			outputLines.push("─".repeat(80));
-			outputLines.push("");
+			respond.text("LLM-Optimized Context:");
+			respond.text("─".repeat(80));
+			respond.text(data.context);
+			respond.text("─".repeat(80));
+			respond.text("");
 		}
 
 		for (let i = 0; i < data.results.length; i++) {
 			const result = data.results[i];
-			outputLines.push(`${i + 1}. ${result.title}`);
-			outputLines.push(`   URL: ${result.url}`);
+			respond.text(`${i + 1}. ${result.title}`);
+			respond.text(`   URL: ${result.url}`);
 
 			if (result.publishedDate) {
 				const date = new Date(result.publishedDate).toLocaleDateString();
-				outputLines.push(`   Published: ${date}`);
+				respond.text(`   Published: ${date}`);
 			}
 
 			if (result.author) {
-				outputLines.push(`   Author: ${result.author}`);
+				respond.text(`   Author: ${result.author}`);
 			}
 
 			if (result.summary) {
-				outputLines.push(`   Summary: ${result.summary}`);
+				respond.text(`   Summary: ${result.summary}`);
 			}
 
 			if (result.text) {
@@ -212,29 +222,28 @@ export const websearchTool = createExaTool({
 					result.text.length > 500
 						? `${result.text.substring(0, 500)}...`
 						: result.text;
-				outputLines.push(`   Text: ${textPreview}`);
+				respond.text(`   Text: ${textPreview}`);
 			}
 
 			if (result.highlights && result.highlights.length > 0) {
-				outputLines.push("   Highlights:");
+				respond.text("   Highlights:");
 				for (const highlight of result.highlights) {
-					outputLines.push(`     - ${highlight}`);
+					respond.text(`     - ${highlight}`);
 				}
 			}
 
-			outputLines.push("");
+			respond.text("");
 		}
 
-		return {
-			content: [{ type: "text", text: outputLines.join("\n") }],
-			details: {
-				requestId: data.requestId,
-				resolvedSearchType: data.resolvedSearchType,
-				resultsCount: data.results.length,
-				costDollars: totalCost,
-				context: data.context,
-				results: data.results,
-			},
-		};
+		respond.detail({
+			requestId: data.requestId,
+			resolvedSearchType: data.resolvedSearchType ?? "auto",
+			resultsCount: data.results.length,
+			costDollars: totalCost ?? null,
+			context: data.context,
+			results: data.results,
+		});
+
+		return respond;
 	},
 });

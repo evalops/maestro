@@ -215,20 +215,3 @@ export function createJsonTool<Schema extends TSchema, Details = undefined>(
 		},
 	});
 }
-
-export interface CreateLegacyToolOptions<Schema extends TSchema, Details>
-	extends Omit<CreateToolOptions<Schema, Details>, "run"> {
-	legacyExecute: (
-		params: Static<Schema>,
-		context: ToolRunContext<Details>,
-	) => AgentToolResult<Details> | Promise<AgentToolResult<Details>>;
-}
-
-export function createLegacyTool<Schema extends TSchema, Details = undefined>(
-	options: CreateLegacyToolOptions<Schema, Details>,
-) {
-	return createTool<Schema, Details>({
-		...options,
-		run: (params, context) => options.legacyExecute(params, context),
-	});
-}
