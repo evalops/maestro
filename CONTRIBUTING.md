@@ -12,18 +12,37 @@ expect before opening a PR.
 ## Development Workflow
 
 1. **Fork & clone** – `git clone https://github.com/evalops/composer-cli.git`
-2. **Install deps** – `npm install`
+2. **Install deps** – `npm install` (or `bun install`)
 3. **Create a branch** – `git checkout -b feature/my-change`
-4. **Implement + document** – update code + relevant docs (README, docs/*.md)
+4. **Implement + document** – update code + relevant docs (README, docs/*.md, AGENTS.md)
 5. **Run checks**:
    ```bash
-   npm run lint
-   npm run test
-   npm run evals
+   npm run lint      # Biome linter
+   npm run test      # Vitest unit tests
+   npm run build     # TypeScript compilation
+   npm run evals     # End-to-end scenarios (optional)
    ```
-   (CI also runs these, but failing locally wastes review cycles.)
+   (CI runs these, but failing locally wastes review cycles.)
 6. **Commit** – descriptive message, e.g., `feat: add bash history`
 7. **Push & PR** – open a PR against `main`, filling out the template.
+
+### Development Tools
+
+#### VS Code
+- Open the workspace and debugging is pre-configured
+- Press F5 to start debugging
+- Use `.vscode/launch.json` configurations for different scenarios
+
+#### Watch Mode
+```bash
+npm run dev          # TypeScript watch mode
+bun run bun:watch    # Bun watch mode
+```
+
+#### Testing Individual Files
+```bash
+npm test -- test/path/to/file.test.ts
+```
 
 ## Code Style
 
@@ -46,8 +65,20 @@ expect before opening a PR.
 
 ## Releases
 
-Maintainers bump `package.json` + `CHANGELOG.md`, tag, and publish. Contributors
-do not run `npm publish`.
+Use the versioning scripts for consistent releases:
+
+```bash
+npm run version:patch    # 0.10.0 -> 0.10.1
+npm run version:minor    # 0.10.0 -> 0.11.0
+npm run version:major    # 0.10.0 -> 1.0.0
+```
+
+These scripts automatically:
+- Update package.json and package-lock.json
+- Create CHANGELOG.md entry with timestamp
+- Provide next-step instructions for git tag and npm publish
+
+Contributors should not run `npm publish`.
 
 ## Communication
 

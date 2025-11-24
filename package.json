@@ -39,7 +39,10 @@
     "verify": "npm run format && npm run lint && npm run test && npm run build && npm run smoke && npm run telemetry:report",
     "smoke": "node scripts/smoke-cli.js",
     "factory:import": "npm run build && node dist/scripts/import-factory-config.js",
-    "factory:export": "npm run build && node dist/scripts/export-factory-config.js"
+    "factory:export": "npm run build && node dist/scripts/export-factory-config.js",
+    "version:patch": "node scripts/version.js patch",
+    "version:minor": "node scripts/version.js minor",
+    "version:major": "node scripts/version.js major"
   },
   "dependencies": {
     "@google/genai": "^1.29.1",
