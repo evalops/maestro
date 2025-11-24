@@ -101,8 +101,8 @@ export class ComposerMessage extends LitElement {
 			display: inline-block;
 			margin-left: 0.75rem;
 			padding: 0.125rem 0.35rem;
-			background: #0b1016;
-			border: 1px solid #252b33;
+			background: var(--bg-secondary, #161b22);
+			border: 1px solid var(--border-color, #30363d);
 			border-radius: 4px;
 			font-size: 0.6rem;
 			font-weight: 700;
@@ -238,8 +238,8 @@ export class ComposerMessage extends LitElement {
 			top: 0.5rem;
 			right: 0.5rem;
 			padding: 0.375rem 0.75rem;
-			background: #0b1016;
-			border: 1px solid #252b33;
+			background: var(--bg-secondary, #161b22);
+			border: 1px solid var(--border-color, #30363d);
 			border-radius: 4px;
 			color: #cde5ff;
 			font-size: 0.75rem;

@@ -35,10 +35,10 @@ export class ComposerChat extends LitElement {
 			color: #e6edf3;
 			overflow: hidden;
 			font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
-			--icon-btn-size: 24px;
-			--icon-btn-font-size: 0.78rem;
-			--icon-btn-border-color: #1f242a;
-			--icon-btn-hover: rgba(88, 166, 255, 0.06);
+			--icon-btn-size: 26px;
+			--icon-btn-font-size: 0.8rem;
+			--icon-btn-border-color: var(--border-color, #30363d);
+			--icon-btn-hover: color-mix(in srgb, var(--accent-color, #2f81f7) 14%, transparent);
 		}
 
 		/* Sidebar - compact, high-density */
@@ -242,17 +242,17 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			gap: 0.25rem;
 			padding: 0.2rem 0.45rem;
-			background: #0b1016;
-			border: 1px solid #252b33;
+			background: var(--bg-primary, #0d1117);
+			border: 1px solid var(--border-color, #30363d);
 			border-radius: 4px;
 			font-size: 0.64rem;
 			letter-spacing: 0.02em;
 		}
 
 			.status-item.active {
-				border-color: #3a82c2;
+				border-color: var(--accent-color, #2f81f7);
 				color: #d7e7ff;
-				background: rgba(88, 166, 255, 0.05);
+				background: color-mix(in srgb, var(--accent-color, #2f81f7) 10%, transparent);
 			}
 
 		.pill {
@@ -260,8 +260,8 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			gap: 0.25rem;
 			padding: 0.1rem 0.4rem;
-			background: #0b1016;
-			border: 1px solid #252b33;
+			background: var(--bg-primary, #0d1117);
+			border: 1px solid var(--border-color, #30363d);
 			border-radius: 4px;
 			color: #e6edf3;
 			font-weight: 600;
@@ -317,8 +317,8 @@ export class ComposerChat extends LitElement {
 			right: 16px;
 			padding: 0.75rem 1rem;
 			border-radius: 4px;
-			background: #0b1016;
-			border: 1px solid #252b33;
+			background: var(--bg-secondary, #161b22);
+			border: 1px solid var(--border-color, #30363d);
 			color: #e6edf3;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 			font-size: 0.75rem;
@@ -389,7 +389,7 @@ export class ComposerChat extends LitElement {
 
 	.icon-btn:hover {
 		background: var(--icon-btn-hover);
-		border-color: #3a82c2;
+		border-color: var(--accent-color, #2f81f7);
 		color: #58a6ff;
 		opacity: 1;
 	}
@@ -454,8 +454,8 @@ export class ComposerChat extends LitElement {
 
 		.banner {
 			padding: 0.6rem 1rem;
-			background: #0b1016;
-			border-bottom: 1px solid #252b33;
+			background: var(--bg-secondary, #161b22);
+			border-bottom: 1px solid var(--border-color, #30363d);
 			border-radius: 4px;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 			font-size: 0.75rem;
@@ -555,8 +555,8 @@ export class ComposerChat extends LitElement {
 
 		.session-gallery {
 			margin: 1.5rem;
-			background: #0c1219;
-			border: 1px solid #2a323c;
+			background: var(--bg-secondary, #161b22);
+			border: 1px solid var(--border-color, #30363d);
 			border-radius: 4px;
 			padding: 1.25rem;
 			box-shadow: 0 20px 35px rgba(0, 0, 0, 0.35);
@@ -592,8 +592,8 @@ export class ComposerChat extends LitElement {
 		}
 
 		.session-card {
-			background: #0c1219;
-			border: 1px solid #2a323c;
+			background: var(--bg-secondary, #161b22);
+			border: 1px solid var(--border-color, #30363d);
 			border-radius: 4px;
 			padding: 0.85rem 1rem;
 			text-align: left;
