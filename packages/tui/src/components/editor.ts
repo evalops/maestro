@@ -349,9 +349,7 @@ export class Editor implements Component {
 			this.insertCharacter(data);
 		}
 	}
-	private layoutText(
-		contentWidth: number,
-	): Array<{
+	private layoutText(contentWidth: number): Array<{
 		text: string;
 		hasCursor: boolean;
 		cursorPos?: number;
