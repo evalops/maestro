@@ -9,28 +9,34 @@ import {
 	inspectConfig,
 	validateConfig,
 } from "../../models/registry.js";
+import {
+	badge,
+	muted,
+	sectionHeading,
+	separator as themedSeparator,
+} from "../../style/theme.js";
 
 /**
  * Handle `composer config validate` command
  */
 export async function handleConfigValidate(): Promise<void> {
-	console.log(chalk.bold("\n🔍 Validating Configuration\n"));
+	console.log(sectionHeading("🔍 Validating Configuration"));
 
 	const result: ConfigValidationResult = validateConfig();
 
 	// Show config files
 	if (result.summary.configFiles.length > 0) {
-		console.log(chalk.dim("Config Files:"));
+		console.log(muted("Config Files:"));
 		for (const file of result.summary.configFiles) {
 			const relPath = file.replace(homedir(), "~");
-			console.log(chalk.dim(`  • ${relPath}`));
+			console.log(muted(`  • ${relPath}`));
 		}
 		console.log();
 	}
 
 	// Show errors
 	if (result.errors.length > 0) {
-		console.log(chalk.red("✗ Errors:"));
+		console.log(badge("✗ Errors", undefined, "danger"));
 		for (const error of result.errors) {
 			console.log(chalk.red(`  • ${error}`));
 		}
@@ -39,7 +45,7 @@ export async function handleConfigValidate(): Promise<void> {
 
 	// Show warnings
 	if (result.warnings.length > 0) {
-		console.log(chalk.yellow("⚠  Warnings:"));
+		console.log(badge("⚠  Warnings", undefined, "warn"));
 		for (const warning of result.warnings) {
 			console.log(chalk.yellow(`  • ${warning}`));
 		}
@@ -47,23 +53,35 @@ export async function handleConfigValidate(): Promise<void> {
 	}
 
 	// Show summary
-	console.log(chalk.dim("Summary:"));
-	console.log(chalk.dim(`  • Providers: ${result.summary.providers}`));
-	console.log(chalk.dim(`  • Models: ${result.summary.models}`));
+	console.log(muted("Summary:"));
 	console.log(
-		chalk.dim(`  • File References: ${result.summary.fileReferences.length}`),
+		muted(`  • ${badge("Providers", String(result.summary.providers))}`),
+	);
+	console.log(muted(`  • ${badge("Models", String(result.summary.models))}`));
+	console.log(
+		muted(
+			`  • ${badge(
+				"File References",
+				String(result.summary.fileReferences.length),
+			)}`,
+		),
 	);
 	console.log(
-		chalk.dim(`  • Environment Variables: ${result.summary.envVars.length}`),
+		muted(
+			`  • ${badge(
+				"Environment Variables",
+				String(result.summary.envVars.length),
+			)}`,
+		),
 	);
 	console.log();
 
 	// Final verdict
 	if (result.valid) {
-		console.log(chalk.green("✓ Configuration is valid\n"));
+		console.log(`${badge("Configuration is valid", undefined, "success")}\n`);
 		process.exit(0);
 	} else {
-		console.log(chalk.red("✗ Configuration has errors\n"));
+		console.log(`${badge("Configuration has errors", undefined, "danger")}\n`);
 		process.exit(1);
 	}
 }
@@ -72,69 +90,72 @@ export async function handleConfigValidate(): Promise<void> {
  * Handle `composer config show` command
  */
 export async function handleConfigShow(): Promise<void> {
-	console.log(chalk.bold("\n📋 Configuration Inspection\n"));
+	console.log(sectionHeading("📋 Configuration Inspection"));
 
 	const inspection: ConfigInspection = inspectConfig();
 
 	// Show config sources
-	console.log(chalk.bold("Config Sources:"));
+	console.log(badge("Config Sources", undefined, "info"));
 	const hierarchy = getConfigHierarchy();
 	for (const source of inspection.sources) {
 		const relPath = source.path.replace(homedir(), "~");
-		const status = source.exists ? chalk.green("✓") : chalk.dim("(not found)");
+		const status = source.exists
+			? badge("present", undefined, "success")
+			: badge("missing", undefined, "warn");
 		const mark = hierarchy.includes(source.path) ? "•" : " ";
-		console.log(`  ${mark} ${status} ${chalk.dim(relPath)}`);
+		console.log(`  ${mark} ${status} ${muted(relPath)}`);
 	}
 	console.log();
 
 	// Show providers
 	if (inspection.providers.length > 0) {
-		console.log(chalk.bold(`Providers (${inspection.providers.length}):`));
+		console.log(
+			badge(`Providers (${inspection.providers.length})`, undefined, "info"),
+		);
 		for (const provider of inspection.providers) {
-			const statusMark = provider.apiKeySource
-				? chalk.green("✓")
-				: chalk.yellow("⚠");
+			const heading = `${chalk.cyan(provider.id)} ${muted(
+				`(${provider.modelCount} models)`,
+			)}`;
+			const keyBadge = provider.apiKeySource
+				? badge("API key", provider.apiKeySource, "success")
+				: badge("API key missing", undefined, "warn");
 
-			console.log(
-				`  ${statusMark} ${chalk.cyan(provider.id)} (${provider.modelCount} models)`,
-			);
-			console.log(chalk.dim(`     ${provider.name}`));
-			console.log(chalk.dim(`     Base URL: ${provider.baseUrl}`));
-
-			if (provider.apiKeySource) {
-				console.log(chalk.dim(`     API Key: ${provider.apiKeySource}`));
-			} else {
-				console.log(chalk.yellow("     API Key: not configured"));
-			}
+			console.log(`  ${heading} ${themedSeparator()} ${keyBadge}`);
+			console.log(`     ${muted(provider.name)}`);
+			console.log(`     ${muted(`Base URL: ${provider.baseUrl}`)}`);
 
 			// Show models
 			if (provider.models.length <= 3) {
 				for (const model of provider.models) {
-					console.log(chalk.dim(`       • ${model.id}`));
+					console.log(muted(`       • ${model.id}`));
 				}
 			} else {
-				console.log(chalk.dim(`       • ${provider.models[0].id}`));
-				console.log(chalk.dim(`       • ${provider.models[1].id}`));
-				console.log(
-					chalk.dim(`       ... and ${provider.models.length - 2} more`),
-				);
+				console.log(muted(`       • ${provider.models[0].id}`));
+				console.log(muted(`       • ${provider.models[1].id}`));
+				console.log(muted(`       ... and ${provider.models.length - 2} more`));
 			}
 			console.log();
 		}
 	} else {
-		console.log(chalk.yellow("No providers configured\n"));
+		console.log(`${badge("No providers configured", undefined, "warn")}\n`);
 	}
 
 	// Show file references
 	if (inspection.fileReferences.length > 0) {
 		console.log(
-			chalk.bold(`File References (${inspection.fileReferences.length}):`),
+			badge(
+				`File References (${inspection.fileReferences.length})`,
+				undefined,
+				"info",
+			),
 		);
 		for (const ref of inspection.fileReferences) {
 			const relPath = ref.path.replace(homedir(), "~");
-			const status = ref.exists ? chalk.green("✓") : chalk.red("✗");
+			const status = ref.exists
+				? badge("present", undefined, "success")
+				: badge("missing", undefined, "danger");
 			const size = ref.size ? ` (${formatBytes(ref.size)})` : "";
-			console.log(`  ${status} ${chalk.dim(relPath)}${chalk.dim(size)}`);
+			console.log(`  ${status} ${muted(relPath)}${muted(size)}`);
 		}
 		console.log();
 	}
@@ -142,14 +163,18 @@ export async function handleConfigShow(): Promise<void> {
 	// Show environment variables
 	if (inspection.envVars.length > 0) {
 		console.log(
-			chalk.bold(`Environment Variables (${inspection.envVars.length}):`),
+			badge(
+				`Environment Variables (${inspection.envVars.length})`,
+				undefined,
+				"info",
+			),
 		);
 		for (const envVar of inspection.envVars) {
-			const status = envVar.set ? chalk.green("✓") : chalk.red("✗");
-			const value = envVar.maskedValue || chalk.dim("(not set)");
-			console.log(
-				`  ${status} ${chalk.cyan(envVar.name)}: ${chalk.dim(value)}`,
-			);
+			const status = envVar.set
+				? badge("set", undefined, "success")
+				: badge("missing", undefined, "warn");
+			const value = envVar.maskedValue ? envVar.maskedValue : "(not set)";
+			console.log(`  ${status} ${chalk.cyan(envVar.name)}: ${muted(value)}`);
 		}
 		console.log();
 	}
@@ -161,7 +186,7 @@ export async function handleConfigShow(): Promise<void> {
  * Handle `composer config init` command
  */
 export async function handleConfigInit(): Promise<void> {
-	console.log(chalk.bold("\n🚀 Initialize Composer Configuration\n"));
+	console.log(sectionHeading("🚀 Initialize Composer Configuration"));
 
 	const readline = await import("node:readline/promises");
 	const rl = readline.createInterface({
@@ -183,14 +208,14 @@ export async function handleConfigInit(): Promise<void> {
 				),
 			);
 			if (overwrite.toLowerCase() !== "y") {
-				console.log(chalk.dim("\nCancelled."));
+				console.log(muted("\nCancelled."));
 				rl.close();
 				return;
 			}
 		}
 
 		// Step 1: Choose provider
-		console.log(chalk.bold("\n1. Choose your provider:"));
+		console.log(`\n${badge("1. Choose your provider", undefined, "info")}`);
 		console.log("  1) Anthropic (Claude)");
 		console.log("  2) OpenAI (GPT)");
 		console.log("  3) AWS Bedrock");
@@ -242,7 +267,9 @@ export async function handleConfigInit(): Promise<void> {
 		}
 
 		// Step 2: API key method
-		console.log(chalk.bold("\n2. How would you like to provide your API key?"));
+		console.log(
+			`\n${badge("2. How would you like to provide your API key?", undefined, "info")}`,
+		);
 		console.log("  1) Environment variable (recommended)");
 		console.log("  2) Direct in config (not recommended)");
 
@@ -261,7 +288,11 @@ export async function handleConfigInit(): Promise<void> {
 
 		// Step 3: Use file references for prompts
 		console.log(
-			chalk.bold("\n3. Would you like to use file references for prompts?"),
+			`\n${badge(
+				"3. Would you like to use file references for prompts?",
+				undefined,
+				"info",
+			)}`,
 		);
 		console.log("  This creates a prompts/ folder for better organization.");
 
@@ -302,7 +333,7 @@ export async function handleConfigInit(): Promise<void> {
 
 		// Write config
 		writeFileSync(configPath, JSON.stringify(config, null, 2));
-		console.log(chalk.green(`\n✓ Created ${configPath}`));
+		console.log(`\n${badge("Created config", configPath, "success")}`);
 
 		// Create example prompt file
 		if (createPrompts) {
@@ -325,7 +356,7 @@ You are a helpful AI coding assistant.
 - Ask clarifying questions when needed
 `;
 			writeFileSync(systemPromptPath, examplePrompt);
-			console.log(chalk.green(`✓ Created ${systemPromptPath}`));
+			console.log(badge("Created prompt", systemPromptPath, "success"));
 		}
 
 		// Create .env.example if using environment variables
@@ -342,22 +373,22 @@ You are a helpful AI coding assistant.
 			} else {
 				writeFileSync(envExamplePath, envContent);
 			}
-			console.log(chalk.green("✓ Updated .env.example"));
+			console.log(badge("Updated .env.example", undefined, "success"));
 		}
 
 		// Show next steps
-		console.log(chalk.bold("\n🎉 Configuration initialized!\n"));
-		console.log(chalk.dim("Next steps:"));
+		console.log(sectionHeading("🎉 Configuration initialized!"));
+		console.log(muted("Next steps:"));
 
 		if (useEnv) {
 			const envVarName = (apiKeyField as any).apiKeyEnv;
-			console.log(chalk.dim(`  1. Set ${envVarName} in your environment`));
+			console.log(muted(`  1. Set ${envVarName} in your environment`));
 		}
 		if (createPrompts) {
-			console.log(chalk.dim("  2. Edit .composer/prompts/system.md"));
+			console.log(muted("  2. Edit .composer/prompts/system.md"));
 		}
-		console.log(chalk.dim("  3. Run: composer models list"));
-		console.log(chalk.dim('  4. Start using: composer "your prompt"\n'));
+		console.log(muted("  3. Run: composer models list"));
+		console.log(muted('  4. Start using: composer "your prompt"\n'));
 
 		rl.close();
 	} catch (error) {

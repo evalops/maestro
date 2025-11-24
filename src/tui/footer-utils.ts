@@ -1,5 +1,12 @@
 import chalk from "chalk";
 import type { AgentState, AssistantMessage } from "../agent/types.js";
+import {
+	brand,
+	contextualBadge,
+	metricStat,
+	themePalette,
+	separator as themedSeparator,
+} from "../style/theme.js";
 import { visibleWidth } from "../tui-lib/index.js";
 
 export interface FooterStats {
@@ -87,35 +94,57 @@ export function buildStatsLine(
 	width: number,
 	modelName: string,
 ): string {
-	const statsParts = [];
+	const statsParts: string[] = [];
 	if (stats.totalInput)
 		statsParts.push(
-			`${chalk.hex("#9ad5ff")("▲")} ${formatTokenCount(stats.totalInput)}`,
+			metricStat(
+				"▲",
+				themePalette.accentCool,
+				formatTokenCount(stats.totalInput),
+			),
 		);
 	if (stats.totalOutput)
 		statsParts.push(
-			`${chalk.hex("#f7b267")("▼")} ${formatTokenCount(stats.totalOutput)}`,
+			metricStat(
+				"▼",
+				themePalette.accentWarm,
+				formatTokenCount(stats.totalOutput),
+			),
 		);
 	if (stats.totalCacheRead)
 		statsParts.push(
-			`${chalk.hex("#c1ffd7")("⟲")} ${formatTokenCount(stats.totalCacheRead)}`,
+			metricStat(
+				"⟲",
+				themePalette.cacheRead,
+				formatTokenCount(stats.totalCacheRead),
+			),
 		);
 	if (stats.totalCacheWrite)
 		statsParts.push(
-			`${chalk.hex("#f7b7c3")("⟳")} ${formatTokenCount(stats.totalCacheWrite)}`,
+			metricStat(
+				"⟳",
+				themePalette.cacheWrite,
+				formatTokenCount(stats.totalCacheWrite),
+			),
 		);
 	if (stats.totalCost)
 		statsParts.push(
-			`${chalk.hex("#ffd6a5")("$")}${stats.totalCost.toFixed(3)}`,
+			`${chalk.hex(themePalette.cost)("$")}${chalk
+				.hex(themePalette.metric)
+				.bold(stats.totalCost.toFixed(3))}`,
 		);
 
 	const contextValue = Number.parseFloat(stats.contextPercent);
-	const contextBadgeColor = contextValue >= 80 ? "#ff6b6b" : "#a0aec0";
-	statsParts.push(chalk.hex(contextBadgeColor)(`ctx ${stats.contextPercent}%`));
+	statsParts.push(
+		contextualBadge("ctx", contextValue, { warn: 80, danger: 90 }),
+	);
 
-	const statsLeft = statsParts.join(" ");
-	const composerBrand = chalk.hex("#7c3aed")("♪ composer");
-	let rightSide = `${modelName} ${composerBrand}`;
+	const separator = themedSeparator();
+	const statsLeft = statsParts.join(separator);
+	const composerGlyph = brand.glyph();
+	const composerBrand = `${composerGlyph} ${brand.text()}`;
+	const tonedModel = chalk.hex(themePalette.model)(modelName);
+	let rightSide = `${tonedModel} ${composerBrand}`;
 
 	const statsLeftWidth = visibleWidth(statsLeft);
 	const rightWidth = visibleWidth(rightSide);
@@ -132,7 +161,8 @@ export function buildStatsLine(
 		} else if (width - statsLeftWidth - minPadding >= brandWidth) {
 			rightSide = composerBrand;
 		} else {
-			rightSide = "";
+			const fallbackSpace = width - statsLeftWidth - minPadding;
+			rightSide = fallbackSpace > 0 ? composerBrand : composerGlyph;
 		}
 	}
 

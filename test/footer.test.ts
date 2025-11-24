@@ -187,7 +187,7 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			const statsLine = rendered[1];
-			expect(statsLine).toContain("♪ composer");
+			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
 		});
 
 		it("should show model name next to composer branding", () => {
@@ -200,7 +200,7 @@ describe("FooterComponent", () => {
 
 			const statsLine = rendered[1];
 			expect(statsLine).toContain("claude-sonnet-4");
-			expect(statsLine).toContain("♪ composer");
+			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
 		});
 
 		it("should truncate model name if width is too small", () => {
@@ -215,7 +215,7 @@ describe("FooterComponent", () => {
 
 			const statsLine = rendered[1];
 			// Should still contain composer branding even if model name is truncated
-			expect(statsLine).toContain("♪ composer");
+			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
 		});
 
 		it("should show pwd with home directory as ~", () => {

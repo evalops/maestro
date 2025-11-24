@@ -1,4 +1,12 @@
 import chalk from "chalk";
+import {
+	badge,
+	contextualBadge,
+	muted,
+	sectionHeading,
+	themePalette,
+	separator as themedSeparator,
+} from "../../style/theme.js";
 import { clearUsage, getUsageSummary } from "../../tracking/cost-tracker.js";
 
 /**
@@ -42,31 +50,43 @@ export async function handleCostSummary(period?: string): Promise<void> {
 
 	const summary = getUsageSummary({ since, until });
 
-	console.log(chalk.bold(`\n💰 Cost Summary (${label})\n`));
+	console.log(sectionHeading(`💰 Cost Summary (${label})`));
 
 	if (summary.totalRequests === 0) {
-		console.log(chalk.dim("No usage data found.\n"));
+		console.log(muted("No usage data found.\n"));
 		return;
 	}
 
 	// Overall summary
-	console.log(chalk.bold("Overview:"));
+	console.log(badge("Overview", undefined, "info"));
 	console.log(
-		`  Requests: ${chalk.cyan(summary.totalRequests.toLocaleString())}`,
+		`  ${badge("Requests", summary.totalRequests.toLocaleString(), "info")}`,
 	);
-	console.log(`  Tokens: ${chalk.cyan(summary.totalTokens.toLocaleString())}`);
-	console.log(`  Cost: ${chalk.green(`$${summary.totalCost.toFixed(4)}`)}\n`);
+	console.log(
+		`  ${badge("Tokens", summary.totalTokens.toLocaleString(), "info")}`,
+	);
+	console.log(`  ${badge("Cost", `$${summary.totalCost.toFixed(4)}`, "warn")}`);
+	const avgTokens = summary.totalTokens / summary.totalRequests;
+	console.log(
+		`  ${contextualBadge("Avg tokens", avgTokens, { warn: 4000, danger: 8000, unit: "" })}`,
+	);
+	console.log();
 
 	// By provider
 	if (Object.keys(summary.byProvider).length > 0) {
-		console.log(chalk.bold("By Provider:"));
+		console.log(badge("By Provider", undefined, "info"));
 		const providers = Object.entries(summary.byProvider).sort(
 			(a, b) => b[1].cost - a[1].cost,
 		);
 
 		for (const [provider, data] of providers) {
+			const metrics = [
+				badge("req", data.requests.toString(), "info"),
+				badge("tok", formatTokens(data.tokens), "info"),
+				badge("cost", `$${data.cost.toFixed(4)}`, "warn"),
+			];
 			console.log(
-				`  ${chalk.cyan(provider.padEnd(20))} ${data.requests.toString().padStart(5)} requests  ${formatTokens(data.tokens).padStart(10)}  ${chalk.green(`$${data.cost.toFixed(4)}`)}`,
+				`  ${chalk.cyan(provider.padEnd(16))} ${metrics.join(themedSeparator())}`,
 			);
 		}
 		console.log();
@@ -74,20 +94,24 @@ export async function handleCostSummary(period?: string): Promise<void> {
 
 	// By model
 	if (Object.keys(summary.byModel).length > 1) {
-		console.log(chalk.bold("By Model:"));
+		console.log(badge("Top Models", undefined, "info"));
 		const models = Object.entries(summary.byModel)
 			.sort((a, b) => b[1].cost - a[1].cost)
 			.slice(0, 10); // Top 10
 
 		for (const [model, data] of models) {
+			const detail = [
+				badge("req", data.requests.toString(), "info"),
+				badge("cost", `$${data.cost.toFixed(4)}`, "warn"),
+			];
 			console.log(
-				`  ${chalk.dim(model.padEnd(35))} ${data.requests.toString().padStart(5)} requests  ${chalk.green(`$${data.cost.toFixed(4)}`)}`,
+				`  ${chalk.dim(model.padEnd(32))} ${detail.join(themedSeparator())}`,
 			);
 		}
 
 		if (Object.keys(summary.byModel).length > 10) {
 			console.log(
-				chalk.dim(
+				muted(
 					`  ... and ${Object.keys(summary.byModel).length - 10} more models`,
 				),
 			);
@@ -100,6 +124,7 @@ export async function handleCostSummary(period?: string): Promise<void> {
  * Handle `composer cost clear` command
  */
 export async function handleCostClear(): Promise<void> {
+	console.log(sectionHeading("🧹 Clear Usage Data"));
 	const readline = await import("node:readline/promises");
 	const rl = readline.createInterface({
 		input: process.stdin,
@@ -114,9 +139,9 @@ export async function handleCostClear(): Promise<void> {
 
 	if (confirm.toLowerCase() === "y") {
 		clearUsage();
-		console.log(chalk.green("\n✓ Usage data cleared\n"));
+		console.log(`\n${badge("Usage data cleared", undefined, "success")}\n`);
 	} else {
-		console.log(chalk.dim("\nCancelled.\n"));
+		console.log(muted("\nCancelled.\n"));
 	}
 }
 
@@ -126,36 +151,34 @@ export async function handleCostClear(): Promise<void> {
 export async function handleCostBreakdown(): Promise<void> {
 	const summary = getUsageSummary();
 
-	console.log(chalk.bold("\n📊 Detailed Cost Breakdown\n"));
+	console.log(sectionHeading("📊 Detailed Cost Breakdown"));
 
 	if (summary.totalRequests === 0) {
-		console.log(chalk.dim("No usage data found.\n"));
+		console.log(muted("No usage data found.\n"));
 		return;
 	}
 
-	// Table header
-	console.log(chalk.bold("Provider       │ Requests │ Tokens    │ Cost"));
-	console.log("━".repeat(60));
-
-	// By provider
 	const providers = Object.entries(summary.byProvider).sort(
 		(a, b) => b[1].cost - a[1].cost,
 	);
 
+	console.log(badge("Providers", undefined, "info"));
 	for (const [provider, data] of providers) {
-		const providerStr = provider.padEnd(14);
-		const requestsStr = data.requests.toString().padStart(8);
-		const tokensStr = formatTokens(data.tokens).padStart(9);
-		const costStr = `$${data.cost.toFixed(4)}`;
-
+		const share = summary.totalCost ? (data.cost / summary.totalCost) * 100 : 0;
+		const metrics = [
+			badge("req", data.requests.toString(), "info"),
+			badge("tok", formatTokens(data.tokens), "info"),
+			badge("cost", `$${data.cost.toFixed(4)}`, "warn"),
+			contextualBadge("share", share, { warn: 30, danger: 50 }),
+		];
 		console.log(
-			`${chalk.cyan(providerStr)} │ ${requestsStr} │ ${tokensStr} │ ${chalk.green(costStr)}`,
+			`  ${chalk.cyan(provider.padEnd(16))} ${metrics.join(themedSeparator())}`,
 		);
 	}
 
-	console.log("━".repeat(60));
+	console.log();
 	console.log(
-		`${chalk.bold("Total".padEnd(14))} │ ${summary.totalRequests.toString().padStart(8)} │ ${formatTokens(summary.totalTokens).padStart(9)} │ ${chalk.green(`$${summary.totalCost.toFixed(4)}`)}`,
+		`  ${badge("Total requests", summary.totalRequests.toLocaleString(), "info")} ${themedSeparator()} ${badge("Total tokens", summary.totalTokens.toLocaleString(), "info")} ${themedSeparator()} ${badge("Total cost", `$${summary.totalCost.toFixed(4)}`, "warn")}`,
 	);
 	console.log();
 }
