@@ -262,7 +262,7 @@ export class PlanView {
 		saveTodoStore(this.options.filePath, store);
 		this.options.showInfoMessage(`Deleted plan "${goalKey}".`);
 		this.options.setPlanHint(calculatePlanHint(store));
-		
+
 		// Show remaining plans or empty state
 		const remaining = Object.keys(store);
 		if (remaining.length > 0) {

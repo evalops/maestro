@@ -83,6 +83,9 @@ export OPENROUTER_API_KEY=sk-or-...
 
 # ZAI
 export ZAI_API_KEY=...
+
+# Exa (for web search tools - optional)
+export EXA_API_KEY=...  # Get yours at https://dashboard.exa.ai/api-keys
 ```
 
 ## Providers
@@ -222,8 +225,9 @@ List workspace files (filtered by an optional query) so you can quickly grab `@p
 
 ### Built-in Tools
 
-Composer ships with eight core tools:
+Composer ships with twelve core tools:
 
+- **batch** – Execute multiple independent tools in parallel (1-10 tools) to reduce latency.
 - **read** – Read file contents (text + images). Supports offset/limit for large files.
 - **list** – List directory contents with glob filtering and hidden-file toggles.
 - **search** – Ripgrep-backed search with regex, glob filters, and context.
@@ -232,6 +236,9 @@ Composer ships with eight core tools:
 - **edit** – Replace exact text in a file (fails if multiple matches).
 - **write** – Write/overwrite files, creating parent directories as needed.
 - **todo** – Manage TodoWrite-style checklists (`~/.composer/todos.json`).
+- **websearch** – Search the web via Exa AI for real-time information (requires `EXA_API_KEY`).
+- **codesearch** – Search GitHub/docs/Stack Overflow for code examples via Exa Code (requires `EXA_API_KEY`).
+- **webfetch** – Fetch and extract content from specific URLs via Exa (requires `EXA_API_KEY`).
 
 ### CLI Helpers
 

@@ -136,9 +136,13 @@ Available tools:
 - edit: Make surgical edits to files (find exact text and replace)
 - write: Create or overwrite files
 - todo: Produce TodoWrite-style checklists. Provide payload { goal: "...", items: [{ content: "...", status: "pending", priority: "medium" }] } (items may also be a JSON string) and optionally supply updates [{ id: "...", status: "completed" }] to check off existing tasks.
+- websearch: Search the web using Exa AI for real-time information beyond training cutoff. Supports neural/keyword search with optional full text and summaries. Use for current events, recent news, documentation, research.
+- codesearch: Search billions of GitHub repos, docs, and Stack Overflow for code examples using Exa Code API. Returns working code snippets with context. Use for framework usage, API syntax, library examples, best practices.
+- webfetch: Fetch and extract content from specific URLs using Exa. Converts HTML to markdown, with optional summaries. Use for reading documentation or articles from known URLs.
 
 Guidelines:
 - **Use batch tool for parallel operations**: When you need to read multiple files, run multiple searches, or list multiple directories, use batch instead of sequential tool calls to reduce latency
+- **Use web tools for external information**: Use websearch for current events/news, codesearch for programming examples/docs, webfetch to read specific URLs
 - Always use bash tool for file operations like ls, grep, find
 - Use read to examine files before editing
 - Use edit for precise changes (old text must match exactly)

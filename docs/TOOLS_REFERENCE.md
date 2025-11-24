@@ -24,6 +24,9 @@ clear error message in chat.
 | `edit` | Structured find/replace writer. | Accepts `path`, `find`, `replace`. Ensures replacements align with expected text. |
 | `write` | Writes or overwrites files. | Takes `path` + `contents`. Creates directories automatically. |
 | `todo` | Generates TodoWrite-style task lists. | Stored near the project (`~/.composer/todos.json`). Integrates with `/plan`. |
+| `websearch` | Search the web via Exa AI for real-time information. | Supports neural/keyword search, domain filtering, date ranges. Requires `EXA_API_KEY` env var. |
+| `codesearch` | Search GitHub/docs/Stack Overflow for code examples via Exa Code. | Returns working code snippets with context. Requires `EXA_API_KEY` env var. |
+| `webfetch` | Fetch content from specific URLs via Exa. | Converts HTML to markdown. Requires `EXA_API_KEY` env var. |
 
 ## CLI Commands
 

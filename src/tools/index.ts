@@ -2,6 +2,8 @@
 import { bashTool } from "./bash.js";
 // Parallel tool execution for reads/searches/listings
 import { createBatchTool } from "./batch.js";
+// Exa Code API for programming context (optional - requires EXA_API_KEY)
+import { codesearchTool } from "./codesearch.js";
 // Git diff inspection (workspace/staged/custom ranges)
 import { diffTool } from "./diff.js";
 // Structured find/replace editing
@@ -14,17 +16,24 @@ import { readTool } from "./read.js";
 import { searchTool } from "./search.js";
 // TodoWrite checklist helper
 import { todoTool } from "./todo.js";
+// Exa web content fetching (optional - requires EXA_API_KEY)
+import { webfetchTool } from "./webfetch.js";
+// Exa web search (optional - requires EXA_API_KEY)
+import { websearchTool } from "./websearch.js";
 // Free-form file writer (create/overwrite)
 import { writeTool } from "./write.js";
 
-export { createBatchTool } from "./batch.js";
 export { bashTool } from "./bash.js";
+export { createBatchTool } from "./batch.js";
+export { codesearchTool } from "./codesearch.js";
 export { diffTool } from "./diff.js";
 export { editTool } from "./edit.js";
 export { listTool } from "./list.js";
 export { readTool } from "./read.js";
 export { searchTool } from "./search.js";
 export { todoTool } from "./todo.js";
+export { webfetchTool } from "./webfetch.js";
+export { websearchTool } from "./websearch.js";
 export { writeTool } from "./write.js";
 
 // Create batch tool with all available tools (excluding batch itself)
@@ -37,6 +46,9 @@ const allTools = [
 	editTool,
 	writeTool,
 	todoTool,
+	websearchTool,
+	codesearchTool,
+	webfetchTool,
 ];
 
 export const batchTool = createBatchTool(allTools);
@@ -51,4 +63,7 @@ export const codingTools = [
 	editTool,
 	writeTool,
 	todoTool,
+	websearchTool,
+	codesearchTool,
+	webfetchTool,
 ];

@@ -636,6 +636,9 @@ describe("codingTools bundle", () => {
 			"edit",
 			"write",
 			"todo",
+			"websearch",
+			"codesearch",
+			"webfetch",
 		]);
 	});
 });

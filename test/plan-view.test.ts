@@ -3,14 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Container } from "../src/tui-lib/index.js";
 import {
 	PlanView,
+	type TodoStore,
 	calculatePlanHint,
 	loadTodoStore,
 	saveTodoStore,
-	type TodoStore,
 } from "../src/tui/plan-view.js";
-import { Container } from "../src/tui-lib/index.js";
 
 describe("calculatePlanHint", () => {
 	it("returns null when no goals exist", () => {
@@ -159,7 +159,9 @@ describe("PlanView clear functionality", () => {
 		// Try to clear all
 		planView.handlePlanCommand("/plan clear all");
 
-		expect(mockOptions.showInfoMessage).toHaveBeenCalledWith("No plans to clear.");
+		expect(mockOptions.showInfoMessage).toHaveBeenCalledWith(
+			"No plans to clear.",
+		);
 	});
 
 	it("handles clear command without argument", () => {
