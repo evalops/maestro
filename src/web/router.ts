@@ -62,6 +62,8 @@ export function matchRoute(
 	return null;
 }
 
+import { respondWithApiError } from "./server-utils.js";
+
 export function createRequestHandler(
 	routes: Route[],
 	fallback?: (
@@ -69,19 +71,24 @@ export function createRequestHandler(
 		res: ServerResponse,
 		pathname: string,
 	) => Promise<void> | void,
+	corsHeaders: Record<string, string> = {},
 ) {
 	return async (
 		req: IncomingMessage,
 		res: ServerResponse,
 		pathname: string,
 	) => {
-		const match = matchRoute(req.method || "GET", pathname, routes);
-		if (match) {
-			await match.handler(req, res, match.params);
-			return;
-		}
-		if (fallback) {
-			await fallback(req, res, pathname);
+		try {
+			const match = matchRoute(req.method || "GET", pathname, routes);
+			if (match) {
+				await match.handler(req, res, match.params);
+				return;
+			}
+			if (fallback) {
+				await fallback(req, res, pathname);
+			}
+		} catch (error) {
+			respondWithApiError(res, error, 500, corsHeaders);
 		}
 	};
 }

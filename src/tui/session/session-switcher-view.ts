@@ -1,5 +1,4 @@
 import type { Container, TUI } from "@evalops/tui";
-import type { CustomEditor } from "../custom-editor.js";
 import type { ModalManager } from "../modal-manager.js";
 import type {
 	SessionDataProvider,
