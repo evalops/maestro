@@ -6,7 +6,22 @@ versioning when releases are cut.
 
 ## Unreleased
 
-- Pending changes
+### Added
+
+- `COMPOSER_TRUST_PROXY` environment variable to trust `X-Forwarded-For` headers for rate limiting when behind a reverse proxy.
+- `COMPOSER_TRUST_PROXY_HOPS` environment variable (default: 1) to configure number of trusted proxy hops for multi-proxy setups.
+
+### Changed
+
+- **BREAKING**: Rate limiting now uses `socket.remoteAddress` by default instead of `X-Forwarded-For`. Deployments behind reverse proxies (nginx, CloudFlare, load balancers) must set `COMPOSER_TRUST_PROXY=true` to correctly identify client IPs.
+
+### Fixed
+
+- Added error handling for middleware chain execution to prevent unhandled promise rejections from crashing the server.
+- Fixed `requestContextStorage.run()` not being awaited, which could cause unhandled promise rejections.
+- Improved X-Forwarded-For parsing to read from right-to-left, preventing IP spoofing attacks.
+- Added IPv6 normalization for consistent rate limiting (strips `::ffff:` prefix from IPv4-mapped addresses).
+- Added validation for empty X-Forwarded-For headers to prevent grouping under empty string.
 
 ## 0.10.0 – 2025-11-18
 

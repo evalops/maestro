@@ -5,11 +5,22 @@ import type { Middleware } from "./middleware.js";
 import type { RateLimiter } from "./rate-limiter.js";
 import { authenticateRequest, sendJson } from "./server-utils.js";
 
+// Helper for consistent safe URL parsing
+function getPathname(req: IncomingMessage): string {
+	try {
+		// Use a dummy base for relative URLs (req.url) to ensure safe parsing
+		const parsed = new URL(req.url || "/", "http://localhost");
+		return parsed.pathname;
+	} catch {
+		return "/";
+	}
+}
+
 export function createLoadSheddingMiddleware(
 	corsHeaders: Record<string, string>,
 ): Middleware {
 	return (req, res, next) => {
-		const pathname = req.url?.split("?")[0] || "/";
+		const pathname = getPathname(req);
 		// 1. Criticality-Aware Load Shedding (Global health)
 		// We prioritize /healthz, /api/metrics, and existing SSE connections
 		// We drop new /api/chat requests if overloaded
@@ -33,20 +44,55 @@ export function createLoadSheddingMiddleware(
 	};
 }
 
+// Normalize IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1 -> 127.0.0.1)
+function normalizeIP(ip: string): string {
+	if (ip.startsWith("::ffff:")) {
+		return ip.substring(7);
+	}
+	return ip;
+}
+
 export function createRateLimitMiddleware(
 	rateLimiter: RateLimiter,
 	corsHeaders: Record<string, string>,
+	trustProxy = false,
+	trustProxyHops = 1,
 ): Middleware {
 	return (req, res, next) => {
-		const pathname = req.url?.split("?")[0] || "/";
+		const pathname = getPathname(req);
 		// 2. Rate limiting check (Per-client fairness)
-		// Skip for static assets/health checks to avoid blocking legitimate browser behavior
-		if (pathname.startsWith("/api")) {
-			const forwarded = req.headers["x-forwarded-for"];
-			const ip =
-				typeof forwarded === "string"
-					? forwarded.split(",")[0].trim()
-					: req.socket.remoteAddress || "unknown";
+		// Skip for static assets and critical health/metrics endpoints
+		const isRateLimited =
+			pathname.startsWith("/api") &&
+			pathname !== "/api/metrics" &&
+			pathname !== "/healthz";
+
+		if (isRateLimited) {
+			let ip = req.socket.remoteAddress || "unknown";
+
+			if (trustProxy) {
+				const forwarded = req.headers["x-forwarded-for"];
+				if (typeof forwarded === "string") {
+					// Parse IPs and read from right-to-left to prevent spoofing
+					// X-Forwarded-For format: "client, proxy1, proxy2, ..."
+					// Each proxy appends its upstream IP to the right
+					// trustProxyHops = number of trusted proxies between us and the internet
+					// Example with CDN -> nginx -> app (2 hops):
+					//   Header: "client, cdn, nginx" -> skip 2 from right -> use "client"
+					const ips = forwarded
+						.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean);
+					if (ips.length > 0) {
+						// Skip trustProxyHops from the right to get the first untrusted IP
+						const targetIndex = Math.max(0, ips.length - trustProxyHops - 1);
+						ip = ips[targetIndex] || ip;
+					}
+				}
+			}
+
+			// Normalize IPv4-mapped IPv6 addresses for consistent rate limiting
+			ip = normalizeIP(ip);
 
 			const { allowed, remaining, reset } = rateLimiter.check(ip);
 
@@ -95,7 +141,7 @@ export function createAuthMiddleware(
 	corsHeaders: Record<string, string>,
 ): Middleware {
 	return (req, res, next) => {
-		const pathname = req.url?.split("?")[0] || "/";
+		const pathname = getPathname(req);
 		if (pathname.startsWith("/api")) {
 			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
 				return;
@@ -113,8 +159,7 @@ export function createRouterMiddleware(
 	) => Promise<void> | void,
 ): Middleware {
 	return async (req, res, next) => {
-		const parsedUrl = parse(req.url || "/", true);
-		const pathname = parsedUrl.pathname || "/";
+		const pathname = getPathname(req);
 		await routerHandler(req, res, pathname);
 		// Router handles the response, so we don't call next() unless it falls through,
 		// but typically router is the end.

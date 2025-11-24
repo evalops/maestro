@@ -90,6 +90,56 @@ export GOOGLE_API_KEY="..."
 export PORT=8080                                    # Server port
 export COMPOSER_SESSION_DIR="~/.composer/sessions"  # Session storage
 export COMPOSER_AGENT_DIR="~/.composer/agent"       # Context files
+
+# Proxy Configuration (when behind nginx, CloudFlare, etc.)
+export COMPOSER_TRUST_PROXY="true"                  # Trust X-Forwarded-For headers
+```
+
+#### COMPOSER_TRUST_PROXY
+
+When running behind a reverse proxy (nginx, CloudFlare, load balancer), set `COMPOSER_TRUST_PROXY=true` to extract the real client IP from the `X-Forwarded-For` header for rate limiting.
+
+**Security Warning:** Only enable this if your server is behind a trusted proxy that properly sets the `X-Forwarded-For` header. Enabling this on a publicly accessible server allows IP spoofing for rate limit bypass.
+
+**Important:** Ensure your server is NOT directly accessible from the internet when using this setting. The proxy should be the only entry point, and it should overwrite (not append to) the `X-Forwarded-For` header for incoming requests.
+
+#### COMPOSER_TRUST_PROXY_HOPS
+
+For multi-proxy setups (e.g., CDN -> nginx -> app), set `COMPOSER_TRUST_PROXY_HOPS` to the number of trusted proxy hops. Default is `1`.
+
+The `X-Forwarded-For` header format is: `client-ip, proxy1-ip, proxy2-ip, ...`
+
+Each proxy appends its upstream IP to the header. The formula skips `HOPS` entries from the right to find the client:
+
+- With 1 hop (nginx only): `"client, nginx"` -> skips 1, uses `client`
+- With 2 hops (CDN + nginx): `"client, cdn, nginx"` -> skips 2, uses `client`
+
+**Example nginx configuration:**
+
+```nginx
+server {
+  listen 80;
+  server_name composer.yourdomain.com;
+
+  location / {
+    proxy_pass http://localhost:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    
+    # SSE specific
+    proxy_buffering off;
+    proxy_read_timeout 24h;
+  }
+}
+```
+
+Then set:
+```bash
+export COMPOSER_TRUST_PROXY=true
+export COMPOSER_TRUST_PROXY_HOPS=1  # Only nginx in front
 ```
 
 ### API Endpoints

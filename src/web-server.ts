@@ -139,6 +139,42 @@ const REQUEST_TIMEOUT_MS =
 	Number.parseInt(process.env.COMPOSER_REQUEST_TIMEOUT_MS || "60000", 10) ||
 	60000;
 
+// Parse and validate TRUST_PROXY setting
+// WARNING: Only enable if behind a trusted reverse proxy that sets X-Forwarded-For
+const trustProxyEnv = process.env.COMPOSER_TRUST_PROXY?.toLowerCase();
+const TRUST_PROXY = trustProxyEnv === "true";
+
+// Number of trusted proxy hops (default 1). Use this to extract the correct client IP
+// when behind multiple proxies (e.g., CDN -> nginx -> app). The IP is read from the
+// right side of X-Forwarded-For, skipping this many trusted proxy IPs.
+const rawProxyHops = Number.parseInt(
+	process.env.COMPOSER_TRUST_PROXY_HOPS || "1",
+	10,
+);
+const TRUST_PROXY_HOPS =
+	Number.isNaN(rawProxyHops) || rawProxyHops < 1 ? 1 : rawProxyHops;
+
+if (
+	process.env.COMPOSER_TRUST_PROXY_HOPS &&
+	(Number.isNaN(rawProxyHops) || rawProxyHops < 1)
+) {
+	console.warn(
+		`[composer:web] Invalid COMPOSER_TRUST_PROXY_HOPS value: "${process.env.COMPOSER_TRUST_PROXY_HOPS}". Must be a positive integer. Defaulting to 1.`,
+	);
+}
+
+if (trustProxyEnv && trustProxyEnv !== "true" && trustProxyEnv !== "false") {
+	console.warn(
+		`[composer:web] Invalid COMPOSER_TRUST_PROXY value: "${process.env.COMPOSER_TRUST_PROXY}". Must be "true" or "false". Defaulting to false.`,
+	);
+}
+
+if (TRUST_PROXY) {
+	console.warn(
+		"[composer:web] COMPOSER_TRUST_PROXY is enabled. Ensure this server is behind a trusted reverse proxy.",
+	);
+}
+
 const sseLimiter = {
 	active: 0,
 	max: MAX_SSE_CONNECTIONS,
@@ -383,34 +419,51 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 		requestTracker.untrack(req);
 	});
 
-	// Setup logging listener immediately
-	res.on("finish", () => {
-		const duration = performance.now() - start;
-		logRequest(req, res.statusCode, start);
-		recordApiRequest(
-			req.method || "UNKNOWN",
-			pathname,
-			res.statusCode,
-			duration,
-			{ requestId, traceId, spanId },
-		);
-	});
+	// Await the context storage run to prevent unhandled promise rejections
+	await requestContextStorage.run(context, async () => {
+		// Setup logging listener inside context to capture trace/span IDs in closure
+		res.on("finish", () => {
+			const duration = performance.now() - start;
+			logRequest(req, res.statusCode, start);
+			recordApiRequest(
+				req.method || "UNKNOWN",
+				pathname,
+				res.statusCode,
+				duration,
+				{ requestId, traceId, spanId },
+			);
+		});
 
-	requestContextStorage.run(context, async () => {
 		const app = compose([
 			createLoadSheddingMiddleware(CORS_HEADERS),
-			createRateLimitMiddleware(rateLimiter, CORS_HEADERS),
+			createRateLimitMiddleware(
+				rateLimiter,
+				CORS_HEADERS,
+				TRUST_PROXY,
+				TRUST_PROXY_HOPS,
+			),
 			createCorsMiddleware(CORS_HEADERS),
 			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS),
 			createRouterMiddleware(router),
 		]);
 
-		await app(req, res, () => {
-			// This fallback should rarely be reached as the router handles 404s
+		try {
+			await app(req, res, () => {
+				// This fallback should rarely be reached as the router handles 404s
+				if (!res.headersSent && !res.writableEnded) {
+					sendJson(res, 404, { error: "Not found" }, CORS_HEADERS, req);
+				}
+			});
+		} catch (error) {
+			logError(error instanceof Error ? error : new Error(String(error)));
 			if (!res.headersSent && !res.writableEnded) {
-				sendJson(res, 404, { error: "Not found" }, CORS_HEADERS, req);
+				res.writeHead(500, {
+					"Content-Type": "application/json",
+					...CORS_HEADERS,
+				});
+				res.end(JSON.stringify({ error: "Internal server error" }));
 			}
-		});
+		}
 	});
 }
 
