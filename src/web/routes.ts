@@ -7,7 +7,9 @@ import { handleModel, handleModels } from "./handlers/models.js";
 import { handleSessions } from "./handlers/sessions.js";
 import { handleStatus } from "./handlers/status.js";
 import { handleUsage } from "./handlers/usage.js";
+import { getStatsSnapshot } from "./logger.js";
 import type { Route } from "./router.js";
+import { sendJson } from "./server-utils.js";
 
 export function createRoutes(context: WebServerContext): Route[] {
 	const { corsHeaders } = context;
@@ -66,6 +68,13 @@ export function createRoutes(context: WebServerContext): Route[] {
 					context.ensureCredential,
 					context.setModelSelection,
 				),
+		},
+		{
+			method: "GET",
+			path: "/api/metrics",
+			handler: (_req, res) => {
+				sendJson(res, 200, getStatsSnapshot(), corsHeaders);
+			},
 		},
 		{
 			method: "POST",

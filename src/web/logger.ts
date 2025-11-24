@@ -17,11 +17,16 @@ const BLUE = `${ESC}34m`;
 const MAGENTA = `${ESC}35m`;
 const CYAN = `${ESC}36m`;
 
+const LOG_FORMAT =
+	process.env.COMPOSER_LOG_FORMAT?.toLowerCase() === "json" ? "json" : "text";
+
 function colorize(text: string | number, color: string): string {
+	if (LOG_FORMAT === "json") return String(text);
 	return `${color}${text}${RESET}`;
 }
 
 export function formatMethod(method = "GET"): string {
+	if (LOG_FORMAT === "json") return method.toUpperCase();
 	switch (method.toUpperCase()) {
 		case "GET":
 			return colorize(method.padEnd(7), BLUE);
@@ -41,6 +46,7 @@ export function formatMethod(method = "GET"): string {
 }
 
 export function formatStatus(status: number): string {
+	if (LOG_FORMAT === "json") return String(status);
 	if (status >= 500) return colorize(status, RED);
 	if (status >= 400) return colorize(status, YELLOW);
 	if (status >= 300) return colorize(status, CYAN);
@@ -50,6 +56,7 @@ export function formatStatus(status: number): string {
 
 export function formatDuration(start: number): string {
 	const duration = performance.now() - start;
+	if (LOG_FORMAT === "json") return duration.toFixed(2);
 	const text = `${duration.toFixed(2)}ms`;
 	if (duration > 1000) return colorize(text, RED);
 	if (duration > 500) return colorize(text, YELLOW);
@@ -57,7 +64,7 @@ export function formatDuration(start: number): string {
 }
 
 // Request stats tracking
-interface RequestStats {
+export interface RequestStats {
 	total: number;
 	errors: number;
 	totalDuration: number;
@@ -99,6 +106,10 @@ export function stopStatsCollection() {
 	}
 }
 
+export function getStatsSnapshot(): RequestStats {
+	return { ...stats };
+}
+
 export function getStatsSummary(): string {
 	const now = Date.now();
 	const elapsedSeconds = (now - stats.startTime) / 1000;
@@ -127,6 +138,23 @@ export function logRequest(
 	stats.totalDuration += duration;
 	if (statusCode >= 400) stats.errors++;
 
+	if (LOG_FORMAT === "json") {
+		console.log(
+			JSON.stringify({
+				timestamp: new Date().toISOString(),
+				level:
+					statusCode >= 500 ? "error" : statusCode >= 400 ? "warn" : "info",
+				requestId,
+				method: req.method,
+				url: req.url,
+				statusCode,
+				durationMs: duration,
+				userAgent: req.headers["user-agent"],
+			}),
+		);
+		return;
+	}
+
 	const method = formatMethod(req.method);
 	const status = formatStatus(statusCode);
 	const durationText = formatDuration(start);
@@ -141,6 +169,19 @@ export function logRequest(
 }
 
 export function logStartup(port: number) {
+	if (LOG_FORMAT === "json") {
+		console.log(
+			JSON.stringify({
+				level: "info",
+				message: "Server started",
+				port,
+				localUrl: `http://localhost:${port}`,
+				apiUrl: `http://localhost:${port}/api`,
+			}),
+		);
+		return;
+	}
+
 	console.clear();
 	const line = colorize("─".repeat(80), DIM);
 
