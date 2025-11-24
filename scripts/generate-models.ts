@@ -81,17 +81,27 @@ function baseUrlFor(providerId: string): string {
 	return BASE_URLS[providerId] ?? "https://api.openai.com/v1";
 }
 
-function enforceEndpoint(baseUrl: string, providerId: string, api: string): string {
+export function enforceEndpoint(
+	baseUrl: string,
+	providerId: string,
+	api: string,
+): string {
 	const normalized = normalizeLLMBaseUrl(baseUrl, providerId, api as Api);
-	if (
-		(api === "openai-responses" || api === "openai-completions") &&
-		!normalized.includes("/responses") &&
-		!normalized.includes("/chat/completions")
-	) {
+
+	const hasResponses = normalized.includes("/responses");
+	const hasCompletions = normalized.includes("/chat/completions");
+
+	if (api === "openai-responses" && (!hasResponses || hasCompletions)) {
 		throw new Error(
-			`Normalized baseUrl missing expected endpoint for provider ${providerId}: ${normalized}`,
+			`Normalized baseUrl missing /responses for provider ${providerId}: ${normalized}`,
 		);
 	}
+	if (api === "openai-completions" && (!hasCompletions || hasResponses)) {
+		throw new Error(
+			`Normalized baseUrl missing /chat/completions for provider ${providerId}: ${normalized}`,
+		);
+	}
+
 	return normalized;
 }
 
