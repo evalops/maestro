@@ -32,7 +32,7 @@ const openaiMock = vi.hoisted(() => {
 		const message = {
 			role: "assistant" as const,
 			content: toolCall ? [toolCall] : [],
-			api: "openai-responses" as const,
+			api: "openai-completions" as const,
 			provider: "openai",
 			model: "gpt-mock",
 			usage: {
@@ -81,10 +81,10 @@ const openaiMock = vi.hoisted(() => {
 
 vi.mock("../../src/agent/providers/openai.js", () => openaiMock);
 
-const model: Model<"openai-responses"> = {
+const model: Model<"openai-completions"> = {
 	id: "gpt-mock",
 	name: "Mock GPT",
-	api: "openai-responses",
+	api: "openai-completions",
 	provider: "openai",
 	baseUrl: "https://example.com/v1",
 	reasoning: false,

@@ -47,10 +47,16 @@ export function resolveOpenAIUrlForTest(
 }
 
 export async function* streamOpenAI(
-	model: Model<"openai-responses" | "openai-completions">,
+	model: Model<"openai-completions">,
 	context: Context,
 	options: OpenAIOptions,
 ): AsyncGenerator<AssistantMessageEvent, void, unknown> {
+	if (model.api !== "openai-completions") {
+		throw new Error(
+			`streamOpenAI does not support api ${model.api}; only openai-completions is implemented`,
+		);
+	}
+
 	const apiKey = options.apiKey;
 	if (!apiKey) {
 		throw new Error("API key is required for OpenAI");
@@ -142,7 +148,7 @@ export async function* streamOpenAI(
 	const requestBody: any = {
 		model: model.id,
 		messages,
-		max_tokens: options.maxTokens || model.maxTokens,
+		max_tokens: options.maxTokens ?? model.maxTokens,
 		stream: true,
 		stream_options: { include_usage: true },
 	};
@@ -228,6 +234,21 @@ export async function* streamOpenAI(
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
+	const partialToolArgs = new Map<number, string>();
+
+	const updateCosts = () => {
+		partial.usage.cost = {
+			input: (partial.usage.input * model.cost.input) / 1_000_000,
+			output: (partial.usage.output * model.cost.output) / 1_000_000,
+			cacheRead: (partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
+			cacheWrite: 0, // OpenAI doesn't charge for cache writes
+			total: 0,
+		};
+		partial.usage.cost.total =
+			partial.usage.cost.input +
+			partial.usage.cost.output +
+			partial.usage.cost.cacheRead;
+	};
 
 	try {
 		while (true) {
@@ -262,6 +283,8 @@ export async function* streamOpenAI(
 								// Adjust input tokens to not double count
 								partial.usage.input -= partial.usage.cacheRead;
 							}
+
+							updateCosts();
 						}
 						continue;
 					}
@@ -269,22 +292,37 @@ export async function* streamOpenAI(
 					const delta = choice.delta;
 
 					if (delta.content) {
-						// Find or create text content block
-						let textBlock = partial.content.find((c) => c.type === "text");
-						if (!textBlock) {
-							const idx = partial.content.length;
-							textBlock = { type: "text", text: "" };
-							partial.content.push(textBlock);
-							yield { type: "text_start", contentIndex: idx, partial };
+						const contentDelta = Array.isArray(delta.content)
+							? delta.content
+									.map((part: unknown) => {
+										if (typeof part === "string") return part;
+										if (part && typeof part === "object" && "text" in part) {
+											return (part as { text?: string }).text || "";
+										}
+										console.warn("Unsupported OpenAI content part", part);
+										return "";
+									})
+									.join("")
+							: delta.content;
+
+						if (contentDelta && contentDelta.length > 0) {
+							// Find or create text content block
+							let textBlock = partial.content.find((c) => c.type === "text");
+							if (!textBlock) {
+								const idx = partial.content.length;
+								textBlock = { type: "text", text: "" };
+								partial.content.push(textBlock);
+								yield { type: "text_start", contentIndex: idx, partial };
+							}
+							const idx = partial.content.indexOf(textBlock);
+							textBlock.text += contentDelta;
+							yield {
+								type: "text_delta",
+								contentIndex: idx,
+								delta: contentDelta,
+								partial,
+							};
 						}
-						const idx = partial.content.indexOf(textBlock);
-						textBlock.text += delta.content;
-						yield {
-							type: "text_delta",
-							contentIndex: idx,
-							delta: delta.content,
-							partial,
-						};
 					}
 
 					// Handle reasoning/thinking content
@@ -335,9 +373,7 @@ export async function* streamOpenAI(
 									id: "",
 									name: "",
 									arguments: {},
-									// Track partial JSON string for progressive parsing
-									partialArgs: "",
-								} as any);
+								});
 							}
 
 							const block = partial.content[idx];
@@ -351,19 +387,14 @@ export async function* streamOpenAI(
 
 							if (toolCall.function?.arguments) {
 								const argsDelta = toolCall.function.arguments;
-
-								// Accumulate partial JSON string
-								if (!(block as any).partialArgs) {
-									(block as any).partialArgs = "";
-								}
-								(block as any).partialArgs += argsDelta;
+								const existing = partialToolArgs.get(idx) ?? "";
+								const combined = existing + argsDelta;
+								partialToolArgs.set(idx, combined);
 
 								// Parse streaming JSON progressively
 								// This allows UI to show partial arguments like file paths
 								// before the complete JSON arrives
-								block.arguments = parseStreamingJson(
-									(block as any).partialArgs,
-								);
+								block.arguments = parseStreamingJson(combined);
 
 								yield {
 									type: "toolcall_delta",
@@ -390,15 +421,14 @@ export async function* streamOpenAI(
 							const block = partial.content[i];
 							if (block.type === "toolCall") {
 								// Final parse of accumulated JSON
-								const partialArgs = (block as any).partialArgs || "{}";
+								const partialArgs = partialToolArgs.get(i) || "{}";
 								try {
 									block.arguments = JSON.parse(partialArgs);
 								} catch {
 									// Fall back to partial parse result
 									block.arguments = parseStreamingJson(partialArgs);
 								}
-								// Clean up temporary field
-								(block as any).partialArgs = undefined;
+								partialToolArgs.delete(i);
 
 								yield {
 									type: "toolcall_end",
@@ -423,19 +453,8 @@ export async function* streamOpenAI(
 							}
 						}
 
-						// Calculate costs
-						partial.usage.cost = {
-							input: (partial.usage.input * model.cost.input) / 1_000_000,
-							output: (partial.usage.output * model.cost.output) / 1_000_000,
-							cacheRead:
-								(partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
-							cacheWrite: 0, // OpenAI doesn't charge for cache writes
-							total: 0,
-						};
-						partial.usage.cost.total =
-							partial.usage.cost.input +
-							partial.usage.cost.output +
-							partial.usage.cost.cacheRead;
+						// Calculate costs one last time (in case no usage block arrived)
+						updateCosts();
 
 						yield {
 							type: "done",

@@ -245,14 +245,15 @@ export class ProviderTransport implements AgentTransport {
 					...streamOptions,
 					thinking: cfg.reasoning,
 				});
-			} else if (
-				model.api === "openai-responses" ||
-				model.api === "openai-completions"
-			) {
+			} else if (model.api === "openai-completions") {
 				stream = streamOpenAI(model as any, currentContext, {
 					...streamOptions,
 					reasoningEffort: cfg.reasoning,
 				});
+			} else if (model.api === "openai-responses") {
+				throw new Error(
+					"openai-responses streaming is not implemented yet; use openai-completions",
+				);
 			} else if (model.api === "google-generative-ai") {
 				stream = streamGoogle(model as any, currentContext, {
 					...streamOptions,
