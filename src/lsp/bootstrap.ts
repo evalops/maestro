@@ -1,5 +1,7 @@
+import { FEATURES } from "../config/constants.js";
 import { applyServerOverrides, getLspConfig } from "../config/lsp-config.js";
 import { resolveWorkspaceRoot } from "../workspace/root-resolver.js";
+import { autostartLspServers } from "./autostart.js";
 import {
 	collectDiagnostics,
 	configureRootResolver,
@@ -22,6 +24,10 @@ export async function bootstrapLsp(): Promise<void> {
 
 	// Configure servers in LSP
 	await configureServers(finalServers);
+
+	if (FEATURES.LSP_AUTOSTART && FEATURES.LSP_ENABLED) {
+		await autostartLspServers(process.cwd());
+	}
 
 	// Configure blocking severity in safe-mode if specified
 	if (lspConfig.blockingSeverity) {

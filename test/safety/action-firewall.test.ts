@@ -5,6 +5,21 @@ import {
 	defaultActionFirewall,
 } from "../../src/safety/action-firewall.js";
 
+const withPlanMode = (fn: () => void) => {
+	const prev = process.env.COMPOSER_PLAN_MODE;
+	process.env.COMPOSER_PLAN_MODE = "1";
+	try {
+		fn();
+	} finally {
+		if (prev === undefined) {
+			// biome-ignore lint/performance/noDelete: need to fully unset env var
+			delete process.env.COMPOSER_PLAN_MODE;
+		} else {
+			process.env.COMPOSER_PLAN_MODE = prev;
+		}
+	}
+};
+
 function makeBashContext(command?: unknown): ActionApprovalContext {
 	return {
 		toolName: "bash",
@@ -40,6 +55,30 @@ function makeCustomCommandContext(command: string): ActionApprovalContext {
 		toolName: "custom_exec",
 		args: { command },
 	};
+}
+
+function makeWriteContext(): ActionApprovalContext {
+	return { toolName: "write", args: { path: "file.txt" } };
+}
+
+function makeEditContext(): ActionApprovalContext {
+	return { toolName: "edit", args: { path: "file.txt" } };
+}
+
+function makeTodoContext(): ActionApprovalContext {
+	return { toolName: "todo", args: { items: [] } };
+}
+
+function makeGhPrContext(action: string): ActionApprovalContext {
+	return { toolName: "gh_pr", args: { action } };
+}
+
+function makeGhIssueContext(action: string): ActionApprovalContext {
+	return { toolName: "gh_issue", args: { action } };
+}
+
+function makeBatchContext(): ActionApprovalContext {
+	return { toolName: "batch", args: { tasks: [] } };
 }
 
 function makeWorkflowContext(
@@ -110,6 +149,42 @@ describe("ActionFirewall", () => {
 			makeCustomCommandContext("mkfs.ext4 /dev/sda"),
 		);
 		expect(verdict.action).toBe("require_approval");
+	});
+
+	it("requires approval for mutating tools when plan mode is on", () => {
+		withPlanMode(() => {
+			const bashVerdict = defaultActionFirewall.evaluate(
+				makeBashContext("echo hi"),
+			);
+			expect(bashVerdict.action).toBe("require_approval");
+
+			const writeVerdict = defaultActionFirewall.evaluate(makeWriteContext());
+			expect(writeVerdict.action).toBe("require_approval");
+
+			const editVerdict = defaultActionFirewall.evaluate(makeEditContext());
+			expect(editVerdict.action).toBe("require_approval");
+
+			const todoVerdict = defaultActionFirewall.evaluate(makeTodoContext());
+			expect(todoVerdict.action).toBe("require_approval");
+
+			const ghPrVerdict = defaultActionFirewall.evaluate(
+				makeGhPrContext("create"),
+			);
+			expect(ghPrVerdict.action).toBe("require_approval");
+
+			const ghIssueVerdict = defaultActionFirewall.evaluate(
+				makeGhIssueContext("create"),
+			);
+			expect(ghIssueVerdict.action).toBe("require_approval");
+
+			const batchVerdict = defaultActionFirewall.evaluate(makeBatchContext());
+			expect(batchVerdict.action).toBe("require_approval");
+
+			const bgVerdict = defaultActionFirewall.evaluate(
+				makeShellBackgroundTaskContext("echo"),
+			);
+			expect(bgVerdict.action).toBe("require_approval");
+		});
 	});
 
 	it("requires approval when human egress sees unredacted PII", () => {

@@ -80,10 +80,14 @@ export function normalizeLLMBaseUrl(
 			return url.toString();
 		} catch {
 			// Fallback string check: ensure desiredPath appears after a slash, not in hostname
-			const includesQueryPath = urlStr.includes(`${desiredPath}?`);
-			const pathIndex = urlStr.indexOf(desiredPath);
-			const looksLikePath = pathIndex > 0 && urlStr[pathIndex - 1] === "/";
-			return (hasPath(urlStr) && looksLikePath) || includesQueryPath
+			const [pathPortion] = urlStr.split(/[?#]/, 1);
+			const pathIndex = pathPortion.indexOf(desiredPath);
+			const looksLikePath = pathIndex > 0 && pathPortion[pathIndex - 1] === "/";
+			const hasDesiredPath = hasPath(pathPortion) && looksLikePath;
+			const includesQueryPath =
+				urlStr.includes(`${desiredPath}?`) ||
+				urlStr.includes(`${desiredPath}#`);
+			return hasDesiredPath || includesQueryPath
 				? urlStr
 				: `${trimTrailingSlash(urlStr)}${desiredPath}`;
 		}

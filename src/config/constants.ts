@@ -116,12 +116,16 @@ export const LIMITS = {
 export const FEATURES = {
 	/** Enable safe mode (requires plan before mutations) */
 	SAFE_MODE: process.env.COMPOSER_SAFE_MODE === "1",
+	/** Enable plan mode (ask before mutations via approval) */
+	PLAN_MODE: process.env.COMPOSER_PLAN_MODE === "1",
 	/** Enable telemetry */
 	TELEMETRY_ENABLED: process.env.COMPOSER_TELEMETRY === "true",
 	/** Telemetry endpoint URL */
 	TELEMETRY_ENDPOINT: process.env.COMPOSER_TELEMETRY_ENDPOINT,
 	/** Enable LSP integration */
 	LSP_ENABLED: process.env.COMPOSER_LSP_ENABLED !== "0",
+	/** Auto-start LSP servers when enabled */
+	LSP_AUTOSTART: process.env.COMPOSER_LSP_AUTOSTART === "1",
 } as const;
 
 /**
