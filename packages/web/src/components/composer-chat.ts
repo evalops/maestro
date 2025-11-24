@@ -7,12 +7,22 @@ import { customElement, property, state } from "lit/decorators.js";
 import {
 	ApiClient,
 	type Message,
+	type Model,
 	type Session,
 	type SessionSummary,
+	type UsageSummary,
+	type WorkspaceStatus,
 } from "../services/api-client.js";
+import { dataStore } from "../services/data-store.js";
 import "./composer-message.js";
 import "./composer-input.js";
 import "./composer-settings.js";
+import "./model-selector.js";
+
+const STATUS_CACHE_KEY = "composer_status_cache";
+const MODELS_CACHE_KEY = "composer_models_cache";
+const USAGE_CACHE_KEY = "composer_usage_cache";
+const MODEL_OVERRIDE_KEY = "composer_model_override";
 
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
@@ -47,11 +57,20 @@ export class ComposerChat extends LitElement {
 			background: #161b22;
 		}
 
+		.sidebar-header {
+			padding: 0.6rem 0.75rem;
+			border-bottom: 1px solid #21262d;
+			background: #161b22;
+			display: flex;
+			flex-direction: column;
+			gap: 0.35rem;
+		}
+
 		.sidebar-header h2 {
 			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 			font-size: 0.7rem;
 			font-weight: 600;
-			margin: 0 0 0.625rem 0;
+			margin: 0;
 			color: #8b949e;
 			text-transform: uppercase;
 			letter-spacing: 0.1em;
@@ -94,13 +113,13 @@ export class ComposerChat extends LitElement {
 			padding: 0;
 		}
 
-		.session-item {
-			padding: 0.625rem 0.75rem;
-			border-bottom: 1px solid #21262d;
-			cursor: pointer;
-			transition: all 0.15s;
-			background: transparent;
-		}
+			.session-item {
+				padding: 0.55rem 0.75rem;
+				border-bottom: 1px solid #21262d;
+				cursor: pointer;
+				transition: all 0.15s;
+				background: transparent;
+			}
 
 		.session-item:hover {
 			background: #161b22;
@@ -114,16 +133,16 @@ export class ComposerChat extends LitElement {
 			padding-left: calc(0.75rem - 3px);
 		}
 
-		.session-title {
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.8rem;
-			font-weight: 500;
-			margin-bottom: 0.25rem;
-			color: #e6edf3;
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-			pointer-events: none;
+			.session-title {
+				font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+				font-size: 0.78rem;
+				font-weight: 500;
+				margin-bottom: 0.1rem;
+				color: #e6edf3;
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				pointer-events: none;
 		}
 
 		.session-meta {
@@ -204,34 +223,77 @@ export class ComposerChat extends LitElement {
 		.status-bar {
 			display: flex;
 			align-items: center;
-			gap: 0.75rem;
+			gap: 0.4rem;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 			font-size: 0.7rem;
+			color: #6e7681;
+		}
+
+		.muted {
 			color: #6e7681;
 		}
 
 		.status-item {
 			display: flex;
 			align-items: center;
-			gap: 0.35rem;
-			padding: 0.25rem 0.5rem;
-			background: #161b22;
+			gap: 0.25rem;
+			padding: 0.2rem 0.45rem;
+			background: #0d1117;
 			border: 1px solid #21262d;
-			border-radius: 2px;
+			border-radius: 999px;
+			font-size: 0.64rem;
+			box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 		}
 
-		.status-item.active {
-			border-color: #58a6ff;
-			color: #58a6ff;
+			.status-item.active {
+				border-color: #58a6ff;
+				color: #58a6ff;
+				background: rgba(88, 166, 255, 0.08);
+			}
+
+		.pill {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.25rem;
+			padding: 0.1rem 0.4rem;
+			background: #0d1117;
+			border: 1px solid #30363d;
+			border-radius: 999px;
+			color: #e6edf3;
+			font-weight: 600;
+			font-size: 0.7rem;
 		}
 
-		.status-dot {
-			width: 6px;
-			height: 6px;
-			border-radius: 50%;
-			background: #3fb950;
-			animation: pulse 2s ease-in-out infinite;
+		.pill.warning {
+			border-color: #d29922;
+			color: #d29922;
 		}
+
+		.pill.success {
+			border-color: #3fb950;
+			color: #3fb950;
+		}
+
+			.status-dot {
+				width: 6px;
+				height: 6px;
+				border-radius: 50%;
+				background: #3fb950;
+				animation: pulse 2s ease-in-out infinite;
+			}
+
+			.status-dot.offline {
+				background: #f85149;
+				animation: none;
+			}
+
+			.status-dot.warning {
+				background: #d29922;
+			}
+
+			.status-dot.success {
+				background: #3fb950;
+			}
 
 		@keyframes pulse {
 			0%, 100% { opacity: 1; }
@@ -242,6 +304,31 @@ export class ComposerChat extends LitElement {
 			display: flex;
 			align-items: center;
 			gap: 0.5rem;
+		}
+
+		.toast {
+			position: fixed;
+			bottom: 16px;
+			right: 16px;
+			padding: 0.75rem 1rem;
+			border-radius: 6px;
+			background: #161b22;
+			border: 1px solid #30363d;
+			color: #e6edf3;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.75rem;
+			box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+			z-index: 300;
+			animation: fadeIn 0.2s ease;
+		}
+
+		.toast.success { border-color: #3fb950; color: #c2f5cd; }
+		.toast.error { border-color: #f85149; color: #fca5a5; }
+		.toast.info { border-color: #58a6ff; color: #cde5ff; }
+
+		@keyframes fadeIn {
+			from { opacity: 0; transform: translateY(6px); }
+			to { opacity: 1; transform: translateY(0); }
 		}
 
 		.model-selector {
@@ -276,13 +363,13 @@ export class ComposerChat extends LitElement {
 			color: #0d1117;
 		}
 
-		.icon-btn {
-			width: 28px;
-			height: 28px;
-			padding: 0;
-			background: transparent;
+	.icon-btn {
+		width: 26px;
+		height: 26px;
+		padding: 0;
+		background: transparent;
 			border: 1px solid #30363d;
-			border-radius: 2px;
+			border-radius: 999px;
 			color: #8b949e;
 			cursor: pointer;
 			transition: all 0.15s;
@@ -292,23 +379,41 @@ export class ComposerChat extends LitElement {
 			justify-content: center;
 		}
 
-		.icon-btn:hover {
-			background: #21262d;
-			border-color: #58a6ff;
-			color: #58a6ff;
-		}
+	.icon-btn:hover {
+		background: #21262d;
+		border-color: #58a6ff;
+		color: #58a6ff;
+	}
+
+	.icon-btn:focus-visible,
+	.toggle-sidebar-btn:focus-visible,
+	.new-session-btn:focus-visible {
+		outline: 2px solid #58a6ff;
+		outline-offset: 2px;
+	}
+
+	.icon-btn.active {
+		border-color: #58a6ff;
+		color: #58a6ff;
+		background: rgba(88, 166, 255, 0.08);
+	}
 
 		/* Messages - dense, terminal-like */
-		.messages {
-			flex: 1;
-			overflow-y: auto;
-			padding: 1rem;
-			display: flex;
-			flex-direction: column;
-			gap: 1px;
-			background: #0a0e14;
-			min-height: 0; /* Fix flexbox overflow issue */
-		}
+	.messages {
+		flex: 1;
+		overflow-y: auto;
+		padding: 1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		background: #0a0e14;
+		min-height: 0; /* Fix flexbox overflow issue */
+	}
+
+	.messages.compact {
+		padding: 0.5rem;
+		gap: 0;
+	}
 
 		.input-container {
 			border-top: 2px solid #21262d;
@@ -325,6 +430,26 @@ export class ComposerChat extends LitElement {
 			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
 			font-size: 0.75rem;
 			line-height: 1.5;
+		}
+
+		.banner {
+			padding: 0.6rem 1rem;
+			background: #1c2128;
+			border-bottom: 1px solid #30363d;
+			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+			font-size: 0.75rem;
+			color: #f2f2f2;
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+		}
+
+		.banner.offline {
+			border-left: 3px solid #f85149;
+		}
+
+		.banner.retry {
+			border-left: 3px solid #d29922;
 		}
 
 		.loading {
@@ -407,13 +532,6 @@ export class ComposerChat extends LitElement {
 			color: #58a6ff;
 		}
 
-		.tool-grid {
-			display: grid;
-			grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-			gap: 0.5rem;
-			margin-top: 0.5rem;
-		}
-
 		.session-gallery {
 			margin: 1.5rem;
 			background: #0d1117;
@@ -490,46 +608,16 @@ export class ComposerChat extends LitElement {
 			color: #8b949e;
 		}
 
-		.tool-badge {
-			padding: 0.375rem 0.5rem;
-			background: #161b22;
-			border: 1px solid #30363d;
-			border-radius: 2px;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.65rem;
-			color: #8b949e;
-			text-align: center;
-			transition: all 0.15s;
-		}
-
-		.tool-badge:hover {
-			border-color: #58a6ff;
-			color: #58a6ff;
-			cursor: pointer;
-		}
-
+		/* Hide the legacy command hint that duplicated the slash-command prompt. */
 		.command-hint {
-			padding: 0.875rem 1rem;
-			background: #0d1117;
-			border-top: 1px solid #21262d;
-			font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
-			font-size: 0.7rem;
-			color: #6e7681;
+			display: none !important;
 		}
 
-		.command-hint code {
-			color: #58a6ff;
-			background: #161b22;
-			padding: 0.125rem 0.35rem;
-			border-radius: 2px;
-			margin: 0 0.25rem;
-		}
-
-		@media (max-width: 768px) {
-			.sidebar {
-				position: absolute;
-				left: 0;
-				top: 0;
+	@media (max-width: 768px) {
+		.sidebar {
+			position: absolute;
+			left: 0;
+			top: 0;
 				bottom: 0;
 				z-index: 10;
 			}
@@ -539,12 +627,24 @@ export class ComposerChat extends LitElement {
 			}
 
 			.workspace-panel {
-				grid-template-columns: 1fr;
-			}
+			grid-template-columns: 1fr;
 		}
+	}
+
+	:host([reduced-motion]) .status-dot {
+		animation: none;
+	}
+
+	:host([reduced-motion]) .toast {
+		animation: none;
+	}
+
+	:host([reduced-motion]) .loading::before {
+		animation: none;
+	}
 	`;
 
-	@property() apiEndpoint = "http://localhost:8080";
+	@property() apiEndpoint = "";
 	@property() model = "claude-sonnet-4-5";
 
 	@state() private messages: Message[] = [];
@@ -555,23 +655,199 @@ export class ComposerChat extends LitElement {
 	@state() private sessions: SessionSummary[] = [];
 	@state() private currentSessionId: string | null = null;
 	@state() private settingsOpen = false;
+	@state() private status: WorkspaceStatus | null = null;
+	@state() private showModelSelector = false;
+	@state() private currentModelTokens: string | null = null;
+	@state() private models: Model[] = [];
+	@state() private usage: UsageSummary | null = null;
+	@state() private toast: {
+		message: string;
+		type: "info" | "error" | "success";
+	} | null = null;
+	@state() private clientOnline =
+		typeof navigator !== "undefined" ? navigator.onLine : true;
+	@state() private lastSendFailed: string | null = null;
+	@state() private lastApiError: string | null = null;
+	@state() private nextRefreshAllowed = 0;
+	@state() private showHealth = false;
+	@state() private showShortcuts = false;
+	@state() private sessionSearch = "";
+	@property({ type: Boolean, reflect: true, attribute: "reduced-motion" })
+	private reducedMotion = false;
+	@property({ type: Boolean }) private compactMode = false;
+
+	private static COMPACT_KEY = "composer_compact_mode";
+	private static REDUCED_MOTION_KEY = "composer_reduced_motion";
 
 	private apiClient!: ApiClient;
+	private unsubscribeStore?: () => void;
+	private handleOnline = () => {
+		this.clientOnline = true;
+		this.refreshStatus();
+	};
+	private handleOffline = () => {
+		this.clientOnline = false;
+	};
+	private toggleHealth() {
+		this.showHealth = !this.showHealth;
+	}
+	private closeHealth() {
+		this.showHealth = false;
+	}
+	private handleKeydown = (e: KeyboardEvent) => {
+		if (e.key === "?" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+			e.preventDefault();
+			this.toggleShortcuts();
+		}
+		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "m") {
+			e.preventDefault();
+			this.toggleCompact();
+		}
+	};
+	private toggleShortcuts() {
+		this.showShortcuts = !this.showShortcuts;
+	}
+	private closeShortcuts() {
+		this.showShortcuts = false;
+	}
+	private toggleCompact() {
+		this.compactMode = !this.compactMode;
+		try {
+			localStorage.setItem(
+				ComposerChat.COMPACT_KEY,
+				this.compactMode ? "true" : "false",
+			);
+		} catch {
+			/* ignore storage errors */
+		}
+		this.showToast(
+			this.compactMode ? "Compact mode on" : "Compact mode off",
+			"info",
+			1500,
+		);
+	}
+	private toggleReducedMotion() {
+		this.reducedMotion = !this.reducedMotion;
+		try {
+			localStorage.setItem(
+				ComposerChat.REDUCED_MOTION_KEY,
+				this.reducedMotion ? "true" : "false",
+			);
+		} catch {
+			/* ignore storage errors */
+		}
+		this.showToast(
+			this.reducedMotion ? "Reduced motion on" : "Reduced motion off",
+			"info",
+			1500,
+		);
+	}
 
 	connectedCallback() {
 		super.connectedCallback();
 		this.apiClient = new ApiClient(this.apiEndpoint);
+		this.subscribeToStore();
 		this.loadCurrentModel();
 		this.loadSessions();
+		dataStore.ensureStatus(this.apiClient);
+		dataStore.ensureModels(this.apiClient);
+		dataStore.ensureUsage(this.apiClient);
+		this.hydrateDisplayPrefs();
+		window.addEventListener("online", this.handleOnline);
+		window.addEventListener("offline", this.handleOffline);
+		window.addEventListener("keydown", this.handleKeydown);
+	}
+
+	disconnectedCallback(): void {
+		super.disconnectedCallback();
+		if (this.unsubscribeStore) this.unsubscribeStore();
+		window.removeEventListener("online", this.handleOnline);
+		window.removeEventListener("offline", this.handleOffline);
+		window.removeEventListener("keydown", this.handleKeydown);
+	}
+
+	private hydrateDisplayPrefs() {
+		if (typeof window === "undefined") return;
+		try {
+			const compact = localStorage.getItem(ComposerChat.COMPACT_KEY);
+			if (compact) this.compactMode = compact === "true";
+			const rm = localStorage.getItem(ComposerChat.REDUCED_MOTION_KEY);
+			if (rm) this.reducedMotion = rm === "true";
+		} catch {
+			/* ignore storage errors */
+		}
+	}
+
+	private subscribeToStore() {
+		// hydrate from cache immediately
+		if (typeof window !== "undefined") {
+			try {
+				const savedModel = localStorage.getItem(MODEL_OVERRIDE_KEY);
+				if (savedModel) this.currentModel = savedModel;
+				const statusCache = localStorage.getItem(STATUS_CACHE_KEY);
+				if (statusCache) this.status = JSON.parse(statusCache);
+				const modelsCache = localStorage.getItem(MODELS_CACHE_KEY);
+				if (modelsCache) this.models = JSON.parse(modelsCache);
+				const usageCache = localStorage.getItem(USAGE_CACHE_KEY);
+				if (usageCache) this.usage = JSON.parse(usageCache);
+			} catch {
+				/* ignore cache parse errors */
+			}
+		}
+
+		this.unsubscribeStore = dataStore.subscribe((snapshot) => {
+			this.status = snapshot.status;
+			this.models = snapshot.models;
+			this.usage = snapshot.usage;
+			if (!this.currentModelTokens && snapshot.models.length > 0) {
+				this.updateModelMeta();
+			}
+		});
 	}
 
 	private async loadCurrentModel() {
 		try {
 			const model = await this.apiClient.getCurrentModel();
 			this.currentModel = model ? `${model.provider}/${model.id}` : this.model;
+			const tokens = this.deriveModelTokens(model);
+			this.currentModelTokens = tokens;
 		} catch (e) {
 			console.error("Failed to load current model:", e);
 			this.currentModel = this.model;
+			this.currentModelTokens = null;
+		}
+	}
+
+	private deriveModelTokens(
+		model: Partial<{
+			contextWindow?: number;
+			maxOutputTokens?: number;
+			maxTokens?: number;
+		}> | null,
+	): string | null {
+		if (!model) return null;
+		if (model.contextWindow)
+			return `${Math.round(model.contextWindow / 1000)}k ctx`;
+		if (model.maxOutputTokens)
+			return `${Math.round(model.maxOutputTokens / 1000)}k max out`;
+		if (model.maxTokens) return `${Math.round(model.maxTokens / 1000)}k tokens`;
+		return null;
+	}
+
+	private async updateModelMeta() {
+		// Avoid extra fetches when we already have tokens or no models yet
+		if (this.currentModelTokens && this.models.length === 0) return;
+		try {
+			const models =
+				this.models.length > 0 ? this.models : await this.apiClient.getModels();
+			const current =
+				models.find((m) => `${m.provider}/${m.id}` === this.currentModel) ??
+				models.find((m) => m.id === this.currentModel);
+			const tokens = this.deriveModelTokens(current || null);
+			this.currentModelTokens = tokens ?? "n/a";
+		} catch (e) {
+			console.error("Failed to load model metadata:", e);
+			this.currentModelTokens = "n/a";
 		}
 	}
 
@@ -591,25 +867,67 @@ export class ComposerChat extends LitElement {
 		this.settingsOpen = !this.settingsOpen;
 	}
 
+	private openModelSelector() {
+		// Ensure models are ready for the dialog
+		dataStore.ensureModels(this.apiClient);
+		this.showModelSelector = true;
+	}
+
+	private closeModelSelector() {
+		this.showModelSelector = false;
+	}
+
 	private handleModelSelect(event: CustomEvent) {
-		this.currentModel = event.detail.model;
-		// You could also call an API to persist the model selection
+		const selected = event.detail.model as string;
+		this.currentModel = selected;
+		localStorage.setItem(MODEL_OVERRIDE_KEY, selected);
+		// Persist selection server-side if possible
+		this.apiClient
+			.setModel(selected)
+			.catch((err) => console.error("Failed to set model:", err));
+		// Update tokens from cached models; fall back to later refresh if missing
+		const cached = this.models.find(
+			(m) => `${m.provider}/${m.id}` === selected || m.id === selected,
+		);
+		if (cached) {
+			this.currentModelTokens =
+				this.deriveModelTokens(cached) ?? this.currentModelTokens;
+		} else {
+			this.currentModelTokens = this.currentModelTokens ?? null;
+		}
+		if (this.models.length === 0) {
+			this.updateModelMeta();
+		}
+		this.closeModelSelector();
+		this.showToast("Model updated", "success");
 	}
 
 	private async createNewSession() {
-		this.messages = [];
-		this.currentSessionId = null;
 		this.error = null;
-		this.requestUpdate(); // Force update
-		await this.loadSessions();
+		try {
+			const session = await this.apiClient.createSession("New Chat");
+			this.currentSessionId = session.id;
+			this.messages = session.messages || [];
+			await this.loadSessions();
+			this.showToast("New session created", "success");
+		} catch (e) {
+			this.error =
+				e instanceof Error ? e.message : "Failed to create new session";
+			this.showToast(this.error, "error");
+		}
 	}
 
 	private async selectSession(sessionId: string) {
 		this.currentSessionId = sessionId;
 		try {
 			const session = await this.apiClient.getSession(sessionId);
+			if (!session || !session.id) {
+				throw new Error("Invalid session response");
+			}
 			this.currentSessionId = session.id;
-			this.messages = [...session.messages];
+			this.messages = Array.isArray(session.messages)
+				? [...session.messages]
+				: [];
 			this.error = null;
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
@@ -617,20 +935,45 @@ export class ComposerChat extends LitElement {
 		} catch (e) {
 			console.error("Failed to load session:", e);
 			this.error = e instanceof Error ? e.message : "Failed to load session";
+			this.showToast(this.error, "error");
 		}
 	}
 
-	private async handleSubmit(event: CustomEvent<{ text: string }>) {
-		const text = event.detail.text.trim();
-		if (!text || this.loading) return;
+	private async deleteSession(sessionId: string) {
+		if (!confirm("Delete this session?")) return;
+		try {
+			await this.apiClient.deleteSession(sessionId);
+			if (this.currentSessionId === sessionId) {
+				this.currentSessionId = null;
+				this.messages = [];
+			}
+			await this.loadSessions();
+			this.showToast("Session deleted", "success");
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : "Failed to delete session";
+			this.showToast(msg, "error");
+		}
+	}
 
-		// Add user message
-		const userMessage: Message = {
-			role: "user",
-			content: text,
-			timestamp: new Date().toISOString(),
-		};
-		this.messages = [...this.messages, userMessage];
+	private async handleSubmit(
+		event: CustomEvent<{ text: string; retry?: boolean }>,
+	) {
+		const text = event.detail.text.trim();
+		if (!text || this.loading || !this.clientOnline) {
+			return;
+		}
+		this.lastSendFailed = null;
+		this.lastApiError = null;
+
+		// Add user message unless reusing the existing one for a retry
+		if (!event.detail.retry) {
+			const userMessage: Message = {
+				role: "user",
+				content: text,
+				timestamp: new Date().toISOString(),
+			};
+			this.messages = [...this.messages, userMessage];
+		}
 
 		// Start loading
 		this.loading = true;
@@ -704,6 +1047,7 @@ export class ComposerChat extends LitElement {
 								const toolCall = msgEvent.toolCall;
 								if (!assistantMessage.tools) assistantMessage.tools = [];
 								assistantMessage.tools.push({
+									id: toolCall.id,
 									name: toolCall.name,
 									status: "pending",
 									args: toolCall.arguments,
@@ -723,6 +1067,7 @@ export class ComposerChat extends LitElement {
 						const toolInfo = activeTools.get(agentEvent.toolCallId);
 						if (toolInfo && assistantMessage.tools) {
 							assistantMessage.tools[toolInfo.index].status = "running";
+							assistantMessage.tools[toolInfo.index].startTime = Date.now();
 							this.messages = [...this.messages];
 						}
 						break;
@@ -736,6 +1081,7 @@ export class ComposerChat extends LitElement {
 								agentEvent.isError ? "error" : "completed";
 							assistantMessage.tools[completedTool.index].result =
 								agentEvent.result;
+							assistantMessage.tools[completedTool.index].endTime = Date.now();
 							this.messages = [...this.messages];
 						}
 						activeTools.delete(agentEvent.toolCallId);
@@ -763,10 +1109,22 @@ export class ComposerChat extends LitElement {
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to send message";
 			this.messages = this.messages.slice(0, -1); // Remove placeholder
+			this.showToast(this.error, "error");
+			this.lastSendFailed = text;
+			this.lastApiError = this.error;
 		} finally {
 			this.loading = false;
 		}
 	}
+
+	private retryLastSend = () => {
+		if (!this.lastSendFailed) return;
+		this.handleSubmit(
+			new CustomEvent("submit", {
+				detail: { text: this.lastSendFailed, retry: true },
+			}),
+		);
+	};
 
 	private scrollToBottom() {
 		this.updateComplete.then(() => {
@@ -789,41 +1147,149 @@ export class ComposerChat extends LitElement {
 		return d.toLocaleDateString();
 	}
 
+	private refreshStatus() {
+		const now = Date.now();
+		if (now < this.nextRefreshAllowed) {
+			this.showToast("Refresh throttled, try again shortly", "info", 1500);
+			return;
+		}
+		this.nextRefreshAllowed = now + 3000; // 3s debounce
+		dataStore.ensureStatus(this.apiClient, true);
+		dataStore.ensureModels(this.apiClient, true);
+		dataStore.ensureUsage(this.apiClient, true);
+		this.showToast("Refreshing API state", "info", 1200);
+	}
+
+	private showToast(
+		message: string,
+		type: "info" | "error" | "success" = "info",
+		duration = 3200,
+	) {
+		this.toast = { message, type };
+		setTimeout(() => {
+			if (this.toast?.message === message) {
+				this.toast = null;
+			}
+		}, duration);
+	}
+
 	render() {
-		const cwd = "/Users/jonathan/codingagent"; // In real app, get from API
-		const tools = [
-			"read",
-			"write",
-			"edit",
-			"bash",
-			"search",
-			"diff",
-			"gh_pr",
-			"gh_issue",
-		];
+		const cwd = this.status?.cwd || "unknown";
+		const gitBranch = this.status?.git?.branch || "unknown";
+		const gitStatus = this.status?.git?.status;
+		const gitSummary = gitStatus
+			? [
+					gitStatus.modified ? `${gitStatus.modified} mod` : null,
+					gitStatus.added ? `${gitStatus.added} add` : null,
+					gitStatus.deleted ? `${gitStatus.deleted} del` : null,
+					gitStatus.untracked ? `${gitStatus.untracked} untracked` : null,
+				]
+					.filter(Boolean)
+					.join(", ")
+			: "n/a";
+		const totalCost =
+			this.usage && typeof this.usage.totalCost === "number"
+				? `$${this.usage.totalCost.toFixed(2)}`
+				: "$0.00";
+		const isOnline = Boolean(this.status) && this.clientOnline;
+		const latency = this.status?.lastLatencyMs || null;
+		const taskHealth = (this.status as any)?.backgroundTasks as
+			| WorkspaceStatus["backgroundTasks"]
+			| undefined;
+		const taskRunning = taskHealth?.running ?? 0;
+		const taskFailed = taskHealth?.failed ?? 0;
 		const showSessionGallery =
 			this.messages.length === 0 && this.sessions.length > 0;
+		const hasMessages = this.messages.length > 0;
+		const renderedMessages = this.messages.map(
+			(msg) => html`
+				<composer-message
+					role=${msg.role}
+					content=${msg.content}
+					timestamp=${msg.timestamp || ""}
+					.thinking=${(msg as any).thinking || ""}
+					.tools=${msg.tools || []}
+					.compact=${this.compactMode}
+					.reducedMotion=${this.reducedMotion}
+				></composer-message>
+			`,
+		);
 		const recentSessions = showSessionGallery ? this.sessions.slice(0, 8) : [];
+		const sessionLoading = this.loading && this.messages.length === 0;
+		const lastUpdated = (this.status as any)?.lastUpdated || null;
+
+		const healthClass = !isOnline
+			? "error"
+			: latency !== null
+				? latency > 1000
+					? "warning"
+					: "success"
+				: "";
+		const latencyLabel =
+			latency === null
+				? "n/a"
+				: latency > 1000
+					? "slow"
+					: latency > 400
+						? "ok"
+						: "fast";
 
 		return html`
+			${
+				!this.clientOnline
+					? html`<div class="banner offline">Offline detected — messages will pause until connection returns.</div>`
+					: ""
+			}
+			${
+				this.lastSendFailed
+					? html`<div class="banner retry">
+						Last send failed.
+						<button class="icon-btn" @click=${this.retryLastSend}>Retry</button>
+					</div>`
+					: ""
+			}
 			<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
 				<div class="sidebar-header">
 					<h2>Sessions</h2>
 					<button class="new-session-btn" @click=${this.createNewSession}>
 						New Chat
 					</button>
+					<input
+						type="search"
+						placeholder="Filter..."
+						value=${this.sessionSearch}
+						@input=${(e: Event) => {
+							const value = (e.target as HTMLInputElement).value.toLowerCase();
+							this.sessionSearch = value;
+						}}
+						style="margin-top:0.4rem; width:100%; padding:0.35rem 0.5rem; background:#0a0e14; border:1px solid #30363d; color:#e6edf3; border-radius:3px; font-family:'SF Mono','Menlo','Monaco',monospace; font-size:0.75rem;"
+					/>
 				</div>
 				<div class="sessions-list">
-					${this.sessions.map(
-						(session) => html`
+					${this.sessions.map((session) =>
+						this.sessionSearch &&
+						!session.title?.toLowerCase().includes(this.sessionSearch) &&
+						!session.id?.toLowerCase().includes(this.sessionSearch)
+							? ""
+							: html`
 							<div
 								class="session-item ${this.currentSessionId === session.id ? "active" : ""}"
 								@click=${() => this.selectSession(session.id)}
 							>
 								<div class="session-title">${session.title || "Untitled Session"}</div>
-								<div class="session-meta">
-									${this.formatSessionDate(session.updatedAt)} • ${session.messageCount || 0} msgs
-								</div>
+							<div class="session-meta">
+								${this.formatSessionDate(session.updatedAt)} • ${session.messageCount || 0} msgs
+							</div>
+							<button
+								class="icon-btn"
+								title="Delete"
+								@click=${(e: Event) => {
+									e.stopPropagation();
+									this.deleteSession(session.id);
+								}}
+							>
+								✕
+							</button>
 							</div>
 						`,
 					)}
@@ -831,68 +1297,114 @@ export class ComposerChat extends LitElement {
 			</div>
 
 			<div class="main-content">
-				<div class="header">
-					<div class="header-left">
-						<button class="toggle-sidebar-btn" @click=${this.toggleSidebar}>
-							${this.sidebarOpen ? "◄" : "►"}
-						</button>
-						<h1>Composer</h1>
-					</div>
-					<div class="status-bar">
+		<div class="header">
+			<div class="header-left">
+				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar}>
+					${this.sidebarOpen ? "◄" : "►"}
+				</button>
+				<h1>Composer</h1>
+			</div>
+			<div class="status-bar">
 						<div class="status-item active">
-							<span class="status-dot"></span>
-							<span>CONNECTED</span>
+							<span class="status-dot ${isOnline ? "" : "offline"} ${healthClass}"></span>
+							<span>${isOnline ? "ONLINE" : "OFFLINE"}</span>
+							${
+								this.status?.server?.uptime
+									? html`<span class="muted">${Math.max(1, Math.floor(this.status.server.uptime / 60))}m</span>`
+									: ""
+							}
+							${
+								latency
+									? html`<span class="muted" title=${latencyLabel}>${Math.round(latency)}ms</span>`
+									: ""
+							}
+							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>ⓘ</button>
 						</div>
 						<div class="status-item">
-							<span>CWD:</span>
-							<span style="color: #58a6ff;">${cwd.split("/").pop()}</span>
+							<span>CWD</span>
+							<span class="pill">${cwd.split("/").pop()}</span>
 						</div>
+						${
+							this.status?.git
+								? html`<div class="status-item" title=${gitStatus}>
+									<span>GIT</span>
+									<span class="pill ${gitStatus === "n/a" || gitStatus === "" ? "" : "warning"}">${gitBranch}</span>
+								</div>`
+								: ""
+						}
+						${
+							taskHealth
+								? html`<div class="status-item" title="Background tasks">
+									<span>TASKS</span>
+									<span class="pill ${taskFailed > 0 ? "warning" : "success"}">
+										${taskRunning} running${taskFailed > 0 ? ` · ${taskFailed} failed` : ""}
+									</span>
+								</div>`
+								: ""
+						}
 						<div class="status-item">
-							<span>MSGS:</span>
-							<span style="color: #e6edf3;">${this.messages.length}</span>
+							<span>MSGS</span>
+							<span class="muted">${this.messages.length}</span>
 						</div>
-					</div>
-					<div class="header-right">
-						<div class="model-selector" @click=${this.toggleSettings}>
-							<span class="model-badge">AI</span>
-							<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
+						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>↻</button>
+						${
+							lastUpdated
+								? html`<span class="status-item" title="Last API refresh">
+										<span>UPDATED</span>
+										<span class="muted">${new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+									</span>`
+								: ""
+						}
+			</div>
+			<div class="header-right">
+				<div class="model-selector" @click=${this.toggleSettings}>
+					<span class="model-badge">AI</span>
+					<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
 						</div>
+						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>🌐</button>
 						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>⚙</button>
+						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>▥</button>
+						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>◌</button>
 					</div>
 				</div>
 
 				${this.error ? html`<div class="error">${this.error}</div>` : ""}
 
-				<div class="messages">
-					${
-						this.messages.length === 0
-							? html`
-								<div class="empty-state">
-									<div class="workspace-panel">
+				<div class="messages ${this.compactMode ? "compact" : ""}">
+						${
+							this.messages.length === 0
+								? html`
+									<div class="empty-state">
+										${
+											sessionLoading
+												? html`<div class="loading">Loading session...</div>`
+												: ""
+										}
+										<div class="workspace-panel">
 										<div class="panel-section">
 											<h3>Workspace</h3>
 											<div class="panel-item active">
 												<span>►</span>${cwd}
 											</div>
 											<div class="panel-item">
-												<span>GIT:</span>feat/concurrently-web-ui-tui
+												<span>GIT:</span>${gitBranch}
 											</div>
 											<div class="panel-item">
-												<span>FILES:</span>~34 modified
+												<span>FILES:</span>${gitSummary}
 											</div>
 										</div>
-										<div class="panel-section">
-											<h3>Model</h3>
-											<div class="panel-item active">
-												<span>►</span>${this.currentModel}
+											<div class="panel-section">
+												<h3>Model</h3>
+												<div class="panel-item active">
+													<span>►</span>${this.currentModel}
+												</div>
+												<div class="panel-item">
+												<span>CTX:</span>${this.currentModelTokens ?? "loading…"}
+												</div>
+												<div class="panel-item">
+													<span>MODE:</span>streaming
+												</div>
 											</div>
-											<div class="panel-item">
-												<span>CTX:</span>200k tokens
-											</div>
-											<div class="panel-item">
-												<span>MODE:</span>streaming
-											</div>
-										</div>
 										<div class="panel-section">
 											<h3>Session</h3>
 											<div class="panel-item">
@@ -903,16 +1415,6 @@ export class ComposerChat extends LitElement {
 											</div>
 											<div class="panel-item">
 												<span>COST:</span>$0.00
-											</div>
-										</div>
-										<div class="panel-section">
-											<h3>Available Tools</h3>
-											<div class="tool-grid">
-												${tools.map(
-													(tool) => html`
-													<div class="tool-badge">${tool}</div>
-												`,
-												)}
 											</div>
 										</div>
 									</div>
@@ -948,23 +1450,10 @@ export class ComposerChat extends LitElement {
 										`
 											: ""
 									}
-									<div class="command-hint">
-										Type a message to start coding, or use slash commands:
-										<code>/run</code><code>/config</code><code>/help</code>
-									</div>
 								</div>
 						  `
-							: this.messages.map(
-									(msg) => html`
-									<composer-message
-										role=${msg.role}
-										content=${msg.content}
-										timestamp=${msg.timestamp || ""}
-										.tools=${msg.tools || []}
-									></composer-message>
-								`,
-								)
-					}
+								: renderedMessages
+						}
 					${this.loading ? html`<div class="loading">Processing...</div>` : ""}
 				</div>
 
@@ -986,8 +1475,71 @@ export class ComposerChat extends LitElement {
 						@close=${this.toggleSettings}
 						@model-select=${this.handleModelSelect}
 					></composer-settings>
-				</div>
+					</div>
 			`
+					: ""
+			}
+
+			${
+				this.showModelSelector
+					? html`
+						<model-selector
+							.open=${this.showModelSelector}
+							.apiEndpoint=${this.apiEndpoint}
+							.currentModel=${this.currentModel}
+							.modelsPrefetch=${this.models}
+							@close=${this.closeModelSelector}
+							@model-selected=${this.handleModelSelect}
+						></model-selector>
+				  `
+					: ""
+			}
+
+			${
+				this.showHealth
+					? html`
+						<div style="position: fixed; top: 64px; right: 12px; width: 260px; background: #0d1117; border: 1px solid #30363d; padding: 0.75rem; z-index: 120; box-shadow: 0 10px 24px rgba(0,0,0,0.4); font-family: 'SF Mono','Menlo','Monaco', monospace; font-size: 0.75rem; color: #e6edf3;">
+							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+								<span style="color:#6e7681; letter-spacing:0.05em;">API HEALTH</span>
+								<button class="icon-btn" @click=${this.closeHealth}>✕</button>
+							</div>
+							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Base:</span> ${this.apiClient.baseUrl}</div>
+							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Latency:</span> ${latency ? `${Math.round(latency)}ms` : "n/a"}</div>
+							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Last updated:</span> ${lastUpdated ? new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "n/a"}</div>
+							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Last error:</span> ${this.lastApiError || "none"}</div>
+						</div>
+				  `
+					: ""
+			}
+
+			${
+				this.toast
+					? html`
+						<div class="toast ${this.toast.type}">
+							${this.toast.message}
+						</div>
+				  `
+					: ""
+			}
+
+			${
+				this.showShortcuts
+					? html`
+						<div style="position: fixed; top: 30%; left: 50%; transform: translateX(-50%); width: 420px; background: #0d1117; border: 1px solid #30363d; padding: 1rem; z-index: 140; box-shadow: 0 18px 40px rgba(0,0,0,0.5); font-family: 'SF Mono','Menlo','Monaco', monospace; font-size: 0.78rem; color: #e6edf3;">
+							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+								<span style="letter-spacing:0.08em; color:#8b949e;">Keyboard shortcuts</span>
+								<button class="icon-btn" @click=${this.closeShortcuts}>✕</button>
+							</div>
+						<div style="display:grid; grid-template-columns: auto 1fr; gap: 0.35rem 0.75rem;">
+							<span class="pill">Enter</span><span>Send message</span>
+							<span class="pill">Shift+Enter</span><span>New line</span>
+							<span class="pill">?</span><span>Toggle this help</span>
+							<span class="pill">↻</span><span>Refresh API status</span>
+							<span class="pill">⌘/Ctrl + K</span><span>Browser find (fwd to your editor)</span>
+							<span class="pill">⌘/Ctrl + M</span><span>Toggle compact layout</span>
+													</div>
+					</div>
+			  `
 					: ""
 			}
 		`;

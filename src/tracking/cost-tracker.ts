@@ -21,16 +21,27 @@ export interface UsageEntry {
 	cost: number; // in USD
 }
 
+export interface UsageTokenTotals {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+}
+
 export interface UsageSummary {
 	totalCost: number;
 	totalRequests: number;
 	totalTokens: number;
+	/** Detailed token breakdown; keeps legacy totalTokens as aggregate. */
+	tokensDetailed: UsageTokenTotals;
 	byProvider: Record<
 		string,
 		{
 			cost: number;
 			requests: number;
 			tokens: number;
+			tokensDetailed: UsageTokenTotals;
 		}
 	>;
 	byModel: Record<
@@ -39,6 +50,7 @@ export interface UsageSummary {
 			cost: number;
 			requests: number;
 			tokens: number;
+			tokensDetailed: UsageTokenTotals;
 		}
 	>;
 }
@@ -120,36 +132,83 @@ export function getUsageSummary(options?: {
 		totalCost: 0,
 		totalRequests: filtered.length,
 		totalTokens: 0,
+		tokensDetailed: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: 0,
+		},
 		byProvider: {},
 		byModel: {},
 	};
 
 	for (const entry of filtered) {
+		const tokensInput = entry.tokensInput;
+		const tokensOutput = entry.tokensOutput;
+		const tokensCacheRead = entry.tokensCacheRead || 0;
+		const tokensCacheWrite = entry.tokensCacheWrite || 0;
 		const tokens =
-			entry.tokensInput +
-			entry.tokensOutput +
-			(entry.tokensCacheRead || 0) +
-			(entry.tokensCacheWrite || 0);
+			tokensInput + tokensOutput + tokensCacheRead + tokensCacheWrite;
 
 		summary.totalCost += entry.cost;
 		summary.totalTokens += tokens;
+		summary.tokensDetailed.input += tokensInput;
+		summary.tokensDetailed.output += tokensOutput;
+		summary.tokensDetailed.cacheRead += tokensCacheRead;
+		summary.tokensDetailed.cacheWrite += tokensCacheWrite;
+		summary.tokensDetailed.total += tokens;
 
 		// By provider
 		if (!summary.byProvider[entry.provider]) {
-			summary.byProvider[entry.provider] = { cost: 0, requests: 0, tokens: 0 };
+			summary.byProvider[entry.provider] = {
+				cost: 0,
+				requests: 0,
+				tokens: 0,
+				tokensDetailed: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: 0,
+				},
+			};
 		}
 		summary.byProvider[entry.provider].cost += entry.cost;
 		summary.byProvider[entry.provider].requests += 1;
 		summary.byProvider[entry.provider].tokens += tokens;
+		const providerTokens = summary.byProvider[entry.provider].tokensDetailed;
+		providerTokens.input += tokensInput;
+		providerTokens.output += tokensOutput;
+		providerTokens.cacheRead += tokensCacheRead;
+		providerTokens.cacheWrite += tokensCacheWrite;
+		providerTokens.total += tokens;
 
 		// By model
 		const modelKey = `${entry.provider}/${entry.model}`;
 		if (!summary.byModel[modelKey]) {
-			summary.byModel[modelKey] = { cost: 0, requests: 0, tokens: 0 };
+			summary.byModel[modelKey] = {
+				cost: 0,
+				requests: 0,
+				tokens: 0,
+				tokensDetailed: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: 0,
+				},
+			};
 		}
 		summary.byModel[modelKey].cost += entry.cost;
 		summary.byModel[modelKey].requests += 1;
 		summary.byModel[modelKey].tokens += tokens;
+		const modelTokens = summary.byModel[modelKey].tokensDetailed;
+		modelTokens.input += tokensInput;
+		modelTokens.output += tokensOutput;
+		modelTokens.cacheRead += tokensCacheRead;
+		modelTokens.cacheWrite += tokensCacheWrite;
+		modelTokens.total += tokens;
 	}
 
 	return summary;

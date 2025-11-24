@@ -6,6 +6,8 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { ApiClient, type Model } from "../services/api-client.js";
 
+const SEARCH_DEBOUNCE = 150;
+
 @customElement("model-selector")
 export class ModelSelector extends LitElement {
 	static styles = css`
@@ -166,12 +168,14 @@ export class ModelSelector extends LitElement {
 	@property({ type: Boolean }) open = false;
 	@property() apiEndpoint = "http://localhost:8080";
 	@property() currentModel = "";
+	@property({ attribute: false }) modelsPrefetch: Model[] | null = null;
 
 	@state() private models: Model[] = [];
 	@state() private filteredModels: Model[] = [];
 	@state() private loading = false;
 	@state() private error: string | null = null;
 	@state() private searchQuery = "";
+	private searchTimer: number | null = null;
 
 	private apiClient!: ApiClient;
 
@@ -191,7 +195,11 @@ export class ModelSelector extends LitElement {
 		this.error = null;
 
 		try {
-			this.models = await this.apiClient.getModels();
+			if (this.modelsPrefetch && this.modelsPrefetch.length > 0) {
+				this.models = this.modelsPrefetch;
+			} else {
+				this.models = await this.apiClient.getModels();
+			}
 			this.filteredModels = this.models;
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to load models";
@@ -202,22 +210,25 @@ export class ModelSelector extends LitElement {
 
 	private handleSearch(e: Event) {
 		const target = e.target as HTMLInputElement;
-		this.searchQuery = target.value.toLowerCase();
-
-		this.filteredModels = this.models.filter(
-			(model) =>
-				model.id.toLowerCase().includes(this.searchQuery) ||
-				model.name.toLowerCase().includes(this.searchQuery) ||
-				model.provider.toLowerCase().includes(this.searchQuery),
-		);
+		const value = target.value.toLowerCase();
+		if (this.searchTimer) window.clearTimeout(this.searchTimer);
+		this.searchTimer = window.setTimeout(() => {
+			this.searchQuery = value;
+			this.filteredModels = this.models.filter(
+				(model) =>
+					model.id.toLowerCase().includes(this.searchQuery) ||
+					model.name.toLowerCase().includes(this.searchQuery) ||
+					model.provider.toLowerCase().includes(this.searchQuery),
+			);
+		}, SEARCH_DEBOUNCE);
 	}
 
 	private async selectModel(model: Model) {
 		try {
-			await this.apiClient.setModel(model.id);
+			const modelKey = `${model.provider}/${model.id}`;
 			this.dispatchEvent(
 				new CustomEvent("model-selected", {
-					detail: { model },
+					detail: { model: modelKey },
 					bubbles: true,
 					composed: true,
 				}),
@@ -269,33 +280,32 @@ export class ModelSelector extends LitElement {
 										? html`<div class="empty">No models found</div>`
 										: this.filteredModels.map(
 												(model) => html`
-												<div
-													class="model-item ${this.currentModel === model.id ? "selected" : ""}"
-													@click=${() => this.selectModel(model)}
-												>
-													<div class="model-name">${model.name}</div>
-													<div class="provider-badge">${model.provider}</div>
-													${
-														model.contextWindow || model.maxOutputTokens
-															? html`
-																<div class="model-info">
-																	${
-																		model.contextWindow
-																			? `${(model.contextWindow / 1000).toFixed(0)}K context`
-																			: ""
-																	}
-																	${model.contextWindow && model.maxOutputTokens ? " • " : ""}
-																	${
-																		model.maxOutputTokens
-																			? `${(model.maxOutputTokens / 1000).toFixed(0)}K output`
-																			: ""
-																	}
-																</div>
-															`
-															: ""
-													}
-												</div>
-											`,
+								<div
+								class="model-item ${
+									this.currentModel === `${model.provider}/${model.id}`
+										? "selected"
+										: ""
+								}"
+									@click=${() => this.selectModel(model)}
+								>
+									<div class="model-name">${model.name}</div>
+									<div class="provider-badge">${model.provider}</div>
+									<div class="model-info">
+										${model.contextWindow ? `${(model.contextWindow / 1000).toFixed(0)}k ctx` : "ctx n/a"}
+										${model.maxOutputTokens ? ` • ${(model.maxOutputTokens / 1000).toFixed(0)}k out` : ""}
+										${
+											model.cost?.input !== undefined
+												? html` • $${(model.cost.input * 1_000_000).toFixed(2)} /1M in`
+												: ""
+										}
+									</div>
+													<div class="model-info">
+														${model.capabilities?.tools ? "tools " : ""}
+														${model.capabilities?.vision ? "vision " : ""}
+														${model.capabilities?.reasoning ? "reasoning " : ""}
+													</div>
+								</div>
+							`,
 											)
 						}
 					</div>

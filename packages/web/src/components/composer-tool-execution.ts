@@ -20,6 +20,12 @@ export class ComposerToolExecution extends LitElement {
 			margin: 0.5rem 0;
 		}
 
+		:host([reduced-motion]) * {
+			animation-duration: 0.001ms !important;
+			animation-iteration-count: 1 !important;
+			transition: none !important;
+		}
+
 		.tool-execution {
 			background: #0d1117;
 			border: 1px solid #30363d;
@@ -162,9 +168,21 @@ export class ComposerToolExecution extends LitElement {
 			color: #f85149;
 		}
 
-		.tool-body {
-			padding: 0.75rem;
-		}
+	.tool-body {
+		padding: 0.75rem;
+	}
+
+	.tool-summary {
+		padding: 0.5rem 0.75rem;
+		border-top: 1px solid #21262d;
+		background: #0a0e14;
+		font-size: 0.7rem;
+		color: #8b949e;
+		display: flex;
+		gap: 0.75rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
 
 		.tool-section {
 			margin-bottom: 0.75rem;
@@ -231,19 +249,40 @@ export class ComposerToolExecution extends LitElement {
 			font-size: 0.7rem;
 		}
 
-		.collapse-toggle {
+		.copy-result {
+			margin-top: 0.35rem;
 			background: transparent;
-			border: none;
-			color: #58a6ff;
+			border: 1px solid #30363d;
+			color: #8b949e;
+			padding: 0.25rem 0.5rem;
+			font-size: 0.65rem;
+			border-radius: 3px;
 			cursor: pointer;
+		}
+
+		.copy-result:hover {
+			border-color: #58a6ff;
+			color: #58a6ff;
+		}
+
+	.collapse-toggle {
+		background: transparent;
+		border: none;
+		color: #58a6ff;
+		cursor: pointer;
 			padding: 0.25rem 0.5rem;
 			font-family: inherit;
 			font-size: 0.7rem;
 			text-transform: uppercase;
 			letter-spacing: 0.05em;
-			transition: all 0.15s;
-			margin-top: 0.5rem;
-		}
+		transition: all 0.15s;
+		margin-top: 0.5rem;
+	}
+
+	.tool-header .collapse-toggle {
+		margin-top: 0;
+		padding: 0.2rem 0.4rem;
+	}
 
 		.collapse-toggle:hover {
 			color: #539bf5;
@@ -282,8 +321,12 @@ export class ComposerToolExecution extends LitElement {
 	@property({ type: Boolean }) isRunning = true;
 	@property({ type: Number }) startTime = Date.now();
 	@property({ type: Number }) endTime: number | null = null;
+	@property({ type: Boolean }) compact = false;
+	@property({ type: Boolean, reflect: true, attribute: "reduced-motion" })
+	reducedMotion = false;
 
-	@state() private collapsed = false;
+	@state() private bodyCollapsed = false;
+	@state() private showFullResult = false;
 
 	private getToolGlyph(toolName: string): string {
 		const glyphs: Record<string, string> = {
@@ -328,8 +371,31 @@ export class ComposerToolExecution extends LitElement {
 		return `${(duration / 1000).toFixed(2)}s`;
 	}
 
-	private toggleCollapse() {
-		this.collapsed = !this.collapsed;
+	private async copyResult() {
+		if (!this.result) return;
+		try {
+			const text =
+				typeof this.result === "string"
+					? this.result
+					: JSON.stringify(this.result, null, 2);
+			await navigator.clipboard.writeText(text);
+		} catch (e) {
+			console.error("Failed to copy result:", e);
+		}
+	}
+
+	private toggleBodyCollapse() {
+		this.bodyCollapsed = !this.bodyCollapsed;
+	}
+
+	private toggleFullResult() {
+		this.showFullResult = !this.showFullResult;
+	}
+
+	protected updated(changed: Map<string, unknown>) {
+		if (changed.has("compact") && this.compact && !this.bodyCollapsed) {
+			this.bodyCollapsed = true;
+		}
 	}
 
 	private renderResult() {
@@ -364,27 +430,29 @@ export class ComposerToolExecution extends LitElement {
 		// Limit content length for display
 		const maxLength = 2000;
 		const truncated = content.length > maxLength;
-		const displayContent = truncated
-			? `${content.slice(0, maxLength)}\n... (truncated)`
-			: content;
+		const displayContent =
+			truncated && !this.showFullResult
+				? `${content.slice(0, maxLength)}\n... (truncated)`
+				: content;
 
 		return html`
-			<div class="tool-section">
-				<div class="section-label">Result</div>
-				<div class="result-content ${isErrorResult ? "error" : ""}">
-					${displayContent}
+				<div class="tool-section">
+					<div class="section-label">Result</div>
+					<div class="result-content ${isErrorResult ? "error" : ""}">
+						${displayContent}
+					</div>
+					${
+						truncated
+							? html`
+						<button class="collapse-toggle" @click=${this.toggleFullResult}>
+							${this.showFullResult ? "Show Less" : "Show Full Output"}
+						</button>
+					`
+							: ""
+					}
+					<button class="copy-result" @click=${this.copyResult}>Copy Result</button>
 				</div>
-				${
-					truncated
-						? html`
-					<button class="collapse-toggle" @click=${this.toggleCollapse}>
-						${this.collapsed ? "Show Less" : "Show Full Output"}
-					</button>
-				`
-						: ""
-				}
-			</div>
-		`;
+			`;
 	}
 
 	render() {
@@ -421,49 +489,74 @@ export class ComposerToolExecution extends LitElement {
 								: ""
 						}
 					</div>
-					<div class="tool-status ${statusClass}">${statusText}</div>
+					<div style="display:flex; align-items:center; gap:0.35rem;">
+						<button class="collapse-toggle" @click=${this.toggleBodyCollapse}>
+							${this.bodyCollapsed ? "Expand" : "Collapse"}
+						</button>
+						<div class="tool-status ${statusClass}">${statusText}</div>
+					</div>
 				</div>
 
-				<div class="tool-body">
-					${
-						formattedArgs.length > 0
-							? html`
-						<div class="tool-section">
-							<div class="section-label">Arguments</div>
-							<div class="args-grid">
-								${formattedArgs.map(
-									(arg) => html`
-									<div class="arg-key">${arg.key}:</div>
-									<div class="arg-value ${typeof arg.value === "object" ? "json" : ""}">
-										${this.formatValue(arg.value)}
+				${
+					this.bodyCollapsed
+						? html`
+						<div class="tool-summary">
+							<span>${statusText}</span>
+							${
+								formattedArgs.length > 0
+									? html`<span class="metadata-value">${formattedArgs[0].key}: ${this.formatValue(formattedArgs[0].value)}</span>`
+									: ""
+							}
+							${
+								!this.isRunning
+									? html`<span class="metadata-value">${this.formatDuration()}</span>`
+									: ""
+							}
+						</div>
+					`
+						: html`
+						<div class="tool-body">
+							${
+								formattedArgs.length > 0
+									? html`
+								<div class="tool-section">
+									<div class="section-label">Arguments</div>
+									<div class="args-grid">
+										${formattedArgs.map(
+											(arg) => html`
+											<div class="arg-key">${arg.key}:</div>
+											<div class="arg-value ${typeof arg.value === "object" ? "json" : ""}">
+												${this.formatValue(arg.value)}
+											</div>
+										`,
+										)}
 									</div>
-								`,
-								)}
-							</div>
+								</div>
+							`
+									: ""
+							}
+
+							${this.result ? this.renderResult() : ""}
+
+							${
+								!this.isRunning
+									? html`
+								<div class="metadata">
+									<div class="metadata-item">
+										<span class="metadata-label">ID:</span>
+										<span class="metadata-value">${this.toolCallId.slice(0, 8)}</span>
+									</div>
+									<div class="metadata-item">
+										<span class="metadata-label">Duration:</span>
+										<span class="metadata-value">${this.formatDuration()}</span>
+									</div>
+								</div>
+							`
+									: ""
+							}
 						</div>
 					`
-							: ""
-					}
-
-					${this.result ? this.renderResult() : ""}
-
-					${
-						!this.isRunning
-							? html`
-						<div class="metadata">
-							<div class="metadata-item">
-								<span class="metadata-label">ID:</span>
-								<span class="metadata-value">${this.toolCallId.slice(0, 8)}</span>
-							</div>
-							<div class="metadata-item">
-								<span class="metadata-label">Duration:</span>
-								<span class="metadata-value">${this.formatDuration()}</span>
-							</div>
-						</div>
-					`
-							: ""
-					}
-				</div>
+				}
 			</div>
 		`;
 	}

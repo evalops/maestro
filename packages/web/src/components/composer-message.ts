@@ -2,6 +2,7 @@
  * Message display component
  */
 
+import DOMPurify from "dompurify";
 import hljs from "highlight.js";
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
@@ -22,37 +23,18 @@ marked.setOptions({
 	},
 } as any); // Type assertion needed for marked options compatibility
 
-// Sanitize HTML to prevent XSS attacks
-function sanitizeHTML(html: string): string {
-	const div = document.createElement("div");
-	div.innerHTML = html;
-
-	// Remove any script tags or event handlers
-	const scripts = Array.from(div.querySelectorAll("script"));
-	for (const script of scripts) {
-		script.remove();
-	}
-
-	// Remove event handler attributes
-	const allElements = Array.from(div.querySelectorAll("*"));
-	for (const el of allElements) {
-		const attributes = Array.from(el.attributes);
-		for (const attr of attributes) {
-			if (attr.name.startsWith("on")) {
-				el.removeAttribute(attr.name);
-			}
-		}
-	}
-
-	return div.innerHTML;
-}
-
 @customElement("composer-message")
 export class ComposerMessage extends LitElement {
 	static styles = css`
-		:host {
-			display: block;
-		}
+			:host {
+				display: block;
+			}
+
+			:host([reduced-motion]) * {
+				animation-duration: 0.001ms !important;
+				animation-iteration-count: 1 !important;
+				transition: none !important;
+			}
 
 		.message {
 			display: grid;
@@ -64,6 +46,12 @@ export class ComposerMessage extends LitElement {
 			font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
 			font-size: 0.8rem;
 			line-height: 1.6;
+		}
+
+		.message.compact {
+			padding: 0.4rem 0.65rem;
+			font-size: 0.75rem;
+			line-height: 1.4;
 		}
 
 		.message.user {
@@ -286,12 +274,18 @@ export class ComposerMessage extends LitElement {
 	@property() role: "user" | "assistant" | "system" = "user";
 	@property() content = "";
 	@property() timestamp = "";
+	@property() thinking = "";
 	@property() tools: Array<{
+		id?: string;
+		toolCallId?: string;
 		name: string;
 		status: string;
 		args?: any;
 		result?: any;
 	}> = [];
+	@property({ type: Boolean }) compact = false;
+	@property({ type: Boolean, reflect: true, attribute: "reduced-motion" })
+	reducedMotion = false;
 
 	private formatTimestamp(ts: string): string {
 		if (!ts) return "";
@@ -314,20 +308,28 @@ export class ComposerMessage extends LitElement {
 		return this.role === "user" ? "👤" : "🤖";
 	}
 
-	private async copyCode(code: string) {
+	private async copyCodeFromButton(button: HTMLElement) {
+		const pre = button.closest("pre");
+		if (!pre) return;
+		const codeEl = pre.querySelector("code");
+		const text = codeEl?.textContent || pre.textContent || "";
 		try {
-			await navigator.clipboard.writeText(code);
-			const button = this.shadowRoot?.querySelector(".copy-button");
-			if (button) {
-				button.textContent = "Copied!";
-				button.classList.add("copied");
-				setTimeout(() => {
-					button.textContent = "Copy";
-					button.classList.remove("copied");
-				}, 2000);
-			}
+			await navigator.clipboard.writeText(text.trim());
+			button.textContent = "Copied!";
+			button.classList.add("copied");
+			setTimeout(() => {
+				button.textContent = "Copy";
+				button.classList.remove("copied");
+			}, 2000);
 		} catch (e) {
 			console.error("Failed to copy:", e);
+		}
+	}
+
+	private handleCopyClick(e: Event) {
+		const target = e.target as HTMLElement;
+		if (target?.classList.contains("copy-button")) {
+			this.copyCodeFromButton(target);
 		}
 	}
 
@@ -344,25 +346,28 @@ export class ComposerMessage extends LitElement {
 
 		// Assistant messages support full markdown
 		const rendered = marked.parse(this.content, { async: false }) as string;
-		const sanitized = sanitizeHTML(rendered);
+		const sanitized = DOMPurify.sanitize(rendered, {
+			ADD_ATTR: ["target", "rel"],
+		});
 
 		// Add copy buttons to code blocks
 		const withCopyButtons = sanitized.replace(
 			/<pre><code/g,
-			'<pre><button class="copy-button" onclick="navigator.clipboard.writeText(this.parentElement.textContent)">Copy</button><code',
+			'<pre class="has-copy"><button class="copy-button" data-copy-button>Copy</button><code',
 		);
 
-		return html`<div class="bubble">${unsafeHTML(withCopyButtons)}</div>`;
+		return html`<div class="bubble" @click=${this.handleCopyClick}>
+			${unsafeHTML(withCopyButtons)}
+		</div>`;
 	}
 
 	render() {
 		// Check if message has thinking or tools
-		const hasThinking =
-			(this as any).thinking && (this as any).thinking.length > 0;
+		const hasThinking = this.thinking && this.thinking.length > 0;
 		const hasTools = this.tools && this.tools.length > 0;
 
 		return html`
-			<div class="message ${this.role}">
+			<div class="message ${this.role} ${this.compact ? "compact" : ""}">
 				<div class="role-label">${this.role.toUpperCase()}</div>
 				<div class="content">
 					${
@@ -378,24 +383,28 @@ export class ComposerMessage extends LitElement {
 
 					${this.renderContent()}
 
-					${
-						hasTools
-							? html`
-						${this.tools.map(
-							(tool) => html`
-							<composer-tool-execution
-								.toolName=${tool.name}
-								.toolCallId=${`${tool.name}-${Date.now()}`}
-								.args=${tool.args || {}}
-								.result=${tool.result || null}
-								.isError=${tool.status === "error"}
-								.isRunning=${tool.status === "running" || tool.status === "pending"}
-							></composer-tool-execution>
-						`,
-						)}
+				${
+					hasTools
+						? html`
+					${this.tools.map(
+						(tool, index) => html`
+						<composer-tool-execution
+							.toolName=${tool.name}
+							.toolCallId=${
+								tool.id || tool.toolCallId || `${tool.name}-${index}`
+							}
+							.args=${tool.args || {}}
+							.result=${tool.result || null}
+							.isError=${tool.status === "error"}
+							.isRunning=${tool.status === "running" || tool.status === "pending"}
+							.compact=${this.compact}
+							.reducedMotion=${this.reducedMotion}
+						></composer-tool-execution>
+					`,
+					)}
 					`
-							: ""
-					}
+						: ""
+				}
 
 					<div class="timestamp">
 						${this.formatTimestamp(this.timestamp)}

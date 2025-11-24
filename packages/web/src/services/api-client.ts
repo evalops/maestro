@@ -22,6 +22,20 @@ export interface Model {
 	name: string;
 	contextWindow?: number;
 	maxOutputTokens?: number;
+	maxTokens?: number;
+	api?: string;
+	cost?: {
+		input: number;
+		output: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+	};
+	capabilities?: {
+		streaming?: boolean;
+		tools?: boolean;
+		vision?: boolean;
+		reasoning?: boolean;
+	};
 }
 
 export type Session = ComposerSession;
@@ -38,11 +52,199 @@ export interface ChatResponse {
 	};
 }
 
+export interface BackgroundTaskSnapshotEntry {
+	id?: string;
+	status?: string;
+	command?: string;
+	summary?: string;
+	lastLogLine?: string;
+	issues?: string[];
+	logTruncated?: boolean;
+	durationSeconds?: number;
+	restarts?: string;
+}
+
+export interface BackgroundTaskSnapshot {
+	total: number;
+	running: number;
+	restarting: number;
+	failed: number;
+	truncated?: boolean;
+	notificationsEnabled?: boolean;
+	detailsRedacted?: boolean;
+	entries?: BackgroundTaskSnapshotEntry[];
+}
+
+export interface WorkspaceStatus {
+	cwd: string;
+	git: {
+		branch: string;
+		status: {
+			modified: number;
+			added: number;
+			deleted: number;
+			untracked: number;
+			total: number;
+		};
+	} | null;
+	context: {
+		agentMd: boolean;
+		claudeMd: boolean;
+	};
+	server: {
+		uptime: number;
+		version: string;
+	};
+	backgroundTasks?: BackgroundTaskSnapshot | null;
+	lastUpdated?: number;
+	lastLatencyMs?: number;
+}
+
+export interface UsageSummary {
+	totalCost: number;
+	totalRequests?: number;
+	totalTokens: number;
+	totalTokensDetailed?: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+	};
+	totalTokensBreakdown?: UsageSummary["totalTokensDetailed"];
+	totalCachedTokens?: number;
+	byProvider: Record<
+		string,
+		{
+			cost: number;
+			calls?: number;
+			requests?: number;
+			tokens: number;
+			tokensDetailed?: UsageSummary["totalTokensDetailed"];
+			cachedTokens?: number;
+		}
+	>;
+	byModel: Record<
+		string,
+		{
+			cost: number;
+			calls?: number;
+			requests?: number;
+			tokens: number;
+			tokensDetailed?: UsageSummary["totalTokensDetailed"];
+			cachedTokens?: number;
+		}
+	>;
+}
+
+async function safeJson(response: Response) {
+	const contentType = response.headers.get("content-type") || "";
+	if (!response.ok) {
+		throw new Error(`API error: ${response.status} ${response.statusText}`);
+	}
+	if (!contentType.includes("application/json")) {
+		const text = await response.text();
+		throw new Error(
+			`Expected JSON but received ${contentType || "unknown"}; check API endpoint. Snippet: ${text.slice(0, 120)}`,
+		);
+	}
+	return response.json();
+}
+
 export class ApiClient {
 	public readonly baseUrl: string;
+	private readonly fallbackBases: string[];
 
-	constructor(baseUrl = "http://localhost:8080") {
-		this.baseUrl = baseUrl.replace(/\/$/, "");
+	constructor(baseUrl?: string) {
+		let resolved = baseUrl;
+		// Window override via global (allows runtime swap without rebuild)
+		if (!resolved && typeof window !== "undefined") {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const winAny = window as any;
+			if (typeof winAny.__COMPOSER_API__ === "string") {
+				resolved = winAny.__COMPOSER_API__;
+			}
+			// ?api= URL param override
+			if (!resolved && window.location?.search) {
+				const params = new URLSearchParams(window.location.search);
+				const api = params.get("api");
+				if (api) resolved = api;
+			}
+			// Same-origin first to avoid CORS when proxied
+			if (!resolved && window.location?.origin) {
+				resolved = window.location.origin;
+			}
+		}
+		// Vite env override
+		if (!resolved && typeof import.meta !== "undefined") {
+			// @ts-ignore Vite injects env at build time
+			resolved = import.meta.env?.VITE_API_ENDPOINT || undefined;
+		}
+		// Final fallback
+		if (!resolved) {
+			resolved = "http://localhost:8080";
+		}
+		this.baseUrl = resolved.replace(/\/$/, "");
+		this.fallbackBases = this.buildFallbacks(this.baseUrl);
+	}
+
+	private buildFallbacks(primary: string): string[] {
+		const bases: string[] = [];
+		// always try origin first if available
+		if (typeof window !== "undefined" && window.location) {
+			const origin = window.location.origin;
+			if (!bases.includes(origin)) bases.push(origin);
+		}
+		// then the configured primary
+		if (!bases.includes(primary)) bases.push(primary);
+		// finally localhost:8080 as a dev fallback
+		if (!bases.includes("http://localhost:8080"))
+			bases.push("http://localhost:8080");
+		return bases;
+	}
+
+	private async fetchJsonWithFallback(path: string) {
+		let lastError: unknown;
+		for (const base of this.fallbackBases) {
+			try {
+				const res = await fetch(`${base}${path}`);
+				return await safeJson(res);
+			} catch (e) {
+				lastError = e;
+				// eslint-disable-next-line no-console
+				console.warn(`API fallback failed for ${base}${path}:`, e);
+			}
+		}
+		throw lastError instanceof Error
+			? lastError
+			: new Error("Failed to fetch API after fallbacks");
+	}
+
+	private async tryFallbackFetch(
+		path: string,
+		init: RequestInit,
+		skipPrimary = false,
+	) {
+		let lastError: unknown;
+		const bases = skipPrimary
+			? this.fallbackBases.filter((b) => b !== this.baseUrl)
+			: this.fallbackBases;
+		for (const base of bases) {
+			try {
+				const res = await fetch(`${base}${path}`, init);
+				if (!res.ok) {
+					throw new Error(`API error: ${res.status} ${res.statusText}`);
+				}
+				return res;
+			} catch (e) {
+				lastError = e;
+				// eslint-disable-next-line no-console
+				console.warn(`API fallback failed for ${base}${path}:`, e);
+			}
+		}
+		throw lastError instanceof Error
+			? lastError
+			: new Error("Failed to fetch API after fallbacks");
 	}
 
 	/**
@@ -166,11 +368,7 @@ export class ApiClient {
 	 * Get list of available models
 	 */
 	async getModels(): Promise<Model[]> {
-		const response = await fetch(`${this.baseUrl}/api/models`);
-		if (!response.ok) {
-			throw new Error(`Failed to fetch models: ${response.statusText}`);
-		}
-		const data = await response.json();
+		const data = await this.fetchJsonWithFallback("/api/models");
 		return data.models || [];
 	}
 
@@ -179,9 +377,8 @@ export class ApiClient {
 	 */
 	async getCurrentModel(): Promise<Model | null> {
 		try {
-			const response = await fetch(`${this.baseUrl}/api/model`);
-			if (!response.ok) return null;
-			return await response.json();
+			const data = await this.fetchJsonWithFallback("/api/model");
+			return (data as Model) ?? null;
 		} catch {
 			return null;
 		}
@@ -200,7 +397,16 @@ export class ApiClient {
 		});
 
 		if (!response.ok) {
-			throw new Error(`Failed to set model: ${response.statusText}`);
+			// attempt fallback hosts (skip the primary that already failed)
+			await this.tryFallbackFetch(
+				"/api/model",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ model: modelId }),
+				},
+				/* skipPrimary */ true,
+			);
 		}
 	}
 
@@ -209,9 +415,7 @@ export class ApiClient {
 	 */
 	async getSessions(): Promise<SessionSummary[]> {
 		try {
-			const response = await fetch(`${this.baseUrl}/api/sessions`);
-			if (!response.ok) return [];
-			const data = await response.json();
+			const data = await this.fetchJsonWithFallback("/api/sessions");
 			return data.sessions || [];
 		} catch (e) {
 			console.error("Failed to fetch sessions:", e);
@@ -220,14 +424,37 @@ export class ApiClient {
 	}
 
 	/**
+	 * Get workspace status (cwd, git, context files, server info)
+	 */
+	async getStatus(): Promise<WorkspaceStatus | null> {
+		try {
+			const data = await this.fetchJsonWithFallback("/api/status");
+			return data as WorkspaceStatus;
+		} catch (e) {
+			console.error("Failed to fetch status:", e);
+			return null;
+		}
+	}
+
+	/**
+	 * Get usage summary (costs and token counts)
+	 */
+	async getUsage(): Promise<UsageSummary | null> {
+		try {
+			const data = await this.fetchJsonWithFallback("/api/usage");
+			return data.summary || null;
+		} catch (e) {
+			console.error("Failed to fetch usage:", e);
+			return null;
+		}
+	}
+
+	/**
 	 * Get a specific session
 	 */
 	async getSession(sessionId: string): Promise<Session> {
-		const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}`);
-		if (!response.ok) {
-			throw new Error(`Failed to fetch session: ${response.statusText}`);
-		}
-		return await response.json();
+		const data = await this.fetchJsonWithFallback(`/api/sessions/${sessionId}`);
+		return data as Session;
 	}
 
 	/**
@@ -243,9 +470,14 @@ export class ApiClient {
 		});
 
 		if (!response.ok) {
-			throw new Error(`Failed to create session: ${response.statusText}`);
+			const fallback = await this.tryFallbackFetch("/api/sessions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ title }),
+			});
+			return (await safeJson(fallback)) as Session;
 		}
-		return await response.json();
+		return (await safeJson(response)) as Session;
 	}
 
 	/**
@@ -257,7 +489,9 @@ export class ApiClient {
 		});
 
 		if (!response.ok) {
-			throw new Error(`Failed to delete session: ${response.statusText}`);
+			await this.tryFallbackFetch(`/api/sessions/${sessionId}`, {
+				method: "DELETE",
+			});
 		}
 	}
 }

@@ -4,73 +4,12 @@
 
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { ApiClient } from "../services/api-client.js";
-
-interface WorkspaceStatus {
-	cwd: string;
-	git: {
-		branch: string;
-		status: {
-			modified: number;
-			added: number;
-			deleted: number;
-			untracked: number;
-			total: number;
-		};
-	} | null;
-	context: {
-		agentMd: boolean;
-		claudeMd: boolean;
-	};
-	server: {
-		uptime: number;
-		version: string;
-	};
-}
-
-interface UsageSummary {
-	totalCost: number;
-	totalTokens: {
-		input: number;
-		output: number;
-		cached: number;
-	};
-	byProvider: Record<
-		string,
-		{
-			cost: number;
-			calls: number;
-		}
-	>;
-	byModel: Record<
-		string,
-		{
-			cost: number;
-			calls: number;
-		}
-	>;
-}
-
-interface ModelInfo {
-	id: string;
-	provider: string;
-	name: string;
-	api: string;
-	contextWindow: number;
-	maxTokens: number;
-	cost: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-	};
-	capabilities: {
-		streaming: boolean;
-		tools: boolean;
-		vision: boolean;
-		reasoning: boolean;
-	};
-}
+import type {
+	ApiClient,
+	Model,
+	UsageSummary,
+	WorkspaceStatus,
+} from "../services/api-client.js";
 
 @customElement("composer-settings")
 export class ComposerSettings extends LitElement {
@@ -274,7 +213,7 @@ export class ComposerSettings extends LitElement {
 
 		.usage-stats {
 			display: grid;
-			grid-template-columns: repeat(3, 1fr);
+			grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 			gap: 0.75rem;
 			margin-bottom: 1rem;
 		}
@@ -340,11 +279,14 @@ export class ComposerSettings extends LitElement {
 
 	@property({ attribute: false }) apiClient!: ApiClient;
 	@property({ type: String }) currentModel = "";
+	@property({ attribute: false }) statusPrefetch: WorkspaceStatus | null = null;
+	@property({ attribute: false }) modelsPrefetch: Model[] | null = null;
+	@property({ attribute: false }) usagePrefetch: UsageSummary | null = null;
 
 	@state() private loading = true;
 	@state() private error: string | null = null;
 	@state() private status: WorkspaceStatus | null = null;
-	@state() private models: ModelInfo[] = [];
+	@state() private models: Model[] = [];
 	@state() private usage: UsageSummary | null = null;
 	@state() private selectedTab: "workspace" | "models" | "usage" = "workspace";
 
@@ -358,24 +300,22 @@ export class ComposerSettings extends LitElement {
 		this.error = null;
 
 		try {
-			// Load all data in parallel
-			const [statusRes, modelsRes, usageRes] = await Promise.all([
-				fetch(`${this.apiClient.baseUrl}/api/status`),
-				fetch(`${this.apiClient.baseUrl}/api/models`),
-				fetch(`${this.apiClient.baseUrl}/api/usage`),
-			]);
+			let statusData = this.statusPrefetch;
+			let modelsData = this.modelsPrefetch;
+			let usageData = this.usagePrefetch;
 
-			if (!statusRes.ok || !modelsRes.ok) {
-				throw new Error("Failed to load settings data");
-			}
-
-			const statusData = await statusRes.json();
-			const modelsData = await modelsRes.json();
-			const usageData = usageRes.ok ? await usageRes.json() : null;
+			if (!statusData) statusData = await this.apiClient.getStatus();
+			if (!modelsData || modelsData.length === 0)
+				modelsData = await this.apiClient.getModels();
+			if (!usageData) usageData = await this.apiClient.getUsage();
 
 			this.status = statusData;
-			this.models = modelsData.models;
-			this.usage = usageData?.summary || null;
+			this.models = modelsData || [];
+			this.usage = usageData || null;
+
+			if (!statusData || !modelsData || modelsData.length === 0) {
+				throw new Error("Failed to load settings data");
+			}
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to load settings";
 		} finally {
@@ -389,7 +329,7 @@ export class ComposerSettings extends LitElement {
 		);
 	}
 
-	private selectModel(model: ModelInfo) {
+	private selectModel(model: Model) {
 		this.dispatchEvent(
 			new CustomEvent("model-select", {
 				detail: { model: `${model.provider}/${model.id}` },
@@ -510,7 +450,7 @@ export class ComposerSettings extends LitElement {
 		}
 
 		// Group by provider
-		const byProvider = new Map<string, ModelInfo[]>();
+		const byProvider = new Map<string, Model[]>();
 		for (const model of this.models) {
 			if (!byProvider.has(model.provider)) {
 				byProvider.set(model.provider, []);
@@ -537,22 +477,41 @@ export class ComposerSettings extends LitElement {
 									>
 										<div class="model-name">${model.name}</div>
 										<div class="model-provider">${model.provider}</div>
-										<div class="info-grid">
-											<div class="info-label">Context:</div>
-											<div class="info-value">${this.formatTokens(model.contextWindow)}</div>
+									<div class="info-grid">
+										<div class="info-label">Context:</div>
+										<div class="info-value">${this.formatTokens(model.contextWindow ?? 0)}</div>
 
-											<div class="info-label">Max Out:</div>
-											<div class="info-value">${this.formatTokens(model.maxTokens)}</div>
+										<div class="info-label">Max Out:</div>
+										<div class="info-value">${this.formatTokens(model.maxTokens ?? model.maxOutputTokens ?? 0)}</div>
 
-											<div class="info-label">Cost/1M:</div>
-											<div class="info-value">
-												In: ${this.formatCost(model.cost.input)} / Out: ${this.formatCost(model.cost.output)}
-											</div>
+										<div class="info-label">Cost/1M:</div>
+										<div class="info-value">
+											In: ${this.formatCost(model.cost?.input ?? 0)} / Out: ${this.formatCost(model.cost?.output ?? 0)}
 										</div>
+
+										${
+											model.cost?.cacheRead !== undefined ||
+											model.cost?.cacheWrite !== undefined
+												? html`
+											<div class="info-label">Cache:</div>
+											<div class="info-value">${this.formatCost(model.cost?.cacheRead ?? 0)} read / ${this.formatCost(model.cost?.cacheWrite ?? 0)} write</div>
+										`
+												: ""
+										}
+
+										${
+											model.api
+												? html`
+											<div class="info-label">API:</div>
+											<div class="info-value">${model.api}</div>
+										`
+												: ""
+										}
+									</div>
 										<div class="model-stats">
-											${model.capabilities.vision ? html`<span class="badge active">Vision</span>` : ""}
-											${model.capabilities.reasoning ? html`<span class="badge active">Reasoning</span>` : ""}
-											${model.capabilities.tools ? html`<span class="badge active">Tools</span>` : ""}
+											${model.capabilities?.vision ? html`<span class="badge active">Vision</span>` : ""}
+											${model.capabilities?.reasoning ? html`<span class="badge active">Reasoning</span>` : ""}
+											${model.capabilities?.tools ? html`<span class="badge active">Tools</span>` : ""}
 										</div>
 									</div>
 								`;
@@ -570,6 +529,17 @@ export class ComposerSettings extends LitElement {
 			return html`<div class="empty-state">No usage data available</div>`;
 		}
 
+		const totals = this.usage.totalTokensDetailed ||
+			this.usage.totalTokensBreakdown || {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: this.usage.totalTokens || 0,
+			};
+		const cachedTotal = totals.cacheRead + totals.cacheWrite;
+		const totalRequests = this.usage.totalRequests ?? 0;
+
 		return html`
 			<div class="usage-stats">
 				<div class="stat-card">
@@ -577,12 +547,16 @@ export class ComposerSettings extends LitElement {
 					<div class="stat-label">Total Cost</div>
 				</div>
 				<div class="stat-card">
-					<div class="stat-value">${this.formatTokens(this.usage.totalTokens.input + this.usage.totalTokens.output)}</div>
-					<div class="stat-label">Total Tokens</div>
+					<div class="stat-value">${this.formatTokens(totals.input + totals.output)}</div>
+					<div class="stat-label">Tokens (In + Out)</div>
 				</div>
 				<div class="stat-card">
-					<div class="stat-value">${this.formatTokens(this.usage.totalTokens.cached)}</div>
+					<div class="stat-value">${this.formatTokens(cachedTotal)}</div>
 					<div class="stat-label">Cached Tokens</div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-value">${totalRequests}</div>
+					<div class="stat-label">Requests</div>
 				</div>
 			</div>
 
@@ -599,7 +573,7 @@ export class ComposerSettings extends LitElement {
 								([provider, stats]) => html`
 								<div class="info-label">${provider}:</div>
 								<div class="info-value">
-									${this.formatCost(stats.cost)} (${stats.calls} calls)
+									${this.formatCost(stats.cost)} (${stats.calls ?? stats.requests ?? 0} calls, ${this.formatTokens((stats.tokensDetailed?.total ?? stats.tokens) || 0)} tok)
 								</div>
 							`,
 							)}
@@ -610,29 +584,29 @@ export class ComposerSettings extends LitElement {
 					: ""
 			}
 
-			${
-				Object.keys(this.usage.byModel).length > 0
-					? html`
-				<div class="section">
-					<div class="section-header">
-						<h3>By Model</h3>
+				${
+					Object.keys(this.usage.byModel).length > 0
+						? html`
+					<div class="section">
+						<div class="section-header">
+							<h3>By Model</h3>
 					</div>
-					<div class="section-content">
-						<div class="info-grid">
-							${Object.entries(this.usage.byModel).map(
-								([model, stats]) => html`
-								<div class="info-label">${model}:</div>
-								<div class="info-value">
-									${this.formatCost(stats.cost)} (${stats.calls} calls)
-								</div>
-							`,
-							)}
+						<div class="section-content">
+							<div class="info-grid">
+								${Object.entries(this.usage.byModel).map(
+									([model, stats]) => html`
+									<div class="info-label">${model}:</div>
+									<div class="info-value">
+										${this.formatCost(stats.cost)} (${stats.calls ?? stats.requests ?? 0} calls, ${this.formatTokens((stats.tokensDetailed?.total ?? stats.tokens) || 0)} tok)
+									</div>
+								`,
+								)}
 						</div>
 					</div>
 				</div>
 			`
-					: ""
-			}
+						: ""
+				}
 		`;
 	}
 

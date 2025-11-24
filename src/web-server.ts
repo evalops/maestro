@@ -624,6 +624,7 @@ function handleModels(res: ServerResponse) {
  */
 function handleStatus(res: ServerResponse) {
 	try {
+		const startedAt = Date.now();
 		const cwd = process.cwd();
 
 		let gitBranch = null;
@@ -667,6 +668,8 @@ function handleStatus(res: ServerResponse) {
 				maxEntries: 5,
 				logLines: 2,
 			}),
+			lastUpdated: Date.now(),
+			lastLatencyMs: Date.now() - startedAt,
 		};
 
 		sendJson(res, 200, status);
@@ -718,8 +721,57 @@ function handleUsage(req: IncomingMessage, res: ServerResponse) {
 		const summary = getUsageSummary(options);
 		const usageFile = getUsageFilePath();
 		const hasData = existsSync(usageFile);
+		const totals = summary.tokensDetailed || {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: summary.totalTokens,
+		};
 
-		sendJson(res, 200, { summary, hasData });
+		const mapBreakdowns = <T extends Record<string, any>>(record: T) => {
+			const mapped: Record<string, any> = {};
+			for (const [key, value] of Object.entries(record)) {
+				const detail = value as {
+					cost: number;
+					tokens: number;
+					requests: number;
+					tokensDetailed?: {
+						input: number;
+						output: number;
+						cacheRead: number;
+						cacheWrite: number;
+						total: number;
+					};
+				};
+				const tokenDetails = detail.tokensDetailed || {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: detail.tokens,
+				};
+				mapped[key] = {
+					...detail,
+					calls: detail.requests,
+					tokensDetailed: tokenDetails,
+					cachedTokens: tokenDetails.cacheRead + tokenDetails.cacheWrite,
+				};
+			}
+			return mapped;
+		};
+
+		sendJson(res, 200, {
+			summary: {
+				...summary,
+				totalTokensDetailed: totals,
+				totalTokensBreakdown: totals,
+				totalCachedTokens: totals.cacheRead + totals.cacheWrite,
+				byProvider: mapBreakdowns(summary.byProvider),
+				byModel: mapBreakdowns(summary.byModel),
+			},
+			hasData,
+		});
 	} catch (error) {
 		respondWithApiError(res, error, 500);
 	}
