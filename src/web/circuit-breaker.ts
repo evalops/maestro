@@ -155,6 +155,15 @@ const AGENT_BREAKER_OPTIONS: CircuitBreakerOptions = {
 	halfOpenMaxAttempts: 1,
 };
 
+const agentBreakerCache = new Map<string, CircuitBreaker>();
+
 export function getAgentCircuitBreaker(provider: string): CircuitBreaker {
-	return getCircuitBreaker(`agent-prompt-${provider}`, AGENT_BREAKER_OPTIONS);
+	if (!agentBreakerCache.has(provider)) {
+		const breaker = getCircuitBreaker(
+			`agent-prompt-${provider}`,
+			AGENT_BREAKER_OPTIONS,
+		);
+		agentBreakerCache.set(provider, breaker);
+	}
+	return agentBreakerCache.get(provider) as CircuitBreaker;
 }

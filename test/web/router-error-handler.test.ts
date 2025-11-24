@@ -1,6 +1,7 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
-import * as serverUtils from "../../src/web/server-utils.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRequestHandler } from "../../src/web/router.js";
+import * as serverUtils from "../../src/web/server-utils.js";
+import { ApiError } from "../../src/web/server-utils.js";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -39,6 +40,6 @@ describe("router error handler", () => {
 
 		await handler(req, res, "/boom");
 
-		expect(spy).toHaveBeenCalledWith(res, expect.any(Error), 500, {}, req);
+		expect(spy).toHaveBeenCalledWith(res, expect.any(ApiError), 500, {}, req);
 	});
 });

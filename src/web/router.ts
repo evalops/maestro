@@ -62,7 +62,7 @@ export function matchRoute(
 	return null;
 }
 
-import { respondWithApiError } from "./server-utils.js";
+import { ApiError, respondWithApiError } from "./server-utils.js";
 
 export function createRequestHandler(
 	routes: Route[],
@@ -88,7 +88,21 @@ export function createRequestHandler(
 				await fallback(req, res, pathname);
 			}
 		} catch (error) {
-			respondWithApiError(res, error, 500, corsHeaders, req);
+			// Always log router-level errors; streaming handlers may have sent headers already.
+			console.error("Router error:", error);
+			if (res.headersSent || res.writableEnded) return;
+			if (error instanceof ApiError) {
+				respondWithApiError(res, error, 500, corsHeaders, req);
+				return;
+			}
+			// Sanitize unexpected errors for clients while keeping server-side log above.
+			respondWithApiError(
+				res,
+				new ApiError(500, "Internal server error"),
+				500,
+				corsHeaders,
+				req,
+			);
 		}
 	};
 }
