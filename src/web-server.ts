@@ -93,6 +93,21 @@ const STATIC_MAX_AGE =
 			(process.env.NODE_ENV === "production" ? "86400" : "60"),
 		10,
 	) || 60;
+const MAX_SSE_CONNECTIONS =
+	Number.parseInt(process.env.COMPOSER_MAX_SSE_CONNECTIONS || "100", 10) || 100;
+const sseLimiter = {
+	active: 0,
+	max: MAX_SSE_CONNECTIONS,
+	tryAcquire(): symbol | null {
+		if (this.active >= this.max) return null;
+		this.active += 1;
+		return Symbol("sse-lease");
+	},
+	release(token: symbol | null) {
+		if (!token) return;
+		if (this.active > 0) this.active -= 1;
+	},
+};
 
 if (!WEB_API_KEY) {
 	console.warn(
@@ -108,7 +123,26 @@ const authResolver = createAuthResolver({
 
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-5";
-let currentModelKey: string | null = null;
+
+/**
+ * Process-local selection store (keeps last chosen model for convenience only).
+ * This avoids cross-request mutations elsewhere and can be replaced with
+ * per-session selection later without blocking concurrent requests.
+ */
+const modelSelectionStore = {
+	currentKey: null as string | null,
+	set(model: RegisteredModel) {
+		this.currentKey = `${model.provider}/${model.id}`;
+	},
+	get(): { provider: string; modelId: string } | null {
+		if (!this.currentKey) return null;
+		const [provider, modelId] = this.currentKey.split("/");
+		return provider && modelId ? { provider, modelId } : null;
+	},
+	reset() {
+		this.currentKey = null;
+	},
+};
 
 function logMissingCredentialHints(provider: string): void {
 	const envVars = getEnvVarsForProvider(provider);
@@ -149,15 +183,13 @@ async function getRegisteredModel(input: string | null | undefined) {
 	);
 	const registeredModel = getRegisteredModelOrThrow(selection);
 	await ensureCredential(registeredModel.provider);
-	currentModelKey = `${registeredModel.provider}/${registeredModel.id}`;
+	modelSelectionStore.set(registeredModel);
 	return registeredModel;
 }
 
 function getCurrentSelection(): { provider: string; modelId: string } {
-	if (currentModelKey) {
-		const [provider, modelId] = currentModelKey.split("/");
-		if (provider && modelId) return { provider, modelId };
-	}
+	const stored = modelSelectionStore.get();
+	if (stored) return stored;
 	const factoryDefault = getFactoryDefaultModelSelection();
 	if (factoryDefault) return factoryDefault;
 	return { provider: DEFAULT_PROVIDER, modelId: DEFAULT_MODEL_ID };
@@ -234,7 +266,7 @@ const routes: Route[] = [
 				},
 				ensureCredential,
 				(model) => {
-					currentModelKey = `${model.provider}/${model.id}`;
+					modelSelectionStore.set(model);
 				},
 			),
 	},
@@ -251,15 +283,15 @@ const routes: Route[] = [
 				},
 				ensureCredential,
 				(model) => {
-					currentModelKey = `${model.provider}/${model.id}`;
+					modelSelectionStore.set(model);
 				},
 			),
 	},
 	{
 		method: "POST",
 		path: "/api/chat",
-		handler: (req, res) =>
-			handleChat(req, res, CORS_HEADERS, {
+		handler: async (req, res) => {
+			return handleChat(req, res, CORS_HEADERS, {
 				createAgent: async (model, thinking, approval) =>
 					createAgent(
 						model,
@@ -270,7 +302,10 @@ const routes: Route[] = [
 				defaultApprovalMode: DEFAULT_APPROVAL_MODE,
 				defaultProvider: DEFAULT_PROVIDER,
 				defaultModelId: DEFAULT_MODEL_ID,
-			}),
+				acquireSse: () => sseLimiter.tryAcquire(),
+				releaseSse: (token) => sseLimiter.release(token),
+			});
+		},
 	},
 	{
 		method: "GET",
