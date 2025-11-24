@@ -18,20 +18,26 @@ export class CircuitBreaker extends EventEmitter {
 	private successes = 0;
 	private lastFailureTime = 0;
 	private nextAttemptTime = 0;
+	private options: CircuitBreakerOptions;
 
 	constructor(
 		private name: string,
-		private options: CircuitBreakerOptions = {
+		options: CircuitBreakerOptions = {
 			failureThreshold: 5,
 			resetTimeoutMs: 30000,
 			halfOpenMaxAttempts: 2,
 		},
 	) {
 		super();
+		this.options = this.normalizeOptions(options);
 	}
 
 	updateOptions(options: CircuitBreakerOptions) {
-		this.options = options;
+		this.options = this.normalizeOptions({ ...this.options, ...options });
+		// If currently open, realign the next attempt window with updated timeout.
+		if (this.state === CircuitState.OPEN) {
+			this.nextAttemptTime = this.lastFailureTime + this.options.resetTimeoutMs;
+		}
 	}
 
 	getState(): CircuitState {
@@ -116,6 +122,16 @@ export class CircuitBreaker extends EventEmitter {
 			`[CircuitBreaker:${this.name}] Transition: ${oldState} -> ${newState}`,
 		);
 	}
+
+	private normalizeOptions(
+		options: CircuitBreakerOptions,
+	): CircuitBreakerOptions {
+		return {
+			failureThreshold: Math.max(1, Math.trunc(options.failureThreshold)),
+			resetTimeoutMs: Math.max(1, Math.trunc(options.resetTimeoutMs)),
+			halfOpenMaxAttempts: Math.max(1, Math.trunc(options.halfOpenMaxAttempts)),
+		};
+	}
 }
 
 export const circuitBreakers = new Map<string, CircuitBreaker>();
@@ -126,6 +142,8 @@ export function getCircuitBreaker(
 ): CircuitBreaker {
 	if (!circuitBreakers.has(name)) {
 		circuitBreakers.set(name, new CircuitBreaker(name, options));
+	} else if (options) {
+		circuitBreakers.get(name)?.updateOptions(options);
 	}
 	// biome-ignore lint/style/noNonNullAssertion: we just set it
 	return circuitBreakers.get(name)!;

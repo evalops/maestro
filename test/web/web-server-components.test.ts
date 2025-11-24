@@ -1,12 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
 	CircuitBreaker,
 	type CircuitBreakerOptions,
 	CircuitState,
+	circuitBreakers,
+	getCircuitBreaker,
 } from "../../src/web/circuit-breaker.js";
 import { RateLimiter } from "../../src/web/rate-limiter.js";
-import { ApiError, respondWithApiError } from "../../src/web/server-utils.js";
+import {
+	ApiError,
+	respondWithApiError,
+	sendJson,
+} from "../../src/web/server-utils.js";
 import { Code, Status } from "../../src/web/status.js";
+
+beforeEach(() => {
+	circuitBreakers.clear();
+});
 
 describe("RateLimiter", () => {
 	it("should calculate reset time correctly", () => {
@@ -50,13 +60,8 @@ describe("RateLimiter", () => {
 });
 
 describe("CircuitBreaker", () => {
-	it("should update options via updateOptions", () => {
-		// Mock registry by accessing the exported map if possible, or just testing class behavior via a new instance if we can't access the singleton easily.
-		// Since getCircuitBreaker uses a module-level map, we can test it directly if we import it.
-		// However, let's test the class method updateOptions primarily.
-
+	it("should update options via updateOptions", async () => {
 		const breaker = new CircuitBreaker("test-breaker");
-		// Default options: failureThreshold: 5
 
 		const newOptions: CircuitBreakerOptions = {
 			failureThreshold: 1,
@@ -66,25 +71,62 @@ describe("CircuitBreaker", () => {
 
 		breaker.updateOptions(newOptions);
 
-		// Trigger failure to see if it opens after 1 attempt
-		// We need to access private state or observe behavior.
-		// Since state is private, let's observe behavior.
+		await expect(
+			breaker.execute(async () => {
+				throw new Error("fail");
+			}),
+		).rejects.toThrow("fail");
 
-		// 1. Fail once
-		try {
-			// biome-ignore lint/complexity/noForEach: simple test
-			breaker
-				.execute(async () => {
-					throw new Error("fail");
-				})
-				.catch(() => {});
-		} catch {}
+		expect(breaker.getState()).toBe(CircuitState.OPEN);
+	});
 
-		// 2. Should be OPEN now if threshold updated to 1
-		// We need to wait a tiny bit for the promise rejection to process in the breaker logic if it was async,
-		// but execute catches synchronously-thrown errors or promise rejections.
+	it("should apply updated options when fetching existing breaker", async () => {
+		getCircuitBreaker("shared-breaker");
 
-		// Actually execute returns a promise.
+		const breaker = getCircuitBreaker("shared-breaker", {
+			failureThreshold: 1,
+			resetTimeoutMs: 10,
+			halfOpenMaxAttempts: 1,
+		});
+
+		await expect(
+			breaker.execute(async () => {
+				throw new Error("boom");
+			}),
+		).rejects.toThrow("boom");
+
+		expect(breaker.getState()).toBe(CircuitState.OPEN);
+		const waitMs = (breaker as any).nextAttemptTime - Date.now();
+		expect(waitMs).toBeGreaterThanOrEqual(0);
+		expect(waitMs).toBeLessThan(100);
+	});
+});
+
+describe("sendJson", () => {
+	it("falls back to identity encoding when request is unavailable", () => {
+		const headers: Record<string, string | number> = {};
+		let statusCode = 0;
+		let body = "";
+		const res: any = {
+			writableEnded: false,
+			headersSent: false,
+			writeHead: (status: number, h: Record<string, string | number>) => {
+				statusCode = status;
+				Object.assign(headers, h);
+			},
+			end: (b: string) => {
+				body = b;
+				res.writableEnded = true;
+			},
+		};
+
+		const bigPayload = { data: "x".repeat(2000) };
+
+		sendJson(res, 200, bigPayload);
+
+		expect(statusCode).toBe(200);
+		expect(headers["Content-Encoding"]).toBe("identity");
+		expect(body).toBe(JSON.stringify(bigPayload));
 	});
 });
 

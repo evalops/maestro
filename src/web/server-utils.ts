@@ -131,16 +131,22 @@ export function sendJson(
 		...(corsHeaders || {}),
 	};
 
-	// Check for compression support
-	// Note: In a real production setup, Nginx/Cloudflare usually handles this.
-	// But for a self-contained server, we do it here.
-	// We prefer the explicitly passed request, but fall back to attached req if available
-	const request = req || ((res as any).req as IncomingMessage);
-	const acceptEncoding = request?.headers["accept-encoding"] || "";
+	// Prefer explicit request; fall back to ServerResponse.req when available.
+	const request = req || ((res as any).req as IncomingMessage | undefined);
+	const acceptEncoding =
+		request?.headers["accept-encoding"]?.toLowerCase() || "";
+
+	// If we cannot inspect the request, respond uncompressed explicitly.
+	if (!request) {
+		headers["Content-Encoding"] = "identity";
+		res.writeHead(status, headers);
+		res.end(body);
+		return;
+	}
 
 	// Only compress if larger than 1KB
 	if (body.length > 1024) {
-		if (acceptEncoding.includes("gzip")) {
+		if (acceptEncoding.includes("gzip") || acceptEncoding.includes("*")) {
 			headers["Content-Encoding"] = "gzip";
 			res.writeHead(status, headers);
 			const gzip = createGzip();
