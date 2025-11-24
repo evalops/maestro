@@ -1,4 +1,8 @@
 import type { IncomingMessage } from "node:http";
+import {
+	type RequestContext,
+	requestContextStorage,
+} from "./request-context.js";
 
 const ESC = "\u001B[";
 const RESET = `${ESC}0m`;
@@ -12,11 +16,6 @@ const YELLOW = `${ESC}33m`;
 const BLUE = `${ESC}34m`;
 const MAGENTA = `${ESC}35m`;
 const CYAN = `${ESC}36m`;
-const WHITE = `${ESC}37m`;
-
-// Background colors
-const BG_BLUE = `${ESC}44m`;
-const BG_CYAN = `${ESC}46m`;
 
 function colorize(text: string | number, color: string): string {
 	return `${color}${text}${RESET}`;
@@ -74,14 +73,31 @@ const stats: RequestStats = {
 	requestsPerSecond: 0,
 };
 
-// Calculate stats every 5 seconds
-setInterval(() => {
-	const now = Date.now();
-	const elapsedSeconds = (now - stats.startTime) / 1000;
-	if (elapsedSeconds > 0) {
-		stats.requestsPerSecond = stats.total / elapsedSeconds;
+let statsInterval: NodeJS.Timeout | null = null;
+
+export function startStatsCollection() {
+	if (statsInterval) return;
+	stats.startTime = Date.now();
+	stats.total = 0;
+	stats.errors = 0;
+	stats.totalDuration = 0;
+	stats.requestsPerSecond = 0;
+
+	statsInterval = setInterval(() => {
+		const now = Date.now();
+		const elapsedSeconds = (now - stats.startTime) / 1000;
+		if (elapsedSeconds > 0) {
+			stats.requestsPerSecond = stats.total / elapsedSeconds;
+		}
+	}, 5000);
+}
+
+export function stopStatsCollection() {
+	if (statsInterval) {
+		clearInterval(statsInterval);
+		statsInterval = null;
 	}
-}, 5000);
+}
 
 export function getStatsSummary(): string {
 	const now = Date.now();
@@ -102,6 +118,9 @@ export function logRequest(
 	start: number,
 ) {
 	const duration = performance.now() - start;
+	const store = requestContextStorage.getStore();
+	const requestId = store?.requestId || "unknown";
+	const shortId = requestId.slice(0, 8);
 
 	// Update stats
 	stats.total++;
@@ -117,7 +136,7 @@ export function logRequest(
 	const statsSummary = getStatsSummary();
 
 	console.log(
-		`${method} ${status} ${durationText} ${url.padEnd(40)} ${statsSummary}`,
+		`${colorize(`[${shortId}]`, DIM)} ${method} ${status} ${durationText} ${url.padEnd(40)} ${statsSummary}`,
 	);
 }
 

@@ -32,11 +32,20 @@ import {
 import { recordApiRequest } from "./telemetry.js";
 import { codingTools } from "./tools/index.js";
 import type { WebServerContext } from "./web/app-context.js";
-import { logRequest, logStartup } from "./web/logger.js";
+import {
+	logRequest,
+	logStartup,
+	startStatsCollection,
+	stopStatsCollection,
+} from "./web/logger.js";
 import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
 } from "./web/model-selection.js";
+import {
+	type RequestContext,
+	requestContextStorage,
+} from "./web/request-context.js";
 import { createRequestHandler } from "./web/router.js";
 import { createRoutes } from "./web/routes.js";
 import {
@@ -261,32 +270,43 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	const start = performance.now();
 	const parsedUrl = parse(req.url || "/", true);
 	const pathname = parsedUrl.pathname || "/";
+	const requestId = Math.random().toString(36).substring(2, 15);
 
-	res.on("finish", () => {
-		const duration = performance.now() - start;
-		logRequest(req, res.statusCode, start);
-		recordApiRequest(
-			req.method || "UNKNOWN",
-			pathname,
-			res.statusCode,
-			duration,
-		);
-	});
+	const context: RequestContext = {
+		requestId,
+		startTime: start,
+		method: req.method || "GET",
+		url: pathname,
+	};
 
-	// CORS preflight
-	if (req.method === "OPTIONS") {
-		res.writeHead(204, CORS_HEADERS);
-		res.end();
-		return;
-	}
+	requestContextStorage.run(context, async () => {
+		res.on("finish", () => {
+			const duration = performance.now() - start;
+			logRequest(req, res.statusCode, start);
+			recordApiRequest(
+				req.method || "UNKNOWN",
+				pathname,
+				res.statusCode,
+				duration,
+				{ requestId },
+			);
+		});
 
-	if (pathname.startsWith("/api")) {
-		if (!authenticateRequest(req, res, CORS_HEADERS, WEB_API_KEY)) {
+		// CORS preflight
+		if (req.method === "OPTIONS") {
+			res.writeHead(204, CORS_HEADERS);
+			res.end();
 			return;
 		}
-	}
 
-	await router(req, res, pathname);
+		if (pathname.startsWith("/api")) {
+			if (!authenticateRequest(req, res, CORS_HEADERS, WEB_API_KEY)) {
+				return;
+			}
+		}
+
+		await router(req, res, pathname);
+	});
 }
 
 export async function startWebServer(port = 8080) {
@@ -304,10 +324,12 @@ export async function startWebServer(port = 8080) {
 
 	server.listen(port, () => {
 		logStartup(port);
+		startStatsCollection();
 	});
 
 	process.on("SIGINT", () => {
 		console.log("\nShutting down server...");
+		stopStatsCollection();
 
 		// Close all open sockets
 		for (const socket of sockets) {
