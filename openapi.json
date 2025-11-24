@@ -7,13 +7,14 @@
   },
   "servers": [
     {
-      "url": "http://localhost:8080"
+      "url": "https://api.example.com"
     }
   ],
   "paths": {
     "/api/models": {
       "get": {
         "summary": "Auto-generated from route definition",
+        "parameters": [],
         "responses": {
           "200": {
             "description": "Registered models",
@@ -104,6 +105,7 @@
     "/api/usage": {
       "get": {
         "summary": "Auto-generated from route definition",
+        "parameters": [],
         "responses": {
           "200": {
             "description": "OK"
@@ -207,6 +209,7 @@
     "/api/sessions": {
       "get": {
         "summary": "Auto-generated from route definition",
+        "parameters": [],
         "responses": {
           "200": {
             "description": "OK"
@@ -215,6 +218,7 @@
       },
       "post": {
         "summary": "Auto-generated from route definition",
+        "parameters": [],
         "responses": {
           "200": {
             "description": "OK"
@@ -225,6 +229,16 @@
     "/api/sessions/{id}": {
       "get": {
         "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -233,6 +247,16 @@
       },
       "delete": {
         "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"

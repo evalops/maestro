@@ -174,6 +174,11 @@ function buildComponents() {
 	};
 }
 
+function extractParams(path: string): string[] {
+	const matches = path.match(/{([^}]+)}/g) || [];
+	return matches.map((m) => m.slice(1, -1));
+}
+
 function buildPaths(routes: Route[]) {
 	const paths: Record<string, any> = {};
 
@@ -185,10 +190,21 @@ function buildPaths(routes: Route[]) {
 	for (const { method, path } of routes) {
 		const normalizedPath = path.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
 		const target = ensure(normalizedPath);
+		const params = extractParams(normalizedPath).map((name) => ({
+			name,
+			in: "path",
+			required: true,
+			schema: { type: "string" },
+		}));
 		target[method] = target[method] || {
 			summary: "Auto-generated from route definition",
+			parameters: params,
 			responses: { 200: { description: "OK" } },
 		};
+		// keep parameters if already enriched
+		if (params.length) {
+			target[method].parameters = params;
+		}
 	}
 
 	// Enrich known endpoints
@@ -323,15 +339,17 @@ function buildPaths(routes: Route[]) {
 }
 
 function buildSpec(routes: Route[]) {
+	const serverUrl =
+		process.env.OPENAPI_SERVER_URL || "https://api.example.com";
 	return {
 		openapi: "3.1.0",
 		info: {
 			title: "Composer Web API",
-			version: "0.10.0",
+			version,
 			description:
 				"Auto-generated from src/web-server.ts routes. Components seeded from runtime schemas.",
 		},
-		servers: [{ url: "http://localhost:8080" }],
+		servers: [{ url: serverUrl }],
 		paths: buildPaths(routes),
 		components: buildComponents(),
 	};
