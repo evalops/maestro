@@ -31,7 +31,10 @@ export class ContextView implements Component {
 	constructor(private readonly options: ContextViewOptions) {}
 
 	private getItems(): ContextItem[] {
-		if (this.options.state === this.lastStateRef && this.cachedItems.length > 0) {
+		if (
+			this.options.state === this.lastStateRef &&
+			this.cachedItems.length > 0
+		) {
 			return this.cachedItems;
 		}
 		const stats = calculateFooterStats(this.options.state);

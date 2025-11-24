@@ -351,7 +351,12 @@ export class Editor implements Component {
 	}
 	private layoutText(
 		contentWidth: number,
-	): Array<{ text: string; hasCursor: boolean; cursorPos?: number; isPlaceholder?: boolean }> {
+	): Array<{
+		text: string;
+		hasCursor: boolean;
+		cursorPos?: number;
+		isPlaceholder?: boolean;
+	}> {
 		const layoutLines = [];
 		if (
 			this.state.lines.length === 0 ||

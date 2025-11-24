@@ -84,4 +84,3 @@ export class ModalManager {
 		this.ui.requestRender();
 	}
 }
-
