@@ -9,6 +9,7 @@ export interface UiState {
 	queueMode?: QueueMode;
 	compactTools?: boolean;
 	footerMode?: FooterMode;
+	zenMode?: boolean;
 }
 
 const UI_STATE_PATH =
@@ -35,6 +36,7 @@ export function loadUiState(): UiState {
 				parsed.footerMode === "ensemble" || parsed.footerMode === "solo"
 					? parsed.footerMode
 					: undefined,
+			zenMode: typeof parsed.zenMode === "boolean" ? parsed.zenMode : undefined,
 		};
 	} catch {
 		return {};
