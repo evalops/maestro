@@ -221,8 +221,12 @@ export class ComposerChat extends LitElement {
 		.status-bar {
 			display: flex;
 			align-items: center;
-			gap: 0.5rem;
+			gap: 0.35rem;
 			flex-wrap: nowrap;
+			white-space: nowrap;
+			overflow-x: auto;
+			min-width: 0;
+			padding-bottom: 2px;
 			font-family: var(--font-mono);
 			font-size: 0.7rem;
 			color: var(--text-secondary, #a1a1aa);
@@ -231,8 +235,8 @@ export class ComposerChat extends LitElement {
 		.status-item {
 			display: flex;
 			align-items: center;
-			gap: 0.4rem;
-			padding: 0.25rem 0.5rem;
+			gap: 0.35rem;
+			padding: 0.22rem 0.42rem;
 			background: var(--bg-secondary, #18181b);
 			border: 1px solid var(--border-primary, #27272a);
 			border-radius: 6px;
@@ -256,13 +260,14 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			gap: 0.5rem;
 			flex-wrap: nowrap;
+			white-space: nowrap;
 		}
 
 		.pill {
 			display: inline-flex;
 			align-items: center;
 			gap: 0.25rem;
-			padding: 0.1rem 0.4rem;
+			padding: 0.08rem 0.32rem;
 			background: var(--bg-panel, #27272a);
 			border-radius: 4px;
 			color: var(--text-primary, #f4f4f5);

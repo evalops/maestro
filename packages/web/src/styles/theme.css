@@ -12,8 +12,8 @@
 	--accent-color: #2f81f7;
 	--accent-hover: #539bf5;
 	--border-color: #30363d;
-	--control-icon-size: 26px;
-	--control-icon-font-size: 0.8rem;
+	--control-icon-size: 32px;
+	--control-icon-font-size: 0.9rem;
 	--control-hover-bg: color-mix(in srgb, var(--accent-color) 14%, transparent);
 
 	/* Syntax Highlighting */
