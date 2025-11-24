@@ -7,9 +7,11 @@ import type {
 	ComposerMessage,
 	ComposerSession,
 	ComposerSessionSummary,
+	ComposerToolCall,
 } from "@evalops/contracts";
 
 export type Message = ComposerMessage;
+export type { ComposerToolCall };
 
 export interface AgentEvent {
 	type: string;
