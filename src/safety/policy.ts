@@ -149,34 +149,28 @@ function extractDependencies(command: string): string[] {
 	const results: string[] = [];
 
 	for (const pattern of patterns) {
-		const matches = command.matchAll(new RegExp(pattern, "g"));
+		const matches = command.matchAll(new RegExp(pattern, "gi"));
 		for (const match of matches) {
-			if (match[1]) {
-				// Split by spaces and cleanup flags/versions
-				const deps = match[1]
-					.split(/\s+/)
-					.filter((p) => !p.startsWith("-"))
-					.map((p) => {
-						// Handle URLs (git+, http:, etc.) and local paths
-						if (
-							p.includes("://") ||
-							p.match(/^git@/) ||
-							p.match(/^\.{0,2}\//)
-						) {
-							return p;
-						}
+			// Split by spaces and cleanup flags/versions
+			const deps = match[1]
+				.split(/\s+/)
+				.filter((p) => !p.startsWith("-"))
+				.map((p) => {
+					// Handle URLs (git+, http:, etc.) and local paths
+					if (p.includes("://") || p.match(/^git@/) || p.match(/^\.{0,2}\//)) {
+						return p;
+					}
 
-						// Handle scoped packages (e.g. @scope/pkg)
-						if (p.startsWith("@")) {
-							const versionIndex = p.indexOf("@", 1);
-							return versionIndex === -1 ? p : p.substring(0, versionIndex);
-						}
-						// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0)
-						return p.split(/[@=<>]/)[0];
-					}) // simple cleanup
-					.filter((p) => p.length > 0);
-				results.push(...deps);
-			}
+					// Handle scoped packages (e.g. @scope/pkg)
+					if (p.startsWith("@")) {
+						const versionIndex = p.indexOf("@", 1);
+						return versionIndex === -1 ? p : p.substring(0, versionIndex);
+					}
+					// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0)
+					return p.split(/[@=<>]/)[0];
+				}) // simple cleanup
+				.filter((p) => p.length > 0);
+			results.push(...deps);
 		}
 	}
 	return results;
@@ -198,9 +192,12 @@ export function checkPolicy(context: ActionApprovalContext): {
 		policy.orgId !== context.user.orgId
 	) {
 		console.warn(
-			`[Policy] Org mismatch: Policy=${policy.orgId}, User=${context.user.orgId}. Policy will be skipped.`,
+			`[Policy] Org mismatch: Policy=${policy.orgId}, User=${context.user.orgId}. Action blocked.`,
 		);
-		return { allowed: true };
+		return {
+			allowed: false,
+			reason: `Organization mismatch: This machine is managed by ${policy.orgId}, but you are signed in to ${context.user.orgId}.`,
+		};
 	}
 
 	// 1. Tool Constraints
