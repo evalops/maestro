@@ -165,6 +165,7 @@ const TODO_STORE_PATH =
 export class TuiRenderer {
 	private ui: TUI;
 	private startupContainer: Container;
+	private headerContainer: Container;
 	private chatContainer: Container;
 	private statusContainer: Container;
 	private editor: CustomEditor;
@@ -253,6 +254,7 @@ export class TuiRenderer {
 	private nextQueuedPreview: string | null = null;
 	private uiState: UiState = {};
 	private footerMode: FooterMode = "ensemble";
+	private zenMode = false;
 	private readonly minimalMode =
 		process.env.COMPOSER_TUI_MINIMAL === "1" ||
 		process.env.COMPOSER_TUI_MINIMAL?.toLowerCase() === "true" ||
@@ -293,6 +295,9 @@ export class TuiRenderer {
 		if (this.uiState.footerMode) {
 			this.footerMode = this.uiState.footerMode;
 		}
+		if (typeof this.uiState.zenMode === "boolean") {
+			this.zenMode = this.uiState.zenMode;
+		}
 		this.agent = agent;
 		this.sessionManager = sessionManager;
 		this.version = version;
@@ -308,6 +313,7 @@ export class TuiRenderer {
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal());
 		this.startupContainer = new Container();
+		this.headerContainer = new Container();
 		this.chatContainer = new Container();
 		this.statusContainer = new Container();
 		this.statusRail = new StatusRailComponent();
@@ -757,6 +763,7 @@ export class TuiRenderer {
 			handleNewChat: (context) => this.handleNewChatCommand(context),
 			handleInitAgents: (context) => this.handleInitCommand(context),
 			handleMcp: (context) => this.handleMcpCommand(context),
+			handleZen: (context) => this.handleZenCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -832,16 +839,21 @@ export class TuiRenderer {
 	async init(): Promise<void> {
 		if (this.isInitialized) return;
 
-		// Add framed header with quick shortcuts
-		const headerPanel = new InstructionPanelComponent(this.version);
-
 		// Setup UI layout
-		this.ui.addChild(new Spacer(1));
-		this.ui.addChild(headerPanel);
-		this.ui.addChild(new Spacer(1));
+		this.ui.addChild(this.headerContainer);
+
+		if (this.zenMode) {
+			this.footer.setMode("solo");
+			this.statusRailContainer.clear();
+		} else {
+			this.renderHeader();
+			// Ensure status rail is present
+			this.statusRailContainer.clear();
+			this.statusRailContainer.addChild(this.statusRail);
+		}
 
 		// Show welcome animation initially (can be disabled in minimal mode)
-		if (!this.isMinimalMode()) {
+		if (!this.isMinimalMode() && !this.zenMode) {
 			this.welcomeAnimation = new WelcomeAnimation(() =>
 				this.ui.requestRender(),
 			);
@@ -1092,6 +1104,57 @@ export class TuiRenderer {
 		if (compacted) {
 			this.recordCompactionDelta(beforeStats, "manual");
 		}
+	}
+
+	private setZenMode(enabled: boolean): void {
+		this.zenMode = enabled;
+		this.persistUiState({ zenMode: enabled });
+
+		if (enabled) {
+			this.headerContainer.clear();
+			this.statusRailContainer.clear();
+			this.footer.setMode("solo");
+			if (this.welcomeAnimation) {
+				this.dismissWelcomeAnimation();
+			}
+		} else {
+			this.renderHeader();
+			this.statusRailContainer.clear(); // Ensure no duplicates
+			this.statusRailContainer.addChild(this.statusRail);
+			// Restore footer mode from state or default to ensemble
+			this.footer.setMode(this.footerMode);
+		}
+		this.ui.requestRender();
+	}
+
+	private renderHeader(): void {
+		this.headerContainer.clear();
+		this.headerContainer.addChild(new Spacer(1));
+		this.headerContainer.addChild(new InstructionPanelComponent(this.version));
+		this.headerContainer.addChild(new Spacer(1));
+	}
+
+	private handleZenCommand(context: CommandExecutionContext): void {
+		const arg = context.argumentText.trim().toLowerCase();
+		if (!arg || arg === "on") {
+			if (this.zenMode) {
+				context.showInfo("Zen mode is already on.");
+				return;
+			}
+			this.setZenMode(true);
+			context.showInfo("Zen mode enabled. Distractions removed.");
+			return;
+		}
+		if (arg === "off") {
+			if (!this.zenMode) {
+				context.showInfo("Zen mode is already off.");
+				return;
+			}
+			this.setZenMode(false);
+			context.showInfo("Zen mode disabled.");
+			return;
+		}
+		context.showError('Usage: /zen [on|off]');
 	}
 
 	private handleFooterCommand(context: CommandExecutionContext): void {

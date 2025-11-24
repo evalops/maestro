@@ -24,6 +24,19 @@ export function createCommandRegistry({
 	const entries: CommandEntry[] = [
 		buildEntry(
 			{
+				name: "zen",
+				description:
+					"Toggle Zen Mode (hides header, status rail, and sets minimal footer)",
+				usage: "/zen [on|off]",
+				tags: ["ui"],
+				examples: ["/zen", "/zen on", "/zen off"],
+			},
+			withArgs("zen"),
+			handlers.zen,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "approvals",
 				description:
 					"Show approval status or switch between auto/prompt/fail modes",
