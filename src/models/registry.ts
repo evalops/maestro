@@ -760,6 +760,7 @@ export function getRegisteredModels(): RegisteredModel[] {
 export function reloadModelConfig(): void {
 	cachedConfig = null;
 	cachedProviders = null;
+	cachedCredentials = null;
 	customProviderMetadata.clear();
 	factoryDataCache = undefined;
 	fileSnapshots.delete(configPath());
