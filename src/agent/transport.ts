@@ -1,3 +1,4 @@
+import { envApiKeyMap } from "../providers/api-keys.js";
 import type { AuthCredential } from "../providers/auth.js";
 import {
 	HUMAN_EGRESS_PII_RULE_ID,
@@ -15,6 +16,7 @@ import type {
 	ActionApprovalService,
 	WorkflowStateSnapshot,
 } from "./action-approval.js";
+import { getStoredCredentials } from "./keys.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamGoogle } from "./providers/google.js";
 import { streamOpenAI } from "./providers/openai.js";
@@ -50,6 +52,24 @@ export interface ProviderTransportOptions {
 	corsProxyUrl?: string;
 	approvalService?: ActionApprovalService;
 	maxConcurrentToolExecutions?: number;
+}
+
+function resolveEnvCredential(provider: string): AuthCredential | undefined {
+	const vars = envApiKeyMap[provider as keyof typeof envApiKeyMap] ?? [];
+	for (const name of vars) {
+		const value = process.env[name];
+		if (!value) continue;
+		const isAnthropicOAuth =
+			provider === "anthropic" && name === "ANTHROPIC_OAUTH_TOKEN";
+		return {
+			provider,
+			token: value,
+			type: isAnthropicOAuth ? "anthropic-oauth" : "api-key",
+			source: isAnthropicOAuth ? "anthropic_oauth_env" : "env",
+			envVar: name,
+		};
+	}
+	return undefined;
 }
 
 function calculateCost(
@@ -136,6 +156,23 @@ export class ProviderTransport implements AgentTransport {
 					token: fallbackKey,
 					type: "api-key",
 					source: "env",
+				};
+			}
+		}
+		if (!credential) {
+			const envCredential = resolveEnvCredential(model.provider);
+			if (envCredential) {
+				credential = envCredential;
+			}
+		}
+		if (!credential) {
+			const stored = getStoredCredentials(model.provider);
+			if (stored.apiKey) {
+				credential = {
+					provider: model.provider,
+					token: stored.apiKey,
+					type: stored.authType ?? "api-key",
+					source: "custom_literal",
 				};
 			}
 		}
