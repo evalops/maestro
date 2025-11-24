@@ -2,6 +2,7 @@
  * Tool execution component - shows tool calls in real-time with args and results
  */
 
+import hljs from "highlight.js";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
@@ -42,8 +43,8 @@ export class ComposerToolExecution extends LitElement {
 			top: 0;
 			bottom: 0;
 			width: 2px;
-			background: linear-gradient(180deg, 
-				rgba(88, 166, 255, 0.2) 0%, 
+			background: linear-gradient(180deg,
+				rgba(88, 166, 255, 0.2) 0%,
 				rgba(88, 166, 255, 0.05) 100%);
 			margin-left: 4px;
 		}
@@ -53,8 +54,8 @@ export class ComposerToolExecution extends LitElement {
 		}
 
 		.tool-execution.error::before {
-			background: linear-gradient(180deg, 
-				rgba(248, 81, 73, 0.2) 0%, 
+			background: linear-gradient(180deg,
+				rgba(248, 81, 73, 0.2) 0%,
 				rgba(248, 81, 73, 0.05) 100%);
 		}
 
@@ -63,8 +64,8 @@ export class ComposerToolExecution extends LitElement {
 		}
 
 		.tool-execution.completed::before {
-			background: linear-gradient(180deg, 
-				rgba(63, 185, 80, 0.2) 0%, 
+			background: linear-gradient(180deg,
+				rgba(63, 185, 80, 0.2) 0%,
 				rgba(63, 185, 80, 0.05) 100%);
 		}
 
@@ -311,6 +312,38 @@ export class ComposerToolExecution extends LitElement {
 		.metadata-value {
 			color: #8b949e;
 		}
+
+		/* Syntax Highlighting */
+		.hljs {
+			display: block;
+			overflow-x: auto;
+			padding: 0.5em;
+			color: var(--text-primary);
+			background: transparent;
+		}
+
+		.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link { color: var(--syntax-keyword, #569cd6); }
+		.hljs-string, .hljs-title, .hljs-name, .hljs-type, .hljs-attribute, .hljs-symbol, .hljs-bullet, .hljs-addition, .hljs-variable, .hljs-template-tag, .hljs-template-variable { color: var(--syntax-string, #ce9178); }
+		.hljs-comment, .hljs-quote, .hljs-deletion, .hljs-meta { color: var(--syntax-comment, #6a9955); }
+		.hljs-number, .hljs-regexp, .hljs-selector-id, .hljs-selector-class, .hljs-builtin-name { color: var(--syntax-number, #b5cea8); }
+		.hljs-function, .hljs-title.function_ { color: var(--syntax-function, #dcdcaa); }
+		.hljs-params, .hljs-attr { color: var(--syntax-variable, #9cdcfe); }
+
+		.arg-value pre {
+			margin: 0;
+			white-space: pre-wrap;
+			font-family: var(--font-mono, monospace);
+		}
+
+		.arg-value.code-block {
+			background: #0d1117;
+			border: 1px solid #30363d;
+			border-radius: 4px;
+			padding: 0.5rem;
+			margin-top: 0.25rem;
+			max-height: 400px;
+			overflow-y: auto;
+		}
 	`;
 
 	@property({ type: String }) toolName = "";
@@ -327,6 +360,52 @@ export class ComposerToolExecution extends LitElement {
 
 	@state() private bodyCollapsed = false;
 	@state() private showFullResult = false;
+
+	private getLanguageFromFilename(filename: string): string {
+		if (!filename) return "plaintext";
+		const ext = filename.split(".").pop()?.toLowerCase();
+		switch (ext) {
+			case "ts":
+			case "tsx":
+				return "typescript";
+			case "js":
+			case "jsx":
+				return "javascript";
+			case "py":
+				return "python";
+			case "html":
+				return "html";
+			case "css":
+				return "css";
+			case "json":
+				return "json";
+			case "md":
+				return "markdown";
+			case "sh":
+			case "bash":
+				return "bash";
+			case "rs":
+				return "rust";
+			case "go":
+				return "go";
+			case "java":
+				return "java";
+			default:
+				return "plaintext";
+		}
+	}
+
+	private highlightCode(code: string, lang: string) {
+		if (!code) return "";
+		if (lang && hljs.getLanguage(lang)) {
+			try {
+				return unsafeHTML(hljs.highlight(code, { language: lang }).value);
+			} catch (e) {
+				console.error("Highlight error:", e);
+			}
+		}
+		return unsafeHTML(hljs.highlightAuto(code).value);
+	}
 
 	private getToolGlyph(toolName: string): string {
 		const glyphs: Record<string, string> = {
@@ -522,14 +601,35 @@ export class ComposerToolExecution extends LitElement {
 								<div class="tool-section">
 									<div class="section-label">Arguments</div>
 									<div class="args-grid">
-										${formattedArgs.map(
-											(arg) => html`
+										${formattedArgs.map((arg) => {
+											const isCodeArg =
+												(arg.key === "contents" ||
+													arg.key === "content" ||
+													arg.key === "new_string" ||
+													arg.key === "old_string") &&
+												(this.toolName === "write" ||
+													this.toolName === "edit" ||
+													this.toolName === "search_replace");
+
+											if (isCodeArg && typeof arg.value === "string") {
+												const filePath = this.getFilePathFromArgs();
+												const lang = filePath
+													? this.getLanguageFromFilename(filePath)
+													: "plaintext";
+												return html`
+													<div class="arg-key">${arg.key}:</div>
+													<div class="arg-value code-block">
+														<pre><code>${this.highlightCode(arg.value, lang)}</code></pre>
+													</div>
+												`;
+											}
+											return html`
 											<div class="arg-key">${arg.key}:</div>
 											<div class="arg-value ${typeof arg.value === "object" ? "json" : ""}">
 												${this.formatValue(arg.value)}
 											</div>
-										`,
-										)}
+										`;
+										})}
 									</div>
 								</div>
 							`
