@@ -136,14 +136,29 @@ export function writeTextFile(
 			"write",
 			error instanceof Error ? error : undefined,
 		);
-		logger.error(
-			"File write failed",
-			error instanceof Error ? error : undefined,
-			{ path },
-		);
+		if (isErrno(error) && error.code === "ENOENT" && createDirs === false) {
+			logger.debug("File write failed", { path, error });
+		} else {
+			logger.error(
+				"File write failed",
+				error instanceof Error ? error : undefined,
+				{ path },
+			);
+		}
 		throw fsError;
 	}
 }
+
+function isErrno(error: unknown): error is NodeJS.ErrnoException {
+	return Boolean(
+		error &&
+			typeof error === "object" &&
+			"code" in error &&
+			typeof (error as NodeJS.ErrnoException).code === "string",
+	);
+}
+
+export { isErrno };
 
 /**
  * Read JSON file with parsing and error handling

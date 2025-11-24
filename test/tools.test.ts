@@ -603,6 +603,7 @@ describe("Composer Tools", () => {
 			const parsed = (result.details as any)?.status ?? {};
 
 			expect(parsed.branch).toBeUndefined();
+			expect(getTextOutput(result)).not.toContain("Branch:");
 			expect(result.details).toEqual(
 				expect.objectContaining({
 					command: expect.stringContaining("git status --porcelain=v2 -z"),

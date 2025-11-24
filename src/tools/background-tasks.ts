@@ -36,6 +36,8 @@ import {
 	getBackgroundTaskHistory,
 	recordBackgroundTaskEvent,
 } from "../telemetry.js";
+import { isErrno } from "../utils/fs.js";
+import { createLogger } from "../utils/logger.js";
 import { safejoin } from "../utils/path-validation.js";
 import { redactSecrets } from "../utils/secret-redactor.js";
 import {
@@ -1489,6 +1491,7 @@ type RotatingLogWriterOptions = {
 };
 
 class RotatingLogWriter extends Writable {
+	private readonly logger = createLogger("background-tasks");
 	private readonly limit: number;
 	private readonly segments: number;
 	private readonly logPath: string;
@@ -1625,8 +1628,30 @@ class RotatingLogWriter extends Writable {
 			await fsPromises.mkdir(dirname(this.logPath), { recursive: true });
 			const handle = await fsPromises.open(this.logPath, "a");
 			await handle.close();
-		} catch (error) {
-			console.warn("Failed to initialize background task log", error);
+		} catch (error: unknown) {
+			if (isErrno(error) && error.code === "ENOENT") {
+				// Expected when the log file is not yet present; mkdir may race on temp dirs.
+				this.logger.debug("Log init ENOENT; will retry", {
+					path: this.logPath,
+					error,
+				});
+				return;
+			}
+
+			if (error instanceof Error) {
+				this.logger.error("Failed to initialize background task log", error, {
+					path: this.logPath,
+				});
+			} else {
+				this.logger.error(
+					"Failed to initialize background task log",
+					undefined,
+					{
+						path: this.logPath,
+						error,
+					},
+				);
+			}
 		}
 	}
 
