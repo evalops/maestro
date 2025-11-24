@@ -983,6 +983,140 @@ describe("Composer Tools", () => {
 				rmSync(homeScopedDir, { recursive: true, force: true });
 			}
 		});
+
+		it("outputMode: files lists only file paths containing matches", async () => {
+			const file1 = join(testDir, "filesonly-a.txt");
+			const file2 = join(testDir, "filesonly-b.txt");
+			const file3 = join(testDir, "filesonly-c.txt");
+			writeFileSync(file1, "has needle here");
+			writeFileSync(file2, "no special content");
+			writeFileSync(file3, "also has needle");
+
+			const result = await searchTool.execute("search-filesonly", {
+				pattern: "needle",
+				paths: testDir,
+				glob: "filesonly-*.txt",
+				outputMode: "files",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Found 2 file(s)");
+			expect(output).toContain("filesonly-a.txt");
+			expect(output).toContain("filesonly-c.txt");
+			expect(output).not.toContain("filesonly-b.txt");
+			expect(result.details).toMatchObject({
+				format: "files",
+				fileCount: 2,
+			});
+		});
+
+		it("outputMode: count shows match counts per file", async () => {
+			const countFile = join(testDir, "count-test.txt");
+			writeFileSync(countFile, "foo bar foo\nfoo baz\nbar foo foo");
+
+			const result = await searchTool.execute("search-count", {
+				pattern: "foo",
+				paths: countFile,
+				outputMode: "count",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Found 5 match(es)");
+			expect(output).toContain("count-test.txt: 5");
+			expect(result.details).toMatchObject({
+				format: "count",
+				totalMatches: 5,
+				fileCount: 1,
+			});
+		});
+
+		it("invertMatch shows lines NOT matching the pattern", async () => {
+			const invertFile = join(testDir, "invert-test.txt");
+			writeFileSync(invertFile, "line one\nkeep this\nline two\nkeep also");
+
+			const result = await searchTool.execute("search-invert", {
+				pattern: "^line",
+				paths: invertFile,
+				invertMatch: true,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("keep this");
+			expect(output).toContain("keep also");
+			expect(output).not.toContain("line one");
+			expect(output).not.toContain("line two");
+		});
+
+		it("onlyMatching shows just the matched text", async () => {
+			const onlyFile = join(testDir, "only-match.txt");
+			writeFileSync(onlyFile, "prefix-target-suffix\nother-target-end");
+
+			const result = await searchTool.execute("search-only", {
+				pattern: "target",
+				paths: onlyFile,
+				onlyMatching: true,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("target");
+			expect(output).not.toContain("prefix");
+			expect(output).not.toContain("suffix");
+		});
+
+		it("throws when context is used with outputMode: files", async () => {
+			await expect(
+				searchTool.execute("search-context-files", {
+					pattern: "test",
+					paths: testDir,
+					outputMode: "files",
+					context: 2,
+				}),
+			).rejects.toThrow("Context options can only be used with outputMode");
+		});
+
+		it("throws when context: 0 is used with outputMode: count", async () => {
+			await expect(
+				searchTool.execute("search-context-zero-count", {
+					pattern: "test",
+					paths: testDir,
+					outputMode: "count",
+					context: 0,
+				}),
+			).rejects.toThrow("Context options can only be used with outputMode");
+		});
+
+		it("throws when JSON format is used with outputMode: files", async () => {
+			await expect(
+				searchTool.execute("search-json-files", {
+					pattern: "test",
+					paths: testDir,
+					outputMode: "files",
+					format: "json",
+				}),
+			).rejects.toThrow("JSON format is not supported with outputMode");
+		});
+
+		it("throws when JSON format is used with outputMode: count", async () => {
+			await expect(
+				searchTool.execute("search-json-count", {
+					pattern: "test",
+					paths: testDir,
+					outputMode: "count",
+					format: "json",
+				}),
+			).rejects.toThrow("JSON format is not supported with outputMode");
+		});
+
+		it("throws when onlyMatching is used with outputMode: files", async () => {
+			await expect(
+				searchTool.execute("search-onlymatching-files", {
+					pattern: "test",
+					paths: testDir,
+					outputMode: "files",
+					onlyMatching: true,
+				}),
+			).rejects.toThrow("onlyMatching can only be used with outputMode");
+		});
 	});
 
 	describe("todo tool", () => {

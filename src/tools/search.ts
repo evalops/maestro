@@ -113,10 +113,35 @@ const searchSchema = Type.Intersect([
 				default: true,
 			}),
 		),
+		outputMode: Type.Optional(
+			Type.Union(
+				[Type.Literal("content"), Type.Literal("files"), Type.Literal("count")],
+				{
+					description:
+						"Output mode: 'content' shows matching lines (default), 'files' lists only file paths, 'count' shows match counts per file.",
+					default: "content",
+				},
+			),
+		),
 		format: Type.Optional(
 			Type.Union([Type.Literal("text"), Type.Literal("json")], {
-				description: "Output format",
+				description:
+					"Output format for content mode. JSON not supported with files/count modes.",
 				default: "text",
+			}),
+		),
+		invertMatch: Type.Optional(
+			Type.Boolean({
+				description:
+					"Show lines that do NOT match the pattern (--invert-match).",
+				default: false,
+			}),
+		),
+		onlyMatching: Type.Optional(
+			Type.Boolean({
+				description:
+					"Only show the matched text, not the entire line (--only-matching). Only works with content mode.",
+				default: false,
 			}),
 		),
 	}),
@@ -213,15 +238,32 @@ const JSON_DETAIL_LIMIT = 200;
 type SearchToolDetails = {
 	command: string;
 	cwd: string;
-	format?: "text" | "json";
+	format?: "text" | "json" | "files" | "count";
 	matches?: RipgrepMatch[];
+	fileCount?: number;
+	files?: string[];
+	totalMatches?: number;
+	counts?: Array<{ file: string; count: number }>;
 };
 
 export const searchTool = createTool<typeof searchSchema, SearchToolDetails>({
 	name: "search",
 	label: "search",
-	description:
-		"Find text across files using ripgrep with optional globbing and context controls.",
+	description: `Find text across files using ripgrep with optional globbing and context controls.
+
+Output modes (outputMode parameter):
+- "content": Show matching lines with file:line:content format (default)
+- "files": List only file paths containing matches (fast for finding files)
+- "count": Show match counts per file (useful for gauging scope)
+
+Modifiers:
+- invertMatch: Show lines that do NOT match
+- onlyMatching: Show only the matched text (content mode only)
+
+Examples:
+  {pattern: "TODO", outputMode: "files"}  → list files containing TODO
+  {pattern: "function", outputMode: "count"}  → count functions per file
+  {pattern: "^#", invertMatch: true}  → lines not starting with #`,
 	schema: searchSchema,
 	async run(params, { signal, respond }) {
 		const {
@@ -239,7 +281,10 @@ export const searchTool = createTool<typeof searchSchema, SearchToolDetails>({
 			cwd,
 			includeHidden,
 			useGitIgnore = true,
+			outputMode = "content",
 			format = "text",
+			invertMatch = false,
+			onlyMatching = false,
 		} = params;
 
 		if (
@@ -251,11 +296,46 @@ export const searchTool = createTool<typeof searchSchema, SearchToolDetails>({
 			);
 		}
 
+		// Validate options incompatible with files/count modes
+		if (outputMode !== "content" && onlyMatching) {
+			throw new Error(
+				"onlyMatching can only be used with outputMode: 'content'.",
+			);
+		}
+
+		if (
+			outputMode !== "content" &&
+			(context !== undefined ||
+				beforeContext !== undefined ||
+				afterContext !== undefined)
+		) {
+			throw new Error(
+				"Context options can only be used with outputMode: 'content'.",
+			);
+		}
+
+		if (format === "json" && outputMode !== "content") {
+			throw new Error(
+				"JSON format is not supported with outputMode: 'files' or 'count'. Use format: 'text' or omit the format parameter.",
+			);
+		}
+
 		const pathArgs = toArray(paths);
 		const globArgs = toArray(glob);
 		const commandCwd = cwd ? resolvePath(expandUserPath(cwd)) : process.cwd();
 
-		const args: string[] = ["--color=never", "-n", "--with-filename"];
+		const args: string[] = ["--color=never"];
+
+		// Output mode flags
+		if (outputMode === "files") {
+			args.push("--files-with-matches");
+		} else if (outputMode === "count") {
+			// Use --count-matches for actual match counts, -H to always show filename
+			args.push("--count-matches", "-H");
+		} else {
+			// content mode: show line numbers and filenames
+			args.push("-n", "--with-filename");
+		}
 
 		if (ignoreCase) {
 			args.push("-i");
@@ -281,6 +361,14 @@ export const searchTool = createTool<typeof searchSchema, SearchToolDetails>({
 			args.push("--no-ignore");
 		}
 
+		if (invertMatch) {
+			args.push("--invert-match");
+		}
+
+		if (onlyMatching) {
+			args.push("--only-matching");
+		}
+
 		if (maxResults !== undefined) {
 			args.push("-m", String(maxResults));
 		}
@@ -301,7 +389,7 @@ export const searchTool = createTool<typeof searchSchema, SearchToolDetails>({
 			args.push("--glob", globPattern);
 		}
 
-		if (format === "json") {
+		if (format === "json" && outputMode === "content") {
 			args.push("--json");
 		}
 
@@ -336,11 +424,74 @@ export const searchTool = createTool<typeof searchSchema, SearchToolDetails>({
 		const command = ["rg", ...args].join(" ");
 
 		if (result.exitCode === 1 || result.stdout.trim().length === 0) {
+			// Use correct format in detail based on mode
+			const detailFormat =
+				outputMode === "files"
+					? "files"
+					: outputMode === "count"
+						? "count"
+						: format;
 			return respond
 				.text("No matches found.")
-				.detail({ command, cwd: commandCwd, format });
+				.detail({ command, cwd: commandCwd, format: detailFormat });
 		}
 
+		// Handle files mode output
+		if (outputMode === "files") {
+			const files = result.stdout
+				.trim()
+				.split("\n")
+				.filter((f) => f.length > 0);
+			const fileList = files.join("\n");
+			return respond
+				.text(
+					`Found ${files.length} file(s) matching "${pattern}":\n\n${fileList}`,
+				)
+				.detail({
+					command,
+					cwd: commandCwd,
+					format: "files",
+					fileCount: files.length,
+					files,
+				});
+		}
+
+		// Handle count mode output
+		if (outputMode === "count") {
+			const lines = result.stdout
+				.trim()
+				.split("\n")
+				.filter((l) => l.length > 0);
+			const counts: Array<{ file: string; count: number }> = [];
+			let totalMatches = 0;
+			// Use regex to parse "filename:count" format robustly
+			// This handles Windows paths (C:\path\file.txt:5) and colons in filenames
+			const countLineRegex = /^(.+):(\d+)$/;
+			for (const line of lines) {
+				const match = line.match(countLineRegex);
+				if (match) {
+					const file = match[1];
+					const matchCount = Number.parseInt(match[2], 10);
+					counts.push({ file, count: matchCount });
+					totalMatches += matchCount;
+				}
+			}
+			const summary = counts.map((c) => `${c.file}: ${c.count}`).join("\n");
+			return respond
+				.text(
+					`Found ${totalMatches} match(es) across ${counts.length} file(s):\n\n${summary}`,
+				)
+				.detail({
+					command,
+					cwd: commandCwd,
+					format: "count",
+					totalMatches,
+					fileCount: counts.length,
+					counts,
+				});
+		}
+
+		// Handle JSON format
 		if (format === "json") {
 			const matches = parseRipgrepJson(result.stdout);
 			const preview = matches
