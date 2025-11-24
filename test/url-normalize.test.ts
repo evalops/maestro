@@ -23,4 +23,13 @@ describe("normalizeLLMBaseUrl", () => {
 			"https://proxy.test/?url=https://api.openai.com/v1/chat/completions",
 		);
 	});
+
+	it("does not append twice for malformed URLs that already include endpoint with query", () => {
+		const url = normalizeLLMBaseUrl(
+			"malformed.com/v1/responses?key=value",
+			"openai",
+			"openai-responses",
+		);
+		expect(url).toBe("malformed.com/v1/responses?key=value");
+	});
 });

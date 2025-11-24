@@ -53,7 +53,8 @@ export function normalizeLLMBaseUrl(
 			}
 			return url.toString();
 		} catch {
-			return hasPath(urlStr)
+			const includesQueryPath = urlStr.includes(`${desiredPath}?`);
+			return hasPath(urlStr) || includesQueryPath
 				? urlStr
 				: `${trimTrailingSlash(urlStr)}${desiredPath}`;
 		}
