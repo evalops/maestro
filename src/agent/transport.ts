@@ -15,6 +15,7 @@ import type {
 	ActionApprovalService,
 	WorkflowStateSnapshot,
 } from "./action-approval.js";
+import { getStoredCredentials } from "./keys.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamGoogle } from "./providers/google.js";
 import { streamOpenAI } from "./providers/openai.js";
@@ -50,6 +51,28 @@ export interface ProviderTransportOptions {
 	corsProxyUrl?: string;
 	approvalService?: ActionApprovalService;
 	maxConcurrentToolExecutions?: number;
+}
+
+const PROVIDER_ENV_VARS: Record<string, string[]> = {
+	openai: ["OPENAI_API_KEY"],
+	openrouter: ["OPENROUTER_API_KEY"],
+	anthropic: ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"],
+	groq: ["GROQ_API_KEY"],
+	gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+	google: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+	cerebras: ["CEREBRAS_API_KEY"],
+	zai: ["ZAI_API_KEY"],
+	xai: ["XAI_API_KEY"],
+	exa: ["EXA_API_KEY"],
+};
+
+function resolveEnvApiKey(provider: string): string | undefined {
+	const vars = PROVIDER_ENV_VARS[provider] ?? [];
+	for (const name of vars) {
+		const value = process.env[name];
+		if (value) return value;
+	}
+	return undefined;
 }
 
 function calculateCost(
@@ -134,6 +157,28 @@ export class ProviderTransport implements AgentTransport {
 				credential = {
 					provider: model.provider,
 					token: fallbackKey,
+					type: "api-key",
+					source: "env",
+				};
+			}
+		}
+		if (!credential) {
+			const stored = getStoredCredentials(model.provider);
+			if (stored.apiKey) {
+				credential = {
+					provider: model.provider,
+					token: stored.apiKey,
+					type: stored.authType ?? "api-key",
+					source: "custom_literal",
+				};
+			}
+		}
+		if (!credential) {
+			const envKey = resolveEnvApiKey(model.provider);
+			if (envKey) {
+				credential = {
+					provider: model.provider,
+					token: envKey,
 					type: "api-key",
 					source: "env",
 				};

@@ -226,7 +226,8 @@ import type { Model } from "../agent/types.js";
 export const MODELS = ${toTs(MODELS)} as Record<string, Record<string, Model<any>>>;
 `;
 
-	const outPath = join(process.cwd(), "src/models/models.generated.ts");
+	const defaultOutPath = join(process.cwd(), "src/models/models.generated.ts");
+	const outPath = process.env.MODELS_OUT_PATH ?? defaultOutPath;
 	writeFileSync(outPath, fileContent);
 	console.log(
 		`[generate-models] wrote ${outPath} with ${Object.values(MODELS).reduce(
