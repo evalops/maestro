@@ -344,13 +344,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 		// biome-ignore lint/style/useConst: needed for closure reference before assignment
 		let timeout: NodeJS.Timeout;
 
-		const cleanup = () => {
-			if (timeout) clearTimeout(timeout);
-		};
-
-		res.on("finish", cleanup);
-		res.on("close", cleanup);
-
 		timeout = setTimeout(() => {
 			if (!res.writableEnded) {
 				requestContextStorage.run(context, () => {
@@ -370,6 +363,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				res.destroy();
 			}
 		}, REQUEST_TIMEOUT_MS);
+
+		const cleanup = () => {
+			if (timeout) clearTimeout(timeout);
+		};
+
+		res.on("finish", cleanup);
+		res.on("close", cleanup);
 	}
 
 	// Track request for introspection (Channelz) and graceful shutdown
