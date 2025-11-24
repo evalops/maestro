@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import v8 from "node:v8";
+import { circuitBreakers } from "./circuit-breaker.js";
 import {
 	type RequestContext,
 	requestContextStorage,
@@ -263,6 +264,17 @@ export function getPrometheusMetrics(): string {
 	lines.push("# HELP nodejs_heap_size_used_bytes Used heap size");
 	lines.push("# TYPE nodejs_heap_size_used_bytes gauge");
 	lines.push(`nodejs_heap_size_used_bytes ${heapStats.used_heap_size}`);
+
+	// Circuit Breakers
+	for (const [name, breaker] of circuitBreakers.entries()) {
+		const state = breaker.getState();
+		const stateVal = state === "CLOSED" ? 0 : state === "OPEN" ? 1 : 0.5;
+		lines.push(
+			`# HELP circuit_breaker_state State of circuit breaker ${name} (0=closed, 1=open, 0.5=half-open)`,
+		);
+		lines.push("# TYPE circuit_breaker_state gauge");
+		lines.push(`circuit_breaker_state{name="${name}"} ${stateVal}`);
+	}
 
 	return lines.join("\n");
 }

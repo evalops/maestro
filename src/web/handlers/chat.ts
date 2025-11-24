@@ -7,6 +7,7 @@ import {
 	toSessionModelMetadata,
 } from "../../session/manager.js";
 import { recordSseSkip } from "../../telemetry.js";
+import { getCircuitBreaker } from "../circuit-breaker.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
@@ -213,7 +214,18 @@ export async function handleChat(
 		};
 
 		try {
-			await agent.prompt(userInput);
+			// Wrap agent.prompt in a circuit breaker
+			const breaker = getCircuitBreaker(
+				`agent-prompt-${registeredModel.provider}`,
+				{
+					failureThreshold: 5,
+					resetTimeoutMs: 30000,
+					halfOpenMaxAttempts: 1,
+				},
+			);
+
+			await breaker.execute(() => agent.prompt(userInput));
+
 			if (!res.writableEnded) {
 				sseSession.sendDone();
 			}

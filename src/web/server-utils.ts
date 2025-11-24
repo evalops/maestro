@@ -3,15 +3,59 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline } from "node:stream";
 import { promisify } from "node:util";
 import { createDeflate, createGzip } from "node:zlib";
+import { Code, Status, StatusError } from "./status.js";
 
 const pipe = promisify(pipeline);
 
-export class ApiError extends Error {
+export class ApiError extends StatusError {
 	constructor(
 		public statusCode: number,
 		message: string,
+		details: Record<string, unknown>[] = [],
 	) {
-		super(message);
+		let code = Code.UNKNOWN;
+		switch (statusCode) {
+			case 400:
+				code = Code.INVALID_ARGUMENT;
+				break;
+			case 401:
+				code = Code.UNAUTHENTICATED;
+				break;
+			case 403:
+				code = Code.PERMISSION_DENIED;
+				break;
+			case 404:
+				code = Code.NOT_FOUND;
+				break;
+			case 409:
+				code = Code.ALREADY_EXISTS;
+				break;
+			case 429:
+				code = Code.RESOURCE_EXHAUSTED;
+				break;
+			case 500:
+				code = Code.INTERNAL;
+				break;
+			case 501:
+				code = Code.UNIMPLEMENTED;
+				break;
+			case 503:
+				code = Code.UNAVAILABLE;
+				break;
+			case 504:
+				code = Code.DEADLINE_EXCEEDED;
+				break;
+		}
+		const status = new Status(
+			code,
+			message,
+			details.map((d) => ({
+				"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+				...d,
+			})),
+		);
+		super(status);
+		this.statusCode = statusCode;
 	}
 }
 
@@ -161,20 +205,30 @@ export function respondWithApiError(
 	fallbackStatus = 500,
 	corsHeaders?: Record<string, string>,
 ): boolean {
+	const status = Status.fromError(error);
+	let statusCode = status.toHttpCode();
+
+	// Preserve explicit status codes from ApiError
 	if (error instanceof ApiError) {
-		sendJson(res, error.statusCode, { error: error.message }, corsHeaders);
-		return true;
+		statusCode = error.statusCode;
+	} else if (status.code === Code.UNKNOWN && fallbackStatus) {
+		// If generic unknown, use fallback if provided
+		statusCode = fallbackStatus;
+		// Map HTTP fallback back to Status Code if possible for consistency
+		if (statusCode === 500) status.code = Code.INTERNAL;
+		else if (statusCode === 400) status.code = Code.INVALID_ARGUMENT;
+		else if (statusCode === 404) status.code = Code.NOT_FOUND;
 	}
-	if (fallbackStatus) {
-		sendJson(
-			res,
-			fallbackStatus,
-			{
-				error: error instanceof Error ? error.message : "Internal server error",
-			},
-			corsHeaders,
-		);
-		return true;
-	}
-	return false;
+
+	sendJson(
+		res,
+		statusCode,
+		{
+			error: status.message,
+			code: Code[status.code],
+			details: status.details.length ? status.details : undefined,
+		},
+		corsHeaders,
+	);
+	return true;
 }
