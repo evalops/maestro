@@ -105,14 +105,18 @@ async function* streamResponsesApi(
 	const decoder = new TextDecoder();
 	let buffer = "";
 
-	const ensureTextBlock = (): { idx: number; created: boolean } => {
-		const block = partial.content.find((c) => c.type === "text");
-		if (!block) {
-			const idx = partial.content.length;
+	const ensureTextBlock = (
+		targetIndex: number,
+	): { idx: number; created: boolean } => {
+		while (partial.content.length <= targetIndex) {
 			partial.content.push({ type: "text", text: "" });
-			return { idx, created: true };
 		}
-		return { idx: partial.content.indexOf(block), created: false };
+		const block = partial.content[targetIndex];
+		if (block.type !== "text") {
+			partial.content[targetIndex] = { type: "text", text: "" };
+			return { idx: targetIndex, created: true };
+		}
+		return { idx: targetIndex, created: block.text.length === 0 };
 	};
 
 	const toolState = new Map<
@@ -157,7 +161,8 @@ async function* streamResponsesApi(
 
 				switch (event.type) {
 					case "response.output_text.delta": {
-						const { idx, created } = ensureTextBlock();
+						const contentIdx = event.content_index ?? 0;
+						const { idx, created } = ensureTextBlock(contentIdx);
 						if (created) {
 							yield { type: "text_start", contentIndex: idx, partial };
 						}
@@ -171,7 +176,8 @@ async function* streamResponsesApi(
 						break;
 					}
 					case "response.output_text.done": {
-						const { idx, created } = ensureTextBlock();
+						const contentIdx = event.content_index ?? 0;
+						const { idx, created } = ensureTextBlock(contentIdx);
 						if (created) {
 							yield { type: "text_start", contentIndex: idx, partial };
 						}
@@ -184,15 +190,16 @@ async function* streamResponsesApi(
 						break;
 					}
 					case "response.function_call_arguments.delta": {
-						const id = event.item_id as string;
-						const state = toolState.get(id) ?? {
+						const callId =
+							(event.call_id as string) || (event.item_id as string);
+						const state = toolState.get(callId) ?? {
 							name: undefined,
 							args: "",
 							outputIndex: event.output_index ?? 0,
 						};
 						state.args += event.delta || "";
 						state.outputIndex = event.output_index ?? state.outputIndex;
-						toolState.set(id, state);
+						toolState.set(callId, state);
 
 						while (partial.content.length <= state.outputIndex) {
 							partial.content.push({
@@ -204,7 +211,7 @@ async function* streamResponsesApi(
 						}
 						const block = partial.content[state.outputIndex];
 						if (block.type === "toolCall" && !block.id) {
-							block.id = id;
+							block.id = callId;
 							yield {
 								type: "toolcall_start",
 								contentIndex: state.outputIndex,
@@ -223,8 +230,9 @@ async function* streamResponsesApi(
 						break;
 					}
 					case "response.function_call_arguments.done": {
-						const id = event.item_id as string;
-						const state = toolState.get(id) ?? {
+						const callId =
+							(event.call_id as string) || (event.item_id as string);
+						const state = toolState.get(callId) ?? {
 							name: event.name,
 							args: event.arguments || "{}",
 							outputIndex: event.output_index ?? 0,
@@ -232,7 +240,7 @@ async function* streamResponsesApi(
 						state.name = event.name || state.name;
 						state.args = event.arguments || state.args;
 						state.outputIndex = event.output_index ?? state.outputIndex;
-						toolState.set(id, state);
+						toolState.set(callId, state);
 
 						while (partial.content.length <= state.outputIndex) {
 							partial.content.push({
@@ -244,7 +252,7 @@ async function* streamResponsesApi(
 						}
 						const block = partial.content[state.outputIndex];
 						if (block.type === "toolCall") {
-							block.id = id;
+							block.id = callId;
 							block.name = state.name || "";
 							try {
 								block.arguments = JSON.parse(state.args);
@@ -305,8 +313,15 @@ async function* streamResponsesApi(
 								(usage.output_tokens_details?.reasoning_tokens || 0);
 							updateCosts();
 						}
+						const status = event.response?.status;
 						partial.stopReason =
-							event.response?.status === "completed" ? "stop" : "error";
+							status === "completed"
+								? "stop"
+								: status === "failed"
+									? "error"
+									: status === "cancelled"
+										? "aborted"
+										: "error";
 						yield {
 							type: "done",
 							reason: partial.stopReason as any,
