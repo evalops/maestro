@@ -33,7 +33,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		id: "anthropic",
 		name: "Anthropic (Claude)",
 		api: "anthropic-messages",
-		defaultModel: "claude-sonnet-4.1",
+		defaultModel: "claude-3-7-sonnet",
 		baseUrl: "https://api.anthropic.com",
 		requiresApiKey: true,
 		apiKeyEnv: "ANTHROPIC_API_KEY",
@@ -50,7 +50,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 	{
 		id: "groq",
 		name: "Groq",
-		api: "openai-responses",
+		api: "openai-completions",
 		defaultModel: "llama-3.1-70b-versatile",
 		baseUrl: "https://api.groq.com/openai/v1",
 		requiresApiKey: true,
@@ -59,7 +59,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 	{
 		id: "openrouter",
 		name: "OpenRouter",
-		api: "openai-responses",
+		api: "openai-completions",
 		defaultModel: "openai/o4-mini",
 		baseUrl: "https://openrouter.ai/api/v1",
 		requiresApiKey: true,
