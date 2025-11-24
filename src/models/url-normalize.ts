@@ -33,27 +33,46 @@ export function normalizeLLMBaseUrl(
 			? "/responses"
 			: "/chat/completions";
 
+	const hasPath = (pathname: string): boolean =>
+		pathname.endsWith(desiredPath) ||
+		pathname.includes(`${desiredPath}/`) ||
+		pathname.includes(`${desiredPath}?`);
+
+	const appendPath = (urlStr: string): string => {
+		try {
+			const url = new URL(urlStr);
+			if (!hasPath(url.pathname)) {
+				url.pathname = `${trimTrailingSlash(url.pathname)}${desiredPath}`;
+			}
+			return url.toString();
+		} catch {
+			return hasPath(urlStr)
+				? urlStr
+				: `${trimTrailingSlash(urlStr)}${desiredPath}`;
+		}
+	};
+
 	try {
 		const parsed = new URL(baseUrl);
-		const pathname = parsed.pathname;
 
-		const hasPath =
-			pathname.endsWith(desiredPath) ||
-			pathname.includes(`${desiredPath}/`) ||
-			pathname.includes(`${desiredPath}?`);
-
-		if (!hasPath) {
-			parsed.pathname = `${trimTrailingSlash(pathname)}${desiredPath}`;
+		// Proxy form: https://proxy/?url=<encoded-upstream>
+		if (parsed.searchParams.has("url")) {
+			const upstream = parsed.searchParams.get("url") ?? "";
+			const normalizedUpstream = appendPath(upstream);
+			if (normalizedUpstream === upstream) {
+				return baseUrl;
+			}
+			parsed.searchParams.set("url", normalizedUpstream);
 			return parsed.toString();
+		}
+
+		if (!hasPath(parsed.pathname)) {
+			parsed.pathname = `${trimTrailingSlash(parsed.pathname)}${desiredPath}`;
 		}
 		return parsed.toString();
 	} catch {
 		// Fallback for malformed URLs
-		const hasPath =
-			baseUrl.endsWith(desiredPath) ||
-			baseUrl.includes(`${desiredPath}/`) ||
-			baseUrl.includes(`${desiredPath}?`);
-		return hasPath ? baseUrl : `${trimTrailingSlash(baseUrl)}${desiredPath}`;
+		return appendPath(baseUrl);
 	}
 }
 
