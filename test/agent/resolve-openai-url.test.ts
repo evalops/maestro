@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveOpenAIUrlForTest } from "../providers/openai.js";
+import { resolveOpenAIUrlForTest } from "../../src/agent/providers/openai.js";
 
 describe("resolveOpenAIUrl", () => {
 	it("appends path before query params for direct URLs", () => {
