@@ -1121,8 +1121,11 @@ export class TuiRenderer {
 			this.renderHeader();
 			this.statusRailContainer.clear(); // Ensure no duplicates
 			this.statusRailContainer.addChild(this.statusRail);
-			// Restore footer mode from state or default to ensemble
-			this.footer.setMode(this.footerMode);
+			// Restore footer mode from state if zen owned it; otherwise keep user's choice
+			const currentFooterMode = this.footer.getMode();
+			if (currentFooterMode === "solo") {
+				this.footer.setMode(this.footerMode);
+			}
 		}
 		this.ui.requestRender();
 	}
@@ -1206,6 +1209,7 @@ export class TuiRenderer {
 			// Zen mode owns the footer; ignore external mode changes
 			return;
 		}
+		this.footerMode = mode;
 		this.footerMode = mode;
 		this.footer.setMode(mode);
 		this.persistUiState({ footerMode: mode });
