@@ -342,6 +342,37 @@ export function getWebviewStyles(): string {
 		.btn-deny {
 			background: #ef4444;
 		}
+
+		.suggestions {
+			position: absolute;
+			bottom: 100%;
+			left: 0;
+			right: 0;
+			background: var(--bg-secondary);
+			border: 1px solid var(--border-color);
+			border-bottom: none;
+			max-height: 200px;
+			overflow-y: auto;
+			z-index: 100;
+			border-radius: 6px 6px 0 0;
+			display: none;
+			box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.2);
+		}
+		.suggestions.visible {
+			display: block;
+		}
+		.suggestion-item {
+			padding: 8px 12px;
+			cursor: pointer;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+			border-bottom: 1px solid var(--border-color);
+		}
+		.suggestion-item:last-child { border-bottom: none; }
+		.suggestion-item:hover, .suggestion-item.selected {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
+		}
 	`;
 }
 
@@ -354,6 +385,13 @@ export function getWebviewScript(): string {
 		let isBusy = false;
 		let assistantHasContent = false;
 		let activeToolCalls = new Map();
+
+		// Suggestions state
+		let suggestionIndex = 0;
+		let suggestionFiles = [];
+		let mentionMatch = null;
+		let currentSearchQuery = null;
+		const suggestionsEl = document.getElementById('suggestions');
 
 		const textarea = document.querySelector('textarea');
 		const sendButton = document.getElementById('send-btn');
@@ -439,6 +477,12 @@ export function getWebviewScript(): string {
 					break;
 				case 'busy':
 					setBusy(Boolean(message.value));
+					break;
+				case 'searchResults':
+					// Ignore stale results from earlier queries
+					if (message.query === currentSearchQuery) {
+						showSuggestions(message.files, message.query);
+					}
 					break;
 			}
 		});
@@ -784,11 +828,87 @@ export function getWebviewScript(): string {
 			messages.scrollTop = messages.scrollHeight;
 		}
 
+		function showSuggestions(files, query) {
+			suggestionFiles = files;
+			suggestionIndex = 0;
+			suggestionsEl.innerHTML = '';
+			if (files.length === 0) {
+				suggestionsEl.classList.remove('visible');
+				return;
+			}
+
+			files.forEach((file, i) => {
+				const div = document.createElement('div');
+				div.className = 'suggestion-item' + (i === 0 ? ' selected' : '');
+				div.textContent = file;
+				div.onclick = () => selectSuggestion(file);
+				suggestionsEl.appendChild(div);
+			});
+			suggestionsEl.classList.add('visible');
+		}
+
+		function hideSuggestions() {
+			suggestionsEl.classList.remove('visible');
+			suggestionFiles = [];
+			mentionMatch = null;
+		}
+
+		function updateSelectedSuggestion() {
+			const items = suggestionsEl.children;
+			for (let i = 0; i < items.length; i++) {
+				if (i === suggestionIndex) items[i].classList.add('selected');
+				else items[i].classList.remove('selected');
+			}
+			const selected = items[suggestionIndex];
+			if (selected) {
+				if (selected.offsetTop < suggestionsEl.scrollTop) {
+					suggestionsEl.scrollTop = selected.offsetTop;
+				} else if (selected.offsetTop + selected.offsetHeight > suggestionsEl.scrollTop + suggestionsEl.offsetHeight) {
+					suggestionsEl.scrollTop = selected.offsetTop + selected.offsetHeight - suggestionsEl.offsetHeight;
+				}
+			}
+		}
+
+		function selectSuggestion(file) {
+			if (!mentionMatch) return;
+			const text = textarea.value;
+			const before = text.slice(0, mentionMatch.start);
+			const after = text.slice(mentionMatch.end);
+			// Avoid double space if after already starts with space
+			const spacer = after.startsWith(' ') ? '' : ' ';
+			const newValue = before + '@' + file + spacer + after;
+			textarea.value = newValue;
+			textarea.focus();
+			// Move cursor
+			const newPos = before.length + file.length + 1 + spacer.length;
+			textarea.setSelectionRange(newPos, newPos);
+
+			hideSuggestions();
+		}
+
 		// Auto-resize textarea
 		if (textarea) {
 			textarea.addEventListener('input', function() {
 				this.style.height = 'auto';
 				this.style.height = (this.scrollHeight) + 'px';
+
+				// Check for mention
+				const cursor = this.selectionStart;
+				const textBeforeCursor = this.value.slice(0, cursor);
+				const match = /@([a-zA-Z0-9_\-\.\/]*)$/.exec(textBeforeCursor);
+
+				if (match) {
+					mentionMatch = {
+						start: match.index,
+						end: cursor,
+						query: match[1]
+					};
+					currentSearchQuery = match[1];
+					vscode.postMessage({ type: 'searchFiles', query: match[1] });
+				} else {
+					currentSearchQuery = null;
+					hideSuggestions();
+				}
 			});
 		}
 
@@ -818,6 +938,7 @@ export function getWebviewScript(): string {
 
 			textarea.value = '';
 			textarea.style.height = 'auto';
+			hideSuggestions();
 
 			vscode.postMessage({ type: 'sendMessage', text });
 		}
@@ -828,6 +949,31 @@ export function getWebviewScript(): string {
 
 		if (textarea) {
 			textarea.addEventListener('keydown', (e) => {
+				if (suggestionsEl.classList.contains('visible')) {
+					if (e.key === 'ArrowDown') {
+						e.preventDefault();
+						suggestionIndex = (suggestionIndex + 1) % suggestionFiles.length;
+						updateSelectedSuggestion();
+						return;
+					}
+					if (e.key === 'ArrowUp') {
+						e.preventDefault();
+						suggestionIndex = (suggestionIndex - 1 + suggestionFiles.length) % suggestionFiles.length;
+						updateSelectedSuggestion();
+						return;
+					}
+					if (e.key === 'Enter' || e.key === 'Tab') {
+						e.preventDefault();
+						selectSuggestion(suggestionFiles[suggestionIndex]);
+						return;
+					}
+					if (e.key === 'Escape') {
+						e.preventDefault();
+						hideSuggestions();
+						return;
+					}
+				}
+
 				if (e.key === 'Enter' && !e.shiftKey) {
 					e.preventDefault();
 					sendMessage();
@@ -865,6 +1011,7 @@ export function getWebviewHtml(options: WebviewTemplateOptions): string {
 
 				<div class="input-area">
 					<div class="input-container">
+						<div id="suggestions" class="suggestions"></div>
 						<textarea placeholder="Ask anything... (Enter to send)" rows="1"></textarea>
 						<div class="input-actions">
 							<span style="font-size: 10px; color: var(--text-secondary); display: flex; align-items: center;">

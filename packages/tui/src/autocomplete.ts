@@ -240,14 +240,15 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 		// Check if we're completing a file attachment (prefix starts with "@")
 		if (prefix.startsWith("@")) {
-			// This is a file attachment completion
-			const newLine = `${beforePrefix}${item.value} ${afterCursor}`;
+			// This is a file attachment completion, avoid double space
+			const spacer = afterCursor.startsWith(" ") ? "" : " ";
+			const newLine = `${beforePrefix}${item.value}${spacer}${afterCursor}`;
 			const newLines = [...lines];
 			newLines[cursorLine] = newLine;
 			return {
 				lines: newLines,
 				cursorLine,
-				cursorCol: beforePrefix.length + item.value.length + 1, // +1 for space
+				cursorCol: beforePrefix.length + item.value.length + spacer.length,
 			};
 		}
 		// Check if we're in a slash command context (beforePrefix contains "/command ")
@@ -274,7 +275,10 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		};
 	}
 	// Extract a path-like prefix from the text before cursor
-	private extractPathPrefix(text: string, forceExtract = false): string | null {
+	protected extractPathPrefix(
+		text: string,
+		forceExtract = false,
+	): string | null {
 		// Check for @ file attachment syntax first
 		const atMatch = text.match(/@([^\s]*)$/);
 		if (atMatch) {
@@ -326,7 +330,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		return path;
 	}
 	// Get file/directory suggestions for a given path prefix
-	private getFileSuggestions(prefix: string): AutocompleteItem[] {
+	protected getFileSuggestions(prefix: string): AutocompleteItem[] {
 		try {
 			let searchDir = "";
 			let searchPrefix = "";
@@ -466,7 +470,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 	}
 
-	private buildRelativePath(
+	protected buildRelativePath(
 		originalPrefix: string,
 		expandedPrefix: string,
 		entryName: string,

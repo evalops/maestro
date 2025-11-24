@@ -413,6 +413,19 @@ export class ApiClient {
 	}
 
 	/**
+	 * Get workspace files for mention
+	 */
+	async getFiles(): Promise<string[]> {
+		try {
+			const data = await this.fetchJsonWithFallback("/api/files");
+			return data.files || [];
+		} catch (e) {
+			console.error("Failed to fetch files:", e);
+			return [];
+		}
+	}
+
+	/**
 	 * Get list of sessions
 	 */
 	async getSessions(): Promise<SessionSummary[]> {

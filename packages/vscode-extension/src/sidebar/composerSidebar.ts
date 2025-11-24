@@ -25,6 +25,7 @@ export class ComposerSidebarProvider
 	private _isProcessing = false;
 	private _creatingSession?: Promise<Session>;
 	private _pinnedFiles: Set<string> = new Set(); // Stores fs paths of pinned files
+	private _searchRequestId = 0;
 
 	private _abortController?: AbortController;
 
@@ -283,6 +284,30 @@ export class ComposerSidebarProvider
 					case "removePinnedFile": {
 						this._pinnedFiles.delete(data.path);
 						this._updateContextUI();
+						break;
+					}
+					case "searchFiles": {
+						const query = data.query || "";
+						const requestId = ++this._searchRequestId;
+						const glob = query ? `**/*${query}*` : "**/*";
+						// Common excludes
+						const exclude =
+							"{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**}";
+						try {
+							const files = await vscode.workspace.findFiles(glob, exclude, 50);
+							// Ignore stale results if a newer search was initiated
+							if (requestId !== this._searchRequestId) break;
+							const filePaths = files.map((f) =>
+								vscode.workspace.asRelativePath(f),
+							);
+							this._view?.webview.postMessage({
+								type: "searchResults",
+								files: filePaths,
+								query,
+							});
+						} catch (e) {
+							console.error("File search failed", e);
+						}
 						break;
 					}
 				}

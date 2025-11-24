@@ -181,6 +181,8 @@ const TODO_STORE_PATH =
  * await renderer.run();
  * ```
  */
+import { SmartAutocompleteProvider } from "./smart-autocomplete-provider.js";
+
 export class TuiRenderer {
 	private ui: TUI;
 	private startupContainer: Container;
@@ -822,7 +824,7 @@ export class TuiRenderer {
 		this.commandEntries = registry.entries;
 		this.slashCommands = registry.commands;
 
-		const autocompleteProvider = new CombinedAutocompleteProvider(
+		const autocompleteProvider = new SmartAutocompleteProvider(
 			this.slashCommands,
 			process.cwd(),
 		);

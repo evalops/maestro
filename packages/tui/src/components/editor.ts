@@ -466,6 +466,10 @@ export class Editor implements Component {
 			if (char === "/" && this.isAtStartOfMessage()) {
 				this.tryTriggerAutocomplete();
 			}
+			// Auto-trigger for "@" (mentions)
+			else if (char === "@") {
+				this.tryTriggerAutocomplete();
+			}
 			// Also auto-trigger when typing letters in a slash command context
 			else if (/[a-zA-Z0-9]/.test(char)) {
 				const currentLine = this.state.lines[this.state.cursorLine] || "";

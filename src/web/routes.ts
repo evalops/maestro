@@ -6,6 +6,7 @@ import { handleChat } from "./handlers/chat.js";
 import { handleClientToolResult } from "./handlers/client-tools.js";
 import { handleCommands } from "./handlers/commands.js";
 import { handleConfig } from "./handlers/config.js";
+import { handleFiles } from "./handlers/files.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
 import { handleSessions } from "./handlers/sessions.js";
@@ -58,6 +59,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 					_req, // Pass request for potential compression access
 				);
 			},
+		},
+		{
+			method: "GET",
+			path: "/api/files",
+			handler: (req, res) => handleFiles(req, res, context),
 		},
 		{
 			method: "GET",

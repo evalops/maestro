@@ -1,9 +1,9 @@
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
+import { getWorkspaceFiles } from "../../utils/workspace-files.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { ModalManager } from "../modal-manager.js";
-import { getWorkspaceFiles } from "../utils/workspace-files.js";
 import { FileSearchComponent } from "./file-search.js";
 
 interface FileSearchViewOptions {
