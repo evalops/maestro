@@ -222,7 +222,7 @@
         }
       }
     },
-    "/api/sessions/:id": {
+    "/api/sessions/{id}": {
       "get": {
         "summary": "Auto-generated from route definition",
         "responses": {

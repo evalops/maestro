@@ -176,8 +176,9 @@ function buildPaths(routes: Route[]) {
 	};
 
 	for (const { method, path } of routes) {
-		const node = ensure(path);
-		node[method] = node[method] || {
+		const normalizedPath = path.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
+		const target = ensure(normalizedPath);
+		target[method] = target[method] || {
 			summary: "Auto-generated from route definition",
 			responses: { 200: { description: "OK" } },
 		};
