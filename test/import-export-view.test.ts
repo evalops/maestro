@@ -60,7 +60,7 @@ const buildView = (overrides: Partial<SessionManager> = {}) => {
 };
 
 describe("ImportExportView.handleExportCommand", () => {
-	const spies: Array<ReturnType<typeof vi.spyOn>> = [];
+	const spies: Array<any> = [];
 
 	beforeEach(() => {
 		vi.restoreAllMocks();

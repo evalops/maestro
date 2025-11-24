@@ -98,7 +98,7 @@ describe("ProviderTransport workflow-state integration", () => {
 		};
 
 		const handoffExecute = vi.fn(async () => ({
-			content: [{ type: "text", text: "handoff" }],
+			content: [{ type: "text" as const, text: "handoff" }],
 		}));
 		const handoffTool: AgentTool = {
 			name: "handoff_to_human",

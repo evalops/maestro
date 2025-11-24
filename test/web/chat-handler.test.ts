@@ -7,7 +7,16 @@ const mockModel: RegisteredModel = {
 	id: "claude-sonnet-4-5",
 	provider: "anthropic",
 	name: "Claude",
-	api: "chat",
+	api: "anthropic-messages",
+	baseUrl: "",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 128000,
+	maxTokens: 4096,
+	providerName: "Anthropic",
+	source: "builtin",
+	isLocal: false,
 };
 
 const cors = { "Access-Control-Allow-Origin": "*" };
@@ -82,6 +91,9 @@ describe("handleChat", () => {
 						thinkingLevel: "off",
 						tools: [],
 						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
 					},
 					subscribe: (fn) => {
 						subscriber = fn;

@@ -1,6 +1,7 @@
 import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
+import { theme } from "../theme/theme.js";
 import {
 	buildBadgeAndPathLine,
 	buildSoloStatsLine,
@@ -18,6 +19,12 @@ import type {
 // Re-export FooterHint for external use
 export type { FooterHint, HintType } from "./utils/footer-utils.js";
 
+interface FooterToast {
+	message: string;
+	tone: "info" | "warn" | "success" | "danger";
+	expiry: number;
+}
+
 /**
  * Footer component that shows pwd, token stats, and context usage
  */
@@ -27,6 +34,7 @@ export class FooterComponent {
 	private hints: FooterHint[] = [];
 	private runtimeBadges: string[] = [];
 	private mode: FooterMode;
+	private activeToast: FooterToast | null = null;
 
 	constructor(state: AgentState, mode: FooterMode = "ensemble") {
 		this.state = state;
@@ -66,6 +74,22 @@ export class FooterComponent {
 		this.hints = [];
 	}
 
+	setToast(
+		message: string,
+		tone: "info" | "warn" | "success" | "danger",
+		durationMs = 5000,
+	): void {
+		this.activeToast = {
+			message,
+			tone,
+			expiry: Date.now() + durationMs,
+		};
+	}
+
+	clearToast(): void {
+		this.activeToast = null;
+	}
+
 	setMode(mode: FooterMode): void {
 		this.mode = mode;
 	}
@@ -75,6 +99,11 @@ export class FooterComponent {
 	}
 
 	render(width: number): string[] {
+		// Check for expired toast
+		if (this.activeToast && Date.now() > this.activeToast.expiry) {
+			this.activeToast = null;
+		}
+
 		const stats = calculateFooterStats(this.state);
 		if (this.mode === "solo") {
 			return this.renderSoloFooter(stats, width);
@@ -91,11 +120,40 @@ export class FooterComponent {
 
 		const lines = [pathLine, chalk.gray(statsLine)];
 
-		// Use new multi-hint system
-		const mergedHint = mergeHints(stats, this.hints, width);
-		if (mergedHint) {
-			const truncated = this.truncateToWidth(mergedHint, width);
-			lines.push(chalk.hex("#94a3b8")(truncated));
+		// Render Toast if active, otherwise Hints
+		if (this.activeToast) {
+			const { message, tone } = this.activeToast;
+			let coloredMessage: string;
+			let prefix = "";
+
+			switch (tone) {
+				case "info":
+					prefix = theme.fg("accent", "ℹ ");
+					coloredMessage = theme.fg("text", message);
+					break;
+				case "warn":
+					prefix = theme.fg("warning", "⚠ ");
+					coloredMessage = theme.fg("warning", message);
+					break;
+				case "success":
+					prefix = theme.fg("success", "✔ ");
+					coloredMessage = theme.fg("success", message);
+					break;
+				case "danger":
+					prefix = theme.fg("error", "✖ ");
+					coloredMessage = theme.fg("error", message);
+					break;
+			}
+
+			const fullMessage = `${prefix}${coloredMessage}`;
+			lines.push(this.truncateToWidth(fullMessage, width));
+		} else {
+			// Use new multi-hint system
+			const mergedHint = mergeHints(stats, this.hints, width);
+			if (mergedHint) {
+				const truncated = this.truncateToWidth(mergedHint, width);
+				lines.push(chalk.hex("#94a3b8")(truncated));
+			}
 		}
 
 		return lines;

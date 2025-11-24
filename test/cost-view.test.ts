@@ -33,21 +33,56 @@ const createContext = (
 	};
 };
 
-const makeSummary = (overrides: Partial<UsageSummary> = {}): UsageSummary => ({
-	totalCost: 12.3456,
-	totalRequests: 4,
-	totalTokens: 12345,
-	byProvider: {
-		anthropic: { cost: 8, requests: 3, tokens: 8000 },
-		openai: { cost: 4.3456, requests: 1, tokens: 4345 },
-	},
-	byModel: {
-		"anthropic/claude-sonnet-4-5": { cost: 6, requests: 2, tokens: 5000 },
-		"anthropic/claude-haiku-4": { cost: 2, requests: 1, tokens: 3000 },
-		"openai/gpt-4.1": { cost: 4.3456, requests: 1, tokens: 4345 },
-	},
-	...overrides,
-});
+const makeSummary = (overrides: Partial<UsageSummary> = {}): UsageSummary => {
+	const zeroDetailed = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		total: 0,
+	};
+	return {
+		totalCost: 12.3456,
+		totalRequests: 4,
+		totalTokens: 12345,
+		tokensDetailed: { ...zeroDetailed, total: 12345 },
+		byProvider: {
+			anthropic: {
+				cost: 8,
+				requests: 3,
+				tokens: 8000,
+				tokensDetailed: { ...zeroDetailed, total: 8000 },
+			},
+			openai: {
+				cost: 4.3456,
+				requests: 1,
+				tokens: 4345,
+				tokensDetailed: { ...zeroDetailed, total: 4345 },
+			},
+		},
+		byModel: {
+			"anthropic/claude-sonnet-4-5": {
+				cost: 6,
+				requests: 2,
+				tokens: 5000,
+				tokensDetailed: { ...zeroDetailed, total: 5000 },
+			},
+			"anthropic/claude-haiku-4": {
+				cost: 2,
+				requests: 1,
+				tokens: 3000,
+				tokensDetailed: { ...zeroDetailed, total: 3000 },
+			},
+			"openai/gpt-4.1": {
+				cost: 4.3456,
+				requests: 1,
+				tokens: 4345,
+				tokensDetailed: { ...zeroDetailed, total: 4345 },
+			},
+		},
+		...overrides,
+	};
+};
 
 describe.sequential("CostView", () => {
 	beforeEach(() => {

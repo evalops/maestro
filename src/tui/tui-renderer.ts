@@ -97,7 +97,6 @@ import { SessionDataProvider } from "./session/session-data-provider.js";
 import { SessionSummaryController } from "./session/session-summary-controller.js";
 import { SessionSwitcherView } from "./session/session-switcher-view.js";
 import { SessionView } from "./session/session-view.js";
-import { StatusRailComponent } from "./status-rail.js";
 import { CostView } from "./status/cost-view.js";
 import { DiagnosticsView } from "./status/diagnostics-view.js";
 import { TelemetryView } from "./status/telemetry-view.js";
@@ -238,8 +237,6 @@ export class TuiRenderer {
 	private planPanelVisible = false;
 	private notificationView: NotificationView;
 	private backgroundTaskNotificationCleanup?: () => void;
-	private statusRail: StatusRailComponent;
-	private statusRailContainer: Container;
 	private updateView: UpdateView;
 	private configView: ConfigView;
 	private costView: CostView;
@@ -319,9 +316,6 @@ export class TuiRenderer {
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
 		this.statusContainer = new Container();
-		this.statusRail = new StatusRailComponent();
-		this.statusRailContainer = new Container();
-		this.statusRailContainer.addChild(this.statusRail);
 		this.editor = new CustomEditor();
 		this.editor.onLargePaste = (event) => {
 			void this.handleLargePaste(event);
@@ -344,7 +338,7 @@ export class TuiRenderer {
 		this.notificationView = new NotificationView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			statusRail: this.statusRail,
+			footer: this.footer,
 		});
 		this.registerBackgroundTaskNotifications();
 		this.approvalController = new ApprovalController({
@@ -866,7 +860,6 @@ export class TuiRenderer {
 		this.ui.addChild(this.startupContainer);
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.statusContainer);
-		this.ui.addChild(this.statusRailContainer);
 
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(this.editorContainer); // Use container that can hold editor or selector
@@ -1116,9 +1109,6 @@ export class TuiRenderer {
 
 		if (enabled) {
 			this.headerContainer.clear();
-			// We do NOT clear statusRailContainer anymore, to ensure critical security
-			// notifications (e.g. approvals, auth errors) remain visible.
-			// The status rail component itself renders nothing if there are no toasts.
 			this.footer.setMode("solo");
 			if (this.welcomeAnimation) {
 				this.dismissWelcomeAnimation();
@@ -2255,10 +2245,7 @@ export class TuiRenderer {
 	}
 
 	private handleEditorTyping(): void {
-		if (!this.statusRail.hasToasts()) {
-			return;
-		}
-		this.statusRail.clearToasts();
+		this.footer.clearToast();
 		this.ui.requestRender();
 	}
 

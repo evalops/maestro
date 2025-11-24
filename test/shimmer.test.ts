@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { shimmerText } from "../src/tui/utils/shimmer.js";
 
 const ANSI_REGEX = new RegExp(`${String.fromCharCode(27)}\[[0-9;]*m`, "g");

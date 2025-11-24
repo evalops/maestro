@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import { parseStatusOutput } from "../src/tools/diff.js";
 
 const pathArb = fc
-	.string({ minLength: 1, maxLength: 15, characters: "abcd _-." })
+	.array(fc.constantFrom(..."abcd _-.".split("")), {
+		minLength: 1,
+		maxLength: 15,
+	})
+	.map((chars) => chars.join(""))
 	.filter(
 		(s) =>
 			!s.includes("\0") &&
@@ -49,7 +53,7 @@ const entryTemplate = fc.oneof(
 );
 
 function buildEntries(
-	entries: Array<fc.TypeOf<typeof entryTemplate>>,
+	entries: Array<any>,
 ): string[] {
 	const lines: string[] = [];
 	for (const entry of entries) {
