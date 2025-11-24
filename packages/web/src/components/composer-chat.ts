@@ -36,8 +36,9 @@ export class ComposerChat extends LitElement {
 			overflow: hidden;
 			font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
 			--icon-btn-size: 24px;
-			--icon-btn-font-size: 0.82rem;
-			--icon-btn-border-color: #2a2f35;
+			--icon-btn-font-size: 0.78rem;
+			--icon-btn-border-color: #1f242a;
+			--icon-btn-hover: rgba(88, 166, 255, 0.06);
 		}
 
 		/* Sidebar - compact, high-density */
@@ -181,7 +182,7 @@ export class ComposerChat extends LitElement {
 		.header-left {
 			display: flex;
 			align-items: center;
-			gap: 0.75rem;
+			gap: 0.4rem;
 		}
 
 		.toggle-sidebar-btn {
@@ -306,7 +307,7 @@ export class ComposerChat extends LitElement {
 		.header-right {
 			display: flex;
 			align-items: center;
-			gap: 0.5rem;
+			gap: 0.4rem;
 		}
 
 		.toast {
@@ -372,7 +373,7 @@ export class ComposerChat extends LitElement {
 		padding: 0;
 		background: transparent;
 			border: 1px solid var(--icon-btn-border-color);
-			border-radius: 6px;
+			border-radius: 4px;
 			color: #8b949e;
 			cursor: pointer;
 			transition: all 0.15s;
@@ -381,12 +382,15 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			justify-content: center;
 			line-height: 1;
+			opacity: 0.92;
+			transform: translateY(0.5px); /* optical align */
 	}
 
 	.icon-btn:hover {
-		background: #21262d;
-		border-color: #58a6ff;
+		background: var(--icon-btn-hover);
+		border-color: #3a82c2;
 		color: #58a6ff;
+		opacity: 1;
 	}
 
 	.icon-btn:focus-visible,
@@ -400,6 +404,17 @@ export class ComposerChat extends LitElement {
 		border-color: #58a6ff;
 		color: #58a6ff;
 		background: rgba(88, 166, 255, 0.08);
+	}
+
+	.icon {
+		width: 16px;
+		height: 16px;
+		stroke: currentColor;
+		fill: none;
+		stroke-width: 1.5;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+		pointer-events: none;
 	}
 
 		/* Messages - dense, terminal-like */
@@ -863,6 +878,34 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
+	private renderIcon(
+		name:
+			| "chevron-left"
+			| "chevron-right"
+			| "info"
+			| "refresh"
+			| "globe"
+			| "settings"
+			| "grid"
+			| "reduce"
+			| "close",
+	) {
+		const paths: Record<string, string> = {
+			"chevron-left": "M15 18l-6-6 6-6",
+			"chevron-right": "M9 6l6 6-6 6",
+			info: "M12 12v4m0-8h.01M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z",
+			refresh: "M4.93 4.93A10 10 0 0 1 19.07 5M20 9v-4h-4M19.07 19.07A10 10 0 0 1 4.93 19M4 15v4h4",
+			globe: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0 0c3 0 5-4 5-9s-2-9-5-9-5 4-5 9 2 9 5 9Zm0 0c2.5 0 4.5-4 4.5-9S14.5 3 12 3 7.5 7 7.5 12 9.5 21 12 21Zm0-9h9M3 12h9",
+			settings: "M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.63a1 1 0 0 0 0-1.74l-1.17-.68a1 1 0 0 1-.46-.86l.05-1.35a1 1 0 0 0-1.17-1.01l-1.35.23a1 1 0 0 1-.9-.26L13.2 6a1 1 0 0 0-1.4 0l-.9.9a1 1 0 0 1-.9.26l-1.35-.23a1 1 0 0 0-1.17 1.01l.05 1.35a1 1 0 0 1-.46.86l-1.17.68a1 1 0 0 0 0 1.74l1.17.68a1 1 0 0 1 .46.86l-.05 1.35a1 1 0 0 0 1.17 1.01l1.35-.23a1 1 0 0 1 .9.26l.9.9a1 1 0 0 0 1.4 0l.9-.9a1 1 0 0 1 .9-.26l1.35.23a1 1 0 0 0 1.17-1.01l-.05-1.35a1 1 0 0 1 .46-.86Z",
+			grid: "M4 4h7v7H4Zm9 0h7v7h-7ZM4 13h7v7H4Zm9 7v-7h7v7Z",
+			reduce: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Zm-5-9h10",
+			close: "M18 6 6 18M6 6l12 12",
+		};
+		return html`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+			<path d=${paths[name]}></path>
+		</svg>`;
+	}
+
 	private toggleSidebar() {
 		this.sidebarOpen = !this.sidebarOpen;
 	}
@@ -1292,7 +1335,7 @@ export class ComposerChat extends LitElement {
 									this.deleteSession(session.id);
 								}}
 							>
-								✕
+								${this.renderIcon("close")}
 							</button>
 							</div>
 						`,
@@ -1303,8 +1346,8 @@ export class ComposerChat extends LitElement {
 			<div class="main-content">
 		<div class="header">
 			<div class="header-left">
-				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar}>
-					${this.sidebarOpen ? "◄" : "►"}
+				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar} title=${this.sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}>
+					${this.sidebarOpen ? this.renderIcon("chevron-left") : this.renderIcon("chevron-right")}
 				</button>
 				<h1>Composer</h1>
 			</div>
@@ -1322,7 +1365,7 @@ export class ComposerChat extends LitElement {
 									? html`<span class="muted" title=${latencyLabel}>${Math.round(latency)}ms</span>`
 									: ""
 							}
-							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>ⓘ</button>
+							<button class="icon-btn" title="API health" @click=${this.toggleHealth}>${this.renderIcon("info")}</button>
 						</div>
 						<div class="status-item">
 							<span>CWD</span>
@@ -1350,7 +1393,7 @@ export class ComposerChat extends LitElement {
 							<span>MSGS</span>
 							<span class="muted">${this.messages.length}</span>
 						</div>
-						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>↻</button>
+						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>${this.renderIcon("refresh")}</button>
 						${
 							lastUpdated
 								? html`<span class="status-item" title="Last API refresh">
@@ -1365,10 +1408,10 @@ export class ComposerChat extends LitElement {
 					<span class="model-badge">AI</span>
 					<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
 						</div>
-						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>🌐</button>
-						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>⚙</button>
-						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>▥</button>
-						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>◌</button>
+						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${this.renderIcon("globe")}</button>
+						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
+						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
+						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
 					</div>
 				</div>
 
@@ -1505,7 +1548,7 @@ export class ComposerChat extends LitElement {
 						<div style="position: fixed; top: 64px; right: 12px; width: 260px; background: #0d1117; border: 1px solid #30363d; padding: 0.75rem; z-index: 120; box-shadow: 0 10px 24px rgba(0,0,0,0.4); font-family: 'SF Mono','Menlo','Monaco', monospace; font-size: 0.75rem; color: #e6edf3;">
 							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
 								<span style="color:#6e7681; letter-spacing:0.05em;">API HEALTH</span>
-								<button class="icon-btn" @click=${this.closeHealth}>✕</button>
+								<button class="icon-btn" @click=${this.closeHealth}>${this.renderIcon("close")}</button>
 							</div>
 							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Base:</span> ${this.apiClient.baseUrl}</div>
 							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Latency:</span> ${latency ? `${Math.round(latency)}ms` : "n/a"}</div>
@@ -1532,7 +1575,7 @@ export class ComposerChat extends LitElement {
 						<div style="position: fixed; top: 30%; left: 50%; transform: translateX(-50%); width: 420px; background: #0d1117; border: 1px solid #30363d; padding: 1rem; z-index: 140; box-shadow: 0 18px 40px rgba(0,0,0,0.5); font-family: 'SF Mono','Menlo','Monaco', monospace; font-size: 0.78rem; color: #e6edf3;">
 							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
 								<span style="letter-spacing:0.08em; color:#8b949e;">Keyboard shortcuts</span>
-								<button class="icon-btn" @click=${this.closeShortcuts}>✕</button>
+								<button class="icon-btn" @click=${this.closeShortcuts}>${this.renderIcon("close")}</button>
 							</div>
 						<div style="display:grid; grid-template-columns: auto 1fr; gap: 0.35rem 0.75rem;">
 							<span class="pill">Enter</span><span>Send message</span>
