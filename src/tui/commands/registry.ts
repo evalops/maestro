@@ -36,6 +36,28 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "plan-mode",
+				description: "Toggle plan mode (ask before write/edit/bash)",
+				usage: "/plan-mode [on|off]",
+				tags: ["safety"],
+			},
+			withArgs("plan-mode"),
+			handlers.planMode,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "commands",
+				description: "List or run user commands from .composer/commands",
+				usage: "/commands list | /commands run <name> [k=v]...",
+				tags: ["session", "automation"],
+			},
+			withArgs("commands"),
+			handlers.commands,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "report",
 				description: "Collect info for bug reports or general feedback",
 				usage: "/report [bug|feedback]",

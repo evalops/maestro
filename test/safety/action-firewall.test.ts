@@ -5,6 +5,20 @@ import {
 	defaultActionFirewall,
 } from "../../src/safety/action-firewall.js";
 
+const withPlanMode = (fn: () => void) => {
+	const prev = process.env.COMPOSER_PLAN_MODE;
+	process.env.COMPOSER_PLAN_MODE = "1";
+	try {
+		fn();
+	} finally {
+		if (prev === undefined) {
+			process.env.COMPOSER_PLAN_MODE = undefined;
+		} else {
+			process.env.COMPOSER_PLAN_MODE = prev;
+		}
+	}
+};
+
 function makeBashContext(command?: unknown): ActionApprovalContext {
 	return {
 		toolName: "bash",
@@ -40,6 +54,14 @@ function makeCustomCommandContext(command: string): ActionApprovalContext {
 		toolName: "custom_exec",
 		args: { command },
 	};
+}
+
+function makeWriteContext(): ActionApprovalContext {
+	return { toolName: "write", args: { path: "file.txt" } };
+}
+
+function makeEditContext(): ActionApprovalContext {
+	return { toolName: "edit", args: { path: "file.txt" } };
 }
 
 function makeWorkflowContext(
@@ -110,6 +132,26 @@ describe("ActionFirewall", () => {
 			makeCustomCommandContext("mkfs.ext4 /dev/sda"),
 		);
 		expect(verdict.action).toBe("require_approval");
+	});
+
+	it("requires approval for mutating tools when plan mode is on", () => {
+		withPlanMode(() => {
+			const bashVerdict = defaultActionFirewall.evaluate(
+				makeBashContext("echo hi"),
+			);
+			expect(bashVerdict.action).toBe("require_approval");
+
+			const writeVerdict = defaultActionFirewall.evaluate(makeWriteContext());
+			expect(writeVerdict.action).toBe("require_approval");
+
+			const editVerdict = defaultActionFirewall.evaluate(makeEditContext());
+			expect(editVerdict.action).toBe("require_approval");
+
+			const bgVerdict = defaultActionFirewall.evaluate(
+				makeShellBackgroundTaskContext("echo"),
+			);
+			expect(bgVerdict.action).toBe("require_approval");
+		});
 	});
 
 	it("requires approval when human egress sees unredacted PII", () => {

@@ -29,6 +29,11 @@ import type {
 	ThinkingLevel,
 	ToolResultMessage,
 } from "../agent/types.js";
+import {
+	loadCommandCatalog,
+	renderCommandPrompt,
+	validateCommandArgs,
+} from "../commands/catalog.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import {
@@ -737,6 +742,7 @@ export class TuiRenderer {
 			handleFooter: (context) => this.handleFooterCommand(context),
 			handleCompactTools: (context) =>
 				this.handleCompactToolsCommand(context.rawInput),
+			handleCommands: (context) => this.handleCommandsCommand(context),
 			handleQueue: (context) => this.handleQueueCommand(context),
 			handleBranch: (context) => this.handleBranchCommand(context),
 			handleLogin: (context) => this.handleLoginCommand(context),
@@ -746,6 +752,7 @@ export class TuiRenderer {
 				process.exit(0);
 			},
 			handleApprovals: (context) => this.handleApprovalsCommand(context),
+			handlePlanMode: (context) => this.handlePlanModeCommand(context),
 			handleNewChat: (context) => this.handleNewChatCommand(context),
 			handleInitAgents: (context) => this.handleInitCommand(context),
 			handleMcp: (context) => this.handleMcpCommand(context),
@@ -1804,6 +1811,82 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
+	private handlePlanModeCommand(context: CommandExecutionContext): void {
+		const arg = context.argumentText.trim().toLowerCase();
+		if (arg) {
+			if (!["on", "off"].includes(arg)) {
+				context.showError('Plan mode must be "on" or "off".');
+				return;
+			}
+			process.env.COMPOSER_PLAN_MODE = arg === "on" ? "1" : "0";
+			this.notificationView.showToast(
+				`Plan mode ${arg === "on" ? "enabled" : "disabled"}.`,
+				"success",
+			);
+			this.refreshFooterHint();
+		}
+		const status =
+			process.env.COMPOSER_PLAN_MODE === "1" ? "enabled" : "disabled";
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(`Plan mode is ${status}.`, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private handleCommandsCommand(context: CommandExecutionContext): void {
+		const arg = context.argumentText.trim();
+		const [action, ...rest] = arg.split(/\s+/).filter(Boolean);
+		const catalog = loadCommandCatalog(process.cwd());
+		if (!action || action === "list") {
+			if (catalog.length === 0) {
+				context.showInfo(
+					"No commands found in ~/.composer/commands or .composer/commands.",
+				);
+				return;
+			}
+			const lines = catalog.map(
+				(cmd) =>
+					`• ${cmd.name} – ${cmd.description ?? "(no description)"} (${cmd.source})`,
+			);
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
+			this.ui.requestRender();
+			return;
+		}
+		if (action !== "run") {
+			context.showError(
+				"Usage: /commands list | /commands run <name> arg=value ...",
+			);
+			return;
+		}
+		const name = rest.shift();
+		if (!name) {
+			context.showError("Specify a command name to run.");
+			return;
+		}
+		const cmd = catalog.find((c) => c.name === name);
+		if (!cmd) {
+			context.showError(`Command ${name} not found.`);
+			return;
+		}
+		const args: Record<string, string> = {};
+		for (const token of rest) {
+			const [k, v] = token.split("=");
+			if (k && v !== undefined) args[k] = v;
+		}
+		const validation = validateCommandArgs(cmd, args);
+		if (validation) {
+			context.showError(validation);
+			return;
+		}
+		const prompt = renderCommandPrompt(cmd, args);
+		this.editor.setContent(prompt);
+		this.notificationView.showToast(
+			`Inserted command "${cmd.name}" into the composer. Edit then submit.`,
+			"info",
+		);
+		this.ui.requestRender();
+	}
+
 	private handleNewChatCommand(context: CommandExecutionContext): void {
 		if (this.isAgentRunning) {
 			context.showError(
@@ -2066,6 +2149,9 @@ export class TuiRenderer {
 		const badges: string[] = [];
 		if (isSafeModeEnabled()) {
 			badges.push("safe:on");
+		}
+		if (process.env.COMPOSER_PLAN_MODE === "1") {
+			badges.push("plan:on");
 		}
 		const approvalMode = this.approvalService.getMode();
 		if (approvalMode && approvalMode !== "auto") {

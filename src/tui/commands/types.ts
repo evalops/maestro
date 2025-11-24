@@ -54,6 +54,8 @@ export interface CommandHandlers {
 	branch(context: CommandExecutionContext): void;
 	quit(context: CommandExecutionContext): void;
 	approvals(context: CommandExecutionContext): void;
+	planMode(context: CommandExecutionContext): void;
+	commands(context: CommandExecutionContext): void | Promise<void>;
 	newChat(context: CommandExecutionContext): void;
 	initAgents(context: CommandExecutionContext): void;
 	mcp(context: CommandExecutionContext): void;

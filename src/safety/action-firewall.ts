@@ -108,6 +108,25 @@ function isHumanFacingTool(toolName: string): boolean {
 
 export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
+		id: "plan-mode-confirm",
+		description:
+			"When plan mode is enabled, require approval before mutating commands",
+		match: (ctx) => {
+			if (process.env.COMPOSER_PLAN_MODE !== "1") return false;
+			const name = ctx.toolName;
+			if (name === "write" || name === "edit" || name === "bash") return true;
+			if (name === "background_tasks") {
+				const args = getArgsObject(ctx);
+				const action = args?.action;
+				const shell = args?.shell === true;
+				return action === "start" && shell;
+			}
+			return false;
+		},
+		reason: (ctx) =>
+			`Plan mode requires confirmation before executing ${ctx.toolName}. Toggle with /plan-mode or COMPOSER_PLAN_MODE=0.`,
+	},
+	{
 		id: "command-rm-rf",
 		description: "High-risk recursive delete",
 		match: (ctx) => {
