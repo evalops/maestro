@@ -7,7 +7,7 @@ import {
 } from "../../session/manager.js";
 import { recordSseSkip } from "../../telemetry.js";
 import type { WebServerContext } from "../app-context.js";
-import { getCircuitBreaker } from "../circuit-breaker.js";
+import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
@@ -43,7 +43,7 @@ export async function handleChat(
 			? (chatReq.messages as ComposerMessage[])
 			: [];
 		if (incomingMessages.length === 0) {
-			sendJson(res, 400, { error: "No messages supplied" }, cors);
+			sendJson(res, 400, { error: "No messages supplied" }, cors, req);
 			return;
 		}
 
@@ -54,20 +54,27 @@ export async function handleChat(
 				400,
 				{ error: "Last message must be a user message" },
 				cors,
+				req,
 			);
 			return;
 		}
 
 		const userInput = (latestMessage.content ?? "").trim();
 		if (!userInput) {
-			sendJson(res, 400, { error: "User message cannot be empty" }, cors);
+			sendJson(res, 400, { error: "User message cannot be empty" }, cors, req);
 			return;
 		}
 
 		if (acquireSse) {
 			sseLease = acquireSse();
 			if (!sseLease) {
-				sendJson(res, 429, { error: "Too many active SSE connections" }, cors);
+				sendJson(
+					res,
+					429,
+					{ error: "Too many active SSE connections" },
+					cors,
+					req,
+				);
 				return;
 			}
 		}
@@ -193,14 +200,7 @@ export async function handleChat(
 
 		try {
 			// Wrap agent.prompt in a circuit breaker
-			const breaker = getCircuitBreaker(
-				`agent-prompt-${registeredModel.provider}`,
-				{
-					failureThreshold: 5,
-					resetTimeoutMs: 30000,
-					halfOpenMaxAttempts: 1,
-				},
-			);
+			const breaker = getAgentCircuitBreaker(registeredModel.provider);
 
 			await breaker.execute(() => agent.prompt(userInput));
 
@@ -218,7 +218,7 @@ export async function handleChat(
 		}
 	} catch (error) {
 		console.error("Chat error:", error);
-		respondWithApiError(res, error, 500, cors);
+		respondWithApiError(res, error, 500, cors, req);
 	} finally {
 		if (sseLease && releaseSse) {
 			releaseSse(sseLease);

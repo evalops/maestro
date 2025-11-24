@@ -29,16 +29,16 @@ export async function handleSessions(
 				messageCount: s.messageCount || 0,
 			}));
 
-			sendJson(res, 200, { sessions: sessionList }, cors);
+			sendJson(res, 200, { sessions: sessionList }, cors, req);
 		} else if (req.method === "GET" && sessionId) {
 			if (!sessionIdPattern.test(sessionId)) {
-				sendJson(res, 400, { error: "Invalid session id" }, cors);
+				sendJson(res, 400, { error: "Invalid session id" }, cors, req);
 				return;
 			}
 			const session = await sessionManager.loadSession(sessionId);
 
 			if (!session) {
-				sendJson(res, 404, { error: "Session not found" }, cors);
+				sendJson(res, 404, { error: "Session not found" }, cors, req);
 				return;
 			}
 
@@ -51,7 +51,7 @@ export async function handleSessions(
 				messages: convertAppMessagesToComposer(session.messages || []),
 			};
 
-			sendJson(res, 200, responseBody, cors);
+			sendJson(res, 200, responseBody, cors, req);
 		} else if (req.method === "POST" && !sessionId) {
 			const { title } = await readJsonBody<{ title?: string }>(req);
 			const session = await sessionManager.createSession({ title });
@@ -64,10 +64,10 @@ export async function handleSessions(
 				messages: convertAppMessagesToComposer(session.messages || []),
 			};
 
-			sendJson(res, 201, responseBody, cors);
+			sendJson(res, 201, responseBody, cors, req);
 		} else if (req.method === "DELETE" && sessionId) {
 			if (!sessionIdPattern.test(sessionId)) {
-				sendJson(res, 400, { error: "Invalid session id" }, cors);
+				sendJson(res, 400, { error: "Invalid session id" }, cors, req);
 				return;
 			}
 			await sessionManager.deleteSession(sessionId);
@@ -82,6 +82,6 @@ export async function handleSessions(
 			res.end(JSON.stringify({ error: "Not found" }));
 		}
 	} catch (error) {
-		respondWithApiError(res, error, 500, cors);
+		respondWithApiError(res, error, 500, cors, req);
 	}
 }

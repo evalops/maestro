@@ -13,7 +13,8 @@ import {
 	parseAndValidateJson,
 } from "../validation.js";
 
-export function handleModels(
+export async function handleModels(
+	_req: IncomingMessage,
 	res: ServerResponse,
 	cors: Record<string, string>,
 ) {
@@ -34,13 +35,14 @@ export function handleModels(
 		},
 	}));
 
-	sendJson(res, 200, { models: modelList }, cors);
+	sendJson(res, 200, { models: modelList }, cors, _req);
 }
 
 function respondWithModel(
 	res: ServerResponse,
 	model: RegisteredModel,
 	cors: Record<string, string>,
+	req?: IncomingMessage,
 ) {
 	sendJson(
 		res,
@@ -54,6 +56,7 @@ function respondWithModel(
 			reasoning: model.reasoning,
 		},
 		cors,
+		req,
 	);
 }
 
@@ -85,7 +88,7 @@ export async function handleModel(
 			res.end(JSON.stringify({ error: "No models registered" }));
 			return;
 		}
-		respondWithModel(res, active, cors);
+		respondWithModel(res, active, cors, req);
 		return;
 	}
 
@@ -105,7 +108,7 @@ export async function handleModel(
 		const registeredModel = getRegisteredModelOrThrow(selection);
 		await ensureCredential(registeredModel.provider);
 		if (onSelect) onSelect(registeredModel);
-		respondWithModel(res, registeredModel, cors);
+		respondWithModel(res, registeredModel, cors, req);
 		return;
 	}
 

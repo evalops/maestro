@@ -121,6 +121,7 @@ export function sendJson(
 	status: number,
 	payload: unknown,
 	corsHeaders?: Record<string, string>,
+	req?: IncomingMessage,
 ): void {
 	if (res.writableEnded || res.headersSent) return;
 
@@ -133,8 +134,9 @@ export function sendJson(
 	// Check for compression support
 	// Note: In a real production setup, Nginx/Cloudflare usually handles this.
 	// But for a self-contained server, we do it here.
-	const req = (res as any).req as IncomingMessage; // Access request from response
-	const acceptEncoding = req?.headers["accept-encoding"] || "";
+	// We prefer the explicitly passed request, but fall back to attached req if available
+	const request = req || ((res as any).req as IncomingMessage);
+	const acceptEncoding = request?.headers["accept-encoding"] || "";
 
 	// Only compress if larger than 1KB
 	if (body.length > 1024) {
@@ -193,7 +195,7 @@ export function authenticateRequest(
 	}
 	const provided = getRequestToken(req);
 	if (!provided || !secureCompare(provided, webApiKey)) {
-		sendJson(res, 401, { error: "Unauthorized" }, corsHeaders);
+		sendJson(res, 401, { error: "Unauthorized" }, corsHeaders, req);
 		return false;
 	}
 	return true;
@@ -204,6 +206,7 @@ export function respondWithApiError(
 	error: unknown,
 	fallbackStatus = 500,
 	corsHeaders?: Record<string, string>,
+	req?: IncomingMessage,
 ): boolean {
 	const originalStatus = Status.fromError(error);
 	// Clone to avoid mutation of original error status
@@ -235,6 +238,7 @@ export function respondWithApiError(
 			details: status.details.length ? status.details : undefined,
 		},
 		corsHeaders,
+		req,
 	);
 	return true;
 }

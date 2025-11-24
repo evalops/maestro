@@ -130,3 +130,13 @@ export function getCircuitBreaker(
 	// biome-ignore lint/style/noNonNullAssertion: we just set it
 	return circuitBreakers.get(name)!;
 }
+
+const AGENT_BREAKER_OPTIONS: CircuitBreakerOptions = {
+	failureThreshold: 5,
+	resetTimeoutMs: 30000,
+	halfOpenMaxAttempts: 1,
+};
+
+export function getAgentCircuitBreaker(provider: string): CircuitBreaker {
+	return getCircuitBreaker(`agent-prompt-${provider}`, AGENT_BREAKER_OPTIONS);
+}

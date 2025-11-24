@@ -51,13 +51,14 @@ export function createRoutes(context: WebServerContext): Route[] {
 						totalLongRunning: longRunning.length,
 					},
 					corsHeaders,
+					_req, // Pass request for potential compression access
 				);
 			},
 		},
 		{
 			method: "GET",
 			path: "/api/models",
-			handler: (_req, res) => handleModels(res, corsHeaders),
+			handler: (req, res) => handleModels(req, res, corsHeaders),
 		},
 		{
 			method: "GET",

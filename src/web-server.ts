@@ -283,7 +283,7 @@ const router = createRequestHandler(
 	routes,
 	(req, res, pathname) => {
 		if (pathname.startsWith("/api")) {
-			sendJson(res, 404, { error: "Not found" }, CORS_HEADERS);
+			sendJson(res, 404, { error: "Not found" }, CORS_HEADERS, req);
 			return;
 		}
 		serveStatic(pathname, req, res, {
@@ -333,7 +333,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	// Set a hard timeout for processing
 	// Skip for SSE endpoints which are meant to be long-lived
 	if (!pathname.startsWith("/api/chat")) {
-		const timeout = setTimeout(() => {
+		// biome-ignore lint/style/useConst: needed for closure reference before assignment
+		let timeout: NodeJS.Timeout;
+
+		const cleanup = () => {
+			if (timeout) clearTimeout(timeout);
+		};
+
+		res.on("finish", cleanup);
+		res.on("close", cleanup);
+
+		timeout = setTimeout(() => {
 			if (!res.writableEnded) {
 				requestContextStorage.run(context, () => {
 					logError(`Request timeout for ${pathname} [${requestId}]`);
@@ -352,10 +362,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				res.destroy();
 			}
 		}, REQUEST_TIMEOUT_MS);
-
-		// Clear timeout if request finishes normally to prevent double logging
-		res.on("finish", () => clearTimeout(timeout));
-		res.on("close", () => clearTimeout(timeout));
 	}
 
 	// Track request for introspection (Channelz) and graceful shutdown
