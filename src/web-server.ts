@@ -172,12 +172,20 @@ const modelSelectionStore = {
 	},
 	get(): { provider: string; modelId: string } | null {
 		if (!this.currentKey) return null;
-		const [provider, modelId] = this.currentKey.split("/");
+		const [provider, ...modelParts] = this.currentKey.split("/");
+		const modelId = modelParts.join("/");
 		return provider && modelId ? { provider, modelId } : null;
 	},
 	reset() {
 		this.currentKey = null;
 	},
+};
+
+// Exposed for testing/internal use only
+export const __modelSelectionStore = {
+	set: (model: RegisteredModel) => modelSelectionStore.set(model),
+	reset: () => modelSelectionStore.reset(),
+	get: () => modelSelectionStore.get(),
 };
 
 function logMissingCredentialHints(provider: string): void {
