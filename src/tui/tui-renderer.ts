@@ -1210,7 +1210,6 @@ export class TuiRenderer {
 			return;
 		}
 		this.footerMode = mode;
-		this.footerMode = mode;
 		this.footer.setMode(mode);
 		this.persistUiState({ footerMode: mode });
 		if (!this.isAgentRunning) {
