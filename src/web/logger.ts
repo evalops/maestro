@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import {
 	type RequestContext,
 	requestContextStorage,
@@ -19,6 +20,14 @@ const CYAN = `${ESC}36m`;
 
 const LOG_FORMAT =
 	process.env.COMPOSER_LOG_FORMAT?.toLowerCase() === "json" ? "json" : "text";
+
+const LOAD_SHEDDING_THRESHOLD_MS =
+	Number.parseInt(
+		process.env.COMPOSER_LOAD_SHEDDING_THRESHOLD_MS || "200",
+		10,
+	) || 200;
+
+const HISTOGRAM_SIZE = 100;
 
 function colorize(text: string | number, color: string): string {
 	if (LOG_FORMAT === "json") return String(text);
@@ -63,6 +72,35 @@ export function formatDuration(start: number): string {
 	return colorize(text, DIM);
 }
 
+// Simple histogram implementation for P50/P95/P99
+class Histogram {
+	private values: number[] = [];
+	private maxSize: number;
+
+	constructor(maxSize = 1000) {
+		this.maxSize = maxSize;
+	}
+
+	add(value: number) {
+		this.values.push(value);
+		if (this.values.length > this.maxSize) {
+			this.values.shift(); // Keep simple sliding window
+		}
+	}
+
+	getPercentile(percentile: number): number {
+		if (this.values.length === 0) return 0;
+		// Sort copy to avoid mutating data
+		const sorted = [...this.values].sort((a, b) => a - b);
+		const index = Math.ceil((percentile / 100) * sorted.length) - 1;
+		return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+	}
+}
+
+// Event Loop Monitor
+const loopMonitor = monitorEventLoopDelay({ resolution: 10 });
+loopMonitor.enable();
+
 // Request stats tracking
 export interface RequestStats {
 	total: number;
@@ -70,6 +108,10 @@ export interface RequestStats {
 	totalDuration: number;
 	startTime: number;
 	requestsPerSecond: number;
+	latencyP50: number;
+	latencyP95: number;
+	latencyP99: number;
+	eventLoopLag: number; // Current event loop lag in ms
 }
 
 const stats: RequestStats = {
@@ -78,7 +120,13 @@ const stats: RequestStats = {
 	totalDuration: 0,
 	startTime: Date.now(),
 	requestsPerSecond: 0,
+	latencyP50: 0,
+	latencyP95: 0,
+	latencyP99: 0,
+	eventLoopLag: 0,
 };
+
+const latencyHistogram = new Histogram(HISTOGRAM_SIZE);
 
 let statsInterval: NodeJS.Timeout | null = null;
 
@@ -90,12 +138,24 @@ export function startStatsCollection() {
 	stats.totalDuration = 0;
 	stats.requestsPerSecond = 0;
 
+	let lastTotal = 0;
+
 	statsInterval = setInterval(() => {
 		const now = Date.now();
-		const elapsedSeconds = (now - stats.startTime) / 1000;
-		if (elapsedSeconds > 0) {
-			stats.requestsPerSecond = stats.total / elapsedSeconds;
-		}
+		// Calculate RPS for this interval
+		const currentTotal = stats.total;
+		const diff = currentTotal - lastTotal;
+		const rps = diff / 5; // 5 seconds interval
+		lastTotal = currentTotal;
+
+		stats.requestsPerSecond = rps;
+		stats.latencyP50 = latencyHistogram.getPercentile(50);
+		stats.latencyP95 = latencyHistogram.getPercentile(95);
+		stats.latencyP99 = latencyHistogram.getPercentile(99);
+
+		// Convert nanoseconds to milliseconds
+		stats.eventLoopLag = loopMonitor.mean / 1_000_000;
+		loopMonitor.reset();
 	}, 5000);
 }
 
@@ -104,6 +164,12 @@ export function stopStatsCollection() {
 		clearInterval(statsInterval);
 		statsInterval = null;
 	}
+	loopMonitor.disable();
+}
+
+export function isOverloaded(): boolean {
+	// Check if event loop lag exceeds threshold
+	return loopMonitor.mean / 1_000_000 > LOAD_SHEDDING_THRESHOLD_MS;
 }
 
 export function getStatsSnapshot(): RequestStats {
@@ -111,16 +177,15 @@ export function getStatsSnapshot(): RequestStats {
 }
 
 export function getStatsSummary(): string {
-	const now = Date.now();
-	const elapsedSeconds = (now - stats.startTime) / 1000;
-	const rps =
-		elapsedSeconds > 0 ? (stats.total / elapsedSeconds).toFixed(2) : "0.00";
-	const avgDuration =
-		stats.total > 0 ? (stats.totalDuration / stats.total).toFixed(2) : "0.00";
+	const rps = stats.requestsPerSecond.toFixed(2);
+	const p99 = stats.latencyP99.toFixed(0);
 	const errorRate =
 		stats.total > 0 ? ((stats.errors / stats.total) * 100).toFixed(1) : "0.0";
+	const lag = stats.eventLoopLag.toFixed(1);
 
-	return `${colorize("RPS:", DIM)} ${colorize(rps, CYAN)} | ${colorize("Avg:", DIM)} ${colorize(`${avgDuration}ms`, CYAN)} | ${colorize("Err:", DIM)} ${colorize(`${errorRate}%`, stats.errors > 0 ? RED : GREEN)}`;
+	// Compact summary
+	// RPS: 12.50 | P99: 120ms | Err: 0.0% | Lag: 5.2ms
+	return `${colorize("RPS:", DIM)} ${colorize(rps, CYAN)} | ${colorize("P99:", DIM)} ${colorize(`${p99}ms`, CYAN)} | ${colorize("Err:", DIM)} ${colorize(`${errorRate}%`, stats.errors > 0 ? RED : GREEN)} | ${colorize("Lag:", DIM)} ${colorize(`${lag}ms`, stats.eventLoopLag > 50 ? YELLOW : GREEN)}`;
 }
 
 export function logRequest(
@@ -129,6 +194,8 @@ export function logRequest(
 	start: number,
 ) {
 	const duration = performance.now() - start;
+	latencyHistogram.add(duration);
+
 	const store = requestContextStorage.getStore();
 	const requestId = store?.requestId || "unknown";
 	const shortId = requestId.slice(0, 8);
@@ -150,6 +217,10 @@ export function logRequest(
 				statusCode,
 				durationMs: duration,
 				userAgent: req.headers["user-agent"],
+				metrics: {
+					eventLoopLag: loopMonitor.mean / 1_000_000,
+					p99: stats.latencyP99,
+				},
 			}),
 		);
 		return;
@@ -197,6 +268,9 @@ export function logStartup(port: number) {
 	);
 	console.log(
 		`  ${colorize("►", GREEN)}  Monitor:  ${colorize("Live stats enabled", DIM)}`,
+	);
+	console.log(
+		`  ${colorize("►", GREEN)}  Safety:   ${colorize(`Load shedding > ${LOAD_SHEDDING_THRESHOLD_MS}ms lag`, DIM)}`,
 	);
 
 	console.log(`\n${line}\n`);

@@ -33,6 +33,7 @@ import { recordApiRequest } from "./telemetry.js";
 import { codingTools } from "./tools/index.js";
 import type { WebServerContext } from "./web/app-context.js";
 import {
+	isOverloaded,
 	logRequest,
 	logStartup,
 	startStatsCollection,
@@ -280,6 +281,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	};
 
 	requestContextStorage.run(context, async () => {
+		// Load shedding check
+		if (
+			isOverloaded() &&
+			pathname !== "/healthz" &&
+			pathname !== "/api/metrics"
+		) {
+			res.writeHead(503, {
+				"Content-Type": "application/json",
+				"Retry-After": "5",
+				...CORS_HEADERS,
+			});
+			res.end(
+				JSON.stringify({ error: "Service Unavailable: Server is overloaded" }),
+			);
+			return;
+		}
+
 		res.on("finish", () => {
 			const duration = performance.now() - start;
 			logRequest(req, res.statusCode, start);
