@@ -2,6 +2,30 @@ import type { Api, Model } from "../agent/types.js";
 import { MODELS as GENERATED_MODELS } from "./models.generated.js";
 import { normalizeModelBaseUrl } from "./url-normalize.js";
 
+// Manual overlay for Claude Opus 4.5 (not yet in models.dev registry)
+const ANTHROPIC_OPUS_45_OVERLAY = {
+	anthropic: {
+		"claude-opus-4-5-20251101": {
+			id: "claude-opus-4-5-20251101",
+			name: "Claude Opus 4.5",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 5,
+				output: 25,
+				cacheRead: 0.5,
+				cacheWrite: 6.25,
+			},
+			contextWindow: 200000,
+			maxTokens: 32000,
+		} as Model<"anthropic-messages">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 // Manual overlay for OpenRouter Responses models (currently not emitted by generator)
 const OPENROUTER_RESPONSES_OVERLAY = {
 	openrouter: {
@@ -184,6 +208,21 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 	}
 
 	// Apply overlay additions
+	for (const [provider, models] of Object.entries(ANTHROPIC_OPUS_45_OVERLAY)) {
+		if (!converted[provider]) {
+			converted[provider] = [];
+		}
+		for (const model of Object.values(models)) {
+			converted[provider] = converted[provider].filter(
+				(m) => m.id !== model.id,
+			);
+			converted[provider].push({
+				...model,
+				baseUrl: normalizeModelBaseUrl(model),
+			});
+		}
+	}
+
 	for (const [provider, models] of Object.entries(
 		OPENROUTER_RESPONSES_OVERLAY,
 	)) {
