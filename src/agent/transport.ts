@@ -497,9 +497,7 @@ export class ProviderTransport implements AgentTransport {
 					const recent = timestamps.filter(
 						(ts) => now - ts < ProviderTransport.TOOL_RATE_WINDOW_MS,
 					);
-					recent.push(now);
-					this.recentToolTimestamps.set(toolCall.name, recent);
-					if (recent.length > ProviderTransport.TOOL_RATE_LIMIT) {
+					if (recent.length >= ProviderTransport.TOOL_RATE_LIMIT) {
 						const rateMessage: ToolResultMessage = {
 							role: "toolResult",
 							toolCallId: toolCall.id,
@@ -518,6 +516,8 @@ export class ProviderTransport implements AgentTransport {
 						}
 						continue;
 					}
+					recent.push(now);
+					this.recentToolTimestamps.set(toolCall.name, recent);
 					this.recentToolCalls.push({ name: toolCall.name, signature });
 					if (
 						this.recentToolCalls.length >
