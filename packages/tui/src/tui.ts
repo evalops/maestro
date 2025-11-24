@@ -2,7 +2,7 @@
  * Minimal TUI implementation with differential rendering
  */
 import type { Terminal } from "./terminal.js";
-import { visibleWidth } from "./utils.js";
+import { visibleWidth, wrapAnsiLines } from "./utils.js";
 
 /**
  * Component interface - all components must implement this
@@ -104,7 +104,7 @@ export class TUI extends Container {
 	}
 
 	private doRender(): void {
-		const width = this.terminal.columns;
+		const width = Math.max(1, this.terminal.columns);
 		const height = this.terminal.rows;
 
 		// Render all components to get new lines

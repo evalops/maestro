@@ -21,4 +21,4 @@ export { Spacer } from "./components/spacer.js";
 export { Text } from "./components/text.js";
 export { ProcessTerminal, type Terminal } from "./terminal.js";
 export { type Component, Container, TUI } from "./tui.js";
-export { visibleWidth } from "./utils.js";
+export { visibleWidth, wrapAnsiLine, wrapAnsiLines } from "./utils.js";
