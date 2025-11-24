@@ -844,12 +844,8 @@ export class TuiRenderer {
 
 		if (this.zenMode) {
 			this.footer.setMode("solo");
-			this.statusRailContainer.clear();
 		} else {
 			this.renderHeader();
-			// Ensure status rail is present
-			this.statusRailContainer.clear();
-			this.statusRailContainer.addChild(this.statusRail);
 		}
 
 		// Show welcome animation initially (can be disabled in minimal mode)
@@ -864,6 +860,11 @@ export class TuiRenderer {
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.statusRailContainer);
+
+		// Always attach status rail (it auto-hides when empty)
+		// This ensures security notifications are never suppressed.
+		this.statusRailContainer.addChild(this.statusRail);
+
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(this.editorContainer); // Use container that can hold editor or selector
 		this.refreshFooterHint();
@@ -1112,15 +1113,15 @@ export class TuiRenderer {
 
 		if (enabled) {
 			this.headerContainer.clear();
-			this.statusRailContainer.clear();
+			// We do NOT clear statusRailContainer anymore, to ensure critical security
+			// notifications (e.g. approvals, auth errors) remain visible.
+			// The status rail component itself renders nothing if there are no toasts.
 			this.footer.setMode("solo");
 			if (this.welcomeAnimation) {
 				this.dismissWelcomeAnimation();
 			}
 		} else {
 			this.renderHeader();
-			this.statusRailContainer.clear(); // Ensure no duplicates
-			this.statusRailContainer.addChild(this.statusRail);
 			// Restore footer mode from state if zen owned it; otherwise keep user's choice
 			const currentFooterMode = this.footer.getMode();
 			if (currentFooterMode === "solo") {
