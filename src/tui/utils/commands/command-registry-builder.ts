@@ -40,6 +40,7 @@ interface CommandRegistryOptions {
 	handleChangelog: (context: CommandExecutionContext) => void;
 	handleConfig: (context: CommandExecutionContext) => void | Promise<void>;
 	handleCost: (context: CommandExecutionContext) => void | Promise<void>;
+	handleQuota: (context: CommandExecutionContext) => void | Promise<void>;
 	handleTelemetry: (context: CommandExecutionContext) => void;
 	handleTraining: (context: CommandExecutionContext) => void;
 	handleStats: (context: CommandExecutionContext) => void | Promise<void>;
@@ -97,6 +98,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			changelog: opts.handleChangelog,
 			config: opts.handleConfig,
 			cost: opts.handleCost,
+			quota: opts.handleQuota,
 			telemetry: opts.handleTelemetry,
 			training: opts.handleTraining,
 			stats: opts.handleStats,

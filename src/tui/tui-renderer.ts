@@ -102,6 +102,7 @@ import { SessionSwitcherView } from "./session/session-switcher-view.js";
 import { SessionView } from "./session/session-view.js";
 import { CostView } from "./status/cost-view.js";
 import { DiagnosticsView } from "./status/diagnostics-view.js";
+import { QuotaView } from "./status/quota-view.js";
 import { TelemetryView } from "./status/telemetry-view.js";
 import { TrainingView } from "./status/training-view.js";
 import { StreamingView } from "./streaming-view.js";
@@ -261,6 +262,7 @@ export class TuiRenderer {
 	private updateView: UpdateView;
 	private configView: ConfigView;
 	private costView: CostView;
+	private quotaView: QuotaView;
 	private runController: RunController;
 	private readonly focusEditor = (): void => {
 		this.ui.setFocus(this.editor);
@@ -686,6 +688,16 @@ export class TuiRenderer {
 			showInfo: (message) => this.notificationView.showInfo(message),
 			showError: (message) => this.notificationView.showError(message),
 		});
+		this.quotaView = new QuotaView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+			getSessionTokenUsage: () => {
+				const stats = calculateFooterStats(this.agent.state);
+				return stats.totalInput + stats.totalOutput;
+			},
+		});
 		this.telemetryView = new TelemetryView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -755,6 +767,7 @@ export class TuiRenderer {
 				this.changelogView.handleChangelogCommand(),
 			handleConfig: (context) => this.configView.handleConfigCommand(context),
 			handleCost: (context) => this.costView.handleCostCommand(context),
+			handleQuota: (context) => this.quotaView.handleQuotaCommand(context),
 			handleTelemetry: (context) =>
 				this.telemetryView.handleTelemetryCommand(context),
 			handleTraining: (context) =>

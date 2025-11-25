@@ -460,6 +460,23 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "quota",
+				description: "Show token quota status and usage limits",
+				usage: "/quota [detailed|models|alerts|limit <tokens>|help]",
+				tags: ["usage"],
+				examples: [
+					"/quota",
+					"/quota detailed",
+					"/quota models",
+					"/quota limit 100000",
+				],
+			},
+			withArgs("quota"),
+			handlers.quota,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "stats",
 				description: "Show combined status and cost overview",
 				usage: "/stats",
