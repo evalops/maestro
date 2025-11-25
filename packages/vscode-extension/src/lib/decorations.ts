@@ -1,8 +1,9 @@
 import * as vscode from "vscode";
 
-export class ThinkingManager {
+export class ThinkingManager implements vscode.Disposable {
 	private decorationType: vscode.TextEditorDecorationType;
 	private thinkingLines: Map<string, number[]> = new Map(); // uri -> line numbers
+	private disposables: vscode.Disposable[] = [];
 
 	constructor() {
 		this.decorationType = vscode.window.createTextEditorDecorationType({
@@ -19,6 +20,13 @@ export class ThinkingManager {
 			),
 			overviewRulerLane: vscode.OverviewRulerLane.Right,
 		});
+
+		// Clean up stored lines when a document is closed to prevent leaks
+		this.disposables.push(
+			vscode.workspace.onDidCloseTextDocument((doc) => {
+				this.thinkingLines.delete(doc.uri.toString());
+			}),
+		);
 	}
 
 	public setThinking(editor: vscode.TextEditor, line: number) {
@@ -52,6 +60,15 @@ export class ThinkingManager {
 		const lines = this.thinkingLines.get(uri) || [];
 
 		const ranges = lines.map((line) => {
+			// Ensure line is within bounds
+			if (line >= editor.document.lineCount) {
+				return new vscode.Range(
+					editor.document.lineCount - 1,
+					0,
+					editor.document.lineCount - 1,
+					0,
+				);
+			}
 			const range = editor.document.lineAt(line).range;
 			return new vscode.Range(range.start, range.end);
 		});
@@ -61,5 +78,9 @@ export class ThinkingManager {
 
 	public dispose() {
 		this.decorationType.dispose();
+		for (const d of this.disposables) {
+			d.dispose();
+		}
+		this.thinkingLines.clear();
 	}
 }

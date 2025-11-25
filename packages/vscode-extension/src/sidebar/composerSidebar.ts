@@ -3,13 +3,17 @@ import { buildComposerUrl } from "../lib/actions";
 import { ApiClient, type Message } from "../lib/api-client";
 import type { ThinkingManager } from "../lib/decorations";
 
-export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
+export class ComposerSidebarProvider
+	implements vscode.WebviewViewProvider, vscode.Disposable
+{
 	public static readonly viewType = "composer.chatView";
 
 	private _view?: vscode.WebviewView;
 	private _apiClient: ApiClient;
 	private _messages: Message[] = [];
 	private _currentSessionId?: string;
+	private _disposables: vscode.Disposable[] = [];
+	private _isProcessing = false;
 
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
@@ -19,6 +23,13 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 		const baseUrl =
 			config.get<string>("apiEndpoint") || "http://localhost:8080";
 		this._apiClient = new ApiClient(baseUrl);
+	}
+
+	public dispose() {
+		for (const d of this._disposables) {
+			d.dispose();
+		}
+		this._disposables = [];
 	}
 
 	public clearChat() {
@@ -43,65 +54,75 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 
 		webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
-		webviewView.webview.onDidReceiveMessage((data) => {
-			switch (data.type) {
-				case "openDocs": {
-					vscode.env.openExternal(vscode.Uri.parse(buildComposerUrl("docs")));
-					break;
-				}
-				case "getEditorContext": {
-					this._sendEditorContext();
-					break;
-				}
-				case "getHistory": {
-					if (this._messages.length > 0) {
-						this._view?.webview.postMessage({
-							type: "history",
-							messages: this._messages,
-						});
+		const messageDisposable = webviewView.webview.onDidReceiveMessage(
+			(data) => {
+				switch (data.type) {
+					case "openDocs": {
+						vscode.env.openExternal(vscode.Uri.parse(buildComposerUrl("docs")));
+						break;
 					}
-					break;
+					case "getEditorContext": {
+						this._sendEditorContext();
+						break;
+					}
+					case "getHistory": {
+						if (this._messages.length > 0) {
+							this._view?.webview.postMessage({
+								type: "history",
+								messages: this._messages,
+							});
+						}
+						break;
+					}
+					case "sendMessage": {
+						this._handleUserMessage(data.text);
+						break;
+					}
+					case "onInfo": {
+						if (data.value) vscode.window.showInformationMessage(data.value);
+						break;
+					}
+					case "onError": {
+						if (data.value) vscode.window.showErrorMessage(data.value);
+						break;
+					}
 				}
-				case "sendMessage": {
-					this._handleUserMessage(data.text);
-					break;
-				}
-				case "onInfo": {
-					if (data.value) vscode.window.showInformationMessage(data.value);
-					break;
-				}
-				case "onError": {
-					if (data.value) vscode.window.showErrorMessage(data.value);
-					break;
-				}
-			}
-		});
+			},
+		);
+		this._disposables.push(messageDisposable);
 
-		vscode.window.onDidChangeActiveTextEditor(() => {
-			this._sendEditorContext();
-		});
-
-		vscode.workspace.onDidChangeTextDocument((e) => {
-			if (
-				e.document === vscode.window.activeTextEditor?.document &&
-				e.contentChanges.length > 0
-			) {
+		this._disposables.push(
+			vscode.window.onDidChangeActiveTextEditor(() => {
 				this._sendEditorContext();
-			}
-		});
+			}),
+		);
 
-		vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration("composer.apiEndpoint")) {
-				const config = vscode.workspace.getConfiguration("composer");
-				const baseUrl =
-					config.get<string>("apiEndpoint") || "http://localhost:8080";
-				this._apiClient = new ApiClient(baseUrl);
-			}
-		});
+		this._disposables.push(
+			vscode.workspace.onDidChangeTextDocument((e) => {
+				if (
+					e.document === vscode.window.activeTextEditor?.document &&
+					e.contentChanges.length > 0
+				) {
+					this._sendEditorContext();
+				}
+			}),
+		);
+
+		this._disposables.push(
+			vscode.workspace.onDidChangeConfiguration((e) => {
+				if (e.affectsConfiguration("composer.apiEndpoint")) {
+					const config = vscode.workspace.getConfiguration("composer");
+					const baseUrl =
+						config.get<string>("apiEndpoint") || "http://localhost:8080";
+					this._apiClient = new ApiClient(baseUrl);
+				}
+			}),
+		);
 	}
 
 	private async _handleUserMessage(text: string) {
-		if (!this._view) return;
+		if (!this._view || this._isProcessing) return;
+		this._isProcessing = true;
 
 		const userMsg: Message = {
 			role: "user",
@@ -122,6 +143,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 					type: "error",
 					value: "Connection failed",
 				});
+				this._isProcessing = false;
 				return;
 			}
 		}
@@ -187,6 +209,8 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 					thinkingLine,
 				);
 			}
+		} finally {
+			this._isProcessing = false;
 		}
 	}
 
@@ -231,11 +255,17 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 			vscode.Uri.joinPath(this._extensionUri, "media", "highlight.css"),
 		);
 
+		const config = vscode.workspace.getConfiguration("composer");
+		const apiEndpoint =
+			config.get<string>("apiEndpoint") || "http://localhost:8080";
+		let cspConnect = apiEndpoint;
+		if (!cspConnect.startsWith("http")) cspConnect = "http://localhost:8080";
+
 		return /* html */ `<!DOCTYPE html>
 			<html lang="en">
 			<head>
 				<meta charset="UTF-8">
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src http://localhost:*; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};">
+				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ${cspConnect}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};">
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
 				<title>Composer Chat</title>
 				<link href="${styleUri}" rel="stylesheet">
@@ -344,12 +374,12 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						min-width: 0;
 						word-wrap: break-word;
 					}
-					
+
 					/* Markdown Content Styles */
 					.message-content p { margin: 0.5em 0; }
 					.message-content p:first-child { margin-top: 0; }
 					.message-content p:last-child { margin-bottom: 0; }
-					.message-content pre { 
+					.message-content pre {
 						background: var(--vscode-editor-background);
 						padding: 8px;
 						border-radius: 4px;
@@ -378,7 +408,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                         gap: 8px;
 						color: var(--text-secondary);
                     }
-                    
+
 					.input-area {
 						padding: 16px;
 						background: var(--bg-secondary);
@@ -461,7 +491,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                         <h2>Composer Agent</h2>
 						<div id="status-dot" class="status-dot"></div>
                     </div>
-                    
+
                     <div id="context-bar" class="context-bar">
 						<span style="opacity: 0.7">Reading:</span>
                         <span id="context-text">No active file</span>
@@ -540,12 +570,23 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                     function updateContextUI(data) {
                         const dot = document.getElementById('status-dot');
                         const text = document.getElementById('context-text');
-                        
+
                         if (data.hasContext) {
                             dot.className = 'status-dot active';
                             const name = data.filename.split(/[\\\\/]/).pop();
-                            const extra = data.selection ? '(selection)' : '';
-                            text.innerHTML = \`\${name} <span class="context-pill">\${data.languageId}</span> \${extra}\`;
+
+							text.innerHTML = '';
+							const nameSpan = document.createTextNode(name + ' ');
+							text.appendChild(nameSpan);
+
+							const pill = document.createElement('span');
+							pill.className = 'context-pill';
+							pill.textContent = data.languageId;
+							text.appendChild(pill);
+
+							if (data.selection) {
+								text.appendChild(document.createTextNode(' (selection)'));
+							}
                         } else {
                             dot.className = 'status-dot';
                             text.textContent = 'No active file';
@@ -566,8 +607,8 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 							const div = document.createElement('div');
 							div.className = \`message \${msg.role}\`;
 							const avatar = msg.role === 'user' ? 'U' : 'AI';
-							const content = msg.role === 'assistant' 
-								? renderMarkdown(msg.content) 
+							const content = msg.role === 'assistant'
+								? renderMarkdown(msg.content)
 								: msg.content.replace(/</g, '&lt;');
 							div.innerHTML = \`
 								<div class="avatar">\${avatar}</div>
@@ -581,11 +622,11 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 					function showThinking() {
 						if (!currentAssistantMessage) createAssistantMessage();
 						if (thinkingEl) return;
-						
+
 						thinkingEl = document.createElement('div');
 						thinkingEl.className = 'thinking';
 						thinkingEl.innerHTML = 'Thinking<span class="thinking-dots"></span>';
-						
+
 						const content = currentAssistantMessage.querySelector('.message-content');
 						// Insert before actual content
 						if (content.firstChild) {
@@ -620,18 +661,18 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 					function appendToken(text) {
 						if (!currentAssistantMessage) createAssistantMessage();
 						currentAssistantContentRaw += text;
-						
+
 						const contentDiv = currentAssistantMessage.querySelector('.message-content');
-						
+
 						// Re-render markdown
 						// Save thinking element if it exists inside contentDiv (it shouldn't if we structure it right, but let's be safe)
 						// Actually, let's separate thinking from content container to avoid overwriting
-						
+
 						// Check if we have a separate content container or just overwrite innerHTML
 						// We need to preserve thinkingEl if it's a child
-						
+
 						let html = renderMarkdown(currentAssistantContentRaw);
-						
+
 						if (thinkingEl && thinkingEl.parentElement === contentDiv) {
 							contentDiv.innerHTML = '';
 							contentDiv.appendChild(thinkingEl);
@@ -641,7 +682,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						} else {
 							contentDiv.innerHTML = html;
 						}
-						
+
 						const messages = document.getElementById('messages');
 						messages.scrollTop = messages.scrollHeight;
 					}
@@ -690,7 +731,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 					}
 
                     document.getElementById('send-btn').addEventListener('click', sendMessage);
-					
+
 					textarea.addEventListener('keydown', (e) => {
 						if (e.key === 'Enter' && !e.shiftKey) {
 							e.preventDefault();
@@ -707,8 +748,18 @@ function getNonce() {
 	let text = "";
 	const possible =
 		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-	for (let i = 0; i < 32; i++) {
-		text += possible.charAt(Math.floor(Math.random() * possible.length));
+	// Use crypto API if available
+	if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+		const values = new Uint8Array(32);
+		crypto.getRandomValues(values);
+		for (let i = 0; i < 32; i++) {
+			text += possible.charAt(values[i] % possible.length);
+		}
+	} else {
+		// Fallback for environments where crypto is not available (should be rare in modern VS Code)
+		for (let i = 0; i < 32; i++) {
+			text += possible.charAt(Math.floor(Math.random() * possible.length));
+		}
 	}
 	return text;
 }
