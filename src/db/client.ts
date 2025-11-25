@@ -123,9 +123,21 @@ async function handleShutdown(signal: NodeJS.Signals): Promise<void> {
 }
 
 process.once("SIGINT", () => {
-	void handleShutdown("SIGINT");
+	handleShutdown("SIGINT").catch((error) => {
+		logger.error(
+			"Error during SIGINT shutdown",
+			error instanceof Error ? error : undefined,
+		);
+		process.exit(1);
+	});
 });
 
 process.once("SIGTERM", () => {
-	void handleShutdown("SIGTERM");
+	handleShutdown("SIGTERM").catch((error) => {
+		logger.error(
+			"Error during SIGTERM shutdown",
+			error instanceof Error ? error : undefined,
+		);
+		process.exit(1);
+	});
 });

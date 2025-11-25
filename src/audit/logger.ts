@@ -12,6 +12,19 @@ import { createLogger } from "../utils/logger.js";
 const logger = createLogger("audit");
 const ALERT_COOLDOWN_MS = 30 * 1000;
 const alertCooldowns = new Map<string, number>();
+const alertCooldownTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleAlertCooldownCleanup(key: string): void {
+	const existingTimer = alertCooldownTimers.get(key);
+	if (existingTimer) {
+		clearTimeout(existingTimer);
+	}
+	const timer = setTimeout(() => {
+		alertCooldowns.delete(key);
+		alertCooldownTimers.delete(key);
+	}, ALERT_COOLDOWN_MS * 2);
+	alertCooldownTimers.set(key, timer);
+}
 
 // ============================================================================
 // AUDIT LOG TYPES
@@ -127,6 +140,17 @@ function redactMetadata(metadata?: AuditMetadata): AuditMetadata | undefined {
 	return redacted;
 }
 
+function escapeCsvValue(rawValue: string): string {
+	let value = rawValue;
+	if (value.includes('"')) {
+		value = value.replaceAll('"', '""');
+	}
+	if (/[",\n]/.test(value)) {
+		return `"${value}"`;
+	}
+	return value;
+}
+
 async function createAlert(alert: {
 	orgId: string;
 	userId: string | null;
@@ -164,6 +188,7 @@ async function checkAlertThresholds(entry: AuditLogEntry): Promise<void> {
 				return true;
 			}
 			alertCooldowns.set(key, now);
+			scheduleAlertCooldownCleanup(key);
 			return false;
 		};
 
@@ -515,7 +540,10 @@ export async function exportAuditLogsToCsv(
 		JSON.stringify(log.metadata || {}),
 	]);
 
-	return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+	const escapeRow = (row: string[]) =>
+		row.map((value) => escapeCsvValue(value)).join(",");
+
+	return [headers.join(","), ...rows.map(escapeRow)].join("\n");
 }
 
 /**
