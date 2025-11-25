@@ -54,7 +54,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 					break;
 				}
 				case "getHistory": {
-					// Restore history
 					if (this._messages.length > 0) {
 						this._view?.webview.postMessage({
 							type: "history",
@@ -91,7 +90,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 			}
 		});
 
-		// Listen for config changes
 		vscode.workspace.onDidChangeConfiguration((e) => {
 			if (e.affectsConfiguration("composer.apiEndpoint")) {
 				const config = vscode.workspace.getConfiguration("composer");
@@ -105,7 +103,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 	private async _handleUserMessage(text: string) {
 		if (!this._view) return;
 
-		// Add user message to history
 		const userMsg: Message = {
 			role: "user",
 			content: text,
@@ -113,7 +110,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 		};
 		this._messages.push(userMsg);
 
-		// Ensure session
 		if (!this._currentSessionId) {
 			try {
 				const session = await this._apiClient.createSession("VS Code Chat");
@@ -130,7 +126,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 			}
 		}
 
-		// Prepare assistant message placeholder
 		const assistantMsg: Message = {
 			role: "assistant",
 			content: "",
@@ -147,7 +142,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 			const config = vscode.workspace.getConfiguration("composer");
 			const model = config.get<string>("model") || "claude-sonnet-4-5";
 
-			// Stream response
 			const stream = this._apiClient.chatWithEvents({
 				model,
 				messages: this._messages.slice(0, -1),
@@ -230,14 +224,21 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 
 	private _getHtmlForWebview(webview: vscode.Webview) {
 		const nonce = getNonce();
+		const vendorUri = webview.asWebviewUri(
+			vscode.Uri.joinPath(this._extensionUri, "media", "vendor.js"),
+		);
+		const styleUri = webview.asWebviewUri(
+			vscode.Uri.joinPath(this._extensionUri, "media", "highlight.css"),
+		);
 
 		return /* html */ `<!DOCTYPE html>
 			<html lang="en">
 			<head>
 				<meta charset="UTF-8">
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src http://localhost:*; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src http://localhost:*; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};">
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
 				<title>Composer Chat</title>
+				<link href="${styleUri}" rel="stylesheet">
 				<style>
 					:root {
 						--bg-primary: var(--vscode-editor-background);
@@ -342,7 +343,29 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						flex: 1;
 						min-width: 0;
 						word-wrap: break-word;
-						white-space: pre-wrap;
+					}
+					
+					/* Markdown Content Styles */
+					.message-content p { margin: 0.5em 0; }
+					.message-content p:first-child { margin-top: 0; }
+					.message-content p:last-child { margin-bottom: 0; }
+					.message-content pre { 
+						background: var(--vscode-editor-background);
+						padding: 8px;
+						border-radius: 4px;
+						overflow-x: auto;
+						border: 1px solid var(--border-color);
+					}
+					.message-content code {
+						font-family: var(--vscode-editor-font-family);
+						font-size: 0.9em;
+						background: rgba(127, 127, 127, 0.1);
+						padding: 0.2em 0.4em;
+						border-radius: 3px;
+					}
+					.message-content pre code {
+						background: transparent;
+						padding: 0;
 					}
 
                     .context-bar {
@@ -459,10 +482,24 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 					</div>
                 </div>
 
+				<script src="${vendorUri}"></script>
 				<script nonce="${nonce}">
 					const vscode = acquireVsCodeApi();
                     let currentAssistantMessage = null;
+					let currentAssistantContentRaw = "";
 					let thinkingEl = null;
+
+					// Configure Markdown
+					if (window.marked && window.hljs) {
+						window.marked.setOptions({
+							highlight: function(code, lang) {
+								if (lang && window.hljs.getLanguage(lang)) {
+									return window.hljs.highlight(code, { language: lang }).value;
+								}
+								return window.hljs.highlightAuto(code).value;
+							}
+						});
+					}
 
                     // Restore history
                     vscode.postMessage({ type: 'getHistory' });
@@ -486,6 +523,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 								break;
 							case 'done':
 								currentAssistantMessage = null;
+								currentAssistantContentRaw = "";
 								break;
 							case 'error':
 								showError(message.value);
@@ -514,6 +552,13 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                         }
                     }
 
+					function renderMarkdown(text) {
+						if (window.marked && window.DOMPurify) {
+							return window.DOMPurify.sanitize(window.marked.parse(text));
+						}
+						return text.replace(/</g, '&lt;');
+					}
+
 					function loadHistory(messages) {
 						const container = document.getElementById('messages');
 						container.innerHTML = '';
@@ -521,9 +566,12 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 							const div = document.createElement('div');
 							div.className = \`message \${msg.role}\`;
 							const avatar = msg.role === 'user' ? 'U' : 'AI';
+							const content = msg.role === 'assistant' 
+								? renderMarkdown(msg.content) 
+								: msg.content.replace(/</g, '&lt;');
 							div.innerHTML = \`
 								<div class="avatar">\${avatar}</div>
-								<div class="message-content">\${msg.content.replace(/</g, '&lt;')}</div>
+								<div class="message-content">\${content}</div>
 							\`;
 							container.appendChild(div);
 						});
@@ -538,9 +586,13 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						thinkingEl.className = 'thinking';
 						thinkingEl.innerHTML = 'Thinking<span class="thinking-dots"></span>';
 						
-						// Insert before content or append
 						const content = currentAssistantMessage.querySelector('.message-content');
-						content.insertBefore(thinkingEl, content.firstChild);
+						// Insert before actual content
+						if (content.firstChild) {
+							content.insertBefore(thinkingEl, content.firstChild);
+						} else {
+							content.appendChild(thinkingEl);
+						}
 					}
 
 					function hideThinking() {
@@ -560,15 +612,35 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						\`;
 						messages.appendChild(div);
 						currentAssistantMessage = div;
+						currentAssistantContentRaw = "";
 						messages.scrollTop = messages.scrollHeight;
 						return div;
 					}
 
 					function appendToken(text) {
 						if (!currentAssistantMessage) createAssistantMessage();
-						const content = currentAssistantMessage.querySelector('.message-content');
-						const textNode = document.createTextNode(text);
-						content.appendChild(textNode);
+						currentAssistantContentRaw += text;
+						
+						const contentDiv = currentAssistantMessage.querySelector('.message-content');
+						
+						// Re-render markdown
+						// Save thinking element if it exists inside contentDiv (it shouldn't if we structure it right, but let's be safe)
+						// Actually, let's separate thinking from content container to avoid overwriting
+						
+						// Check if we have a separate content container or just overwrite innerHTML
+						// We need to preserve thinkingEl if it's a child
+						
+						let html = renderMarkdown(currentAssistantContentRaw);
+						
+						if (thinkingEl && thinkingEl.parentElement === contentDiv) {
+							contentDiv.innerHTML = '';
+							contentDiv.appendChild(thinkingEl);
+							const span = document.createElement('div');
+							span.innerHTML = html;
+							contentDiv.appendChild(span);
+						} else {
+							contentDiv.innerHTML = html;
+						}
 						
 						const messages = document.getElementById('messages');
 						messages.scrollTop = messages.scrollHeight;
