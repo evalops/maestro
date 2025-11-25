@@ -65,6 +65,9 @@ export async function runStreamingShellCommand(
 		});
 
 		child.on("close", (code) => {
+			if (closed) {
+				return;
+			}
 			closed = true;
 			if (options.signal) {
 				options.signal.removeEventListener("abort", handleAbort);
@@ -87,6 +90,10 @@ export async function runStreamingShellCommand(
 		});
 
 		child.on("error", (error) => {
+			if (closed) {
+				return;
+			}
+			closed = true;
 			if (options.signal) {
 				options.signal.removeEventListener("abort", handleAbort);
 			}
