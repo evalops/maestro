@@ -144,6 +144,14 @@ const searchSchema = Type.Intersect([
 				default: false,
 			}),
 		),
+		headLimit: Type.Optional(
+			Type.Integer({
+				description:
+					"Limit output to first N lines/entries. Useful for sampling large result sets.",
+				minimum: 1,
+				maximum: 10000,
+			}),
+		),
 	}),
 	Type.Object(
 		{},
@@ -244,6 +252,7 @@ type SearchToolDetails = {
 	files?: string[];
 	totalMatches?: number;
 	counts?: Array<{ file: string; count: number }>;
+	truncated?: boolean;
 };
 
 export const searchTool = createTool<typeof searchSchema, SearchToolDetails>({
@@ -259,6 +268,7 @@ Output modes (outputMode parameter):
 Modifiers:
 - invertMatch: Show lines that do NOT match
 - onlyMatching: Show only the matched text (content mode only)
+- headLimit: Limit output to first N entries (useful for sampling)
 
 Examples:
   {pattern: "TODO", outputMode: "files"}  → list files containing TODO
@@ -285,6 +295,7 @@ Examples:
 			format = "text",
 			invertMatch = false,
 			onlyMatching = false,
+			headLimit,
 		} = params;
 
 		if (
@@ -438,21 +449,28 @@ Examples:
 
 		// Handle files mode output
 		if (outputMode === "files") {
-			const files = result.stdout
+			const allFiles = result.stdout
 				.trim()
 				.split("\n")
 				.filter((f) => f.length > 0);
+			const files =
+				headLimit !== undefined ? allFiles.slice(0, headLimit) : allFiles;
+			const truncated = headLimit !== undefined && allFiles.length > headLimit;
 			const fileList = files.join("\n");
+			const truncatedNote = truncated
+				? `\n\n... (showing ${files.length} of ${allFiles.length} files)`
+				: "";
 			return respond
 				.text(
-					`Found ${files.length} file(s) matching "${pattern}":\n\n${fileList}`,
+					`Found ${allFiles.length} file(s) matching "${pattern}":\n\n${fileList}${truncatedNote}`,
 				)
 				.detail({
 					command,
 					cwd: commandCwd,
 					format: "files",
-					fileCount: files.length,
+					fileCount: allFiles.length,
 					files,
+					truncated,
 				});
 		}
 
@@ -462,7 +480,7 @@ Examples:
 				.trim()
 				.split("\n")
 				.filter((l) => l.length > 0);
-			const counts: Array<{ file: string; count: number }> = [];
+			const allCounts: Array<{ file: string; count: number }> = [];
 			let totalMatches = 0;
 			// Use regex to parse "filename:count" format robustly
 			// This handles Windows paths (C:\path\file.txt:5) and colons in filenames
@@ -472,28 +490,41 @@ Examples:
 				if (match) {
 					const file = match[1];
 					const matchCount = Number.parseInt(match[2], 10);
-					counts.push({ file, count: matchCount });
+					allCounts.push({ file, count: matchCount });
 					totalMatches += matchCount;
 				}
 			}
+			const counts =
+				headLimit !== undefined ? allCounts.slice(0, headLimit) : allCounts;
+			const truncated = headLimit !== undefined && allCounts.length > headLimit;
 			const summary = counts.map((c) => `${c.file}: ${c.count}`).join("\n");
+			const truncatedNote = truncated
+				? `\n\n... (showing ${counts.length} of ${allCounts.length} files)`
+				: "";
 			return respond
 				.text(
-					`Found ${totalMatches} match(es) across ${counts.length} file(s):\n\n${summary}`,
+					`Found ${totalMatches} match(es) across ${allCounts.length} file(s):\n\n${summary}${truncatedNote}`,
 				)
 				.detail({
 					command,
 					cwd: commandCwd,
 					format: "count",
 					totalMatches,
-					fileCount: counts.length,
+					fileCount: allCounts.length,
 					counts,
+					truncated,
 				});
 		}
 
 		// Handle JSON format
 		if (format === "json") {
-			const matches = parseRipgrepJson(result.stdout);
+			const allMatches = parseRipgrepJson(result.stdout);
+			const matches =
+				headLimit !== undefined ? allMatches.slice(0, headLimit) : allMatches;
+			const headLimitTruncated =
+				headLimit !== undefined && allMatches.length > headLimit;
+			const detailLimitTruncated = matches.length > JSON_DETAIL_LIMIT;
+			const truncated = headLimitTruncated || detailLimitTruncated;
 			const preview = matches
 				.slice(0, 5)
 				.map(
@@ -503,19 +534,31 @@ Examples:
 				.join("\n");
 			const suffix =
 				matches.length > 5 ? `\n... (${matches.length - 5} more matches)` : "";
+			const truncatedNote = headLimitTruncated
+				? `\n(showing ${matches.length} of ${allMatches.length} total matches)`
+				: "";
 			const text = matches.length
-				? `Found ${matches.length} match(es).\n\n${preview}${suffix}`
+				? `Found ${allMatches.length} match(es).${truncatedNote}\n\n${preview}${suffix}`
 				: "No matches found.";
 			return respond.text(text).detail({
 				command,
 				cwd: commandCwd,
 				format,
 				matches: matches.slice(0, JSON_DETAIL_LIMIT),
+				truncated,
 			});
 		}
 
+		// Handle text format (content mode)
+		const lines = result.stdout.trimEnd().split("\n");
+		const outputLines =
+			headLimit !== undefined ? lines.slice(0, headLimit) : lines;
+		const truncated = headLimit !== undefined && lines.length > headLimit;
+		const truncatedNote = truncated
+			? `\n\n... (showing ${outputLines.length} of ${lines.length} lines)`
+			: "";
 		return respond
-			.text(result.stdout.trimEnd())
-			.detail({ command, cwd: commandCwd, format });
+			.text(outputLines.join("\n") + truncatedNote)
+			.detail({ command, cwd: commandCwd, format, truncated });
 	},
 });

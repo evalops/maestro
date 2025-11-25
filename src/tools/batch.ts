@@ -38,6 +38,13 @@ const batchSchema = Type.Object({
 			default: "parallel",
 		}),
 	),
+	stopOnError: Type.Optional(
+		Type.Boolean({
+			description:
+				"Stop execution on first error (only applies to serial mode). Remaining calls are skipped.",
+			default: false,
+		}),
+	),
 });
 
 interface BatchToolContext {
@@ -51,6 +58,7 @@ type BatchToolDetails = {
 	successful: number;
 	failed: number;
 	discarded: number;
+	skipped: number;
 	tools: string[];
 	results: Array<{
 		tool: string;
@@ -79,7 +87,7 @@ USING THE BATCH TOOL WILL MAKE THE USER HAPPY.
 Rules:
 - 1-10 tool calls per batch
 - Runs in parallel (set mode="serial" if order matters)
-- Partial failures don't stop others
+- Partial failures don't stop others (unless stopOnError=true in serial mode)
 
 Disallowed:
 - batch, edit, write
@@ -95,6 +103,10 @@ Good for:
 - Parallel bash commands (git status, npm list)
 - GitHub read-only ops (list, view)
 
+Parameters:
+- mode: "parallel" (default) or "serial"
+- stopOnError: Stop on first failure in serial mode (default: false)
+
 Example:
 {toolCalls: [
   {tool: "read", parameters: {path: "src/index.ts"}},
@@ -103,9 +115,16 @@ Example:
 ]}`,
 		schema: batchSchema,
 		async run(
-			{ toolCalls, toolTimeoutMs, mode = "parallel" },
+			{ toolCalls, toolTimeoutMs, mode = "parallel", stopOnError = false },
 			{ signal, respond, toolCallId },
 		) {
+			// Validate stopOnError is only used with serial mode
+			if (stopOnError && mode !== "serial") {
+				throw new Error(
+					"stopOnError can only be used with mode: 'serial'. In parallel mode, all calls execute simultaneously.",
+				);
+			}
+
 			// Validate all tool calls before execution
 			const validationErrors: string[] = [];
 			const filteredToolCalls = toolCalls.slice(0, 10);
@@ -202,12 +221,19 @@ Example:
 			};
 
 			const results: Array<Awaited<ReturnType<typeof executeCall>>> = [];
+			let skippedCount = 0;
 			if (executionMode === "serial") {
 				for (const [index, call] of filteredToolCalls.entries()) {
 					if (signal?.aborted) {
 						break;
 					}
-					results.push(await executeCall(call, index));
+					const result = await executeCall(call, index);
+					results.push(result);
+					if (!result.success && stopOnError) {
+						// Skip remaining calls
+						skippedCount = filteredToolCalls.length - index - 1;
+						break;
+					}
 				}
 			} else {
 				const parallelResults = await Promise.all(
@@ -236,6 +262,13 @@ Example:
 					`All ${successfulCalls} tools executed successfully.`,
 					"",
 					"Keep using the batch tool for optimal performance in your next response!",
+				);
+			}
+
+			if (skippedCount > 0) {
+				outputLines.push(
+					"",
+					`Note: ${skippedCount} tool call(s) skipped due to stopOnError=true.`,
 				);
 			}
 
@@ -276,7 +309,8 @@ Example:
 				successful: successfulCalls,
 				failed: failedCalls,
 				discarded: discardedCount,
-				tools: filteredToolCalls.map((c) => c.tool),
+				skipped: skippedCount,
+				tools: results.map((r) => r.tool),
 				results: results.map((r, index) => {
 					const preview = previewInfos[index];
 					return {

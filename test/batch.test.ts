@@ -213,6 +213,72 @@ describe("batch tool", () => {
 
 				expect(events).toEqual(["start-1", "finish-1", "start-2", "finish-2"]);
 			});
+
+			it("stops on first error in serial mode with stopOnError=true", async () => {
+				const batchTool = createBatchTool([mockSuccessTool, mockFailTool]);
+
+				const result = await batchTool.execute("batch-call-stop-on-error", {
+					mode: "serial",
+					stopOnError: true,
+					toolCalls: [
+						{ tool: "mock-success", parameters: { id: "first" } },
+						{ tool: "mock-fail", parameters: {} },
+						{ tool: "mock-success", parameters: { id: "should-skip" } },
+					],
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("1 failed");
+				expect(output).toContain("skipped due to stopOnError=true");
+				expect(output).not.toContain("should-skip");
+				const details = getBatchDetails(result);
+				expect(details).toMatchObject({
+					totalCalls: 2,
+					successful: 1,
+					failed: 1,
+					skipped: 1,
+				});
+				// Verify tools array matches totalCalls (only executed calls, not all requested)
+				expect(details.tools).toHaveLength(details.totalCalls);
+				expect(details.tools).toEqual(["mock-success", "mock-fail"]);
+			});
+
+			it("continues on error in serial mode without stopOnError", async () => {
+				const batchTool = createBatchTool([mockSuccessTool, mockFailTool]);
+
+				const result = await batchTool.execute("batch-call-no-stop", {
+					mode: "serial",
+					stopOnError: false,
+					toolCalls: [
+						{ tool: "mock-success", parameters: { id: "first" } },
+						{ tool: "mock-fail", parameters: {} },
+						{ tool: "mock-success", parameters: { id: "third" } },
+					],
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("2/3 tools successfully");
+				expect(output).not.toContain("skipped");
+				const details = getBatchDetails(result);
+				expect(details).toMatchObject({
+					totalCalls: 3,
+					successful: 2,
+					failed: 1,
+					skipped: 0,
+				});
+			});
+
+			it("throws when stopOnError is used with parallel mode", async () => {
+				const batchTool = createBatchTool([mockSuccessTool]);
+
+				await expect(
+					batchTool.execute("batch-call-invalid-stop", {
+						mode: "parallel",
+						stopOnError: true,
+						toolCalls: [{ tool: "mock-success", parameters: {} }],
+					}),
+				).rejects.toThrow("stopOnError can only be used with mode: 'serial'");
+			});
 		});
 
 		it("handles partial failures gracefully", async () => {

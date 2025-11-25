@@ -80,13 +80,39 @@ const listSchema = Type.Object({
 			default: "asc",
 		}),
 	),
+	excludePatterns: Type.Optional(
+		Type.Array(
+			Type.String({
+				description: "Glob pattern to exclude",
+				minLength: 1,
+			}),
+			{
+				description:
+					"Array of glob patterns to exclude (e.g., ['node_modules/**', '*.log', 'dist/**'])",
+			},
+		),
+	),
 });
 
 export const listTool = createTool<typeof listSchema, ListToolDetails>({
 	name: "list",
 	label: "list",
-	description:
-		"List files and directories in a path using safe glob patterns. Supports limiting and optional dotfiles.",
+	description: `List files and directories using glob patterns with filtering and sorting.
+
+Parameters:
+- path: Directory to list (default: current directory)
+- pattern: Glob pattern (default: *)
+- excludePatterns: Array of patterns to exclude (e.g., ['node_modules/**', 'dist/**'])
+- limit: Max entries (1-500, default: 200)
+- maxDepth: Directory depth limit (0 = unlimited)
+- includeHidden: Include dotfiles
+- includeMetadata: Include size and timestamps
+- sortBy: name, type, size, mtime
+- format: text or json
+
+Examples:
+  {path: "src", pattern: "**/*.ts"}
+  {excludePatterns: ["node_modules/**", "*.log"]}`,
 	schema: listSchema,
 	async run(
 		{
@@ -99,6 +125,7 @@ export const listTool = createTool<typeof listSchema, ListToolDetails>({
 			format = "text",
 			sortBy = "name",
 			sortDirection = "asc",
+			excludePatterns = [],
 		},
 		{ signal, respond },
 	) {
@@ -123,6 +150,9 @@ export const listTool = createTool<typeof listSchema, ListToolDetails>({
 			};
 			if (typeof maxDepth === "number" && maxDepth > 0) {
 				globOptions.maxDepth = maxDepth;
+			}
+			if (excludePatterns.length > 0) {
+				globOptions.ignore = excludePatterns;
 			}
 			const entries = (await glob(pattern || "*", globOptions)) as string[];
 
@@ -181,6 +211,9 @@ export const listTool = createTool<typeof listSchema, ListToolDetails>({
 				`Results: ${limitedEntries.length}${truncated ? ` of ${sorted.length}` : ""}`,
 				`Sorted by: ${sortBy} (${sortDirection})`,
 			];
+			if (excludePatterns.length > 0) {
+				summary.push(`Excluding: ${excludePatterns.join(", ")}`);
+			}
 			if (includeHidden) {
 				summary.push("Including hidden files");
 			}

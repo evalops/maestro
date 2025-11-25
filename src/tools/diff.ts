@@ -62,6 +62,20 @@ const diffSchema = Type.Intersect([
 				default: false,
 			}),
 		),
+		ignoreWhitespace: Type.Optional(
+			Type.Boolean({
+				description:
+					"Ignore whitespace changes (--ignore-space-change). Useful for comparing reformatted code.",
+				default: false,
+			}),
+		),
+		ignoreBlankLines: Type.Optional(
+			Type.Boolean({
+				description:
+					"Ignore changes that only add or remove blank lines (--ignore-blank-lines).",
+				default: false,
+			}),
+		),
 		paths: pathInputSchema,
 	}),
 	Type.Object(
@@ -135,6 +149,8 @@ export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 			stat,
 			wordDiff,
 			nameOnly,
+			ignoreWhitespace,
+			ignoreBlankLines,
 			paths,
 		} = params;
 
@@ -170,6 +186,14 @@ export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 
 		if (nameOnly) {
 			args.push("--name-only");
+		}
+
+		if (ignoreWhitespace) {
+			args.push("--ignore-space-change");
+		}
+
+		if (ignoreBlankLines) {
+			args.push("--ignore-blank-lines");
 		}
 
 		if (range) {

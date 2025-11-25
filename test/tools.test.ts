@@ -124,6 +124,49 @@ describe("Composer Tools", () => {
 				listTool.execute("list-call-5", { path: invalidPath }),
 			).rejects.toThrow(/Listing.*failed/);
 		});
+
+		it("excludes files matching excludePatterns", async () => {
+			const nodeModules = join(testDir, "node_modules");
+			const src = join(testDir, "src");
+			mkdirSync(nodeModules);
+			mkdirSync(src);
+			writeFileSync(join(nodeModules, "dep.js"), "");
+			writeFileSync(join(src, "app.ts"), "");
+			writeFileSync(join(testDir, "readme.md"), "");
+			writeFileSync(join(testDir, "debug.log"), "");
+
+			const result = await listTool.execute("list-exclude-1", {
+				path: testDir,
+				pattern: "**/*",
+				excludePatterns: ["node_modules/**", "*.log"],
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Excluding: node_modules/**, *.log");
+			expect(output).toContain("src/");
+			expect(output).toContain("readme.md");
+			// node_modules directory itself may appear but contents should be excluded
+			expect(output).not.toContain("dep.js");
+			expect(output).not.toContain("debug.log");
+		});
+
+		it("excludePatterns works with multiple patterns", async () => {
+			writeFileSync(join(testDir, "keep.ts"), "");
+			writeFileSync(join(testDir, "skip.test.ts"), "");
+			writeFileSync(join(testDir, "skip.spec.ts"), "");
+			writeFileSync(join(testDir, "build.js"), "");
+
+			const result = await listTool.execute("list-exclude-2", {
+				path: testDir,
+				excludePatterns: ["*.test.ts", "*.spec.ts"],
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("keep.ts");
+			expect(output).toContain("build.js");
+			expect(output).not.toContain("skip.test.ts");
+			expect(output).not.toContain("skip.spec.ts");
+		});
 	});
 
 	describe("read tool", () => {
@@ -277,6 +320,38 @@ describe("Composer Tools", () => {
 			expect(output).toContain("Line 46");
 			expect(output).toContain("Line 50");
 			expect(output).toContain("Showing last 5 line(s)");
+		});
+
+		it("supports latin1 encoding for legacy files", async () => {
+			const testFile = join(testDir, "latin1.txt");
+			// Write bytes that represent latin1 characters (e.g., accented chars)
+			const latin1Content = Buffer.from([
+				0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0xe9, 0xe8, 0xe0,
+			]); // "Hello ééà" in latin1
+			writeFileSync(testFile, latin1Content);
+
+			const result = await readTool.execute("test-read-latin1", {
+				path: testFile,
+				encoding: "latin1",
+			});
+			const output = getTextOutput(result);
+
+			// latin1 decoding should preserve the high bytes as single characters
+			expect(output).toContain("Hello");
+			expect(output).toContain("\u00e9"); // é
+		});
+
+		it("defaults to utf-8 encoding", async () => {
+			const testFile = join(testDir, "utf8.txt");
+			const utf8Content = "Hello 世界 🌍";
+			writeFileSync(testFile, utf8Content, "utf-8");
+
+			const result = await readTool.execute("test-read-utf8", {
+				path: testFile,
+			});
+			const output = getTextOutput(result);
+
+			expect(output).toContain("Hello 世界 🌍");
 		});
 	});
 
@@ -643,6 +718,40 @@ describe("Composer Tools", () => {
 			expect(result.details).toEqual(
 				expect.objectContaining({
 					command: expect.stringContaining("git diff"),
+				}),
+			);
+		});
+
+		it("uses --ignore-space-change flag when ignoreWhitespace is true", async () => {
+			writeFileSync(tempFile, "line one\nline two\n");
+			execSync(`git add "${tempFile}"`);
+			writeFileSync(tempFile, "line one\nline   two\n"); // extra spaces
+
+			const result = await diffTool.execute("diff-whitespace", {
+				ignoreWhitespace: true,
+				paths: tempFile,
+			});
+
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("--ignore-space-change"),
+				}),
+			);
+		});
+
+		it("uses --ignore-blank-lines flag when ignoreBlankLines is true", async () => {
+			writeFileSync(tempFile, "first\nsecond\n");
+			execSync(`git add "${tempFile}"`);
+			writeFileSync(tempFile, "first\n\n\nsecond\n"); // extra blank lines
+
+			const result = await diffTool.execute("diff-blanklines", {
+				ignoreBlankLines: true,
+				paths: tempFile,
+			});
+
+			expect(result.details).toEqual(
+				expect.objectContaining({
+					command: expect.stringContaining("--ignore-blank-lines"),
 				}),
 			);
 		});
@@ -1116,6 +1225,69 @@ describe("Composer Tools", () => {
 					onlyMatching: true,
 				}),
 			).rejects.toThrow("onlyMatching can only be used with outputMode");
+		});
+
+		it("headLimit truncates output in files mode", async () => {
+			for (let i = 1; i <= 5; i++) {
+				writeFileSync(join(testDir, `headlimit-${i}.txt`), "match content");
+			}
+
+			const result = await searchTool.execute("search-headlimit-files", {
+				pattern: "match",
+				paths: testDir,
+				glob: "headlimit-*.txt",
+				outputMode: "files",
+				headLimit: 2,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Found 5 file(s)");
+			expect(output).toContain("showing 2 of 5 files");
+			expect(result.details).toMatchObject({
+				fileCount: 5,
+				truncated: true,
+			});
+		});
+
+		it("headLimit truncates output in content mode", async () => {
+			const multilineFile = join(testDir, "headlimit-content.txt");
+			writeFileSync(
+				multilineFile,
+				"line1 match\nline2 match\nline3 match\nline4 match\nline5 match",
+			);
+
+			const result = await searchTool.execute("search-headlimit-content", {
+				pattern: "match",
+				paths: multilineFile,
+				headLimit: 2,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("showing 2 of 5 lines");
+			expect(result.details).toMatchObject({
+				truncated: true,
+			});
+		});
+
+		it("headLimit truncates output in count mode", async () => {
+			for (let i = 1; i <= 4; i++) {
+				writeFileSync(join(testDir, `headcount-${i}.txt`), "foo foo foo");
+			}
+
+			const result = await searchTool.execute("search-headlimit-count", {
+				pattern: "foo",
+				paths: testDir,
+				glob: "headcount-*.txt",
+				outputMode: "count",
+				headLimit: 2,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("showing 2 of 4 files");
+			expect(result.details).toMatchObject({
+				fileCount: 4,
+				truncated: true,
+			});
 		});
 	});
 

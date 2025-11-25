@@ -103,6 +103,21 @@ const readSchema = Type.Object({
 				"Language identifier for the code fence (overrides auto-detection)",
 		}),
 	),
+	encoding: Type.Optional(
+		Type.Union(
+			[
+				Type.Literal("utf-8"),
+				Type.Literal("utf-16le"),
+				Type.Literal("latin1"),
+				Type.Literal("ascii"),
+			],
+			{
+				description:
+					"Text encoding for the file (default: utf-8). Use latin1 for legacy files.",
+				default: "utf-8",
+			},
+		),
+	),
 });
 
 const MAX_LINES = 2000;
@@ -128,6 +143,7 @@ Parameters:
 - offset: Start line (1-indexed)
 - limit: Max lines
 - mode: "normal", "head", "tail"
+- encoding: utf-8 (default), utf-16le, latin1, ascii
 
 Auto-detects images, provides syntax highlighting, handles large files.
 Use 'batch' to read multiple files in parallel.`,
@@ -142,6 +158,7 @@ Use 'batch' to read multiple files in parallel.`,
 			wrapInCodeFence = true,
 			asBase64 = false,
 			language,
+			encoding = "utf-8",
 		},
 		{ signal, respond },
 	) {
@@ -192,7 +209,7 @@ Use 'batch' to read multiple files in parallel.`,
 				.detail({ mode: "binary-base64" });
 		}
 
-		const textContent = rawBuffer.toString("utf-8");
+		const textContent = rawBuffer.toString(encoding);
 		const lines = textContent.split("\n");
 		let startLine = offset ? Math.max(0, offset - 1) : 0;
 		let maxLines = limit || MAX_LINES;
