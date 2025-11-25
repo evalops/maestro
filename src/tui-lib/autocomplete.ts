@@ -126,6 +126,14 @@ function isAttachableFile(filePath: string): boolean {
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	private commands: (SlashCommand | AutocompleteItem)[];
 	private basePath: string;
+	private dirCache = new Map<
+		string,
+		{ entries: Array<{ name: string; isDirectory: boolean }>; ts: number }
+	>();
+	private readonly dirCacheTtlMs = 10_000;
+	private readonly maxCachedDirs = 100;
+	private readonly prefetchDepth = 1;
+	private readonly maxPrefetchDirs = 20;
 
 	constructor(
 		commands: (SlashCommand | AutocompleteItem)[] = [],
@@ -133,9 +141,11 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	) {
 		this.commands = commands;
 		this.basePath = basePath;
+		this.prefetchDirectories(this.basePath);
 	}
 	setBasePath(basePath: string): void {
 		this.basePath = basePath;
+		this.prefetchDirectories(basePath);
 	}
 	getSuggestions(
 		lines: string[],
@@ -320,115 +330,60 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			let searchPrefix = "";
 			let expandedPrefix = prefix;
 			let isAtPrefix = false;
-			// Handle @ file attachment prefix
 			if (prefix.startsWith("@")) {
 				isAtPrefix = true;
-				expandedPrefix = prefix.slice(1); // Remove the @
+				expandedPrefix = prefix.slice(1);
 			}
-			// Handle home directory expansion
 			if (expandedPrefix.startsWith("~")) {
 				expandedPrefix = this.expandHomePath(expandedPrefix);
 			}
-			if (
-				expandedPrefix === "" ||
-				expandedPrefix === "./" ||
-				expandedPrefix === "../" ||
-				expandedPrefix === "~" ||
-				expandedPrefix === "~/" ||
-				prefix === "@"
+			if (expandedPrefix.startsWith("/")) {
+				if (expandedPrefix.endsWith("/")) {
+					searchDir = expandedPrefix;
+				} else {
+					searchDir = dirname(expandedPrefix);
+					searchPrefix = basename(expandedPrefix);
+				}
+			} else if (
+				!expandedPrefix ||
+				expandedPrefix === "." ||
+				expandedPrefix === "./"
 			) {
-				// Complete from specified position
-				if (prefix.startsWith("~")) {
-					searchDir = expandedPrefix;
-				} else {
-					searchDir = join(this.basePath, expandedPrefix);
-				}
-				searchPrefix = "";
+				searchDir = this.basePath;
 			} else if (expandedPrefix.endsWith("/")) {
-				// If prefix ends with /, show contents of that directory
-				if (
-					prefix.startsWith("~") ||
-					(isAtPrefix && expandedPrefix.startsWith("/"))
-				) {
-					searchDir = expandedPrefix;
-				} else {
-					searchDir = join(this.basePath, expandedPrefix);
-				}
-				searchPrefix = "";
+				searchDir = join(this.basePath, expandedPrefix);
 			} else {
-				// Split into directory and file prefix
 				const dir = dirname(expandedPrefix);
-				const file = basename(expandedPrefix);
-				if (
-					prefix.startsWith("~") ||
-					(isAtPrefix && expandedPrefix.startsWith("/"))
-				) {
-					searchDir = dir;
-				} else {
-					searchDir = join(this.basePath, dir);
-				}
-				searchPrefix = file;
+				searchDir = join(this.basePath, dir === "." ? "" : dir);
+				searchPrefix = basename(expandedPrefix);
 			}
-			const entries = readdirSync(searchDir);
+			const entries = this.readDirEntries(searchDir);
 			const suggestions: AutocompleteItem[] = [];
 			for (const entry of entries) {
-				if (!entry.toLowerCase().startsWith(searchPrefix.toLowerCase())) {
+				if (
+					searchPrefix &&
+					!entry.name.toLowerCase().startsWith(searchPrefix.toLowerCase())
+				) {
 					continue;
 				}
-				const fullPath = join(searchDir, entry);
-				const isDirectory = statSync(fullPath).isDirectory();
-				// For @ prefix, filter to only show directories and attachable files
-				if (isAtPrefix && !isDirectory && !isAttachableFile(fullPath)) {
-					continue;
-				}
-				let relativePath = "";
-				// Handle @ prefix path construction
-				if (isAtPrefix) {
-					const pathWithoutAt = expandedPrefix;
-					if (pathWithoutAt.endsWith("/")) {
-						relativePath = `@${pathWithoutAt}${entry}`;
-					} else if (pathWithoutAt.includes("/")) {
-						if (pathWithoutAt.startsWith("~/")) {
-							const homeRelativeDir = pathWithoutAt.slice(2); // Remove ~/
-							const dir = dirname(homeRelativeDir);
-							relativePath = `@~/${dir === "." ? entry : join(dir, entry)}`;
-						} else {
-							relativePath = `@${join(dirname(pathWithoutAt), entry)}`;
-						}
-					} else {
-						if (pathWithoutAt.startsWith("~")) {
-							relativePath = `@~/${entry}`;
-						} else {
-							relativePath = `@${entry}`;
-						}
-					}
-				} else if (prefix.endsWith("/")) {
-					// If prefix ends with /, append entry to the prefix
-					relativePath = prefix + entry;
-				} else if (prefix.includes("/")) {
-					// Preserve ~/ format for home directory paths
-					if (prefix.startsWith("~/")) {
-						const homeRelativeDir = prefix.slice(2); // Remove ~/
-						const dir = dirname(homeRelativeDir);
-						relativePath = `~/${dir === "." ? entry : join(dir, entry)}`;
-					} else {
-						relativePath = join(dirname(prefix), entry);
-					}
-				} else {
-					// For standalone entries, preserve ~/ if original prefix was ~/
-					if (prefix.startsWith("~")) {
-						relativePath = `~/${entry}`;
-					} else {
-						relativePath = entry;
+				if (isAtPrefix && !entry.isDirectory) {
+					const fullPath = join(searchDir, entry.name);
+					if (!isAttachableFile(fullPath)) {
+						continue;
 					}
 				}
+				const relativePath = this.buildRelativePath(
+					prefix,
+					expandedPrefix,
+					entry.name,
+					isAtPrefix,
+				);
 				suggestions.push({
-					value: isDirectory ? `${relativePath}/` : relativePath,
-					label: entry,
-					description: isDirectory ? "directory" : "file",
+					value: entry.isDirectory ? `${relativePath}/` : relativePath,
+					label: entry.name,
+					description: entry.isDirectory ? "directory" : "file",
 				});
 			}
-			// Sort directories first, then alphabetically
 			suggestions.sort((a, b) => {
 				const aIsDir = a.description === "directory";
 				const bIsDir = b.description === "directory";
@@ -436,9 +391,8 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				if (!aIsDir && bIsDir) return 1;
 				return a.label.localeCompare(b.label);
 			});
-			return suggestions.slice(0, 10); // Limit to 10 suggestions
-		} catch (e) {
-			// Directory doesn't exist or not accessible
+			return suggestions.slice(0, 10);
+		} catch {
 			return [];
 		}
 	}
@@ -479,5 +433,109 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			return false;
 		}
 		return true;
+	}
+
+	private readDirEntries(
+		dir: string,
+	): Array<{ name: string; isDirectory: boolean }> {
+		const cached = this.dirCache.get(dir);
+		const now = Date.now();
+		if (cached && now - cached.ts < this.dirCacheTtlMs) {
+			return cached.entries;
+		}
+		try {
+			const entries = readdirSync(dir, { withFileTypes: true }).map(
+				(entry) => ({
+					name: entry.name,
+					isDirectory: entry.isDirectory(),
+				}),
+			);
+			this.dirCache.set(dir, { entries, ts: now });
+			while (this.dirCache.size > this.maxCachedDirs) {
+				const iterator = this.dirCache.keys().next();
+				if (iterator.done || !iterator.value) {
+					break;
+				}
+				this.dirCache.delete(iterator.value);
+			}
+			return entries;
+		} catch {
+			return [];
+		}
+	}
+
+	private buildRelativePath(
+		originalPrefix: string,
+		expandedPrefix: string,
+		entryName: string,
+		isAtPrefix: boolean,
+	): string {
+		if (isAtPrefix) {
+			if (expandedPrefix.endsWith("/")) {
+				return `@${expandedPrefix}${entryName}`;
+			}
+			if (expandedPrefix.includes("/")) {
+				if (expandedPrefix.startsWith("~/")) {
+					const slice = expandedPrefix.slice(2);
+					const dir = dirname(slice);
+					return `@~/${dir === "." ? entryName : join(dir, entryName)}`;
+				}
+				return `@${join(dirname(expandedPrefix), entryName)}`;
+			}
+			if (expandedPrefix.startsWith("~")) {
+				return `@~/${entryName}`;
+			}
+			return `@${entryName}`;
+		}
+		if (originalPrefix.endsWith("/")) {
+			return originalPrefix + entryName;
+		}
+		if (originalPrefix.includes("/")) {
+			if (originalPrefix.startsWith("~/")) {
+				const rel = originalPrefix.slice(2);
+				const dir = dirname(rel);
+				return `~/${dir === "." ? entryName : join(dir, entryName)}`;
+			}
+			return join(dirname(originalPrefix), entryName);
+		}
+		if (originalPrefix.startsWith("~")) {
+			return `~/${entryName}`;
+		}
+		return entryName;
+	}
+
+	private prefetchDirectories(root: string): void {
+		const queue: Array<{ dir: string; depth: number }> = [
+			{ dir: root, depth: this.prefetchDepth },
+		];
+		const visited = new Set<string>();
+		let processed = 0;
+		while (queue.length && processed < this.maxPrefetchDirs) {
+			const next = queue.shift();
+			if (!next) break;
+			if (visited.has(next.dir)) {
+				continue;
+			}
+			visited.add(next.dir);
+			const entries = this.readDirEntries(next.dir);
+			processed++;
+			if (next.depth <= 0) {
+				continue;
+			}
+			let childCount = 0;
+			for (const entry of entries) {
+				if (!entry.isDirectory) {
+					continue;
+				}
+				queue.push({
+					dir: join(next.dir, entry.name),
+					depth: next.depth - 1,
+				});
+				childCount++;
+				if (childCount >= 5) {
+					break;
+				}
+			}
+		}
 	}
 }
