@@ -21,21 +21,6 @@ export function activate(context: vscode.ExtensionContext) {
 		),
 	);
 
-	// Command to simulate thinking for demo purposes
-	const simulateThinking = vscode.commands.registerCommand(
-		"composer.simulateThinking",
-		() => {
-			const editor = vscode.window.activeTextEditor;
-			if (editor) {
-				const line = editor.selection.active.line;
-				thinkingManager.setThinking(editor, line);
-				// Clear after 3 seconds
-				setTimeout(() => thinkingManager.clearThinking(editor, line), 3000);
-			}
-		},
-	);
-	context.subscriptions.push(simulateThinking);
-
 	const openPanel = vscode.commands.registerCommand(
 		"composer.openPanel",
 		() => {
