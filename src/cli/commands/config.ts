@@ -36,7 +36,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		id: "anthropic",
 		name: "Anthropic (Claude)",
 		api: "anthropic-messages",
-		defaultModel: "claude-3-7-sonnet-20250219",
+		defaultModel: "claude-opus-4-5-20251101",
 		baseUrl: "https://api.anthropic.com",
 		requiresApiKey: true,
 		apiKeyEnv: "ANTHROPIC_API_KEY",
