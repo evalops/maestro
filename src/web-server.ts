@@ -41,6 +41,7 @@ import {
 	startStatsCollection,
 	stopStatsCollection,
 } from "./web/logger.js";
+import { compose } from "./web/middleware.js";
 import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
@@ -54,6 +55,13 @@ import {
 import { requestTracker } from "./web/request-tracker.js";
 import { createRequestHandler } from "./web/router.js";
 import { createRoutes } from "./web/routes.js";
+import {
+	createAuthMiddleware,
+	createCorsMiddleware,
+	createLoadSheddingMiddleware,
+	createRateLimitMiddleware,
+	createRouterMiddleware,
+} from "./web/server-middlewares.js";
 import {
 	ApiError,
 	authenticateRequest,
@@ -306,14 +314,6 @@ const router = createRequestHandler(
 // Active request tracking for graceful shutdown and debugging
 const rateLimiter = new RateLimiter({ windowMs: 60000, max: 1000 }); // 1000 requests per minute per IP
 
-function getClientIp(req: IncomingMessage): string {
-	const forwarded = req.headers["x-forwarded-for"];
-	if (typeof forwarded === "string") {
-		return forwarded.split(",")[0].trim();
-	}
-	return req.socket.remoteAddress || "unknown";
-}
-
 async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	const start = performance.now();
 	const parsedUrl = parse(req.url || "/", true);
@@ -383,86 +383,34 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 		requestTracker.untrack(req);
 	});
 
+	// Setup logging listener immediately
+	res.on("finish", () => {
+		const duration = performance.now() - start;
+		logRequest(req, res.statusCode, start);
+		recordApiRequest(
+			req.method || "UNKNOWN",
+			pathname,
+			res.statusCode,
+			duration,
+			{ requestId, traceId, spanId },
+		);
+	});
+
 	requestContextStorage.run(context, async () => {
-		// 1. Criticality-Aware Load Shedding (Global health)
-		// We prioritize /healthz, /api/metrics, and existing SSE connections
-		// We drop new /api/chat requests if overloaded
-		if (
-			isOverloaded() &&
-			pathname !== "/healthz" &&
-			pathname !== "/api/metrics"
-		) {
-			// Drop non-critical traffic
-			res.writeHead(503, {
-				"Content-Type": "application/json",
-				"Retry-After": "5",
-				...CORS_HEADERS,
-			});
-			res.end(
-				JSON.stringify({ error: "Service Unavailable: Server is overloaded" }),
-			);
-			return;
-		}
+		const app = compose([
+			createLoadSheddingMiddleware(CORS_HEADERS),
+			createRateLimitMiddleware(rateLimiter, CORS_HEADERS),
+			createCorsMiddleware(CORS_HEADERS),
+			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS),
+			createRouterMiddleware(router),
+		]);
 
-		// 2. Rate limiting check (Per-client fairness)
-		// Skip for static assets/health checks to avoid blocking legitimate browser behavior
-		if (pathname.startsWith("/api")) {
-			const ip = getClientIp(req);
-			const { allowed, remaining, reset } = rateLimiter.check(ip);
-
-			if (!allowed) {
-				res.writeHead(429, {
-					"Content-Type": "application/json",
-					"X-RateLimit-Limit": "1000",
-					"X-RateLimit-Remaining": "0",
-					"X-RateLimit-Reset": Math.ceil(reset / 1000).toString(),
-					"Retry-After": Math.ceil((reset - Date.now()) / 1000).toString(),
-					...CORS_HEADERS,
-				});
-				res.end(
-					JSON.stringify({ error: "Too Many Requests: Rate limit exceeded" }),
-				);
-				// Log the rejection immediately as it won't go through the router
-				logRequest(req, 429, start);
-				return;
+		await app(req, res, () => {
+			// This fallback should rarely be reached as the router handles 404s
+			if (!res.headersSent && !res.writableEnded) {
+				sendJson(res, 404, { error: "Not found" }, CORS_HEADERS, req);
 			}
-			// Add rate limit headers to successful responses too
-			// Pass them to CORS headers so they are included in all responses (including errors)
-			// Note: We modify the global CORS_HEADERS object for this request's response cycle
-			// But since we can't easily inject them into router/helpers without changing signatures everywhere,
-			// we use setHeader. Note that helpers using sendJson/writeHead must respect existing headers.
-			// sendJson uses writeHead which merges headers.
-			res.setHeader("X-RateLimit-Limit", "1000");
-			res.setHeader("X-RateLimit-Remaining", remaining.toString());
-			res.setHeader("X-RateLimit-Reset", Math.ceil(reset / 1000).toString());
-		}
-
-		res.on("finish", () => {
-			const duration = performance.now() - start;
-			logRequest(req, res.statusCode, start);
-			recordApiRequest(
-				req.method || "UNKNOWN",
-				pathname,
-				res.statusCode,
-				duration,
-				{ requestId, traceId, spanId },
-			);
 		});
-
-		// CORS preflight
-		if (req.method === "OPTIONS") {
-			res.writeHead(204, CORS_HEADERS);
-			res.end();
-			return;
-		}
-
-		if (pathname.startsWith("/api")) {
-			if (!authenticateRequest(req, res, CORS_HEADERS, WEB_API_KEY)) {
-				return;
-			}
-		}
-
-		await router(req, res, pathname);
 	});
 }
 
