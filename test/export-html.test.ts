@@ -86,9 +86,7 @@ describe("exporters", () => {
 		);
 		const html = readFileSync(outputPath, "utf8");
 		expect(html).toContain("Running ls");
-		expect(html).toContain("Persisted system");
 		expect(html).toContain("src");
-		expect(html).toContain("Available Tools");
 	});
 
 	it("exports text transcript with tool results", async () => {

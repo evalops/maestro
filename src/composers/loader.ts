@@ -97,7 +97,8 @@ function loadFromDirectory(
 			// Prevent path traversal via symlinks
 			try {
 				const resolvedPath = realpathSync(filePath);
-				if (!resolvedPath.startsWith(resolve(dir))) {
+				const resolvedDir = realpathSync(dir);
+				if (!resolvedPath.startsWith(resolvedDir)) {
 					console.warn(`[composers] Rejected path traversal attempt: ${file}`);
 					continue;
 				}

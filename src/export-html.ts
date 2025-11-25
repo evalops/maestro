@@ -15,11 +15,7 @@ import {
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
 } from "./conversation/render-model.js";
-import type {
-	SessionHeaderEntry,
-	SessionManager,
-	SessionToolInfo,
-} from "./session/manager.js";
+import type { SessionHeaderEntry, SessionManager } from "./session/manager.js";
 
 // Get version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -33,28 +29,6 @@ interface SessionFileParseResult {
 	header: SessionHeaderEntry | null;
 	messages: AppMessage[];
 }
-
-/**
- * TUI Color scheme (matching exact RGB values from TUI components)
- */
-const COLORS = {
-	// Backgrounds
-	userMessageBg: "rgb(52, 53, 65)", // Dark slate
-	toolPendingBg: "rgb(40, 40, 50)", // Dark blue-gray
-	toolSuccessBg: "rgb(40, 50, 40)", // Dark green
-	toolErrorBg: "rgb(60, 40, 40)", // Dark red
-	bodyBg: "rgb(24, 24, 30)", // Very dark background
-	containerBg: "rgb(30, 30, 36)", // Slightly lighter container
-
-	// Text colors (matching chalk colors)
-	text: "rgb(229, 229, 231)", // Light gray (close to white)
-	textDim: "rgb(161, 161, 170)", // Dimmed gray
-	cyan: "rgb(103, 232, 249)", // Cyan for paths
-	green: "rgb(34, 197, 94)", // Green for success
-	red: "rgb(239, 68, 68)", // Red for errors
-	yellow: "rgb(234, 179, 8)", // Yellow for warnings
-	italic: "rgb(161, 161, 170)", // Gray italic for thinking
-};
 
 async function parseSessionFile(
 	sessionFile: string,
@@ -122,21 +96,13 @@ function replaceTabs(text: string): string {
 	return text.replace(/\t/g, "   ");
 }
 
-function toToolInfo(state: AgentState): SessionToolInfo[] {
-	return state.tools.map((tool) => ({
-		name: tool.name,
-		label: tool.label,
-		description: tool.description,
-	}));
-}
-
 /**
  * Format tool execution matching TUI ToolExecutionComponent
  */
 function formatToolExecution(
 	toolCall: RenderableToolCall,
 	result?: RenderableToolResultMessage,
-): { html: string; bgColor: string } {
+): string {
 	const toolName = toolCall.name;
 	const args = toolCall.arguments;
 	const getArg = (key: string): string => {
@@ -144,13 +110,6 @@ function formatToolExecution(
 		return typeof value === "string" ? value : "";
 	};
 	let html = "";
-	const isError = result?.raw.isError || false;
-	const bgColor = result
-		? isError
-			? COLORS.toolErrorBg
-			: COLORS.toolSuccessBg
-		: COLORS.toolPendingBg;
-
 	// Get text output from result
 	const getTextOutput = (): string => {
 		return result?.textContent ?? "";
@@ -336,7 +295,7 @@ function formatToolExecution(
 		html += `<div class="attachment-list">${imageItems}</div>`;
 	}
 
-	return { html, bgColor };
+	return html;
 }
 
 function formatRenderableMessageHtml(
@@ -368,7 +327,15 @@ function formatUserMessageHtml(message: RenderableUserMessage): string {
 	if (!textHtml && !attachmentsHtml) {
 		return "";
 	}
-	return `<div class="user-message">${textHtml}${attachmentsHtml}</div>`;
+
+	return `
+	<div class="message-wrapper">
+		<div class="message-header">
+			<div class="user-avatar">U</div>
+			User
+		</div>
+		<div class="user-message">${textHtml}${attachmentsHtml}</div>
+	</div>`;
 }
 
 function formatAssistantMessageHtml(
@@ -376,6 +343,15 @@ function formatAssistantMessageHtml(
 	toolResultsMap: Map<string, RenderableToolResultMessage>,
 ): string {
 	let html = "";
+
+	// Open wrapper
+	html += `<div class="message-wrapper">
+		<div class="message-header">
+			<div class="assistant-avatar">AI</div>
+			Composer
+		</div>
+		<div class="assistant-message">`;
+
 	for (const text of message.textBlocks) {
 		html += `<div class="assistant-text">${escapeHtml(text).replace(/\n/g, "<br>")}</div>`;
 	}
@@ -384,11 +360,8 @@ function formatAssistantMessageHtml(
 	}
 	for (const toolCall of message.toolCalls) {
 		const toolResult = toolResultsMap.get(toolCall.id);
-		const { html: toolHtml, bgColor } = formatToolExecution(
-			toolCall,
-			toolResult,
-		);
-		html += `<div class="tool-execution" style="background-color: ${bgColor}">${toolHtml}</div>`;
+		const toolHtml = formatToolExecution(toolCall, toolResult);
+		html += `<div class="tool-execution">${toolHtml}</div>`;
 	}
 	if (message.toolCalls.length === 0) {
 		if (message.stopReason === "aborted") {
@@ -398,6 +371,10 @@ function formatAssistantMessageHtml(
 			html += `<div class="error-text">Error: ${escapeHtml(errorMsg)}</div>`;
 		}
 	}
+
+	// Close wrapper
+	html += "</div></div>";
+
 	return html;
 }
 
@@ -434,20 +411,10 @@ export async function exportSessionToHtml(
 		return `${sessionBasename}.html`;
 	})();
 
-	const toolsToRender = sessionHeader?.tools ?? toToolInfo(state);
 	const messagesHtml = visibleMessages
 		.map((message) => formatRenderableMessageHtml(message, toolResultsMap))
 		.join("");
-	const toolListHtml = toolsToRender
-		.map(
-			(tool: SessionToolInfo) =>
-				`<div class="tool-item"><span class="tool-item-name">${escapeHtml(tool.label ?? tool.name)}</span>${tool.description ? ` - ${escapeHtml(tool.description)}` : ""}</div>`,
-		)
-		.join("");
 
-	const systemPromptContent =
-		sessionHeader?.systemPrompt ?? state.systemPrompt ?? "";
-	const thinkingLevel = sessionHeader?.thinkingLevel ?? state.thinkingLevel;
 	const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -455,6 +422,24 @@ export async function exportSessionToHtml(
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Session Export - ${basename(sessionFile)}</title>
     <style>
+        :root {
+            --bg-color: #0d1117;
+            --container-bg: #161b22;
+            --border-color: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --text-dim: #6e7681;
+            --accent-color: #58a6ff;
+            --success-color: #238636;
+            --error-color: #f85149;
+            --warning-color: #d29922;
+            --user-bg: #1f2428;
+            --assistant-bg: #161b22;
+            --code-bg: #0d1117;
+            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            --font-mono: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, "Liberation Mono", monospace;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -462,151 +447,217 @@ export async function exportSessionToHtml(
         }
 
         body {
-            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            font-family: var(--font-sans);
             font-size: 14px;
             line-height: 1.6;
-            color: ${COLORS.text};
-            background: ${COLORS.bodyBg};
+            color: var(--text-primary);
+            background: var(--bg-color);
             padding: 24px;
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1000px;
             margin: 0 auto;
         }
 
         .header {
-            margin-bottom: 24px;
-            padding: 16px;
-            background: ${COLORS.containerBg};
-            border-radius: 4px;
+            margin-bottom: 32px;
+            padding: 24px;
+            background: var(--container-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12);
         }
 
         .header h1 {
-            font-size: 16px;
-            font-weight: bold;
-            margin-bottom: 12px;
-            color: ${COLORS.cyan};
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--accent-color);
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .header-info {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
             font-size: 13px;
         }
 
         .info-item {
-            color: ${COLORS.textDim};
+            color: var(--text-secondary);
             display: flex;
-            align-items: baseline;
+            align-items: center;
         }
 
         .info-label {
-            font-weight: 600;
+            font-weight: 500;
             margin-right: 8px;
-            min-width: 80px;
+            color: var(--text-dim);
+            min-width: 70px;
         }
 
         .info-value {
-            color: ${COLORS.text};
-            flex: 1;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
         }
 
         .messages {
             display: flex;
             flex-direction: column;
-            gap: 16px;
+            gap: 24px;
         }
 
-        /* User message - matching TUI UserMessageComponent */
+        /* Message Containers */
+        .message-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-left: 4px;
+        }
+
+        .user-avatar, .assistant-avatar {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .user-avatar {
+            background: var(--accent-color);
+            color: #fff;
+        }
+
+        .assistant-avatar {
+            background: var(--success-color);
+            color: #fff;
+        }
+
+        /* User Message */
         .user-message {
-            background: ${COLORS.userMessageBg};
-            padding: 12px 16px;
-            border-radius: 4px;
+            background: var(--user-bg);
+            padding: 16px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
             white-space: pre-wrap;
             word-wrap: break-word;
+            font-family: var(--font-mono);
+            font-size: 13px;
         }
 
         .attachment-list {
-            margin-top: 8px;
-            border-left: 2px solid ${COLORS.cyan};
-            padding-left: 12px;
+            margin-top: 12px;
+            border-top: 1px solid var(--border-color);
+            padding-top: 8px;
         }
 
         .attachment-item {
-            color: ${COLORS.textDim};
-            font-size: 13px;
-            line-height: 1.4;
+            color: var(--text-secondary);
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
 
-        /* Assistant text - matching TUI AssistantMessageComponent */
+        /* Assistant Message */
+        .assistant-message {
+            background: transparent;
+        }
+
         .assistant-text {
-            padding: 12px 16px;
+            padding: 4px 0;
             white-space: pre-wrap;
             word-wrap: break-word;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            color: var(--text-primary);
+            margin-bottom: 12px;
         }
 
-        /* Thinking text - gray italic */
+        /* Thinking Text */
         .thinking-text {
             padding: 12px 16px;
-            color: ${COLORS.italic};
+            margin-bottom: 12px;
+            background: var(--container-bg);
+            border-left: 3px solid var(--text-dim);
+            color: var(--text-secondary);
             font-style: italic;
             white-space: pre-wrap;
             word-wrap: break-word;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            border-radius: 0 4px 4px 0;
         }
 
-        /* Tool execution - matching TUI ToolExecutionComponent */
+        /* Tools */
         .tool-execution {
-            padding: 12px 16px;
-            border-radius: 4px;
-            margin-top: 8px;
+            background: var(--container-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-top: 12px;
+            overflow: hidden;
+            font-family: var(--font-mono);
+            font-size: 12px;
         }
 
         .tool-header {
-            font-weight: bold;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .tool-name {
-            font-weight: bold;
+            font-weight: 600;
+            color: var(--accent-color);
         }
 
         .tool-path {
-            color: ${COLORS.cyan};
+            color: var(--text-secondary);
         }
 
         .line-count {
-            color: ${COLORS.textDim};
+            color: var(--text-dim);
+            font-size: 11px;
         }
 
         .tool-command {
-            font-weight: bold;
+            color: var(--text-primary);
+            font-weight: 500;
         }
 
         .tool-output {
-            margin-top: 12px;
-            color: ${COLORS.textDim};
+            padding: 12px;
+            color: var(--text-secondary);
             white-space: pre-wrap;
-            font-family: inherit;
+            overflow-x: auto;
+            background: var(--code-bg);
         }
 
-        .tool-output > div {
-            line-height: 1.4;
-        }
-
-        .tool-output pre {
-            margin: 0;
-            font-family: inherit;
-            color: inherit;
-        }
-
-        /* Expandable tool output */
         .tool-output.expandable {
             cursor: pointer;
+            position: relative;
         }
 
         .tool-output.expandable:hover {
-            opacity: 0.9;
+            background: rgba(255, 255, 255, 0.02);
         }
 
         .tool-output.expandable .output-full {
@@ -622,95 +673,53 @@ export async function exportSessionToHtml(
         }
 
         .expand-hint {
-            color: ${COLORS.cyan};
-            font-style: italic;
-            margin-top: 4px;
+            color: var(--accent-color);
+            font-size: 11px;
+            margin-top: 8px;
+            opacity: 0.8;
         }
 
-        /* System prompt section */
-        .system-prompt {
-            background: rgb(60, 55, 40);
-            padding: 12px 16px;
-            border-radius: 4px;
-            margin-bottom: 16px;
-        }
-
-        .system-prompt-header {
-            font-weight: bold;
-            color: ${COLORS.yellow};
-            margin-bottom: 8px;
-        }
-
-        .system-prompt-content {
-            color: ${COLORS.textDim};
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            font-size: 13px;
-        }
-
-        .tools-list {
-            background: rgb(60, 55, 40);
-            padding: 12px 16px;
-            border-radius: 4px;
-            margin-bottom: 16px;
-        }
-
-        .tools-header {
-            font-weight: bold;
-            color: ${COLORS.yellow};
-            margin-bottom: 8px;
-        }
-
-        .tools-content {
-            color: ${COLORS.textDim};
-            font-size: 13px;
-        }
-
-        .tool-item {
-            margin: 4px 0;
-        }
-
-        .tool-item-name {
-            font-weight: bold;
-            color: ${COLORS.text};
-        }
-
-        /* Diff styling */
+        /* Diff Styling */
         .tool-diff {
-            margin-top: 12px;
-            font-size: 13px;
-            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-            overflow-x: auto;
-            max-width: 100%;
-        }
-
-        .diff-line-old {
-            color: ${COLORS.red};
-            white-space: pre;
+            display: flex;
+            flex-direction: column;
+            width: 100%;
         }
 
         .diff-line-new {
-            color: ${COLORS.green};
-            white-space: pre;
+            background: rgba(46, 160, 67, 0.15);
+            color: #e6ffec;
+            padding: 0 4px;
+        }
+
+        .diff-line-old {
+            background: rgba(248, 81, 73, 0.15);
+            color: #ffdad8;
+            padding: 0 4px;
         }
 
         .diff-line-context {
-            color: ${COLORS.textDim};
-            white-space: pre;
+            color: var(--text-dim);
+            padding: 0 4px;
         }
 
-        /* Error text */
+        /* Error */
         .error-text {
-            color: ${COLORS.red};
-            padding: 12px 16px;
+            color: var(--error-color);
+            padding: 12px;
+            background: rgba(248, 81, 73, 0.1);
+            border-radius: 6px;
+            margin-top: 8px;
         }
 
+        /* Footer */
         .footer {
             margin-top: 48px;
-            padding: 20px;
+            padding-top: 24px;
             text-align: center;
-            color: ${COLORS.textDim};
+            color: var(--text-dim);
             font-size: 12px;
+            border-top: 1px solid var(--border-color);
         }
 
         @media print {
@@ -718,8 +727,9 @@ export async function exportSessionToHtml(
                 background: white;
                 color: black;
             }
-            .tool-execution {
+            .header, .user-message, .tool-execution, .thinking-text {
                 border: 1px solid #ddd;
+                background: none;
             }
         }
     </style>
@@ -727,43 +737,29 @@ export async function exportSessionToHtml(
 <body>
     <div class="container">
         <div class="header">
-            <h1>Composer v${VERSION} (EvalOps)</h1>
+            <h1>Composer Session Export</h1>
             <div class="header-info">
                 <div class="info-item">
-                    <span class="info-label">Session:</span>
+                    <span class="info-label">Session</span>
                     <span class="info-value">${escapeHtml(sessionHeader?.id || "unknown")}</span>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">Date:</span>
+                    <span class="info-label">Date</span>
                     <span class="info-value">${sessionHeader?.timestamp ? new Date(sessionHeader.timestamp).toLocaleString() : timestamp}</span>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">Model:</span>
+                    <span class="info-label">Model</span>
                     <span class="info-value">${escapeHtml(sessionHeader?.model || state.model.id)}</span>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">Messages:</span>
+                    <span class="info-label">Messages</span>
                     <span class="info-value">${visibleMessages.length}</span>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">Directory:</span>
+                    <span class="info-label">Directory</span>
                     <span class="info-value">${escapeHtml(shortenPath(sessionHeader?.cwd || process.cwd()))}</span>
                 </div>
-                <div class="info-item">
-                    <span class="info-label">Thinking:</span>
-                    <span class="info-value">${escapeHtml(thinkingLevel)}</span>
-                </div>
             </div>
-        </div>
-
-        <div class="system-prompt">
-            <div class="system-prompt-header">System Prompt</div>
-            <div class="system-prompt-content">${escapeHtml(systemPromptContent)}</div>
-        </div>
-
-        <div class="tools-list">
-            <div class="tools-header">Available Tools</div>
-            <div class="tools-content">${toolListHtml || '<div class="tool-item">No tools available</div>'}</div>
         </div>
 
         <div class="messages">
@@ -771,7 +767,7 @@ export async function exportSessionToHtml(
         </div>
 
         <div class="footer">
-            Generated by Composer on ${new Date().toLocaleString()}
+            Generated by Composer v${VERSION} on ${new Date().toLocaleString()}
         </div>
     </div>
 </body>
