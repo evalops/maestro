@@ -108,10 +108,10 @@ export class BashModeView {
 	 * Abort the currently running command (if any).
 	 */
 	abortCurrentCommand(): boolean {
+		this.stopStreamUpdates();
 		if (this.currentAbortController) {
 			this.currentAbortController.abort();
 			this.currentAbortController = null;
-			this.stopStreamUpdates();
 			return true;
 		}
 		return false;
@@ -232,7 +232,9 @@ ${muted("Back to normal chat.")}`,
 				env: options.env,
 			});
 			this.lastExitCode = 0;
-			this.updateFooter();
+			if (this.active) {
+				this.updateFooter();
+			}
 			this.renderBackgroundTaskStart({
 				taskId: task.id,
 				command: task.command,
@@ -241,7 +243,9 @@ ${muted("Back to normal chat.")}`,
 			});
 		} catch (error) {
 			this.lastExitCode = 1;
-			this.updateFooter();
+			if (this.active) {
+				this.updateFooter();
+			}
 			this.renderBackgroundTaskFailure(options.command, error);
 		}
 	}
@@ -413,10 +417,11 @@ ${muted("Back to normal chat.")}`,
 		}
 		const key = exportMatch[1];
 		let value = exportMatch[2];
-		// Strip surrounding quotes if present
+		// Strip surrounding quotes if present (only if length > 1 to avoid single quote edge case)
 		if (
-			(value.startsWith('"') && value.endsWith('"')) ||
-			(value.startsWith("'") && value.endsWith("'"))
+			value.length > 1 &&
+			((value.startsWith('"') && value.endsWith('"')) ||
+				(value.startsWith("'") && value.endsWith("'")))
 		) {
 			value = value.slice(1, -1);
 		}

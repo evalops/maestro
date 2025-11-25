@@ -56,13 +56,11 @@ export class LspClient extends EventEmitter {
 
 		this.connection.onClose(() => {
 			this.connection.dispose();
-			if (this.processClosed) {
+			if (this.processClosed || this._dead) {
 				return;
 			}
-			if (!this._dead) {
-				this._dead = true;
-				this.emit("close");
-			}
+			this._dead = true;
+			this.emit("close");
 		});
 
 		this.connection.onError((error) => {

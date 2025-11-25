@@ -33,11 +33,22 @@ export async function runStreamingShellCommand(
 		let stderr = "";
 		let aborted = false;
 		let closed = false;
+		let killTimeout: ReturnType<typeof setTimeout> | null = null;
+
+		const cleanup = () => {
+			if (killTimeout) {
+				clearTimeout(killTimeout);
+				killTimeout = null;
+			}
+			if (options.signal) {
+				options.signal.removeEventListener("abort", handleAbort);
+			}
+		};
 
 		const handleAbort = () => {
 			aborted = true;
 			child.kill("SIGTERM");
-			setTimeout(() => {
+			killTimeout = setTimeout(() => {
 				if (!closed) {
 					child.kill("SIGKILL");
 				}
@@ -69,9 +80,7 @@ export async function runStreamingShellCommand(
 				return;
 			}
 			closed = true;
-			if (options.signal) {
-				options.signal.removeEventListener("abort", handleAbort);
-			}
+			cleanup();
 			if (aborted) {
 				resolve({
 					success: false,
@@ -94,9 +103,7 @@ export async function runStreamingShellCommand(
 				return;
 			}
 			closed = true;
-			if (options.signal) {
-				options.signal.removeEventListener("abort", handleAbort);
-			}
+			cleanup();
 			resolve({
 				success: false,
 				code: -1,
