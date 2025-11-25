@@ -1,0 +1,49 @@
+{
+	"name": "@evalops/vscode-extension",
+	"displayName": "Composer",
+	"description": "Use Composer's deterministic AI assistant inside VS Code.",
+	"publisher": "evalops",
+	"version": "0.10.0",
+	"license": "MIT",
+	"type": "commonjs",
+	"main": "./dist/extension.js",
+	"engines": {
+		"vscode": "^1.90.0"
+	},
+	"categories": ["Other"],
+	"activationEvents": [
+		"onCommand:composer.openPanel",
+		"onCommand:composer.openDocs"
+	],
+	"contributes": {
+		"commands": [
+			{
+				"command": "composer.openPanel",
+				"title": "Composer: Open Assistant Panel",
+				"category": "Composer"
+			},
+			{
+				"command": "composer.openDocs",
+				"title": "Composer: Open Documentation",
+				"category": "Composer"
+			}
+		]
+	},
+	"scripts": {
+		"clean": "rm -rf dist out",
+		"build": "tsc -p tsconfig.json",
+		"watch": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+		"package": "vsce package",
+		"check": "tsc --noEmit",
+		"test": "vitest --run"
+	},
+	"dependencies": {},
+	"devDependencies": {
+		"@types/node": "^24.10.1",
+		"@types/vscode": "^1.90.0",
+		"typescript": "^5.7.3",
+		"vsce": "^2.15.0",
+		"@vscode/test-electron": "^2.3.0",
+		"vitest": "^3.2.4"
+	}
+}

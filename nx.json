@@ -37,6 +37,9 @@
 		},
 		"tui": {
 			"tags": []
+		},
+		"vscode-extension": {
+			"tags": []
 		}
 	}
 }
