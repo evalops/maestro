@@ -113,6 +113,7 @@ export interface PermissionContext {
 // ============================================================================
 
 const permissionCache = new Map<string, boolean>();
+const permissionCacheTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const CACHE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
 // ============================================================================
@@ -165,21 +166,34 @@ export async function checkPermission(
 
 		const hasPermission = membership.role.permissions.some((rp) => {
 			const perm = rp.permission;
-			return (
-				(perm.resource === resource || perm.resource === "orgs") &&
-				(perm.action === action ||
-					perm.action === ACTIONS.WILDCARD ||
-					perm.action === ACTIONS.ADMIN)
-			);
+			// Resource must match (or be "orgs" which grants org-wide access)
+			const resourceMatches =
+				perm.resource === resource || perm.resource === "orgs";
+			// Action must match, or be wildcard, or be admin for the SAME resource
+			const actionMatches =
+				perm.action === action ||
+				perm.action === ACTIONS.WILDCARD ||
+				(perm.action === ACTIONS.ADMIN && perm.resource === resource);
+			return resourceMatches && actionMatches;
 		});
 
 		// Ownership check removed - all access must go through RBAC
 		// This ensures audit requirements and organizational policies are enforced
 
 		permissionCache.set(cacheKey, hasPermission);
-		setTimeout(() => {
+
+		// Clear any existing timer for this key
+		const existingTimer = permissionCacheTimers.get(cacheKey);
+		if (existingTimer) {
+			clearTimeout(existingTimer);
+		}
+
+		// Store timer ID so it can be cleared if cache is manually cleared
+		const timerId = setTimeout(() => {
 			permissionCache.delete(cacheKey);
+			permissionCacheTimers.delete(cacheKey);
 		}, CACHE_TIMEOUT);
+		permissionCacheTimers.set(cacheKey, timerId);
 
 		return hasPermission;
 	} catch (error) {
@@ -235,10 +249,19 @@ export function clearPermissionCache(userId?: string, orgId?: string): void {
 		for (const key of permissionCache.keys()) {
 			if (key.startsWith(prefix)) {
 				permissionCache.delete(key);
+				const timer = permissionCacheTimers.get(key);
+				if (timer) {
+					clearTimeout(timer);
+					permissionCacheTimers.delete(key);
+				}
 			}
 		}
 	} else {
 		permissionCache.clear();
+		for (const timer of permissionCacheTimers.values()) {
+			clearTimeout(timer);
+		}
+		permissionCacheTimers.clear();
 	}
 }
 

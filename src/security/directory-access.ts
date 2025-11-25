@@ -44,6 +44,7 @@ export interface CreateDirectoryRuleInput {
 // ============================================================================
 
 const ruleCache = new Map<string, AccessRule[]>();
+const ruleCacheTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const CACHE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
 // ============================================================================
@@ -81,9 +82,19 @@ async function getRules(orgId: string): Promise<AccessRule[]> {
 	}));
 
 	ruleCache.set(cacheKey, mappedRules);
-	setTimeout(() => {
+
+	// Clear any existing timer for this key
+	const existingTimer = ruleCacheTimers.get(cacheKey);
+	if (existingTimer) {
+		clearTimeout(existingTimer);
+	}
+
+	// Store timer ID so it can be cleared if cache is manually cleared
+	const timerId = setTimeout(() => {
 		ruleCache.delete(cacheKey);
+		ruleCacheTimers.delete(cacheKey);
 	}, CACHE_TIMEOUT);
+	ruleCacheTimers.set(cacheKey, timerId);
 
 	return mappedRules;
 }
@@ -205,9 +216,19 @@ export async function checkMultiplePaths(
  */
 export function clearDirectoryRulesCache(orgId?: string): void {
 	if (orgId) {
-		ruleCache.delete(`rules:${orgId}`);
+		const cacheKey = `rules:${orgId}`;
+		ruleCache.delete(cacheKey);
+		const timer = ruleCacheTimers.get(cacheKey);
+		if (timer) {
+			clearTimeout(timer);
+			ruleCacheTimers.delete(cacheKey);
+		}
 	} else {
 		ruleCache.clear();
+		for (const timer of ruleCacheTimers.values()) {
+			clearTimeout(timer);
+		}
+		ruleCacheTimers.clear();
 	}
 }
 
