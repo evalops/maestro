@@ -13,11 +13,43 @@ describe("wrapAnsiLines", () => {
 		expect(wrapped[0]).toMatch(new RegExp(`${String.fromCharCode(27)}\\[0m$`));
 	});
 
+	it("preserves active ANSI across wrapped segments", () => {
+		const styled = `${chalk.bold.red("abcd")}${chalk.bold.red("ef")}`;
+		const wrapped = wrapAnsiLines([styled], 3);
+		expect(wrapped.length).toBeGreaterThan(1);
+		// First line should end with reset
+		expect(wrapped[0]).toMatch(new RegExp(`${String.fromCharCode(27)}\\[0m$`));
+		// Second line should still contain styling (either leading ansi or chars with active style)
+		const hasLeadingAnsi = new RegExp(
+			`^${String.fromCharCode(27)}\\[0-9;]*m`,
+		).test(wrapped[1]);
+		const containsStyledChar =
+			wrapped[1].includes("\x1b[31m") || wrapped[1].includes("\x1b[1m");
+		expect(hasLeadingAnsi || containsStyledChar).toBe(true);
+	});
+
 	it("wraps wide characters correctly", () => {
 		const wrapped = wrapAnsiLines(["😀😀😀"], 2);
 		expect(wrapped.length).toBe(3);
 		for (const line of wrapped) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(2);
+		}
+	});
+
+	it("handles tabs by normalizing to spaces before measurement", () => {
+		const wrapped = wrapAnsiLines(["\t1234"], 3);
+		expect(wrapped.length).toBeGreaterThan(1);
+	});
+
+	it("returns an empty string when width is zero or negative", () => {
+		expect(wrapAnsiLines(["abc"], 0)).toEqual([""]);
+		expect(wrapAnsiLines(["abc"], -5)).toEqual([""]);
+	});
+
+	it("skips characters wider than the target width", () => {
+		const wrapped = wrapAnsiLines(["😀"], 1);
+		for (const line of wrapped) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(1);
 		}
 	});
 

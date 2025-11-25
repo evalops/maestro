@@ -55,14 +55,21 @@ export function wrapAnsiLine(line: string, width: number): string[] {
 		const charWidth = visibleWidth(char);
 
 		if (currentLength + charWidth > width) {
-			if (activeAnsiCodes.length > 0) {
-				wrapped.push(`${currentLine}${ANSI_ESCAPE_RESET}`);
-				currentLine = activeAnsiCodes.join("");
-			} else {
-				wrapped.push(currentLine);
-				currentLine = "";
+			if (currentLength > 0) {
+				if (activeAnsiCodes.length > 0) {
+					wrapped.push(`${currentLine}${ANSI_ESCAPE_RESET}`);
+					currentLine = activeAnsiCodes.join("");
+				} else {
+					wrapped.push(currentLine);
+					currentLine = "";
+				}
+				currentLength = 0;
 			}
-			currentLength = 0;
+			// Skip characters that individually exceed the target width
+			if (charWidth > width) {
+				i += char.length;
+				continue;
+			}
 		}
 
 		currentLine += char;
