@@ -143,14 +143,15 @@ export async function recordTokenUsage(
 		});
 
 		if (modelApproval) {
+			const updateData: Record<string, unknown> = {
+				tokenUsed: sql`${modelApprovals.tokenUsed} + ${usage.tokenCount}`,
+			};
+			if (usage.estimatedCost) {
+				updateData.spendUsed = sql`${modelApprovals.spendUsed} + ${usage.estimatedCost}`;
+			}
 			await db
 				.update(modelApprovals)
-				.set({
-					tokenUsed: sql`${modelApprovals.tokenUsed} + ${usage.tokenCount}`,
-					spendUsed: usage.estimatedCost
-						? sql`${modelApprovals.spendUsed} + ${usage.estimatedCost}`
-						: modelApprovals.spendUsed,
-				})
+				.set(updateData)
 				.where(eq(modelApprovals.id, modelApproval.id));
 		}
 
