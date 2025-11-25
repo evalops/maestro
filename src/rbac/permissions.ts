@@ -3,7 +3,7 @@
  * Defines resources, actions, and permission checking logic
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import {
 	orgMemberships,
@@ -307,21 +307,24 @@ export async function seedPermissions(): Promise<void> {
 				.returning();
 
 			if (role) {
-				const permIds = await db.query.permissions.findMany({
-					where: inArray(
-						permissions.resource,
-						roleData.permissions.map((p) => p.resource),
-					),
-				});
+				// For each permission defined in the role, find the exact matching permission record
+				for (const rolePerm of roleData.permissions) {
+					const perm = await db.query.permissions.findFirst({
+						where: and(
+							eq(permissions.resource, rolePerm.resource),
+							eq(permissions.action, rolePerm.action),
+						),
+					});
 
-				for (const perm of permIds) {
-					await db
-						.insert(rolePermissions)
-						.values({
-							roleId: role.id,
-							permissionId: perm.id,
-						})
-						.onConflictDoNothing();
+					if (perm) {
+						await db
+							.insert(rolePermissions)
+							.values({
+								roleId: role.id,
+								permissionId: perm.id,
+							})
+							.onConflictDoNothing();
+					}
 				}
 
 				logger.info(`Created system role: ${roleData.name}`);

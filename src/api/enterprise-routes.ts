@@ -36,6 +36,7 @@ import {
 	RESOURCES,
 	seedPermissions,
 } from "../rbac/permissions.js";
+import { seedDefaultDirectoryRules } from "../security/directory-access.js";
 import { createLogger } from "../utils/logger.js";
 import type { Route } from "../web/router.js";
 import {
@@ -167,6 +168,9 @@ async function handleRegister(
 			.update(users)
 			.set({ defaultOrgId: org.id })
 			.where(eq(users.id, user.id));
+
+		// Seed default directory access rules for the new org
+		await seedDefaultDirectoryRules(org.id);
 
 		// Generate tokens
 		const tokens = generateTokenPair({
