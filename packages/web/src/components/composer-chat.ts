@@ -19,6 +19,7 @@ import "./composer-message.js";
 import "./composer-input.js";
 import "./composer-settings.js";
 import "./model-selector.js";
+import "./admin-settings.js";
 
 const STATUS_CACHE_KEY = "composer_status_cache";
 const MODELS_CACHE_KEY = "composer_models_cache";
@@ -538,6 +539,7 @@ export class ComposerChat extends LitElement {
 	@state() private sessions: SessionSummary[] = [];
 	@state() private currentSessionId: string | null = null;
 	@state() private settingsOpen = false;
+	@state() private adminSettingsOpen = false;
 	@state() private status: WorkspaceStatus | null = null;
 	@state() private showModelSelector = false;
 	@state() private currentModelTokens: string | null = null;
@@ -779,6 +781,10 @@ export class ComposerChat extends LitElement {
 
 	private toggleSettings() {
 		this.settingsOpen = !this.settingsOpen;
+	}
+
+	private toggleAdminSettings() {
+		this.adminSettingsOpen = !this.adminSettingsOpen;
 	}
 
 	private openModelSelector() {
@@ -1284,6 +1290,7 @@ export class ComposerChat extends LitElement {
 						</div>
 						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${this.renderIcon("globe")}</button>
 						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
+						<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>
 						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
 						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
 					</div>
@@ -1401,6 +1408,18 @@ export class ComposerChat extends LitElement {
 						@model-select=${this.handleModelSelect}
 					></composer-settings>
 					</div>
+			`
+					: ""
+			}
+
+			${
+				this.adminSettingsOpen
+					? html`
+				<div style="position: absolute; top: 0; right: 0; width: 800px; height: 100%; background: var(--bg-primary, #09090b); border-left: 2px solid var(--border-primary, #27272a); z-index: 110;">
+					<admin-settings
+						@close=${this.toggleAdminSettings}
+					></admin-settings>
+				</div>
 			`
 					: ""
 			}

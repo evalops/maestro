@@ -41,9 +41,17 @@ describe("MCP tool bridge schema conversion", () => {
 	});
 });
 
+// Type for MCP content items
+type McpContent = {
+	type: string;
+	text?: string | null | undefined;
+	data?: string;
+	uri?: string;
+};
+
 describe("MCP tool text content filtering", () => {
 	it("filters text content correctly", () => {
-		const content = [
+		const content: McpContent[] = [
 			{ type: "text", text: "Hello" },
 			{ type: "text", text: "World" },
 			{ type: "image", data: "base64data" },
@@ -54,29 +62,35 @@ describe("MCP tool text content filtering", () => {
 
 		// Simulate the filtering logic from tool-bridge.ts
 		const textContent = content
-			.filter((c) => c.type === "text" && typeof c.text === "string")
-			.map((c) => c.text as string)
+			.filter(
+				(c): c is McpContent & { text: string } =>
+					c.type === "text" && typeof c.text === "string",
+			)
+			.map((c) => c.text)
 			.join("\n");
 
 		expect(textContent).toBe("Hello\nWorld\n");
 	});
 
 	it("returns empty string when no text content", () => {
-		const content = [
+		const content: McpContent[] = [
 			{ type: "image", data: "base64data" },
 			{ type: "resource", uri: "file:///test" },
 		];
 
 		const textContent = content
-			.filter((c) => c.type === "text" && typeof c.text === "string")
-			.map((c) => c.text as string)
+			.filter(
+				(c): c is McpContent & { text: string } =>
+					c.type === "text" && typeof c.text === "string",
+			)
+			.map((c) => c.text)
 			.join("\n");
 
 		expect(textContent).toBe("");
 	});
 
 	it("handles content with only undefined text values", () => {
-		const content = [
+		const content: McpContent[] = [
 			{ type: "text" },
 			{ type: "text", text: undefined },
 			{ type: "text", text: null },
@@ -84,11 +98,10 @@ describe("MCP tool text content filtering", () => {
 
 		const textContent = content
 			.filter(
-				(c) =>
-					c.type === "text" &&
-					typeof (c as { text?: unknown }).text === "string",
+				(c): c is McpContent & { text: string } =>
+					c.type === "text" && typeof c.text === "string",
 			)
-			.map((c) => (c as { text: string }).text)
+			.map((c) => c.text)
 			.join("\n");
 
 		// Should be empty, not "undefined\nundefined\nnull"
@@ -96,14 +109,17 @@ describe("MCP tool text content filtering", () => {
 	});
 
 	it("preserves whitespace in text content", () => {
-		const content = [
+		const content: McpContent[] = [
 			{ type: "text", text: "  indented" },
 			{ type: "text", text: "line with trailing  " },
 		];
 
 		const textContent = content
-			.filter((c) => c.type === "text" && typeof c.text === "string")
-			.map((c) => c.text as string)
+			.filter(
+				(c): c is McpContent & { text: string } =>
+					c.type === "text" && typeof c.text === "string",
+			)
+			.map((c) => c.text)
 			.join("\n");
 
 		expect(textContent).toBe("  indented\nline with trailing  ");
