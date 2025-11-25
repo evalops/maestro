@@ -9,7 +9,10 @@ export function activate(context: vscode.ExtensionContext) {
 	const thinkingManager = new ThinkingManager();
 	context.subscriptions.push(thinkingManager);
 
-	const sidebarProvider = new ComposerSidebarProvider(context.extensionUri);
+	const sidebarProvider = new ComposerSidebarProvider(
+		context.extensionUri,
+		thinkingManager,
+	);
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(
 			ComposerSidebarProvider.viewType,

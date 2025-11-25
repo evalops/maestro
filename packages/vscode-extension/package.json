@@ -56,7 +56,9 @@
 		"check": "tsc --noEmit",
 		"test": "vitest --run"
 	},
-	"dependencies": {},
+	"dependencies": {
+		"@evalops/contracts": "workspace:*"
+	},
 	"devDependencies": {
 		"@types/node": "^24.10.1",
 		"@types/vscode": "^1.90.0",

@@ -1,12 +1,22 @@
 import * as vscode from "vscode";
 import { buildComposerUrl } from "../lib/actions";
+import { ApiClient, type Message } from "../lib/api-client";
+import type { ThinkingManager } from "../lib/decorations";
 
 export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 	public static readonly viewType = "composer.chatView";
 
 	private _view?: vscode.WebviewView;
+	private _apiClient: ApiClient;
+	private _messages: Message[] = [];
+	private _currentSessionId?: string;
 
-	constructor(private readonly _extensionUri: vscode.Uri) {}
+	constructor(
+		private readonly _extensionUri: vscode.Uri,
+		private readonly _thinkingManager: ThinkingManager,
+	) {
+		this._apiClient = new ApiClient();
+	}
 
 	public resolveWebviewView(
 		webviewView: vscode.WebviewView,
@@ -16,7 +26,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 		this._view = webviewView;
 
 		webviewView.webview.options = {
-			// Allow scripts in the webview
 			enableScripts: true,
 			localResourceRoots: [this._extensionUri],
 		};
@@ -33,6 +42,10 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 					this._sendEditorContext();
 					break;
 				}
+				case "sendMessage": {
+					this._handleUserMessage(data.text);
+					break;
+				}
 				case "onInfo": {
 					if (data.value) vscode.window.showInformationMessage(data.value);
 					break;
@@ -44,7 +57,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 			}
 		});
 
-		// Listen for editor changes to keep context fresh
 		vscode.window.onDidChangeActiveTextEditor(() => {
 			this._sendEditorContext();
 		});
@@ -54,10 +66,100 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 				e.document === vscode.window.activeTextEditor?.document &&
 				e.contentChanges.length > 0
 			) {
-				// Debounce could be added here
 				this._sendEditorContext();
 			}
 		});
+	}
+
+	private async _handleUserMessage(text: string) {
+		if (!this._view) return;
+
+		// Add user message to history
+		const userMsg: Message = {
+			role: "user",
+			content: text,
+			timestamp: new Date().toISOString(),
+		};
+		this._messages.push(userMsg);
+
+		// Ensure session
+		if (!this._currentSessionId) {
+			try {
+				const session = await this._apiClient.createSession("VS Code Chat");
+				this._currentSessionId = session.id;
+			} catch (e) {
+				vscode.window.showErrorMessage(
+					"Failed to create session. Is the Composer server running on port 8080?",
+				);
+				this._view.webview.postMessage({
+					type: "error",
+					value: "Connection failed",
+				});
+				return;
+			}
+		}
+
+		// Prepare assistant message placeholder
+		const assistantMsg: Message = {
+			role: "assistant",
+			content: "",
+			timestamp: new Date().toISOString(),
+		};
+		this._messages.push(assistantMsg);
+
+		let thinkingLine: number | undefined;
+		if (vscode.window.activeTextEditor) {
+			thinkingLine = vscode.window.activeTextEditor.selection.active.line;
+		}
+
+		try {
+			// Stream response
+			const stream = this._apiClient.chatWithEvents({
+				model: "claude-sonnet-4-5", // default
+				messages: this._messages.slice(0, -1),
+				sessionId: this._currentSessionId,
+			});
+
+			for await (const event of stream) {
+				if (event.type === "text_delta" && event.text) {
+					assistantMsg.content += event.text;
+					this._view.webview.postMessage({
+						type: "token",
+						value: event.text,
+					});
+				} else if (event.type === "thinking_start") {
+					if (vscode.window.activeTextEditor && thinkingLine !== undefined) {
+						this._thinkingManager.setThinking(
+							vscode.window.activeTextEditor,
+							thinkingLine,
+						);
+					}
+					this._view.webview.postMessage({ type: "thinking_start" });
+				} else if (event.type === "thinking_end") {
+					if (vscode.window.activeTextEditor && thinkingLine !== undefined) {
+						this._thinkingManager.clearThinking(
+							vscode.window.activeTextEditor,
+							thinkingLine,
+						);
+					}
+					this._view.webview.postMessage({ type: "thinking_end" });
+				}
+			}
+
+			this._view.webview.postMessage({ type: "done" });
+		} catch (e) {
+			console.error(e);
+			this._view.webview.postMessage({
+				type: "error",
+				value: e instanceof Error ? e.message : "Unknown error",
+			});
+			if (vscode.window.activeTextEditor && thinkingLine !== undefined) {
+				this._thinkingManager.clearThinking(
+					vscode.window.activeTextEditor,
+					thinkingLine,
+				);
+			}
+		}
 	}
 
 	private _sendEditorContext() {
@@ -67,9 +169,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 		if (!editor) {
 			this._view.webview.postMessage({
 				type: "contextUpdate",
-				data: {
-					hasContext: false,
-				},
+				data: { hasContext: false },
 			});
 			return;
 		}
@@ -87,8 +187,8 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 				hasContext: true,
 				filename,
 				languageId,
-				selection: text || null, // Only send if non-empty
-				fullText: text ? null : fullText, // Send full text only if no selection (simplified strategy)
+				selection: text || null,
+				fullText: text ? null : fullText,
 				cursorLine: selection.active.line,
 			},
 		});
@@ -101,7 +201,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 			<html lang="en">
 			<head>
 				<meta charset="UTF-8">
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src http://localhost:*; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
 				<title>Composer Chat</title>
 				<style>
@@ -208,6 +308,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						flex: 1;
 						min-width: 0;
 						word-wrap: break-word;
+						white-space: pre-wrap;
 					}
 
                     .context-bar {
@@ -276,6 +377,25 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						color: var(--vscode-badge-foreground);
 						border-radius: 10px;
 					}
+
+					.thinking {
+						font-style: italic;
+						color: var(--text-secondary);
+						margin-bottom: 8px;
+						display: flex;
+						align-items: center;
+						gap: 6px;
+					}
+					.thinking-dots::after {
+						content: '';
+						animation: dots 1.5s infinite;
+					}
+					@keyframes dots {
+						0% { content: ''; }
+						33% { content: '.'; }
+						66% { content: '..'; }
+						100% { content: '...'; }
+					}
 				</style>
 			</head>
 			<body>
@@ -290,14 +410,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                         <span id="context-text">No active file</span>
                     </div>
 
-                    <div class="messages" id="messages">
-						<div class="message assistant">
-							<div class="avatar">AI</div>
-							<div class="message-content">
-								Hello! I'm ready to help you with your code. I can see your current file and selection.
-							</div>
-						</div>
-                    </div>
+                    <div class="messages" id="messages"></div>
 
 					<div class="input-area">
 						<div class="input-container">
@@ -314,7 +427,9 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 
 				<script nonce="${nonce}">
 					const vscode = acquireVsCodeApi();
-                    
+                    let currentAssistantMessage = null;
+					let thinkingEl = null;
+
                     // Initial context request
                     vscode.postMessage({ type: 'getEditorContext' });
 
@@ -324,6 +439,21 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                             case 'contextUpdate':
                                 updateContextUI(message.data);
                                 break;
+							case 'token':
+								appendToken(message.value);
+								break;
+							case 'thinking_start':
+								showThinking();
+								break;
+							case 'thinking_end':
+								hideThinking();
+								break;
+							case 'done':
+								currentAssistantMessage = null;
+								break;
+							case 'error':
+								showError(message.value);
+								break;
                         }
                     });
 
@@ -342,6 +472,63 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                         }
                     }
 
+					function showThinking() {
+						if (!currentAssistantMessage) createAssistantMessage();
+						if (thinkingEl) return;
+						
+						thinkingEl = document.createElement('div');
+						thinkingEl.className = 'thinking';
+						thinkingEl.innerHTML = 'Thinking<span class="thinking-dots"></span>';
+						
+						// Insert before content or append
+						const content = currentAssistantMessage.querySelector('.message-content');
+						content.insertBefore(thinkingEl, content.firstChild);
+					}
+
+					function hideThinking() {
+						if (thinkingEl) {
+							thinkingEl.remove();
+							thinkingEl = null;
+						}
+					}
+
+					function createAssistantMessage() {
+						const messages = document.getElementById('messages');
+						const div = document.createElement('div');
+						div.className = 'message assistant';
+						div.innerHTML = \`
+							<div class="avatar">AI</div>
+							<div class="message-content"></div>
+						\`;
+						messages.appendChild(div);
+						currentAssistantMessage = div;
+						messages.scrollTop = messages.scrollHeight;
+						return div;
+					}
+
+					function appendToken(text) {
+						if (!currentAssistantMessage) createAssistantMessage();
+						const content = currentAssistantMessage.querySelector('.message-content');
+						const textNode = document.createTextNode(text);
+						content.appendChild(textNode);
+						
+						const messages = document.getElementById('messages');
+						messages.scrollTop = messages.scrollHeight;
+					}
+
+					function showError(text) {
+						const messages = document.getElementById('messages');
+						const div = document.createElement('div');
+						div.className = 'message assistant';
+						div.style.borderColor = '#ef4444';
+						div.innerHTML = \`
+							<div class="avatar" style="background:#ef4444">!</div>
+							<div class="message-content">\${text}</div>
+						\`;
+						messages.appendChild(div);
+						messages.scrollTop = messages.scrollHeight;
+					}
+
 					// Auto-resize textarea
 					const textarea = document.querySelector('textarea');
 					textarea.addEventListener('input', function() {
@@ -349,7 +536,6 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						this.style.height = (this.scrollHeight) + 'px';
 					});
 
-					// Send message handling
 					function sendMessage() {
 						const text = textarea.value.trim();
 						if (!text) return;
@@ -369,17 +555,8 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 						textarea.value = '';
 						textarea.style.height = 'auto';
 
-						// Simulate response (mock for now)
-						setTimeout(() => {
-							const responseDiv = document.createElement('div');
-							responseDiv.className = 'message assistant';
-							responseDiv.innerHTML = \`
-								<div class="avatar">AI</div>
-								<div class="message-content">I received your message: "\${text}". This is a mock response until the backend is fully connected.</div>
-							\`;
-							messages.appendChild(responseDiv);
-							messages.scrollTop = messages.scrollHeight;
-						}, 1000);
+						// Send to extension
+						vscode.postMessage({ type: 'sendMessage', text });
 					}
 
                     document.getElementById('send-btn').addEventListener('click', sendMessage);
