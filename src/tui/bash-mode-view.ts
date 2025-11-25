@@ -278,23 +278,22 @@ ${muted("Back to normal chat.")}`,
 	}
 
 	private async executeCommand(command: string): Promise<void> {
-		// Record to persistent history
-		this.history = appendToHistory(this.history, command);
+		const strippedBackgroundCommand = stripBackgroundSuffix(command);
+		const normalizedCommand = strippedBackgroundCommand ?? command;
+
+		// Record to persistent history with normalized command (no trailing &)
+		this.history = appendToHistory(this.history, normalizedCommand);
 
 		// Handle export commands for session env persistence
-		const exportResult = this.handleExport(command);
+		const exportResult = this.handleExport(normalizedCommand);
 		if (exportResult) {
 			this.renderExportResult(exportResult);
 			return;
 		}
 
-		const backgroundCommand = stripBackgroundSuffix(command);
-		if (backgroundCommand) {
-			if (this.history.length > 0) {
-				this.history[this.history.length - 1] = backgroundCommand;
-			}
+		if (strippedBackgroundCommand) {
 			this.launchBackgroundTaskCommand({
-				command: backgroundCommand,
+				command: strippedBackgroundCommand,
 				source: "suffix",
 				cwd: this.currentCwd,
 				env: { ...process.env, ...this.sessionEnv },
@@ -303,7 +302,7 @@ ${muted("Back to normal chat.")}`,
 			return;
 		}
 
-		const promptLine = this.formatPrompt(command);
+		const promptLine = this.formatPrompt(normalizedCommand);
 		const block = new BashShellBlock(
 			this.formatDisplayPath(this.currentCwd),
 			`${promptLine}\n${muted("Running…")}`,
@@ -314,7 +313,7 @@ ${muted("Back to normal chat.")}`,
 		this.options.ui.requestRender();
 
 		// Check for builtin commands first
-		const builtinResult = this.handleBuiltin(command);
+		const builtinResult = this.handleBuiltin(normalizedCommand);
 		if (builtinResult) {
 			this.lastExitCode = builtinResult.code;
 			const statusLine = badge(
@@ -352,7 +351,7 @@ ${muted("Back to normal chat.")}`,
 		}, 80);
 
 		const mergedEnv = { ...process.env, ...this.sessionEnv };
-		const result = await runStreamingShellCommand(command, {
+		const result = await runStreamingShellCommand(normalizedCommand, {
 			cwd: this.currentCwd,
 			env: mergedEnv,
 			signal: this.currentAbortController.signal,
