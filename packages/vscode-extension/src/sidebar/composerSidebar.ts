@@ -15,17 +15,33 @@ export class ComposerSidebarProvider
 	private _disposables: vscode.Disposable[] = [];
 	private _isProcessing = false;
 
+	private _abortController?: AbortController;
+
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _thinkingManager: ThinkingManager,
+		private readonly _context: vscode.ExtensionContext,
 	) {
 		const config = vscode.workspace.getConfiguration("composer");
 		const baseUrl =
 			config.get<string>("apiEndpoint") || "http://localhost:8080";
 		this._apiClient = new ApiClient(baseUrl);
+
+		// Load history from state
+		const savedMessages =
+			this._context.workspaceState.get<Message[]>("composer.messages");
+		if (savedMessages) {
+			this._messages = savedMessages;
+		}
+		const savedSessionId =
+			this._context.workspaceState.get<string>("composer.sessionId");
+		if (savedSessionId) {
+			this._currentSessionId = savedSessionId;
+		}
 	}
 
 	public dispose() {
+		this._abortController?.abort();
 		for (const d of this._disposables) {
 			d.dispose();
 		}
@@ -33,8 +49,11 @@ export class ComposerSidebarProvider
 	}
 
 	public clearChat() {
+		this._abortController?.abort();
 		this._messages = [];
 		this._currentSessionId = undefined;
+		this._context.workspaceState.update("composer.messages", undefined);
+		this._context.workspaceState.update("composer.sessionId", undefined);
 		if (this._view) {
 			this._view.webview.postMessage({ type: "clear" });
 		}
@@ -121,7 +140,15 @@ export class ComposerSidebarProvider
 	}
 
 	private async _handleUserMessage(text: string) {
-		if (!this._view || this._isProcessing) return;
+		if (!this._view) return;
+
+		// Cancel any existing request
+		if (this._abortController) {
+			this._abortController.abort();
+		}
+		this._abortController = new AbortController();
+		const signal = this._abortController.signal;
+
 		this._isProcessing = true;
 
 		const userMsg: Message = {
@@ -130,11 +157,16 @@ export class ComposerSidebarProvider
 			timestamp: new Date().toISOString(),
 		};
 		this._messages.push(userMsg);
+		this._context.workspaceState.update("composer.messages", this._messages);
 
 		if (!this._currentSessionId) {
 			try {
 				const session = await this._apiClient.createSession("VS Code Chat");
 				this._currentSessionId = session.id;
+				this._context.workspaceState.update(
+					"composer.sessionId",
+					this._currentSessionId,
+				);
 			} catch (e) {
 				vscode.window.showErrorMessage(
 					"Failed to create session. Is the Composer server running?",
@@ -154,6 +186,9 @@ export class ComposerSidebarProvider
 			timestamp: new Date().toISOString(),
 		};
 		this._messages.push(assistantMsg);
+		// Don't save empty assistant message yet, wait for content or token updates?
+		// Better to save it so we know a message is pending if we reload, but content is empty.
+		this._context.workspaceState.update("composer.messages", this._messages);
 
 		let thinkingLine: number | undefined;
 		if (vscode.window.activeTextEditor) {
@@ -164,19 +199,26 @@ export class ComposerSidebarProvider
 			const config = vscode.workspace.getConfiguration("composer");
 			const model = config.get<string>("model") || "claude-sonnet-4-5";
 
-			const stream = this._apiClient.chatWithEvents({
-				model,
-				messages: this._messages.slice(0, -1),
-				sessionId: this._currentSessionId,
-			});
+			const stream = this._apiClient.chatWithEvents(
+				{
+					model,
+					messages: this._messages.slice(0, -1),
+					sessionId: this._currentSessionId,
+				},
+				signal,
+			);
 
 			for await (const event of stream) {
+				if (signal.aborted) break;
+
 				if (event.type === "text_delta" && event.text) {
 					assistantMsg.content += event.text;
 					this._view.webview.postMessage({
 						type: "token",
 						value: event.text,
 					});
+					// Periodically save state? Or just at the end.
+					// Saving on every token is too expensive. We'll save at done.
 				} else if (event.type === "thinking_start") {
 					if (vscode.window.activeTextEditor && thinkingLine !== undefined) {
 						this._thinkingManager.setThinking(
@@ -196,8 +238,19 @@ export class ComposerSidebarProvider
 				}
 			}
 
-			this._view.webview.postMessage({ type: "done" });
+			if (!signal.aborted) {
+				this._view.webview.postMessage({ type: "done" });
+				// Save final state
+				this._context.workspaceState.update(
+					"composer.messages",
+					this._messages,
+				);
+			}
 		} catch (e) {
+			if (signal.aborted) {
+				// Abort is expected
+				return;
+			}
 			console.error(e);
 			this._view.webview.postMessage({
 				type: "error",
@@ -211,6 +264,7 @@ export class ComposerSidebarProvider
 			}
 		} finally {
 			this._isProcessing = false;
+			this._abortController = undefined;
 		}
 	}
 

@@ -27,6 +27,23 @@ export class ThinkingManager implements vscode.Disposable {
 				this.thinkingLines.delete(doc.uri.toString());
 			}),
 		);
+
+		// Clear decorations on any edit to prevent line number invalidation/staleness
+		// It's safer to clear thinking indicators if the user starts typing
+		this.disposables.push(
+			vscode.workspace.onDidChangeTextDocument((e) => {
+				const uri = e.document.uri.toString();
+				if (this.thinkingLines.has(uri)) {
+					this.thinkingLines.delete(uri);
+					// We find the editor for this document and update (clear) decorations
+					for (const editor of vscode.window.visibleTextEditors) {
+						if (editor.document.uri.toString() === uri) {
+							this.updateDecorations(editor);
+						}
+					}
+				}
+			}),
+		);
 	}
 
 	public setThinking(editor: vscode.TextEditor, line: number) {

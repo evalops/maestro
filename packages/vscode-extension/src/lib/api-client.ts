@@ -58,6 +58,7 @@ export class ApiClient {
 	 */
 	async *chatWithEvents(
 		request: ChatRequest,
+		signal?: AbortSignal,
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		const response = await fetch(`${this.baseUrl}/api/chat`, {
 			method: "POST",
@@ -65,6 +66,7 @@ export class ApiClient {
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({ ...request, stream: true }),
+			signal,
 		});
 
 		if (!response.ok) {
