@@ -2,6 +2,8 @@ import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { extname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
+import { getLspConfig } from "../config/lsp-config.js";
+import { getDiagnostics } from "../lsp/index.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
@@ -97,6 +99,12 @@ const readSchema = Type.Object({
 			default: false,
 		}),
 	),
+	withDiagnostics: Type.Optional(
+		Type.Boolean({
+			description: "Include LSP diagnostics (errors/warnings) if available",
+			default: true,
+		}),
+	),
 	language: Type.Optional(
 		Type.String({
 			description:
@@ -157,6 +165,7 @@ Use 'batch' to read multiple files in parallel.`,
 			lineNumbers = true,
 			wrapInCodeFence = true,
 			asBase64 = false,
+			withDiagnostics = true,
 			language,
 			encoding = "utf-8",
 		},
@@ -279,6 +288,61 @@ Use 'batch' to read multiple files in parallel.`,
 		}
 		if (notices.length > 0) {
 			formattedText += `\n\n... (${notices.join(". ")})`;
+		}
+
+		// Append LSP diagnostics if available
+		if (withDiagnostics) {
+			try {
+				const diagnostics = await getDiagnostics(absolutePath);
+				if (diagnostics.length > 0) {
+					// Treat undefined severity as error (severity 1) per LSP spec
+					const errors = diagnostics.filter(
+						(d) => d.severity === 1 || d.severity === undefined,
+					);
+					const warnings = diagnostics.filter((d) => d.severity === 2);
+
+					if (errors.length > 0 || warnings.length > 0) {
+						formattedText += "\n\n--- LSP Diagnostics ---\n";
+
+						const config = getLspConfig();
+						const maxDiagnostics = config.maxDiagnosticsPerFile ?? 10;
+						let count = 0;
+
+						// Sanitize and limit message length to prevent injection and overflow
+						const sanitizeMessage = (msg: string): string => {
+							// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally removing control chars for security
+							const controlChars = /[\x00-\x1F\x7F]/g;
+							return msg
+								.replace(/[`\n\r]/g, " ") // Remove backticks and newlines
+								.replace(controlChars, "") // Remove control characters
+								.slice(0, 500); // Limit length
+						};
+
+						for (const d of errors) {
+							if (count >= maxDiagnostics) break;
+							const message = sanitizeMessage(d.message);
+							formattedText += `ERROR (line ${d.range.start.line + 1}): ${message}\n`;
+							count++;
+						}
+
+						for (const d of warnings) {
+							if (count >= maxDiagnostics) break;
+							const message = sanitizeMessage(d.message);
+							formattedText += `WARN (line ${d.range.start.line + 1}): ${message}\n`;
+							count++;
+						}
+
+						if (errors.length + warnings.length > maxDiagnostics) {
+							const remaining =
+								errors.length + warnings.length - maxDiagnostics;
+							formattedText += `...and ${remaining} more ${remaining === 1 ? "diagnostic" : "diagnostics"} hidden.\n`;
+						}
+					}
+				}
+			} catch (error) {
+				// Ignore LSP errors during read, but log for debug
+				console.debug("[read] Failed to get LSP diagnostics:", error);
+			}
 		}
 
 		return respond.text(formattedText).detail({

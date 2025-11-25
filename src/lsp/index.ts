@@ -15,10 +15,16 @@ import type { MessageConnection } from "vscode-jsonrpc";
 import { lspManager } from "./manager.js";
 import { SymbolKind } from "./types.js";
 import type {
+	LspCompletionItem,
+	LspCompletionList,
 	LspDiagnostic,
 	LspDocumentSymbol,
+	LspFormattingOptions,
+	LspLocation,
+	LspRange,
 	LspServerConfig,
 	LspSymbol,
+	LspTextEdit,
 	RootResolver,
 } from "./types.js";
 import { pathToUri, uriToPath } from "./utils.js";
@@ -26,11 +32,16 @@ import { pathToUri, uriToPath } from "./utils.js";
 // Re-export types
 export type {
 	LspClientHandle,
+	LspCompletionItem,
+	LspCompletionList,
 	LspDiagnostic,
 	LspDocumentSymbol,
+	LspFormattingOptions,
+	LspLocation,
 	LspRange,
 	LspServerConfig,
 	LspSymbol,
+	LspTextEdit,
 	RootResolver,
 } from "./types.js";
 export { SymbolKind } from "./types.js";
@@ -100,6 +111,21 @@ export async function collectDiagnostics(): Promise<
 }
 
 /**
+ * Get diagnostics for a specific file
+ */
+export async function getDiagnostics(file: string): Promise<LspDiagnostic[]> {
+	const clients = await lspManager.getClientsForFile(file);
+	const uri = pathToUri(file);
+	const results: LspDiagnostic[] = [];
+
+	for (const client of clients) {
+		results.push(...client.getDiagnostics(uri));
+	}
+
+	return results;
+}
+
+/**
  * Get hover information at a position
  */
 export async function hover(
@@ -131,6 +157,59 @@ const IMPORTANT_KINDS = [
 	SymbolKind.Struct,
 	SymbolKind.Enum,
 ];
+
+/**
+ * Helper to normalize LSP location results which can be Location, Location[], or LocationLink[]
+ */
+function normalizeLocationResult(result: unknown): LspLocation[] {
+	if (!result) return [];
+
+	const items = Array.isArray(result) ? result : [result];
+	const locations: LspLocation[] = [];
+
+	for (const item of items) {
+		if (!item || typeof item !== "object") continue;
+
+		// Handle LocationLink (has targetUri and targetRange)
+		if ("targetUri" in item && "targetRange" in item) {
+			const link = item as { targetUri: string; targetRange: LspRange };
+			locations.push({ uri: link.targetUri, range: link.targetRange });
+		}
+		// Handle Location (has uri and range)
+		else if ("uri" in item && "range" in item) {
+			locations.push(item as LspLocation);
+		}
+	}
+
+	return locations;
+}
+
+/**
+ * Helper to execute an LSP request across all applicable clients
+ */
+async function executeLspRequest<T>(
+	file: string,
+	method: string,
+	params: Record<string, unknown>,
+	resultMapper: (result: unknown) => T[],
+): Promise<T[]> {
+	const clients = await lspManager.getClientsForFile(file);
+	const uri = pathToUri(file);
+
+	const results = await Promise.all(
+		clients.map((client) =>
+			client.connection
+				.sendRequest(method, {
+					textDocument: { uri },
+					...params,
+				})
+				.then(resultMapper)
+				.catch(() => []),
+		),
+	);
+
+	return results.flat().filter(Boolean) as T[];
+}
 
 /**
  * Search for workspace symbols
@@ -180,6 +259,114 @@ export async function documentSymbol(
 	);
 
 	return results.flat().filter(Boolean);
+}
+
+/**
+ * Get definition location(s) for a symbol at a position
+ */
+export async function definition(
+	file: string,
+	line: number,
+	character: number,
+): Promise<LspLocation[]> {
+	return executeLspRequest(
+		file,
+		"textDocument/definition",
+		{ position: { line, character } },
+		normalizeLocationResult,
+	);
+}
+
+/**
+ * Get references for a symbol at a position
+ */
+export async function references(
+	file: string,
+	line: number,
+	character: number,
+	includeDeclaration = true,
+): Promise<LspLocation[]> {
+	return executeLspRequest(
+		file,
+		"textDocument/references",
+		{ position: { line, character }, context: { includeDeclaration } },
+		(result) => (Array.isArray(result) ? result : []),
+	);
+}
+
+/**
+ * Get type definition location(s) for a symbol at a position
+ */
+export async function typeDefinition(
+	file: string,
+	line: number,
+	character: number,
+): Promise<LspLocation[]> {
+	return executeLspRequest(
+		file,
+		"textDocument/typeDefinition",
+		{ position: { line, character } },
+		normalizeLocationResult,
+	);
+}
+
+/**
+ * Get implementation location(s) for a symbol at a position
+ */
+export async function implementation(
+	file: string,
+	line: number,
+	character: number,
+): Promise<LspLocation[]> {
+	return executeLspRequest(
+		file,
+		"textDocument/implementation",
+		{ position: { line, character } },
+		normalizeLocationResult,
+	);
+}
+
+/**
+ * Format a file
+ */
+export async function formatting(
+	file: string,
+	options?: LspFormattingOptions,
+): Promise<LspTextEdit[]> {
+	return executeLspRequest(
+		file,
+		"textDocument/formatting",
+		{
+			options: options ?? {
+				tabSize: 2, // Default
+				insertSpaces: true,
+			},
+		},
+		(result) => (Array.isArray(result) ? result : []),
+	);
+}
+
+/**
+ * Get completion items at a position
+ */
+export async function completion(
+	file: string,
+	line: number,
+	character: number,
+): Promise<LspCompletionItem[]> {
+	return executeLspRequest(
+		file,
+		"textDocument/completion",
+		{ position: { line, character } },
+		(result) => {
+			if (!result) return [];
+			if (Array.isArray(result)) return result;
+			if (typeof result === "object" && result !== null && "items" in result) {
+				return (result as LspCompletionList).items;
+			}
+			return [];
+		},
+	);
 }
 
 /**

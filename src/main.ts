@@ -8,6 +8,7 @@ import {
 } from "./agent/action-approval.js";
 import {
 	BackgroundTaskContextSource,
+	LspContextSource,
 	TodoContextSource,
 } from "./agent/context-providers.js";
 import { Agent, ProviderTransport, type ThinkingLevel } from "./agent/index.js";
@@ -662,6 +663,7 @@ export async function main(args: string[]) {
 		contextSources: [
 			new TodoContextSource(),
 			new BackgroundTaskContextSource(),
+			new LspContextSource(),
 		],
 	});
 

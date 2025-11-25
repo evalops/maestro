@@ -6,6 +6,11 @@ export interface LspRange {
 	end: { line: number; character: number };
 }
 
+export interface LspLocation {
+	uri: string;
+	range: LspRange;
+}
+
 export interface LspDiagnostic {
 	severity?: 1 | 2 | 3 | 4;
 	message: string;
@@ -16,10 +21,34 @@ export interface LspDiagnostic {
 export interface LspSymbol {
 	name: string;
 	kind: number;
-	location: {
-		uri: string;
-		range: LspRange;
-	};
+	location: LspLocation;
+}
+
+export interface LspTextEdit {
+	range: LspRange;
+	newText: string;
+}
+
+export interface LspFormattingOptions {
+	tabSize: number;
+	insertSpaces: boolean;
+	[key: string]: boolean | number | string;
+}
+
+export interface LspCompletionItem {
+	label: string;
+	kind?: number;
+	detail?: string;
+	documentation?: string | { kind: string; value: string };
+	sortText?: string;
+	filterText?: string;
+	insertText?: string;
+	textEdit?: LspTextEdit;
+}
+
+export interface LspCompletionList {
+	isIncomplete: boolean;
+	items: LspCompletionItem[];
 }
 
 export interface LspDocumentSymbol {

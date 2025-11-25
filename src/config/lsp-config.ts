@@ -34,6 +34,20 @@ const configSchema = Type.Object({
 			blockingSeverity: Type.Optional(
 				Type.Integer({ minimum: 1, description: "LSP blocking severity" }),
 			),
+			maxDiagnosticsPerFile: Type.Optional(
+				Type.Integer({
+					minimum: 1,
+					default: 10,
+					description: "Max diagnostics shown in read tool",
+				}),
+			),
+			maxFilesInContext: Type.Optional(
+				Type.Integer({
+					minimum: 1,
+					default: 5,
+					description: "Max files with errors shown in context",
+				}),
+			),
 		},
 		{ default: { enabled: true } },
 	),

@@ -88,11 +88,46 @@ export class LspClient extends EventEmitter {
 						didSave: true,
 						didClose: true,
 					},
+					completion: {
+						completionItem: {
+							snippetSupport: true,
+						},
+					},
 					hover: {
 						contentFormat: ["plaintext", "markdown"],
 					},
+					signatureHelp: {
+						dynamicRegistration: true,
+					},
+					definition: {
+						dynamicRegistration: true,
+					},
+					references: {
+						dynamicRegistration: true,
+					},
+					documentHighlight: {
+						dynamicRegistration: true,
+					},
 					documentSymbol: {
 						hierarchicalDocumentSymbolSupport: true,
+					},
+					codeAction: {
+						dynamicRegistration: true,
+					},
+					formatting: {
+						dynamicRegistration: true,
+					},
+					rangeFormatting: {
+						dynamicRegistration: true,
+					},
+					rename: {
+						dynamicRegistration: true,
+					},
+					typeDefinition: {
+						dynamicRegistration: true,
+					},
+					implementation: {
+						dynamicRegistration: true,
 					},
 				},
 			},

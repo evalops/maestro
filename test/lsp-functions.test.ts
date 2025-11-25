@@ -1,19 +1,26 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type LspServerConfig,
 	SymbolKind,
 	changeFile,
 	closeFile,
 	collectDiagnostics,
+	completion,
 	configureRootResolver,
 	configureServers,
+	definition,
 	documentSymbol,
+	formatting,
 	getClients,
+	implementation,
+	references,
 	touchFile,
+	typeDefinition,
 	workspaceSymbol,
 } from "../src/lsp/index.js";
+import { lspManager } from "../src/lsp/manager.js";
 
 const TEST_DIR = join(process.cwd(), "tmp", "lsp-functions-tests");
 
@@ -21,6 +28,7 @@ describe("LSP functions", () => {
 	beforeEach(() => {
 		rmSync(TEST_DIR, { recursive: true, force: true });
 		mkdirSync(TEST_DIR, { recursive: true });
+		vi.restoreAllMocks();
 	});
 
 	it("should track file versions with changeFile", async () => {
@@ -66,6 +74,60 @@ describe("LSP functions", () => {
 		expect(symbols).toEqual([]);
 	});
 
+	it("should return empty array for definition with no clients", async () => {
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
+		await configureServers([]);
+		const locations = await definition(testFile, 0, 0);
+		expect(locations).toEqual([]);
+	});
+
+	it("should return empty array for references with no clients", async () => {
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
+		await configureServers([]);
+		const locations = await references(testFile, 0, 0);
+		expect(locations).toEqual([]);
+	});
+
+	it("should return empty array for typeDefinition with no clients", async () => {
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
+		await configureServers([]);
+		const locations = await typeDefinition(testFile, 0, 0);
+		expect(locations).toEqual([]);
+	});
+
+	it("should return empty array for implementation with no clients", async () => {
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
+		await configureServers([]);
+		const locations = await implementation(testFile, 0, 0);
+		expect(locations).toEqual([]);
+	});
+
+	it("should return empty array for formatting with no clients", async () => {
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
+		await configureServers([]);
+		const edits = await formatting(testFile);
+		expect(edits).toEqual([]);
+	});
+
+	it("should return empty array for completion with no clients", async () => {
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
+		await configureServers([]);
+		const items = await completion(testFile, 0, 0);
+		expect(items).toEqual([]);
+	});
+
 	it("should return empty diagnostics when no clients are running", async () => {
 		await configureServers([]);
 		const diagnostics = await collectDiagnostics();
@@ -96,5 +158,40 @@ describe("LSP functions", () => {
 
 		await configureServers([]);
 		await expect(touchFile(testFile)).resolves.toBeUndefined();
+	});
+
+	it("should return definition from client when available", async () => {
+		const testFile = join(TEST_DIR, "test.ts");
+		writeFileSync(testFile, "const x = 1;");
+
+		// Mock client
+		const mockClient = {
+			connection: {
+				sendRequest: vi.fn().mockResolvedValue({
+					uri: "file:///test.ts",
+					range: {
+						start: { line: 0, character: 0 },
+						end: { line: 0, character: 5 },
+					},
+				}),
+			},
+			openFile: vi.fn(),
+		};
+
+		// Mock lspManager to return our mock client
+		vi.spyOn(lspManager, "getClientsForFile").mockResolvedValue([
+			mockClient as any,
+		]);
+
+		const locations = await definition(testFile, 0, 0);
+
+		expect(locations).toHaveLength(1);
+		expect(locations[0].uri).toBe("file:///test.ts");
+		expect(mockClient.connection.sendRequest).toHaveBeenCalledWith(
+			"textDocument/definition",
+			expect.objectContaining({
+				position: { line: 0, character: 0 },
+			}),
+		);
 	});
 });
