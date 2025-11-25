@@ -5,6 +5,7 @@ import type { ActionApprovalContext } from "../agent/action-approval.js";
 import { safeJsonParse } from "../utils/json.js";
 
 export interface EnterprisePolicy {
+	orgId?: string;
 	tools?: {
 		allowed?: string[];
 		blocked?: string[];
@@ -70,13 +71,13 @@ function getCommandArg(context: ActionApprovalContext): string | null {
 }
 
 // Regex to catch npm install, pip install, bun add, etc.
-// Captures the package names
+// Captures the package names. Added ':' to capture URLs.
 const npmInstallPattern =
-	/\b(?:npm|pnpm|yarn)\s+(?:install|i|add)\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.\s]+)/i;
+	/\b(?:npm|pnpm|yarn)\s+(?:install|i|add)\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s]+)/i;
 const bunAddPattern =
-	/\bbun\s+(?:add|install)\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.\s]+)/i;
+	/\bbun\s+(?:add|install)\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s]+)/i;
 const pipInstallPattern =
-	/\bpip\d*\s+install\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.\s=<>]+)/i;
+	/\bpip\d*\s+install\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s=<>]+)/i;
 
 function extractDependencies(command: string): string[] {
 	let matches = command.match(npmInstallPattern);
@@ -89,6 +90,11 @@ function extractDependencies(command: string): string[] {
 			.split(/\s+/)
 			.filter((p) => !p.startsWith("-"))
 			.map((p) => {
+				// Handle URLs (git+, http:, etc.) and local paths
+				if (p.includes("://") || p.match(/^git@/) || p.match(/^\.{0,2}\//)) {
+					return p;
+				}
+
 				// Handle scoped packages (e.g. @scope/pkg)
 				if (p.startsWith("@")) {
 					const versionIndex = p.indexOf("@", 1);
@@ -108,6 +114,22 @@ export function checkPolicy(context: ActionApprovalContext): {
 	const policy = loadPolicy();
 	if (!policy) {
 		return { allowed: true };
+	}
+
+	// 0. Organization Context Check
+	if (
+		policy.orgId &&
+		context.user?.orgId &&
+		policy.orgId !== context.user.orgId
+	) {
+		// If policy is for a different org, we might normally skip it or fail.
+		// For safety, if a policy exists but mismatches org, we should probably strictly enforce or log.
+		// Assuming this local policy file is intended for the current environment/user.
+		// If there's a mismatch, it's a configuration error.
+		// For now, we'll log a warning but enforce the policy (safer to over-enforce).
+		console.warn(
+			`[Policy] Org mismatch: Policy=${policy.orgId}, User=${context.user.orgId}`,
+		);
 	}
 
 	// 1. Tool Constraints
