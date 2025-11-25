@@ -41,9 +41,17 @@ const editSchema = Type.Object({
 		description: "New text to replace the old text with",
 		default: "",
 	}),
+	replaceAll: Type.Optional(
+		Type.Boolean({
+			description:
+				"Replace all occurrences (useful for variable renaming). Cannot be used with occurrence.",
+			default: false,
+		}),
+	),
 	occurrence: Type.Optional(
 		Type.Integer({
-			description: "Which occurrence of the text to replace (1-based)",
+			description:
+				"Which occurrence of the text to replace (1-based). Cannot be used with replaceAll.",
 			minimum: 1,
 			default: 1,
 		}),
@@ -68,9 +76,10 @@ export const editTool = createTool<typeof editSchema, EditToolDetails>({
 
 Parameters:
 - path: File path
-- oldText: Exact text to find (must be unique)
+- oldText: Exact text to find (must be unique unless using replaceAll)
 - newText: Replacement (use "" to delete)
-- occurrence: Which match (default: 1)
+- replaceAll: Replace all occurrences (default: false). Useful for variable renaming.
+- occurrence: Which match (default: 1). Cannot be used with replaceAll.
 - dryRun: Preview only (default: false)
 
 Best practices:
@@ -78,14 +87,34 @@ Best practices:
 - Include context (5-10 lines) for uniqueness
 - Match indentation style (tabs vs spaces)
 - Use dryRun for complex edits
+- Use replaceAll for variable renaming or bulk replacements
 
 If "not found", read file to check actual content.`,
 	schema: editSchema,
 	async run(
-		{ path, oldText, newText, occurrence = 1, dryRun = false },
+		{
+			path,
+			oldText,
+			newText,
+			replaceAll = false,
+			occurrence = 1,
+			dryRun = false,
+		},
 		{ signal, respond },
 	) {
 		requirePlanCheck("edit");
+
+		// Defense in depth: validate oldText is not empty (schema has minLength: 1)
+		if (!oldText || oldText.length === 0) {
+			throw new Error("oldText cannot be empty");
+		}
+
+		if (replaceAll && occurrence !== 1) {
+			throw new Error(
+				"Cannot use both replaceAll and occurrence parameters. Use replaceAll=true to replace all, or occurrence=N to replace a specific one.",
+			);
+		}
+
 		const absolutePath = resolvePath(expandUserPath(path));
 		const throwIfAborted = () => {
 			if (signal?.aborted) {
@@ -117,25 +146,48 @@ If "not found", read file to check actual content.`,
 			);
 		}
 
-		if (occurrence > exactMatches.length) {
-			throw new Error(
-				`Only ${exactMatches.length} occurrence(s) found in ${path}, but occurrence #${occurrence} was requested`,
-			);
+		let newContent: string;
+		let replacementCount: number;
+
+		// Safety limit to prevent DoS from excessive replacements
+		const MAX_REPLACEMENTS = 10000;
+
+		if (replaceAll) {
+			// Check replacement count before proceeding
+			if (exactMatches.length > MAX_REPLACEMENTS) {
+				throw new Error(
+					`Too many replacements: found ${exactMatches.length} occurrences (max ${MAX_REPLACEMENTS}). Use a more specific search pattern.`,
+				);
+			}
+
+			// Use native replaceAll for better memory efficiency
+			newContent = content.replaceAll(oldText, newText);
+			replacementCount = exactMatches.length;
+		} else {
+			// Replace single occurrence
+			if (occurrence > exactMatches.length) {
+				throw new Error(
+					`Only ${exactMatches.length} occurrence(s) found in ${path}, but occurrence #${occurrence} was requested`,
+				);
+			}
+
+			const targetMatch = exactMatches[occurrence - 1];
+			const matchIndex = targetMatch.index ?? 0;
+			newContent =
+				content.slice(0, matchIndex) +
+				newText +
+				content.slice(matchIndex + oldText.length);
+			replacementCount = 1;
 		}
 
-		const targetMatch = exactMatches[occurrence - 1];
-		const matchIndex = targetMatch.index ?? 0;
-		const newContent =
-			content.slice(0, matchIndex) +
-			newText +
-			content.slice(matchIndex + oldText.length);
 		const diff = generateDiffString(content, newContent);
 
 		if (dryRun) {
+			const modeDesc = replaceAll
+				? `all ${exactMatches.length} occurrence(s)`
+				: `occurrence #${occurrence}`;
 			return respond
-				.text(
-					`Dry run: preview for ${path} (occurrence #${occurrence}). No changes written.`,
-				)
+				.text(`Dry run: preview for ${path} (${modeDesc}). No changes written.`)
 				.detail({ diff });
 		}
 
@@ -154,14 +206,16 @@ If "not found", read file to check actual content.`,
 
 		throwIfAborted();
 
-		return respond
-			.text(
-				`Successfully replaced ${oldText.length} characters with ${newText.length} characters in ${path}${
+		const resultMessage = replaceAll
+			? `Successfully replaced all ${replacementCount} occurrence(s) in ${path}.`
+			: `Successfully replaced ${oldText.length} characters with ${newText.length} characters in ${path}${
 					exactMatches.length > 1
 						? ` (occurrence #${occurrence} of ${exactMatches.length})`
 						: ""
-				}.`,
-			)
+				}.`;
+
+		return respond
+			.text(resultMessage)
 			.detail({ diff, validators: validatorSummaries });
 	},
 });

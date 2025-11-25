@@ -445,6 +445,85 @@ describe("Composer Tools", () => {
 			const onDisk = readFileSync(testFile, "utf-8");
 			expect(onDisk).toBe("alpha beta");
 		});
+
+		it("replaces all occurrences when replaceAll is true", async () => {
+			const testFile = join(testDir, "edit-replace-all.txt");
+			writeFileSync(testFile, "foo foo foo bar foo");
+
+			const result = await editTool.execute("test-call-replace-all", {
+				path: testFile,
+				oldText: "foo",
+				newText: "baz",
+				replaceAll: true,
+			});
+
+			const updated = readFileSync(testFile, "utf-8");
+			expect(updated).toBe("baz baz baz bar baz");
+			expect(getTextOutput(result)).toContain("all 4 occurrence(s)");
+		});
+
+		it("replaceAll works with dryRun", async () => {
+			const testFile = join(testDir, "edit-replace-all-dry.txt");
+			writeFileSync(testFile, "cat cat dog cat");
+
+			const result = await editTool.execute("test-call-replace-all-dry", {
+				path: testFile,
+				oldText: "cat",
+				newText: "bird",
+				replaceAll: true,
+				dryRun: true,
+			});
+
+			expect(getTextOutput(result)).toContain("Dry run");
+			expect(getTextOutput(result)).toContain("all 3 occurrence(s)");
+			const onDisk = readFileSync(testFile, "utf-8");
+			expect(onDisk).toBe("cat cat dog cat");
+		});
+
+		it("throws error when replaceAll and occurrence are both specified", async () => {
+			const testFile = join(testDir, "edit-conflict.txt");
+			writeFileSync(testFile, "foo foo foo");
+
+			await expect(
+				editTool.execute("test-call-conflict", {
+					path: testFile,
+					oldText: "foo",
+					newText: "bar",
+					replaceAll: true,
+					occurrence: 2,
+				}),
+			).rejects.toThrow("Cannot use both replaceAll and occurrence");
+		});
+
+		it("replaceAll can delete all occurrences with empty newText", async () => {
+			const testFile = join(testDir, "edit-delete-all.txt");
+			writeFileSync(testFile, "removeMe keep removeMe keep removeMe end");
+
+			await editTool.execute("test-call-delete-all", {
+				path: testFile,
+				oldText: "removeMe ",
+				newText: "",
+				replaceAll: true,
+			});
+
+			const updated = readFileSync(testFile, "utf-8");
+			expect(updated).toBe("keep keep end");
+		});
+
+		it("rejects too many replacements to prevent DoS", async () => {
+			const testFile = join(testDir, "edit-many-matches.txt");
+			// Create a file with more than 10000 occurrences of "a"
+			writeFileSync(testFile, "a".repeat(10001));
+
+			await expect(
+				editTool.execute("test-call-too-many", {
+					path: testFile,
+					oldText: "a",
+					newText: "b",
+					replaceAll: true,
+				}),
+			).rejects.toThrow("Too many replacements");
+		});
 	});
 
 	describe("bash tool", () => {
