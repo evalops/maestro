@@ -61,6 +61,12 @@ const baseInput: DiagnosticsInput = {
 		sampleRate: 1,
 		flagValue: "true",
 	},
+	training: {
+		preference: "opted-out",
+		optOut: true,
+		reason: "COMPOSER_TRAINING_OPT_OUT=1",
+		flagValue: "1",
+	},
 	exaUsage: {
 		totalCalls: 3,
 		successes: 2,
@@ -124,6 +130,11 @@ describe("formatDiagnosticsReport", () => {
 				enabled: false,
 				reason: "disabled",
 				sampleRate: 0,
+			},
+			training: {
+				preference: "provider-default",
+				optOut: null,
+				reason: "provider default",
 			},
 			apiKeyLookup: {
 				provider: "anthropic",

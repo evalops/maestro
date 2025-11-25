@@ -53,6 +53,7 @@ import {
 	type BackgroundTaskNotification,
 	backgroundTaskManager,
 } from "../tools/background-tasks.js";
+import { getTrainingStatus } from "../training.js";
 
 import { composerManager, loadComposers } from "../composers/index.js";
 import { mcpManager } from "../mcp/index.js";
@@ -102,6 +103,7 @@ import { SessionView } from "./session/session-view.js";
 import { CostView } from "./status/cost-view.js";
 import { DiagnosticsView } from "./status/diagnostics-view.js";
 import { TelemetryView } from "./status/telemetry-view.js";
+import { TrainingView } from "./status/training-view.js";
 import { StreamingView } from "./streaming-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolOutputView } from "./tool-output-view.js";
@@ -186,6 +188,7 @@ export class TuiRenderer {
 	private pendingTools = new Map<string, ToolExecutionComponent>();
 	private explicitApiKey?: string;
 	private telemetryStatus = getTelemetryStatus();
+	private trainingStatus = getTrainingStatus();
 	private backgroundSettings = getBackgroundTaskSettings();
 	private backgroundSettingsUnsubscribe?: () => void;
 	private currentModelMetadata?: SessionModelMetadata;
@@ -223,6 +226,7 @@ export class TuiRenderer {
 	private feedbackView: FeedbackView;
 	private aboutView: AboutView;
 	private changelogView: ChangelogView;
+	private trainingView: TrainingView;
 	private contextView?: ContextView;
 	private infoView: InfoView;
 	private streamingView: StreamingView;
@@ -465,6 +469,7 @@ export class TuiRenderer {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			telemetryStatus: this.telemetryStatus,
+			trainingStatus: this.trainingStatus,
 			version: this.version,
 			explicitApiKey: this.explicitApiKey,
 			chatContainer: this.chatContainer,
@@ -691,6 +696,16 @@ export class TuiRenderer {
 				this.diagnosticsView.setTelemetryStatus(status);
 			},
 		});
+		this.trainingView = new TrainingView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+			onStatusChanged: (status) => {
+				this.trainingStatus = status;
+				this.diagnosticsView.setTrainingStatus(status);
+			},
+		});
 		this.ollamaView = new OllamaView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -742,6 +757,8 @@ export class TuiRenderer {
 			handleCost: (context) => this.costView.handleCostCommand(context),
 			handleTelemetry: (context) =>
 				this.telemetryView.handleTelemetryCommand(context),
+			handleTraining: (context) =>
+				this.trainingView.handleTrainingCommand(context),
 			handleStats: (context) => this.handleStatsCommand(context),
 			handlePlan: (context) => this.handlePlanCommand(context),
 			handlePreview: (context) =>

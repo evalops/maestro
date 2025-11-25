@@ -41,6 +41,7 @@ interface CommandRegistryOptions {
 	handleConfig: (context: CommandExecutionContext) => void | Promise<void>;
 	handleCost: (context: CommandExecutionContext) => void | Promise<void>;
 	handleTelemetry: (context: CommandExecutionContext) => void;
+	handleTraining: (context: CommandExecutionContext) => void;
 	handleStats: (context: CommandExecutionContext) => void | Promise<void>;
 	handlePlan: (context: CommandExecutionContext) => void | Promise<void>;
 	handlePreview: (context: CommandExecutionContext) => void | Promise<void>;
@@ -97,6 +98,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			config: opts.handleConfig,
 			cost: opts.handleCost,
 			telemetry: opts.handleTelemetry,
+			training: opts.handleTraining,
 			stats: opts.handleStats,
 			plan: opts.handlePlan,
 			preview: opts.handlePreview,

@@ -273,7 +273,8 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "status",
-				description: "Show health snapshot (model, git, plan, telemetry)",
+				description:
+					"Show health snapshot (model, git, plan, telemetry, training)",
 				usage: "/status",
 				tags: ["diagnostics"],
 			},
@@ -410,6 +411,27 @@ export function createCommandRegistry({
 			},
 			withArgs("telemetry"),
 			handlers.telemetry,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "training",
+				description: "Toggle model training preference or show status",
+				usage: "/training [status|on|off|reset]",
+				tags: ["privacy"],
+				arguments: [
+					{
+						name: "action",
+						type: "enum",
+						required: false,
+						description: "Training action",
+						choices: ["status", "on", "off", "reset"],
+					},
+				],
+				examples: ["/training", "/training off"],
+			},
+			withArgs("training"),
+			handlers.training,
 			createContext,
 		),
 		buildEntry(

@@ -4,6 +4,7 @@ import type {
 	BackgroundTaskHealth,
 	BackgroundTaskHealthEntry,
 } from "../../tools/background-tasks.js";
+import type { TrainingStatus } from "../../training.js";
 import type { HealthSnapshot } from "./health-snapshot.js";
 
 export interface BugReportInfo {
@@ -20,6 +21,7 @@ export interface StatusSnapshotInfo {
 	modelLabel: string;
 	thinkingLevel: string;
 	telemetry: TelemetryStatus;
+	training: TrainingStatus;
 	health: HealthSnapshot;
 	sessionId: string | null;
 	sessionFile: string;
@@ -84,11 +86,28 @@ export function buildStatusSnapshot(info: StatusSnapshotInfo): string {
 	const sessionLine = info.sessionId
 		? `${info.sessionId}\n${muted(info.sessionFile)}`
 		: muted("No persisted session yet.");
+	const trainingLine = labeledValue(
+		"Training",
+		[
+			info.training.preference === "opted-out"
+				? badge("training", "opt-out", "warn")
+				: info.training.preference === "opted-in"
+					? badge("training", "opt-in", "success")
+					: badge("training", "default", "info"),
+			badge("reason", info.training.reason),
+			info.training.runtimeOverride
+				? muted(`override ${info.training.runtimeOverride}`)
+				: "",
+		]
+			.filter(Boolean)
+			.join(" "),
+	);
 
 	const rows = [
 		`${labeledValue("Model", info.modelLabel)} ${badge("v", info.version, "info")}`,
 		labeledValue("Thinking", info.thinkingLevel),
 		telemetryLine,
+		trainingLine,
 		labeledValue("Git", gitLine),
 		labeledValue(
 			"Background tasks",
