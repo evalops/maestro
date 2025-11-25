@@ -172,7 +172,7 @@ export async function checkPermission(
 			const actionMatches =
 				perm.action === action ||
 				perm.action === ACTIONS.WILDCARD ||
-				(perm.action === ACTIONS.ADMIN && resourceMatches);
+				(perm.action === ACTIONS.ADMIN && perm.resource === resource);
 			return resourceMatches && actionMatches;
 		});
 
