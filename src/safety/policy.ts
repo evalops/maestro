@@ -60,15 +60,18 @@ export function loadPolicy(force = false): EnterprisePolicy | null {
 					"Invalid enterprise policy schema:",
 					validatePolicy.errors,
 				);
+				cachedPolicy = null;
 				return null;
 			}
 			cachedPolicy = result.data;
 			return cachedPolicy;
 		}
 		console.warn("Failed to load enterprise policy:", result.error);
+		cachedPolicy = null;
 		return null;
 	} catch (error) {
 		console.warn("Failed to load enterprise policy:", error);
+		cachedPolicy = null;
 		return null;
 	}
 }
