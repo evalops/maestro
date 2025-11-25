@@ -40,6 +40,7 @@ export interface CommandHandlers {
 	config(context: CommandExecutionContext): Promise<void> | void;
 	cost(context: CommandExecutionContext): Promise<void> | void;
 	telemetry(context: CommandExecutionContext): void;
+	training(context: CommandExecutionContext): void;
 	stats(context: CommandExecutionContext): Promise<void> | void;
 	plan(context: CommandExecutionContext): void;
 	preview(context: CommandExecutionContext): Promise<void> | void;

@@ -369,6 +369,14 @@ function buildParams(
 		config.abortSignal = options.signal;
 	}
 
+	if (options.headers && Object.keys(options.headers).length > 0) {
+		const existingHeaders = config.httpOptions?.headers ?? {};
+		config.httpOptions = {
+			...(config.httpOptions ?? {}),
+			headers: { ...existingHeaders, ...options.headers },
+		};
+	}
+
 	return {
 		model: model.id,
 		contents,

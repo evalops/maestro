@@ -14,6 +14,7 @@ import type { SessionModelMetadata } from "../../session/manager.js";
 import { muted } from "../../style/theme.js";
 import type { TelemetryStatus } from "../../telemetry.js";
 import { getExaUsageSummary } from "../../tools/exa-usage.js";
+import type { TrainingStatus } from "../../training.js";
 import type { GitView } from "../git/git-view.js";
 import type { ToolExecutionComponent } from "../tool-execution.js";
 import {
@@ -35,6 +36,7 @@ interface DiagnosticsViewOptions {
 	agent: Agent;
 	sessionManager: SessionManager;
 	telemetryStatus: TelemetryStatus;
+	trainingStatus: TrainingStatus;
 	version: string;
 	explicitApiKey?: string;
 	chatContainer: Container;
@@ -50,9 +52,11 @@ interface DiagnosticsViewOptions {
 export class DiagnosticsView {
 	private currentApiKeyInfo?: ApiKeyLookupResult;
 	private telemetryStatus: TelemetryStatus;
+	private trainingStatus: TrainingStatus;
 
 	constructor(private readonly options: DiagnosticsViewOptions) {
 		this.telemetryStatus = options.telemetryStatus;
+		this.trainingStatus = options.trainingStatus;
 		if (options.explicitApiKey) {
 			this.currentApiKeyInfo = {
 				provider: options.agent.state.model.provider,
@@ -114,6 +118,7 @@ export class DiagnosticsView {
 			modelLabel: model,
 			thinkingLevel: thinking,
 			telemetry: this.telemetryStatus,
+			training: this.trainingStatus,
 			health: snapshot,
 			sessionId,
 			sessionFile,
@@ -175,6 +180,7 @@ ${copyNote}`;
 			modelMetadata: this.options.getCurrentModelMetadata(),
 			apiKeyLookup: this.currentApiKeyInfo,
 			telemetry: this.telemetryStatus,
+			training: this.trainingStatus,
 			exaUsage: getExaUsageSummary(),
 			pendingTools: Array.from(this.options.getPendingTools().entries()).map(
 				([id, component]) => ({ id, name: component.getToolName() }),
@@ -200,6 +206,10 @@ ${copyNote}`;
 		this.telemetryStatus = status;
 	}
 
+	setTrainingStatus(status: TrainingStatus): void {
+		this.trainingStatus = status;
+	}
+
 	private resolveApiKey(): ApiKeyLookupResult {
 		const provider = this.options.agent.state.model.provider;
 		return lookupApiKey(provider, this.options.explicitApiKey);
@@ -216,6 +226,12 @@ ${copyNote}`;
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
 		const runtime = this.describeRuntime();
+		const training =
+			this.trainingStatus.preference === "opted-out"
+				? "opted-out"
+				: this.trainingStatus.preference === "opted-in"
+					? "opted-in"
+					: "provider default";
 		const attachLine = attachments.length
 			? attachments.map((entry) => `- ${entry}`).join("\n")
 			: muted("(no attachments found)");
@@ -224,6 +240,7 @@ ${copyNote}`;
 			`Model: ${model}`,
 			`Session: ${this.options.sessionManager.getSessionFile() ?? muted("(pending)")}`,
 			`Telemetry: ${this.telemetryStatus.enabled ? "enabled" : "disabled"}`,
+			`Training: ${training}`,
 			`Runtime: ${runtime}`,
 			`Tool failures: ${health.toolFailures}${health.toolFailurePath ? ` (${health.toolFailurePath})` : ""}`,
 			`Git: ${health.gitStatus ?? muted("unavailable")}`,

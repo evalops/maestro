@@ -5,6 +5,7 @@ import type { ApiKeyLookupResult } from "../../providers/api-keys.js";
 import type { SessionModelMetadata } from "../../session/manager.js";
 import type { TelemetryStatus } from "../../telemetry.js";
 import type { ExaUsageSummary } from "../../tools/exa-usage.js";
+import type { TrainingStatus } from "../../training.js";
 
 export interface DiagnosticsInput {
 	sessionId: string;
@@ -13,6 +14,7 @@ export interface DiagnosticsInput {
 	modelMetadata?: SessionModelMetadata;
 	apiKeyLookup: ApiKeyLookupResult;
 	telemetry: TelemetryStatus;
+	training: TrainingStatus;
 	exaUsage?: ExaUsageSummary | null;
 	pendingTools: Array<{ id: string; name: string }>;
 	explicitApiKey?: string;
@@ -122,6 +124,26 @@ function formatTelemetrySection(status: TelemetryStatus): string {
 		lines.push(
 			chalk.dim(`Override: ${status.runtimeOverride.toUpperCase()}${reason}`),
 		);
+	}
+	return lines.join("\n");
+}
+
+function formatTrainingSection(status: TrainingStatus): string {
+	const lines: string[] = [];
+	const state =
+		status.preference === "opted-out"
+			? "opted-out"
+			: status.preference === "opted-in"
+				? "opted-in"
+				: "provider default";
+	lines.push(`${chalk.bold("Training")}: ${state}`);
+	lines.push(chalk.dim(`Reason: ${status.reason}`));
+	if (status.flagValue !== undefined) {
+		lines.push(chalk.dim(`Flag: ${status.flagValue}`));
+	}
+	if (status.runtimeOverride) {
+		const reason = status.overrideReason ? ` (${status.overrideReason})` : "";
+		lines.push(chalk.dim(`Override: ${status.runtimeOverride}${reason}`));
 	}
 	return lines.join("\n");
 }
@@ -260,6 +282,8 @@ export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	sections.push(formatApiKeySection(input.apiKeyLookup, input.explicitApiKey));
 	sections.push("");
 	sections.push(formatTelemetrySection(input.telemetry));
+	sections.push("");
+	sections.push(formatTrainingSection(input.training));
 	sections.push("");
 	const exaUsageSection = formatExaUsageSection(input.exaUsage);
 	if (exaUsageSection) {

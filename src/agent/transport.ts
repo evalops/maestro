@@ -12,6 +12,7 @@ import {
 } from "../safety/workflow-state.js";
 import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
+import { getTrainingHeaders } from "../training.js";
 import type {
 	ActionApprovalService,
 	WorkflowStateSnapshot,
@@ -246,6 +247,7 @@ export class ProviderTransport implements AgentTransport {
 			maxTokens: model.maxTokens,
 			signal,
 			authType: credential?.type ?? "api-key",
+			headers: getTrainingHeaders(),
 		};
 
 		let hasMoreToolCalls = true;
