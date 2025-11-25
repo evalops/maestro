@@ -17,6 +17,8 @@ export class LspClient extends EventEmitter {
 	private readonly diagnostics = new Map<string, LspDiagnostic[]>();
 	private _initialized = false;
 	private _dead = false;
+	private processClosed = false;
+	private connectionDisposed = false;
 
 	constructor(
 		config: LspServerConfig,
@@ -29,6 +31,15 @@ export class LspClient extends EventEmitter {
 		this.root = root;
 		this.process = process;
 		this.connection = connection;
+
+		this.process.once("exit", () => {
+			this.processClosed = true;
+			this.disposeConnection();
+			if (!this._dead) {
+				this._dead = true;
+				this.emit("close");
+			}
+		});
 
 		this.setupEventHandlers();
 	}
@@ -45,12 +56,17 @@ export class LspClient extends EventEmitter {
 		);
 
 		this.connection.onClose(() => {
+			this.disposeConnection();
+			if (this.processClosed || this._dead) {
+				return;
+			}
 			this._dead = true;
 			this.emit("close");
 		});
 
 		this.connection.onError((error) => {
 			console.error(`[lsp] Connection error for ${this.id}:`, error);
+			this.disposeConnection();
 			this._dead = true;
 			this.emit("error", error);
 		});
@@ -61,7 +77,15 @@ export class LspClient extends EventEmitter {
 	}
 
 	get isDead(): boolean {
-		return this._dead || this.process.killed;
+		return this._dead || this.processClosed;
+	}
+
+	private disposeConnection(): void {
+		if (this.connectionDisposed) {
+			return;
+		}
+		this.connectionDisposed = true;
+		this.connection.dispose();
 	}
 
 	async initialize(initOptions?: Record<string, unknown>): Promise<void> {
@@ -228,7 +252,7 @@ export class LspClient extends EventEmitter {
 
 		// Force kill if still alive
 		try {
-			if (!this.process.killed) {
+			if (!this.processClosed) {
 				this.process.kill("SIGKILL");
 			}
 		} catch {
