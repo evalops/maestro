@@ -272,6 +272,10 @@ export interface AgentState {
 	streamMessage: Message | null;
 	pendingToolCalls: Map<string, PendingToolCall>;
 	error?: string;
+	user?: {
+		id: string; // UUID
+		orgId: string; // UUID
+	};
 }
 
 export type AgentEvent =
@@ -347,6 +351,10 @@ export interface AgentRunConfig {
 	model: Model<Api>;
 	reasoning?: ReasoningEffort;
 	getQueuedMessages?: <T>() => Promise<QueuedMessage<T>[]>;
+	user?: {
+		id: string; // UUID
+		orgId: string; // UUID
+	};
 }
 
 export interface AgentTransport {

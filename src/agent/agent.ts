@@ -419,6 +419,7 @@ export class Agent {
 				model: this._state.model,
 				reasoning,
 				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
+				user: this._state.user,
 			};
 
 			for await (const event of this.transport.run(
