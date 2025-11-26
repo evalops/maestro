@@ -45,8 +45,38 @@
 				"command": "composer.openDocs",
 				"title": "Composer: Open Documentation",
 				"category": "Composer"
+			},
+			{
+				"command": "composer.clearChat",
+				"title": "Clear Chat",
+				"category": "Composer",
+				"icon": "$(clear-all)"
 			}
-		]
+		],
+		"menus": {
+			"view/title": [
+				{
+					"command": "composer.clearChat",
+					"when": "view == composer.chatView",
+					"group": "navigation"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Composer",
+			"properties": {
+				"composer.apiEndpoint": {
+					"type": "string",
+					"default": "http://localhost:8080",
+					"description": "URL of the Composer API server"
+				},
+				"composer.model": {
+					"type": "string",
+					"default": "claude-sonnet-4-5",
+					"description": "Model ID to use for chat generation"
+				}
+			}
+		}
 	},
 	"scripts": {
 		"clean": "rm -rf dist out",

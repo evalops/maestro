@@ -15,7 +15,18 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _thinkingManager: ThinkingManager,
 	) {
-		this._apiClient = new ApiClient();
+		const config = vscode.workspace.getConfiguration("composer");
+		const baseUrl =
+			config.get<string>("apiEndpoint") || "http://localhost:8080";
+		this._apiClient = new ApiClient(baseUrl);
+	}
+
+	public clearChat() {
+		this._messages = [];
+		this._currentSessionId = undefined;
+		if (this._view) {
+			this._view.webview.postMessage({ type: "clear" });
+		}
 	}
 
 	public resolveWebviewView(
@@ -40,6 +51,16 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 				}
 				case "getEditorContext": {
 					this._sendEditorContext();
+					break;
+				}
+				case "getHistory": {
+					// Restore history
+					if (this._messages.length > 0) {
+						this._view?.webview.postMessage({
+							type: "history",
+							messages: this._messages,
+						});
+					}
 					break;
 				}
 				case "sendMessage": {
@@ -69,6 +90,16 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 				this._sendEditorContext();
 			}
 		});
+
+		// Listen for config changes
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration("composer.apiEndpoint")) {
+				const config = vscode.workspace.getConfiguration("composer");
+				const baseUrl =
+					config.get<string>("apiEndpoint") || "http://localhost:8080";
+				this._apiClient = new ApiClient(baseUrl);
+			}
+		});
 	}
 
 	private async _handleUserMessage(text: string) {
@@ -89,7 +120,7 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 				this._currentSessionId = session.id;
 			} catch (e) {
 				vscode.window.showErrorMessage(
-					"Failed to create session. Is the Composer server running on port 8080?",
+					"Failed to create session. Is the Composer server running?",
 				);
 				this._view.webview.postMessage({
 					type: "error",
@@ -113,9 +144,12 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 		}
 
 		try {
+			const config = vscode.workspace.getConfiguration("composer");
+			const model = config.get<string>("model") || "claude-sonnet-4-5";
+
 			// Stream response
 			const stream = this._apiClient.chatWithEvents({
-				model: "claude-sonnet-4-5", // default
+				model,
 				messages: this._messages.slice(0, -1),
 				sessionId: this._currentSessionId,
 			});
@@ -430,7 +464,9 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                     let currentAssistantMessage = null;
 					let thinkingEl = null;
 
-                    // Initial context request
+                    // Restore history
+                    vscode.postMessage({ type: 'getHistory' });
+                    // Initial context
                     vscode.postMessage({ type: 'getEditorContext' });
 
                     window.addEventListener('message', event => {
@@ -454,6 +490,12 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
 							case 'error':
 								showError(message.value);
 								break;
+							case 'history':
+								loadHistory(message.messages);
+								break;
+							case 'clear':
+								document.getElementById('messages').innerHTML = '';
+								break;
                         }
                     });
 
@@ -471,6 +513,22 @@ export class ComposerSidebarProvider implements vscode.WebviewViewProvider {
                             text.textContent = 'No active file';
                         }
                     }
+
+					function loadHistory(messages) {
+						const container = document.getElementById('messages');
+						container.innerHTML = '';
+						messages.forEach(msg => {
+							const div = document.createElement('div');
+							div.className = \`message \${msg.role}\`;
+							const avatar = msg.role === 'user' ? 'U' : 'AI';
+							div.innerHTML = \`
+								<div class="avatar">\${avatar}</div>
+								<div class="message-content">\${msg.content.replace(/</g, '&lt;')}</div>
+							\`;
+							container.appendChild(div);
+						});
+						container.scrollTop = container.scrollHeight;
+					}
 
 					function showThinking() {
 						if (!currentAssistantMessage) createAssistantMessage();

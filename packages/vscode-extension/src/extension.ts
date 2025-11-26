@@ -49,7 +49,14 @@ export function activate(context: vscode.ExtensionContext) {
 		},
 	);
 
-	context.subscriptions.push(openPanel, openDocs);
+	const clearChat = vscode.commands.registerCommand(
+		"composer.clearChat",
+		() => {
+			sidebarProvider.clearChat();
+		},
+	);
+
+	context.subscriptions.push(openPanel, openDocs, clearChat);
 
 	vscode.commands.executeCommand("setContext", "composer.isActive", true);
 	context.subscriptions.push({
