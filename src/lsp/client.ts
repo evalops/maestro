@@ -18,6 +18,7 @@ export class LspClient extends EventEmitter {
 	private _initialized = false;
 	private _dead = false;
 	private processClosed = false;
+	private connectionDisposed = false;
 
 	constructor(
 		config: LspServerConfig,
@@ -33,7 +34,7 @@ export class LspClient extends EventEmitter {
 
 		this.process.once("exit", () => {
 			this.processClosed = true;
-			this.connection.dispose();
+			this.disposeConnection();
 			if (!this._dead) {
 				this._dead = true;
 				this.emit("close");
@@ -55,7 +56,7 @@ export class LspClient extends EventEmitter {
 		);
 
 		this.connection.onClose(() => {
-			this.connection.dispose();
+			this.disposeConnection();
 			if (this.processClosed || this._dead) {
 				return;
 			}
@@ -65,7 +66,7 @@ export class LspClient extends EventEmitter {
 
 		this.connection.onError((error) => {
 			console.error(`[lsp] Connection error for ${this.id}:`, error);
-			this.connection.dispose();
+			this.disposeConnection();
 			this._dead = true;
 			this.emit("error", error);
 		});
@@ -77,6 +78,14 @@ export class LspClient extends EventEmitter {
 
 	get isDead(): boolean {
 		return this._dead || this.processClosed;
+	}
+
+	private disposeConnection(): void {
+		if (this.connectionDisposed) {
+			return;
+		}
+		this.connectionDisposed = true;
+		this.connection.dispose();
 	}
 
 	async initialize(initOptions?: Record<string, unknown>): Promise<void> {

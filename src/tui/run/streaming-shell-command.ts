@@ -107,7 +107,7 @@ export async function runStreamingShellCommand(
 			resolve({
 				success: false,
 				code: -1,
-				stdout,
+				stdout: stdout.trimEnd(),
 				stderr:
 					error instanceof Error ? error.message : String(error ?? "unknown"),
 			});
