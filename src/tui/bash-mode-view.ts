@@ -290,14 +290,7 @@ ${muted("Back to normal chat.")}`,
 		// Record to persistent history with normalized command (no trailing &)
 		this.history = appendToHistory(this.history, normalizedCommand);
 
-		// Handle export commands for session env persistence
-		const exportResult = this.handleExport(normalizedCommand);
-		if (exportResult) {
-			this.renderExportResult(exportResult);
-			this.resetHistoryNavigation(true);
-			return;
-		}
-
+		// Background tasks take precedence over export handling
 		if (strippedBackgroundCommand) {
 			this.launchBackgroundTaskCommand({
 				command: strippedBackgroundCommand,
@@ -305,6 +298,14 @@ ${muted("Back to normal chat.")}`,
 				cwd: this.currentCwd,
 				env: { ...process.env, ...this.sessionEnv },
 			});
+			this.resetHistoryNavigation(true);
+			return;
+		}
+
+		// Handle export commands for session env persistence
+		const exportResult = this.handleExport(normalizedCommand);
+		if (exportResult) {
+			this.renderExportResult(exportResult);
 			this.resetHistoryNavigation(true);
 			return;
 		}
