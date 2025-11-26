@@ -32,12 +32,13 @@ export async function runStreamingShellCommand(
 		let stdout = "";
 		let stderr = "";
 		let aborted = false;
+		let closed = false;
 
 		const handleAbort = () => {
 			aborted = true;
 			child.kill("SIGTERM");
 			setTimeout(() => {
-				if (!child.killed) {
+				if (!closed) {
 					child.kill("SIGKILL");
 				}
 			}, 500);
@@ -64,6 +65,7 @@ export async function runStreamingShellCommand(
 		});
 
 		child.on("close", (code) => {
+			closed = true;
 			if (options.signal) {
 				options.signal.removeEventListener("abort", handleAbort);
 			}
