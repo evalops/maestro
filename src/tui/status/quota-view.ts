@@ -411,7 +411,7 @@ export class QuotaView {
 		}
 
 		const limit = Number.parseInt(arg, 10);
-		if (Number.isNaN(limit) || limit <= 0) {
+		if (Number.isNaN(limit) || limit <= 0 || limit > Number.MAX_SAFE_INTEGER) {
 			this.options.showError(
 				"Invalid limit. Provide a positive number of tokens.",
 			);

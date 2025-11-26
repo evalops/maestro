@@ -203,6 +203,18 @@ describe("QuotaView", () => {
 			);
 		});
 
+		it("shows error for limit exceeding MAX_SAFE_INTEGER", () => {
+			const { view, showError } = createQuotaView();
+
+			view.handleQuotaCommand(
+				createContext(`/quota limit ${Number.MAX_SAFE_INTEGER + 1}`),
+			);
+
+			expect(showError).toHaveBeenCalledWith(
+				expect.stringContaining("positive number"),
+			);
+		});
+
 		it("shows current limit status when called without args", () => {
 			const { view, container } = createQuotaView({
 				getSessionTokenUsage: () => 25000,
