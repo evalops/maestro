@@ -602,12 +602,17 @@ export class AdminSettings extends LitElement {
 			case "success":
 			case "approved":
 			case "auto_approved":
+			case "info":
+			case "low":
 				return "success";
 			case "failure":
 			case "error":
 			case "denied":
+			case "critical":
+			case "high":
 				return "error";
 			case "pending":
+			case "medium":
 				return "warning";
 			default:
 				return "";

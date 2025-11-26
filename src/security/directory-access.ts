@@ -292,13 +292,18 @@ export async function deleteDirectoryRule(
  * Seed default rules for a new organization
  */
 export async function seedDefaultDirectoryRules(orgId: string): Promise<void> {
+	const homeDir = process.env.HOME || process.env.USERPROFILE;
 	const defaultRules: Array<Omit<CreateDirectoryRuleInput, "orgId">> = [
-		{
-			pattern: `${process.env.HOME}/**`,
-			isAllowed: true,
-			priority: 100,
-			description: "Allow access to user home directory",
-		},
+		...(homeDir
+			? [
+					{
+						pattern: `${homeDir}/**`,
+						isAllowed: true,
+						priority: 100,
+						description: "Allow access to user home directory",
+					},
+				]
+			: []),
 		{
 			pattern: "/tmp/**",
 			isAllowed: true,
