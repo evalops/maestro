@@ -679,7 +679,7 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
-	private showInfoMessage(text: string): void {
+	public showInfoMessage(text: string): void {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(chalk.dim(text), 1, 0));
 		this.ui.requestRender();
@@ -693,12 +693,12 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
-	private refreshFooterHint(): void {
+	public refreshFooterHint(): void {
 		const suffix = this.planHint ? ` • Plan ${this.planHint}` : "";
 		this.footer.setHint(`${this.idleFooterHint}${suffix}`);
 	}
 
-	private showToast(
+	public showToast(
 		text: string,
 		tone: "info" | "warn" | "success" = "info",
 	): void {
@@ -713,7 +713,7 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
-	private handleHelpCommand(): void {
+	public handleHelpCommand(): void {
 		const lines = this.slashCommands.map(
 			(cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`,
 		);
@@ -724,7 +724,7 @@ ${lines.join("\n")}`;
 		this.ui.requestRender();
 	}
 
-	private handleWhyCommand(): void {
+	public handleWhyCommand(): void {
 		const user = this.lastUserMessageText
 			? this.lastUserMessageText
 			: chalk.dim("No recent user question recorded.");
@@ -748,7 +748,7 @@ ${response}`;
 		this.ui.requestRender();
 	}
 
-	private extractTextFromAppMessage(message: AppMessage): string {
+	public extractTextFromAppMessage(message: AppMessage): string {
 		if ((message as AssistantMessage).content) {
 			const content = (message as AssistantMessage).content;
 			const textParts = content
