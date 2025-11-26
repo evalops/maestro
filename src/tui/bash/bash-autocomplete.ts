@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, delimiter as pathDelimiter } from "node:path";
 import type { AutocompleteItem, AutocompleteProvider } from "@evalops/tui";
 
 /**
@@ -268,7 +268,7 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		const executables = new Set<string>();
-		const pathDirs = pathEnv.split(":");
+		const pathDirs = pathEnv.split(pathDelimiter || ":");
 
 		for (const dir of pathDirs.slice(0, 10)) {
 			// Limit to first 10 PATH entries
