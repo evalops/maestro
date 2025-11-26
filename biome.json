@@ -6,7 +6,8 @@
 			"dist",
 			"node_modules",
 			".external",
-			"src/models/models.generated.ts"
+			"src/models/models.generated.ts",
+			"packages/vscode-extension/media"
 		]
 	},
 	"formatter": {
