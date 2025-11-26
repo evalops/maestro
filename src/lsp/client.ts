@@ -33,6 +33,7 @@ export class LspClient extends EventEmitter {
 
 		this.process.once("exit", () => {
 			this.processClosed = true;
+			this.connection.dispose();
 			if (!this._dead) {
 				this._dead = true;
 				this.emit("close");
@@ -54,6 +55,7 @@ export class LspClient extends EventEmitter {
 		);
 
 		this.connection.onClose(() => {
+			this.connection.dispose();
 			if (this.processClosed) {
 				return;
 			}
@@ -65,6 +67,7 @@ export class LspClient extends EventEmitter {
 
 		this.connection.onError((error) => {
 			console.error(`[lsp] Connection error for ${this.id}:`, error);
+			this.connection.dispose();
 			this._dead = true;
 			this.emit("error", error);
 		});
