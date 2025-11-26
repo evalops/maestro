@@ -48,11 +48,28 @@ async function safeJson(response: Response) {
 	return response.json();
 }
 
+export interface CommandDefinition {
+	name: string;
+	description?: string;
+	prompt: string;
+	args?: Array<{ name: string; required?: boolean }>;
+}
+
 export class ApiClient {
 	public readonly baseUrl: string;
 
 	constructor(baseUrl = "http://localhost:8080") {
 		this.baseUrl = baseUrl.replace(/\/$/, "");
+	}
+
+	// ... existing methods ...
+
+	async getCommands(): Promise<CommandDefinition[]> {
+		const response = await fetch(`${this.baseUrl}/api/commands`);
+		const data = (await safeJson(response)) as {
+			commands: CommandDefinition[];
+		};
+		return data.commands || [];
 	}
 
 	/**
@@ -145,5 +162,59 @@ export class ApiClient {
 			body: JSON.stringify({ title }),
 		});
 		return (await safeJson(response)) as Session;
+	}
+
+	async listSessions(): Promise<SessionSummary[]> {
+		const response = await fetch(`${this.baseUrl}/api/sessions`);
+		const data = (await safeJson(response)) as { sessions: SessionSummary[] };
+		return data.sessions || [];
+	}
+
+	async getSession(id: string): Promise<Session> {
+		const response = await fetch(`${this.baseUrl}/api/sessions/${id}`);
+		return (await safeJson(response)) as Session;
+	}
+
+	async submitApproval(requestId: string, decision: "approved" | "denied") {
+		const response = await fetch(`${this.baseUrl}/api/chat/approval`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ requestId, decision }),
+		});
+		if (!response.ok) {
+			const error = await safeJson(response);
+			throw new Error(
+				(error as { error?: string })?.error ||
+					`Request failed with status ${response.status}`,
+			);
+		}
+		return safeJson(response);
+	}
+
+	async submitClientToolResult(
+		toolCallId: string,
+		content: any[],
+		isError: boolean,
+	) {
+		const response = await fetch(
+			`${this.baseUrl}/api/chat/client-tool-result`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ toolCallId, content, isError }),
+			},
+		);
+		if (!response.ok) {
+			const error = await safeJson(response);
+			throw new Error(
+				(error as { error?: string })?.error ||
+					`Request failed with status ${response.status}`,
+			);
+		}
+		return safeJson(response);
 	}
 }

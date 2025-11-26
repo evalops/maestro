@@ -20,6 +20,12 @@ import { searchTool } from "./search.js";
 import { statusTool } from "./status.js";
 // TodoWrite checklist helper
 import { todoTool } from "./todo.js";
+import {
+	vscodeFindReferencesTool,
+	vscodeGetDefinitionTool,
+	vscodeGetDiagnosticsTool,
+	vscodeReadFileRangeTool,
+} from "./vscode.js";
 // Exa web content fetching (optional - requires EXA_API_KEY)
 import { webfetchTool } from "./webfetch.js";
 // Exa web search (optional - requires EXA_API_KEY)
@@ -86,4 +92,11 @@ export const codingTools = [
 	ghPrTool,
 	ghIssueTool,
 	ghRepoTool,
+];
+
+export const vscodeTools = [
+	vscodeGetDiagnosticsTool,
+	vscodeGetDefinitionTool,
+	vscodeFindReferencesTool,
+	vscodeReadFileRangeTool,
 ];

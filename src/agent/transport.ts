@@ -16,6 +16,7 @@ import {
 import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
+import type { ClientToolService } from "../web/client-tools-service.js";
 import type {
 	ActionApprovalService,
 	WorkflowStateSnapshot,
@@ -28,6 +29,7 @@ import { validateToolArguments } from "./providers/validation.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
+	AgentToolResult,
 	AgentTransport,
 	AppMessage,
 	AssistantMessage,
@@ -55,6 +57,7 @@ export interface ProviderTransportOptions {
 	) => AuthCredential | undefined | Promise<AuthCredential | undefined>;
 	corsProxyUrl?: string;
 	approvalService?: ActionApprovalService;
+	clientToolService?: ClientToolService;
 	maxConcurrentToolExecutions?: number;
 }
 
@@ -742,10 +745,53 @@ export class ProviderTransport implements AgentTransport {
 						continue;
 					}
 
+					// For client tools, set up the execution promise first, then emit event
+					// This prevents race conditions where the client responds before we're listening
+					let clientToolExecPromise:
+						| ReturnType<ClientToolService["requestExecution"]>
+						| undefined;
+					if (
+						tool.executionLocation === "client" &&
+						this.options.clientToolService
+					) {
+						clientToolExecPromise =
+							this.options.clientToolService.requestExecution(
+								toolCall.id,
+								toolCall.name,
+								validatedArgs,
+								signal,
+							);
+						// Now emit the event - the promise is already waiting for the result
+						yield {
+							type: "client_tool_request",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							args: validatedArgs,
+						};
+					}
+
 					const startTime = Date.now();
 					const executionPromise: Promise<ToolExecutionOutcome> =
 						Promise.resolve()
-							.then(() => tool.execute(toolCall.id, validatedArgs, signal))
+							.then(() => {
+								if (tool.executionLocation === "client") {
+									if (!clientToolExecPromise) {
+										throw new Error(
+											`Client tool execution service not configured for tool "${tool.name}"`,
+										);
+									}
+									return clientToolExecPromise.then(
+										(res) =>
+											({
+												content: res.content,
+												isError: res.isError,
+												details: undefined,
+											}) as AgentToolResult,
+									);
+								}
+								return tool.execute(toolCall.id, validatedArgs, signal);
+							})
+
 							.then(async (result) => {
 								// Log tool execution - check isError flag for correct status
 								await logToolExecutionAudit(

@@ -62,7 +62,16 @@ export function isPathTraversal(path: string, baseDir?: string): boolean {
 	const base = baseDir ? normalizePath(baseDir) : process.cwd();
 
 	// Check if the normalized path starts with the base directory
-	return !normalizedPath.startsWith(base + sep) && normalizedPath !== base;
+	const isWindows = process.platform === "win32";
+	const normalizedPathCheck = isWindows
+		? normalizedPath.toLowerCase()
+		: normalizedPath;
+	const baseCheck = isWindows ? base.toLowerCase() : base;
+
+	return (
+		!normalizedPathCheck.startsWith(baseCheck + sep) &&
+		normalizedPathCheck !== baseCheck
+	);
 }
 
 /**
@@ -240,7 +249,12 @@ export function validatePathSync(path: string, baseDir?: string): string {
 export function isWithinCwd(path: string): boolean {
 	const normalizedPath = normalizePath(path);
 	const cwd = process.cwd();
-	return normalizedPath.startsWith(cwd + sep) || normalizedPath === cwd;
+	const isWindows = process.platform === "win32";
+
+	const pathCheck = isWindows ? normalizedPath.toLowerCase() : normalizedPath;
+	const cwdCheck = isWindows ? cwd.toLowerCase() : cwd;
+
+	return pathCheck.startsWith(cwdCheck + sep) || pathCheck === cwdCheck;
 }
 
 /**
@@ -250,7 +264,11 @@ export function safejoin(base: string, ...parts: string[]): string {
 	const joined = resolve(base, ...parts);
 	const normalizedBase = normalizePath(base);
 
-	if (!joined.startsWith(normalizedBase + sep) && joined !== normalizedBase) {
+	const isWindows = process.platform === "win32";
+	const joinedCheck = isWindows ? joined.toLowerCase() : joined;
+	const baseCheck = isWindows ? normalizedBase.toLowerCase() : normalizedBase;
+
+	if (!joinedCheck.startsWith(baseCheck + sep) && joinedCheck !== baseCheck) {
 		throw new PathValidationError(
 			`Path would escape base directory: ${parts.join("/")}`,
 			joined,

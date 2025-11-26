@@ -127,6 +127,12 @@ export interface AgentTool<
 	/** Tool behavior hints from MCP annotations */
 	annotations?: ToolAnnotations;
 	toolType?: string;
+	/**
+	 * Where the tool should be executed.
+	 * - "server": (default) Executed by the backend agent.
+	 * - "client": Executed by the client (e.g. VS Code, browser) via a callback mechanism.
+	 */
+	executionLocation?: "server" | "client";
 	inputExamples?: unknown[];
 	allowedCallers?: string[];
 	deferApiDefinition?: boolean;
@@ -350,6 +356,12 @@ export type AgentEvent =
 			type: "action_approval_resolved";
 			request: ActionApprovalRequest;
 			decision: ActionApprovalDecision;
+	  }
+	| {
+			type: "client_tool_request";
+			toolCallId: string;
+			toolName: string;
+			args: unknown;
 	  };
 
 export interface QueuedMessage<TOriginal = AppMessage> {

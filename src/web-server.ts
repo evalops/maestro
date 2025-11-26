@@ -31,8 +31,10 @@ import {
 	createAuthResolver,
 } from "./providers/auth.js";
 import { recordApiRequest } from "./telemetry.js";
-import { codingTools } from "./tools/index.js";
+import { codingTools, vscodeTools } from "./tools/index.js";
 import type { WebServerContext } from "./web/app-context.js";
+import { WebActionApprovalService } from "./web/approval-service.js";
+import { clientToolService } from "./web/client-tools-service.js";
 import {
 	isOverloaded,
 	logError,
@@ -287,13 +289,23 @@ async function createAgent(
 	registeredModel: RegisteredModel,
 	thinkingLevel: ThinkingLevel = "off",
 	approvalMode: ApprovalMode = DEFAULT_APPROVAL_MODE,
+	options?: { includeClientTools?: boolean },
 ): Promise<Agent> {
 	const transport = new ProviderTransport({
 		getAuthContext: async (provider: string) => authResolver(provider),
-		approvalService: new ActionApprovalService(approvalMode),
+		approvalService: new WebActionApprovalService(approvalMode),
+		clientToolService: options?.includeClientTools
+			? clientToolService
+			: undefined,
 	});
 
 	const systemPrompt = buildSystemPrompt();
+
+	// Only include vscodeTools if a client is connected (indicated by includeClientTools)
+	// Without a connected VS Code client, these tools will hang waiting for responses
+	const tools = options?.includeClientTools
+		? [...codingTools, ...vscodeTools]
+		: codingTools;
 
 	const agent = new Agent({
 		transport,
@@ -301,7 +313,7 @@ async function createAgent(
 			systemPrompt,
 			model: registeredModel,
 			thinkingLevel,
-			tools: codingTools,
+			tools,
 		},
 	});
 

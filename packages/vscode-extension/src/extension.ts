@@ -42,7 +42,43 @@ export function activate(context: vscode.ExtensionContext) {
 		},
 	);
 
-	context.subscriptions.push(openPanel, openDocs, clearChat);
+	const switchSession = vscode.commands.registerCommand(
+		"composer.switchSession",
+		() => {
+			sidebarProvider.showSessionPicker();
+		},
+	);
+
+	const addToContext = vscode.commands.registerCommand(
+		"composer.addToContext",
+		() => {
+			sidebarProvider.addToContext();
+		},
+	);
+
+	const removeFromContext = vscode.commands.registerCommand(
+		"composer.removeFromContext",
+		(uri?: vscode.Uri) => {
+			sidebarProvider.removeFromContext(uri);
+		},
+	);
+
+	const showCommandPicker = vscode.commands.registerCommand(
+		"composer.showCommandPicker",
+		() => {
+			sidebarProvider.showCommandPicker();
+		},
+	);
+
+	context.subscriptions.push(
+		openPanel,
+		openDocs,
+		clearChat,
+		switchSession,
+		addToContext,
+		removeFromContext,
+		showCommandPicker,
+	);
 
 	vscode.commands.executeCommand("setContext", "composer.isActive", true);
 	context.subscriptions.push({

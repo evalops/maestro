@@ -61,17 +61,58 @@
 				"title": "Clear Chat",
 				"category": "Composer",
 				"icon": "$(clear-all)"
+			},
+			{
+				"command": "composer.switchSession",
+				"title": "Switch Session",
+				"category": "Composer",
+				"icon": "$(history)"
+			},
+			{
+				"command": "composer.addToContext",
+				"title": "Add File to Context",
+				"category": "Composer",
+				"icon": "$(pin)"
+			},
+			{
+				"command": "composer.removeFromContext",
+				"title": "Remove File from Context",
+				"category": "Composer",
+				"icon": "$(close)"
+			},
+			{
+				"command": "composer.showCommandPicker",
+				"title": "Run Command",
+				"category": "Composer",
+				"icon": "$(terminal)"
 			}
 		],
 		"menus": {
 			"view/title": [
 				{
+					"command": "composer.showCommandPicker",
+					"when": "view == composer.chatView",
+					"group": "navigation@1"
+				},
+				{
+					"command": "composer.switchSession",
+					"when": "view == composer.chatView",
+					"group": "navigation@2"
+				},
+				{
 					"command": "composer.clearChat",
 					"when": "view == composer.chatView",
+					"group": "navigation@3"
+				}
+			],
+			"editor/title/context": [
+				{
+					"command": "composer.addToContext",
 					"group": "navigation"
 				}
 			]
 		},
+
 		"configuration": {
 			"title": "Composer",
 			"properties": {

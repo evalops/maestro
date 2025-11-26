@@ -1,7 +1,10 @@
 import type { ApprovalMode } from "../agent/action-approval.js";
 import type { ThinkingLevel } from "../agent/types.js";
 import type { WebServerContext } from "./app-context.js";
+import { handleApproval } from "./handlers/approval.js";
 import { handleChat } from "./handlers/chat.js";
+import { handleClientToolResult } from "./handlers/client-tools.js";
+import { handleCommands } from "./handlers/commands.js";
 import { handleConfig } from "./handlers/config.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
@@ -58,6 +61,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 		},
 		{
 			method: "GET",
+			path: "/api/commands",
+			handler: (req, res) => handleCommands(req, res, context),
+		},
+		{
+			method: "GET",
 			path: "/api/models",
 			handler: (req, res) => handleModels(req, res, corsHeaders),
 		},
@@ -111,6 +119,16 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/chat",
 			handler: async (req, res) => handleChat(req, res, context),
+		},
+		{
+			method: "POST",
+			path: "/api/chat/approval",
+			handler: (req, res) => handleApproval(req, res, context),
+		},
+		{
+			method: "POST",
+			path: "/api/chat/client-tool-result",
+			handler: (req, res) => handleClientToolResult(req, res, context),
 		},
 		{
 			method: "GET",
