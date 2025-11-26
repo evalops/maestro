@@ -9,16 +9,22 @@ type TrainingCommandContext = Parameters<
 
 vi.mock("../src/training.js", () => ({
 	getTrainingStatus: vi.fn(),
-	setTrainingRuntimeOverride: vi.fn(),
+	optIntoTraining: vi.fn(),
+	optOutOfTraining: vi.fn(),
+	resetTrainingRuntimeOverride: vi.fn(),
 }));
 
 import {
 	getTrainingStatus,
-	setTrainingRuntimeOverride,
+	optIntoTraining,
+	optOutOfTraining,
+	resetTrainingRuntimeOverride,
 } from "../src/training.js";
 
 const mockGetStatus = vi.mocked(getTrainingStatus);
-const mockSetOverride = vi.mocked(setTrainingRuntimeOverride);
+const mockOptIn = vi.mocked(optIntoTraining);
+const mockOptOut = vi.mocked(optOutOfTraining);
+const mockReset = vi.mocked(resetTrainingRuntimeOverride);
 
 const createStatus = (
 	preference: "opted-in" | "opted-out" | "provider-default",
@@ -92,13 +98,18 @@ describe("TrainingView", () => {
 
 		view.handleTrainingCommand(createContext("on", { action: "on" }));
 
-		expect(mockSetOverride).toHaveBeenCalledWith(false, expect.any(String));
+		expect(mockOptIn).toHaveBeenCalledWith("enabled via /training");
 		expect(onStatusChanged).toHaveBeenCalledWith(status);
 		expect(showInfo).toHaveBeenCalled();
 	});
 
+	it("opts out of training when /training off is used", () => {
+		view.handleTrainingCommand(createContext("off", { action: "off" }));
+		expect(mockOptOut).toHaveBeenCalledWith("disabled via /training");
+	});
+
 	it("resets training preference when /training reset is used", () => {
 		view.handleTrainingCommand(createContext("reset", { action: "reset" }));
-		expect(mockSetOverride).toHaveBeenCalledWith(null, undefined);
+		expect(mockReset).toHaveBeenCalled();
 	});
 });

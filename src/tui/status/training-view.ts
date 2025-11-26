@@ -10,7 +10,9 @@ import {
 import {
 	type TrainingStatus,
 	getTrainingStatus,
-	setTrainingRuntimeOverride,
+	optIntoTraining,
+	optOutOfTraining,
+	resetTrainingRuntimeOverride,
 } from "../../training.js";
 import type { CommandExecutionContext } from "../commands/types.js";
 
@@ -34,17 +36,17 @@ export class TrainingView {
 			context.parsedArgs?.action ?? this.inferAction(context.argumentText);
 		switch (action) {
 			case "on":
-				setTrainingRuntimeOverride(false, "enabled via /training");
+				optIntoTraining("enabled via /training");
 				this.handleStatusChange(
 					"Training data may be used for provider training.",
 				);
 				return;
 			case "off":
-				setTrainingRuntimeOverride(true, "disabled via /training");
+				optOutOfTraining("disabled via /training");
 				this.handleStatusChange("Training opt-out enabled for this session.");
 				return;
 			case "reset":
-				setTrainingRuntimeOverride(null, undefined);
+				resetTrainingRuntimeOverride();
 				this.handleStatusChange(
 					"Training preference reset to provider defaults.",
 				);

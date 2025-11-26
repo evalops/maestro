@@ -1,8 +1,10 @@
-type TrainingPreference = boolean | null;
+export type TrainingPreference = boolean | null;
 
 const trainingFlag = process.env.COMPOSER_TRAINING_OPT_OUT;
 
-const parseFlag = (value: string | undefined): TrainingPreference => {
+export const parseTrainingFlag = (
+	value: string | undefined,
+): TrainingPreference => {
 	if (!value) return null;
 	const normalized = value.trim().toLowerCase();
 	if (
@@ -24,7 +26,7 @@ const parseFlag = (value: string | undefined): TrainingPreference => {
 	return null;
 };
 
-const initialTrainingPreference = parseFlag(trainingFlag);
+const initialTrainingPreference = parseTrainingFlag(trainingFlag);
 let trainingPreference: TrainingPreference = initialTrainingPreference;
 let trainingOverride: TrainingPreference = null;
 let trainingOverrideReason: string | undefined;
@@ -42,9 +44,27 @@ export function setTrainingRuntimeOverride(
 	optOut: TrainingPreference,
 	reason?: string,
 ): void {
+	if (optOut === null) {
+		trainingOverride = null;
+		trainingOverrideReason = undefined;
+		trainingPreference = initialTrainingPreference;
+		return;
+	}
 	trainingOverride = optOut;
 	trainingOverrideReason = reason;
-	trainingPreference = optOut === null ? initialTrainingPreference : optOut;
+	trainingPreference = optOut;
+}
+
+export function resetTrainingRuntimeOverride(): void {
+	setTrainingRuntimeOverride(null, undefined);
+}
+
+export function optIntoTraining(reason?: string): void {
+	setTrainingRuntimeOverride(false, reason);
+}
+
+export function optOutOfTraining(reason?: string): void {
+	setTrainingRuntimeOverride(true, reason);
 }
 
 export function getTrainingStatus(): TrainingStatus {
