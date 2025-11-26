@@ -20,12 +20,14 @@ const POLICY_PATH = join(homedir(), ".composer", "policy.json");
 let cachedPolicy: EnterprisePolicy | null = null;
 
 export function loadPolicy(force = false): EnterprisePolicy | null {
-	if (cachedPolicy && !force) {
-		return cachedPolicy;
+	// Check if file exists first - if not, clear cache and return null
+	if (!existsSync(POLICY_PATH)) {
+		cachedPolicy = null;
+		return null;
 	}
 
-	if (!existsSync(POLICY_PATH)) {
-		return null;
+	if (cachedPolicy && !force) {
+		return cachedPolicy;
 	}
 
 	try {
@@ -86,7 +88,15 @@ function extractDependencies(command: string): string[] {
 		return matches[1]
 			.split(/\s+/)
 			.filter((p) => !p.startsWith("-"))
-			.map((p) => p.split("@")[0].split("=")[0]); // simple cleanup
+			.map((p) => {
+				// Handle scoped packages (e.g. @scope/pkg)
+				if (p.startsWith("@")) {
+					const versionIndex = p.indexOf("@", 1);
+					return versionIndex === -1 ? p : p.substring(0, versionIndex);
+				}
+				// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0)
+				return p.split(/[@=<>]/)[0];
+			}); // simple cleanup
 	}
 	return [];
 }
