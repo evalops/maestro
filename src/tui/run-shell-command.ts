@@ -7,13 +7,19 @@ export interface ShellCommandResult {
 	stderr: string;
 }
 
+export interface ShellCommandOptions {
+	cwd?: string;
+	env?: NodeJS.ProcessEnv;
+}
+
 export async function runShellCommand(
 	command: string,
+	options: ShellCommandOptions = {},
 ): Promise<ShellCommandResult> {
 	return await new Promise((resolve) => {
 		const child = spawn("bash", ["-lc", command], {
-			cwd: process.cwd(),
-			env: process.env,
+			cwd: options.cwd ?? process.cwd(),
+			env: options.env ?? process.env,
 		});
 		let stdout = "";
 		let stderr = "";

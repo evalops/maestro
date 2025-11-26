@@ -34,6 +34,7 @@ import {
 	Text,
 } from "../tui-lib/index.js";
 import { AgentEventRouter } from "./agent-event-router.js";
+import { BashModeView } from "./bash-mode-view.js";
 import { CommandPaletteView } from "./command-palette-view.js";
 import { buildCommandRegistry } from "./command-registry-builder.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
@@ -156,6 +157,7 @@ export class TuiRenderer {
 	private sessionSwitcherView!: SessionSwitcherView;
 	private importExportView: ImportExportView;
 	private runCommandView: RunCommandView;
+	private bashModeView: BashModeView;
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
 	private diagnosticsView: DiagnosticsView;
@@ -233,6 +235,12 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
+		});
+		this.bashModeView = new BashModeView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			onStateChange: () => this.refreshFooterHint(),
 		});
 		this.gitView = new GitView({
 			chatContainer: this.chatContainer,
@@ -514,9 +522,7 @@ export class TuiRenderer {
 			getCommandEntries: () => this.commandEntries,
 			onFirstInput: () => this.dismissWelcomeAnimation(),
 			onSubmit: (text) => {
-				if (this.onInputCallback) {
-					this.onInputCallback(text);
-				}
+				void this.handleTextSubmit(text);
 			},
 			shouldInterrupt: () => this.isAgentRunning || this.interruptArmed,
 			onInterrupt: () => this.handleInterruptRequest(),
@@ -604,6 +610,15 @@ export class TuiRenderer {
 				resolve(text);
 			};
 		});
+	}
+
+	private async handleTextSubmit(text: string): Promise<void> {
+		if (await this.bashModeView.tryHandleInput(text)) {
+			return;
+		}
+		if (this.onInputCallback) {
+			this.onInputCallback(text);
+		}
 	}
 
 	setInterruptCallback(callback: () => void): void {
@@ -867,6 +882,9 @@ export class TuiRenderer {
 					? "1 prompt queued"
 					: `${this.queuedPromptCount} prompts queued`;
 			hints.push(queueLabel);
+		}
+		if (this.bashModeView?.isActive()) {
+			hints.push("Bash mode active — type exit to leave");
 		}
 		if (this.planHint) {
 			hints.push(`Plan ${this.planHint}`);
