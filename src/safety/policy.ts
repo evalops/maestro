@@ -132,7 +132,8 @@ function extractDependencies(command: string): string[] {
 				}
 				// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0)
 				return p.split(/[@=<>]/)[0];
-			}); // simple cleanup
+			}) // simple cleanup
+			.filter((p) => p.length > 0);
 	}
 	return [];
 }
