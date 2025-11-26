@@ -145,37 +145,38 @@ const pipInstallPattern =
 	/\bpip\d*\s+install\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s=<>]+)/i;
 
 function extractDependencies(command: string): string[] {
-	let matches = command.matchAll(new RegExp(npmInstallPattern, "g"));
-	if (!matches) {
-		matches = command.matchAll(new RegExp(bunAddPattern, "g"));
-	}
-	if (!matches) {
-		matches = command.matchAll(new RegExp(pipInstallPattern, "g"));
-	}
-
+	const patterns = [npmInstallPattern, bunAddPattern, pipInstallPattern];
 	const results: string[] = [];
-	for (const match of matches) {
-		if (match[1]) {
-			// Split by spaces and cleanup flags/versions
-			const deps = match[1]
-				.split(/\s+/)
-				.filter((p) => !p.startsWith("-"))
-				.map((p) => {
-					// Handle URLs (git+, http:, etc.) and local paths
-					if (p.includes("://") || p.match(/^git@/) || p.match(/^\.{0,2}\//)) {
-						return p;
-					}
 
-					// Handle scoped packages (e.g. @scope/pkg)
-					if (p.startsWith("@")) {
-						const versionIndex = p.indexOf("@", 1);
-						return versionIndex === -1 ? p : p.substring(0, versionIndex);
-					}
-					// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0)
-					return p.split(/[@=<>]/)[0];
-				}) // simple cleanup
-				.filter((p) => p.length > 0);
-			results.push(...deps);
+	for (const pattern of patterns) {
+		const matches = command.matchAll(new RegExp(pattern, "g"));
+		for (const match of matches) {
+			if (match[1]) {
+				// Split by spaces and cleanup flags/versions
+				const deps = match[1]
+					.split(/\s+/)
+					.filter((p) => !p.startsWith("-"))
+					.map((p) => {
+						// Handle URLs (git+, http:, etc.) and local paths
+						if (
+							p.includes("://") ||
+							p.match(/^git@/) ||
+							p.match(/^\.{0,2}\//)
+						) {
+							return p;
+						}
+
+						// Handle scoped packages (e.g. @scope/pkg)
+						if (p.startsWith("@")) {
+							const versionIndex = p.indexOf("@", 1);
+							return versionIndex === -1 ? p : p.substring(0, versionIndex);
+						}
+						// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0)
+						return p.split(/[@=<>]/)[0];
+					}) // simple cleanup
+					.filter((p) => p.length > 0);
+				results.push(...deps);
+			}
 		}
 	}
 	return results;
