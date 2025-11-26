@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { v4 as uuidv4 } from "uuid";
+import { validate as uuidValidate, v4 as uuidv4 } from "uuid";
 import type { AgentState, AppMessage } from "../agent/types.js";
 import { SESSION_CONFIG } from "../config/constants.js";
 import {

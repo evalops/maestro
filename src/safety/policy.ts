@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Type } from "@sinclair/typebox";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
 import { safeJsonParse } from "../utils/json.js";
+import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 
 export interface EnterprisePolicy {
 	orgId?: string;
@@ -15,6 +17,24 @@ export interface EnterprisePolicy {
 		blocked?: string[];
 	};
 }
+
+const PolicySchema = Type.Object({
+	orgId: Type.Optional(Type.String()),
+	tools: Type.Optional(
+		Type.Object({
+			allowed: Type.Optional(Type.Array(Type.String())),
+			blocked: Type.Optional(Type.Array(Type.String())),
+		}),
+	),
+	dependencies: Type.Optional(
+		Type.Object({
+			allowed: Type.Optional(Type.Array(Type.String())),
+			blocked: Type.Optional(Type.Array(Type.String())),
+		}),
+	),
+});
+
+const validatePolicy = compileTypeboxSchema(PolicySchema);
 
 const POLICY_PATH = join(homedir(), ".composer", "policy.json");
 
@@ -35,6 +55,13 @@ export function loadPolicy(force = false): EnterprisePolicy | null {
 		const raw = readFileSync(POLICY_PATH, "utf8");
 		const result = safeJsonParse<EnterprisePolicy>(raw);
 		if (result.success) {
+			if (!validatePolicy(result.data)) {
+				console.warn(
+					"Invalid enterprise policy schema:",
+					validatePolicy.errors,
+				);
+				return null;
+			}
 			cachedPolicy = result.data;
 			return cachedPolicy;
 		}
@@ -73,9 +100,9 @@ function getCommandArg(context: ActionApprovalContext): string | null {
 // Regex to catch npm install, pip install, bun add, etc.
 // Captures the package names. Added ':' to capture URLs.
 const npmInstallPattern =
-	/\b(?:npm|pnpm|yarn)\s+(?:install|i|add)\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s]+)/i;
+	/\b(?:npm|pnpm|yarn)\s+(?:install|i|add)\s+(?:--?[a-zA-Z-]+(?:=\S+)?\s+)*([\w@\-/.:\s]+)/i;
 const bunAddPattern =
-	/\bbun\s+(?:add|install)\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s]+)/i;
+	/\bbun\s+(?:add|install)\s+(?:--?[a-zA-Z-]+(?:=\S+)?\s+)*([\w@\-/.:\s]+)/i;
 const pipInstallPattern =
 	/\bpip\d*\s+install\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s=<>]+)/i;
 
@@ -135,7 +162,7 @@ export function checkPolicy(context: ActionApprovalContext): {
 	// 1. Tool Constraints
 	if (policy.tools) {
 		const { allowed, blocked } = policy.tools;
-		if (allowed?.length && !allowed.includes(context.toolName)) {
+		if (allowed && !allowed.includes(context.toolName)) {
 			return {
 				allowed: false,
 				reason: `Tool "${context.toolName}" is not in the approved tools list.`,
@@ -157,11 +184,20 @@ export function checkPolicy(context: ActionApprovalContext): {
 	) {
 		const command = getCommandArg(context);
 		if (command) {
+			// Check for shell metacharacters which could bypass detection
+			if (/[;&|`$()<>]/.test(command)) {
+				return {
+					allowed: false,
+					reason:
+						"Command contains shell metacharacters which are not allowed by enterprise policy.",
+				};
+			}
+
 			const deps = extractDependencies(command);
 			const { allowed, blocked } = policy.dependencies;
 
 			for (const dep of deps) {
-				if (allowed?.length && !allowed.includes(dep)) {
+				if (allowed && !allowed.includes(dep)) {
 					return {
 						allowed: false,
 						reason: `Dependency "${dep}" is not in the approved dependencies list.`,

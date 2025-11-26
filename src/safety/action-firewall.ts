@@ -119,9 +119,16 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
 		id: "enterprise-policy",
 		description: "Enforce enterprise policies on tools and dependencies",
-		match: (ctx) => !checkPolicy(ctx).allowed,
-		reason: (ctx) =>
-			checkPolicy(ctx).reason ?? "Action blocked by enterprise policy",
+		match: (ctx) => {
+			const result = checkPolicy(ctx);
+			// Cache result on context to avoid re-evaluating in reason()
+			(ctx as any)._policyCheckResult = result;
+			return !result.allowed;
+		},
+		reason: (ctx) => {
+			const result = (ctx as any)._policyCheckResult ?? checkPolicy(ctx);
+			return result.reason ?? "Action blocked by enterprise policy";
+		},
 	},
 	{
 		id: "mcp-destructive-tool",
