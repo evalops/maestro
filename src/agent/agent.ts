@@ -1,8 +1,11 @@
 import { validate as uuidValidate } from "uuid";
+import { createLogger } from "../utils/logger.js";
 import {
 	AgentContextManager,
 	type AgentContextSource,
 } from "./context-manager.js";
+
+const logger = createLogger("agent");
 import type {
 	AgentEvent,
 	AgentState,
@@ -226,7 +229,10 @@ export class Agent {
 			try {
 				listener(event);
 			} catch (error) {
-				console.error("Error in agent event listener:", error);
+				logger.error(
+					"Error in agent event listener",
+					error instanceof Error ? error : new Error(String(error)),
+				);
 			}
 		}
 	}
@@ -436,7 +442,10 @@ export class Agent {
 					systemPrompt += `\n\n${contextAdditions}`;
 				}
 			} catch (error) {
-				console.warn("Failed to inject environmental context:", error);
+				logger.warn("Failed to inject environmental context", {
+					error: error instanceof Error ? error.message : String(error),
+					stack: error instanceof Error ? error.stack : undefined,
+				});
 			}
 
 			const runConfig = {

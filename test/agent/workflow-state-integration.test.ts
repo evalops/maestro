@@ -144,7 +144,7 @@ describe("ProviderTransport workflow-state integration", () => {
 			timestamp: Date.now(),
 		};
 
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const handoffResults: ToolResultMessage[] = [];
 
 		for await (const event of transport.run([], userMessage, cfg)) {
@@ -162,12 +162,12 @@ describe("ProviderTransport workflow-state integration", () => {
 		expect(handoffResults[0].content[0]).toMatchObject({
 			text: expect.stringContaining("redact_transcript"),
 		});
-		expect(warnSpy).toHaveBeenCalledWith(
+		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining(
-				"WorkflowStateTracker currently requires serialized tool execution; maxConcurrentToolExecutions has been capped",
+				"WorkflowStateTracker requires serialized tool execution",
 			),
 		);
 
-		warnSpy.mockRestore();
+		logSpy.mockRestore();
 	});
 });

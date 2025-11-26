@@ -1,6 +1,9 @@
 import { TokenTracker } from "../billing/token-tracker.js";
 import { isDatabaseConfigured } from "../db/client.js";
 import { envApiKeyMap } from "../providers/api-keys.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("transport");
 import type { AuthCredential } from "../providers/auth.js";
 import {
 	HUMAN_EGRESS_PII_RULE_ID,
@@ -111,8 +114,10 @@ async function logToolExecutionAudit(
 		await logSensitiveToolExecution(toolName, args, status, durationMs, error);
 	} catch (err) {
 		// Log audit failures but fail open (allow legitimate use) per user feedback
-		console.error(
-			`[audit] Failed to log tool execution: ${err instanceof Error ? err.message : String(err)}`,
+		logger.error(
+			"Failed to log tool execution",
+			err instanceof Error ? err : new Error(String(err)),
+			{ toolName },
 		);
 	}
 }
@@ -319,8 +324,9 @@ export class ProviderTransport implements AgentTransport {
 						// Log error but don't throw - let checkSessionLimits handle it.
 						// If limits are active, it will fail closed because tokenCount is undefined.
 						// If no limits are active, we shouldn't block just because tracking failed.
-						console.error(
-							`[SessionLimit] Failed to get session token count: ${err instanceof Error ? err.message : String(err)}`,
+						logger.error(
+							"Failed to get session token count",
+							err instanceof Error ? err : new Error(String(err)),
 						);
 					}
 				}
@@ -437,7 +443,11 @@ export class ProviderTransport implements AgentTransport {
 										cost,
 									});
 								} catch (error) {
-									console.warn("[Cost Tracking] Failed to track usage:", error);
+									logger.warn("Failed to track usage", {
+										error:
+											error instanceof Error ? error.message : String(error),
+										stack: error instanceof Error ? error.stack : undefined,
+									});
 								}
 							}
 						}
@@ -471,8 +481,8 @@ export class ProviderTransport implements AgentTransport {
 				if (configuredConcurrency > 1 && requiresSerializedTurn) {
 					concurrencyLimit = 1;
 					if (!this.warnedAboutWorkflowConcurrency) {
-						console.warn(
-							"[provider-transport] WorkflowStateTracker currently requires serialized tool execution; maxConcurrentToolExecutions has been capped at 1 until invariants support parallelism.",
+						logger.warn(
+							"WorkflowStateTracker requires serialized tool execution; maxConcurrentToolExecutions capped at 1",
 						);
 						this.warnedAboutWorkflowConcurrency = true;
 					}
