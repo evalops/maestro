@@ -7,8 +7,11 @@ import {
 	formatTodosSection,
 	loadStore,
 } from "../tools/todo.js";
+import { createLogger } from "../utils/logger.js";
 import { isWithinCwd } from "../utils/path-validation.js";
 import type { AgentContextSource } from "./context-manager.js";
+
+const logger = createLogger("context-providers");
 
 export class TodoContextSource implements AgentContextSource {
 	name = "todo";
@@ -49,7 +52,10 @@ export class TodoContextSource implements AgentContextSource {
 
 			return null;
 		} catch (error) {
-			console.warn("Failed to load todo context:", error);
+			logger.warn("Failed to load todo context", {
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 			return null;
 		}
 	}
@@ -62,7 +68,10 @@ export class BackgroundTaskContextSource implements AgentContextSource {
 		try {
 			return formatTaskFailures();
 		} catch (error) {
-			console.warn("Failed to load background task context:", error);
+			logger.warn("Failed to load background task context", {
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 			return null;
 		}
 	}
@@ -131,7 +140,10 @@ export class LspContextSource implements AgentContextSource {
 
 			return `# Workspace Health\n${summary}`;
 		} catch (error) {
-			console.warn("Failed to load LSP context:", error);
+			logger.warn("Failed to load LSP context", {
+				error: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 			return null;
 		}
 	}

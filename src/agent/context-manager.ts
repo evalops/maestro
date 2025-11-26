@@ -1,3 +1,7 @@
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("context-manager");
+
 export interface AgentContextSource {
 	name: string;
 	getSystemPromptAdditions(): Promise<string | null>;
@@ -15,8 +19,11 @@ export class AgentContextManager {
 		// Run in parallel for performance
 		const results = await Promise.all(
 			this.sources.map((s) =>
-				s.getSystemPromptAdditions().catch((err) => {
-					console.warn(`Context source '${s.name}' failed:`, err);
+				s.getSystemPromptAdditions().catch((error) => {
+					logger.warn(`Context source '${s.name}' failed`, {
+						error: error instanceof Error ? error.message : String(error),
+						stack: error instanceof Error ? error.stack : undefined,
+					});
 					return null;
 				}),
 			),

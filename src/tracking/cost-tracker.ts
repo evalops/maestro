@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseJsonOr } from "../utils/json.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("cost-tracker");
 
 /**
  * Cost tracking for API usage
@@ -67,7 +70,10 @@ function loadUsage(): UsageEntry[] {
 		const data = readFileSync(USAGE_FILE, "utf-8");
 		return parseJsonOr<UsageEntry[]>(data, []);
 	} catch (error) {
-		console.warn("[Cost Tracking] Failed to load usage data:", error);
+		logger.warn("Failed to load usage data", {
+			error: error instanceof Error ? error.message : String(error),
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return [];
 	}
 }
@@ -84,7 +90,10 @@ function saveUsage(entries: UsageEntry[]): void {
 
 		writeFileSync(USAGE_FILE, JSON.stringify(entries, null, 2));
 	} catch (error) {
-		console.warn("[Cost Tracking] Failed to save usage data:", error);
+		logger.warn("Failed to save usage data", {
+			error: error instanceof Error ? error.message : String(error),
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 	}
 }
 
