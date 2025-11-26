@@ -603,7 +603,7 @@ export async function main(args: string[]) {
 	}
 
 	provider ??= "anthropic";
-	modelId ??= "claude-opus-4-5-20251101";
+	modelId ??= "claude-sonnet-4-5";
 
 	const supportedProviders = new Set(getSupportedProviders());
 	if (!supportedProviders.has(provider)) {
