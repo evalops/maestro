@@ -2,7 +2,6 @@ import { statSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import {
 	type AutocompleteProvider,
-	CombinedAutocompleteProvider,
 	type Container,
 	Spacer,
 	type TUI,
@@ -11,24 +10,50 @@ import {
 import chalk from "chalk";
 import { badge, heading, italic, muted } from "../style/theme.js";
 import { BashShellBlock } from "./bash-shell-block.js";
-import type { CustomEditor } from "./custom-editor.js";
 import {
-	type ShellCommandResult,
-	runShellCommand,
-} from "./run/run-shell-command.js";
+	type BackgroundLaunchSource,
+	parseBackgroundPrefixCommand,
+	startBackgroundTask,
+	stripBackgroundSuffix,
+} from "./bash/background-launcher.js";
+import {
+	BashAutocompleteProvider,
+	appendToHistory,
+	highlightBashCommand,
+	loadBashHistory,
+} from "./bash/index.js";
+import type { CustomEditor } from "./custom-editor.js";
+import type { ShellCommandResult } from "./run/run-shell-command.js";
+import { runStreamingShellCommand } from "./run/streaming-shell-command.js";
 
 interface BashModeViewOptions {
 	chatContainer: Container;
 	ui: TUI;
 	showInfoMessage: (message: string) => void;
 	onStateChange: (active: boolean) => void;
+	onFooterUpdate?: (info: BashModeFooterInfo | null) => void;
 	editor: CustomEditor;
 	defaultAutocomplete: AutocompleteProvider;
+}
+
+export interface BashModeFooterInfo {
+	cwd: string;
+	lastExitCode: number | null;
+	isRunning: boolean;
+	elapsedMs?: number;
 }
 
 /**
  * Presents a lightweight REPL-like view that proxies chat input to bash.
  * When active, every submitted line runs as a shell command until the user exits.
+ *
+ * Features:
+ * - Streaming output (real-time stdout/stderr display)
+ * - Persistent command history (~/.composer/bash-history.json)
+ * - Enhanced autocomplete (executables, git, npm scripts)
+ * - Syntax highlighting for commands
+ * - Environment variable persistence within session
+ * - Background task support (!& prefix)
  */
 export class BashModeView {
 	private active = false;
@@ -36,13 +61,19 @@ export class BashModeView {
 	private readonly projectRoot: string;
 	private readonly homeDir: string;
 	private readonly defaultAutocomplete: AutocompleteProvider;
-	private bashAutocomplete?: CombinedAutocompleteProvider;
+	private bashAutocomplete?: BashAutocompleteProvider;
 	private history: string[] = [];
 	private historyIndex: number | null = null;
 	private draftCommand = "";
 	private pendingDraft: string | null = null;
 	private applyingHistory = false;
+	private lastExitCode: number | null = null;
+	private isRunning = false;
+	private currentAbortController: AbortController | null = null;
+	private sessionEnv: Record<string, string> = {};
+	private streamUpdateInterval: NodeJS.Timeout | null = null;
 	private static readonly EXIT_COMMANDS = new Set(["exit", "quit", "leave"]);
+	private static readonly CLEAR_COMMANDS = new Set(["clear", "cls"]);
 
 	constructor(private readonly options: BashModeViewOptions) {
 		this.projectRoot = this.normalizePath(process.cwd());
@@ -53,13 +84,52 @@ export class BashModeView {
 		this.options.editor.onHistoryNavigate = (direction) =>
 			this.handleHistoryNavigate(direction);
 		this.options.editor.onChange = (text) => this.handleEditorChange(text);
+		// Load persistent history
+		this.history = loadBashHistory();
 	}
 
 	isActive(): boolean {
 		return this.active;
 	}
 
+	isCommandRunning(): boolean {
+		return this.isRunning;
+	}
+
+	getCurrentCwd(): string {
+		return this.currentCwd;
+	}
+
+	getLastExitCode(): number | null {
+		return this.lastExitCode;
+	}
+
+	/**
+	 * Abort the currently running command (if any).
+	 */
+	abortCurrentCommand(): boolean {
+		if (this.currentAbortController) {
+			this.currentAbortController.abort();
+			this.currentAbortController = null;
+			return true;
+		}
+		return false;
+	}
+
 	async tryHandleInput(rawInput: string): Promise<boolean> {
+		const prefixBackgroundCommand = !this.active
+			? parseBackgroundPrefixCommand(rawInput)
+			: null;
+		if (!this.active && prefixBackgroundCommand) {
+			this.history = appendToHistory(this.history, prefixBackgroundCommand);
+			this.launchBackgroundTaskCommand({
+				command: prefixBackgroundCommand,
+				source: "prefix",
+				cwd: this.projectRoot,
+				env: process.env,
+			});
+			return true;
+		}
 		if (!this.active && !rawInput.startsWith("!")) {
 			return false;
 		}
@@ -69,7 +139,8 @@ export class BashModeView {
 			this.renderSystemMessage(
 				`${heading("Bash mode enabled")}
 ${muted(`cwd ${this.formatDisplayPath(this.currentCwd)}`)}
-${muted("Shift+Enter inserts a newline. Type exit to return to chat.")}`,
+${muted("Shift+Enter inserts a newline. Type exit to return to chat.")}
+${muted("Ctrl+C aborts running commands.")}`,
 			);
 			const command = rawInput.slice(1).trim();
 			if (!command) {
@@ -89,6 +160,13 @@ ${muted("Shift+Enter inserts a newline. Type exit to return to chat.")}`,
 			return true;
 		}
 
+		// Handle clear command
+		if (BashModeView.CLEAR_COMMANDS.has(trimmed.toLowerCase())) {
+			this.options.chatContainer.clear();
+			this.options.ui.requestRender();
+			return true;
+		}
+
 		await this.executeCommand(trimmed);
 		return true;
 	}
@@ -99,9 +177,11 @@ ${muted("Shift+Enter inserts a newline. Type exit to return to chat.")}`,
 		}
 		this.currentCwd = this.projectRoot;
 		this.active = true;
+		this.sessionEnv = {}; // Reset session env
 		this.options.editor.setLargePasteMode("verbatim");
 		this.enableBashAutocomplete();
 		this.options.onStateChange(true);
+		this.updateFooter();
 		this.options.showInfoMessage("Entered bash mode. Type exit to leave.");
 	}
 
@@ -109,6 +189,8 @@ ${muted("Shift+Enter inserts a newline. Type exit to return to chat.")}`,
 		if (!this.active) {
 			return;
 		}
+		// Abort any running command
+		this.abortCurrentCommand();
 		this.active = false;
 		this.resetHistoryNavigation(true);
 		this.options.editor.setLargePasteMode("placeholder");
@@ -118,7 +200,16 @@ ${muted("Shift+Enter inserts a newline. Type exit to return to chat.")}`,
 ${muted("Back to normal chat.")}`,
 		);
 		this.options.onStateChange(false);
+		this.options.onFooterUpdate?.(null);
 		this.options.showInfoMessage("Exited bash mode.");
+	}
+
+	private updateFooter(): void {
+		this.options.onFooterUpdate?.({
+			cwd: this.formatDisplayPath(this.currentCwd),
+			lastExitCode: this.lastExitCode,
+			isRunning: this.isRunning,
+		});
 	}
 
 	private renderSystemMessage(message: string): void {
@@ -127,48 +218,213 @@ ${muted("Back to normal chat.")}`,
 		this.options.ui.requestRender();
 	}
 
+	private launchBackgroundTaskCommand(options: {
+		command: string;
+		source: BackgroundLaunchSource;
+		cwd: string;
+		env?: NodeJS.ProcessEnv;
+	}): void {
+		try {
+			const task = startBackgroundTask(options.command, {
+				cwd: options.cwd,
+				env: options.env,
+			});
+			this.lastExitCode = 0;
+			this.updateFooter();
+			this.renderBackgroundTaskStart({
+				taskId: task.id,
+				command: task.command,
+				cwd: options.cwd,
+				source: options.source,
+			});
+		} catch (error) {
+			this.lastExitCode = 1;
+			this.updateFooter();
+			this.renderBackgroundTaskFailure(options.command, error);
+		}
+	}
+
+	private renderBackgroundTaskStart(details: {
+		taskId: string;
+		command: string;
+		cwd: string;
+		source: BackgroundLaunchSource;
+	}): void {
+		const lines = [heading("Background task started")];
+		const sourceLine =
+			details.source === "prefix"
+				? muted("Launched via !& (detached command)")
+				: muted("Launched via trailing & (detached command)");
+		lines.push(sourceLine);
+		lines.push(
+			`${badge("Task", details.taskId, "info")} ${muted(details.command)}`,
+		);
+		lines.push(muted(`cwd ${this.formatDisplayPath(details.cwd)}`));
+		lines.push(
+			muted("Use /background list or /background logs <id> to monitor."),
+		);
+		this.renderSystemMessage(lines.join("\n"));
+	}
+
+	private renderBackgroundTaskFailure(command: string, error: unknown): void {
+		const description =
+			error instanceof Error ? error.message : String(error ?? "unknown");
+		const lines = [
+			heading("Background task failed to start"),
+			muted(command),
+			chalk.hex("#f87171")(description || "Unable to start background task."),
+		];
+		this.renderSystemMessage(lines.join("\n"));
+	}
+
 	private async executeCommand(command: string): Promise<void> {
-		this.recordHistory(command);
+		// Record to persistent history
+		this.history = appendToHistory(this.history, command);
+
+		// Handle export commands for session env persistence
+		const exportResult = this.handleExport(command);
+		if (exportResult) {
+			this.renderExportResult(exportResult);
+			return;
+		}
+
+		const backgroundCommand = stripBackgroundSuffix(command);
+		if (backgroundCommand) {
+			if (this.history.length > 0) {
+				this.history[this.history.length - 1] = backgroundCommand;
+			}
+			this.launchBackgroundTaskCommand({
+				command: backgroundCommand,
+				source: "suffix",
+				cwd: this.currentCwd,
+				env: { ...process.env, ...this.sessionEnv },
+			});
+			this.resetHistoryNavigation(true);
+			return;
+		}
+
 		const promptLine = this.formatPrompt(command);
 		const block = new BashShellBlock(
 			this.formatDisplayPath(this.currentCwd),
 			`${promptLine}\n${muted("Running…")}`,
 		);
+		block.setPromptLine(promptLine);
 		block.setStatus("pending");
 		this.options.chatContainer.addChild(block);
 		this.options.ui.requestRender();
 
-		const result = await this.runCommandOrBuiltin(command);
+		// Check for builtin commands first
+		const builtinResult = this.handleBuiltin(command);
+		if (builtinResult) {
+			this.lastExitCode = builtinResult.code;
+			const statusLine = badge(
+				"Exit code",
+				String(builtinResult.code),
+				builtinResult.success ? "success" : "danger",
+			);
+			const body = [builtinResult.stdout, builtinResult.stderr]
+				.filter(Boolean)
+				.join("\n");
+			let content = `${promptLine}\n${body || muted("(no output)")}\n\n${statusLine}`;
+			if (builtinResult.cwdChanged) {
+				const cwdLine = italic(
+					`cwd → ${this.formatDisplayPath(this.currentCwd)}`,
+				);
+				content = `${promptLine}\n${cwdLine}\n${body || muted("(no output)")}\n\n${statusLine}`;
+			}
+			block.setBody(content);
+			block.setStatus(builtinResult.success ? "success" : "error");
+			this.updateFooter();
+			this.options.ui.requestRender();
+			this.resetHistoryNavigation(true);
+			return;
+		}
+
+		// Run command with streaming output
+		this.isRunning = true;
+		this.currentAbortController = new AbortController();
+		this.updateFooter();
+
+		// Start spinner update interval for animated display
+		this.streamUpdateInterval = setInterval(() => {
+			block.appendStreamOutput(""); // Trigger display update for spinner
+			this.options.ui.requestRender();
+		}, 80);
+
+		const mergedEnv = { ...process.env, ...this.sessionEnv };
+		const result = await runStreamingShellCommand(command, {
+			cwd: this.currentCwd,
+			env: mergedEnv,
+			signal: this.currentAbortController.signal,
+			onStdout: (chunk) => {
+				block.appendStreamOutput(chunk);
+				this.options.ui.requestRender();
+			},
+			onStderr: (chunk) => {
+				block.appendStreamOutput(chalk.hex("#ff8c69")(chunk));
+				this.options.ui.requestRender();
+			},
+		});
+
+		// Clear update interval
+		if (this.streamUpdateInterval) {
+			clearInterval(this.streamUpdateInterval);
+			this.streamUpdateInterval = null;
+		}
+
+		this.isRunning = false;
+		this.currentAbortController = null;
+		this.lastExitCode = result.code;
+		this.updateFooter();
+
+		// Build final output
+		const elapsedMs = block.getElapsedMs();
+		const elapsed =
+			elapsedMs < 1000 ? `${elapsedMs}ms` : `${(elapsedMs / 1000).toFixed(1)}s`;
 		const statusLine = badge(
 			"Exit code",
-			String(result.code ?? 0),
+			String(result.code),
 			result.success ? "success" : "danger",
 		);
+		const timeLabel = muted(`(${elapsed})`);
 		const body = [result.stdout, result.stderr].filter(Boolean).join("\n");
+
+		block.clearStreamBuffer();
 		block.setBody(
-			`${promptLine}\n${body || muted("(no output)")}\n\n${statusLine}`,
+			`${promptLine}\n${body || muted("(no output)")}\n\n${statusLine} ${timeLabel}`,
 		);
 		block.setStatus(result.success ? "success" : "error");
-		if (result.cwdChanged) {
-			const cwdLine = italic(
-				`cwd → ${this.formatDisplayPath(this.currentCwd)}`,
-			);
-			block.setBody(
-				`${promptLine}\n${cwdLine}\n${body || muted("(no output)")}\n\n${statusLine}`,
-			);
-		}
 		this.options.ui.requestRender();
 		this.resetHistoryNavigation(true);
 	}
 
-	private async runCommandOrBuiltin(
-		command: string,
-	): Promise<ShellCommandResult> {
-		const builtinResult = this.handleBuiltin(command);
-		if (builtinResult) {
-			return builtinResult;
+	private handleExport(command: string): { key: string; value: string } | null {
+		const exportMatch = command.match(
+			/^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$/,
+		);
+		if (!exportMatch) {
+			return null;
 		}
-		return await runShellCommand(command, { cwd: this.currentCwd });
+		const key = exportMatch[1];
+		let value = exportMatch[2];
+		// Strip surrounding quotes if present
+		if (
+			(value.startsWith('"') && value.endsWith('"')) ||
+			(value.startsWith("'") && value.endsWith("'"))
+		) {
+			value = value.slice(1, -1);
+		}
+		this.sessionEnv[key] = value;
+		return { key, value };
+	}
+
+	private renderExportResult(result: { key: string; value: string }): void {
+		const message = `${heading("Environment variable set")}
+${muted(`${result.key}=${result.value}`)}
+${muted("(persists for this bash mode session)")}`;
+		this.renderSystemMessage(message);
+		this.lastExitCode = 0;
+		this.updateFooter();
 	}
 
 	private handleBuiltin(
@@ -243,7 +499,7 @@ ${muted("Back to normal chat.")}`,
 		const cwdLabel = chalk
 			.hex("#38bdf8")
 			.bold(`[${this.formatDisplayPath(this.currentCwd)}]$`);
-		const cmd = chalk.hex("#e2e8f0")(command);
+		const cmd = highlightBashCommand(command);
 		return `${cwdLabel} ${cmd}`.trim();
 	}
 
@@ -270,20 +526,6 @@ ${muted("Back to normal chat.")}`,
 			return "/";
 		}
 		return path.replace(/\/+$/u, "");
-	}
-
-	private recordHistory(command: string): void {
-		const text = command.trim();
-		if (!text) {
-			return;
-		}
-		if (this.history[this.history.length - 1] === command) {
-			return;
-		}
-		this.history.push(command);
-		if (this.history.length > 100) {
-			this.history.shift();
-		}
 	}
 
 	private handleHistoryNavigate(direction: "prev" | "next"): boolean {
@@ -340,13 +582,14 @@ ${muted("Back to normal chat.")}`,
 
 	private enableBashAutocomplete(): void {
 		if (!this.bashAutocomplete) {
-			this.bashAutocomplete = new CombinedAutocompleteProvider(
-				[],
+			this.bashAutocomplete = new BashAutocompleteProvider(
 				this.currentCwd,
+				this.history,
 			);
 			this.options.editor.setAutocompleteProvider(this.bashAutocomplete);
 		} else {
 			this.bashAutocomplete.setBasePath(this.currentCwd);
+			this.bashAutocomplete.setHistory(this.history);
 		}
 	}
 

@@ -2606,6 +2606,15 @@ export class TuiRenderer {
 
 	private buildOperationalHints(): string[] {
 		const hints: string[] = [];
+		const backgroundCounts = this.getBackgroundTaskCounts();
+		if (backgroundCounts.running > 0 || backgroundCounts.failed > 0) {
+			const runningLabel = `${backgroundCounts.running} background ${backgroundCounts.running === 1 ? "task" : "tasks"} running`;
+			const failureSuffix =
+				backgroundCounts.failed > 0
+					? `; ${backgroundCounts.failed} failed`
+					: "";
+			hints.push(`${runningLabel}${failureSuffix} (use /background list)`);
+		}
 		if (this.compactionInProgress) {
 			hints.push("Compacting history…");
 		}
@@ -2670,12 +2679,32 @@ export class TuiRenderer {
 			);
 			badges.push(`mcp:${connectedMcp}(${totalTools})`);
 		}
+		const backgroundCounts = this.getBackgroundTaskCounts();
+		if (backgroundCounts.running > 0 || backgroundCounts.failed > 0) {
+			const failureSuffix =
+				backgroundCounts.failed > 0 ? `!${backgroundCounts.failed}` : "";
+			badges.push(`bg:${backgroundCounts.running}${failureSuffix}`);
+		}
 		// Active composer
 		const composerState = composerManager.getState();
 		if (composerState.active) {
 			badges.push(`composer:${composerState.active.name}`);
 		}
 		return badges;
+	}
+	private getBackgroundTaskCounts(): { running: number; failed: number } {
+		const tasks = backgroundTaskManager.getTasks();
+		let running = 0;
+		let failed = 0;
+		for (const task of tasks) {
+			if (task.status === "running" || task.status === "restarting") {
+				running++;
+			}
+			if (task.status === "failed") {
+				failed++;
+			}
+		}
+		return { running, failed };
 	}
 
 	private cycleThinkingLevel(): void {
