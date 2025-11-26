@@ -1,503 +1,419 @@
-# Composer Enterprise Features
+# Composer Enterprise
 
-This document describes the enterprise features added to Composer for multi-tenant deployments, RBAC, audit logging, and security controls.
+## Executive Summary
 
-## Features Overview
+Composer Enterprise adds the controls required for regulated and security-conscious environments:
 
-### 1. **Multi-Tenancy & Organizations**
-- Organizations with isolated resources
-- User management with invitations
-- Org-scoped sessions, models, and configurations
+- **Isolation**: Multi-tenant organizations with full resource separation
+- **Fine-grained RBAC**: Permission checks at API, tool-execution, and directory-resolution layers
+- **Real-time guardrails**: PII detection, directory allowlists, model approvals, spend limits—all enforced before execution
+- **Auditability**: Complete activity logs with PII-safe redaction
+- **Clean migration path**: Move from single-user JSONL to enterprise DB with one command
 
-### 2. **Role-Based Access Control (RBAC)**
-- Built-in roles: `org_owner`, `org_admin`, `org_member`, `org_viewer`
-- Custom roles per organization
-- Granular permissions: `resource:action` (e.g., `sessions:write`, `models:execute`)
-- Resource ownership checks
+No hidden state. No ambient authority. Every action is gated, logged, and attributable.
 
-### 3. **Audit Logging**
-- Comprehensive logging of all user actions
-- Tool execution tracking with command redaction
-- Session activity monitoring
-- Security event logging (failed auth, permission denials)
-- CSV export for compliance
-- Configurable retention policies
+---
 
-### 4. **PII Detection & Redaction**
-- Automatic detection of sensitive data (emails, SSNs, credit cards, API keys, etc.)
-- Regex-based pattern matching with custom patterns
-- Command-line argument redaction
-- Environment variable filtering
-- Content redaction before storage
+## Deployment Model
 
-### 5. **Directory Access Controls**
-- Allowlist/denylist with glob patterns
-- Role-based path restrictions
-- Priority-based rule matching
-- Default safe/restricted directories
+Composer is **stateless at the application layer**. All persistent state lives in the database:
 
-### 6. **Token & Spend Tracking**
-- Per-user token quotas
-- Per-model spend limits
-- Real-time usage monitoring
-- Threshold alerts (80%, 100%)
-- Organization-wide usage summaries
+| State Type | Storage | Notes |
+|------------|---------|-------|
+| Sessions & messages | PostgreSQL | Replaces JSONL files |
+| Audit logs | PostgreSQL | Partitionable by month |
+| User/org/role data | PostgreSQL | RBAC source of truth |
+| Permissions cache | In-memory | 5-min TTL, auto-cleared on changes |
+| Directory rules cache | In-memory | 5-min TTL, auto-cleared on changes |
 
-### 7. **Model Approval Workflow**
-- Approve/deny models per organization
-- Spend and token limits per model
-- Auto-approval rules based on metadata
-- Role-based model restrictions
+**Scaling**: Add Composer instances behind a load balancer. No sticky sessions required. All instances read/write the same database.
 
-### 8. **Alerting System**
-- Threshold-based alerts (quota, spend, security events)
-- Severity levels (critical, high, medium, low, info)
-- Webhook notifications (configurable)
-- Alert deduplication
+**Request capacity**: A single Composer instance handles 100+ req/s for typical API operations. Audit log writes are async and batched. For orgs with >50 concurrent users, consider read replicas for audit queries.
 
-## Architecture
+---
 
-### Database Schema
+## RBAC Permission System
 
-The system uses a PostgreSQL/SQLite database with the following core tables:
+### Enforcement Points
 
-- `organizations` - Tenants with settings
-- `users` - User accounts with optional password auth
-- `org_memberships` - User-org relationships with roles and quotas
-- `roles` & `permissions` - RBAC system
-- `sessions` & `session_messages` - Chat sessions (migrated from JSONL)
-- `audit_logs` - Comprehensive activity tracking
-- `model_approvals` - Model usage policies
-- `directory_access_rules` - File system access controls
-- `alerts` - Notifications and warnings
-- `api_keys` - Programmatic access tokens
+Permission checks occur at three layers:
 
-### Technology Stack
+1. **API layer**: Every authenticated request validates `resource:action` against the user's role
+2. **Tool execution layer**: Before any tool runs, permissions are re-checked with the specific resource context
+3. **Directory resolver**: File paths are validated against org/user access rules before any read/write/execute
 
-- **ORM**: Drizzle ORM (type-safe, performant)
-- **Auth**: JWT with bcrypt password hashing
-- **PII Detection**: Regex-based with extensible patterns
-- **Path Matching**: minimatch for glob patterns
-- **Database**: PostgreSQL (production) or SQLite (dev/single-user)
-
-## Getting Started
-
-### 1. Environment Variables
-
-```bash
-# Multi-tenant mode
-COMPOSER_MULTI_TENANT=true
-
-# Database
-COMPOSER_DATABASE_TYPE=postgres  # or 'sqlite'
-COMPOSER_DATABASE_URL=postgresql://user:pass@localhost/composer
-
-# JWT Authentication
-COMPOSER_JWT_SECRET=your-secure-secret-key
-COMPOSER_JWT_EXPIRY=24h
-
-# Audit Logging
-COMPOSER_AUDIT_ENABLED=true
-COMPOSER_AUDIT_RETENTION_DAYS=90
-
-# PII Redaction
-COMPOSER_PII_ENABLED=true
-```
-
-### 2. Database Migration
-
-```bash
-# Generate migrations (after schema changes)
-bun run db:generate
-
-# Run migrations
-bun run db:migrate
-
-# Seed default permissions and roles
-bun run db:seed
-```
-
-### 3. User Registration & Login
-
-```bash
-# Register a new user (creates org automatically)
-curl -X POST http://localhost:8080/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "admin@example.com",
-    "name": "Admin User",
-    "password": "SecurePass123!",
-    "orgName": "Acme Corp"
-  }'
-
-# Login
-curl -X POST http://localhost:8080/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "admin@example.com",
-    "password": "SecurePass123!"
-  }'
-```
-
-### 4. Using the API with JWT
-
-```bash
-# All authenticated requests require Bearer token
-curl -X GET http://localhost:8080/api/auth/me \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-
-# Check usage quota
-curl -X GET http://localhost:8080/api/usage/quota \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-
-# View audit logs (requires permission)
-curl -X GET http://localhost:8080/api/audit/logs \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
-
-## RBAC Permission Model
+A request must pass all three checks. Failure at any layer is logged and returns a 403.
 
 ### Built-in Roles
 
-| Role | Permissions | Use Case |
-|------|-------------|----------|
-| **org_owner** | Full access (`*:*`) | Organization owner |
-| **org_admin** | Manage sessions, models, configs, view users | Team lead |
-| **org_member** | Create/manage own sessions, execute models | Developer |
-| **org_viewer** | Read-only access | Stakeholder, auditor |
+| Role | Permissions | Typical Use |
+|------|-------------|-------------|
+| `org_owner` | `*:*` on all resources | Billing owner, full control |
+| `org_admin` | Manage sessions, models, configs; read users; view audit | Engineering lead |
+| `org_member` | Own sessions, execute approved models, use tools | Developer |
+| `org_viewer` | Read-only on sessions, models, configs | Stakeholder, auditor |
 
-### Resources
+### Resources and Actions
 
-- `sessions` - Chat sessions
-- `models` - Model selection/execution
-- `users` - User management
-- `orgs` - Organization settings
-- `audit` - Audit log access
-- `config` - Configuration management
-- `tools` - Tool execution (bash, git, etc.)
-- `api_keys` - API key management
-- `roles` - Role management
-- `directories` - File system access
+**Resources**: `sessions`, `models`, `users`, `orgs`, `audit`, `config`, `tools`, `api_keys`, `roles`, `directories`
 
-### Actions
+**Actions**: `read`, `write`, `delete`, `execute`, `admin`, `*` (wildcard)
 
-- `read` - View resources
-- `write` - Create/update resources
-- `delete` - Delete resources
-- `execute` - Execute operations (models, tools)
-- `admin` - Administrative actions
-- `*` - All actions
+### Custom Roles
 
-### Example: Check Permission
+Organizations can create custom roles with any permission combination:
 
-```typescript
-import { PermissionChecker, RESOURCES, ACTIONS } from "./src/rbac/permissions.js";
-
-const allowed = await PermissionChecker.check(
-  { userId: "user-id", orgId: "org-id", roleId: "role-id" },
-  RESOURCES.SESSIONS,
-  ACTIONS.WRITE
-);
+```bash
+curl -X POST /api/roles \
+  -d '{"name": "ml_engineer", "permissions": ["models:*", "sessions:write", "tools:execute"]}'
 ```
+
+---
 
 ## Directory Access Control
 
-### Default Rules
+### Enforcement Scope
 
-The system seeds these default rules for new organizations:
+Directory rules apply to **any file path referenced by any tool**—not just the working directory. Before a tool executes:
+
+1. All paths in the tool's parameters are resolved to absolute paths
+2. Each path is checked against the org's directory rules (highest priority wins)
+3. If any path is denied, the entire tool call is rejected
+
+This covers: `bash` commands, `read`/`write` tools, `git` operations, file searches, and any MCP tool that references paths.
+
+### Rule Structure
 
 ```typescript
-// Allowed
-/home/user/**        - User home directory
-/tmp/**              - Temporary directory
-
-// Denied
-/etc/**              - System configuration
-/sys/**              - System files
-/proc/**             - Process information
-**/node_modules/**   - Dependencies
-**/.git/**           - Git internals
+{
+  pattern: "/app/src/**",    // Glob pattern (minimatch syntax)
+  isAllowed: true,           // Allow or deny
+  priority: 100,             // Higher = evaluated first
+  roleIds: ["role-id"],      // Optional: restrict to specific roles
+  description: "App source"  // For audit/admin UI
+}
 ```
 
-### Custom Rules
+### Default Rules (seeded for new orgs)
 
-Add organization-specific rules via API:
+| Pattern | Allow/Deny | Priority | Purpose |
+|---------|------------|----------|---------|
+| `$HOME/**` | Allow | 100 | User workspace |
+| `/tmp/**` | Allow | 90 | Temp files |
+| `/etc/**` | Deny | 200 | System config |
+| `/sys/**`, `/proc/**` | Deny | 200 | Kernel interfaces |
+| `**/node_modules/**` | Deny | 50 | Dependencies |
+| `**/.git/**` | Deny | 50 | Git internals |
+
+### Example: Restrict to Project Directory
 
 ```bash
-curl -X POST http://localhost:8080/api/directory-rules \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "pattern": "/app/src/**",
-    "isAllowed": true,
-    "priority": 100,
-    "description": "Allow access to application source"
-  }'
+# Deny everything by default
+curl -X POST /api/directory-rules \
+  -d '{"pattern": "/**", "isAllowed": false, "priority": 1}'
+
+# Allow only the project
+curl -X POST /api/directory-rules \
+  -d '{"pattern": "/home/dev/myproject/**", "isAllowed": true, "priority": 100}'
 ```
 
-## PII Detection
+---
+
+## PII Detection Pipeline
+
+PII detection runs at multiple points in the request lifecycle:
+
+| Stage | What's Checked | Action on Detection |
+|-------|----------------|---------------------|
+| **Message intake** | User prompts, assistant responses | Log detection, optionally block |
+| **Tool parameters** | Bash commands, file contents, API payloads | Redact before execution logging |
+| **Audit logging** | All logged content | Redact before write |
+| **Session storage** | Messages persisted to DB | Configurable: redact or flag |
 
 ### Built-in Patterns
 
-- Email addresses
-- Phone numbers (US format)
-- Social Security Numbers
-- Credit card numbers
-- API keys (generic, AWS, GitHub)
-- JWT tokens
-- IPv4 addresses
-- Private keys (PEM format)
+- Email addresses, phone numbers (US)
+- SSN, credit card numbers (Luhn-validated)
+- API keys (AWS, GitHub, generic)
+- JWT tokens, private keys (PEM)
 - Database connection strings
-- Passwords in config
+- Passwords in config files
 
 ### Custom Patterns
 
-Add custom PII patterns per organization:
-
 ```typescript
-import { getGlobalPiiDetector } from "./src/security/pii-detector.js";
-
-const detector = getGlobalPiiDetector();
 detector.addPatternFromString(
   "employee_id",
   /EMP-\d{6}/g,
-  "[EMPLOYEE_ID_REDACTED]",
-  "Employee ID numbers"
+  "[EMPLOYEE_ID]",
+  "Internal employee IDs"
 );
 ```
 
-### Usage
+### Configuration
 
-```typescript
-import { redactPii, hasPii } from "./src/security/pii-detector.js";
-
-const content = "Contact me at john@example.com or call 555-123-4567";
-const redacted = redactPii(content);
-// "Contact me at [EMAIL_REDACTED] or call [PHONE_REDACTED]"
-
-if (hasPii(content)) {
-  console.log("PII detected!");
-}
+```bash
+COMPOSER_PII_ENABLED=true           # Enable detection
+COMPOSER_PII_BLOCK_ON_DETECT=false  # Block requests with PII (vs. redact and continue)
+COMPOSER_PII_LOG_DETECTIONS=true    # Audit log PII events
 ```
+
+---
+
+## Model Approval & Spend Controls
+
+### Approval Workflow
+
+Models must be explicitly approved before use:
+
+```bash
+curl -X POST /api/model-approvals \
+  -d '{
+    "modelId": "claude-sonnet-4-5",
+    "status": "approved",
+    "tokenLimit": 1000000,
+    "spendLimitCents": 5000,
+    "allowedRoles": ["org_admin", "org_member"]
+  }'
+```
+
+### Real-time Gating
+
+**Executions are blocked before dispatch** when:
+
+- Model is not approved for the org
+- User's role is not in `allowedRoles`
+- User has exceeded their token quota
+- User has exceeded per-model spend limit
+- Org has exceeded aggregate spend limit
+
+The check happens synchronously before the LLM request is sent. No partial execution.
+
+### Quota Structure
+
+| Level | Configurable Limits |
+|-------|---------------------|
+| Organization | Total tokens/month, total spend/month |
+| User | Tokens/month, spend/month |
+| Per-model | Tokens/request, spend/request |
+
+---
 
 ## Audit Logging
 
 ### What Gets Logged
 
-1. **Authentication**: Login, logout, failed attempts, token refresh
-2. **Resource Access**: Session CRUD, model selection, config changes
-3. **Tool Execution**: Bash commands, file operations, git commands (with redaction)
-4. **Administrative Actions**: User/role changes, org settings
-5. **Security Events**: Permission denials, PII detection, quota violations
+| Category | Events |
+|----------|--------|
+| Authentication | Login, logout, token refresh, failed attempts |
+| Sessions | Create, read, update, delete, share |
+| Tool execution | Command, parameters (redacted), result status, duration |
+| Model calls | Model ID, token counts, latency, cost |
+| Admin actions | Role changes, user invites, org settings |
+| Security events | Permission denials, PII detections, quota blocks |
 
-### Example: Query Audit Logs
+### Log Schema
 
 ```typescript
-import { AuditLogger } from "./src/audit/logger.js";
-
-const logs = await AuditLogger.query({
-  orgId: "org-id",
-  userId: "user-id",
+{
+  id: "uuid",
+  orgId: "uuid",
+  userId: "uuid",
+  sessionId: "uuid | null",
   action: "tool.bash.execute",
-  startDate: new Date("2025-01-01"),
-  limit: 100,
-});
+  resource: "sessions/abc123",
+  details: { /* redacted metadata */ },
+  ipAddress: "192.168.1.1",
+  userAgent: "...",
+  createdAt: "2025-01-15T10:30:00Z"
+}
 ```
 
-### Export to CSV
+### Retention & Export
 
-```typescript
-const csv = await AuditLogger.exportToCsv({
-  orgId: "org-id",
-  startDate: new Date("2025-01-01"),
-  endDate: new Date("2025-01-31"),
-});
+```bash
+COMPOSER_AUDIT_RETENTION_DAYS=90  # Auto-delete after 90 days
 ```
 
-## Token & Spend Tracking
-
-### Set User Quota
-
-```typescript
-import { getDb } from "./src/db/client.js";
-import { orgMemberships } from "./src/db/schema.js";
-
-await getDb().update(orgMemberships)
-  .set({ tokenQuota: 1_000_000 }) // 1M tokens per month
-  .where(eq(orgMemberships.userId, "user-id"));
+```bash
+# Export for compliance
+curl -X GET "/api/audit/export?format=csv&startDate=2025-01-01"
 ```
 
-### Track Usage
+---
 
-```typescript
-import { TokenTracker } from "./src/billing/token-tracker.js";
-
-await TokenTracker.recordUsage(
-  {
-    sessionId: "session-id",
-    modelId: "claude-sonnet-4-5",
-    provider: "anthropic",
-    tokenCount: 1500,
-    estimatedCost: 45, // cents
-  },
-  {
-    orgId: "org-id",
-    userId: "user-id",
-  }
-);
-```
-
-### Usage Summary
-
-```typescript
-const summary = await TokenTracker.getOrgUsageSummary("org-id");
-// {
-//   totalTokens: 5_000_000,
-//   totalSessions: 150,
-//   totalUsers: 10,
-//   topUsers: [...],
-//   modelBreakdown: [...]
-// }
-```
-
-## Alerting
+## Alerting System
 
 ### Alert Types
 
-- `token_quota_warning` - 80% quota reached
-- `token_quota_exceeded` - Quota exceeded
-- `spend_limit_exceeded` - Spend limit exceeded
-- `permission_denial_spike` - Multiple permission denials
-- `pii_detected` - PII found in session
-- `auth_failure_spike` - Multiple failed logins
+| Type | Trigger | Default Severity |
+|------|---------|------------------|
+| `token_quota_warning` | 80% of quota used | medium |
+| `token_quota_exceeded` | 100% of quota used | high |
+| `spend_limit_exceeded` | Spend limit reached | high |
+| `pii_detected` | PII in session content | medium |
+| `permission_denial_spike` | >10 denials in 5 min | high |
+| `auth_failure_spike` | >5 failed logins in 5 min | critical |
 
-### Webhook Notifications
+### Deduplication
 
-Configure in organization settings:
+Alerts are deduplicated using a **time-window + pattern** rule:
 
-```typescript
-await getDb().update(organizations)
-  .set({
-    settings: {
-      alertWebhooks: [
-        "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
-      ]
-    }
-  })
-  .where(eq(organizations.id, "org-id"));
-```
+- Same alert type + same user + same resource = dedupe for 15 minutes
+- Same alert type + same org (no specific user) = dedupe for 5 minutes
 
-## Migration from JSONL Sessions
+This prevents alert storms while ensuring distinct incidents are reported.
 
-### Automatic Migration
-
-The system includes a migration tool to import existing JSONL sessions:
-
-```bash
-bun run migrate:sessions
-```
-
-This will:
-1. Scan `~/.composer/agent/sessions/` for JSONL files
-2. Create a default organization for the user
-3. Import all sessions with their full message history
-4. Preserve metadata (favorites, summaries, model selections)
-
-### Manual Migration
+### Webhook Configuration
 
 ```typescript
-import { migrateJsonlSession } from "./src/db/migrate-sessions.js";
-
-await migrateJsonlSession({
-  filePath: "~/.composer/agent/sessions/abc123.jsonl",
-  userId: "user-id",
-  orgId: "org-id",
-});
+settings: {
+  alertWebhooks: ["https://hooks.slack.com/..."],
+  alertEmailRecipients: ["security@company.com"],
+  alertMinSeverity: "medium"  // Don't send "info" or "low"
+}
 ```
 
-## Backward Compatibility
+---
 
-### Single-User Mode
+## Authentication
 
-Set `COMPOSER_MULTI_TENANT=false` to disable enterprise features and use the original file-based system:
+### Current: JWT + Password
+
+- Passwords hashed with bcrypt (cost factor 12)
+- Access tokens: 24h expiry (configurable)
+- Refresh tokens: 7d expiry
+- API keys: Hashed, prefix-only display
+
+### Planned: SSO/OIDC
+
+SSO integration is on the roadmap. The auth layer is designed for pluggable providers:
+
+```typescript
+// Future API (not yet implemented)
+COMPOSER_AUTH_PROVIDER=oidc
+COMPOSER_OIDC_ISSUER=https://login.company.com
+COMPOSER_OIDC_CLIENT_ID=...
+COMPOSER_OIDC_CLIENT_SECRET=...
+```
+
+Current JWT auth will remain available for service accounts and CLI access.
+
+---
+
+## Migration from Single-User Mode
+
+### File-based Defaults (Single-User)
+
+In single-user mode, Composer stores sessions in `~/.composer/agent/sessions/` as JSONL files. This is the default for CLI installations.
+
+### Enterprise Equivalents
+
+| Single-User | Enterprise |
+|-------------|------------|
+| `~/.composer/agent/sessions/*.jsonl` | `sessions` + `session_messages` tables |
+| `~/.composer/config.json` | `organizations.settings` + `org_memberships` |
+| No auth | JWT + RBAC |
+| No audit | `audit_logs` table |
+
+### Migration Command
 
 ```bash
-export COMPOSER_MULTI_TENANT=false
-composer
+# Migrate all JSONL sessions to database
+bun run migrate:sessions --user-email admin@company.com --org-name "My Company"
 ```
 
-### Hybrid Mode
+This preserves: message history, favorites, summaries, model selections, timestamps.
 
-Use database for enterprise users while keeping JSONL for CLI-only users:
+---
+
+## Environment Variables
+
+### Required for Enterprise
 
 ```bash
-export COMPOSER_HYBRID_MODE=true
-composer --no-auth  # Uses JSONL
-composer web        # Uses database
+COMPOSER_MULTI_TENANT=true
+COMPOSER_DATABASE_URL=postgresql://user:pass@host/composer
+COMPOSER_JWT_SECRET=$(openssl rand -hex 32)
 ```
 
-## Security Best Practices
+### Optional
 
-1. **JWT Secret**: Use a strong random secret (`openssl rand -hex 32`)
-2. **Password Policy**: Enforce minimum 8 chars with uppercase, lowercase, number, special char
-3. **API Keys**: Hash with bcrypt, show prefix only
-4. **Rate Limiting**: Configure per-IP and per-user limits
-5. **Audit Retention**: Set to 90+ days for compliance
-6. **PII Redaction**: Enable by default in production
-7. **Directory Rules**: Use allowlist approach (deny by default)
-8. **HTTPS Only**: Run behind reverse proxy with TLS
+```bash
+COMPOSER_DATABASE_TYPE=postgres          # or 'sqlite' for dev
+COMPOSER_JWT_EXPIRY=24h
+COMPOSER_AUDIT_ENABLED=true
+COMPOSER_AUDIT_RETENTION_DAYS=90
+COMPOSER_PII_ENABLED=true
+COMPOSER_PII_BLOCK_ON_DETECT=false
+```
 
-## Performance Considerations
+---
 
-- **Permission Cache**: 5-minute TTL, clear on role changes
-- **Directory Rules Cache**: 5-minute TTL, clear on rule updates
-- **Audit Log Partitioning**: Consider partitioning by month for large datasets
-- **Database Indexes**: All foreign keys and frequently queried columns indexed
-- **SQLite vs PostgreSQL**: Use PostgreSQL for >10 concurrent users
+## Architecture Details
+
+### Database Schema
+
+Core tables:
+
+- `organizations` - Tenant with settings JSON
+- `users` - Accounts (email, password hash, metadata)
+- `org_memberships` - User ↔ Org ↔ Role relationship, quotas
+- `roles` - System and custom roles
+- `permissions` - Resource:action definitions
+- `role_permissions` - Role ↔ Permission mapping
+- `sessions` - Chat sessions
+- `session_messages` - Individual messages
+- `audit_logs` - Activity records
+- `model_approvals` - Per-org model policies
+- `directory_access_rules` - Path ACLs
+- `api_keys` - Hashed API keys
+- `alerts` - Generated alerts
+
+### Technology Stack
+
+- **ORM**: Drizzle ORM (type-safe, zero runtime overhead)
+- **Database**: PostgreSQL (production), SQLite (dev/testing)
+- **Auth**: JWT (jsonwebtoken), bcrypt
+- **Path matching**: minimatch
+- **PII detection**: Regex with Luhn validation for credit cards
+
+---
 
 ## Troubleshooting
 
-### Permission Denied Errors
+### "Permission denied" errors
 
 ```bash
-# Check user's role and permissions
-curl -X GET http://localhost:8080/api/auth/me \
-  -H "Authorization: Bearer YOUR_TOKEN"
+# Check user's effective permissions
+curl -X GET /api/auth/me -H "Authorization: Bearer $TOKEN"
 
-# View recent audit logs for denials
-curl -X GET http://localhost:8080/api/audit/logs?action=permission.denied \
-  -H "Authorization: Bearer YOUR_TOKEN"
+# Check recent denial events
+curl -X GET "/api/audit/logs?action=permission.denied&limit=10"
 ```
 
-### Quota Issues
+### Quota/spend blocks
 
 ```bash
-# Check current quota
-curl -X GET http://localhost:8080/api/usage/quota \
-  -H "Authorization: Bearer YOUR_TOKEN"
+# Check current usage
+curl -X GET /api/usage/quota
 
-# Reset quota (admin only)
-curl -X POST http://localhost:8080/api/usage/reset \
-  -H "Authorization: Bearer YOUR_TOKEN"
+# Check org-wide summary (admin only)
+curl -X GET /api/usage/summary
 ```
 
-### Database Connection Errors
+### Directory access denied
 
 ```bash
-# Test database connection
-bun run db:check
+# List active rules for debugging
+curl -X GET /api/directory-rules
 
-# Run migrations
-bun run db:migrate
-
-# Verify schema
-bun run db:studio  # Opens Drizzle Studio
+# Check why a specific path was denied (returns matched rule)
+curl -X POST /api/directory-rules/check -d '{"path": "/etc/passwd"}'
 ```
 
-## API Reference
-
-See [API.md](./API.md) for complete endpoint documentation.
+---
 
 ## Support
 
-For issues, questions, or feature requests, please open an issue on GitHub or contact the EvalOps team.
+For enterprise support, contact the EvalOps team or open an issue on GitHub.
