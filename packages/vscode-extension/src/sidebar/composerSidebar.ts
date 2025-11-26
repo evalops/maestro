@@ -1,6 +1,8 @@
+import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
+
 import { buildComposerUrl } from "../lib/actions";
-import { ApiClient, type Message } from "../lib/api-client";
+import { ApiClient, type Message, type Session } from "../lib/api-client";
 import type { ThinkingManager } from "../lib/decorations";
 
 export class ComposerSidebarProvider
@@ -14,6 +16,7 @@ export class ComposerSidebarProvider
 	private _currentSessionId?: string;
 	private _disposables: vscode.Disposable[] = [];
 	private _isProcessing = false;
+	private _creatingSession?: Promise<Session>;
 
 	private _abortController?: AbortController;
 
@@ -42,6 +45,9 @@ export class ComposerSidebarProvider
 
 	public dispose() {
 		this._abortController?.abort();
+		this._abortController = undefined;
+		this._view = undefined;
+		this._isProcessing = false;
 		for (const d of this._disposables) {
 			d.dispose();
 		}
@@ -50,12 +56,15 @@ export class ComposerSidebarProvider
 
 	public clearChat() {
 		this._abortController?.abort();
+		this._abortController = undefined;
+		this._isProcessing = false;
 		this._messages = [];
 		this._currentSessionId = undefined;
 		this._context.workspaceState.update("composer.messages", undefined);
 		this._context.workspaceState.update("composer.sessionId", undefined);
 		if (this._view) {
 			this._view.webview.postMessage({ type: "clear" });
+			this._view.webview.postMessage({ type: "busy", value: false });
 		}
 	}
 
@@ -72,6 +81,12 @@ export class ComposerSidebarProvider
 		};
 
 		webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+
+		this._disposables.push(
+			webviewView.onDidDispose(() => {
+				this.dispose();
+			}),
+		);
 
 		const messageDisposable = webviewView.webview.onDidReceiveMessage(
 			(data) => {
@@ -141,61 +156,46 @@ export class ComposerSidebarProvider
 
 	private async _handleUserMessage(text: string) {
 		if (!this._view) return;
-
-		// Cancel any existing request
-		if (this._abortController) {
-			this._abortController.abort();
+		const trimmed = text?.trim();
+		if (!trimmed) return;
+		if (this._isProcessing) {
+			vscode.window.showWarningMessage(
+				"Composer is still responding. Please wait for it to finish.",
+			);
+			return;
 		}
+
+		this._abortController?.abort();
 		this._abortController = new AbortController();
 		const signal = this._abortController.signal;
-
 		this._isProcessing = true;
+		this._view?.webview.postMessage({ type: "busy", value: true });
 
 		const userMsg: Message = {
 			role: "user",
-			content: text,
+			content: trimmed,
 			timestamp: new Date().toISOString(),
 		};
 		this._messages.push(userMsg);
 		this._context.workspaceState.update("composer.messages", this._messages);
 
-		if (!this._currentSessionId) {
-			try {
-				const session = await this._apiClient.createSession("VS Code Chat");
-				this._currentSessionId = session.id;
-				this._context.workspaceState.update(
-					"composer.sessionId",
-					this._currentSessionId,
-				);
-			} catch (e) {
-				vscode.window.showErrorMessage(
-					"Failed to create session. Is the Composer server running?",
-				);
-				this._view.webview.postMessage({
-					type: "error",
-					value: "Connection failed",
-				});
-				this._isProcessing = false;
-				return;
-			}
-		}
+		const thinkingEditor = vscode.window.activeTextEditor;
+		const thinkingLine = thinkingEditor?.selection.active.line;
 
-		const assistantMsg: Message = {
-			role: "assistant",
-			content: "",
-			timestamp: new Date().toISOString(),
-		};
-		this._messages.push(assistantMsg);
-		// Don't save empty assistant message yet, wait for content or token updates?
-		// Better to save it so we know a message is pending if we reload, but content is empty.
-		this._context.workspaceState.update("composer.messages", this._messages);
-
-		let thinkingLine: number | undefined;
-		if (vscode.window.activeTextEditor) {
-			thinkingLine = vscode.window.activeTextEditor.selection.active.line;
-		}
+		let assistantMsg: Message | undefined;
+		let assistantHasContent = false;
 
 		try {
+			await this._ensureSession();
+
+			assistantMsg = {
+				role: "assistant",
+				content: "",
+				timestamp: new Date().toISOString(),
+			};
+			this._messages.push(assistantMsg);
+			this._context.workspaceState.update("composer.messages", this._messages);
+
 			const config = vscode.workspace.getConfiguration("composer");
 			const model = config.get<string>("model") || "claude-sonnet-4-5";
 
@@ -213,58 +213,52 @@ export class ComposerSidebarProvider
 
 				if (event.type === "text_delta" && event.text) {
 					assistantMsg.content += event.text;
-					this._view.webview.postMessage({
+					assistantHasContent = true;
+					this._view?.webview.postMessage({
 						type: "token",
 						value: event.text,
 					});
-					// Periodically save state? Or just at the end.
-					// Saving on every token is too expensive. We'll save at done.
 				} else if (event.type === "thinking_start") {
-					if (vscode.window.activeTextEditor && thinkingLine !== undefined) {
-						this._thinkingManager.setThinking(
-							vscode.window.activeTextEditor,
-							thinkingLine,
-						);
+					if (thinkingEditor && thinkingLine !== undefined) {
+						this._thinkingManager.setThinking(thinkingEditor, thinkingLine);
 					}
-					this._view.webview.postMessage({ type: "thinking_start" });
+					this._view?.webview.postMessage({ type: "thinking_start" });
 				} else if (event.type === "thinking_end") {
-					if (vscode.window.activeTextEditor && thinkingLine !== undefined) {
-						this._thinkingManager.clearThinking(
-							vscode.window.activeTextEditor,
-							thinkingLine,
-						);
+					if (thinkingEditor && thinkingLine !== undefined) {
+						this._thinkingManager.clearThinking(thinkingEditor, thinkingLine);
 					}
-					this._view.webview.postMessage({ type: "thinking_end" });
+					this._view?.webview.postMessage({ type: "thinking_end" });
+				} else if (event.type === "error" || event.type === "stream_error") {
+					throw new Error(event.message || "Stream error");
 				}
 			}
 
 			if (!signal.aborted) {
-				this._view.webview.postMessage({ type: "done" });
-				// Save final state
 				this._context.workspaceState.update(
 					"composer.messages",
 					this._messages,
 				);
+				this._view?.webview.postMessage({ type: "done" });
+			} else if (!assistantHasContent) {
+				this._removeAssistantMessage(assistantMsg);
 			}
-		} catch (e) {
-			if (signal.aborted) {
-				// Abort is expected
-				return;
-			}
-			console.error(e);
-			this._view.webview.postMessage({
-				type: "error",
-				value: e instanceof Error ? e.message : "Unknown error",
-			});
-			if (vscode.window.activeTextEditor && thinkingLine !== undefined) {
-				this._thinkingManager.clearThinking(
-					vscode.window.activeTextEditor,
-					thinkingLine,
-				);
+		} catch (error) {
+			if (!signal.aborted) {
+				if (!assistantHasContent) {
+					this._removeAssistantMessage(assistantMsg);
+				}
+				const message =
+					error instanceof Error ? error.message : "Unknown error";
+				this._view?.webview.postMessage({ type: "error", value: message });
+				vscode.window.showErrorMessage(message);
 			}
 		} finally {
+			if (thinkingEditor && thinkingLine !== undefined) {
+				this._thinkingManager.clearThinking(thinkingEditor, thinkingLine);
+			}
 			this._isProcessing = false;
 			this._abortController = undefined;
+			this._view?.webview.postMessage({ type: "busy", value: false });
 		}
 	}
 
@@ -273,7 +267,7 @@ export class ComposerSidebarProvider
 
 		const editor = vscode.window.activeTextEditor;
 		if (!editor) {
-			this._view.webview.postMessage({
+			this._view?.webview.postMessage({
 				type: "contextUpdate",
 				data: { hasContext: false },
 			});
@@ -287,7 +281,7 @@ export class ComposerSidebarProvider
 		const filename = document.fileName;
 		const languageId = document.languageId;
 
-		this._view.webview.postMessage({
+		this._view?.webview.postMessage({
 			type: "contextUpdate",
 			data: {
 				hasContext: true,
@@ -298,6 +292,32 @@ export class ComposerSidebarProvider
 				cursorLine: selection.active.line,
 			},
 		});
+	}
+
+	private async _ensureSession() {
+		if (this._currentSessionId) return;
+		if (!this._creatingSession) {
+			this._creatingSession = this._apiClient.createSession("VS Code Chat");
+		}
+		try {
+			const session = await this._creatingSession;
+			this._currentSessionId = session.id;
+			this._context.workspaceState.update(
+				"composer.sessionId",
+				this._currentSessionId,
+			);
+		} finally {
+			this._creatingSession = undefined;
+		}
+	}
+
+	private _removeAssistantMessage(target?: Message) {
+		if (!target) return;
+		const index = this._messages.indexOf(target);
+		if (index !== -1) {
+			this._messages.splice(index, 1);
+			this._context.workspaceState.update("composer.messages", this._messages);
+		}
 	}
 
 	private _getHtmlForWebview(webview: vscode.Webview) {
@@ -312,8 +332,16 @@ export class ComposerSidebarProvider
 		const config = vscode.workspace.getConfiguration("composer");
 		const apiEndpoint =
 			config.get<string>("apiEndpoint") || "http://localhost:8080";
-		let cspConnect = apiEndpoint;
-		if (!cspConnect.startsWith("http")) cspConnect = "http://localhost:8080";
+		let cspConnect = "http://localhost:8080";
+		try {
+			const parsed = new URL(apiEndpoint);
+			cspConnect = parsed.origin;
+		} catch (error) {
+			console.warn(
+				"Invalid composer.apiEndpoint; falling back to localhost.",
+				error,
+			);
+		}
 
 		return /* html */ `<!DOCTYPE html>
 			<html lang="en">
@@ -570,8 +598,26 @@ export class ComposerSidebarProvider
 				<script nonce="${nonce}">
 					const vscode = acquireVsCodeApi();
                     let currentAssistantMessage = null;
-					let currentAssistantContentRaw = "";
-					let thinkingEl = null;
+			let currentAssistantContentRaw = "";
+			let thinkingEl = null;
+			let isBusy = false;
+			let assistantHasContent = false;
+
+					const textarea = document.querySelector('textarea');
+					const sendButton = document.getElementById('send-btn');
+
+					function setBusy(state) {
+						isBusy = state;
+						if (sendButton) {
+							sendButton.disabled = state;
+							sendButton.textContent = state ? 'Working…' : 'Send';
+						}
+						if (textarea) {
+							textarea.disabled = state;
+						}
+					}
+
+					setBusy(false);
 
 					// Configure Markdown
 					if (window.marked && window.hljs) {
@@ -606,17 +652,25 @@ export class ComposerSidebarProvider
 								hideThinking();
 								break;
 							case 'done':
-								currentAssistantMessage = null;
-								currentAssistantContentRaw = "";
+								resetAssistantState();
 								break;
 							case 'error':
+								discardPendingAssistantMessage();
 								showError(message.value);
 								break;
 							case 'history':
 								loadHistory(message.messages);
 								break;
 							case 'clear':
-								document.getElementById('messages').innerHTML = '';
+								const list = document.getElementById('messages');
+								if (list) {
+									list.innerHTML = '';
+								}
+								resetAssistantState();
+								setBusy(false);
+								break;
+							case 'busy':
+								setBusy(Boolean(message.value));
 								break;
                         }
                     });
@@ -656,22 +710,31 @@ export class ComposerSidebarProvider
 
 					function loadHistory(messages) {
 						const container = document.getElementById('messages');
+						if (!container) return;
 						container.innerHTML = '';
 						messages.forEach(msg => {
 							const div = document.createElement('div');
-							div.className = \`message \${msg.role}\`;
-							const avatar = msg.role === 'user' ? 'U' : 'AI';
-							const content = msg.role === 'assistant'
-								? renderMarkdown(msg.content)
-								: msg.content.replace(/</g, '&lt;');
-							div.innerHTML = \`
-								<div class="avatar">\${avatar}</div>
-								<div class="message-content">\${content}</div>
-							\`;
+							div.className = 'message ' + msg.role;
+							const avatar = document.createElement('div');
+							avatar.className = 'avatar';
+							avatar.textContent = msg.role === 'user' ? 'U' : 'AI';
+
+							const content = document.createElement('div');
+							content.className = 'message-content';
+							if (msg.role === 'assistant') {
+								content.innerHTML = renderMarkdown(msg.content || '');
+							} else {
+								content.textContent = msg.content || '';
+							}
+
+							div.appendChild(avatar);
+							div.appendChild(content);
 							container.appendChild(div);
 						});
 						container.scrollTop = container.scrollHeight;
+						resetAssistantState();
 					}
+
 
 					function showThinking() {
 						if (!currentAssistantMessage) createAssistantMessage();
@@ -697,6 +760,20 @@ export class ComposerSidebarProvider
 						}
 					}
 
+					function resetAssistantState() {
+						currentAssistantMessage = null;
+						currentAssistantContentRaw = '';
+						assistantHasContent = false;
+						hideThinking();
+					}
+
+					function discardPendingAssistantMessage() {
+						if (currentAssistantMessage && !assistantHasContent) {
+							currentAssistantMessage.remove();
+						}
+						resetAssistantState();
+					}
+
 					function createAssistantMessage() {
 						const messages = document.getElementById('messages');
 						const div = document.createElement('div');
@@ -707,7 +784,8 @@ export class ComposerSidebarProvider
 						\`;
 						messages.appendChild(div);
 						currentAssistantMessage = div;
-						currentAssistantContentRaw = "";
+						currentAssistantContentRaw = '';
+						assistantHasContent = false;
 						messages.scrollTop = messages.scrollHeight;
 						return div;
 					}
@@ -715,6 +793,7 @@ export class ComposerSidebarProvider
 					function appendToken(text) {
 						if (!currentAssistantMessage) createAssistantMessage();
 						currentAssistantContentRaw += text;
+						assistantHasContent = true;
 
 						const contentDiv = currentAssistantMessage.querySelector('.message-content');
 
@@ -743,55 +822,78 @@ export class ComposerSidebarProvider
 
 					function showError(text) {
 						const messages = document.getElementById('messages');
+						if (!messages) return;
 						const div = document.createElement('div');
 						div.className = 'message assistant';
 						div.style.borderColor = '#ef4444';
-						div.innerHTML = \`
-							<div class="avatar" style="background:#ef4444">!</div>
-							<div class="message-content">\${text}</div>
-						\`;
+
+						const avatar = document.createElement('div');
+						avatar.className = 'avatar';
+						avatar.style.background = '#ef4444';
+						avatar.textContent = '!';
+
+						const content = document.createElement('div');
+						content.className = 'message-content';
+						content.textContent = text || '';
+
+						div.appendChild(avatar);
+						div.appendChild(content);
 						messages.appendChild(div);
 						messages.scrollTop = messages.scrollHeight;
 					}
 
+
 					// Auto-resize textarea
-					const textarea = document.querySelector('textarea');
-					textarea.addEventListener('input', function() {
-						this.style.height = 'auto';
-						this.style.height = (this.scrollHeight) + 'px';
-					});
+					if (textarea) {
+						textarea.addEventListener('input', function() {
+							this.style.height = 'auto';
+							this.style.height = (this.scrollHeight) + 'px';
+						});
+					}
 
 					function sendMessage() {
+						if (!textarea || isBusy) return;
 						const text = textarea.value.trim();
 						if (!text) return;
 
-						// Add user message to UI
 						const messages = document.getElementById('messages');
-						const div = document.createElement('div');
-						div.className = 'message user';
-						div.innerHTML = \`
-							<div class="avatar">U</div>
-							<div class="message-content">\${text.replace(/</g, '&lt;')}</div>
-						\`;
-						messages.appendChild(div);
-						messages.scrollTop = messages.scrollHeight;
+						if (messages) {
+							const div = document.createElement('div');
+							div.className = 'message user';
 
-						// Clear input
+							const avatar = document.createElement('div');
+							avatar.className = 'avatar';
+							avatar.textContent = 'U';
+
+							const content = document.createElement('div');
+							content.className = 'message-content';
+							content.textContent = text;
+
+							div.appendChild(avatar);
+							div.appendChild(content);
+							messages.appendChild(div);
+							messages.scrollTop = messages.scrollHeight;
+						}
+
 						textarea.value = '';
 						textarea.style.height = 'auto';
 
-						// Send to extension
 						vscode.postMessage({ type: 'sendMessage', text });
 					}
 
-                    document.getElementById('send-btn').addEventListener('click', sendMessage);
 
-					textarea.addEventListener('keydown', (e) => {
-						if (e.key === 'Enter' && !e.shiftKey) {
-							e.preventDefault();
-							sendMessage();
-						}
-					});
+					if (sendButton) {
+						sendButton.addEventListener('click', sendMessage);
+					}
+
+					if (textarea) {
+						textarea.addEventListener('keydown', (e) => {
+							if (e.key === 'Enter' && !e.shiftKey) {
+								e.preventDefault();
+								sendMessage();
+							}
+						});
+					}
 				</script>
 			</body>
 			</html>`;
@@ -799,21 +901,5 @@ export class ComposerSidebarProvider
 }
 
 function getNonce() {
-	let text = "";
-	const possible =
-		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-	// Use crypto API if available
-	if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-		const values = new Uint8Array(32);
-		crypto.getRandomValues(values);
-		for (let i = 0; i < 32; i++) {
-			text += possible.charAt(values[i] % possible.length);
-		}
-	} else {
-		// Fallback for environments where crypto is not available (should be rare in modern VS Code)
-		for (let i = 0; i < 32; i++) {
-			text += possible.charAt(Math.floor(Math.random() * possible.length));
-		}
-	}
-	return text;
+	return randomBytes(16).toString("base64");
 }

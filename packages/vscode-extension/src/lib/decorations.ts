@@ -47,6 +47,7 @@ export class ThinkingManager implements vscode.Disposable {
 	}
 
 	public setThinking(editor: vscode.TextEditor, line: number) {
+		if (line < 0) return;
 		const uri = editor.document.uri.toString();
 		const lines = this.thinkingLines.get(uri) || [];
 
@@ -64,7 +65,11 @@ export class ThinkingManager implements vscode.Disposable {
 			const index = lines.indexOf(line);
 			if (index !== -1) {
 				lines.splice(index, 1);
-				this.thinkingLines.set(uri, lines);
+				if (lines.length === 0) {
+					this.thinkingLines.delete(uri);
+				} else {
+					this.thinkingLines.set(uri, lines);
+				}
 			}
 		} else {
 			this.thinkingLines.delete(uri);
@@ -75,21 +80,24 @@ export class ThinkingManager implements vscode.Disposable {
 	private updateDecorations(editor: vscode.TextEditor) {
 		const uri = editor.document.uri.toString();
 		const lines = this.thinkingLines.get(uri) || [];
+		const lineCount = editor.document.lineCount;
+		if (lineCount === 0) {
+			this.thinkingLines.delete(uri);
+			editor.setDecorations(this.decorationType, []);
+			return;
+		}
 
-		const ranges = lines.map((line) => {
-			// Ensure line is within bounds
-			if (line >= editor.document.lineCount) {
-				return new vscode.Range(
-					editor.document.lineCount - 1,
-					0,
-					editor.document.lineCount - 1,
-					0,
-				);
-			}
-			const range = editor.document.lineAt(line).range;
-			return new vscode.Range(range.start, range.end);
-		});
+		const validLines = lines.filter((line) => line >= 0 && line < lineCount);
+		if (validLines.length === 0) {
+			this.thinkingLines.delete(uri);
+			editor.setDecorations(this.decorationType, []);
+			return;
+		}
+		if (validLines.length !== lines.length) {
+			this.thinkingLines.set(uri, validLines);
+		}
 
+		const ranges = validLines.map((line) => editor.document.lineAt(line).range);
 		editor.setDecorations(this.decorationType, ranges);
 	}
 

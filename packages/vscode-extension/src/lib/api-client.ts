@@ -32,6 +32,8 @@ export type Session = ComposerSession;
 export type SessionSummary = ComposerSessionSummary;
 export type ChatRequest = ComposerChatRequest;
 
+const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
+
 async function safeJson(response: Response) {
 	const contentType = response.headers.get("content-type") || "";
 	if (!response.ok) {
@@ -93,6 +95,9 @@ export class ApiClient {
 				if (done) break;
 
 				buffer += decoder.decode(value, { stream: true });
+				if (buffer.length > MAX_SSE_BUFFER) {
+					throw new Error("SSE buffer exceeded maximum size (1MB)");
+				}
 				const lines = buffer.split("\n");
 				buffer = lines.pop() || "";
 
@@ -105,7 +110,12 @@ export class ApiClient {
 							const event = JSON.parse(data) as AgentEvent;
 							yield event;
 						} catch (e) {
-							console.warn("Failed to parse SSE data:", data);
+							yield {
+								type: "stream_error",
+								message:
+									e instanceof Error ? e.message : "Failed to parse SSE event",
+								raw: data,
+							};
 						}
 					}
 				}

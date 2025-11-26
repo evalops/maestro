@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 
 import { buildComposerUrl, getActionLabel } from "../lib/actions";
@@ -5,11 +6,21 @@ import { buildComposerUrl, getActionLabel } from "../lib/actions";
 export class ComposerPanel {
 	private static currentPanel: ComposerPanel | undefined;
 	private readonly disposables: vscode.Disposable[] = [];
+	private readonly apiEndpoint: string;
+	private readonly apiOrigin: string;
+	private readonly statusDisplayTarget: string;
+	private readonly statusCheckUrl: string;
 
 	private constructor(
 		private readonly panel: vscode.WebviewPanel,
 		private readonly extensionUri: vscode.Uri,
 	) {
+		const { endpoint, origin } = ComposerPanel.resolveApiEndpoint();
+		this.apiEndpoint = endpoint;
+		this.apiOrigin = origin;
+		const statusInfo = ComposerPanel.buildStatusInfo(endpoint, origin);
+		this.statusDisplayTarget = statusInfo.display;
+		this.statusCheckUrl = statusInfo.statusUrl;
 		this.panel.webview.html = this.getWebviewContent(this.panel.webview);
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
 		this.panel.webview.onDidReceiveMessage(
@@ -59,10 +70,59 @@ export class ComposerPanel {
 				break;
 			case "openLocal":
 				if (message.url) {
-					vscode.env.openExternal(vscode.Uri.parse(message.url));
+					try {
+						const target = new URL(message.url);
+						if (target.origin === this.apiOrigin) {
+							vscode.env.openExternal(vscode.Uri.parse(target.toString()));
+						} else {
+							vscode.window.showWarningMessage(
+								"Blocked navigation to non-configured endpoint.",
+							);
+						}
+					} catch {
+						vscode.window.showWarningMessage("Invalid URL");
+					}
 				}
 				break;
 		}
+	}
+
+	private static resolveApiEndpoint() {
+		const config = vscode.workspace.getConfiguration("composer");
+		const raw = config.get<string>("apiEndpoint") || "http://localhost:8080";
+		try {
+			const parsed = new URL(raw);
+			let normalizedPath = parsed.pathname;
+			if (normalizedPath.endsWith("/")) {
+				normalizedPath = normalizedPath.slice(0, -1);
+			}
+			const endpoint = `${parsed.origin}${normalizedPath}` || parsed.origin;
+			return { endpoint, origin: parsed.origin };
+		} catch (error) {
+			console.warn(
+				"Invalid composer.apiEndpoint; falling back to localhost.",
+				error,
+			);
+			return {
+				endpoint: "http://localhost:8080",
+				origin: "http://localhost:8080",
+			};
+		}
+	}
+
+	private static buildStatusInfo(endpoint: string, origin: string) {
+		let display = endpoint || origin;
+		if (display.endsWith("/")) {
+			display = display.slice(0, -1);
+		}
+		if (!display) {
+			display = origin;
+		}
+		const statusUrl = `${display}/api/models`;
+		return {
+			display,
+			statusUrl,
+		};
 	}
 
 	private getWebviewContent(webview: vscode.Webview): string {
@@ -74,7 +134,7 @@ export class ComposerPanel {
 			<html lang="en">
 			<head>
 				<meta charset="UTF-8" />
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src http://localhost:*; img-src https: data:; script-src 'nonce-${nonce}' ${cspSource}; style-src 'unsafe-inline';" />
+				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ${this.apiOrigin}; img-src https: data:; script-src 'nonce-${nonce}' ${cspSource}; style-src 'unsafe-inline';" />
 				<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 				<title>Composer Assistant</title>
 				<style>
@@ -256,9 +316,9 @@ export class ComposerPanel {
                                 Open Web UI
                             </button>
                         </div>
-                        <div id="local-placeholder" style="font-size: 13px; color: var(--text-secondary); font-style: italic;">
-                            Server not detected on port 8080. Run <code>npm run web</code> to start.
-                        </div>
+				<div id="local-placeholder" style="font-size: 13px; color: var(--text-secondary); font-style: italic;">
+					Server not detected at ${this.statusDisplayTarget}. Run <code>npm run web</code> to start.
+				</div>
 
                         <div class="server-status">
                             <span id="server-indicator" class="indicator"></span>
@@ -280,6 +340,9 @@ export class ComposerPanel {
 
 				<script nonce="${nonce}">
 					const vscode = acquireVsCodeApi();
+					const API_ENDPOINT = ${JSON.stringify(this.apiEndpoint)};
+					const STATUS_DISPLAY = ${JSON.stringify(this.statusDisplayTarget)};
+					const STATUS_URL = ${JSON.stringify(this.statusCheckUrl)};
 
                     // Button handlers
 					document.querySelectorAll('button[data-action]').forEach((button) => {
@@ -293,48 +356,53 @@ export class ComposerPanel {
                     const btnOpenLocal = document.getElementById('btn-open-local');
                     if (btnOpenLocal) {
                         btnOpenLocal.addEventListener('click', () => {
-                            vscode.postMessage({ type: 'openLocal', url: 'http://localhost:8080' });
+							vscode.postMessage({ type: 'openLocal', url: API_ENDPOINT });
                         });
                     }
 
-                    // Status check
-                    async function checkServer() {
-                        const badge = document.getElementById('server-badge');
-                        const indicator = document.getElementById('server-indicator');
-                        const text = document.getElementById('server-text');
-                        const localActions = document.getElementById('local-actions');
-                        const localPlaceholder = document.getElementById('local-placeholder');
+					// Status check
+					async function checkServer() {
+					const badge = document.getElementById('server-badge');
+					const indicator = document.getElementById('server-indicator');
+					const text = document.getElementById('server-text');
+					const localActions = document.getElementById('local-actions');
+					const localPlaceholder = document.getElementById('local-placeholder');
+					const offlineMessage = 'Server not detected at ' + STATUS_DISPLAY;
 
-                        try {
-                            // Try to fetch models or health endpoint
-                            const controller = new AbortController();
-                            const timeoutId = setTimeout(() => controller.abort(), 1000);
+						try {
+							const controller = new AbortController();
+							const timeoutId = setTimeout(() => controller.abort(), 1000);
 
-                            const res = await fetch('http://localhost:8080/api/models', {
-                                method: 'GET',
-                                signal: controller.signal
-                            });
-                            clearTimeout(timeoutId);
+						const res = await fetch(STATUS_URL, {
+								method: 'GET',
+								signal: controller.signal
+							});
+							clearTimeout(timeoutId);
 
-                            if (res.ok) {
-                                badge.textContent = 'Active';
-                                badge.className = 'status-badge online';
-                                indicator.className = 'indicator active';
-                                text.textContent = 'Server running at localhost:8080';
-                                localActions.style.display = 'grid';
-                                localPlaceholder.style.display = 'none';
-                            } else {
-                                throw new Error('Status not ok');
-                            }
-                        } catch (e) {
-                            badge.textContent = 'Offline';
-                            badge.className = 'status-badge offline';
-                            indicator.className = 'indicator';
-                            text.textContent = 'Server not detected';
-                            localActions.style.display = 'none';
-                            localPlaceholder.style.display = 'block';
-                        }
-                    }
+							if (res.ok) {
+								badge.textContent = 'Active';
+								badge.className = 'status-badge online';
+								indicator.className = 'indicator active';
+							text.textContent = 'Server running at ' + STATUS_DISPLAY;
+								localActions.style.display = 'grid';
+								if (localPlaceholder) {
+									localPlaceholder.style.display = 'none';
+								}
+							} else {
+								throw new Error('Status not ok');
+							}
+						} catch (e) {
+							badge.textContent = 'Offline';
+							badge.className = 'status-badge offline';
+							indicator.className = 'indicator';
+							text.textContent = offlineMessage;
+							localActions.style.display = 'none';
+							if (localPlaceholder) {
+								localPlaceholder.style.display = 'block';
+								localPlaceholder.textContent = offlineMessage + '. Run "npm run web" to start.';
+							}
+						}
+					}
 
                     // Check immediately and then every 5s
                     checkServer();
@@ -346,11 +414,5 @@ export class ComposerPanel {
 }
 
 function getNonce() {
-	let text = "";
-	const possible =
-		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-	for (let i = 0; i < 32; i++) {
-		text += possible.charAt(Math.floor(Math.random() * possible.length));
-	}
-	return text;
+	return randomBytes(16).toString("base64");
 }
