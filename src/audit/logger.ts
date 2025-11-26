@@ -3,13 +3,15 @@
  * Tracks all user actions, tool executions, and security events
  */
 
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { type AuditMetadata, alerts, auditLogs } from "../db/schema.js";
 import { redactCommandLine, redactPii } from "../security/pii-detector.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("audit");
+const ALERT_COOLDOWN_MS = 30 * 1000;
+const alertCooldowns = new Map<string, number>();
 
 // ============================================================================
 // AUDIT LOG TYPES
@@ -155,29 +157,61 @@ async function checkAlertThresholds(entry: AuditLogEntry): Promise<void> {
 	try {
 		const db = getDb();
 
-		// Check for repeated permission denials (potential attack)
-		if (entry.action === AUDIT_ACTIONS.PERMISSION_DENIED) {
-			const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-			const recentDenials = await db.query.auditLogs.findMany({
-				where: and(
-					eq(auditLogs.userId, entry.userId),
-					eq(auditLogs.action, AUDIT_ACTIONS.PERMISSION_DENIED),
-					gte(auditLogs.createdAt, fiveMinutesAgo),
-				),
-			});
+		const shouldThrottle = (key: string): boolean => {
+			const now = Date.now();
+			const last = alertCooldowns.get(key) || 0;
+			if (now - last < ALERT_COOLDOWN_MS) {
+				return true;
+			}
+			alertCooldowns.set(key, now);
+			return false;
+		};
 
-			if (recentDenials.length >= 5) {
-				await createAlert({
+		const countRecentActions = async (params: {
+			orgId: string;
+			userId: string;
+			action: string;
+			since: Date;
+		}): Promise<number> => {
+			const [result] = await db
+				.select({ count: sql<number>`count(*)` })
+				.from(auditLogs)
+				.where(
+					and(
+						eq(auditLogs.orgId, params.orgId),
+						eq(auditLogs.userId, params.userId),
+						eq(auditLogs.action, params.action),
+						gte(auditLogs.createdAt, params.since),
+					),
+				);
+			return Number(result?.count || 0);
+		};
+
+		// Check for repeated permission denials (potential attack)
+		if (entry.action === AUDIT_ACTIONS.PERMISSION_DENIED && entry.userId) {
+			const throttleKey = `denial:${entry.orgId}:${entry.userId}`;
+			if (!shouldThrottle(throttleKey)) {
+				const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+				const recentDenials = await countRecentActions({
 					orgId: entry.orgId,
 					userId: entry.userId,
-					severity: "high",
-					type: "permission_denial_spike",
-					message: `User has been denied permission ${recentDenials.length} times in the last 5 minutes`,
-					metadata: {
-						threshold: 5,
-						currentValue: recentDenials.length,
-					},
+					action: AUDIT_ACTIONS.PERMISSION_DENIED,
+					since: fiveMinutesAgo,
 				});
+
+				if (recentDenials >= 5) {
+					await createAlert({
+						orgId: entry.orgId,
+						userId: entry.userId,
+						severity: "high",
+						type: "permission_denial_spike",
+						message: `User has been denied permission ${recentDenials} times in the last 5 minutes`,
+						metadata: {
+							threshold: 5,
+							currentValue: recentDenials,
+						},
+					});
+				}
 			}
 		}
 
@@ -196,29 +230,31 @@ async function checkAlertThresholds(entry: AuditLogEntry): Promise<void> {
 		}
 
 		// Check for failed auth attempts
-		if (entry.action === AUDIT_ACTIONS.AUTH_FAILED) {
-			const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-			const recentFailures = await db.query.auditLogs.findMany({
-				where: and(
-					eq(auditLogs.userId, entry.userId),
-					eq(auditLogs.action, AUDIT_ACTIONS.AUTH_FAILED),
-					gte(auditLogs.createdAt, tenMinutesAgo),
-				),
-			});
-
-			if (recentFailures.length >= 3) {
-				await createAlert({
+		if (entry.action === AUDIT_ACTIONS.AUTH_FAILED && entry.userId) {
+			const throttleKey = `auth_fail:${entry.orgId}:${entry.userId}`;
+			if (!shouldThrottle(throttleKey)) {
+				const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+				const recentFailures = await countRecentActions({
 					orgId: entry.orgId,
 					userId: entry.userId,
-					severity: "critical",
-					type: "auth_failure_spike",
-					message: `Multiple failed authentication attempts detected (${recentFailures.length} in 10 minutes)`,
-					metadata: {
-						threshold: 3,
-						currentValue: recentFailures.length,
-						actionRequired: true,
-					},
+					action: AUDIT_ACTIONS.AUTH_FAILED,
+					since: tenMinutesAgo,
 				});
+
+				if (recentFailures >= 3) {
+					await createAlert({
+						orgId: entry.orgId,
+						userId: entry.userId,
+						severity: "critical",
+						type: "auth_failure_spike",
+						message: `Multiple failed authentication attempts detected (${recentFailures} in 10 minutes)`,
+						metadata: {
+							threshold: 3,
+							currentValue: recentFailures,
+							actionRequired: true,
+						},
+					});
+				}
 			}
 		}
 	} catch (error) {
@@ -258,7 +294,7 @@ export async function logAudit(entry: AuditLogEntry): Promise<void> {
 			durationMs: entry.durationMs,
 		});
 
-		await checkAlertThresholds(entry);
+		void checkAlertThresholds(entry);
 	} catch (error) {
 		logger.error(
 			"Failed to write audit log",

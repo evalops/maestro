@@ -103,10 +103,29 @@ export async function testConnection(): Promise<boolean> {
 }
 
 // Graceful shutdown
-process.on("SIGINT", () => {
-	closeDb();
+let shuttingDown = false;
+async function handleShutdown(signal: NodeJS.Signals): Promise<void> {
+	if (shuttingDown) {
+		return;
+	}
+	shuttingDown = true;
+	logger.info(`Received ${signal}, shutting down database connections`);
+	try {
+		await closeDb();
+	} catch (error) {
+		logger.error(
+			"Error while closing database connection",
+			error instanceof Error ? error : undefined,
+		);
+	} finally {
+		process.exit(0);
+	}
+}
+
+process.once("SIGINT", () => {
+	void handleShutdown("SIGINT");
 });
 
-process.on("SIGTERM", () => {
-	closeDb();
+process.once("SIGTERM", () => {
+	void handleShutdown("SIGTERM");
 });

@@ -123,54 +123,56 @@ async function handleRegister(
 			return;
 		}
 
-		// Create user
 		const passwordHash = await hashPassword(password);
-		const [user] = await db
-			.insert(users)
-			.values({
-				email,
-				name,
-				passwordHash,
-			})
-			.returning();
-
-		// Create organization
 		const slug = (orgName || `${name}-org`)
 			.toLowerCase()
 			.replace(/[^a-z0-9-]/g, "-");
 
-		const [org] = await db
-			.insert(organizations)
-			.values({
-				name: orgName || `${name}'s Organization`,
-				slug,
-			})
-			.returning();
+		const { user, org, ownerRole } = await db.transaction(async (tx) => {
+			const [createdUser] = await tx
+				.insert(users)
+				.values({
+					email,
+					name,
+					passwordHash,
+				})
+				.returning();
 
-		// Get owner role
-		const ownerRole = await db.query.roles.findFirst({
-			where: and(eq(roles.name, "org_owner"), eq(roles.isSystem, true)),
+			const [createdOrg] = await tx
+				.insert(organizations)
+				.values({
+					name: orgName || `${name}'s Organization`,
+					slug,
+				})
+				.returning();
+
+			const systemOwnerRole = await tx.query.roles.findFirst({
+				where: and(eq(roles.name, "org_owner"), eq(roles.isSystem, true)),
+			});
+
+			if (!systemOwnerRole) {
+				throw new Error("System roles not initialized");
+			}
+
+			await tx.insert(orgMemberships).values({
+				userId: createdUser.id,
+				orgId: createdOrg.id,
+				roleId: systemOwnerRole.id,
+			});
+
+			await tx
+				.update(users)
+				.set({ defaultOrgId: createdOrg.id })
+				.where(eq(users.id, createdUser.id));
+
+			await seedDefaultDirectoryRules(createdOrg.id, tx);
+
+			return {
+				user: createdUser,
+				org: createdOrg,
+				ownerRole: systemOwnerRole,
+			};
 		});
-
-		if (!ownerRole) {
-			throw new Error("System roles not initialized");
-		}
-
-		// Create membership
-		await db.insert(orgMemberships).values({
-			userId: user.id,
-			orgId: org.id,
-			roleId: ownerRole.id,
-		});
-
-		// Update user's default org
-		await db
-			.update(users)
-			.set({ defaultOrgId: org.id })
-			.where(eq(users.id, user.id));
-
-		// Seed default directory access rules for the new org
-		await seedDefaultDirectoryRules(org.id);
 
 		// Generate tokens
 		const tokens = generateTokenPair({

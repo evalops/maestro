@@ -3,10 +3,11 @@
  * Implements allowlist/denylist with wildcard patterns
  */
 
+import { realpath } from "node:fs/promises";
 import { normalize, resolve } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { minimatch } from "minimatch";
-import { getDb } from "../db/client.js";
+import { type DbClient, getDb } from "../db/client.js";
 import { directoryAccessRules } from "../db/schema.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -99,6 +100,14 @@ async function getRules(orgId: string): Promise<AccessRule[]> {
 	return mappedRules;
 }
 
+async function normalizePathSafely(filePath: string): Promise<string> {
+	try {
+		return normalize(await realpath(filePath));
+	} catch {
+		return normalize(resolve(filePath));
+	}
+}
+
 // ============================================================================
 // PUBLIC FUNCTIONS
 // ============================================================================
@@ -111,7 +120,7 @@ export async function checkDirectoryAccess(
 	filePath: string,
 ): Promise<{ allowed: boolean; reason?: string; matchedRule?: string }> {
 	try {
-		const normalizedPath = normalize(resolve(filePath));
+		const normalizedPath = await normalizePathSafely(filePath);
 		const rules = await getRules(context.orgId);
 
 		// If no rules are defined, deny by default for security
@@ -315,8 +324,20 @@ export async function deleteDirectoryRule(
 /**
  * Seed default rules for a new organization
  */
-export async function seedDefaultDirectoryRules(orgId: string): Promise<void> {
+type DirectoryRuleInsertClient = Pick<DbClient, "insert">;
+
+export async function seedDefaultDirectoryRules(
+	orgId: string,
+	dbClient: DirectoryRuleInsertClient = getDb(),
+): Promise<void> {
 	const homeDir = process.env.HOME || process.env.USERPROFILE;
+	if (!homeDir) {
+		logger.warn(
+			"HOME environment variable not set; skipping home directory allow rule",
+			{ orgId },
+		);
+	}
+
 	const defaultRules: Array<Omit<CreateDirectoryRuleInput, "orgId">> = [
 		...(homeDir
 			? [
@@ -367,7 +388,13 @@ export async function seedDefaultDirectoryRules(orgId: string): Promise<void> {
 	];
 
 	for (const rule of defaultRules) {
-		await createDirectoryRule({ ...rule, orgId });
+		await dbClient
+			.insert(directoryAccessRules)
+			.values({
+				orgId,
+				...rule,
+			})
+			.onConflictDoNothing();
 	}
 
 	logger.info("Seeded default directory access rules", { orgId });

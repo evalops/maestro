@@ -155,16 +155,82 @@ async function safeJson(response: Response) {
 	return response.json();
 }
 
+type TokenKey = "access" | "refresh";
+
+class EphemeralTokenStorage {
+	private memoryStore = new Map<TokenKey, string>();
+	private readonly keys: Record<TokenKey, string> = {
+		access: "composer_access_token",
+		refresh: "composer_refresh_token",
+	};
+
+	private get browserStorage(): Storage | null {
+		if (typeof window === "undefined") {
+			return null;
+		}
+		try {
+			return window.sessionStorage;
+		} catch (error) {
+			globalThis.console?.warn?.(
+				"Session storage unavailable, falling back to in-memory token store",
+				error,
+			);
+			return null;
+		}
+	}
+
+	get(key: TokenKey): string | null {
+		const storage = this.browserStorage;
+		if (storage) {
+			try {
+				return storage.getItem(this.keys[key]);
+			} catch {
+				// ignore and fall back to memory
+			}
+		}
+		return this.memoryStore.get(key) ?? null;
+	}
+
+	set(key: TokenKey, value: string): void {
+		const storage = this.browserStorage;
+		if (storage) {
+			try {
+				storage.setItem(this.keys[key], value);
+				return;
+			} catch {
+				// ignore and fall back to memory
+			}
+		}
+		this.memoryStore.set(key, value);
+	}
+
+	remove(key: TokenKey): void {
+		const storage = this.browserStorage;
+		if (storage) {
+			try {
+				storage.removeItem(this.keys[key]);
+			} catch {
+				// ignore
+			}
+		}
+		this.memoryStore.delete(key);
+	}
+
+	clear(): void {
+		this.remove("access");
+		this.remove("refresh");
+	}
+}
+
+const tokenStorage = new EphemeralTokenStorage();
+
 export class EnterpriseApiClient {
 	private baseUrl: string;
 	private accessToken: string | null = null;
 
 	constructor(baseUrl?: string) {
 		this.baseUrl = (baseUrl || "http://localhost:8080").replace(/\/$/, "");
-		// Try to restore token from localStorage
-		if (typeof window !== "undefined") {
-			this.accessToken = localStorage.getItem("composer_access_token");
-		}
+		this.accessToken = tokenStorage.get("access");
 	}
 
 	private get headers(): Record<string, string> {
@@ -217,10 +283,7 @@ export class EnterpriseApiClient {
 
 	logout(): void {
 		this.accessToken = null;
-		if (typeof window !== "undefined") {
-			localStorage.removeItem("composer_access_token");
-			localStorage.removeItem("composer_refresh_token");
-		}
+		tokenStorage.clear();
 	}
 
 	isAuthenticated(): boolean {
@@ -229,10 +292,8 @@ export class EnterpriseApiClient {
 
 	private setTokens(accessToken: string, refreshToken: string): void {
 		this.accessToken = accessToken;
-		if (typeof window !== "undefined") {
-			localStorage.setItem("composer_access_token", accessToken);
-			localStorage.setItem("composer_refresh_token", refreshToken);
-		}
+		tokenStorage.set("access", accessToken);
+		tokenStorage.set("refresh", refreshToken);
 	}
 
 	// =========================================================================

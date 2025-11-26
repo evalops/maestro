@@ -112,48 +112,47 @@ export async function recordTokenUsage(
 	try {
 		const db = getDb();
 
-		// Update session token count
-		await db
-			.update(sessions)
-			.set({
-				tokenCount: sql`${sessions.tokenCount} + ${usage.tokenCount}`,
-				updatedAt: new Date(),
-			})
-			.where(eq(sessions.id, usage.sessionId));
+		await db.transaction(async (tx) => {
+			await tx
+				.update(sessions)
+				.set({
+					tokenCount: sql`${sessions.tokenCount} + ${usage.tokenCount}`,
+					updatedAt: new Date(),
+				})
+				.where(eq(sessions.id, usage.sessionId));
 
-		// Update user's quota usage
-		await db
-			.update(orgMemberships)
-			.set({
-				tokenUsed: sql`${orgMemberships.tokenUsed} + ${usage.tokenCount}`,
-			})
-			.where(
-				and(
-					eq(orgMemberships.userId, context.userId),
-					eq(orgMemberships.orgId, context.orgId),
+			await tx
+				.update(orgMemberships)
+				.set({
+					tokenUsed: sql`${orgMemberships.tokenUsed} + ${usage.tokenCount}`,
+				})
+				.where(
+					and(
+						eq(orgMemberships.userId, context.userId),
+						eq(orgMemberships.orgId, context.orgId),
+					),
+				);
+
+			const modelApproval = await tx.query.modelApprovals.findFirst({
+				where: and(
+					eq(modelApprovals.orgId, context.orgId),
+					eq(modelApprovals.modelId, usage.modelId),
 				),
-			);
+			});
 
-		// Update model approval usage
-		const modelApproval = await db.query.modelApprovals.findFirst({
-			where: and(
-				eq(modelApprovals.orgId, context.orgId),
-				eq(modelApprovals.modelId, usage.modelId),
-			),
-		});
-
-		if (modelApproval) {
-			const updateData: Record<string, unknown> = {
-				tokenUsed: sql`${modelApprovals.tokenUsed} + ${usage.tokenCount}`,
-			};
-			if (usage.estimatedCost) {
-				updateData.spendUsed = sql`${modelApprovals.spendUsed} + ${usage.estimatedCost}`;
+			if (modelApproval) {
+				const updateData: Record<string, unknown> = {
+					tokenUsed: sql`${modelApprovals.tokenUsed} + ${usage.tokenCount}`,
+				};
+				if (usage.estimatedCost) {
+					updateData.spendUsed = sql`${modelApprovals.spendUsed} + ${usage.estimatedCost}`;
+				}
+				await tx
+					.update(modelApprovals)
+					.set(updateData)
+					.where(eq(modelApprovals.id, modelApproval.id));
 			}
-			await db
-				.update(modelApprovals)
-				.set(updateData)
-				.where(eq(modelApprovals.id, modelApproval.id));
-		}
+		});
 
 		// Check quota limits and trigger alerts if needed
 		await checkQuotaLimits(context.userId, context.orgId, context);

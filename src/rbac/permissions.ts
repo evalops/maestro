@@ -30,6 +30,7 @@ export const RESOURCES = {
 	API_KEYS: "api_keys",
 	ROLES: "roles",
 	DIRECTORIES: "directories",
+	ANY: "*",
 } as const;
 
 export const ACTIONS = {
@@ -57,7 +58,7 @@ export const SYSTEM_ROLES = {
 	ORG_OWNER: {
 		name: "org_owner",
 		description: "Organization owner with full access",
-		permissions: [{ resource: RESOURCES.ORGS, action: ACTIONS.WILDCARD }],
+		permissions: [{ resource: RESOURCES.ANY, action: ACTIONS.WILDCARD }],
 	},
 	ORG_ADMIN: {
 		name: "org_admin",
@@ -166,14 +167,12 @@ export async function checkPermission(
 
 		const hasPermission = membership.role.permissions.some((rp) => {
 			const perm = rp.permission;
-			// Resource must match (or be "orgs" which grants org-wide access)
 			const resourceMatches =
-				perm.resource === resource || perm.resource === "orgs";
-			// Action must match, or be wildcard, or be admin for the SAME resource
+				perm.resource === resource || perm.resource === RESOURCES.ANY;
 			const actionMatches =
 				perm.action === action ||
 				perm.action === ACTIONS.WILDCARD ||
-				(perm.action === ACTIONS.ADMIN && perm.resource === resource);
+				(perm.action === ACTIONS.ADMIN && resourceMatches);
 			return resourceMatches && actionMatches;
 		});
 

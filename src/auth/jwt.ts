@@ -3,26 +3,30 @@
  * Handles token generation, validation, and refresh
  */
 
+import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth");
 
-const DEFAULT_SECRET = "composer-default-secret-change-in-production";
-const JWT_SECRET = process.env.COMPOSER_JWT_SECRET || DEFAULT_SECRET;
-const JWT_EXPIRY = process.env.COMPOSER_JWT_EXPIRY || "24h";
-const REFRESH_TOKEN_EXPIRY = "7d";
+const envSecret = process.env.COMPOSER_JWT_SECRET || process.env.JWT_SECRET;
+let JWT_SECRET: string;
 
-if (JWT_SECRET === DEFAULT_SECRET) {
-	if (process.env.NODE_ENV === "production") {
-		throw new Error(
-			"COMPOSER_JWT_SECRET must be set in production environment",
-		);
-	}
+if (envSecret && envSecret.trim().length >= 32) {
+	JWT_SECRET = envSecret;
+} else if (process.env.NODE_ENV === "test") {
+	JWT_SECRET = crypto.randomBytes(32).toString("hex");
 	logger.warn(
-		"Using default JWT secret! Set COMPOSER_JWT_SECRET in production",
+		"Generated ephemeral JWT secret for tests; set COMPOSER_JWT_SECRET for predictable behavior",
+	);
+} else {
+	throw new Error(
+		"COMPOSER_JWT_SECRET must be set and at least 32 characters long",
 	);
 }
+
+const JWT_EXPIRY = process.env.COMPOSER_JWT_EXPIRY || "24h";
+const REFRESH_TOKEN_EXPIRY = "7d";
 
 export interface JwtPayload {
 	userId: string;

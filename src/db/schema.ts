@@ -314,11 +314,13 @@ export const auditLogs = pgTable(
 	"audit_logs",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
-		orgId: uuid("org_id").references(() => organizations.id, {
-			onDelete: "set null",
-		}),
+		orgId: uuid("org_id")
+			.notNull()
+			.references(() => organizations.id, {
+				onDelete: "restrict",
+			}),
 		userId: uuid("user_id").references(() => users.id, {
-			onDelete: "set null",
+			onDelete: "restrict",
 		}),
 		sessionId: uuid("session_id").references(() => sessions.id, {
 			onDelete: "set null",

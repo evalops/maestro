@@ -18,6 +18,7 @@ describe("RBAC Permissions", () => {
 			expect(RESOURCES.API_KEYS).toBe("api_keys");
 			expect(RESOURCES.ROLES).toBe("roles");
 			expect(RESOURCES.DIRECTORIES).toBe("directories");
+			expect(RESOURCES.ANY).toBe("*");
 		});
 	});
 
@@ -57,10 +58,10 @@ describe("RBAC Permissions", () => {
 			expect(hasOnlyRead).toBe(true);
 		});
 
-		it("org_owner has wildcard permission on orgs", () => {
+		it("org_owner has wildcard permission across resources", () => {
 			const ownerPerms = SYSTEM_ROLES.ORG_OWNER.permissions;
 			const hasOrgWildcard = ownerPerms.some(
-				(p) => p.resource === RESOURCES.ORGS && p.action === ACTIONS.WILDCARD,
+				(p) => p.resource === RESOURCES.ANY && p.action === ACTIONS.WILDCARD,
 			);
 			expect(hasOrgWildcard).toBe(true);
 		});
