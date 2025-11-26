@@ -31,9 +31,9 @@ export class QuotaView {
 
 	constructor(private readonly options: QuotaViewOptions) {}
 
-	handleQuotaCommand(
+	async handleQuotaCommand(
 		context: CommandExecutionContext<Record<string, unknown>>,
-	): void {
+	): Promise<void> {
 		const tokens = context.argumentText
 			.trim()
 			.split(/\s+/)
@@ -46,19 +46,19 @@ export class QuotaView {
 				this.renderHelp();
 				return;
 			case "detailed":
-				this.handleDetailedCommand();
+				await this.handleDetailedCommand();
 				return;
 			case "models":
-				this.handleModelsCommand();
+				await this.handleModelsCommand();
 				return;
 			case "alerts":
-				this.handleAlertsCommand();
+				await this.handleAlertsCommand();
 				return;
 			case "limit":
 				this.handleLimitCommand(remainder);
 				return;
 			default:
-				this.handleStatusCommand();
+				await this.handleStatusCommand();
 		}
 	}
 
@@ -76,13 +76,13 @@ export class QuotaView {
 		);
 	}
 
-	private handleStatusCommand(): void {
+	private async handleStatusCommand(): Promise<void> {
 		if (!isDatabaseConfigured()) {
 			this.renderNonEnterpriseStatus();
 			return;
 		}
 
-		this.handleEnterpriseStatusCommand();
+		await this.handleEnterpriseStatusCommand();
 	}
 
 	private async handleEnterpriseStatusCommand(): Promise<void> {
@@ -178,7 +178,7 @@ export class QuotaView {
 	}): void {
 		const lines = [badge("[Token Quota Status]", undefined, "info"), ""];
 
-		if (quota.tokenQuota === null) {
+		if (quota.tokenQuota === null || quota.tokenQuota === 0) {
 			lines.push(badge("Token Limit", "Unlimited", "success"));
 			lines.push(
 				`  ${badge("Used", this.formatTokens(quota.tokenUsed), "info")}`,
@@ -249,7 +249,7 @@ export class QuotaView {
 				`  ${badge("Remaining", quota.tokenQuota ? this.formatTokens(quota.tokenRemaining) : "∞", "info")}`,
 			);
 
-			if (quota.tokenQuota) {
+			if (quota.tokenQuota && quota.tokenQuota > 0) {
 				const percent = (quota.tokenUsed / quota.tokenQuota) * 100;
 				lines.push(
 					`  ${contextualBadge("Usage", percent, { warn: 80, danger: 100 })}`,

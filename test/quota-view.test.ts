@@ -395,6 +395,40 @@ describe("QuotaView", () => {
 			process.env.COMPOSER_ENTERPRISE_TOKEN = undefined;
 		});
 
+		it("handles zero quota as unlimited (prevents division by zero)", async () => {
+			process.env.COMPOSER_ENTERPRISE_TOKEN = "test-token";
+			mockVerifyToken.mockReturnValue({
+				userId: "user-123",
+				orgId: "org-456",
+				email: "test@example.com",
+				roleId: "role-789",
+				type: "access",
+			});
+			mockGetUsageQuota.mockResolvedValue({
+				userId: "user-123",
+				orgId: "org-456",
+				tokenQuota: 0,
+				tokenUsed: 1000,
+				tokenRemaining: 0,
+				spendLimit: null,
+				spendUsed: 0,
+				spendRemaining: Number.POSITIVE_INFINITY,
+				quotaResetAt: null,
+			});
+
+			const { view, container } = createQuotaView();
+
+			view.handleQuotaCommand(createContext("/quota"));
+
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			const rendered = getRenderedText(container);
+			expect(rendered).toContain("Unlimited");
+			expect(rendered).not.toContain("Infinity");
+
+			process.env.COMPOSER_ENTERPRISE_TOKEN = undefined;
+		});
+
 		it("shows error for enterprise commands without database", () => {
 			mockIsDatabaseConfigured.mockReturnValue(false);
 			const { view, showError } = createQuotaView();
