@@ -11,7 +11,13 @@
  * - Edge cases and error conditions
  */
 
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -432,7 +438,7 @@ describe("fs utilities", () => {
 			const filePath = join(testDir, "atomic2.txt");
 			writeTextFileAtomic(filePath, "content");
 
-			const files = require("node:fs").readdirSync(testDir);
+			const files = readdirSync(testDir);
 			const tempFiles = files.filter((f: string) => f.includes(".tmp."));
 			expect(tempFiles).toHaveLength(0);
 		});

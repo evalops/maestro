@@ -284,6 +284,10 @@ export interface AgentState {
 		id: string; // UUID
 		orgId: string; // UUID
 	};
+	session?: {
+		id: string;
+		startedAt: Date;
+	};
 }
 
 export type AgentEvent =
@@ -362,6 +366,10 @@ export interface AgentRunConfig {
 	user?: {
 		id: string; // UUID
 		orgId: string; // UUID
+	};
+	session?: {
+		id: string;
+		startedAt: Date;
 	};
 }
 

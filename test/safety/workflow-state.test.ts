@@ -160,7 +160,7 @@ describe("WorkflowStateTracker", () => {
 });
 
 describe("PII invariant workflow story", () => {
-	it("requires approval until redaction occurs", () => {
+	it("requires approval until redaction occurs", async () => {
 		const tracker = new WorkflowStateTracker();
 		const firewall = defaultActionFirewall;
 
@@ -174,7 +174,7 @@ describe("PII invariant workflow story", () => {
 			isError: false,
 		});
 
-		const requireVerdict = firewall.evaluate({
+		const requireVerdict = await firewall.evaluate({
 			toolName: "handoff_to_human",
 			args: {},
 			metadata: { workflowState: tracker.snapshot() },
@@ -194,7 +194,7 @@ describe("PII invariant workflow story", () => {
 			isError: false,
 		});
 
-		const allowVerdict = firewall.evaluate({
+		const allowVerdict = await firewall.evaluate({
 			toolName: "handoff_to_human",
 			args: {},
 			metadata: { workflowState: tracker.snapshot() },

@@ -4,6 +4,7 @@ import type { WebServerContext } from "./app-context.js";
 import { handleChat } from "./handlers/chat.js";
 import { handleConfig } from "./handlers/config.js";
 import { handleModel, handleModels } from "./handlers/models.js";
+import { handlePolicyValidate } from "./handlers/policy.js";
 import { handleSessions } from "./handlers/sessions.js";
 import { handleStatus } from "./handlers/status.js";
 import { handleUsage } from "./handlers/usage.js";
@@ -132,6 +133,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/api/sessions/:id",
 			handler: (req, res, params) =>
 				handleSessions(req, res, params, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/policy/validate",
+			handler: (req, res) => handlePolicyValidate(req, res, corsHeaders),
 		},
 	];
 }

@@ -11,6 +11,7 @@ import {
 } from "jsonc-parser";
 import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
+import { PolicyError, checkModelPolicy } from "../safety/policy.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
@@ -724,7 +725,18 @@ export function resolveModel(
 	const match = getRegisteredModels().find(
 		(entry) => entry.provider === provider && entry.id === modelId,
 	);
-	return match ?? null;
+	if (!match) return null;
+
+	// Check enterprise policy
+	const policyResult = checkModelPolicy(modelId);
+	if (!policyResult.allowed) {
+		// Throw policy error instead of returning null to distinguish from "not found"
+		throw new PolicyError(
+			`Model "${modelId}" is blocked by enterprise policy: ${policyResult.reason}`,
+		);
+	}
+
+	return match;
 }
 
 export function getSupportedProviders(): string[] {

@@ -244,6 +244,22 @@ export async function canConsumeTokens(
 }
 
 /**
+ * Get token usage for a specific session
+ */
+export async function getSessionTokenCount(
+	sessionId: string,
+): Promise<number | null> {
+	const db = getDb();
+	const session = await db.query.sessions.findFirst({
+		where: eq(sessions.id, sessionId),
+		columns: {
+			tokenCount: true,
+		},
+	});
+	return session?.tokenCount ?? null;
+}
+
+/**
  * Reset quota for a user (e.g., monthly reset)
  */
 export async function resetUserQuota(
@@ -436,6 +452,7 @@ export const TokenTracker = {
 	recordUsage: recordTokenUsage,
 	getQuota: getUsageQuota,
 	canConsumeTokens,
+	getSessionTokenCount,
 	resetQuota: resetUserQuota,
 	getOrgUsageSummary,
 	estimateCost,

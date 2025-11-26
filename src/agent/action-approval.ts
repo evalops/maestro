@@ -42,6 +42,10 @@ export interface ActionApprovalContext {
 		id: string; // UUID
 		orgId: string; // UUID
 	};
+	session?: {
+		id: string;
+		startedAt: Date;
+	};
 }
 
 export type ActionFirewallVerdict =

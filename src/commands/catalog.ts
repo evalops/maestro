@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -31,7 +31,6 @@ function readJsonIfExists(path: string): unknown | null {
 function listCommandFiles(dir: string): string[] {
 	if (!existsSync(dir)) return [];
 	try {
-		const { readdirSync } = require("node:fs");
 		return readdirSync(dir)
 			.filter((f: string) => f.endsWith(".json"))
 			.map((f: string) => join(dir, f));

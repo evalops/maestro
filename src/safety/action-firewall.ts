@@ -10,8 +10,8 @@ import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 export interface ActionFirewallRule {
 	id: string;
 	description: string;
-	match: (context: ActionApprovalContext) => boolean;
-	reason?: (context: ActionApprovalContext) => string;
+	match: (context: ActionApprovalContext) => boolean | Promise<boolean>;
+	reason?: (context: ActionApprovalContext) => string | Promise<string>;
 }
 
 const rmRfPattern =
@@ -119,14 +119,15 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
 		id: "enterprise-policy",
 		description: "Enforce enterprise policies on tools and dependencies",
-		match: (ctx) => {
-			const result = checkPolicy(ctx);
+		match: async (ctx) => {
+			const result = await checkPolicy(ctx);
 			// Cache result on context to avoid re-evaluating in reason()
 			(ctx as any)._policyCheckResult = result;
 			return !result.allowed;
 		},
-		reason: (ctx) => {
-			const result = (ctx as any)._policyCheckResult ?? checkPolicy(ctx);
+		reason: async (ctx) => {
+			const result =
+				(ctx as any)._policyCheckResult ?? (await checkPolicy(ctx));
 			return result.reason ?? "Action blocked by enterprise policy";
 		},
 	},
@@ -257,14 +258,16 @@ export class ActionFirewall {
 		private readonly rules: ActionFirewallRule[] = defaultFirewallRules,
 	) {}
 
-	evaluate(context: ActionApprovalContext): ActionFirewallVerdict {
+	async evaluate(
+		context: ActionApprovalContext,
+	): Promise<ActionFirewallVerdict> {
 		for (const rule of this.rules) {
-			if (rule.match(context)) {
+			if (await rule.match(context)) {
 				return {
 					action: "require_approval",
 					ruleId: rule.id,
 					reason:
-						rule.reason?.(context) ??
+						(await rule.reason?.(context)) ??
 						`Action matched high-risk rule: ${rule.description}`,
 				};
 			}

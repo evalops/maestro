@@ -1,9 +1,12 @@
+import { TokenTracker } from "../billing/token-tracker.js";
+import { isDatabaseConfigured } from "../db/client.js";
 import { envApiKeyMap } from "../providers/api-keys.js";
 import type { AuthCredential } from "../providers/auth.js";
 import {
 	HUMAN_EGRESS_PII_RULE_ID,
 	defaultActionFirewall,
 } from "../safety/action-firewall.js";
+import { checkSessionLimits } from "../safety/policy.js";
 import {
 	WorkflowStateError,
 	WorkflowStateTracker,
@@ -71,6 +74,44 @@ function resolveEnvCredential(provider: string): AuthCredential | undefined {
 		};
 	}
 	return undefined;
+}
+
+// Sensitive tools that should be logged for audit purposes
+const SENSITIVE_TOOLS = new Set([
+	"bash",
+	"background_tasks",
+	"write",
+	"edit",
+	"git_cmd",
+	"gh_pr",
+	"gh_issue",
+	"websearch",
+	"webfetch",
+]);
+
+async function logToolExecutionAudit(
+	toolName: string,
+	args: Record<string, unknown>,
+	status: "success" | "failure" | "denied",
+	durationMs: number,
+	error?: string,
+): Promise<void> {
+	// Only log sensitive tools and only if enterprise features are available
+	if (!SENSITIVE_TOOLS.has(toolName) || !isDatabaseConfigured()) {
+		return;
+	}
+
+	try {
+		const { logSensitiveToolExecution } = await import(
+			"../enterprise/audit-integration.js"
+		);
+		await logSensitiveToolExecution(toolName, args, status, durationMs, error);
+	} catch (err) {
+		// Log audit failures but fail open (allow legitimate use) per user feedback
+		console.error(
+			`[audit] Failed to log tool execution: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
 }
 
 function calculateCost(
@@ -259,6 +300,35 @@ export class ProviderTransport implements AgentTransport {
 
 		while (hasMoreToolCalls || queuedMessages.length > 0) {
 			yield { type: "turn_start" };
+
+			// Enforce session limits before every turn (duration + tokens)
+			if (cfg.session) {
+				let tokenCount: number | undefined;
+				if (isDatabaseConfigured()) {
+					try {
+						const count = await TokenTracker.getSessionTokenCount(
+							cfg.session.id,
+						);
+						if (count !== null) {
+							tokenCount = count;
+						}
+					} catch (err) {
+						// Log error but don't throw - let checkSessionLimits handle it.
+						// If limits are active, it will fail closed because tokenCount is undefined.
+						// If no limits are active, we shouldn't block just because tracking failed.
+						console.error(
+							`[SessionLimit] Failed to get session token count: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+				}
+
+				const limitCheck = checkSessionLimits(cfg.session, {
+					tokenCount: tokenCount,
+				});
+				if (!limitCheck.allowed) {
+					throw new Error(limitCheck.reason);
+				}
+			}
 
 			if (queuedMessages.length > 0) {
 				for (const queued of queuedMessages) {
@@ -540,7 +610,7 @@ export class ProviderTransport implements AgentTransport {
 					const workflowSnapshot = this.workflowState.snapshot();
 					// Look up tool to get annotations for firewall decisions
 					const toolDef = tools.find((t) => t.name === toolCall.name);
-					const verdict = firewall.evaluate({
+					const verdict = await firewall.evaluate({
 						toolName: toolCall.name,
 						args: toolCall.arguments,
 						metadata: {
@@ -548,6 +618,7 @@ export class ProviderTransport implements AgentTransport {
 							annotations: toolDef?.annotations,
 						},
 						user: cfg.user,
+						session: cfg.session,
 					});
 					if (
 						verdict.action === "require_approval" &&
@@ -597,6 +668,15 @@ export class ProviderTransport implements AgentTransport {
 					}
 
 					if (!approvalAllowed) {
+						// Log denied tool execution for audit
+						await logToolExecutionAudit(
+							toolCall.name,
+							toolCall.arguments as Record<string, unknown>,
+							"denied",
+							0,
+							approvalReason,
+						);
+
 						const deniedResult: ToolResultMessage = {
 							role: "toolResult",
 							toolCallId: toolCall.id,
@@ -662,42 +742,64 @@ export class ProviderTransport implements AgentTransport {
 						continue;
 					}
 
+					const startTime = Date.now();
 					const executionPromise: Promise<ToolExecutionOutcome> =
 						Promise.resolve()
 							.then(() => tool.execute(toolCall.id, validatedArgs, signal))
-							.then((result) => ({
-								message: {
-									role: "toolResult" as const,
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									content: result.content,
-									details: result.details,
+							.then(async (result) => {
+								// Log tool execution - check isError flag for correct status
+								await logToolExecutionAudit(
+									toolCall.name,
+									validatedArgs,
+									result.isError ? "failure" : "success",
+									Date.now() - startTime,
+								);
+								return {
+									message: {
+										role: "toolResult" as const,
+										toolCallId: toolCall.id,
+										toolName: toolCall.name,
+										content: result.content,
+										details: result.details,
+										isError: result.isError || false,
+										timestamp: Date.now(),
+									},
 									isError: result.isError || false,
-									timestamp: Date.now(),
-								},
-								isError: result.isError || false,
-							}))
-							.catch((error: unknown) => ({
-								message: {
-									role: "toolResult" as const,
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									content: [
-										{
-											type: "text",
-											text:
-												error instanceof Error
-													? error.message
-													: `Error: ${String(error)}`,
-										},
-									],
-									details:
-										error instanceof ToolError ? error.toolDetails : undefined,
+								};
+							})
+							.catch(async (error: unknown) => {
+								// Log failed tool execution
+								await logToolExecutionAudit(
+									toolCall.name,
+									validatedArgs,
+									"failure",
+									Date.now() - startTime,
+									error instanceof Error ? error.message : String(error),
+								);
+								return {
+									message: {
+										role: "toolResult" as const,
+										toolCallId: toolCall.id,
+										toolName: toolCall.name,
+										content: [
+											{
+												type: "text",
+												text:
+													error instanceof Error
+														? error.message
+														: `Error: ${String(error)}`,
+											},
+										],
+										details:
+											error instanceof ToolError
+												? error.toolDetails
+												: undefined,
+										isError: true,
+										timestamp: Date.now(),
+									},
 									isError: true,
-									timestamp: Date.now(),
-								},
-								isError: true,
-							}));
+								};
+							});
 
 					pendingExecutions.push({
 						toolCall,

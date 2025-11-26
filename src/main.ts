@@ -59,6 +59,7 @@ import {
 } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
+import { PolicyError, checkSessionLimits } from "./safety/policy.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import { codingTools } from "./tools/index.js";
@@ -226,6 +227,32 @@ async function runRpcMode(
 
 export async function main(args: string[]) {
 	loadEnv();
+
+	// Initialize enterprise context (user/org tracking for audit logging)
+	const { enterpriseContext } = await import("./enterprise/context.js");
+	await enterpriseContext.initialize();
+
+	// Initialize audit integration if enterprise features are available
+	if (enterpriseContext.isEnterprise()) {
+		const { initializeAuditIntegration } = await import(
+			"./enterprise/audit-integration.js"
+		);
+		initializeAuditIntegration();
+
+		// Register cleanup to end enterprise session on exit
+		const cleanup = () => {
+			enterpriseContext.endSession();
+		};
+		process.once("beforeExit", cleanup);
+		process.once("SIGINT", () => {
+			cleanup();
+			process.exit(0);
+		});
+		process.once("SIGTERM", () => {
+			cleanup();
+			process.exit(0);
+		});
+	}
 
 	const parsed = parseArgs(args);
 
@@ -621,7 +648,17 @@ export async function main(args: string[]) {
 	await requireCredential(provider, true);
 
 	// Create agent
-	const model = resolveModel(provider, modelId);
+	let model: ReturnType<typeof resolveModel> | undefined;
+	try {
+		model = resolveModel(provider, modelId);
+	} catch (error) {
+		if (error instanceof PolicyError) {
+			console.error(chalk.red(`\n${error.message}\n`));
+			process.exit(1);
+		}
+		throw error;
+	}
+
 	if (!model) {
 		console.error(
 			chalk.red(
@@ -655,6 +692,10 @@ export async function main(args: string[]) {
 			model,
 			thinkingLevel: "off",
 			tools: allTools,
+			user: (() => {
+				const u = enterpriseContext.getUser();
+				return u ? { id: u.userId, orgId: u.orgId } : undefined;
+			})(),
 		},
 		transport: new ProviderTransport({
 			getAuthContext: (providerName) => requireCredential(providerName, false),
@@ -866,7 +907,63 @@ export async function main(args: string[]) {
 
 			// Check if we should initialize session now (after first user+assistant exchange)
 			if (sessionManager.shouldInitializeSession(agent.state.messages)) {
+				// Check concurrent session limit before starting
+				// We define "active" as updated in the last hour
+				let activeCount: number | undefined;
+				try {
+					const sessions = sessionManager.loadAllSessions();
+					activeCount = sessions.filter(
+						(s) => Date.now() - s.modified.getTime() < 60 * 60 * 1000,
+					).length;
+				} catch (error) {
+					// Fallback to undefined to let checkSessionLimits decide (it will fail-closed if limit exists)
+					console.error(
+						chalk.yellow(
+							`[Policy] Failed to count active sessions: ${error instanceof Error ? error.message : String(error)}`,
+						),
+					);
+				}
+
+				// Check against policy (+1 for the session we are about to create)
+				const limitCheck = checkSessionLimits(
+					{ startedAt: new Date() },
+					// If loadAllSessions failed (activeCount undefined), we pass undefined to trigger fail-closed
+					// If successful (activeCount number), we pass count + 1
+					activeCount !== undefined
+						? { activeSessionCount: activeCount + 1 }
+						: undefined,
+				);
+
+				if (!limitCheck.allowed) {
+					const msg = `\n[Policy] ${limitCheck.reason}`;
+					if (isInteractive) {
+						// In TUI, we might need to show error via renderer, but renderer isn't accessible here easily
+						// We'll log to stderr which might break TUI layout, but it's a fatal error
+						console.error(chalk.red(msg));
+						// We can't easily stop the agent loop from here without throwing
+						process.exit(1);
+					} else {
+						console.error(chalk.red(msg));
+						process.exit(1);
+					}
+				}
+
 				sessionManager.startSession(agent.state);
+
+				// Record session start in enterprise context for audit logging
+				if (enterpriseContext.isEnterprise()) {
+					enterpriseContext.startSession(
+						sessionManager.getSessionId(),
+						(agent.state.model as RegisteredModel)?.id,
+					);
+					const session = enterpriseContext.getSession();
+					if (session) {
+						agent.setSession({
+							id: session.sessionId,
+							startedAt: session.startedAt,
+						});
+					}
+				}
 			}
 		}
 

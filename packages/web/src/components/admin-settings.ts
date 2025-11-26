@@ -27,6 +27,7 @@ type AdminTab =
 	| "models"
 	| "directories"
 	| "security"
+	| "policy"
 	| "audit";
 
 interface Toast {
@@ -1029,6 +1030,81 @@ export class AdminSettings extends LitElement {
 		alertWebhooks: [],
 	};
 
+	private static readonly DEFAULT_AUDIT_LOGS: AuditLog[] = [
+		{
+			id: "1",
+			orgId: "org",
+			userId: "user_abc123",
+			action: "session.create",
+			resourceType: "session",
+			status: "success",
+			createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+		},
+		{
+			id: "2",
+			orgId: "org",
+			userId: "user_abc123",
+			action: "tool.bash.execute",
+			resourceType: "tool",
+			status: "success",
+			createdAt: new Date(Date.now() - 14 * 60 * 1000).toISOString(),
+		},
+		{
+			id: "3",
+			orgId: "org",
+			userId: "user_abc123",
+			action: "tool.write.execute",
+			resourceType: "tool",
+			status: "success",
+			createdAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+		},
+		{
+			id: "4",
+			orgId: "org",
+			userId: "user_def456",
+			action: "session.create",
+			resourceType: "session",
+			status: "success",
+			createdAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+		},
+		{
+			id: "5",
+			orgId: "org",
+			userId: "user_def456",
+			action: "tool.bash.execute",
+			resourceType: "tool",
+			status: "denied",
+			createdAt: new Date(Date.now() - 44 * 60 * 1000).toISOString(),
+		},
+		{
+			id: "6",
+			orgId: "org",
+			userId: "user_def456",
+			action: "model.select",
+			resourceType: "model",
+			status: "success",
+			createdAt: new Date(Date.now() - 43 * 60 * 1000).toISOString(),
+		},
+		{
+			id: "7",
+			orgId: "org",
+			userId: "user_ghi789",
+			action: "directory.access.denied",
+			resourceType: "directory",
+			status: "denied",
+			createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+		},
+		{
+			id: "8",
+			orgId: "org",
+			userId: "user_abc123",
+			action: "tool.edit.execute",
+			resourceType: "tool",
+			status: "success",
+			createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+		},
+	];
+
 	// Data states - initialized with defaults
 	@state() private quota: UsageQuota | null = {
 		userId: "user",
@@ -1051,9 +1127,18 @@ export class AdminSettings extends LitElement {
 			{ modelId: "gpt-4o-mini", tokenUsed: 400000 },
 		],
 	};
+
+	// Usage trend data (last 14 days)
+	private readonly usageTrend = [
+		42000, 58000, 71000, 65000, 89000, 95000, 78000, 102000, 88000, 115000,
+		98000, 125000, 110000, 145000,
+	];
+	private readonly sessionTrend = [
+		18, 24, 31, 28, 35, 42, 38, 45, 41, 52, 48, 58, 54, 62,
+	];
 	@state() private members: OrgMember[] = [];
 	@state() private roles: Role[] = AdminSettings.DEFAULT_ROLES;
-	@state() private auditLogs: AuditLog[] = [];
+	@state() private auditLogs: AuditLog[] = AdminSettings.DEFAULT_AUDIT_LOGS;
 	@state() private alerts: Alert[] = [];
 	@state() private modelApprovals: ModelApproval[] =
 		AdminSettings.DEFAULT_MODELS;
@@ -1081,6 +1166,30 @@ export class AdminSettings extends LitElement {
 	@state() private auditRetention =
 		AdminSettings.DEFAULT_SETTINGS.auditRetentionDays || 90;
 	@state() private webhookUrls = "";
+
+	// Policy state
+	@state() private policyJson = JSON.stringify(
+		{
+			orgId: "your-org-id",
+			tools: { allowed: [], blocked: [] },
+			dependencies: { allowed: [], blocked: [] },
+			models: { allowed: ["claude-*", "gpt-4*"], blocked: [] },
+			paths: { allowed: [], blocked: ["/etc/**", "**/.env*", "**/secrets/**"] },
+			network: {
+				allowedHosts: [],
+				blockedHosts: [],
+				blockLocalhost: false,
+				blockPrivateIPs: false,
+			},
+			limits: {
+				maxTokensPerSession: 500000,
+				maxSessionDurationMinutes: 480,
+			},
+		},
+		null,
+		2,
+	);
+	@state() private policyError: string | null = null;
 
 	private api: EnterpriseApiClient;
 	private alertRefreshInterval: ReturnType<typeof setInterval> | null = null;
@@ -1542,6 +1651,44 @@ export class AdminSettings extends LitElement {
 		return Math.ceil(this.filteredAuditLogs.length / this.auditPageSize);
 	}
 
+	private renderSparkline(
+		data: number[],
+		color = "var(--admin-accent)",
+		width = 120,
+		height = 32,
+	) {
+		if (data.length < 2) return "";
+		const max = Math.max(...data);
+		const min = Math.min(...data);
+		const range = max - min || 1;
+		const step = width / (data.length - 1);
+
+		const points = data
+			.map((v, i) => {
+				const x = i * step;
+				const y = height - ((v - min) / range) * (height - 4) - 2;
+				return `${x},${y}`;
+			})
+			.join(" ");
+
+		const lastY =
+			height - ((data[data.length - 1] - min) / range) * (height - 4) - 2;
+
+		return html`
+			<svg width="${width}" height="${height}" style="display: block;">
+				<polyline
+					points="${points}"
+					fill="none"
+					stroke="${color}"
+					stroke-width="1.5"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				/>
+				<circle cx="${width}" cy="${lastY}" r="2.5" fill="${color}" />
+			</svg>
+		`;
+	}
+
 	// =========================================================================
 	// RENDER METHODS
 	// =========================================================================
@@ -1552,16 +1699,26 @@ export class AdminSettings extends LitElement {
 		return html`
 			<div class="stats-grid">
 				<div class="stat-card">
-					<div class="stat-value">${this.formatNumber(this.orgUsage?.totalTokens || 0)}</div>
-					<div class="stat-label">Total Tokens</div>
+					<div style="display: flex; justify-content: space-between; align-items: flex-start;">
+						<div>
+							<div class="stat-value">${this.formatNumber(this.orgUsage?.totalTokens || 0)}</div>
+							<div class="stat-label">Total Tokens</div>
+						</div>
+						<div style="opacity: 0.8;">${this.renderSparkline(this.usageTrend)}</div>
+					</div>
 				</div>
 				<div class="stat-card">
-					<div class="stat-value">${this.orgUsage?.totalSessions || 0}</div>
-					<div class="stat-label">Sessions</div>
+					<div style="display: flex; justify-content: space-between; align-items: flex-start;">
+						<div>
+							<div class="stat-value">${this.orgUsage?.totalSessions || 0}</div>
+							<div class="stat-label">Sessions</div>
+						</div>
+						<div style="opacity: 0.8;">${this.renderSparkline(this.sessionTrend, "var(--admin-accent-green)")}</div>
+					</div>
 				</div>
 				<div class="stat-card">
 					<div class="stat-value">${this.orgUsage?.totalUsers || 0}</div>
-					<div class="stat-label">Users</div>
+					<div class="stat-label">Active Users</div>
 				</div>
 				<div class="stat-card ${unreadAlerts > 0 ? "warning" : ""}">
 					<div class="stat-value">${unreadAlerts}</div>
@@ -1620,6 +1777,39 @@ export class AdminSettings extends LitElement {
 									</div>
 								`,
 							)}
+						</div>
+					</div>
+				`
+					: ""
+			}
+
+			${
+				this.orgUsage?.modelBreakdown && this.orgUsage.modelBreakdown.length > 0
+					? html`
+					<div class="section">
+						<div class="section-header">
+							<h3>Usage by Model</h3>
+						</div>
+						<div class="section-content">
+							${this.orgUsage.modelBreakdown.map((model) => {
+								const total =
+									this.orgUsage?.modelBreakdown.reduce(
+										(sum, m) => sum + m.tokenUsed,
+										0,
+									) || 1;
+								const pct = (model.tokenUsed / total) * 100;
+								return html`
+									<div style="margin-bottom: 1rem;">
+										<div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem; font-size: 0.8rem;">
+											<span style="font-family: var(--font-mono);">${model.modelId}</span>
+											<span style="color: var(--admin-text-secondary);">${this.formatNumber(model.tokenUsed)} (${pct.toFixed(1)}%)</span>
+										</div>
+										<div style="height: 6px; background: var(--admin-bg-surface); border-radius: 3px; overflow: hidden;">
+											<div style="height: 100%; width: ${pct}%; background: var(--admin-accent); border-radius: 3px;"></div>
+										</div>
+									</div>
+								`;
+							})}
 						</div>
 					</div>
 				`
@@ -2170,6 +2360,214 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 		`;
 	}
 
+	private renderPolicyTab() {
+		return html`
+			<div class="section">
+				<div class="section-header">
+					<h3>Enterprise Policy</h3>
+					<span style="font-size: 0.7rem; color: var(--admin-text-tertiary);">
+						Deploy via MDM to ~/.composer/policy.json
+					</span>
+				</div>
+				<div class="section-content">
+					<p style="color: var(--admin-text-secondary); font-size: 0.8rem; margin-bottom: 1.25rem; line-height: 1.6;">
+						Enterprise policies control which tools, models, paths, and network resources can be accessed.
+						Deploy this configuration to managed devices via your MDM (Jamf, Intune, Kandji, etc.) targeting
+						<code style="background: var(--admin-bg-surface); padding: 0.15rem 0.35rem;">~/.composer/policy.json</code>.
+					</p>
+
+					${
+						this.policyError
+							? html`<div style="color: var(--admin-accent-red); font-size: 0.75rem; margin-bottom: 1rem; padding: 0.75rem; background: var(--admin-accent-red-dim); border-left: 2px solid var(--admin-accent-red);">${this.policyError}</div>`
+							: ""
+					}
+
+					<div class="form-group">
+						<label class="form-label">Policy Configuration (JSON)</label>
+						<textarea
+							class="form-input"
+							style="font-family: var(--font-mono); font-size: 0.75rem; min-height: 400px; line-height: 1.5; resize: vertical;"
+							.value=${this.policyJson}
+							@input=${(e: Event) => {
+								this.policyJson = (e.target as HTMLTextAreaElement).value;
+								this.policyError = null;
+							}}
+						></textarea>
+					</div>
+
+					<div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
+						<button class="btn btn-primary" @click=${this.validatePolicy}>Validate</button>
+						<button class="btn" @click=${this.formatPolicy}>Format</button>
+						<button class="btn" @click=${this.copyPolicyToClipboard}>Export for MDM</button>
+						<button class="btn" @click=${this.downloadPolicy}>Download JSON</button>
+					</div>
+				</div>
+			</div>
+
+			<div class="section">
+				<div class="section-header">
+					<h3>Policy Reference</h3>
+				</div>
+				<div class="section-content" style="padding: 0;">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>Section</th>
+								<th>Description</th>
+								<th>Example Values</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td><code>orgId</code></td>
+								<td>Organization ID that must match the signed-in user</td>
+								<td><code>"org_abc123"</code></td>
+							</tr>
+							<tr>
+								<td><code>tools.allowed</code></td>
+								<td>Whitelist of allowed tool names (if set, only these tools work)</td>
+								<td><code>["read", "write", "bash"]</code></td>
+							</tr>
+							<tr>
+								<td><code>tools.blocked</code></td>
+								<td>Blacklist of blocked tool names</td>
+								<td><code>["bash", "background_tasks"]</code></td>
+							</tr>
+							<tr>
+								<td><code>models.allowed</code></td>
+								<td>Allowed model patterns (supports wildcards)</td>
+								<td><code>["claude-*", "gpt-4o"]</code></td>
+							</tr>
+							<tr>
+								<td><code>models.blocked</code></td>
+								<td>Blocked model patterns</td>
+								<td><code>["*-preview", "*-experimental"]</code></td>
+							</tr>
+							<tr>
+								<td><code>paths.blocked</code></td>
+								<td>Glob patterns for blocked file paths</td>
+								<td><code>["/etc/**", "**/.env*"]</code></td>
+							</tr>
+							<tr>
+								<td><code>paths.allowed</code></td>
+								<td>If set, only these paths are accessible</td>
+								<td><code>["/home/user/projects/**"]</code></td>
+							</tr>
+							<tr>
+								<td><code>dependencies.blocked</code></td>
+								<td>Blocked npm/pip package names</td>
+								<td><code>["malicious-pkg"]</code></td>
+							</tr>
+							<tr>
+								<td><code>network.blockedHosts</code></td>
+								<td>Blocked hostnames for network requests</td>
+								<td><code>["evil.com"]</code></td>
+							</tr>
+							<tr>
+								<td><code>network.blockLocalhost</code></td>
+								<td>Block access to localhost/127.0.0.1</td>
+								<td><code>true</code></td>
+							</tr>
+							<tr>
+								<td><code>network.blockPrivateIPs</code></td>
+								<td>Block access to private IP ranges (10.x, 192.168.x, etc.)</td>
+								<td><code>true</code></td>
+							</tr>
+							<tr>
+								<td><code>limits.maxTokensPerSession</code></td>
+								<td>Maximum tokens allowed per session</td>
+								<td><code>500000</code></td>
+							</tr>
+							<tr>
+								<td><code>limits.maxSessionDurationMinutes</code></td>
+								<td>Maximum session duration in minutes</td>
+								<td><code>480</code></td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+		`;
+	}
+
+	private async validatePolicy() {
+		try {
+			// First check basic JSON syntax locally
+			JSON.parse(this.policyJson);
+		} catch (e) {
+			this.policyError = `Invalid JSON: ${e instanceof Error ? e.message : "Parse error"}`;
+			return;
+		}
+
+		// Then validate against schema via API
+		try {
+			const response = await fetch("/api/policy/validate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: this.policyJson,
+			});
+
+			const result = await response.json();
+			if (result.valid) {
+				this.policyError = null;
+				this.showToast("Policy JSON is valid", "success");
+			} else {
+				const errorMessages = result.errors
+					.map(
+						(e: { path?: string; message: string }) =>
+							`${e.path || "/"}: ${e.message}`,
+					)
+					.join("; ");
+				this.policyError = `Schema validation failed: ${errorMessages}`;
+			}
+		} catch (e) {
+			// Fallback to basic JSON validation if API unavailable
+			this.policyError = null;
+			this.showToast(
+				"Policy JSON syntax is valid (schema validation unavailable)",
+				"info",
+			);
+		}
+	}
+
+	private formatPolicy() {
+		try {
+			const parsed = JSON.parse(this.policyJson);
+			this.policyJson = JSON.stringify(parsed, null, 2);
+			this.policyError = null;
+		} catch (e) {
+			this.policyError = `Cannot format invalid JSON: ${e instanceof Error ? e.message : "Parse error"}`;
+		}
+	}
+
+	private async copyPolicyToClipboard() {
+		try {
+			await navigator.clipboard.writeText(this.policyJson);
+			this.showToast(
+				"Policy JSON copied - ready for MDM deployment",
+				"success",
+			);
+		} catch {
+			this.showToast("Failed to copy to clipboard", "error");
+		}
+	}
+
+	private downloadPolicy() {
+		try {
+			JSON.parse(this.policyJson);
+			const blob = new Blob([this.policyJson], { type: "application/json" });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.href = url;
+			a.download = "policy.json";
+			a.click();
+			URL.revokeObjectURL(url);
+			this.showToast("Policy downloaded", "success");
+		} catch {
+			this.showToast("Fix JSON errors before downloading", "error");
+		}
+	}
+
 	private renderCurrentTab() {
 		switch (this.currentTab) {
 			case "overview":
@@ -2182,6 +2580,8 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 				return this.renderDirectoriesTab();
 			case "security":
 				return this.renderSecurityTab();
+			case "policy":
+				return this.renderPolicyTab();
 			case "audit":
 				return this.renderAuditTab();
 			default:
@@ -2193,7 +2593,11 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 		return html`
 			<div class="admin-header">
 				<h2>Admin Settings</h2>
-				<button class="close-btn" @click=${this.close}>✕</button>
+				<button class="close-btn" @click=${this.close}>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M18 6L6 18M6 6l12 12"/>
+						</svg>
+					</button>
 			</div>
 
 			${this.error ? html`<div class="error-message">${this.error}</div>` : ""}
@@ -2229,6 +2633,12 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 						@click=${() => this.selectTab("security")}
 					>
 						<span>Security & PII</span>
+					</div>
+					<div
+						class="nav-item ${this.currentTab === "policy" ? "active" : ""}"
+						@click=${() => this.selectTab("policy")}
+					>
+						<span>Enterprise Policy</span>
 					</div>
 					<div
 						class="nav-item ${this.currentTab === "audit" ? "active" : ""}"

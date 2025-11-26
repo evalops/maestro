@@ -276,6 +276,20 @@ export class Agent {
 	}
 
 	/**
+	 * Sets the active user for this agent.
+	 */
+	setUser(user: AgentState["user"]): void {
+		this._state.user = user;
+	}
+
+	/**
+	 * Sets the active session for this agent.
+	 */
+	setSession(session: AgentState["session"]): void {
+		this._state.session = session;
+	}
+
+	/**
 	 * Replaces the entire message history with a new set of messages.
 	 *
 	 * @param ms - New message array
@@ -432,6 +446,7 @@ export class Agent {
 				reasoning,
 				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
 				user: this._state.user,
+				session: this._state.session,
 			};
 
 			for await (const event of this.transport.run(
