@@ -247,15 +247,17 @@ async function handleLogin(
 			// Send response first, then log asynchronously to prevent timing leaks
 			sendJson(res, 401, { error: "Invalid credentials" }, cors, req);
 
-			// Log after response (fire and forget)
-			AuditLogger.log({
-				orgId: user?.defaultOrgId || "",
-				userId: user?.id || "",
-				action: AUDIT_ACTIONS.AUTH_FAILED,
-				resourceType: "user",
-				status: "failure",
-				metadata: { error: "Invalid credentials" },
-			}).catch(() => {});
+			// Only log if we have valid UUIDs for the audit record
+			if (user?.defaultOrgId && user?.id) {
+				AuditLogger.log({
+					orgId: user.defaultOrgId,
+					userId: user.id,
+					action: AUDIT_ACTIONS.AUTH_FAILED,
+					resourceType: "user",
+					status: "failure",
+					metadata: { error: "Invalid credentials" },
+				}).catch(() => {});
+			}
 			return;
 		}
 
@@ -547,8 +549,10 @@ async function handleGetOrgMembers(
 		id: m.id,
 		userId: m.userId,
 		roleId: m.roleId,
-		email: m.user.email,
-		name: m.user.name,
+		user: {
+			email: m.user.email,
+			name: m.user.name,
+		},
 		role: { id: m.role.id, name: m.role.name },
 		tokenQuota: m.tokenQuota,
 		tokenUsed: m.tokenUsed,
