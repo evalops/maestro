@@ -111,6 +111,7 @@ export class BashModeView {
 		if (this.currentAbortController) {
 			this.currentAbortController.abort();
 			this.currentAbortController = null;
+			this.stopStreamUpdates();
 			return true;
 		}
 		return false;
@@ -191,6 +192,7 @@ ${muted("Ctrl+C aborts running commands.")}`,
 		}
 		// Abort any running command
 		this.abortCurrentCommand();
+		this.stopStreamUpdates();
 		this.active = false;
 		this.resetHistoryNavigation(true);
 		this.options.editor.setLargePasteMode("placeholder");
@@ -288,6 +290,7 @@ ${muted("Back to normal chat.")}`,
 		const exportResult = this.handleExport(normalizedCommand);
 		if (exportResult) {
 			this.renderExportResult(exportResult);
+			this.resetHistoryNavigation(true);
 			return;
 		}
 
@@ -366,10 +369,7 @@ ${muted("Back to normal chat.")}`,
 		});
 
 		// Clear update interval
-		if (this.streamUpdateInterval) {
-			clearInterval(this.streamUpdateInterval);
-			this.streamUpdateInterval = null;
-		}
+		this.stopStreamUpdates();
 
 		this.isRunning = false;
 		this.currentAbortController = null;
@@ -395,6 +395,13 @@ ${muted("Back to normal chat.")}`,
 		block.setStatus(result.success ? "success" : "error");
 		this.options.ui.requestRender();
 		this.resetHistoryNavigation(true);
+	}
+
+	private stopStreamUpdates(): void {
+		if (this.streamUpdateInterval) {
+			clearInterval(this.streamUpdateInterval);
+			this.streamUpdateInterval = null;
+		}
 	}
 
 	private handleExport(command: string): { key: string; value: string } | null {
