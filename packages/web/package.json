@@ -1,0 +1,47 @@
+{
+  "name": "@evalops/composer-web",
+  "version": "0.10.0",
+  "description": "Web UI for Composer - Browser-based AI coding assistant interface",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "test": "vitest --run",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "composer",
+    "ai",
+    "web-ui",
+    "llm",
+    "coding-assistant",
+    "browser"
+  ],
+  "author": "EvalOps",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evalops/composer-cli.git",
+    "directory": "packages/web"
+  },
+  "dependencies": {
+    "lit": "^3.2.1",
+    "marked": "^17.0.0",
+    "highlight.js": "^11.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.3",
+    "vitest": "^3.2.4"
+  }
+}

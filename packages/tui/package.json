@@ -1,0 +1,49 @@
+{
+  "name": "@evalops/tui",
+  "version": "0.10.0",
+  "description": "Terminal UI library with differential rendering for Composer CLI",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "check": "tsc --noEmit",
+    "test": "vitest --run",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "tui",
+    "terminal",
+    "ui",
+    "text-editor",
+    "differential-rendering",
+    "typescript",
+    "cli",
+    "composer"
+  ],
+  "author": "EvalOps",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evalops/composer-cli.git",
+    "directory": "packages/tui"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "chalk": "^5.5.0",
+    "string-width": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  }
+}
