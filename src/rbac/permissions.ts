@@ -173,12 +173,8 @@ export async function checkPermission(
 			);
 		});
 
-		// Special case: users can always read/write their own resources
-		if (context.resourceOwnerId && context.resourceOwnerId === context.userId) {
-			if (action === ACTIONS.READ || action === ACTIONS.WRITE) {
-				return true;
-			}
-		}
+		// Ownership check removed - all access must go through RBAC
+		// This ensures audit requirements and organizational policies are enforced
 
 		permissionCache.set(cacheKey, hasPermission);
 		setTimeout(() => {

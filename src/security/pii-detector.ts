@@ -64,12 +64,13 @@ export const BUILT_IN_PII_PATTERNS: PiiPattern[] = [
 		replacement: "[AWS_KEY_REDACTED]",
 		description: "AWS access keys",
 	},
-	// AWS Secret Keys
+	// AWS Secret Keys - require context keywords to reduce false positives
 	{
 		name: "aws_secret_key",
-		pattern: /\b([a-zA-Z0-9/+=]{40})\b/g,
+		pattern:
+			/(?:aws_secret|secret_key|secret_access_key|aws_secret_access_key)['":\s=]*([a-zA-Z0-9/+=]{40})/gi,
 		replacement: "[AWS_SECRET_REDACTED]",
-		description: "AWS secret keys",
+		description: "AWS secret keys with context keywords",
 	},
 	// GitHub tokens
 	{

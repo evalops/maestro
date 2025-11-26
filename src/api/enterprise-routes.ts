@@ -236,33 +236,26 @@ async function handleLogin(
 			where: eq(users.email, email),
 		});
 
-		if (!user || !user.passwordHash) {
-			await AuditLogger.log({
+		// Always verify a password hash to prevent timing attacks
+		// This ensures consistent response time whether user exists or not
+		const dummyHash =
+			"$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.FVnWpI8bdRvFIO";
+		const hashToVerify = user?.passwordHash || dummyHash;
+		const valid = await verifyPassword(password, hashToVerify);
+
+		if (!user || !user.passwordHash || !valid) {
+			// Send response first, then log asynchronously to prevent timing leaks
+			sendJson(res, 401, { error: "Invalid credentials" }, cors, req);
+
+			// Log after response (fire and forget)
+			AuditLogger.log({
 				orgId: user?.defaultOrgId || "",
 				userId: user?.id || "",
 				action: AUDIT_ACTIONS.AUTH_FAILED,
 				resourceType: "user",
 				status: "failure",
 				metadata: { error: "Invalid credentials" },
-			});
-
-			sendJson(res, 401, { error: "Invalid credentials" }, cors, req);
-			return;
-		}
-
-		// Verify password
-		const valid = await verifyPassword(password, user.passwordHash);
-		if (!valid) {
-			await AuditLogger.log({
-				orgId: user.defaultOrgId || "",
-				userId: user.id,
-				action: AUDIT_ACTIONS.AUTH_FAILED,
-				resourceType: "user",
-				status: "failure",
-				metadata: { error: "Invalid credentials" },
-			});
-
-			sendJson(res, 401, { error: "Invalid credentials" }, cors, req);
+			}).catch(() => {});
 			return;
 		}
 
@@ -551,7 +544,9 @@ async function handleGetOrgMembers(
 	});
 
 	const result = members.map((m) => ({
+		id: m.id,
 		userId: m.userId,
+		roleId: m.roleId,
 		email: m.user.email,
 		name: m.user.name,
 		role: { id: m.role.id, name: m.role.name },

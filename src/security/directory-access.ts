@@ -103,9 +103,12 @@ export async function checkDirectoryAccess(
 		const normalizedPath = normalize(resolve(filePath));
 		const rules = await getRules(context.orgId);
 
-		// If no rules are defined, allow by default (backward compatibility)
+		// If no rules are defined, deny by default for security
 		if (rules.length === 0) {
-			return { allowed: true };
+			return {
+				allowed: false,
+				reason: "No access rules configured (default deny)",
+			};
 		}
 
 		// Check rules in priority order (highest first)
