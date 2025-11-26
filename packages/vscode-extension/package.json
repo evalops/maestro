@@ -12,10 +12,29 @@
 	},
 	"categories": ["Other"],
 	"activationEvents": [
+		"onView:composer.chatView",
 		"onCommand:composer.openPanel",
 		"onCommand:composer.openDocs"
 	],
 	"contributes": {
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "composer-sidebar",
+					"title": "Composer",
+					"icon": "$(hubot)"
+				}
+			]
+		},
+		"views": {
+			"composer-sidebar": [
+				{
+					"type": "webview",
+					"id": "composer.chatView",
+					"name": "Chat"
+				}
+			]
+		},
 		"commands": [
 			{
 				"command": "composer.openPanel",
