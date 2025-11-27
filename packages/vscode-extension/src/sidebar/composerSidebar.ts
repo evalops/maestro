@@ -9,6 +9,7 @@ import {
 	type Session,
 } from "../lib/api-client";
 import type { ThinkingManager } from "../lib/decorations";
+import { convertToComposerMessage } from "../lib/message-converter";
 
 export class ComposerSidebarProvider
 	implements vscode.WebviewViewProvider, vscode.Disposable
@@ -1715,43 +1716,4 @@ function getNonce() {
 	return randomBytes(16).toString("base64");
 }
 
-function convertToComposerMessage(msg: any): Message {
-	if (typeof msg.content === "string") return msg;
-	const contentParts: string[] = [];
-	const tools: any[] = [];
-	let thinking: string | undefined;
-
-	if (Array.isArray(msg.content)) {
-		for (const part of msg.content) {
-			if (part.type === "text") {
-				contentParts.push(part.text);
-			} else if (part.type === "toolCall") {
-				tools.push({
-					name: part.name,
-					status: "completed",
-					args: part.arguments,
-					toolCallId: part.id,
-				});
-			} else if (part.type === "thinking") {
-				thinking = part.thinking;
-			}
-		}
-	}
-
-	let role = msg.role;
-	if (role === "toolResult") {
-		role = "tool";
-	}
-
-	return {
-		role,
-		content: contentParts.join("\n"),
-		thinking,
-		tools: tools.length ? tools : undefined,
-		timestamp: msg.timestamp
-			? new Date(msg.timestamp).toISOString()
-			: new Date().toISOString(),
-		toolName: msg.toolName,
-		isError: msg.isError,
-	};
-}
+export { convertToComposerMessage } from "../lib/message-converter";
