@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import type { LargePasteEvent } from "@evalops/tui";
@@ -38,10 +37,8 @@ import {
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import {
-	getBackgroundSettingsPath,
 	getBackgroundTaskSettings,
 	subscribeBackgroundTaskSettings,
-	updateBackgroundTaskSettings,
 } from "../runtime/background-settings.js";
 import {
 	type SessionModelMetadata,
@@ -63,6 +60,14 @@ import { AgentEventRouter } from "./agent-event-router.js";
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
+import {
+	type BackgroundRenderContext,
+	handleBackgroundCommand,
+} from "./commands/background-handlers.js";
+import {
+	type McpRenderContext,
+	handleMcpCommand,
+} from "./commands/mcp-handlers.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
@@ -1672,140 +1677,34 @@ export class TuiRenderer {
 	}
 
 	private handleBackgroundCommand(context: CommandExecutionContext): void {
-		const tokens = context.argumentText
-			.trim()
-			.split(/\s+/)
-			.filter((token) => token.length > 0);
-		const action = tokens[0]?.toLowerCase() ?? "status";
-		if (action === "status") {
-			this.renderBackgroundStatus();
-			return;
-		}
-		if (action === "notify" || action === "details") {
-			const toggle = this.parseToggle(tokens[1]);
-			if (toggle === null) {
-				context.showError("Provide 'on' or 'off'.");
-				return;
-			}
-			updateBackgroundTaskSettings(
-				action === "notify"
-					? { notificationsEnabled: toggle }
-					: { statusDetailsEnabled: toggle },
-			);
-			this.notificationView.showInfo(
-				action === "notify"
-					? `Background task notifications ${toggle ? "enabled" : "disabled"}.`
-					: `Background task details ${toggle ? "enabled" : "disabled"}.`,
-			);
-			return;
-		}
-		if (action === "history") {
-			const limitArg = tokens[1] ? Number.parseInt(tokens[1], 10) : 10;
-			const limit = Number.isFinite(limitArg)
-				? Math.min(Math.max(limitArg, 1), 50)
-				: 10;
-			this.renderBackgroundHistory(limit);
-			return;
-		}
-		if (action === "path") {
-			const path = getBackgroundSettingsPath();
-			const exists = existsSync(path);
-			this.notificationView.showInfo(
-				[
-					`Background settings file: ${path}`,
-					exists
-						? "File exists and will be hot-reloaded on change."
-						: "File not found yet (it will be created on first toggle).",
-					process.env.COMPOSER_BACKGROUND_SETTINGS
-						? "Overridden via COMPOSER_BACKGROUND_SETTINGS."
-						: "Using default location under ~/.composer/agent/.",
-				].join("\n"),
-			);
-			return;
-		}
-		context.renderHelp();
-	}
-
-	private parseToggle(value?: string): boolean | null {
-		if (!value) {
-			return null;
-		}
-		const normalized = value.toLowerCase();
-		if (["on", "true", "enable", "enabled", "yes"].includes(normalized)) {
-			return true;
-		}
-		if (["off", "false", "disable", "disabled", "no"].includes(normalized)) {
-			return false;
-		}
-		return null;
-	}
-
-	private renderBackgroundStatus(): void {
-		const snapshot = backgroundTaskManager.getHealthSnapshot({
-			maxEntries: 1,
-			logLines: 1,
-			historyLimit: 3,
-		});
-		const lines = [chalk.bold("Background tasks")];
-		lines.push(
-			`Notifications: ${this.backgroundSettings.notificationsEnabled ? chalk.green("on") : chalk.red("off")}`,
-			`Status details: ${this.backgroundSettings.statusDetailsEnabled ? chalk.green("on") : chalk.red("off")}`,
+		handleBackgroundCommand(
+			this.backgroundSettings,
+			this._createBackgroundRenderContext(context),
 		);
-		if (snapshot) {
-			lines.push(
-				`Running: ${snapshot.running}/${snapshot.total} · Failed: ${snapshot.failed}`,
-				`Details: ${snapshot.detailsRedacted ? "redacted" : "visible"}`,
-			);
-		} else {
-			lines.push("No recent background activity.");
-		}
-		lines.push(
-			"Use /background notify <on|off> or /background details <on|off>.",
-		);
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		this.ui.requestRender();
 	}
 
-	private renderBackgroundHistory(limit: number): void {
-		if (!this.backgroundSettings.statusDetailsEnabled) {
-			this.notificationView.showInfo(
-				"Enable /background details on to inspect task history.",
-			);
-			return;
-		}
-		const snapshot = backgroundTaskManager.getHealthSnapshot({
-			maxEntries: 1,
-			logLines: 1,
-			historyLimit: limit,
-		});
-		const history = snapshot?.history ?? [];
-		this.chatContainer.addChild(new Spacer(1));
-		if (history.length === 0) {
-			this.chatContainer.addChild(
-				new Text("No background task history found.", 1, 0),
-			);
-			this.ui.requestRender();
-			return;
-		}
-		const lines = history.map((entry) => {
-			const stamp = new Date(entry.timestamp).toLocaleTimeString();
-			const reason = entry.failureReason
-				? ` ${chalk.dim(entry.failureReason)}`
-				: entry.limitBreach
-					? ` ${chalk.dim(`limit ${entry.limitBreach.kind}`)}`
-					: "";
-			return `${stamp} ${entry.event} ${entry.taskId} – ${entry.command}${reason}`;
-		});
-		if (snapshot?.historyTruncated) {
-			lines.push(
-				chalk.dim(
-					"…additional events hidden; pass /background history <n> for more.",
-				),
-			);
-		}
-		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		this.ui.requestRender();
+	private _createBackgroundRenderContext(
+		context: CommandExecutionContext,
+	): BackgroundRenderContext {
+		return {
+			argumentText: context.argumentText,
+			addContent: (content: string) => {
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(new Text(content, 1, 0));
+			},
+			showInfo: (message: string) => {
+				this.notificationView.showInfo(message);
+			},
+			showError: (message: string) => {
+				this.notificationView.showError(message);
+			},
+			renderHelp: () => {
+				context.renderHelp();
+			},
+			requestRender: () => {
+				this.ui.requestRender();
+			},
+		};
 	}
 
 	private showQueuePanel(): void {
@@ -2194,183 +2093,22 @@ export class TuiRenderer {
 	}
 
 	private handleMcpCommand(context: CommandExecutionContext): void {
-		const args = context.rawInput.replace(/^\/mcp\s*/, "").trim();
-		const parts = args.split(/\s+/);
-		const subcommand = parts[0]?.toLowerCase() || "";
-
-		if (subcommand === "resources") {
-			this.handleMcpResourcesCommand(parts.slice(1));
-			return;
-		}
-		if (subcommand === "prompts") {
-			this.handleMcpPromptsCommand(parts.slice(1));
-			return;
-		}
-
-		// Default: show status
-		const status = mcpManager.getStatus();
-		const lines: string[] = ["Model Context Protocol", ""];
-
-		if (status.servers.length === 0) {
-			lines.push(
-				"No MCP servers configured.",
-				"",
-				"Add servers to ~/.composer/mcp.json or .composer/mcp.json:",
-				"",
-				'  { "mcpServers": { "my-server": { "command": "npx", "args": ["-y", "@example/mcp-server"] } } }',
-			);
-		} else {
-			for (const server of status.servers) {
-				const statusIcon = server.connected ? chalk.green("●") : chalk.red("○");
-				lines.push(`${statusIcon} ${server.name}`);
-				if (server.connected) {
-					if (server.tools.length > 0) {
-						lines.push(
-							`    Tools: ${server.tools.map((t) => t.name).join(", ")}`,
-						);
-					}
-					if (server.resources.length > 0) {
-						lines.push(`    Resources: ${server.resources.length}`);
-					}
-					if (server.prompts.length > 0) {
-						lines.push(`    Prompts: ${server.prompts.join(", ")}`);
-					}
-				} else {
-					lines.push(`    ${chalk.dim("Not connected")}`);
-				}
-			}
-			lines.push("");
-			lines.push(chalk.dim("Subcommands: /mcp resources, /mcp prompts"));
-		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		this.ui.requestRender();
+		handleMcpCommand(context, this._createMcpRenderContext());
 	}
 
-	private handleMcpResourcesCommand(args: string[]): void {
-		const status = mcpManager.getStatus();
-		const lines: string[] = ["MCP Resources", ""];
-
-		// /mcp resources [server] [uri] - read a specific resource
-		if (args.length >= 2) {
-			const serverName = args[0];
-			const uri = args.slice(1).join(" ");
-			const server = status.servers.find((s) => s.name === serverName);
-			if (!server?.connected) {
-				lines.push(`Server '${serverName}' not connected`);
-			} else {
-				mcpManager
-					.readResource(serverName, uri)
-					.then((result) => {
-						const resourceLines = [`Resource: ${uri}`, ""];
-						for (const content of result.contents) {
-							if (content.text) {
-								resourceLines.push(content.text);
-							} else if (content.blob) {
-								resourceLines.push(
-									`[Binary data: ${content.mimeType || "unknown type"}]`,
-								);
-							}
-						}
-						this.chatContainer.addChild(new Spacer(1));
-						this.chatContainer.addChild(
-							new Text(resourceLines.join("\n"), 1, 0),
-						);
-						this.ui.requestRender();
-					})
-					.catch((err: unknown) => {
-						const message = err instanceof Error ? err.message : String(err);
-						this.notificationView.showError(
-							`Failed to read resource: ${message}`,
-						);
-					});
-				return;
-			}
-		} else {
-			// List all resources from all servers
-			let hasResources = false;
-			for (const server of status.servers) {
-				if (!server.connected || server.resources.length === 0) continue;
-				hasResources = true;
-				lines.push(`${chalk.bold(server.name)}:`);
-				for (const uri of server.resources) {
-					lines.push(`  ${uri}`);
-				}
-				lines.push("");
-			}
-			if (!hasResources) {
-				lines.push("No resources available from connected servers.");
-			}
-			lines.push("");
-			lines.push(chalk.dim("Usage: /mcp resources <server> <uri>"));
-		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handleMcpPromptsCommand(args: string[]): void {
-		const status = mcpManager.getStatus();
-		const lines: string[] = ["MCP Prompts", ""];
-
-		// /mcp prompts [server] [name] - get a specific prompt
-		if (args.length >= 2) {
-			const serverName = args[0];
-			const promptName = args[1];
-			const server = status.servers.find((s) => s.name === serverName);
-			if (!server?.connected) {
-				lines.push(`Server '${serverName}' not connected`);
-			} else if (!server.prompts.includes(promptName)) {
-				lines.push(
-					`Prompt '${promptName}' not found on server '${serverName}'`,
-				);
-			} else {
-				mcpManager
-					.getPrompt(serverName, promptName)
-					.then((result) => {
-						const promptLines = [`Prompt: ${promptName}`, ""];
-						if (result.description) {
-							promptLines.push(`Description: ${result.description}`, "");
-						}
-						for (const msg of result.messages) {
-							promptLines.push(`[${msg.role}]`);
-							promptLines.push(msg.content);
-							promptLines.push("");
-						}
-						this.chatContainer.addChild(new Spacer(1));
-						this.chatContainer.addChild(new Text(promptLines.join("\n"), 1, 0));
-						this.ui.requestRender();
-					})
-					.catch((err: unknown) => {
-						const message = err instanceof Error ? err.message : String(err);
-						this.notificationView.showError(`Failed to get prompt: ${message}`);
-					});
-				return;
-			}
-		} else {
-			// List all prompts from all servers
-			let hasPrompts = false;
-			for (const server of status.servers) {
-				if (!server.connected || server.prompts.length === 0) continue;
-				hasPrompts = true;
-				lines.push(`${chalk.bold(server.name)}:`);
-				for (const prompt of server.prompts) {
-					lines.push(`  ${prompt}`);
-				}
-				lines.push("");
-			}
-			if (!hasPrompts) {
-				lines.push("No prompts available from connected servers.");
-			}
-			lines.push("");
-			lines.push(chalk.dim("Usage: /mcp prompts <server> <name>"));
-		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		this.ui.requestRender();
+	private _createMcpRenderContext(): McpRenderContext {
+		return {
+			addContent: (content: string) => {
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(new Text(content, 1, 0));
+			},
+			showError: (message: string) => {
+				this.notificationView.showError(message);
+			},
+			requestRender: () => {
+				this.ui.requestRender();
+			},
+		};
 	}
 
 	private handleComposerCommand(context: CommandExecutionContext): void {
