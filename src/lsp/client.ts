@@ -238,13 +238,17 @@ export class LspClient extends EventEmitter {
 	async shutdown(): Promise<void> {
 		if (this.isDead) return;
 
+		this._dead = true;
+
 		// Try graceful shutdown with timeout
 		const shutdownPromise = (async () => {
 			try {
-				await this.connection.sendRequest("shutdown", null, 500);
-				await this.connection.sendNotification("exit", {});
+				if (!this.connectionDisposed && !this.processClosed) {
+					await this.connection.sendRequest("shutdown", null, 500);
+					await this.connection.sendNotification("exit", {});
+				}
 			} catch {
-				// Server didn't respond
+				// Server didn't respond or connection already closed
 			}
 		})();
 
@@ -252,14 +256,15 @@ export class LspClient extends EventEmitter {
 
 		// Force kill if still alive
 		try {
-			if (!this.processClosed) {
+			if (!this.processClosed && this.process && !this.process.killed) {
 				this.process.kill("SIGKILL");
 			}
 		} catch {
 			// Already dead
 		}
 
-		this._dead = true;
+		// Dispose connection to prevent any further writes
+		this.disposeConnection();
 	}
 
 	private async sendSafe(fn: () => Promise<void>): Promise<void> {

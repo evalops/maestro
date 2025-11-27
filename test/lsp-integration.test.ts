@@ -29,24 +29,11 @@ describe("LSP Integration Tests", () => {
 	});
 
 	afterEach(async () => {
-		// Clean up any running LSP clients
-		const clients = await getClients();
-		for (const client of clients) {
-			try {
-				// Just kill the process - disposing can cause EPIPE if server already dead
-				if (client.process && !client.process.killed) {
-					client.process.kill("SIGKILL");
-				}
-			} catch {
-				// Process already dead
-			}
-		}
-
-		// Reset configuration and shutdown clients
+		// Reset configuration which triggers shutdownAll internally
 		await configureServers([]);
 
 		// Allow cleanup time for processes to fully exit
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await new Promise((resolve) => setTimeout(resolve, 100));
 	});
 
 	it("should spawn LSP server and initialize", async () => {

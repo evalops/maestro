@@ -1339,9 +1339,17 @@ export class ComposerSidebarProvider
 						if (active) {
 							const row = document.createElement('div');
 							row.className = 'context-row';
-							row.innerHTML = \`<span style="opacity: 0.7">Active:</span> \${active.filename.split(/[\\\\/]/).pop()}\`;
+							const labelSpan = document.createElement('span');
+							labelSpan.style.opacity = '0.7';
+							labelSpan.textContent = 'Active:';
+							row.appendChild(labelSpan);
+							row.appendChild(document.createTextNode(' ' + active.filename.split(/[\\\\/]/).pop()));
 							if (active.selection) {
-								row.innerHTML += ' <span class="context-pill">Selection</span>';
+								const selectionPill = document.createElement('span');
+								selectionPill.className = 'context-pill';
+								selectionPill.textContent = 'Selection';
+								row.appendChild(document.createTextNode(' '));
+								row.appendChild(selectionPill);
 							}
 							container.appendChild(row);
 						}
@@ -1350,11 +1358,20 @@ export class ComposerSidebarProvider
 							const row = document.createElement('div');
 							row.className = 'context-row';
 							row.style.flexWrap = 'wrap';
-							row.innerHTML = '<span style="opacity: 0.7">Pinned:</span>';
+							const pinnedLabel = document.createElement('span');
+							pinnedLabel.style.opacity = '0.7';
+							pinnedLabel.textContent = 'Pinned:';
+							row.appendChild(pinnedLabel);
 							pinned.forEach(p => {
 								const pill = document.createElement('span');
 								pill.className = 'context-pill';
-								pill.innerHTML = \`\${p.name} <span class="remove-btn" onclick="removePinned('\${p.path.replace(/\\\\/g, '\\\\\\\\')}')">×</span>\`;
+								const nameNode = document.createTextNode(p.name + ' ');
+								const removeButton = document.createElement('span');
+								removeButton.className = 'remove-btn';
+								removeButton.textContent = '×';
+								removeButton.addEventListener('click', () => removePinned(p.path));
+								pill.appendChild(nameNode);
+								pill.appendChild(removeButton);
 								row.appendChild(pill);
 							});
 							container.appendChild(row);
