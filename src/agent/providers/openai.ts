@@ -1,4 +1,5 @@
 import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
+import { createLogger } from "../../utils/logger.js";
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
@@ -6,6 +7,8 @@ import type {
 	Model,
 	StreamOptions,
 } from "../types.js";
+
+const logger = createLogger("agent:providers:openai");
 import { parseStreamingJson } from "./json-parse.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { transformMessages } from "./transform-messages.js";
@@ -158,7 +161,10 @@ async function* streamResponsesApi(
 				try {
 					event = JSON.parse(data);
 				} catch (e) {
-					console.warn("Failed to parse OpenAI Responses event", e);
+					logger.warn("Failed to parse OpenAI Responses event", {
+						error: e instanceof Error ? e.message : String(e),
+						stack: e instanceof Error ? e.stack : undefined,
+					});
 					continue;
 				}
 
@@ -664,7 +670,14 @@ export async function* streamOpenAI(
 										) {
 											return sanitizeSurrogates((part as any).text);
 										}
-										console.warn("Unsupported OpenAI content part", part);
+										logger.warn("Unsupported OpenAI content part", {
+											partType: typeof part,
+											keys:
+												part && typeof part === "object"
+													? Object.keys(part)
+													: undefined,
+											type: (part as any)?.type,
+										});
 										return "";
 									})
 									.filter((s: string) => s.length > 0)
@@ -835,7 +848,10 @@ export async function* streamOpenAI(
 						};
 					}
 				} catch (e) {
-					console.warn("Failed to parse OpenAI event:", e);
+					logger.warn("Failed to parse OpenAI event", {
+						error: e instanceof Error ? e.message : String(e),
+						stack: e instanceof Error ? e.stack : undefined,
+					});
 				}
 			}
 		}

@@ -1,6 +1,9 @@
 import AjvModule, { type ErrorObject } from "ajv";
 import addFormatsModule from "ajv-formats";
+import { createLogger } from "../../utils/logger.js";
 import type { AgentTool, ToolCall } from "../types.js";
+
+const logger = createLogger("agent:providers:validation");
 
 // Handle both default and named exports
 const Ajv = (AjvModule as any).default || AjvModule;
@@ -24,7 +27,10 @@ if (!isBrowserExtension) {
 		addFormats(ajv);
 	} catch (e) {
 		// AJV initialization failed (likely CSP restriction)
-		console.warn("AJV validation disabled due to CSP restrictions");
+		logger.warn("AJV validation disabled due to CSP restrictions", {
+			error: e instanceof Error ? e.message : String(e),
+			isBrowserExtension,
+		});
 	}
 }
 

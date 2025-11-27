@@ -1,4 +1,5 @@
 import { CLAUDE_CODE_BETA_HEADER } from "../../providers/anthropic-auth.js";
+import { createLogger } from "../../utils/logger.js";
 import type {
 	AgentTool,
 	AssistantMessage,
@@ -14,6 +15,8 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types.js";
+
+const logger = createLogger("agent:providers:anthropic");
 import { parseStreamingJson } from "./json-parse.js";
 import { transformMessages } from "./transform-messages.js";
 
@@ -532,7 +535,10 @@ export async function* streamAnthropic(
 					}
 				} catch (e) {
 					// Skip malformed event
-					console.warn("Failed to parse Anthropic event:", e);
+					logger.warn("Failed to parse Anthropic event", {
+						error: e instanceof Error ? e.message : String(e),
+						stack: e instanceof Error ? e.stack : undefined,
+					});
 				}
 			}
 		}
