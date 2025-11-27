@@ -58,9 +58,11 @@ function loadStorage(): OAuthStorageFormat {
 		const content = readFileSync(filePath, "utf-8");
 		return JSON.parse(content);
 	} catch (error) {
-		logger.warn("Failed to load OAuth credentials", {
-			error: error instanceof Error ? error.message : String(error),
-		});
+		logger.error(
+			"Failed to load OAuth credentials",
+			error instanceof Error ? error : undefined,
+			{ error: error instanceof Error ? error.message : String(error) },
+		);
 		return {};
 	}
 }
