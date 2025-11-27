@@ -113,11 +113,11 @@ export class ComposerMessage extends LitElement {
 
 		.content > composer-tool-execution {
 			display: block;
-			margin-top: 0.85rem;
+			margin-top: 1rem;
 		}
 
 		.message.compact .content > composer-tool-execution {
-			margin-top: 0.6rem;
+			margin-top: 0.8rem;
 		}
 
 		/* Markdown styles */
