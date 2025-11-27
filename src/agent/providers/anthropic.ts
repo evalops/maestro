@@ -170,14 +170,21 @@ export async function* streamAnthropic(
 
 	// Cache tools (last tool)
 	const tools: AnthropicTool[] =
-		context.tools?.map((tool, idx, arr) => ({
-			name: tool.name,
-			description: tool.description,
-			input_schema: tool.parameters,
-			...(idx === arr.length - 1 && cacheAppliedCount < maxCacheItems
-				? { cache_control: { type: "ephemeral" as const } }
-				: {}),
-		})) || [];
+		context.tools?.map((tool, idx, arr) => {
+			const params = tool.parameters as any;
+			return {
+				name: tool.name,
+				description: tool.description,
+				input_schema: {
+					type: "object" as const,
+					properties: params.properties || {},
+					required: params.required || [],
+				},
+				...(idx === arr.length - 1 && cacheAppliedCount < maxCacheItems
+					? { cache_control: { type: "ephemeral" as const } }
+					: {}),
+			};
+		}) || [];
 
 	if (tools.length > 0 && tools[tools.length - 1].cache_control) {
 		cacheAppliedCount++;
