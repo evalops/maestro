@@ -10,6 +10,17 @@ import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 
 const logger = createLogger("safety:action-firewall");
 
+// Type for policy check result caching
+interface PolicyCheckResult {
+	allowed: boolean;
+	reason?: string;
+}
+
+// Extended context type for caching policy check results
+interface ActionApprovalContextWithCache extends ActionApprovalContext {
+	_policyCheckResult?: PolicyCheckResult;
+}
+
 export interface ActionFirewallRule {
 	id: string;
 	description: string;
@@ -126,12 +137,13 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		match: async (ctx) => {
 			const result = await checkPolicy(ctx);
 			// Cache result on context to avoid re-evaluating in reason()
-			(ctx as any)._policyCheckResult = result;
+			(ctx as ActionApprovalContextWithCache)._policyCheckResult = result;
 			return !result.allowed;
 		},
 		reason: async (ctx) => {
 			const result =
-				(ctx as any)._policyCheckResult ?? (await checkPolicy(ctx));
+				(ctx as ActionApprovalContextWithCache)._policyCheckResult ??
+				(await checkPolicy(ctx));
 			return result.reason ?? "Action blocked by enterprise policy";
 		},
 	},

@@ -2,11 +2,12 @@
  * Check if an error indicates a dead connection
  */
 export function isConnectionDead(error: unknown): boolean {
-	const err = error as any;
+	if (!error || typeof error !== "object") return false;
+	const err = error as { code?: string; message?: string };
 	return (
-		err?.code === "EPIPE" ||
-		err?.message?.includes("socket") ||
-		err?.message?.includes("ended by the other party")
+		err.code === "EPIPE" ||
+		(err.message?.includes("socket") ?? false) ||
+		(err.message?.includes("ended by the other party") ?? false)
 	);
 }
 

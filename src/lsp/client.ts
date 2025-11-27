@@ -50,7 +50,7 @@ export class LspClient extends EventEmitter {
 	private setupEventHandlers(): void {
 		this.connection.onNotification(
 			"textDocument/publishDiagnostics",
-			(params: any) => {
+			(params: { uri?: string; diagnostics?: LspDiagnostic[] }) => {
 				const uri = params.uri;
 				if (!uri) return;
 				this.diagnostics.set(uri, params.diagnostics ?? []);

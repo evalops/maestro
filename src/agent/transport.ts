@@ -36,7 +36,9 @@ import type {
 	AgentTransport,
 	AppMessage,
 	AssistantMessage,
+	AssistantMessageEvent,
 	Message,
+	Model,
 	ToolCall,
 	ToolResultMessage,
 } from "./types.js";
@@ -151,21 +153,22 @@ function stableStringify(
 	maxDepth = 50,
 	maxLength = 10_000,
 ): string {
-	const seen = new WeakSet();
-	const sorter = (input: any, depth = 0): any => {
+	const seen = new WeakSet<object>();
+	const sorter = (input: unknown, depth = 0): unknown => {
 		if (depth > maxDepth) return "[Max Depth]";
 		if (input === null || typeof input !== "object") return input;
 		if (seen.has(input)) return "[Circular]";
 		seen.add(input);
-		let output: any;
+		let output: unknown;
 		if (Array.isArray(input)) {
 			output = input.map((item) => sorter(item, depth + 1));
 		} else {
 			const sortedKeys = Object.keys(input).sort();
-			output = {};
+			const obj: Record<string, unknown> = {};
 			for (const key of sortedKeys) {
-				output[key] = sorter(input[key], depth + 1);
+				obj[key] = sorter((input as Record<string, unknown>)[key], depth + 1);
 			}
+			output = obj;
 		}
 		seen.delete(input);
 		return output;
@@ -176,8 +179,8 @@ function stableStringify(
 			return "[SerializationError: Signature too large]";
 		}
 		return result;
-	} catch (error: any) {
-		const message = error?.message || "unknown";
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "unknown";
 		return `[SerializationError: ${message}]`;
 	}
 }
@@ -362,25 +365,37 @@ export class ProviderTransport implements AgentTransport {
 				messages: allMessages,
 			};
 
-			let stream: AsyncGenerator<any, void, unknown>;
+			let stream: AsyncGenerator<AssistantMessageEvent, void, unknown>;
 			if (model.api === "anthropic-messages") {
-				stream = streamAnthropic(model as any, currentContext, {
-					...streamOptions,
-					thinking: cfg.reasoning,
-				});
+				stream = streamAnthropic(
+					model as Model<"anthropic-messages">,
+					currentContext,
+					{
+						...streamOptions,
+						thinking: cfg.reasoning,
+					},
+				);
 			} else if (
 				model.api === "openai-completions" ||
 				model.api === "openai-responses"
 			) {
-				stream = streamOpenAI(model as any, currentContext, {
-					...streamOptions,
-					reasoningEffort: cfg.reasoning,
-				});
+				stream = streamOpenAI(
+					model as Model<"openai-completions" | "openai-responses">,
+					currentContext,
+					{
+						...streamOptions,
+						reasoningEffort: cfg.reasoning,
+					},
+				);
 			} else if (model.api === "google-generative-ai") {
-				stream = streamGoogle(model as any, currentContext, {
-					...streamOptions,
-					thinking: cfg.reasoning,
-				});
+				stream = streamGoogle(
+					model as Model<"google-generative-ai">,
+					currentContext,
+					{
+						...streamOptions,
+						thinking: cfg.reasoning,
+					},
+				);
 			} else {
 				throw new Error(`Unsupported API: ${model.api}`);
 			}
