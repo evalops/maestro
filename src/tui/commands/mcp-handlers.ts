@@ -1,19 +1,15 @@
-import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import { mcpManager } from "../../mcp/index.js";
-import type { CommandExecutionContext } from "./types.js";
 
 export interface McpRenderContext {
+	rawInput: string;
 	addContent(content: string): void;
 	showError(message: string): void;
 	requestRender(): void;
 }
 
-export function handleMcpCommand(
-	context: CommandExecutionContext,
-	renderCtx: McpRenderContext,
-): void {
-	const args = context.rawInput.replace(/^\/mcp\s*/, "").trim();
+export function handleMcpCommand(renderCtx: McpRenderContext): void {
+	const args = renderCtx.rawInput.replace(/^\/mcp\s*/, "").trim();
 	const parts = args.split(/\s+/);
 	const subcommand = parts[0]?.toLowerCase() || "";
 

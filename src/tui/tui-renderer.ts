@@ -52,7 +52,7 @@ import {
 } from "../tools/background-tasks.js";
 import { getTrainingStatus } from "../training.js";
 
-import { composerManager, loadComposers } from "../composers/index.js";
+import { composerManager } from "../composers/index.js";
 import { mcpManager } from "../mcp/index.js";
 import { getChangelogPath, parseChangelog } from "../update/changelog.js";
 import { AboutView } from "./about-view.js";
@@ -64,6 +64,10 @@ import {
 	type BackgroundRenderContext,
 	handleBackgroundCommand,
 } from "./commands/background-handlers.js";
+import {
+	type ComposerRenderContext,
+	handleComposerCommand,
+} from "./commands/composer-handlers.js";
 import {
 	type McpRenderContext,
 	handleMcpCommand,
@@ -2093,11 +2097,14 @@ export class TuiRenderer {
 	}
 
 	private handleMcpCommand(context: CommandExecutionContext): void {
-		handleMcpCommand(context, this._createMcpRenderContext());
+		handleMcpCommand(this._createMcpRenderContext(context));
 	}
 
-	private _createMcpRenderContext(): McpRenderContext {
+	private _createMcpRenderContext(
+		context: CommandExecutionContext,
+	): McpRenderContext {
 		return {
+			rawInput: context.rawInput,
 			addContent: (content: string) => {
 				this.chatContainer.addChild(new Spacer(1));
 				this.chatContainer.addChild(new Text(content, 1, 0));
@@ -2112,105 +2119,23 @@ export class TuiRenderer {
 	}
 
 	private handleComposerCommand(context: CommandExecutionContext): void {
-		const args = context.rawInput.replace(/^\/composer\s*/, "").trim();
-		const parts = args.split(/\s+/);
-		const subcommand = parts[0]?.toLowerCase() || "";
-		const composerName = parts.slice(1).join(" ");
+		handleComposerCommand(this._createComposerRenderContext(context));
+	}
 
-		const lines: string[] = [];
-		const composers = loadComposers(process.cwd());
-		const state = composerManager.getState();
-
-		if (subcommand === "activate" && composerName) {
-			const success = composerManager.activate(composerName, process.cwd());
-			if (success) {
-				const newState = composerManager.getState();
-				lines.push(`Activated composer: ${newState.active?.name}`);
-				lines.push(`Description: ${newState.active?.description}`);
-				if (newState.active?.tools?.length) {
-					lines.push(
-						`Tools restricted to: ${newState.active.tools.join(", ")}`,
-					);
-				}
-				if (newState.active?.model) {
-					lines.push(`Model: ${newState.active.model}`);
-				}
-			} else {
-				lines.push(`Failed to activate composer '${composerName}'.`);
-				lines.push("Use /composer list to see available composers.");
-			}
-		} else if (subcommand === "deactivate") {
-			if (state.active) {
-				const name = state.active.name;
-				composerManager.deactivate();
-				lines.push(`Deactivated composer: ${name}`);
-				lines.push("Restored to default configuration.");
-			} else {
-				lines.push("No composer is currently active.");
-			}
-		} else if (subcommand === "list" || subcommand === "") {
-			// List all composers
-			lines.push("Custom Composers", "");
-
-			if (state.active) {
-				lines.push(`Active: ${state.active.name}`, "");
-			}
-
-			if (composers.length === 0) {
-				lines.push(
-					"No composers configured.",
-					"",
-					"Create composers in ~/.composer/composers/ or .composer/composers/",
-					"",
-					"Example composer.yaml:",
-					"  name: code-reviewer",
-					"  description: Reviews code for best practices",
-					"  systemPrompt: |",
-					"    You are a code reviewer focused on...",
-					"  tools: [read, search, diff]",
-				);
-			} else {
-				for (const composer of composers) {
-					const sourceIcon = composer.source === "project" ? "📁" : "🏠";
-					const activeMarker =
-						state.active?.name === composer.name ? " (active)" : "";
-					lines.push(`${sourceIcon} ${composer.name}${activeMarker}`);
-					lines.push(`    ${composer.description}`);
-				}
-			}
-		} else {
-			// Treat as composer name - show details
-			const composer = composers.find((c) => c.name === subcommand);
-			if (composer) {
-				lines.push(`Name: ${composer.name}`);
-				lines.push(`Description: ${composer.description}`);
-				lines.push(`Source: ${composer.source} (${composer.filePath})`);
-				if (composer.model) {
-					lines.push(`Model: ${composer.model}`);
-				}
-				if (composer.tools?.length) {
-					lines.push(`Tools: ${composer.tools.join(", ")}`);
-				}
-				if (composer.systemPrompt) {
-					lines.push("", "System Prompt:", composer.systemPrompt.slice(0, 500));
-				}
-				if (state.active?.name === composer.name) {
-					lines.push("", "(currently active)");
-				}
-			} else {
-				lines.push(`Composer '${subcommand}' not found.`);
-				lines.push("");
-				lines.push("Usage:");
-				lines.push("  /composer              - List available composers");
-				lines.push("  /composer <name>       - Show composer details");
-				lines.push("  /composer activate <name> - Activate a composer");
-				lines.push("  /composer deactivate   - Deactivate current composer");
-			}
-		}
-
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		this.ui.requestRender();
+	private _createComposerRenderContext(
+		context: CommandExecutionContext,
+	): ComposerRenderContext {
+		return {
+			rawInput: context.rawInput,
+			cwd: process.cwd(),
+			addContent: (content: string) => {
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(new Text(content, 1, 0));
+			},
+			requestRender: () => {
+				this.ui.requestRender();
+			},
+		};
 	}
 
 	private renderQueueList(): void {
