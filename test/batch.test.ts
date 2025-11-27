@@ -104,6 +104,9 @@ type BatchResultDetails = {
 	successful?: number;
 	failed?: number;
 	discarded?: number;
+	skipped?: number;
+	totalCalls?: number;
+	tools?: string[];
 };
 
 function getBatchDetails(result: AgentToolResult<unknown>): BatchResultDetails {
@@ -239,7 +242,7 @@ describe("batch tool", () => {
 					skipped: 1,
 				});
 				// Verify tools array matches totalCalls (only executed calls, not all requested)
-				expect(details.tools).toHaveLength(details.totalCalls);
+				expect(details.tools).toHaveLength(details.totalCalls ?? 0);
 				expect(details.tools).toEqual(["mock-success", "mock-fail"]);
 			});
 

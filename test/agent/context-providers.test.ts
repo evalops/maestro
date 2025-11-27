@@ -56,7 +56,6 @@ describe("TodoContextSource", () => {
 	});
 
 	it("returns null when no active goal", async () => {
-		// @ts-expect-error - mocking
 		vi.mocked(todoTool.loadStore).mockResolvedValue({});
 
 		const source = new TodoContextSource();
