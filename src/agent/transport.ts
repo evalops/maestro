@@ -180,7 +180,15 @@ function stableStringify(
 		}
 		return result;
 	} catch (error) {
-		const message = error instanceof Error ? error.message : "unknown";
+		const message =
+			error instanceof Error
+				? error.message
+				: typeof error === "object" &&
+						error !== null &&
+						"message" in error &&
+						typeof error.message === "string"
+					? error.message
+					: String(error);
 		return `[SerializationError: ${message}]`;
 	}
 }

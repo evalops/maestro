@@ -16,10 +16,14 @@ interface PolicyCheckResult {
 	reason?: string;
 }
 
-// Extended context type for caching policy check results
-interface ActionApprovalContextWithCache extends ActionApprovalContext {
-	_policyCheckResult?: PolicyCheckResult;
-}
+// WeakMap for caching policy check results per context object.
+// This cache relies on match() being called before reason() for the same context,
+// which is guaranteed by the firewall evaluation flow in evaluateFirewall().
+// WeakMap ensures entries are garbage collected when context is no longer referenced.
+const policyCheckCache = new WeakMap<
+	ActionApprovalContext,
+	PolicyCheckResult
+>();
 
 export interface ActionFirewallRule {
 	id: string;
@@ -136,14 +140,13 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		description: "Enforce enterprise policies on tools and dependencies",
 		match: async (ctx) => {
 			const result = await checkPolicy(ctx);
-			// Cache result on context to avoid re-evaluating in reason()
-			(ctx as ActionApprovalContextWithCache)._policyCheckResult = result;
+			// Cache result to avoid re-evaluating in reason()
+			policyCheckCache.set(ctx, result);
 			return !result.allowed;
 		},
 		reason: async (ctx) => {
-			const result =
-				(ctx as ActionApprovalContextWithCache)._policyCheckResult ??
-				(await checkPolicy(ctx));
+			const cached = policyCheckCache.get(ctx);
+			const result = cached ?? (await checkPolicy(ctx));
 			return result.reason ?? "Action blocked by enterprise policy";
 		},
 	},
