@@ -66,7 +66,10 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed": "bun run src/db/seed.ts",
-    "db:check": "bun run src/db/check.ts"
+    "db:check": "bun run src/db/check.ts",
+    "vscode:build": "npx nx run vscode-extension:build",
+    "vscode:package": "npx nx run vscode-extension:package",
+    "vscode:publish": "npx nx run vscode-extension:publish"
   },
   "dependencies": {
     "@evalops/contracts": "^0.10.0",
