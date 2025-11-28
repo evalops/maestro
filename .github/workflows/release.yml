@@ -125,6 +125,8 @@ jobs:
 
       - run: bun install
       - run: bun run build
+      - name: Generate version metadata
+        run: node scripts/create-version-json.js
 
       - name: Verify NPM token is present
         run: |
@@ -155,6 +157,54 @@ jobs:
           set -euo pipefail
           printf "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n" > "$HOME/.npmrc"
           npm publish "${{ steps.pack.outputs.tarball }}" --access public
+
+      - name: Sync Hopper version metadata
+        env:
+          HOPPER_PUSH_TOKEN: ${{ secrets.HOPPER_PUSH_TOKEN }}
+          HOPPER_REPOSITORY: ${{ vars.HOPPER_REPOSITORY }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$HOPPER_PUSH_TOKEN" ]; then
+            echo "HOPPER_PUSH_TOKEN secret missing; skipping Hopper sync."
+            exit 0
+          fi
+
+          repo="${HOPPER_REPOSITORY:-evalops/hopper}"
+          workdir=$(mktemp -d)
+          trap 'rm -rf "$workdir"' EXIT
+
+          gh auth setup-git
+          gh auth status
+          gh auth refresh --hostname github.com --scopes repo || true
+
+          gh api user >/dev/null || {
+            echo "gh auth not configured; initializing with provided token"
+            export GH_TOKEN="$HOPPER_PUSH_TOKEN"
+          }
+
+          git clone "https://x-access-token:${HOPPER_PUSH_TOKEN}@github.com/${repo}.git" "$workdir"
+          pushd "$workdir" >/dev/null
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main || git pull --rebase origin main
+
+          mkdir -p public/composer
+          cp "$GITHUB_WORKSPACE/dist/version.json" "public/composer/version.json"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git status --short | grep -q "composer"; then
+            git add public/composer/version.json
+            git commit -m "chore: update composer version to v${RELEASE_VERSION}"
+            git push origin HEAD
+          else
+            echo "No changes to Hopper repository."
+          fi
+
+          popd >/dev/null
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
