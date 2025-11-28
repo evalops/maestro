@@ -164,17 +164,32 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			const spaceIndex = textBeforeCursor.indexOf(" ");
 			if (spaceIndex === -1) {
 				// No space yet - complete command names
-				const prefix = textBeforeCursor.slice(1); // Remove the "/"
+				const prefix = textBeforeCursor.slice(1).toLowerCase(); // Remove the "/"
 				const filtered = this.commands
 					.filter((cmd) => {
-						const name = "name" in cmd ? cmd.name : cmd.value; // Check if SlashCommand or AutocompleteItem
-						return name?.toLowerCase().startsWith(prefix.toLowerCase());
+						const name = "name" in cmd ? cmd.name : cmd.value;
+						const aliases = "aliases" in cmd && cmd.aliases ? cmd.aliases : [];
+						// Match command name or any alias
+						return (
+							name?.toLowerCase().startsWith(prefix) ||
+							aliases.some((a) => a.toLowerCase().startsWith(prefix))
+						);
 					})
-					.map((cmd) => ({
-						value: "name" in cmd ? cmd.name : cmd.value,
-						label: "name" in cmd ? cmd.name : cmd.label,
-						...(cmd.description && { description: cmd.description }),
-					}));
+					.map((cmd) => {
+						const name = "name" in cmd ? cmd.name : cmd.value;
+						const aliases = "aliases" in cmd && cmd.aliases ? cmd.aliases : [];
+						// Show short aliases in label (e.g., "help (h)")
+						const shortAliases = aliases.filter((a) => a.length <= 2);
+						const label =
+							shortAliases.length > 0
+								? `${name} (${shortAliases.join(", ")})`
+								: name;
+						return {
+							value: name,
+							label,
+							...(cmd.description && { description: cmd.description }),
+						};
+					});
 				if (filtered.length === 0) return null;
 				return {
 					items: filtered,
@@ -182,11 +197,16 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				};
 			}
 			// Space found - complete command arguments
-			const commandName = textBeforeCursor.slice(1, spaceIndex); // Command without "/"
+			const commandName = textBeforeCursor.slice(1, spaceIndex).toLowerCase(); // Command without "/"
 			const argumentText = textBeforeCursor.slice(spaceIndex + 1); // Text after space
 			const command = this.commands.find((cmd) => {
 				const name = "name" in cmd ? cmd.name : cmd.value;
-				return name === commandName;
+				const aliases = "aliases" in cmd && cmd.aliases ? cmd.aliases : [];
+				// Match command name or any alias
+				return (
+					name?.toLowerCase() === commandName ||
+					aliases.some((a) => a.toLowerCase() === commandName)
+				);
 			});
 			if (
 				!command ||

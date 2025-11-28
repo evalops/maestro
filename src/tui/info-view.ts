@@ -12,9 +12,14 @@ export class InfoView {
 	constructor(private readonly options: InfoViewOptions) {}
 
 	showHelp(): void {
-		const lines = this.options
-			.getSlashCommands()
-			.map((cmd) => `${chalk.cyan(`/${cmd.name}`)} - ${cmd.description}`);
+		const lines = this.options.getSlashCommands().map((cmd) => {
+			const shortAliases = (cmd.aliases ?? []).filter((a) => a.length <= 2);
+			const aliasHint =
+				shortAliases.length > 0
+					? chalk.dim(` (${shortAliases.join(", ")})`)
+					: "";
+			return `${chalk.cyan(`/${cmd.name}`)}${aliasHint} - ${cmd.description}`;
+		});
 		const body = `${chalk.bold("Slash commands")}
 ${lines.join("\n")}`;
 		this.options.chatContainer.addChild(new Spacer(1));

@@ -6,15 +6,27 @@ import type {
 	CommandRegistryOptions,
 } from "./types.js";
 
-const equals = (name: string) => (input: string) => input === `/${name}`;
+const equals =
+	(name: string, aliases: string[] = []) =>
+	(input: string) =>
+		input === `/${name}` || aliases.some((a) => input === `/${a}`);
 
-const withArgs = (name: string) => (input: string) =>
-	input === `/${name}` || input.startsWith(`/${name} `);
+const withArgs =
+	(name: string, aliases: string[] = []) =>
+	(input: string) =>
+		input === `/${name}` ||
+		input.startsWith(`/${name} `) ||
+		aliases.some((a) => input === `/${a}` || input.startsWith(`/${a} `));
 
 const matchDiagnostics = (input: string) =>
-	input === "/diag" || input.startsWith("/diag ") || input === "/diagnostics";
+	input === "/diag" ||
+	input.startsWith("/diag ") ||
+	input === "/diagnostics" ||
+	input === "/d" ||
+	input.startsWith("/d ");
 
-const matchQuit = (input: string) => input === "/quit" || input === "/exit";
+const matchQuit = (input: string) =>
+	input === "/quit" || input === "/exit" || input === "/q";
 
 export function createCommandRegistry({
 	getRunScriptCompletions,
@@ -128,8 +140,9 @@ export function createCommandRegistry({
 				description: "Export session to HTML or text",
 				usage: "/export [path] [html|text]",
 				tags: ["session", "sharing"],
+				aliases: ["e"],
 			},
-			withArgs("export"),
+			withArgs("export", ["e"]),
 			handlers.exportSession,
 			createContext,
 		),
@@ -150,8 +163,9 @@ export function createCommandRegistry({
 				description: "Show available tools, failures, or clear logs",
 				usage: "/tools [list|failures|clear]",
 				tags: ["tools"],
+				aliases: ["t"],
 			},
-			withArgs("tools"),
+			withArgs("tools", ["t"]),
 			handlers.tools,
 			createContext,
 		),
@@ -174,8 +188,9 @@ export function createCommandRegistry({
 				usage:
 					'/session [info|favorite|unfavorite|summary "text"] (defaults: info)',
 				tags: ["session"],
+				aliases: ["s"],
 			},
-			withArgs("session"),
+			withArgs("session", ["s"]),
 			handlers.session,
 			createContext,
 		),
@@ -187,8 +202,9 @@ export function createCommandRegistry({
 				usage:
 					"/sessions [list|load <id>|favorite <id>|unfavorite <id>|summarize <id>]",
 				tags: ["session"],
+				aliases: ["ss"],
 			},
-			withArgs("sessions"),
+			withArgs("sessions", ["ss"]),
 			handlers.sessions,
 			createContext,
 		),
@@ -243,8 +259,9 @@ export function createCommandRegistry({
 				description: "Show saved plans/checklists",
 				usage: "/plan [id]",
 				tags: ["planning"],
+				aliases: ["p"],
 			},
-			withArgs("plan"),
+			withArgs("plan", ["p"]),
 			handlers.plan,
 			createContext,
 		),
@@ -341,9 +358,10 @@ export function createCommandRegistry({
 				description: "Run npm script (e.g. /run test --watch)",
 				usage: "/run <script> [--flags]",
 				tags: ["automation"],
+				aliases: ["r"],
 				getArgumentCompletions: getRunScriptCompletions,
 			},
-			withArgs("run"),
+			withArgs("run", ["r"]),
 			handlers.run,
 			createContext,
 		),
@@ -365,8 +383,9 @@ export function createCommandRegistry({
 				description: "List available slash commands",
 				usage: "/help",
 				tags: ["support"],
+				aliases: ["h"],
 			},
-			equals("help"),
+			equals("help", ["h"]),
 			handlers.help,
 			createContext,
 		),
@@ -492,7 +511,7 @@ export function createCommandRegistry({
 				description: "Show provider/model/API key diagnostics",
 				usage: "/diag [lsp|keys]",
 				tags: ["diagnostics"],
-				aliases: ["diagnostics"],
+				aliases: ["d", "diagnostics"],
 			},
 			matchDiagnostics,
 			handlers.diagnostics,
@@ -615,7 +634,7 @@ export function createCommandRegistry({
 				description: "Exit composer (same as ctrl+c twice)",
 				usage: "/quit",
 				tags: ["system"],
-				aliases: ["exit"],
+				aliases: ["q", "exit"],
 			},
 			matchQuit,
 			handlers.quit,
