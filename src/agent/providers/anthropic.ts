@@ -172,14 +172,15 @@ export async function* streamAnthropic(
 	const tools: AnthropicTool[] =
 		context.tools?.map((tool, idx, arr) => {
 			const params = tool.parameters as any;
+			const schema = {
+				type: "object" as const,
+				properties: params.properties || {},
+				required: params.required || [],
+			};
 			return {
 				name: tool.name,
 				description: tool.description,
-				input_schema: {
-					type: "object" as const,
-					properties: params.properties || {},
-					required: params.required || [],
-				},
+				input_schema: schema,
 				...(idx === arr.length - 1 && cacheAppliedCount < maxCacheItems
 					? { cache_control: { type: "ephemeral" as const } }
 					: {}),
@@ -350,12 +351,14 @@ export async function* streamAnthropic(
 							yield { type: "thinking_start", contentIndex: idx, partial };
 						} else if (block.type === "tool_use") {
 							const idx = partial.content.length;
-							partial.content.push({
+							const toolCall: any = {
 								type: "toolCall",
 								id: block.id,
 								name: block.name,
 								arguments: {},
-							});
+								partialJson: "", // Track partial JSON
+							};
+							partial.content.push(toolCall);
 							yield { type: "toolcall_start", contentIndex: idx, partial };
 						}
 					} else if (event.type === "content_block_delta") {
@@ -386,15 +389,22 @@ export async function* streamAnthropic(
 							delta.type === "input_json_delta" &&
 							block?.type === "toolCall"
 						) {
+							const partialJson = delta.partial_json || "";
+							(block as any).partialJson = ((block as any).partialJson || "") + partialJson;
+							
+							// Try to parse accumulated JSON
 							try {
-								const partialJson = delta.partial_json || "";
-								yield {
-									type: "toolcall_delta",
-									contentIndex: idx,
-									delta: partialJson,
-									partial,
-								};
-							} catch {}
+								block.arguments = JSON.parse((block as any).partialJson);
+							} catch {
+								// Not complete JSON yet, keep accumulating
+							}
+							
+							yield {
+								type: "toolcall_delta",
+								contentIndex: idx,
+								delta: partialJson,
+								partial,
+							};
 						}
 					} else if (event.type === "content_block_stop") {
 						const idx = event.index;
