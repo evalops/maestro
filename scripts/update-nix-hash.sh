@@ -8,11 +8,6 @@ if ! command -v nix >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "jq is required to update flake.nix" >&2
-  exit 1
-fi
-
 # Ensure deps are installed (skip scripts to avoid side effects)
 if [ -f package-lock.json ]; then
   npm ci --ignore-scripts >/dev/null
