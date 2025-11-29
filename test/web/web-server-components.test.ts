@@ -50,7 +50,7 @@ describe("RateLimiter", () => {
 });
 
 describe("CircuitBreaker", () => {
-	it("should update options via getCircuitBreaker", () => {
+	it("should update options via updateOptions", () => {
 		// Mock registry by accessing the exported map if possible, or just testing class behavior via a new instance if we can't access the singleton easily.
 		// Since getCircuitBreaker uses a module-level map, we can test it directly if we import it.
 		// However, let's test the class method updateOptions primarily.

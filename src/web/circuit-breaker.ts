@@ -128,9 +128,5 @@ export function getCircuitBreaker(
 		circuitBreakers.set(name, new CircuitBreaker(name, options));
 	}
 	// biome-ignore lint/style/noNonNullAssertion: we just set it
-	const breaker = circuitBreakers.get(name)!;
-	if (options) {
-		breaker.updateOptions(options);
-	}
-	return breaker;
+	return circuitBreakers.get(name)!;
 }
