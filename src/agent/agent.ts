@@ -1,5 +1,8 @@
-import type { AgentContextSource } from "./context-manager.js";
-import { AgentContextManager } from "./context-manager.js";
+import { validate as uuidValidate } from "uuid";
+import {
+	AgentContextManager,
+	type AgentContextSource,
+} from "./context-manager.js";
 import type {
 	AgentEvent,
 	AgentState,
@@ -150,6 +153,15 @@ export class Agent {
 
 		const { systemPrompt, model, thinkingLevel, tools, ...restInitialState } =
 			opts.initialState ?? {};
+
+		if (restInitialState.user) {
+			if (
+				!uuidValidate(restInitialState.user.id) ||
+				!uuidValidate(restInitialState.user.orgId)
+			) {
+				throw new Error("Invalid user ID or Org ID: Must be a valid UUID");
+			}
+		}
 
 		this._state = {
 			systemPrompt: systemPrompt ?? "",
@@ -419,6 +431,7 @@ export class Agent {
 				model: this._state.model,
 				reasoning,
 				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
+				user: this._state.user,
 			};
 
 			for await (const event of this.transport.run(

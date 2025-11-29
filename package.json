@@ -93,6 +93,7 @@
     "partial-json": "^0.1.7",
     "postgres": "^3.4.7",
     "string-width": "^8.1.0",
+    "uuid": "^13.0.0",
     "vscode-jsonrpc": "^8.2.0",
     "zod": "^4.1.13",
     "zod-validation-error": "^5.0.0"
@@ -107,6 +108,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24.10.1",
+    "@types/uuid": "^11.0.0",
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.7",
     "esbuild": "^0.27.0",

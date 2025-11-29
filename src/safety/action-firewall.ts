@@ -4,6 +4,7 @@ import type {
 	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
+import { checkPolicy } from "./policy.js";
 import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 
 export interface ActionFirewallRule {
@@ -115,7 +116,20 @@ function isMcpTool(toolName: string): boolean {
 }
 
 export const defaultFirewallRules: ActionFirewallRule[] = [
-	// MCP tool annotations rule - require approval for destructive MCP tools
+	{
+		id: "enterprise-policy",
+		description: "Enforce enterprise policies on tools and dependencies",
+		match: (ctx) => {
+			const result = checkPolicy(ctx);
+			// Cache result on context to avoid re-evaluating in reason()
+			(ctx as any)._policyCheckResult = result;
+			return !result.allowed;
+		},
+		reason: (ctx) => {
+			const result = (ctx as any)._policyCheckResult ?? checkPolicy(ctx);
+			return result.reason ?? "Action blocked by enterprise policy";
+		},
+	},
 	{
 		id: "mcp-destructive-tool",
 		description: "MCP tools marked as destructive require approval",

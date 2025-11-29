@@ -38,6 +38,10 @@ export interface ActionApprovalContext {
 			openWorldHint?: boolean;
 		};
 	};
+	user?: {
+		id: string; // UUID
+		orgId: string; // UUID
+	};
 }
 
 export type ActionFirewallVerdict =

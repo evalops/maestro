@@ -547,6 +547,7 @@ export class ProviderTransport implements AgentTransport {
 							workflowState: workflowSnapshot,
 							annotations: toolDef?.annotations,
 						},
+						user: cfg.user,
 					});
 					if (
 						verdict.action === "require_approval" &&
