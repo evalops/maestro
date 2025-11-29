@@ -44,17 +44,21 @@ export class RateLimiter {
 
 		if (client.tokens >= 1) {
 			client.tokens -= 1;
+			const tokensNeeded = this.max - client.tokens;
+			const msNeeded = tokensNeeded / this.refillRate;
 			return {
 				allowed: true,
 				remaining: Math.floor(client.tokens),
-				reset: now + 1 / this.refillRate,
+				reset: now + msNeeded,
 			};
 		}
 
+		const tokensNeeded = 1 - client.tokens;
+		const msNeeded = tokensNeeded / this.refillRate;
 		return {
 			allowed: false,
 			remaining: 0,
-			reset: now + (1 - client.tokens) / this.refillRate,
+			reset: now + msNeeded,
 		};
 	}
 

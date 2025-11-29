@@ -30,6 +30,10 @@ export class CircuitBreaker extends EventEmitter {
 		super();
 	}
 
+	updateOptions(options: CircuitBreakerOptions) {
+		this.options = options;
+	}
+
 	getState(): CircuitState {
 		// Auto-transition to HALF_OPEN if timeout passed
 		if (
@@ -124,5 +128,9 @@ export function getCircuitBreaker(
 		circuitBreakers.set(name, new CircuitBreaker(name, options));
 	}
 	// biome-ignore lint/style/noNonNullAssertion: we just set it
-	return circuitBreakers.get(name)!;
+	const breaker = circuitBreakers.get(name)!;
+	if (options) {
+		breaker.updateOptions(options);
+	}
+	return breaker;
 }

@@ -68,21 +68,23 @@ export { SseSession } from "./web/sse-session.js";
 loadEnv();
 
 // Global crash handlers
-process.on("uncaughtException", (error) => {
-	logError(error);
-	console.error("FATAL: Uncaught Exception. Exiting...");
-	process.exit(1);
-});
+function registerCrashHandlers() {
+	process.on("uncaughtException", (error) => {
+		logError(error);
+		console.error("FATAL: Uncaught Exception. Exiting...");
+		process.exit(1);
+	});
 
-process.on("unhandledRejection", (reason) => {
-	logError(
-		reason instanceof Error
-			? reason
-			: new Error(`Unhandled Rejection: ${String(reason)}`),
-	);
-	console.error("FATAL: Unhandled Rejection. Exiting...");
-	process.exit(1);
-});
+	process.on("unhandledRejection", (reason) => {
+		logError(
+			reason instanceof Error
+				? reason
+				: new Error(`Unhandled Rejection: ${String(reason)}`),
+		);
+		console.error("FATAL: Unhandled Rejection. Exiting...");
+		process.exit(1);
+	});
+}
 
 function normalizeApprovalMode(value?: string | null): ApprovalMode {
 	const normalized = value?.trim().toLowerCase();
@@ -324,7 +326,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	if (!pathname.startsWith("/api/chat")) {
 		res.setTimeout(REQUEST_TIMEOUT_MS, () => {
 			if (!res.writableEnded) {
-				logError(`Request timeout for ${pathname} [${requestId}]`);
+				requestContextStorage.run(context, () => {
+					logError(`Request timeout for ${pathname} [${requestId}]`);
+				});
 				res.writeHead(504, {
 					"Content-Type": "application/json",
 					...CORS_HEADERS,
@@ -401,6 +405,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				return;
 			}
 			// Add rate limit headers to successful responses too
+			// Pass them to CORS headers so they are included in all responses (including errors)
+			// Note: We modify the global CORS_HEADERS object for this request's response cycle
+			// But since we can't easily inject them into router/helpers without changing signatures everywhere,
+			// we use setHeader. Note that helpers using sendJson/writeHead must respect existing headers.
+			// sendJson uses writeHead which merges headers.
 			res.setHeader("X-RateLimit-Limit", "1000");
 			res.setHeader("X-RateLimit-Remaining", remaining.toString());
 			res.setHeader("X-RateLimit-Reset", Math.ceil(reset / 1000).toString());
@@ -436,6 +445,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 }
 
 export async function startWebServer(port = 8080) {
+	registerCrashHandlers();
 	await reloadModelConfig();
 
 	const server = createServer(handleRequest);

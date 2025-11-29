@@ -205,7 +205,13 @@ export function respondWithApiError(
 	fallbackStatus = 500,
 	corsHeaders?: Record<string, string>,
 ): boolean {
-	const status = Status.fromError(error);
+	const originalStatus = Status.fromError(error);
+	// Clone to avoid mutation of original error status
+	const status = new Status(
+		originalStatus.code,
+		originalStatus.message,
+		originalStatus.details,
+	);
 	let statusCode = status.toHttpCode();
 
 	// Preserve explicit status codes from ApiError
