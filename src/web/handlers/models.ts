@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getRegisteredModels } from "../../models/registry.js";
 import type { RegisteredModel } from "../../models/registry.js";
-import type { AuthCredential } from "../../providers/auth.js";
+import type { WebServerContext } from "../app-context.js";
 import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
@@ -60,11 +60,16 @@ function respondWithModel(
 export async function handleModel(
 	req: IncomingMessage,
 	res: ServerResponse,
-	cors: Record<string, string>,
-	defaults: { provider: string; modelId: string },
-	ensureCredential: (provider: string) => Promise<AuthCredential>,
-	onSelect?: (model: RegisteredModel) => void,
+	context: WebServerContext,
 ) {
+	const {
+		corsHeaders: cors,
+		getCurrentSelection,
+		ensureCredential,
+		setModelSelection: onSelect,
+	} = context;
+	const defaults = getCurrentSelection();
+
 	if (req.method === "GET") {
 		const models = getRegisteredModels();
 		const active =
@@ -85,25 +90,22 @@ export async function handleModel(
 	}
 
 	if (req.method === "POST") {
-		try {
-			const payload = await parseAndValidateJson<ModelSetInput>(
-				req,
-				ModelSetSchema,
-			);
-			const modelInput = payload.model.trim();
+		// Remove try/catch, let router handle it
+		const payload = await parseAndValidateJson<ModelSetInput>(
+			req,
+			ModelSetSchema,
+		);
+		const modelInput = payload.model.trim();
 
-			const selection = determineModelSelection(
-				modelInput,
-				defaults.provider,
-				defaults.modelId,
-			);
-			const registeredModel = getRegisteredModelOrThrow(selection);
-			await ensureCredential(registeredModel.provider);
-			if (onSelect) onSelect(registeredModel);
-			respondWithModel(res, registeredModel, cors);
-		} catch (error) {
-			respondWithApiError(res, error, 400, cors);
-		}
+		const selection = determineModelSelection(
+			modelInput,
+			defaults.provider,
+			defaults.modelId,
+		);
+		const registeredModel = getRegisteredModelOrThrow(selection);
+		await ensureCredential(registeredModel.provider);
+		if (onSelect) onSelect(registeredModel);
+		respondWithModel(res, registeredModel, cors);
 		return;
 	}
 

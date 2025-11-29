@@ -122,7 +122,7 @@ export function sendJson(
 	payload: unknown,
 	corsHeaders?: Record<string, string>,
 ): void {
-	if (res.writableEnded) return;
+	if (res.writableEnded || res.headersSent) return;
 
 	const body = JSON.stringify(payload);
 	const headers: Record<string, string | number> = {

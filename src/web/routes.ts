@@ -85,28 +85,12 @@ export function createRoutes(context: WebServerContext): Route[] {
 		{
 			method: "GET",
 			path: "/api/model",
-			handler: async (req, res) =>
-				handleModel(
-					req,
-					res,
-					corsHeaders,
-					{ ...context.getCurrentSelection() },
-					context.ensureCredential,
-					context.setModelSelection,
-				),
+			handler: async (req, res) => handleModel(req, res, context),
 		},
 		{
 			method: "POST",
 			path: "/api/model",
-			handler: async (req, res) =>
-				handleModel(
-					req,
-					res,
-					corsHeaders,
-					{ ...context.getCurrentSelection() },
-					context.ensureCredential,
-					context.setModelSelection,
-				),
+			handler: async (req, res) => handleModel(req, res, context),
 		},
 		{
 			method: "GET",
@@ -124,22 +108,7 @@ export function createRoutes(context: WebServerContext): Route[] {
 		{
 			method: "POST",
 			path: "/api/chat",
-			handler: async (req, res) => {
-				return handleChat(req, res, corsHeaders, {
-					createAgent: async (model, thinking, approval) =>
-						context.createAgent(
-							model,
-							thinking as ThinkingLevel,
-							approval as ApprovalMode,
-						),
-					getRegisteredModel: context.getRegisteredModel,
-					defaultApprovalMode: context.defaultApprovalMode,
-					defaultProvider: context.defaultProvider,
-					defaultModelId: context.defaultModelId,
-					acquireSse: context.acquireSse,
-					releaseSse: context.releaseSse,
-				});
-			},
+			handler: async (req, res) => handleChat(req, res, context),
 		},
 		{
 			method: "GET",

@@ -18,40 +18,34 @@ export async function handleConfig(
 	cors: Record<string, string>,
 ) {
 	if (req.method === "GET") {
-		try {
-			const config = getComposerCustomConfig();
-			const configPath = getCustomConfigPath();
-			sendJson(res, 200, { config, configPath }, cors);
-		} catch (error) {
-			respondWithApiError(res, error, 500, cors);
-		}
+		// Let router handle errors
+		const config = getComposerCustomConfig();
+		const configPath = getCustomConfigPath();
+		sendJson(res, 200, { config, configPath }, cors);
 	} else if (req.method === "POST") {
-		try {
-			const { config } = await readJsonBody<{ config: unknown }>(req);
-			if (
-				config === null ||
-				typeof config !== "object" ||
-				Array.isArray(config)
-			) {
-				throw new ApiError(400, "Config must be a JSON object");
-			}
-			if (containsPollutionKeys(config)) {
-				throw new ApiError(400, "Config contains forbidden keys");
-			}
-			if (isTooDeep(config, MAX_CONFIG_DEPTH)) {
-				throw new ApiError(400, "Config is too deeply nested");
-			}
-			const serialized = JSON.stringify(config);
-			if (Buffer.byteLength(serialized, "utf8") > MAX_CONFIG_BYTES) {
-				throw new ApiError(413, "Config exceeds maximum allowed size");
-			}
-			const configPath = getCustomConfigPath();
-			writeFileSync(configPath, serialized, "utf-8");
-			await reloadModelConfig();
-			sendJson(res, 200, { success: true }, cors);
-		} catch (error) {
-			respondWithApiError(res, error, 500, cors);
+		// Let router handle errors
+		const { config } = await readJsonBody<{ config: unknown }>(req);
+		if (
+			config === null ||
+			typeof config !== "object" ||
+			Array.isArray(config)
+		) {
+			throw new ApiError(400, "Config must be a JSON object");
 		}
+		if (containsPollutionKeys(config)) {
+			throw new ApiError(400, "Config contains forbidden keys");
+		}
+		if (isTooDeep(config, MAX_CONFIG_DEPTH)) {
+			throw new ApiError(400, "Config is too deeply nested");
+		}
+		const serialized = JSON.stringify(config);
+		if (Buffer.byteLength(serialized, "utf8") > MAX_CONFIG_BYTES) {
+			throw new ApiError(413, "Config exceeds maximum allowed size");
+		}
+		const configPath = getCustomConfigPath();
+		writeFileSync(configPath, serialized, "utf-8");
+		await reloadModelConfig();
+		sendJson(res, 200, { success: true }, cors);
 	}
 }
 

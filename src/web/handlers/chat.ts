@@ -1,14 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
-import type { AgentState } from "../../agent/types.js";
-import type { RegisteredModel } from "../../models/registry.js";
+import type { SessionManager } from "../../session/manager.js"; // Import type only if not used as value
 import {
-	SessionManager,
+	SessionManager as SessionManagerImpl, // Rename value import
 	toSessionModelMetadata,
 } from "../../session/manager.js";
 import { recordSseSkip } from "../../telemetry.js";
+import type { WebServerContext } from "../app-context.js";
 import { getCircuitBreaker } from "../circuit-breaker.js";
-import { respondWithApiError, sendJson } from "../server-utils.js";
+import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
 import {
@@ -17,44 +17,22 @@ import {
 	parseAndValidateJson,
 } from "../validation.js";
 
-export interface ChatDeps {
-	createAgent: (
-		registeredModel: RegisteredModel,
-		thinkingLevel: string,
-		approvalMode: string,
-	) => Promise<{
-		subscribe: (fn: (event: any) => void) => () => void;
-		replaceMessages: (msgs: any[]) => void;
-		clearMessages: () => void;
-		prompt: (input: string) => Promise<void>;
-		abort: () => void;
-		state: AgentState;
-	}>;
-	getRegisteredModel: (
-		input: string | null | undefined,
-	) => Promise<RegisteredModel>;
-	defaultApprovalMode: string;
-	defaultProvider: string;
-	defaultModelId: string;
-	onComplete?: () => void;
-	acquireSse?: () => symbol | null;
-	releaseSse?: (token: symbol | null) => void;
-}
-
 export async function handleChat(
 	req: IncomingMessage,
 	res: ServerResponse,
-	cors: Record<string, string>,
-	{
+	context: WebServerContext,
+) {
+	const {
 		createAgent,
 		getRegisteredModel,
 		defaultApprovalMode,
-		onComplete,
 		acquireSse,
 		releaseSse,
-	}: ChatDeps,
-) {
+		corsHeaders: cors,
+	} = context;
+
 	let sseLease: symbol | null = null;
+
 	try {
 		const chatReq = (await parseAndValidateJson<ChatRequestInput>(
 			req,
@@ -94,7 +72,7 @@ export async function handleChat(
 			}
 		}
 
-		const sessionManager = new SessionManager(false);
+		const sessionManager = new SessionManagerImpl(false);
 		if (chatReq.sessionId) {
 			const sessionFile = sessionManager.getSessionFileById(chatReq.sessionId);
 			if (sessionFile) {
@@ -245,6 +223,5 @@ export async function handleChat(
 		if (sseLease && releaseSse) {
 			releaseSse(sseLease);
 		}
-		if (typeof onComplete === "function") onComplete();
 	}
 }

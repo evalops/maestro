@@ -54,7 +54,7 @@ describe("handleChat", () => {
 
 		const res = makeRes();
 
-		await handleChat(req, res, cors, {
+		const context: any = {
 			createAgent: async () => {
 				throw new Error("should not create agent");
 			},
@@ -62,7 +62,10 @@ describe("handleChat", () => {
 			defaultApprovalMode: "prompt",
 			defaultProvider: "anthropic",
 			defaultModelId: mockModel.id,
-		});
+			corsHeaders: cors,
+		};
+
+		await handleChat(req, res, context);
 
 		expect(res.statusCode).toBe(400);
 		expect(res.body).toContain("No messages supplied");
@@ -81,7 +84,7 @@ describe("handleChat", () => {
 		const res = makeRes();
 		const events: any[] = [];
 
-		await handleChat(req, res, cors, {
+		const context: any = {
 			createAgent: async () => {
 				let subscriber: ((e: any) => void) | undefined;
 				return {
@@ -95,7 +98,7 @@ describe("handleChat", () => {
 						streamMessage: null,
 						pendingToolCalls: new Map(),
 					},
-					subscribe: (fn) => {
+					subscribe: (fn: any) => {
 						subscriber = fn;
 						return () => {
 							subscriber = undefined;
@@ -116,7 +119,10 @@ describe("handleChat", () => {
 			defaultApprovalMode: "prompt",
 			defaultProvider: "anthropic",
 			defaultModelId: mockModel.id,
-		});
+			corsHeaders: cors,
+		};
+
+		await handleChat(req, res, context);
 
 		// SSE stream writes contain DONE marker
 		expect(res.body).toContain("[DONE]");
