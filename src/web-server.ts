@@ -337,6 +337,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 			if (!res.writableEnded) {
 				requestContextStorage.run(context, () => {
 					logError(`Request timeout for ${pathname} [${requestId}]`);
+					const duration = performance.now() - start;
+					recordApiRequest(req.method || "UNKNOWN", pathname, 504, duration, {
+						requestId,
+						traceId,
+						spanId,
+					});
 				});
 				res.writeHead(504, {
 					"Content-Type": "application/json",

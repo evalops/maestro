@@ -89,6 +89,7 @@
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24.10.1",
     "concurrently": "^9.2.1",
+    "esbuild": "^0.27.0",
     "fast-check": "^4.3.0",
     "husky": "^9.1.7",
     "nx": "19.7.3",
