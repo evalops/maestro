@@ -58,7 +58,7 @@ export function wrapAnsiLine(line: string, width: number): string[] {
 		const char = String.fromCodePoint(codePoint);
 		const charWidth = visibleWidth(char);
 
-		if (currentLength + charWidth > width) {
+		if (currentLength + charWidth > targetWidth) {
 			if (currentLength > 0) {
 				if (activeAnsiCodes.length > 0) {
 					wrapped.push(`${currentLine}${ANSI_ESCAPE_RESET}`);
@@ -70,7 +70,7 @@ export function wrapAnsiLine(line: string, width: number): string[] {
 				currentLength = 0;
 			}
 			// Skip characters that individually exceed the target width
-			if (charWidth > width) {
+			if (charWidth > targetWidth) {
 				i += char.length;
 				continue;
 			}
