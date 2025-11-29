@@ -580,14 +580,14 @@
           "id": {
             "type": "string"
           },
-          "name": {
+          "title": {
             "type": "string"
           },
           "summary": {
             "type": "string"
           },
           "messageCount": {
-            "type": "integer"
+            "type": "number"
           },
           "createdAt": {
             "type": "string",

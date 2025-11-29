@@ -163,9 +163,9 @@ const schemas: Record<string, unknown> = {
 		required: ["id", "createdAt", "updatedAt"],
 		properties: {
 			id: { type: "string" },
-			name: { type: "string" },
+			title: { type: "string" },
 			summary: { type: "string" },
-			messageCount: { type: "integer" },
+			messageCount: { type: "number" },
 			createdAt: { type: "string", format: "date-time" },
 			updatedAt: { type: "string", format: "date-time" },
 		},
