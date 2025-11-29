@@ -25,7 +25,11 @@ export function visibleWidth(str: string): number {
  */
 export function wrapAnsiLine(line: string, width: number): string[] {
 	if (!line || width <= 0) return [""];
-	if (visibleWidth(line) <= width) return [line];
+
+	const MAX_VISIBLE_WIDTH = 8192;
+	const targetWidth = Math.min(width, MAX_VISIBLE_WIDTH);
+
+	if (visibleWidth(line) <= targetWidth) return [line];
 
 	const wrapped: string[] = [];
 	const activeAnsiCodes: string[] = [];

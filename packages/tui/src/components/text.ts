@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import type { Component } from "../tui.js";
-import { visibleWidth } from "../utils.js";
+import { visibleWidth, wrapAnsiLines } from "../utils.js";
 
 /**
  * Text component - displays multi-line text with word wrapping
@@ -144,7 +144,9 @@ export class Text implements Component {
 		const leftPad = " ".repeat(this.paddingX);
 		const paddedLines: string[] = [];
 
-		for (const line of lines) {
+		const wrappedContent = wrapAnsiLines(lines, contentWidth);
+
+		for (const line of wrappedContent) {
 			const visibleLength = visibleWidth(line);
 			const rightPadLength = Math.max(0, width - this.paddingX - visibleLength);
 			const rightPad = " ".repeat(rightPadLength);

@@ -108,7 +108,7 @@ export class TUI extends Container {
 		const height = this.terminal.rows;
 
 		// Render all components to get new lines
-		const newLines = wrapAnsiLines(this.render(width), width);
+		const newLines = this.render(width);
 
 		// Width changed - need full re-render
 		const widthChanged =
