@@ -35,11 +35,15 @@ export class FooterComponent {
 			}
 		}
 
-		// Get last assistant message for context percentage calculation
+		// Get last assistant message for context percentage calculation (skip aborted messages)
 		const lastAssistantMessage = this.state.messages
 			.slice()
 			.reverse()
-			.find((m) => m.role === "assistant") as AssistantMessage | undefined;
+			.find(
+				(m) =>
+					m.role === "assistant" &&
+					(m as AssistantMessage).stopReason !== "aborted",
+			) as AssistantMessage | undefined;
 
 		// Calculate context percentage from last message (input + output + cacheRead + cacheWrite)
 		const contextTokens = lastAssistantMessage
@@ -103,33 +107,45 @@ export class FooterComponent {
 
 		const statsLeft = statsParts.join(" ");
 
-		// Add model name on the right side
+		// Add model name and composer branding on the right side
+		const composerBrand = chalk.hex("#7c3aed")("♪ composer");
 		let modelName = this.state.model.id;
+		const rightSide = `${modelName} ${composerBrand}`;
+		
 		const statsLeftWidth = visibleWidth(statsLeft);
-		const modelWidth = visibleWidth(modelName);
+		const rightSideWidth = visibleWidth(rightSide);
 
-		// Calculate available space for padding (minimum 2 spaces between stats and model)
+		// Calculate available space for padding (minimum 2 spaces between stats and right side)
 		const minPadding = 2;
-		const totalNeeded = statsLeftWidth + minPadding + modelWidth;
+		const totalNeeded = statsLeftWidth + minPadding + rightSideWidth;
 
 		let statsLine: string;
 		if (totalNeeded <= width) {
-			// Both fit - add padding to right-align model
-			const padding = " ".repeat(width - statsLeftWidth - modelWidth);
-			statsLine = statsLeft + padding + modelName;
+			// Both fit - add padding to right-align
+			const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
+			statsLine = statsLeft + padding + rightSide;
 		} else {
 			// Need to truncate model name
-			const availableForModel = width - statsLeftWidth - minPadding;
+			const brandWidth = visibleWidth(composerBrand);
+			const availableForModel = width - statsLeftWidth - minPadding - brandWidth - 1;
 			if (availableForModel > 3) {
-				// Truncate model name to fit
+				// Truncate model name to fit, keep composer branding
 				modelName = modelName.substring(0, availableForModel);
+				const truncatedRight = `${modelName} ${composerBrand}`;
 				const padding = " ".repeat(
-					width - statsLeftWidth - visibleWidth(modelName),
+					width - statsLeftWidth - visibleWidth(truncatedRight),
 				);
-				statsLine = statsLeft + padding + modelName;
+				statsLine = statsLeft + padding + truncatedRight;
 			} else {
-				// Not enough space for model name at all
-				statsLine = statsLeft;
+				// Not enough space for model name, just show composer branding
+				const availableForBrand = width - statsLeftWidth - minPadding;
+				if (availableForBrand >= brandWidth) {
+					const padding = " ".repeat(width - statsLeftWidth - brandWidth);
+					statsLine = statsLeft + padding + composerBrand;
+				} else {
+					// Not enough space for anything on right
+					statsLine = statsLeft;
+				}
 			}
 		}
 

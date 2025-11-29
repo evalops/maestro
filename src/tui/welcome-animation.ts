@@ -106,9 +106,11 @@ export class WelcomeAnimation extends Container {
 
 		// Add centered text below
 		lines.push("");
-		const title = chalk.hex("#a5b4fc").bold("composer");
-		const subtitle = chalk.dim("orchestrating your code");
-		lines.push(this.centerText(title, width));
+		const note = chalk.hex("#7c3aed")("♪");
+		const title = chalk.hex("#8b5cf6").bold("composer");
+		const titleWithNote = `${note} ${title}`;
+		const subtitle = chalk.hex("#a78bfa")("orchestrating your code");
+		lines.push(this.centerText(titleWithNote, width));
 		lines.push(this.centerText(subtitle, width));
 
 		this.textComponent.setText(lines.join("\n"));
