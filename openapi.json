@@ -247,9 +247,31 @@
             "ComposerApiKey": []
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
-          "200": {
-            "description": "Session created/imported"
+          "201": {
+            "description": "Session created/imported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid session payload",
@@ -322,7 +344,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "204": {
             "description": "Deleted"
           },
           "401": {
@@ -569,12 +591,13 @@
           }
         }
       },
-      "Session": {
+      "SessionSummary": {
         "type": "object",
         "required": [
           "id",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "messageCount"
         ],
         "properties": {
           "id": {
@@ -583,11 +606,34 @@
           "title": {
             "type": "string"
           },
-          "summary": {
-            "type": "string"
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
           },
           "messageCount": {
-            "type": "number"
+            "type": "integer"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "createdAt",
+          "updatedAt",
+          "messageCount",
+          "messages"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
           },
           "createdAt": {
             "type": "string",
@@ -596,6 +642,15 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "messageCount": {
+            "type": "integer"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            }
           }
         }
       },
@@ -608,7 +663,7 @@
           "sessions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Session"
+              "$ref": "#/components/schemas/SessionSummary"
             }
           }
         }

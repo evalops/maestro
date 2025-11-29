@@ -60,7 +60,7 @@ function extractRoutes(sourcePath: string): Route[] {
 }
 
 function buildComponents() {
-const schemas: Record<string, unknown> = {
+	const schemas: Record<string, unknown> = {
 		ChatRequest: ChatRequestSchema,
 		ModelSetRequest: ModelSetSchema,
 		ChatMessage: {
@@ -127,8 +127,8 @@ const schemas: Record<string, unknown> = {
 				configPath: { type: "string" },
 			},
 		},
-	StatusResponse: {
-		type: "object",
+		StatusResponse: {
+			type: "object",
 			properties: {
 				cwd: { type: "string" },
 				git: {
@@ -157,38 +157,58 @@ const schemas: Record<string, unknown> = {
 				lastUpdated: { type: "number" },
 				lastLatencyMs: { type: "number" },
 			},
-	},
-	Session: {
-		type: "object",
-		required: ["id", "createdAt", "updatedAt"],
-		properties: {
-			id: { type: "string" },
-			title: { type: "string" },
-			summary: { type: "string" },
-			messageCount: { type: "number" },
-			createdAt: { type: "string", format: "date-time" },
-			updatedAt: { type: "string", format: "date-time" },
 		},
-	},
-	SessionsResponse: {
-		type: "object",
-		required: ["sessions"],
-		properties: {
-			sessions: {
-				type: "array",
-				items: { $ref: "#/components/schemas/Session" },
+		SessionSummary: {
+			type: "object",
+			required: ["id", "createdAt", "updatedAt", "messageCount"],
+			properties: {
+				id: { type: "string" },
+				title: { type: "string" },
+				createdAt: { type: "string", format: "date-time" },
+				updatedAt: { type: "string", format: "date-time" },
+				messageCount: { type: "integer" },
 			},
 		},
-	},
-	ErrorResponse: {
-		type: "object",
-		required: ["error"],
-		properties: {
-			error: { type: "string" },
-			details: { type: "string" },
+		Session: {
+			type: "object",
+			required: [
+				"id",
+				"createdAt",
+				"updatedAt",
+				"messageCount",
+				"messages",
+			],
+			properties: {
+				id: { type: "string" },
+				title: { type: "string" },
+				createdAt: { type: "string", format: "date-time" },
+				updatedAt: { type: "string", format: "date-time" },
+				messageCount: { type: "integer" },
+				messages: {
+					type: "array",
+					items: { $ref: "#/components/schemas/ChatMessage" },
+				},
+			},
 		},
-	},
-};
+		SessionsResponse: {
+			type: "object",
+			required: ["sessions"],
+			properties: {
+				sessions: {
+					type: "array",
+					items: { $ref: "#/components/schemas/SessionSummary" },
+				},
+			},
+		},
+		ErrorResponse: {
+			type: "object",
+			required: ["error"],
+			properties: {
+				error: { type: "string" },
+				details: { type: "string" },
+			},
+		},
+	};
 
 	return {
 		securitySchemes: {
@@ -386,8 +406,26 @@ function buildPaths(routes: Route[]) {
 			paths["/api/sessions"].post = {
 				summary: "Create/import session",
 				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: false,
+					content: {
+						"application/json": {
+							schema: {
+								type: "object",
+								properties: { title: { type: "string" } },
+							},
+						},
+					},
+				},
 				responses: {
-					200: { description: "Session created/imported" },
+					201: {
+						description: "Session created/imported",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/Session" },
+							},
+						},
+					},
 					401: { description: "Unauthorized" },
 					400: {
 						description: "Invalid session payload",
@@ -432,7 +470,7 @@ function buildPaths(routes: Route[]) {
 					{ name: "id", in: "path", required: true, schema: { type: "string" } },
 				],
 				responses: {
-					200: { description: "Deleted" },
+					204: { description: "Deleted" },
 					401: { description: "Unauthorized" },
 					404: { description: "Not found" },
 				},

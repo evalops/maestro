@@ -24,8 +24,30 @@ describe("OpenAPI spec", () => {
 		expect(modelsGet?.security?.[0]).toEqual({ ComposerApiKey: [] });
 	});
 
-	it("includes referenced schemas for sessions", () => {
-		expect(spec.components.schemas.Session).toBeDefined();
-		expect(spec.components.schemas.SessionsResponse).toBeDefined();
+	it("describes session schemas accurately", () => {
+		const { Session, SessionSummary, SessionsResponse } =
+			spec.components.schemas;
+		expect(Session).toBeDefined();
+		expect(SessionSummary).toBeDefined();
+		expect(Session.required).toEqual(
+			expect.arrayContaining(["id", "messages", "messageCount"]),
+		);
+		expect(Session.properties.messages).toBeDefined();
+		expect(SessionSummary.required).toEqual(
+			expect.arrayContaining(["id", "messageCount"]),
+		);
+		const sessionsItems = SessionsResponse.properties.sessions.items?.$ref;
+		expect(sessionsItems).toBe("#/components/schemas/SessionSummary");
+	});
+
+	it("documents session mutation responses", () => {
+		const postSession = spec.paths?.["/api/sessions"]?.post;
+		const deleteSession = spec.paths?.["/api/sessions/{id}"]?.delete;
+		expect(postSession?.responses?.[201]).toBeTruthy();
+		expect(
+			postSession?.responses?.[201]?.content?.["application/json"]?.schema
+				?.$ref,
+		).toBe("#/components/schemas/Session");
+		expect(deleteSession?.responses?.[204]).toBeTruthy();
 	});
 });
