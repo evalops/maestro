@@ -555,8 +555,8 @@ export class ComposerChat extends LitElement {
 
 		.session-gallery {
 			margin: 1.5rem;
-			background: #0d1117;
-			border: 1px solid #21262d;
+			background: #0c1219;
+			border: 1px solid #2a323c;
 			border-radius: 4px;
 			padding: 1.25rem;
 			box-shadow: 0 20px 35px rgba(0, 0, 0, 0.35);
@@ -592,8 +592,8 @@ export class ComposerChat extends LitElement {
 		}
 
 		.session-card {
-			background: #0a0e14;
-			border: 1px solid #21262d;
+			background: #0c1219;
+			border: 1px solid #2a323c;
 			border-radius: 4px;
 			padding: 0.85rem 1rem;
 			text-align: left;
@@ -1238,8 +1238,10 @@ export class ComposerChat extends LitElement {
 			: "n/a";
 		const totalCost =
 			this.usage && typeof this.usage.totalCost === "number"
-				? `$${this.usage.totalCost.toFixed(2)}`
-				: "$0.00";
+				? this.usage.totalCost > 0
+					? `$${this.usage.totalCost.toFixed(2)}`
+					: null
+				: null;
 		const isOnline = Boolean(this.status) && this.clientOnline;
 		const latency = this.status?.lastLatencyMs || null;
 		const taskHealth = (this.status as any)?.backgroundTasks as
@@ -1462,9 +1464,13 @@ export class ComposerChat extends LitElement {
 											<div class="panel-item">
 												<span>MSGS:</span>0
 											</div>
-											<div class="panel-item">
-												<span>COST:</span>$0.00
-											</div>
+											${
+												totalCost
+													? html`<div class="panel-item">
+														<span>COST:</span>${totalCost}
+													</div>`
+													: ""
+											}
 										</div>
 									</div>
 									${
