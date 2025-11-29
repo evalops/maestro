@@ -158,6 +158,56 @@ function buildComponents() {
 				lastLatencyMs: { type: "number" },
 			},
 		},
+		SessionSummary: {
+			type: "object",
+			required: ["id", "createdAt", "updatedAt", "messageCount"],
+			properties: {
+				id: { type: "string" },
+				title: { type: "string" },
+				createdAt: { type: "string", format: "date-time" },
+				updatedAt: { type: "string", format: "date-time" },
+				messageCount: { type: "integer" },
+			},
+		},
+		Session: {
+			type: "object",
+			required: [
+				"id",
+				"createdAt",
+				"updatedAt",
+				"messageCount",
+				"messages",
+			],
+			properties: {
+				id: { type: "string" },
+				title: { type: "string" },
+				createdAt: { type: "string", format: "date-time" },
+				updatedAt: { type: "string", format: "date-time" },
+				messageCount: { type: "integer" },
+				messages: {
+					type: "array",
+					items: { $ref: "#/components/schemas/ChatMessage" },
+				},
+			},
+		},
+		SessionsResponse: {
+			type: "object",
+			required: ["sessions"],
+			properties: {
+				sessions: {
+					type: "array",
+					items: { $ref: "#/components/schemas/SessionSummary" },
+				},
+			},
+		},
+		ErrorResponse: {
+			type: "object",
+			required: ["error"],
+			properties: {
+				error: { type: "string" },
+				details: { type: "string" },
+			},
+		},
 	};
 
 	return {
@@ -196,15 +246,31 @@ function buildPaths(routes: Route[]) {
 			required: true,
 			schema: { type: "string" },
 		}));
-		target[method] = target[method] || {
+		const defaults = {
 			summary: "Auto-generated from route definition",
 			parameters: params,
 			responses: { 200: { description: "OK" } },
 		};
-		// keep parameters if already enriched
-		if (params.length) {
-			target[method].parameters = params;
-		}
+		target[method] = target[method]
+			? {
+					...defaults,
+					...target[method],
+					// merge parameters/security if present
+					parameters: params.length
+						? params
+						: target[method].parameters || defaults.parameters,
+					security:
+						target[method].security ||
+						(normalizedPath.startsWith("/api")
+							? [{ ComposerApiKey: [] }]
+							: undefined),
+			  }
+			: {
+					...defaults,
+					security: normalizedPath.startsWith("/api")
+						? [{ ComposerApiKey: [] }]
+						: undefined,
+			  };
 	}
 
 	// Enrich known endpoints
@@ -313,6 +379,100 @@ function buildPaths(routes: Route[]) {
 					200: { description: "Config persisted" },
 					400: { description: "Invalid config" },
 					413: { description: "Payload too large" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/sessions"]) {
+		if (paths["/api/sessions"].get) {
+			paths["/api/sessions"].get = {
+				summary: "List sessions",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Sessions list",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/SessionsResponse" },
+							},
+						},
+					},
+					401: { description: "Unauthorized" },
+				},
+			};
+		}
+		if (paths["/api/sessions"].post) {
+			paths["/api/sessions"].post = {
+				summary: "Create/import session",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: false,
+					content: {
+						"application/json": {
+							schema: {
+								type: "object",
+								properties: { title: { type: "string" } },
+							},
+						},
+					},
+				},
+				responses: {
+					201: {
+						description: "Session created/imported",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/Session" },
+							},
+						},
+					},
+					401: { description: "Unauthorized" },
+					400: {
+						description: "Invalid session payload",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/ErrorResponse" },
+							},
+						},
+					},
+				},
+			};
+		}
+	}
+
+	if (paths["/api/sessions/{id}"]) {
+		if (paths["/api/sessions/{id}"].get) {
+			paths["/api/sessions/{id}"].get = {
+				summary: "Get session by id",
+				security: [{ ComposerApiKey: [] }],
+				parameters: [
+					{ name: "id", in: "path", required: true, schema: { type: "string" } },
+				],
+				responses: {
+					200: {
+						description: "Session data",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/Session" },
+							},
+						},
+					},
+					401: { description: "Unauthorized" },
+					404: { description: "Not found" },
+				},
+			};
+		}
+		if (paths["/api/sessions/{id}"].delete) {
+			paths["/api/sessions/{id}"].delete = {
+				summary: "Delete session",
+				security: [{ ComposerApiKey: [] }],
+				parameters: [
+					{ name: "id", in: "path", required: true, schema: { type: "string" } },
+				],
+				responses: {
+					204: { description: "Deleted" },
+					401: { description: "Unauthorized" },
+					404: { description: "Not found" },
 				},
 			};
 		}
