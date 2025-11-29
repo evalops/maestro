@@ -15,7 +15,7 @@ import {
 	runValidatorsOnSuccess,
 } from "../safety/safe-mode.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
-import { generateDiffString } from "./diff-utils.js";
+import { formatLspDiagnostics, generateDiffString } from "./diff-utils.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const writeSchema = Type.Object({
@@ -115,8 +115,14 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 				: undefined;
 
 		let validatorSummaries: ValidatorRunResult[] | undefined;
+		let linterOutput = "";
 		try {
 			const lspDiagnostics = await collectDiagnostics();
+			const fileDiagnostics = lspDiagnostics[absolutePath] || [];
+			if (fileDiagnostics.length > 0) {
+				linterOutput = formatLspDiagnostics(path, fileDiagnostics);
+			}
+
 			validatorSummaries = await runValidatorsOnSuccess(
 				[absolutePath],
 				lspDiagnostics,
@@ -144,6 +150,10 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 			}
 		} else {
 			summaryLines.push("File did not exist; it was created.");
+		}
+
+		if (linterOutput) {
+			summaryLines.push(linterOutput);
 		}
 
 		return respond.text(summaryLines.join("\n")).detail({

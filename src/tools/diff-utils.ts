@@ -1,4 +1,38 @@
 import * as Diff from "diff";
+import type { LspDiagnostic } from "../lsp/index.js";
+
+/**
+ * Format LSP diagnostics for user/agent display
+ */
+export function formatLspDiagnostics(
+	path: string,
+	diagnostics: LspDiagnostic[],
+): string {
+	if (!diagnostics || diagnostics.length === 0) return "";
+
+	// Filter out low severity/noise if needed, but for now show everything relevant
+	// Limit to top 5 to prevent context flooding
+	const topDiagnostics = diagnostics.slice(0, 5);
+	const lines = [`\nLinter check for ${path}:`];
+
+	for (const diag of topDiagnostics) {
+		const line = diag.range.start.line + 1;
+		const severityLabels: Record<number, string> = {
+			1: "Error",
+			2: "Warning",
+			3: "Info",
+			4: "Hint",
+		};
+		const sev = severityLabels[diag.severity ?? 2] ?? "Warning";
+		lines.push(`  [${sev}] Line ${line}: ${diag.message}`);
+	}
+
+	if (diagnostics.length > 5) {
+		lines.push(`  ...and ${diagnostics.length - 5} more.`);
+	}
+
+	return lines.join("\n");
+}
 
 /**
  * Generate a unified diff-like string with line numbers and limited context.

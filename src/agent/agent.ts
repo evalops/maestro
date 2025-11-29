@@ -1,3 +1,5 @@
+import type { AgentContextSource } from "./context-manager.js";
+import { AgentContextManager } from "./context-manager.js";
 import type {
 	AgentEvent,
 	AgentState,
@@ -89,6 +91,8 @@ export interface AgentOptions {
 	messageTransformer?: (
 		messages: AppMessage[],
 	) => Message[] | Promise<Message[]>;
+	/** Optional context sources for environment injection */
+	contextSources?: AgentContextSource[];
 }
 
 /**
@@ -124,6 +128,7 @@ export class Agent {
 	private messageQueue: Array<QueuedMessage<AppMessage>> = [];
 	private runningPrompt?: Promise<void>;
 	private resolveRunningPrompt?: () => void;
+	private contextManager: AgentContextManager;
 
 	/**
 	 * Creates a new Agent instance.
@@ -135,6 +140,13 @@ export class Agent {
 		this.messageTransformer =
 			opts.messageTransformer ??
 			((messages) => defaultMessageTransformer(messages));
+
+		this.contextManager = new AgentContextManager();
+		if (opts.contextSources) {
+			for (const source of opts.contextSources) {
+				this.contextManager.addSource(source);
+			}
+		}
 
 		const { systemPrompt, model, thinkingLevel, tools, ...restInitialState } =
 			opts.initialState ?? {};
@@ -389,8 +401,20 @@ export class Agent {
 				? mapThinkingLevel(level)
 				: undefined;
 
+			// Inject Context from Environment (Terrarium Principle)
+			let systemPrompt = this._state.systemPrompt;
+			try {
+				const contextAdditions =
+					await this.contextManager.getCombinedSystemPrompt();
+				if (contextAdditions) {
+					systemPrompt += `\n\n${contextAdditions}`;
+				}
+			} catch (error) {
+				console.warn("Failed to inject environmental context:", error);
+			}
+
 			const runConfig = {
-				systemPrompt: this._state.systemPrompt,
+				systemPrompt,
 				tools: this._state.tools,
 				model: this._state.model,
 				reasoning,

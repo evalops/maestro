@@ -9,6 +9,8 @@ import { setPlanSatisfied } from "../safety/safe-mode.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createTool } from "./tool-dsl.js";
 
+export type { NormalizedTodo, TodoStore, StatusKey };
+
 const sectionDivider = "─".repeat(40);
 
 const statusSymbols = {
@@ -197,14 +199,14 @@ type TodoStore = Record<
 	{ goal: string; items: NormalizedTodo[]; updatedAt: string }
 >;
 
-const defaultStorePath =
+export const defaultStorePath =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
 async function ensureParentDirectory(filePath: string) {
 	await mkdir(dirname(filePath), { recursive: true });
 }
 
-async function loadStore(): Promise<TodoStore> {
+export async function loadStore(): Promise<TodoStore> {
 	try {
 		const raw = await readFile(defaultStorePath, "utf-8");
 		const result = safeJsonParse<TodoStore>(raw, "TODO store");
@@ -224,7 +226,7 @@ async function loadStore(): Promise<TodoStore> {
 	}
 }
 
-async function saveStore(store: TodoStore): Promise<void> {
+export async function saveStore(store: TodoStore): Promise<void> {
 	await ensureParentDirectory(defaultStorePath);
 	await writeFile(
 		defaultStorePath,
@@ -281,11 +283,11 @@ function applyUpdates(
 	return result;
 }
 
-function formatGoalSection(goal: string): string {
+export function formatGoalSection(goal: string): string {
 	return `Goal\n${sectionDivider}\n${goal}`;
 }
 
-function formatSummarySection(
+export function formatSummarySection(
 	counts: Record<StatusKey | "total", number>,
 ): string {
 	if (counts.total === 0) {
@@ -314,7 +316,7 @@ function buildStatusBar(count: number, total: number): string {
 	return `[${bar}]`;
 }
 
-function formatTodosSection(items: NormalizedTodo[]): string {
+export function formatTodosSection(items: NormalizedTodo[]): string {
 	if (items.length === 0) {
 		return `Checklist\n${sectionDivider}\nNo tasks tracked for this goal yet.`;
 	}

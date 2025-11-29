@@ -9,7 +9,7 @@ import {
 	runValidatorsOnSuccess,
 } from "../safety/safe-mode.js";
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
-import { generateDiffString } from "./diff-utils.js";
+import { formatLspDiagnostics, generateDiffString } from "./diff-utils.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
 async function writeFileAtomically(
@@ -276,8 +276,13 @@ If "not found", read file to check actual content.`,
 
 		await writeFileAtomically(absolutePath, newContent);
 		let validatorSummaries: ValidatorRunResult[] | undefined;
+		let linterOutput = "";
 		try {
 			const lspDiagnostics = await collectDiagnostics();
+			const fileDiagnostics = lspDiagnostics[absolutePath] || [];
+			if (fileDiagnostics.length > 0) {
+				linterOutput = formatLspDiagnostics(path, fileDiagnostics);
+			}
 			validatorSummaries = await runValidatorsOnSuccess(
 				[absolutePath],
 				lspDiagnostics,
@@ -295,11 +300,13 @@ If "not found", read file to check actual content.`,
 				? `Successfully replaced all ${replacementCount} occurrence(s) in ${path}.`
 				: `Successfully edited ${path}.`;
 
-		return respond.text(resultMessage).detail({
-			diff,
-			editsApplied: hasMultiEdit ? replacementCount : undefined,
-			validators: validatorSummaries,
-		});
+		return respond
+			.text(linterOutput ? `${resultMessage}\n${linterOutput}` : resultMessage)
+			.detail({
+				diff,
+				editsApplied: hasMultiEdit ? replacementCount : undefined,
+				validators: validatorSummaries,
+			});
 	},
 });
 

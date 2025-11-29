@@ -1850,6 +1850,43 @@ function buildTaskDetail(task: BackgroundTask) {
 	};
 }
 
+export function formatTaskFailures(): string | null {
+	const tasks = backgroundTaskManager.getTasks();
+	const failedTasks = tasks.filter((task) => task.status === "failed");
+
+	if (failedTasks.length === 0) {
+		return null;
+	}
+
+	// Only show recent failures (last 5 minutes) to avoid nagging about old news
+	const RECENT_THRESHOLD = 5 * 60 * 1000;
+	const now = Date.now();
+	const recentFailures = failedTasks.filter((task) => {
+		if (!task.finishedAt) return false;
+		return now - task.finishedAt < RECENT_THRESHOLD;
+	});
+
+	if (recentFailures.length === 0) {
+		return null;
+	}
+
+	const lines = ["# ⚠️ Background Task Alerts"];
+	for (const task of recentFailures) {
+		const reason = task.failureReason
+			? `Reason: ${task.failureReason}`
+			: typeof task.exitCode === "number" && task.exitCode !== 0
+				? `Exit Code: ${task.exitCode}`
+				: "Exited unexpectedly";
+		lines.push(`- Task "${task.command}" (${task.id}) stopped. ${reason}`);
+		// Add a hint about logs
+		lines.push(
+			`  (Use background_tasks action=logs taskId=${task.id} to investigate)`,
+		);
+	}
+
+	return lines.join("\n");
+}
+
 export const backgroundTasksTool = createTool<
 	BackgroundTaskSchema,
 	BackgroundTaskToolDetails

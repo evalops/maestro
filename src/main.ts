@@ -6,6 +6,10 @@ import {
 	ActionApprovalService,
 	type ApprovalMode,
 } from "./agent/action-approval.js";
+import {
+	BackgroundTaskContextSource,
+	TodoContextSource,
+} from "./agent/context-providers.js";
 import { Agent, ProviderTransport, type ThinkingLevel } from "./agent/index.js";
 import { type Args, type Mode, parseArgs } from "./cli/args.js";
 import {
@@ -655,6 +659,10 @@ export async function main(args: string[]) {
 			getAuthContext: (providerName) => requireCredential(providerName, false),
 			approvalService,
 		}),
+		contextSources: [
+			new TodoContextSource(),
+			new BackgroundTaskContextSource(),
+		],
 	});
 
 	// Initialize composer manager with base config first
