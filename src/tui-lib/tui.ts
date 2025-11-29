@@ -57,11 +57,11 @@ export class Container implements Component {
  * TUI - Main class for managing terminal UI with differential rendering
  */
 export class TUI extends Container {
-	private previousLines: string[] = [];
-	private previousWidth = 0;
 	private focusedComponent: Component | null = null;
 	private renderRequested = false;
-	private cursorRow = 0; // Track where cursor is (0-indexed, relative to our first line)
+	private renderTimer: NodeJS.Timeout | null = null;
+	private lastRenderAt = 0;
+	private readonly renderMinInterval = 1000 / 60;
 
 	constructor(private terminal: Terminal) {
 		super();
@@ -76,22 +76,43 @@ export class TUI extends Container {
 			(data: string) => this.handleInput(data),
 			() => this.requestRender(),
 		);
+		this.terminal.write("\x1b[?1049h\x1b[H\x1b[2J");
 		this.terminal.hideCursor();
 		this.requestRender();
 	}
 
 	stop(): void {
+		if (this.renderTimer) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = null;
+		}
+		this.renderRequested = false;
 		this.terminal.showCursor();
+		this.terminal.write("\x1b[?1049l");
 		this.terminal.stop();
 	}
 
 	requestRender(): void {
 		if (this.renderRequested) return;
 		this.renderRequested = true;
-		process.nextTick(() => {
+		if (this.renderTimer) return;
+		this.scheduleRender();
+	}
+
+	private scheduleRender(): void {
+		const now = Date.now();
+		const elapsed = now - this.lastRenderAt;
+		const delay =
+			elapsed >= this.renderMinInterval ? 0 : this.renderMinInterval - elapsed;
+		this.renderTimer = setTimeout(() => {
+			this.renderTimer = null;
 			this.renderRequested = false;
+			this.lastRenderAt = Date.now();
 			this.doRender();
-		});
+			if (this.renderRequested && !this.renderTimer) {
+				this.scheduleRender();
+			}
+		}, delay);
 	}
 
 	private handleInput(data: string): void {
@@ -106,121 +127,20 @@ export class TUI extends Container {
 	private doRender(): void {
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
-
-		// Render all components to get new lines
 		const newLines = this.render(width);
-
-		// Width changed - need full re-render
-		const widthChanged =
-			this.previousWidth !== 0 && this.previousWidth !== width;
-
-		// First render - just output everything without clearing
-		if (this.previousLines.length === 0) {
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				buffer += newLines[i];
+		const maxLines = height > 0 ? height : newLines.length;
+		const linesToRender = newLines.slice(0, maxLines);
+		let buffer = "\x1b[H";
+		for (let i = 0; i < linesToRender.length; i++) {
+			const line = linesToRender[i];
+			if (visibleWidth(line) > width) {
+				throw new Error(`Rendered line ${i} exceeds terminal width\n\n${line}`);
 			}
-			buffer += "\x1b[?2026l"; // End synchronized output
-			this.terminal.write(buffer);
-
-			// After rendering N lines, cursor is at end of last line (line N-1)
-			this.cursorRow = newLines.length - 1;
-			this.previousLines = newLines;
-			this.previousWidth = width;
-			return;
+			if (i > 0) buffer += "\r\n";
+			buffer += line;
+			buffer += "\x1b[K";
 		}
-
-		// Width changed - full re-render
-		if (widthChanged) {
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
-			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				buffer += newLines[i];
-			}
-			buffer += "\x1b[?2026l"; // End synchronized output
-			this.terminal.write(buffer);
-
-			this.cursorRow = newLines.length - 1;
-			this.previousLines = newLines;
-			this.previousWidth = width;
-			return;
-		}
-
-		// Find first and last changed lines
-		let firstChanged = -1;
-		let lastChanged = -1;
-		const maxLines = Math.max(newLines.length, this.previousLines.length);
-
-		for (let i = 0; i < maxLines; i++) {
-			const oldLine =
-				i < this.previousLines.length ? this.previousLines[i] : "";
-			const newLine = i < newLines.length ? newLines[i] : "";
-			if (oldLine !== newLine) {
-				if (firstChanged === -1) {
-					firstChanged = i;
-				}
-				lastChanged = i;
-			}
-		}
-
-		// No changes
-		if (firstChanged === -1) {
-			return;
-		}
-
-		// Check if firstChanged is outside the viewport
-		const viewportTop = this.cursorRow - height + 1;
-		if (firstChanged < viewportTop) {
-			// First change is above viewport - need full re-render
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
-			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				buffer += newLines[i];
-			}
-			buffer += "\x1b[?2026l"; // End synchronized output
-			this.terminal.write(buffer);
-
-			this.cursorRow = newLines.length - 1;
-			this.previousLines = newLines;
-			this.previousWidth = width;
-			return;
-		}
-
-		// Render from first changed line to end
-		let buffer = "\x1b[?2026h"; // Begin synchronized output
-
-		// Move cursor to first changed line
-		const lineDiff = firstChanged - this.cursorRow;
-		if (lineDiff > 0) {
-			buffer += `\x1b[${lineDiff}B`; // Move down
-		} else if (lineDiff < 0) {
-			buffer += `\x1b[${-lineDiff}A`; // Move up
-		}
-		buffer += "\r"; // Move to column 0
-		buffer += "\x1b[J"; // Clear from cursor to end of screen
-
-		// Render from first changed line to end
-		for (let i = firstChanged; i < newLines.length; i++) {
-			if (i > firstChanged) buffer += "\r\n";
-			if (visibleWidth(newLines[i]) > width) {
-				throw new Error(
-					`Rendered line ${i} exceeds terminal width\n\n${newLines[i]}`,
-				);
-			}
-			buffer += newLines[i];
-		}
-
-		buffer += "\x1b[?2026l"; // End synchronized output
-
-		// Write entire buffer at once
+		buffer += "\x1b[J";
 		this.terminal.write(buffer);
-
-		// Cursor is now at end of last line
-		this.cursorRow = newLines.length - 1;
-		this.previousLines = newLines;
-		this.previousWidth = width;
 	}
 }
