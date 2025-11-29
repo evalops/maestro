@@ -20,6 +20,10 @@ interface CreateTypeboxToolOptions<Schema extends TSchema, Details> {
 	description: string;
 	schema: Schema;
 	annotations?: ToolAnnotations;
+	toolType?: string;
+	inputExamples?: unknown[];
+	allowedCallers?: string[];
+	deferApiDefinition?: boolean;
 	maxRetries?: number;
 	retryDelayMs?: number;
 	shouldRetry?: (error: unknown) => boolean;
@@ -43,6 +47,10 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 		description: options.description,
 		parameters,
 		annotations: options.annotations,
+		toolType: options.toolType,
+		inputExamples: options.inputExamples,
+		allowedCallers: options.allowedCallers,
+		deferApiDefinition: options.deferApiDefinition,
 		execute: async (toolCallId, params, signal) => {
 			let parsedParams: Static<Schema>;
 			const input =

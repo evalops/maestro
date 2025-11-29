@@ -115,6 +115,10 @@ export interface CreateToolOptions<Schema extends TSchema, Details> {
 	description: string;
 	schema: Schema;
 	annotations?: import("../agent/types.js").ToolAnnotations;
+	toolType?: string;
+	inputExamples?: unknown[];
+	allowedCallers?: string[];
+	deferApiDefinition?: boolean;
 	run: (
 		params: Static<Schema>,
 		context: ToolRunContext<Details>,
@@ -139,6 +143,10 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 		description: options.description,
 		schema: options.schema,
 		annotations: options.annotations,
+		toolType: options.toolType,
+		inputExamples: options.inputExamples,
+		allowedCallers: options.allowedCallers,
+		deferApiDefinition: options.deferApiDefinition,
 		maxRetries: options.maxRetries,
 		retryDelayMs: options.retryDelayMs,
 		shouldRetry: options.shouldRetry,

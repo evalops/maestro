@@ -99,6 +99,10 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	name: string;
 	description: string;
 	parameters: TParameters;
+	toolType?: string;
+	inputExamples?: unknown[];
+	allowedCallers?: string[];
+	deferApiDefinition?: boolean;
 }
 
 export interface ToolAnnotations {
@@ -122,6 +126,10 @@ export interface AgentTool<
 	parameters: TParameters;
 	/** Tool behavior hints from MCP annotations */
 	annotations?: ToolAnnotations;
+	toolType?: string;
+	inputExamples?: unknown[];
+	allowedCallers?: string[];
+	deferApiDefinition?: boolean;
 	execute: (
 		toolCallId: string,
 		params: Record<string, unknown>,

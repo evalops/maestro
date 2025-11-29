@@ -48,7 +48,7 @@ const AUTH_FILE = resolve(
 );
 
 export const CLAUDE_CODE_BETA_HEADER =
-	"oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
+	"oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,advanced-tool-use-2025-11-20";
 
 interface PKCEPair {
 	verifier: string;

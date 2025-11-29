@@ -60,6 +60,10 @@ interface AnthropicTool {
 	description: string;
 	input_schema: any;
 	cache_control?: PromptCacheControl;
+	type?: string;
+	input_examples?: unknown[];
+	allowed_callers?: string[];
+	defer_loading?: boolean;
 }
 
 export async function* streamAnthropic(
@@ -193,19 +197,38 @@ export async function* streamAnthropic(
 				properties: params.properties || {},
 				required: params.required || [],
 			};
-			return {
+			const mappedTool: AnthropicTool = {
 				name: tool.name,
 				description: tool.description,
 				input_schema: schema,
+				...(tool.toolType ? { type: tool.toolType } : {}),
+				...(tool.inputExamples && tool.inputExamples.length > 0
+					? { input_examples: tool.inputExamples }
+					: {}),
+				...(tool.allowedCallers && tool.allowedCallers.length > 0
+					? { allowed_callers: tool.allowedCallers }
+					: {}),
+				...(tool.deferApiDefinition
+					? { defer_loading: tool.deferApiDefinition }
+					: {}),
 				...(idx === arr.length - 1 && cacheAppliedCount < maxCacheItems
 					? { cache_control: { type: "ephemeral" as const } }
 					: {}),
 			};
+			return mappedTool;
 		}) || [];
 
 	if (tools.length > 0 && tools[tools.length - 1].cache_control) {
 		cacheAppliedCount++;
 	}
+
+	const hasAdvancedToolFeatures = tools.some(
+		(tool) =>
+			tool.defer_loading ||
+			(tool.input_examples && tool.input_examples.length > 0) ||
+			(tool.allowed_callers && tool.allowed_callers.length > 0) ||
+			!!tool.type,
+	);
 
 	// Cache system prompt
 	const systemBlocks: Array<{
@@ -283,12 +306,14 @@ export async function* streamAnthropic(
 		headers["anthropic-beta"] = CLAUDE_CODE_BETA_HEADER;
 	} else {
 		headers["x-api-key"] = apiKey;
+		const betaHeaders = ["prompt-caching-2024-07-31"];
 		if (options.thinking && model.reasoning) {
-			headers["anthropic-beta"] =
-				"prompt-caching-2024-07-31,extended-thinking-2024-12-12";
-		} else {
-			headers["anthropic-beta"] = "prompt-caching-2024-07-31";
+			betaHeaders.push("extended-thinking-2024-12-12");
 		}
+		if (hasAdvancedToolFeatures) {
+			betaHeaders.push("advanced-tool-use-2025-11-20");
+		}
+		headers["anthropic-beta"] = betaHeaders.join(",");
 	}
 
 	const response = await fetch(model.baseUrl, {
