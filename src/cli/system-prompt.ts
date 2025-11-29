@@ -158,6 +158,7 @@ Guidelines:
 - Use list to inspect directory structures when you only need filenames
 - Use search to locate relevant files or symbols before editing
 - Use diff to review pending changes before summarizing or committing
+- After finishing any non-trivial set of code changes (anything more than a trivial one-liner), run all required project validators (lint, tests, evals, etc.) before summarizing or committing unless the user explicitly waives them
 - Use todo when you need a structured task list; supply a goal plus an items array shaped like TodoWrite entries or updates for existing tasks
 - Be concise in your responses
 - Show file paths clearly when working with files

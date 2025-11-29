@@ -146,7 +146,7 @@ describe("CLI integration", () => {
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalCodex = process.env.CODEX_API_KEY;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
-		const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
+	const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
 	const originalLog = console.log;
 	const originalError = console.error;
 	let output: string[];
@@ -155,7 +155,10 @@ describe("CLI integration", () => {
 	beforeEach(() => {
 		tempAgentDir = mkdtempSync(join(tmpdir(), "composer-cli-test-"));
 		process.env.COMPOSER_AGENT_DIR = tempAgentDir;
-		process.env.ANTHROPIC_OAUTH_FILE = join(tempAgentDir, "anthropic-oauth.json");
+		process.env.ANTHROPIC_OAUTH_FILE = join(
+			tempAgentDir,
+			"anthropic-oauth.json",
+		);
 		process.env.ANTHROPIC_API_KEY = "test-key";
 		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
 		delete process.env.OPENAI_API_KEY;
@@ -200,6 +203,7 @@ describe("CLI integration", () => {
 			process.env.CLAUDE_CODE_TOKEN = originalClaude;
 		}
 		if (originalAnthropicOAuthFile === undefined) {
+			// biome-ignore lint/performance/noDelete: restoring env var state
 			delete process.env.ANTHROPIC_OAUTH_FILE;
 		} else {
 			process.env.ANTHROPIC_OAUTH_FILE = originalAnthropicOAuthFile;
