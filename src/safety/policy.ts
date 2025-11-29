@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { type FSWatcher, existsSync, readFileSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -39,11 +39,45 @@ const validatePolicy = compileTypeboxSchema(PolicySchema);
 const POLICY_PATH = join(homedir(), ".composer", "policy.json");
 
 let cachedPolicy: EnterprisePolicy | null = null;
+let policyWatcher: FSWatcher | undefined;
+
+function startPolicyWatcher() {
+	if (policyWatcher) return;
+
+	try {
+		// Only watch if the file exists
+		if (!existsSync(POLICY_PATH)) return;
+
+		policyWatcher = watch(POLICY_PATH, (eventType) => {
+			if (eventType === "rename") {
+				// File deleted or renamed
+				cachedPolicy = null;
+				if (!existsSync(POLICY_PATH)) {
+					policyWatcher?.close();
+					policyWatcher = undefined;
+				}
+			} else if (eventType === "change") {
+				// File modified - invalidate cache so next loadPolicy() reloads
+				// We don't proactively reload here to avoid race conditions with partial writes
+				cachedPolicy = null;
+			}
+		});
+		// Prevent the watcher from keeping the process alive
+		policyWatcher.unref();
+	} catch (error) {
+		// Ignore watcher errors (e.g. system limit reached)
+		// We fall back to standard caching behavior
+	}
+}
 
 export function loadPolicy(force = false): EnterprisePolicy | null {
 	// Check if file exists first - if not, clear cache and return null
 	if (!existsSync(POLICY_PATH)) {
 		cachedPolicy = null;
+		if (policyWatcher) {
+			policyWatcher.close();
+			policyWatcher = undefined;
+		}
 		return null;
 	}
 
@@ -64,6 +98,7 @@ export function loadPolicy(force = false): EnterprisePolicy | null {
 				return null;
 			}
 			cachedPolicy = result.data;
+			startPolicyWatcher();
 			return cachedPolicy;
 		}
 		console.warn("Failed to load enterprise policy:", result.error);
