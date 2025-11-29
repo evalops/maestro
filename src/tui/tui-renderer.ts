@@ -37,6 +37,7 @@ import {
 import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
 
+import { getChangelogPath, parseChangelog } from "../update/changelog.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
 import { BashModeView } from "./bash-mode-view.js";

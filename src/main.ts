@@ -345,6 +345,12 @@ export async function main(args: string[]) {
 		}
 	}
 
+	if (parsed.command === "openai") {
+		const { handleOpenAICommand } = await import("./cli/commands/openai.js");
+		await handleOpenAICommand(parsed.subcommand, parsed.messages);
+		return;
+	}
+
 	if (parsed.command === "anthropic") {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"

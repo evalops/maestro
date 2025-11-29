@@ -3,6 +3,7 @@ import {
 	getFreshAnthropicOAuthCredential,
 } from "./anthropic-auth.js";
 import { lookupApiKey } from "./api-keys.js";
+import { getFreshOpenAIOAuthCredential } from "./openai-auth.js";
 
 export type AuthMode = "auto" | "api-key" | "chatgpt" | "claude";
 
@@ -16,7 +17,8 @@ export type AuthCredentialSource =
 	| "codex_env"
 	| "codex_flag"
 	| "anthropic_oauth_env"
-	| "anthropic_oauth_file";
+	| "anthropic_oauth_file"
+	| "openai_oauth_file";
 
 export interface AuthCredential {
 	provider: string;
@@ -43,24 +45,14 @@ const ANTHROPIC_OAUTH_ENV_VARS = [
 	"ANTHROPIC_ACCESS_TOKEN",
 ];
 
-function shouldUseCodexToken(
-	provider: string,
-	mode: AuthMode,
-	token?: string,
-): boolean {
-	if (!token) {
-		return false;
-	}
-	if (mode === "api-key") {
-		return false;
-	}
+function isOpenAIProvider(provider: string): boolean {
 	const normalized = provider.toLowerCase();
-	const supported =
+	return (
 		normalized === "openai" ||
 		normalized === "chatgpt" ||
 		normalized.startsWith("openai/") ||
-		normalized.includes("openai-");
-	return supported;
+		normalized.includes("openai-")
+	);
 }
 
 export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
@@ -78,17 +70,30 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 			};
 		}
 
-		if (shouldUseCodexToken(provider, options.mode, codexToken)) {
-			if (!codexToken) {
-				return undefined;
+		// Handle OpenAI/ChatGPT Auth
+		if (isOpenAIProvider(provider) && options.mode !== "api-key") {
+			// 1. Codex Token (Env/Flag)
+			if (codexToken) {
+				return {
+					provider,
+					token: codexToken,
+					type: "chatgpt",
+					source: options.codexSource === "flag" ? "codex_flag" : "codex_env",
+					envVar: options.codexSource === "env" ? CODEX_DEFAULT_ENV : undefined,
+				};
 			}
-			return {
-				provider,
-				token: codexToken,
-				type: "chatgpt",
-				source: options.codexSource === "flag" ? "codex_flag" : "codex_env",
-				envVar: options.codexSource === "env" ? CODEX_DEFAULT_ENV : undefined,
-			};
+
+			// 2. OpenAI OAuth
+			const oauthCred = await getFreshOpenAIOAuthCredential();
+			if (oauthCred?.apiKey) {
+				return {
+					provider,
+					token: oauthCred.apiKey,
+					type: "api-key",
+					source: "openai_oauth_file",
+					metadata: { mode: oauthCred.mode },
+				};
+			}
 		}
 
 		const preferAnthropicOAuth =
