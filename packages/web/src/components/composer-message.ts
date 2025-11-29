@@ -111,6 +111,15 @@ export class ComposerMessage extends LitElement {
 			letter-spacing: 0.04em;
 		}
 
+		.content > composer-tool-execution {
+			display: block;
+			margin-top: 0.85rem;
+		}
+
+		.message.compact .content > composer-tool-execution {
+			margin-top: 0.6rem;
+		}
+
 		/* Markdown styles */
 		.bubble :global(pre) {
 			background: #0d1117;
