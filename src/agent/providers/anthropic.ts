@@ -24,49 +24,157 @@ export interface AnthropicOptions extends StreamOptions {
 	thinking?: ReasoningEffort;
 }
 
-interface AnthropicMessage {
-	role: "user" | "assistant";
+interface AnthropicTextContent {
+	type: "text";
+	text: string;
+	cache_control?: PromptCacheControl;
+}
+
+interface AnthropicImageContent {
+	type: "image";
+	source: { type: "base64"; media_type: string; data: string };
+	cache_control?: PromptCacheControl;
+}
+
+interface AnthropicToolUseContent {
+	type: "tool_use";
+	id: string;
+	name: string;
+	input: Record<string, unknown>;
+}
+
+interface AnthropicToolResultContent {
+	type: "tool_result";
+	tool_use_id: string;
 	content:
 		| string
 		| Array<
-				| { type: "text"; text: string; cache_control?: PromptCacheControl }
+				| { type: "text"; text: string }
 				| {
 						type: "image";
-						source: { type: "base64"; media_type: string; data: string };
-						cache_control?: PromptCacheControl;
-				  }
-				| { type: "tool_use"; id: string; name: string; input: any }
-				| {
-						type: "tool_result";
-						tool_use_id: string;
-						content:
-							| string
-							| Array<
-									| { type: "text"; text: string }
-									| {
-											type: "image";
-											source: {
-												type: "base64";
-												media_type: string;
-												data: string;
-											};
-									  }
-							  >;
-						is_error?: boolean;
-						cache_control?: PromptCacheControl;
+						source: {
+							type: "base64";
+							media_type: string;
+							data: string;
+						};
 				  }
 		  >;
+	is_error?: boolean;
+	cache_control?: PromptCacheControl;
+}
+
+type AnthropicContentPart =
+	| AnthropicTextContent
+	| AnthropicImageContent
+	| AnthropicToolUseContent
+	| AnthropicToolResultContent;
+
+interface AnthropicMessage {
+	role: "user" | "assistant";
+	content: string | AnthropicContentPart[];
+}
+
+interface AnthropicInputSchema {
+	type: "object";
+	properties: Record<string, unknown>;
+	required?: string[];
 }
 
 interface AnthropicTool {
 	name: string;
 	description: string;
-	input_schema: any;
+	input_schema: AnthropicInputSchema;
 	cache_control?: PromptCacheControl;
 	type?: string;
 	input_examples?: unknown[];
 	allowed_callers?: string[];
 	defer_loading?: boolean;
+}
+
+// Anthropic SSE Event Types
+interface AnthropicMessageStartEvent {
+	type: "message_start";
+	message?: {
+		usage?: {
+			input_tokens?: number;
+			cache_read_input_tokens?: number;
+			cache_creation_input_tokens?: number;
+		};
+	};
+}
+
+interface AnthropicContentBlockStartEvent {
+	type: "content_block_start";
+	index: number;
+	content_block: {
+		type: "text" | "thinking" | "tool_use";
+		id?: string;
+		name?: string;
+	};
+}
+
+interface AnthropicContentBlockDeltaEvent {
+	type: "content_block_delta";
+	index: number;
+	delta: {
+		type: "text_delta" | "thinking_delta" | "input_json_delta";
+		text?: string;
+		thinking?: string;
+		partial_json?: string;
+	};
+}
+
+interface AnthropicContentBlockStopEvent {
+	type: "content_block_stop";
+	index: number;
+}
+
+interface AnthropicMessageDeltaEvent {
+	type: "message_delta";
+	delta?: {
+		stop_reason?: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
+	};
+	usage?: {
+		output_tokens?: number;
+	};
+}
+
+interface AnthropicMessageStopEvent {
+	type: "message_stop";
+}
+
+interface AnthropicErrorEvent {
+	type: "error";
+	error?: {
+		message?: string;
+	};
+}
+
+type AnthropicEvent =
+	| AnthropicMessageStartEvent
+	| AnthropicContentBlockStartEvent
+	| AnthropicContentBlockDeltaEvent
+	| AnthropicContentBlockStopEvent
+	| AnthropicMessageDeltaEvent
+	| AnthropicMessageStopEvent
+	| AnthropicErrorEvent;
+
+interface AnthropicRequestBody {
+	model: string;
+	max_tokens: number;
+	messages: AnthropicMessage[];
+	stream: boolean;
+	system?: Array<{
+		type: "text";
+		text: string;
+		cache_control?: PromptCacheControl;
+	}>;
+	tools?: AnthropicTool[];
+	temperature?: number;
+	thinking?: {
+		type: "enabled";
+		budget_tokens: number;
+	};
 }
 
 export async function* streamAnthropic(
@@ -116,7 +224,7 @@ export async function* streamAnthropic(
 						});
 			pushMessage({ role: "user", content });
 		} else if (msg.role === "assistant") {
-			const content: any[] = [];
+			const content: Array<AnthropicTextContent | AnthropicToolUseContent> = [];
 			for (const c of msg.content) {
 				if (c.type === "text") {
 					content.push({ type: "text", text: c.text });
@@ -132,13 +240,19 @@ export async function* streamAnthropic(
 			pushMessage({ role: "assistant", content });
 		} else if (msg.role === "toolResult") {
 			// Collect all consecutive toolResult messages into one user message
-			const toolResults: any[] = [];
+			const toolResults: AnthropicToolResultContent[] = [];
 
 			// Helper to convert tool result content
-			const convertToolResultContent = (content: any) =>
-				typeof content === "string"
-					? content
-					: content.map((c: any) => {
+			type ToolResultContentInput = (
+				| TextContent
+				| { type: "image"; data: string; mimeType: string }
+			)[];
+			const convertToolResultContent = (
+				contentInput: string | ToolResultContentInput,
+			): AnthropicToolResultContent["content"] =>
+				typeof contentInput === "string"
+					? contentInput
+					: contentInput.map((c) => {
 							if (c.type === "text") {
 								return { type: "text" as const, text: c.text };
 							}
@@ -194,9 +308,12 @@ export async function* streamAnthropic(
 	// Cache tools (last tool)
 	const tools: AnthropicTool[] =
 		context.tools?.map((tool, idx, arr) => {
-			const params = tool.parameters as any;
-			const schema = {
-				type: "object" as const,
+			const params = tool.parameters as {
+				properties?: Record<string, unknown>;
+				required?: string[];
+			};
+			const schema: AnthropicInputSchema = {
+				type: "object",
 				properties: params.properties || {},
 				required: params.required || [],
 			};
@@ -271,7 +388,7 @@ export async function* streamAnthropic(
 		}
 	}
 
-	const requestBody: any = {
+	const requestBody: AnthropicRequestBody = {
 		model: model.id,
 		max_tokens: options.maxTokens || model.maxTokens,
 		messages,
@@ -403,13 +520,19 @@ export async function* streamAnthropic(
 							partial.content.push({ type: "thinking", thinking: "" });
 							yield { type: "thinking_start", contentIndex: idx, partial };
 						} else if (block.type === "tool_use") {
+							if (!block.id || !block.name) {
+								logger.warn("Missing required fields for tool_use block", {
+									id: block.id,
+									name: block.name,
+								});
+								continue;
+							}
 							const idx = partial.content.length;
-							const toolCall: any = {
+							const toolCall: ToolCall = {
 								type: "toolCall",
 								id: block.id,
 								name: block.name,
 								arguments: {},
-								partialJson: "", // Track partial JSON
 							};
 							partial.content.push(toolCall);
 							yield { type: "toolcall_start", contentIndex: idx, partial };
@@ -523,11 +646,22 @@ export async function* streamAnthropic(
 							partial.usage.cost.cacheRead +
 							partial.usage.cost.cacheWrite;
 
-						yield {
-							type: "done",
-							reason: partial.stopReason as any,
-							message: partial,
-						};
+						if (
+							partial.stopReason === "error" ||
+							partial.stopReason === "aborted"
+						) {
+							yield {
+								type: "error",
+								reason: partial.stopReason,
+								error: partial,
+							};
+						} else {
+							yield {
+								type: "done",
+								reason: partial.stopReason,
+								message: partial,
+							};
+						}
 					} else if (event.type === "error") {
 						partial.stopReason = "error";
 						partial.errorMessage = event.error?.message || "Unknown error";

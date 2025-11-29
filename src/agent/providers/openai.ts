@@ -17,6 +17,162 @@ export interface OpenAIOptions extends StreamOptions {
 	reasoningEffort?: "minimal" | "low" | "medium" | "high";
 }
 
+// OpenAI API Types
+
+interface OpenAITextContentPart {
+	type: "text";
+	text: string;
+}
+
+interface OpenAIImageContentPart {
+	type: "image_url";
+	image_url: { url: string; detail?: "auto" | "low" | "high" };
+}
+
+type OpenAIContentPart = OpenAITextContentPart | OpenAIImageContentPart;
+
+interface OpenAIResponsesRequestBody {
+	model: string;
+	input: Array<{
+		role: string;
+		content: Array<{ type: "input_text"; text: string }>;
+	}>;
+	stream: boolean;
+	tools?: Array<{
+		type: "function";
+		function: {
+			name: string;
+			description: string;
+			parameters: unknown;
+		};
+	}>;
+	max_output_tokens?: number;
+	reasoning?: { effort: string };
+}
+
+interface OpenAICompletionsRequestBody {
+	model: string;
+	messages: OpenAIMessage[];
+	max_tokens: number;
+	stream: boolean;
+	stream_options: { include_usage: boolean };
+	tools?: Array<{
+		type: "function";
+		function: {
+			name: string;
+			description: string;
+			parameters: unknown;
+		};
+	}>;
+	temperature?: number;
+	reasoning_effort?: string;
+}
+
+// OpenAI SSE Event Types (Responses API)
+interface OpenAIResponsesTextDeltaEvent {
+	type: "response.output_text.delta";
+	content_index?: number;
+	delta?: string;
+}
+
+interface OpenAIResponsesTextDoneEvent {
+	type: "response.output_text.done";
+	content_index?: number;
+}
+
+interface OpenAIResponsesFunctionCallDeltaEvent {
+	type: "response.function_call_arguments.delta";
+	call_id?: string;
+	item_id?: string;
+	output_index?: number;
+	delta?: string;
+}
+
+interface OpenAIResponsesFunctionCallDoneEvent {
+	type: "response.function_call_arguments.done";
+	call_id?: string;
+	item_id?: string;
+	output_index?: number;
+	name?: string;
+	arguments?: string;
+}
+
+interface OpenAIResponsesUsage {
+	input_tokens?: number;
+	output_tokens?: number;
+	output_tokens_details?: {
+		reasoning_tokens?: number;
+	};
+}
+
+interface OpenAIResponsesCompletedEvent {
+	type: "response.completed";
+	response?: {
+		status?: "completed" | "failed" | "cancelled";
+		usage?: OpenAIResponsesUsage;
+	};
+}
+
+interface OpenAIResponsesFailedEvent {
+	type: "response.failed";
+	response?: {
+		error?: {
+			message?: string;
+		};
+	};
+}
+
+interface OpenAIResponsesDoneEvent {
+	type: "response.done";
+	response?: {
+		status?: "completed" | "failed" | "cancelled";
+		usage?: OpenAIResponsesUsage;
+	};
+}
+
+type OpenAIResponsesEvent =
+	| OpenAIResponsesTextDeltaEvent
+	| OpenAIResponsesTextDoneEvent
+	| OpenAIResponsesFunctionCallDeltaEvent
+	| OpenAIResponsesFunctionCallDoneEvent
+	| OpenAIResponsesCompletedEvent
+	| OpenAIResponsesFailedEvent
+	| OpenAIResponsesDoneEvent;
+
+// OpenAI SSE Event Types (Completions API)
+interface OpenAICompletionsDelta {
+	content?: string | Array<unknown>;
+	reasoning_content?: string;
+	reasoning?: string;
+	tool_calls?: Array<{
+		index: number;
+		id?: string;
+		function?: {
+			name?: string;
+			arguments?: string;
+		};
+	}>;
+}
+
+interface OpenAICompletionsChoice {
+	index: number;
+	delta?: OpenAICompletionsDelta;
+	finish_reason?: "stop" | "length" | "tool_calls" | null;
+}
+
+interface OpenAICompletionsUsage {
+	prompt_tokens?: number;
+	completion_tokens?: number;
+	prompt_tokens_details?: {
+		cached_tokens?: number;
+	};
+}
+
+interface OpenAICompletionsChunk {
+	choices?: OpenAICompletionsChoice[];
+	usage?: OpenAICompletionsUsage;
+}
+
 async function* streamResponsesApi(
 	model: Model<"openai-responses">,
 	context: Context,
@@ -36,15 +192,15 @@ async function* streamResponsesApi(
 			parts.push({ type: "input_text", text: msg.content });
 		} else {
 			for (const c of msg.content) {
-				if ((c as any).text) {
-					parts.push({ type: "input_text", text: (c as any).text });
+				if (c.type === "text") {
+					parts.push({ type: "input_text", text: c.text });
 				}
 			}
 		}
 		return { role: msg.role, content: parts };
 	});
 
-	const requestBody: any = {
+	const requestBody: OpenAIResponsesRequestBody = {
 		model: model.id,
 		input,
 		stream: true,
@@ -157,9 +313,21 @@ async function* streamResponsesApi(
 				const data = line.slice(6);
 				if (data === "[DONE]") continue;
 
-				let event: any;
+				let event: OpenAIResponsesEvent;
 				try {
-					event = JSON.parse(data);
+					const parsed: unknown = JSON.parse(data);
+					if (
+						!parsed ||
+						typeof parsed !== "object" ||
+						!("type" in parsed) ||
+						typeof (parsed as { type: unknown }).type !== "string"
+					) {
+						logger.warn("Invalid event structure from OpenAI Responses API", {
+							data: data.slice(0, 100),
+						});
+						continue;
+					}
+					event = parsed as OpenAIResponsesEvent;
 				} catch (e) {
 					logger.warn("Failed to parse OpenAI Responses event", {
 						error: e instanceof Error ? e.message : String(e),
@@ -175,7 +343,10 @@ async function* streamResponsesApi(
 						if (created) {
 							yield { type: "text_start", contentIndex: idx, partial };
 						}
-						(partial.content[idx] as any).text += event.delta || "";
+						const textBlock = partial.content[idx];
+						if (textBlock.type === "text") {
+							textBlock.text += event.delta || "";
+						}
 						yield {
 							type: "text_delta",
 							contentIndex: idx,
@@ -190,18 +361,24 @@ async function* streamResponsesApi(
 						if (created) {
 							yield { type: "text_start", contentIndex: idx, partial };
 						}
+						const doneTextBlock = partial.content[idx];
 						yield {
 							type: "text_end",
 							contentIndex: idx,
-							content: (partial.content[idx] as any).text,
+							content: doneTextBlock.type === "text" ? doneTextBlock.text : "",
 							partial,
 						};
 						textEnded.add(idx);
 						break;
 					}
 					case "response.function_call_arguments.delta": {
-						const callId =
-							(event.call_id as string) || (event.item_id as string);
+						const callId = event.call_id || event.item_id;
+						if (!callId) {
+							logger.warn("Tool call delta missing both call_id and item_id", {
+								outputIndex: event.output_index,
+							});
+							break;
+						}
 						const state = toolState.get(callId) ?? {
 							name: undefined,
 							args: "",
@@ -240,8 +417,13 @@ async function* streamResponsesApi(
 						break;
 					}
 					case "response.function_call_arguments.done": {
-						const callId =
-							(event.call_id as string) || (event.item_id as string);
+						const callId = event.call_id || event.item_id;
+						if (!callId) {
+							logger.warn("Tool call done missing both call_id and item_id", {
+								outputIndex: event.output_index,
+							});
+							break;
+						}
 						const state = toolState.get(callId) ?? {
 							name: event.name,
 							args: event.arguments || "{}",
@@ -343,11 +525,22 @@ async function* streamResponsesApi(
 									: status === "cancelled"
 										? "aborted"
 										: "error";
-						yield {
-							type: "done",
-							reason: partial.stopReason as any,
-							message: partial,
-						};
+						if (
+							partial.stopReason === "error" ||
+							partial.stopReason === "aborted"
+						) {
+							yield {
+								type: "error",
+								reason: partial.stopReason,
+								error: partial,
+							};
+						} else {
+							yield {
+								type: "done",
+								reason: partial.stopReason,
+								message: partial,
+							};
+						}
 						break;
 					}
 					default:
@@ -502,7 +695,7 @@ export async function* streamOpenAI(
 		);
 	}
 
-	const requestBody: any = {
+	const requestBody: OpenAICompletionsRequestBody = {
 		model: model.id,
 		messages,
 		max_tokens: options.maxTokens ?? model.maxTokens,
@@ -512,7 +705,7 @@ export async function* streamOpenAI(
 
 	if (context.tools && context.tools.length > 0) {
 		requestBody.tools = context.tools.map((tool) => ({
-			type: "function",
+			type: "function" as const,
 			function: {
 				name: tool.name,
 				description: tool.description,
@@ -666,9 +859,11 @@ export async function* streamOpenAI(
 											part &&
 											typeof part === "object" &&
 											"text" in part &&
-											typeof (part as any).text === "string"
+											typeof (part as { text: unknown }).text === "string"
 										) {
-											return sanitizeSurrogates((part as any).text);
+											return sanitizeSurrogates(
+												(part as { text: string }).text,
+											);
 										}
 										logger.warn("Unsupported OpenAI content part", {
 											partType: typeof part,
@@ -676,7 +871,10 @@ export async function* streamOpenAI(
 												part && typeof part === "object"
 													? Object.keys(part)
 													: undefined,
-											type: (part as any)?.type,
+											type:
+												part && typeof part === "object" && "type" in part
+													? (part as { type: unknown }).type
+													: undefined,
 										});
 										return "";
 									})
@@ -710,37 +908,29 @@ export async function* streamOpenAI(
 					// Handle reasoning/thinking content
 					// Some endpoints return reasoning in "reasoning_content" (llama.cpp),
 					// others use "reasoning" (other OpenAI-compatible endpoints)
-					const reasoningFields = ["reasoning_content", "reasoning"];
-					for (const field of reasoningFields) {
-						const reasoningDelta = (delta as any)[field];
-						if (
-							reasoningDelta !== null &&
-							reasoningDelta !== undefined &&
-							reasoningDelta.length > 0
-						) {
-							// Find or create thinking block
-							let thinkingBlock = partial.content.find(
-								(c) => c.type === "thinking",
-							);
-							if (!thinkingBlock) {
-								const idx = partial.content.length;
-								thinkingBlock = { type: "thinking", thinking: "" };
-								partial.content.push(thinkingBlock);
-								yield { type: "thinking_start", contentIndex: idx, partial };
-							}
+					const reasoningDelta =
+						delta.reasoning_content || delta.reasoning || "";
+					if (reasoningDelta.length > 0) {
+						// Find or create thinking block
+						let thinkingBlock = partial.content.find(
+							(c) => c.type === "thinking",
+						);
+						if (!thinkingBlock) {
+							const idx = partial.content.length;
+							thinkingBlock = { type: "thinking", thinking: "" };
+							partial.content.push(thinkingBlock);
+							yield { type: "thinking_start", contentIndex: idx, partial };
+						}
 
-							if (thinkingBlock.type === "thinking") {
-								const idx = partial.content.indexOf(thinkingBlock);
-								thinkingBlock.thinking += reasoningDelta;
-								yield {
-									type: "thinking_delta",
-									contentIndex: idx,
-									delta: reasoningDelta,
-									partial,
-								};
-							}
-							// Only process first matching field
-							break;
+						if (thinkingBlock.type === "thinking") {
+							const idx = partial.content.indexOf(thinkingBlock);
+							thinkingBlock.thinking += reasoningDelta;
+							yield {
+								type: "thinking_delta",
+								contentIndex: idx,
+								delta: reasoningDelta,
+								partial,
+							};
 						}
 					}
 
@@ -843,7 +1033,7 @@ export async function* streamOpenAI(
 
 						yield {
 							type: "done",
-							reason: partial.stopReason as any,
+							reason: partial.stopReason,
 							message: partial,
 						};
 					}
