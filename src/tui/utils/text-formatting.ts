@@ -1,4 +1,4 @@
-import { visibleWidth } from "@evalops/tui";
+import { Text, visibleWidth } from "@evalops/tui";
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: required to match ANSI CSI sequences
 const CSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
@@ -105,4 +105,18 @@ export function truncateText(text: string, maxWidth: number): string {
 
 export function sanitizeAnsi(text: string): string {
 	return stripAnsiSequences(text);
+}
+
+/**
+ * Helper that wraps arbitrary text to the provided width using the shared Text
+ * component. Centralizing this logic keeps modal renderers consistent while
+ * documenting the dependency on Text's indentation-aware wrapping.
+ */
+export function wrapTextBlock(text: string, width: number): string[] {
+	const normalizedWidth = Math.max(1, width);
+	if (text.length === 0) {
+		return [""];
+	}
+	const renderer = new Text(text, 0, 0);
+	return renderer.render(normalizedWidth);
 }

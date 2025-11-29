@@ -64,43 +64,79 @@ export class Text implements Component {
 			const visibleLineLength = visibleWidth(line);
 			if (visibleLineLength <= contentWidth) {
 				lines.push(line);
-			} else {
-				// Word wrap
-				const words = line.split(" ");
-				let currentLine = "";
+				continue;
+			}
 
-				for (const word of words) {
-					const currentVisible = visibleWidth(currentLine);
-					const wordVisible = visibleWidth(word);
+			const indentMatch = line.match(/^\s+/);
+			const originalIndent = indentMatch?.[0] ?? "";
+			let indent = originalIndent;
+			const indentWidth = visibleWidth(indent);
+			const maxIndentWidth = Math.max(0, contentWidth - 1);
+			if (indentWidth > maxIndentWidth) {
+				indent = indent.slice(0, maxIndentWidth);
+			}
+			const content =
+				originalIndent.length > 0 ? line.slice(originalIndent.length) : line;
+			const tokens = splitLineIntoTokens(content);
+			let currentLine = "";
+			let needsIndent = indent.length > 0;
+			let lineHasContent = false;
 
-					// If word is too long, truncate it
-					let finalWord = word;
-					if (wordVisible > contentWidth) {
-						let truncated = "";
-						for (const char of word) {
-							if (visibleWidth(truncated + char) > contentWidth) {
-								break;
-							}
-							truncated += char;
-						}
-						finalWord = truncated;
-					}
+			const startNewLine = (): void => {
+				currentLine = "";
+				needsIndent = indent.length > 0;
+				lineHasContent = false;
+			};
 
-					if (currentVisible === 0) {
-						currentLine = finalWord;
-					} else if (
-						currentVisible + 1 + visibleWidth(finalWord) <=
-						contentWidth
-					) {
-						currentLine += ` ${finalWord}`;
-					} else {
-						lines.push(currentLine);
-						currentLine = finalWord;
-					}
+			const applyIndentIfNeeded = (): void => {
+				if (needsIndent) {
+					currentLine = indent;
+					needsIndent = false;
 				}
-				if (currentLine.length > 0) {
+			};
+
+			const flushCurrentLine = (): void => {
+				if (currentLine.length > 0 && lineHasContent) {
 					lines.push(currentLine);
 				}
+				startNewLine();
+			};
+
+			startNewLine();
+
+			for (const token of tokens) {
+				let remaining = token;
+				while (remaining.length > 0) {
+					applyIndentIfNeeded();
+					const currentVisible = visibleWidth(currentLine);
+					const availableWidth = contentWidth - currentVisible;
+					if (availableWidth <= 0) {
+						flushCurrentLine();
+						continue;
+					}
+
+					const [chunk, rest] = sliceTokenToWidth(remaining, availableWidth);
+					if (chunk.length === 0) {
+						flushCurrentLine();
+						remaining = rest;
+						continue;
+					}
+
+					currentLine += chunk;
+					if (chunk.trim().length > 0) {
+						lineHasContent = true;
+					}
+					remaining = rest;
+					if (remaining.length > 0) {
+						flushCurrentLine();
+					}
+				}
+			}
+
+			if (currentLine.length > 0 && lineHasContent) {
+				lines.push(currentLine);
+			} else if (tokens.length === 0 && indent.length > 0) {
+				lines.push(indent);
 			}
 		}
 
@@ -152,4 +188,34 @@ export class Text implements Component {
 
 		return result.length > 0 ? result : [""];
 	}
+}
+
+function splitLineIntoTokens(line: string): string[] {
+	const tokens = line.match(/(\s+|\S+)/g);
+	return tokens ?? [];
+}
+
+function sliceTokenToWidth(input: string, maxWidth: number): [string, string] {
+	if (input.length === 0) {
+		return ["", ""];
+	}
+	let chunk = "";
+	let consumed = 0;
+	for (const char of input) {
+		if (visibleWidth(chunk + char) > maxWidth) {
+			break;
+		}
+		chunk += char;
+		consumed += char.length;
+		if (visibleWidth(chunk) === maxWidth) {
+			break;
+		}
+	}
+	if (chunk.length === 0) {
+		const [firstChar = ""] = Array.from(input);
+		chunk = firstChar;
+		consumed = firstChar.length;
+	}
+	const remainder = input.slice(consumed);
+	return [chunk, remainder];
 }
