@@ -321,6 +321,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	// Attach request to response for easy access in helpers
 	(res as any).req = req;
 
+	const context: RequestContext = {
+		requestId,
+		traceId,
+		spanId,
+		startTime: start,
+		method: req.method || "GET",
+		url: pathname,
+	};
+
 	// Set a hard timeout for processing
 	// Skip for SSE endpoints which are meant to be long-lived
 	if (!pathname.startsWith("/api/chat")) {
@@ -338,15 +347,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 			}
 		});
 	}
-
-	const context: RequestContext = {
-		requestId,
-		traceId,
-		spanId,
-		startTime: start,
-		method: req.method || "GET",
-		url: pathname,
-	};
 
 	// Track request for introspection (Channelz) and graceful shutdown
 	requestTracker.track(req, {

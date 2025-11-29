@@ -44,8 +44,11 @@ export class RateLimiter {
 
 		if (client.tokens >= 1) {
 			client.tokens -= 1;
-			const tokensNeeded = this.max - client.tokens;
-			const msNeeded = tokensNeeded / this.refillRate;
+			// Reset time indicates when the next request can be made (when 1 token is available)
+			// If we still have tokens (tokens >= 1), we can request immediately (reset = now)
+			// If we dropped below 1 token, we calculate time to refill to 1
+			const tokensNeeded = 1 - client.tokens;
+			const msNeeded = Math.max(0, tokensNeeded / this.refillRate);
 			return {
 				allowed: true,
 				remaining: Math.floor(client.tokens),

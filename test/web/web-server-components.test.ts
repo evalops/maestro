@@ -20,14 +20,11 @@ describe("RateLimiter", () => {
 		expect(allowed).toBe(true);
 		expect(remaining).toBe(99);
 
-		// Reset should be slightly in the future (time for 1 token to refill)
-		// refillRate = 100 / 60000 = 0.001666... tokens/ms
-		// ms needed for 1 token = 1 / 0.001666... = 600ms
+		// Since we still have 99 tokens, we can make a request immediately.
+		// Reset time should be effectively "now" (or very close to it).
 		const now = Date.now();
 		const diff = reset - now;
-		// Allow some jitter for execution time, but should be around 600ms
-		expect(diff).toBeGreaterThan(500);
-		expect(diff).toBeLessThan(700);
+		expect(diff).toBeLessThan(50); // Allow small execution delta
 	});
 
 	it("should calculate reset correctly when empty", () => {
