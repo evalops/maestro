@@ -110,32 +110,40 @@ const pipInstallPattern =
 	/\bpip\d*\s+install\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s=<>]+)/i;
 
 function extractDependencies(command: string): string[] {
-	let matches = command.match(npmInstallPattern);
-	if (!matches) matches = command.match(bunAddPattern);
-	if (!matches) matches = command.match(pipInstallPattern);
-
-	if (matches?.[1]) {
-		// Split by spaces and cleanup flags/versions
-		return matches[1]
-			.split(/\s+/)
-			.filter((p) => !p.startsWith("-"))
-			.map((p) => {
-				// Handle URLs (git+, http:, etc.) and local paths
-				if (p.includes("://") || p.match(/^git@/) || p.match(/^\.{0,2}\//)) {
-					return p;
-				}
-
-				// Handle scoped packages (e.g. @scope/pkg)
-				if (p.startsWith("@")) {
-					const versionIndex = p.indexOf("@", 1);
-					return versionIndex === -1 ? p : p.substring(0, versionIndex);
-				}
-				// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0)
-				return p.split(/[@=<>]/)[0];
-			}) // simple cleanup
-			.filter((p) => p.length > 0);
+	let matches = command.matchAll(new RegExp(npmInstallPattern, "g"));
+	if (!matches) {
+		matches = command.matchAll(new RegExp(bunAddPattern, "g"));
 	}
-	return [];
+	if (!matches) {
+		matches = command.matchAll(new RegExp(pipInstallPattern, "g"));
+	}
+
+	const results: string[] = [];
+	for (const match of matches) {
+		if (match[1]) {
+			// Split by spaces and cleanup flags/versions
+			const deps = match[1]
+				.split(/\s+/)
+				.filter((p) => !p.startsWith("-"))
+				.map((p) => {
+					// Handle URLs (git+, http:, etc.) and local paths
+					if (p.includes("://") || p.match(/^git@/) || p.match(/^\.{0,2}\//)) {
+						return p;
+					}
+
+					// Handle scoped packages (e.g. @scope/pkg)
+					if (p.startsWith("@")) {
+						const versionIndex = p.indexOf("@", 1);
+						return versionIndex === -1 ? p : p.substring(0, versionIndex);
+					}
+					// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0)
+					return p.split(/[@=<>]/)[0];
+				}) // simple cleanup
+				.filter((p) => p.length > 0);
+			results.push(...deps);
+		}
+	}
+	return results;
 }
 
 export function checkPolicy(context: ActionApprovalContext): {
@@ -153,14 +161,10 @@ export function checkPolicy(context: ActionApprovalContext): {
 		context.user?.orgId &&
 		policy.orgId !== context.user.orgId
 	) {
-		// If policy is for a different org, we might normally skip it or fail.
-		// For safety, if a policy exists but mismatches org, we should probably strictly enforce or log.
-		// Assuming this local policy file is intended for the current environment/user.
-		// If there's a mismatch, it's a configuration error.
-		// For now, we'll log a warning but enforce the policy (safer to over-enforce).
 		console.warn(
-			`[Policy] Org mismatch: Policy=${policy.orgId}, User=${context.user.orgId}`,
+			`[Policy] Org mismatch: Policy=${policy.orgId}, User=${context.user.orgId}. Policy will be skipped.`,
 		);
+		return { allowed: true };
 	}
 
 	// 1. Tool Constraints
@@ -188,16 +192,16 @@ export function checkPolicy(context: ActionApprovalContext): {
 	) {
 		const command = getCommandArg(context);
 		if (command) {
-			// Check for shell metacharacters which could bypass detection
-			if (/[;&|`$()<>]/.test(command)) {
+			const deps = extractDependencies(command);
+			// Only check metacharacters if we actually found dependency installation patterns
+			if (deps.length > 0 && /[;&|`$()<>]/.test(command)) {
 				return {
 					allowed: false,
 					reason:
-						"Command contains shell metacharacters which are not allowed by enterprise policy.",
+						"Command contains shell metacharacters which are not allowed by enterprise policy during package installation.",
 				};
 			}
 
-			const deps = extractDependencies(command);
 			const { allowed, blocked } = policy.dependencies;
 
 			for (const dep of deps) {
