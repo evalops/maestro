@@ -55,6 +55,7 @@ import { getTrainingStatus } from "../training.js";
 import { composerManager } from "../composers/index.js";
 import { mcpManager } from "../mcp/index.js";
 import { getChangelogPath, parseChangelog } from "../update/changelog.js";
+import { createLogger } from "../utils/logger.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
 import { BashModeView } from "./bash-mode-view.js";
@@ -139,6 +140,9 @@ import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
 import { ModalManager } from "./modal-manager.js";
+
+const logger = createLogger("tui:renderer");
+
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
@@ -2616,7 +2620,10 @@ export class TuiRenderer {
 				);
 			}
 		} catch (error) {
-			console.error("Failed to summarize pasted content", error);
+			logger.error(
+				"Failed to summarize pasted content",
+				error instanceof Error ? error : undefined,
+			);
 			this.notificationView.showError(
 				"Couldn't summarize pasted content. The original text will be sent.",
 			);

@@ -14,8 +14,11 @@ import {
 	renderMessageToPlainText,
 } from "../../conversation/render-model.js";
 import type { SessionManager } from "../../session/manager.js";
+import { createLogger } from "../../utils/logger.js";
 import type { FooterComponent } from "../footer.js";
 import type { ToolExecutionComponent } from "../tool-execution.js";
+
+const logger = createLogger("tui:conversation-compactor");
 
 interface ConversationCompactorOptions {
 	agent: Agent;
@@ -81,7 +84,9 @@ export class ConversationCompactor {
 			};
 			usedModel = true;
 		} catch (error) {
-			console.warn("LLM compaction failed:", error);
+			logger.warn("LLM compaction failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
 		} finally {
 			this.options.footer.setHint(this.options.idleHint);
 		}

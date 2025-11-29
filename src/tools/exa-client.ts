@@ -1,7 +1,10 @@
 import { recordToolExecution } from "../telemetry.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
+import { createLogger } from "../utils/logger.js";
 import { retry } from "../utils/retry.js";
 import { trackExaUsage } from "./exa-usage.js";
+
+const logger = createLogger("tools:exa");
 
 const EXA_API_BASE = "https://api.exa.ai";
 const EXA_DEBUG = (process.env.EXA_DEBUG ?? "").toLowerCase();
@@ -165,8 +168,8 @@ function reportExaTelemetry(event: ExaTelemetryEvent): void {
 
 function logExaDebug(message: string, payload?: unknown): void {
 	if (!EXA_DEBUG_ENABLED) return;
-	const suffix = payload ? ` ${JSON.stringify(payload)}` : "";
-	console.error(`[exa] ${message}${suffix}`);
+	// Use info level since EXA_DEBUG flag already gates this output
+	logger.info(message, payload ? { payload } : undefined);
 }
 
 export async function callExa<T>(
