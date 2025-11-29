@@ -1,4 +1,4 @@
-import { validate as uuidValidate, v4 as uuidv4 } from "uuid";
+import { validate as uuidValidate } from "uuid";
 import {
 	AgentContextManager,
 	type AgentContextSource,
