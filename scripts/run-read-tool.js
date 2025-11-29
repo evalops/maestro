@@ -24,7 +24,11 @@ if (!existsSync(absoluteTarget)) {
 const moduleUrl = pathToFileURL(join(projectRoot, "dist", "tools", "read.js"));
 const { readTool } = await import(moduleUrl.href);
 
-const result = await readTool.execute("eval-read", { path: absoluteTarget });
+const result = await readTool.execute("eval-read", {
+	path: absoluteTarget,
+	wrapInCodeFence: false,
+	lineNumbers: false,
+});
 
 const textContent = result.content.find((item) => item.type === "text");
 
