@@ -333,7 +333,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	// Set a hard timeout for processing
 	// Skip for SSE endpoints which are meant to be long-lived
 	if (!pathname.startsWith("/api/chat")) {
-		res.setTimeout(REQUEST_TIMEOUT_MS, () => {
+		const timeout = setTimeout(() => {
 			if (!res.writableEnded) {
 				requestContextStorage.run(context, () => {
 					logError(`Request timeout for ${pathname} [${requestId}]`);
@@ -351,7 +351,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				res.end(JSON.stringify({ error: "Gateway Timeout" }));
 				res.destroy();
 			}
-		});
+		}, REQUEST_TIMEOUT_MS);
+
+		// Clear timeout if request finishes normally to prevent double logging
+		res.on("finish", () => clearTimeout(timeout));
+		res.on("close", () => clearTimeout(timeout));
 	}
 
 	// Track request for introspection (Channelz) and graceful shutdown
