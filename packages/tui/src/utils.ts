@@ -58,6 +58,21 @@ export function wrapAnsiLine(line: string, width: number): string[] {
 		const char = String.fromCodePoint(codePoint);
 		const charWidth = visibleWidth(char);
 
+		// If a single grapheme is too wide for even an empty line, skip it
+		if (charWidth > targetWidth) {
+			if (currentLength > 0) {
+				wrapped.push(
+					activeAnsiCodes.length > 0
+						? `${currentLine}${ANSI_ESCAPE_RESET}`
+						: currentLine,
+				);
+				currentLine = activeAnsiCodes.join("");
+				currentLength = 0;
+			}
+			i += char.length;
+			continue;
+		}
+
 		if (currentLength + charWidth > targetWidth) {
 			if (currentLength > 0) {
 				if (activeAnsiCodes.length > 0) {
@@ -68,11 +83,6 @@ export function wrapAnsiLine(line: string, width: number): string[] {
 					currentLine = "";
 				}
 				currentLength = 0;
-			}
-			// Skip characters that individually exceed the target width
-			if (charWidth > targetWidth) {
-				i += char.length;
-				continue;
 			}
 		}
 
