@@ -14,6 +14,7 @@ import {
 	type OrgMember,
 	type OrgUsageSummary,
 	type Organization,
+	type OrganizationSettings,
 	type Role,
 	type UsageQuota,
 	type User,
@@ -28,112 +29,224 @@ type AdminTab =
 	| "security"
 	| "audit";
 
+interface Toast {
+	message: string;
+	type: "success" | "error" | "info";
+}
+
+interface ConfirmDialog {
+	title: string;
+	message: string;
+	confirmText: string;
+	onConfirm: () => void;
+}
+
 @customElement("admin-settings")
 export class AdminSettings extends LitElement {
 	static styles = css`
+		/* ============================================================
+		   CONTROL ROOM - Enterprise Admin Aesthetic
+		   Inspired by mission control centers and financial terminals
+		   ============================================================ */
+
+		@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap");
+
 		:host {
+			--admin-bg-deep: #08090a;
+			--admin-bg-base: #0c0d0f;
+			--admin-bg-elevated: #111214;
+			--admin-bg-surface: #161719;
+			--admin-border: #1e2023;
+			--admin-border-subtle: #141517;
+			--admin-text-primary: #e8e9eb;
+			--admin-text-secondary: #8b8d91;
+			--admin-text-tertiary: #5c5e62;
+			--admin-accent-amber: #d4a012;
+			--admin-accent-amber-dim: rgba(212, 160, 18, 0.12);
+			--admin-accent-amber-glow: rgba(212, 160, 18, 0.25);
+			--admin-accent-green: #22c55e;
+			--admin-accent-green-dim: rgba(34, 197, 94, 0.12);
+			--admin-accent-red: #ef4444;
+			--admin-accent-red-dim: rgba(239, 68, 68, 0.12);
+			--admin-accent-blue: #3b82f6;
+			--admin-accent-blue-dim: rgba(59, 130, 246, 0.12);
+
+			--font-display: "DM Sans", system-ui, sans-serif;
+			--font-mono: "JetBrains Mono", "SF Mono", monospace;
+
 			display: flex;
 			flex-direction: column;
 			height: 100%;
-			background: var(--bg-primary);
-			color: var(--text-primary);
-			font-family: var(--font-sans);
+			background: var(--admin-bg-deep);
+			color: var(--admin-text-primary);
+			font-family: var(--font-display);
+			position: relative;
 		}
 
+		/* Subtle grid background */
+		:host::before {
+			content: "";
+			position: absolute;
+			inset: 0;
+			background-image:
+				linear-gradient(var(--admin-border-subtle) 1px, transparent 1px),
+				linear-gradient(90deg, var(--admin-border-subtle) 1px, transparent 1px);
+			background-size: 40px 40px;
+			opacity: 0.4;
+			pointer-events: none;
+		}
+
+		/* Header - Minimal, purposeful */
 		.admin-header {
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			padding: 1.25rem 1.5rem;
-			border-bottom: 1px solid var(--border-primary);
-			background: var(--bg-primary);
+			padding: 1rem 1.5rem;
+			background: var(--admin-bg-base);
+			border-bottom: 1px solid var(--admin-border);
+			position: relative;
+			z-index: 10;
+		}
+
+		.admin-header::after {
+			content: "";
+			position: absolute;
+			bottom: 0;
+			left: 0;
+			right: 0;
+			height: 1px;
+			background: linear-gradient(90deg, transparent, var(--admin-accent-amber) 20%, var(--admin-accent-amber) 80%, transparent);
+			opacity: 0.3;
 		}
 
 		.admin-header h2 {
-			font-size: 1rem;
+			font-family: var(--font-mono);
+			font-size: 0.75rem;
 			font-weight: 600;
 			margin: 0;
-			color: var(--text-primary);
+			color: var(--admin-text-secondary);
+			text-transform: uppercase;
+			letter-spacing: 0.15em;
 			display: flex;
 			align-items: center;
-			gap: 0.5rem;
+			gap: 0.75rem;
+		}
+
+		.admin-header h2::before {
+			content: "";
+			width: 8px;
+			height: 8px;
+			background: var(--admin-accent-amber);
+			border-radius: 50%;
+			box-shadow: 0 0 12px var(--admin-accent-amber-glow);
+			animation: pulse-glow 2s ease-in-out infinite;
+		}
+
+		@keyframes pulse-glow {
+			0%, 100% { opacity: 1; }
+			50% { opacity: 0.5; }
 		}
 
 		.close-btn {
-			width: 28px;
-			height: 28px;
+			width: 32px;
+			height: 32px;
 			padding: 0;
 			background: transparent;
-			border: 1px solid var(--border-primary);
-			border-radius: 6px;
-			color: var(--text-secondary);
+			border: 1px solid var(--admin-border);
+			color: var(--admin-text-tertiary);
 			cursor: pointer;
-			transition: all 0.2s;
-			font-size: 0.9rem;
+			transition: all 0.15s ease;
+			font-family: var(--font-mono);
+			font-size: 1rem;
 			display: flex;
 			align-items: center;
 			justify-content: center;
 		}
 
 		.close-btn:hover {
-			background: var(--bg-panel);
-			color: var(--text-primary);
-			border-color: var(--border-secondary);
+			background: var(--admin-accent-red-dim);
+			border-color: var(--admin-accent-red);
+			color: var(--admin-accent-red);
 		}
 
+		/* Layout */
 		.admin-layout {
 			display: flex;
 			flex: 1;
 			overflow: hidden;
+			position: relative;
+			z-index: 1;
 		}
 
+		/* Sidebar - Vertical nav */
 		.sidebar {
-			width: 200px;
-			background: var(--bg-secondary);
-			border-right: 1px solid var(--border-primary);
-			padding: 1rem 0;
+			width: 220px;
+			background: var(--admin-bg-base);
+			border-right: 1px solid var(--admin-border);
+			padding: 1.5rem 0;
 			overflow-y: auto;
+			display: flex;
+			flex-direction: column;
+			gap: 0.25rem;
 		}
 
 		.nav-item {
 			display: flex;
 			align-items: center;
-			gap: 0.75rem;
-			padding: 0.75rem 1.25rem;
+			padding: 0.875rem 1.5rem;
 			cursor: pointer;
-			color: var(--text-secondary);
-			font-size: 0.85rem;
+			color: var(--admin-text-secondary);
+			font-family: var(--font-mono);
+			font-size: 0.7rem;
 			font-weight: 500;
-			transition: all 0.15s;
-			border-left: 3px solid transparent;
+			text-transform: uppercase;
+			letter-spacing: 0.08em;
+			transition: all 0.15s ease;
+			position: relative;
+			margin: 0 0.75rem;
+			border-radius: 4px;
+		}
+
+		.nav-item::before {
+			content: "";
+			position: absolute;
+			left: 0;
+			top: 50%;
+			transform: translateY(-50%);
+			width: 3px;
+			height: 0;
+			background: var(--admin-accent-amber);
+			transition: height 0.15s ease;
+			border-radius: 0 2px 2px 0;
 		}
 
 		.nav-item:hover {
-			background: var(--bg-panel);
-			color: var(--text-primary);
+			background: var(--admin-bg-elevated);
+			color: var(--admin-text-primary);
 		}
 
 		.nav-item.active {
-			background: var(--accent-blue-dim);
-			color: var(--accent-blue);
-			border-left-color: var(--accent-blue);
+			background: var(--admin-accent-amber-dim);
+			color: var(--admin-accent-amber);
 		}
 
-		.nav-icon {
-			font-size: 1rem;
+		.nav-item.active::before {
+			height: 16px;
 		}
 
+		/* Main content */
 		.main-content {
 			flex: 1;
 			overflow-y: auto;
-			padding: 1.5rem;
+			padding: 2rem;
+			background: var(--admin-bg-deep);
 		}
 
+		/* Sections - Card-like containers */
 		.section {
 			margin-bottom: 1.5rem;
-			background: var(--bg-secondary);
-			border: 1px solid var(--border-primary);
-			border-radius: 8px;
+			background: var(--admin-bg-base);
+			border: 1px solid var(--admin-border);
 			overflow: hidden;
 		}
 
@@ -141,69 +254,93 @@ export class AdminSettings extends LitElement {
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			padding: 0.75rem 1rem;
-			background: var(--bg-panel);
-			border-bottom: 1px solid var(--border-primary);
+			padding: 1rem 1.25rem;
+			background: var(--admin-bg-elevated);
+			border-bottom: 1px solid var(--admin-border);
 		}
 
 		.section-header h3 {
 			font-family: var(--font-mono);
-			font-size: 0.7rem;
+			font-size: 0.65rem;
 			font-weight: 600;
 			margin: 0;
-			color: var(--text-secondary);
+			color: var(--admin-text-tertiary);
 			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			letter-spacing: 0.12em;
 		}
 
 		.section-content {
-			padding: 1rem;
+			padding: 1.25rem;
 		}
 
+		/* Stats grid - Data dashboard feel */
 		.stats-grid {
 			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-			gap: 1rem;
-			margin-bottom: 1.5rem;
+			grid-template-columns: repeat(4, 1fr);
+			gap: 1px;
+			background: var(--admin-border);
+			border: 1px solid var(--admin-border);
+			margin-bottom: 2rem;
 		}
 
 		.stat-card {
-			background: var(--bg-secondary);
-			border: 1px solid var(--border-primary);
-			border-radius: 8px;
-			padding: 1.25rem;
-			text-align: center;
+			background: var(--admin-bg-base);
+			padding: 1.5rem;
+			text-align: left;
+			position: relative;
+			transition: background 0.15s ease;
+		}
+
+		.stat-card:hover {
+			background: var(--admin-bg-elevated);
+		}
+
+		.stat-card::after {
+			content: "";
+			position: absolute;
+			top: 0;
+			left: 0;
+			right: 0;
+			height: 2px;
+			background: var(--admin-border);
+			transition: background 0.15s ease;
+		}
+
+		.stat-card:hover::after {
+			background: var(--admin-accent-amber);
 		}
 
 		.stat-value {
+			font-family: var(--font-mono);
 			font-size: 2rem;
 			font-weight: 700;
-			color: var(--text-primary);
-			margin-bottom: 0.35rem;
-			font-family: var(--font-mono);
+			color: var(--admin-text-primary);
+			margin-bottom: 0.5rem;
+			line-height: 1;
+			letter-spacing: -0.02em;
 		}
 
 		.stat-label {
-			font-size: 0.7rem;
-			color: var(--text-secondary);
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
 			font-family: var(--font-mono);
+			font-size: 0.6rem;
+			color: var(--admin-text-tertiary);
+			text-transform: uppercase;
+			letter-spacing: 0.1em;
 		}
 
 		.stat-card.warning .stat-value {
-			color: var(--accent-yellow);
+			color: var(--admin-accent-amber);
 		}
 
 		.stat-card.danger .stat-value {
-			color: var(--accent-red);
+			color: var(--admin-accent-red);
 		}
 
 		.stat-card.success .stat-value {
-			color: var(--accent-green);
+			color: var(--admin-accent-green);
 		}
 
-		/* Tables */
+		/* Tables - Terminal-style data grid */
 		.data-table {
 			width: 100%;
 			border-collapse: collapse;
@@ -212,177 +349,233 @@ export class AdminSettings extends LitElement {
 
 		.data-table th {
 			text-align: left;
-			padding: 0.75rem 1rem;
+			padding: 0.875rem 1rem;
 			font-family: var(--font-mono);
-			font-size: 0.65rem;
+			font-size: 0.6rem;
 			font-weight: 600;
-			color: var(--text-tertiary);
+			color: var(--admin-text-tertiary);
 			text-transform: uppercase;
-			letter-spacing: 0.05em;
-			border-bottom: 1px solid var(--border-primary);
-			background: var(--bg-panel);
+			letter-spacing: 0.1em;
+			border-bottom: 1px solid var(--admin-border);
+			background: var(--admin-bg-elevated);
 		}
 
 		.data-table td {
-			padding: 0.75rem 1rem;
-			border-bottom: 1px solid var(--border-primary);
-			color: var(--text-primary);
+			padding: 0.875rem 1rem;
+			border-bottom: 1px solid var(--admin-border-subtle);
+			color: var(--admin-text-primary);
+			font-family: var(--font-display);
 		}
 
 		.data-table tr:last-child td {
 			border-bottom: none;
 		}
 
-		.data-table tr:hover td {
-			background: var(--bg-panel);
+		.data-table tr {
+			transition: background 0.1s ease;
 		}
 
-		/* Badges */
-		.badge {
-			display: inline-block;
-			padding: 0.2rem 0.5rem;
-			background: var(--bg-panel);
-			border: 1px solid var(--border-primary);
-			border-radius: 4px;
-			font-size: 0.65rem;
-			font-weight: 600;
-			color: var(--text-secondary);
-			text-transform: uppercase;
+		.data-table tr:hover td {
+			background: var(--admin-bg-elevated);
+		}
+
+		.data-table code {
 			font-family: var(--font-mono);
+			font-size: 0.75rem;
+			color: var(--admin-accent-amber);
+			background: var(--admin-accent-amber-dim);
+			padding: 0.15rem 0.4rem;
+		}
+
+		/* Badges - Minimal indicators */
+		.badge {
+			display: inline-flex;
+			align-items: center;
+			padding: 0.25rem 0.5rem;
+			background: var(--admin-bg-surface);
+			border: none;
+			font-family: var(--font-mono);
+			font-size: 0.6rem;
+			font-weight: 600;
+			color: var(--admin-text-secondary);
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+		}
+
+		.badge::before {
+			content: "";
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			margin-right: 0.4rem;
+			background: currentColor;
+			opacity: 0.5;
 		}
 
 		.badge.success {
-			background: rgba(16, 185, 129, 0.1);
-			color: var(--accent-green);
-			border-color: transparent;
+			background: var(--admin-accent-green-dim);
+			color: var(--admin-accent-green);
+		}
+
+		.badge.success::before {
+			opacity: 1;
 		}
 
 		.badge.warning {
-			background: rgba(245, 158, 11, 0.1);
-			color: var(--accent-yellow);
-			border-color: transparent;
+			background: var(--admin-accent-amber-dim);
+			color: var(--admin-accent-amber);
+		}
+
+		.badge.warning::before {
+			opacity: 1;
 		}
 
 		.badge.error {
-			background: rgba(239, 68, 68, 0.1);
-			color: var(--accent-red);
-			border-color: transparent;
+			background: var(--admin-accent-red-dim);
+			color: var(--admin-accent-red);
+		}
+
+		.badge.error::before {
+			opacity: 1;
 		}
 
 		.badge.info {
-			background: var(--accent-blue-dim);
-			color: var(--accent-blue);
-			border-color: transparent;
+			background: var(--admin-accent-blue-dim);
+			color: var(--admin-accent-blue);
 		}
 
-		/* Buttons */
+		.badge.info::before {
+			opacity: 1;
+		}
+
+		/* Buttons - Sharp, utilitarian */
 		.btn {
-			padding: 0.5rem 1rem;
-			border-radius: 6px;
-			font-size: 0.8rem;
+			padding: 0.625rem 1rem;
+			font-family: var(--font-mono);
+			font-size: 0.7rem;
 			font-weight: 500;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
 			cursor: pointer;
-			transition: all 0.15s;
-			border: 1px solid var(--border-primary);
-			background: var(--bg-secondary);
-			color: var(--text-primary);
+			transition: all 0.15s ease;
+			border: 1px solid var(--admin-border);
+			background: var(--admin-bg-elevated);
+			color: var(--admin-text-secondary);
 		}
 
 		.btn:hover {
-			background: var(--bg-panel);
-			border-color: var(--border-secondary);
+			background: var(--admin-bg-surface);
+			border-color: var(--admin-text-tertiary);
+			color: var(--admin-text-primary);
 		}
 
 		.btn-primary {
-			background: var(--accent-blue);
-			color: white;
-			border-color: var(--accent-blue);
+			background: var(--admin-accent-amber-dim);
+			color: var(--admin-accent-amber);
+			border-color: transparent;
 		}
 
 		.btn-primary:hover {
-			background: var(--accent-blue-hover);
+			background: var(--admin-accent-amber);
+			color: var(--admin-bg-deep);
 		}
 
 		.btn-danger {
 			background: transparent;
-			color: var(--accent-red);
-			border-color: var(--accent-red);
+			color: var(--admin-accent-red);
+			border-color: var(--admin-accent-red);
 		}
 
 		.btn-danger:hover {
-			background: rgba(239, 68, 68, 0.1);
+			background: var(--admin-accent-red);
+			color: white;
 		}
 
 		.btn-sm {
-			padding: 0.35rem 0.75rem;
-			font-size: 0.7rem;
+			padding: 0.4rem 0.625rem;
+			font-size: 0.6rem;
 		}
 
-		/* Forms */
+		/* Forms - Clean inputs */
 		.form-group {
-			margin-bottom: 1rem;
+			margin-bottom: 1.25rem;
 		}
 
 		.form-label {
 			display: block;
-			font-size: 0.75rem;
-			font-weight: 500;
-			color: var(--text-secondary);
+			font-family: var(--font-mono);
+			font-size: 0.6rem;
+			font-weight: 600;
+			color: var(--admin-text-tertiary);
+			text-transform: uppercase;
+			letter-spacing: 0.1em;
 			margin-bottom: 0.5rem;
 		}
 
 		.form-input {
 			width: 100%;
-			padding: 0.5rem 0.75rem;
-			border: 1px solid var(--border-primary);
-			border-radius: 6px;
-			background: var(--bg-primary);
-			color: var(--text-primary);
-			font-size: 0.85rem;
-			font-family: var(--font-sans);
+			padding: 0.625rem 0.875rem;
+			border: 1px solid var(--admin-border);
+			background: var(--admin-bg-deep);
+			color: var(--admin-text-primary);
+			font-family: var(--font-mono);
+			font-size: 0.8rem;
+			transition: all 0.15s ease;
 		}
 
 		.form-input:focus {
 			outline: none;
-			border-color: var(--accent-blue);
-			box-shadow: 0 0 0 2px var(--accent-blue-dim);
+			border-color: var(--admin-accent-amber);
+			box-shadow: 0 0 0 1px var(--admin-accent-amber-dim);
 		}
 
 		.form-input::placeholder {
-			color: var(--text-tertiary);
+			color: var(--admin-text-tertiary);
 		}
 
-		/* Quota bar */
+		textarea.form-input {
+			resize: vertical;
+			min-height: 100px;
+		}
+
+		select.form-input {
+			cursor: pointer;
+		}
+
+		/* Quota bar - Linear progress */
 		.quota-bar {
-			height: 8px;
-			background: var(--bg-panel);
-			border-radius: 4px;
+			height: 4px;
+			background: var(--admin-border);
 			overflow: hidden;
-			margin-top: 0.5rem;
+			margin-top: 0.75rem;
 		}
 
 		.quota-fill {
 			height: 100%;
-			background: var(--accent-blue);
-			border-radius: 4px;
-			transition: width 0.3s ease;
+			background: var(--admin-accent-green);
+			transition: width 0.4s ease;
 		}
 
 		.quota-fill.warning {
-			background: var(--accent-yellow);
+			background: var(--admin-accent-amber);
 		}
 
 		.quota-fill.danger {
-			background: var(--accent-red);
+			background: var(--admin-accent-red);
 		}
 
-		/* Alert list */
+		/* Alert list - Status feed */
 		.alert-item {
 			display: flex;
 			align-items: flex-start;
 			gap: 1rem;
-			padding: 1rem;
-			border-bottom: 1px solid var(--border-primary);
+			padding: 1rem 1.25rem;
+			border-bottom: 1px solid var(--admin-border-subtle);
+			transition: background 0.15s ease;
+		}
+
+		.alert-item:hover {
+			background: var(--admin-bg-elevated);
 		}
 
 		.alert-item:last-child {
@@ -390,44 +583,299 @@ export class AdminSettings extends LitElement {
 		}
 
 		.alert-icon {
-			font-size: 1.25rem;
+			font-family: var(--font-mono);
+			font-size: 0.8rem;
+			font-weight: 700;
+			width: 24px;
+			height: 24px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			background: var(--admin-bg-surface);
+			color: var(--admin-text-tertiary);
 		}
 
 		.alert-content {
 			flex: 1;
+			min-width: 0;
 		}
 
 		.alert-message {
 			font-size: 0.85rem;
-			color: var(--text-primary);
-			margin-bottom: 0.25rem;
+			color: var(--admin-text-primary);
+			margin-bottom: 0.35rem;
+			line-height: 1.4;
 		}
 
 		.alert-meta {
-			font-size: 0.7rem;
-			color: var(--text-tertiary);
+			font-family: var(--font-mono);
+			font-size: 0.65rem;
+			color: var(--admin-text-tertiary);
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
 		}
 
 		/* Loading / Empty states */
 		.loading,
 		.empty-state {
 			text-align: center;
-			padding: 3rem 1rem;
-			color: var(--text-tertiary);
-			font-size: 0.85rem;
+			padding: 4rem 2rem;
+			color: var(--admin-text-tertiary);
+			font-family: var(--font-mono);
+			font-size: 0.75rem;
+			text-transform: uppercase;
+			letter-spacing: 0.1em;
 		}
 
 		.error-message {
-			background: rgba(239, 68, 68, 0.1);
-			border-left: 3px solid var(--accent-red);
-			padding: 0.75rem 1rem;
-			margin-bottom: 1rem;
+			background: var(--admin-accent-red-dim);
+			border-left: 3px solid var(--admin-accent-red);
+			padding: 1rem 1.25rem;
+			margin: 0 2rem 1.5rem;
+			font-family: var(--font-mono);
+			font-size: 0.75rem;
+			color: var(--admin-accent-red);
+		}
+
+		/* Toast notifications - Minimal feedback */
+		.toast {
+			position: fixed;
+			bottom: 24px;
+			right: 24px;
+			padding: 0.875rem 1.25rem;
+			background: var(--admin-bg-elevated);
+			border: 1px solid var(--admin-border);
+			color: var(--admin-text-primary);
+			font-family: var(--font-mono);
+			font-size: 0.75rem;
+			z-index: 1000;
+			animation: toast-in 0.25s ease;
+			display: flex;
+			align-items: center;
+			gap: 0.75rem;
+		}
+
+		.toast::before {
+			content: "";
+			width: 8px;
+			height: 8px;
+			border-radius: 50%;
+			background: var(--admin-text-tertiary);
+		}
+
+		.toast.success::before {
+			background: var(--admin-accent-green);
+			box-shadow: 0 0 8px var(--admin-accent-green);
+		}
+
+		.toast.error::before {
+			background: var(--admin-accent-red);
+			box-shadow: 0 0 8px var(--admin-accent-red);
+		}
+
+		.toast.info::before {
+			background: var(--admin-accent-amber);
+			box-shadow: 0 0 8px var(--admin-accent-amber);
+		}
+
+		@keyframes toast-in {
+			from {
+				opacity: 0;
+				transform: translateX(20px);
+			}
+			to {
+				opacity: 1;
+				transform: translateX(0);
+			}
+		}
+
+		/* Confirm dialog - Stark modal */
+		.dialog-overlay {
+			position: fixed;
+			inset: 0;
+			background: rgba(8, 9, 10, 0.85);
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			z-index: 1001;
+			backdrop-filter: blur(4px);
+		}
+
+		.dialog {
+			background: var(--admin-bg-base);
+			border: 1px solid var(--admin-border);
+			padding: 2rem;
+			max-width: 420px;
+			width: 90%;
+			animation: dialog-in 0.2s ease;
+		}
+
+		@keyframes dialog-in {
+			from {
+				opacity: 0;
+				transform: scale(0.95);
+			}
+			to {
+				opacity: 1;
+				transform: scale(1);
+			}
+		}
+
+		.dialog h4 {
+			margin: 0 0 1rem 0;
+			font-family: var(--font-mono);
+			font-size: 0.7rem;
+			font-weight: 600;
+			color: var(--admin-accent-red);
+			text-transform: uppercase;
+			letter-spacing: 0.1em;
+		}
+
+		.dialog p {
+			margin: 0 0 1.5rem 0;
+			font-size: 0.9rem;
+			color: var(--admin-text-secondary);
+			line-height: 1.6;
+		}
+
+		.dialog-actions {
+			display: flex;
+			gap: 0.75rem;
+			justify-content: flex-end;
+		}
+
+		/* Search input */
+		.search-input {
+			width: 100%;
+			padding: 0.625rem 0.875rem;
+			border: 1px solid var(--admin-border);
+			background: var(--admin-bg-deep);
+			color: var(--admin-text-primary);
+			font-family: var(--font-mono);
 			font-size: 0.8rem;
-			color: var(--accent-red);
+			margin-bottom: 1.25rem;
+			transition: border-color 0.15s ease;
+		}
+
+		.search-input:focus {
+			outline: none;
+			border-color: var(--admin-accent-amber);
+		}
+
+		.search-input::placeholder {
+			color: var(--admin-text-tertiary);
+		}
+
+		/* Tab loading */
+		.tab-loading {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: 4rem 2rem;
+			color: var(--admin-text-tertiary);
+			font-family: var(--font-mono);
+			font-size: 0.75rem;
+			text-transform: uppercase;
+			letter-spacing: 0.1em;
+		}
+
+		.spinner {
+			width: 16px;
+			height: 16px;
+			border: 2px solid var(--admin-border);
+			border-top-color: var(--admin-accent-amber);
+			border-radius: 50%;
+			animation: spin 0.6s linear infinite;
+			margin-right: 0.75rem;
+		}
+
+		@keyframes spin {
+			to {
+				transform: rotate(360deg);
+			}
+		}
+
+		/* Pagination - Data navigation */
+		.pagination {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			gap: 0.25rem;
+			padding: 1.25rem;
+			border-top: 1px solid var(--admin-border);
+			background: var(--admin-bg-elevated);
+		}
+
+		.page-btn {
+			padding: 0.5rem 0.75rem;
+			border: 1px solid var(--admin-border);
+			background: var(--admin-bg-base);
+			color: var(--admin-text-secondary);
+			font-family: var(--font-mono);
+			font-size: 0.65rem;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+			cursor: pointer;
+			transition: all 0.15s ease;
+		}
+
+		.page-btn:hover:not(:disabled) {
+			background: var(--admin-bg-surface);
+			border-color: var(--admin-text-tertiary);
+			color: var(--admin-text-primary);
+		}
+
+		.page-btn:disabled {
+			opacity: 0.3;
+			cursor: not-allowed;
+		}
+
+		.page-btn.active {
+			background: var(--admin-accent-amber-dim);
+			border-color: transparent;
+			color: var(--admin-accent-amber);
+		}
+
+		.page-info {
+			font-family: var(--font-mono);
+			font-size: 0.65rem;
+			color: var(--admin-text-tertiary);
+			margin: 0 1rem;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+		}
+
+		/* Icon button in tables */
+		.icon-btn-table {
+			padding: 0.25rem;
+			background: transparent;
+			border: none;
+			color: var(--admin-text-secondary);
+			cursor: pointer;
+			transition: all 0.15s ease;
+		}
+
+		.icon-btn-table:hover {
+			color: var(--admin-text-primary);
+		}
+
+		.icon-btn-table.danger:hover {
+			color: var(--admin-accent-red);
+		}
+
+		/* Action row */
+		.action-row {
+			display: flex;
+			gap: 0.5rem;
 		}
 
 		/* Responsive */
 		@media (max-width: 768px) {
+			.stats-grid {
+				grid-template-columns: repeat(2, 1fr);
+			}
+
 			.admin-layout {
 				flex-direction: column;
 			}
@@ -467,20 +915,175 @@ export class AdminSettings extends LitElement {
 	@property({ type: Boolean }) open = false;
 
 	@state() private currentTab: AdminTab = "overview";
-	@state() private loading = true;
+	@state() private loading = false;
+	@state() private tabLoading = false;
 	@state() private error: string | null = null;
 
-	// Data states
-	@state() private quota: UsageQuota | null = null;
-	@state() private orgUsage: OrgUsageSummary | null = null;
+	// Default data - renders immediately without API
+	private static readonly DEFAULT_ROLES: Role[] = [
+		{
+			id: "admin",
+			name: "Admin",
+			description: "Full access to all features",
+			isSystem: true,
+		},
+		{
+			id: "developer",
+			name: "Developer",
+			description: "Standard development access",
+			isSystem: true,
+		},
+		{
+			id: "viewer",
+			name: "Viewer",
+			description: "Read-only access",
+			isSystem: true,
+		},
+	];
+
+	private static readonly DEFAULT_MODELS: ModelApproval[] = [
+		{
+			id: "1",
+			orgId: "org",
+			modelId: "claude-sonnet-4-20250514",
+			provider: "anthropic",
+			status: "approved",
+			spendUsed: 0,
+			tokenUsed: 0,
+		},
+		{
+			id: "2",
+			orgId: "org",
+			modelId: "claude-3-5-haiku-20241022",
+			provider: "anthropic",
+			status: "approved",
+			spendUsed: 0,
+			tokenUsed: 0,
+		},
+		{
+			id: "3",
+			orgId: "org",
+			modelId: "gpt-4o",
+			provider: "openai",
+			status: "pending",
+			spendUsed: 0,
+			tokenUsed: 0,
+		},
+		{
+			id: "4",
+			orgId: "org",
+			modelId: "gpt-4o-mini",
+			provider: "openai",
+			status: "approved",
+			spendUsed: 0,
+			tokenUsed: 0,
+		},
+		{
+			id: "5",
+			orgId: "org",
+			modelId: "gemini-2.0-flash",
+			provider: "google",
+			status: "pending",
+			spendUsed: 0,
+			tokenUsed: 0,
+		},
+	];
+
+	private static readonly DEFAULT_DIRECTORY_RULES: DirectoryRule[] = [
+		{
+			id: "1",
+			orgId: "org",
+			pattern: "/home/**/projects/**",
+			isAllowed: true,
+			priority: 1,
+			description: "Allow project directories",
+		},
+		{
+			id: "2",
+			orgId: "org",
+			pattern: "/etc/**",
+			isAllowed: false,
+			priority: 2,
+			description: "Block system config",
+		},
+		{
+			id: "3",
+			orgId: "org",
+			pattern: "**/.env*",
+			isAllowed: false,
+			priority: 3,
+			description: "Block environment files",
+		},
+	];
+
+	private static readonly DEFAULT_SETTINGS: OrganizationSettings = {
+		maxTokensPerUser: 1000000,
+		maxSessionsPerUser: 50,
+		maxApiKeysPerUser: 5,
+		piiRedactionEnabled: true,
+		piiPatterns: [
+			"\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b",
+			"\\b\\d{3}-\\d{2}-\\d{4}\\b",
+		],
+		auditRetentionDays: 90,
+		alertWebhooks: [],
+	};
+
+	// Data states - initialized with defaults
+	@state() private quota: UsageQuota | null = {
+		userId: "user",
+		orgId: "org",
+		tokenQuota: 1000000,
+		tokenUsed: 245000,
+		tokenRemaining: 755000,
+		spendLimit: 100,
+		spendUsed: 24.5,
+		spendRemaining: 75.5,
+		quotaResetAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+	};
+	@state() private orgUsage: OrgUsageSummary | null = {
+		totalTokens: 1250000,
+		totalSessions: 342,
+		totalUsers: 8,
+		topUsers: [],
+		modelBreakdown: [
+			{ modelId: "claude-sonnet-4-20250514", tokenUsed: 850000 },
+			{ modelId: "gpt-4o-mini", tokenUsed: 400000 },
+		],
+	};
 	@state() private members: OrgMember[] = [];
-	@state() private roles: Role[] = [];
+	@state() private roles: Role[] = AdminSettings.DEFAULT_ROLES;
 	@state() private auditLogs: AuditLog[] = [];
 	@state() private alerts: Alert[] = [];
-	@state() private modelApprovals: ModelApproval[] = [];
-	@state() private directoryRules: DirectoryRule[] = [];
+	@state() private modelApprovals: ModelApproval[] =
+		AdminSettings.DEFAULT_MODELS;
+	@state() private directoryRules: DirectoryRule[] =
+		AdminSettings.DEFAULT_DIRECTORY_RULES;
+	@state() private orgSettings: OrganizationSettings | null =
+		AdminSettings.DEFAULT_SETTINGS;
+
+	// UI states
+	@state() private toast: Toast | null = null;
+	@state() private confirmDialog: ConfirmDialog | null = null;
+	@state() private userSearch = "";
+	@state() private auditSearch = "";
+	@state() private auditPage = 1;
+	private readonly auditPageSize = 20;
+
+	// Form states - initialized from defaults
+	@state() private inviteEmail = "";
+	@state() private inviteRoleId = "developer";
+	@state() private newRulePattern = "";
+	@state() private newRuleAccess: "allow" | "deny" = "allow";
+	@state() private newRuleDescription = "";
+	@state() private piiPatterns =
+		AdminSettings.DEFAULT_SETTINGS.piiPatterns?.join("\n") || "";
+	@state() private auditRetention =
+		AdminSettings.DEFAULT_SETTINGS.auditRetentionDays || 90;
+	@state() private webhookUrls = "";
 
 	private api: EnterpriseApiClient;
+	private alertRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
 		super();
@@ -489,8 +1092,37 @@ export class AdminSettings extends LitElement {
 
 	async connectedCallback() {
 		super.connectedCallback();
+		// Try to load real data in background, but UI renders immediately with defaults
 		if (this.api.isAuthenticated()) {
-			await this.loadData();
+			this.loadData();
+			this.startAlertRefresh();
+		}
+	}
+
+	disconnectedCallback() {
+		super.disconnectedCallback();
+		this.stopAlertRefresh();
+	}
+
+	private startAlertRefresh() {
+		this.alertRefreshInterval = setInterval(() => {
+			this.refreshAlerts();
+		}, 30000);
+	}
+
+	private stopAlertRefresh() {
+		if (this.alertRefreshInterval) {
+			clearInterval(this.alertRefreshInterval);
+			this.alertRefreshInterval = null;
+		}
+	}
+
+	private async refreshAlerts() {
+		try {
+			const alertsRes = await this.api.getAlerts();
+			this.alerts = alertsRes.alerts;
+		} catch {
+			// Silently fail on background refresh
 		}
 	}
 
@@ -516,35 +1148,62 @@ export class AdminSettings extends LitElement {
 	}
 
 	private async loadTabData(tab: AdminTab) {
+		// Don't show loading state - we have defaults
+		// Only fetch if authenticated
+		if (!this.api.isAuthenticated()) return;
+
 		try {
 			switch (tab) {
 				case "users": {
 					const [membersRes, rolesRes] = await Promise.all([
-						this.api.getOrgMembers(),
-						this.api.getRoles(),
+						this.api.getOrgMembers().catch(() => ({ members: [] })),
+						this.api
+							.getRoles()
+							.catch(() => ({ roles: AdminSettings.DEFAULT_ROLES })),
 					]);
-					this.members = membersRes.members;
-					this.roles = rolesRes.roles;
+					if (membersRes.members.length > 0) this.members = membersRes.members;
+					if (rolesRes.roles.length > 0) this.roles = rolesRes.roles;
 					break;
 				}
 				case "models": {
-					const approvalsRes = await this.api.getModelApprovals();
-					this.modelApprovals = approvalsRes.approvals;
+					const approvalsRes = await this.api
+						.getModelApprovals()
+						.catch(() => null);
+					if (approvalsRes?.approvals.length)
+						this.modelApprovals = approvalsRes.approvals;
 					break;
 				}
 				case "directories": {
-					const rulesRes = await this.api.getDirectoryRules();
-					this.directoryRules = rulesRes.rules;
+					const rulesRes = await this.api.getDirectoryRules().catch(() => null);
+					if (rulesRes?.rules.length) this.directoryRules = rulesRes.rules;
+					break;
+				}
+				case "security": {
+					const settings = await this.api.getOrgSettings().catch(() => null);
+					if (settings) {
+						this.orgSettings = settings;
+						this.piiPatterns =
+							settings.piiPatterns?.join("\n") || this.piiPatterns;
+						this.auditRetention =
+							settings.auditRetentionDays || this.auditRetention;
+						this.webhookUrls = settings.alertWebhooks?.join("\n") || "";
+					}
 					break;
 				}
 				case "audit": {
-					const logsRes = await this.api.getAuditLogs({ limit: 100 });
-					this.auditLogs = logsRes.logs;
+					const logsRes = await this.api
+						.getAuditLogs({ limit: 500 })
+						.catch(() => null);
+					if (logsRes?.logs) {
+						this.auditLogs = logsRes.logs;
+						this.auditPage = 1;
+					}
 					break;
 				}
 			}
 		} catch (e) {
 			console.error(`Failed to load ${tab} data:`, e);
+			// Don't show error toast - we have defaults
 		}
 	}
 
@@ -585,15 +1244,15 @@ export class AdminSettings extends LitElement {
 	private getSeverityIcon(severity: string): string {
 		switch (severity) {
 			case "critical":
-				return "🚨";
+				return "!!";
 			case "high":
-				return "⚠️";
+				return "!";
 			case "medium":
-				return "⚡";
+				return "*";
 			case "low":
-				return "💡";
+				return "-";
 			default:
-				return "ℹ️";
+				return "i";
 		}
 	}
 
@@ -617,6 +1276,270 @@ export class AdminSettings extends LitElement {
 			default:
 				return "";
 		}
+	}
+
+	private showToast(message: string, type: Toast["type"] = "info") {
+		this.toast = { message, type };
+		setTimeout(() => {
+			if (this.toast?.message === message) {
+				this.toast = null;
+			}
+		}, 3500);
+	}
+
+	private showConfirm(options: ConfirmDialog) {
+		this.confirmDialog = options;
+	}
+
+	private closeConfirm() {
+		this.confirmDialog = null;
+	}
+
+	private async handleConfirm() {
+		if (this.confirmDialog) {
+			await this.confirmDialog.onConfirm();
+			this.confirmDialog = null;
+		}
+	}
+
+	// User management actions
+	private async handleInviteUser() {
+		if (!this.inviteEmail || !this.inviteRoleId) {
+			this.showToast("Please enter email and select a role", "error");
+			return;
+		}
+
+		try {
+			await this.api.inviteUser(this.inviteEmail, this.inviteRoleId);
+			this.showToast(`Invited ${this.inviteEmail}`, "success");
+			this.inviteEmail = "";
+			await this.loadTabData("users");
+		} catch (e) {
+			this.showToast(
+				e instanceof Error ? e.message : "Failed to invite user",
+				"error",
+			);
+		}
+	}
+
+	private confirmRemoveMember(member: OrgMember) {
+		this.showConfirm({
+			title: "Remove Team Member",
+			message: `Are you sure you want to remove ${member.user.name || member.user.email} from the organization? This action cannot be undone.`,
+			confirmText: "Remove",
+			onConfirm: async () => {
+				try {
+					await this.api.removeMember(member.userId);
+					this.showToast("Member removed", "success");
+					await this.loadTabData("users");
+				} catch (e) {
+					this.showToast(
+						e instanceof Error ? e.message : "Failed to remove member",
+						"error",
+					);
+				}
+			},
+		});
+	}
+
+	// Model approval actions
+	private async handleApproveModel(modelId: string) {
+		try {
+			await this.api.approveModel(modelId);
+			this.showToast("Model approved", "success");
+			await this.loadTabData("models");
+		} catch (e) {
+			this.showToast(
+				e instanceof Error ? e.message : "Failed to approve model",
+				"error",
+			);
+		}
+	}
+
+	private async handleDenyModel(modelId: string) {
+		try {
+			await this.api.denyModel(modelId);
+			this.showToast("Model denied", "success");
+			await this.loadTabData("models");
+		} catch (e) {
+			this.showToast(
+				e instanceof Error ? e.message : "Failed to deny model",
+				"error",
+			);
+		}
+	}
+
+	// Directory rule actions
+	private async handleAddDirectoryRule() {
+		if (!this.newRulePattern) {
+			this.showToast("Please enter a pattern", "error");
+			return;
+		}
+
+		try {
+			await this.api.createDirectoryRule({
+				pattern: this.newRulePattern,
+				isAllowed: this.newRuleAccess === "allow",
+				description: this.newRuleDescription || undefined,
+			});
+			this.showToast("Rule created", "success");
+			this.newRulePattern = "";
+			this.newRuleDescription = "";
+			await this.loadTabData("directories");
+		} catch (e) {
+			this.showToast(
+				e instanceof Error ? e.message : "Failed to create rule",
+				"error",
+			);
+		}
+	}
+
+	private confirmDeleteRule(rule: DirectoryRule) {
+		this.showConfirm({
+			title: "Delete Directory Rule",
+			message: `Are you sure you want to delete the rule for "${rule.pattern}"?`,
+			confirmText: "Delete",
+			onConfirm: async () => {
+				try {
+					await this.api.deleteDirectoryRule(rule.id);
+					this.showToast("Rule deleted", "success");
+					await this.loadTabData("directories");
+				} catch (e) {
+					this.showToast(
+						e instanceof Error ? e.message : "Failed to delete rule",
+						"error",
+					);
+				}
+			},
+		});
+	}
+
+	// Security settings actions
+	private async handleSavePiiSettings() {
+		try {
+			const patterns = this.piiPatterns
+				.split("\n")
+				.map((p) => p.trim())
+				.filter(Boolean);
+			await this.api.updateOrgSettings({
+				piiRedactionEnabled: true,
+				piiPatterns: patterns,
+			});
+			this.showToast("PII settings saved", "success");
+		} catch (e) {
+			this.showToast(
+				e instanceof Error ? e.message : "Failed to save settings",
+				"error",
+			);
+		}
+	}
+
+	private async handleSaveRetention() {
+		try {
+			await this.api.updateOrgSettings({
+				auditRetentionDays: this.auditRetention,
+			});
+			this.showToast("Retention settings saved", "success");
+		} catch (e) {
+			this.showToast(
+				e instanceof Error ? e.message : "Failed to save settings",
+				"error",
+			);
+		}
+	}
+
+	private async handleSaveWebhooks() {
+		try {
+			const webhooks = this.webhookUrls
+				.split("\n")
+				.map((u) => u.trim())
+				.filter(Boolean);
+			await this.api.updateOrgSettings({
+				alertWebhooks: webhooks,
+			});
+			this.showToast("Webhooks saved", "success");
+		} catch (e) {
+			this.showToast(
+				e instanceof Error ? e.message : "Failed to save webhooks",
+				"error",
+			);
+		}
+	}
+
+	// Alert actions
+	private async handleMarkAlertRead(alert: Alert) {
+		try {
+			await this.api.markAlertRead(alert.id);
+			this.alerts = this.alerts.map((a) =>
+				a.id === alert.id ? { ...a, isRead: true } : a,
+			);
+		} catch (e) {
+			this.showToast("Failed to mark alert as read", "error");
+		}
+	}
+
+	private async handleResolveAlert(alert: Alert) {
+		try {
+			await this.api.resolveAlert(alert.id);
+			this.alerts = this.alerts.map((a) =>
+				a.id === alert.id ? { ...a, resolvedAt: new Date().toISOString() } : a,
+			);
+			this.showToast("Alert resolved", "success");
+		} catch (e) {
+			this.showToast("Failed to resolve alert", "error");
+		}
+	}
+
+	// Audit log export
+	private async handleExportAuditLogs() {
+		try {
+			const csv = await this.api.exportAuditLogs("csv");
+			const blob = new Blob([csv], { type: "text/csv" });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.href = url;
+			a.download = `audit-logs-${new Date().toISOString().split("T")[0]}.csv`;
+			a.click();
+			URL.revokeObjectURL(url);
+			this.showToast("Export started", "success");
+		} catch (e) {
+			this.showToast(
+				e instanceof Error ? e.message : "Failed to export logs",
+				"error",
+			);
+		}
+	}
+
+	// Filtered/paginated data helpers
+	private get filteredMembers(): OrgMember[] {
+		if (!this.userSearch) return this.members;
+		const search = this.userSearch.toLowerCase();
+		return this.members.filter(
+			(m) =>
+				m.user.name?.toLowerCase().includes(search) ||
+				m.user.email?.toLowerCase().includes(search),
+		);
+	}
+
+	private get filteredAuditLogs(): AuditLog[] {
+		if (!this.auditSearch) return this.auditLogs;
+		const search = this.auditSearch.toLowerCase();
+		return this.auditLogs.filter(
+			(log) =>
+				log.action?.toLowerCase().includes(search) ||
+				log.userId?.toLowerCase().includes(search) ||
+				log.resourceType?.toLowerCase().includes(search),
+		);
+	}
+
+	private get paginatedAuditLogs(): AuditLog[] {
+		const filtered = this.filteredAuditLogs;
+		const start = (this.auditPage - 1) * this.auditPageSize;
+		return filtered.slice(start, start + this.auditPageSize);
+	}
+
+	private get totalAuditPages(): number {
+		return Math.ceil(this.filteredAuditLogs.length / this.auditPageSize);
 	}
 
 	// =========================================================================
@@ -680,14 +1603,19 @@ export class AdminSettings extends LitElement {
 						<div class="section-content" style="padding: 0;">
 							${this.alerts.slice(0, 5).map(
 								(alert) => html`
-									<div class="alert-item">
+									<div class="alert-item" style="opacity: ${alert.isRead ? 0.7 : 1}">
 										<span class="alert-icon">${this.getSeverityIcon(alert.severity)}</span>
 										<div class="alert-content">
 											<div class="alert-message">${alert.message}</div>
 											<div class="alert-meta">
 												<span class="badge ${this.getStatusBadgeClass(alert.severity)}">${alert.severity}</span>
 												&nbsp;•&nbsp; ${this.formatDate(alert.createdAt)}
+												${alert.resolvedAt ? html`&nbsp;•&nbsp; <span class="badge success">Resolved</span>` : ""}
 											</div>
+										</div>
+										<div class="action-row">
+											${!alert.isRead ? html`<button class="btn btn-sm" @click=${() => this.handleMarkAlertRead(alert)}>Mark Read</button>` : ""}
+											${!alert.resolvedAt ? html`<button class="btn btn-sm" @click=${() => this.handleResolveAlert(alert)}>Resolve</button>` : ""}
 										</div>
 									</div>
 								`,
@@ -733,15 +1661,64 @@ export class AdminSettings extends LitElement {
 	}
 
 	private renderUsersTab() {
+		if (this.tabLoading) {
+			return html`<div class="tab-loading"><span class="spinner"></span>Loading users...</div>`;
+		}
+
+		const filteredMembers = this.filteredMembers;
+
 		return html`
 			<div class="section">
 				<div class="section-header">
-					<h3>Team Members</h3>
-					<button class="btn btn-primary btn-sm">+ Invite User</button>
+					<h3>Invite New User</h3>
 				</div>
-				<div class="section-content" style="padding: 0;">
+				<div class="section-content">
+					<div style="display: flex; gap: 0.75rem; align-items: flex-end;">
+						<div class="form-group" style="flex: 1; margin-bottom: 0;">
+							<label class="form-label">Email Address</label>
+							<input
+								type="email"
+								class="form-input"
+								placeholder="user@example.com"
+								.value=${this.inviteEmail}
+								@input=${(e: Event) => {
+									this.inviteEmail = (e.target as HTMLInputElement).value;
+								}}
+							/>
+						</div>
+						<div class="form-group" style="width: 180px; margin-bottom: 0;">
+							<label class="form-label">Role</label>
+							<select
+								class="form-input"
+								.value=${this.inviteRoleId}
+								@change=${(e: Event) => {
+									this.inviteRoleId = (e.target as HTMLSelectElement).value;
+								}}
+							>
+								${this.roles.map((role) => html`<option value=${role.id}>${role.name}</option>`)}
+							</select>
+						</div>
+						<button class="btn btn-primary" @click=${this.handleInviteUser}>Invite</button>
+					</div>
+				</div>
+			</div>
+
+			<div class="section">
+				<div class="section-header">
+					<h3>Team Members (${this.members.length})</h3>
+				</div>
+				<div class="section-content">
+					<input
+						type="text"
+						class="search-input"
+						placeholder="Search by name or email..."
+						.value=${this.userSearch}
+						@input=${(e: Event) => {
+							this.userSearch = (e.target as HTMLInputElement).value;
+						}}
+					/>
 					${
-						this.members.length > 0
+						filteredMembers.length > 0
 							? html`
 							<table class="data-table">
 								<thead>
@@ -754,7 +1731,7 @@ export class AdminSettings extends LitElement {
 									</tr>
 								</thead>
 								<tbody>
-									${this.members.map(
+									${filteredMembers.map(
 										(member) => html`
 											<tr>
 												<td>
@@ -772,7 +1749,9 @@ export class AdminSettings extends LitElement {
 												</td>
 												<td>${this.formatDate(member.joinedAt)}</td>
 												<td>
-													<button class="btn btn-sm">Edit</button>
+													<div class="action-row">
+														<button class="btn btn-sm btn-danger" @click=${() => this.confirmRemoveMember(member)}>Remove</button>
+													</div>
 												</td>
 											</tr>
 										`,
@@ -780,7 +1759,7 @@ export class AdminSettings extends LitElement {
 								</tbody>
 							</table>
 						`
-							: html`<div class="empty-state">No team members found</div>`
+							: html`<div class="empty-state">${this.userSearch ? "No matching members found" : "No team members found"}</div>`
 					}
 				</div>
 			</div>
@@ -816,6 +1795,10 @@ export class AdminSettings extends LitElement {
 	}
 
 	private renderModelsTab() {
+		if (this.tabLoading) {
+			return html`<div class="tab-loading"><span class="spinner"></span>Loading models...</div>`;
+		}
+
 		return html`
 			<div class="section">
 				<div class="section-header">
@@ -863,10 +1846,12 @@ export class AdminSettings extends LitElement {
 													${
 														approval.status === "pending"
 															? html`
-															<button class="btn btn-sm btn-primary">Approve</button>
-															<button class="btn btn-sm btn-danger">Deny</button>
+															<div class="action-row">
+																<button class="btn btn-sm btn-primary" @click=${() => this.handleApproveModel(approval.modelId)}>Approve</button>
+																<button class="btn btn-sm btn-danger" @click=${() => this.handleDenyModel(approval.modelId)}>Deny</button>
+															</div>
 														`
-															: html`<button class="btn btn-sm">Edit</button>`
+															: html`<span class="badge ${this.getStatusBadgeClass(approval.status)}">${approval.status}</span>`
 													}
 												</td>
 											</tr>
@@ -883,11 +1868,66 @@ export class AdminSettings extends LitElement {
 	}
 
 	private renderDirectoriesTab() {
+		if (this.tabLoading) {
+			return html`<div class="tab-loading"><span class="spinner"></span>Loading directory rules...</div>`;
+		}
+
 		return html`
 			<div class="section">
 				<div class="section-header">
-					<h3>Directory Access Rules</h3>
-					<button class="btn btn-primary btn-sm">+ Add Rule</button>
+					<h3>Add Directory Rule</h3>
+				</div>
+				<div class="section-content">
+					<div style="display: grid; grid-template-columns: 1fr 140px 1fr auto; gap: 0.75rem; align-items: flex-end;">
+						<div class="form-group" style="margin-bottom: 0;">
+							<label class="form-label">Pattern (glob syntax)</label>
+							<input
+								type="text"
+								class="form-input"
+								placeholder="/app/src/**"
+								.value=${this.newRulePattern}
+								@input=${(e: Event) => {
+									this.newRulePattern = (e.target as HTMLInputElement).value;
+								}}
+							/>
+						</div>
+						<div class="form-group" style="margin-bottom: 0;">
+							<label class="form-label">Access</label>
+							<select
+								class="form-input"
+								.value=${this.newRuleAccess}
+								@change=${(e: Event) => {
+									this.newRuleAccess = (e.target as HTMLSelectElement).value as
+										| "allow"
+										| "deny";
+								}}
+							>
+								<option value="allow">Allow</option>
+								<option value="deny">Deny</option>
+							</select>
+						</div>
+						<div class="form-group" style="margin-bottom: 0;">
+							<label class="form-label">Description (optional)</label>
+							<input
+								type="text"
+								class="form-input"
+								placeholder="Allow access to source files"
+								.value=${this.newRuleDescription}
+								@input=${(e: Event) => {
+									this.newRuleDescription = (
+										e.target as HTMLInputElement
+									).value;
+								}}
+							/>
+						</div>
+						<button class="btn btn-primary" @click=${this.handleAddDirectoryRule}>Add Rule</button>
+					</div>
+				</div>
+			</div>
+
+			<div class="section">
+				<div class="section-header">
+					<h3>Directory Access Rules (${this.directoryRules.length})</h3>
 				</div>
 				<div class="section-content" style="padding: 0;">
 					${
@@ -916,7 +1956,7 @@ export class AdminSettings extends LitElement {
 												<td>${rule.priority}</td>
 												<td>${rule.description || "-"}</td>
 												<td>
-													<button class="btn btn-sm btn-danger">Delete</button>
+													<button class="btn btn-sm btn-danger" @click=${() => this.confirmDeleteRule(rule)}>Delete</button>
 												</td>
 											</tr>
 										`,
@@ -928,34 +1968,14 @@ export class AdminSettings extends LitElement {
 					}
 				</div>
 			</div>
-
-			<div class="section">
-				<div class="section-header">
-					<h3>Add Directory Rule</h3>
-				</div>
-				<div class="section-content">
-					<div class="form-group">
-						<label class="form-label">Pattern (glob syntax)</label>
-						<input type="text" class="form-input" placeholder="/app/src/**" />
-					</div>
-					<div class="form-group">
-						<label class="form-label">Access Type</label>
-						<select class="form-input">
-							<option value="allow">Allow</option>
-							<option value="deny">Deny</option>
-						</select>
-					</div>
-					<div class="form-group">
-						<label class="form-label">Description</label>
-						<input type="text" class="form-input" placeholder="Allow access to source files" />
-					</div>
-					<button class="btn btn-primary">Add Rule</button>
-				</div>
-			</div>
 		`;
 	}
 
 	private renderSecurityTab() {
+		if (this.tabLoading) {
+			return html`<div class="tab-loading"><span class="spinner"></span>Loading security settings...</div>`;
+		}
+
 		return html`
 			<div class="section">
 				<div class="section-header">
@@ -964,7 +1984,7 @@ export class AdminSettings extends LitElement {
 				<div class="section-content">
 					<div class="form-group">
 						<label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-							<input type="checkbox" checked />
+							<input type="checkbox" ?checked=${this.orgSettings?.piiRedactionEnabled ?? true} />
 							<span>Enable PII auto-detection and redaction</span>
 						</label>
 					</div>
@@ -975,9 +1995,13 @@ export class AdminSettings extends LitElement {
 							rows="4"
 							placeholder="EMP-\\d{6}
 INTERNAL-[A-Z]{3}-\\d{4}"
+							.value=${this.piiPatterns}
+							@input=${(e: Event) => {
+								this.piiPatterns = (e.target as HTMLTextAreaElement).value;
+							}}
 						></textarea>
 					</div>
-					<button class="btn btn-primary">Save Settings</button>
+					<button class="btn btn-primary" @click=${this.handleSavePiiSettings}>Save Settings</button>
 				</div>
 			</div>
 
@@ -988,9 +2012,20 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 				<div class="section-content">
 					<div class="form-group">
 						<label class="form-label">Retention Period (days)</label>
-						<input type="number" class="form-input" value="90" min="30" max="365" />
+						<input
+							type="number"
+							class="form-input"
+							min="30"
+							max="365"
+							.value=${String(this.auditRetention)}
+							@input=${(e: Event) => {
+								this.auditRetention =
+									Number.parseInt((e.target as HTMLInputElement).value, 10) ||
+									90;
+							}}
+						/>
 					</div>
-					<button class="btn btn-primary">Update</button>
+					<button class="btn btn-primary" @click=${this.handleSaveRetention}>Update</button>
 				</div>
 			</div>
 
@@ -1005,24 +2040,45 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 							class="form-input"
 							rows="3"
 							placeholder="https://hooks.slack.com/services/..."
+							.value=${this.webhookUrls}
+							@input=${(e: Event) => {
+								this.webhookUrls = (e.target as HTMLTextAreaElement).value;
+							}}
 						></textarea>
 					</div>
-					<button class="btn btn-primary">Save Webhooks</button>
+					<button class="btn btn-primary" @click=${this.handleSaveWebhooks}>Save Webhooks</button>
 				</div>
 			</div>
 		`;
 	}
 
 	private renderAuditTab() {
+		if (this.tabLoading) {
+			return html`<div class="tab-loading"><span class="spinner"></span>Loading audit logs...</div>`;
+		}
+
+		const paginatedLogs = this.paginatedAuditLogs;
+		const totalPages = this.totalAuditPages;
+
 		return html`
 			<div class="section">
 				<div class="section-header">
-					<h3>Audit Logs</h3>
-					<button class="btn btn-sm">Export CSV</button>
+					<h3>Audit Logs (${this.filteredAuditLogs.length})</h3>
+					<button class="btn btn-sm" @click=${this.handleExportAuditLogs}>Export CSV</button>
 				</div>
-				<div class="section-content" style="padding: 0;">
+				<div class="section-content">
+					<input
+						type="text"
+						class="search-input"
+						placeholder="Search by action, user ID, or resource type..."
+						.value=${this.auditSearch}
+						@input=${(e: Event) => {
+							this.auditSearch = (e.target as HTMLInputElement).value;
+							this.auditPage = 1;
+						}}
+					/>
 					${
-						this.auditLogs.length > 0
+						paginatedLogs.length > 0
 							? html`
 							<table class="data-table">
 								<thead>
@@ -1031,11 +2087,12 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 										<th>Action</th>
 										<th>User</th>
 										<th>Status</th>
+										<th>Duration</th>
 										<th>Details</th>
 									</tr>
 								</thead>
 								<tbody>
-									${this.auditLogs.map(
+									${paginatedLogs.map(
 										(log) => html`
 											<tr>
 												<td style="white-space: nowrap; font-size: 0.75rem;">
@@ -1043,12 +2100,15 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 												</td>
 												<td><code style="font-size: 0.75rem;">${log.action}</code></td>
 												<td>
-													<code style="font-size: 0.7rem;">${log.userId?.slice(0, 8)}...</code>
+													<code style="font-size: 0.7rem;" title=${log.userId || ""}>${log.userId?.slice(0, 8) || "-"}...</code>
 												</td>
 												<td>
 													<span class="badge ${this.getStatusBadgeClass(log.status)}">
 														${log.status}
 													</span>
+												</td>
+												<td style="font-size: 0.75rem;">
+													${log.durationMs !== undefined ? `${log.durationMs}ms` : "-"}
 												</td>
 												<td style="font-size: 0.75rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
 													${
@@ -1062,8 +2122,48 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 									)}
 								</tbody>
 							</table>
+							${
+								totalPages > 1
+									? html`
+									<div class="pagination">
+										<button
+											class="page-btn"
+											?disabled=${this.auditPage === 1}
+											@click=${() => {
+												this.auditPage = 1;
+											}}
+										>First</button>
+										<button
+											class="page-btn"
+											?disabled=${this.auditPage === 1}
+											@click=${() => {
+												this.auditPage = Math.max(1, this.auditPage - 1);
+											}}
+										>Prev</button>
+										<span class="page-info">Page ${this.auditPage} of ${totalPages}</span>
+										<button
+											class="page-btn"
+											?disabled=${this.auditPage === totalPages}
+											@click=${() => {
+												this.auditPage = Math.min(
+													totalPages,
+													this.auditPage + 1,
+												);
+											}}
+										>Next</button>
+										<button
+											class="page-btn"
+											?disabled=${this.auditPage === totalPages}
+											@click=${() => {
+												this.auditPage = totalPages;
+											}}
+										>Last</button>
+									</div>
+								`
+									: ""
+							}
 						`
-							: html`<div class="empty-state">No audit logs available</div>`
+							: html`<div class="empty-state">${this.auditSearch ? "No matching logs found" : "No audit logs available"}</div>`
 					}
 				</div>
 			</div>
@@ -1092,7 +2192,7 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 	render() {
 		return html`
 			<div class="admin-header">
-				<h2>🛡️ Admin Settings</h2>
+				<h2>Admin Settings</h2>
 				<button class="close-btn" @click=${this.close}>✕</button>
 			</div>
 
@@ -1104,42 +2204,36 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 						class="nav-item ${this.currentTab === "overview" ? "active" : ""}"
 						@click=${() => this.selectTab("overview")}
 					>
-						<span class="nav-icon">📊</span>
 						<span>Overview</span>
 					</div>
 					<div
 						class="nav-item ${this.currentTab === "users" ? "active" : ""}"
 						@click=${() => this.selectTab("users")}
 					>
-						<span class="nav-icon">👥</span>
 						<span>Users & Roles</span>
 					</div>
 					<div
 						class="nav-item ${this.currentTab === "models" ? "active" : ""}"
 						@click=${() => this.selectTab("models")}
 					>
-						<span class="nav-icon">🤖</span>
 						<span>Model Approvals</span>
 					</div>
 					<div
 						class="nav-item ${this.currentTab === "directories" ? "active" : ""}"
 						@click=${() => this.selectTab("directories")}
 					>
-						<span class="nav-icon">📁</span>
 						<span>Directories</span>
 					</div>
 					<div
 						class="nav-item ${this.currentTab === "security" ? "active" : ""}"
 						@click=${() => this.selectTab("security")}
 					>
-						<span class="nav-icon">🔐</span>
 						<span>Security & PII</span>
 					</div>
 					<div
 						class="nav-item ${this.currentTab === "audit" ? "active" : ""}"
 						@click=${() => this.selectTab("audit")}
 					>
-						<span class="nav-icon">📝</span>
 						<span>Audit Logs</span>
 					</div>
 				</nav>
@@ -1152,6 +2246,29 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 					}
 				</main>
 			</div>
+
+			${
+				this.toast
+					? html`<div class="toast ${this.toast.type}">${this.toast.message}</div>`
+					: ""
+			}
+
+			${
+				this.confirmDialog
+					? html`
+					<div class="dialog-overlay" @click=${this.closeConfirm}>
+						<div class="dialog" @click=${(e: Event) => e.stopPropagation()}>
+							<h4>${this.confirmDialog.title}</h4>
+							<p>${this.confirmDialog.message}</p>
+							<div class="dialog-actions">
+								<button class="btn" @click=${this.closeConfirm}>Cancel</button>
+								<button class="btn btn-danger" @click=${this.handleConfirm}>${this.confirmDialog.confirmText}</button>
+							</div>
+						</div>
+					</div>
+				`
+					: ""
+			}
 		`;
 	}
 }

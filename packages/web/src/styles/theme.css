@@ -1,53 +1,157 @@
 /**
- * Composer Web UI Theme - Modern Design System
+ * Composer Web UI Theme - Control Room Design System
+ * Inspired by mission control centers and financial terminals
  */
 
-:root {
-	/* Colors - Dark Theme with improved contrast */
-	--bg-primary: #0d1117;
-	--bg-secondary: #161b22;
-	--bg-tertiary: #21262d;
-	--text-primary: #e6edf3;
-	--text-secondary: #7d8590;
-	--accent-color: #2f81f7;
-	--accent-hover: #539bf5;
-	--border-color: #30363d;
-	--control-icon-size: 32px;
-	--control-icon-font-size: 0.9rem;
-	--control-hover-bg: color-mix(in srgb, var(--accent-color) 14%, transparent);
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap");
 
-	/* Syntax Highlighting */
-	--syntax-keyword: #569cd6;
-	--syntax-string: #ce9178;
-	--syntax-number: #b5cea8;
-	--syntax-comment: #6a9955;
-	--syntax-function: #dcdcaa;
-	--syntax-variable: #9cdcfe;
+:root {
+	/* ============================================================
+	   CONTROL ROOM - Core Color Palette
+	   ============================================================ */
+
+	/* Backgrounds - Deep, layered darks */
+	--bg-deep: #08090a;
+	--bg-primary: #0c0d0f;
+	--bg-secondary: #111214;
+	--bg-elevated: #161719;
+	--bg-surface: #1a1b1e;
+	--bg-panel: #1e1f22;
+
+	/* Borders - Subtle separation */
+	--border-subtle: #141517;
+	--border-primary: #1e2023;
+	--border-secondary: #282a2e;
+	--border-hover: #3a3d42;
+
+	/* Text - High contrast hierarchy */
+	--text-primary: #e8e9eb;
+	--text-secondary: #8b8d91;
+	--text-tertiary: #5c5e62;
+	--text-muted: #3d3f43;
+
+	/* Accent - Amber/Gold (primary action color) */
+	--accent-amber: #d4a012;
+	--accent-amber-hover: #e5b015;
+	--accent-amber-dim: rgba(212, 160, 18, 0.12);
+	--accent-amber-glow: rgba(212, 160, 18, 0.25);
 
 	/* Status Colors */
-	--success-color: #4ec9b0;
-	--warning-color: #dcdcaa;
-	--error-color: #f48771;
-	--info-color: #569cd6;
+	--accent-green: #22c55e;
+	--accent-green-dim: rgba(34, 197, 94, 0.12);
+	--accent-red: #ef4444;
+	--accent-red-dim: rgba(239, 68, 68, 0.12);
+	--accent-blue: #3b82f6;
+	--accent-blue-dim: rgba(59, 130, 246, 0.12);
+	--accent-yellow: #eab308;
+	--accent-yellow-dim: rgba(234, 179, 8, 0.12);
+
+	/* Legacy compatibility mappings */
+	--bg-tertiary: var(--bg-elevated);
+	--border-color: var(--border-primary);
+	--accent-color: var(--accent-amber);
+	--accent-hover: var(--accent-amber-hover);
+	--success-color: var(--accent-green);
+	--warning-color: var(--accent-yellow);
+	--error-color: var(--accent-red);
+	--info-color: var(--accent-blue);
+
+	/* ============================================================
+	   Typography
+	   ============================================================ */
+
+	--font-display: "DM Sans", system-ui, -apple-system, sans-serif;
+	--font-mono: "JetBrains Mono", "SF Mono", "Menlo", "Monaco", monospace;
+	--font-sans: var(--font-display);
+
+	/* ============================================================
+	   Spacing & Sizing
+	   ============================================================ */
+
+	--control-icon-size: 32px;
+	--control-icon-font-size: 0.9rem;
+	--control-hover-bg: var(--accent-amber-dim);
+	--radius-sm: 0;
+	--radius-md: 2px;
+	--radius-lg: 4px;
+
+	/* ============================================================
+	   Shadows
+	   ============================================================ */
+
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+	--shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+	--shadow-glow: 0 0 20px var(--accent-amber-glow);
+
+	/* ============================================================
+	   Syntax Highlighting - Muted, professional
+	   ============================================================ */
+
+	--syntax-keyword: #c586c0;
+	--syntax-string: #ce9178;
+	--syntax-number: #b5cea8;
+	--syntax-comment: #5c6370;
+	--syntax-function: var(--accent-amber);
+	--syntax-variable: #9cdcfe;
+	--syntax-operator: #d4d4d4;
+	--syntax-class: #4ec9b0;
 }
 
-/* Light Theme Override */
-[data-theme="light"] {
-	--bg-primary: #ffffff;
-	--bg-secondary: #f3f3f3;
-	--text-primary: #333333;
-	--text-secondary: #666666;
-	--accent-color: #0078d4;
-	--border-color: #d0d0d0;
+/* ============================================================
+   Global Resets & Base Styles
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
 }
 
-/* Code Highlighting Styles */
+html {
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	text-rendering: optimizeLegibility;
+}
+
+::selection {
+	background: var(--accent-amber-dim);
+	color: var(--accent-amber);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: var(--bg-deep);
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--border-secondary);
+	border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: var(--border-hover);
+}
+
+/* ============================================================
+   Code Highlighting Styles
+   ============================================================ */
+
 .hljs {
 	display: block;
 	overflow-x: auto;
-	padding: 0.5em;
-	background: var(--bg-primary);
+	padding: 1.25rem;
+	background: var(--bg-deep);
 	color: var(--text-primary);
+	font-family: var(--font-mono);
+	font-size: 0.8rem;
+	line-height: 1.6;
+	border: 1px solid var(--border-primary);
 }
 
 .hljs-keyword,
@@ -77,6 +181,7 @@
 .hljs-deletion,
 .hljs-meta {
 	color: var(--syntax-comment);
+	font-style: italic;
 }
 
 .hljs-number,
