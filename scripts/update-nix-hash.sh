@@ -21,7 +21,26 @@ fi
 HASH=$(nix hash path ./node_modules)
 
 tmpfile=$(mktemp)
-sed "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"${HASH}\"|" flake.nix >"$tmpfile"
-mv "$tmpfile" flake.nix
+current=$(sed -n 's/.*npmDepsHash = "\(sha256-[^"]*\)".*/\1/p' flake.nix | head -n1 || true)
+if [ -z "$current" ]; then
+  echo "Failed to find npmDepsHash in flake.nix" >&2
+  rm -f "$tmpfile"
+  exit 1
+fi
 
-echo "Updated flake.nix npmDepsHash to ${HASH}"
+if [ "$current" = "$HASH" ]; then
+  echo "npmDepsHash already up to date (${HASH})"
+  rm -f "$tmpfile"
+  exit 0
+fi
+
+sed "s|npmDepsHash = \"${current}\"|npmDepsHash = \"${HASH}\"|" flake.nix >"$tmpfile"
+
+if ! grep -q "${HASH}" "$tmpfile"; then
+  echo "Failed to update npmDepsHash in flake.nix" >&2
+  rm -f "$tmpfile"
+  exit 1
+fi
+
+mv "$tmpfile" flake.nix
+echo "Updated flake.nix npmDepsHash from ${current} to ${HASH}"
