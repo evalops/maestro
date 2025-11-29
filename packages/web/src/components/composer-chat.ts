@@ -35,6 +35,9 @@ export class ComposerChat extends LitElement {
 			color: #e6edf3;
 			overflow: hidden;
 			font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+			--icon-btn-size: 24px;
+			--icon-btn-font-size: 0.82rem;
+			--icon-btn-border-color: #2a2f35;
 		}
 
 		/* Sidebar - compact, high-density */
@@ -364,20 +367,21 @@ export class ComposerChat extends LitElement {
 		}
 
 	.icon-btn {
-		width: 26px;
-		height: 26px;
+		width: var(--icon-btn-size);
+		height: var(--icon-btn-size);
 		padding: 0;
 		background: transparent;
-			border: 1px solid #30363d;
-			border-radius: 999px;
+			border: 1px solid var(--icon-btn-border-color);
+			border-radius: 6px;
 			color: #8b949e;
 			cursor: pointer;
 			transition: all 0.15s;
-			font-size: 0.9rem;
-			display: flex;
+			font-size: var(--icon-btn-font-size);
+			display: inline-flex;
 			align-items: center;
 			justify-content: center;
-		}
+			line-height: 1;
+	}
 
 	.icon-btn:hover {
 		background: #21262d;
