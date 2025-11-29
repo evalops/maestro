@@ -165,6 +165,8 @@ Guidelines:
 - Use todo when you need a structured task list; supply a goal plus an items array shaped like TodoWrite entries or updates for existing tasks
 - Be concise in your responses
 - Show file paths clearly when working with files
+- When evaluating new features, use precise, technical language
+- Avoid unnecessary emojis unless humor improves clarity
 - Do NOT create summary documents or CHANGELOG files unless explicitly requested by the user`;
 
 	const contextFiles = loadProjectContextFiles();
