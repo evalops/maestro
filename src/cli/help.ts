@@ -14,7 +14,7 @@ export function printHelp(version: string) {
 		"--codex-api-key <key>   Codex/ChatGPT API token (defaults to CODEX_API_KEY)",
 		"--system-prompt <text>  System prompt (default: coding assistant prompt)",
 		"--mode <mode>           Output mode: text (default), json, or rpc",
-		"--auth <mode>           Credential mode: auto (default), api-key, chatgpt",
+		"--auth <mode>           Credential mode: auto (default), api-key, chatgpt, claude",
 		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
 		"--continue, -c          Continue previous session",
 		"--resume, -r            Select a session to resume",
@@ -44,6 +44,8 @@ export function printHelp(version: string) {
 		`  GEMINI_API_KEY          - Google Gemini API key
   OPENAI_API_KEY          - OpenAI API key
   ANTHROPIC_API_KEY       - Anthropic API key
+  CLAUDE_CODE_TOKEN       - Claude Code access token for --auth claude
+  ANTHROPIC_OAUTH_TOKEN   - Alternate env for Claude Code bearer tokens
   CODEX_API_KEY           - Codex/ChatGPT API token for --auth chatgpt
   COMPOSER_AGENT_DIR      - Session storage directory (default: ~/.composer/agent)
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,

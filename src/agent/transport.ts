@@ -211,18 +211,20 @@ export class ProviderTransport implements AgentTransport {
 						if (currentAssistantMessage.usage) {
 							const usage = currentAssistantMessage.usage;
 							const cost = model.cost ? calculateCost(usage, model.cost) : 0;
-							try {
-								trackUsage({
-									provider: model.provider,
-									model: model.id,
-									tokensInput: usage.input || 0,
-									tokensOutput: usage.output || 0,
-									tokensCacheRead: usage.cacheRead,
-									tokensCacheWrite: usage.cacheWrite,
-									cost,
-								});
-							} catch (error) {
-								console.warn("[Cost Tracking] Failed to track usage:", error);
+							if (credential?.type !== "anthropic-oauth") {
+								try {
+									trackUsage({
+										provider: model.provider,
+										model: model.id,
+										tokensInput: usage.input || 0,
+										tokensOutput: usage.output || 0,
+										tokensCacheRead: usage.cacheRead,
+										tokensCacheWrite: usage.cacheWrite,
+										cost,
+									});
+								} catch (error) {
+									console.warn("[Cost Tracking] Failed to track usage:", error);
+								}
 							}
 						}
 					}

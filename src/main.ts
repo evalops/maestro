@@ -190,9 +190,9 @@ export async function main(args: string[]) {
 		);
 		if (authMode !== "api-key") {
 			push(
-				"Set CODEX_API_KEY (or use --codex-api-key) or switch to --auth api-key to rely on provider API keys.",
+				'Set CODEX_API_KEY/CODEX token (chatgpt) or run "composer anthropic login" (claude) before retrying.',
 				chalk.dim(
-					"Set CODEX_API_KEY (or use --codex-api-key) or switch to --auth api-key to rely on provider API keys.",
+					'Set CODEX_API_KEY/CODEX token (chatgpt) or run "composer anthropic login" (claude) before retrying.',
 				),
 			);
 		}
@@ -218,11 +218,11 @@ export async function main(args: string[]) {
 		return lines;
 	};
 
-	const requireCredential = (
+	const requireCredential = async (
 		providerName: string,
 		fatal: boolean,
-	): AuthCredential => {
-		const credential = authResolver(providerName);
+	): Promise<AuthCredential> => {
+		const credential = await authResolver(providerName);
 		if (credential) {
 			return credential;
 		}
@@ -322,6 +322,14 @@ export async function main(args: string[]) {
 				);
 				process.exit(1);
 		}
+	}
+
+	if (parsed.command === "anthropic") {
+		const { handleAnthropicCommand } = await import(
+			"./cli/commands/anthropic.js"
+		);
+		await handleAnthropicCommand(parsed.subcommand, parsed.messages);
+		return;
 	}
 
 	// Handle cost commands
@@ -542,7 +550,7 @@ export async function main(args: string[]) {
 		);
 		process.exit(1);
 	}
-	requireCredential(provider, true);
+	await requireCredential(provider, true);
 
 	// Create agent
 	const model = resolveModel(provider, modelId);

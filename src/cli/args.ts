@@ -17,8 +17,8 @@ export interface Args {
 	command?: string;
 	subcommand?: string;
 	approvalMode?: "auto" | "prompt" | "fail";
+	authMode?: "auto" | "api-key" | "chatgpt" | "claude";
 	force?: boolean;
-	authMode?: "auto" | "api-key" | "chatgpt";
 	execJson?: boolean;
 	execFullAuto?: boolean;
 	execReadOnly?: boolean;
@@ -30,8 +30,21 @@ export interface Args {
 	messages: string[];
 }
 
-const COMMANDS = new Set(["config", "models", "cost", "agents", "exec"]);
-const SUBCOMMAND_COMMANDS = new Set(["config", "models", "cost", "agents"]);
+const COMMANDS = new Set([
+	"config",
+	"models",
+	"cost",
+	"agents",
+	"exec",
+	"anthropic",
+]);
+const SUBCOMMAND_COMMANDS = new Set([
+	"config",
+	"models",
+	"cost",
+	"agents",
+	"anthropic",
+]);
 
 export function parseArgs(args: string[]): Args {
 	const result: Args = {
@@ -85,7 +98,12 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--auth" && i + 1 < args.length) {
 			const value = args[++i];
-			if (value === "auto" || value === "api-key" || value === "chatgpt") {
+			if (
+				value === "auto" ||
+				value === "api-key" ||
+				value === "chatgpt" ||
+				value === "claude"
+			) {
 				result.authMode = value;
 			}
 		} else if (arg === "--force") {

@@ -145,6 +145,8 @@ describe("CLI integration", () => {
 	const originalAgentDir = process.env.COMPOSER_AGENT_DIR;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalCodex = process.env.CODEX_API_KEY;
+	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
+		const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
 	const originalLog = console.log;
 	const originalError = console.error;
 	let output: string[];
@@ -153,11 +155,14 @@ describe("CLI integration", () => {
 	beforeEach(() => {
 		tempAgentDir = mkdtempSync(join(tmpdir(), "composer-cli-test-"));
 		process.env.COMPOSER_AGENT_DIR = tempAgentDir;
+		process.env.ANTHROPIC_OAUTH_FILE = join(tempAgentDir, "anthropic-oauth.json");
 		process.env.ANTHROPIC_API_KEY = "test-key";
 		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
 		delete process.env.OPENAI_API_KEY;
 		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
 		delete process.env.CODEX_API_KEY;
+		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
+		delete process.env.CLAUDE_CODE_TOKEN;
 		output = [];
 		console.log = (...args: unknown[]) => {
 			output.push(args.map((arg) => String(arg)).join(" "));
@@ -187,6 +192,17 @@ describe("CLI integration", () => {
 			delete process.env.CODEX_API_KEY;
 		} else {
 			process.env.CODEX_API_KEY = originalCodex;
+		}
+		if (originalClaude === undefined) {
+			// biome-ignore lint/performance/noDelete: restoring env var state
+			delete process.env.CLAUDE_CODE_TOKEN;
+		} else {
+			process.env.CLAUDE_CODE_TOKEN = originalClaude;
+		}
+		if (originalAnthropicOAuthFile === undefined) {
+			delete process.env.ANTHROPIC_OAUTH_FILE;
+		} else {
+			process.env.ANTHROPIC_OAUTH_FILE = originalAnthropicOAuthFile;
 		}
 		if (originalAgentDir === undefined) {
 			process.env.COMPOSER_AGENT_DIR = undefined;
@@ -321,6 +337,46 @@ describe("CLI integration", () => {
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
 		expect(output.join("\n")).toContain("CODEX_API_KEY");
+		exitSpy.mockRestore();
+	});
+
+	it("uses claude auth when Claude Code token is provided", async () => {
+		process.env.CLAUDE_CODE_TOKEN = "claude-token";
+		await main([
+			"--provider",
+			"anthropic",
+			"--model",
+			"claude-sonnet-4-5",
+			"--auth",
+			"claude",
+			"hello",
+		]);
+		expect(output.join("\n")).toContain("Echo: hello");
+		// biome-ignore lint/performance/noDelete: resetting test env var
+		delete process.env.CLAUDE_CODE_TOKEN;
+	});
+
+	it("fails when claude auth mode lacks OAuth tokens", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+			code?: number,
+		) => {
+			exitCodes.push(code ?? 0);
+			throw new Error("exit");
+		}) as never);
+		await expect(
+			main([
+				"--provider",
+				"anthropic",
+				"--model",
+				"claude-sonnet-4-5",
+				"--auth",
+				"claude",
+				"hello",
+			]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain("composer anthropic login");
 		exitSpy.mockRestore();
 	});
 });

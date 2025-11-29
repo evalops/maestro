@@ -1,8 +1,12 @@
+import {
+	type AnthropicOAuthCredential,
+	getFreshAnthropicOAuthCredential,
+} from "./anthropic-auth.js";
 import { lookupApiKey } from "./api-keys.js";
 
-export type AuthMode = "auto" | "api-key" | "chatgpt";
+export type AuthMode = "auto" | "api-key" | "chatgpt" | "claude";
 
-export type AuthCredentialType = "api-key" | "chatgpt";
+export type AuthCredentialType = "api-key" | "chatgpt" | "anthropic-oauth";
 
 export type AuthCredentialSource =
 	| "explicit"
@@ -10,7 +14,9 @@ export type AuthCredentialSource =
 	| "custom_literal"
 	| "custom_env"
 	| "codex_env"
-	| "codex_flag";
+	| "codex_flag"
+	| "anthropic_oauth_env"
+	| "anthropic_oauth_file";
 
 export interface AuthCredential {
 	provider: string;
@@ -18,6 +24,7 @@ export interface AuthCredential {
 	type: AuthCredentialType;
 	source: AuthCredentialSource;
 	envVar?: string;
+	metadata?: Record<string, unknown>;
 }
 
 export interface AuthResolverOptions {
@@ -27,9 +34,14 @@ export interface AuthResolverOptions {
 	codexSource?: "env" | "flag";
 }
 
-type AuthResolver = (provider: string) => AuthCredential | undefined;
+type AuthResolver = (provider: string) => Promise<AuthCredential | undefined>;
 
 const CODEX_DEFAULT_ENV = "CODEX_API_KEY";
+const ANTHROPIC_OAUTH_ENV_VARS = [
+	"CLAUDE_CODE_TOKEN",
+	"ANTHROPIC_OAUTH_TOKEN",
+	"ANTHROPIC_ACCESS_TOKEN",
+];
 
 function shouldUseCodexToken(
 	provider: string,
@@ -54,7 +66,9 @@ function shouldUseCodexToken(
 export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 	const explicitKey = options.explicitApiKey?.trim();
 	const codexToken = options.codexApiKey?.trim();
-	return (provider: string): AuthCredential | undefined => {
+	return async (provider: string): Promise<AuthCredential | undefined> => {
+		const normalizedProvider = provider.toLowerCase();
+
 		if (explicitKey) {
 			return {
 				provider,
@@ -75,6 +89,41 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 				source: options.codexSource === "flag" ? "codex_flag" : "codex_env",
 				envVar: options.codexSource === "env" ? CODEX_DEFAULT_ENV : undefined,
 			};
+		}
+
+		const preferAnthropicOAuth =
+			normalizedProvider === "anthropic" &&
+			options.mode !== "chatgpt" &&
+			options.mode !== "api-key";
+
+		if (preferAnthropicOAuth) {
+			const envTokenEntry = ANTHROPIC_OAUTH_ENV_VARS.map((envVar) => ({
+				envVar,
+				token: process.env[envVar]?.trim(),
+			})).find((entry) => entry.token);
+			if (envTokenEntry?.token) {
+				return {
+					provider,
+					token: envTokenEntry.token,
+					type: "anthropic-oauth",
+					source: "anthropic_oauth_env",
+					envVar: envTokenEntry.envVar,
+				};
+			}
+			const stored: AnthropicOAuthCredential | null =
+				await getFreshAnthropicOAuthCredential();
+			if (stored) {
+				return {
+					provider,
+					token: stored.accessToken,
+					type: "anthropic-oauth",
+					source: "anthropic_oauth_file",
+					metadata: { mode: stored.mode },
+				};
+			}
+			if (options.mode === "claude") {
+				return undefined;
+			}
 		}
 
 		if (options.mode === "chatgpt") {

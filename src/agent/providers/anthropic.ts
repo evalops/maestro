@@ -1,3 +1,4 @@
+import { CLAUDE_CODE_BETA_HEADER } from "../../providers/anthropic-auth.js";
 import type {
 	AgentTool,
 	AssistantMessage,
@@ -272,15 +273,21 @@ export async function* streamAnthropic(
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		"anthropic-version": "2023-06-01",
-		"x-api-key": apiKey,
 		...options.headers,
 	};
 
-	if (options.thinking && model.reasoning) {
-		headers["anthropic-beta"] =
-			"prompt-caching-2024-07-31,extended-thinking-2024-12-12";
+	const isOAuth = options.authType === "anthropic-oauth";
+	if (isOAuth) {
+		headers.authorization = `Bearer ${apiKey}`;
+		headers["anthropic-beta"] = CLAUDE_CODE_BETA_HEADER;
 	} else {
-		headers["anthropic-beta"] = "prompt-caching-2024-07-31";
+		headers["x-api-key"] = apiKey;
+		if (options.thinking && model.reasoning) {
+			headers["anthropic-beta"] =
+				"prompt-caching-2024-07-31,extended-thinking-2024-12-12";
+		} else {
+			headers["anthropic-beta"] = "prompt-caching-2024-07-31";
+		}
 	}
 
 	const response = await fetch(model.baseUrl, {
