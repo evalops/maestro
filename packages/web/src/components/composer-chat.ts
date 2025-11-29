@@ -38,20 +38,20 @@ export class ComposerChat extends LitElement {
 			display: flex !important;
 			height: 100% !important;
 			width: 100% !important;
-			background: var(--bg-primary, #09090b);
-			color: var(--text-primary, #f4f4f5);
+			background: var(--bg-primary, #0c0d0f);
+			color: var(--text-primary, #e8e9eb);
 			overflow: hidden;
-			font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+			font-family: var(--font-mono, "JetBrains Mono", monospace);
 		}
 
-		/* Sidebar - Solid & Matte */
+		/* Sidebar - Control Room Panel */
 		.sidebar {
-			width: 280px;
-			background: var(--bg-primary, #09090b);
-			border-right: 1px solid var(--border-primary, #27272a);
+			width: 260px;
+			background: var(--bg-deep, #08090a);
+			border-right: 1px solid var(--border-primary, #1e2023);
 			display: flex;
 			flex-direction: column;
-			transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+			transition: transform 0.2s ease;
 			z-index: 20;
 		}
 
@@ -60,116 +60,105 @@ export class ComposerChat extends LitElement {
 		}
 
 		.sidebar-header {
-			padding: 1.25rem 1rem 0.75rem;
+			padding: 1rem 0.75rem;
 			display: flex;
 			flex-direction: column;
 			gap: 0.75rem;
+			border-bottom: 1px solid var(--border-primary, #1e2023);
 		}
 
 		.sidebar-header h2 {
-			font-family: var(--font-sans);
-			font-size: 0.75rem;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.6rem;
 			font-weight: 600;
 			margin: 0;
-			color: var(--text-tertiary, #71717a);
+			color: var(--text-tertiary, #5c5e62);
 			text-transform: uppercase;
-			letter-spacing: 0.05em;
-			padding-left: 0.25rem;
+			letter-spacing: 0.1em;
 		}
 
 		.new-session-btn {
 			width: 100%;
-			padding: 0.6rem 0.75rem;
-			background: var(--accent-blue, #3b82f6);
-			color: white;
+			padding: 0.5rem 0.75rem;
+			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+			color: var(--accent-amber, #d4a012);
 			border: none;
-			border-radius: 6px;
-			font-family: var(--font-sans);
-			font-size: 0.85rem;
-			font-weight: 500;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.7rem;
+			font-weight: 600;
 			cursor: pointer;
-			transition: all 0.2s ease;
+			transition: all 0.15s ease;
 			display: flex;
 			align-items: center;
 			justify-content: center;
 			gap: 0.5rem;
-			box-shadow: var(--shadow-md, 0 4px 6px -1px rgba(0, 0, 0, 0.1));
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
 		}
 
 		.new-session-btn:hover {
-			background: #2563eb; /* Blue 600 */
-			transform: translateY(-1px);
-			box-shadow: var(--shadow-lg, 0 10px 15px -3px rgba(0, 0, 0, 0.1));
+			background: var(--accent-amber, #d4a012);
+			color: var(--bg-deep, #08090a);
 		}
 
 		.new-session-btn:active {
-			transform: translateY(0);
+			transform: scale(0.98);
 		}
 
 		.sessions-list {
 			flex: 1;
 			overflow-y: auto;
-			padding: 0.5rem 0.5rem;
+			padding: 0.5rem;
 		}
 
 		.session-item {
-			padding: 0.75rem 0.75rem;
-			margin-bottom: 2px;
-			border-radius: 6px;
+			padding: 0.625rem 0.75rem;
+			margin-bottom: 1px;
 			cursor: pointer;
-			transition: all 0.15s ease;
+			transition: all 0.1s ease;
 			background: transparent;
-			border: 1px solid transparent;
+			border-left: 2px solid transparent;
 			position: relative;
-			overflow: hidden;
 		}
 
 		.session-item:hover {
-			background: var(--bg-panel, #27272a);
+			background: var(--bg-elevated, #161719);
 		}
 
 		.session-item.active {
-			background: var(--bg-panel, #27272a);
-			border-color: var(--border-secondary, #3f3f46);
-		}
-
-		.session-item.active::before {
-			content: "";
-			position: absolute;
-			left: 0;
-			top: 50%;
-			transform: translateY(-50%);
-			height: 16px;
-			width: 3px;
-			background: var(--accent-blue, #3b82f6);
-			border-radius: 0 4px 4px 0;
+			background: var(--bg-elevated, #161719);
+			border-left-color: var(--accent-amber, #d4a012);
 		}
 
 		.session-title {
-			font-family: var(--font-sans);
-			font-size: 0.85rem;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.75rem;
 			font-weight: 500;
-			margin-bottom: 0.25rem;
-			color: var(--text-primary, #f4f4f5);
+			margin-bottom: 0.2rem;
+			color: var(--text-primary, #e8e9eb);
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
 		}
 
-		.session-meta {
-			font-family: var(--font-sans);
-			font-size: 0.7rem;
-			color: var(--text-tertiary, #71717a);
+		.session-item.active .session-title {
+			color: var(--accent-amber, #d4a012);
 		}
 
-		/* Main Content - Clean & Spacious */
+		.session-meta {
+			font-family: var(--font-mono, monospace);
+			font-size: 0.6rem;
+			color: var(--text-tertiary, #5c5e62);
+		}
+
+		/* Main Content */
 		.main-content {
 			flex: 1;
 			display: flex;
 			flex-direction: column;
 			position: relative;
 			min-width: 0;
-			background: var(--bg-primary, #09090b);
+			background: var(--bg-primary, #0c0d0f);
 		}
 
 		.header {
@@ -177,10 +166,10 @@ export class ComposerChat extends LitElement {
 			grid-template-columns: auto 1fr auto;
 			align-items: center;
 			gap: 1rem;
-			padding: 0.75rem 1.5rem;
-			background: var(--bg-primary, #09090b); /* Seamless header */
-			border-bottom: 1px solid var(--border-primary, #27272a);
-			min-height: 56px;
+			padding: 0.625rem 1.25rem;
+			background: var(--bg-deep, #08090a);
+			border-bottom: 1px solid var(--border-primary, #1e2023);
+			min-height: 48px;
 			z-index: 10;
 		}
 
@@ -191,69 +180,67 @@ export class ComposerChat extends LitElement {
 		}
 
 		.toggle-sidebar-btn {
-			width: 32px;
-			height: 32px;
+			width: 28px;
+			height: 28px;
 			padding: 0;
 			background: transparent;
-			border: none;
-			border-radius: 6px;
-			color: var(--text-secondary, #a1a1aa);
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-tertiary, #5c5e62);
 			cursor: pointer;
-			transition: all 0.2s;
+			transition: all 0.15s ease;
 			display: flex;
 			align-items: center;
 			justify-content: center;
 		}
 
 		.toggle-sidebar-btn:hover {
-			background: var(--bg-panel, #27272a);
-			color: var(--text-primary, #f4f4f5);
+			background: var(--bg-elevated, #161719);
+			color: var(--text-primary, #e8e9eb);
+			border-color: var(--border-hover, #3a3d42);
 		}
 
 		.header h1 {
-			font-family: var(--font-sans);
-			font-size: 1rem;
+			font-family: var(--font-display, "DM Sans", sans-serif);
+			font-size: 0.9rem;
 			font-weight: 600;
 			margin: 0;
-			color: var(--text-primary, #f4f4f5);
+			color: var(--text-primary, #e8e9eb);
 			letter-spacing: -0.01em;
 		}
 
 		.status-bar {
 			display: flex;
 			align-items: center;
-			gap: 0.35rem;
+			gap: 0.5rem;
 			flex-wrap: nowrap;
 			white-space: nowrap;
 			overflow-x: auto;
 			min-width: 0;
-			padding-bottom: 2px;
-			font-family: var(--font-mono);
-			font-size: 0.7rem;
-			color: var(--text-secondary, #a1a1aa);
+			font-family: var(--font-mono, monospace);
+			font-size: 0.6rem;
+			color: var(--text-tertiary, #5c5e62);
 		}
 
 		.status-item {
 			display: flex;
 			align-items: center;
 			gap: 0.35rem;
-			padding: 0.22rem 0.42rem;
-			background: var(--bg-secondary, #18181b);
-			border: 1px solid var(--border-primary, #27272a);
-			border-radius: 6px;
-			font-size: 0.7rem;
+			padding: 0.2rem 0.5rem;
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			font-size: 0.6rem;
 			font-weight: 500;
-			transition: border-color 0.2s;
+			transition: all 0.15s ease;
 		}
 
 		.status-item:hover {
-			border-color: var(--border-secondary, #3f3f46);
+			border-color: var(--border-hover, #3a3d42);
 		}
 
 		.status-item.active {
-			border-color: rgba(59, 130, 246, 0.3);
-			background: rgba(59, 130, 246, 0.05);
-			color: var(--accent-blue, #3b82f6);
+			border-color: var(--accent-amber, #d4a012);
+			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+			color: var(--accent-amber, #d4a012);
 		}
 
 		.header-right {
@@ -268,30 +255,31 @@ export class ComposerChat extends LitElement {
 			display: inline-flex;
 			align-items: center;
 			gap: 0.25rem;
-			padding: 0.08rem 0.32rem;
-			background: var(--bg-panel, #27272a);
-			border-radius: 4px;
-			color: var(--text-primary, #f4f4f5);
+			padding: 0.15rem 0.4rem;
+			background: var(--bg-elevated, #161719);
+			color: var(--text-secondary, #8b8d91);
 			font-weight: 600;
-			font-size: 0.7rem;
+			font-size: 0.6rem;
+			text-transform: uppercase;
+			letter-spacing: 0.03em;
 		}
 
 		.pill.warning {
-			background: rgba(245, 158, 11, 0.1);
-			color: var(--accent-yellow, #f59e0b);
+			background: var(--accent-yellow-dim, rgba(234, 179, 8, 0.12));
+			color: var(--accent-yellow, #eab308);
 		}
 
 		.pill.success {
-			background: rgba(16, 185, 129, 0.1);
-			color: var(--accent-green, #10b981);
+			background: var(--accent-green-dim, rgba(34, 197, 94, 0.12));
+			color: var(--accent-green, #22c55e);
 		}
 
 		.status-dot {
-			width: 6px;
-			height: 6px;
+			width: 5px;
+			height: 5px;
 			border-radius: 50%;
-			background: var(--accent-green, #10b981);
-			box-shadow: 0 0 8px var(--accent-green);
+			background: var(--accent-green, #22c55e);
+			box-shadow: 0 0 6px var(--accent-green, #22c55e);
 		}
 
 		.status-dot.offline {
@@ -299,90 +287,89 @@ export class ComposerChat extends LitElement {
 			box-shadow: none;
 		}
 
-		/* Messages - Elegant & Readable */
+		/* Messages Area */
 		.messages {
 			flex: 1;
 			overflow-y: auto;
-			padding: 2rem;
+			padding: 1.5rem 2rem;
 			display: flex;
 			flex-direction: column;
-			gap: 1.5rem;
-			background: var(--bg-primary, #09090b);
+			background: var(--bg-primary, #0c0d0f);
 			scroll-behavior: smooth;
 		}
 
 		.messages.compact {
 			padding: 1rem;
-			gap: 0.5rem;
 		}
 
 		.input-container {
-			padding: 1.5rem 2rem;
-			background: linear-gradient(to top, var(--bg-primary) 80%, transparent);
+			padding: 1rem 1.5rem 1.5rem;
+			background: var(--bg-deep, #08090a);
+			border-top: 1px solid var(--border-primary, #1e2023);
 			position: sticky;
 			bottom: 0;
 			z-index: 15;
 		}
 
-		/* Model Selector - Refined */
+		/* Model Selector */
 		.model-selector {
 			display: flex;
 			align-items: center;
-			gap: 0.6rem;
-			padding: 0.35rem 0.75rem;
-			background: var(--bg-secondary, #18181b);
-			border: 1px solid var(--border-primary, #27272a);
-			border-radius: 20px;
-			font-family: var(--font-sans);
-			font-size: 0.75rem;
-			color: var(--text-primary, #f4f4f5);
+			gap: 0.5rem;
+			padding: 0.25rem 0.6rem;
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			font-family: var(--font-mono, monospace);
+			font-size: 0.65rem;
+			color: var(--text-secondary, #8b8d91);
 			font-weight: 500;
 			cursor: pointer;
-			transition: all 0.2s;
+			transition: all 0.15s ease;
 		}
 
 		.model-selector:hover {
-			background: var(--bg-panel, #27272a);
-			border-color: var(--border-secondary, #3f3f46);
+			background: var(--bg-surface, #1a1b1e);
+			border-color: var(--border-hover, #3a3d42);
+			color: var(--text-primary, #e8e9eb);
 		}
 
 		.model-badge {
-			width: 6px;
-			height: 6px;
+			width: 5px;
+			height: 5px;
 			border-radius: 50%;
-			background: var(--accent-blue, #3b82f6);
+			background: var(--accent-amber, #d4a012);
 		}
 
-		/* Icon Buttons - Minimal */
+		/* Icon Buttons */
 		.icon-btn {
-			width: var(--control-icon-size, 26px);
-			height: var(--control-icon-size, 26px);
+			width: 26px;
+			height: 26px;
 			padding: 0;
 			background: transparent;
-			border: 1px solid var(--border-color, #30363d);
-			border-radius: 4px;
-			color: var(--text-secondary, #a1a1aa);
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-tertiary, #5c5e62);
 			cursor: pointer;
-			transition: all 0.2s;
+			transition: all 0.15s ease;
 			display: flex;
 			align-items: center;
 			justify-content: center;
 		}
 
 		.icon-btn:hover {
-			background: var(--control-hover-bg, color-mix(in srgb, var(--accent-color, #2f81f7) 14%, transparent));
-			border-color: var(--border-color, #30363d);
-			color: var(--text-primary, #f4f4f5);
+			background: var(--bg-elevated, #161719);
+			border-color: var(--border-hover, #3a3d42);
+			color: var(--text-primary, #e8e9eb);
 		}
 
 		.icon-btn.active {
-			background: color-mix(in srgb, var(--accent-color, #2f81f7) 18%, transparent);
-			color: var(--accent-color, #2f81f7);
+			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+			border-color: var(--accent-amber, #d4a012);
+			color: var(--accent-amber, #d4a012);
 		}
 
 		.icon {
-			width: 16px;
-			height: 16px;
+			width: 14px;
+			height: 14px;
 			stroke: currentColor;
 			fill: none;
 			stroke-width: 1.5;
@@ -391,36 +378,35 @@ export class ComposerChat extends LitElement {
 			pointer-events: none;
 		}
 
-		/* Toast - Modern */
+		/* Toast */
 		.toast {
 			position: fixed;
-			bottom: 24px;
-			right: 24px;
-			padding: 0.75rem 1.25rem;
-			border-radius: 8px;
-			background: var(--bg-panel, #27272a);
-			border: 1px solid var(--border-secondary, #3f3f46);
-			color: var(--text-primary, #f4f4f5);
-			font-family: var(--font-sans);
-			font-size: 0.85rem;
-			box-shadow: var(--shadow-lg);
+			bottom: 20px;
+			right: 20px;
+			padding: 0.6rem 1rem;
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-primary, #e8e9eb);
+			font-family: var(--font-mono, monospace);
+			font-size: 0.75rem;
+			box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
 			z-index: 300;
 			display: flex;
 			align-items: center;
 			gap: 0.75rem;
-			animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+			animation: slideIn 0.2s ease;
 		}
 
-		@keyframes slideUp {
-			from { opacity: 0; transform: translateY(10px); }
-			to { opacity: 1; transform: translateY(0); }
+		@keyframes slideIn {
+			from { opacity: 0; transform: translateX(10px); }
+			to { opacity: 1; transform: translateX(0); }
 		}
 
-		.toast.success { border-left: 3px solid var(--accent-green); }
-		.toast.error { border-left: 3px solid var(--accent-red); }
-		.toast.info { border-left: 3px solid var(--accent-blue); }
+		.toast.success { border-left: 2px solid var(--accent-green, #22c55e); }
+		.toast.error { border-left: 2px solid var(--accent-red, #ef4444); }
+		.toast.info { border-left: 2px solid var(--accent-amber, #d4a012); }
 
-		/* Empty State - Elegant */
+		/* Empty State */
 		.empty-state {
 			flex: 1;
 			display: flex;
@@ -428,13 +414,13 @@ export class ComposerChat extends LitElement {
 			align-items: center;
 			justify-content: center;
 			padding: 2rem;
-			background: radial-gradient(circle at center, var(--bg-secondary) 0%, var(--bg-primary) 70%);
+			background: var(--bg-primary, #0c0d0f);
 		}
 
 		.workspace-panel {
 			display: grid;
 			grid-template-columns: repeat(3, 1fr);
-			gap: 1.5rem;
+			gap: 1rem;
 			background: transparent;
 			border: none;
 			margin: 2rem 0;
@@ -443,40 +429,38 @@ export class ComposerChat extends LitElement {
 		}
 
 		.panel-section {
-			background: var(--glass-bg);
-			padding: 1.25rem;
-			border: 1px solid var(--glass-border);
-			border-radius: 12px;
-			backdrop-filter: blur(8px);
+			background: var(--bg-elevated, #161719);
+			padding: 1rem;
+			border: 1px solid var(--border-primary, #1e2023);
 		}
 
 		.panel-section h3 {
-			font-family: var(--font-mono);
-			font-size: 0.7rem;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.6rem;
 			font-weight: 600;
-			color: var(--text-secondary);
+			color: var(--text-tertiary, #5c5e62);
 			text-transform: uppercase;
 			letter-spacing: 0.1em;
-			margin: 0 0 1rem 0;
+			margin: 0 0 0.75rem 0;
 		}
 
 		.panel-item {
-			font-family: var(--font-mono);
-			font-size: 0.8rem;
-			color: var(--text-primary);
-			margin: 0.5rem 0;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.75rem;
+			color: var(--text-primary, #e8e9eb);
+			margin: 0.4rem 0;
 			display: flex;
 			align-items: center;
 		}
 
 		.panel-item span {
-			color: var(--text-tertiary);
-			margin-right: 0.75rem;
-			min-width: 3rem;
+			color: var(--text-tertiary, #5c5e62);
+			margin-right: 0.5rem;
+			min-width: 2.5rem;
 		}
 
 		.session-gallery {
-			margin-top: 2rem;
+			margin-top: 1.5rem;
 			width: 100%;
 			max-width: 800px;
 			background: transparent;
@@ -487,32 +471,30 @@ export class ComposerChat extends LitElement {
 
 		.session-grid {
 			display: grid;
-			grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-			gap: 1rem;
+			grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+			gap: 0.75rem;
 		}
 
 		.session-card {
-			background: var(--bg-secondary);
-			border: 1px solid var(--border-primary);
-			border-radius: 8px;
-			padding: 1.25rem;
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			padding: 1rem;
 			text-align: left;
 			cursor: pointer;
-			transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-			color: var(--text-primary);
+			transition: all 0.15s ease;
+			color: var(--text-primary, #e8e9eb);
 		}
 
 		.session-card:hover {
-			border-color: var(--accent-blue);
-			transform: translateY(-2px);
-			box-shadow: var(--shadow-md);
+			border-color: var(--accent-amber, #d4a012);
+			background: var(--bg-surface, #1a1b1e);
 		}
 
 		.session-card-title {
-			font-family: var(--font-sans);
-			font-size: 0.95rem;
-			font-weight: 600;
-			margin-bottom: 0.5rem;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.8rem;
+			font-weight: 500;
+			margin-bottom: 0.35rem;
 		}
 
 		/* Responsive */
@@ -520,7 +502,7 @@ export class ComposerChat extends LitElement {
 			.sidebar {
 				position: absolute;
 				height: 100%;
-				box-shadow: var(--shadow-xl);
+				box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
 			}
 			.workspace-panel {
 				grid-template-columns: 1fr;

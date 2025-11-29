@@ -26,25 +26,25 @@ marked.setOptions({
 @customElement("composer-message")
 export class ComposerMessage extends LitElement {
 	static styles = css`
-			:host {
-				display: block;
-			}
+		:host {
+			display: block;
+		}
 
-			:host([reduced-motion]) * {
-				animation-duration: 0.001ms !important;
-				animation-iteration-count: 1 !important;
-				transition: none !important;
-			}
+		:host([reduced-motion]) * {
+			animation-duration: 0.001ms !important;
+			animation-iteration-count: 1 !important;
+			transition: none !important;
+		}
 
 		.message {
 			display: flex;
-			gap: 1.5rem;
-			padding: 2rem 0;
-			font-family: var(--font-sans);
-			font-size: 0.95rem;
-			line-height: 1.6;
-			color: var(--text-primary);
-			border-bottom: 1px solid var(--border-primary);
+			gap: 1.25rem;
+			padding: 1.5rem 0;
+			font-family: var(--font-mono, "JetBrains Mono", monospace);
+			font-size: 0.85rem;
+			line-height: 1.7;
+			color: var(--text-primary, #e8e9eb);
+			border-bottom: 1px solid var(--border-subtle, #141517);
 		}
 
 		.message:last-child {
@@ -57,7 +57,7 @@ export class ComposerMessage extends LitElement {
 
 		.message.compact {
 			padding: 1rem 0;
-			font-size: 0.9rem;
+			font-size: 0.8rem;
 			gap: 1rem;
 		}
 
@@ -66,34 +66,35 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.avatar-column {
-			flex: 0 0 32px;
+			flex: 0 0 28px;
 			display: flex;
 			flex-direction: column;
 			align-items: center;
-			padding-top: 0.25rem;
+			padding-top: 0.125rem;
 		}
 
 		.avatar {
-			width: 28px;
-			height: 28px;
-			border-radius: 6px;
+			width: 24px;
+			height: 24px;
 			display: flex;
 			align-items: center;
 			justify-content: center;
-			font-size: 1rem;
-			background: transparent;
-			color: var(--text-secondary);
+			font-size: 0.7rem;
+			font-weight: 600;
+			font-family: var(--font-mono, monospace);
+			color: var(--text-tertiary, #5c5e62);
 		}
 
 		.message.user .avatar {
-			background: var(--bg-panel);
-			color: var(--text-primary);
-			border: 1px solid var(--border-primary);
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-secondary, #8b8d91);
 		}
 
 		.message.assistant .avatar {
-			background: var(--accent-blue);
-			color: white;
+			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+			border: 1px solid transparent;
+			color: var(--accent-amber, #d4a012);
 		}
 
 		.content-column {
@@ -110,13 +111,20 @@ export class ComposerMessage extends LitElement {
 
 		.role-name {
 			font-weight: 600;
-			font-size: 0.9rem;
-			color: var(--text-primary);
+			font-size: 0.7rem;
+			color: var(--text-secondary, #8b8d91);
+			text-transform: uppercase;
+			letter-spacing: 0.08em;
+		}
+
+		.message.assistant .role-name {
+			color: var(--accent-amber, #d4a012);
 		}
 
 		.timestamp {
-			font-size: 0.75rem;
-			color: var(--text-tertiary);
+			font-size: 0.65rem;
+			color: var(--text-tertiary, #5c5e62);
+			font-family: var(--font-mono, monospace);
 		}
 
 		.content {
@@ -125,49 +133,46 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.bubble {
-			color: var(--text-primary);
+			color: var(--text-primary, #e8e9eb);
 		}
 
 		.tools-indicator {
 			display: inline-flex;
 			align-items: center;
-			margin-left: 0.75rem;
-			padding: 0.15rem 0.4rem;
-			background: var(--bg-panel);
-			border: 1px solid var(--border-primary);
-			border-radius: 4px;
-			font-size: 0.7rem;
+			margin-left: 0.5rem;
+			padding: 0.1rem 0.35rem;
+			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+			font-size: 0.6rem;
 			font-weight: 600;
-			color: var(--text-secondary);
+			color: var(--accent-amber, #d4a012);
 			text-transform: uppercase;
 			letter-spacing: 0.05em;
 		}
 
 		.content > composer-tool-execution {
 			display: block;
-			margin-top: 1.25rem;
+			margin-top: 1rem;
 		}
 
-		/* Markdown styles - refined */
+		/* Markdown styles - Control Room */
 		.bubble :global(pre) {
-			background: var(--bg-panel);
-			padding: 1.25rem;
-			border-radius: 8px;
+			background: var(--bg-deep, #08090a);
+			padding: 1rem;
 			overflow-x: auto;
 			margin: 1rem 0;
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-primary, #1e2023);
+			border-left: 2px solid var(--accent-amber, #d4a012);
 			position: relative;
-			font-family: var(--font-mono);
-			font-size: 0.85rem;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.8rem;
 		}
 
 		.bubble :global(code) {
-			font-family: var(--font-mono);
+			font-family: var(--font-mono, monospace);
 			font-size: 0.85em;
-			background: rgba(113, 113, 122, 0.15); /* Zinc 500 alpha */
-			padding: 0.2em 0.4em;
-			border-radius: 4px;
-			color: var(--accent-red); /* Highlight inline code slightly */
+			background: var(--bg-elevated, #161719);
+			padding: 0.15em 0.35em;
+			color: var(--accent-amber, #d4a012);
 		}
 
 		.bubble :global(pre code) {
@@ -179,8 +184,8 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.message.user .bubble :global(code) {
-			background: rgba(255, 255, 255, 0.1);
-			color: inherit;
+			background: var(--bg-elevated, #161719);
+			color: var(--text-primary, #e8e9eb);
 		}
 
 		.bubble :global(p) {
@@ -194,41 +199,43 @@ export class ComposerMessage extends LitElement {
 		.bubble :global(h1),
 		.bubble :global(h2),
 		.bubble :global(h3) {
-			margin: 1.5rem 0 1rem 0;
-			font-weight: 700;
+			margin: 1.5rem 0 0.75rem 0;
+			font-weight: 600;
 			line-height: 1.3;
-			color: var(--text-primary);
+			color: var(--text-primary, #e8e9eb);
+			font-family: var(--font-display, "DM Sans", sans-serif);
 		}
 
-		.bubble :global(h1) { font-size: 1.5rem; letter-spacing: -0.02em; }
-		.bubble :global(h2) { font-size: 1.25rem; letter-spacing: -0.01em; }
-		.bubble :global(h3) { font-size: 1.1rem; }
+		.bubble :global(h1) { font-size: 1.25rem; letter-spacing: -0.01em; }
+		.bubble :global(h2) { font-size: 1.1rem; }
+		.bubble :global(h3) { font-size: 1rem; }
 
 		.bubble :global(ul),
 		.bubble :global(ol) {
 			margin: 0.75rem 0;
-			padding-left: 1.5rem;
+			padding-left: 1.25rem;
 		}
 
 		.bubble :global(li) {
-			margin: 0.25rem 0;
+			margin: 0.35rem 0;
+		}
+
+		.bubble :global(li::marker) {
+			color: var(--text-tertiary, #5c5e62);
 		}
 
 		.bubble :global(blockquote) {
-			border-left: 3px solid var(--accent-blue);
-			padding-left: 1rem;
-			margin: 1rem 0;
-			color: var(--text-secondary);
-			font-style: italic;
-			background: linear-gradient(to right, var(--bg-panel), transparent);
+			border-left: 2px solid var(--accent-amber, #d4a012);
 			padding: 0.75rem 1rem;
-			border-radius: 0 6px 6px 0;
+			margin: 1rem 0;
+			color: var(--text-secondary, #8b8d91);
+			font-style: normal;
+			background: var(--bg-elevated, #161719);
 		}
 
 		.bubble :global(a) {
-			color: var(--accent-blue);
+			color: var(--accent-amber, #d4a012);
 			text-decoration: none;
-			font-weight: 500;
 		}
 
 		.bubble :global(a:hover) {
@@ -236,50 +243,49 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.bubble :global(table) {
-			border-collapse: separate;
-			border-spacing: 0;
+			border-collapse: collapse;
 			width: 100%;
-			margin: 1.5rem 0;
-			border-radius: 8px;
-			border: 1px solid var(--border-primary);
-			overflow: hidden;
+			margin: 1.25rem 0;
+			border: 1px solid var(--border-primary, #1e2023);
+			font-size: 0.8rem;
 		}
 
 		.bubble :global(th),
 		.bubble :global(td) {
-			padding: 0.75rem 1rem;
-			border-bottom: 1px solid var(--border-primary);
+			padding: 0.5rem 0.75rem;
+			border: 1px solid var(--border-primary, #1e2023);
 			text-align: left;
 		}
 
 		.bubble :global(th) {
-			background: var(--bg-panel);
+			background: var(--bg-elevated, #161719);
 			font-weight: 600;
-			font-size: 0.85rem;
-			color: var(--text-secondary);
+			font-size: 0.7rem;
+			color: var(--text-secondary, #8b8d91);
 			text-transform: uppercase;
 			letter-spacing: 0.05em;
 		}
 
-		.bubble :global(tr:last-child td) {
-			border-bottom: none;
+		.bubble :global(tr:nth-child(even)) {
+			background: var(--bg-deep, #08090a);
 		}
 
 		.copy-button {
 			position: absolute;
-			top: 0.75rem;
-			right: 0.75rem;
-			padding: 0.4rem 0.8rem;
-			background: var(--bg-secondary);
-			border: 1px solid var(--border-primary);
-			border-radius: 6px;
-			color: var(--text-secondary);
-			font-size: 0.75rem;
-			font-weight: 500;
+			top: 0.5rem;
+			right: 0.5rem;
+			padding: 0.25rem 0.5rem;
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-tertiary, #5c5e62);
+			font-size: 0.6rem;
+			font-weight: 600;
+			font-family: var(--font-mono, monospace);
 			cursor: pointer;
 			opacity: 0;
-			transition: all 0.2s;
-			font-family: var(--font-sans);
+			transition: all 0.15s ease;
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
 		}
 
 		.bubble :global(pre:hover) .copy-button {
@@ -287,20 +293,21 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.copy-button:hover {
-			background: var(--bg-panel);
-			color: var(--accent-blue);
-			border-color: var(--accent-blue);
+			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+			color: var(--accent-amber, #d4a012);
+			border-color: var(--accent-amber, #d4a012);
 		}
 
 		.copy-button.copied {
-			color: var(--accent-green);
-			border-color: var(--accent-green);
+			color: var(--accent-green, #22c55e);
+			border-color: var(--accent-green, #22c55e);
+			background: var(--accent-green-dim, rgba(34, 197, 94, 0.12));
 		}
 
 		@media (max-width: 768px) {
-			.message { padding: 1rem; gap: 0.75rem; }
-			.avatar-column { flex: 0 0 28px; }
-			.avatar { width: 28px; height: 28px; font-size: 0.8rem; }
+			.message { padding: 1rem 0; gap: 0.75rem; }
+			.avatar-column { flex: 0 0 24px; }
+			.avatar { width: 20px; height: 20px; font-size: 0.6rem; }
 		}
 	`;
 
@@ -338,7 +345,7 @@ export class ComposerMessage extends LitElement {
 	}
 
 	private getAvatar(): string {
-		return this.role === "user" ? "👤" : "🤖";
+		return this.role === "user" ? "U" : "C";
 	}
 
 	private async copyCodeFromButton(button: HTMLElement) {
