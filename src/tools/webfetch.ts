@@ -37,12 +37,27 @@ export interface WebfetchDetails {
 	results: ExaContentsResponse["results"];
 }
 
+// Retry on network errors
+const isWebfetchRetryable = (error: unknown): boolean => {
+	if (!(error instanceof Error)) return false;
+	const msg = error.message.toLowerCase();
+	return (
+		msg.includes("network") ||
+		msg.includes("timeout") ||
+		msg.includes("econnreset") ||
+		msg.includes("fetch failed")
+	);
+};
+
 export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 	name: "webfetch",
 	label: "webfetch",
 	description:
 		"Fetch content from URLs. Returns clean markdown with optional summaries and highlights. Use when you have specific URLs to read.",
 	schema: webfetchSchema,
+	maxRetries: 2,
+	retryDelayMs: 1000,
+	shouldRetry: isWebfetchRetryable,
 	run: async (params, { respond }) => {
 		const urls = Array.isArray(params.urls) ? params.urls : [params.urls];
 		const contents = buildContentsOptions(

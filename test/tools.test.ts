@@ -723,6 +723,32 @@ describe("Composer Tools", () => {
 
 			expect(getTextOutput(result)).toContain("from-bash");
 		});
+
+		it("should interpolate ${cwd} in command", async () => {
+			const result = await bashTool.execute("test-interpolate-cwd", {
+				command: "echo ${cwd}",
+			});
+
+			expect(getTextOutput(result)).toContain(process.cwd());
+		});
+
+		it("should interpolate ${home} in command", async () => {
+			const result = await bashTool.execute("test-interpolate-home", {
+				command: "echo ${home}",
+			});
+
+			expect(getTextOutput(result)).toContain(homedir());
+		});
+
+		it("should interpolate ${env.VAR} in command", async () => {
+			process.env.BASH_INTERPOLATE_TEST = "interpolated-value";
+			const result = await bashTool.execute("test-interpolate-env", {
+				command: "echo ${env.BASH_INTERPOLATE_TEST}",
+			});
+
+			expect(getTextOutput(result)).toContain("interpolated-value");
+			process.env.BASH_INTERPOLATE_TEST = undefined;
+		});
 	});
 
 	describe("diff tool", () => {

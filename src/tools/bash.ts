@@ -5,7 +5,7 @@ import {
 	killProcessTree,
 	validateShellParams,
 } from "./shell-utils.js";
-import { createTool } from "./tool-dsl.js";
+import { createTool, interpolateContext } from "./tool-dsl.js";
 
 const bashSchema = Type.Object({
 	command: Type.String({
@@ -43,11 +43,19 @@ Usage guidelines:
 - Chain commands with ';' or '&&', avoid cd
 - Use 'gh' CLI for GitHub operations (gh pr create, gh issue list, gh repo view)
 
+Supports interpolation in command:
+- \${cwd} - current working directory
+- \${home} - user home directory
+- \${env.VAR} - environment variable
+
 Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 	schema: bashSchema,
 	async run({ command, timeout, cwd, env }, { signal, sandbox }) {
+		// Interpolate ${cwd}, ${home}, ${env.VAR} in command
+		const interpolatedCommand = interpolateContext(command);
+
 		if (sandbox) {
-			const result = await sandbox.exec(command, cwd, env);
+			const result = await sandbox.exec(interpolatedCommand, cwd, env);
 
 			let output = "";
 			if (result.stdout) {
@@ -79,7 +87,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 		}>((resolve, reject) => {
 			let resolvedCwd: string | undefined;
 			try {
-				({ resolvedCwd } = validateShellParams(command, cwd, env));
+				({ resolvedCwd } = validateShellParams(interpolatedCommand, cwd, env));
 			} catch (error) {
 				reject(error);
 				return;
@@ -87,7 +95,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 
 			const { shell, args } = getShellConfig();
 			const mergedEnv = { ...process.env, ...env } as Record<string, string>;
-			const child = spawn(shell, [...args, command], {
+			const child = spawn(shell, [...args, interpolatedCommand], {
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
 				cwd: resolvedCwd,
