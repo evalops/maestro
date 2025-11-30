@@ -14,6 +14,7 @@ export interface RuntimeBadgeParams {
 	sandboxMode?: string | null;
 	isSafeMode?: boolean;
 	sandboxRequestedButMissing?: boolean;
+	alertCount?: number;
 }
 
 export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
@@ -45,6 +46,10 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 		} else {
 			badges.push(queueLabel);
 		}
+	}
+
+	if (params.alertCount && params.alertCount > 0) {
+		badges.push(`alerts:${params.alertCount}`);
 	}
 
 	const thinkingLevel = params.thinkingLevel;

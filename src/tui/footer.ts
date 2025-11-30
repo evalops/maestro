@@ -42,6 +42,7 @@ export class FooterComponent {
 	private activeToast: FooterToast | null = null;
 	private toastQueue: ToastQueueItem[] = [];
 	private nextToastId = 1;
+	private unseenAlertCount = 0;
 	private gitBranchTracker: GitBranchTracker;
 	private currentBranch: string | null | undefined = undefined;
 
@@ -101,6 +102,9 @@ export class FooterComponent {
 		};
 		this.enqueueToast(toast);
 		this.dequeueToast();
+		if (tone === "danger" || tone === "warn") {
+			this.unseenAlertCount += 1;
+		}
 	}
 
 	private resolveToastDuration(
@@ -123,11 +127,20 @@ export class FooterComponent {
 	clearToast(): void {
 		this.activeToast = null;
 		this.toastQueue = [];
+		this.unseenAlertCount = 0;
 	}
 
 	getToastHistory(limit = 5): FooterToast[] {
 		const active = this.activeToast ? [this.activeToast] : [];
 		return [...active, ...this.toastQueue].slice(0, limit);
+	}
+
+	getUnseenAlertCount(): number {
+		return this.unseenAlertCount;
+	}
+
+	clearAlertCount(): void {
+		this.unseenAlertCount = 0;
 	}
 
 	getActiveToast(): FooterToast | null {

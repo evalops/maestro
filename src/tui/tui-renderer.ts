@@ -2392,6 +2392,7 @@ export class TuiRenderer {
 				sandboxMode,
 				isSafeMode: process.env.COMPOSER_SAFE_MODE === "1",
 				sandboxRequestedButMissing: sandboxRequested && !sandboxActive,
+				alertCount: this.footer.getUnseenAlertCount(),
 			}),
 		);
 		if (this.isAgentRunning) {
