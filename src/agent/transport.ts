@@ -665,7 +665,11 @@ export class ProviderTransport implements AgentTransport {
 							content: [
 								{
 									type: "text",
-									text: `Action blocked by firewall: ${verdict.reason}`,
+									text: `Action blocked by firewall: ${verdict.reason}${
+										verdict.remediation
+											? `\n\nSuggestion: ${verdict.remediation}`
+											: ""
+									}`,
 								},
 							],
 							isError: true,

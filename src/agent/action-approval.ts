@@ -51,7 +51,12 @@ export interface ActionApprovalContext {
 export type ActionFirewallVerdict =
 	| { action: "allow" }
 	| { action: "require_approval"; ruleId: string; reason: string }
-	| { action: "block"; ruleId: string; reason: string };
+	| {
+			action: "block";
+			ruleId: string;
+			reason: string;
+			remediation?: string;
+	  };
 
 type PendingEntry = {
 	request: ActionApprovalRequest;

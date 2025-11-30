@@ -39,6 +39,7 @@ export interface ActionFirewallRule {
 	action?: "allow" | "require_approval" | "block";
 	match: (context: ActionApprovalContext) => boolean | Promise<boolean>;
 	reason?: (context: ActionApprovalContext) => string | Promise<string>;
+	remediation?: (context: ActionApprovalContext) => string | Promise<string>;
 }
 
 const untaggedEgressWarnings = new Set<string>();
@@ -318,6 +319,8 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		},
 		reason: (ctx) =>
 			"Modification of critical system directories is blocked for safety.",
+		remediation: () =>
+			"Do not modify critical system paths. If you need to write a file, use the current workspace directory or a temporary folder.",
 	},
 	{
 		id: "workspace-containment",
@@ -342,6 +345,8 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			const outsidePaths = paths.filter((p) => !isContainedInWorkspace(p));
 			return `File modification outside workspace detected: ${outsidePaths.join(", ")}. This requires explicit approval.`;
 		},
+		remediation: () =>
+			"The file path is outside the allowed workspace. Please use a path within the current project or a temporary directory, or ask the user to add this path to 'containment.trustedPaths' in ~/.composer/firewall.json.",
 	},
 	{
 		id: "mcp-destructive-tool",
@@ -436,9 +441,19 @@ export class ActionFirewall {
 				const reason =
 					(await rule.reason?.(context)) ??
 					`Action matched rule: ${rule.description}`;
+				const remediation = await rule.remediation?.(context);
 
 				if (action === "allow") {
 					return { action: "allow" };
+				}
+
+				if (action === "block") {
+					return {
+						action,
+						ruleId: rule.id,
+						reason,
+						remediation,
+					};
 				}
 
 				return {
