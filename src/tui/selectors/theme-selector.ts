@@ -1,17 +1,16 @@
-import { Container, type SelectItem, SelectList } from "@evalops/tui";
+import type { SelectItem } from "@evalops/tui";
 import {
 	getAvailableThemes,
 	getSelectListTheme,
 	setTheme,
 } from "../../theme/theme.js";
-import { DynamicBorder } from "../utils/borders.js";
+import { BaseSelectorComponent } from "./base-selector.js";
 
 /**
  * Component that renders a theme selector with live preview.
  * Uses onSelectionChange for live preview as the user navigates.
  */
-export class ThemeSelectorComponent extends Container {
-	private selectList: SelectList;
+export class ThemeSelectorComponent extends BaseSelectorComponent<string> {
 	private originalTheme: string;
 
 	constructor(
@@ -20,9 +19,6 @@ export class ThemeSelectorComponent extends Container {
 		onCancel: () => void,
 		onPreview?: (themeName: string) => void,
 	) {
-		super();
-		this.originalTheme = currentTheme;
-
 		// Get available themes and create select items
 		const themes = getAvailableThemes();
 		const themeItems: SelectItem[] = themes.map((name) => ({
@@ -31,46 +27,30 @@ export class ThemeSelectorComponent extends Container {
 			description: name === currentTheme ? "(current)" : undefined,
 		}));
 
-		// Add top border
-		this.addChild(new DynamicBorder());
+		super({
+			items: themeItems,
+			visibleRows: 10,
+			onSelect: (theme) => {
+				setTheme(theme);
+				onSelect(theme);
+			},
+			onCancel: () => {
+				setTheme(currentTheme);
+				onCancel();
+			},
+			onSelectionChange: (theme) => {
+				setTheme(theme);
+				onPreview?.(theme);
+			},
+		});
 
-		// Create selector with theme styling
-		this.selectList = new SelectList(themeItems, 10);
+		this.originalTheme = currentTheme;
 
 		// Preselect current theme
 		const currentIndex = themes.indexOf(currentTheme);
 		if (currentIndex !== -1) {
-			this.selectList.setSelectedIndex(currentIndex);
+			this.getSelectList().setSelectedIndex(currentIndex);
 		}
-
-		this.selectList.onSelect = (item) => {
-			// Apply theme permanently
-			setTheme(item.value);
-			onSelect(item.value);
-		};
-
-		this.selectList.onCancel = () => {
-			// Restore original theme on cancel
-			setTheme(this.originalTheme);
-			onCancel();
-		};
-
-		// Live preview as user navigates
-		if (onPreview) {
-			this.selectList.onSelectionChange = (item) => {
-				setTheme(item.value);
-				onPreview(item.value);
-			};
-		}
-
-		this.addChild(this.selectList);
-
-		// Add bottom border
-		this.addChild(new DynamicBorder());
-	}
-
-	getSelectList(): SelectList {
-		return this.selectList;
 	}
 
 	/**
@@ -78,12 +58,5 @@ export class ThemeSelectorComponent extends Container {
 	 */
 	getOriginalTheme(): string {
 		return this.originalTheme;
-	}
-
-	/**
-	 * Forward input to the SelectList for keyboard navigation
-	 */
-	handleInput(data: string): void {
-		this.selectList.handleInput(data);
 	}
 }

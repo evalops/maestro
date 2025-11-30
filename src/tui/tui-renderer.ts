@@ -139,10 +139,10 @@ import {
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { handleAgentsInit } from "../cli/commands/agents.js";
-import { isSafeModeEnabled } from "../safety/safe-mode.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
 import { ModalManager } from "./modal-manager.js";
+import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
 
@@ -384,6 +384,7 @@ export class TuiRenderer {
 			this.editor,
 		);
 		this.footer = new FooterComponent(agent.state, this.footerMode);
+		this.footer.startBranchTracking(() => this.ui.requestRender());
 		this.notificationView = new NotificationView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -2288,7 +2289,15 @@ export class TuiRenderer {
 	}
 
 	public refreshFooterHint(): void {
-		this.footer.setRuntimeBadges(this.buildRuntimeBadges());
+		this.footer.setRuntimeBadges(
+			buildRuntimeBadges({
+				approvalMode: this.approvalService.getMode(),
+				promptQueueMode: this.promptQueueMode,
+				queuedPromptCount: this.queuedPromptCount,
+				hasPromptQueue: Boolean(this.promptQueue),
+				thinkingLevel: this.agent.state.thinkingLevel,
+			}),
+		);
 		if (this.isAgentRunning) {
 			return;
 		}
@@ -2347,53 +2356,6 @@ export class TuiRenderer {
 		return null;
 	}
 
-	private buildRuntimeBadges(): string[] {
-		const badges: string[] = [];
-		if (isSafeModeEnabled()) {
-			badges.push("safe:on");
-		}
-		if (process.env.COMPOSER_PLAN_MODE === "1") {
-			badges.push("plan:on");
-		}
-		const approvalMode = this.approvalService.getMode();
-		if (approvalMode && approvalMode !== "auto") {
-			badges.push(`approvals:${approvalMode}`);
-		}
-		const queueLabel = `queue:${this.promptQueueMode}`;
-		if (this.promptQueue) {
-			if (this.queuedPromptCount > 0) {
-				badges.push(`${queueLabel}(${this.queuedPromptCount})`);
-			} else {
-				badges.push(queueLabel);
-			}
-		}
-		const thinkingLevel = this.agent.state.thinkingLevel;
-		if (thinkingLevel && thinkingLevel !== "off") {
-			badges.push(`think:${thinkingLevel}`);
-		}
-		// MCP servers status
-		const mcpStatus = mcpManager.getStatus();
-		const connectedMcp = mcpStatus.servers.filter((s) => s.connected).length;
-		if (connectedMcp > 0) {
-			const totalTools = mcpStatus.servers.reduce(
-				(sum, s) => sum + s.tools.length,
-				0,
-			);
-			badges.push(`mcp:${connectedMcp}(${totalTools})`);
-		}
-		const backgroundCounts = this.getBackgroundTaskCounts();
-		if (backgroundCounts.running > 0 || backgroundCounts.failed > 0) {
-			const failureSuffix =
-				backgroundCounts.failed > 0 ? `!${backgroundCounts.failed}` : "";
-			badges.push(`bg:${backgroundCounts.running}${failureSuffix}`);
-		}
-		// Active composer
-		const composerState = composerManager.getState();
-		if (composerState.active) {
-			badges.push(`composer:${composerState.active.name}`);
-		}
-		return badges;
-	}
 	private getBackgroundTaskCounts(): { running: number; failed: number } {
 		const tasks = backgroundTaskManager.getTasks();
 		let running = 0;
@@ -2776,6 +2738,7 @@ export class TuiRenderer {
 			this.ui.stop();
 			this.isInitialized = false;
 		}
+		this.footer.dispose();
 	}
 
 	private async handleLoginCommand(

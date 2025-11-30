@@ -1,16 +1,15 @@
-import { Container, type SelectItem, SelectList, Spacer } from "@evalops/tui";
+import { type SelectItem, Spacer } from "@evalops/tui";
+import { BaseSelectorComponent } from "./base-selector.js";
 
-export class QueueModeSelectorComponent extends Container {
-	private selectList: SelectList;
-
+export class QueueModeSelectorComponent extends BaseSelectorComponent<
+	"all" | "one"
+> {
 	constructor(
 		currentMode: "all" | "one",
 		onSelect: (mode: "all" | "one") => void,
 		onCancel: () => void,
 	) {
-		super();
-
-		const queueModes: SelectItem[] = [
+		const queueModes: Array<SelectItem & { value: "one" | "all" }> = [
 			{
 				value: "one",
 				label: "one-at-a-time",
@@ -23,36 +22,23 @@ export class QueueModeSelectorComponent extends Container {
 			},
 		];
 
-		this.addChild(new Spacer(1));
-
-		// Create selector
-		this.selectList = new SelectList(queueModes, 2);
+		super({
+			items: queueModes,
+			visibleRows: 2,
+			onSelect,
+			onCancel,
+			topBorder: false,
+			bottomBorder: false,
+			prepend: [new Spacer(1)],
+			append: [new Spacer(1)],
+		});
 
 		// Preselect current mode
 		const currentIndex = queueModes.findIndex(
 			(item) => item.value === currentMode,
 		);
 		if (currentIndex !== -1) {
-			this.selectList.setSelectedIndex(currentIndex);
+			this.getSelectList().setSelectedIndex(currentIndex);
 		}
-
-		this.selectList.onSelect = (item) => {
-			onSelect(item.value as "all" | "one");
-		};
-
-		this.selectList.onCancel = () => {
-			onCancel();
-		};
-
-		this.addChild(this.selectList);
-		this.addChild(new Spacer(1));
-	}
-
-	getSelectList(): SelectList {
-		return this.selectList;
-	}
-
-	handleInput(data: string): void {
-		this.selectList.handleInput(data);
 	}
 }

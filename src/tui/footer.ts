@@ -3,11 +3,12 @@ import chalk from "chalk";
 import type { AgentState } from "../agent/types.js";
 import { theme } from "../theme/theme.js";
 import {
+	GitBranchTracker,
 	buildBadgeAndPathLine,
 	buildSoloStatsLine,
 	buildStatsLine,
 	calculateFooterStats,
-	formatPath,
+	formatPathWithBranch,
 	mergeHints,
 } from "./utils/footer-utils.js";
 import type {
@@ -35,10 +36,17 @@ export class FooterComponent {
 	private runtimeBadges: string[] = [];
 	private mode: FooterMode;
 	private activeToast: FooterToast | null = null;
+	private gitBranchTracker: GitBranchTracker;
+	private currentBranch: string | null | undefined = undefined;
 
-	constructor(state: AgentState, mode: FooterMode = "ensemble") {
+	constructor(
+		state: AgentState,
+		mode: FooterMode = "ensemble",
+		gitBranchTracker = new GitBranchTracker(),
+	) {
 		this.state = state;
 		this.mode = mode;
+		this.gitBranchTracker = gitBranchTracker;
 	}
 
 	updateState(state: AgentState): void {
@@ -90,6 +98,23 @@ export class FooterComponent {
 		this.activeToast = null;
 	}
 
+	/**
+	 * Begin watching for git branch changes and invoke a callback when the
+	 * branch changes so the UI can re-render.
+	 */
+	startBranchTracking(onBranchChange?: () => void): void {
+		this.currentBranch = this.gitBranchTracker.getCurrentBranch();
+		this.gitBranchTracker.watchBranch(() => {
+			this.gitBranchTracker.invalidate();
+			this.currentBranch = this.gitBranchTracker.getCurrentBranch();
+			onBranchChange?.();
+		});
+	}
+
+	dispose(): void {
+		this.gitBranchTracker.dispose();
+	}
+
 	setMode(mode: FooterMode): void {
 		this.mode = mode;
 	}
@@ -99,6 +124,12 @@ export class FooterComponent {
 	}
 
 	render(width: number): string[] {
+		// Refresh branch cache if needed
+		if (this.currentBranch === undefined) {
+			this.currentBranch = this.gitBranchTracker.getCurrentBranch();
+		}
+		const branch = this.currentBranch ?? null;
+
 		// Check for expired toast
 		if (this.activeToast && Date.now() > this.activeToast.expiry) {
 			this.activeToast = null;
@@ -115,6 +146,7 @@ export class FooterComponent {
 			this.activeStage,
 			this.runtimeBadges,
 			width,
+			branch,
 		);
 		const statsLine = buildStatsLine(stats, width, this.state);
 
@@ -171,7 +203,10 @@ export class FooterComponent {
 	}
 
 	private renderSoloFooter(stats: FooterStats, width: number): string[] {
-		const pathLine = chalk.gray(formatPath(process.cwd(), width));
+		const branch = this.currentBranch ?? null;
+		const pathLine = chalk.gray(
+			formatPathWithBranch(process.cwd(), width, branch),
+		);
 		const statsLine = buildSoloStatsLine(stats, width, this.state);
 		return [pathLine, chalk.gray(statsLine)];
 	}

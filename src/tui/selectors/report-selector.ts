@@ -1,10 +1,6 @@
-import {
-	type Component,
-	Container,
-	type SelectItem,
-	SelectList,
-} from "@evalops/tui";
+import type { Component, SelectItem } from "@evalops/tui";
 import chalk from "chalk";
+import { BaseSelectorComponent } from "./base-selector.js";
 
 type ReportType = "bug" | "feedback";
 
@@ -14,13 +10,9 @@ class Divider implements Component {
 	}
 }
 
-export class ReportSelectorComponent extends Container {
-	private readonly selectList: SelectList;
-
+export class ReportSelectorComponent extends BaseSelectorComponent<ReportType> {
 	constructor(onSelect: (type: ReportType) => void, onCancel: () => void) {
-		super();
-
-		const options: SelectItem[] = [
+		const options: Array<SelectItem & { value: ReportType }> = [
 			{
 				value: "bug",
 				label: "Bug report",
@@ -33,24 +25,13 @@ export class ReportSelectorComponent extends Container {
 			},
 		];
 
-		this.addChild(new Divider());
-		this.selectList = new SelectList(options, options.length);
-		this.selectList.onSelect = (item) => {
-			onSelect(item.value as ReportType);
-		};
-		this.selectList.onCancel = () => {
-			onCancel();
-		};
-		this.addChild(this.selectList);
-		this.addChild(new Divider());
-	}
-
-	getSelectList(): SelectList {
-		return this.selectList;
-	}
-
-	handleInput(data: string): void {
-		this.selectList.handleInput(data);
+		super({
+			items: options,
+			onSelect,
+			onCancel,
+			topBorder: new Divider(),
+			bottomBorder: new Divider(),
+		});
 	}
 }
 

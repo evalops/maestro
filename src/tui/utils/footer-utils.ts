@@ -575,9 +575,10 @@ export function buildBadgeAndPathLine(
 	stageLabel: string | null,
 	runtimeBadges: string[],
 	width: number,
+	branch: string | null = null,
 ): string {
 	if (width < 40) {
-		return chalk.gray(formatPath(cwd, width));
+		return chalk.gray(formatPathWithBranch(cwd, width, branch));
 	}
 
 	const badgesBudget = Math.max(
@@ -603,7 +604,12 @@ export function buildBadgeAndPathLine(
 		return badgeZone;
 	}
 	const minPathWidth = Math.min(PATH_ZONE_MIN_WIDTH, pathBudget);
-	const pathFormatted = formatPath(cwd, pathBudget, minPathWidth);
+	const pathFormatted = formatPathWithBranch(
+		cwd,
+		pathBudget,
+		branch,
+		minPathWidth,
+	);
 	const pathZone = chalk.gray(pathFormatted);
 	return `${badgeZone}${separator}${pathZone}`;
 }

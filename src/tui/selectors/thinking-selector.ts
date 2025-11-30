@@ -1,21 +1,17 @@
-import { Container, type SelectItem, SelectList } from "@evalops/tui";
+import type { SelectItem } from "@evalops/tui";
 import type { ThinkingLevel } from "../../agent/types.js";
-import { DynamicBorder } from "../utils/borders.js";
+import { BaseSelectorComponent } from "./base-selector.js";
 
 /**
  * Component that renders a thinking level selector with borders
  */
-export class ThinkingSelectorComponent extends Container {
-	private selectList: SelectList;
-
+export class ThinkingSelectorComponent extends BaseSelectorComponent<ThinkingLevel> {
 	constructor(
 		currentLevel: ThinkingLevel,
 		onSelect: (level: ThinkingLevel) => void,
 		onCancel: () => void,
 	) {
-		super();
-
-		const thinkingLevels: SelectItem[] = [
+		const thinkingLevels: Array<SelectItem & { value: ThinkingLevel }> = [
 			{ value: "off", label: "off", description: "No reasoning" },
 			{
 				value: "minimal",
@@ -39,42 +35,18 @@ export class ThinkingSelectorComponent extends Container {
 			},
 		];
 
-		// Add top border
-		this.addChild(new DynamicBorder());
+		super({
+			items: thinkingLevels,
+			visibleRows: 5,
+			onSelect,
+			onCancel,
+		});
 
-		// Create selector
-		this.selectList = new SelectList(thinkingLevels, 5);
-
-		// Preselect current level
 		const currentIndex = thinkingLevels.findIndex(
 			(item) => item.value === currentLevel,
 		);
 		if (currentIndex !== -1) {
-			this.selectList.setSelectedIndex(currentIndex);
+			this.getSelectList().setSelectedIndex(currentIndex);
 		}
-
-		this.selectList.onSelect = (item) => {
-			onSelect(item.value as ThinkingLevel);
-		};
-
-		this.selectList.onCancel = () => {
-			onCancel();
-		};
-
-		this.addChild(this.selectList);
-
-		// Add bottom border
-		this.addChild(new DynamicBorder());
-	}
-
-	getSelectList(): SelectList {
-		return this.selectList;
-	}
-
-	/**
-	 * Forward input to the SelectList for keyboard navigation
-	 */
-	handleInput(data: string): void {
-		this.selectList.handleInput(data);
 	}
 }
