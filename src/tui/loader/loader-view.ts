@@ -1,5 +1,5 @@
 import type { Container } from "@evalops/tui";
-import { Loader, type Spacer, StatusBar, type TUI } from "@evalops/tui";
+import { Loader, Spacer, type TUI } from "@evalops/tui";
 import type { FooterComponent } from "../footer.js";
 import {
 	STAGE_DISPLAY_LABELS,
@@ -13,26 +13,20 @@ interface LoaderViewOptions {
 	footer: FooterComponent;
 	lowColor?: boolean;
 	lowUnicode?: boolean;
-	idleInterruptHint?: string;
 }
 
 export class LoaderView {
 	private loader: Loader | null = null;
 	private stageManager: LoaderStageManager;
 	private hasActiveTurn = false;
-	private idlePlaceholder: Spacer | StatusBar;
+	private idlePlaceholder: Spacer;
 
 	constructor(private readonly options: LoaderViewOptions) {
 		// Keep a permanent spacer so the status row height stays fixed (prevents
 		// cursor jumps in remote terminals when loader mounts/unmounts).
 		// This is intentionally stateful (vs. inline Spacer creation) to ensure
 		// a consistent node is reused across loader lifecycles.
-		this.idlePlaceholder = new StatusBar({
-			message: "Ready",
-			interruptHint: options.idleInterruptHint ?? "Ctrl+C to interrupt",
-			lowColor: options.lowColor,
-			lowUnicode: options.lowUnicode,
-		});
+		this.idlePlaceholder = new Spacer(1);
 		this.setIdlePlaceholder();
 		this.stageManager = new LoaderStageManager({
 			setFooterStage: (label) => {

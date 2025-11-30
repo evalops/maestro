@@ -449,7 +449,6 @@ export class TuiRenderer {
 			footer: this.footer,
 			lowColor: this.terminalFeatures.lowColor,
 			lowUnicode: this.terminalFeatures.lowUnicode,
-			idleInterruptHint: "Ctrl+C to interrupt",
 		});
 		this.planView = new PlanView({
 			filePath: TODO_STORE_PATH,
