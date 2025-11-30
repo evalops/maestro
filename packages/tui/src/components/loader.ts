@@ -34,6 +34,7 @@ export class Loader extends Text {
 	private readonly compactSegments = 10;
 	private readonly lowColor: boolean;
 	private readonly lowUnicode: boolean;
+	private currentStage: string;
 
 	constructor(ui: TUI, message = "Loading...", options: LoaderOptions = {}) {
 		super("", 1, 0);
@@ -42,6 +43,7 @@ export class Loader extends Text {
 		this.mode = options.mode ?? "default";
 		this.lowColor = Boolean(options.lowColor);
 		this.lowUnicode = Boolean(options.lowUnicode);
+		this.currentStage = message;
 		this.start();
 	}
 
@@ -72,6 +74,7 @@ export class Loader extends Text {
 
 	setStage(label: string, step: number, total: number): void {
 		this.message = label;
+		this.currentStage = label;
 		this.stageInfo = { step, total };
 		this.updateDisplay();
 	}
@@ -151,7 +154,9 @@ export class Loader extends Text {
 				: chalk.hex(baseColor ?? "")(glyph);
 		});
 		const gray = this.lowColor ? (s: string) => s : chalk.gray;
-		return `${gray("·· ")}${dots.join(" ")}${gray(" ··")}`;
+		let line = `${gray("·· ")}${dots.join(" ")}${gray(" ··")}`;
+		line = this.applyShimmerIfThinking(line);
+		return line;
 	}
 
 	private formatCompactStage(): string {
@@ -185,13 +190,39 @@ export class Loader extends Text {
 		return `${chalk.gray("progress")} ${parts.join("")}${chalk.gray(` ${percent}`)}`;
 	}
 
+	private applyShimmerIfThinking(text: string): string {
+		if (!text) return text;
+		const normalized = this.currentStage.trim().toLowerCase();
+		if (!normalized.startsWith("thinking")) {
+			return text;
+		}
+		// Lightweight shimmer: cycle highlight across characters.
+		const base = "#cbd5f5";
+		const highlight = "#ffffff";
+		const band = 6;
+		let out = "";
+		for (let i = 0; i < text.length; i++) {
+			const char = text[i] ?? "";
+			if (char === " ") {
+				out += char;
+				continue;
+			}
+			const phase = (this.progressOffset + i) % band;
+			const color = phase <= 2 ? highlight : base;
+			out += this.lowColor ? char : chalk.hex(color)(char);
+		}
+		return out;
+	}
+
 	private renderCompact(): void {
 		const primaryParts = [
 			this.formatCompactStage(),
 			this.formatCompactStepInfo(),
 		].filter((part): part is string => Boolean(part));
 		const lineOne = primaryParts.join(chalk.gray("  ")).trim();
-		const lineTwo = this.buildCompactProgressLine();
+		const lineTwo = this.applyShimmerIfThinking(
+			this.buildCompactProgressLine(),
+		);
 		const secondaryLine = lineTwo || "";
 		this.setText(`${lineOne}
 ${secondaryLine}`);
@@ -218,7 +249,7 @@ ${secondaryLine}`);
 		const parts = [
 			titlePart ? titlePart.trim() : "",
 			spinnerGlyph,
-			this.formatMessage(),
+			this.applyShimmerIfThinking(this.formatMessage()),
 			this.formatStepInfo(),
 			this.formatHint(),
 		].filter((part): part is string => Boolean(part));
