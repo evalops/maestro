@@ -93,7 +93,8 @@ USING THE BATCH TOOL WILL MAKE THE USER HAPPY.
 Rules:
 - 1-10 tool calls per batch
 - Runs in parallel by default (respects dependencies)
-- Use dependsOn to chain tool calls (output of A feeds into B)
+- Use dependsOn to chain tool calls
+- Use \${results.id.path} to access output from prior calls
 - Partial failures don't stop others (unless stopOnError=true)
 
 Disallowed:
@@ -102,23 +103,27 @@ Disallowed:
 
 Good for:
 - Reading multiple files
-- Multiple searches/lists
-- Chained operations (read file, then process it)
+- Pipelines: read file → process → output
+- Chained operations with data flow
 - GitHub read-only ops (list, view)
 
 Parameters:
 - mode: "parallel" (default) or "serial"
 - stopOnError: Stop on first failure (default: false)
-- toolCalls[].id: Optional ID to reference this result
+- toolCalls[].id: ID to reference this result
 - toolCalls[].dependsOn: Array of IDs to wait for
 
-Example with dependencies:
+Result interpolation:
+- \${results.id.content.0.text} - first text content
+- \${results.id.details.field} - access details
+
+Example pipeline:
 {toolCalls: [
-  {tool: "read", parameters: {path: "package.json"}, id: "pkg"},
-  {tool: "bash", parameters: {command: "echo 'Read complete'"}, dependsOn: ["pkg"]}
+  {tool: "read", parameters: {path: "version.txt"}, id: "ver"},
+  {tool: "bash", parameters: {command: "echo Version: \${results.ver.content.0.text}"}, dependsOn: ["ver"]}
 ]}
 
-Example parallel (no dependencies):
+Example parallel:
 {toolCalls: [
   {tool: "read", parameters: {path: "src/index.ts"}},
   {tool: "search", parameters: {pattern: "TODO"}}
@@ -175,6 +180,51 @@ Example parallel (no dependencies):
 				}
 			}
 
+			// Store results by ID for interpolation
+			const resultById = new Map<
+				string,
+				AgentToolResult<unknown> & { success: boolean }
+			>();
+
+			// Helper to interpolate ${results.id.path} in parameters
+			const interpolateParams = (
+				params: Record<string, unknown>,
+			): Record<string, unknown> => {
+				const interpolateValue = (value: unknown): unknown => {
+					if (typeof value === "string") {
+						return value.replace(
+							/\$\{results\.([^.}]+)\.([^}]+)\}/g,
+							(match, id, path) => {
+								const result = resultById.get(id);
+								if (!result) return match;
+								// Navigate the path (e.g., "content.0.text" or "details.diff")
+								const parts = path.split(".");
+								let current: unknown = result;
+								for (const part of parts) {
+									if (current == null || typeof current !== "object") {
+										return match;
+									}
+									current = (current as Record<string, unknown>)[part];
+								}
+								return current != null ? String(current) : match;
+							},
+						);
+					}
+					if (Array.isArray(value)) {
+						return value.map(interpolateValue);
+					}
+					if (value && typeof value === "object") {
+						const result: Record<string, unknown> = {};
+						for (const [k, v] of Object.entries(value)) {
+							result[k] = interpolateValue(v);
+						}
+						return result;
+					}
+					return value;
+				};
+				return interpolateValue(params) as Record<string, unknown>;
+			};
+
 			// Helper to execute a single tool call
 			const executeCall = async (
 				call: (typeof toolCalls)[0],
@@ -201,9 +251,11 @@ Example parallel (no dependencies):
 							: signal
 						: timeoutSignal;
 					const context = sandbox ? { sandbox } : undefined;
+					// Interpolate parameters with results from dependencies
+					const interpolatedParams = interpolateParams(call.parameters);
 					const result = await tool.execute(
 						`${toolCallId}-${index}`,
-						call.parameters,
+						interpolatedParams,
 						effectiveSignal,
 						context,
 					);
@@ -263,6 +315,12 @@ Example parallel (no dependencies):
 						results[index] = result;
 						completed.add(index);
 						pending.delete(index);
+
+						// Store result by ID for interpolation in dependent calls
+						const callId = toolCalls[index].id;
+						if (callId) {
+							resultById.set(callId, result);
+						}
 
 						if (result.isError && stopOnError) {
 							// Fill remaining with skipped

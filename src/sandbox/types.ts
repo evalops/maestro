@@ -37,6 +37,20 @@ export interface Sandbox {
 	exists(path: string): Promise<boolean>;
 
 	/**
+	 * List files in a directory.
+	 * @param path Path to the directory
+	 * @returns Array of file/directory names
+	 */
+	list?(path: string): Promise<string[]>;
+
+	/**
+	 * Delete a file or directory.
+	 * @param path Path to delete
+	 * @param recursive Whether to delete directories recursively
+	 */
+	delete?(path: string, recursive?: boolean): Promise<void>;
+
+	/**
 	 * Clean up sandbox resources (stop containers, etc.)
 	 */
 	dispose(): Promise<void>;

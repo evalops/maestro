@@ -170,20 +170,45 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 				}
 			}
 
-			const builder = new ToolResponseBuilder<Details>();
-			const result = await options.run(params as any, {
-				toolCallId,
-				signal,
-				respond: builder,
-				sandbox: context?.sandbox,
-			});
-			if (result instanceof ToolResponseBuilder) {
-				return result.build();
+			const maxRetries = options.maxRetries ?? 0;
+			const retryDelayMs = options.retryDelayMs ?? 1000;
+			const shouldRetry = options.shouldRetry ?? (() => true);
+
+			let lastError: unknown;
+			for (let attempt = 0; attempt <= maxRetries; attempt++) {
+				if (attempt > 0) {
+					// Exponential backoff: delay * 2^(attempt-1)
+					const delay = retryDelayMs * 2 ** (attempt - 1);
+					await new Promise((resolve) => setTimeout(resolve, delay));
+					if (signal?.aborted) {
+						throw new Error("Operation aborted");
+					}
+				}
+
+				try {
+					const builder = new ToolResponseBuilder<Details>();
+					const result = await options.run(params as any, {
+						toolCallId,
+						signal,
+						respond: builder,
+						sandbox: context?.sandbox,
+					});
+					if (result instanceof ToolResponseBuilder) {
+						return result.build();
+					}
+					if (result) {
+						return result;
+					}
+					return builder.build();
+				} catch (error) {
+					lastError = error;
+					if (attempt < maxRetries && shouldRetry(error)) {
+						continue;
+					}
+					throw error;
+				}
 			}
-			if (result) {
-				return result;
-			}
-			return builder.build();
+			throw lastError;
 		},
 	});
 }
@@ -198,6 +223,17 @@ export function expandUserPath(path: string): string {
 		return path.replace("~", os.homedir());
 	}
 	return path;
+}
+
+/**
+ * Interpolate environment variables and context in a string.
+ * Supports: ${env.VAR}, ${cwd}, ${home}
+ */
+export function interpolateContext(value: string): string {
+	return value
+		.replace(/\$\{env\.([^}]+)\}/g, (_, varName) => process.env[varName] ?? "")
+		.replace(/\$\{cwd\}/g, process.cwd())
+		.replace(/\$\{home\}/g, os.homedir());
 }
 
 export interface CreateTextToolOptions<Schema extends TSchema, Details>

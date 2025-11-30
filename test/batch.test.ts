@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentTool, AgentToolResult } from "../src/agent/types.js";
 import { bashTool } from "../src/tools/bash.js";
@@ -8,6 +9,7 @@ import { createBatchTool } from "../src/tools/batch.js";
 import { listTool } from "../src/tools/list.js";
 import { readTool } from "../src/tools/read.js";
 import { searchTool } from "../src/tools/search.js";
+import { createTool } from "../src/tools/tool-dsl.js";
 
 // Helper to extract text from content blocks
 function getTextOutput(result: AgentToolResult<any>): string {
@@ -429,6 +431,109 @@ describe("batch tool", () => {
 			await expect(
 				batchTool.execute("batch-call-12", { toolCalls: [] }),
 			).rejects.toThrow(/must NOT have fewer than 1 items/);
+		});
+	});
+
+	describe("dependencies and interpolation", () => {
+		it("executes tools in dependency order", async () => {
+			const executionOrder: string[] = [];
+			const trackingTool = createTool({
+				name: "track",
+				description: "Track execution order",
+				schema: Type.Object({ id: Type.String() }),
+				async run({ id }, { respond }) {
+					executionOrder.push(id);
+					return respond.text(`Executed ${id}`);
+				},
+			});
+
+			const batchTool = createBatchTool([trackingTool]);
+
+			await batchTool.execute("batch-deps-1", {
+				toolCalls: [
+					{ tool: "track", parameters: { id: "third" }, dependsOn: ["second"] },
+					{ tool: "track", parameters: { id: "first" }, id: "first" },
+					{
+						tool: "track",
+						parameters: { id: "second" },
+						id: "second",
+						dependsOn: ["first"],
+					},
+				],
+			});
+
+			expect(executionOrder).toEqual(["first", "second", "third"]);
+		});
+
+		it("interpolates results from dependencies", async () => {
+			const echoTool = createTool({
+				name: "echo",
+				description: "Echo input",
+				schema: Type.Object({ message: Type.String() }),
+				async run({ message }, { respond }) {
+					return respond.text(message).detail({ message });
+				},
+			});
+
+			const batchTool = createBatchTool([echoTool]);
+
+			const result = await batchTool.execute("batch-interpolate-1", {
+				toolCalls: [
+					{ tool: "echo", parameters: { message: "hello" }, id: "greeting" },
+					{
+						tool: "echo",
+						parameters: { message: "Got: ${results.greeting.content.0.text}" },
+						dependsOn: ["greeting"],
+					},
+				],
+			});
+
+			const details = getBatchDetails(result);
+			expect(details.results[1].result.content[0]).toMatchObject({
+				type: "text",
+				text: "Got: hello",
+			});
+		});
+
+		it("detects circular dependencies", async () => {
+			const batchTool = createBatchTool([mockSuccessTool]);
+
+			const result = await batchTool.execute("batch-circular", {
+				toolCalls: [
+					{
+						tool: "mock-success",
+						parameters: {},
+						id: "a",
+						dependsOn: ["b"],
+					},
+					{
+						tool: "mock-success",
+						parameters: {},
+						id: "b",
+						dependsOn: ["a"],
+					},
+				],
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("Circular dependency");
+		});
+
+		it("errors on missing dependency", async () => {
+			const batchTool = createBatchTool([mockSuccessTool]);
+
+			const result = await batchTool.execute("batch-missing-dep", {
+				toolCalls: [
+					{
+						tool: "mock-success",
+						parameters: {},
+						dependsOn: ["nonexistent"],
+					},
+				],
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain('Dependency "nonexistent"');
 		});
 	});
 
