@@ -51,4 +51,8 @@ export class QueueModeSelectorComponent extends Container {
 	getSelectList(): SelectList {
 		return this.selectList;
 	}
+
+	handleInput(data: string): void {
+		this.selectList.handleInput(data);
+	}
 }

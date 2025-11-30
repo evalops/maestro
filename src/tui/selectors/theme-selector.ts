@@ -79,4 +79,11 @@ export class ThemeSelectorComponent extends Container {
 	getOriginalTheme(): string {
 		return this.originalTheme;
 	}
+
+	/**
+	 * Forward input to the SelectList for keyboard navigation
+	 */
+	handleInput(data: string): void {
+		this.selectList.handleInput(data);
+	}
 }

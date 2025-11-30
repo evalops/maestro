@@ -70,4 +70,11 @@ export class ThinkingSelectorComponent extends Container {
 	getSelectList(): SelectList {
 		return this.selectList;
 	}
+
+	/**
+	 * Forward input to the SelectList for keyboard navigation
+	 */
+	handleInput(data: string): void {
+		this.selectList.handleInput(data);
+	}
 }
