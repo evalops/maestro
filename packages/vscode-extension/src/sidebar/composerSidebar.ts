@@ -363,6 +363,8 @@ export class ComposerSidebarProvider
 				throw new Error("Request cancelled");
 			}
 		};
+		const toPromise = <T>(value: Promise<T> | Thenable<T>): Promise<T> =>
+			Promise.resolve(value);
 		const raceWithAbort = <T>(promise: Promise<T>, abortSignal?: AbortSignal) =>
 			new Promise<T>((resolve, reject) => {
 				if (abortSignal?.aborted) {
@@ -527,9 +529,11 @@ export class ComposerSidebarProvider
 				const uri = validateWorkspacePath(args.uri);
 				const pos = new vscode.Position(args.line, args.character);
 				const definitions = await raceWithAbort(
-					vscode.commands.executeCommand<
-						(vscode.Location | vscode.LocationLink)[]
-					>("vscode.executeDefinitionProvider", uri, pos),
+					toPromise(
+						vscode.commands.executeCommand<
+							(vscode.Location | vscode.LocationLink)[]
+						>("vscode.executeDefinitionProvider", uri, pos),
+					),
 					signal,
 				);
 				const formatted = definitions.map((d) => {
@@ -568,10 +572,12 @@ export class ComposerSidebarProvider
 				const pos = new vscode.Position(args.line, args.character);
 				const references =
 					(await raceWithAbort(
-						vscode.commands.executeCommand<vscode.Location[]>(
-							"vscode.executeReferenceProvider",
-							uri,
-							pos,
+						toPromise(
+							vscode.commands.executeCommand<vscode.Location[]>(
+								"vscode.executeReferenceProvider",
+								uri,
+								pos,
+							),
 						),
 						signal,
 					)) || [];
@@ -602,7 +608,7 @@ export class ComposerSidebarProvider
 				}
 				const uri = validateWorkspacePath(args.uri);
 				const doc = await raceWithAbort(
-					vscode.workspace.openTextDocument(uri),
+					toPromise(vscode.workspace.openTextDocument(uri)),
 					signal,
 				);
 				checkAbort();
