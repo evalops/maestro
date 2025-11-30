@@ -7,6 +7,7 @@ export type { ActionApprovalContext } from "../agent/action-approval.js";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { getFirewallConfig } from "../config/firewall-config.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	dangerousPatternDescriptions,
@@ -255,7 +256,23 @@ function isContainedInWorkspace(filePath: string): boolean {
 		(!relToTemp.startsWith("..") && !isAbsolute(relToTemp)) ||
 		(!relToTempLogical.startsWith("..") && !isAbsolute(relToTempLogical));
 
-	return isInsideWorkspace || isInsideTemp;
+	if (isInsideWorkspace || isInsideTemp) {
+		return true;
+	}
+
+	// Check trusted paths from config
+	const config = getFirewallConfig();
+	if (config.containment?.trustedPaths) {
+		for (const trustedPath of config.containment.trustedPaths) {
+			const resolvedTrusted = resolve(trustedPath);
+			const relToTrusted = relative(resolvedTrusted, resolvedPath);
+			if (!relToTrusted.startsWith("..") && !isAbsolute(relToTrusted)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 export const defaultFirewallRules: ActionFirewallRule[] = [
