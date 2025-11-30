@@ -27,6 +27,13 @@ Type `/` in the editor to see completions. Common commands:
 
 Commands are discoverable via Ctrl+K (palette) or the inline autocomplete list.
 
+### Framework Preference
+
+- Use `/framework <id>` to set a default stack (`fastapi`, `express`, `node`).
+- Add `--workspace` to scope it to the current repo; `/framework none` clears.
+- `/framework list` shows available options.
+- Precedence: policy (locked) > policy > env override > env default > workspace `.composer/workspace.json` > user `~/.composer/default-framework.json` > none.
+
 ### Bash Mode
 
 Prefix a message with `!` to enter persistent bash mode. While active:

@@ -110,6 +110,15 @@ export function listFrameworks(): { id: string; summary: string }[] {
 		.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+export function validateFrameworkPreference(): string | null {
+	const pref = resolveFrameworkPreference();
+	if (!pref.id) return null;
+	const info = getFrameworkInfo(pref.id);
+	if (info) return null;
+	const available = Object.keys(FRAMEWORKS).sort().join(", ");
+	return `Unknown framework "${pref.id}" from ${pref.source}. Available options: ${available}. Use /framework none to clear.`;
+}
+
 export function getFrameworkSummary(
 	id: string | null,
 ): { id: string; summary: string } | null {

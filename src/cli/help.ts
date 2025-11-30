@@ -91,6 +91,13 @@ export function printHelp(version: string) {
   Example: composer --tools batch,read,list,find,search,diff "Analyze this code"`,
 	)}`;
 
+	const frameworkSection = `${sectionHeading("Framework Preference")}${muted(
+		`  /framework <id>            Set default stack (fastapi, express, node)
+  /framework <id> --workspace  Set workspace-scoped default
+  /framework list              Show available options
+  Precedence: policy (locked) > policy > env override > env default > workspace > user file > none`,
+	)}`;
+
 	console.log(
 		[
 			header,
@@ -106,6 +113,7 @@ export function printHelp(version: string) {
 				"composer models list",
 				"info",
 			)}`,
+			frameworkSection,
 			tools,
 		].join("\n\n"),
 	);

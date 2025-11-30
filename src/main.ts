@@ -32,6 +32,7 @@ import {
 	loadProjectContextFiles,
 } from "./cli/system-prompt.js";
 import { composerManager } from "./composers/index.js";
+import { validateFrameworkPreference } from "./config/framework.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig } from "./mcp/config.js";
@@ -373,6 +374,13 @@ export async function main(args: string[]) {
 	if (parsed.help) {
 		printHelp(VERSION);
 		return;
+	}
+
+	const frameworkWarning = validateFrameworkPreference();
+	if (frameworkWarning) {
+		console.warn(
+			chalk.yellow(`Framework preference warning: ${frameworkWarning}`),
+		);
 	}
 
 	// Handle config commands
