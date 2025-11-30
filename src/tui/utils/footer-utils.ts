@@ -66,9 +66,16 @@ export type StageKind = "thinking" | "working" | "responding" | "dreaming";
 const STAGE_COLORS: Record<StageKind, string> = {
 	thinking: themePalette.info, // soft purple
 	working: "#fbbf24", // amber
-	responding: "#f472b6", // pink
+	responding: "#e0115f", // ruby
 	dreaming: "#c084fc", // purple
 } as const;
+
+const RESPONDING_SHIMMER = {
+	...STAGE_SHIMMER_OPTIONS.responding,
+	baseColor: "#e0115f",
+	highlightColor: "#ff4f8b",
+	intensityScale: 0.7,
+};
 
 export function formatModelLabel(
 	state: Pick<AgentState, "model" | "thinkingLevel">,
@@ -244,6 +251,9 @@ export function renderStaticStageBadge(label: string): string {
 	const color = kind ? STAGE_COLORS[kind] : themePalette.muted;
 	if (kind === "thinking") {
 		return shimmerText(trimmed || label, STAGE_SHIMMER_OPTIONS.thinking);
+	}
+	if (kind === "responding") {
+		return shimmerText(trimmed || label, RESPONDING_SHIMMER);
 	}
 	return chalk.hex(color).bold(trimmed || label);
 }
