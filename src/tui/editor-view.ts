@@ -5,6 +5,7 @@ interface EditorViewOptions {
 	editor: CustomEditor;
 	getCommandEntries: () => CommandEntry[];
 	onFirstInput: () => void;
+	onCommandExecuted?: (name: string) => void;
 	onSubmit: (text: string) => void;
 	shouldInterrupt: () => boolean;
 	onInterrupt?: () => void;
@@ -45,6 +46,7 @@ export class EditorView {
 				.getCommandEntries()
 				.find((entry) => entry.matches(trimmed));
 			if (command) {
+				this.options.onCommandExecuted?.(command.command.name);
 				const outcome = command.execute(trimmed);
 				this.options.editor.setText("");
 				if (outcome && typeof (outcome as Promise<void>).then === "function") {

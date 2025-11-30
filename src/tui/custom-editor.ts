@@ -12,8 +12,17 @@ export class CustomEditor extends Editor {
 	public onCtrlP?: () => void;
 	public onCtrlO?: () => void;
 	public onTyping?: () => void;
+	public onTab?: () => boolean;
 
 	handleInput(data: string): void {
+		// Tab cycles slash hints when provided
+		if (data === "\t" && this.onTab) {
+			const handled = this.onTab();
+			if (handled) {
+				return;
+			}
+		}
+
 		// Ctrl+P cycles models
 		if (data === "\x10" && this.onCtrlP) {
 			this.onCtrlP();

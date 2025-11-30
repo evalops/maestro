@@ -9,6 +9,9 @@ interface CommandPaletteViewOptions {
 	modalManager: ModalManager;
 	ui: TUI;
 	getCommands: () => SlashCommand[];
+	getRecentCommands: () => string[];
+	getFavoriteCommands: () => Set<string>;
+	onToggleFavorite: (name: string) => void;
 }
 
 export class CommandPaletteView {
@@ -20,6 +23,8 @@ export class CommandPaletteView {
 		if (this.commandPalette) return;
 		this.commandPalette = new CommandPaletteComponent(
 			this.options.getCommands(),
+			this.options.getRecentCommands(),
+			this.options.getFavoriteCommands(),
 			(command) => {
 				this.hideCommandPalette();
 				const current = this.options.editor.getText().trim();
@@ -32,6 +37,7 @@ export class CommandPaletteView {
 				this.options.ui.requestRender();
 			},
 			() => this.hideCommandPalette(),
+			(name) => this.options.onToggleFavorite(name),
 		);
 		this.options.modalManager.push(this.commandPalette);
 	}

@@ -133,6 +133,7 @@ import {
 	REVIEW_INSTRUCTIONS,
 	buildReviewPrompt,
 } from "./utils/commands/review-prompt.js";
+import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
 import {
 	type FooterHint,
 	type FooterMode,
@@ -248,6 +249,11 @@ export class TuiRenderer {
 	private commandPaletteView: CommandPaletteView;
 	private slashCommands: SlashCommand[] = [];
 	private commandEntries: CommandEntry[] = [];
+	private recentCommands: string[] = [];
+	private favoriteCommands = new Set<string>();
+	private slashHintBar!: SlashHintBar;
+	private slashCycleQuery: string | null = null;
+	private slashCycleIndex = 0;
 	private planView: PlanView;
 	private sessionView: SessionView;
 	private sessionDataProvider: SessionDataProvider;
@@ -391,6 +397,14 @@ export class TuiRenderer {
 		if (typeof this.uiState.zenMode === "boolean") {
 			this.zenMode = this.uiState.zenMode;
 		}
+		if (Array.isArray(this.uiState.recentCommands)) {
+			this.recentCommands = [...this.uiState.recentCommands];
+		}
+		if (Array.isArray(this.uiState.favoriteCommands)) {
+			for (const name of this.uiState.favoriteCommands) {
+				this.favoriteCommands.add(name);
+			}
+		}
 		this.agent = agent;
 		this.sessionManager = sessionManager;
 		this.version = version;
@@ -428,7 +442,10 @@ export class TuiRenderer {
 		this.editor.onCtrlO = () => {
 			this.toggleToolOutputs();
 		};
+		this.editor.onTab = () => this.handleSlashCycle();
 		this.editorContainer = new Container(); // Container to hold editor or selector
+		this.slashHintBar = new SlashHintBar();
+		this.editorContainer.addChild(this.slashHintBar);
 		this.editorContainer.addChild(this.editor); // Start with editor
 		this.modalManager = new ModalManager(
 			this.editorContainer,
@@ -573,6 +590,9 @@ export class TuiRenderer {
 			modalManager: this.modalManager,
 			ui: this.ui,
 			getCommands: () => this.slashCommands,
+			getRecentCommands: () => this.recentCommands,
+			getFavoriteCommands: () => this.favoriteCommands,
+			onToggleFavorite: (name) => this.toggleFavoriteCommand(name),
 		});
 		this.toolOutputView = new ToolOutputView({
 			ui: this.ui,
@@ -648,6 +668,8 @@ export class TuiRenderer {
 			ui: this.ui,
 			getSlashCommands: () => this.slashCommands,
 			isInteractive: () => this.terminalCapabilities.isTTY,
+			getRecentCommands: () => this.recentCommands,
+			getFavoriteCommands: () => this.favoriteCommands,
 		});
 		this.thinkingSelectorView = new ThinkingSelectorView({
 			agent: this.agent,
@@ -924,6 +946,7 @@ export class TuiRenderer {
 			editor: this.editor,
 			getCommandEntries: () => this.commandEntries,
 			onFirstInput: () => this.dismissWelcomeAnimation(),
+			onCommandExecuted: (name) => this.recordCommandUsage(name),
 			onSubmit: (text) => {
 				void this.handleTextSubmit(text);
 			},
@@ -1962,12 +1985,103 @@ export class TuiRenderer {
 		this.refreshFooterHint();
 	}
 
+	private recordCommandUsage(name: string): void {
+		// maintain uniqueness and recency
+		this.recentCommands = [
+			name,
+			...this.recentCommands.filter((n) => n !== name),
+		].slice(0, 20);
+		this.persistUiState({
+			recentCommands: this.recentCommands,
+			favoriteCommands: Array.from(this.favoriteCommands),
+		});
+		this.refreshSlashHint();
+		this.ui.requestRender();
+	}
+
+	private toggleFavoriteCommand(name: string): void {
+		if (this.favoriteCommands.has(name)) {
+			this.favoriteCommands.delete(name);
+		} else {
+			this.favoriteCommands.add(name);
+		}
+		this.persistUiState({
+			recentCommands: this.recentCommands,
+			favoriteCommands: Array.from(this.favoriteCommands),
+		});
+	}
+
+	private handleSlashCycle(): boolean {
+		const text = this.editor.getText().trim();
+		if (!text.startsWith("/")) return false;
+		const [commandToken, ...restTokens] = text.split(/\s+/);
+		const query = (commandToken ?? "/").slice(1).toLowerCase();
+		const matches = this.getSlashMatches(query);
+		if (matches.length === 0) return false;
+		if (this.slashCycleQuery !== query) {
+			this.slashCycleQuery = query;
+			this.slashCycleIndex = 0;
+		} else {
+			this.slashCycleIndex = (this.slashCycleIndex + 1) % matches.length;
+		}
+		const replacement = matches[this.slashCycleIndex]?.name ?? query;
+		const rest =
+			restTokens && restTokens.length > 0 ? ` ${restTokens.join(" ")}` : " ";
+		this.editor.setText(`/${replacement}${rest}`);
+		this.refreshSlashHint();
+		this.ui.requestRender();
+		return true;
+	}
+
+	private getSlashMatches(query: string): SlashCommand[] {
+		const q = query.trim();
+		const favorites = this.favoriteCommands;
+		const recents = new Set(this.recentCommands);
+		const scored = this.slashCommands
+			.map((cmd) => ({
+				cmd,
+				score: this.scoreCommand(cmd, q, favorites, recents),
+			}))
+			.filter((item) => item.score > 0 || !q)
+			.sort(
+				(a, b) => b.score - a.score || a.cmd.name.localeCompare(b.cmd.name),
+			);
+		return scored.map((s) => s.cmd);
+	}
+
+	private scoreCommand(
+		cmd: SlashCommand,
+		q: string,
+		favorites: Set<string>,
+		recents: Set<string>,
+	): number {
+		let score = 0;
+		const name = cmd.name.toLowerCase();
+		const aliases = (cmd.aliases ?? []).map((a) => a.toLowerCase());
+		const query = q.toLowerCase();
+		if (!query) {
+			score += favorites.has(cmd.name) ? 8 : 0;
+			score += recents.has(cmd.name) ? 5 : 0;
+			return score;
+		}
+		if (name === query || aliases.includes(query)) score += 100;
+		if (name.startsWith(query)) score += 70;
+		if (aliases.some((a) => a.startsWith(query))) score += 55;
+		if (name.includes(query)) score += 25;
+		if (aliases.some((a) => a.includes(query))) score += 15;
+		score += favorites.has(cmd.name) ? 12 : 0;
+		score += recents.has(cmd.name) ? 8 : 0;
+		return score;
+	}
+
 	private persistUiState(extra?: Partial<UiState>): void {
 		saveUiState({
 			queueMode: this.promptQueueMode,
 			compactTools: this.toolOutputView.isCompact(),
 			footerMode: this.footerMode,
 			cleanMode: this.cleanMode,
+			recentCommands: this.recentCommands,
+			favoriteCommands: Array.from(this.favoriteCommands),
 			...extra,
 		});
 	}
@@ -2575,7 +2689,19 @@ export class TuiRenderer {
 
 	private handleEditorTyping(): void {
 		this.footer.clearToast();
+		this.refreshSlashHint();
 		this.ui.requestRender();
+	}
+
+	private refreshSlashHint(): void {
+		if (!this.slashHintBar) return;
+		const text = this.editor.getText();
+		this.slashHintBar.update(
+			text,
+			this.slashCommands,
+			new Set(this.recentCommands),
+			this.favoriteCommands,
+		);
 	}
 
 	private surfaceStartupWarnings(): void {

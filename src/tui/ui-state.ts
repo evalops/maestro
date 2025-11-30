@@ -12,6 +12,8 @@ export interface UiState {
 	footerMode?: FooterMode;
 	zenMode?: boolean;
 	cleanMode?: CleanMode;
+	recentCommands?: string[];
+	favoriteCommands?: string[];
 }
 
 const UI_STATE_PATH =
@@ -45,6 +47,16 @@ export function loadUiState(): UiState {
 					? parsed.cleanMode
 					: undefined,
 			zenMode: typeof parsed.zenMode === "boolean" ? parsed.zenMode : undefined,
+			recentCommands: Array.isArray(parsed.recentCommands)
+				? (parsed.recentCommands as string[]).filter(
+						(item) => typeof item === "string" && item.trim().length > 0,
+					)
+				: undefined,
+			favoriteCommands: Array.isArray(parsed.favoriteCommands)
+				? (parsed.favoriteCommands as string[]).filter(
+						(item) => typeof item === "string" && item.trim().length > 0,
+					)
+				: undefined,
 		};
 	} catch {
 		return {};
