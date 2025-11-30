@@ -9,6 +9,7 @@ const POLICY_PATH =
 	process.env.COMPOSER_FRAMEWORK_POLICY_FILE ??
 	join(homedir(), ".composer", "policy.json");
 const ENV_OVERRIDE = process.env.COMPOSER_FRAMEWORK_OVERRIDE;
+const WORKSPACE_FILE = ".composer/workspace.json";
 
 interface FrameworkPrefs {
 	defaultFramework: string | null;
@@ -107,6 +108,21 @@ export function resolveFrameworkPreference(): {
 			source: "env",
 			locked: false,
 		};
+	}
+
+	// Workspace-scoped file (if present)
+	try {
+		const raw = readFileSync(WORKSPACE_FILE, "utf8");
+		const parsed = JSON.parse(raw) as FrameworkPrefs;
+		if (parsed.defaultFramework) {
+			return {
+				id: parsed.defaultFramework,
+				source: WORKSPACE_FILE,
+				locked: false,
+			};
+		}
+	} catch {
+		// ignore missing/invalid workspace file
 	}
 
 	const filePref = getDefaultFramework();
