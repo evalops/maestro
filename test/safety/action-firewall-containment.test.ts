@@ -60,8 +60,9 @@ describe("ActionFirewall - Workspace Containment", () => {
 	});
 
 	it("requires approval for deletion outside workspace", async () => {
+		// Use a path that's outside both workspace and temp dir
 		const verdict = await defaultActionFirewall.evaluate(
-			makeDeleteContext("/tmp/some-file"),
+			makeDeleteContext("/home/otheruser/some-file"),
 		);
 		expect(verdict.action).toBe("require_approval");
 		expect(verdict).toMatchObject({
