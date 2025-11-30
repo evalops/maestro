@@ -143,6 +143,11 @@ export class FooterComponent {
 		this.unseenAlertCount = 0;
 	}
 
+	clearAlerts(): void {
+		this.clearToast();
+		this.unseenAlertCount = 0;
+	}
+
 	getActiveToast(): FooterToast | null {
 		return this.activeToast;
 	}

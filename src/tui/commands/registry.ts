@@ -603,11 +603,15 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "footer",
-				description:
-					"Switch between Ensemble (rich) and Solo (minimal) footer styles",
-				usage: "/footer [ensemble|solo]",
+				description: "Switch footer style or view/clear footer alerts",
+				usage: "/footer [ensemble|solo|history|clear]",
 				tags: ["ui"],
-				examples: ["/footer", "/footer solo", "/footer ensemble"],
+				examples: [
+					"/footer",
+					"/footer solo",
+					"/footer history",
+					"/footer clear",
+				],
 			},
 			withArgs("footer"),
 			handlers.footer,

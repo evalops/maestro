@@ -1392,6 +1392,13 @@ export class TuiRenderer {
 			return;
 		}
 
+		if (tokens[0] === "clear") {
+			this.footer.clearAlerts();
+			context.showInfo("Footer alerts cleared.");
+			this.ui.requestRender();
+			return;
+		}
+
 		let candidate = tokens[0];
 		if (candidate === "mode" || candidate === "set" || candidate === "style") {
 			candidate = tokens[1] ?? "";
