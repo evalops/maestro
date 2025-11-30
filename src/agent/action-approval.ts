@@ -46,6 +46,7 @@ export interface ActionApprovalContext {
 		id: string;
 		startedAt: Date;
 	};
+	userIntent?: string;
 }
 
 export type ActionFirewallVerdict =
