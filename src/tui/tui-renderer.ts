@@ -515,6 +515,7 @@ export class TuiRenderer {
 			gitView: this.gitView,
 			todoStorePath: TODO_STORE_PATH,
 			getApprovalMode: () => this.approvalService.getMode(),
+			getAlertCount: () => this.footer.getUnseenAlertCount(),
 		});
 		this.fileSearchView = new FileSearchView({
 			editor: this.editor,

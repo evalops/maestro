@@ -25,6 +25,8 @@ export interface StatusSnapshotInfo {
 	health: HealthSnapshot;
 	sessionId: string | null;
 	sessionFile: string;
+	alertCount?: number;
+	sandboxLabel?: string;
 }
 
 export interface FeedbackTemplateInfo {
@@ -106,6 +108,7 @@ export function buildStatusSnapshot(info: StatusSnapshotInfo): string {
 	const rows = [
 		`${labeledValue("Model", info.modelLabel)} ${badge("v", info.version, "info")}`,
 		labeledValue("Thinking", info.thinkingLevel),
+		info.sandboxLabel ? labeledValue("Sandbox", info.sandboxLabel) : null,
 		telemetryLine,
 		trainingLine,
 		labeledValue("Git", gitLine),
@@ -115,6 +118,9 @@ export function buildStatusSnapshot(info: StatusSnapshotInfo): string {
 		),
 		labeledValue("Plans", planLine),
 		labeledValue("Tool failures", toolLine),
+		info.alertCount && info.alertCount > 0
+			? labeledValue("Alerts", badge("alerts", `${info.alertCount}`, "warn"))
+			: null,
 		labeledValue("Session", sessionLine),
 	];
 

@@ -619,6 +619,25 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "alerts",
+				description: "Alias for footer alerts (history|clear)",
+				usage: "/alerts [history|clear]",
+				tags: ["ui"],
+				examples: ["/alerts history", "/alerts clear"],
+			},
+			withArgs("alerts"),
+			(context) => {
+				context.rawInput = context.rawInput.replace(/^\/alerts/, "/footer");
+				context.argumentText = context.argumentText.replace(
+					/^alerts/,
+					"footer",
+				);
+				handlers.footer(context);
+			},
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "compact-tools",
 				description: "Toggle folding of tool outputs",
 				usage: "/compact-tools [on|off]",

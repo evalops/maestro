@@ -47,6 +47,7 @@ interface DiagnosticsViewOptions {
 	gitView: GitView;
 	todoStorePath: string;
 	getApprovalMode?: () => string;
+	getAlertCount?: () => number;
 }
 
 export class DiagnosticsView {
@@ -113,6 +114,10 @@ export class DiagnosticsView {
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
 		const thinking = this.options.agent.state.thinkingLevel ?? "off";
+		const sandboxLabel = this.options.agent.state.sandboxMode
+			? `${this.options.agent.state.sandboxMode}${this.options.agent.state.sandboxEnabled ? " (active)" : " (inactive)"}`
+			: undefined;
+		const alertCount = this.options.getAlertCount?.();
 		const text = buildStatusSnapshot({
 			version: this.options.version,
 			modelLabel: model,
@@ -122,6 +127,8 @@ export class DiagnosticsView {
 			health: snapshot,
 			sessionId,
 			sessionFile,
+			alertCount,
+			sandboxLabel,
 		});
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(new Text(text, 1, 0));
