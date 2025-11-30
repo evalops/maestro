@@ -1,5 +1,5 @@
 import {
-	getFrameworkInfo,
+	getFrameworkSummary,
 	resolveFrameworkPreference,
 } from "../config/framework.js";
 import { getLspConfig } from "../config/lsp-config.js";
@@ -159,10 +159,8 @@ export class FrameworkPreferenceContextSource implements AgentContextSource {
 	async getSystemPromptAdditions(): Promise<string | null> {
 		const pref = resolveFrameworkPreference();
 		if (!pref.id) return null;
-		const info = getFrameworkInfo(pref.id);
-		if (!info) {
-			return `Preferred framework: ${pref.id}. Source: ${pref.source}. Use this stack by default unless the user overrides.`;
-		}
+		const info = getFrameworkSummary(pref.id);
+		if (!info) return null;
 		return `${info.summary} (source: ${pref.source})`;
 	}
 }

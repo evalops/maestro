@@ -383,6 +383,14 @@ export class ComposerSidebarProvider
 						reject(err);
 					});
 			});
+
+		const submitResult = async (payload: any[], isError: boolean) => {
+			checkAbort();
+			await raceWithAbort(
+				this._apiClient.submitClientToolResult(id, payload, isError),
+				signal,
+			);
+		};
 		checkAbort();
 		// Helper to validate paths are within workspace (prevents path traversal attacks)
 		const validateWorkspacePath = (filePath: string): vscode.Uri => {
@@ -611,13 +619,13 @@ export class ComposerSidebarProvider
 				throw new Error(`Unknown client tool: ${name}`);
 			}
 
-			await this._apiClient.submitClientToolResult(id, result, false);
+			await submitResult(result, false);
 		} catch (e) {
-			await this._apiClient.submitClientToolResult(
-				id,
-				[{ type: "text", text: String(e) }],
-				true,
-			);
+			try {
+				await submitResult([{ type: "text", text: String(e) }], true);
+			} catch (submitError) {
+				console.error("Client tool submission failed:", submitError);
+			}
 		}
 	}
 

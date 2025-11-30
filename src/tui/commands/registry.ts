@@ -84,8 +84,8 @@ export function createCommandRegistry({
 			{
 				name: "framework",
 				description:
-					"Set or show default framework (e.g. fastapi, express, none)",
-				usage: "/framework [id|none]",
+					"Set or show default framework (supports --workspace and list)",
+				usage: "/framework [id|none|list] [--workspace]",
 				tags: ["session"],
 			},
 			withArgs("framework"),

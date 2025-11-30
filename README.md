@@ -185,6 +185,20 @@ Every operation is exposed as an explicit slash command. Type `/help` for the fu
 - **gh_issue** – Issue operations
 - **gh_repo** – Repository operations
 
+### Framework Preference
+
+- Set a default stack for new tasks with `/framework <id>` (e.g., `fastapi`, `express`, `node`).
+- Scope defaults per user (default) or workspace via `/framework <id> --workspace`; clear with `/framework none`.
+- Discover options with `/framework list`.
+- Precedence: policy (locked) > policy > env override (`COMPOSER_FRAMEWORK_OVERRIDE`) > env default (`COMPOSER_DEFAULT_FRAMEWORK`) > workspace `.composer/workspace.json` > user `~/.composer/default-framework.json` > none.
+- Example policy (`~/.composer/policy.json`):
+
+```json
+{
+  "framework": { "default": "fastapi", "locked": true }
+}
+```
+
 ### Editor Features
 
 - **Tab completion** for paths

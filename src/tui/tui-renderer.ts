@@ -141,9 +141,11 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import {
 	getDefaultFramework,
-	getFrameworkInfo,
+	getFrameworkSummary,
+	listFrameworks,
 	resolveFrameworkPreference,
 	setDefaultFramework,
+	setWorkspaceFramework,
 } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
@@ -2010,20 +2012,46 @@ export class TuiRenderer {
 	}
 
 	private handleFrameworkCommand(context: CommandExecutionContext): void {
-		const arg = context.argumentText.trim();
-		if (!arg) {
+		const parts = context.argumentText
+			.split(/\s+/)
+			.map((p) => p.trim())
+			.filter(Boolean);
+
+		const flags = new Set(parts.filter((p) => p.startsWith("-")));
+		const value = parts.find((p) => !p.startsWith("-"));
+		const targetWorkspace = flags.has("--workspace") || flags.has("-w");
+		const targetLabel = targetWorkspace ? "workspace" : "user";
+
+		if (!value) {
 			const pref = resolveFrameworkPreference();
 			const current = pref.id ?? "none";
+			const scopeHint = targetWorkspace ? "(workspace) " : "";
 			this.notificationView.showInfo(
-				`Default framework: ${current} (source: ${pref.source})`,
+				`${scopeHint}Default framework: ${current} (source: ${pref.source})`,
 			);
 			return;
 		}
-		const normalized = arg.toLowerCase();
+
+		const normalized = value.toLowerCase();
+		if (normalized === "list") {
+			const items = listFrameworks()
+				.map((f) => `${f.id} — ${f.summary}`)
+				.join("\n");
+			this.notificationView.showInfo(`Available frameworks:\n${items}`);
+			return;
+		}
+
+		const setter = targetWorkspace
+			? setWorkspaceFramework
+			: setDefaultFramework;
+
 		if (normalized === "none" || normalized === "off") {
 			try {
-				setDefaultFramework(null);
-				this.notificationView.showToast("Default framework cleared", "success");
+				setter(null);
+				this.notificationView.showToast(
+					`Default framework cleared for ${targetLabel} scope`,
+					"success",
+				);
 			} catch (error) {
 				this.notificationView.showError(
 					error instanceof Error ? error.message : String(error),
@@ -2031,12 +2059,16 @@ export class TuiRenderer {
 			}
 			return;
 		}
-		const info = getFrameworkInfo(normalized);
+
+		const info = getFrameworkSummary(normalized);
 		try {
-			setDefaultFramework(normalized);
+			setter(normalized);
 			const summary =
 				info?.summary ?? `Preferred framework set to ${normalized}.`;
-			this.notificationView.showToast(summary, "success");
+			this.notificationView.showToast(
+				`${summary} (scope: ${targetLabel})`,
+				"success",
+			);
 		} catch (error) {
 			this.notificationView.showError(
 				error instanceof Error ? error.message : String(error),
