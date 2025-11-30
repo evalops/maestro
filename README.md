@@ -634,9 +634,26 @@ Adds extra restrictions on shell writes and surfaces a shield icon in the footer
 
 See [Safety & Approvals](docs/SAFETY.md) for detailed configuration.
 
-### Sub-Agents
+### Composers (Sub-Agents)
 
-Composer will not grow built-in sub-agents. If you need delegation, spawn another `composer` process or write a small helper tool + README the agent can call. Direct execution with full context beats lossy hand-offs.
+Composer supports **custom composers** — specialized agent profiles with custom system prompts, tool restrictions, and model overrides. Configure them in `~/.composer/composers/` (personal) or `.composer/composers/` (project):
+
+```yaml
+# .composer/composers/code-reviewer.yaml
+name: code-reviewer
+description: Focused code review assistant
+systemPrompt: |
+  You are a code reviewer. Focus on correctness, security, and maintainability.
+tools: [read, search, diff]
+model: claude-sonnet-4-5
+triggers:
+  keywords: [review, pr]
+  files: ["*.ts", "*.py"]
+```
+
+Use `/composer list` to see available composers, `/composer activate <name>` to switch, and `/composer deactivate` to return to the default agent.
+
+For heavier delegation patterns (parallel tasks, long-running jobs), spawn a separate `composer` process or write a helper tool the agent can call via `bash`.
 
 ### Background Tasks
 

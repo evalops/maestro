@@ -3,20 +3,62 @@
  * Provides structured parsing of shell commands to detect dangerous patterns.
  */
 
-import Parser from "tree-sitter";
-import BashLanguage from "tree-sitter-bash";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:bash-parser");
 
-// Initialize parser
-let parser: Parser | null = null;
-try {
-	parser = new Parser();
-	// Cast to any to avoid type mismatch between tree-sitter versions
-	parser.setLanguage(BashLanguage as unknown as Parser.Language);
-} catch (error) {
-	logger.warn("Failed to initialize tree-sitter bash parser", { error });
+// Dynamic import types - use typeof for the default export class
+type ParserType = InstanceType<typeof import("tree-sitter")>;
+type SyntaxNode = import("tree-sitter").SyntaxNode;
+
+// Initialize parser lazily to handle missing native bindings
+let parser: ParserType | null = null;
+let parserInitialized = false;
+let parserAvailable = false;
+
+async function initParser(): Promise<boolean> {
+	if (parserInitialized) return parserAvailable;
+	parserInitialized = true;
+
+	try {
+		const [Parser, BashLanguage] = await Promise.all([
+			import("tree-sitter").then((m) => m.default),
+			import("tree-sitter-bash").then((m) => m.default),
+		]);
+		parser = new Parser();
+		parser.setLanguage(
+			BashLanguage as unknown as import("tree-sitter").Language,
+		);
+		parserAvailable = true;
+		logger.debug("Tree-sitter bash parser initialized successfully");
+	} catch (error) {
+		logger.warn(
+			"Tree-sitter bash parser not available (native bindings missing)",
+			{
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
+		parserAvailable = false;
+	}
+	return parserAvailable;
+}
+
+// Eagerly try to init but don't block
+initParser().catch(() => {});
+
+/**
+ * Ensure the parser is ready. Call this before using parser functions in tests.
+ * Returns true if parser is available, false otherwise.
+ */
+export async function ensureParserReady(): Promise<boolean> {
+	return initParser();
+}
+
+/**
+ * Check if the parser is available (for sync checks).
+ */
+export function isParserAvailable(): boolean {
+	return parserAvailable;
 }
 
 export interface ParsedCommand {
@@ -141,9 +183,10 @@ const DANGEROUS_COMMANDS = new Set([
 
 /**
  * Parse a bash command string into structured components.
+ * Returns a result indicating parser unavailability if tree-sitter isn't loaded.
  */
 export function parseBashCommand(command: string): BashParseResult {
-	if (!parser) {
+	if (!parser || !parserAvailable) {
 		return {
 			success: false,
 			commands: [],
@@ -152,7 +195,7 @@ export function parseBashCommand(command: string): BashParseResult {
 			hasSubshell: false,
 			hasBackgroundJob: false,
 			hasCommandSubstitution: false,
-			error: "Parser not initialized",
+			error: "Parser not available",
 		};
 	}
 
@@ -184,7 +227,8 @@ export function parseBashCommand(command: string): BashParseResult {
 		};
 
 		// Walk the tree to extract information
-		const walk = (node: Parser.SyntaxNode) => {
+		// Using 'any' here since the SyntaxNode type comes from dynamic import
+		const walk = (node: SyntaxNode) => {
 			switch (node.type) {
 				case "pipeline":
 					result.hasPipes = true;
@@ -239,7 +283,7 @@ export function parseBashCommand(command: string): BashParseResult {
  * Extract command name and arguments from a command node.
  */
 function extractCommand(
-	node: Parser.SyntaxNode,
+	node: SyntaxNode,
 	source: string,
 ): ParsedCommand | null {
 	const nameNode = node.childForFieldName("name");
