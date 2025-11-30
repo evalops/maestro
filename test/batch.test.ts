@@ -131,6 +131,17 @@ describe("batch tool", () => {
 	});
 
 	describe("basic execution", () => {
+		it("defaults results to empty array when details.results is undefined", () => {
+			const result: AgentToolResult<unknown> = {
+				content: [],
+				isError: false,
+				details: { results: undefined },
+			};
+
+			const details = getBatchDetails(result);
+			expect(details.results).toEqual([]);
+		});
+
 		it("executes multiple tools in parallel", async () => {
 			const batchTool = createBatchTool([mockSuccessTool, mockSlowTool]);
 
