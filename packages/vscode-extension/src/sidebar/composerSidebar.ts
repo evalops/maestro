@@ -340,6 +340,9 @@ export class ComposerSidebarProvider
 						config.get<string>("apiEndpoint") || "http://localhost:8080";
 					this._apiClient = new ApiClient(baseUrl);
 					this.clearChat();
+					if (this._view) {
+						this._view.webview.postMessage({ type: "history", messages: [] });
+					}
 					vscode.window.showInformationMessage(
 						"Composer endpoint changed. Chat history was cleared to avoid mixing sessions.",
 					);
@@ -359,6 +362,26 @@ export class ComposerSidebarProvider
 				throw new Error("Request cancelled");
 			}
 		};
+		const raceWithAbort = <T>(promise: Promise<T>, abortSignal?: AbortSignal) =>
+			new Promise<T>((resolve, reject) => {
+				if (abortSignal?.aborted) {
+					reject(new Error("Request cancelled"));
+					return;
+				}
+				const onAbort = () => {
+					reject(new Error("Request cancelled"));
+				};
+				abortSignal?.addEventListener("abort", onAbort, { once: true });
+				promise
+					.then((v) => {
+						abortSignal?.removeEventListener("abort", onAbort);
+						resolve(v);
+					})
+					.catch((err) => {
+						abortSignal?.removeEventListener("abort", onAbort);
+						reject(err);
+					});
+			});
 		checkAbort();
 		// Helper to validate paths are within workspace (prevents path traversal attacks)
 		const validateWorkspacePath = (filePath: string): vscode.Uri => {
@@ -368,18 +391,47 @@ export class ComposerSidebarProvider
 			}
 
 			const path = require("node:path");
-			const activeWorkspace =
-				vscode.workspace.getWorkspaceFolder(
-					vscode.window.activeTextEditor?.document.uri ?? vscode.Uri.file(""),
-				) ?? workspaceFolders[0];
-			const baseRoot = activeWorkspace.uri.fsPath;
+			// If caller provided a workspaceFolder hint, prefer that
+			let targetWorkspace =
+				args?.workspaceFolder && typeof args.workspaceFolder === "string"
+					? workspaceFolders.find(
+							(wf) =>
+								wf.name === args.workspaceFolder ||
+								args.workspaceFolder.startsWith(wf.uri.fsPath),
+						)
+					: undefined;
+
+			// Otherwise use the workspace that contains the active editor, else first
+			if (!targetWorkspace) {
+				targetWorkspace =
+					vscode.workspace.getWorkspaceFolder(
+						vscode.window.activeTextEditor?.document.uri ?? vscode.Uri.file(""),
+					) ?? workspaceFolders[0];
+			}
+
+			const tryResolve = (root: vscode.WorkspaceFolder) =>
+				path.isAbsolute(filePath)
+					? path.resolve(filePath)
+					: path.resolve(root.uri.fsPath, filePath);
+
+			let normalizedPath = tryResolve(targetWorkspace);
+
+			// If relative path doesn’t exist under that root and we have multiple roots,
+			// try each workspace root to find a match.
+			if (workspaceFolders.length > 1 && !pathExists(normalizedPath)) {
+				for (const wf of workspaceFolders) {
+					const candidate = tryResolve(wf);
+					if (pathExists(candidate)) {
+						normalizedPath = candidate;
+						targetWorkspace = wf;
+						break;
+					}
+				}
+			}
 
 			// Resolve relative paths against workspace root, not CWD
 			// This ensures "src/file.ts" resolves to "/workspace/src/file.ts"
 			// Also normalizes ".." sequences to prevent traversal attacks
-			const normalizedPath = path.isAbsolute(filePath)
-				? path.resolve(filePath)
-				: path.resolve(baseRoot, filePath);
 			const uri = vscode.Uri.file(normalizedPath);
 
 			// Use VS Code's built-in workspace folder check
@@ -458,11 +510,12 @@ export class ComposerSidebarProvider
 				checkAbort();
 				const uri = validateWorkspacePath(args.uri);
 				const pos = new vscode.Position(args.line, args.character);
-				const definitions =
-					(await vscode.commands.executeCommand<
+				const definitions = await raceWithAbort(
+					vscode.commands.executeCommand<
 						(vscode.Location | vscode.LocationLink)[]
-					>("vscode.executeDefinitionProvider", uri, pos)) || [];
-				checkAbort();
+					>("vscode.executeDefinitionProvider", uri, pos),
+					signal,
+				);
 				const formatted = definitions.map((d) => {
 					if ("targetUri" in d) {
 						// LocationLink
@@ -498,12 +551,14 @@ export class ComposerSidebarProvider
 				const uri = validateWorkspacePath(args.uri);
 				const pos = new vscode.Position(args.line, args.character);
 				const references =
-					(await vscode.commands.executeCommand<vscode.Location[]>(
-						"vscode.executeReferenceProvider",
-						uri,
-						pos,
+					(await raceWithAbort(
+						vscode.commands.executeCommand<vscode.Location[]>(
+							"vscode.executeReferenceProvider",
+							uri,
+							pos,
+						),
+						signal,
 					)) || [];
-				checkAbort();
 				const formatted = references.map((d) => ({
 					uri: d.uri.fsPath,
 					range: {
@@ -530,7 +585,10 @@ export class ComposerSidebarProvider
 					throw new Error("startLine must be <= endLine");
 				}
 				const uri = validateWorkspacePath(args.uri);
-				const doc = await vscode.workspace.openTextDocument(uri);
+				const doc = await raceWithAbort(
+					vscode.workspace.openTextDocument(uri),
+					signal,
+				);
 				checkAbort();
 				const start = Math.max(0, args.startLine);
 				// Use endLine + 1 since endLine is inclusive (fixes off-by-one error)
