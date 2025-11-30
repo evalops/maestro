@@ -10,6 +10,8 @@ import {
 	themePalette,
 	separator as themedSeparator,
 } from "../../style/theme.js";
+import { shimmerText } from "./shimmer.js";
+import { STAGE_SHIMMER_OPTIONS } from "./stage-labels.js";
 
 export const CONTEXT_HINT_THRESHOLD = 70;
 export const CONTEXT_HINT_WARN_GAP = 5;
@@ -240,6 +242,9 @@ export function renderStaticStageBadge(label: string): string {
 	}
 
 	const color = kind ? STAGE_COLORS[kind] : themePalette.muted;
+	if (kind === "thinking") {
+		return shimmerText(trimmed || label, STAGE_SHIMMER_OPTIONS.thinking);
+	}
 	return chalk.hex(color).bold(trimmed || label);
 }
 
