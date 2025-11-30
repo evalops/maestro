@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import * as vscode from "vscode";
 
 import { buildComposerUrl } from "../lib/actions.js";
@@ -385,6 +386,13 @@ export class ComposerSidebarProvider
 		checkAbort();
 		// Helper to validate paths are within workspace (prevents path traversal attacks)
 		const validateWorkspacePath = (filePath: string): vscode.Uri => {
+			const pathExists = (p: string) => {
+				try {
+					return existsSync(p);
+				} catch {
+					return false;
+				}
+			};
 			const workspaceFolders = vscode.workspace.workspaceFolders;
 			if (!workspaceFolders || workspaceFolders.length === 0) {
 				throw new Error("No workspace folder open");

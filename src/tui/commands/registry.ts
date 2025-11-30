@@ -82,6 +82,18 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "framework",
+				description:
+					"Set or show default framework (e.g. fastapi, express, none)",
+				usage: "/framework [id|none]",
+				tags: ["session"],
+			},
+			withArgs("framework"),
+			handlers.framework,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "commands",
 				description: "List or run user commands from .composer/commands",
 				usage: "/commands list | /commands run <name> [k=v]...",

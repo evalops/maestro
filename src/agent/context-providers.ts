@@ -1,3 +1,4 @@
+import { getDefaultFramework, getFrameworkInfo } from "../config/framework.js";
 import { getLspConfig } from "../config/lsp-config.js";
 import { collectDiagnostics, getClients } from "../lsp/index.js";
 import { formatTaskFailures } from "../tools/background-tasks.js";
@@ -146,5 +147,19 @@ export class LspContextSource implements AgentContextSource {
 			});
 			return null;
 		}
+	}
+}
+
+export class FrameworkPreferenceContextSource implements AgentContextSource {
+	name = "framework-default";
+
+	async getSystemPromptAdditions(): Promise<string | null> {
+		const pref = getDefaultFramework();
+		if (!pref) return null;
+		const info = getFrameworkInfo(pref);
+		if (!info) {
+			return `Preferred framework: ${pref}. Use this stack by default unless the user overrides.`;
+		}
+		return info.summary;
 	}
 }

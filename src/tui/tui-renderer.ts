@@ -139,6 +139,11 @@ import {
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { handleAgentsInit } from "../cli/commands/agents.js";
+import {
+	getDefaultFramework,
+	getFrameworkInfo,
+	setDefaultFramework,
+} from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
 import { ModalManager } from "./modal-manager.js";
@@ -840,6 +845,7 @@ export class TuiRenderer {
 			handleZen: (context) => this.handleZenCommand(context),
 			handleContext: (context) => this.handleContextCommand(context),
 			handleLsp: (context) => this.lspView.handleLspCommand(context.rawInput),
+			handleFramework: (context) => this.handleFrameworkCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -2000,6 +2006,26 @@ export class TuiRenderer {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(`Plan mode is ${status}.`, 1, 0));
 		this.ui.requestRender();
+	}
+
+	private handleFrameworkCommand(context: CommandExecutionContext): void {
+		const arg = context.argumentText.trim();
+		if (!arg) {
+			const current = getDefaultFramework() ?? "none";
+			this.notificationView.showInfo(`Default framework: ${current}`);
+			return;
+		}
+		const normalized = arg.toLowerCase();
+		if (normalized === "none" || normalized === "off") {
+			setDefaultFramework(null);
+			this.notificationView.showToast("Default framework cleared", "success");
+			return;
+		}
+		const info = getFrameworkInfo(normalized);
+		setDefaultFramework(normalized);
+		const summary =
+			info?.summary ?? `Preferred framework set to ${normalized}.`;
+		this.notificationView.showToast(summary, "success");
 	}
 
 	private handleCommandsCommand(context: CommandExecutionContext): void {

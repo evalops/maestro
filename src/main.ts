@@ -8,6 +8,7 @@ import {
 } from "./agent/action-approval.js";
 import {
 	BackgroundTaskContextSource,
+	FrameworkPreferenceContextSource,
 	LspContextSource,
 	TodoContextSource,
 } from "./agent/context-providers.js";
@@ -740,6 +741,7 @@ export async function main(args: string[]) {
 			new TodoContextSource(),
 			new BackgroundTaskContextSource(),
 			new LspContextSource(),
+			new FrameworkPreferenceContextSource(),
 		],
 	});
 
