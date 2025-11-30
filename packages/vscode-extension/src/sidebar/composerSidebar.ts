@@ -1,16 +1,16 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 
-import { buildComposerUrl } from "../lib/actions";
+import { buildComposerUrl } from "../lib/actions.js";
 import {
 	ApiClient,
 	type CommandDefinition,
 	type Message,
 	type Session,
-} from "../lib/api-client";
-import type { ThinkingManager } from "../lib/decorations";
-import { convertToComposerMessage } from "../lib/message-converter";
-import { getWebviewHtml } from "./webview-template";
+} from "../lib/api-client.js";
+import type { ThinkingManager } from "../lib/decorations.js";
+import { convertToComposerMessage } from "../lib/message-converter.js";
+import { getWebviewHtml } from "./webview-template.js";
 
 export class ComposerSidebarProvider
 	implements vscode.WebviewViewProvider, vscode.Disposable

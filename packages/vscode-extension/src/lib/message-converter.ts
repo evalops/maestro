@@ -1,6 +1,6 @@
 // @ts-ignore TS1541: type-only import from ESM inside CJS
 import type * as Contracts from "@evalops/contracts";
-import type { Message } from "./api-client";
+import type { Message } from "./api-client.js";
 
 interface ContentPart {
 	type: string;

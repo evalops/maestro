@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildComposerUrl, getActionLabel } from "./actions";
+import { buildComposerUrl, getActionLabel } from "./actions.js";
 
 describe("actions", () => {
 	it("builds default composer url", () => {

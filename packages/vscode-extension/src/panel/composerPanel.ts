@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 
-import { buildComposerUrl, getActionLabel } from "../lib/actions";
+import { buildComposerUrl, getActionLabel } from "../lib/actions.js";
 
 export class ComposerPanel {
 	private static currentPanel: ComposerPanel | undefined;

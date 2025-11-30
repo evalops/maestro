@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type RawMessage,
 	convertToComposerMessage,
-} from "../lib/message-converter";
+} from "../lib/message-converter.js";
 
 describe("convertToComposerMessage", () => {
 	it("normalizes tool role and timestamp when content is a string", () => {

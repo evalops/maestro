@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 
-import { buildComposerUrl } from "./lib/actions";
-import { ThinkingManager } from "./lib/decorations";
-import { ComposerPanel } from "./panel/composerPanel";
-import { ComposerSidebarProvider } from "./sidebar/composerSidebar";
+import { buildComposerUrl } from "./lib/actions.js";
+import { ThinkingManager } from "./lib/decorations.js";
+import { ComposerPanel } from "./panel/composerPanel.js";
+import { ComposerSidebarProvider } from "./sidebar/composerSidebar.js";
 
 export function activate(context: vscode.ExtensionContext) {
 	const thinkingManager = new ThinkingManager();
