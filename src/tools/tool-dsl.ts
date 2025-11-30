@@ -22,6 +22,28 @@ try {
 	ajv = null;
 }
 
+// Cache compiled validators per schema to avoid recompiling on every execute()
+const validatorCache = new WeakMap<
+	TSchema,
+	{ (data: unknown): boolean; errors?: ErrorObject[] | null }
+>();
+
+function getOrCompileValidator(
+	schema: TSchema,
+): { (data: unknown): boolean; errors?: ErrorObject[] | null } | null {
+	if (!ajv) return null;
+
+	let validate = validatorCache.get(schema);
+	if (!validate) {
+		validate = ajv.compile(schema) as {
+			(data: unknown): boolean;
+			errors?: ErrorObject[] | null;
+		};
+		validatorCache.set(schema, validate);
+	}
+	return validate;
+}
+
 export class ToolResponseBuilder<Details> {
 	private _content: (
 		| { type: "text"; text: string }
@@ -125,13 +147,10 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 			signal?: AbortSignal,
 			context?: { sandbox?: Sandbox },
 		) => {
-			// Validate params against schema if AJV is available
-			if (ajv && options.schema) {
-				const validate = ajv.compile(options.schema) as {
-					(data: unknown): boolean;
-					errors?: ErrorObject[] | null;
-				};
-				if (!validate(params)) {
+			// Validate params against schema using cached validator
+			if (options.schema) {
+				const validate = getOrCompileValidator(options.schema);
+				if (validate && !validate(params)) {
 					const errors =
 						(validate.errors ?? [])
 							.map((err) => {

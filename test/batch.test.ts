@@ -224,12 +224,17 @@ describe("batch tool", () => {
 				});
 
 				const output = getTextOutput(result);
-				// Batch stops after failure, so only 2 tools executed
-				expect(output).toContain("Executed 2 tools");
+				// Batch stops after failure, remaining are marked as skipped
+				expect(output).toContain("Executed 3 tools");
 				expect(output).toContain("[OK] mock-success");
 				expect(output).toContain("[ERROR] mock-fail");
 				const details = getBatchDetails(result);
-				expect(details.results).toHaveLength(2);
+				expect(details.results).toHaveLength(3);
+				// Third result should be skipped
+				expect(details.results[2].result.content[0]).toMatchObject({
+					type: "text",
+					text: "Skipped due to prior error",
+				});
 			});
 
 			it("continues on error in serial mode without stopOnError", async () => {

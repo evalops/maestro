@@ -169,13 +169,31 @@ Use 'batch' to read multiple files in parallel.`,
 			language,
 			encoding = "utf-8",
 		},
-		{ signal, respond },
+		{ signal, respond, sandbox },
 	) {
 		const throwIfAborted = () => {
 			if (signal?.aborted) {
 				throw new Error("Operation aborted");
 			}
 		};
+
+		// Use sandbox if available
+		if (sandbox) {
+			try {
+				const content = await sandbox.readFile(path);
+				const lines = content.split("\n");
+				const lang = language || guessLanguage(path);
+				const formatted = wrapInCodeFence
+					? `\`\`\`${lang || ""}\n${content}\n\`\`\``
+					: content;
+				return respond.text(formatted).detail({
+					totalLines: lines.length,
+					mode: "sandbox",
+				});
+			} catch (err) {
+				return respond.error(`File not found in sandbox: ${path}`);
+			}
+		}
 
 		const absolutePath = resolvePath(expandUserPath(path));
 		const mimeType = isImageFile(absolutePath);

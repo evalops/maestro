@@ -40,11 +40,12 @@ const writeSchema = Type.Object({
 });
 
 type WriteToolDetails = {
-	previousExists: boolean;
-	bytesWritten: number;
+	previousExists?: boolean;
+	bytesWritten?: number;
 	diff?: string;
 	backupPath?: string;
 	validators?: ValidatorRunResult[];
+	mode?: "sandbox";
 };
 
 export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
@@ -55,9 +56,43 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 	schema: writeSchema,
 	async run(
 		{ path, content, previewDiff = true, backup = true },
-		{ signal, respond },
+		{ signal, respond, sandbox },
 	) {
 		requirePlanCheck("write");
+
+		// Use sandbox if available
+		if (sandbox) {
+			try {
+				let previousContent: string | null = null;
+				try {
+					if (await sandbox.exists(path)) {
+						previousContent = await sandbox.readFile(path);
+					}
+				} catch {
+					// File doesn't exist
+				}
+
+				await sandbox.writeFile(path, content);
+
+				const diff =
+					previousContent !== null && previewDiff
+						? generateDiffString(previousContent, content)
+						: undefined;
+
+				return respond
+					.text(
+						previousContent !== null
+							? `Updated ${path} in sandbox`
+							: `Created ${path} in sandbox`,
+					)
+					.detail({ diff, mode: "sandbox" });
+			} catch (err) {
+				return respond.error(
+					`Failed to write file in sandbox: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+
 		const absolutePath = resolvePath(expandUserPath(path));
 		const dir = dirname(absolutePath);
 		const ensureNotAborted = () => {

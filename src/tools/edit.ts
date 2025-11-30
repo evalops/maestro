@@ -93,6 +93,7 @@ type EditToolDetails = {
 	diff: string;
 	editsApplied?: number;
 	validators?: ValidatorRunResult[];
+	mode?: "sandbox";
 };
 
 export const editTool = createTool<typeof editSchema, EditToolDetails>({
@@ -129,7 +130,7 @@ If "not found", read file to check actual content.`,
 			occurrence = 1,
 			dryRun = false,
 		},
-		{ signal, respond },
+		{ signal, respond, sandbox },
 	) {
 		requirePlanCheck("edit");
 
@@ -161,6 +162,107 @@ If "not found", read file to check actual content.`,
 			throw new Error(
 				"Cannot use replaceAll or occurrence with edits array. These options only apply to single edits.",
 			);
+		}
+
+		// Helper to apply edits to content (shared between sandbox and normal mode)
+		const applyEdits = (
+			originalContent: string,
+		): { newContent: string; replacementCount: number } => {
+			if (hasMultiEdit && edits) {
+				let content = originalContent;
+				let editsApplied = 0;
+				for (const [index, edit] of edits.entries()) {
+					const matches = findExactMatches(content, edit.oldText);
+					if (matches.length === 0) {
+						const approx = findApproximateMatches(content, edit.oldText);
+						const suggestion = approx.length
+							? `\n\nPossible matches:\n${approx.slice(0, 3).map(formatMatchPreview).join("\n")}`
+							: "";
+						throw new Error(
+							`Edit #${index + 1}: Could not find text after ${editsApplied} prior edit(s).${suggestion}`,
+						);
+					}
+					if (matches.length > 1) {
+						throw new Error(
+							`Edit #${index + 1}: Found ${matches.length} matches for oldText. Provide more context. Matches at lines: ${matches.map((m) => m.line).join(", ")}`,
+						);
+					}
+					const matchIndex = matches[0]?.index ?? 0;
+					content =
+						content.slice(0, matchIndex) +
+						(edit.newText ?? "") +
+						content.slice(matchIndex + edit.oldText.length);
+					editsApplied++;
+				}
+				return { newContent: content, replacementCount: editsApplied };
+			}
+			// Single edit mode
+			if (!oldText || oldText.length === 0) {
+				throw new Error("oldText cannot be empty");
+			}
+			const exactMatches = findExactMatches(originalContent, oldText);
+			if (exactMatches.length === 0) {
+				const approx = findApproximateMatches(originalContent, oldText);
+				const suggestion = approx.length
+					? `\n\nPossible matches:\n${approx.slice(0, 3).map(formatMatchPreview).join("\n")}`
+					: `\n\nTip: double-check whitespace/newlines via /diff ${path}`;
+				throw new Error(
+					`Could not find the exact text in ${path}.${suggestion}`,
+				);
+			}
+			if (replaceAll) {
+				if (exactMatches.length > 10000) {
+					throw new Error(
+						`Too many replacements: ${exactMatches.length} (max 10000).`,
+					);
+				}
+				return {
+					newContent: originalContent.replaceAll(oldText, newText ?? ""),
+					replacementCount: exactMatches.length,
+				};
+			}
+			if (occurrence > exactMatches.length) {
+				throw new Error(
+					`Only ${exactMatches.length} occurrence(s) found, but #${occurrence} requested.`,
+				);
+			}
+			const targetMatch = exactMatches[occurrence - 1];
+			const matchIndex = targetMatch.index ?? 0;
+			return {
+				newContent:
+					originalContent.slice(0, matchIndex) +
+					(newText ?? "") +
+					originalContent.slice(matchIndex + oldText.length),
+				replacementCount: 1,
+			};
+		};
+
+		// Use sandbox if available
+		if (sandbox) {
+			try {
+				const exists = await sandbox.exists(path);
+				if (!exists) {
+					throw new Error(`File not found in sandbox: ${path}`);
+				}
+				const originalContent = await sandbox.readFile(path);
+				const { newContent, replacementCount } = applyEdits(originalContent);
+				const diff = generateDiffString(originalContent, newContent);
+
+				if (!dryRun) {
+					await sandbox.writeFile(path, newContent);
+				}
+
+				return respond
+					.text(
+						dryRun
+							? `[DRY RUN] Would apply ${replacementCount} edit(s) to ${path} in sandbox`
+							: `Applied ${replacementCount} edit(s) to ${path} in sandbox`,
+					)
+					.detail({ diff, editsApplied: replacementCount, mode: "sandbox" });
+			} catch (err) {
+				if (err instanceof Error) throw err;
+				throw new Error(String(err));
+			}
 		}
 
 		try {

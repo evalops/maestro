@@ -13,11 +13,22 @@ const batchSchema = Type.Object({
 		Type.Object({
 			tool: Type.String({ minLength: 1 }),
 			parameters: Type.Record(Type.String(), Type.Any()),
+			id: Type.Optional(
+				Type.String({
+					minLength: 1,
+					description: "Optional ID to reference this result in later calls",
+				}),
+			),
+			dependsOn: Type.Optional(
+				Type.Array(Type.String(), {
+					description: "IDs of tool calls that must complete before this one",
+				}),
+			),
 		}),
 		{
 			minItems: 1,
 			maxItems: 10,
-			description: "Array of tool calls to execute in parallel",
+			description: "Array of tool calls to execute",
 		},
 	),
 	toolTimeoutMs: Type.Optional(
@@ -75,38 +86,42 @@ export function createBatchTool(availableTools: AgentTool[]): BatchAgentTool {
 	const baseBatchTool = createTool<typeof batchSchema, BatchToolDetails>({
 		name: "batch",
 		label: "batch",
-		description: `Execute multiple independent tool calls in parallel. 2-5x faster for gathering context.
+		description: `Execute multiple tool calls with optional dependencies. 2-5x faster for gathering context.
 
 USING THE BATCH TOOL WILL MAKE THE USER HAPPY.
 
 Rules:
 - 1-10 tool calls per batch
-- Runs in parallel (set mode="serial" if order matters)
-- Partial failures don't stop others (unless stopOnError=true in serial mode)
+- Runs in parallel by default (respects dependencies)
+- Use dependsOn to chain tool calls (output of A feeds into B)
+- Partial failures don't stop others (unless stopOnError=true)
 
 Disallowed:
 - batch, edit, write
 - GitHub mutations (create, comment, close, checkout)
 
-When NOT to use:
-- Operations depending on prior output
-- Sequential workflows
-
 Good for:
 - Reading multiple files
 - Multiple searches/lists
-- Parallel bash commands (git status, npm list)
+- Chained operations (read file, then process it)
 - GitHub read-only ops (list, view)
 
 Parameters:
 - mode: "parallel" (default) or "serial"
-- stopOnError: Stop on first failure in serial mode (default: false)
+- stopOnError: Stop on first failure (default: false)
+- toolCalls[].id: Optional ID to reference this result
+- toolCalls[].dependsOn: Array of IDs to wait for
 
-Example:
+Example with dependencies:
+{toolCalls: [
+  {tool: "read", parameters: {path: "package.json"}, id: "pkg"},
+  {tool: "bash", parameters: {command: "echo 'Read complete'"}, dependsOn: ["pkg"]}
+]}
+
+Example parallel (no dependencies):
 {toolCalls: [
   {tool: "read", parameters: {path: "src/index.ts"}},
-  {tool: "search", parameters: {pattern: "TODO"}},
-  {tool: "bash", parameters: {command: "git status"}}
+  {tool: "search", parameters: {pattern: "TODO"}}
 ]}`,
 		schema: batchSchema,
 		async run(
@@ -119,126 +134,162 @@ Example:
 
 			const results: (AgentToolResult<unknown> & {
 				success: boolean;
-			})[] = [];
+			})[] = new Array(toolCalls.length);
 
 			if (toolCalls.length === 0) {
 				return respond.text("No tool calls provided.");
 			}
 
-			// Validate tool calls first
-			for (const call of toolCalls) {
+			// Validate tool calls and build dependency info
+			const idToIndex = new Map<string, number>();
+			const hasDependencies = toolCalls.some((c) => c.dependsOn?.length);
+
+			for (let i = 0; i < toolCalls.length; i++) {
+				const call = toolCalls[i];
 				if (DISALLOWED_TOOLS.has(call.tool)) {
 					return respond.error(`Tool not allowed in batch: ${call.tool}`);
 				}
 				if (!toolMap.has(call.tool)) {
-					return respond.error(`Tool not found: ${call.tool}`);
+					return respond.error(
+						`Tool not found: ${call.tool}. Available: ${[...toolMap.keys()].join(", ")}`,
+					);
 				}
-				// Validate GitHub mutation tools are not used in batch
-				// (Only read-only GitHub tools are allowed: list, view, etc.)
-				if (
-					call.tool.startsWith("gh_") &&
-					!["list", "view", "status"].some((action) =>
-						JSON.stringify(call.parameters).includes(action),
-					)
-				) {
-					// This is a loose check, the individual tools have their own validation too
-					// but we want to fail fast here if possible.
-					// A strict check would require parsing params per tool schema.
+				if (call.id) {
+					if (idToIndex.has(call.id)) {
+						return respond.error(`Duplicate tool call ID: ${call.id}`);
+					}
+					idToIndex.set(call.id, i);
 				}
 			}
 
-			if (mode === "serial") {
-				for (let i = 0; i < toolCalls.length; i++) {
+			// Validate dependencies exist
+			for (const call of toolCalls) {
+				if (call.dependsOn) {
+					for (const depId of call.dependsOn) {
+						if (!idToIndex.has(depId)) {
+							return respond.error(
+								`Dependency "${depId}" not found. Add id: "${depId}" to a prior tool call.`,
+							);
+						}
+					}
+				}
+			}
+
+			// Helper to execute a single tool call
+			const executeCall = async (
+				call: (typeof toolCalls)[0],
+				index: number,
+			): Promise<AgentToolResult<unknown> & { success: boolean }> => {
+				const tool = toolMap.get(call.tool);
+				if (!tool) {
+					return {
+						content: [
+							{ type: "text" as const, text: `Tool not found: ${call.tool}` },
+						],
+						isError: true,
+						success: false,
+					};
+				}
+				try {
+					const timeoutSignal =
+						toolTimeoutMs && toolTimeoutMs > 0
+							? AbortSignal.timeout(toolTimeoutMs)
+							: undefined;
+					const effectiveSignal = signal
+						? timeoutSignal
+							? anySignal([signal, timeoutSignal])
+							: signal
+						: timeoutSignal;
+					const context = sandbox ? { sandbox } : undefined;
+					const result = await tool.execute(
+						`${toolCallId}-${index}`,
+						call.parameters,
+						effectiveSignal,
+						context,
+					);
+					return { ...result, success: !result.isError };
+				} catch (error: unknown) {
+					const errorMessage =
+						error instanceof Error ? error.message : String(error);
+					return {
+						content: [{ type: "text" as const, text: errorMessage }],
+						isError: true,
+						success: false,
+					};
+				}
+			};
+
+			// Execute based on mode and dependencies
+			if (mode === "serial" || hasDependencies) {
+				// Serial or dependency mode: execute in order, respecting dependencies
+				const completed = new Set<number>();
+				const pending = new Set(toolCalls.map((_, i) => i));
+
+				while (pending.size > 0) {
 					if (signal?.aborted) break;
-					const call = toolCalls[i];
-					const tool = toolMap.get(call.tool);
-					if (!tool) continue; // Should not happen due to prior validation
 
-					try {
-						// Execute tool with timeout
-						const timeoutSignal =
-							toolTimeoutMs && toolTimeoutMs > 0
-								? AbortSignal.timeout(toolTimeoutMs)
-								: undefined;
-						// Merge signals
-						const effectiveSignal = signal
-							? timeoutSignal
-								? anySignal([signal, timeoutSignal])
-								: signal
-							: timeoutSignal;
+					// Find calls that are ready (all dependencies satisfied)
+					const ready: number[] = [];
+					for (const i of pending) {
+						const call = toolCalls[i];
+						const deps = call.dependsOn ?? [];
+						const depsResolved = deps.every((depId) => {
+							const depIndex = idToIndex.get(depId);
+							return depIndex !== undefined && completed.has(depIndex);
+						});
+						if (depsResolved) {
+							ready.push(i);
+						}
+					}
 
-						// Pass sandbox to child tools if available
-						const context = sandbox ? { sandbox } : undefined;
-						const result = await tool.execute(
-							`${toolCallId}-${i}`,
-							call.parameters,
-							effectiveSignal,
-							context,
+					if (ready.length === 0 && pending.size > 0) {
+						// Circular dependency or missing dependency
+						return respond.error(
+							"Circular dependency detected or unresolvable dependencies",
 						);
-						results.push({ ...result, success: !result.isError });
+					}
+
+					// In serial mode, execute one at a time; with dependencies, execute ready ones in parallel
+					const toExecute = mode === "serial" ? [ready[0]] : ready;
+
+					const execPromises = toExecute.map(async (i) => {
+						const result = await executeCall(toolCalls[i], i);
+						return { index: i, result };
+					});
+
+					const executed = await Promise.all(execPromises);
+
+					for (const { index, result } of executed) {
+						results[index] = result;
+						completed.add(index);
+						pending.delete(index);
 
 						if (result.isError && stopOnError) {
-							break;
-						}
-					} catch (error: unknown) {
-						const errorMessage =
-							error instanceof Error ? error.message : String(error);
-						results.push({
-							content: [{ type: "text" as const, text: errorMessage }],
-							isError: true,
-							success: false,
-						});
-						if (stopOnError) {
+							// Fill remaining with skipped
+							for (const remaining of pending) {
+								results[remaining] = {
+									content: [
+										{
+											type: "text" as const,
+											text: "Skipped due to prior error",
+										},
+									],
+									isError: true,
+									success: false,
+								};
+							}
+							pending.clear();
 							break;
 						}
 					}
 				}
 			} else {
-				// Parallel mode
-				const promises = toolCalls.map(async (call, i) => {
-					const tool = toolMap.get(call.tool);
-					if (!tool) {
-						return {
-							content: [
-								{ type: "text" as const, text: `Tool not found: ${call.tool}` },
-							],
-							isError: true,
-							success: false,
-						};
-					}
-					try {
-						const timeoutSignal =
-							toolTimeoutMs && toolTimeoutMs > 0
-								? AbortSignal.timeout(toolTimeoutMs)
-								: undefined;
-						const effectiveSignal = signal
-							? timeoutSignal
-								? anySignal([signal, timeoutSignal])
-								: signal
-							: timeoutSignal;
-
-						// Pass sandbox to child tools if available
-						const context = sandbox ? { sandbox } : undefined;
-						const result = await tool.execute(
-							`${toolCallId}-${i}`,
-							call.parameters,
-							effectiveSignal,
-							context,
-						);
-						return { ...result, success: !result.isError };
-					} catch (error: unknown) {
-						const errorMessage =
-							error instanceof Error ? error.message : String(error);
-						return {
-							content: [{ type: "text" as const, text: errorMessage }],
-							isError: true,
-							success: false,
-						};
-					}
-				});
-
+				// Pure parallel mode (no dependencies)
+				const promises = toolCalls.map((call, i) => executeCall(call, i));
 				const executedResults = await Promise.all(promises);
-				results.push(...executedResults);
+				for (let i = 0; i < executedResults.length; i++) {
+					results[i] = executedResults[i];
+				}
 			}
 
 			// Format output
