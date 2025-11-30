@@ -127,10 +127,38 @@ Examples:
 			sortDirection = "asc",
 			excludePatterns = [],
 		},
-		{ signal, respond },
+		{ signal, respond, sandbox },
 	) {
 		if (signal?.aborted) {
 			throw new Error("Operation aborted");
+		}
+
+		// Use sandbox if available and it supports list
+		if (sandbox?.list) {
+			try {
+				const entries = await sandbox.list(path);
+				const safeLimit = Math.min(limit, MAX_LIMIT);
+				const limited = entries.slice(0, safeLimit);
+				const truncated = entries.length > limited.length;
+
+				const text = [
+					`Directory: ${path} (sandbox)`,
+					`Results: ${limited.length}${truncated ? ` of ${entries.length}` : ""}`,
+					"",
+					...limited.map((e) => `• ${e}`),
+				].join("\n");
+
+				return respond.text(text).detail({
+					format: "text",
+					includeMetadata: false,
+					limit: safeLimit,
+					truncated,
+				});
+			} catch (err) {
+				return respond.error(
+					`Failed to list directory in sandbox: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
 		}
 
 		const resolvedPath = resolvePath(expandUserPath(path));

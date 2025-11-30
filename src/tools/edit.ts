@@ -268,7 +268,14 @@ If "not found", read file to check actual content.`,
 		try {
 			await access(absolutePath, constants.R_OK | constants.W_OK);
 		} catch {
-			throw new Error(`File not found: ${path}`);
+			// Provide helpful hint
+			let hint = "";
+			if (path.includes("//")) {
+				hint = " Hint: path contains double slashes.";
+			}
+			throw new Error(
+				`File not found: ${path}.${hint} Use 'read' to verify the path exists.`,
+			);
 		}
 
 		throwIfAborted();

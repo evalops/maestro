@@ -34,6 +34,18 @@ const ghPrSchema = Type.Object({
 	nameOnly: Type.Optional(Type.Boolean({ default: false })),
 });
 
+// Retry on network errors for gh CLI
+const isGhRetryable = (error: unknown): boolean => {
+	if (!(error instanceof Error)) return false;
+	const msg = error.message.toLowerCase();
+	return (
+		msg.includes("network") ||
+		msg.includes("timeout") ||
+		msg.includes("econnreset") ||
+		msg.includes("enotfound")
+	);
+};
+
 export const ghPrTool = createTool<typeof ghPrSchema>({
 	name: "gh_pr",
 	label: "gh pr",
@@ -57,6 +69,9 @@ Examples:
   {action: "checks", number: 42, json: true}
   {action: "diff", number: 42, nameOnly: true}`,
 	schema: ghPrSchema,
+	maxRetries: 2,
+	retryDelayMs: 1000,
+	shouldRetry: isGhRetryable,
 	async run(params, { signal, respond }) {
 		const check = await checkGhCliAvailable(signal);
 		if (check) return check;
@@ -155,6 +170,9 @@ Examples:
   {action: "list", state: "open", labels: ["bug", "priority"]}
   {action: "close", number: 42}`,
 	schema: ghIssueSchema,
+	maxRetries: 2,
+	retryDelayMs: 1000,
+	shouldRetry: isGhRetryable,
 	async run(params, { signal }) {
 		const check = await checkGhCliAvailable(signal);
 		if (check) return check;
@@ -218,6 +236,9 @@ Examples:
   {action: "fork"}
   {action: "clone", repository: "owner/repo", directory: "my-dir"}`,
 	schema: ghRepoSchema,
+	maxRetries: 2,
+	retryDelayMs: 1000,
+	shouldRetry: isGhRetryable,
 	async run(params, { signal }) {
 		const check = await checkGhCliAvailable(signal);
 		if (check) return check;

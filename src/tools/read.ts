@@ -201,7 +201,16 @@ Use 'batch' to read multiple files in parallel.`,
 		try {
 			await access(absolutePath, constants.R_OK);
 		} catch {
-			return respond.error(`File not found: ${path}`);
+			// Provide helpful hints for common path issues
+			let hint = "";
+			if (path.includes("//")) {
+				hint = " (path contains double slashes - possible typo)";
+			} else if (path.startsWith("./") && path.includes(" ")) {
+				hint = " (path contains spaces - ensure it's correct)";
+			} else if (!path.includes("/") && !path.includes(".")) {
+				hint = " (no extension - did you forget the file extension?)";
+			}
+			return respond.error(`File not found: ${path}${hint}`);
 		}
 
 		throwIfAborted();
