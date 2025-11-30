@@ -9,7 +9,11 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { getFirewallConfig } from "../config/firewall-config.js";
 import { createLogger } from "../utils/logger.js";
-import { analyzeCommandSafety, unwrapShellCommand } from "./bash-parser.js";
+import {
+	analyzeCommandSafety,
+	isParserAvailable,
+	unwrapShellCommand,
+} from "./bash-parser.js";
 import {
 	dangerousPatternDescriptions,
 	dangerousPatterns,
@@ -181,6 +185,11 @@ const treeSitterCommandRule: ActionFirewallRule = {
 	description: "Tree-sitter based command safety analysis",
 	action: "require_approval",
 	match: (ctx) => {
+		// Only run if tree-sitter parser is available (has native bindings)
+		if (!isParserAvailable()) {
+			return false;
+		}
+
 		if (ctx.toolName !== "bash" && !isBackgroundTaskShellStart(ctx)) {
 			return false;
 		}
