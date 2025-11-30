@@ -55,7 +55,7 @@ const codeTool = createTool({
 	name: "code-tool",
 	description: "Emit code block",
 	schema: Type.Object({}),
-	run: (_params, { respond }) => respond.code("ts", "const x = 42;"),
+	run: (_params, { respond }) => respond.text("```ts\nconst x = 42;\n```"),
 });
 
 describe("createTool DSL", () => {
@@ -104,48 +104,18 @@ describe("createTool DSL", () => {
 		expect(sample).toBe(`${os.homedir()}/tmp`);
 	});
 
-	it("throws when builder has no content", () => {
+	it("allows builder with no content", () => {
 		const builder = new ToolResponseBuilder();
-		expect(() => builder.build()).toThrow(/no content/i);
+		const result = builder.build();
+		expect(result.content).toEqual([]);
+		expect(result.isError).toBe(false);
 	});
 
-	it("emits standardized error responses", () => {
-		const builder = new ToolResponseBuilder<{ code: number }>();
-		try {
-			builder.error("File not found", { code: 404 });
-			throw new Error("Expected error to be thrown");
-		} catch (error: any) {
-			expect(error.message).toBe("Error: File not found");
-			expect(error.toolDetails).toEqual({ code: 404 });
-		}
-	});
-
-	it("sanitizes sensitive path information from error details", () => {
-		const builder = new ToolResponseBuilder<{
-			code: number;
-			absolutePath?: string;
-			fullPath?: string;
-			realPath?: string;
-			safePath?: string;
-		}>();
-		try {
-			builder.error("Access denied", {
-				code: 403,
-				absolutePath: "/home/user/secret",
-				fullPath: "/home/user/secret/file.txt",
-				realPath: "/mnt/secure/data",
-				safePath: "public/file.txt",
-			});
-			throw new Error("Expected error to be thrown");
-		} catch (error: any) {
-			expect(error.message).toBe("Error: Access denied");
-			// Sensitive paths should be removed
-			expect(error.toolDetails).not.toHaveProperty("absolutePath");
-			expect(error.toolDetails).not.toHaveProperty("fullPath");
-			expect(error.toolDetails).not.toHaveProperty("realPath");
-			// Non-sensitive properties should remain
-			expect(error.toolDetails).toHaveProperty("code", 403);
-			expect(error.toolDetails).toHaveProperty("safePath", "public/file.txt");
-		}
+	it("marks error responses with isError flag", () => {
+		const builder = new ToolResponseBuilder();
+		builder.error("File not found");
+		const result = builder.build();
+		expect(result.isError).toBe(true);
+		expect(result.content[0]).toMatchObject({ text: "File not found" });
 	});
 });

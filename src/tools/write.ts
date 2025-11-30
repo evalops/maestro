@@ -53,7 +53,10 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 	description:
 		"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
 	schema: writeSchema,
-	async run({ path, content, previewDiff, backup }, { signal, respond }) {
+	async run(
+		{ path, content, previewDiff = true, backup = true },
+		{ signal, respond },
+	) {
 		requirePlanCheck("write");
 		const absolutePath = resolvePath(expandUserPath(path));
 		const dir = dirname(absolutePath);

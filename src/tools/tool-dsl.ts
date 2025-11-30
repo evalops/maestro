@@ -1,104 +1,41 @@
-import os from "node:os";
-import type { Static, TSchema } from "@sinclair/typebox";
-import type {
-	AgentToolResult,
-	ImageContent,
-	TextContent,
-} from "../agent/types.js";
-import { createTypeboxTool } from "./typebox-tool.js";
-
-/**
- * Sanitize error details to prevent exposing sensitive file system paths
- */
-function sanitizeErrorDetails(details: unknown): unknown {
-	if (!details || typeof details !== "object") {
-		return details;
-	}
-
-	const sanitized = { ...details } as Record<string, unknown>;
-
-	// Remove or redact potentially sensitive path information
-	const sensitiveKeys = ["absolutePath", "fullPath", "realPath"];
-	for (const key of sensitiveKeys) {
-		if (key in sanitized) {
-			delete sanitized[key];
-		}
-	}
-
-	return sanitized;
-}
-
-/**
- * Custom error class for tool execution errors with optional details
- */
-export class ToolError<Details = unknown> extends Error {
-	public readonly toolDetails?: Details;
-
-	constructor(message: string, details?: Details) {
-		super(message);
-		this.name = "ToolError";
-		// Sanitize details to prevent exposing internal paths
-		this.toolDetails = (
-			details !== undefined ? sanitizeErrorDetails(details) : undefined
-		) as Details;
-	}
-}
+import type { TSchema } from "@sinclair/typebox";
+import type { AgentToolResult, ToolAnnotations } from "../agent/types.js";
+import type { Sandbox } from "../sandbox/types.js";
 
 export class ToolResponseBuilder<Details> {
-	private contents: (TextContent | ImageContent)[] = [];
-	private details: Details | undefined;
+	private _content: (
+		| { type: "text"; text: string }
+		| { type: "image"; data: string; mimeType: string }
+	)[] = [];
+	private _details?: Details;
+	private _isError = false;
 
-	text(text: string): this {
-		this.contents.push({ type: "text", text });
+	text(content: string): this {
+		this._content.push({ type: "text", text: content });
 		return this;
 	}
 
-	json(value: unknown, spacing = 2): this {
-		const serialized = JSON.stringify(value, null, spacing);
-		return this.text(serialized);
-	}
-
-	code(language: string | undefined, code: string): this {
-		const lang = language?.trim();
-		const fence = "```";
-		const header = lang && lang.length > 0 ? `${fence}${lang}\n` : `${fence}\n`;
-		const block = `${header}${code}\n${fence}`;
-		return this.text(block);
-	}
-
-	image(data: string, mimeType: string): this {
-		this.contents.push({ type: "image", data, mimeType });
+	image(base64: string, mimeType: string): this {
+		this._content.push({ type: "image", data: base64, mimeType });
 		return this;
 	}
 
-	push(content: TextContent | ImageContent): this {
-		this.contents.push(content);
+	detail(details: Details): this {
+		this._details = details;
 		return this;
 	}
 
-	error(message: string, details?: Details): never {
-		const prefix = message.startsWith("Error:") ? message : `Error: ${message}`;
-		throw new ToolError(prefix, details);
-	}
-
-	detail(value: Details): this {
-		this.details = value;
+	error(message: string): this {
+		this.text(message);
+		this._isError = true;
 		return this;
-	}
-
-	setDetails(value: Details): this {
-		return this.detail(value);
 	}
 
 	build(): AgentToolResult<Details> {
-		if (this.contents.length === 0) {
-			throw new Error(
-				"ToolResponseBuilder produced no content. Call text()/image()/push() before build().",
-			);
-		}
 		return {
-			content: [...this.contents],
-			details: this.details,
+			content: this._content,
+			details: this._details,
+			isError: this._isError,
 		};
 	}
 }
@@ -107,6 +44,7 @@ export interface ToolRunContext<Details> {
 	toolCallId: string;
 	signal?: AbortSignal;
 	respond: ToolResponseBuilder<Details>;
+	sandbox?: Sandbox;
 }
 
 export interface CreateToolOptions<Schema extends TSchema, Details> {
@@ -114,13 +52,13 @@ export interface CreateToolOptions<Schema extends TSchema, Details> {
 	label?: string;
 	description: string;
 	schema: Schema;
-	annotations?: import("../agent/types.js").ToolAnnotations;
+	annotations?: ToolAnnotations;
 	toolType?: string;
 	inputExamples?: unknown[];
 	allowedCallers?: string[];
 	deferApiDefinition?: boolean;
 	run: (
-		params: Static<Schema>,
+		params: import("@sinclair/typebox").Static<Schema>,
 		context: ToolRunContext<Details>,
 	) =>
 		| undefined
@@ -134,14 +72,25 @@ export interface CreateToolOptions<Schema extends TSchema, Details> {
 	shouldRetry?: (error: unknown) => boolean;
 }
 
+export class ToolError extends Error {
+	constructor(
+		message: string,
+		public readonly code?: string,
+		public readonly details?: unknown,
+	) {
+		super(message);
+		this.name = "ToolError";
+	}
+}
+
 export function createTool<Schema extends TSchema, Details = undefined>(
 	options: CreateToolOptions<Schema, Details>,
 ) {
-	return createTypeboxTool<Schema, Details>({
+	return Object.freeze({
 		name: options.name,
 		label: options.label ?? options.name,
 		description: options.description,
-		schema: options.schema,
+		parameters: options.schema,
 		annotations: options.annotations,
 		toolType: options.toolType,
 		inputExamples: options.inputExamples,
@@ -150,12 +99,18 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 		maxRetries: options.maxRetries,
 		retryDelayMs: options.retryDelayMs,
 		shouldRetry: options.shouldRetry,
-		execute: async (toolCallId, params, signal) => {
+		execute: async (
+			toolCallId: string,
+			params: Record<string, unknown>,
+			signal?: AbortSignal,
+			context?: { sandbox?: Sandbox },
+		) => {
 			const builder = new ToolResponseBuilder<Details>();
-			const result = await options.run(params, {
+			const result = await options.run(params as any, {
 				toolCallId,
 				signal,
 				respond: builder,
+				sandbox: context?.sandbox,
 			});
 			if (result instanceof ToolResponseBuilder) {
 				return result.build();
@@ -168,31 +123,22 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 	});
 }
 
+import os from "node:os";
+
 export function expandUserPath(path: string): string {
 	if (path === "~") {
 		return os.homedir();
 	}
 	if (path.startsWith("~/")) {
-		return os.homedir() + path.slice(1);
+		return path.replace("~", os.homedir());
 	}
 	return path;
-}
-
-function isAgentToolResult<Details>(
-	value: unknown,
-): value is AgentToolResult<Details> {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"content" in (value as Record<string, unknown>) &&
-		Array.isArray((value as AgentToolResult<Details>).content)
-	);
 }
 
 export interface CreateTextToolOptions<Schema extends TSchema, Details>
 	extends Omit<CreateToolOptions<Schema, Details>, "run"> {
 	run: (
-		params: Static<Schema>,
+		params: import("@sinclair/typebox").Static<Schema>,
 		context: ToolRunContext<Details>,
 	) =>
 		| string
@@ -225,7 +171,7 @@ export function createTextTool<Schema extends TSchema, Details = undefined>(
 export interface CreateJsonToolOptions<Schema extends TSchema, Details>
 	extends Omit<CreateToolOptions<Schema, Details>, "run"> {
 	run: (
-		params: Static<Schema>,
+		params: import("@sinclair/typebox").Static<Schema>,
 		context: ToolRunContext<Details>,
 	) =>
 		| unknown
@@ -245,23 +191,27 @@ export function createJsonTool<Schema extends TSchema, Details = undefined>(
 ) {
 	return createTool<Schema, Details>({
 		...options,
-		run: async (
-			params,
-			context,
-		): Promise<
-			ToolResponseBuilder<Details> | AgentToolResult<Details> | undefined
-		> => {
+		run: async (params, context) => {
 			const result = await options.run(params, context);
 			if (
-				result === undefined ||
-				result instanceof ToolResponseBuilder ||
-				isAgentToolResult<Details>(result)
+				result !== undefined &&
+				!(result instanceof ToolResponseBuilder) &&
+				!isAgentToolResult(result)
 			) {
-				return result;
+				return context.respond.text(JSON.stringify(result, null, 2));
 			}
-			return context.respond.json(
-				result,
-			) as unknown as AgentToolResult<Details>;
+			return result as any;
 		},
 	});
+}
+
+function isAgentToolResult<Details>(
+	value: unknown,
+): value is AgentToolResult<Details> {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"content" in value &&
+		Array.isArray((value as AgentToolResult<Details>).content)
+	);
 }

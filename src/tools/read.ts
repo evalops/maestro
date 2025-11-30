@@ -237,10 +237,11 @@ Use 'batch' to read multiple files in parallel.`,
 		}
 
 		if (startLine >= lines.length) {
-			return respond.error(
-				`Offset ${offset} is beyond end of file (${lines.length} lines total)`,
-				{ mode, totalLines: lines.length },
-			);
+			return respond
+				.error(
+					`Offset ${offset} is beyond end of file (${lines.length} lines total)`,
+				)
+				.detail({ mode, totalLines: lines.length });
 		}
 
 		const endLine = Math.min(startLine + maxLines, lines.length);

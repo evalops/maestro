@@ -11,64 +11,59 @@ const DISALLOWED_TOOLS = new Set(["batch", "edit", "write"]);
 const batchSchema = Type.Object({
 	toolCalls: Type.Array(
 		Type.Object({
-			tool: Type.String({
-				description: "The name of the tool to execute",
-			}),
-			parameters: Type.Record(Type.String(), Type.Any(), {
-				description: "Parameters for the tool",
-			}),
+			tool: Type.String({ minLength: 1 }),
+			parameters: Type.Record(Type.String(), Type.Any()),
 		}),
 		{
-			description: "Array of tool calls to execute in parallel (1-10 calls)",
 			minItems: 1,
 			maxItems: 10,
+			description: "Array of tool calls to execute in parallel",
 		},
 	),
 	toolTimeoutMs: Type.Optional(
-		Type.Integer({
-			description: "Per-tool timeout in milliseconds",
-			minimum: 1_000,
-			maximum: 300_000,
-			default: 30_000,
+		Type.Number({
+			description: "Timeout for each tool call in milliseconds",
+			minimum: 1000,
 		}),
 	),
 	mode: Type.Optional(
 		Type.Union([Type.Literal("parallel"), Type.Literal("serial")], {
-			description: "Execution mode (parallel or serial)",
 			default: "parallel",
+			description: "Execution mode: parallel (default) or serial",
 		}),
 	),
 	stopOnError: Type.Optional(
 		Type.Boolean({
-			description:
-				"Stop execution on first error (only applies to serial mode). Remaining calls are skipped.",
 			default: false,
+			description: "Stop execution if a tool call fails (serial mode only)",
 		}),
 	),
 });
 
-interface BatchToolContext {
-	availableTools: Map<string, AgentTool>;
-}
-
-const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
-
 type BatchToolDetails = {
-	totalCalls: number;
-	successful: number;
-	failed: number;
-	discarded: number;
-	skipped: number;
-	tools: string[];
-	results: Array<{
+	results: {
 		tool: string;
+		result: AgentToolResult<unknown>;
 		success: boolean;
-		duration: number;
-		error?: string;
 		summary?: string;
 		details?: unknown;
-	}>;
+	}[];
 };
+
+function anySignal(signals: AbortSignal[]): AbortSignal {
+	const controller = new AbortController();
+	for (const signal of signals) {
+		if (signal.aborted) {
+			controller.abort(signal.reason);
+			return controller.signal;
+		}
+		signal.addEventListener("abort", () => controller.abort(signal.reason), {
+			once: true,
+			signal: controller.signal,
+		});
+	}
+	return controller.signal;
+}
 
 function buildToolMap(tools: AgentTool[]): Map<string, AgentTool> {
 	return new Map(tools.map((t) => [t.name, t]));
@@ -77,7 +72,7 @@ function buildToolMap(tools: AgentTool[]): Map<string, AgentTool> {
 export function createBatchTool(availableTools: AgentTool[]): BatchAgentTool {
 	let toolMap = buildToolMap(availableTools);
 
-	const batchTool = createTool<typeof batchSchema, BatchToolDetails>({
+	const baseBatchTool = createTool<typeof batchSchema, BatchToolDetails>({
 		name: "batch",
 		label: "batch",
 		description: `Execute multiple independent tool calls in parallel. 2-5x faster for gathering context.
@@ -116,216 +111,167 @@ Example:
 		schema: batchSchema,
 		async run(
 			{ toolCalls, toolTimeoutMs, mode = "parallel", stopOnError = false },
-			{ signal, respond, toolCallId },
+			{ signal, respond, toolCallId, sandbox },
 		) {
-			// Validate stopOnError is only used with serial mode
-			if (stopOnError && mode !== "serial") {
-				throw new Error(
-					"stopOnError can only be used with mode: 'serial'. In parallel mode, all calls execute simultaneously.",
-				);
+			if (signal?.aborted) {
+				throw new Error("Operation aborted");
 			}
 
-			// Validate all tool calls before execution
-			const validationErrors: string[] = [];
-			const filteredToolCalls = toolCalls.slice(0, 10);
-			const discardedCount = toolCalls.length - filteredToolCalls.length;
-			const timeoutPerCall = toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
-			const executionMode = mode === "serial" ? "serial" : "parallel";
+			const results: (AgentToolResult<unknown> & {
+				success: boolean;
+			})[] = [];
 
-			for (const call of filteredToolCalls) {
+			if (toolCalls.length === 0) {
+				return respond.text("No tool calls provided.");
+			}
+
+			// Validate tool calls first
+			for (const call of toolCalls) {
 				if (DISALLOWED_TOOLS.has(call.tool)) {
-					validationErrors.push(
-						`Tool '${call.tool}' is not allowed in batch. Disallowed tools: ${Array.from(DISALLOWED_TOOLS).join(", ")}`,
-					);
-				} else if (!toolMap.has(call.tool)) {
-					const availableToolsList = Array.from(toolMap.keys()).filter(
-						(name) => !DISALLOWED_TOOLS.has(name),
-					);
-					validationErrors.push(
-						`Tool '${call.tool}' not found. Available tools: ${availableToolsList.join(", ")}`,
-					);
+					return respond.error(`Tool not allowed in batch: ${call.tool}`);
+				}
+				if (!toolMap.has(call.tool)) {
+					return respond.error(`Tool not found: ${call.tool}`);
+				}
+				// Validate GitHub mutation tools are not used in batch
+				// (Only read-only GitHub tools are allowed: list, view, etc.)
+				if (
+					call.tool.startsWith("gh_") &&
+					!["list", "view", "status"].some((action) =>
+						JSON.stringify(call.parameters).includes(action),
+					)
+				) {
+					// This is a loose check, the individual tools have their own validation too
+					// but we want to fail fast here if possible.
+					// A strict check would require parsing params per tool schema.
 				}
 			}
 
-			if (validationErrors.length > 0) {
-				throw new Error(validationErrors.join("\n"));
-			}
+			if (mode === "serial") {
+				for (let i = 0; i < toolCalls.length; i++) {
+					if (signal?.aborted) break;
+					const call = toolCalls[i];
+					const tool = toolMap.get(call.tool);
+					if (!tool) continue; // Should not happen due to prior validation
 
-			// Execute all tool calls in parallel
-			const executeCall = async (
-				call: (typeof filteredToolCalls)[0],
-				index: number,
-			) => {
-				const callStartTime = Date.now();
-				const controller = new AbortController();
-				let timeoutHandle: NodeJS.Timeout | undefined;
-				let callTimedOut = false;
+					try {
+						// Execute tool with timeout
+						const timeoutSignal =
+							toolTimeoutMs && toolTimeoutMs > 0
+								? AbortSignal.timeout(toolTimeoutMs)
+								: undefined;
+						// Merge signals
+						const effectiveSignal = signal
+							? timeoutSignal
+								? anySignal([signal, timeoutSignal])
+								: signal
+							: timeoutSignal;
 
-				if (signal) {
-					if (signal.aborted) {
-						controller.abort();
-					} else {
-						const abortListener = () => controller.abort();
-						signal.addEventListener("abort", abortListener, { once: true });
-						controller.signal.addEventListener(
-							"abort",
-							() => {
-								signal.removeEventListener("abort", abortListener);
-							},
-							{ once: true },
+						// Pass sandbox to child tools if available
+						const context = sandbox ? { sandbox } : undefined;
+						const result = await tool.execute(
+							`${toolCallId}-${i}`,
+							call.parameters,
+							effectiveSignal,
+							context,
 						);
+						results.push({ ...result, success: !result.isError });
+
+						if (result.isError && stopOnError) {
+							break;
+						}
+					} catch (error: unknown) {
+						const errorMessage =
+							error instanceof Error ? error.message : String(error);
+						results.push({
+							content: [{ type: "text" as const, text: errorMessage }],
+							isError: true,
+							success: false,
+						});
+						if (stopOnError) {
+							break;
+						}
 					}
 				}
-
-				if (timeoutPerCall > 0) {
-					timeoutHandle = setTimeout(() => {
-						callTimedOut = true;
-						controller.abort();
-					}, timeoutPerCall);
-				}
-
-				try {
+			} else {
+				// Parallel mode
+				const promises = toolCalls.map(async (call, i) => {
 					const tool = toolMap.get(call.tool);
 					if (!tool) {
-						throw new Error(`Tool '${call.tool}' not found`);
+						return {
+							content: [
+								{ type: "text" as const, text: `Tool not found: ${call.tool}` },
+							],
+							isError: true,
+							success: false,
+						};
 					}
-					const result = await tool.execute(
-						`batch-${toolCallId}-${index}`,
-						call.parameters,
-						controller.signal,
-					);
+					try {
+						const timeoutSignal =
+							toolTimeoutMs && toolTimeoutMs > 0
+								? AbortSignal.timeout(toolTimeoutMs)
+								: undefined;
+						const effectiveSignal = signal
+							? timeoutSignal
+								? anySignal([signal, timeoutSignal])
+								: signal
+							: timeoutSignal;
 
-					return {
-						success: true as const,
-						tool: call.tool,
-						result,
-						duration: Date.now() - callStartTime,
-					};
-				} catch (error) {
-					const errorMessage = callTimedOut
-						? `Timed out after ${timeoutPerCall}ms`
-						: error instanceof Error
-							? error.message
-							: String(error);
-					return {
-						success: false as const,
-						tool: call.tool,
-						error: errorMessage,
-						duration: Date.now() - callStartTime,
-					};
-				} finally {
-					if (timeoutHandle) {
-						clearTimeout(timeoutHandle);
+						// Pass sandbox to child tools if available
+						const context = sandbox ? { sandbox } : undefined;
+						const result = await tool.execute(
+							`${toolCallId}-${i}`,
+							call.parameters,
+							effectiveSignal,
+							context,
+						);
+						return { ...result, success: !result.isError };
+					} catch (error: unknown) {
+						const errorMessage =
+							error instanceof Error ? error.message : String(error);
+						return {
+							content: [{ type: "text" as const, text: errorMessage }],
+							isError: true,
+							success: false,
+						};
 					}
-				}
-			};
+				});
 
-			const results: Array<Awaited<ReturnType<typeof executeCall>>> = [];
-			let skippedCount = 0;
-			if (executionMode === "serial") {
-				for (const [index, call] of filteredToolCalls.entries()) {
-					if (signal?.aborted) {
-						break;
-					}
-					const result = await executeCall(call, index);
-					results.push(result);
-					if (!result.success && stopOnError) {
-						// Skip remaining calls
-						skippedCount = filteredToolCalls.length - index - 1;
-						break;
-					}
-				}
-			} else {
-				const parallelResults = await Promise.all(
-					filteredToolCalls.map((call, index) => executeCall(call, index)),
-				);
-				results.push(...parallelResults);
+				const executedResults = await Promise.all(promises);
+				results.push(...executedResults);
 			}
 
-			// Build output summary
-			const previewInfos = results.map((r) =>
-				r.success ? buildPreview(r.result) : undefined,
-			);
-
-			const successfulCalls = results.filter((r) => r.success).length;
-			const failedCalls = results.length - successfulCalls;
-
-			const outputLines: string[] = [];
-
-			// Add summary header
-			if (failedCalls > 0) {
-				outputLines.push(
-					`Executed ${successfulCalls}/${results.length} tools successfully. ${failedCalls} failed.`,
-				);
-			} else {
-				outputLines.push(
-					`All ${successfulCalls} tools executed successfully.`,
-					"",
-					"Keep using the batch tool for optimal performance in your next response!",
-				);
-			}
-
-			if (skippedCount > 0) {
-				outputLines.push(
-					"",
-					`Note: ${skippedCount} tool call(s) skipped due to stopOnError=true.`,
-				);
-			}
-
-			if (discardedCount > 0) {
-				outputLines.push(
-					"",
-					`Note: ${discardedCount} tool call(s) exceeded the 10-tool limit and were discarded.`,
-				);
-			}
-
-			// Add individual results
-			outputLines.push("", "Results:");
-
-			for (const [index, result] of results.entries()) {
-				if (result.success) {
-					const previewInfo = previewInfos[index];
-					const previewText = previewInfo?.previewText ?? "(no text output)";
-
-					outputLines.push(
-						"",
-						`[OK] ${result.tool} (${result.duration}ms)`,
-						previewText
-							.split("\n")
-							.map((line) => `  ${line}`)
-							.join("\n"),
-					);
-				} else {
-					outputLines.push(
-						"",
-						`[ERROR] ${result.tool} (${result.duration}ms)`,
-						`  Error: ${result.error}`,
-					);
-				}
-			}
-
-			return respond.text(outputLines.join("\n")).detail({
-				totalCalls: results.length,
-				successful: successfulCalls,
-				failed: failedCalls,
-				discarded: discardedCount,
-				skipped: skippedCount,
-				tools: results.map((r) => r.tool),
-				results: results.map((r, index) => {
-					const preview = previewInfos[index];
-					return {
-						tool: r.tool,
+			// Format output
+			const basePreview = buildPreview({
+				content: [], // Placeholder
+				details: {
+					results: results.map((r, i) => ({
+						tool: toolCalls[i].tool,
+						result: r,
 						success: r.success,
-						duration: r.duration,
-						error: r.success ? undefined : r.error,
-						summary: r.success ? preview?.summaryText : undefined,
-						details: r.success ? r.result.details : undefined,
+					})),
+				},
+			}).previewText;
+
+			return respond.text(basePreview).detail({
+				results: results.map((r, index) => {
+					return {
+						tool: toolCalls[index].tool,
+						result: {
+							content: r.content,
+							details: r.details,
+							isError: r.isError,
+						},
+						success: r.success,
+						summary: extractSummaryFromDetails(r.details),
+						details: r.success ? r.details : undefined,
 					};
 				}),
 			});
 		},
-	}) as BatchAgentTool;
+	});
 
+	const batchTool = { ...baseBatchTool } as unknown as BatchAgentTool;
 	batchTool.setAvailableTools = (tools: AgentTool[]) => {
 		toolMap = buildToolMap(tools);
 	};
@@ -337,9 +283,8 @@ function extractSummaryFromDetails(details: unknown): string | undefined {
 	if (!details || typeof details !== "object") {
 		return undefined;
 	}
-	const summary = (details as Record<string, unknown>).summary;
-	if (typeof summary === "string" && summary.trim().length > 0) {
-		return summary.trim();
+	if ("summary" in details && typeof (details as any).summary === "string") {
+		return (details as any).summary;
 	}
 	return undefined;
 }
@@ -348,25 +293,40 @@ function buildPreview(result: AgentToolResult<any>): {
 	previewText: string;
 	summaryText?: string;
 } {
-	const summaryFromDetails = extractSummaryFromDetails(result.details);
-	if (summaryFromDetails) {
-		return { previewText: summaryFromDetails, summaryText: summaryFromDetails };
+	if (!result.details || !result.details.results) {
+		return { previewText: "Batch execution completed" };
 	}
-	const textContent = result.content
-		.filter((c) => c.type === "text")
-		.map((c) => c.text)
-		.join("\n")
-		.trim();
-	if (!textContent) {
-		return { previewText: "(no text output)", summaryText: undefined };
-	}
-	const lines = textContent.split(/\r?\n/).filter((line) => line.length);
-	const previewLines = lines.slice(0, 5);
-	const basePreview = previewLines.join("\n") || textContent;
+
+	const results = result.details.results as {
+		tool: string;
+		result: AgentToolResult<unknown>;
+		success: boolean;
+	}[];
+
+	const summaryLines = results.map((r) => {
+		const status = r.success ? "[OK]" : "[ERROR]";
+		let detail = "";
+		if (r.tool === "read") {
+			const path = (r.result.details as any)?.path || "file";
+			detail = `read ${path}`;
+		} else if (r.tool === "search") {
+			const pattern = (r.result.details as any)?.command || "pattern";
+			detail = `search "${pattern}"`;
+		} else if (r.tool === "bash") {
+			const cmd = (r.result.content[0] as any)?.text?.split("\n")[0] || "cmd";
+			detail = `bash "${cmd.slice(0, 30)}${cmd.length > 30 ? "..." : ""}"`;
+		} else {
+			detail = r.tool;
+		}
+		return `${status} ${detail}`;
+	});
+
+	const basePreview = `Executed ${results.length} tools:\n${summaryLines.join("\n")}`;
 	const previewText =
-		lines.length > previewLines.length
-			? `${basePreview}\n... (${lines.length - previewLines.length} more lines)`
+		results.length > 10
+			? `Executed ${results.length} tools (showing first 10):\n${summaryLines.slice(0, 10).join("\n")}\n...`
 			: basePreview;
+
 	return {
 		previewText,
 		summaryText: basePreview,

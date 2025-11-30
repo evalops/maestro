@@ -918,9 +918,7 @@ export class ProviderTransport implements AgentTransport {
 											},
 										],
 										details:
-											error instanceof ToolError
-												? error.toolDetails
-												: undefined,
+											error instanceof ToolError ? error.details : undefined,
 										isError: true,
 										timestamp: Date.now(),
 									},

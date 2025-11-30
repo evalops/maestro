@@ -34,7 +34,7 @@ const bashSchema = Type.Object({
 export const bashTool = createTool<typeof bashSchema>({
 	name: "bash",
 	label: "bash",
-	description: `Execute bash commands. Returns stdout and stderr.
+	description: `Execute bash commands.
 
 Usage guidelines:
 - ALWAYS quote paths with spaces: cd "/path with spaces"
@@ -45,7 +45,34 @@ Usage guidelines:
 
 Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 	schema: bashSchema,
-	async run({ command, timeout, cwd, env }, { signal }) {
+	async run({ command, timeout, cwd, env }, { signal, sandbox }) {
+		if (sandbox) {
+			const result = await sandbox.exec(command, cwd, env);
+
+			let output = "";
+			if (result.stdout) {
+				output += result.stdout;
+			}
+			if (result.stderr) {
+				if (output) output += "\n";
+				output += result.stderr;
+			}
+
+			if (result.exitCode !== 0) {
+				output += `\n\nExit code: ${result.exitCode}`;
+			}
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: output.trim() || "Command executed successfully (no output)",
+					},
+				],
+				details: undefined,
+			};
+		}
+
 		return new Promise<{
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
@@ -99,9 +126,9 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 
 			if (child.stdout) {
 				child.stdout.on("data", (data) => {
-					stdout += data.toString();
-					if (stdout.length > MAX_BUFFER) {
-						stdout = stdout.slice(0, MAX_BUFFER);
+					if (stdout.length < MAX_BUFFER) {
+						stdout += data.toString();
+					} else {
 						stdoutTruncated = true;
 					}
 				});
@@ -109,95 +136,43 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 
 			if (child.stderr) {
 				child.stderr.on("data", (data) => {
-					stderr += data.toString();
-					if (stderr.length > MAX_BUFFER) {
-						stderr = stderr.slice(0, MAX_BUFFER);
+					if (stderr.length < MAX_BUFFER) {
+						stderr += data.toString();
+					} else {
 						stderrTruncated = true;
 					}
 				});
 			}
 
+			child.on("error", (error) => {
+				cleanup();
+				reject(error);
+			});
+
 			child.on("close", (code) => {
 				cleanup();
-
-				if (signal?.aborted) {
-					let output = stdout;
-					if (stderr) {
-						if (output) output += "\n";
-						output += stderr;
-					}
-					if (stdoutTruncated || stderrTruncated) {
-						if (output) output += "\n\n";
-						output += "Output truncated at 10MB";
-					}
-					if (output) output += "\n\n";
-					output += "Command aborted";
-					resolve({
-						content: [{ type: "text", text: `Command failed\n\n${output}` }],
-						details: undefined,
-					});
-					return;
-				}
-
-				if (timedOut) {
-					let output = stdout;
-					if (stderr) {
-						if (output) output += "\n";
-						output += stderr;
-					}
-					if (stdoutTruncated || stderrTruncated) {
-						if (output) output += "\n\n";
-						output += "Output truncated at 10MB";
-					}
-					if (output) output += "\n\n";
-					output += `Command timed out after ${timeout} seconds`;
-					resolve({
-						content: [{ type: "text", text: `Command failed\n\n${output}` }],
-						details: undefined,
-					});
-					return;
-				}
-
 				let output = stdout;
 				if (stderr) {
 					if (output) output += "\n";
 					output += stderr;
 				}
+
 				if (stdoutTruncated || stderrTruncated) {
-					if (output) output += "\n\n";
-					output += "Output truncated at 10MB";
+					output += "\n\n(Output truncated)";
 				}
 
-				if (code !== 0 && code !== null) {
-					if (output) output += "\n\n";
-					resolve({
-						content: [
-							{
-								type: "text",
-								text: `Command failed\n\n${output}Command exited with code ${code}`,
-							},
-						],
-						details: undefined,
-					});
-				} else {
-					resolve({
-						content: [{ type: "text", text: output || "(no output)" }],
-						details: undefined,
-					});
+				if (timedOut) {
+					output += "\n\n(Command timed out)";
+				} else if (code !== 0) {
+					output += `\n\nExit code: ${code}`;
 				}
-			});
 
-			child.once("error", (error) => {
-				cleanup();
-				const reason =
-					error instanceof Error
-						? `${error.name}: ${error.message}`
-						: `Failed to start process: ${String(error)}`;
 				resolve({
 					content: [
 						{
 							type: "text",
-							text: `Command failed to start\n\n${reason}`,
+							text:
+								output.trim() || "Command executed successfully (no output)",
 						},
 					],
 					details: undefined,
@@ -205,11 +180,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			});
 
 			if (signal) {
-				if (signal.aborted) {
-					onAbort();
-				} else {
-					signal.addEventListener("abort", onAbort, { once: true });
-				}
+				signal.addEventListener("abort", onAbort);
 			}
 		});
 	},

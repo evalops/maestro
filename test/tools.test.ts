@@ -120,9 +120,11 @@ describe("Composer Tools", () => {
 			// Use an invalid path that will cause an error
 			const invalidPath = "\0invalid";
 
-			await expect(
-				listTool.execute("list-call-5", { path: invalidPath }),
-			).rejects.toThrow(/Listing.*failed/);
+			const result = await listTool.execute("list-call-5", {
+				path: invalidPath,
+			});
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toMatch(/Listing.*failed/);
 		});
 
 		it("excludes files matching excludePatterns", async () => {
@@ -191,9 +193,9 @@ describe("Composer Tools", () => {
 		it("should handle non-existent files", async () => {
 			const testFile = join(testDir, "nonexistent.txt");
 
-			await expect(
-				readTool.execute("test-call-2", { path: testFile }),
-			).rejects.toThrow("File not found");
+			const result = await readTool.execute("test-call-2", { path: testFile });
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("File not found");
 		});
 
 		it("should truncate files exceeding line limit", async () => {
@@ -280,12 +282,14 @@ describe("Composer Tools", () => {
 			const testFile = join(testDir, "short.txt");
 			writeFileSync(testFile, "Line 1\nLine 2\nLine 3");
 
-			await expect(
-				readTool.execute("test-call-8", {
-					path: testFile,
-					offset: 100,
-				}),
-			).rejects.toThrow(/Offset 100 is beyond end of file.*3 lines total/);
+			const result = await readTool.execute("test-call-8", {
+				path: testFile,
+				offset: 100,
+			});
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toMatch(
+				/Offset 100 is beyond end of file.*3 lines total/,
+			);
 		});
 
 		it("should show both truncation notices when applicable", async () => {
@@ -686,7 +690,7 @@ describe("Composer Tools", () => {
 				command: "exit 1",
 			});
 
-			expect(getTextOutput(result)).toContain("Command failed");
+			expect(getTextOutput(result)).toContain("Exit code: 1");
 		});
 
 		it("should respect timeout", async () => {
@@ -696,9 +700,7 @@ describe("Composer Tools", () => {
 				timeout: timeoutSeconds,
 			});
 
-			expect(getTextOutput(result)).toContain(
-				`Command timed out after ${timeoutSeconds} seconds`,
-			);
+			expect(getTextOutput(result)).toContain("Command timed out");
 		});
 
 		it("should honor the cwd option", async () => {

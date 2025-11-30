@@ -140,6 +140,7 @@ export interface AgentTool<
 		toolCallId: string,
 		params: Record<string, unknown>,
 		signal?: AbortSignal,
+		context?: { sandbox?: import("../sandbox/types.js").Sandbox },
 	) => AgentToolResult<TDetails> | Promise<AgentToolResult<TDetails>>;
 }
 
