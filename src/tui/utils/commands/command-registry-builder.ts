@@ -16,6 +16,7 @@ interface CommandRegistryOptions {
 	}) => CommandExecutionContext;
 	showThinkingSelector: (context: CommandExecutionContext) => void;
 	showModelSelector: (context: CommandExecutionContext) => void;
+	showThemeSelector: (context: CommandExecutionContext) => void;
 	handleExportSession: (
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
@@ -81,6 +82,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 		handlers: {
 			thinking: opts.showThinkingSelector,
 			model: opts.showModelSelector,
+			theme: opts.showThemeSelector,
 			exportSession: opts.handleExportSession,
 			shareSession: opts.handleShareSession,
 			tools: opts.handleTools,

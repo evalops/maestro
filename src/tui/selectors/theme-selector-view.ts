@@ -3,7 +3,7 @@ import type { ModalManager } from "../modal-manager.js";
 import { ThemeSelectorComponent } from "./theme-selector.js";
 
 interface ThemeSelectorViewOptions {
-	currentTheme: string;
+	currentTheme: string | (() => string);
 	modalManager: ModalManager;
 	ui: TUI;
 	showInfoMessage: (text: string) => void;
@@ -15,12 +15,18 @@ export class ThemeSelectorView {
 
 	constructor(private readonly options: ThemeSelectorViewOptions) {}
 
+	private getCurrentTheme(): string {
+		return typeof this.options.currentTheme === "function"
+			? this.options.currentTheme()
+			: this.options.currentTheme;
+	}
+
 	show(): void {
 		if (this.selector) {
 			return;
 		}
 		this.selector = new ThemeSelectorComponent(
-			this.options.currentTheme,
+			this.getCurrentTheme(),
 			(themeName) => {
 				this.options.showInfoMessage(`Theme: ${themeName}`);
 				this.options.onThemeChange?.();

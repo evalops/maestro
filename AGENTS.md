@@ -319,6 +319,59 @@ this.resubscribe();
 
 _Note: Currently used only in PromptQueue. Document additional patterns here as the codebase evolves._
 
+### Adding Slash Commands
+
+Slash commands require updates across 4 files. Follow this pattern:
+
+**1. Define handler type** in `src/tui/commands/types.ts`:
+```typescript
+export interface CommandHandlers {
+  // ... existing handlers
+  myCommand(context: CommandExecutionContext): void;
+}
+```
+
+**2. Register command** in `src/tui/commands/registry.ts`:
+```typescript
+buildEntry(
+  {
+    name: "mycommand",
+    description: "Description shown in /help",
+    usage: "/mycommand [args]",
+    tags: ["ui"],  // Categories: ui, session, tools, config, diagnostics, etc.
+  },
+  equals("mycommand"),  // or withArgs("mycommand") if it takes arguments
+  handlers.myCommand,
+  createContext,
+),
+```
+
+**3. Add to builder options** in `src/tui/utils/commands/command-registry-builder.ts`:
+```typescript
+interface CommandRegistryOptions {
+  // ... existing options
+  handleMyCommand: (context: CommandExecutionContext) => void;
+}
+
+// And in buildCommandRegistry():
+handlers: {
+  // ... existing handlers
+  myCommand: opts.handleMyCommand,
+}
+```
+
+**4. Wire handler** in `src/tui/tui-renderer.ts`:
+```typescript
+// In buildCommandRegistry call:
+handleMyCommand: (context) => this.doSomething(),
+```
+
+**For selector-based commands** (like `/theme`, `/model`, `/thinking`):
+- Create a `*SelectorComponent` in `src/tui/selectors/` (the UI component)
+- Create a `*SelectorView` wrapper that manages modal lifecycle
+- Initialize the view in `TuiRenderer` constructor
+- Use `this.modalManager.push(component)` to show it
+
 -----
 
 ### Troubleshooting

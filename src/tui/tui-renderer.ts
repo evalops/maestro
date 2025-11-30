@@ -46,6 +46,7 @@ import {
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
+import { getCurrentThemeName } from "../theme/theme.js";
 import {
 	type BackgroundTaskNotification,
 	backgroundTaskManager,
@@ -103,6 +104,7 @@ import { ModelSelectorView } from "./selectors/model-selector-view.js";
 import { OAuthSelectorView } from "./selectors/oauth-selector-view.js";
 import { QueueModeSelectorView } from "./selectors/queue-mode-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
+import { ThemeSelectorView } from "./selectors/theme-selector-view.js";
 import { ThinkingSelectorView } from "./selectors/thinking-selector-view.js";
 import { UserMessageSelectorView } from "./selectors/user-message-selector-view.js";
 import { ConversationCompactor } from "./session/conversation-compactor.js";
@@ -249,6 +251,7 @@ export class TuiRenderer {
 	private infoView: InfoView;
 	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
+	private themeSelectorView: ThemeSelectorView;
 	private modelSelectorView: ModelSelectorView;
 	private reportSelectorView: ReportSelectorView;
 	private oauthLoginView?: OAuthSelectorView;
@@ -592,6 +595,13 @@ export class TuiRenderer {
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
+		this.themeSelectorView = new ThemeSelectorView({
+			currentTheme: () => getCurrentThemeName(),
+			modalManager: this.modalManager,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			onThemeChange: () => this.ui.requestRender(),
+		});
 		this.modelSelectorView = new ModelSelectorView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -764,6 +774,7 @@ export class TuiRenderer {
 			createContext: (ctx) => this.createCommandContext(ctx),
 			showThinkingSelector: (_context) => this.thinkingSelectorView.show(),
 			showModelSelector: (_context) => this.modelSelectorView.show(),
+			showThemeSelector: (_context) => this.themeSelectorView.show(),
 			handleExportSession: async (context) =>
 				this.importExportView.handleExportCommand(context.rawInput),
 			handleShareSession: async (context) =>

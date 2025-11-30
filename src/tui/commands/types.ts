@@ -67,6 +67,7 @@ export interface CommandHandlers {
 	zen(context: CommandExecutionContext): void;
 	context(context: CommandExecutionContext): void;
 	lsp(context: CommandExecutionContext): void | Promise<void>;
+	theme(context: CommandExecutionContext): void;
 }
 
 export interface CommandEntry {

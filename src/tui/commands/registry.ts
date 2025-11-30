@@ -125,6 +125,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "theme",
+				description: "Select color theme (opens selector with live preview)",
+				usage: "/theme",
+				tags: ["ui"],
+			},
+			equals("theme"),
+			handlers.theme,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "new",
 				description: "Start a fresh chat session",
 				usage: "/new",

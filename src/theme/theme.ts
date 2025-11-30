@@ -660,6 +660,10 @@ export function onThemeChange(callback: () => void): void {
 	onThemeChangeCallback = callback;
 }
 
+export function getCurrentThemeName(): string {
+	return currentThemeName ?? "dark";
+}
+
 function startThemeWatcher(): void {
 	// Stop existing watcher if any
 	if (themeWatcher) {
