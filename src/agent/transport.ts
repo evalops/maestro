@@ -656,6 +656,37 @@ export class ProviderTransport implements AgentTransport {
 						user: cfg.user,
 						session: cfg.session,
 					});
+
+					if (verdict.action === "block") {
+						const blockedResult: ToolResultMessage = {
+							role: "toolResult",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							content: [
+								{
+									type: "text",
+									text: `Action blocked by firewall: ${verdict.reason}`,
+								},
+							],
+							isError: true,
+							timestamp: Date.now(),
+						};
+
+						// Log denied tool execution for audit
+						await logToolExecutionAudit(
+							toolCall.name,
+							toolCall.arguments as Record<string, unknown>,
+							"denied",
+							0,
+							verdict.reason,
+						);
+
+						for (const event of emitToolResult(blockedResult, toolCall, true)) {
+							yield event;
+						}
+						continue;
+					}
+
 					if (
 						verdict.action === "require_approval" &&
 						verdict.ruleId === HUMAN_EGRESS_PII_RULE_ID

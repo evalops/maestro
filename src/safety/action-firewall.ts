@@ -4,7 +4,12 @@ import type {
 	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
+import { join, resolve } from "node:path";
 import { createLogger } from "../utils/logger.js";
+import {
+	dangerousPatternDescriptions,
+	dangerousPatterns,
+} from "./dangerous-patterns.js";
 import { checkPolicy } from "./policy.js";
 import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 
@@ -28,15 +33,11 @@ const policyCheckCache = new WeakMap<
 export interface ActionFirewallRule {
 	id: string;
 	description: string;
+	action?: "allow" | "require_approval" | "block";
 	match: (context: ActionApprovalContext) => boolean | Promise<boolean>;
 	reason?: (context: ActionApprovalContext) => string | Promise<string>;
 }
 
-const rmRfPattern =
-	/\brm\s+-[^\n]*-?r[^\n]*-?f[^\n]*\s+(?:-+\w+\s+)*(["']?\/?[\w.*\-\s]*|\.)/i;
-const mkfsPattern = /\bmkfs\b|\bmkfs\.[a-z0-9]+/i;
-const diskZeroPattern = /dd\s+if=\/dev\/(?:zero|null)/i;
-const chmodZeroPattern = /chmod\s+0{3,4}\b/i;
 const untaggedEgressWarnings = new Set<string>();
 export const HUMAN_EGRESS_PII_RULE_ID = "pii-redaction-before-human-egress";
 
@@ -134,10 +135,90 @@ function isMcpTool(toolName: string): boolean {
 	return toolName.startsWith("mcp_");
 }
 
+/**
+ * Generate rules from dangerous patterns
+ */
+const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
+	dangerousPatterns,
+).map(([key, pattern]) => ({
+	id: `command-${key}`,
+	description:
+		dangerousPatternDescriptions[
+			key as keyof typeof dangerousPatternDescriptions
+		],
+	// rmRf is high risk, keep as require_approval (or block if we want to be stricter)
+	// For now, require_approval is standard for dangerous commands unless policy blocks them.
+	action: "require_approval",
+	match: (ctx) => {
+		const command = getCommandArg(ctx);
+		return !!command && pattern.test(command);
+	},
+	reason: (ctx) => {
+		const command = getCommandArg(ctx) ?? "";
+		return `Detected ${dangerousPatternDescriptions[key as keyof typeof dangerousPatternDescriptions]}: ${command.trim()}`;
+	},
+}));
+
+/**
+ * Critical system paths to protect
+ */
+const SYSTEM_PATHS = [
+	"/etc",
+	"/usr",
+	"/var",
+	"/boot",
+	"/sys",
+	"/proc",
+	"/dev",
+	"/bin",
+	"/sbin",
+	"/lib",
+	"/lib64",
+	"/opt",
+	// Windows
+	"C:\\Windows",
+	"C:\\Program Files",
+	"C:\\Program Files (x86)",
+];
+
+function isSystemPath(filePath: string): boolean {
+	const normalized = resolve(filePath);
+	return SYSTEM_PATHS.some((sysPath) => {
+		// Exact match or subdirectory
+		return (
+			normalized === sysPath ||
+			normalized.startsWith(`${sysPath}/`) ||
+			normalized.startsWith(`${sysPath}\\`)
+		);
+	});
+}
+
+function extractFilePaths(context: ActionApprovalContext): string[] {
+	const args = getArgsObject(context);
+	if (!args) return [];
+	const paths: string[] = [];
+
+	// Simple extraction for standard file tools
+	// Note: deeper extraction is done in policy.ts, this is for quick system protection
+	if (context.toolName === "write" || context.toolName === "edit") {
+		const p =
+			getStringArg(context, "file_path") || getStringArg(context, "path");
+		if (p) paths.push(p);
+	}
+	if (context.toolName === "delete_file") {
+		const p =
+			getStringArg(context, "file_path") ||
+			getStringArg(context, "target_file");
+		if (p) paths.push(p);
+	}
+	return paths;
+}
+
 export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
 		id: "enterprise-policy",
 		description: "Enforce enterprise policies on tools and dependencies",
+		action: "block", // HARD BLOCK for policy violations
 		match: async (ctx) => {
 			const result = await checkPolicy(ctx);
 			// Cache result to avoid re-evaluating in reason()
@@ -151,8 +232,28 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		},
 	},
 	{
+		id: "system-path-protection",
+		description: "Prevent modification of critical system directories",
+		action: "block", // HARD BLOCK for system paths
+		match: (ctx) => {
+			// Only check file mutation tools
+			if (
+				!["write", "edit", "delete_file", "move_file", "copy_file"].includes(
+					ctx.toolName,
+				)
+			) {
+				return false;
+			}
+			const paths = extractFilePaths(ctx);
+			return paths.some(isSystemPath);
+		},
+		reason: (ctx) =>
+			"Modification of critical system directories is blocked for safety.",
+	},
+	{
 		id: "mcp-destructive-tool",
 		description: "MCP tools marked as destructive require approval",
+		action: "require_approval",
 		match: (ctx) => {
 			if (!isMcpTool(ctx.toolName)) return false;
 			const annotations = getAnnotations(ctx);
@@ -168,6 +269,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		id: "plan-mode-confirm",
 		description:
 			"When plan mode is enabled, require approval before mutating commands",
+		action: "require_approval",
 		match: (ctx) => {
 			if (process.env.COMPOSER_PLAN_MODE !== "1") return false;
 			const name = ctx.toolName;
@@ -193,57 +295,11 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		reason: (ctx) =>
 			`Plan mode requires confirmation before executing ${ctx.toolName}. Toggle with /plan-mode or COMPOSER_PLAN_MODE=0.`,
 	},
-	{
-		id: "command-rm-rf",
-		description: "High-risk recursive delete",
-		match: (ctx) => {
-			const command = getCommandArg(ctx);
-			return !!command && rmRfPattern.test(command);
-		},
-		reason: (ctx) => {
-			const command = getCommandArg(ctx) ?? "";
-			return `Potential destructive delete: ${command.trim()}`;
-		},
-	},
-	{
-		id: "command-mkfs",
-		description: "Filesystem formatting",
-		match: (ctx) => {
-			const command = getCommandArg(ctx);
-			return !!command && mkfsPattern.test(command);
-		},
-		reason: (ctx) => {
-			const command = getCommandArg(ctx) ?? "";
-			return `Detected mkfs invocation: ${command.trim()}`;
-		},
-	},
-	{
-		id: "command-disk-zero",
-		description: "Disk zeroing",
-		match: (ctx) => {
-			const command = getCommandArg(ctx);
-			return !!command && diskZeroPattern.test(command);
-		},
-		reason: (ctx) => {
-			const command = getCommandArg(ctx) ?? "";
-			return `Detected disk zeroing: ${command.trim()}`;
-		},
-	},
-	{
-		id: "command-chmod-000",
-		description: "Permission removal",
-		match: (ctx) => {
-			const command = getCommandArg(ctx);
-			return !!command && chmodZeroPattern.test(command);
-		},
-		reason: (ctx) => {
-			const command = getCommandArg(ctx) ?? "";
-			return `Detected chmod 000*: ${command.trim()}`;
-		},
-	},
+	...dangerousCommandRules,
 	{
 		id: "background-shell-mode",
 		description: "Shell mode background tasks",
+		action: "require_approval",
 		match: (ctx) => isBackgroundTaskShellStart(ctx),
 		reason: () =>
 			"Background task shell mode requires manual approval (pipes, redirects, and globbing are high risk)",
@@ -251,6 +307,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
 		id: HUMAN_EGRESS_PII_RULE_ID,
 		description: "PII must be redacted before human-facing tools execute",
+		action: "require_approval",
 		match: (ctx) => {
 			if (!isHumanFacingTool(ctx.toolName)) {
 				return false;
@@ -282,12 +339,19 @@ export class ActionFirewall {
 	): Promise<ActionFirewallVerdict> {
 		for (const rule of this.rules) {
 			if (await rule.match(context)) {
+				const action = rule.action ?? "require_approval";
+				const reason =
+					(await rule.reason?.(context)) ??
+					`Action matched rule: ${rule.description}`;
+
+				if (action === "allow") {
+					return { action: "allow" };
+				}
+
 				return {
-					action: "require_approval",
+					action,
 					ruleId: rule.id,
-					reason:
-						(await rule.reason?.(context)) ??
-						`Action matched high-risk rule: ${rule.description}`,
+					reason,
 				};
 			}
 		}
