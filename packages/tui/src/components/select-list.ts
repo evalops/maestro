@@ -25,6 +25,7 @@ export class SelectList implements Component {
 
 	onSelect?: (item: SelectItem) => void;
 	onCancel?: () => void;
+	onSelectionChange?: (item: SelectItem) => void;
 
 	constructor(items: SelectItem[], maxVisible = 5) {
 		this.items = items;
@@ -149,6 +150,7 @@ export class SelectList implements Component {
 		// Up arrow
 		if (keyData === "\x1b[A") {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+			this.notifySelectionChange();
 		}
 		// Down arrow
 		else if (keyData === "\x1b[B") {
@@ -156,6 +158,7 @@ export class SelectList implements Component {
 				this.filteredItems.length - 1,
 				this.selectedIndex + 1,
 			);
+			this.notifySelectionChange();
 		}
 		// Enter
 		else if (keyData === "\r") {
@@ -169,6 +172,13 @@ export class SelectList implements Component {
 			if (this.onCancel) {
 				this.onCancel();
 			}
+		}
+	}
+
+	private notifySelectionChange(): void {
+		const selectedItem = this.filteredItems[this.selectedIndex];
+		if (selectedItem && this.onSelectionChange) {
+			this.onSelectionChange(selectedItem);
 		}
 	}
 	getSelectedItem(): SelectItem | null {
