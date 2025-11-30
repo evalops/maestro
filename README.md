@@ -606,9 +606,33 @@ Payloads capture tool name, success flag, duration, and evaluation context. Tran
 
 ## Philosophy
 
-### Security (YOLO by default)
+### Security
 
-Composer runs with full trust: no prompts for permission, no command filtering, no sandboxing. It can read/write/delete anything your user can. If you need guardrails, run inside a VM/container or fork the CLI and add them. Otherwise, embrace the YOLO mode and proceed at your own risk.
+Composer ships with a layered security model that balances power with protection:
+
+**Action Firewall** (enabled by default):
+- **Dangerous command detection** – Blocks or requires approval for `rm -rf`, `mkfs`, `dd if=/dev/zero`, `chmod 000`, and other high-risk patterns
+- **Tree-sitter analysis** – Parses bash commands for deeper safety checks beyond regex
+- **System path protection** – Hard blocks modifications to `/etc`, `/usr`, `/var`, `/boot`, and other critical directories
+- **Workspace containment** – Requires approval for file writes outside the current project or temp directories
+- **Trusted paths** – Configure additional allowed paths in `~/.composer/firewall.json`
+
+**Approval Modes** (`--approval-mode` or `COMPOSER_APPROVAL_MODE`):
+| Mode | Behavior |
+|------|----------|
+| `prompt` (default) | Ask the user in TUI; fail in headless mode |
+| `auto` | Auto-approve (use in trusted sandboxes only) |
+| `fail` | Reject all high-risk commands |
+
+**Sandbox Execution** (`composer exec --sandbox`):
+- `default` – Workspace containment and firewall rules active
+- `danger-full-access` – Remove guardrails (for trusted environments)
+- Docker sandbox available for full isolation
+
+**Safe Mode** (`--safe-mode` or `COMPOSER_SAFE_MODE=1`):
+Adds extra restrictions on shell writes and surfaces a shield icon in the footer.
+
+See [Safety & Approvals](docs/SAFETY.md) for detailed configuration.
 
 ### Sub-Agents
 
