@@ -2379,7 +2379,9 @@ export class TuiRenderer {
 		const sandboxMode =
 			this.agent.state.sandboxMode ?? process.env.COMPOSER_SANDBOX ?? null;
 		const sandboxRequested = Boolean(sandboxMode);
-		const sandboxActive = Boolean(this.agent.state.sandboxEnabled);
+		const sandboxActive =
+			Boolean(this.agent.state.sandboxEnabled) ||
+			Boolean(this.agent.state.sandbox);
 		this.footer.setRuntimeBadges(
 			buildRuntimeBadges({
 				approvalMode: this.approvalService.getMode(),

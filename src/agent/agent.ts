@@ -179,8 +179,10 @@ export class Agent {
 			isStreaming: false,
 			streamMessage: null,
 			pendingToolCalls: new Map(),
+			sandbox: restInitialState.sandbox,
 			sandboxMode: restInitialState.sandboxMode ?? null,
-			sandboxEnabled: restInitialState.sandboxEnabled ?? false,
+			sandboxEnabled:
+				restInitialState.sandboxEnabled ?? Boolean(restInitialState.sandbox),
 			...restInitialState,
 		};
 	}
@@ -458,6 +460,7 @@ export class Agent {
 				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
 				user: this._state.user,
 				session: this._state.session,
+				sandbox: this._state.sandbox,
 			};
 
 			for await (const event of this.transport.run(

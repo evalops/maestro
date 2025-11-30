@@ -287,6 +287,7 @@ export interface AgentState {
 	streamMessage: Message | null;
 	pendingToolCalls: Map<string, PendingToolCall>;
 	error?: string;
+	sandbox?: import("../sandbox/types.js").Sandbox;
 	sandboxMode?: string | null;
 	sandboxEnabled?: boolean;
 	user?: {
