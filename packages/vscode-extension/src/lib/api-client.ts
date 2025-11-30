@@ -1,17 +1,11 @@
 /**
  * API Client for Composer Backend (VS Code Extension Version)
  */
+// @ts-ignore TS1541: type-only import from ESM inside CJS
+import type * as Contracts from "@evalops/contracts";
 
-import type {
-	ComposerChatRequest,
-	ComposerMessage,
-	ComposerSession,
-	ComposerSessionSummary,
-	ComposerToolCall,
-} from "@evalops/contracts";
-
-export type Message = ComposerMessage;
-export type { ComposerToolCall };
+export type Message = Contracts.ComposerMessage;
+export type ComposerToolCall = Contracts.ComposerToolCall;
 
 export interface AgentEvent {
 	type: string;
@@ -28,9 +22,9 @@ export interface Model {
 	api?: string;
 }
 
-export type Session = ComposerSession;
-export type SessionSummary = ComposerSessionSummary;
-export type ChatRequest = ComposerChatRequest;
+export type Session = Contracts.ComposerSession;
+export type SessionSummary = Contracts.ComposerSessionSummary;
+export type ChatRequest = Contracts.ComposerChatRequest;
 
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
 

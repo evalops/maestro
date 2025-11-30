@@ -1,4 +1,5 @@
-import type { ComposerToolCall, ComposerUsage } from "@evalops/contracts";
+// @ts-ignore TS1541: type-only import from ESM inside CJS
+import type * as Contracts from "@evalops/contracts";
 import type { Message } from "./api-client";
 
 interface ContentPart {
@@ -16,12 +17,12 @@ export interface RawMessage {
 	timestamp?: number | string;
 	toolName?: string;
 	isError?: boolean;
-	usage?: ComposerUsage;
+	usage?: Contracts.ComposerUsage;
 }
 
 export function convertToComposerMessage(msg: RawMessage): Message {
 	const contentParts: string[] = [];
-	const tools: ComposerToolCall[] = [];
+	const tools: Contracts.ComposerToolCall[] = [];
 	let thinking: string | undefined;
 
 	if (typeof msg.content === "string") {

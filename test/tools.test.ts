@@ -1699,6 +1699,8 @@ describe("sandbox support", () => {
 				writeFile: async () => {},
 				exists: async () => true,
 				list: async (path: string) => ["file1.txt", "file2.txt", "subdir/"],
+				exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				dispose: async () => {},
 			};
 
 			const result = await listTool.execute(
@@ -1724,6 +1726,8 @@ describe("sandbox support", () => {
 				list: async () => {
 					throw new Error("Sandbox access denied");
 				},
+				exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				dispose: async () => {},
 			};
 
 			const result = await listTool.execute(
@@ -1746,6 +1750,8 @@ describe("sandbox support", () => {
 				writeFile: async () => {},
 				exists: async () => true,
 				// no list() method
+				exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				dispose: async () => {},
 			};
 
 			const result = await listTool.execute(

@@ -1,6 +1,14 @@
 import { TextEncoder } from "node:util";
 import { Type } from "@sinclair/typebox";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	type MockInstance,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { streamAnthropic } from "../../src/agent/providers/anthropic.js";
 import type { AgentTool, Context, Model } from "../../src/agent/types.js";
 
@@ -38,23 +46,26 @@ const baseTool: AgentTool = {
 };
 
 describe("Anthropic advanced tool features", () => {
-	let fetchSpy: ReturnType<typeof vi.spyOn>;
+	let fetchSpy: MockInstance<typeof fetch>;
 	let capturedHeaders: Record<string, string> = {};
 
 	beforeEach(() => {
 		capturedHeaders = {};
-		fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (_, init) => {
-			capturedHeaders = (init?.headers as Record<string, string>) || {};
-			const lines = [
-				'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
-				'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
-				'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n',
-				'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
-				'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n',
-				'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-			];
-			return new Response(makeStream(lines), { status: 200 });
-		});
+		fetchSpy = vi
+			.spyOn(global, "fetch")
+			.mockImplementation(async (...args: Parameters<typeof fetch>) => {
+				const [, init] = args;
+				capturedHeaders = (init?.headers as Record<string, string>) || {};
+				const lines = [
+					'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
+					'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+					'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}\n\n',
+					'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+					'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n',
+					'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+				];
+				return new Response(makeStream(lines), { status: 200 });
+			});
 	});
 
 	afterEach(() => {

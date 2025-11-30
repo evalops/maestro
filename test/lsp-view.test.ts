@@ -1,4 +1,34 @@
+import { Container, TUI } from "@evalops/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const createStubTerminal = (): import("@evalops/tui").Terminal => ({
+	start: vi.fn(),
+	stop: vi.fn(),
+	write: vi.fn(),
+	get columns() {
+		return 80;
+	},
+	get rows() {
+		return 24;
+	},
+	moveBy: vi.fn(),
+	hideCursor: vi.fn(),
+	showCursor: vi.fn(),
+	clearLine: vi.fn(),
+	clearFromCursor: vi.fn(),
+	clearScreen: vi.fn(),
+});
+
+class StubTui extends TUI {
+	requestRender = vi.fn();
+	setFocus = vi.fn();
+	start = vi.fn();
+	stop = vi.fn();
+
+	constructor() {
+		super(createStubTerminal());
+	}
+}
 
 type LspMocks = {
 	getClients: ReturnType<typeof vi.fn>;
@@ -30,35 +60,8 @@ const buildView = async (features: {
 
 	const { LspView } = await import("../src/tui/lsp-view.js");
 
-	const chatChildren: unknown[] = [];
-	const chatContainer = {
-		children: chatChildren,
-		addChild: vi.fn((child: unknown) => {
-			chatChildren.push(child);
-		}),
-		removeChild: vi.fn(),
-		clear: vi.fn(() => {
-			chatChildren.length = 0;
-		}),
-		render: vi.fn().mockReturnValue([]),
-	} as unknown as import("@evalops/tui").Container;
-
-	const uiChildren: unknown[] = [];
-	const ui = {
-		children: uiChildren,
-		addChild: vi.fn((child: unknown) => {
-			uiChildren.push(child);
-		}),
-		removeChild: vi.fn(),
-		clear: vi.fn(() => {
-			uiChildren.length = 0;
-		}),
-		render: vi.fn().mockReturnValue([]),
-		requestRender: vi.fn(),
-		setFocus: vi.fn(),
-		start: vi.fn(),
-		stop: vi.fn(),
-	} as unknown as import("@evalops/tui").TUI;
+	const chatContainer = new Container();
+	const ui = new StubTui();
 	const notifications = {
 		showInfo: vi.fn(),
 		showError: vi.fn(),

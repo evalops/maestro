@@ -102,7 +102,7 @@ function getNumberParam(params: Record<string, unknown>, key: string): number {
 }
 
 type BatchResultDetails = {
-	results?: Array<Record<string, unknown>>;
+	results: Array<Record<string, unknown>>;
 	successful?: number;
 	failed?: number;
 	discarded?: number;
@@ -112,7 +112,11 @@ type BatchResultDetails = {
 };
 
 function getBatchDetails(result: AgentToolResult<unknown>): BatchResultDetails {
-	return (result.details as BatchResultDetails) ?? {};
+	const details = (result.details as Partial<BatchResultDetails>) ?? {};
+	return {
+		...details,
+		results: details.results ?? [],
+	};
 }
 
 describe("batch tool", () => {
@@ -233,7 +237,10 @@ describe("batch tool", () => {
 				const details = getBatchDetails(result);
 				expect(details.results).toHaveLength(3);
 				// Third result should be skipped
-				expect(details.results[2].result.content[0]).toMatchObject({
+				const third = details.results[2] as {
+					result: { content: Array<{ type: string; text?: string }> };
+				};
+				expect(third.result.content[0]).toMatchObject({
 					type: "text",
 					text: "Skipped due to prior error",
 				});
@@ -466,12 +473,16 @@ describe("batch tool", () => {
 		});
 
 		it("interpolates results from dependencies", async () => {
-			const echoTool = createTool({
+			const echoTool = createTool<
+				ReturnType<typeof Type.Object>,
+				{ message: string }
+			>({
 				name: "echo",
 				description: "Echo input",
 				schema: Type.Object({ message: Type.String() }),
 				async run({ message }, { respond }) {
-					return respond.text(message).detail({ message });
+					const text = String(message);
+					return respond.text(text).detail({ message: text });
 				},
 			});
 
@@ -489,7 +500,10 @@ describe("batch tool", () => {
 			});
 
 			const details = getBatchDetails(result);
-			expect(details.results[1].result.content[0]).toMatchObject({
+			const second = details.results[1] as {
+				result: { content: Array<{ type: string; text?: string }> };
+			};
+			expect(second.result.content[0]).toMatchObject({
 				type: "text",
 				text: "Got: hello",
 			});

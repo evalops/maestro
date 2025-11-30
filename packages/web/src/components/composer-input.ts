@@ -302,8 +302,11 @@ export class ComposerInput extends LitElement {
 	}
 
 	private scrollSelectedIntoView() {
-		const list = this.shadowRoot?.querySelector(".suggestions");
-		const item = list?.children[this.suggestionIndex] as HTMLElement;
+		const list = this.shadowRoot?.querySelector(
+			".suggestions",
+		) as HTMLElement | null;
+		const item =
+			(list?.children?.[this.suggestionIndex] as HTMLElement) ?? null;
 		if (item && list) {
 			if (item.offsetTop < list.scrollTop) {
 				list.scrollTop = item.offsetTop;
