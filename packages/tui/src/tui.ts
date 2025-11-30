@@ -3,6 +3,7 @@
  */
 import type { Terminal } from "./terminal.js";
 import { visibleWidth, wrapAnsiLines } from "./utils.js";
+import { detectTerminalFeatures, type TerminalFeatures } from "./utils/terminal-features.js";
 
 /**
  * Component interface - all components must implement this
@@ -65,9 +66,23 @@ export class TUI extends Container {
 	private minRenderIntervalMs = 0;
 	private lastRenderTs = 0;
 	private renderTimer: NodeJS.Timeout | null = null;
+	private features: TerminalFeatures;
+	private syncOutput = true;
+	private interruptHandler?: () => void;
+	private overlayActive = false;
 
-	constructor(private terminal: Terminal) {
+	constructor(private terminal: Terminal, features?: TerminalFeatures) {
 		super();
+		this.features = features ?? detectTerminalFeatures();
+		this.syncOutput = this.features.supportsSyncOutput;
+		if (this.features.overSsh) {
+			// Avoid repaint storms on high-latency SSH links.
+			this.minRenderIntervalMs = 24;
+		}
+	}
+
+	setInterruptHandler(handler?: () => void): void {
+		this.interruptHandler = handler;
 	}
 
 	setMinRenderInterval(ms: number): void {
@@ -84,6 +99,45 @@ export class TUI extends Container {
 			() => this.requestRender(),
 		);
 		this.terminal.hideCursor();
+		this.requestRender();
+	}
+
+	/**
+	 * Render a transient overlay in an alternate screen, then restore the inline view.
+	 * Useful for pagers/diffs when running over SSH so scrollback is preserved.
+	 */
+	renderOverlay(render: (width: number, height: number) => string[]): void {
+		if (!this.features.supportsAltScreen || !this.terminal.enterAltScreen) {
+			// Fallback: draw inline after clearing. This preserves scrollback even if alt screen unsupported.
+			const width = Math.max(1, this.terminal.columns);
+			const height = this.terminal.rows;
+			const lines = render(width, height);
+			let buffer = this.syncOutput ? "\x1b[?2026h" : "";
+			buffer += "\x1b[3J\x1b[2J\x1b[H";
+			for (let i = 0; i < lines.length; i++) {
+				if (i > 0) buffer += "\r\n";
+				buffer += lines[i];
+			}
+			if (this.syncOutput) buffer += "\x1b[?2026l";
+			this.terminal.write(buffer);
+			this.requestRender();
+			return;
+		}
+
+		this.overlayActive = true;
+		this.terminal.enterAltScreen();
+		const width = Math.max(1, this.terminal.columns);
+		const height = this.terminal.rows;
+		const lines = render(width, height);
+		let buffer = this.syncOutput ? "\x1b[?2026h" : "";
+		for (let i = 0; i < lines.length; i++) {
+			if (i > 0) buffer += "\r\n";
+			buffer += lines[i];
+		}
+		if (this.syncOutput) buffer += "\x1b[?2026l";
+		this.terminal.write(buffer);
+		this.terminal.leaveAltScreen?.();
+		this.overlayActive = false;
 		this.requestRender();
 	}
 
@@ -118,6 +172,11 @@ export class TUI extends Container {
 	}
 
 	private handleInput(data: string): void {
+		// Global interrupt path: Ctrl+C or bare Esc should always have an effect.
+		if ((data === "\u0003" || data === "\u001b") && this.interruptHandler) {
+			this.interruptHandler();
+			return;
+		}
 		// Pass input to focused component (including Ctrl+C)
 		// The focused component can decide how to handle Ctrl+C
 		if (this.focusedComponent?.handleInput) {
@@ -140,12 +199,12 @@ export class TUI extends Container {
 
 		// First render - just output everything without clearing
 		if (this.previousLines.length === 0) {
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
+			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
 				buffer += newLines[i];
 			}
-			buffer += "\x1b[?2026l"; // End synchronized output
+			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
 
 			// After rendering N lines, cursor is at end of last line (line N-1)
@@ -157,13 +216,13 @@ export class TUI extends Container {
 
 		// Width changed - full re-render
 		if (widthChanged) {
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
+			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
 				buffer += newLines[i];
 			}
-			buffer += "\x1b[?2026l"; // End synchronized output
+			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
 
 			this.cursorRow = newLines.length - 1;
@@ -214,7 +273,7 @@ export class TUI extends Container {
 		}
 
 		// Render from first changed line to end
-		let buffer = "\x1b[?2026h"; // Begin synchronized output
+		let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 
 		// Move cursor to first changed line
 		const lineDiff = firstChanged - this.cursorRow;
@@ -237,7 +296,7 @@ export class TUI extends Container {
 			buffer += newLines[i];
 		}
 
-		buffer += "\x1b[?2026l"; // End synchronized output
+		if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 
 		// Write entire buffer at once
 		this.terminal.write(buffer);

@@ -50,6 +50,8 @@ export class Editor implements Component {
 	private pasteBuffer = "";
 	private isInPaste = false;
 	private largePasteMode: "placeholder" | "verbatim" = "placeholder";
+	private burstPasteTimer: NodeJS.Timeout | null = null;
+	private burstPasteBuffer = "";
 
 	// Undo/redo history
 	private undoStack: HistoryEntry[] = [];
@@ -165,6 +167,13 @@ export class Editor implements Component {
 		return result;
 	}
 	handleInput(inputData: string): void {
+		// Treat multi-character blobs arriving in raw mode as a paste burst when
+		// bracketed paste isn't available (common over SSH/tmux). We debounce
+		// for a few ms to avoid interleaving with streamed output.
+		if (this.maybeHandleBurstPaste(inputData)) {
+			return;
+		}
+
 		let data = inputData;
 		// Handle bracketed paste mode
 		// Start of paste: \x1b[200~
@@ -468,6 +477,26 @@ export class Editor implements Component {
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
+	}
+
+	private maybeHandleBurstPaste(data: string): boolean {
+		// Ignore control characters and single key presses
+		if (data.length <= 1) return false;
+		// If bracketed paste markers are present, let the main handler manage them.
+		if (data.includes("\x1b[200~") || data.includes("\x1b[201~")) {
+			return false;
+		}
+		this.burstPasteBuffer += data;
+		if (this.burstPasteTimer) {
+			return true;
+		}
+		this.burstPasteTimer = setTimeout(() => {
+			const content = this.burstPasteBuffer;
+			this.burstPasteBuffer = "";
+			this.burstPasteTimer = null;
+			this.handlePaste(content);
+		}, 12);
+		return true;
 	}
 	// All the editor methods from before...
 	setLargePasteMode(mode: "placeholder" | "verbatim"): void {

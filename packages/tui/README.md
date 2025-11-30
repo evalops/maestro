@@ -86,6 +86,15 @@ Animated loading indicator.
 const loader = new Loader("Processing...");
 ```
 
+#### StatusBar
+Lightweight status strip with spinner and interrupt hint. Handy over SSH where prompts can be missed.
+
+```typescript
+const status = new StatusBar({ message: "Working", interruptHint: "Ctrl+C" });
+tui.addChild(status);
+tui.setInterruptHandler(() => abortCurrentTask());
+```
+
 #### SelectList
 Interactive list selector with keyboard navigation.
 

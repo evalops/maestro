@@ -13,6 +13,10 @@ export interface Terminal {
 	clearLine(): void;
 	clearFromCursor(): void;
 	clearScreen(): void;
+	enterAltScreen?(): void;
+	leaveAltScreen?(): void;
+	enableBracketedPaste?(): void;
+	disableBracketedPaste?(): void;
 }
 
 /**
@@ -22,10 +26,13 @@ export class ProcessTerminal implements Terminal {
 	private wasRaw = false;
 	private inputHandler?: (data: string) => void;
 	private resizeHandler?: () => void;
+	private bracketedPasteEnabled = false;
+	private altScreenActive = false;
 
 	start(onInput: (data: string) => void, onResize: () => void): void {
 		this.inputHandler = onInput;
 		this.resizeHandler = onResize;
+		const features = detectTerminalFeatures();
 
 		// Save previous state and enable raw mode
 		this.wasRaw = process.stdin.isRaw || false;
@@ -35,8 +42,9 @@ export class ProcessTerminal implements Terminal {
 		process.stdin.setEncoding("utf8");
 		process.stdin.resume();
 
-		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
-		process.stdout.write("\x1b[?2004h");
+		if (features.supportsBracketedPaste) {
+			this.enableBracketedPaste?.();
+		}
 
 		// Set up event handlers
 		process.stdin.on("data", this.inputHandler);
@@ -44,8 +52,10 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
-		// Disable bracketed paste mode
-		process.stdout.write("\x1b[?2004l");
+		if (this.altScreenActive) {
+			this.leaveAltScreen?.();
+		}
+		this.disableBracketedPaste?.();
 
 		// Remove event handlers
 		if (this.inputHandler) {
@@ -105,4 +115,29 @@ export class ProcessTerminal implements Terminal {
 	clearScreen(): void {
 		process.stdout.write("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
 	}
+
+	enterAltScreen(): void {
+		if (this.altScreenActive) return;
+		process.stdout.write("\x1b[?1049h\x1b[?1007h");
+		this.altScreenActive = true;
+	}
+
+	leaveAltScreen(): void {
+		if (!this.altScreenActive) return;
+		process.stdout.write("\x1b[?1007l\x1b[?1049l");
+		this.altScreenActive = false;
+	}
+
+	enableBracketedPaste(): void {
+		if (this.bracketedPasteEnabled) return;
+		process.stdout.write("\x1b[?2004h");
+		this.bracketedPasteEnabled = true;
+	}
+
+	disableBracketedPaste(): void {
+		if (!this.bracketedPasteEnabled) return;
+		process.stdout.write("\x1b[?2004l");
+		this.bracketedPasteEnabled = false;
+	}
 }
+import { detectTerminalFeatures } from "./utils/terminal-features.js";

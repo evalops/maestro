@@ -6,6 +6,8 @@ type LoaderMode = "default" | "compact";
 
 interface LoaderOptions {
 	mode?: LoaderMode;
+	lowColor?: boolean;
+	lowUnicode?: boolean;
 }
 
 /**
@@ -30,12 +32,16 @@ export class Loader extends Text {
 	private title: string | null = null;
 	private readonly mode: LoaderMode;
 	private readonly compactSegments = 10;
+	private readonly lowColor: boolean;
+	private readonly lowUnicode: boolean;
 
 	constructor(ui: TUI, message = "Loading...", options: LoaderOptions = {}) {
 		super("", 1, 0);
 		this.message = message;
 		this.ui = ui;
 		this.mode = options.mode ?? "default";
+		this.lowColor = Boolean(options.lowColor);
+		this.lowUnicode = Boolean(options.lowUnicode);
 		this.start();
 	}
 
@@ -93,8 +99,8 @@ export class Loader extends Text {
 		const trimmed = this.message.trim();
 		if (!trimmed) return "";
 		const [first, ...rest] = trimmed.split(/\s+/);
-		const accent = chalk.hex("#f1c0e8");
-		const secondary = chalk.hex("#94a3b8");
+		const accent = this.lowColor ? (s: string) => s : chalk.hex("#f1c0e8");
+		const secondary = this.lowColor ? (s: string) => s : chalk.hex("#94a3b8");
 		const highlightedFirst = accent(first ?? "");
 		return rest.length
 			? `${highlightedFirst} ${secondary(rest.join(" "))}`
@@ -105,12 +111,14 @@ export class Loader extends Text {
 		if (!this.stageInfo) return "";
 		const { step, total } = this.stageInfo;
 		const safeStep = Math.max(1, Math.min(step, total));
-		return chalk.gray(`· step ${safeStep}/${total}`);
+		return (this.lowColor ? (s: string) => s : chalk.gray)(
+			`· step ${safeStep}/${total}`,
+		);
 	}
 
 	private formatHint(): string {
 		if (this.mode === "compact" || !this.hint) return "";
-		return chalk.gray(this.hint);
+		return (this.lowColor ? (s: string) => s : chalk.gray)(this.hint);
 	}
 
 	private buildProgressLine(): string {
@@ -131,14 +139,19 @@ export class Loader extends Text {
 			return `${chalk.gray("⟪")}${blocks.join("")}${chalk.gray("⟫")} ${chalk.gray(percentText)}`;
 		}
 
-		const baseColor = "#475569";
-		const accentColor = "#c4b5fd";
+		const baseColor = this.lowColor ? undefined : "#475569";
+		const accentColor = this.lowColor ? undefined : "#c4b5fd";
+		const glyph = this.lowUnicode ? "*" : "●";
 		const dots = this.progressDots.map((dotIndex) => {
 			const isActive =
 				(this.progressOffset + dotIndex) % this.progressDots.length === 0;
-			return isActive ? chalk.hex(accentColor)("●") : chalk.hex(baseColor)("●");
+			if (this.lowColor) return isActive ? glyph : glyph.toLowerCase();
+			return isActive
+				? chalk.hex(accentColor ?? "")(glyph)
+				: chalk.hex(baseColor ?? "")(glyph);
 		});
-		return `${chalk.gray("·· ")}${dots.join(" ")}${chalk.gray(" ··")}`;
+		const gray = this.lowColor ? (s: string) => s : chalk.gray;
+		return `${gray("·· ")}${dots.join(" ")}${gray(" ··")}`;
 	}
 
 	private formatCompactStage(): string {
@@ -193,9 +206,14 @@ ${secondaryLine}`);
 			return;
 		}
 		const spinner = this.spinnerFrames[this.progressOffset];
-		const spinnerGlyph = chalk.hex(spinner.color)(spinner.glyph);
+		const glyph = this.lowUnicode ? "*" : spinner.glyph;
+		const spinnerGlyph = this.lowColor
+			? glyph
+			: chalk.hex(spinner.color)(glyph);
 		const titlePart = this.title
-			? `${chalk.hex("#b3b8ff")(this.title.toUpperCase())} `
+			? `${(this.lowColor ? (s: string) => s : chalk.hex("#b3b8ff"))(
+					this.title.toUpperCase(),
+				)} `
 			: "";
 		const parts = [
 			titlePart ? titlePart.trim() : "",

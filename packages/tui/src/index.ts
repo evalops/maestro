@@ -11,6 +11,7 @@ export type { LargePasteEvent } from "./components/editor.js";
 export { Input } from "./components/input.js";
 export { Loader } from "./components/loader.js";
 export { Markdown, type MarkdownTheme } from "./components/markdown.js";
+export { StatusBar } from "./components/status-bar.js";
 export {
 	type SelectItem,
 	SelectList,
@@ -23,3 +24,4 @@ export { TruncatedText } from "./components/truncated-text.js";
 export { ProcessTerminal, type Terminal } from "./terminal.js";
 export { type Component, Container, TUI } from "./tui.js";
 export { visibleWidth, wrapAnsiLine, wrapAnsiLines } from "./utils.js";
+export { detectTerminalFeatures } from "./utils/terminal-features.js";
