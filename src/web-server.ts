@@ -314,8 +314,8 @@ async function createAgent(
 			model: registeredModel,
 			thinkingLevel,
 			tools,
-			sandboxMode: null,
-			sandboxEnabled: false,
+			sandboxMode: process.env.COMPOSER_SANDBOX ?? null,
+			sandboxEnabled: Boolean(process.env.COMPOSER_SANDBOX),
 		},
 	});
 
