@@ -131,6 +131,7 @@ import {
 	buildReviewPrompt,
 } from "./utils/commands/review-prompt.js";
 import {
+	type FooterHint,
 	type FooterMode,
 	type FooterStats,
 	calculateFooterStats,
@@ -146,6 +147,7 @@ import {
 	resolveFrameworkPreference,
 	setDefaultFramework,
 	setWorkspaceFramework,
+	validateFrameworkPreference,
 } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
@@ -323,6 +325,7 @@ export class TuiRenderer {
 	private startupChangelog?: string | null;
 	private startupChangelogSummary?: string | null;
 	private updateNotice?: UpdateCheckResult | null;
+	private startupWarnings: FooterHint[] = [];
 	private isCyclingModel = false;
 	private isOAuthFlowActive = false;
 	private modalManager: ModalManager;
@@ -398,6 +401,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			footer: this.footer,
 		});
+		this.surfaceStartupWarnings();
 		this.registerBackgroundTaskNotifications();
 		this.approvalController = new ApprovalController({
 			approvalService,
@@ -2379,6 +2383,9 @@ export class TuiRenderer {
 			this.idleFooterHint,
 			...this.buildOperationalHints(),
 		];
+		if (this.startupWarnings.length > 0) {
+			hints.push(...this.startupWarnings.map((w) => w.message));
+		}
 		if (this.planHint) {
 			hints.push(`Plan ${this.planHint}`);
 		}
@@ -2415,6 +2422,17 @@ export class TuiRenderer {
 	private handleEditorTyping(): void {
 		this.footer.clearToast();
 		this.ui.requestRender();
+	}
+
+	private surfaceStartupWarnings(): void {
+		const warning = validateFrameworkPreference();
+		if (!warning) return;
+		this.startupWarnings.push({
+			type: "custom",
+			message: warning,
+			priority: 140,
+		});
+		this.footer.setToast(warning, "warn");
 	}
 
 	private buildQueueHint(): string | null {

@@ -85,13 +85,30 @@ export class FooterComponent {
 	setToast(
 		message: string,
 		tone: "info" | "warn" | "success" | "danger",
-		durationMs = 5000,
+		durationMs?: number,
 	): void {
 		this.activeToast = {
 			message,
 			tone,
-			expiry: Date.now() + durationMs,
+			expiry: Date.now() + this.resolveToastDuration(tone, durationMs),
 		};
+	}
+
+	private resolveToastDuration(
+		tone: "info" | "warn" | "success" | "danger",
+		override?: number,
+	): number {
+		if (override && override > 0) return override;
+		switch (tone) {
+			case "danger":
+				return 8000;
+			case "warn":
+				return 6000;
+			case "success":
+				return 4500;
+			default:
+				return 4000;
+		}
 	}
 
 	clearToast(): void {

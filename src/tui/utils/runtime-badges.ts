@@ -24,7 +24,7 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 		badges.push("plan:on");
 	}
 
-	if (params.approvalMode && params.approvalMode !== "auto") {
+	if (params.approvalMode) {
 		badges.push(`approvals:${params.approvalMode}`);
 	}
 
