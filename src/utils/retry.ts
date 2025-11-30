@@ -23,6 +23,77 @@ export interface RetryOptions {
 	onRetry?: (error: Error, attempt: number, delay: number) => void;
 }
 
+/**
+ * Parse retry-after header value to milliseconds.
+ * Supports: seconds (number), milliseconds header, or HTTP date format.
+ */
+export function parseRetryAfter(
+	headers?: Record<string, string>,
+): number | null {
+	if (!headers) return null;
+
+	// Check retry-after-ms first (milliseconds)
+	const retryAfterMs = headers["retry-after-ms"];
+	if (retryAfterMs) {
+		const ms = Number.parseFloat(retryAfterMs);
+		if (!Number.isNaN(ms) && ms > 0) {
+			return Math.ceil(ms);
+		}
+	}
+
+	// Check retry-after (seconds or HTTP date)
+	const retryAfter = headers["retry-after"];
+	if (retryAfter) {
+		// Try parsing as seconds
+		const seconds = Number.parseFloat(retryAfter);
+		if (!Number.isNaN(seconds) && seconds > 0) {
+			return Math.ceil(seconds * 1000);
+		}
+
+		// Try parsing as HTTP date (e.g., "Wed, 21 Oct 2015 07:28:00 GMT")
+		const dateMs = Date.parse(retryAfter);
+		if (!Number.isNaN(dateMs)) {
+			const delayMs = dateMs - Date.now();
+			if (delayMs > 0) {
+				return Math.ceil(delayMs);
+			}
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Extract headers from an error if available.
+ * Works with fetch errors and custom error types.
+ */
+export function extractRetryHeaders(
+	error: unknown,
+): Record<string, string> | undefined {
+	if (!error || typeof error !== "object") return undefined;
+
+	// Check for responseHeaders property (common pattern)
+	const errObj = error as Record<string, unknown>;
+	if (errObj.responseHeaders && typeof errObj.responseHeaders === "object") {
+		return errObj.responseHeaders as Record<string, string>;
+	}
+
+	// Check for headers property
+	if (errObj.headers && typeof errObj.headers === "object") {
+		return errObj.headers as Record<string, string>;
+	}
+
+	// Check for response.headers (fetch-like errors)
+	if (errObj.response && typeof errObj.response === "object") {
+		const response = errObj.response as Record<string, unknown>;
+		if (response.headers && typeof response.headers === "object") {
+			return response.headers as Record<string, string>;
+		}
+	}
+
+	return undefined;
+}
+
 export class RetryError extends Error {
 	constructor(
 		message: string,
@@ -84,13 +155,21 @@ export async function retry<T>(
 				throw lastError;
 			}
 
-			// Calculate delay for next attempt
-			if (exponentialBackoff) {
+			// Check for retry-after header first
+			const retryHeaders = extractRetryHeaders(error);
+			const retryAfterDelay = parseRetryAfter(retryHeaders);
+
+			if (retryAfterDelay !== null) {
+				// Use server-specified delay (capped at maxDelay)
+				delay = Math.min(retryAfterDelay, maxDelay);
+			} else if (exponentialBackoff) {
+				// Fall back to exponential backoff
 				delay = Math.min(delay * backoffMultiplier, maxDelay);
 			}
 
 			logger.warn(`Attempt ${attempt} failed, retrying in ${delay}ms`, {
 				error: lastError.message,
+				retryAfterHeader: retryAfterDelay !== null,
 				attempt,
 				maxAttempts,
 			});

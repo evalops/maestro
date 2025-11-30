@@ -673,6 +673,55 @@ describe("Composer Tools", () => {
 				}),
 			).rejects.toThrow("Cannot use both");
 		});
+
+		it("suggests approximate matches using similarity scoring", async () => {
+			const testFile = join(testDir, "edit-fuzzy.txt");
+			// Create a file with content similar but not identical to what we'll search for
+			writeFileSync(
+				testFile,
+				"function calculateTotal(items) {\n  return items.reduce((a, b) => a + b, 0);\n}",
+			);
+
+			// Try to edit with slightly different text (different whitespace/casing)
+			try {
+				await editTool.execute("test-fuzzy-match", {
+					path: testFile,
+					oldText:
+						"function  calculateTotal(items){\n  return items.reduce((a,b)=>a+b,0);\n}",
+					newText: "replaced",
+				});
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const message = (error as Error).message;
+				expect(message).toContain("Could not find the exact text");
+				// Should suggest the similar match
+				expect(message).toContain("Possible matches");
+				expect(message).toContain("Line 1");
+			}
+		});
+
+		it("suggests multi-line approximate matches", async () => {
+			const testFile = join(testDir, "edit-multiline-fuzzy.txt");
+			writeFileSync(
+				testFile,
+				"const config = {\n  host: 'localhost',\n  port: 3000\n};",
+			);
+
+			try {
+				await editTool.execute("test-multiline-fuzzy", {
+					path: testFile,
+					// Missing comma, different quotes
+					oldText: 'const config = {\n  host: "localhost"\n  port: 3000\n};',
+					newText: "replaced",
+				});
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const message = (error as Error).message;
+				expect(message).toContain("Could not find the exact text");
+				// Should still find the similar block
+				expect(message).toContain("Possible matches");
+			}
+		});
 	});
 
 	describe("bash tool", () => {
@@ -1711,6 +1760,82 @@ describe("sandbox support", () => {
 			expect(output).toContain("real-file.txt");
 
 			rmSync(testDir, { recursive: true, force: true });
+		});
+	});
+});
+
+describe("retry utilities", () => {
+	// Import dynamically to avoid side effects
+	const getRetryUtils = async () => import("../src/utils/retry.js");
+
+	describe("parseRetryAfter", () => {
+		it("parses retry-after-ms header (milliseconds)", async () => {
+			const { parseRetryAfter } = await getRetryUtils();
+			expect(parseRetryAfter({ "retry-after-ms": "5000" })).toBe(5000);
+			expect(parseRetryAfter({ "retry-after-ms": "1500.5" })).toBe(1501);
+		});
+
+		it("parses retry-after header (seconds)", async () => {
+			const { parseRetryAfter } = await getRetryUtils();
+			expect(parseRetryAfter({ "retry-after": "5" })).toBe(5000);
+			expect(parseRetryAfter({ "retry-after": "1.5" })).toBe(1500);
+		});
+
+		it("parses retry-after header (HTTP date)", async () => {
+			const { parseRetryAfter } = await getRetryUtils();
+			const futureDate = new Date(Date.now() + 10000).toUTCString();
+			const result = parseRetryAfter({ "retry-after": futureDate });
+			// Should be approximately 10 seconds (allow some variance)
+			expect(result).toBeGreaterThan(9000);
+			expect(result).toBeLessThan(11000);
+		});
+
+		it("returns null for missing headers", async () => {
+			const { parseRetryAfter } = await getRetryUtils();
+			expect(parseRetryAfter(undefined)).toBeNull();
+			expect(parseRetryAfter({})).toBeNull();
+		});
+
+		it("returns null for invalid values", async () => {
+			const { parseRetryAfter } = await getRetryUtils();
+			expect(parseRetryAfter({ "retry-after": "invalid" })).toBeNull();
+			expect(parseRetryAfter({ "retry-after-ms": "not-a-number" })).toBeNull();
+		});
+
+		it("prefers retry-after-ms over retry-after", async () => {
+			const { parseRetryAfter } = await getRetryUtils();
+			const result = parseRetryAfter({
+				"retry-after-ms": "1000",
+				"retry-after": "5",
+			});
+			expect(result).toBe(1000);
+		});
+	});
+
+	describe("extractRetryHeaders", () => {
+		it("extracts responseHeaders property", async () => {
+			const { extractRetryHeaders } = await getRetryUtils();
+			const error = { responseHeaders: { "retry-after": "5" } };
+			expect(extractRetryHeaders(error)).toEqual({ "retry-after": "5" });
+		});
+
+		it("extracts headers property", async () => {
+			const { extractRetryHeaders } = await getRetryUtils();
+			const error = { headers: { "retry-after-ms": "1000" } };
+			expect(extractRetryHeaders(error)).toEqual({ "retry-after-ms": "1000" });
+		});
+
+		it("extracts response.headers property", async () => {
+			const { extractRetryHeaders } = await getRetryUtils();
+			const error = { response: { headers: { "retry-after": "10" } } };
+			expect(extractRetryHeaders(error)).toEqual({ "retry-after": "10" });
+		});
+
+		it("returns undefined for errors without headers", async () => {
+			const { extractRetryHeaders } = await getRetryUtils();
+			expect(extractRetryHeaders(new Error("test"))).toBeUndefined();
+			expect(extractRetryHeaders(null)).toBeUndefined();
+			expect(extractRetryHeaders("string error")).toBeUndefined();
 		});
 	});
 });

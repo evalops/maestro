@@ -439,27 +439,106 @@ function findExactMatches(content: string, snippet: string): MatchPreview[] {
 	return matches;
 }
 
+/**
+ * Levenshtein distance between two strings.
+ * Returns the minimum number of single-character edits needed.
+ */
+function levenshtein(a: string, b: string): number {
+	if (a.length === 0) return b.length;
+	if (b.length === 0) return a.length;
+
+	// Use two rows instead of full matrix for memory efficiency
+	let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	let curr = new Array<number>(b.length + 1);
+
+	for (let i = 1; i <= a.length; i++) {
+		curr[0] = i;
+		for (let j = 1; j <= b.length; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			curr[j] = Math.min(
+				prev[j] + 1, // deletion
+				curr[j - 1] + 1, // insertion
+				prev[j - 1] + cost, // substitution
+			);
+		}
+		[prev, curr] = [curr, prev];
+	}
+	return prev[b.length];
+}
+
+/**
+ * Calculate similarity ratio (0-1) between two strings.
+ */
+function similarity(a: string, b: string): number {
+	const maxLen = Math.max(a.length, b.length);
+	if (maxLen === 0) return 1;
+	return 1 - levenshtein(a, b) / maxLen;
+}
+
+// Similarity thresholds for approximate matching
+const SINGLE_CANDIDATE_THRESHOLD = 0.5; // Accept single match if 50%+ similar
+const MULTI_CANDIDATE_THRESHOLD = 0.6; // Need 60%+ to show when multiple matches
+
 function findApproximateMatches(
 	content: string,
 	snippet: string,
 ): MatchPreview[] {
+	// First try regex-based relaxed matching
 	const relaxed = buildRelaxedRegex(snippet);
-	if (!relaxed) return [];
-	const matches: MatchPreview[] = [];
-	let result: RegExpExecArray | null;
-	while (matches.length < 5) {
-		result = relaxed.exec(content);
-		if (!result) {
-			break;
+	const regexMatches: Array<MatchPreview & { similarity: number }> = [];
+
+	if (relaxed) {
+		let result: RegExpExecArray | null;
+		while (regexMatches.length < 10) {
+			result = relaxed.exec(content);
+			if (!result) break;
+			const matchIndex = result.index;
+			const matchText = result[0];
+			const sim = similarity(snippet.trim(), matchText.trim());
+			regexMatches.push({
+				line: getLineNumber(content, matchIndex),
+				snippet: getSnippet(content, matchIndex, matchText.length),
+				similarity: sim,
+			});
 		}
-		const matchIndex = result.index;
-		const matchLength = result[0]?.length ?? snippet.length;
-		matches.push({
-			line: getLineNumber(content, matchIndex),
-			snippet: getSnippet(content, matchIndex, matchLength),
-		});
 	}
-	return matches;
+
+	// Also try line-by-line similarity for multi-line snippets
+	const snippetLines = snippet.trim().split("\n");
+	if (snippetLines.length > 1) {
+		const contentLines = content.split("\n");
+		for (let i = 0; i <= contentLines.length - snippetLines.length; i++) {
+			const candidateLines = contentLines.slice(i, i + snippetLines.length);
+			const candidate = candidateLines.join("\n");
+			const sim = similarity(snippet.trim(), candidate.trim());
+			if (sim >= SINGLE_CANDIDATE_THRESHOLD) {
+				// Check if we already have this line
+				const lineNum = i + 1;
+				if (!regexMatches.some((m) => m.line === lineNum)) {
+					regexMatches.push({
+						line: lineNum,
+						snippet: candidateLines.slice(0, 3).join("\n").trim(),
+						similarity: sim,
+					});
+				}
+			}
+			if (regexMatches.length >= 10) break;
+		}
+	}
+
+	// Sort by similarity descending
+	regexMatches.sort((a, b) => b.similarity - a.similarity);
+
+	// Filter by threshold based on number of candidates
+	const threshold =
+		regexMatches.length === 1
+			? SINGLE_CANDIDATE_THRESHOLD
+			: MULTI_CANDIDATE_THRESHOLD;
+
+	return regexMatches
+		.filter((m) => m.similarity >= threshold)
+		.slice(0, 5)
+		.map(({ line, snippet }) => ({ line, snippet }));
 }
 
 function buildRelaxedRegex(snippet: string): RegExp | null {
