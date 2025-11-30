@@ -11,6 +11,7 @@ export function printHelp(version: string) {
 		"--provider <name>       Provider name (default: anthropic)",
 		"--model <id>            Model ID (default: claude-sonnet-4-5)",
 		"--models <patterns>     Comma-separated patterns for Ctrl+P model cycling",
+		"--tools <names>         Comma-separated tool names to enable (e.g., read,search,list,find)",
 		"--api-key <key>         API key (defaults to env vars)",
 		"--codex-api-key <key>   Codex/ChatGPT API token (defaults to CODEX_API_KEY)",
 		"--system-prompt <text>  System prompt (default: coding assistant prompt)",
@@ -78,12 +79,16 @@ export function printHelp(version: string) {
 	const tools = `${sectionHeading("Available Tools")}${muted(
 		`  read   - Read file contents
   list   - List files in a directory
+  find   - Fast file search using fd (glob patterns)
   search - Search files with ripgrep-style filtering
   diff   - Show git diffs (workspace, staged, or ranges)
   bash   - Execute bash commands
   edit   - Edit files with find/replace
   write  - Write files (creates/overwrites)
-  todo   - Create TodoWrite-style checklists`,
+  todo   - Create TodoWrite-style checklists
+  
+  Read-only tools: batch,read,list,find,search,diff,status
+  Example: composer --tools batch,read,list,find,search,diff "Analyze this code"`,
 	)}`;
 
 	console.log(

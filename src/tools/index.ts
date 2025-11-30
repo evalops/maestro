@@ -9,6 +9,8 @@ import { codesearchTool } from "./codesearch.js";
 import { diffTool } from "./diff.js";
 // Structured find/replace editing
 import { editTool } from "./edit.js";
+// Fast file finder using fd
+import { findTool } from "./find.js";
 // GitHub CLI tools (requires gh CLI)
 import { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 // Directory listing / globbing
@@ -39,6 +41,7 @@ export { createBatchTool } from "./batch.js";
 export { codesearchTool } from "./codesearch.js";
 export { diffTool } from "./diff.js";
 export { editTool } from "./edit.js";
+export { findTool } from "./find.js";
 export { listTool } from "./list.js";
 export { readTool } from "./read.js";
 export { searchTool } from "./search.js";
@@ -48,6 +51,7 @@ export { websearchTool } from "./websearch.js";
 export { writeTool } from "./write.js";
 export { statusTool } from "./status.js";
 export { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
+export { ensureTool, getToolPath } from "./tools-manager.js";
 
 // Create batch tool with all available tools (excluding batch itself)
 // Note: GitHub tools are included for read-only operations (list, view)
@@ -55,6 +59,7 @@ export { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 const allTools = [
 	readTool,
 	listTool,
+	findTool,
 	searchTool,
 	diffTool,
 	bashTool,
@@ -77,6 +82,7 @@ export const codingTools = [
 	batchTool,
 	readTool,
 	listTool,
+	findTool,
 	searchTool,
 	diffTool,
 	bashTool,
@@ -93,6 +99,58 @@ export const codingTools = [
 	ghIssueTool,
 	ghRepoTool,
 ];
+
+// Tool registry for --tools flag filtering
+export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
+	batch: batchTool,
+	read: readTool,
+	list: listTool,
+	find: findTool,
+	search: searchTool,
+	diff: diffTool,
+	bash: bashTool,
+	background_tasks: backgroundTasksTool,
+	edit: editTool,
+	write: writeTool,
+	todo: todoTool,
+	websearch: websearchTool,
+	codesearch: codesearchTool,
+	webfetch: webfetchTool,
+	status: statusTool,
+	gh_pr: ghPrTool,
+	gh_issue: ghIssueTool,
+	gh_repo: ghRepoTool,
+};
+
+// Read-only tools for restricted subagents (Oracle-style)
+export const readOnlyToolNames = [
+	"batch",
+	"read",
+	"list",
+	"find",
+	"search",
+	"diff",
+	"status",
+] as const;
+
+export function filterTools(
+	toolNames: string[],
+): (typeof codingTools)[number][] {
+	const filtered: (typeof codingTools)[number][] = [];
+	for (const name of toolNames) {
+		const tool = toolRegistry[name];
+		if (tool) {
+			filtered.push(tool);
+		}
+	}
+	// Recreate batch tool with only the filtered tools (excluding batch itself)
+	const batchableTools = filtered.filter((t) => t.name !== "batch");
+	if (filtered.some((t) => t.name === "batch") && batchableTools.length > 0) {
+		const filteredBatch = createBatchTool(batchableTools);
+		return [filteredBatch, ...batchableTools];
+	}
+	return filtered;
+}
 
 export const vscodeTools = [
 	vscodeGetDiagnosticsTool,

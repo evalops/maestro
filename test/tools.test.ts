@@ -1600,6 +1600,7 @@ describe("codingTools bundle", () => {
 			"batch",
 			"read",
 			"list",
+			"find",
 			"search",
 			"diff",
 			"bash",

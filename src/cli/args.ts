@@ -28,6 +28,7 @@ export interface Args {
 	execResumeId?: string;
 	execUseLast?: boolean;
 	models?: string[];
+	tools?: string[];
 	messages: string[];
 }
 
@@ -133,6 +134,14 @@ export function parseArgs(args: string[]): Args {
 			result.execOutputLast = args[++i];
 		} else if (arg === "--last" && result.command === "exec") {
 			result.execUseLast = true;
+		} else if (arg === "--tools" && i + 1 < args.length) {
+			const toolNames = args[++i]
+				.split(",")
+				.map((value) => value.trim())
+				.filter((value) => value.length > 0);
+			if (toolNames.length > 0) {
+				result.tools = toolNames;
+			}
 		} else if (!arg.startsWith("-")) {
 			if (!result.command && COMMANDS.has(arg)) {
 				result.command = arg;

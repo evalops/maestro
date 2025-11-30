@@ -62,7 +62,12 @@ import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-h
 import { PolicyError, checkSessionLimits } from "./safety/policy.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
-import { codingTools } from "./tools/index.js";
+import {
+	codingTools,
+	filterTools,
+	readOnlyToolNames,
+	toolRegistry,
+} from "./tools/index.js";
 import { TuiRenderer } from "./tui/tui-renderer.js";
 import {
 	formatChangelogVersion,
@@ -667,7 +672,13 @@ export async function main(args: string[]) {
 		);
 		process.exit(1);
 	}
-	const systemPrompt = buildSystemPrompt(parsed.systemPrompt);
+	// Build system prompt - defer until after tools are filtered if needed
+	// We need to know the tool names for dynamic system prompt generation
+	const systemPromptToolNames = parsed.tools;
+	const systemPrompt = buildSystemPrompt(
+		parsed.systemPrompt,
+		systemPromptToolNames,
+	);
 
 	const isInteractiveTui =
 		parsed.messages.length === 0 && (parsed.mode ?? "text") !== "rpc";
@@ -684,7 +695,31 @@ export async function main(args: string[]) {
 	const approvalService = new ActionApprovalService(approvalModeOverride);
 
 	// Build initial tools list (MCP tools added dynamically after connection)
-	const allTools = [...codingTools];
+	// Apply --tools filter if specified
+	let baseTools = codingTools;
+	if (parsed.tools && parsed.tools.length > 0) {
+		const filteredTools = filterTools(parsed.tools);
+		if (filteredTools.length === 0) {
+			console.error(
+				chalk.red(
+					`No valid tools matched --tools filter: ${parsed.tools.join(", ")}`,
+				),
+			);
+			console.log(
+				chalk.dim(
+					`Available tools: ${Object.keys(toolRegistry).sort().join(", ")}`,
+				),
+			);
+			process.exit(1);
+		}
+		baseTools = filteredTools;
+		console.log(
+			chalk.dim(
+				`Tools restricted to: ${filteredTools.map((t) => t.name).join(", ")}`,
+			),
+		);
+	}
+	const allTools = [...baseTools];
 
 	const agent = new Agent({
 		initialState: {
@@ -718,7 +753,7 @@ export async function main(args: string[]) {
 		mcpManager.on("connected", () => {
 			const mcpTools = getAllMcpTools();
 			if (mcpTools.length > 0) {
-				const updatedTools = [...codingTools, ...mcpTools];
+				const updatedTools = [...baseTools, ...mcpTools];
 				agent.setTools(updatedTools);
 				// Update composer manager's base tools (preserves active composer state)
 				composerManager.updateBaseTools(updatedTools);
@@ -733,7 +768,7 @@ export async function main(args: string[]) {
 			toolsChangedTimeout = setTimeout(() => {
 				toolsChangedTimeout = null;
 				const mcpTools = getAllMcpTools();
-				const updatedTools = [...codingTools, ...mcpTools];
+				const updatedTools = [...baseTools, ...mcpTools];
 				agent.setTools(updatedTools);
 				composerManager.updateBaseTools(updatedTools);
 			}, 100);
