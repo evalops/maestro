@@ -195,24 +195,43 @@ Every operation is exposed as an explicit slash command. Type `/help` for the fu
 
 ## Security
 
-Composer ships with layered security enabled by default:
+Composer ships with a layered security model that balances power with protection:
 
-**Action Firewall:**
-- Blocks dangerous commands (`rm -rf`, `mkfs`, `chmod 000`, etc.)
-- Protects system paths (`/etc`, `/usr`, `/var`, `/boot`)
-- Requires approval for writes outside your project
+### Action Firewall (enabled by default)
 
-**Approval Modes** (`--approval-mode`):
+- **Dangerous command detection** – Blocks or requires approval for `rm -rf`, `mkfs`, `dd if=/dev/zero`, `chmod 000`, and other high-risk patterns
+- **Tree-sitter analysis** – Parses bash commands for deeper safety checks beyond regex (detects `sudo`, `git push --force`, command substitution, etc.)
+- **System path protection** – Hard blocks modifications to `/etc`, `/usr`, `/var`, `/boot`, `/sys`, `/proc`, `/dev`
+- **Workspace containment** – Requires approval for file writes outside the current project or temp directories
+- **Trusted paths** – Configure additional allowed paths in `~/.composer/firewall.json`
+
+### Approval Modes
+
+Control how Composer handles risky actions via `--approval-mode` or `COMPOSER_APPROVAL_MODE`:
+
 | Mode | Behavior |
 |------|----------|
-| `prompt` (default) | Ask before risky actions |
-| `auto` | Auto-approve (trusted sandboxes only) |
-| `fail` | Reject all high-risk commands |
+| `prompt` (default) | Ask the user in TUI; fail in headless mode |
+| `auto` | Auto-approve all actions (use only in trusted sandboxes) |
+| `fail` | Reject all high-risk commands automatically |
 
-**Safe Mode** (`--safe-mode` or `COMPOSER_SAFE_MODE=1`):
-Extra restrictions on shell writes.
+### Sandbox Execution
 
-See [Safety & Approvals](docs/SAFETY.md) for details.
+```bash
+composer exec --sandbox default        # Workspace containment + firewall active
+composer exec --sandbox danger-full-access  # Remove guardrails (trusted environments only)
+```
+
+Optional Docker sandbox available for stronger isolation (see [docs/SAFETY.md](docs/SAFETY.md) for current status).
+
+### Safe Mode
+
+Enable extra restrictions with `--safe-mode` or `COMPOSER_SAFE_MODE=1`:
+- Additional constraints on shell writes
+- Shield icon in footer indicates active protection
+- Recommended for untrusted environments
+
+See [Safety & Approvals](docs/SAFETY.md) for detailed configuration.
 
 ## Telemetry
 
@@ -244,15 +263,65 @@ Use them for coding conventions, architecture notes, and project-specific instru
 
 ## EvalOps Workflows
 
-Composer is built for automated evaluation pipelines:
+Composer is built for automated evaluation pipelines, making it easy to benchmark agent behavior and wire into CI/CD.
+
+### Running Evaluations
 
 ```bash
-# Run evaluation scenarios
+# Build CLI/TUI/Web and run all scenarios
 npx nx run composer:evals --skip-nx-cache
 ```
 
-- **Customize scenarios:** Add entries to `evals/scenarios.json`
-- **Stream telemetry:** Set `COMPOSER_TELEMETRY=true` or `COMPOSER_TELEMETRY_ENDPOINT`
+This executes scenarios defined in `evals/scenarios.json` and reports pass/fail based on stdout assertions.
+
+### Scenario Format
+
+Each scenario specifies a command and expected output patterns:
+
+```json
+{
+  "scenarios": [
+    {
+      "name": "help-command",
+      "command": "composer --help",
+      "expect": {
+        "stdout": ["Usage:", "--provider", "--model"],
+        "exitCode": 0
+      }
+    },
+    {
+      "name": "version-check",
+      "command": "composer --version",
+      "expect": {
+        "stdout": ["\\d+\\.\\d+\\.\\d+"],
+        "exitCode": 0
+      }
+    }
+  ]
+}
+```
+
+- **stdout** – Array of regular expressions that must all match
+- **exitCode** – Expected process exit code
+- **timeout** – Optional timeout in milliseconds
+
+### Telemetry Integration
+
+Stream evaluation results to your analytics pipeline:
+
+```bash
+# Write to local log file
+export COMPOSER_TELEMETRY=true
+export COMPOSER_TELEMETRY_FILE=~/.composer/telemetry.log
+
+# Or stream to endpoint
+export COMPOSER_TELEMETRY_ENDPOINT=https://your-evalops-dashboard.com/ingest
+
+# Control sampling rate (0.0 to 1.0)
+export COMPOSER_TELEMETRY_SAMPLE=0.25
+```
+
+Payloads include tool name, success flag, duration, and evaluation context. Use `npm run telemetry:report` to summarize success rates and durations from the log.
 
 ### Design Principles
 
@@ -359,35 +428,117 @@ composer [options] [messages...]
 
 ## Composers (Sub-Agents)
 
-Create specialized agent profiles in `~/.composer/composers/` or `.composer/composers/`:
+Composers are specialized agent profiles with custom system prompts, tool restrictions, and model overrides. Configure them in `~/.composer/composers/` (personal) or `.composer/composers/` (project-specific).
+
+### Configuration
 
 ```yaml
 # .composer/composers/code-reviewer.yaml
 name: code-reviewer
 description: Focused code review assistant
 systemPrompt: |
-  You are a code reviewer. Focus on correctness, security, and maintainability.
-tools: [read, search, diff]
-model: claude-sonnet-4-5
+  You are a senior code reviewer. Focus on:
+  - Correctness and edge cases
+  - Security vulnerabilities
+  - Performance implications
+  - Code maintainability
+  
+  Be concise. Flag issues by severity (critical/warning/suggestion).
+  
+tools: [read, search, diff, gh_pr]  # Restricted tool set
+model: claude-opus-4-5-20251101     # Can override default model
 triggers:
-  keywords: [review, pr]
-  files: ["*.ts", "*.py"]
+  keywords: [review, pr, code review]
+  files: ["*.ts", "*.tsx", "*.py", "*.go"]
 ```
 
-Commands: `/composer list`, `/composer activate <name>`, `/composer deactivate`
+### Available Fields
+
+| Field | Description |
+|-------|-------------|
+| `name` | Unique identifier |
+| `description` | Shown in `/composer list` |
+| `systemPrompt` | Custom instructions prepended to context |
+| `tools` | Array of allowed tools (omit for all tools) |
+| `model` | Override the default model |
+| `triggers.keywords` | Auto-activate on these words |
+| `triggers.files` | Auto-activate for these file patterns |
+
+### Commands
+
+```bash
+/composer list              # Show available composers
+/composer activate <name>   # Switch to a composer
+/composer deactivate        # Return to default agent
+```
+
+For heavier delegation patterns (parallel tasks, long-running jobs), spawn a separate `composer` process or write a helper tool the agent can call via `bash`.
 
 ## Background Tasks
 
-The `background_tasks` tool manages long-running processes:
+The `background_tasks` tool manages long-running processes with lifecycle management, auto-restart, and log persistence.
+
+### Actions
 
 | Action | Description |
 |--------|-------------|
-| `start` | Launch command (with optional restart policy) |
-| `stop` | Terminate by ID |
-| `list` | View active tasks |
-| `logs` | Tail output (default 40 lines) |
+| `start` | Launch a background command |
+| `stop` | Terminate a running task by ID |
+| `list` | View all active tasks with status and resource usage |
+| `logs` | Tail task output (default 40 lines, max 200) |
 
-Features: shell mode for pipes, custom cwd/env, restart policies with backoff, log persistence.
+### Example: Dev Server Workflow
+
+```bash
+# Start a dev server in the background
+composer "Start the Next.js dev server"
+# Agent executes: background_tasks action=start command="npm run dev" cwd="./packages/web"
+
+# Make code changes...
+
+# Check for errors
+composer "Show me the dev server logs"
+# Agent executes: background_tasks action=logs taskId="abc123" lines=50
+
+# Stop when done
+composer "Stop all background tasks"
+# Agent executes: background_tasks action=stop taskId="abc123"
+```
+
+### Start Parameters
+
+```json
+{
+  "action": "start",
+  "command": "npm run dev",
+  "cwd": "./packages/web",
+  "env": { "PORT": "3001" },
+  "shell": true,
+  "restart": {
+    "maxAttempts": 3,
+    "delayMs": 1000,
+    "strategy": "exponential",
+    "maxDelayMs": 30000,
+    "jitterRatio": 0.1
+  }
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `command` | Command to run |
+| `cwd` | Working directory |
+| `env` | Additional environment variables |
+| `shell` | Set `true` for pipes/redirects (e.g., `cmd1 \| cmd2`) |
+| `restart.maxAttempts` | Max restart attempts on failure (1-5) |
+| `restart.delayMs` | Delay between restarts (50-60000ms) |
+| `restart.strategy` | `"fixed"` or `"exponential"` backoff |
+
+### Log Storage
+
+- Logs persist to `~/.composer/logs/background-<taskId>.log`
+- Files truncated at 5MB to prevent disk issues
+- Tasks auto-cleanup on Composer exit
 
 ## Adding Your Own Tools
 
