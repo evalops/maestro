@@ -46,7 +46,7 @@ import {
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
-import { getCurrentThemeName } from "../theme/theme.js";
+import { getCurrentThemeName, setTheme } from "../theme/theme.js";
 import {
 	type BackgroundTaskNotification,
 	backgroundTaskManager,
@@ -155,6 +155,7 @@ import { ModalManager } from "./modal-manager.js";
 import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
+const SSH_RENDER_INTERVAL_MS = 50;
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -367,6 +368,7 @@ export class TuiRenderer {
 		this.startupChangelogSummary = options.startupChangelogSummary;
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal());
+		this.configureRenderThrottle();
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
@@ -1030,6 +1032,8 @@ export class TuiRenderer {
 
 	async init(): Promise<void> {
 		if (this.isInitialized) return;
+
+		await this.detectAndApplyTerminalTheme();
 
 		// Setup UI layout
 		this.ui.addChild(this.headerContainer);
@@ -3175,6 +3179,33 @@ export class TuiRenderer {
 		this.oauthLogoutView.show();
 	}
 
+	private async detectAndApplyTerminalTheme(): Promise<void> {
+		const auto = process.env.COMPOSER_TUI_AUTO_THEME;
+		if (auto === "0" || auto === "false") return;
+		const detected = await probeTerminalBackground();
+		if (!detected) return;
+		const current = getCurrentThemeName();
+		if (current !== "dark" && current !== "light") return;
+		if (detected === current) return;
+		const { success } = setTheme(detected);
+		if (success) {
+			this.ui.requestRender();
+		}
+	}
+
+	private configureRenderThrottle(): void {
+		const envValue = process.env.COMPOSER_TUI_RENDER_INTERVAL_MS;
+		let interval = Number.parseInt(envValue ?? "", 10);
+		if (!Number.isFinite(interval)) {
+			if (process.env.SSH_CONNECTION || process.env.SSH_TTY) {
+				interval = SSH_RENDER_INTERVAL_MS;
+			} else {
+				interval = 0;
+			}
+		}
+		this.ui.setMinRenderInterval(Math.max(0, interval));
+	}
+
 	private async performOAuthLogout(
 		providerId: "anthropic" | "openai" | "github-copilot",
 		context: CommandExecutionContext,
@@ -3201,4 +3232,85 @@ export class TuiRenderer {
 			context.showError(message);
 		}
 	}
+}
+
+async function probeTerminalBackground(): Promise<"dark" | "light" | null> {
+	if (!process.stdout.isTTY || !process.stdin.isTTY) return null;
+
+	const prevRaw = process.stdin.isRaw;
+	return await new Promise((resolve) => {
+		let settled = false;
+		const cleanup = () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			try {
+				if (process.stdin.setRawMode && prevRaw === false) {
+					process.stdin.setRawMode(false);
+				}
+			} catch {
+				// ignore
+			}
+			process.stdin.off("data", handler);
+		};
+
+		const timeout = setTimeout(() => {
+			cleanup();
+			resolve(null);
+		}, 300);
+
+		const handler = (data: Buffer) => {
+			const escIndex = data.indexOf(0x1b);
+			if (escIndex === -1) return;
+			const slice = data.slice(escIndex);
+			const text = slice.toString();
+			const start = text.indexOf("]11;");
+			if (start === -1) return;
+			const payloadStart = start + 4;
+			const end = text.indexOf("\u0007", payloadStart);
+			if (end === -1) return;
+			const color = text.slice(payloadStart, end);
+			const luminance = parseLuminance(color);
+			cleanup();
+			resolve(luminance);
+		};
+
+		try {
+			if (process.stdin.setRawMode && prevRaw === false) {
+				process.stdin.setRawMode(true);
+			}
+		} catch {
+			resolve(null);
+			return;
+		}
+
+		process.stdin.on("data", handler);
+		process.stdout.write("\u001b]11;?\u0007");
+	});
+}
+
+function parseLuminance(color: string): "dark" | "light" | null {
+	let r = 0;
+	let g = 0;
+	let b = 0;
+	if (color.startsWith("rgb:")) {
+		const parts = color.substring(4).split("/");
+		r = Number.parseInt(parts[0] ?? "0", 16) >> 8;
+		g = Number.parseInt(parts[1] ?? "0", 16) >> 8;
+		b = Number.parseInt(parts[2] ?? "0", 16) >> 8;
+	} else if (color.startsWith("#")) {
+		r = Number.parseInt(color.substring(1, 3) || "0", 16);
+		g = Number.parseInt(color.substring(3, 5) || "0", 16);
+		b = Number.parseInt(color.substring(5, 7) || "0", 16);
+	} else if (color.startsWith("rgb(")) {
+		const parts = color.substring(4, color.length - 1).split(",");
+		r = Number.parseInt(parts[0] ?? "0", 10);
+		g = Number.parseInt(parts[1] ?? "0", 10);
+		b = Number.parseInt(parts[2] ?? "0", 10);
+	} else {
+		return null;
+	}
+
+	const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+	return luminance > 0.5 ? "light" : "dark";
 }

@@ -62,9 +62,16 @@ export class TUI extends Container {
 	private focusedComponent: Component | null = null;
 	private renderRequested = false;
 	private cursorRow = 0; // Track where cursor is (0-indexed, relative to our first line)
+	private minRenderIntervalMs = 0;
+	private lastRenderTs = 0;
+	private renderTimer: NodeJS.Timeout | null = null;
 
 	constructor(private terminal: Terminal) {
 		super();
+	}
+
+	setMinRenderInterval(ms: number): void {
+		this.minRenderIntervalMs = Math.max(0, ms);
 	}
 
 	setFocus(component: Component | null): void {
@@ -88,10 +95,26 @@ export class TUI extends Container {
 	requestRender(): void {
 		if (this.renderRequested) return;
 		this.renderRequested = true;
-		process.nextTick(() => {
-			this.renderRequested = false;
-			this.doRender();
-		});
+		const now = Date.now();
+		const delay = Math.max(
+			0,
+			this.minRenderIntervalMs - (now - this.lastRenderTs),
+		);
+		if (delay > 0) {
+			if (this.renderTimer) {
+				return;
+			}
+			this.renderTimer = setTimeout(() => {
+				this.renderTimer = null;
+				this.renderRequested = false;
+				this.doRender();
+			}, delay);
+		} else {
+			process.nextTick(() => {
+				this.renderRequested = false;
+				this.doRender();
+			});
+		}
 	}
 
 	private handleInput(data: string): void {
@@ -106,6 +129,7 @@ export class TUI extends Container {
 	private doRender(): void {
 		const width = Math.max(1, this.terminal.columns);
 		const height = this.terminal.rows;
+		this.lastRenderTs = Date.now();
 
 		// Render all components to get new lines
 		const newLines = this.render(width);
