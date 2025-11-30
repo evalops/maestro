@@ -2,17 +2,33 @@
 
 Composer is a deterministic coding agent with multi-model support, featuring both a powerful terminal interface (TUI/CLI) and a modern web UI for AI-assisted development.
 
-## Documentation
+---
 
-- [Quickstart](docs/QUICKSTART.md) – install, build, and eval instructions
-- [Feature Guide](docs/FEATURES.md) – TUI/CLI walkthrough, bash mode, prompt queue
-- [Tools Reference](docs/TOOLS_REFERENCE.md) – detailed list of built-in tools
-- [Safety & Approvals](docs/SAFETY.md) – action firewall rules, safe mode, approvals
-- [Sessions](docs/SESSIONS.md) – JSONL format, continuation/resume flags
-- [Prompt Queue](docs/PROMPT_QUEUE.md) – how prompts are queued and loader stages update
-- [Providers & Factory](docs/MODELS.md) – model registry resolution and factory sync
-- [Contributing](CONTRIBUTING.md) – workflow, coding standards, release steps
-- [Changelog](CHANGELOG.md) – notable fixes and features per release
+## For Users
+
+- [Concept](#concept)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [API Keys & Providers](#api-keys)
+- [Slash Commands](#slash-commands)
+- [Tools Overview](#tools)
+- [Security](#security)
+- [Telemetry](#telemetry)
+
+## For Contributors
+
+- [EvalOps Workflows](#evalops-workflows)
+- [Building from Source](#from-source-bun--nx)
+- [Workspace Commands](#workspace-commands-bun--nx)
+- [Full Commands Reference](#full-commands-reference)
+- [Composers & Background Tasks](#composers-sub-agents)
+- [MCP Integration](#adding-your-own-tools)
+- [Contributing](#contributing)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+# For Users
 
 ## Concept
 
@@ -23,32 +39,19 @@ Choose your interface:
 - **Web UI**: Modern browser-based interface for those who prefer a graphical environment
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
-## Who It's For
+### Who It's For
 
-Developers who want deterministic, scriptable AI assistance with full transparency. You value explicit commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to reason about every action Composer takes. If you prefer tight control, fast iteration, and the option to automate everything, you're in the right place.
-
-### Design Principles
-
-- **Slash-command first automation.** Everything routes through explicit commands (`/run`, `/config`, etc.) so actions stay reviewable and scriptable.
-- **Deterministic tooling.** Composer touches the filesystem only via transparent git-aware helpers, keeping review diffs clean.
-- **EvalOps-ready by default.** Built-in scenario runners, telemetry, and cost tracking mean the CLI can drop straight into automated evaluation loops.
-- **Provider-agnostic, session-stable.** Multi-model switching and shared context loading ensure prompts stay portable between Anthropic, OpenAI, Gemini, Groq, and more.
-
-### EvalOps Workflows
-
-- **Run automated evaluations:** `npx nx run composer:evals --skip-nx-cache` builds the CLI/TUI/Web targets with Bun and executes the scenarios defined in `evals/scenarios.json`, making it easy to wire Composer into continuous evaluation pipelines.
-- **Customize scenarios:** add more entries to `evals/scenarios.json` to benchmark additional commands (each scenario can assert against stdout via regular expressions).
-- **Surface telemetry:** set `COMPOSER_TELEMETRY=true` (or point to a custom `COMPOSER_TELEMETRY_ENDPOINT`) to stream tool usage and evaluation outcomes into your EvalOps dashboards.
+Developers who want deterministic, scriptable AI assistance with full transparency. You value explicit commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to reason about every action Composer takes.
 
 ## Installation
 
-### Bun (default)
+### Bun (recommended)
 
 ```bash
 bun install -g @evalops/composer
 ```
 
-### npm (alternative)
+### npm
 
 ```bash
 npm install -g @evalops/composer
@@ -57,44 +60,12 @@ npm install -g @evalops/composer
 ### Nix (with flakes)
 ```bash
 nix run github:evalops/composer
-# Or add to your flake.nix
 ```
-
-### From Source (Bun + Nx)
-```bash
-git clone https://github.com/evalops/composer.git
-cd composer
-bun install
-npx nx run composer:build:all --skip-nx-cache   # Builds CLI, TUI, Web
-npm link                                        # Optional: link the CLI locally
-```
-
-#### Binary Compilation (Bun)
-```bash
-git clone https://github.com/evalops/composer.git
-cd composer
-bun install
-bun run compile:binary
-# Binary available at dist/composer-bun
-```
-
-### Workspace Commands (Bun + Nx)
-
-- Install deps: `bun install`
-- Lint + eval verifier: `bun run bun:lint`
-- Full test suite (builds TUI/Web): `npx nx run composer:test --skip-nx-cache`
-- Package builds: `bun run --filter @evalops/tui build` and `bun run --filter @evalops/composer-web build`
-- Targeted tests: `bunx vitest --run -t "<test name>"`
-
-### Nix hash auto-update (CI)
-- The `Update Nix Hash` workflow runs on pushes to `main` that touch `bun.lockb`, `package.json`, or `package-lock.json`.
-- It commits the new `npmDepsHash` and force-pushes to the `ci/update-nix-hash` branch (no PR is created). If you need the updated hash, merge or cherry-pick that branch.
-- If the workflow fails, rerun after rebasing onto `main`; org PR permissions are no longer required because no PR is opened automatically.
 
 ## Quick Start
 
 ```bash
-# Set your API key (see API Keys below)
+# Set your API key
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Start the interactive terminal UI
@@ -102,23 +73,18 @@ composer
 
 # Or start the web UI
 composer web
-# Then open http://localhost:3000 in your browser
+# Then open http://localhost:3000
 ```
 
-Once in the interface, chat with the AI: `Create a simple Express server in src/server.ts`. Composer will read/write files and run shell commands via explicit slash commands.
+Once running, chat with the AI: `Create a simple Express server in src/server.ts`. Composer will read/write files and run shell commands via explicit slash commands.
 
-### API Keys
+## API Keys
 
-Composer supports multiple LLM providers. You can supply keys in three ways (priority order):
-
-1) **Per-run flags/env**: set the environment variable for your provider (below) or pass `--api-key` when invoking `composer run`/`composer web`.
-2) **Provider-specific env vars** (recommended):
+Composer supports multiple LLM providers. Set the environment variable for your provider:
 
 ```bash
-# Anthropic (Claude)
+# Anthropic (Claude) - default
 export ANTHROPIC_API_KEY=sk-ant-...
-# Or use OAuth token (retrieved via: claude setup-token)
-export ANTHROPIC_OAUTH_TOKEN=...
 
 # OpenAI (GPT)
 export OPENAI_API_KEY=sk-...
@@ -129,429 +95,249 @@ export GEMINI_API_KEY=...
 # Groq
 export GROQ_API_KEY=gsk_...
 
-# Cerebras
-export CEREBRAS_API_KEY=csk-...
-
 # xAI (Grok)
 export XAI_API_KEY=xai-...
 
 # OpenRouter
 export OPENROUTER_API_KEY=sk-or-...
 
-# ZAI
-export ZAI_API_KEY=...
-
-# Exa (for web search tools - optional)
-export EXA_API_KEY=...  # Get yours at https://dashboard.exa.ai/api-keys
+# Exa (for web search - optional)
+export EXA_API_KEY=...
 ```
 
-3) **Local key store**: add entries to `~/.composer/keys.json`:
+**Alternative:** Store keys in `~/.composer/keys.json`:
 
 ```json
 {
-  "openai": { "apiKey": "sk-..." },
-  "openrouter": { "apiKey": "sk-or-..." },
-  "anthropic": { "apiKey": "sk-ant-...", "authType": "api-key" },
-  "anthropic-oauth": { "apiKey": "Bearer eyJ..." } // supports OAuth tokens
+  "anthropic": { "apiKey": "sk-ant-..." },
+  "openai": { "apiKey": "sk-..." }
 }
 ```
 
-Keys in the key store are loaded automatically if a provider env var is missing.
-
-### Provider presets
-
-`composer config init` includes curated presets you can pick interactively or via `--preset <id>`:
-
-- anthropic, openai, groq, openrouter, google-gemini, vertex-ai (ADC), bedrock
-- mistral, lmstudio (local), ollama (local)
-
-For key-based providers, set the matching env var before running (e.g., `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`). Bedrock and Vertex rely on platform credentials/ADC; local providers skip API keys.
-
-## Providers
-
-Composer supports Anthropic, OpenAI, Google (Gemini), xAI (Grok), Groq, Cerebras, OpenRouter, and ZAI. Set the appropriate API key environment variable (see API Keys section), then use `--provider` and `--model` flags to select your provider and model. Sessions remember the provider/model pair for seamless continuations.
-
-For detailed provider configuration, including OpenRouter integration and custom endpoints, see [Providers & Factory](docs/MODELS.md).
-
-> **Factory CLI users:** Run `npm run factory:import` / `npm run factory:export` or use `/import factory` inside the TUI whenever you want to sync providers and settings—otherwise Composer stays fully standalone.
+Use `composer config init` for interactive provider setup, or `--provider` and `--model` flags to switch providers.
 
 ## Slash Commands
 
-This CLI doesn't hide behaviors behind fuzzy chat. Every operation is exposed as an explicit slash command—the covenant is that if the agent can do it, you can run it yourself.
-
-### /model
-
-Switch models mid-session via an interactive selector (search by provider or model, arrow keys to navigate, Enter to select).
-
-### /thinking
-
-Adjust thinking/reasoning level for supported models (Claude Sonnet 4, GPT-5, Gemini 2.5).
-
-### /export [filename]
-
-Export the current session to a self-contained HTML file.
-
-```
-/export
-/export my-session.html
-```
-
-### /help
-
-List available slash commands.
-
-### /session
-
-Display session information (file path, token counts, etc.), mark the current
-session as a favorite, or attach a manual summary without touching the JSONL.
-
-```
-/session                         # show session stats
-/session favorite                # star the current session
-/session unfavorite              # remove the star
-/session summary "Fixed build"   # add a manual summary entry
-```
-
-### /sessions
-
-List or load saved sessions by index and manage their metadata.
-
-```
-/sessions list text              # show the latest sessions inline
-/sessions load 2                 # load session #2
-/sessions favorite 1             # mark a saved session as favorite
-/sessions unfavorite 1           # remove a favorite flag
-/sessions summarize 3            # generate an AI summary for a session
-```
-
-### /tools
-
-Show registered tools plus recent failures. Use `clear` to rotate the failure log.
-
-### /config [summary|sources|providers|env|files]
-
-Render validation, sources, providers, env vars, or file references without chaining commands.
-
-```
-/config
-/config sources
-/config providers
-/config env
-/config files
-```
-
-### /cost [period|breakdown|clear|help]
-
-Display usage summaries, provider/model breakdowns, or reset local tracking data.
-
-```
-/cost today
-/cost breakdown week
-/cost clear
-/cost help
-```
-
-### /stats
-
-Run `/status` plus `/cost today` together for a quick health pulse.
-
-```
-/stats
-```
-
-### /plan
-
-Inspect plans created via the `todo` tool. Show all goals or a specific one.
-
-```
-/plan                                   # list all plans
-/plan <goal>                            # show plan details
-/plan new <goal>                        # create a plan
-/plan add <goal> :: <task> [:: priority] # add a task
-/plan complete <goal> :: <task number|id> # mark done
-/plan clear <goal>                      # delete a plan
-/plan clear all                         # delete all plans
-```
-
-### /diff
-
-Show git diff for a file without leaving the TUI.
-
-```
-/diff <path>
-```
-
-### /run
-
-Execute project scripts (delegates to `npm run`).
-
-### /diag
-
-Display provider/API key diagnostics plus telemetry/health info. Append `copy` to send the report to your clipboard.
-
-### /report
-
-Collect info for bug reports or general feedback.
-
-```
-/report
-/report bug
-/report feedback
-```
-
-### /status
-
-Show a quick health summary (model, thinking level, git status, plan stats, telemetry) without running the heavier diagnostics report.
-
-### /review
-
-Print a review-friendly snapshot of `git status` plus `git diff --stat` before diving deeper.
-
-### /undo
-
-Discard working tree changes in one or more files via git checkout.
-
-### /new
-
-Start a fresh chat session.
-
-### /share
-
-Generate a self-contained HTML share link.
-
-```
-/share [output.html]
-```
-
-### /branch
-
-Create a new session from an earlier user message (keeps history up to that point).
-
-```
-/branch [list|<user-message-number>]
-```
-
-### /queue
-
-List, cancel, or change queue mode when the agent is busy.
-
-```
-/queue [list|cancel <id>|mode <one|all>]
-```
-
-### /about
-
-Show Composer build, environment, and git info.
-
-### /clear
-
-Clear context and start a fresh session.
-
-### /init
-
-Create or overwrite AGENTS.md scaffolding for this repo.
-
-```
-/init [path]
-```
-
-### /background
-
-Configure background task notifications and status redaction.
-
-```
-/background [status|notify <on|off>|details <on|off>|history|path]
-```
-
-### /approvals
-
-Show approval status or switch between auto/prompt/fail modes.
-
-```
-/approvals [auto|prompt|fail]
-```
-
-### /ollama
-
-Control local Ollama models (list, pull, ps).
-
-```
-/ollama [list|pull <model>|ps]
-```
-
-### /update
-
-Check for Composer CLI updates.
-
-### /changelog
-
-Display full version history.
-
-### /telemetry
-
-Show telemetry status or toggle runtime overrides.
-
-```
-/telemetry [status|on|off|reset]
-```
-
-### /mcp
-
-Show configured Model Context Protocol servers.
-
-### /compact
-
-Summarize older messages to reclaim context.
-
-### /footer
-
-Switch between Ensemble (rich) and Solo (minimal) footer styles.
-
-```
-/footer [ensemble|solo]
-```
-
-### /compact-tools
-
-Toggle folding of tool outputs.
-
-```
-/compact-tools [on|off]
-```
-
-### /login
-
-Authenticate with Claude Pro/Max via OAuth.
-
-```
-/login [mode]
-/login [provider:mode]
-/login pro
-/login console
-/login anthropic:pro
-```
-
-### /logout
-
-Remove stored Claude OAuth credentials.
-
-```
-/logout [provider]
-```
-
-### /quit
-
-Exit composer (same as ctrl+c twice). Alias: `/exit`.
-
-### /mention
-
-List workspace files (filtered by an optional query) so you can quickly grab `@path` references.
+Every operation is exposed as an explicit slash command. Type `/help` for the full list.
+
+### Essential Commands
+
+| Command | Description |
+|---------|-------------|
+| `/model` | Switch models mid-session (interactive selector) |
+| `/help` | List all available commands |
+| `/new` | Start a fresh session |
+| `/clear` | Clear context and restart |
+| `/export` | Export session to HTML |
+| `/quit` | Exit (or Ctrl+C twice) |
+
+### Session Management
+
+| Command | Description |
+|---------|-------------|
+| `/session` | Show session info, mark favorites, add summaries |
+| `/sessions` | List/load saved sessions |
+| `/cost` | View usage and cost breakdown |
+| `/stats` | Quick health pulse (status + cost) |
+
+### Development
+
+| Command | Description |
+|---------|-------------|
+| `/diff <path>` | Show git diff for a file |
+| `/review` | Git status + diff summary |
+| `/undo` | Discard working tree changes |
+| `/run` | Execute project scripts |
+| `/plan` | Manage todo plans |
+
+### Configuration
+
+| Command | Description |
+|---------|-------------|
+| `/config` | Show configuration (sources, providers, env) |
+| `/diag` | Provider/API diagnostics |
+| `/approvals` | Toggle approval modes (auto/prompt/fail) |
+| `/thinking` | Adjust reasoning level for supported models |
 
 ## Tools
 
 ### Built-in Tools
 
-Composer ships with core tools for file operations, git, web search, and GitHub automation:
+**File Operations:**
+- **read** – Read files (text + images), with offset/limit for large files
+- **write** – Create/overwrite files
+- **edit** – Replace exact text in files
+- **list** – List directories with glob filtering
+- **search** – Ripgrep-powered search with regex
 
-**File & Code Operations:**
-- **batch** – Execute multiple independent tools in parallel (1-10 tools) to reduce latency.
-- **read** – Read file contents (text + images). Supports offset/limit for large files.
-- **list** – List directory contents with glob filtering and hidden-file toggles.
-- **search** – Ripgrep-backed search with regex, glob filters, and context.
-- **edit** – Replace exact text in a file (fails if multiple matches).
-- **write** – Write/overwrite files, creating parent directories as needed.
+**Git & Shell:**
+- **diff** – Inspect git diffs
+- **bash** – Execute shell commands
+- **batch** – Run multiple read-only tools in parallel
 
-**Git & Version Control:**
-- **diff** – Inspect git diffs (working tree, staged index, revision ranges).
-- **bash** – Execute bash commands with optional timeouts.
-- **background_tasks** – Run long-running processes in the background with lifecycle management.
+**Web & Search** (requires `EXA_API_KEY`):
+- **websearch** – Search the web via Exa AI
+- **codesearch** – Search GitHub/docs/Stack Overflow
+- **webfetch** – Fetch content from URLs
 
-**Task Management:**
-- **todo** – Manage TodoWrite-style checklists (`~/.composer/todos.json`).
-
-**Web & Search:**
-- **websearch** – Search the web via Exa AI for real-time information (requires `EXA_API_KEY`).
-- **codesearch** – Search GitHub/docs/Stack Overflow for code examples via Exa Code (requires `EXA_API_KEY`).
-- **webfetch** – Fetch and extract content from specific URLs via Exa (requires `EXA_API_KEY`).
-
-**GitHub CLI Tools** (requires `gh` CLI installed and authenticated):
-- **gh_pr** – Pull request operations (create, checkout, view, list, comment)
-- **gh_issue** – Issue operations (create, view, list, comment, close)
-- **gh_repo** – Repository operations (view, fork, clone)
-
-Install GitHub CLI: `brew install gh` (macOS) or visit [cli.github.com](https://cli.github.com)
-
-**Batch Tool:** Read-only actions (`view`, `list`) are safe to batch. Do NOT batch mutations (`create`, `comment`, `close`, `checkout`) as order and outcome matter.
-
-Examples:
-```
-Create PR:     {action: "create", title: "Fix bug", body: "Details"}
-Checkout PR:   {action: "checkout", number: 123}
-Create issue:  {action: "create", title: "Bug report", labels: ["bug"]}
-List issues:   {action: "list", state: "open", author: "username"}
-```
-
-### CLI Helpers
-
-Use Composer's CLI commands to inspect your model registry:
-
-- `composer models list` – grouped list of every registered model (built-in + custom). Add `--provider openrouter` to filter.
-- `composer models providers` – summarize providers, API key env vars, and base URLs so you know which endpoints are wired up.
-
-### Adding Your Own Tools
-
-Composer supports the **Model Context Protocol (MCP)** for tool extensibility. Configure MCP servers in `~/.composer/mcp.json` or `.composer/mcp.json`:
-
-```json
-{
-  "servers": [
-    {
-      "name": "my-tools",
-      "transport": "stdio",
-      "command": "node",
-      "args": ["path/to/mcp-server.js"]
-    }
-  ]
-}
-```
-
-MCP tools appear as `mcp_<server>_<tool>` and are automatically available to the agent. Use `/mcp` to view connected servers.
-
-**Alternative:** For simple extensions without MCP:
-1. Create a CLI tool (any language)
-2. Document it in a README
-3. Reference it from `AGENT.md` so the agent knows to use `bash` to call it
+**GitHub** (requires `gh` CLI):
+- **gh_pr** – Pull request operations
+- **gh_issue** – Issue operations
+- **gh_repo** – Repository operations
 
 ### Editor Features
 
-- **Path completion:** Tab through relative/absolute paths, with arrow navigation.
-- **File drag & drop:** Drop files onto the terminal to insert paths.
-- **Multi-line paste:** Pasted blocks collapse into `[paste #123 <N> lines]` markers, but full content is sent.
-- **Command palette:** `Ctrl+K` opens a searchable list of slash commands.
-- **File search:** Type `@` (or `Ctrl+K` → File Search) for fuzzy find.
-- **Keyboard shortcuts:** `Ctrl+K`, `Ctrl+C`, Tab, Enter, Shift+Enter, arrow keys, `Ctrl+A/E`, etc.
+- **Tab completion** for paths
+- **Drag & drop** files to insert paths
+- **Multi-line paste** with collapsible markers
+- **Command palette** via `Ctrl+K`
+- **File search** via `@` or `Ctrl+K`
 
-### Web UI
+## Security
 
-Start the web interface for a browser-based experience:
+Composer ships with layered security enabled by default:
+
+**Action Firewall:**
+- Blocks dangerous commands (`rm -rf`, `mkfs`, `chmod 000`, etc.)
+- Protects system paths (`/etc`, `/usr`, `/var`, `/boot`)
+- Requires approval for writes outside your project
+
+**Approval Modes** (`--approval-mode`):
+| Mode | Behavior |
+|------|----------|
+| `prompt` (default) | Ask before risky actions |
+| `auto` | Auto-approve (trusted sandboxes only) |
+| `fail` | Reject all high-risk commands |
+
+**Safe Mode** (`--safe-mode` or `COMPOSER_SAFE_MODE=1`):
+Extra restrictions on shell writes.
+
+See [Safety & Approvals](docs/SAFETY.md) for details.
+
+## Telemetry
+
+Telemetry is **off by default**. Enable for analytics:
 
 ```bash
-composer web
-# Or with custom port
-composer web --port 3001
+# Write to local log
+export COMPOSER_TELEMETRY=true
+
+# Or stream to endpoint
+export COMPOSER_TELEMETRY_ENDPOINT=https://your-endpoint.com/hook
 ```
 
-The web UI provides:
-- **Modern Interface**: Clean, responsive design optimized for AI-assisted development
-- **Real-time Updates**: Live streaming of AI responses and tool executions
-- **Session Management**: Load, save, and switch between sessions seamlessly
-- **All CLI Features**: Full access to slash commands, file operations, and git integration
-- **Multi-user Ready**: Run on a server and access from any device (authentication not included)
+Payloads include tool name, success flag, and duration. Transport failures never block workflows.
 
-Development mode (auto-reload):
+## Context Files
+
+Composer loads `AGENT.md` or `CLAUDE.md` files automatically:
+
+1. **Global** (`~/.composer/agent/AGENT.md`) – personal defaults
+2. **Parent directories** – inherited settings
+3. **Project root** – most specific wins
+
+Use them for coding conventions, architecture notes, and project-specific instructions.
+
+---
+
+# For Contributors
+
+## EvalOps Workflows
+
+Composer is built for automated evaluation pipelines:
+
 ```bash
-npm run web:dev
+# Run evaluation scenarios
+npx nx run composer:evals --skip-nx-cache
 ```
+
+- **Customize scenarios:** Add entries to `evals/scenarios.json`
+- **Stream telemetry:** Set `COMPOSER_TELEMETRY=true` or `COMPOSER_TELEMETRY_ENDPOINT`
+
+### Design Principles
+
+- **Slash-command first** – All actions are explicit and scriptable
+- **Deterministic tooling** – Filesystem changes via git-aware helpers
+- **EvalOps-ready** – Built-in scenario runners and cost tracking
+- **Provider-agnostic** – Portable across Anthropic, OpenAI, Gemini, Groq, etc.
+
+## From Source (Bun + Nx)
+
+```bash
+git clone https://github.com/evalops/composer.git
+cd composer
+bun install
+npx nx run composer:build:all --skip-nx-cache   # Builds CLI, TUI, Web
+npm link                                        # Optional: link locally
+```
+
+### Binary Compilation
+```bash
+bun run compile:binary
+# Output: dist/composer-bun
+```
+
+## Workspace Commands (Bun + Nx)
+
+| Command | Purpose |
+|---------|---------|
+| `bun install` | Install dependencies |
+| `bun run bun:lint` | Lint + eval verifier |
+| `npx nx run composer:test --skip-nx-cache` | Full test suite (builds TUI/Web) |
+| `npx nx run composer:evals --skip-nx-cache` | Run eval scenarios |
+| `bun run --filter @evalops/tui build` | Build TUI package |
+| `bun run --filter @evalops/composer-web build` | Build Web package |
+| `bunx vitest --run -t "<test>"` | Run specific tests |
+
+### Nix Hash Auto-Update (CI)
+
+The `Update Nix Hash` workflow runs on pushes to `main` that touch `bun.lockb`, `package.json`, or `package-lock.json`. It commits the new `npmDepsHash` to the `ci/update-nix-hash` branch.
+
+## Full Commands Reference
+
+### All Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/model` | Switch models (interactive) |
+| `/thinking` | Adjust reasoning level |
+| `/export [file]` | Export to HTML |
+| `/help` | List commands |
+| `/session` | Session info/favorites/summary |
+| `/sessions` | List/load sessions |
+| `/tools` | Show tools + failures |
+| `/config` | Configuration details |
+| `/cost` | Usage/cost breakdown |
+| `/stats` | Quick health check |
+| `/plan` | Manage todo plans |
+| `/diff <path>` | Git diff |
+| `/run` | Run project scripts |
+| `/diag` | Provider diagnostics |
+| `/report` | Bug/feedback reports |
+| `/status` | Health summary |
+| `/review` | Git status + diff |
+| `/undo` | Discard changes |
+| `/new` | Fresh session |
+| `/share` | Generate share link |
+| `/branch` | Branch from earlier message |
+| `/queue` | Manage prompt queue |
+| `/about` | Build/env info |
+| `/clear` | Clear context |
+| `/init` | Create AGENTS.md |
+| `/background` | Background task config |
+| `/approvals` | Approval mode |
+| `/ollama` | Local Ollama control |
+| `/update` | Check for updates |
+| `/changelog` | Version history |
+| `/telemetry` | Telemetry control |
+| `/mcp` | MCP server status |
+| `/compact` | Summarize old messages |
+| `/footer` | Footer style |
+| `/compact-tools` | Fold tool outputs |
+| `/login` | OAuth authentication |
+| `/logout` | Remove credentials |
+| `/quit` | Exit |
+| `/mention` | List workspace files |
 
 ### CLI Options
 
@@ -559,84 +345,21 @@ npm run web:dev
 composer [options] [messages...]
 ```
 
-Key flags:
+| Flag | Description |
+|------|-------------|
+| `--provider <name>` | Provider (anthropic, openai, google, etc.) |
+| `--model <id>` | Model ID |
+| `--api-key <key>` | Override API key |
+| `--system-prompt <text\|file>` | Custom system prompt |
+| `--mode <text\|json\|rpc>` | Output format |
+| `--no-session` | Ephemeral run |
+| `--session <path>` | Use specific session |
+| `-c, --continue` | Resume latest session |
+| `-r, --resume` | Interactive session picker |
 
-- `--provider <name>` – Provider (`anthropic`, `openai`, `google`, `xai`, `groq`, `cerebras`, `openrouter`, `zai`). Default `anthropic`.
-- `--model <id>` – Model ID. Default `claude-sonnet-4-5`.
-- `--api-key <key>` – Override environment variables.
-- `--system-prompt <text|file>` – Inline prompt or file reference.
-- `--mode <text|json|rpc>` – Control output format / RPC integration.
-- `--no-session` – Ephemeral run.
-- `--session <path>` – Use a specific session file.
-- `--continue/-c`, `--resume/-r`, `--help/-h` – Session helpers and docs.
+## Composers (Sub-Agents)
 
-### Session Management
-
-Sessions live under `~/.composer/agent/sessions/` as JSONL. Use:
-
-- `composer --continue` (or `-c`) – resume the latest session.
-- `composer --resume` (or `-r`) – interactive session selector.
-- `composer --no-session` – run without saving.
-- `composer --session /path/file.jsonl` – resume a specific session.
-
-### Image Support
-
-Pass image paths directly (e.g., `What is in this screenshot? /path/to/image.png`). Composer encodes `.jpg/.jpeg/.png/.gif/.webp` and attaches them for vision-capable models.
-
-## Context
-
-Composer automatically loads `AGENT.md`/`CLAUDE.md` files when starting new sessions so you can layer global, repo, and subdirectory guidance.
-
-1. **Global** (`~/.composer/agent/AGENT.md`) – personal defaults.
-2. **Parent directories** – the agent walks up the tree, applying each file.
-3. **Project root** – the most specific context wins.
-
-Use them for coding conventions, architecture notes, commands, testing instructions, etc. `AGENT.md` takes precedence over `CLAUDE.md` when both exist.
-
-## Telemetry
-
-Telemetry is off by default. Enable it when you want EvalOps analytics:
-
-- `COMPOSER_TELEMETRY=true` – write events to `~/.composer/telemetry.log` (or `COMPOSER_TELEMETRY_FILE`).
-- `COMPOSER_TELEMETRY_ENDPOINT=https://example.com/hook` – stream events to your ingestion endpoint.
-- `COMPOSER_TELEMETRY_SAMPLE=0.25` – sample rate control (set to `0` to disable while leaving config in place).
-- `npm run telemetry:report` – summarize success rates + durations from the log.
-
-Payloads capture tool name, success flag, duration, and evaluation context. Transport failures are ignored so telemetry never blocks day-to-day workflows.
-
-## Philosophy
-
-### Security
-
-Composer ships with a layered security model that balances power with protection:
-
-**Action Firewall** (enabled by default):
-- **Dangerous command detection** – Blocks or requires approval for `rm -rf`, `mkfs`, `dd if=/dev/zero`, `chmod 000`, and other high-risk patterns
-- **Tree-sitter analysis** – Parses bash commands for deeper safety checks beyond regex
-- **System path protection** – Hard blocks modifications to `/etc`, `/usr`, `/var`, `/boot`, and other critical directories
-- **Workspace containment** – Requires approval for file writes outside the current project or temp directories
-- **Trusted paths** – Configure additional allowed paths in `~/.composer/firewall.json`
-
-**Approval Modes** (`--approval-mode` or `COMPOSER_APPROVAL_MODE`):
-| Mode | Behavior |
-|------|----------|
-| `prompt` (default) | Ask the user in TUI; fail in headless mode |
-| `auto` | Auto-approve (use in trusted sandboxes only) |
-| `fail` | Reject all high-risk commands |
-
-**Sandbox Execution** (`composer exec --sandbox`):
-- `default` – Workspace containment and firewall rules active
-- `danger-full-access` – Remove guardrails (for trusted environments)
-- Docker sandbox available for full isolation
-
-**Safe Mode** (`--safe-mode` or `COMPOSER_SAFE_MODE=1`):
-Adds extra restrictions on shell writes and surfaces a shield icon in the footer.
-
-See [Safety & Approvals](docs/SAFETY.md) for detailed configuration.
-
-### Composers (Sub-Agents)
-
-Composer supports **custom composers** — specialized agent profiles with custom system prompts, tool restrictions, and model overrides. Configure them in `~/.composer/composers/` (personal) or `.composer/composers/` (project):
+Create specialized agent profiles in `~/.composer/composers/` or `.composer/composers/`:
 
 ```yaml
 # .composer/composers/code-reviewer.yaml
@@ -651,81 +374,78 @@ triggers:
   files: ["*.ts", "*.py"]
 ```
 
-Use `/composer list` to see available composers, `/composer activate <name>` to switch, and `/composer deactivate` to return to the default agent.
+Commands: `/composer list`, `/composer activate <name>`, `/composer deactivate`
 
-For heavier delegation patterns (parallel tasks, long-running jobs), spawn a separate `composer` process or write a helper tool the agent can call via `bash`.
+## Background Tasks
 
-### Background Tasks
+The `background_tasks` tool manages long-running processes:
 
-Composer supports managed background processes via the `background_tasks` tool:
-- **Start/stop** long-running commands (dev servers, watchers, tunnels)
-- **View logs** and task status with real-time monitoring
-- **Auto-restart** on failure with configurable retry policies
-- **Clean shutdown** on exit with automatic cleanup
+| Action | Description |
+|--------|-------------|
+| `start` | Launch command (with optional restart policy) |
+| `stop` | Terminate by ID |
+| `list` | View active tasks |
+| `logs` | Tail output (default 40 lines) |
 
-Actions available:
-- `start` – Launch a background command with optional restart policy
-- `stop` – Terminate a running task by ID
-- `list` – View all active background tasks
-- `logs` – Tail task output (default 40 lines, max 200)
+Features: shell mode for pipes, custom cwd/env, restart policies with backoff, log persistence.
 
-Example workflow:
-```bash
-# Start a dev server
-composer "Start the dev server in the background"
-# Agent uses: background_tasks action=start command="npm run dev"
+## Adding Your Own Tools
 
-# Make code changes, then check logs
-composer "Show me the last 20 lines of the dev server logs"
+Configure MCP servers in `~/.composer/mcp.json`:
 
-# Stop when done
-composer "Stop all background tasks"
+```json
+{
+  "servers": [
+    {
+      "name": "my-tools",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["path/to/mcp-server.js"]
+    }
+  ]
+}
 ```
 
-Features:
-- **Shell mode** – Use `shell: true` for pipes/redirects (e.g., `cmd1 | cmd2`)
-- **Working directory** – Set custom `cwd` per task
-- **Environment variables** – Pass custom `env` vars
-- **Restart policies** – Configure max attempts, delays, exponential backoff, and jitter
-- **Log management** – Stores logs to `~/.composer/logs/` for persistence
-- **Resource tracking** – Monitor CPU and memory usage
-
-For interactive monitoring outside Composer, use `tmux` or `screen`.
+Tools appear as `mcp_<server>_<tool>`. Use `/mcp` to view status.
 
 ## Contributing
 
-Run the same validators Composer uses internally before submitting changes:
-
 ```bash
-bun install                                  # one-time
-bunx biome check .                           # lint/format (Biome + eval verifier)
-npx nx run composer:test --skip-nx-cache     # builds TUI/Web + runs tests (mirrors CI)
-npx nx run composer:evals --skip-nx-cache    # optional EvalOps scenarios
-# If you touched a package directly, also build it:
-bun run --filter @evalops/tui build
-bun run --filter @evalops/composer-web build
+bun install
+bunx biome check .                           # lint/format
+npx nx run composer:test --skip-nx-cache     # tests (mirrors CI)
+npx nx run composer:evals --skip-nx-cache    # eval scenarios
 ```
 
-New slash commands or views should ship with tests in `test/`. Use the eval runner for larger feature work so telemetry scenarios stay honest.
+New commands/features should include tests in `test/`.
 
 ## Troubleshooting
 
-### Missing or Invalid API Keys
+### API Key Issues
 
-If you see authentication errors:
-
-1. Verify your API key is correctly set: `echo $ANTHROPIC_API_KEY` (or the relevant provider variable)
-2. Check for typos or extra whitespace in your `.bashrc`/`.zshrc`
-3. Restart your terminal after setting environment variables
-4. Use `composer --diag` to verify provider configuration
+1. Verify: `echo $ANTHROPIC_API_KEY`
+2. Check for typos/whitespace in shell config
+3. Restart terminal after setting vars
+4. Run `composer --diag`
 
 ### Session Files
 
-Sessions are stored as JSONL in `~/.composer/agent/sessions/`. Each message appends to the file, so sessions can grow large over time. You can:
+Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
+- `composer --no-session` for fresh starts
+- `/export` to save as HTML before archiving
 
-- Start fresh with `composer --no-session`
-- Archive old sessions by moving them out of the sessions directory
-- Use `/export` to save sessions as standalone HTML before archiving
+---
+
+## Documentation
+
+- [Quickstart](docs/QUICKSTART.md)
+- [Feature Guide](docs/FEATURES.md)
+- [Tools Reference](docs/TOOLS_REFERENCE.md)
+- [Safety & Approvals](docs/SAFETY.md)
+- [Sessions](docs/SESSIONS.md)
+- [Providers & Factory](docs/MODELS.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
