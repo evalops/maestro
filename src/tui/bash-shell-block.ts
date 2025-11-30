@@ -1,5 +1,7 @@
 import { Container, Spacer, Text, visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
+import { getBorderChars } from "./utils/borders.js";
+import { PANEL_WIDTHS } from "./utils/layout.js";
 
 export type ShellBlockStatus = "pending" | "success" | "error";
 
@@ -32,7 +34,10 @@ export class BashShellBlock extends Container {
 		super();
 		this.title = title;
 		this.startTime = Date.now();
-		this.panelWidth = Math.min(80, Math.max(42, visibleWidth(title) + 28));
+		this.panelWidth = Math.min(
+			PANEL_WIDTHS.shellBlock.max,
+			Math.max(PANEL_WIDTHS.shellBlock.min, visibleWidth(title) + 28),
+		);
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(this.buildTopLine(), 1, 0));
 		this.content = new Text(initialBody, 1, 1, BG_COLORS.pending);
@@ -130,6 +135,7 @@ export class BashShellBlock extends Container {
 	}
 
 	private buildTopLine(): string {
+		const chars = getBorderChars("rounded");
 		const label = chalk.hex(LABEL_COLOR).bold("bash");
 		const meta = chalk.hex(PATH_COLOR)(this.title);
 		const header = `${label} ${meta}`;
@@ -138,11 +144,14 @@ export class BashShellBlock extends Container {
 			this.panelWidth - visibleWidth(header) - 4,
 		);
 		return chalk.hex(BORDER_COLOR)(
-			`╭ ${header} ${"─".repeat(decorativeWidth)}╮`,
+			`${chars.topLeft} ${header} ${chars.horizontal.repeat(decorativeWidth)}${chars.topRight}`,
 		);
 	}
 
 	private buildBottomLine(): string {
-		return chalk.hex(BORDER_COLOR)(`╰${"─".repeat(this.panelWidth - 2)}╯`);
+		const chars = getBorderChars("rounded");
+		return chalk.hex(BORDER_COLOR)(
+			`${chars.bottomLeft}${chars.horizontal.repeat(this.panelWidth - 2)}${chars.bottomRight}`,
+		);
 	}
 }

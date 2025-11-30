@@ -1,17 +1,9 @@
-import { type Component, Container, Spacer, Text } from "@evalops/tui";
+import { Container, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { SessionManager } from "../../session/manager.js";
+import { DynamicBorder } from "../utils/borders.js";
 import { SessionDataProvider } from "./session-data-provider.js";
 import { SessionList } from "./session-list.js";
-
-/**
- * Dynamic border component that adjusts to viewport width
- */
-class DynamicBorder implements Component {
-	render(width: number): string[] {
-		return [chalk.blue("─".repeat(Math.max(1, width)))];
-	}
-}
 
 /**
  * Component that renders a session selector

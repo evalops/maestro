@@ -1,11 +1,12 @@
 import { Container, Text, visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
+import { PANEL_WIDTHS } from "./utils/layout.js";
 import { shimmerText } from "./utils/shimmer.js";
 
 const HEADLINE = "𝅘𝅥𝅮 composer";
 const TAGLINE = "deterministic coding agent";
 const HINT = "type /help to explore commands";
-const CANVAS_WIDTH = 56;
+const CANVAS_WIDTH = PANEL_WIDTHS.welcome;
 
 export class WelcomeAnimation extends Container {
 	private intervalId: NodeJS.Timeout | null = null;

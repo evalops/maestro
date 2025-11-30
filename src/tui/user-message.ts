@@ -1,5 +1,7 @@
 import { Container, Markdown, Spacer, Text, visibleWidth } from "@evalops/tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+import { themedBottomLine, themedTopLine } from "./utils/borders.js";
+import { PANEL_WIDTHS } from "./utils/layout.js";
 
 /**
  * Component that renders a user message styled as a rounded card.
@@ -39,22 +41,26 @@ export class UserMessageComponent extends Container {
 		this.addChild(new Text(this.buildBottomLine(panelWidth), 1, 0));
 	}
 
+	private static readonly MIN_WIDTH = PANEL_WIDTHS.userMessage.min;
+	private static readonly MAX_WIDTH = PANEL_WIDTHS.userMessage.max;
+
 	private computePanelWidth(text: string): number {
 		const lines = text.split("\n");
 		const maxLine = lines.reduce(
 			(max, line) => Math.max(max, visibleWidth(line)),
 			0,
 		);
-		return Math.min(72, Math.max(36, maxLine + 6));
+		return Math.min(
+			UserMessageComponent.MAX_WIDTH,
+			Math.max(UserMessageComponent.MIN_WIDTH, maxLine + 6),
+		);
 	}
 
 	private buildTopLine(width: number): string {
-		const dash = width - 2;
-		return theme.fg("border", `╭${"─".repeat(dash)}╮`);
+		return themedTopLine(width, { color: "border" });
 	}
 
 	private buildBottomLine(width: number): string {
-		const dash = width - 2;
-		return theme.fg("border", `╰${"─".repeat(dash)}╯`);
+		return themedBottomLine(width, { color: "border" });
 	}
 }

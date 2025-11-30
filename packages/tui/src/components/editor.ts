@@ -26,6 +26,11 @@ interface EditorState {
 	cursorCol: number;
 }
 
+interface HistoryEntry {
+	state: EditorState;
+	timestamp: number;
+}
+
 export class Editor implements Component {
 	private state: EditorState = {
 		lines: [""],
@@ -45,6 +50,13 @@ export class Editor implements Component {
 	private pasteBuffer = "";
 	private isInPaste = false;
 	private largePasteMode: "placeholder" | "verbatim" = "placeholder";
+
+	// Undo/redo history
+	private undoStack: HistoryEntry[] = [];
+	private redoStack: HistoryEntry[] = [];
+	private static readonly MAX_HISTORY = 100;
+	private lastSaveTime = 0;
+	private static readonly SAVE_DEBOUNCE_MS = 300;
 
 	onSubmit?: (text: string) => void;
 	onChange?: (text: string) => void;
@@ -245,6 +257,16 @@ export class Editor implements Component {
 			return;
 		}
 		// Continue with rest of input handling
+		// Ctrl+Z - Undo
+		if (data.charCodeAt(0) === 26) {
+			this.undo();
+			return;
+		}
+		// Ctrl+Y or Ctrl+Shift+Z - Redo (some terminals send \x19 for Ctrl+Y)
+		if (data.charCodeAt(0) === 25) {
+			this.redo();
+			return;
+		}
 		// Ctrl+K - Delete to end of line (or merge with next line if at end)
 		if (data.charCodeAt(0) === 11) {
 			this.deleteToEndOfLine();
@@ -452,6 +474,7 @@ export class Editor implements Component {
 		this.largePasteMode = mode;
 	}
 	private insertCharacter(char: string): void {
+		this.saveToHistory();
 		const line = this.state.lines[this.state.cursorLine] || "";
 		const before = line.slice(0, this.state.cursorCol);
 		const after = line.slice(this.state.cursorCol);
@@ -521,6 +544,7 @@ export class Editor implements Component {
 		return true;
 	}
 	private handlePaste(pastedText: string): void {
+		this.saveToHistory();
 		// Clean the pasted text
 		const cleanText = pastedText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 		// Convert tabs to spaces (4 spaces per tab)
@@ -599,6 +623,7 @@ export class Editor implements Component {
 		}
 	}
 	private addNewLine(): void {
+		this.saveToHistory();
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		const before = currentLine.slice(0, this.state.cursorCol);
 		const after = currentLine.slice(this.state.cursorCol);
@@ -613,6 +638,7 @@ export class Editor implements Component {
 		}
 	}
 	private handleBackspace(): void {
+		this.saveToHistory();
 		if (this.state.cursorCol > 0) {
 			// Delete character in current line
 			const line = this.state.lines[this.state.cursorLine] || "";
@@ -645,6 +671,7 @@ export class Editor implements Component {
 		this.state.cursorCol = currentLine.length;
 	}
 	private handleForwardDelete(): void {
+		this.saveToHistory();
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		if (this.state.cursorCol < currentLine.length) {
 			// Delete character at cursor position (forward delete)
@@ -663,6 +690,7 @@ export class Editor implements Component {
 	}
 
 	private deleteToStartOfLine(): void {
+		this.saveToHistory();
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		if (this.state.cursorCol > 0) {
 			// Delete from start of line up to cursor
@@ -684,6 +712,7 @@ export class Editor implements Component {
 	}
 
 	private deleteToEndOfLine(): void {
+		this.saveToHistory();
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		if (this.state.cursorCol < currentLine.length) {
 			// Delete from cursor to end of line
@@ -703,6 +732,7 @@ export class Editor implements Component {
 	}
 
 	private deleteWordBackwards(): void {
+		this.saveToHistory();
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		// If at start of line, behave like backspace at column 0 (merge with previous line)
 		if (this.state.cursorCol === 0) {
@@ -870,5 +900,131 @@ export class Editor implements Component {
 			// No more matches, cancel autocomplete
 			this.cancelAutocomplete();
 		}
+	}
+
+	/**
+	 * Save current state to undo history.
+	 * Debounces saves to avoid excessive history entries during rapid typing.
+	 */
+	private saveToHistory(): void {
+		const now = Date.now();
+		if (now - this.lastSaveTime < Editor.SAVE_DEBOUNCE_MS) {
+			// Update the most recent entry instead of creating a new one
+			if (this.undoStack.length > 0) {
+				this.undoStack[this.undoStack.length - 1] = {
+					state: this.cloneState(),
+					timestamp: now,
+				};
+			}
+			return;
+		}
+
+		this.undoStack.push({
+			state: this.cloneState(),
+			timestamp: now,
+		});
+
+		// Trim history if too long
+		if (this.undoStack.length > Editor.MAX_HISTORY) {
+			this.undoStack.shift();
+		}
+
+		// Clear redo stack when new changes are made
+		this.redoStack = [];
+		this.lastSaveTime = now;
+	}
+
+	/**
+	 * Clone current editor state.
+	 */
+	private cloneState(): EditorState {
+		return {
+			lines: [...this.state.lines],
+			cursorLine: this.state.cursorLine,
+			cursorCol: this.state.cursorCol,
+		};
+	}
+
+	/**
+	 * Undo the last change.
+	 */
+	undo(): boolean {
+		if (this.undoStack.length === 0) {
+			return false;
+		}
+
+		// Save current state to redo stack
+		this.redoStack.push({
+			state: this.cloneState(),
+			timestamp: Date.now(),
+		});
+
+		// Restore previous state
+		const entry = this.undoStack.pop();
+		if (entry) {
+			this.state = {
+				lines: [...entry.state.lines],
+				cursorLine: entry.state.cursorLine,
+				cursorCol: entry.state.cursorCol,
+			};
+			if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Redo the last undone change.
+	 */
+	redo(): boolean {
+		if (this.redoStack.length === 0) {
+			return false;
+		}
+
+		// Save current state to undo stack
+		this.undoStack.push({
+			state: this.cloneState(),
+			timestamp: Date.now(),
+		});
+
+		// Restore next state
+		const entry = this.redoStack.pop();
+		if (entry) {
+			this.state = {
+				lines: [...entry.state.lines],
+				cursorLine: entry.state.cursorLine,
+				cursorCol: entry.state.cursorCol,
+			};
+			if (this.onChange) {
+				this.onChange(this.getText());
+			}
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Clear undo/redo history.
+	 */
+	clearHistory(): void {
+		this.undoStack = [];
+		this.redoStack = [];
+		this.lastSaveTime = 0;
+	}
+
+	/**
+	 * Check if undo is available.
+	 */
+	canUndo(): boolean {
+		return this.undoStack.length > 0;
+	}
+
+	/**
+	 * Check if redo is available.
+	 */
+	canRedo(): boolean {
+		return this.redoStack.length > 0;
 	}
 }

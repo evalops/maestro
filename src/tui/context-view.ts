@@ -6,6 +6,11 @@ import type {
 } from "../agent/types.js";
 import { theme } from "../theme/theme.js";
 import {
+	themedBottomLine,
+	themedSeparatorLine,
+	themedTopLine,
+} from "./utils/borders.js";
+import {
 	calculateFooterStats,
 	formatTokenCount,
 	normalizeUsage,
@@ -49,18 +54,19 @@ export class ContextView implements Component {
 
 	render(width: number): string[] {
 		const lines: string[] = [];
+		const borderV = theme.fg("borderAccent", "│");
 
-		// Top border
-		lines.push(theme.fg("borderAccent", `╭${"─".repeat(width - 2)}╮`));
-
-		// Title
-		const title = centerText("CONTEXT USAGE", width - 4);
+		// Top border with title
 		lines.push(
-			`${theme.fg("borderAccent", "│ ")}${theme.bold(theme.fg("text", title))}${theme.fg("borderAccent", " │")}`,
+			themedTopLine(width, {
+				title: theme.bold("CONTEXT USAGE"),
+				titleAlign: "center",
+				color: "borderAccent",
+			}),
 		);
 
-		// Separator
-		lines.push(theme.fg("borderAccent", `├${"─".repeat(width - 2)}┤`));
+		// Separator after title
+		lines.push(themedSeparatorLine(width, { color: "borderAccent" }));
 
 		const stats = calculateFooterStats(this.options.state);
 		const items = this.getItems();
@@ -110,15 +116,15 @@ export class ContextView implements Component {
 		}
 
 		// Bottom separator
-		lines.push(theme.fg("borderAccent", `├${"─".repeat(width - 2)}┤`));
+		lines.push(themedSeparatorLine(width, { color: "borderAccent" }));
 
 		const helpText = "[esc] close  [↑/↓] scroll";
 		lines.push(
-			`${theme.fg("borderAccent", "│ ")}${centerText(theme.fg("dim", helpText), width - 4)}${theme.fg("borderAccent", " │")}`,
+			`${borderV} ${centerText(theme.fg("dim", helpText), width - 4)} ${borderV}`,
 		);
 
 		// Bottom border
-		lines.push(theme.fg("borderAccent", `╰${"─".repeat(width - 2)}╯`));
+		lines.push(themedBottomLine(width, { color: "borderAccent" }));
 
 		return lines;
 	}

@@ -2,6 +2,12 @@ import type { Component } from "@evalops/tui";
 import chalk from "chalk";
 import type { ActionApprovalRequest } from "../../agent/action-approval.js";
 import {
+	getBorderChars,
+	themedBottomLine,
+	themedSeparatorLine,
+	themedTopLine,
+} from "../utils/borders.js";
+import {
 	centerText,
 	padLine,
 	sanitizeAnsi,
@@ -28,16 +34,19 @@ export class ApprovalModal implements Component {
 		this.queueSize = size;
 	}
 
+	private static readonly BORDER_COLOR = "#8b5cf6";
+
 	render(width: number): string[] {
-		const borderColor = "#8b5cf6";
+		const borderColor = ApprovalModal.BORDER_COLOR;
+		const chars = getBorderChars("rounded");
 		const innerWidth = Math.max(1, width - 4);
 		const lines: string[] = [];
+		const borderV = chalk.hex(borderColor)(chars.vertical);
+
 		const pushRow = (content: string): void => {
 			const safeContent = truncateText(content, innerWidth);
 			const padded = padLine(safeContent, innerWidth);
-			lines.push(
-				`${chalk.hex(borderColor)("│ ")}${padded}${chalk.hex(borderColor)(" │")}`,
-			);
+			lines.push(`${borderV} ${padded} ${borderV}`);
 		};
 		const pushSpacer = (): void => {
 			pushRow(" ".repeat(innerWidth));
@@ -49,14 +58,16 @@ export class ApprovalModal implements Component {
 			}
 		};
 
-		lines.push(
-			chalk.hex(borderColor)(`╭${"─".repeat(Math.max(0, width - 2))}╮`),
-		);
+		// Top border with title
+		const topLine = `${chars.topLeft}${chars.horizontal.repeat(Math.max(0, width - 2))}${chars.topRight}`;
+		lines.push(chalk.hex(borderColor)(topLine));
+
 		const title = centerText("ACTION APPROVAL", innerWidth);
 		pushRow(chalk.hex("#e2e8f0").bold(title));
-		lines.push(
-			chalk.hex(borderColor)(`├${"─".repeat(Math.max(0, width - 2))}┤`),
-		);
+
+		// Separator
+		const sepLine = `${chars.leftT}${chars.horizontal.repeat(Math.max(0, width - 2))}${chars.rightT}`;
+		lines.push(chalk.hex(borderColor)(sepLine));
 
 		pushSection("Reason", this.describeReason(innerWidth));
 		pushSpacer();
@@ -66,17 +77,18 @@ export class ApprovalModal implements Component {
 		pushSpacer();
 		pushSection("Queue Status", [this.describeQueue()]);
 
-		lines.push(
-			chalk.hex(borderColor)(`├${"─".repeat(Math.max(0, width - 2))}┤`),
-		);
+		// Footer separator
+		lines.push(chalk.hex(borderColor)(sepLine));
+
 		const footer = centerText(
 			"[y] approve  [n] deny  [esc] cancel",
 			innerWidth,
 		);
 		pushRow(chalk.dim(footer));
-		lines.push(
-			chalk.hex(borderColor)(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
-		);
+
+		// Bottom border
+		const bottomLine = `${chars.bottomLeft}${chars.horizontal.repeat(Math.max(0, width - 2))}${chars.bottomRight}`;
+		lines.push(chalk.hex(borderColor)(bottomLine));
 
 		return lines;
 	}

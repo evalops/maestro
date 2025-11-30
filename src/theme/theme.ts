@@ -49,8 +49,9 @@ const ThemeJsonSchema = Type.Object({
 	name: Type.String(),
 	vars: Type.Optional(Type.Record(Type.String(), ColorValueSchema)),
 	colors: Type.Object({
-		// Core UI (10 colors)
+		// Core UI (11 colors)
 		accent: ColorValueSchema,
+		accentWarm: ColorValueSchema, // Warm accent for interactive/actionable elements
 		border: ColorValueSchema,
 		borderAccent: ColorValueSchema,
 		borderMuted: ColorValueSchema,
@@ -116,6 +117,7 @@ const EMBEDDED_THEMES: Record<"dark" | "light", ThemeJson> = {
 			green: "#b5bd68",
 			red: "#cc6666",
 			yellow: "#ffff00",
+			coral: "#f97316", // Warm accent for interactive elements
 			gray: "#808080",
 			dimGray: "#666666",
 			darkGray: "#505050",
@@ -127,6 +129,7 @@ const EMBEDDED_THEMES: Record<"dark" | "light", ThemeJson> = {
 		},
 		colors: {
 			accent: "accent",
+			accentWarm: "coral",
 			border: "blue",
 			borderAccent: "cyan",
 			borderMuted: "darkGray",
@@ -181,6 +184,7 @@ const EMBEDDED_THEMES: Record<"dark" | "light", ThemeJson> = {
 			green: "#87af87",
 			red: "#af5f5f",
 			yellow: "#d7af5f",
+			coral: "#ea580c", // Warm accent for interactive elements (darker for light theme)
 			mediumGray: "#6c6c6c",
 			dimGray: "#8a8a8a",
 			lightGray: "#b0b0b0",
@@ -191,6 +195,7 @@ const EMBEDDED_THEMES: Record<"dark" | "light", ThemeJson> = {
 		},
 		colors: {
 			accent: "teal",
+			accentWarm: "coral",
 			border: "blue",
 			borderAccent: "teal",
 			borderMuted: "lightGray",
@@ -240,6 +245,7 @@ const EMBEDDED_THEMES: Record<"dark" | "light", ThemeJson> = {
 
 export type ThemeColor =
 	| "accent"
+	| "accentWarm"
 	| "border"
 	| "borderAccent"
 	| "borderMuted"

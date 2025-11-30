@@ -1,20 +1,6 @@
-import {
-	type Component,
-	Container,
-	type SelectItem,
-	SelectList,
-} from "@evalops/tui";
-import chalk from "chalk";
+import { Container, type SelectItem, SelectList } from "@evalops/tui";
 import type { ThinkingLevel } from "../../agent/types.js";
-
-/**
- * Dynamic border component that adjusts to viewport width
- */
-class DynamicBorder implements Component {
-	render(width: number): string[] {
-		return [chalk.blue("─".repeat(Math.max(1, width)))];
-	}
-}
+import { DynamicBorder } from "../utils/borders.js";
 
 /**
  * Component that renders a thinking level selector with borders

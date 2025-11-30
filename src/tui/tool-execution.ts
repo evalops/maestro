@@ -4,6 +4,8 @@ import {
 	type ToolRenderer,
 	createToolRenderer,
 } from "./tool-renderers/index.js";
+import { themedBottomLine, themedTopLine } from "./utils/borders.js";
+import { PANEL_WIDTHS } from "./utils/layout.js";
 
 /**
  * Component that renders a tool call with its result (updateable)
@@ -48,19 +50,20 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	private static readonly PANEL_WIDTH = PANEL_WIDTHS.tool;
+
 	private buildTopLine(): string {
 		const label = this.toolName.toUpperCase();
-		const width = 60;
-		const dashCount = Math.max(0, width - (label.length + 4));
-		return theme.fg(
-			"borderMuted",
-			`╭ ${theme.bold(label)} ${"─".repeat(dashCount)}╮`,
-		);
+		return themedTopLine(ToolExecutionComponent.PANEL_WIDTH, {
+			title: theme.bold(label),
+			color: "borderMuted",
+		});
 	}
 
 	private buildBottomLine(): string {
-		const width = 60;
-		return theme.fg("borderMuted", `╰${"─".repeat(width - 2)}╯`);
+		return themedBottomLine(ToolExecutionComponent.PANEL_WIDTH, {
+			color: "borderMuted",
+		});
 	}
 
 	updateArgs(args: Record<string, unknown>): void {
