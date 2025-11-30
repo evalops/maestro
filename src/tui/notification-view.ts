@@ -9,6 +9,29 @@ interface NotificationViewOptions {
 	footer: FooterComponent;
 }
 
+const ERROR_HINTS: Array<{ match: RegExp; hint: string }> = [
+	{
+		match: /api key/i,
+		hint: "Check API keys with /config sources or set ANTHROPIC_API_KEY.",
+	},
+	{
+		match: /authentication/i,
+		hint: "Login again or refresh credentials (/login or /config env).",
+	},
+	{
+		match: /rate limit|usage limit/i,
+		hint: "Switch to a smaller model or wait for the next reset.",
+	},
+	{
+		match: /network|connect/i,
+		hint: "Verify internet/egress; try again on a trusted network.",
+	},
+	{
+		match: /model.*not found/i,
+		hint: "Pick an available model via /model or /framework.",
+	},
+];
+
 export class NotificationView {
 	constructor(private readonly options: NotificationViewOptions) {}
 
@@ -20,8 +43,10 @@ export class NotificationView {
 	}
 
 	showError(errorMessage: string): void {
+		const hint = ERROR_HINTS.find((h) => h.match.test(errorMessage))?.hint;
+		const full = hint ? `${errorMessage} • ${hint}` : errorMessage;
 		// Errors go to footer toast for visibility
-		this.options.footer.setToast(errorMessage, "danger");
+		this.options.footer.setToast(full, "danger");
 		this.options.ui.requestRender();
 	}
 

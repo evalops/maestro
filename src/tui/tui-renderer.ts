@@ -157,6 +157,13 @@ import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 const logger = createLogger("tui:renderer");
 const SSH_RENDER_INTERVAL_MS = 50;
 
+type TerminalCapabilities = {
+	isTTY: boolean;
+	columns: number;
+	rows: number;
+	colorLevel: number;
+};
+
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
@@ -330,6 +337,12 @@ export class TuiRenderer {
 	private isCyclingModel = false;
 	private isOAuthFlowActive = false;
 	private modalManager: ModalManager;
+	private terminalCapabilities: TerminalCapabilities = {
+		isTTY: Boolean(process.stdout.isTTY && process.stdin.isTTY),
+		columns: process.stdout.columns ?? 80,
+		rows: process.stdout.rows ?? 24,
+		colorLevel: chalk.level || 0,
+	};
 
 	constructor(
 		agent: Agent,
@@ -369,6 +382,8 @@ export class TuiRenderer {
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal());
 		this.configureRenderThrottle();
+		this.refreshTerminalCapabilities();
+		process.stdout.on("resize", () => this.refreshTerminalCapabilities());
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
@@ -603,6 +618,7 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			getSlashCommands: () => this.slashCommands,
+			isInteractive: () => this.terminalCapabilities.isTTY,
 		});
 		this.thinkingSelectorView = new ThinkingSelectorView({
 			agent: this.agent,
@@ -1034,6 +1050,13 @@ export class TuiRenderer {
 		if (this.isInitialized) return;
 
 		await this.detectAndApplyTerminalTheme();
+		this.runConnectivityProbe().catch((error) => {
+			const msg =
+				error instanceof Error
+					? error.message
+					: "Model connectivity probe failed.";
+			this.notificationView.showError(msg);
+		});
 
 		// Setup UI layout
 		this.ui.addChild(this.headerContainer);
@@ -1108,6 +1131,15 @@ export class TuiRenderer {
 			this.startupContainer.addChild(new Text(line.trim(), 1, 0));
 			const hintLine = chalk.dim("Hints: /changelog /model /thinking");
 			this.startupContainer.addChild(new Text(hintLine, 1, 0));
+			announced = true;
+		} else if (!announced) {
+			const example = chalk.dim(
+				`Try: ${chalk.cyan(
+					"/review src/tui/tui-renderer.ts — summarize rendering flow",
+				)}`,
+			);
+			this.startupContainer.addChild(new Spacer(1));
+			this.startupContainer.addChild(new Text(example, 1, 0));
 			announced = true;
 		}
 
@@ -3204,6 +3236,33 @@ export class TuiRenderer {
 			}
 		}
 		this.ui.setMinRenderInterval(Math.max(0, interval));
+	}
+
+	private refreshTerminalCapabilities(): void {
+		this.terminalCapabilities = {
+			isTTY: Boolean(process.stdout.isTTY && process.stdin.isTTY),
+			columns: process.stdout.columns ?? 80,
+			rows: process.stdout.rows ?? 24,
+			colorLevel: chalk.level || 0,
+		};
+	}
+
+	private async runConnectivityProbe(): Promise<void> {
+		// Fast, no-network probe: ensure a model is selected and transport is configured.
+		const state = this.agent.state;
+		if (!state?.model) {
+			throw new Error("No default model configured. Use /model to select one.");
+		}
+		// If transport exposes a light ping, use it without sending user content
+		const transport: any = (this.agent as any).transport;
+		if (transport?.ping) {
+			await transport.ping().catch((error: any) => {
+				const message =
+					error?.message ??
+					"Model connectivity probe failed. Check API key and network.";
+				throw new Error(message);
+			});
+		}
 	}
 
 	private async performOAuthLogout(
