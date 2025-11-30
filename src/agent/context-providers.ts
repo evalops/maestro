@@ -1,4 +1,7 @@
-import { getDefaultFramework, getFrameworkInfo } from "../config/framework.js";
+import {
+	getFrameworkInfo,
+	resolveFrameworkPreference,
+} from "../config/framework.js";
 import { getLspConfig } from "../config/lsp-config.js";
 import { collectDiagnostics, getClients } from "../lsp/index.js";
 import { formatTaskFailures } from "../tools/background-tasks.js";
@@ -154,12 +157,12 @@ export class FrameworkPreferenceContextSource implements AgentContextSource {
 	name = "framework-default";
 
 	async getSystemPromptAdditions(): Promise<string | null> {
-		const pref = getDefaultFramework();
-		if (!pref) return null;
-		const info = getFrameworkInfo(pref);
+		const pref = resolveFrameworkPreference();
+		if (!pref.id) return null;
+		const info = getFrameworkInfo(pref.id);
 		if (!info) {
-			return `Preferred framework: ${pref}. Use this stack by default unless the user overrides.`;
+			return `Preferred framework: ${pref.id}. Source: ${pref.source}. Use this stack by default unless the user overrides.`;
 		}
-		return info.summary;
+		return `${info.summary} (source: ${pref.source})`;
 	}
 }

@@ -142,6 +142,7 @@ import { handleAgentsInit } from "../cli/commands/agents.js";
 import {
 	getDefaultFramework,
 	getFrameworkInfo,
+	resolveFrameworkPreference,
 	setDefaultFramework,
 } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
@@ -2011,21 +2012,36 @@ export class TuiRenderer {
 	private handleFrameworkCommand(context: CommandExecutionContext): void {
 		const arg = context.argumentText.trim();
 		if (!arg) {
-			const current = getDefaultFramework() ?? "none";
-			this.notificationView.showInfo(`Default framework: ${current}`);
+			const pref = resolveFrameworkPreference();
+			const current = pref.id ?? "none";
+			this.notificationView.showInfo(
+				`Default framework: ${current} (source: ${pref.source})`,
+			);
 			return;
 		}
 		const normalized = arg.toLowerCase();
 		if (normalized === "none" || normalized === "off") {
-			setDefaultFramework(null);
-			this.notificationView.showToast("Default framework cleared", "success");
+			try {
+				setDefaultFramework(null);
+				this.notificationView.showToast("Default framework cleared", "success");
+			} catch (error) {
+				this.notificationView.showError(
+					error instanceof Error ? error.message : String(error),
+				);
+			}
 			return;
 		}
 		const info = getFrameworkInfo(normalized);
-		setDefaultFramework(normalized);
-		const summary =
-			info?.summary ?? `Preferred framework set to ${normalized}.`;
-		this.notificationView.showToast(summary, "success");
+		try {
+			setDefaultFramework(normalized);
+			const summary =
+				info?.summary ?? `Preferred framework set to ${normalized}.`;
+			this.notificationView.showToast(summary, "success");
+		} catch (error) {
+			this.notificationView.showError(
+				error instanceof Error ? error.message : String(error),
+			);
+		}
 	}
 
 	private handleCommandsCommand(context: CommandExecutionContext): void {

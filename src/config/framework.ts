@@ -5,9 +5,20 @@ import { dirname, join } from "node:path";
 const DEFAULT_PATH =
 	process.env.COMPOSER_DEFAULT_FRAMEWORK_FILE ??
 	join(homedir(), ".composer", "default-framework.json");
+const POLICY_PATH =
+	process.env.COMPOSER_FRAMEWORK_POLICY_FILE ??
+	join(homedir(), ".composer", "policy.json");
+const ENV_OVERRIDE = process.env.COMPOSER_FRAMEWORK_OVERRIDE;
 
 interface FrameworkPrefs {
 	defaultFramework: string | null;
+}
+
+interface FrameworkPolicy {
+	framework?: {
+		default?: string | null;
+		locked?: boolean;
+	};
 }
 
 const ensureDir = (filePath: string) => {
@@ -28,6 +39,12 @@ export function getDefaultFramework(): string | null {
 }
 
 export function setDefaultFramework(framework: string | null): void {
+	const policy = getPolicyFramework();
+	if (policy.locked) {
+		throw new Error(
+			`Framework preference is locked by policy (${policy.id ?? "unspecified"}).`,
+		);
+	}
 	ensureDir(DEFAULT_PATH);
 	const data: FrameworkPrefs = { defaultFramework: framework };
 	writeFileSync(DEFAULT_PATH, JSON.stringify(data, null, 2), "utf8");
@@ -52,4 +69,50 @@ export function getFrameworkInfo(
 		};
 	}
 	return null;
+}
+
+export function getPolicyFramework(): { id: string | null; locked: boolean } {
+	try {
+		const raw = readFileSync(POLICY_PATH, "utf8");
+		const parsed = JSON.parse(raw) as FrameworkPolicy;
+		const id = parsed.framework?.default ?? null;
+		const locked = parsed.framework?.locked === true;
+		return { id, locked };
+	} catch {
+		return { id: null, locked: false };
+	}
+}
+
+export function resolveFrameworkPreference(): {
+	id: string | null;
+	source: string;
+	locked: boolean;
+} {
+	const policy = getPolicyFramework();
+	if (policy.id) {
+		return {
+			id: policy.id,
+			source: policy.locked ? "policy (locked)" : "policy",
+			locked: policy.locked,
+		};
+	}
+
+	if (ENV_OVERRIDE) {
+		return { id: ENV_OVERRIDE, source: "env override", locked: false };
+	}
+
+	if (process.env.COMPOSER_DEFAULT_FRAMEWORK) {
+		return {
+			id: process.env.COMPOSER_DEFAULT_FRAMEWORK,
+			source: "env",
+			locked: false,
+		};
+	}
+
+	const filePref = getDefaultFramework();
+	if (filePref) {
+		return { id: filePref, source: DEFAULT_PATH, locked: false };
+	}
+
+	return { id: null, source: "none", locked: false };
 }
