@@ -55,7 +55,9 @@ export class StatusBar implements Component {
 		const hint = this.lowColor
 			? this.interruptHint
 			: chalk.hex("#94a3b8")(this.interruptHint);
-		const msg = this.lowColor ? this.message : chalk.hex("#f1c0e8")(this.message);
+		const msg = this.lowColor
+			? this.message
+			: chalk.hex("#f1c0e8")(this.message);
 		const line = `${coloredSpin} ${msg}  ${hint}`;
 		const pad = Math.max(0, width - visibleWidth(line));
 		return [line + " ".repeat(pad)];

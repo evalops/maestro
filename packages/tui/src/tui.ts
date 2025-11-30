@@ -3,7 +3,10 @@
  */
 import type { Terminal } from "./terminal.js";
 import { visibleWidth, wrapAnsiLines } from "./utils.js";
-import { detectTerminalFeatures, type TerminalFeatures } from "./utils/terminal-features.js";
+import {
+	type TerminalFeatures,
+	detectTerminalFeatures,
+} from "./utils/terminal-features.js";
 
 /**
  * Component interface - all components must implement this
@@ -71,7 +74,10 @@ export class TUI extends Container {
 	private interruptHandler?: () => void;
 	private overlayActive = false;
 
-	constructor(private terminal: Terminal, features?: TerminalFeatures) {
+	constructor(
+		private terminal: Terminal,
+		features?: TerminalFeatures,
+	) {
 		super();
 		this.features = features ?? detectTerminalFeatures();
 		this.syncOutput = this.features.supportsSyncOutput;
