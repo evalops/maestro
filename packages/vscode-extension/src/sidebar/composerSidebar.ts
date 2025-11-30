@@ -339,6 +339,10 @@ export class ComposerSidebarProvider
 					const baseUrl =
 						config.get<string>("apiEndpoint") || "http://localhost:8080";
 					this._apiClient = new ApiClient(baseUrl);
+					this.clearChat();
+					vscode.window.showInformationMessage(
+						"Composer endpoint changed. Chat history was cleared to avoid mixing sessions.",
+					);
 				}
 			}),
 		);
@@ -348,7 +352,14 @@ export class ComposerSidebarProvider
 		id: string,
 		name: string,
 		args: any,
+		signal?: AbortSignal,
 	): Promise<void> {
+		const checkAbort = () => {
+			if (signal?.aborted) {
+				throw new Error("Request cancelled");
+			}
+		};
+		checkAbort();
 		// Helper to validate paths are within workspace (prevents path traversal attacks)
 		const validateWorkspacePath = (filePath: string): vscode.Uri => {
 			const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -357,14 +368,18 @@ export class ComposerSidebarProvider
 			}
 
 			const path = require("node:path");
-			const primaryWorkspace = workspaceFolders[0].uri.fsPath;
+			const activeWorkspace =
+				vscode.workspace.getWorkspaceFolder(
+					vscode.window.activeTextEditor?.document.uri ?? vscode.Uri.file(""),
+				) ?? workspaceFolders[0];
+			const baseRoot = activeWorkspace.uri.fsPath;
 
 			// Resolve relative paths against workspace root, not CWD
 			// This ensures "src/file.ts" resolves to "/workspace/src/file.ts"
 			// Also normalizes ".." sequences to prevent traversal attacks
 			const normalizedPath = path.isAbsolute(filePath)
 				? path.resolve(filePath)
-				: path.resolve(primaryWorkspace, filePath);
+				: path.resolve(baseRoot, filePath);
 			const uri = vscode.Uri.file(normalizedPath);
 
 			// Use VS Code's built-in workspace folder check
@@ -404,6 +419,7 @@ export class ComposerSidebarProvider
 		try {
 			let result: any[] = [];
 			if (name === "vscode_get_diagnostics") {
+				checkAbort();
 				const uri = args.uri ? validateWorkspacePath(args.uri) : undefined;
 				let allDiagnosticItems: vscode.Diagnostic[] = [];
 
@@ -417,6 +433,7 @@ export class ComposerSidebarProvider
 						allDiagnosticItems.push(...fileDiagnostics);
 					}
 				}
+				checkAbort();
 
 				const allDiagnostics = allDiagnosticItems.map((d) => ({
 					message: d.message,
@@ -438,12 +455,14 @@ export class ComposerSidebarProvider
 					},
 				];
 			} else if (name === "vscode_get_definition") {
+				checkAbort();
 				const uri = validateWorkspacePath(args.uri);
 				const pos = new vscode.Position(args.line, args.character);
 				const definitions =
 					(await vscode.commands.executeCommand<
 						(vscode.Location | vscode.LocationLink)[]
 					>("vscode.executeDefinitionProvider", uri, pos)) || [];
+				checkAbort();
 				const formatted = definitions.map((d) => {
 					if ("targetUri" in d) {
 						// LocationLink
@@ -475,6 +494,7 @@ export class ComposerSidebarProvider
 				});
 				result = [{ type: "text", text: JSON.stringify(formatted, null, 2) }];
 			} else if (name === "vscode_find_references") {
+				checkAbort();
 				const uri = validateWorkspacePath(args.uri);
 				const pos = new vscode.Position(args.line, args.character);
 				const references =
@@ -483,6 +503,7 @@ export class ComposerSidebarProvider
 						uri,
 						pos,
 					)) || [];
+				checkAbort();
 				const formatted = references.map((d) => ({
 					uri: d.uri.fsPath,
 					range: {
@@ -495,6 +516,7 @@ export class ComposerSidebarProvider
 				}));
 				result = [{ type: "text", text: JSON.stringify(formatted, null, 2) }];
 			} else if (name === "vscode_read_file_range") {
+				checkAbort();
 				// Validate line numbers
 				if (
 					typeof args.startLine !== "number" ||
@@ -509,6 +531,7 @@ export class ComposerSidebarProvider
 				}
 				const uri = validateWorkspacePath(args.uri);
 				const doc = await vscode.workspace.openTextDocument(uri);
+				checkAbort();
 				const start = Math.max(0, args.startLine);
 				// Use endLine + 1 since endLine is inclusive (fixes off-by-one error)
 				const end = Math.min(doc.lineCount, args.endLine + 1);
@@ -516,6 +539,7 @@ export class ComposerSidebarProvider
 				for (let i = start; i < end; i++) {
 					text += `${doc.lineAt(i).text}\n`;
 				}
+				checkAbort();
 				result = [{ type: "text", text }];
 			} else {
 				throw new Error(`Unknown client tool: ${name}`);
@@ -752,6 +776,7 @@ export class ComposerSidebarProvider
 						event.toolCallId,
 						event.toolName,
 						event.args,
+						signal,
 					).catch((err) => {
 						console.error("Client tool execution failed:", err);
 						// Try to submit error result so backend doesn't wait forever
