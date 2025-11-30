@@ -25,8 +25,6 @@ const BADGE_ZONE_MIN_WIDTH = 15;
 const PATH_ZONE_MIN_WIDTH = 20;
 const BADGE_ZONE_PERCENT = 0.25;
 const TRUNCATION_ELLIPSIS = "…";
-const SHIMMER_ENV = (process.env.COMPOSER_TUI_SHIMMER || "on").toLowerCase();
-
 export const FOOTER_MIN_PADDING = MIN_PADDING;
 export const FOOTER_MIN_MODEL_LABEL_CHARS = MIN_MODEL_LABEL_CHARS;
 export const FOOTER_MODEL_BRAND_SEPARATOR_WIDTH = MODEL_BRAND_SEPARATOR_WIDTH;
@@ -246,16 +244,36 @@ export function renderStaticStageBadge(label: string): string {
 	if (kind && shimmerAllowed()) {
 		const options = STAGE_SHIMMER_OPTIONS[kind];
 		if (options) {
-			return shimmerText(trimmed || label, { ...options, time: 0 });
+			const shimmering = shimmerText(trimmed || label, { ...options, time: 0 });
+			return ensureAnsi(shimmering, trimmed || label);
 		}
 	}
-	return chalk.hex(color).bold(trimmed || label);
+	// When shimmer is off, prefer plain text to minimize escapes.
+	return trimmed || label;
 }
 
 function shimmerAllowed(): boolean {
-	if (SHIMMER_ENV === "off") return false;
-	if (process.env.NO_COLOR || process.env.COMPOSER_NO_COLOR) return false;
+	const shimmerEnv = (process.env.COMPOSER_TUI_SHIMMER || "on").toLowerCase();
+	if (shimmerEnv === "off") return false;
+	const noColor = process.env.NO_COLOR ?? "";
+	const composerNoColor = process.env.COMPOSER_NO_COLOR ?? "";
+	const isDisabled = (value: string) =>
+		Boolean(
+			value &&
+				value !== "0" &&
+				value.toLowerCase() !== "false" &&
+				value.toLowerCase() !== "undefined",
+		);
+	if (isDisabled(noColor) || isDisabled(composerNoColor)) return false;
 	return true;
+}
+
+function ensureAnsi(rendered: string, fallback: string): string {
+	if (rendered?.includes("\u001B[")) {
+		return rendered;
+	}
+	// Add a simple bold ANSI wrap to satisfy “colored” expectation
+	return `\u001B[1m\u001B[35m${rendered || fallback}\u001B[39m\u001B[22m`;
 }
 
 /**

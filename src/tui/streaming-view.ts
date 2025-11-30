@@ -28,7 +28,7 @@ export class StreamingView {
 		this.streamingComponent = new AssistantMessageComponent();
 		this.options.chatContainer.addChild(this.streamingComponent);
 		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message),
+			toRenderableAssistantMessage(message, { cleanMode: "soft" }),
 		);
 	}
 
@@ -61,7 +61,7 @@ export class StreamingView {
 			this.bufferedMessages = [];
 		}
 		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message),
+			toRenderableAssistantMessage(message, { cleanMode: "soft" }),
 		);
 		if (message.stopReason === "aborted" || message.stopReason === "error") {
 			const errorMessage =
@@ -140,7 +140,7 @@ export class StreamingView {
 	private applyUpdate(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
 		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message),
+			toRenderableAssistantMessage(message, { cleanMode: "soft" }),
 		);
 	}
 

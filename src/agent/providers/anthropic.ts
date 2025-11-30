@@ -483,6 +483,8 @@ export async function* streamAnthropic(
 	const decoder = new TextDecoder();
 	let buffer = "";
 	const toolArgBuffers = new Map<number, string>();
+	const lastTextDelta = new Map<number, string>();
+	const lastThinkingDelta = new Map<number, string>();
 
 	try {
 		while (true) {
@@ -543,22 +545,32 @@ export async function* streamAnthropic(
 						const block = partial.content[idx];
 
 						if (delta.type === "text_delta" && block?.type === "text") {
-							block.text += delta.text;
+							const chunk = delta.text;
+							if (chunk === lastTextDelta.get(idx)) {
+								continue;
+							}
+							lastTextDelta.set(idx, chunk);
+							block.text += chunk;
 							yield {
 								type: "text_delta",
 								contentIndex: idx,
-								delta: delta.text,
+								delta: chunk,
 								partial,
 							};
 						} else if (
 							delta.type === "thinking_delta" &&
 							block?.type === "thinking"
 						) {
-							block.thinking += delta.thinking;
+							const chunk = delta.thinking;
+							if (chunk === lastThinkingDelta.get(idx)) {
+								continue;
+							}
+							lastThinkingDelta.set(idx, chunk);
+							block.thinking += chunk;
 							yield {
 								type: "thinking_delta",
 								contentIndex: idx,
-								delta: delta.thinking,
+								delta: chunk,
 								partial,
 							};
 						} else if (

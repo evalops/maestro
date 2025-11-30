@@ -81,6 +81,7 @@ export class DiagnosticsView {
 			.join("\n");
 		const renderables = buildConversationModel(
 			this.options.agent.state.messages as AppMessage[],
+			{ cleanMode: "soft" },
 		);
 
 		const text = buildBugReport({

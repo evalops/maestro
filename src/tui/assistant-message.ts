@@ -6,15 +6,16 @@ import { getMarkdownTheme, theme } from "../theme/theme.js";
  * Component that renders a complete assistant message.
  */
 export class AssistantMessageComponent extends Container {
+	private headerText: Text;
 	private contentContainer: Container;
 
 	constructor(message?: RenderableAssistantMessage) {
 		super();
 		this.contentContainer = new Container();
 
-		// Header with minimal style
-		const header = `${theme.fg("accent", "COMPOSER")} ${theme.fg("muted", "· response")}`;
-		this.addChild(new Text(header, 1, 0));
+		// Header with minimal style; updated per message to reflect cleaning state
+		this.headerText = new Text("", 1, 0);
+		this.addChild(this.headerText);
 
 		this.addChild(this.contentContainer);
 
@@ -27,6 +28,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	updateContent(message: RenderableAssistantMessage): void {
+		this.headerText.setText(this.buildHeader(message.cleaned));
 		this.contentContainer.clear();
 
 		const hasPrimaryContent =
@@ -88,5 +90,10 @@ export class AssistantMessageComponent extends Container {
 			),
 		);
 		return container;
+	}
+
+	private buildHeader(cleaned: boolean): string {
+		const base = `${theme.fg("accent", "COMPOSER")} ${theme.fg("muted", "· response")}`;
+		return cleaned ? `${base} ${theme.fg("muted", "· cleaned")}` : base;
 	}
 }

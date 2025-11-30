@@ -12,6 +12,55 @@ export type RenderableMessage =
 	| RenderableAssistantMessage
 	| RenderableToolResultMessage;
 
+export type CleanMode = "off" | "soft" | "aggressive";
+
+export interface RenderOptions {
+	cleanMode?: CleanMode;
+}
+
+/**
+ * Collapse duplicate lines with configurable window.
+ * - soft: consecutive only (default windowSize 1)
+ * - aggressive: dedupe within a small recent window and across blocks
+ */
+export function collapseRepeatedLines(
+	text: string,
+	options: { windowSize?: number; crossBlock?: boolean } = {},
+): { text: string; changed: boolean } {
+	const lines = text.split(/\r?\n/);
+	const result: string[] = [];
+	const windowSize = options.windowSize ?? 1;
+	const recent: string[] = [];
+	let changed = false;
+
+	for (const line of lines) {
+		const isEmpty = line.length === 0;
+		const isDuplicate =
+			!isEmpty &&
+			(options.crossBlock
+				? recent.includes(line)
+				: recent.length > 0 && recent[recent.length - 1] === line);
+
+		if (isDuplicate) {
+			changed = true;
+			continue;
+		}
+
+		result.push(line);
+		if (!isEmpty) {
+			recent.push(line);
+			if (recent.length > windowSize) {
+				recent.shift();
+			}
+		} else if (windowSize === 1 && !options.crossBlock) {
+			// In soft mode (consecutive only), blank lines break the streak
+			recent.length = 0;
+		}
+	}
+
+	return { text: result.join("\n"), changed };
+}
+
 export interface RenderableUserMessage {
 	kind: "user";
 	text: string;
@@ -26,6 +75,7 @@ export interface RenderableAssistantMessage {
 	toolCalls: RenderableToolCall[];
 	stopReason: StopReason;
 	errorMessage?: string;
+	cleaned: boolean;
 	raw: AssistantMessage;
 }
 
@@ -81,16 +131,26 @@ export function toRenderableUserMessage(
 
 export function toRenderableAssistantMessage(
 	message: AssistantMessage,
+	options: RenderOptions = {},
 ): RenderableAssistantMessage {
 	const textBlocks: string[] = [];
 	const thinkingBlocks: string[] = [];
 	const toolCalls: RenderableToolCall[] = [];
+	const cleanMode = options.cleanMode ?? "off";
+	let cleaned = false;
 
 	for (const content of message.content) {
 		if (content.type === "text" && content.text.trim()) {
-			textBlocks.push(content.text.trim());
+			const { text, changed } = maybeCleanText(content.text.trim(), cleanMode);
+			textBlocks.push(text);
+			cleaned = cleaned || changed;
 		} else if (content.type === "thinking" && content.thinking.trim()) {
-			thinkingBlocks.push(content.thinking.trim());
+			const { text, changed } = maybeCleanText(
+				content.thinking.trim(),
+				cleanMode,
+			);
+			thinkingBlocks.push(text);
+			cleaned = cleaned || changed;
 		} else if (content.type === "toolCall") {
 			toolCalls.push({
 				id: content.id,
@@ -107,8 +167,23 @@ export function toRenderableAssistantMessage(
 		toolCalls,
 		stopReason: message.stopReason,
 		errorMessage: message.errorMessage,
+		cleaned,
 		raw: message,
 	};
+}
+
+function maybeCleanText(
+	text: string,
+	mode: CleanMode,
+): { text: string; changed: boolean } {
+	if (mode === "off") {
+		return { text, changed: false };
+	}
+	if (mode === "soft") {
+		return collapseRepeatedLines(text);
+	}
+	// aggressive: dedupe within a sliding window across blocks
+	return collapseRepeatedLines(text, { windowSize: 8, crossBlock: true });
 }
 
 export function toRenderableToolResultMessage(
@@ -136,12 +211,13 @@ export function toRenderableToolResultMessage(
 
 export function createRenderableMessage(
 	message: AppMessage,
+	options: RenderOptions = {},
 ): RenderableMessage | null {
 	if (message.role === "user") {
 		return toRenderableUserMessage(message as UserMessageWithAttachments);
 	}
 	if (message.role === "assistant") {
-		return toRenderableAssistantMessage(message);
+		return toRenderableAssistantMessage(message, options);
 	}
 	if (message.role === "toolResult") {
 		return toRenderableToolResultMessage(message);
@@ -151,10 +227,11 @@ export function createRenderableMessage(
 
 export function buildConversationModel(
 	messages: AppMessage[],
+	options: RenderOptions = {},
 ): RenderableMessage[] {
 	const renderables: RenderableMessage[] = [];
 	for (const message of messages) {
-		const renderable = createRenderableMessage(message);
+		const renderable = createRenderableMessage(message, options);
 		if (renderable) {
 			renderables.push(renderable);
 		}

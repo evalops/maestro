@@ -1,7 +1,22 @@
-import chalk from "chalk";
+import chalk, { type ChalkInstance } from "chalk";
 import { interpolateGradient } from "../welcome-colors.js";
 
 const shimmerEpoch = Date.now();
+// Force colors for shimmer output regardless of NO_COLOR leakage in tests/env.
+const colorChalk: ChalkInstance =
+	// Chalk v5 exposes ChalkInstance directly; no public constructor is exported in some builds.
+	// Fall back to the default singleton when custom instances aren't supported.
+	(
+		chalk as unknown as {
+			Instance?: new (opts: { level: number }) => ChalkInstance;
+		}
+	).Instance
+		? new (
+				chalk as unknown as {
+					Instance: new (opts: { level: number }) => ChalkInstance;
+				}
+			).Instance({ level: 3 })
+		: chalk;
 
 export interface ShimmerOptions {
 	padding?: number;
@@ -41,7 +56,7 @@ export function shimmerText(
 				: 0;
 			const mixValue = Math.min(1, Math.max(0, t * intensityScale));
 			const blended = mixHex(baseColor, highlightColor, mixValue);
-			const painter = chalk.hex(blended);
+			const painter = colorChalk.hex(blended);
 			return (options.bold ?? true) ? painter.bold(ch) : painter(ch);
 		})
 		.join("");

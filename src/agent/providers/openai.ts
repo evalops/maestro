@@ -789,6 +789,8 @@ export async function* streamOpenAI(
 	const textEnded = new Set<number>();
 	const toolEnded = new Set<number>();
 	const thinkingEnded = new Set<number>();
+	const lastTextDelta = new Map<number, string>();
+	const lastThinkingDelta = new Map<number, string>();
 
 	const updateCosts = () => {
 		partial.usage.cost = {
@@ -892,6 +894,11 @@ export async function* streamOpenAI(
 								yield { type: "text_start", contentIndex: idx, partial };
 							}
 							const idx = partial.content.indexOf(textBlock);
+							const lastDelta = lastTextDelta.get(idx) ?? "";
+							if (contentDelta === lastDelta) {
+								continue;
+							}
+							lastTextDelta.set(idx, contentDelta);
 							textBlock.text += contentDelta;
 							if (!textEnded.has(idx)) {
 								// will mark ended on text_end
@@ -924,6 +931,11 @@ export async function* streamOpenAI(
 
 						if (thinkingBlock.type === "thinking") {
 							const idx = partial.content.indexOf(thinkingBlock);
+							const lastDelta = lastThinkingDelta.get(idx) ?? "";
+							if (reasoningDelta === lastDelta) {
+								continue;
+							}
+							lastThinkingDelta.set(idx, reasoningDelta);
 							thinkingBlock.thinking += reasoningDelta;
 							yield {
 								type: "thinking_delta",
