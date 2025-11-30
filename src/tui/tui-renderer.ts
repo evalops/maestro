@@ -88,6 +88,7 @@ import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
 import { LoaderView } from "./loader/loader-view.js";
+import { LspView } from "./lsp-view.js";
 import { MessageView } from "./message-view.js";
 import { NotificationView } from "./notification-view.js";
 import { OllamaView } from "./ollama-view.js";
@@ -236,6 +237,7 @@ export class TuiRenderer {
 	private diagnosticsView: DiagnosticsView;
 	private telemetryView: TelemetryView;
 	private ollamaView: OllamaView;
+	private lspView: LspView;
 	private fileSearchView: FileSearchView;
 	private conversationCompactor: ConversationCompactor;
 	private messageView: MessageView;
@@ -749,6 +751,12 @@ export class TuiRenderer {
 				this.ui.requestRender();
 			},
 		});
+		this.lspView = new LspView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+		});
 
 		const registry = buildCommandRegistry({
 			getRunScriptCompletions: (prefix: string) =>
@@ -819,6 +827,7 @@ export class TuiRenderer {
 			handleComposer: (context) => this.handleComposerCommand(context),
 			handleZen: (context) => this.handleZenCommand(context),
 			handleContext: (context) => this.handleContextCommand(context),
+			handleLsp: (context) => this.lspView.handleLspCommand(context.rawInput),
 		});
 
 		this.commandEntries = registry.entries;

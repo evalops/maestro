@@ -378,6 +378,7 @@ The `Update Nix Hash` workflow runs on pushes to `main` that touch `bun.lockb`, 
 | `/config` | Configuration details |
 | `/cost` | Usage/cost breakdown |
 | `/stats` | Quick health check |
+| `/lsp` | Manage Language Server Protocol servers (status/start/stop/restart/detect) |
 | `/plan` | Manage todo plans |
 | `/diff <path>` | Git diff |
 | `/run` | Run project scripts |
@@ -417,7 +418,7 @@ composer [options] [messages...]
 | Flag | Description |
 |------|-------------|
 | `--provider <name>` | Provider (anthropic, openai, google, etc.). Default: `anthropic` |
-| `--model <id>` | Model ID. Default: `claude-opus-4-5` |
+| `--model <id>` | Model ID. Default: `claude-opus-4-5-20251101` |
 | `--api-key <key>` | Override API key |
 | `--system-prompt <text\|file>` | Custom system prompt |
 | `--mode <text\|json\|rpc>` | Output format |

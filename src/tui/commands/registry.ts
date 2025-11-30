@@ -530,6 +530,25 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "lsp",
+				description: "Manage Language Server Protocol servers",
+				usage: "/lsp [status|start|stop|restart|detect]",
+				tags: ["tools", "diagnostics"],
+				examples: [
+					"/lsp",
+					"/lsp status",
+					"/lsp start",
+					"/lsp stop",
+					"/lsp restart",
+					"/lsp detect",
+				],
+			},
+			withArgs("lsp"),
+			handlers.lsp,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "composer",
 				description: "Manage custom composer configurations",
 				usage: "/composer [list|<name>|activate <name>|deactivate]",
