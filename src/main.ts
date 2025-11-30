@@ -736,6 +736,8 @@ export async function main(args: string[]) {
 			model,
 			thinkingLevel: "off",
 			tools: allTools,
+			sandboxMode: parsed.execSandbox ?? null,
+			sandboxEnabled: Boolean(parsed.execSandbox),
 			user: (() => {
 				const u = enterpriseContext.getUser();
 				return u ? { id: u.userId, orgId: u.orgId } : undefined;

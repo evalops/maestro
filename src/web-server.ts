@@ -314,6 +314,8 @@ async function createAgent(
 			model: registeredModel,
 			thinkingLevel,
 			tools,
+			sandboxMode: null,
+			sandboxEnabled: false,
 		},
 	});
 

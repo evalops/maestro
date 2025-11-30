@@ -287,6 +287,8 @@ export interface AgentState {
 	streamMessage: Message | null;
 	pendingToolCalls: Map<string, PendingToolCall>;
 	error?: string;
+	sandboxMode?: string | null;
+	sandboxEnabled?: boolean;
 	user?: {
 		id: string; // UUID
 		orgId: string; // UUID

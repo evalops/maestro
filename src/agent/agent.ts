@@ -179,6 +179,8 @@ export class Agent {
 			isStreaming: false,
 			streamMessage: null,
 			pendingToolCalls: new Map(),
+			sandboxMode: restInitialState.sandboxMode ?? null,
+			sandboxEnabled: restInitialState.sandboxEnabled ?? false,
 			...restInitialState,
 		};
 	}
