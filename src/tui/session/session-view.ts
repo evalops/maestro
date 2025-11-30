@@ -49,9 +49,7 @@ export class SessionView {
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		const state = this.options.agent.state;
 
-		const renderables = buildConversationModel(state.messages as AppMessage[], {
-			cleanMode: "soft",
-		});
+		const renderables = buildConversationModel(state.messages as AppMessage[]);
 		const userMessages = renderables.filter((message) =>
 			isRenderableUserMessage(message),
 		).length;

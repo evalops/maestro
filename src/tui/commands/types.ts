@@ -69,6 +69,7 @@ export interface CommandHandlers {
 	lsp(context: CommandExecutionContext): void | Promise<void>;
 	theme(context: CommandExecutionContext): void;
 	framework(context: CommandExecutionContext): void;
+	clean(context: CommandExecutionContext): void;
 }
 
 export interface CommandEntry {

@@ -789,8 +789,24 @@ export async function* streamOpenAI(
 	const textEnded = new Set<number>();
 	const toolEnded = new Set<number>();
 	const thinkingEnded = new Set<number>();
-	const lastTextDelta = new Map<number, string>();
-	const lastThinkingDelta = new Map<number, string>();
+	const appendDelta = (
+		existing: string,
+		delta: string,
+	): { next: string; skipped: boolean } => {
+		if (!delta) return { next: existing, skipped: true };
+		if (existing.endsWith(delta)) {
+			return { next: existing, skipped: true };
+		}
+		const overlap = Math.min(existing.length, delta.length);
+		let shared = 0;
+		for (let i = overlap; i > 0; i--) {
+			if (existing.endsWith(delta.slice(0, i))) {
+				shared = i;
+				break;
+			}
+		}
+		return { next: existing + delta.slice(shared), skipped: false };
+	};
 
 	const updateCosts = () => {
 		partial.usage.cost = {
@@ -894,19 +910,20 @@ export async function* streamOpenAI(
 								yield { type: "text_start", contentIndex: idx, partial };
 							}
 							const idx = partial.content.indexOf(textBlock);
-							const lastDelta = lastTextDelta.get(idx) ?? "";
-							if (contentDelta === lastDelta) {
-								continue;
-							}
-							lastTextDelta.set(idx, contentDelta);
-							textBlock.text += contentDelta;
+							const previousLength = textBlock.text.length;
+							const { next, skipped } = appendDelta(
+								textBlock.text,
+								contentDelta,
+							);
+							if (skipped) continue;
+							textBlock.text = next;
 							if (!textEnded.has(idx)) {
 								// will mark ended on text_end
 							}
 							yield {
 								type: "text_delta",
 								contentIndex: idx,
-								delta: contentDelta,
+								delta: next.slice(previousLength),
 								partial,
 							};
 						}
@@ -931,16 +948,17 @@ export async function* streamOpenAI(
 
 						if (thinkingBlock.type === "thinking") {
 							const idx = partial.content.indexOf(thinkingBlock);
-							const lastDelta = lastThinkingDelta.get(idx) ?? "";
-							if (reasoningDelta === lastDelta) {
-								continue;
-							}
-							lastThinkingDelta.set(idx, reasoningDelta);
-							thinkingBlock.thinking += reasoningDelta;
+							const previousLength = thinkingBlock.thinking.length;
+							const { next, skipped } = appendDelta(
+								thinkingBlock.thinking,
+								reasoningDelta,
+							);
+							if (skipped) continue;
+							thinkingBlock.thinking = next;
 							yield {
 								type: "thinking_delta",
 								contentIndex: idx,
-								delta: reasoningDelta,
+								delta: next.slice(previousLength),
 								partial,
 							};
 						}

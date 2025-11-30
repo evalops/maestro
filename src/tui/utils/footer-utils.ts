@@ -248,8 +248,7 @@ export function renderStaticStageBadge(label: string): string {
 			return ensureAnsi(shimmering, trimmed || label);
 		}
 	}
-	// When shimmer is off, prefer plain text to minimize escapes.
-	return trimmed || label;
+	return chalk.hex(color).bold(trimmed || label);
 }
 
 function shimmerAllowed(): boolean {

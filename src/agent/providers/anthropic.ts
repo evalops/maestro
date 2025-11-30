@@ -483,8 +483,24 @@ export async function* streamAnthropic(
 	const decoder = new TextDecoder();
 	let buffer = "";
 	const toolArgBuffers = new Map<number, string>();
-	const lastTextDelta = new Map<number, string>();
-	const lastThinkingDelta = new Map<number, string>();
+	const appendDelta = (
+		existing: string,
+		delta: string,
+	): { next: string; skipped: boolean } => {
+		if (!delta) return { next: existing, skipped: true };
+		if (existing.endsWith(delta)) {
+			return { next: existing, skipped: true };
+		}
+		const overlap = Math.min(existing.length, delta.length);
+		let shared = 0;
+		for (let i = overlap; i > 0; i--) {
+			if (existing.endsWith(delta.slice(0, i))) {
+				shared = i;
+				break;
+			}
+		}
+		return { next: existing + delta.slice(shared), skipped: false };
+	};
 
 	try {
 		while (true) {
@@ -546,15 +562,14 @@ export async function* streamAnthropic(
 
 						if (delta.type === "text_delta" && block?.type === "text") {
 							const chunk = delta.text;
-							if (chunk === lastTextDelta.get(idx)) {
-								continue;
-							}
-							lastTextDelta.set(idx, chunk);
-							block.text += chunk;
+							const previousLength = block.text.length;
+							const { next, skipped } = appendDelta(block.text, chunk);
+							if (skipped) continue;
+							block.text = next;
 							yield {
 								type: "text_delta",
 								contentIndex: idx,
-								delta: chunk,
+								delta: next.slice(previousLength),
 								partial,
 							};
 						} else if (
@@ -562,15 +577,14 @@ export async function* streamAnthropic(
 							block?.type === "thinking"
 						) {
 							const chunk = delta.thinking;
-							if (chunk === lastThinkingDelta.get(idx)) {
-								continue;
-							}
-							lastThinkingDelta.set(idx, chunk);
-							block.thinking += chunk;
+							const previousLength = block.thinking.length;
+							const { next, skipped } = appendDelta(block.thinking, chunk);
+							if (skipped) continue;
+							block.thinking = next;
 							yield {
 								type: "thinking_delta",
 								contentIndex: idx,
-								delta: chunk,
+								delta: next.slice(previousLength),
 								partial,
 							};
 						} else if (

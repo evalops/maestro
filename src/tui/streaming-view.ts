@@ -1,7 +1,10 @@
 import type { Container } from "@evalops/tui";
 import { Text } from "@evalops/tui";
 import type { AssistantMessage } from "../agent/types.js";
-import { toRenderableAssistantMessage } from "../conversation/render-model.js";
+import {
+	type CleanMode,
+	toRenderableAssistantMessage,
+} from "../conversation/render-model.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import type { ToolOutputView } from "./tool-output-view.js";
@@ -15,6 +18,7 @@ interface StreamingViewOptions {
 		batchIntervalMs: number;
 		scrollbackLimit: number;
 	};
+	getCleanMode: () => CleanMode;
 }
 
 export class StreamingView {
@@ -27,9 +31,7 @@ export class StreamingView {
 	beginAssistantMessage(message: AssistantMessage): void {
 		this.streamingComponent = new AssistantMessageComponent();
 		this.options.chatContainer.addChild(this.streamingComponent);
-		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message, { cleanMode: "soft" }),
-		);
+		this.streamingComponent.updateContent(this.renderStreaming(message));
 	}
 
 	updateAssistantMessage(message: AssistantMessage): void {
@@ -60,8 +62,9 @@ export class StreamingView {
 			}
 			this.bufferedMessages = [];
 		}
+		// Final render uses raw content to preserve transcript fidelity.
 		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message, { cleanMode: "soft" }),
+			toRenderableAssistantMessage(message, { cleanMode: "off" }),
 		);
 		if (message.stopReason === "aborted" || message.stopReason === "error") {
 			const errorMessage =
@@ -139,9 +142,7 @@ export class StreamingView {
 
 	private applyUpdate(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
-		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message, { cleanMode: "soft" }),
-		);
+		this.streamingComponent.updateContent(this.renderStreaming(message));
 	}
 
 	private trimScrollback(): void {
@@ -152,5 +153,14 @@ export class StreamingView {
 		if (container.children.length <= limit) return;
 		const removeCount = container.children.length - limit;
 		container.children.splice(0, removeCount);
+	}
+
+	private renderStreaming(message: AssistantMessage) {
+		const cleanMode = this.options.getCleanMode();
+		const mode: CleanMode = cleanMode ?? "off";
+		if (mode === "off") {
+			return toRenderableAssistantMessage(message, { cleanMode: "off" });
+		}
+		return toRenderableAssistantMessage(message, { cleanMode: mode });
 	}
 }

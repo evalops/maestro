@@ -62,7 +62,6 @@ export class FeedbackView {
 		const envSummary = this.buildEnvironmentSummary();
 		const renderables = buildConversationModel(
 			this.options.agent.state.messages as AppMessage[],
-			{ cleanMode: "soft" },
 		);
 		const toolsUsed = renderables
 			.filter((message) => isRenderableAssistantMessage(message))

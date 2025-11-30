@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { CleanMode } from "../conversation/render-model.js";
 import type { FooterMode } from "./utils/footer-utils.js";
 
 export type QueueMode = "one" | "all";
@@ -10,6 +11,7 @@ export interface UiState {
 	compactTools?: boolean;
 	footerMode?: FooterMode;
 	zenMode?: boolean;
+	cleanMode?: CleanMode;
 }
 
 const UI_STATE_PATH =
@@ -35,6 +37,12 @@ export function loadUiState(): UiState {
 			footerMode:
 				parsed.footerMode === "ensemble" || parsed.footerMode === "solo"
 					? parsed.footerMode
+					: undefined,
+			cleanMode:
+				parsed.cleanMode === "soft" ||
+				parsed.cleanMode === "aggressive" ||
+				parsed.cleanMode === "off"
+					? parsed.cleanMode
 					: undefined,
 			zenMode: typeof parsed.zenMode === "boolean" ? parsed.zenMode : undefined,
 		};

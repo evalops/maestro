@@ -24,7 +24,7 @@ export class MessageView {
 	constructor(private readonly options: MessageViewOptions) {}
 
 	addMessage(message: AppMessage): void {
-		const renderable = createRenderableMessage(message, { cleanMode: "soft" });
+		const renderable = createRenderableMessage(message);
 		if (!renderable) {
 			return;
 		}

@@ -36,6 +36,7 @@ import {
 	renderCommandPrompt,
 	validateCommandArgs,
 } from "../commands/catalog.js";
+import type { CleanMode } from "../conversation/render-model.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import {
@@ -315,6 +316,7 @@ export class TuiRenderer {
 	private queuedPromptCount = 0;
 	private queueEnabled = false;
 	private promptQueueMode: "one" | "all" = "all";
+	private cleanMode: CleanMode = "off";
 	private nextQueuedPreview: string | null = null;
 	private uiState: UiState = {};
 	private footerMode: FooterMode = "ensemble";
@@ -375,6 +377,13 @@ export class TuiRenderer {
 		this.uiState = loadUiState();
 		if (this.uiState.queueMode) {
 			this.promptQueueMode = this.uiState.queueMode;
+		}
+		if (this.uiState.cleanMode) {
+			this.cleanMode = this.uiState.cleanMode;
+		}
+		const envCleanMode = this.readCleanModeFromEnv();
+		if (envCleanMode) {
+			this.cleanMode = envCleanMode;
 		}
 		if (this.uiState.footerMode) {
 			this.footerMode = this.uiState.footerMode;
@@ -585,6 +594,7 @@ export class TuiRenderer {
 			pendingTools: this.pendingTools,
 			toolOutputView: this.toolOutputView,
 			lowBandwidth: this.lowBandwidthConfig,
+			getCleanMode: () => this.cleanMode,
 		});
 		this.agentEventRouter = new AgentEventRouter({
 			messageView: this.messageView,
@@ -891,6 +901,7 @@ export class TuiRenderer {
 			handleContext: (context) => this.handleContextCommand(context),
 			handleLsp: (context) => this.lspView.handleLspCommand(context.rawInput),
 			handleFramework: (context) => this.handleFrameworkCommand(context),
+			handleClean: (context) => this.handleCleanCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -1410,6 +1421,28 @@ export class TuiRenderer {
 			return;
 		}
 		context.showError("Usage: /zen [on|off]");
+	}
+
+	private handleCleanCommand(context: CommandExecutionContext): void {
+		const arg = context.argumentText.trim().toLowerCase();
+		if (!arg) {
+			context.showInfo(
+				`Clean mode is ${this.cleanMode} (streaming only). Use /clean off|soft|aggressive.`,
+			);
+			return;
+		}
+
+		const parsed = this.parseCleanMode(arg);
+		if (!parsed) {
+			context.showError("Usage: /clean [off|soft|aggressive]");
+			return;
+		}
+
+		this.cleanMode = parsed;
+		this.persistUiState({ cleanMode: parsed });
+		context.showInfo(
+			`Clean mode set to ${parsed}. Dedupe applies only while text streams; transcripts stay raw.`,
+		);
 	}
 
 	private handleContextCommand(_context: CommandExecutionContext): void {
@@ -1934,8 +1967,38 @@ export class TuiRenderer {
 			queueMode: this.promptQueueMode,
 			compactTools: this.toolOutputView.isCompact(),
 			footerMode: this.footerMode,
+			cleanMode: this.cleanMode,
 			...extra,
 		});
+	}
+
+	private parseCleanMode(value: string): CleanMode | null {
+		const normalized = value.toLowerCase();
+		if (
+			normalized === "off" ||
+			normalized === "disable" ||
+			normalized === "0"
+		) {
+			return "off";
+		}
+		if (
+			normalized === "on" ||
+			normalized === "true" ||
+			normalized === "soft" ||
+			normalized === "1"
+		) {
+			return "soft";
+		}
+		if (normalized === "aggressive") {
+			return "aggressive";
+		}
+		return null;
+	}
+
+	private readCleanModeFromEnv(): CleanMode | null {
+		const raw = process.env.COMPOSER_TUI_CLEAN;
+		if (!raw) return null;
+		return this.parseCleanMode(raw);
 	}
 
 	private handleBranchCommand(context: CommandExecutionContext): void {

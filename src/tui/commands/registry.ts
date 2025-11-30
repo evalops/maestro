@@ -148,6 +148,19 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "clean",
+				description:
+					"Toggle assistant text deduplication during live streaming only",
+				usage: "/clean [off|soft|aggressive]",
+				tags: ["ui"],
+				examples: ["/clean", "/clean soft", "/clean off"],
+			},
+			withArgs("clean"),
+			handlers.clean,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "new",
 				description: "Start a fresh chat session",
 				usage: "/new",
