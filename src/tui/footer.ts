@@ -26,6 +26,10 @@ interface FooterToast {
 	expiry: number;
 }
 
+interface ToastQueueItem extends FooterToast {
+	id: number;
+}
+
 /**
  * Footer component that shows pwd, token stats, and context usage
  */
@@ -36,6 +40,8 @@ export class FooterComponent {
 	private runtimeBadges: string[] = [];
 	private mode: FooterMode;
 	private activeToast: FooterToast | null = null;
+	private toastQueue: ToastQueueItem[] = [];
+	private nextToastId = 1;
 	private gitBranchTracker: GitBranchTracker;
 	private currentBranch: string | null | undefined = undefined;
 
@@ -87,11 +93,14 @@ export class FooterComponent {
 		tone: "info" | "warn" | "success" | "danger",
 		durationMs?: number,
 	): void {
-		this.activeToast = {
+		const toast: ToastQueueItem = {
+			id: this.nextToastId++,
 			message,
 			tone,
 			expiry: Date.now() + this.resolveToastDuration(tone, durationMs),
 		};
+		this.enqueueToast(toast);
+		this.dequeueToast();
 	}
 
 	private resolveToastDuration(
@@ -113,6 +122,43 @@ export class FooterComponent {
 
 	clearToast(): void {
 		this.activeToast = null;
+		this.toastQueue = [];
+	}
+
+	private enqueueToast(toast: ToastQueueItem): void {
+		const priority = this.toastPriority(toast.tone);
+		let inserted = false;
+		for (let i = 0; i < this.toastQueue.length; i++) {
+			if (priority > this.toastPriority(this.toastQueue[i].tone)) {
+				this.toastQueue.splice(i, 0, toast);
+				inserted = true;
+				break;
+			}
+		}
+		if (!inserted) {
+			this.toastQueue.push(toast);
+		}
+	}
+
+	private dequeueToast(): void {
+		if (this.activeToast) return;
+		const next = this.toastQueue.shift();
+		if (next) {
+			this.activeToast = next;
+		}
+	}
+
+	private toastPriority(tone: FooterToast["tone"]): number {
+		switch (tone) {
+			case "danger":
+				return 4;
+			case "warn":
+				return 3;
+			case "success":
+				return 2;
+			default:
+				return 1;
+		}
 	}
 
 	/**

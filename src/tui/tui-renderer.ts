@@ -2374,6 +2374,8 @@ export class TuiRenderer {
 				queuedPromptCount: this.queuedPromptCount,
 				hasPromptQueue: Boolean(this.promptQueue),
 				thinkingLevel: this.agent.state.thinkingLevel,
+				sandboxMode: process.env.COMPOSER_SANDBOX || null,
+				isSafeMode: process.env.COMPOSER_SAFE_MODE === "1",
 			}),
 		);
 		if (this.isAgentRunning) {

@@ -11,12 +11,15 @@ export interface RuntimeBadgeParams {
 	queuedPromptCount: number;
 	hasPromptQueue: boolean;
 	thinkingLevel?: ThinkingLevel | null;
+	sandboxMode?: string | null;
+	isSafeMode?: boolean;
 }
 
 export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 	const badges: string[] = [];
 
-	if (isSafeModeEnabled()) {
+	const safeMode = params.isSafeMode ?? isSafeModeEnabled();
+	if (safeMode) {
 		badges.push("safe:on");
 	}
 
@@ -26,6 +29,10 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 
 	if (params.approvalMode) {
 		badges.push(`approvals:${params.approvalMode}`);
+	}
+
+	if (params.sandboxMode) {
+		badges.push(`sandbox:${params.sandboxMode}`);
 	}
 
 	if (params.hasPromptQueue) {
