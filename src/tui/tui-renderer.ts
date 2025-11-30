@@ -1383,6 +1383,15 @@ export class TuiRenderer {
 			return;
 		}
 
+		if (tokens[0] === "history") {
+			const history = this.footer
+				.getToastHistory(5)
+				.map((t) => `${t.tone}: ${t.message}`)
+				.join("\n");
+			context.showInfo(history || "No recent footer alerts (toasts).");
+			return;
+		}
+
 		let candidate = tokens[0];
 		if (candidate === "mode" || candidate === "set" || candidate === "style") {
 			candidate = tokens[1] ?? "";

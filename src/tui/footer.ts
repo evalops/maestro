@@ -125,6 +125,11 @@ export class FooterComponent {
 		this.toastQueue = [];
 	}
 
+	getToastHistory(limit = 5): FooterToast[] {
+		const active = this.activeToast ? [this.activeToast] : [];
+		return [...active, ...this.toastQueue].slice(0, limit);
+	}
+
 	private enqueueToast(toast: ToastQueueItem): void {
 		const priority = this.toastPriority(toast.tone);
 		let inserted = false;
