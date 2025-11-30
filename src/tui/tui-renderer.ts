@@ -8,8 +8,10 @@ import {
 	Markdown,
 	ProcessTerminal,
 	Spacer,
+	StatusBar,
 	TUI,
 	Text,
+	detectTerminalFeatures,
 } from "@evalops/tui";
 import chalk from "chalk";
 import type {
@@ -344,6 +346,7 @@ export class TuiRenderer {
 		rows: process.stdout.rows ?? 24,
 		colorLevel: chalk.level || 0,
 	};
+	private terminalFeatures = detectTerminalFeatures();
 	private lowBandwidthConfig = {
 		enabled:
 			process.env.COMPOSER_TUI_LOW_BW === "1" ||
@@ -392,7 +395,7 @@ export class TuiRenderer {
 		this.startupChangelog = options.startupChangelog;
 		this.startupChangelogSummary = options.startupChangelogSummary;
 		this.updateNotice = options.updateNotice;
-		this.ui = new TUI(new ProcessTerminal());
+		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
 		this.configureRenderThrottle();
 		this.refreshTerminalCapabilities();
 		process.stdout.on("resize", () => this.refreshTerminalCapabilities());
@@ -444,6 +447,9 @@ export class TuiRenderer {
 			ui: this.ui,
 			statusContainer: this.statusContainer,
 			footer: this.footer,
+			lowColor: this.terminalFeatures.lowColor,
+			lowUnicode: this.terminalFeatures.lowUnicode,
+			idleInterruptHint: "Ctrl+C to interrupt",
 		});
 		this.planView = new PlanView({
 			filePath: TODO_STORE_PATH,
@@ -485,6 +491,7 @@ export class TuiRenderer {
 			notifyFileChanges: () => this.gitView.notifyFileChanges(),
 			inMinimalMode: () => this.isMinimalMode(),
 		});
+		this.ui.setInterruptHandler(() => this.runController.handleCtrlC());
 		this.toolStatusView = new ToolStatusView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
