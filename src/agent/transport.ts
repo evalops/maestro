@@ -870,7 +870,15 @@ export class ProviderTransport implements AgentTransport {
 											}) as AgentToolResult,
 									);
 								}
-								return tool.execute(toolCall.id, validatedArgs, signal);
+								const context = cfg.sandbox
+									? { sandbox: cfg.sandbox }
+									: undefined;
+								return tool.execute(
+									toolCall.id,
+									validatedArgs,
+									signal,
+									context,
+								);
 							})
 
 							.then(async (result) => {

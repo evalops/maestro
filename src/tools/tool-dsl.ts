@@ -1,6 +1,26 @@
 import type { TSchema } from "@sinclair/typebox";
+import AjvModule, { type ErrorObject } from "ajv";
+import addFormatsModule from "ajv-formats";
 import type { AgentToolResult, ToolAnnotations } from "../agent/types.js";
 import type { Sandbox } from "../sandbox/types.js";
+
+// Handle both default and named exports
+const Ajv = (AjvModule as any).default || AjvModule;
+const addFormats = (addFormatsModule as any).default || addFormatsModule;
+
+// Create a singleton AJV instance for schema validation
+let ajv: ReturnType<typeof Ajv> | null = null;
+try {
+	ajv = new Ajv({
+		allErrors: true,
+		strict: false,
+		useDefaults: true, // Apply schema defaults to input
+	});
+	addFormats(ajv);
+} catch {
+	// AJV initialization failed (likely CSP restriction)
+	ajv = null;
+}
 
 export class ToolResponseBuilder<Details> {
 	private _content: (
@@ -105,6 +125,32 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 			signal?: AbortSignal,
 			context?: { sandbox?: Sandbox },
 		) => {
+			// Validate params against schema if AJV is available
+			if (ajv && options.schema) {
+				const validate = ajv.compile(options.schema) as {
+					(data: unknown): boolean;
+					errors?: ErrorObject[] | null;
+				};
+				if (!validate(params)) {
+					const errors =
+						(validate.errors ?? [])
+							.map((err) => {
+								const path =
+									err.instancePath && err.instancePath.length > 1
+										? err.instancePath.substring(1)
+										: (err.params as { missingProperty?: string })
+												.missingProperty || "root";
+								return `  - ${path}: ${err.message ?? "invalid value"}`;
+							})
+							.join("\n") || "Unknown validation error";
+					throw new ToolError(
+						`Validation failed for tool "${options.name}":\n${errors}`,
+						"VALIDATION_ERROR",
+						{ params },
+					);
+				}
+			}
+
 			const builder = new ToolResponseBuilder<Details>();
 			const result = await options.run(params as any, {
 				toolCallId,

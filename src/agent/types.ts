@@ -385,6 +385,8 @@ export interface AgentRunConfig {
 		startedAt: Date;
 	};
 	runLLM?: (systemPrompt: string, userPrompt: string) => Promise<string>;
+	/** Optional sandbox for isolated tool execution */
+	sandbox?: import("../sandbox/types.js").Sandbox;
 }
 
 export interface AgentTransport {

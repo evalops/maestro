@@ -178,6 +178,7 @@ describe("ProviderTransport tool validation", () => {
 			"tc-1",
 			{ path: "/tmp/file.ts" },
 			undefined,
+			undefined, // context (sandbox) parameter
 		);
 
 		const endEvent = events.find((e) => e.type === "tool_execution_end") as any;

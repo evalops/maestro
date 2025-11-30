@@ -388,8 +388,7 @@ describe("batch tool", () => {
 
 	describe("limits", () => {
 		it("executes more than 10 tools when passed directly", async () => {
-			// Note: Schema validation (minItems/maxItems) is only enforced by the transport,
-			// not by direct execute() calls. Direct calls bypass schema validation.
+			// Schema validation (minItems/maxItems) is now enforced at tool execute level
 			const batchTool = createBatchTool([mockSuccessTool]);
 
 			const toolCalls = Array.from({ length: 15 }, (_, i) => ({
@@ -397,9 +396,9 @@ describe("batch tool", () => {
 				parameters: { index: i },
 			}));
 
-			const result = await batchTool.execute("batch-call-10", { toolCalls });
-			const details = getBatchDetails(result);
-			expect(details.results).toHaveLength(15);
+			await expect(
+				batchTool.execute("batch-call-10", { toolCalls }),
+			).rejects.toThrow(/must NOT have more than 10 items/);
 		});
 
 		it("handles exactly 10 tools", async () => {
@@ -418,13 +417,13 @@ describe("batch tool", () => {
 			expect(details.results).toHaveLength(10);
 		});
 
-		it("returns message for empty tool calls", async () => {
+		it("rejects empty tool calls", async () => {
+			// Schema validation now enforced at tool execute level
 			const batchTool = createBatchTool([mockSuccessTool]);
 
-			const result = await batchTool.execute("batch-call-12", {
-				toolCalls: [],
-			});
-			expect(getTextOutput(result)).toContain("No tool calls provided");
+			await expect(
+				batchTool.execute("batch-call-12", { toolCalls: [] }),
+			).rejects.toThrow(/must NOT have fewer than 1 items/);
 		});
 	});
 
