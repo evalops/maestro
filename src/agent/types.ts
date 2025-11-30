@@ -383,6 +383,7 @@ export interface AgentRunConfig {
 		id: string;
 		startedAt: Date;
 	};
+	runLLM?: (systemPrompt: string, userPrompt: string) => Promise<string>;
 }
 
 export interface AgentTransport {

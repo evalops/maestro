@@ -10,6 +10,7 @@ import {
 	defaultActionFirewall,
 } from "../safety/action-firewall.js";
 import { checkSessionLimits } from "../safety/policy.js";
+import { SemanticJudge } from "../safety/semantic-judge.js";
 import {
 	WorkflowStateError,
 	WorkflowStateTracker,
@@ -244,6 +245,12 @@ export class ProviderTransport implements AgentTransport {
 		const { systemPrompt, tools } = cfg;
 		let model = cfg.model;
 		const firewall = defaultActionFirewall;
+
+		// Configure semantic judge if LLM access is provided
+		if (cfg.runLLM) {
+			firewall.setSemanticJudge(new SemanticJudge(cfg.runLLM));
+		}
+
 		this.workflowState.reset();
 		this.recentToolCalls = [];
 
@@ -655,6 +662,12 @@ export class ProviderTransport implements AgentTransport {
 						},
 						user: cfg.user,
 						session: cfg.session,
+						// We don't have the explicit userIntent here easily without passing it down
+						// For now, we can use the last user message content if available
+						userIntent:
+							userMessage.content && typeof userMessage.content === "string"
+								? userMessage.content
+								: undefined,
 					});
 
 					if (verdict.action === "block") {

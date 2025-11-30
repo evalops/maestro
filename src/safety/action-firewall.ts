@@ -16,6 +16,8 @@ import {
 import { checkPolicy } from "./policy.js";
 import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 
+import type { SemanticJudge, SemanticJudgeContext } from "./semantic-judge.js";
+
 const logger = createLogger("safety:action-firewall");
 
 // Type for policy check result caching
@@ -428,9 +430,15 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 ];
 
 export class ActionFirewall {
+	private semanticJudge?: SemanticJudge;
+
 	constructor(
 		private readonly rules: ActionFirewallRule[] = defaultFirewallRules,
 	) {}
+
+	setSemanticJudge(judge: SemanticJudge) {
+		this.semanticJudge = judge;
+	}
 
 	async evaluate(
 		context: ActionApprovalContext,
@@ -463,6 +471,33 @@ export class ActionFirewall {
 				};
 			}
 		}
+
+		// 2. Run semantic judge if available (slow path)
+		if (this.semanticJudge && context.userIntent) {
+			const SENSITIVE_TOOLS = [
+				"bash",
+				"write",
+				"edit",
+				"delete_file",
+				"background_tasks",
+			];
+			if (SENSITIVE_TOOLS.includes(context.toolName)) {
+				const judgment = await this.semanticJudge.evaluate({
+					userIntent: context.userIntent,
+					toolName: context.toolName,
+					toolArgs: context.args,
+				});
+
+				if (!judgment.safe) {
+					return {
+						action: "require_approval",
+						ruleId: "semantic-judge",
+						reason: judgment.reason,
+					};
+				}
+			}
+		}
+
 		return { action: "allow" };
 	}
 }
