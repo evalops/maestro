@@ -1,4 +1,5 @@
 import * as os from "node:os";
+import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import * as Diff from "diff";
 import { highlightCodeLines } from "../../style/code-highlighter.js";
@@ -216,4 +217,54 @@ function humanizeDetailKey(key: string): string {
 		.replace(/[_-]+/g, " ")
 		.replace(/([a-z])([A-Z])/g, "$1 $2");
 	return withSpaces.trim() || "details";
+}
+
+/**
+ * Clamp ANSI-colored lines to a max visible width without breaking escape codes.
+ * Adds an ellipsis if truncation occurs.
+ */
+export function clampAnsiLines(lines: string[], maxWidth: number): string[] {
+	return lines.map((line) => clampAnsiLine(line, maxWidth));
+}
+
+function clampAnsiLine(line: string, maxWidth: number): string {
+	if (maxWidth <= 0) return line;
+	let visible = 0;
+	let i = 0;
+	let out = "";
+	while (i < line.length) {
+		const char = line[i];
+		if (char === "\u001b") {
+			// Skip over ANSI escape sequence without counting width
+			let j = i + 1;
+			// CSI sequences end with a final byte in the range @-~
+			while (j < line.length) {
+				const code = line[j];
+				if (code >= "@" && code <= "~") {
+					j += 1;
+					break;
+				}
+				j += 1;
+			}
+			out += line.slice(i, j);
+			i = j;
+			continue;
+		}
+		if (visible >= maxWidth) {
+			break;
+		}
+		out += char;
+		i += 1;
+		visible += 1;
+	}
+	if (visibleWidth(line) > maxWidth) {
+		// Reserve space for ellipsis
+		const ellipsis = "…";
+		// Remove last visible char if necessary
+		while (visibleWidth(out) > Math.max(1, maxWidth - 1)) {
+			out = out.slice(0, -1);
+		}
+		out += ellipsis;
+	}
+	return out;
 }

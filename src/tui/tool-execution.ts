@@ -5,13 +5,15 @@ import {
 	createToolRenderer,
 } from "./tool-renderers/index.js";
 import { themedBottomLine, themedTopLine } from "./utils/borders.js";
-import { PANEL_WIDTHS } from "./utils/layout.js";
+import { PANEL_WIDTHS, responsiveWidth } from "./utils/layout.js";
 
 /**
  * Component that renders a tool call with its result (updateable)
  */
 export class ToolExecutionComponent extends Container {
 	private contentText: Text;
+	private topLine: Text;
+	private bottomLine: Text;
 	private toolName: string;
 	private args: Record<string, unknown>;
 	private partialArgs: Record<string, unknown>;
@@ -36,11 +38,13 @@ export class ToolExecutionComponent extends Container {
 		this.args = args;
 		this.partialArgs = args;
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(this.buildTopLine(), 1, 0));
+		this.topLine = new Text(this.buildTopLine(), 1, 0);
+		this.addChild(this.topLine);
 		// Content
 		this.contentText = new Text("", 1, 1);
 		this.addChild(this.contentText);
-		this.addChild(new Text(this.buildBottomLine(), 1, 0));
+		this.bottomLine = new Text(this.buildBottomLine(), 1, 0);
+		this.addChild(this.bottomLine);
 		this.renderer = createToolRenderer(this.toolName);
 		this.updateDisplay();
 	}
@@ -54,16 +58,22 @@ export class ToolExecutionComponent extends Container {
 
 	private buildTopLine(): string {
 		const label = this.toolName.toUpperCase();
-		return themedTopLine(ToolExecutionComponent.PANEL_WIDTH, {
+		return themedTopLine(this.panelWidth(), {
 			title: theme.bold(label),
 			color: "borderMuted",
 		});
 	}
 
 	private buildBottomLine(): string {
-		return themedBottomLine(ToolExecutionComponent.PANEL_WIDTH, {
+		return themedBottomLine(this.panelWidth(), {
 			color: "borderMuted",
 		});
+	}
+
+	private panelWidth(): number {
+		const cols = process.stdout.columns ?? 80;
+		// Keep things readable on narrow terminals but expand when space allows.
+		return responsiveWidth(cols, 48, 100, 0.72);
 	}
 
 	updateArgs(args: Record<string, unknown>): void {
@@ -97,6 +107,9 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
+		// Refresh borders so they adapt to current terminal width.
+		this.topLine.setText(this.buildTopLine());
+		this.bottomLine.setText(this.buildBottomLine());
 		// We rely on ANSI colors in the text itself rather than background fill
 		// for a cleaner look
 		this.contentText.setText(this.formatToolExecution());

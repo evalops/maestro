@@ -1,6 +1,7 @@
 import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
+	clampAnsiLines,
 	formatDetailSections,
 	formatSection,
 	replaceTabs,
@@ -39,8 +40,11 @@ export class ReadRenderer implements ToolRenderer {
 		if (context.result) {
 			const output = this.getTextOutput(context);
 			const { lines, remaining } = summarizeLines(output, 10);
-			const displayLines = lines.map((line: string) =>
-				theme.fg("dim", replaceTabs(line)),
+			const terminalWidth = process.stdout.columns ?? 80;
+			const maxWidth = Math.max(48, Math.min(120, terminalWidth - 8));
+			const displayLines = clampAnsiLines(
+				lines.map((line: string) => theme.fg("dim", replaceTabs(line))),
+				maxWidth,
 			);
 			if (displayLines.length) {
 				text += `\n\n${formatSection("content", displayLines)}`;

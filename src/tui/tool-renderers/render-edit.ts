@@ -2,6 +2,7 @@ import { highlightCodeLines } from "../../style/code-highlighter.js";
 import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
+	clampAnsiLines,
 	formatDetailSections,
 	formatSection,
 	generateDiff,
@@ -11,6 +12,10 @@ import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class EditRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
+		const terminalWidth = process.stdout.columns ?? 80;
+		const maxDiffWidth = Math.max(48, Math.min(120, terminalWidth - 8));
+		const diffStyle =
+			process.env.COMPOSER_TUI_DIFF_STYLE?.toLowerCase() ?? "auto";
 		const pathValue =
 			typeof context.args?.file_path === "string"
 				? context.args.file_path
@@ -44,7 +49,23 @@ export class EditRenderer implements ToolRenderer {
 			details && typeof details.diff === "string" ? details.diff : null;
 		if (diffValue) {
 			const diffLines = highlightCodeLines(diffValue, "diff");
-			const diffSection = formatSection("diff", diffLines);
+			const shouldCompact = diffStyle === "auto" && terminalWidth < 90;
+			const renderedLines = shouldCompact
+				? clampAnsiLines(
+						diffLines
+							.slice(0, 80)
+							.concat(
+								diffLines.length > 80
+									? [`${theme.fg("dim", "… truncated …")}`]
+									: [],
+							),
+						maxDiffWidth,
+					)
+				: clampAnsiLines(diffLines, maxDiffWidth);
+			const diffSection = formatSection(
+				shouldCompact ? "diff (compact)" : "diff",
+				renderedLines,
+			);
 			if (diffSection) {
 				sections.push(diffSection);
 			}
@@ -54,7 +75,10 @@ export class EditRenderer implements ToolRenderer {
 		) {
 			const previewSection = formatSection(
 				"preview",
-				generateDiff(context.args.before, context.args.after).split("\n"),
+				clampAnsiLines(
+					generateDiff(context.args.before, context.args.after).split("\n"),
+					maxDiffWidth,
+				),
 			);
 			if (previewSection) {
 				sections.push(previewSection);

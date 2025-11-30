@@ -1,6 +1,7 @@
 import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
+	clampAnsiLines,
 	formatDetailSections,
 	formatSection,
 	formatShellSnippet,
@@ -36,7 +37,12 @@ export class BashRenderer implements ToolRenderer {
 			const output = this.getTextOutput(context).trim();
 			if (output) {
 				const { lines, remaining } = summarizeLines(output, 5);
-				const dimmed = lines.map((line) => theme.fg("dim", line));
+				const terminalWidth = process.stdout.columns ?? 80;
+				const maxWidth = Math.max(48, Math.min(120, terminalWidth - 8));
+				const dimmed = clampAnsiLines(
+					lines.map((line) => theme.fg("dim", line)),
+					maxWidth,
+				);
 				sections.push(formatSection("output", dimmed));
 				if (remaining > 0) {
 					sections.push(theme.fg("dim", `  ... (${remaining} more lines)`));
