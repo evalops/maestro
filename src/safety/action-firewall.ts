@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { getFirewallConfig } from "../config/firewall-config.js";
 import { createLogger } from "../utils/logger.js";
+import { analyzeCommandSafety, unwrapShellCommand } from "./bash-parser.js";
 import {
 	dangerousPatternDescriptions,
 	dangerousPatterns,
@@ -142,7 +143,7 @@ function isMcpTool(toolName: string): boolean {
 }
 
 /**
- * Generate rules from dangerous patterns
+ * Generate rules from dangerous patterns (regex-based)
  */
 const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 	dangerousPatterns,
@@ -164,6 +165,50 @@ const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 		return `Detected ${dangerousPatternDescriptions[key as keyof typeof dangerousPatternDescriptions]}: ${command.trim()}`;
 	},
 }));
+
+// Cache for tree-sitter analysis results
+const treeSitterAnalysisCache = new WeakMap<
+	ActionApprovalContext,
+	{ safe: boolean; reason?: string }
+>();
+
+/**
+ * Tree-sitter based command safety rule.
+ * Provides more accurate analysis than regex patterns.
+ */
+const treeSitterCommandRule: ActionFirewallRule = {
+	id: "command-treesitter-analysis",
+	description: "Tree-sitter based command safety analysis",
+	action: "require_approval",
+	match: (ctx) => {
+		if (ctx.toolName !== "bash" && !isBackgroundTaskShellStart(ctx)) {
+			return false;
+		}
+		let command = getCommandArg(ctx);
+		if (!command) return false;
+
+		// Try to unwrap bash -c "..." style commands
+		const unwrapped = unwrapShellCommand(command);
+		if (unwrapped) {
+			command = unwrapped;
+		}
+
+		const analysis = analyzeCommandSafety(command);
+		// Cache the result for reason()
+		treeSitterAnalysisCache.set(ctx, {
+			safe: analysis.safe,
+			reason: analysis.reason,
+		});
+		return !analysis.safe;
+	},
+	reason: (ctx) => {
+		const cached = treeSitterAnalysisCache.get(ctx);
+		if (cached?.reason) {
+			return cached.reason;
+		}
+		return "Command failed tree-sitter safety analysis";
+	},
+};
 
 /**
  * Critical system paths to protect
@@ -396,6 +441,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			`Plan mode requires confirmation before executing ${ctx.toolName}. Toggle with /plan-mode or COMPOSER_PLAN_MODE=0.`,
 	},
 	...dangerousCommandRules,
+	treeSitterCommandRule,
 	{
 		id: "background-shell-mode",
 		description: "Shell mode background tasks",

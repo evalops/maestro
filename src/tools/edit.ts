@@ -423,6 +423,7 @@ type MatchPreview = {
 	line: number;
 	snippet: string;
 	index?: number;
+	similarity?: number;
 };
 
 function findExactMatches(content: string, snippet: string): MatchPreview[] {
@@ -538,7 +539,7 @@ function findApproximateMatches(
 	return regexMatches
 		.filter((m) => m.similarity >= threshold)
 		.slice(0, 5)
-		.map(({ line, snippet }) => ({ line, snippet }));
+		.map(({ line, snippet, similarity }) => ({ line, snippet, similarity }));
 }
 
 function buildRelaxedRegex(snippet: string): RegExp | null {
@@ -567,5 +568,8 @@ function getSnippet(content: string, start: number, length: number): string {
 }
 
 function formatMatchPreview(match: MatchPreview): string {
-	return `• Line ${match.line}: ${match.snippet}`;
+	const simPct = match.similarity
+		? ` (${Math.round(match.similarity * 100)}% similar)`
+		: "";
+	return `• Line ${match.line}${simPct}: ${match.snippet}`;
 }
