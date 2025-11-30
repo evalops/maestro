@@ -4,7 +4,9 @@ import type {
 	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
-import { join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { createLogger } from "../utils/logger.js";
 import {
 	dangerousPatternDescriptions,
@@ -214,6 +216,48 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 	return paths;
 }
 
+/**
+ * Check if a path is inside the current workspace or temporary directory.
+ * Returns true if the path is contained (safe), false if it escapes.
+ */
+function isContainedInWorkspace(filePath: string): boolean {
+	const resolvedPath = resolve(filePath);
+	const workspaceRoot = process.cwd();
+	const tempDir = tmpdir();
+
+	// Check if path is within workspace root
+	const relToWorkspace = relative(workspaceRoot, resolvedPath);
+	const isInsideWorkspace =
+		!relToWorkspace.startsWith("..") && !isAbsolute(relToWorkspace);
+
+	// Check if path is within temp dir
+	// Resolve symlinks for temp dir (macOS /var vs /private/var)
+	let resolvedTemp = tempDir;
+	try {
+		resolvedTemp = realpathSync(tempDir);
+	} catch {
+		// keep original if realpath fails
+	}
+	// Also check realpath of file path
+	let realFilePath = resolvedPath;
+	try {
+		realFilePath = realpathSync(resolvedPath);
+	} catch {
+		// File might not exist yet (writing new file), so checking realpath might fail
+		// In that case we rely on the logical path
+	}
+
+	const relToTemp = relative(resolvedTemp, realFilePath);
+	// On macOS, temp dir might be symlinked. We check both logical and physical paths.
+	const relToTempLogical = relative(tempDir, resolvedPath);
+
+	const isInsideTemp =
+		(!relToTemp.startsWith("..") && !isAbsolute(relToTemp)) ||
+		(!relToTempLogical.startsWith("..") && !isAbsolute(relToTempLogical));
+
+	return isInsideWorkspace || isInsideTemp;
+}
+
 export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
 		id: "enterprise-policy",
@@ -245,10 +289,42 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 				return false;
 			}
 			const paths = extractFilePaths(ctx);
-			return paths.some(isSystemPath);
+			// We check system paths first, but if it's in temp (safe), we should allow it.
+			// System paths like /var include /var/folders (temp on mac), so we need to exclude safe temp paths from system path blocking
+			// if they are legitimately inside the temp dir.
+
+			// Filter out paths that are inside the temp directory (which is safe)
+			const unsafePaths = paths.filter((p) => !isContainedInWorkspace(p));
+
+			// Only check remaining paths against system blocklist
+			return unsafePaths.some(isSystemPath);
 		},
 		reason: (ctx) =>
 			"Modification of critical system directories is blocked for safety.",
+	},
+	{
+		id: "workspace-containment",
+		description:
+			"Require approval for file modifications outside the workspace",
+		action: "require_approval",
+		match: (ctx) => {
+			// Only check file mutation tools
+			if (
+				!["write", "edit", "delete_file", "move_file", "copy_file"].includes(
+					ctx.toolName,
+				)
+			) {
+				return false;
+			}
+			const paths = extractFilePaths(ctx);
+			// Return true (match rule) if ANY path is NOT contained
+			return paths.some((p) => !isContainedInWorkspace(p));
+		},
+		reason: (ctx) => {
+			const paths = extractFilePaths(ctx);
+			const outsidePaths = paths.filter((p) => !isContainedInWorkspace(p));
+			return `File modification outside workspace detected: ${outsidePaths.join(", ")}. This requires explicit approval.`;
+		},
 	},
 	{
 		id: "mcp-destructive-tool",
