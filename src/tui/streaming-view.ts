@@ -10,10 +10,17 @@ interface StreamingViewOptions {
 	chatContainer: Container;
 	toolOutputView: ToolOutputView;
 	pendingTools: Map<string, ToolExecutionComponent>;
+	lowBandwidth: {
+		enabled: boolean;
+		batchIntervalMs: number;
+		scrollbackLimit: number;
+	};
 }
 
 export class StreamingView {
 	private streamingComponent: AssistantMessageComponent | null = null;
+	private bufferedMessages: AssistantMessage[] = [];
+	private flushTimer: NodeJS.Timeout | null = null;
 
 	constructor(private readonly options: StreamingViewOptions) {}
 
@@ -27,9 +34,12 @@ export class StreamingView {
 
 	updateAssistantMessage(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
-		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message),
-		);
+		if (this.options.lowBandwidth.enabled) {
+			this.bufferedMessages.push(message);
+			this.scheduleFlush();
+		} else {
+			this.applyUpdate(message);
+		}
 		for (const content of message.content) {
 			if (content.type === "toolCall") {
 				this.ensureToolComponent(
@@ -44,6 +54,12 @@ export class StreamingView {
 
 	finishAssistantMessage(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
+		if (this.options.lowBandwidth.enabled && this.bufferedMessages.length) {
+			for (const buffered of this.bufferedMessages) {
+				this.applyUpdate(buffered);
+			}
+			this.bufferedMessages = [];
+		}
 		this.streamingComponent.updateContent(
 			toRenderableAssistantMessage(message),
 		);
@@ -101,5 +117,40 @@ export class StreamingView {
 		// Remove the in-progress assistant block to avoid stale content when force-stopping.
 		this.options.chatContainer.removeChild(this.streamingComponent);
 		this.streamingComponent = null;
+		this.bufferedMessages = [];
+		if (this.flushTimer) {
+			clearTimeout(this.flushTimer);
+			this.flushTimer = null;
+		}
+	}
+
+	private scheduleFlush(): void {
+		if (this.flushTimer) return;
+		this.flushTimer = setTimeout(() => {
+			this.flushTimer = null;
+			const batch = this.bufferedMessages.splice(0);
+			if (!this.streamingComponent) return;
+			for (const msg of batch) {
+				this.applyUpdate(msg);
+			}
+			this.trimScrollback();
+		}, this.options.lowBandwidth.batchIntervalMs);
+	}
+
+	private applyUpdate(message: AssistantMessage): void {
+		if (!this.streamingComponent) return;
+		this.streamingComponent.updateContent(
+			toRenderableAssistantMessage(message),
+		);
+	}
+
+	private trimScrollback(): void {
+		if (!this.options.lowBandwidth.enabled) return;
+		const limit = this.options.lowBandwidth.scrollbackLimit;
+		if (!Number.isFinite(limit) || limit <= 0) return;
+		const container = this.options.chatContainer;
+		if (container.children.length <= limit) return;
+		const removeCount = container.children.length - limit;
+		container.children.splice(0, removeCount);
 	}
 }

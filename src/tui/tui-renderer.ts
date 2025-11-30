@@ -137,6 +137,7 @@ import {
 	calculateFooterStats,
 	formatTokenCount,
 } from "./utils/footer-utils.js";
+import { formatLink } from "./utils/links.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { handleAgentsInit } from "../cli/commands/agents.js";
@@ -342,6 +343,17 @@ export class TuiRenderer {
 		columns: process.stdout.columns ?? 80,
 		rows: process.stdout.rows ?? 24,
 		colorLevel: chalk.level || 0,
+	};
+	private lowBandwidthConfig = {
+		enabled:
+			process.env.COMPOSER_TUI_LOW_BW === "1" ||
+			process.env.COMPOSER_TUI_LOW_BW?.toLowerCase() === "true" ||
+			Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY),
+		batchIntervalMs:
+			Number.parseInt(process.env.COMPOSER_TUI_LOW_BW_BATCH_MS ?? "", 10) ||
+			120,
+		scrollbackLimit:
+			Number.parseInt(process.env.COMPOSER_TUI_SCROLLBACK ?? "", 10) || 600,
 	};
 
 	constructor(
@@ -566,6 +578,7 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			pendingTools: this.pendingTools,
 			toolOutputView: this.toolOutputView,
+			lowBandwidth: this.lowBandwidthConfig,
 		});
 		this.agentEventRouter = new AgentEventRouter({
 			messageView: this.messageView,
@@ -1107,7 +1120,9 @@ export class TuiRenderer {
 				"npm install -g @evalops/composer",
 			)}`;
 			const noteLine = notes ? chalk.dim(notes) : null;
-			const sourceLine = source ? chalk.dim(`Source: ${source}`) : null;
+			const sourceLine = source
+				? chalk.dim(`Source: ${formatLink(source, "changelog")}`)
+				: null;
 			const message = [headline, currentLine, installLine, noteLine, sourceLine]
 				.filter(Boolean)
 				.join("\n");
