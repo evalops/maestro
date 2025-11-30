@@ -1555,3 +1555,136 @@ describe("codingTools bundle", () => {
 		});
 	});
 });
+
+describe("error hints", () => {
+	let testDir: string;
+
+	beforeEach(() => {
+		testDir = mkdtempSync(join(tmpdir(), "composer-hints-test-"));
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	describe("read tool hints", () => {
+		it("hints about double slashes in path", async () => {
+			const result = await readTool.execute("hint-1", {
+				path: "/some//path/file.txt",
+			});
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("double slashes");
+		});
+
+		it("hints about paths with spaces", async () => {
+			const result = await readTool.execute("hint-2", {
+				path: "./my file with spaces",
+			});
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("spaces");
+		});
+
+		it("hints about missing extension", async () => {
+			const result = await readTool.execute("hint-3", {
+				path: "somefile",
+			});
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("extension");
+		});
+	});
+
+	describe("edit tool hints", () => {
+		it("hints about double slashes when file not found", async () => {
+			await expect(
+				editTool.execute("edit-hint-1", {
+					path: "/some//path/file.txt",
+					oldText: "old",
+					newText: "new",
+				}),
+			).rejects.toThrow(/double slashes/);
+		});
+
+		it("suggests using read to verify path", async () => {
+			await expect(
+				editTool.execute("edit-hint-2", {
+					path: "/nonexistent/file.txt",
+					oldText: "old",
+					newText: "new",
+				}),
+			).rejects.toThrow(/read/);
+		});
+	});
+});
+
+describe("sandbox support", () => {
+	describe("list tool with sandbox", () => {
+		it("uses sandbox.list() when available", async () => {
+			const mockSandbox = {
+				readFile: async () => "",
+				writeFile: async () => {},
+				exists: async () => true,
+				list: async (path: string) => ["file1.txt", "file2.txt", "subdir/"],
+			};
+
+			const result = await listTool.execute(
+				"sandbox-list-1",
+				{ path: "/sandbox/dir" },
+				undefined,
+				{ sandbox: mockSandbox },
+			);
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("sandbox");
+			expect(output).toContain("file1.txt");
+			expect(output).toContain("file2.txt");
+			expect(output).toContain("subdir/");
+		});
+
+		it("handles sandbox.list() errors gracefully", async () => {
+			const mockSandbox = {
+				readFile: async () => "",
+				writeFile: async () => {},
+				exists: async () => true,
+				list: async () => {
+					throw new Error("Sandbox access denied");
+				},
+			};
+
+			const result = await listTool.execute(
+				"sandbox-list-2",
+				{ path: "/sandbox/dir" },
+				undefined,
+				{ sandbox: mockSandbox },
+			);
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("Sandbox access denied");
+		});
+
+		it("falls back to filesystem when sandbox has no list()", async () => {
+			const testDir = mkdtempSync(join(tmpdir(), "sandbox-fallback-"));
+			writeFileSync(join(testDir, "real-file.txt"), "content");
+
+			const mockSandbox = {
+				readFile: async () => "",
+				writeFile: async () => {},
+				exists: async () => true,
+				// no list() method
+			};
+
+			const result = await listTool.execute(
+				"sandbox-list-3",
+				{ path: testDir },
+				undefined,
+				{ sandbox: mockSandbox },
+			);
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("real-file.txt");
+
+			rmSync(testDir, { recursive: true, force: true });
+		});
+	});
+});

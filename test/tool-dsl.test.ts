@@ -1,12 +1,13 @@
 import os from "node:os";
 import { Type } from "@sinclair/typebox";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	ToolResponseBuilder,
 	createJsonTool,
 	createTextTool,
 	createTool,
 	expandUserPath,
+	interpolateContext,
 } from "../src/tools/tool-dsl.js";
 
 const echoSchema = Type.Object({
@@ -117,5 +118,133 @@ describe("createTool DSL", () => {
 		const result = builder.build();
 		expect(result.isError).toBe(true);
 		expect(result.content[0]).toMatchObject({ text: "File not found" });
+	});
+});
+
+describe("tool retry logic", () => {
+	it("retries on failure when maxRetries is set", async () => {
+		let attempts = 0;
+		const failingTool = createTool({
+			name: "retry-test",
+			description: "Test retry",
+			schema: Type.Object({}),
+			maxRetries: 2,
+			retryDelayMs: 10, // Short delay for tests
+			run: async () => {
+				attempts++;
+				if (attempts < 3) {
+					throw new Error("Temporary failure");
+				}
+				return { content: [{ type: "text", text: "success" }] };
+			},
+		});
+
+		const result = await failingTool.execute("retry-1", {});
+		expect(attempts).toBe(3); // Initial + 2 retries
+		expect(result.content[0]).toMatchObject({ text: "success" });
+	});
+
+	it("respects shouldRetry predicate", async () => {
+		let attempts = 0;
+		const selectiveRetryTool = createTool({
+			name: "selective-retry",
+			description: "Test selective retry",
+			schema: Type.Object({}),
+			maxRetries: 3,
+			retryDelayMs: 10,
+			shouldRetry: (error) =>
+				error instanceof Error && error.message.includes("transient"),
+			run: async () => {
+				attempts++;
+				if (attempts === 1) {
+					throw new Error("transient error"); // Will retry
+				}
+				if (attempts === 2) {
+					throw new Error("permanent error"); // Won't retry - no "transient"
+				}
+				return { content: [{ type: "text", text: "done" }] };
+			},
+		});
+
+		await expect(selectiveRetryTool.execute("retry-2", {})).rejects.toThrow(
+			"permanent error",
+		);
+		expect(attempts).toBe(2); // Initial + 1 retry (stopped by shouldRetry)
+	});
+
+	it("throws after exhausting retries", async () => {
+		let attempts = 0;
+		const alwaysFailTool = createTool({
+			name: "always-fail",
+			description: "Always fails",
+			schema: Type.Object({}),
+			maxRetries: 2,
+			retryDelayMs: 10,
+			run: async () => {
+				attempts++;
+				throw new Error("Persistent failure");
+			},
+		});
+
+		await expect(alwaysFailTool.execute("retry-3", {})).rejects.toThrow(
+			"Persistent failure",
+		);
+		expect(attempts).toBe(3); // Initial + 2 retries
+	});
+
+	it("respects abort signal during retry delay", async () => {
+		const controller = new AbortController();
+		let attempts = 0;
+
+		const abortableTool = createTool({
+			name: "abortable",
+			description: "Can be aborted",
+			schema: Type.Object({}),
+			maxRetries: 5,
+			retryDelayMs: 1000, // Long delay
+			run: async () => {
+				attempts++;
+				throw new Error("Fail");
+			},
+		});
+
+		// Abort after first attempt
+		setTimeout(() => controller.abort(), 50);
+
+		await expect(
+			abortableTool.execute("abort-1", {}, controller.signal),
+		).rejects.toThrow();
+		expect(attempts).toBeLessThanOrEqual(2); // Should abort before many retries
+	});
+});
+
+describe("interpolateContext", () => {
+	it("interpolates environment variables", () => {
+		process.env.TEST_VAR = "test-value";
+		const result = interpolateContext("Value: ${env.TEST_VAR}");
+		expect(result).toBe("Value: test-value");
+		process.env.TEST_VAR = undefined;
+	});
+
+	it("returns empty string for missing env vars", () => {
+		const result = interpolateContext("Value: ${env.NONEXISTENT_VAR_XYZ}");
+		expect(result).toBe("Value: ");
+	});
+
+	it("interpolates cwd", () => {
+		const result = interpolateContext("Dir: ${cwd}");
+		expect(result).toBe(`Dir: ${process.cwd()}`);
+	});
+
+	it("interpolates home", () => {
+		const result = interpolateContext("Home: ${home}");
+		expect(result).toBe(`Home: ${os.homedir()}`);
+	});
+
+	it("handles multiple interpolations", () => {
+		process.env.TEST_USER = "alice";
+		const result = interpolateContext("${home}/users/${env.TEST_USER}");
+		expect(result).toBe(`${os.homedir()}/users/alice`);
+		process.env.TEST_USER = undefined;
 	});
 });
