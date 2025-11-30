@@ -347,8 +347,8 @@ composer [options] [messages...]
 
 | Flag | Description |
 |------|-------------|
-| `--provider <name>` | Provider (anthropic, openai, google, etc.) |
-| `--model <id>` | Model ID |
+| `--provider <name>` | Provider (anthropic, openai, google, etc.). Default: `anthropic` |
+| `--model <id>` | Model ID. Default: `claude-opus-4-5` |
 | `--api-key <key>` | Override API key |
 | `--system-prompt <text\|file>` | Custom system prompt |
 | `--mode <text\|json\|rpc>` | Output format |
