@@ -13,6 +13,7 @@ export interface RuntimeBadgeParams {
 	thinkingLevel?: ThinkingLevel | null;
 	sandboxMode?: string | null;
 	isSafeMode?: boolean;
+	sandboxRequestedButMissing?: boolean;
 }
 
 export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
@@ -33,6 +34,8 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 
 	if (params.sandboxMode) {
 		badges.push(`sandbox:${params.sandboxMode}`);
+	} else if (params.sandboxRequestedButMissing) {
+		badges.push("sandbox:off");
 	}
 
 	if (params.hasPromptQueue) {

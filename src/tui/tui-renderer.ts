@@ -2376,6 +2376,9 @@ export class TuiRenderer {
 	}
 
 	public refreshFooterHint(): void {
+		const sandboxMode = process.env.COMPOSER_SANDBOX || null;
+		const sandboxRequested = Boolean(process.env.COMPOSER_SANDBOX);
+		const sandboxActive = false; // Sandbox status not tracked in AgentState today
 		this.footer.setRuntimeBadges(
 			buildRuntimeBadges({
 				approvalMode: this.approvalService.getMode(),
@@ -2383,8 +2386,9 @@ export class TuiRenderer {
 				queuedPromptCount: this.queuedPromptCount,
 				hasPromptQueue: Boolean(this.promptQueue),
 				thinkingLevel: this.agent.state.thinkingLevel,
-				sandboxMode: process.env.COMPOSER_SANDBOX || null,
+				sandboxMode,
 				isSafeMode: process.env.COMPOSER_SAFE_MODE === "1",
+				sandboxRequestedButMissing: sandboxRequested && !sandboxActive,
 			}),
 		);
 		if (this.isAgentRunning) {
@@ -2394,6 +2398,13 @@ export class TuiRenderer {
 			this.idleFooterHint,
 			...this.buildOperationalHints(),
 		];
+		const activeToast = this.footer.getActiveToast();
+		if (
+			activeToast &&
+			(activeToast.tone === "danger" || activeToast.tone === "warn")
+		) {
+			hints.push(`Alert: ${activeToast.message}`);
+		}
 		if (this.startupWarnings.length > 0) {
 			hints.push(...this.startupWarnings.map((w) => w.message));
 		}

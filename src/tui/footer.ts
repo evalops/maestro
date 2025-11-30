@@ -130,6 +130,10 @@ export class FooterComponent {
 		return [...active, ...this.toastQueue].slice(0, limit);
 	}
 
+	getActiveToast(): FooterToast | null {
+		return this.activeToast;
+	}
+
 	private enqueueToast(toast: ToastQueueItem): void {
 		const priority = this.toastPriority(toast.tone);
 		let inserted = false;
