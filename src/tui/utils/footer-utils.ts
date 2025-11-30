@@ -25,6 +25,7 @@ const BADGE_ZONE_MIN_WIDTH = 15;
 const PATH_ZONE_MIN_WIDTH = 20;
 const BADGE_ZONE_PERCENT = 0.25;
 const TRUNCATION_ELLIPSIS = "…";
+const SHIMMER_ENV = (process.env.COMPOSER_TUI_SHIMMER || "on").toLowerCase();
 
 export const FOOTER_MIN_PADDING = MIN_PADDING;
 export const FOOTER_MIN_MODEL_LABEL_CHARS = MIN_MODEL_LABEL_CHARS;
@@ -69,13 +70,6 @@ const STAGE_COLORS: Record<StageKind, string> = {
 	responding: "#e0115f", // ruby
 	dreaming: "#c084fc", // purple
 } as const;
-
-const RESPONDING_SHIMMER = {
-	...STAGE_SHIMMER_OPTIONS.responding,
-	baseColor: "#e0115f",
-	highlightColor: "#ff4f8b",
-	intensityScale: 0.7,
-};
 
 export function formatModelLabel(
 	state: Pick<AgentState, "model" | "thinkingLevel">,
@@ -249,13 +243,19 @@ export function renderStaticStageBadge(label: string): string {
 	}
 
 	const color = kind ? STAGE_COLORS[kind] : themePalette.muted;
-	if (kind === "thinking") {
-		return shimmerText(trimmed || label, STAGE_SHIMMER_OPTIONS.thinking);
-	}
-	if (kind === "responding") {
-		return shimmerText(trimmed || label, RESPONDING_SHIMMER);
+	if (kind && shimmerAllowed()) {
+		const options = STAGE_SHIMMER_OPTIONS[kind];
+		if (options) {
+			return shimmerText(trimmed || label, { ...options, time: 0 });
+		}
 	}
 	return chalk.hex(color).bold(trimmed || label);
+}
+
+function shimmerAllowed(): boolean {
+	if (SHIMMER_ENV === "off") return false;
+	if (process.env.NO_COLOR || process.env.COMPOSER_NO_COLOR) return false;
+	return true;
 }
 
 /**

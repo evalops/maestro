@@ -1,3 +1,4 @@
+import { themePalette } from "../../style/theme.js";
 import type { ShimmerOptions } from "./shimmer.js";
 
 export type StageKind = "thinking" | "working" | "responding" | "dreaming";
@@ -23,9 +24,9 @@ export const STAGE_SHIMMER_OPTIONS: Record<StageKind, ShimmerOptions> = {
 		padding: 2,
 		bandWidth: 2,
 		sweepSeconds: 2.1,
-		intensityScale: 0.65,
-		baseColor: "#f5cbe6",
-		highlightColor: "#ffffff",
+		intensityScale: 0.7,
+		baseColor: themePalette.rubyPrimary,
+		highlightColor: themePalette.rubyHighlight,
 		bold: false,
 	},
 	thinking: {

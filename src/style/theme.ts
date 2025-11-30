@@ -58,6 +58,8 @@ export const themePalette = {
 	warning: "#ffb347",
 	danger: "#ff8c69",
 	info: "#c3b8ff",
+	rubyPrimary: "#e0115f",
+	rubyHighlight: "#ff4f8b",
 	// Italic styling colors - soft cyan for contemplative/secondary content
 	italic: "#7dd3fc", // Primary italic text (thinking blocks, emphasis)
 	italicBorder: "#38bdf8", // Borders for italic content (blockquotes)
