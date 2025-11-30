@@ -30,10 +30,35 @@ const buildView = async (features: {
 
 	const { LspView } = await import("../src/tui/lsp-view.js");
 
+	const chatChildren: unknown[] = [];
 	const chatContainer = {
-		addChild: vi.fn(),
-	};
-	const ui = { requestRender: vi.fn() };
+		children: chatChildren,
+		addChild: vi.fn((child: unknown) => {
+			chatChildren.push(child);
+		}),
+		removeChild: vi.fn(),
+		clear: vi.fn(() => {
+			chatChildren.length = 0;
+		}),
+		render: vi.fn().mockReturnValue([]),
+	} as unknown as import("@evalops/tui").Container;
+
+	const uiChildren: unknown[] = [];
+	const ui = {
+		children: uiChildren,
+		addChild: vi.fn((child: unknown) => {
+			uiChildren.push(child);
+		}),
+		removeChild: vi.fn(),
+		clear: vi.fn(() => {
+			uiChildren.length = 0;
+		}),
+		render: vi.fn().mockReturnValue([]),
+		requestRender: vi.fn(),
+		setFocus: vi.fn(),
+		start: vi.fn(),
+		stop: vi.fn(),
+	} as unknown as import("@evalops/tui").TUI;
 	const notifications = {
 		showInfo: vi.fn(),
 		showError: vi.fn(),
