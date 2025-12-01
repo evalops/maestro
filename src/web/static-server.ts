@@ -1,6 +1,9 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, normalize, resolve } from "node:path";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("web:static");
 
 interface ServeStaticOptions {
 	webRoot: string;
@@ -78,7 +81,7 @@ export function serveStatic(
 
 		const stream = createReadStream(filePath);
 		stream.on("error", (error) => {
-			console.error("Error serving file:", error);
+			logger.error("Error serving file", error, { path: filePath });
 			if (!res.writableEnded && !res.headersSent) {
 				res.writeHead(500, { "Content-Type": "text/plain" });
 				res.end("Internal Server Error");
@@ -86,7 +89,11 @@ export function serveStatic(
 		});
 		stream.pipe(res);
 	} catch (error) {
-		console.error("Error serving file:", error);
+		logger.error(
+			"Error serving file",
+			error instanceof Error ? error : undefined,
+			{ path: pathname },
+		);
 		res.writeHead(500, { "Content-Type": "text/plain" });
 		res.end("Internal Server Error");
 	}

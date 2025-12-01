@@ -1,6 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
 import type { AgentEvent } from "../../agent/types.js";
+import { createLogger } from "../../utils/logger.js";
+
+const logger = createLogger("web:chat");
 import type { SessionManager } from "../../session/manager.js"; // Import type only if not used as value
 import {
 	SessionManager as SessionManagerImpl, // Rename value import
@@ -209,7 +212,11 @@ export async function handleChat(
 				sseSession.sendDone();
 			}
 		} catch (error) {
-			console.error("Agent prompt error:", error);
+			logger.error(
+				"Agent prompt error",
+				error instanceof Error ? error : undefined,
+				{ sessionId: sessionManager.getSessionId?.() },
+			);
 			sendSSE(sseSession, {
 				type: "error",
 				message: error instanceof Error ? error.message : "Unknown error",
@@ -218,7 +225,10 @@ export async function handleChat(
 			await cleanup(false);
 		}
 	} catch (error) {
-		console.error("Chat error:", error);
+		logger.error(
+			"Chat handler error",
+			error instanceof Error ? error : undefined,
+		);
 		respondWithApiError(res, error, 500, cors, req);
 	} finally {
 		if (sseLease && releaseSse) {

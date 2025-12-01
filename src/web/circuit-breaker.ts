@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("circuit-breaker");
 
 export enum CircuitState {
 	CLOSED = "CLOSED", // Normal operation
@@ -118,9 +121,11 @@ export class CircuitBreaker extends EventEmitter {
 			this.emit("half_open", { name: this.name });
 		}
 
-		console.log(
-			`[CircuitBreaker:${this.name}] Transition: ${oldState} -> ${newState}`,
-		);
+		logger.info("Circuit breaker state transition", {
+			breaker: this.name,
+			from: oldState,
+			to: newState,
+		});
 	}
 
 	private normalizeOptions(

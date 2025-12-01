@@ -2,6 +2,9 @@ import type { Agent } from "../agent/agent.js";
 import { composerManager } from "../composers/index.js";
 import { PromptQueue } from "../tui/prompt-queue.js";
 import type { TuiRenderer } from "../tui/tui-renderer.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("agent-runtime");
 
 interface AgentRuntimeControllerOptions {
 	agent: Agent;
@@ -37,8 +40,10 @@ export class AgentRuntimeController {
 					this.options.onError(error);
 					return;
 				}
-				const message = error instanceof Error ? error.message : String(error);
-				console.error(message);
+				logger.error(
+					"Runtime error",
+					error instanceof Error ? error : undefined,
+				);
 			},
 		);
 

@@ -1,4 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("web:router");
 
 export type RouteHandler = (
 	req: IncomingMessage,
@@ -89,7 +92,10 @@ export function createRequestHandler(
 			}
 		} catch (error) {
 			// Always log router-level errors; streaming handlers may have sent headers already.
-			console.error("Router error:", error);
+			logger.error("Router error", error instanceof Error ? error : undefined, {
+				path: pathname,
+				method: req.method,
+			});
 			if (res.headersSent || res.writableEnded) return;
 			if (error instanceof ApiError) {
 				respondWithApiError(res, error, 500, corsHeaders, req);
