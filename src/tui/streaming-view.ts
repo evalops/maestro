@@ -62,9 +62,12 @@ export class StreamingView {
 			}
 			this.bufferedMessages = [];
 		}
-		// Final render uses raw content to preserve transcript fidelity.
+		// Final render respects the configured clean mode so duplicate lines are
+		// collapsed consistently between streaming and final views.
+		const cleanMode = this.options.getCleanMode();
+		const mode: CleanMode = cleanMode ?? "off";
 		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message, { cleanMode: "off" }),
+			toRenderableAssistantMessage(message, { cleanMode: mode }),
 		);
 		if (message.stopReason === "aborted" || message.stopReason === "error") {
 			const errorMessage =

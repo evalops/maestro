@@ -336,7 +336,9 @@ export class TuiRenderer {
 	private queuedPromptCount = 0;
 	private queueEnabled = false;
 	private promptQueueMode: "one" | "all" = "all";
-	private cleanMode: CleanMode = "off";
+	// Default to soft deduplication so repeated streamed lines don't appear in the TUI.
+	// Users can still override via /clean or env/UI state.
+	private cleanMode: CleanMode = "soft";
 	private nextQueuedPreview: string | null = null;
 	private uiState: UiState = {};
 	private footerMode: FooterMode = "ensemble";
