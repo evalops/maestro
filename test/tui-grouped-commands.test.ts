@@ -1403,6 +1403,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				showInfo: vi.fn(),
 			};
 
 			const handler = createSessionCommandHandler(deps);
