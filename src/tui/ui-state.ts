@@ -20,6 +20,10 @@ const UI_STATE_PATH =
 	process.env.COMPOSER_UI_STATE ??
 	join(homedir(), ".composer", "agent", "ui-state.json");
 
+const COMMAND_PREFS_PATH =
+	process.env.COMPOSER_COMMAND_PREFS ??
+	join(homedir(), ".composer", "agent", "command-prefs.json");
+
 export function loadUiState(): UiState {
 	if (!existsSync(UI_STATE_PATH)) {
 		return {};
@@ -68,4 +72,38 @@ export function saveUiState(partial: UiState): void {
 	const next: UiState = { ...current, ...partial };
 	mkdirSync(dirname(UI_STATE_PATH), { recursive: true });
 	writeFileSync(UI_STATE_PATH, JSON.stringify(next, null, 2), "utf-8");
+}
+
+export function loadCommandPrefs(): {
+	favorites: string[];
+	recents: string[];
+} {
+	if (!existsSync(COMMAND_PREFS_PATH)) {
+		return { favorites: [], recents: [] };
+	}
+	try {
+		const raw = readFileSync(COMMAND_PREFS_PATH, "utf-8");
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		const favorites = Array.isArray(parsed.favorites)
+			? (parsed.favorites as unknown[]).filter(
+					(item): item is string => typeof item === "string",
+				)
+			: [];
+		const recents = Array.isArray(parsed.recents)
+			? (parsed.recents as unknown[]).filter(
+					(item): item is string => typeof item === "string",
+				)
+			: [];
+		return { favorites, recents };
+	} catch {
+		return { favorites: [], recents: [] };
+	}
+}
+
+export function saveCommandPrefs(prefs: {
+	favorites: string[];
+	recents: string[];
+}): void {
+	mkdirSync(dirname(COMMAND_PREFS_PATH), { recursive: true });
+	writeFileSync(COMMAND_PREFS_PATH, JSON.stringify(prefs, null, 2), "utf-8");
 }

@@ -125,7 +125,13 @@ import { StreamingView } from "./streaming-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
-import { type UiState, loadUiState, saveUiState } from "./ui-state.js";
+import {
+	type UiState,
+	loadCommandPrefs,
+	loadUiState,
+	saveCommandPrefs,
+	saveUiState,
+} from "./ui-state.js";
 import { UpdateView } from "./update-view.js";
 import { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildCommandRegistry } from "./utils/commands/command-registry-builder.js";
@@ -405,6 +411,13 @@ export class TuiRenderer {
 			for (const name of this.uiState.favoriteCommands) {
 				this.favoriteCommands.add(name);
 			}
+		}
+		const diskPrefs = loadCommandPrefs();
+		if (diskPrefs.recents.length > 0) {
+			this.recentCommands = diskPrefs.recents;
+		}
+		for (const fav of diskPrefs.favorites) {
+			this.favoriteCommands.add(fav);
 		}
 		this.agent = agent;
 		this.sessionManager = sessionManager;
@@ -2093,6 +2106,10 @@ export class TuiRenderer {
 			recentCommands: this.recentCommands,
 			favoriteCommands: Array.from(this.favoriteCommands),
 			...extra,
+		});
+		saveCommandPrefs({
+			favorites: Array.from(this.favoriteCommands),
+			recents: this.recentCommands,
 		});
 	}
 
