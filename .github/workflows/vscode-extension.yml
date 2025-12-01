@@ -38,12 +38,17 @@ jobs:
 
       - name: Determine and validate version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
+          REF_VALUE: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
-          elif [[ "$GITHUB_REF" =~ ^refs/tags/vscode-v ]]; then
-            VERSION="${GITHUB_REF_NAME#vscode-v}"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${DISPATCH_VERSION}" ]]; then
+            VERSION="${DISPATCH_VERSION}"
+          elif [[ "${REF_VALUE}" =~ ^refs/tags/vscode-v ]]; then
+            VERSION="${REF_NAME#vscode-v}"
           else
             VERSION=$(jq -r '.version' packages/vscode-extension/package.json)
           fi
@@ -139,12 +144,14 @@ jobs:
         working-directory: packages/vscode-extension
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_VALUE: ${{ github.ref }}
         run: |
           set -euo pipefail
           VSIX_FILE="${{ needs.build.outputs.vsix_name }}"
-          
+
           if [[ -z "${VSCE_PAT:-}" ]]; then
-            if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/vscode-v') }}" == "true" ]]; then
+            if [[ "${EVENT_NAME}" == "push" && "${REF_VALUE}" =~ ^refs/tags/vscode-v ]]; then
               echo "::error::VSCE_PAT secret required for tag releases"
               exit 1
             fi

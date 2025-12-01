@@ -247,6 +247,13 @@ Enable extra restrictions with `--safe-mode` or `COMPOSER_SAFE_MODE=1`:
 
 See [Safety & Approvals](docs/SAFETY.md) for detailed configuration.
 
+### Composer Guardian (secrets + CI hygiene)
+
+- **What it does:** Runs Semgrep (`p/secrets` + `p/ci`) plus a git-secrets/trufflehog fallback against staged files before commits/pushes initiated through Composer.
+- **Default:** On. Disable only in trusted environments with `COMPOSER_GUARDIAN=0` or `/guardian disable`.
+- **Manual runs:** `/guardian` in the TUI or `bash scripts/guardian.sh --staged`.
+- **Pre-commit hook:** `npm run guardian:install-hook` installs `.git/hooks/pre-commit` that points to the same script.
+
 ## Telemetry
 
 Telemetry is **off by default**. Enable for analytics:

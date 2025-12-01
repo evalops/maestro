@@ -9,7 +9,7 @@ const SS3_PATTERN = /\x1B[PX^_].*?\x1B\\/gs;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: required to match ANSI escape sequences
 const ESC_PATTERN = /\x1B[@-Z\\-_]/g;
 
-function stripAnsiSequences(text: string): string {
+export function stripAnsiSequences(text: string): string {
 	return text
 		.replace(CSI_PATTERN, "")
 		.replace(OSC_PATTERN, "")

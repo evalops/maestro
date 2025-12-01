@@ -30,6 +30,10 @@ jobs:
       - run: bun install
       - run: bun install --cwd packages/tui
       - run: bun install --cwd packages/web
+      - name: Install Semgrep CLI
+        run: python3 -m pip install --user semgrep && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Composer Guardian
+        run: bash scripts/guardian.sh --all --trigger ci
       - run: npm run build:all
       - run: bun run bun:lint
       - run: bun run bun:test

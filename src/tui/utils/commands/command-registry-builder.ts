@@ -74,6 +74,7 @@ interface CommandRegistryOptions {
 	handleLsp: (context: CommandExecutionContext) => void | Promise<void>;
 	handleFramework: (context: CommandExecutionContext) => void;
 	handleClean: (context: CommandExecutionContext) => void;
+	handleGuardian: (context: CommandExecutionContext) => void | Promise<void>;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -135,6 +136,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			lsp: opts.handleLsp,
 			framework: opts.handleFramework,
 			clean: opts.handleClean,
+			guardian: opts.handleGuardian,
 		},
 		createContext: opts.createContext,
 	});

@@ -26,6 +26,7 @@ expect before opening a PR.
    bun run --filter @evalops/composer-web build
    ```
    (CI runs these, but failing locally wastes review cycles.)
+   - Security: `bun run guardian` scans staged files with Semgrep + secrets; install a pre-commit hook with `npm run guardian:install-hook`.
 6. **Commit** – descriptive message, e.g., `feat: add bash history`
 7. **Push & PR** – open a PR against `main`, filling out the template.
 

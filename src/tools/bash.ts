@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import {
+	formatGuardianResult,
+	runGuardian,
+	shouldGuardCommand,
+} from "../guardian/index.js";
+import {
 	getShellConfig,
 	killProcessTree,
 	validateShellParams,
@@ -53,6 +58,25 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 	async run({ command, timeout, cwd, env }, { signal, sandbox }) {
 		// Interpolate ${cwd}, ${home}, ${env.VAR} in command
 		const interpolatedCommand = interpolateContext(command);
+
+		const guardCheck = shouldGuardCommand(interpolatedCommand);
+		if (guardCheck.shouldGuard) {
+			const guardian = await runGuardian({
+				trigger: guardCheck.trigger ?? "git",
+				target: "staged",
+			});
+			if (guardian.status === "failed" || guardian.status === "error") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Composer Guardian blocked ${guardCheck.trigger ?? "git"}\n\n${formatGuardianResult(guardian)}`,
+						},
+					],
+					details: undefined,
+				};
+			}
+		}
 
 		if (sandbox) {
 			const result = await sandbox.exec(interpolatedCommand, cwd, env);

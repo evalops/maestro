@@ -161,6 +161,12 @@ import {
 	setWorkspaceFramework,
 	validateFrameworkPreference,
 } from "../config/framework.js";
+import {
+	formatGuardianResult,
+	loadGuardianState,
+	runGuardian,
+	setGuardianEnabled,
+} from "../guardian/index.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
 import { ModalManager } from "./modal-manager.js";
@@ -945,6 +951,7 @@ export class TuiRenderer {
 			handleLsp: (context) => this.lspView.handleLspCommand(context.rawInput),
 			handleFramework: (context) => this.handleFrameworkCommand(context),
 			handleClean: (context) => this.handleCleanCommand(context),
+			handleGuardian: (context) => this.handleGuardianCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -1465,6 +1472,57 @@ export class TuiRenderer {
 			return;
 		}
 		context.showError("Usage: /zen [on|off]");
+	}
+
+	private async handleGuardianCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const arg = context.argumentText.trim().toLowerCase();
+		if (arg.startsWith("enable")) {
+			setGuardianEnabled(true);
+			this.notificationView.showToast(
+				"Composer Guardian enabled (Semgrep + secrets before commit/push).",
+				"success",
+			);
+			return;
+		}
+		if (arg.startsWith("disable")) {
+			setGuardianEnabled(false);
+			this.notificationView.showToast(
+				"Composer Guardian disabled. Set COMPOSER_GUARDIAN=1 to force on.",
+				"warn",
+			);
+			return;
+		}
+		if (arg.startsWith("status") || arg.startsWith("last")) {
+			const state = loadGuardianState();
+			const statusLine = `Guardian is ${state.enabled ? "enabled" : "disabled"}.`;
+			const runSummary = state.lastRun
+				? formatGuardianResult(state.lastRun)
+				: "No Guardian run recorded yet.";
+			this.chatContainer.addChild(
+				new Markdown([statusLine, "", runSummary].join("\n")),
+			);
+			this.ui.requestRender();
+			return;
+		}
+
+		const target = arg.includes("all") ? "all" : "staged";
+		const result = await runGuardian({
+			target,
+			trigger: "/guardian",
+		});
+		this.chatContainer.addChild(
+			new Markdown(`### Guardian\n${formatGuardianResult(result)}`),
+		);
+		this.ui.requestRender();
+		if (result.status === "failed" || result.status === "error") {
+			this.notificationView.showError(
+				"Composer Guardian found issues. Resolve findings or set COMPOSER_GUARDIAN=0 to override (not recommended).",
+			);
+		} else if (result.status === "passed") {
+			this.notificationView.showToast("Guardian passed.", "success");
+		}
 	}
 
 	private handleCleanCommand(context: CommandExecutionContext): void {

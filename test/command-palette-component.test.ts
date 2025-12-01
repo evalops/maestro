@@ -1,6 +1,7 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it } from "vitest";
 import { CommandPaletteComponent } from "../src/tui/utils/commands/command-palette.js";
+import { stripAnsiSequences } from "../src/tui/utils/text-formatting.js";
 
 const cmd = (name: string, tags: string[] = []): SlashCommand => ({
 	name,
@@ -45,8 +46,7 @@ describe("CommandPaletteComponent", () => {
 		);
 
 		palette.handleInput("f"); // toggle favorite on selected item
-		const output = renderText(palette);
-
+		const output = stripAnsiSequences(renderText(palette));
 		const normalized = output.replace(/\s+/g, " ");
 		expect(normalized).toContain("★ /run");
 	});

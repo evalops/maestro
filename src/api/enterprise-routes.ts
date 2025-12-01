@@ -47,6 +47,15 @@ import {
 
 const logger = createLogger("enterprise-api");
 
+const getDummyPasswordHash = (() => {
+	let cached: string | null = null;
+	return async () => {
+		if (cached) return cached;
+		cached = await hashPassword("invalid-credentials-placeholder");
+		return cached;
+	};
+})();
+
 // ============================================================================
 // AUTHENTICATION MIDDLEWARE
 // ============================================================================
@@ -240,8 +249,7 @@ async function handleLogin(
 
 		// Always verify a password hash to prevent timing attacks
 		// This ensures consistent response time whether user exists or not
-		const dummyHash =
-			"$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.FVnWpI8bdRvFIO";
+		const dummyHash = await getDummyPasswordHash();
 		const hashToVerify = user?.passwordHash || dummyHash;
 		const valid = await verifyPassword(password, hashToVerify);
 

@@ -22,16 +22,20 @@ jobs:
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
       - id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
+          REF_VALUE: ${{ github.ref }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            if [[ -z "${{ github.event.inputs.version }}" ]]; then
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ -z "${DISPATCH_VERSION}" ]]; then
               echo "No version provided for workflow_dispatch; skipping release workflow."
               echo "should_run=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-          elif [[ ! "${GITHUB_REF}" =~ ^refs/tags/v ]]; then
-            echo "No semver tag detected (ref=${GITHUB_REF}); skipping release workflow."
+          elif [[ ! "${REF_VALUE}" =~ ^refs/tags/v ]]; then
+            echo "No semver tag detected (ref=${REF_VALUE}); skipping release workflow."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -60,13 +64,17 @@ jobs:
           fetch-depth: 0
 
       - id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
+          REF_NAME_VALUE: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            RAW_TAG="${{ github.event.inputs.version }}"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            RAW_TAG="${DISPATCH_VERSION}"
           else
-            RAW_TAG="$GITHUB_REF_NAME"
+            RAW_TAG="${REF_NAME_VALUE}"
           fi
 
           if [[ -z "$RAW_TAG" ]]; then

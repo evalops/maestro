@@ -82,6 +82,19 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "guardian",
+				description:
+					"Run Composer Guardian (Semgrep + secrets) or toggle enforcement",
+				usage: "/guardian [run|status|enable|disable|all]",
+				tags: ["safety", "git"],
+				examples: ["/guardian", "/guardian status", "/guardian disable"],
+			},
+			withArgs("guardian"),
+			handlers.guardian,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "framework",
 				description:
 					"Set or show default framework (supports --workspace and list)",

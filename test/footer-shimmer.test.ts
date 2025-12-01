@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderStaticStageBadge } from "../src/tui/utils/footer-utils.js";
+import { stripAnsiSequences } from "../src/tui/utils/text-formatting.js";
 
 const ORIGINAL = {
 	shimmer: process.env.COMPOSER_TUI_SHIMMER,
@@ -23,7 +24,7 @@ describe("footer stage shimmer", () => {
 		process.env.COMPOSER_TUI_SHIMMER = "off";
 		process.env.FORCE_COLOR = "1";
 		const out = renderStaticStageBadge("Responding");
-		expect(out.toLowerCase()).toContain("responding");
+		expect(stripAnsiSequences(out).toLowerCase()).toContain("responding");
 	});
 
 	it("adds more ANSI escapes when shimmer is on", () => {
@@ -35,7 +36,9 @@ describe("footer stage shimmer", () => {
 		process.env.COMPOSER_TUI_SHIMMER = "off";
 		const staticBadge = renderStaticStageBadge("Responding");
 		expect(countEscapes(shimmering)).toBeGreaterThan(countEscapes(staticBadge));
-		expect(shimmering.toLowerCase()).toContain("responding");
+		expect(stripAnsiSequences(shimmering).toLowerCase()).toContain(
+			"responding",
+		);
 	});
 });
 

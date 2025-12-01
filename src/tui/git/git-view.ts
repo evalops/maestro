@@ -3,6 +3,7 @@ import { normalize, resolve } from "node:path";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
+import { formatGuardianResult, runGuardian } from "../../guardian/index.js";
 import type { ModalManager } from "../modal-manager.js";
 import { CommitModal } from "./commit-modal.js";
 import {
@@ -76,6 +77,10 @@ export class GitView {
 	}
 
 	private async performCommit(message: string): Promise<void> {
+		const guardianOk = await this.runGuardianGate();
+		if (!guardianOk) {
+			return;
+		}
 		const result = await this.runGitAsync(["commit", "-m", message]);
 		if (!result.success) {
 			this.options.showInfoMessage(result.stderr || "Commit failed");
@@ -84,6 +89,18 @@ export class GitView {
 		this.options.showToast("Committed changes.", "success");
 		this.closeCommitModal();
 		await this.refreshPreviewEntries();
+	}
+
+	private async runGuardianGate(): Promise<boolean> {
+		const guardian = await runGuardian({
+			trigger: "git commit",
+			target: "staged",
+		});
+		if (guardian.status === "failed" || guardian.status === "error") {
+			this.options.showInfoMessage(formatGuardianResult(guardian));
+			return false;
+		}
+		return true;
 	}
 
 	private async refreshPreviewEntries(targetPath?: string): Promise<void> {

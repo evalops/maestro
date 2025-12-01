@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { SpanStatusCode } from "@opentelemetry/api";
+import { type Span, SpanStatusCode } from "@opentelemetry/api";
 
 import {
 	getTelemetryTracer,
@@ -232,7 +232,7 @@ async function postToEndpoint(payload: string) {
 function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 	try {
 		const tracer = getTelemetryTracer();
-		tracer.startActiveSpan(`telemetry.${event.type}`, (span) => {
+		tracer.startActiveSpan(`telemetry.${event.type}`, (span: Span) => {
 			span.setAttributes({
 				"composer.telemetry.type": event.type,
 				"composer.telemetry.timestamp": event.timestamp,
