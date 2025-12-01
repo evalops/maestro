@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { extname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { getLspConfig } from "../config/lsp-config.js";
@@ -130,6 +130,8 @@ const readSchema = Type.Object({
 
 const MAX_LINES = 2000;
 const MAX_LINE_LENGTH = 2000;
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB - warn for very large files
+const LARGE_FILE_THRESHOLD = 1 * 1024 * 1024; // 1MB - suggest pagination
 
 type ReadToolDetails = {
 	startLine?: number;
@@ -215,6 +217,17 @@ Use 'batch' to read multiple files in parallel.`,
 
 		throwIfAborted();
 
+		// Check file size and provide appropriate feedback for large files
+		const fileStats = await stat(absolutePath);
+		const fileSizeBytes = fileStats.size;
+		const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2);
+
+		if (fileSizeBytes > MAX_FILE_SIZE && !mimeType) {
+			return respond.error(
+				`File is too large (${fileSizeMB}MB). Maximum size is 10MB.\nFor large files, use:\n  - read("${path}", offset=1, limit=1000) to read specific sections\n  - bash("head -n 100 '${path}'") for first 100 lines\n  - bash("tail -n 100 '${path}'") for last 100 lines`,
+			);
+		}
+
 		if (mimeType) {
 			const buffer = await readFile(absolutePath);
 			throwIfAborted();
@@ -223,6 +236,12 @@ Use 'batch' to read multiple files in parallel.`,
 				.text(`Read image file [${mimeType}]`)
 				.image(base64, mimeType)
 				.detail({ mode: "image" });
+		}
+
+		// Warn about large text files if not using pagination
+		let largeFileWarning = "";
+		if (fileSizeBytes > LARGE_FILE_THRESHOLD && !offset && !limit) {
+			largeFileWarning = `\n\n📊 Note: This file is ${fileSizeMB}MB. Only showing first ${MAX_LINES} lines. Use offset/limit parameters for pagination.`;
 		}
 
 		const rawBuffer = await readFile(absolutePath);
@@ -316,6 +335,11 @@ Use 'batch' to read multiple files in parallel.`,
 		}
 		if (notices.length > 0) {
 			formattedText += `\n\n... (${notices.join(". ")})`;
+		}
+
+		// Add large file warning if applicable
+		if (largeFileWarning) {
+			formattedText += largeFileWarning;
 		}
 
 		// Append LSP diagnostics if available

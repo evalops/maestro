@@ -213,12 +213,26 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 					output += stderr;
 				}
 
-				if (stdoutTruncated || stderrTruncated) {
-					output += "\n\n(Output truncated)";
+				// Provide detailed truncation feedback
+				const truncationMessages: string[] = [];
+				if (stdoutTruncated) {
+					const displayedKB = Math.round(MAX_BUFFER / 1024);
+					truncationMessages.push(
+						`stdout exceeded ${displayedKB}KB limit and was truncated`,
+					);
+				}
+				if (stderrTruncated) {
+					const displayedKB = Math.round(MAX_BUFFER / 1024);
+					truncationMessages.push(
+						`stderr exceeded ${displayedKB}KB limit and was truncated`,
+					);
+				}
+				if (truncationMessages.length > 0) {
+					output += `\n\n⚠️ Output truncated: ${truncationMessages.join("; ")}. Consider piping output to a file or using head/tail.`;
 				}
 
 				if (timedOut) {
-					output += "\n\n(Command timed out)";
+					output += `\n\n⏱️ Command timed out after ${effectiveTimeout}s`;
 				} else if (code !== 0) {
 					output += `\n\nExit code: ${code}`;
 				}
