@@ -62,6 +62,14 @@ export class CustomEditor extends Editor {
 			}
 		}
 
+		// 'k' or 'K' can trigger keep-partial during interrupt (if handler returns true)
+		if ((data === "k" || data === "K") && this.onShortcut) {
+			const handled = this.onShortcut("k");
+			if (handled) {
+				return;
+			}
+		}
+
 		// Intercept Ctrl+C
 		if (data === "\x03" && this.onCtrlC) {
 			this.onCtrlC();

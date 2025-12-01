@@ -1,10 +1,21 @@
 import type { Agent } from "../agent/agent.js";
+import type { AppMessage } from "../agent/types.js";
 import { composerManager } from "../composers/index.js";
 import { PromptQueue } from "../tui/prompt-queue.js";
 import type { TuiRenderer } from "../tui/tui-renderer.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("agent-runtime");
+
+export interface InterruptOptions {
+	/** If true, preserve the partial response in message history */
+	keepPartial?: boolean;
+}
+
+export interface InterruptResult {
+	/** The partial message that was saved, if keepPartial was true */
+	partialMessage?: AppMessage | null;
+}
 
 interface AgentRuntimeControllerOptions {
 	agent: Agent;
@@ -55,15 +66,35 @@ export class AgentRuntimeController {
 	attachRenderer(renderer: TuiRenderer): void {
 		this.renderer = renderer;
 		renderer.attachPromptQueue(this.promptQueue);
-		renderer.setInterruptCallback(() => this.abort());
+		renderer.setInterruptCallback((options) => this.interrupt(options));
 	}
 
 	enqueue(text: string): void {
 		this.promptQueue.enqueue(text);
 	}
 
-	abort(): void {
+	/**
+	 * Interrupt the current agent operation.
+	 *
+	 * @param options - Control how the interrupt is handled
+	 * @returns Result containing any saved partial message
+	 */
+	interrupt(options?: InterruptOptions): InterruptResult {
+		if (options?.keepPartial) {
+			const partialMessage = this.options.agent.abortAndKeepPartial();
+			logger.info("Interrupted with partial acceptance", {
+				hasPartial: !!partialMessage,
+			});
+			return { partialMessage };
+		}
+
 		this.options.agent.abort();
+		return {};
+	}
+
+	/** @deprecated Use interrupt() instead */
+	abort(): void {
+		this.interrupt();
 	}
 
 	stop(): void {

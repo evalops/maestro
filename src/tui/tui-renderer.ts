@@ -237,7 +237,7 @@ export class TuiRenderer {
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
 	private loaderView: LoaderView;
-	private onInterruptCallback?: () => void;
+	private onInterruptCallback?: (options?: { keepPartial?: boolean }) => void;
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -982,6 +982,7 @@ export class TuiRenderer {
 			},
 			shouldInterrupt: () => this.isAgentRunning || this.interruptArmed,
 			onInterrupt: () => this.handleInterruptRequest(),
+			onKeepPartial: () => this.handleKeepPartialRequest(),
 			onCtrlC: () => this.runController.handleCtrlC(),
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
@@ -1307,7 +1308,9 @@ export class TuiRenderer {
 		}
 	}
 
-	setInterruptCallback(callback: () => void): void {
+	setInterruptCallback(
+		callback: (options?: { keepPartial?: boolean }) => void,
+	): void {
 		this.onInterruptCallback = callback;
 	}
 
@@ -1319,7 +1322,20 @@ export class TuiRenderer {
 			this.armInterrupt();
 			return;
 		}
-		this.executeInterrupt();
+		this.executeInterrupt({ keepPartial: false });
+	}
+
+	/**
+	 * Handle 'k' key press to keep partial response during interrupt.
+	 * Only works when interrupt is armed.
+	 * @returns true if the key was handled (interrupt was armed), false otherwise
+	 */
+	handleKeepPartialRequest(): boolean {
+		if (!this.interruptArmed) {
+			return false;
+		}
+		this.executeInterrupt({ keepPartial: true });
+		return true;
 	}
 
 	private armInterrupt(): void {
@@ -1328,19 +1344,30 @@ export class TuiRenderer {
 			clearTimeout(this.interruptTimeout);
 		}
 		if (!this.isMinimalMode()) {
-			this.notificationView.showInfo("Press Esc again within 5s to interrupt.");
+			this.notificationView.showInfo(
+				"Press Esc to discard, K to keep partial response",
+			);
 		}
-		this.footer.setHint("Esc again within 5s to interrupt");
+		this.footer.setHint("Esc=discard | K=keep partial");
 		this.interruptTimeout = setTimeout(() => {
 			this.clearInterruptArm();
 		}, 5000);
 	}
 
-	private executeInterrupt(): void {
+	private executeInterrupt(options: { keepPartial: boolean }): void {
 		this.clearInterruptArm();
-		this.notificationView.showToast("Interrupted current run", "warn");
+
+		if (options.keepPartial) {
+			this.notificationView.showToast(
+				"Interrupted - keeping partial response",
+				"info",
+			);
+		} else {
+			this.notificationView.showToast("Interrupted current run", "warn");
+		}
+
 		if (this.onInterruptCallback) {
-			this.onInterruptCallback();
+			this.onInterruptCallback({ keepPartial: options.keepPartial });
 		}
 		this.restoreQueuedPromptIfAny();
 	}

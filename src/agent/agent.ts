@@ -348,6 +348,63 @@ export class Agent {
 	}
 
 	/**
+	 * Aborts the current streaming request and saves any partial response.
+	 *
+	 * Unlike `abort()`, this method preserves the partial assistant message
+	 * that was being streamed, adding it to the message history. This allows
+	 * users to keep useful partial responses when interrupting long generations.
+	 *
+	 * @returns The partial message that was saved, or null if no partial was available
+	 *
+	 * @example
+	 * ```typescript
+	 * // User presses Ctrl+C during a long response
+	 * const partial = agent.abortAndKeepPartial();
+	 * if (partial) {
+	 *   console.log("Saved partial response:", partial.content);
+	 * }
+	 * ```
+	 */
+	abortAndKeepPartial(): AppMessage | null {
+		const partialMessage = this._state.streamMessage;
+
+		// Only save if we have an assistant message (not user message)
+		if (
+			partialMessage &&
+			partialMessage.role === "assistant" &&
+			this.abortController
+		) {
+			// Mark as interrupted by setting stopReason
+			const savedMessage: AssistantMessage = {
+				...partialMessage,
+				stopReason: "aborted",
+			};
+
+			// Add to message history before aborting
+			this._state.messages = [...this._state.messages, savedMessage];
+			this._state.streamMessage = null;
+			this._partialAccepted = savedMessage;
+
+			logger.info("Saved partial message on interrupt", {
+				contentLength: JSON.stringify(savedMessage.content).length,
+			});
+
+			// Now abort
+			this.abort();
+
+			return savedMessage;
+		}
+
+		// No partial to save, just abort
+		this.abort();
+
+		return null;
+	}
+
+	/** Tracks if a partial message was accepted during abort */
+	private _partialAccepted: AppMessage | null = null;
+
+	/**
 	 * Returns a promise that resolves when the current prompt completes.
 	 * Returns immediately resolved promise if no prompt is running.
 	 */
@@ -515,10 +572,14 @@ export class Agent {
 				this.resolvePendingToolCalls(reason);
 			}
 
+			const partialAccepted = this._partialAccepted;
+			this._partialAccepted = null;
+
 			this.emit({
 				type: "agent_end",
 				messages: this._state.messages,
 				aborted,
+				partialAccepted: partialAccepted ?? undefined,
 			});
 		}
 	}

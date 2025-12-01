@@ -308,6 +308,8 @@ export type AgentEvent =
 			type: "agent_end";
 			messages: AppMessage[];
 			aborted?: boolean;
+			/** If aborted with partial acceptance, contains the saved partial message */
+			partialAccepted?: AppMessage;
 	  }
 	| {
 			type: "status";

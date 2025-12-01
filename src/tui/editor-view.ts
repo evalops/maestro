@@ -9,6 +9,11 @@ interface EditorViewOptions {
 	onSubmit: (text: string) => void;
 	shouldInterrupt: () => boolean;
 	onInterrupt?: () => void;
+	/**
+	 * Called when 'k' is pressed during interrupt-armed state to keep partial response.
+	 * Should return true if the key was handled (interrupt was armed), false otherwise.
+	 */
+	onKeepPartial?: () => boolean;
 	onCtrlC?: () => void;
 	showCommandPalette: () => void;
 	showFileSearch: () => void;
@@ -33,6 +38,10 @@ export class EditorView {
 			if (shortcut === "at") {
 				this.options.showFileSearch();
 				return true;
+			}
+			// 'k' during interrupt-armed state keeps partial response
+			if (shortcut === "k" && this.options.onKeepPartial) {
+				return this.options.onKeepPartial();
 			}
 			return false;
 		};
