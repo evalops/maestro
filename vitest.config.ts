@@ -10,5 +10,10 @@ export default defineConfig({
     // File parallelism enabled - cost-tracking tests now use isolated temp directories
     // via COMPOSER_USAGE_FILE environment variable
     fileParallelism: true,
+    // Benchmark configuration
+    benchmark: {
+      include: ['test/**/*.bench.ts'],
+      reporters: ['verbose'],
+    },
   }
 });
