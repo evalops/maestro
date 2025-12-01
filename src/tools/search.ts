@@ -138,6 +138,7 @@ const searchSchema = Type.Intersect([
 ]);
 
 const JSON_DETAIL_LIMIT = 200;
+const DEFAULT_MAX_RESULTS = 500;
 
 type SearchToolDetails = {
 	command: string;
@@ -276,9 +277,8 @@ Examples:
 			args.push("--only-matching");
 		}
 
-		if (maxResults !== undefined) {
-			args.push("-m", String(maxResults));
-		}
+		const effectiveMaxResults = maxResults ?? DEFAULT_MAX_RESULTS;
+		args.push("-m", String(effectiveMaxResults));
 
 		if (context !== undefined) {
 			args.push(`-C${context}`);
@@ -308,7 +308,12 @@ Examples:
 			args.push(".");
 		}
 
-		let result: { stdout: string; stderr: string; exitCode: number };
+		let result: {
+			stdout: string;
+			stderr: string;
+			exitCode: number;
+			truncated: boolean;
+		};
 		try {
 			result = await runRipgrep(args, signal, commandCwd);
 		} catch (error) {
@@ -343,6 +348,8 @@ Examples:
 				.detail({ command, cwd: commandCwd, format: detailFormat });
 		}
 
+		const truncatedByBytes = result.truncated ?? false;
+
 		// Handle files mode output
 		if (outputMode === "files") {
 			const allFiles = result.stdout
@@ -355,7 +362,9 @@ Examples:
 			const fileList = files.join("\n");
 			const truncatedNote = truncated
 				? `\n\n... (showing ${files.length} of ${allFiles.length} files)`
-				: "";
+				: truncatedByBytes
+					? "\n\n... (output truncated due to size limit)"
+					: "";
 			return respond
 				.text(
 					`Found ${allFiles.length} file(s) matching "${pattern}":\n\n${fileList}${truncatedNote}`,
@@ -366,7 +375,7 @@ Examples:
 					format: "files",
 					fileCount: allFiles.length,
 					files,
-					truncated,
+					truncated: truncated || truncatedByBytes,
 				});
 		}
 
@@ -396,7 +405,9 @@ Examples:
 			const summary = counts.map((c) => `${c.file}: ${c.count}`).join("\n");
 			const truncatedNote = truncated
 				? `\n\n... (showing ${counts.length} of ${allCounts.length} files)`
-				: "";
+				: truncatedByBytes
+					? "\n\n... (output truncated due to size limit)"
+					: "";
 			return respond
 				.text(
 					`Found ${totalMatches} match(es) across ${allCounts.length} file(s):\n\n${summary}${truncatedNote}`,
@@ -408,7 +419,7 @@ Examples:
 					totalMatches,
 					fileCount: allCounts.length,
 					counts,
-					truncated,
+					truncated: truncated || truncatedByBytes,
 				});
 		}
 
@@ -420,7 +431,8 @@ Examples:
 			const headLimitTruncated =
 				headLimit !== undefined && allMatches.length > headLimit;
 			const detailLimitTruncated = matches.length > JSON_DETAIL_LIMIT;
-			const truncated = headLimitTruncated || detailLimitTruncated;
+			const truncated =
+				headLimitTruncated || detailLimitTruncated || truncatedByBytes;
 			const preview = matches
 				.slice(0, 5)
 				.map(
@@ -452,9 +464,14 @@ Examples:
 		const truncated = headLimit !== undefined && lines.length > headLimit;
 		const truncatedNote = truncated
 			? `\n\n... (showing ${outputLines.length} of ${lines.length} lines)`
-			: "";
-		return respond
-			.text(outputLines.join("\n") + truncatedNote)
-			.detail({ command, cwd: commandCwd, format, truncated });
+			: truncatedByBytes
+				? "\n\n... (output truncated due to size limit)"
+				: "";
+		return respond.text(outputLines.join("\n") + truncatedNote).detail({
+			command,
+			cwd: commandCwd,
+			format,
+			truncated: truncated || truncatedByBytes,
+		});
 	},
 });

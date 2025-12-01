@@ -5,6 +5,7 @@ import {
 	runGuardian,
 	shouldGuardCommand,
 } from "../guardian/index.js";
+import { requirePlanCheck } from "../safety/safe-mode.js";
 import {
 	getShellConfig,
 	killProcessTree,
@@ -36,6 +37,21 @@ const bashSchema = Type.Object({
 	),
 });
 
+const DEFAULT_TIMEOUT_SECONDS = 90;
+const MAX_TIMEOUT_SECONDS = 600;
+const MAX_BUFFER = 40 * 1024; // 40KB stdout/stderr cap to avoid runaway output
+
+function isMutatingCommand(command: string): boolean {
+	const mutationPatterns = [
+		/(^|\s)(rm|mv|cp|chmod|chown|truncate|dd|mkfs|ln)\b/i,
+		/\btee\b/i,
+		/\bsed\b[^|;]*\s-i\b/i,
+		/(^|\s)sudo\b/i,
+		/>|>>/, // file redirection
+	];
+	return mutationPatterns.some((re) => re.test(command));
+}
+
 export const bashTool = createTool<typeof bashSchema>({
 	name: "bash",
 	label: "bash",
@@ -59,6 +75,10 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 		// Interpolate ${cwd}, ${home}, ${env.VAR} in command
 		const interpolatedCommand = interpolateContext(command);
 
+		if (isMutatingCommand(interpolatedCommand)) {
+			requirePlanCheck("bash");
+		}
+
 		const guardCheck = shouldGuardCommand(interpolatedCommand);
 		if (guardCheck.shouldGuard) {
 			const guardian = await runGuardian({
@@ -77,6 +97,11 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				};
 			}
 		}
+
+		const effectiveTimeout = Math.min(
+			timeout ?? DEFAULT_TIMEOUT_SECONDS,
+			MAX_TIMEOUT_SECONDS,
+		);
 
 		if (sandbox) {
 			const result = await sandbox.exec(interpolatedCommand, cwd, env);
@@ -131,14 +156,13 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			let timedOut = false;
 			let stdoutTruncated = false;
 			let stderrTruncated = false;
-			const MAX_BUFFER = 10 * 1024 * 1024;
 
 			let timeoutHandle: NodeJS.Timeout | undefined;
-			if (timeout !== undefined && timeout > 0) {
+			if (effectiveTimeout > 0) {
 				timeoutHandle = setTimeout(() => {
 					timedOut = true;
 					onAbort();
-				}, timeout * 1000);
+				}, effectiveTimeout * 1000);
 			}
 
 			const onAbort = () => {

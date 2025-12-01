@@ -11,6 +11,7 @@ import {
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const RANGE_DETAIL_LIMIT = 200;
+const DEFAULT_MAX_RESULTS = 500;
 
 const parallelRipgrepSchema = Type.Object({
 	patterns: Type.Array(Type.String({ minLength: 1 }), {
@@ -277,9 +278,8 @@ export const parallelRipgrepTool = createTool<
 			baseArgs.push("--no-ignore");
 		}
 
-		if (maxResults !== undefined) {
-			baseArgs.push("-m", String(maxResults));
-		}
+		const effectiveMaxResults = maxResults ?? DEFAULT_MAX_RESULTS;
+		baseArgs.push("-m", String(effectiveMaxResults));
 
 		if (context !== undefined) {
 			baseArgs.push(`-C${context}`);
@@ -302,10 +302,13 @@ export const parallelRipgrepTool = createTool<
 		}
 
 		const commands: string[] = [];
+		let truncatedByBytes = false;
 		const ripgrepCalls = patterns.map(async (pattern) => {
 			const args = [...baseArgs, "--", pattern, ...pathArgs];
 			commands.push(["rg", ...args].join(" "));
-			return { pattern, result: await runRipgrep(args, signal, commandCwd) };
+			const result = await runRipgrep(args, signal, commandCwd);
+			truncatedByBytes ||= result.truncated;
+			return { pattern, result };
 		});
 
 		let results: Array<{
@@ -404,7 +407,9 @@ export const parallelRipgrepTool = createTool<
 
 		const truncatedNote = truncated
 			? `\n\n... (showing ${ranges.length} of ${mergedRanges.length} ranges)`
-			: "";
+			: truncatedByBytes
+				? "\n\n... (output truncated due to size limit)"
+				: "";
 
 		return respond
 			.text(
@@ -416,7 +421,7 @@ export const parallelRipgrepTool = createTool<
 				matchCount,
 				rangeCount: mergedRanges.length,
 				ranges,
-				truncated,
+				truncated: truncated || truncatedByBytes,
 			});
 	},
 });

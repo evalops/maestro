@@ -1,6 +1,7 @@
 import {
 	type ChildProcess,
 	type SpawnOptions,
+	execSync,
 	spawn,
 } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -212,6 +213,7 @@ interface BackgroundTask {
 	restartTimer?: NodeJS.Timeout | null;
 	resourceUsage?: TaskResourceUsage;
 	usageMonitor?: NodeJS.Timeout | null;
+	monitoringMode?: "proc" | "ps" | "disabled";
 	limits: TaskRuntimeLimits;
 	terminatingForLimits?: boolean;
 	failureReason?: string;
@@ -826,10 +828,12 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	private startUsageMonitor(task: BackgroundTask): void {
-		if (process.platform !== "linux") {
+		if (!task.pid || task.usageMonitor) {
 			return;
 		}
-		if (!task.pid || task.usageMonitor) {
+		const mode = this.getMonitoringMode();
+		task.monitoringMode = mode;
+		if (mode === "disabled") {
 			return;
 		}
 		this.sampleResourceUsage(task);
@@ -849,13 +853,28 @@ class BackgroundTaskManager extends EventEmitter {
 		}
 	}
 
+	private getMonitoringMode(): "proc" | "ps" | "disabled" {
+		if (process.platform === "linux") return "proc";
+		if (process.platform === "darwin") return "ps";
+		return "disabled";
+	}
+
 	private sampleResourceUsage(task: BackgroundTask): void {
 		if (!task.pid) {
 			this.stopUsageMonitor(task);
 			return;
 		}
-		const usage = this.readUsageFromProc(task.pid);
+		const usage =
+			task.monitoringMode === "proc"
+				? this.readUsageFromProc(task.pid)
+				: task.monitoringMode === "ps"
+					? this.readUsageFromPs(task.pid)
+					: null;
 		if (!usage) {
+			if (task.monitoringMode === "ps") {
+				// If ps cannot be read (pid exited), stop monitoring to avoid noisy logs
+				this.stopUsageMonitor(task);
+			}
 			return;
 		}
 		if (!task.resourceUsage) {
@@ -955,6 +974,59 @@ class BackgroundTaskManager extends EventEmitter {
 			// Ignore stat read errors; may not be available
 		}
 		return Object.keys(usage).length > 0 ? usage : null;
+	}
+
+	private readUsageFromPs(pid: number): TaskResourceUsage | null {
+		if (process.platform !== "darwin") {
+			return null;
+		}
+		try {
+			const output = execSync(`ps -o rss= -o time= -p ${pid}`, {
+				encoding: "utf-8",
+			})
+				.trim()
+				.split(/\s+/)
+				.filter(Boolean);
+			if (output.length < 2) {
+				return null;
+			}
+			const rssKb = Number.parseInt(output[0] ?? "", 10);
+			const timeMs = this.parsePsTimeToMs(output[1] ?? "");
+			const usage: TaskResourceUsage = {};
+			if (Number.isFinite(rssKb)) {
+				usage.maxRssKb = Math.max(rssKb, 0);
+			}
+			if (Number.isFinite(timeMs)) {
+				// ps only reports total CPU time; treat as user time for limit enforcement
+				usage.userMs = Math.max(timeMs, 0);
+			}
+			return Object.keys(usage).length > 0 ? usage : null;
+		} catch {
+			return null;
+		}
+	}
+
+	private parsePsTimeToMs(timeText: string): number {
+		// Supports [[dd-]hh:]mm:ss
+		const daySplit = timeText.split("-");
+		let dayPortion = 0;
+		let timePortion = timeText;
+		if (daySplit.length === 2) {
+			dayPortion = Number.parseInt(daySplit[0] ?? "0", 10);
+			timePortion = daySplit[1] ?? "";
+		}
+		const parts = timePortion.split(":").map((p) => Number.parseInt(p, 10));
+		if (parts.length < 2 || parts.some((n) => Number.isNaN(n))) {
+			return Number.NaN;
+		}
+		const [hoursOrMinutes, minutesOrSeconds, seconds] =
+			parts.length === 3 ? parts : [0, parts[0] ?? 0, parts[1] ?? 0];
+		const hours = parts.length === 3 ? hoursOrMinutes : 0;
+		const minutes = parts.length === 3 ? minutesOrSeconds : hoursOrMinutes;
+		const secs = parts.length === 3 ? seconds : minutesOrSeconds;
+		const totalSeconds =
+			(dayPortion || 0) * 24 * 3600 + hours * 3600 + minutes * 60 + secs;
+		return totalSeconds * 1000;
 	}
 
 	private getLogDir(): string {
@@ -1320,6 +1392,7 @@ class BackgroundTaskManager extends EventEmitter {
 			restartTimer: null,
 			logTruncated: false,
 			limits: taskLimits,
+			monitoringMode: "disabled",
 		};
 
 		this.tasks.set(id, task);
@@ -1849,6 +1922,7 @@ function buildTaskDetail(task: BackgroundTask) {
 		limits: task.limits,
 		resourceUsage: task.resourceUsage ?? null,
 		failureReason: task.failureReason ?? null,
+		monitoringMode: task.monitoringMode ?? "disabled",
 	};
 }
 

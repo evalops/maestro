@@ -7,6 +7,11 @@ export interface BatchAgentTool extends AgentTool {
 }
 
 const DISALLOWED_TOOLS = new Set(["batch", "edit", "write"]);
+const GH_MUTATING_ACTIONS: Record<string, Set<string>> = {
+	gh_pr: new Set(["create", "checkout", "comment", "close"]),
+	gh_issue: new Set(["create", "comment", "close"]),
+	gh_repo: new Set(["fork", "clone"]),
+};
 
 const batchSchema = Type.Object({
 	toolCalls: Type.Array(
@@ -154,6 +159,16 @@ Example parallel:
 				if (DISALLOWED_TOOLS.has(call.tool)) {
 					return respond.error(`Tool not allowed in batch: ${call.tool}`);
 				}
+				const mutatingActions = GH_MUTATING_ACTIONS[call.tool];
+				const action =
+					typeof call.parameters?.action === "string"
+						? (call.parameters.action as string)
+						: undefined;
+				if (mutatingActions && action && mutatingActions.has(action)) {
+					return respond.error(
+						`GitHub mutation "${call.tool}:${action}" is not allowed in batch. Run it individually.`,
+					);
+				}
 				if (!toolMap.has(call.tool)) {
 					return respond.error(
 						`Tool not found: ${call.tool}. Available: ${[...toolMap.keys()].join(", ")}`,
@@ -187,6 +202,24 @@ Example parallel:
 			>();
 
 			// Helper to interpolate ${results.id.path} in parameters
+			const resolvePath = (
+				source: unknown,
+				segments: string[],
+			): string | undefined => {
+				let current: any = source;
+				for (const segment of segments) {
+					if (current == null) return undefined;
+					const numeric = Number.parseInt(segment, 10);
+					if (!Number.isNaN(numeric) && Array.isArray(current)) {
+						current = current[numeric];
+						continue;
+					}
+					if (typeof current !== "object") return undefined;
+					current = (current as Record<string, unknown>)[segment];
+				}
+				return current == null ? undefined : String(current);
+			};
+
 			const interpolateParams = (
 				params: Record<string, unknown>,
 			): Record<string, unknown> => {
@@ -196,17 +229,16 @@ Example parallel:
 							/\$\{results\.([^.}]+)\.([^}]+)\}/g,
 							(match, id, path) => {
 								const result = resultById.get(id);
-								if (!result) return match;
-								// Navigate the path (e.g., "content.0.text" or "details.diff")
-								const parts = path.split(".");
-								let current: unknown = result;
-								for (const part of parts) {
-									if (current == null || typeof current !== "object") {
-										return match;
-									}
-									current = (current as Record<string, unknown>)[part];
+								if (!result) {
+									throw new Error(`Missing batch dependency result "${id}"`);
 								}
-								return current != null ? String(current) : match;
+								const resolved = resolvePath(result, path.split("."));
+								if (resolved === undefined) {
+									throw new Error(
+										`Path "${path}" not found on result "${id}". Available keys: content, details, isError`,
+									);
+								}
+								return resolved;
 							},
 						);
 					}

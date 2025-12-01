@@ -182,18 +182,18 @@ describe("backgroundTasksTool", () => {
 			command: "node -e \"console.log('usage'); setTimeout(() => {}, 1000)\"",
 		});
 		const taskId = (startResult.details as any)?.id as string;
-		const requiresUsage = process.platform === "linux";
+		const supportsUsage = ["linux", "darwin"].includes(process.platform);
 
 		await waitForCondition(() => {
 			const task = backgroundTaskManager.getTask(taskId);
 			if (!task || (task.status !== "exited" && task.status !== "failed")) {
 				return false;
 			}
-			return requiresUsage ? Boolean(task.resourceUsage) : true;
+			return supportsUsage ? Boolean(task.resourceUsage) : true;
 		});
 
 		const task = backgroundTaskManager.getTask(taskId);
-		if (requiresUsage) {
+		if (supportsUsage) {
 			expect(task?.resourceUsage).toBeTruthy();
 			expect(task?.resourceUsage?.maxRssKb ?? 0).toBeGreaterThan(0);
 		} else {

@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
-import { glob } from "glob";
+import { type GlobOptions, globIterate } from "glob";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const DEFAULT_LIMIT = 200;
@@ -162,6 +162,11 @@ Examples:
 		}
 
 		const resolvedPath = resolvePath(expandUserPath(path));
+		if (resolvedPath.includes("\0")) {
+			return respond.error(
+				`Listing ${resolvedPath} failed: invalid path (contains null byte)`,
+			);
+		}
 		const safeLimit = Math.min(
 			Math.max(Math.floor(limit || DEFAULT_LIMIT), 1),
 			MAX_LIMIT,
@@ -170,7 +175,7 @@ Examples:
 			includeMetadata || sortBy === "size" || sortBy === "mtime";
 
 		try {
-			const globOptions: Parameters<typeof glob>[1] = {
+			const globOptions: GlobOptions = {
 				cwd: resolvedPath,
 				dot: includeHidden,
 				mark: true,
@@ -182,35 +187,49 @@ Examples:
 			if (excludePatterns.length > 0) {
 				globOptions.ignore = excludePatterns;
 			}
-			const entries = (await glob(pattern || "*", globOptions)) as string[];
+			const annotated: Array<{
+				path: string;
+				isDirectory: boolean;
+				size?: number;
+				mtimeMs?: number;
+			}> = [];
+			let matchedCount = 0;
+			let truncated = false;
 
-			if (signal?.aborted) {
-				throw new Error("Operation aborted");
-			}
-
-			const annotated = await Promise.all(
-				entries.map(async (entry) => {
-					const normalized = entry.endsWith("/") ? entry.slice(0, -1) : entry;
-					const absolute = resolvePath(resolvedPath, normalized);
-					let size: number | undefined;
-					let mtimeMs: number | undefined;
-					if (needsStats) {
-						try {
-							const stats = await stat(absolute);
-							size = stats.size;
-							mtimeMs = stats.mtimeMs;
-						} catch {
-							// ignore stat errors
-						}
+			for await (const entry of globIterate(pattern || "*", globOptions)) {
+				const entryStr = entry.toString();
+				if (signal?.aborted) {
+					throw new Error("Operation aborted");
+				}
+				matchedCount += 1;
+				if (annotated.length >= safeLimit) {
+					truncated = true;
+					continue;
+				}
+				const normalized = entryStr.endsWith("/")
+					? entryStr.slice(0, -1)
+					: entryStr;
+				const absolute = resolvePath(resolvedPath, normalized);
+				let size: number | undefined;
+				let mtimeMs: number | undefined;
+				let isDirectory = entryStr.endsWith("/");
+				if (needsStats) {
+					try {
+						const stats = await stat(absolute);
+						size = stats.size;
+						mtimeMs = stats.mtimeMs;
+						isDirectory = stats.isDirectory();
+					} catch {
+						// ignore stat errors
 					}
-					return {
-						path: entry,
-						isDirectory: entry.endsWith("/"),
-						size,
-						mtimeMs,
-					};
-				}),
-			);
+				}
+				annotated.push({
+					path: entryStr,
+					isDirectory,
+					size,
+					mtimeMs,
+				});
+			}
 
 			const sorted = annotated.sort((a, b) => {
 				let comparison = 0;
@@ -231,12 +250,12 @@ Examples:
 			});
 
 			const limitedEntries = sorted.slice(0, safeLimit);
-			const truncated = sorted.length > limitedEntries.length;
+			truncated ||= matchedCount > limitedEntries.length;
 
 			const summary: string[] = [
 				`Directory: ${resolvedPath}`,
 				`Pattern: ${pattern || "*"}`,
-				`Results: ${limitedEntries.length}${truncated ? ` of ${sorted.length}` : ""}`,
+				`Results: ${limitedEntries.length}${truncated ? ` of ${matchedCount}` : ""}`,
 				`Sorted by: ${sortBy} (${sortDirection})`,
 			];
 			if (excludePatterns.length > 0) {

@@ -40,11 +40,18 @@ export function toArray<T>(value: T | T[] | undefined): T[] {
 	return Array.isArray(value) ? value : [value];
 }
 
+const MAX_RIPGREP_OUTPUT_BYTES = 2_000_000; // ~2MB safeguard
+
 export async function runRipgrep(
 	args: string[],
 	signal?: AbortSignal,
 	cwd?: string,
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+): Promise<{
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+	truncated: boolean;
+}> {
 	const child = spawn("rg", args, {
 		cwd: cwd ?? process.cwd(),
 		stdio: ["ignore", "pipe", "pipe"],
@@ -54,14 +61,31 @@ export async function runRipgrep(
 	return await new Promise((resolve, reject) => {
 		let stdout = "";
 		let stderr = "";
+		let truncated = false;
 
 		child.stdout.setEncoding("utf-8");
 		child.stdout.on("data", (chunk) => {
+			if (stdout.length + chunk.length > MAX_RIPGREP_OUTPUT_BYTES) {
+				truncated = true;
+				stdout += chunk
+					.slice(0, Math.max(0, MAX_RIPGREP_OUTPUT_BYTES - stdout.length))
+					.toString();
+				child.kill("SIGTERM");
+				return;
+			}
 			stdout += chunk;
 		});
 
 		child.stderr.setEncoding("utf-8");
 		child.stderr.on("data", (chunk) => {
+			if (stderr.length + chunk.length > MAX_RIPGREP_OUTPUT_BYTES) {
+				truncated = true;
+				stderr += chunk
+					.slice(0, Math.max(0, MAX_RIPGREP_OUTPUT_BYTES - stderr.length))
+					.toString();
+				child.kill("SIGTERM");
+				return;
+			}
 			stderr += chunk;
 		});
 
@@ -74,7 +98,7 @@ export async function runRipgrep(
 		});
 
 		child.once("close", (code) => {
-			resolve({ stdout, stderr, exitCode: code ?? 0 });
+			resolve({ stdout, stderr, exitCode: code ?? 0, truncated });
 		});
 	});
 }
