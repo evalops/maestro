@@ -11,6 +11,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, parseSubcommand } from "./utils.js";
 
 export interface GitCommandDeps {
 	handleDiff: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -23,8 +24,7 @@ export function createGitCommandHandler(deps: GitCommandDeps) {
 	return async function handleGitCommand(
 		ctx: CommandExecutionContext,
 	): Promise<void> {
-		const args = ctx.argumentText.trim().split(/\s+/);
-		const subcommand = args[0]?.toLowerCase() || "status";
+		const { subcommand, args, customContext } = parseSubcommand(ctx, "status");
 
 		switch (subcommand) {
 			case "status":
@@ -34,11 +34,12 @@ export function createGitCommandHandler(deps: GitCommandDeps) {
 
 			case "diff":
 			case "d":
-				await deps.handleDiff({
-					...ctx,
-					rawInput: `/diff ${args.slice(1).join(" ")}`,
-					argumentText: args.slice(1).join(" "),
-				});
+				await deps.handleDiff(
+					customContext(
+						`/diff ${args.slice(1).join(" ")}`,
+						args.slice(1).join(" "),
+					),
+				);
 				break;
 
 			case "review":
@@ -46,18 +47,15 @@ export function createGitCommandHandler(deps: GitCommandDeps) {
 				deps.handleReview(ctx);
 				break;
 
-			case "help":
-				showGitHelp(ctx);
-				break;
-
 			default:
+				if (isHelpRequest(subcommand)) {
+					showGitHelp(ctx);
+				}
 				// If argument looks like a path, treat as diff
-				if (args[0] && !args[0].startsWith("-")) {
-					await deps.handleDiff({
-						...ctx,
-						rawInput: `/diff ${ctx.argumentText}`,
-						argumentText: ctx.argumentText,
-					});
+				else if (args[0] && !args[0].startsWith("-")) {
+					await deps.handleDiff(
+						customContext(`/diff ${ctx.argumentText}`, ctx.argumentText),
+					);
 				} else {
 					ctx.showError(`Unknown subcommand: ${subcommand}`);
 					showGitHelp(ctx);

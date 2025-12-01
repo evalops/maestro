@@ -11,6 +11,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, parseSubcommand } from "./utils.js";
 
 export interface SafetyCommandDeps {
 	handleApprovals: (ctx: CommandExecutionContext) => void;
@@ -28,14 +29,7 @@ export function createSafetyCommandHandler(deps: SafetyCommandDeps) {
 	return async function handleSafetyCommand(
 		ctx: CommandExecutionContext,
 	): Promise<void> {
-		const args = ctx.argumentText.trim().split(/\s+/);
-		const subcommand = args[0]?.toLowerCase() || "status";
-
-		const rewriteContext = (cmd: string): CommandExecutionContext => ({
-			...ctx,
-			rawInput: `/${cmd} ${args.slice(1).join(" ")}`.trim(),
-			argumentText: args.slice(1).join(" "),
-		});
+		const { subcommand, rewriteContext } = parseSubcommand(ctx, "status");
 
 		switch (subcommand) {
 			case "status":
@@ -61,13 +55,13 @@ export function createSafetyCommandHandler(deps: SafetyCommandDeps) {
 				await deps.handleGuardian(rewriteContext("guardian"));
 				break;
 
-			case "help":
-				showSafetyHelp(ctx);
-				break;
-
 			default:
-				ctx.showError(`Unknown subcommand: ${subcommand}`);
-				showSafetyHelp(ctx);
+				if (isHelpRequest(subcommand)) {
+					showSafetyHelp(ctx);
+				} else {
+					ctx.showError(`Unknown subcommand: ${subcommand}`);
+					showSafetyHelp(ctx);
+				}
 		}
 	};
 }

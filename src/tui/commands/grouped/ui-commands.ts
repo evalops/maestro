@@ -14,6 +14,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, parseSubcommand } from "./utils.js";
 
 export interface UiCommandDeps {
 	handleTheme: (ctx: CommandExecutionContext) => void;
@@ -32,14 +33,10 @@ export interface UiCommandDeps {
 
 export function createUiCommandHandler(deps: UiCommandDeps) {
 	return function handleUiCommand(ctx: CommandExecutionContext): void {
-		const args = ctx.argumentText.trim().split(/\s+/);
-		const subcommand = args[0]?.toLowerCase() || "status";
-
-		const rewriteContext = (cmd: string): CommandExecutionContext => ({
-			...ctx,
-			rawInput: `/${cmd} ${args.slice(1).join(" ")}`.trim(),
-			argumentText: args.slice(1).join(" "),
-		});
+		const { subcommand, args, rewriteContext, customContext } = parseSubcommand(
+			ctx,
+			"status",
+		);
 
 		switch (subcommand) {
 			case "status":
@@ -65,11 +62,12 @@ export function createUiCommandHandler(deps: UiCommandDeps) {
 			case "alerts":
 			case "notifications":
 				// Rewrite to footer command
-				deps.handleFooter({
-					...ctx,
-					rawInput: `/footer ${args.slice(1).join(" ") || "history"}`,
-					argumentText: args.slice(1).join(" ") || "history",
-				});
+				deps.handleFooter(
+					customContext(
+						`/footer ${args.slice(1).join(" ") || "history"}`,
+						args.slice(1).join(" ") || "history",
+					),
+				);
 				break;
 
 			case "zen":
@@ -81,13 +79,13 @@ export function createUiCommandHandler(deps: UiCommandDeps) {
 				deps.handleCompactTools(rewriteContext("compact-tools"));
 				break;
 
-			case "help":
-				showUiHelp(ctx);
-				break;
-
 			default:
-				ctx.showError(`Unknown subcommand: ${subcommand}`);
-				showUiHelp(ctx);
+				if (isHelpRequest(subcommand)) {
+					showUiHelp(ctx);
+				} else {
+					ctx.showError(`Unknown subcommand: ${subcommand}`);
+					showUiHelp(ctx);
+				}
 		}
 	};
 }

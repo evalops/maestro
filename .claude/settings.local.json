@@ -36,7 +36,9 @@
       "Bash(GIT_AUTHOR_DATE=\"2025-12-01T07:59:58\" GIT_COMMITTER_DATE=\"2025-12-01T07:59:58\" git commit -m \"$(cat <<''EOF''\n[composer] add grouped slash commands for better discoverability\n\nOrganize related slash commands under parent commands with subcommands,\nreducing command sprawl while maintaining backward compatibility:\n\n- /sess: session management (new, clear, list, load, branch, export, share)\n- /dx: diagnostics (status, about, context, bg, lsp, keys, pii, access, audit)\n- /look: UI settings (theme, clean, footer, alerts, zen, compact)\n- /safe: safety controls (approvals, plan, guardian)\n- /vcs: git operations (status, diff, review)\n- /auth: authentication (login, logout, status)\n- /usage: usage tracking (cost, quota, stats)\n- /back: undo system (undo, redo, checkpoint, history)\n\nOriginal commands remain available as aliases for backward compatibility.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(GIT_COMMITTER_DATE=\"2025-12-01T08:01:00\" git commit:*)",
       "Bash(GIT_AUTHOR_DATE=\"2025-12-01T08:01:33\" GIT_COMMITTER_DATE=\"2025-12-01T08:01:33\" git commit:*)",
-      "Bash(GIT_AUTHOR_DATE=\"2025-12-01T08:03:47\" GIT_COMMITTER_DATE=\"2025-12-01T08:03:47\" git commit:*)"
+      "Bash(GIT_AUTHOR_DATE=\"2025-12-01T08:03:47\" GIT_COMMITTER_DATE=\"2025-12-01T08:03:47\" git commit:*)",
+      "Bash(bun run build:*)",
+      "Bash(GIT_AUTHOR_DATE=\"2025-12-01T08:11:05\" GIT_COMMITTER_DATE=\"2025-12-01T08:11:05\" git commit -m \"$(cat <<''EOF''\n[composer] fix bun:check script recursive workspace loop\n\nRemove recursive workspace check from bun:check script that was\ncausing infinite loop when workspaces called back to root check.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

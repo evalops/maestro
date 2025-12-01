@@ -11,6 +11,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, parseSubcommand } from "./utils.js";
 
 export interface UsageCommandDeps {
 	handleCost: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -22,14 +23,10 @@ export function createUsageCommandHandler(deps: UsageCommandDeps) {
 	return async function handleUsageCommand(
 		ctx: CommandExecutionContext,
 	): Promise<void> {
-		const args = ctx.argumentText.trim().split(/\s+/);
-		const subcommand = args[0]?.toLowerCase() || "overview";
-
-		const rewriteContext = (cmd: string): CommandExecutionContext => ({
-			...ctx,
-			rawInput: `/${cmd} ${args.slice(1).join(" ")}`.trim(),
-			argumentText: args.slice(1).join(" "),
-		});
+		const { subcommand, rewriteContext, customContext } = parseSubcommand(
+			ctx,
+			"overview",
+		);
 
 		switch (subcommand) {
 			case "overview":
@@ -56,28 +53,23 @@ export function createUsageCommandHandler(deps: UsageCommandDeps) {
 				await deps.handleStats(ctx);
 				break;
 
-			case "help":
-				showUsageHelp(ctx);
-				break;
-
 			default:
+				if (isHelpRequest(subcommand)) {
+					showUsageHelp(ctx);
+				}
 				// Check if it's a cost subcommand
-				if (
+				else if (
 					["breakdown", "clear", "week", "month", "day"].includes(subcommand)
 				) {
-					await deps.handleCost({
-						...ctx,
-						rawInput: `/cost ${ctx.argumentText}`,
-						argumentText: ctx.argumentText,
-					});
+					await deps.handleCost(
+						customContext(`/cost ${ctx.argumentText}`, ctx.argumentText),
+					);
 				}
 				// Check if it's a quota subcommand
 				else if (["detailed", "models", "alerts"].includes(subcommand)) {
-					await deps.handleQuota({
-						...ctx,
-						rawInput: `/quota ${ctx.argumentText}`,
-						argumentText: ctx.argumentText,
-					});
+					await deps.handleQuota(
+						customContext(`/quota ${ctx.argumentText}`, ctx.argumentText),
+					);
 				} else {
 					ctx.showError(`Unknown subcommand: ${subcommand}`);
 					showUsageHelp(ctx);

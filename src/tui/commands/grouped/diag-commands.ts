@@ -25,6 +25,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, parseSubcommand } from "./utils.js";
 
 export interface DiagCommandDeps {
 	handleStatus: () => void;
@@ -47,8 +48,7 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 	return async function handleDiagCommand(
 		ctx: CommandExecutionContext,
 	): Promise<void> {
-		const args = ctx.argumentText.trim().split(/\s+/);
-		const subcommand = args[0]?.toLowerCase() || "status";
+		const { subcommand, args, customContext } = parseSubcommand(ctx, "status");
 
 		switch (subcommand) {
 			case "status":
@@ -74,19 +74,21 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 
 			case "background":
 			case "bg":
-				deps.handleBackground({
-					...ctx,
-					rawInput: `/background ${args.slice(1).join(" ")}`,
-					argumentText: args.slice(1).join(" "),
-				});
+				deps.handleBackground(
+					customContext(
+						`/background ${args.slice(1).join(" ")}`,
+						args.slice(1).join(" "),
+					),
+				);
 				break;
 
 			case "lsp":
-				await deps.handleLsp({
-					...ctx,
-					rawInput: `/lsp ${args.slice(1).join(" ")}`,
-					argumentText: args.slice(1).join(" "),
-				});
+				await deps.handleLsp(
+					customContext(
+						`/lsp ${args.slice(1).join(" ")}`,
+						args.slice(1).join(" "),
+					),
+				);
 				break;
 
 			case "mcp":
@@ -95,29 +97,27 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 
 			case "keys":
 			case "api":
-				deps.handleDiagnostics({
-					...ctx,
-					rawInput: "/diag keys",
-					argumentText: "keys",
-				});
+				deps.handleDiagnostics(customContext("/diag keys", "keys"));
 				break;
 
 			case "telemetry":
 			case "telem":
-				deps.handleTelemetry({
-					...ctx,
-					rawInput: `/telemetry ${args.slice(1).join(" ")}`,
-					argumentText: args.slice(1).join(" "),
-				});
+				deps.handleTelemetry(
+					customContext(
+						`/telemetry ${args.slice(1).join(" ")}`,
+						args.slice(1).join(" "),
+					),
+				);
 				break;
 
 			case "training":
 			case "train":
-				deps.handleTraining({
-					...ctx,
-					rawInput: `/training ${args.slice(1).join(" ")}`,
-					argumentText: args.slice(1).join(" "),
-				});
+				deps.handleTraining(
+					customContext(
+						`/training ${args.slice(1).join(" ")}`,
+						args.slice(1).join(" "),
+					),
+				);
 				break;
 
 			case "otel":
@@ -154,13 +154,13 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 				}
 				break;
 
-			case "help":
-				showDiagHelp(ctx);
-				break;
-
 			default:
-				// Pass through to original diag handler for unknown subcommands
-				deps.handleDiagnostics(ctx);
+				if (isHelpRequest(subcommand)) {
+					showDiagHelp(ctx);
+				} else {
+					// Pass through to original diag handler for unknown subcommands
+					deps.handleDiagnostics(ctx);
+				}
 		}
 	};
 }

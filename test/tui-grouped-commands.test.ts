@@ -1387,4 +1387,238 @@ describe("Grouped Command Handlers", () => {
 			expect(deps.handleRun).toHaveBeenCalled();
 		});
 	});
+
+	describe("Error Paths and Help", () => {
+		it("shows help for unknown subcommand in session handler", async () => {
+			const { createSessionCommandHandler } = await import(
+				"../src/tui/commands/grouped/session-commands.js"
+			);
+
+			const deps = {
+				handleSessionInfo: vi.fn(),
+				handleNewChat: vi.fn(),
+				handleClear: vi.fn(),
+				handleSessionsList: vi.fn(),
+				handleBranch: vi.fn(),
+				handleQueue: vi.fn(),
+				handleExport: vi.fn(),
+				handleShare: vi.fn(),
+			};
+
+			const handler = createSessionCommandHandler(deps);
+			const ctx = createMockContext("/session unknowncmd", "unknowncmd");
+
+			await handler(ctx);
+
+			expect(ctx.showError).toHaveBeenCalledWith(
+				"Unknown subcommand: unknowncmd",
+			);
+			expect(ctx.showInfo).toHaveBeenCalled();
+		});
+
+		it("shows help for --help flag in any handler", async () => {
+			const { createDiagCommandHandler } = await import(
+				"../src/tui/commands/grouped/diag-commands.js"
+			);
+
+			const deps = {
+				handleStatus: vi.fn(),
+				handleAbout: vi.fn(),
+				handleContext: vi.fn(),
+				handleStats: vi.fn(),
+				handleBackground: vi.fn(),
+				handleDiagnostics: vi.fn(),
+				handleTelemetry: vi.fn(),
+				handleTraining: vi.fn(),
+				handleOtel: vi.fn(),
+				handleConfig: vi.fn(),
+				handleLsp: vi.fn(),
+				handleMcp: vi.fn(),
+				showInfo: vi.fn(),
+				isDatabaseConfigured: vi.fn().mockReturnValue(false),
+			};
+
+			const handler = createDiagCommandHandler(deps);
+			const ctx = createMockContext("/diag --help", "--help");
+
+			await handler(ctx);
+
+			expect(ctx.showInfo).toHaveBeenCalled();
+			expect(deps.handleStatus).not.toHaveBeenCalled();
+		});
+
+		it("shows help for ? in any handler", async () => {
+			const { createUiCommandHandler } = await import(
+				"../src/tui/commands/grouped/ui-commands.js"
+			);
+
+			const deps = {
+				handleTheme: vi.fn(),
+				handleClean: vi.fn(),
+				handleFooter: vi.fn(),
+				handleZen: vi.fn(),
+				handleCompactTools: vi.fn(),
+				showInfo: vi.fn(),
+				getUiState: vi.fn().mockReturnValue({
+					zenMode: false,
+					cleanMode: "off",
+					footerMode: "ensemble",
+					compactTools: false,
+				}),
+			};
+
+			const handler = createUiCommandHandler(deps);
+			const ctx = createMockContext("/ui ?", "?");
+
+			handler(ctx);
+
+			expect(ctx.showInfo).toHaveBeenCalled();
+		});
+	});
+
+	describe("Alias Support", () => {
+		it("cfg 'fw' routes to framework", async () => {
+			const { createConfigCommandHandler } = await import(
+				"../src/tui/commands/grouped/config-commands.js"
+			);
+
+			const deps = {
+				handleConfig: vi.fn(),
+				handleImport: vi.fn(),
+				handleFramework: vi.fn(),
+				handleComposer: vi.fn(),
+				handleInit: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createConfigCommandHandler(deps);
+			const ctx = createMockContext("/cfg fw react", "fw react");
+
+			await handler(ctx);
+
+			expect(deps.handleFramework).toHaveBeenCalled();
+		});
+
+		it("diag 'bg' routes to background", async () => {
+			const { createDiagCommandHandler } = await import(
+				"../src/tui/commands/grouped/diag-commands.js"
+			);
+
+			const deps = {
+				handleStatus: vi.fn(),
+				handleAbout: vi.fn(),
+				handleContext: vi.fn(),
+				handleStats: vi.fn(),
+				handleBackground: vi.fn(),
+				handleDiagnostics: vi.fn(),
+				handleTelemetry: vi.fn(),
+				handleTraining: vi.fn(),
+				handleOtel: vi.fn(),
+				handleConfig: vi.fn(),
+				handleLsp: vi.fn(),
+				handleMcp: vi.fn(),
+				showInfo: vi.fn(),
+				isDatabaseConfigured: vi.fn().mockReturnValue(false),
+			};
+
+			const handler = createDiagCommandHandler(deps);
+			const ctx = createMockContext("/diag bg", "bg");
+
+			await handler(ctx);
+
+			expect(deps.handleBackground).toHaveBeenCalled();
+		});
+
+		it("ui 'dedup' routes to clean", async () => {
+			const { createUiCommandHandler } = await import(
+				"../src/tui/commands/grouped/ui-commands.js"
+			);
+
+			const deps = {
+				handleTheme: vi.fn(),
+				handleClean: vi.fn(),
+				handleFooter: vi.fn(),
+				handleZen: vi.fn(),
+				handleCompactTools: vi.fn(),
+				showInfo: vi.fn(),
+				getUiState: vi.fn().mockReturnValue({
+					zenMode: false,
+					cleanMode: "off",
+					footerMode: "ensemble",
+					compactTools: false,
+				}),
+			};
+
+			const handler = createUiCommandHandler(deps);
+			const ctx = createMockContext("/ui dedup soft", "dedup soft");
+
+			handler(ctx);
+
+			expect(deps.handleClean).toHaveBeenCalled();
+		});
+
+		it("safe 'guard' routes to guardian", async () => {
+			const { createSafetyCommandHandler } = await import(
+				"../src/tui/commands/grouped/safety-commands.js"
+			);
+
+			const deps = {
+				handleApprovals: vi.fn(),
+				handlePlanMode: vi.fn(),
+				handleGuardian: vi.fn(),
+				showInfo: vi.fn(),
+				getSafetyState: vi.fn().mockReturnValue({
+					approvalMode: "prompt",
+					planMode: false,
+					guardianEnabled: true,
+				}),
+			};
+
+			const handler = createSafetyCommandHandler(deps);
+			const ctx = createMockContext("/safe guard run", "guard run");
+
+			await handler(ctx);
+
+			expect(deps.handleGuardian).toHaveBeenCalled();
+		});
+
+		it("git 'd' routes to diff", async () => {
+			const { createGitCommandHandler } = await import(
+				"../src/tui/commands/grouped/git-commands.js"
+			);
+
+			const deps = {
+				handleDiff: vi.fn(),
+				handleReview: vi.fn(),
+				showInfo: vi.fn(),
+				runGitCommand: vi.fn(),
+			};
+
+			const handler = createGitCommandHandler(deps);
+			const ctx = createMockContext("/git d src/index.ts", "d src/index.ts");
+
+			await handler(ctx);
+
+			expect(deps.handleDiff).toHaveBeenCalled();
+		});
+
+		it("usage 'spend' routes to cost", async () => {
+			const { createUsageCommandHandler } = await import(
+				"../src/tui/commands/grouped/usage-commands.js"
+			);
+
+			const deps = {
+				handleCost: vi.fn(),
+				handleQuota: vi.fn(),
+				handleStats: vi.fn(),
+			};
+
+			const handler = createUsageCommandHandler(deps);
+			const ctx = createMockContext("/usage spend", "spend");
+
+			await handler(ctx);
+
+			expect(deps.handleCost).toHaveBeenCalled();
+		});
+	});
 });

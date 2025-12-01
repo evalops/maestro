@@ -273,18 +273,11 @@ export function createCommandRegistry({
 			handlers.shareSession,
 			createContext,
 		),
-		buildEntry(
-			{
-				name: "tools",
-				description: "Show available tools, failures, or clear logs",
-				usage: "/tools [list|failures|clear]",
-				tags: ["tools"],
-				aliases: ["t"],
-			},
-			withArgs("tools", ["t"]),
-			handlers.tools,
-			createContext,
-		),
+		// ═══════════════════════════════════════════════════════════════════
+		// STANDALONE COMMANDS - These are also available as grouped subcommands
+		// (e.g., /import is also /cfg import, /mcp is also /tools mcp)
+		// Keep for backwards compatibility and discoverability
+		// ═══════════════════════════════════════════════════════════════════
 		buildEntry(
 			{
 				name: "import",
