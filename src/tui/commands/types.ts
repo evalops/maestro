@@ -75,6 +75,7 @@ export interface CommandHandlers {
 	workflow(context: CommandExecutionContext): void | Promise<void>;
 	changes(context: CommandExecutionContext): void;
 	checkpoint(context: CommandExecutionContext): void;
+	memory(context: CommandExecutionContext): void;
 }
 
 export interface CommandEntry {

@@ -16,8 +16,8 @@ describe("Composers loader", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
-	it("returns empty array when no composers exist", () => {
-		const composers = loadComposers(testDir);
+	it("returns empty array when no composers exist (excluding builtin)", () => {
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toEqual([]);
 	});
 
@@ -35,7 +35,7 @@ describe("Composers loader", () => {
 			}),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("test-composer");
 		expect(composers[0].description).toBe("A test composer");
@@ -54,7 +54,7 @@ tools: [read, write, bash]
 `,
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("yaml-composer");
 		expect(composers[0].tools).toEqual(["read", "write", "bash"]);
@@ -70,7 +70,7 @@ tools: [read, write, bash]
 			}),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("unnamed");
 	});
@@ -91,7 +91,7 @@ tools: [read, write, bash]
 			}),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("enabled");
 	});
@@ -107,7 +107,7 @@ tools: [read, write, bash]
 			}),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].tools).toEqual(["read", "search", "write"]);
 	});
@@ -123,7 +123,7 @@ tools: [read, write, bash]
 			}),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].tools).toEqual(["read", "search", "write"]);
 	});
@@ -139,7 +139,7 @@ tools: [read, write, bash]
 			}),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].tools).toEqual(["read", "write"]);
 	});
@@ -155,7 +155,7 @@ tools: [read, write, bash]
 			}),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].tools).toBeUndefined();
 	});
@@ -186,7 +186,7 @@ tools: [read, write, bash]
 			return;
 		}
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		// The symlinked file should be rejected
 		expect(composers.find((c) => c.name === "secret")).toBeUndefined();
 	});
@@ -207,7 +207,7 @@ systemPrompt: |
 `,
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("multiline-composer");
 		expect(composers[0].systemPrompt).toContain("You are a helpful assistant.");
@@ -231,7 +231,7 @@ triggers:
 `,
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].triggers).toBeDefined();
 		expect(composers[0].triggers?.keywords).toEqual(["deploy", "release"]);
@@ -248,7 +248,7 @@ triggers:
 		writeFileSync(join(composersDir, "readme.md"), "# Readme");
 		writeFileSync(join(composersDir, "notes.txt"), "Some notes");
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("valid");
 	});
@@ -262,7 +262,7 @@ triggers:
 			JSON.stringify({ name: "valid" }),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("valid");
 	});
@@ -281,7 +281,7 @@ triggers:
 			JSON.stringify({ name: "valid" }),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("valid");
 	});
@@ -296,7 +296,7 @@ description: Uses .yml extension
 `,
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].name).toBe("yml-composer");
 	});
@@ -309,7 +309,7 @@ description: Uses .yml extension
 			JSON.stringify({ name: "no-desc" }),
 		);
 
-		const composers = loadComposers(testDir);
+		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
 		expect(composers[0].description).toBe("Custom composer: no-desc");
 	});

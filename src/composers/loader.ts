@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, extname, join, resolve } from "node:path";
+import { basename, extname, join } from "node:path";
 import yaml from "js-yaml";
 import { createLogger } from "../utils/logger.js";
+import { getBuiltinAgents } from "./builtin.js";
 import type { ComposerConfig, LoadedComposer } from "./types.js";
 
 const logger = createLogger("composers:loader");
@@ -125,15 +126,24 @@ function loadFromDirectory(
 	}
 }
 
-export function loadComposers(projectRoot?: string): LoadedComposer[] {
+export function loadComposers(
+	projectRoot?: string,
+	options?: { includeBuiltin?: boolean },
+): LoadedComposer[] {
+	const includeBuiltin = options?.includeBuiltin ?? true;
+
+	const builtinComposers = includeBuiltin ? getBuiltinAgents() : [];
 	const personalComposers = loadFromDirectory(PERSONAL_DIR, "personal");
 	const projectComposers = projectRoot
 		? loadFromDirectory(join(projectRoot, PROJECT_DIR_NAME), "project")
 		: [];
 
-	// Project composers override personal by name
+	// Priority: project > personal > builtin (later overrides earlier)
 	const composerMap = new Map<string, LoadedComposer>();
 
+	for (const composer of builtinComposers) {
+		composerMap.set(composer.name, composer);
+	}
 	for (const composer of personalComposers) {
 		composerMap.set(composer.name, composer);
 	}

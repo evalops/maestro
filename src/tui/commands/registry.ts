@@ -499,6 +499,44 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "memory",
+				description: "Cross-session memory for facts and learnings",
+				usage: "/memory [save|search|list|delete|stats|export|import|clear]",
+				tags: ["memory", "session"],
+				arguments: [
+					{
+						name: "subcommand",
+						type: "enum",
+						required: false,
+						description: "Memory subcommand",
+						choices: [
+							"save",
+							"search",
+							"list",
+							"delete",
+							"stats",
+							"export",
+							"import",
+							"clear",
+							"recent",
+						],
+					},
+				],
+				examples: [
+					"/memory",
+					"/memory save api-design Use REST conventions #rest",
+					"/memory search REST",
+					"/memory list",
+					"/memory list api-design",
+					"/memory stats",
+				],
+			},
+			withArgs("memory"),
+			handlers.memory,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "mention",
 				description: "Search files to mention (same as @ search)",
 				usage: "/mention <query>",

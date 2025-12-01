@@ -78,6 +78,7 @@ interface CommandRegistryOptions {
 	handleWorkflow: (context: CommandExecutionContext) => void | Promise<void>;
 	handleChanges: (context: CommandExecutionContext) => void;
 	handleCheckpoint: (context: CommandExecutionContext) => void;
+	handleMemory: (context: CommandExecutionContext) => void;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -143,6 +144,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			workflow: opts.handleWorkflow,
 			changes: opts.handleChanges,
 			checkpoint: opts.handleCheckpoint,
+			memory: opts.handleMemory,
 		},
 		createContext: opts.createContext,
 	});

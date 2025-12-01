@@ -188,11 +188,19 @@ export class ComposerManager extends EventEmitter {
 			newSystemPrompt = this.baseSystemPrompt;
 		}
 
-		// Filter tools if whitelist specified
+		// Filter tools based on whitelist and blocklist
 		let newTools = this.baseTools;
+
+		// Apply whitelist if specified (only allow listed tools)
 		if (composer.tools && composer.tools.length > 0) {
 			const allowedSet = new Set(composer.tools);
-			newTools = this.baseTools.filter((t) => allowedSet.has(t.name));
+			newTools = newTools.filter((t) => allowedSet.has(t.name));
+		}
+
+		// Apply blocklist if specified (remove denied tools)
+		if (composer.denyTools && composer.denyTools.length > 0) {
+			const denySet = new Set(composer.denyTools);
+			newTools = newTools.filter((t) => !denySet.has(t.name));
 		}
 
 		// Apply changes to agent

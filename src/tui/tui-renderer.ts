@@ -957,6 +957,7 @@ export class TuiRenderer {
 			handleWorkflow: (context) => this.handleWorkflowCommand(context),
 			handleChanges: (context) => this.handleChangesCommand(context),
 			handleCheckpoint: (context) => this.handleCheckpointCommand(context),
+			handleMemory: (context) => this.handleMemoryCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -1632,6 +1633,24 @@ export class TuiRenderer {
 				});
 			},
 		);
+	}
+
+	private handleMemoryCommand(context: CommandExecutionContext): void {
+		import("./commands/memory-handlers.js").then(({ handleMemoryCommand }) => {
+			handleMemoryCommand({
+				rawInput: context.rawInput,
+				cwd: process.cwd(),
+				sessionId: this.agent.state.session?.id,
+				addContent: (content) => {
+					this.chatContainer.addChild(new Markdown(content));
+				},
+				showError: (message) => this.notificationView.showError(message),
+				showInfo: (message) => this.notificationView.showInfo(message),
+				showSuccess: (message) =>
+					this.notificationView.showToast(message, "success"),
+				requestRender: () => this.ui.requestRender(),
+			});
+		});
 	}
 
 	private handleCleanCommand(context: CommandExecutionContext): void {

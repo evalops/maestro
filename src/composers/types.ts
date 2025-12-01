@@ -7,6 +7,22 @@ export interface ComposerTrigger {
 	keywords?: string[];
 }
 
+/** Permission level for tool access */
+export type PermissionLevel = "allow" | "ask" | "deny";
+
+/** Tool permission configuration */
+export interface ToolPermissions {
+	/** Default permission for unlisted tools */
+	default?: PermissionLevel;
+	/** Specific tool permissions (tool name -> permission) */
+	tools?: Record<string, PermissionLevel>;
+	/** Bash command patterns (pattern -> permission) */
+	bash?: Record<string, PermissionLevel>;
+}
+
+/** Agent mode - when this agent can be used */
+export type AgentMode = "primary" | "subagent" | "all";
+
 export interface ComposerConfig {
 	name: string;
 	description: string;
@@ -16,16 +32,30 @@ export interface ComposerConfig {
 	promptMode?: "prepend" | "append" | "replace";
 	/** Whitelist of tool names to allow (if omitted, all tools allowed) */
 	tools?: string[];
+	/** Blocklist of tool names to deny */
+	denyTools?: string[];
 	/** Model to use when this composer is active */
 	model?: string;
 	/** Triggers for auto-activation */
 	triggers?: ComposerTrigger;
 	/** Whether this composer is enabled */
 	enabled?: boolean;
+	/** Permission configuration */
+	permissions?: ToolPermissions;
+	/** Agent mode - primary, subagent, or all */
+	mode?: AgentMode;
+	/** Temperature for LLM */
+	temperature?: number;
+	/** Top-p for LLM */
+	topP?: number;
+	/** Color for UI display */
+	color?: string;
+	/** Whether this is a built-in agent */
+	builtIn?: boolean;
 }
 
 export interface LoadedComposer extends ComposerConfig {
-	source: "project" | "personal";
+	source: "project" | "personal" | "builtin";
 	filePath: string;
 }
 
