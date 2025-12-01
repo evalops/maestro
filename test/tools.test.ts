@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bashTool } from "../src/tools/bash.js";
 import { diffTool } from "../src/tools/diff.js";
 import { parseStatusOutput } from "../src/tools/diff.js";
@@ -798,6 +798,23 @@ describe("Composer Tools", () => {
 
 			expect(getTextOutput(result)).toContain("interpolated-value");
 			process.env.BASH_INTERPOLATE_TEST = undefined;
+		});
+
+		it("requires a plan for mutating commands when safe mode is enabled", async () => {
+			vi.resetModules();
+			process.env.COMPOSER_SAFE_MODE = "1";
+			process.env.COMPOSER_SAFE_REQUIRE_PLAN = "1";
+
+			const { bashTool: freshBashTool } = await import("../src/tools/bash.js");
+
+			await expect(
+				freshBashTool.execute("test-safe-mode", {
+					command: "echo hi > file.txt",
+				}),
+			).rejects.toThrow(/requires a plan/);
+
+			process.env.COMPOSER_SAFE_MODE = undefined;
+			process.env.COMPOSER_SAFE_REQUIRE_PLAN = undefined;
 		});
 	});
 

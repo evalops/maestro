@@ -30,6 +30,47 @@ describe("websearch tool", () => {
 		mockedCallExa.mockReset();
 	});
 
+	it("truncates long result text and marks truncation", async () => {
+		const longText = "a".repeat(4000);
+		mockedCallExa.mockResolvedValue({
+			requestId: "req-2",
+			resolvedSearchType: "auto",
+			costDollars: { total: 0.001 },
+			results: [
+				{
+					title: "Result",
+					url: "https://example.com",
+					text: longText,
+				},
+				{
+					title: "Result 2",
+					url: "https://example.com/2",
+					text: longText,
+				},
+				{
+					title: "Result 3",
+					url: "https://example.com/3",
+					text: longText,
+				},
+				{
+					title: "Result 4",
+					url: "https://example.com/4",
+					text: longText,
+				},
+			],
+		});
+
+		const result = await websearchTool.execute("call-long", {
+			query: "overflow",
+			numResults: 2,
+		});
+
+		const text = getText(result);
+		expect(text).toContain("[text truncated]");
+		expect(text).toContain("[truncated] Additional results omitted");
+		expect(result.details?.truncated).toBe(true);
+	});
+
 	it("formats context output and forwards advanced options", async () => {
 		mockedCallExa.mockResolvedValue({
 			requestId: "req-1",
@@ -75,6 +116,36 @@ describe("websearch tool", () => {
 describe("webfetch tool", () => {
 	beforeEach(() => {
 		mockedCallExa.mockReset();
+	});
+
+	it("truncates long content and caps total output", async () => {
+		const longText = "line\n".repeat(1500); // > MAX_CONTENT_CHARS
+		mockedCallExa.mockResolvedValue({
+			results: [
+				{
+					id: "1",
+					url: "https://docs",
+					title: "Docs",
+					text: longText,
+				},
+				{
+					id: "2",
+					url: "https://docs2",
+					title: "Docs2",
+					text: longText,
+				},
+			],
+			statuses: [],
+		});
+
+		const result = await webfetchTool.execute("call-long-fetch", {
+			urls: ["https://docs", "https://docs2"],
+		});
+
+		const text = getText(result);
+		expect(text).toContain("[content truncated]");
+		expect(text).toContain("Additional content omitted");
+		expect(result.details?.truncated).toBe(true);
 	});
 
 	it("supports highlight configuration", async () => {
