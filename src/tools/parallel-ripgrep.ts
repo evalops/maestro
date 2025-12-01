@@ -12,101 +12,94 @@ import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const RANGE_DETAIL_LIMIT = 200;
 
-const parallelRipgrepSchema = Type.Intersect([
-	Type.Object({
-		patterns: Type.Array(Type.String({ minLength: 1 }), {
-			minItems: 1,
-			maxItems: 10,
-			description: "Multiple regex patterns to search for",
-		}),
-		paths: pathSchema,
-		glob: globSchema,
-		ignoreCase: Type.Optional(
-			Type.Boolean({
-				description: "Perform case-insensitive search (-i) for all patterns.",
-				default: false,
-			}),
-		),
-		literal: Type.Optional(
-			Type.Boolean({
-				description: "Treat all patterns as literal strings (--fixed-strings).",
-				default: false,
-			}),
-		),
-		word: Type.Optional(
-			Type.Boolean({
-				description: "Match only whole words (-w).",
-				default: false,
-			}),
-		),
-		multiline: Type.Optional(
-			Type.Boolean({
-				description: "Enable multiline matching (--multiline).",
-				default: false,
-			}),
-		),
-		maxResults: Type.Optional(
-			Type.Integer({
-				description: "Stop after this many matches per pattern (-m).",
-				minimum: 1,
-				maximum: 1000,
-			}),
-		),
-		context: Type.Optional(
-			Type.Integer({
-				description: "Lines of context before/after each match (-C).",
-				minimum: 0,
-				maximum: 20,
-			}),
-		),
-		beforeContext: Type.Optional(
-			Type.Integer({
-				description: "Lines of context before each match (-B).",
-				minimum: 0,
-				maximum: 20,
-			}),
-		),
-		afterContext: Type.Optional(
-			Type.Integer({
-				description: "Lines of context after each match (-A).",
-				minimum: 0,
-				maximum: 20,
-			}),
-		),
-		cwd: Type.Optional(
-			Type.String({
-				description: "Working directory to run ripgrep from",
-				minLength: 1,
-			}),
-		),
-		includeHidden: Type.Optional(
-			Type.Boolean({
-				description: "Include hidden files (--hidden)",
-				default: false,
-			}),
-		),
-		useGitIgnore: Type.Optional(
-			Type.Boolean({
-				description: "Respect .gitignore (set false to pass --no-ignore)",
-				default: true,
-			}),
-		),
-		headLimit: Type.Optional(
-			Type.Integer({
-				description: "Limit number of line ranges returned",
-				minimum: 1,
-				maximum: RANGE_DETAIL_LIMIT,
-			}),
-		),
+const parallelRipgrepSchema = Type.Object({
+	patterns: Type.Array(Type.String({ minLength: 1 }), {
+		minItems: 1,
+		maxItems: 10,
+		description:
+			"Regex patterns to search for in parallel (1-10). Results are merged when matches overlap.",
 	}),
-	Type.Object(
-		{},
-		{
-			description:
-				"Runs ripgrep for multiple patterns in parallel and returns merged line ranges with content.",
-		},
+	paths: pathSchema,
+	glob: globSchema,
+	ignoreCase: Type.Optional(
+		Type.Boolean({
+			description: "Case-insensitive search (-i) for all patterns",
+			default: false,
+		}),
 	),
-]);
+	literal: Type.Optional(
+		Type.Boolean({
+			description:
+				"Treat patterns as literal strings, not regex (--fixed-strings)",
+			default: false,
+		}),
+	),
+	word: Type.Optional(
+		Type.Boolean({
+			description: "Match whole words only (-w)",
+			default: false,
+		}),
+	),
+	multiline: Type.Optional(
+		Type.Boolean({
+			description: "Enable multiline matching (--multiline)",
+			default: false,
+		}),
+	),
+	maxResults: Type.Optional(
+		Type.Integer({
+			description: "Max matches per pattern (-m)",
+			minimum: 1,
+			maximum: 1000,
+		}),
+	),
+	context: Type.Optional(
+		Type.Integer({
+			description: "Lines of context before and after each match (-C)",
+			minimum: 0,
+			maximum: 20,
+		}),
+	),
+	beforeContext: Type.Optional(
+		Type.Integer({
+			description: "Lines of context before each match (-B)",
+			minimum: 0,
+			maximum: 20,
+		}),
+	),
+	afterContext: Type.Optional(
+		Type.Integer({
+			description: "Lines of context after each match (-A)",
+			minimum: 0,
+			maximum: 20,
+		}),
+	),
+	cwd: Type.Optional(
+		Type.String({
+			description: "Working directory for ripgrep",
+			minLength: 1,
+		}),
+	),
+	includeHidden: Type.Optional(
+		Type.Boolean({
+			description: "Include hidden files (--hidden)",
+			default: false,
+		}),
+	),
+	useGitIgnore: Type.Optional(
+		Type.Boolean({
+			description: "Respect .gitignore (false to pass --no-ignore)",
+			default: true,
+		}),
+	),
+	headLimit: Type.Optional(
+		Type.Integer({
+			description: "Max number of merged line ranges to return",
+			minimum: 1,
+			maximum: RANGE_DETAIL_LIMIT,
+		}),
+	),
+});
 
 type RangeDetail = {
 	file: string;
@@ -217,7 +210,7 @@ export const parallelRipgrepTool = createTool<
 	name: "parallel_ripgrep",
 	label: "parallel_ripgrep",
 	description:
-		"Run multiple ripgrep searches in parallel, merge overlapping matches into line ranges, and return their content.",
+		"Search for multiple patterns simultaneously. Runs ripgrep queries in parallel, automatically merges overlapping line ranges, and returns consolidated content. Ideal for finding related code (e.g., function definitions AND usages) or multiple related patterns without duplicate context.",
 	schema: parallelRipgrepSchema,
 	async run(params, { signal, respond }) {
 		const {

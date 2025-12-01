@@ -12,7 +12,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	find: "Fast file search using fd with glob patterns. Respects .gitignore. Use for discovering files across large codebases.",
 	search: "Search files with ripgrep (pattern, glob, context options)",
 	parallel_ripgrep:
-		"Run multiple ripgrep patterns in parallel and return merged line ranges with content for fast context gathering.",
+		"Run multiple ripgrep searches in parallel, merge overlapping matches into line ranges, and return their content.",
 	diff: "Inspect git diffs (workspace, staged, or revision ranges)",
 	bash: "Execute bash commands (ls, grep, find, etc.)",
 	background_tasks:
