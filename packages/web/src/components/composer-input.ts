@@ -6,6 +6,94 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { ApiClient } from "../services/api-client.js";
 
+type SlashCommandHint = {
+	name: string;
+	description: string;
+	usage: string;
+	tags?: string[];
+};
+
+const SLASH_COMMANDS: SlashCommandHint[] = [
+	{
+		name: "help",
+		description: "List commands",
+		usage: "/help",
+		tags: ["support"],
+	},
+	{
+		name: "run",
+		description: "Run npm script",
+		usage: "/run <script>",
+		tags: ["automation"],
+	},
+	{
+		name: "diff",
+		description: "Show git diff",
+		usage: "/diff <path>",
+		tags: ["git"],
+	},
+	{
+		name: "review",
+		description: "Summarize git status/diff",
+		usage: "/review",
+		tags: ["git"],
+	},
+	{
+		name: "plan",
+		description: "Show saved plans",
+		usage: "/plan",
+		tags: ["planning"],
+	},
+	{
+		name: "model",
+		description: "Select model",
+		usage: "/model",
+		tags: ["session"],
+	},
+	{
+		name: "theme",
+		description: "Select theme",
+		usage: "/theme",
+		tags: ["ui"],
+	},
+	{
+		name: "config",
+		description: "Inspect config",
+		usage: "/config",
+		tags: ["config"],
+	},
+	{
+		name: "cost",
+		description: "Show usage/cost",
+		usage: "/cost",
+		tags: ["usage"],
+	},
+	{
+		name: "telemetry",
+		description: "Toggle telemetry",
+		usage: "/telemetry [on|off]",
+		tags: ["diagnostics"],
+	},
+	{
+		name: "approvals",
+		description: "Set approval mode",
+		usage: "/approvals [auto|prompt|fail]",
+		tags: ["safety"],
+	},
+	{
+		name: "queue",
+		description: "Manage prompt queue",
+		usage: "/queue [list|mode]",
+		tags: ["planning"],
+	},
+	{
+		name: "new",
+		description: "New session",
+		usage: "/new",
+		tags: ["session"],
+	},
+];
+
 @customElement("composer-input")
 export class ComposerInput extends LitElement {
 	static styles = css`
@@ -169,6 +257,75 @@ export class ComposerInput extends LitElement {
 			color: var(--accent-amber, #d4a012);
 		}
 
+		.slash-hint {
+			position: absolute;
+			bottom: 100%;
+			left: 0;
+			right: 0;
+			margin-bottom: 0.35rem;
+			padding: 0.5rem 0.75rem;
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--bg-secondary, #161b22);
+			box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+			border-radius: 4px;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			gap: 0.75rem;
+			font-family: var(--font-mono, monospace);
+			color: var(--text-primary, #e8e9eb);
+			z-index: 90;
+		}
+
+		.slash-hint .meta {
+			display: flex;
+			flex-direction: column;
+			gap: 0.2rem;
+			min-width: 0;
+		}
+
+		.slash-hint .name {
+			font-weight: 700;
+			font-size: 0.85rem;
+		}
+
+		.slash-hint .desc {
+			color: var(--text-secondary, #9ca3af);
+			font-size: 0.75rem;
+		}
+
+		.slash-hint .usage {
+			color: var(--text-tertiary, #6b7280);
+			font-size: 0.72rem;
+		}
+
+		.slash-hint .tags {
+			display: flex;
+			gap: 0.35rem;
+			flex-wrap: wrap;
+			font-size: 0.62rem;
+			color: var(--accent-amber, #d4a012);
+		}
+
+		.slash-hint .controls {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.35rem;
+			font-size: 0.65rem;
+			color: var(--text-tertiary, #6b7280);
+			white-space: nowrap;
+		}
+
+		.slash-hint kbd {
+			padding: 0.15rem 0.4rem;
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			font-family: inherit;
+			font-size: 0.62rem;
+			font-weight: 600;
+			color: var(--text-secondary, #8b8d91);
+		}
+
 		@media (max-width: 768px) {
 			textarea {
 				font-size: 16px;
@@ -189,6 +346,9 @@ export class ComposerInput extends LitElement {
 	@state() private showSuggestions = false;
 	@state() private suggestionIndex = 0;
 	@state() private filteredFiles: string[] = [];
+	@state() private slashHint: SlashCommandHint | null = null;
+	@state() private slashMatches: SlashCommandHint[] = [];
+	@state() private slashIndex = 0;
 
 	private maxLength = 10000;
 	private allFiles: string[] = [];
@@ -196,6 +356,7 @@ export class ComposerInput extends LitElement {
 	private mentionMatch: { start: number; end: number; query: string } | null =
 		null;
 	private checkMentionCounter = 0;
+	private slashDebounce?: number;
 
 	private async handleInput(e: Event) {
 		const target = e.target as HTMLTextAreaElement;
@@ -207,6 +368,7 @@ export class ComposerInput extends LitElement {
 
 		// Check for mention (awaited to prevent race conditions)
 		await this.checkMention(target);
+		this.updateSlashHint(target.value);
 	}
 
 	private async checkMention(textarea: HTMLTextAreaElement) {
@@ -265,7 +427,80 @@ export class ComposerInput extends LitElement {
 		this.mentionMatch = null;
 	}
 
+	private updateSlashHint(text: string) {
+		// Debounce to avoid flicker
+		if (this.slashDebounce) {
+			clearTimeout(this.slashDebounce);
+		}
+		this.slashDebounce = window.setTimeout(() => {
+			const trimmed = text.trim();
+			if (!trimmed.startsWith("/")) {
+				this.slashHint = null;
+				this.slashMatches = [];
+				this.slashIndex = 0;
+				return;
+			}
+			const [token] = trimmed.split(/\s+/);
+			const query = (token ?? "/").slice(1).toLowerCase();
+			const scored = SLASH_COMMANDS.map((cmd) => ({
+				cmd,
+				score: this.scoreCommand(cmd, query),
+			}))
+				.filter((s) => s.score > 0 || !query)
+				.sort(
+					(a, b) => b.score - a.score || a.cmd.name.localeCompare(b.cmd.name),
+				);
+			this.slashMatches = scored.map((s) => s.cmd);
+			this.slashIndex = 0;
+			this.slashHint = this.slashMatches[0] ?? null;
+		}, 20);
+	}
+
+	private cycleSlash(reverse: boolean) {
+		if (this.slashMatches.length === 0) {
+			this.updateSlashHint(this.value);
+			return;
+		}
+		if (reverse) {
+			this.slashIndex =
+				(this.slashIndex - 1 + this.slashMatches.length) %
+				this.slashMatches.length;
+		} else {
+			this.slashIndex = (this.slashIndex + 1) % this.slashMatches.length;
+		}
+		this.slashHint = this.slashMatches[this.slashIndex] ?? null;
+
+		// Replace current token with selected command
+		const parts = this.value.split(/\s+/);
+		if (parts.length > 0) {
+			parts[0] = `/${this.slashHint?.name ?? parts[0].slice(1)}`;
+			this.value = parts.join(" ");
+			this.requestUpdate();
+		}
+	}
+
+	private scoreCommand(cmd: SlashCommandHint, query: string): number {
+		let score = 0;
+		const q = query.trim();
+		const name = cmd.name.toLowerCase();
+		if (!q) return 1;
+		if (name === q) score += 100;
+		if (name.startsWith(q)) score += 70;
+		if (name.includes(q)) score += 20;
+		if (cmd.tags?.some((t) => t.includes(q))) score += 10;
+		return score;
+	}
+
 	private handleKeyDown(e: KeyboardEvent) {
+		// Slash cycling (Tab / Shift+Tab) if not showing file suggestions
+		if (!this.showSuggestions && this.value.trim().startsWith("/")) {
+			if (e.key === "Tab") {
+				e.preventDefault();
+				this.cycleSlash(e.shiftKey);
+				return;
+			}
+		}
+
 		if (this.showSuggestions) {
 			if (e.key === "ArrowDown") {
 				e.preventDefault();
@@ -383,6 +618,31 @@ export class ComposerInput extends LitElement {
 
 		return html`
 			<div class="input-container">
+				${
+					this.slashHint
+						? html`
+							<div class="slash-hint">
+								<div class="meta">
+									<div class="name">/${this.slashHint.name}</div>
+									<div class="desc">${this.slashHint.description}</div>
+									<div class="usage">${this.slashHint.usage}</div>
+									${
+										this.slashHint.tags?.length
+											? html`<div class="tags">
+												${this.slashHint.tags.map(
+													(tag) => html`<span>#${tag}</span>`,
+												)}
+										  </div>`
+											: null
+									}
+								</div>
+								<div class="controls">
+									<kbd>Tab</kbd><span>cycle</span>
+								</div>
+							</div>
+					  `
+						: null
+				}
 				${
 					this.showSuggestions
 						? html`
