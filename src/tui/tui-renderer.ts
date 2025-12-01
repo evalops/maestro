@@ -154,21 +154,13 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import {
 	getDefaultFramework,
-	getFrameworkSummary,
-	listFrameworks,
-	resolveFrameworkPreference,
-	setDefaultFramework,
-	setWorkspaceFramework,
 	validateFrameworkPreference,
 } from "../config/framework.js";
-import {
-	formatGuardianResult,
-	loadGuardianState,
-	runGuardian,
-	setGuardianEnabled,
-} from "../guardian/index.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
+import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
+import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
+import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
 import { ModalManager } from "./modal-manager.js";
 import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
@@ -1524,52 +1516,14 @@ export class TuiRenderer {
 	private async handleGuardianCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const arg = context.argumentText.trim().toLowerCase();
-		if (arg.startsWith("enable")) {
-			setGuardianEnabled(true);
-			this.notificationView.showToast(
-				"Composer Guardian enabled (Semgrep + secrets before commit/push).",
-				"success",
-			);
-			return;
-		}
-		if (arg.startsWith("disable")) {
-			setGuardianEnabled(false);
-			this.notificationView.showToast(
-				"Composer Guardian disabled. Set COMPOSER_GUARDIAN=1 to force on.",
-				"warn",
-			);
-			return;
-		}
-		if (arg.startsWith("status") || arg.startsWith("last")) {
-			const state = loadGuardianState();
-			const statusLine = `Guardian is ${state.enabled ? "enabled" : "disabled"}.`;
-			const runSummary = state.lastRun
-				? formatGuardianResult(state.lastRun)
-				: "No Guardian run recorded yet.";
-			this.chatContainer.addChild(
-				new Markdown([statusLine, "", runSummary].join("\n")),
-			);
-			this.ui.requestRender();
-			return;
-		}
-
-		const target = arg.includes("all") ? "all" : "staged";
-		const result = await runGuardian({
-			target,
-			trigger: "/guardian",
+		await guardianHandler(context, {
+			showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
+			showWarning: (msg) => this.notificationView.showToast(msg, "warn"),
+			showError: (msg) => this.notificationView.showError(msg),
+			addContent: (content) =>
+				this.chatContainer.addChild(new Markdown(content)),
+			requestRender: () => this.ui.requestRender(),
 		});
-		this.chatContainer.addChild(
-			new Markdown(`### Guardian\n${formatGuardianResult(result)}`),
-		);
-		this.ui.requestRender();
-		if (result.status === "failed" || result.status === "error") {
-			this.notificationView.showError(
-				"Composer Guardian found issues. Resolve findings or set COMPOSER_GUARDIAN=0 to override (not recommended).",
-			);
-		} else if (result.status === "passed") {
-			this.notificationView.showToast("Guardian passed.", "success");
-		}
 	}
 
 	private async handleWorkflowCommand(
@@ -1772,16 +1726,7 @@ export class TuiRenderer {
 	}
 
 	private handleOtelCommand(_context: CommandExecutionContext): void {
-		const status = getOpenTelemetryStatus();
-		const lines = [
-			`OpenTelemetry: ${status.enabled ? "enabled" : "disabled"} (${status.reason})`,
-			`Service: ${status.serviceName}`,
-			`SDK started: ${status.sdkStarted ? "yes" : "no"}`,
-			`OTLP endpoint: ${status.otlpEndpoint ?? "none"}`,
-			`Exporters: traces=${status.tracesExporter}, metrics=${status.metricsExporter}, logs=${status.logsExporter}`,
-			`Auto-instrumentation: ${status.autoInstrumentation ? "enabled (http/undici/fs/db)" : "disabled"}`,
-		];
-		this.notificationView.showInfo(lines.join("\n"));
+		otelHandler({ showInfo: (msg) => this.notificationView.showInfo(msg) });
 	}
 
 	private parseFooterMode(value: string): FooterMode | null {
@@ -2510,68 +2455,11 @@ export class TuiRenderer {
 	}
 
 	private handleFrameworkCommand(context: CommandExecutionContext): void {
-		const parts = context.argumentText
-			.split(/\s+/)
-			.map((p) => p.trim())
-			.filter(Boolean);
-
-		const flags = new Set(parts.filter((p) => p.startsWith("-")));
-		const value = parts.find((p) => !p.startsWith("-"));
-		const targetWorkspace = flags.has("--workspace") || flags.has("-w");
-		const targetLabel = targetWorkspace ? "workspace" : "user";
-
-		if (!value) {
-			const pref = resolveFrameworkPreference();
-			const current = pref.id ?? "none";
-			const scopeHint = targetWorkspace ? "(workspace) " : "";
-			this.notificationView.showInfo(
-				`${scopeHint}Default framework: ${current} (source: ${pref.source})`,
-			);
-			return;
-		}
-
-		const normalized = value.toLowerCase();
-		if (normalized === "list") {
-			const items = listFrameworks()
-				.map((f) => `${f.id} — ${f.summary}`)
-				.join("\n");
-			this.notificationView.showInfo(`Available frameworks:\n${items}`);
-			return;
-		}
-
-		const setter = targetWorkspace
-			? setWorkspaceFramework
-			: setDefaultFramework;
-
-		if (normalized === "none" || normalized === "off") {
-			try {
-				setter(null);
-				this.notificationView.showToast(
-					`Default framework cleared for ${targetLabel} scope`,
-					"success",
-				);
-			} catch (error) {
-				this.notificationView.showError(
-					error instanceof Error ? error.message : String(error),
-				);
-			}
-			return;
-		}
-
-		const info = getFrameworkSummary(normalized);
-		try {
-			setter(normalized);
-			const summary =
-				info?.summary ?? `Preferred framework set to ${normalized}.`;
-			this.notificationView.showToast(
-				`${summary} (scope: ${targetLabel})`,
-				"success",
-			);
-		} catch (error) {
-			this.notificationView.showError(
-				error instanceof Error ? error.message : String(error),
-			);
-		}
+		frameworkHandler(context, {
+			showInfo: (msg) => this.notificationView.showInfo(msg),
+			showError: (msg) => this.notificationView.showError(msg),
+			showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
+		});
 	}
 
 	private handleCommandsCommand(context: CommandExecutionContext): void {
