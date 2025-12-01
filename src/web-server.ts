@@ -33,7 +33,10 @@ import {
 } from "./providers/auth.js";
 import { recordApiRequest } from "./telemetry.js";
 import { codingTools, vscodeTools } from "./tools/index.js";
+import { createLogger } from "./utils/logger.js";
 import type { WebServerContext } from "./web/app-context.js";
+
+const logger = createLogger("web-server");
 import { WebActionApprovalService } from "./web/approval-service.js";
 import { clientToolService } from "./web/client-tools-service.js";
 import {
@@ -83,7 +86,7 @@ void initOpenTelemetry("composer-web-server");
 function registerCrashHandlers() {
 	process.on("uncaughtException", (error) => {
 		logError(error);
-		console.error("FATAL: Uncaught Exception. Exiting...");
+		logger.error("FATAL: Uncaught Exception. Exiting...");
 		process.exit(1);
 	});
 
@@ -93,7 +96,7 @@ function registerCrashHandlers() {
 				? reason
 				: new Error(`Unhandled Rejection: ${String(reason)}`),
 		);
-		console.error("FATAL: Unhandled Rejection. Exiting...");
+		logger.error("FATAL: Unhandled Rejection. Exiting...");
 		process.exit(1);
 	});
 }
@@ -162,20 +165,22 @@ if (
 	process.env.COMPOSER_TRUST_PROXY_HOPS &&
 	(Number.isNaN(rawProxyHops) || rawProxyHops < 1)
 ) {
-	console.warn(
-		`[composer:web] Invalid COMPOSER_TRUST_PROXY_HOPS value: "${process.env.COMPOSER_TRUST_PROXY_HOPS}". Must be a positive integer. Defaulting to 1.`,
+	logger.warn(
+		"Invalid COMPOSER_TRUST_PROXY_HOPS value. Must be a positive integer. Defaulting to 1.",
+		{ value: process.env.COMPOSER_TRUST_PROXY_HOPS },
 	);
 }
 
 if (trustProxyEnv && trustProxyEnv !== "true" && trustProxyEnv !== "false") {
-	console.warn(
-		`[composer:web] Invalid COMPOSER_TRUST_PROXY value: "${process.env.COMPOSER_TRUST_PROXY}". Must be "true" or "false". Defaulting to false.`,
+	logger.warn(
+		"Invalid COMPOSER_TRUST_PROXY value. Must be 'true' or 'false'. Defaulting to false.",
+		{ value: process.env.COMPOSER_TRUST_PROXY },
 	);
 }
 
 if (TRUST_PROXY) {
-	console.warn(
-		"[composer:web] COMPOSER_TRUST_PROXY is enabled. Ensure this server is behind a trusted reverse proxy.",
+	logger.warn(
+		"COMPOSER_TRUST_PROXY is enabled. Ensure this server is behind a trusted reverse proxy.",
 	);
 }
 
@@ -194,8 +199,8 @@ const sseLimiter = {
 };
 
 if (!WEB_API_KEY) {
-	console.warn(
-		"[composer:web] COMPOSER_WEB_API_KEY is not set; API routes are running without authentication",
+	logger.warn(
+		"COMPOSER_WEB_API_KEY is not set; API routes are running without authentication",
 	);
 }
 
@@ -251,7 +256,7 @@ function logMissingCredentialHints(provider: string): void {
 	} else if (provider === "openai") {
 		hints.push("Set OPENAI_API_KEY or configure ChatGPT/Codex credentials.");
 	}
-	console.warn(hints.join(" "));
+	logger.warn(hints.join(" "), { provider });
 }
 
 function buildMissingCredentialMessage(provider: string): string {
@@ -511,7 +516,7 @@ export async function startWebServer(port = 8080) {
 	process.on("SIGINT", async () => {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		console.log("\nSIGINT received. Starting graceful shutdown...");
+		logger.info("SIGINT received. Starting graceful shutdown...");
 		stopStatsCollection();
 
 		// Stop accepting new connections
@@ -520,9 +525,11 @@ export async function startWebServer(port = 8080) {
 		// Drain existing requests
 		const activeCount = requestTracker.getCount();
 		if (activeCount > 0) {
-			console.log(`Waiting for ${activeCount} active requests to complete...`);
+			logger.info("Waiting for active requests to complete...", {
+				activeCount,
+			});
 			drainTimeout = setTimeout(() => {
-				console.log("Drain timeout reached. Forcing shutdown...");
+				logger.warn("Drain timeout reached. Forcing shutdown...");
 				for (const socket of sockets) {
 					socket.destroy();
 				}
@@ -534,12 +541,12 @@ export async function startWebServer(port = 8080) {
 				if (requestTracker.getCount() === 0) {
 					if (drainInterval) clearInterval(drainInterval);
 					if (drainTimeout) clearTimeout(drainTimeout);
-					console.log("All requests completed. Exiting.");
+					logger.info("All requests completed. Exiting.");
 					process.exit(0);
 				}
 			}, 100);
 		} else {
-			console.log("No active requests. Exiting.");
+			logger.info("No active requests. Exiting.");
 			process.exit(0);
 		}
 	});

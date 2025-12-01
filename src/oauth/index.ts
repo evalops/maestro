@@ -168,7 +168,7 @@ export async function migrateOAuthCredentials(): Promise<void> {
 	// Migrate Anthropic credentials
 	const anthropicMigrated = await migrateAnthropicCredentials();
 	if (anthropicMigrated) {
-		console.log("Migrated Anthropic OAuth credentials to new format");
+		logger.info("Migrated Anthropic OAuth credentials to new format");
 	}
 
 	// Add more migrations here as needed

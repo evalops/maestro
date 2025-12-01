@@ -222,9 +222,12 @@ export class McpClientManager extends EventEmitter {
 		}
 
 		const delay = DEFAULT_RECONNECT_DELAY_MS * 2 ** attempt;
-		console.log(
-			`[mcp] Scheduling reconnect for ${config.name} in ${delay}ms (attempt ${attempt + 1}/${MAX_RECONNECT_ATTEMPTS})`,
-		);
+		logger.info("Scheduling reconnect", {
+			server: config.name,
+			delayMs: delay,
+			attempt: attempt + 1,
+			maxAttempts: MAX_RECONNECT_ATTEMPTS,
+		});
 
 		const timeoutId = setTimeout(async () => {
 			this.reconnectTimers.delete(config.name);

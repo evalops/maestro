@@ -423,6 +423,7 @@ class BackgroundTaskManager extends EventEmitter {
 	private settings: BackgroundTaskSettings;
 	private unsubscribeSettings?: () => void;
 	private secretCounter = 0;
+	private readonly logger = createLogger("background-tasks");
 
 	private ensureSettingsSubscription(): void {
 		if (this.unsubscribeSettings) {
@@ -473,10 +474,12 @@ class BackgroundTaskManager extends EventEmitter {
 		}
 		this.emit("notification", payload);
 		if (this.settings.notificationsEnabled) {
-			const prefix = payload.level === "warn" ? "[bg-task warn]" : "[bg-task]";
-			console.warn(
-				`${prefix} ${payload.taskId} ${payload.message}${payload.reason ? ` (${payload.reason})` : ""}`,
-			);
+			const logMethod =
+				payload.level === "warn" ? this.logger.warn : this.logger.info;
+			logMethod.call(this.logger, payload.message, {
+				taskId: payload.taskId,
+				reason: payload.reason,
+			});
 		}
 	}
 

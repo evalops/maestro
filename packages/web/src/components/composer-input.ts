@@ -355,7 +355,8 @@ export class ComposerInput extends LitElement {
 			}
 			const [token] = trimmed.split(/\s+/);
 			const query = (token ?? "/").slice(1).toLowerCase();
-			const scored = SLASH_COMMANDS.map((cmd) => ({
+			type ScoredCommand = { cmd: WebSlashCommand; score: number };
+			const scored: ScoredCommand[] = WEB_SLASH_COMMANDS.map((cmd) => ({
 				cmd,
 				score: this.scoreCommand(cmd, query),
 			}))

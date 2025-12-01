@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bench, describe } from "vitest";
 import { readTool } from "../../src/tools/read.js";
-import { createToolResponseBuilder } from "../../src/tools/tool-dsl.js";
 
 // Create temp directory for benchmarks
 const benchDir = join(tmpdir(), `composer-bench-${Date.now()}`);
@@ -51,16 +50,9 @@ describe("Read Tool Benchmarks", () => {
 	bench(
 		"read small file (~150 bytes)",
 		async () => {
-			const respond = createToolResponseBuilder<undefined>();
-			await readTool.run(
-				{
-					path: smallFile,
-					lineNumbers: true,
-					wrapInCodeFence: true,
-					withDiagnostics: false,
-				},
-				{ respond },
-			);
+			await readTool.execute("bench-small", {
+				path: smallFile,
+			});
 		},
 		{ iterations: 100 },
 	);
@@ -68,16 +60,9 @@ describe("Read Tool Benchmarks", () => {
 	bench(
 		"read medium file (~30KB)",
 		async () => {
-			const respond = createToolResponseBuilder<undefined>();
-			await readTool.run(
-				{
-					path: mediumFile,
-					lineNumbers: true,
-					wrapInCodeFence: true,
-					withDiagnostics: false,
-				},
-				{ respond },
-			);
+			await readTool.execute("bench-medium", {
+				path: mediumFile,
+			});
 		},
 		{ iterations: 50 },
 	);
@@ -85,17 +70,10 @@ describe("Read Tool Benchmarks", () => {
 	bench(
 		"read large file with limit (~1.2MB total, 2000 lines)",
 		async () => {
-			const respond = createToolResponseBuilder<undefined>();
-			await readTool.run(
-				{
-					path: largeFile,
-					lineNumbers: true,
-					wrapInCodeFence: true,
-					withDiagnostics: false,
-					limit: 2000,
-				},
-				{ respond },
-			);
+			await readTool.execute("bench-large", {
+				path: largeFile,
+				limit: 2000,
+			});
 		},
 		{ iterations: 20 },
 	);
@@ -103,18 +81,11 @@ describe("Read Tool Benchmarks", () => {
 	bench(
 		"read with pagination (offset + limit)",
 		async () => {
-			const respond = createToolResponseBuilder<undefined>();
-			await readTool.run(
-				{
-					path: largeFile,
-					offset: 10000,
-					limit: 500,
-					lineNumbers: true,
-					wrapInCodeFence: true,
-					withDiagnostics: false,
-				},
-				{ respond },
-			);
+			await readTool.execute("bench-paginated", {
+				path: largeFile,
+				offset: 10000,
+				limit: 500,
+			});
 		},
 		{ iterations: 50 },
 	);
@@ -122,18 +93,11 @@ describe("Read Tool Benchmarks", () => {
 	bench(
 		"read tail mode",
 		async () => {
-			const respond = createToolResponseBuilder<undefined>();
-			await readTool.run(
-				{
-					path: largeFile,
-					mode: "tail",
-					limit: 100,
-					lineNumbers: true,
-					wrapInCodeFence: true,
-					withDiagnostics: false,
-				},
-				{ respond },
-			);
+			await readTool.execute("bench-tail", {
+				path: largeFile,
+				mode: "tail",
+				limit: 100,
+			});
 		},
 		{ iterations: 50 },
 	);
@@ -141,33 +105,9 @@ describe("Read Tool Benchmarks", () => {
 	bench(
 		"read JSON file",
 		async () => {
-			const respond = createToolResponseBuilder<undefined>();
-			await readTool.run(
-				{
-					path: jsonFile,
-					lineNumbers: true,
-					wrapInCodeFence: true,
-					withDiagnostics: false,
-				},
-				{ respond },
-			);
-		},
-		{ iterations: 100 },
-	);
-
-	bench(
-		"read without line numbers",
-		async () => {
-			const respond = createToolResponseBuilder<undefined>();
-			await readTool.run(
-				{
-					path: mediumFile,
-					lineNumbers: false,
-					wrapInCodeFence: false,
-					withDiagnostics: false,
-				},
-				{ respond },
-			);
+			await readTool.execute("bench-json", {
+				path: jsonFile,
+			});
 		},
 		{ iterations: 100 },
 	);
@@ -177,14 +117,9 @@ describe("Read Tool - File Not Found", () => {
 	bench(
 		"handle missing file",
 		async () => {
-			const respond = createToolResponseBuilder<undefined>();
-			await readTool.run(
-				{
-					path: "/nonexistent/path/to/file.txt",
-					withDiagnostics: false,
-				},
-				{ respond },
-			);
+			await readTool.execute("bench-missing", {
+				path: "/nonexistent/path/to/file.txt",
+			});
 		},
 		{ iterations: 100 },
 	);

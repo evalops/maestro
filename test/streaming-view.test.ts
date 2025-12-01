@@ -1,3 +1,4 @@
+import type { Component } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "../src/agent/types.js";
 import { StreamingView } from "../src/tui/streaming-view.js";
@@ -39,12 +40,18 @@ const baseMessage: AssistantMessage = {
 };
 
 class MockContainer {
-	children: unknown[] = [];
-	addChild(child: unknown): void {
+	children: Component[] = [];
+	addChild(child: Component): void {
 		this.children.push(child);
 	}
-	removeChild(child: unknown): void {
+	removeChild(child: Component): void {
 		this.children = this.children.filter((c) => c !== child);
+	}
+	clear(): void {
+		this.children = [];
+	}
+	render(_width: number): string[] {
+		return [];
 	}
 }
 

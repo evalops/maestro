@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import {
 	afterAll,
+	afterEach,
 	beforeAll,
 	beforeEach,
 	describe,
@@ -38,7 +39,7 @@ afterAll(() => {
 });
 
 describe("guardian runner", () => {
-	const mockSpawn = spawnSync as unknown as vi.Mock;
+	const mockSpawn = spawnSync as ReturnType<typeof vi.fn>;
 
 	beforeEach(() => {
 		mockSpawn.mockImplementation(
