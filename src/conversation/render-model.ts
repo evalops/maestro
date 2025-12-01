@@ -34,27 +34,38 @@ export function collapseRepeatedLines(
 	let changed = false;
 
 	for (const line of lines) {
-		const isEmpty = line.length === 0;
+		const normalized = line.trimEnd();
+		const isEmpty = normalized.length === 0;
+		// Collapse runs of blank lines to a single blank.
+		if (
+			isEmpty &&
+			result.length > 0 &&
+			result[result.length - 1].length === 0
+		) {
+			changed = true;
+			continue;
+		}
 		const isDuplicate =
 			!isEmpty &&
 			(options.crossBlock
-				? recent.includes(line)
-				: recent.length > 0 && recent[recent.length - 1] === line);
+				? recent.includes(normalized)
+				: recent.length > 0 && recent[recent.length - 1] === normalized);
 
 		if (isDuplicate) {
+			// Also remove a trailing blank we may have kept right before the duplicate.
+			if (result.length > 0 && result[result.length - 1].length === 0) {
+				result.pop();
+			}
 			changed = true;
 			continue;
 		}
 
 		result.push(line);
 		if (!isEmpty) {
-			recent.push(line);
+			recent.push(normalized);
 			if (recent.length > windowSize) {
 				recent.shift();
 			}
-		} else if (windowSize === 1 && !options.crossBlock) {
-			// In soft mode (consecutive only), blank lines break the streak
-			recent.length = 0;
 		}
 	}
 

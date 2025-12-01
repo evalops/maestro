@@ -51,9 +51,16 @@ describe("render-model helpers", () => {
 	});
 
 	it("does not collapse non-consecutive duplicate lines", () => {
-		const input = "A\n\n\nA";
+		const input = "A\nB\nA";
 		const { text, changed } = collapseRepeatedLines(input);
 		expect(text).toBe(input);
 		expect(changed).toBe(false);
+	});
+
+	it("collapses duplicate blocks separated by blank lines", () => {
+		const input = ["Header", "", "Body", "", "Body", "Tail"].join("\n");
+		const { text, changed } = collapseRepeatedLines(input);
+		expect(text).toBe(["Header", "", "Body", "Tail"].join("\n"));
+		expect(changed).toBe(true);
 	});
 });
