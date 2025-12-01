@@ -1,12 +1,13 @@
 /**
- * Consolidated /undo command handler.
+ * Grouped /undo command handler.
  *
- * Combines: /undo, /redo, /checkpoint
+ * Combines: /undo, /checkpoint, /changes
  *
  * Usage:
  *   /undo                  - Undo last action
- *   /undo redo             - Redo last undone action
+ *   /undo [N]              - Undo last N actions
  *   /undo checkpoint [name] - Create/restore checkpoint
+ *   /undo changes          - List tracked file changes
  *   /undo history          - Show undo/redo history
  */
 
@@ -14,14 +15,12 @@ import type { CommandExecutionContext } from "../types.js";
 
 export interface UndoCommandDeps {
 	handleUndo: (ctx: CommandExecutionContext) => Promise<void> | void;
-	handleRedo: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleCheckpoint: (ctx: CommandExecutionContext) => Promise<void> | void;
+	handleChanges: (ctx: CommandExecutionContext) => void;
 	showInfo: (message: string) => void;
 	getUndoState: () => {
 		canUndo: boolean;
-		canRedo: boolean;
 		undoCount: number;
-		redoCount: number;
 		checkpoints: string[];
 	};
 }
@@ -46,11 +45,6 @@ export function createUndoCommandHandler(deps: UndoCommandDeps) {
 				await deps.handleUndo(ctx);
 				break;
 
-			case "redo":
-			case "forward":
-				await deps.handleRedo(rewriteContext("redo"));
-				break;
-
 			case "checkpoint":
 			case "save":
 			case "snap":
@@ -58,8 +52,19 @@ export function createUndoCommandHandler(deps: UndoCommandDeps) {
 				await deps.handleCheckpoint(rewriteContext("checkpoint"));
 				break;
 
+			case "changes":
+			case "files":
+			case "tracked":
+				deps.handleChanges({
+					...ctx,
+					rawInput: `/changes ${args.slice(1).join(" ")}`,
+					argumentText: args.slice(1).join(" "),
+				});
+				break;
+
 			case "history":
 			case "list":
+			case "status":
 				showUndoHistory(deps);
 				break;
 
@@ -68,8 +73,16 @@ export function createUndoCommandHandler(deps: UndoCommandDeps) {
 				break;
 
 			default:
+				// If argument is a number, treat as undo N
+				if (/^\d+$/.test(subcommand)) {
+					await deps.handleUndo({
+						...ctx,
+						rawInput: `/undo ${subcommand}`,
+						argumentText: subcommand,
+					});
+				}
 				// If argument looks like a checkpoint name, treat as checkpoint restore
-				if (args[0] && !args[0].startsWith("-")) {
+				else if (args[0] && !args[0].startsWith("-")) {
 					await deps.handleCheckpoint({
 						...ctx,
 						rawInput: `/checkpoint restore ${ctx.argumentText}`,
@@ -90,23 +103,23 @@ function showUndoHistory(deps: UndoCommandDeps): void {
 			? state.checkpoints.map((c) => `  - ${c}`).join("\n")
 			: "  (none)";
 
-	deps.showInfo(`Undo/Redo History:
-  Can Undo: ${state.canUndo ? "yes" : "no"} (${state.undoCount} actions)
-  Can Redo: ${state.canRedo ? "yes" : "no"} (${state.redoCount} actions)
+	deps.showInfo(`Undo Status:
+  Can Undo: ${state.canUndo ? "yes" : "no"} (${state.undoCount} tracked changes)
 
 Checkpoints:
 ${checkpointList}
 
-Use /undo or /undo redo to navigate.`);
+Use /undo or /undo <N> to revert changes.`);
 }
 
 function showUndoHelp(ctx: CommandExecutionContext): void {
 	ctx.showInfo(`Undo Commands:
   /undo                  Undo last action
-  /undo redo             Redo last undone action
+  /undo <N>              Undo last N actions
   /undo checkpoint [name] Create named checkpoint
   /undo checkpoint restore <name> Restore checkpoint
-  /undo history          Show undo/redo history
+  /undo changes          List tracked file changes
+  /undo history          Show undo status and checkpoints
 
-Direct shortcuts still work: /redo, /checkpoint`);
+Direct shortcuts still work: /checkpoint, /changes`);
 }

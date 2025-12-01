@@ -1,7 +1,8 @@
 /**
- * Consolidated /diag command handler.
+ * Grouped /diag command handler.
  *
- * Combines: /status, /about, /context, /stats, /background, /diag
+ * Combines: /status, /about, /context, /stats, /background, /diag,
+ *           /telemetry, /training, /otel, /lsp, /mcp, /config
  * Adds: pii, access, audit inspection
  *
  * Usage:
@@ -12,7 +13,12 @@
  *   /diag stats           - Combined status and cost overview
  *   /diag background      - Background task configuration
  *   /diag lsp             - LSP server diagnostics
+ *   /diag mcp             - MCP server status
  *   /diag keys            - API key configuration status
+ *   /diag telemetry       - Telemetry status and controls
+ *   /diag training        - Model training preference
+ *   /diag otel            - OpenTelemetry runtime config
+ *   /diag config          - Configuration validation
  *   /diag pii [test]      - PII detection patterns and testing
  *   /diag access [path]   - Directory access rules and testing
  *   /diag audit [filter]  - Audit log inspection (enterprise)
@@ -24,8 +30,15 @@ export interface DiagCommandDeps {
 	handleStatus: () => void;
 	handleAbout: () => void;
 	handleContext: () => void;
+	handleStats: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleBackground: (ctx: CommandExecutionContext) => void;
 	handleDiagnostics: (ctx: CommandExecutionContext) => void;
+	handleTelemetry: (ctx: CommandExecutionContext) => void;
+	handleTraining: (ctx: CommandExecutionContext) => void;
+	handleOtel: (ctx: CommandExecutionContext) => void;
+	handleConfig: (ctx: CommandExecutionContext) => void | Promise<void>;
+	handleLsp: (ctx: CommandExecutionContext) => void | Promise<void>;
+	handleMcp: (ctx: CommandExecutionContext) => void;
 	showInfo: (message: string) => void;
 	isDatabaseConfigured: () => boolean;
 }
@@ -56,7 +69,7 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 
 			case "stats":
 			case "overview":
-				deps.handleStatus(); // Stats redirects to status
+				await deps.handleStats(ctx);
 				break;
 
 			case "background":
@@ -69,11 +82,15 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 				break;
 
 			case "lsp":
-				deps.handleDiagnostics({
+				await deps.handleLsp({
 					...ctx,
-					rawInput: "/diag lsp",
-					argumentText: "lsp",
+					rawInput: `/lsp ${args.slice(1).join(" ")}`,
+					argumentText: args.slice(1).join(" "),
 				});
+				break;
+
+			case "mcp":
+				deps.handleMcp(ctx);
 				break;
 
 			case "keys":
@@ -83,6 +100,34 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 					rawInput: "/diag keys",
 					argumentText: "keys",
 				});
+				break;
+
+			case "telemetry":
+			case "telem":
+				deps.handleTelemetry({
+					...ctx,
+					rawInput: `/telemetry ${args.slice(1).join(" ")}`,
+					argumentText: args.slice(1).join(" "),
+				});
+				break;
+
+			case "training":
+			case "train":
+				deps.handleTraining({
+					...ctx,
+					rawInput: `/training ${args.slice(1).join(" ")}`,
+					argumentText: args.slice(1).join(" "),
+				});
+				break;
+
+			case "otel":
+			case "opentelemetry":
+				deps.handleOtel(ctx);
+				break;
+
+			case "config":
+			case "cfg":
+				await deps.handleConfig(ctx);
 				break;
 
 			case "pii":
@@ -128,8 +173,13 @@ function showDiagHelp(ctx: CommandExecutionContext): void {
   /diag context         Token usage visualization
   /diag stats           Combined status and cost
   /diag background      Background task config
-  /diag lsp             LSP server diagnostics
+  /diag lsp [cmd]       LSP server (status|start|stop|restart|detect)
+  /diag mcp             MCP server status
   /diag keys            API key status
+  /diag telemetry [cmd] Telemetry (status|on|off|reset)
+  /diag training [cmd]  Training preference (status|on|off|reset)
+  /diag otel            OpenTelemetry runtime config
+  /diag config          Configuration validation
   /diag pii [cmd]       PII detection (patterns|test <text>)
   /diag access [cmd]    Directory access (safe|restricted|test <path>)
   /diag audit           Audit log status (enterprise)

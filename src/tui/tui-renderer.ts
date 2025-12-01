@@ -3795,10 +3795,24 @@ export class TuiRenderer {
 					handleStatus: () => this.diagnosticsView.handleStatusCommand(),
 					handleAbout: () => this.aboutView.handleAboutCommand(),
 					handleContext: () => this.handleContextCommand(context),
+					handleStats: (ctx: CommandExecutionContext) =>
+						this.handleStatsCommand(ctx),
 					handleBackground: (ctx: CommandExecutionContext) =>
 						this.handleBackgroundCommand(ctx),
 					handleDiagnostics: (ctx: CommandExecutionContext) =>
 						this.diagnosticsView.handleDiagnosticsCommand(ctx.rawInput),
+					handleTelemetry: (ctx: CommandExecutionContext) =>
+						this.telemetryView.handleTelemetryCommand(ctx),
+					handleTraining: (ctx: CommandExecutionContext) =>
+						this.trainingView.handleTrainingCommand(ctx),
+					handleOtel: (ctx: CommandExecutionContext) =>
+						this.handleOtelCommand(ctx),
+					handleConfig: (ctx: CommandExecutionContext) =>
+						this.configView.handleConfigCommand(ctx),
+					handleLsp: (ctx: CommandExecutionContext) =>
+						this.lspView.handleLspCommand(ctx.rawInput),
+					handleMcp: (ctx: CommandExecutionContext) =>
+						this.handleMcpCommand(ctx),
 					showInfo: (msg: string) => context.showInfo(msg),
 					isDatabaseConfigured: () => false, // PII/Access/Audit enterprise features
 				});
@@ -3922,17 +3936,14 @@ export class TuiRenderer {
 				const handler = createUndoCommandHandler({
 					handleUndo: (ctx: CommandExecutionContext) =>
 						this.handleEnhancedUndoCommand(ctx),
-					handleRedo: () => {
-						context.showInfo("Redo is not yet implemented.");
-					},
 					handleCheckpoint: (ctx: CommandExecutionContext) =>
 						this.handleCheckpointCommand(ctx),
+					handleChanges: (ctx: CommandExecutionContext) =>
+						this.handleChangesCommand(ctx),
 					showInfo: (msg: string) => context.showInfo(msg),
 					getUndoState: () => ({
-						canUndo: false, // TODO: Check actual undo state
-						canRedo: false,
-						undoCount: 0,
-						redoCount: 0,
+						canUndo: true, // Actual state tracked in undo-handlers
+						undoCount: 0, // Use /undo changes for details
 						checkpoints: [],
 					}),
 				});
