@@ -139,6 +139,27 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "thinking",
+				description: "Adjust reasoning level for supported models",
+				usage: "/thinking [off|minimal|low|medium|high]",
+				tags: ["session"],
+				arguments: [
+					{
+						name: "level",
+						type: "enum",
+						required: false,
+						description: "Thinking level to set",
+						choices: ["off", "minimal", "low", "medium", "high"],
+					},
+				],
+				examples: ["/thinking", "/thinking medium", "/thinking off"],
+			},
+			withArgs("thinking"),
+			handlers.thinking,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "model",
 				description: "Select model (opens selector UI)",
 				usage: "/model",

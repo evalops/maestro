@@ -89,8 +89,12 @@ export async function createSandbox(
 	let mode: SandboxMode = options.mode ?? "none";
 	let dockerConfig = options.docker;
 
-	// Check environment variable
-	const envMode = process.env.COMPOSER_SANDBOX_MODE as SandboxMode | undefined;
+	// Check environment variable (handle "undefined" string from process.env assignment)
+	const envModeRaw = process.env.COMPOSER_SANDBOX_MODE;
+	const envMode =
+		envModeRaw && envModeRaw !== "undefined"
+			? (envModeRaw as SandboxMode)
+			: undefined;
 	if (!options.mode && envMode) {
 		mode = envMode;
 	}

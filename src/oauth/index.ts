@@ -6,6 +6,11 @@ import {
 	refreshAnthropicToken,
 } from "./anthropic.js";
 import {
+	loginOpenAI,
+	migrateOpenAICredentials,
+	refreshOpenAIToken,
+} from "./openai.js";
+import {
 	type OAuthCredentials,
 	listOAuthProviders as listOAuthProvidersFromStorage,
 	loadOAuthCredentials,
@@ -43,7 +48,7 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 			id: "openai",
 			name: "OpenAI",
 			description: "ChatGPT Plus subscription",
-			available: false, // TODO: Implement
+			available: true,
 		},
 		{
 			id: "github-copilot",
@@ -70,6 +75,7 @@ export async function login(
 		mode?: AnthropicLoginMode;
 		onAuthUrl: (url: string) => void;
 		onPromptCode: () => Promise<string>;
+		onStatus?: (status: string) => void;
 	},
 ): Promise<void> {
 	switch (provider) {
@@ -81,7 +87,8 @@ export async function login(
 			);
 			break;
 		case "openai":
-			throw new Error("OpenAI OAuth is not yet implemented");
+			await loginOpenAI(options.onAuthUrl, options.onStatus);
+			break;
 		case "github-copilot":
 			throw new Error("GitHub Copilot OAuth is not yet implemented");
 		default:
@@ -117,7 +124,11 @@ export async function refreshToken(
 			);
 			break;
 		case "openai":
-			throw new Error("OpenAI OAuth is not yet implemented");
+			newCredentials = await refreshOpenAIToken(
+				credentials.refresh,
+				credentials.metadata,
+			);
+			break;
 		case "github-copilot":
 			throw new Error("GitHub Copilot OAuth is not yet implemented");
 		default:
@@ -169,6 +180,12 @@ export async function migrateOAuthCredentials(): Promise<void> {
 	const anthropicMigrated = await migrateAnthropicCredentials();
 	if (anthropicMigrated) {
 		logger.info("Migrated Anthropic OAuth credentials to new format");
+	}
+
+	// Migrate OpenAI credentials
+	const openaiMigrated = await migrateOpenAICredentials();
+	if (openaiMigrated) {
+		logger.info("Migrated OpenAI OAuth credentials to new format");
 	}
 
 	// Add more migrations here as needed

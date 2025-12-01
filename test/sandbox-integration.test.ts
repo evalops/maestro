@@ -162,19 +162,19 @@ describe("Sandbox", () => {
 			const configPath = join(testDir, ".composer", "sandbox.json");
 			writeFileSync(configPath, JSON.stringify({ mode: "local" }));
 
-			try {
-				// Clear env var to ensure config is used
-				const originalEnv = process.env.COMPOSER_SANDBOX_MODE;
-				process.env.COMPOSER_SANDBOX_MODE = undefined;
+			// Save and clear env var to ensure config is used
+			const originalEnv = process.env.COMPOSER_SANDBOX_MODE;
+			process.env.COMPOSER_SANDBOX_MODE = undefined;
 
+			try {
 				const sandbox = await createSandbox({ cwd: testDir });
 				expect(sandbox).toBeInstanceOf(LocalSandbox);
 				await sandbox?.dispose();
-
+			} finally {
+				// Restore env var
 				if (originalEnv !== undefined) {
 					process.env.COMPOSER_SANDBOX_MODE = originalEnv;
 				}
-			} finally {
 				rmSync(testDir, { recursive: true, force: true });
 			}
 		});
