@@ -1073,4 +1073,89 @@ describe("Grouped Command Handlers", () => {
 			expect(deps.handleLogin).toHaveBeenCalled();
 		});
 	});
+
+	describe("Shared Utilities", () => {
+		it("parseSubcommand extracts subcommand and provides rewriteContext", async () => {
+			const { parseSubcommand } = await import(
+				"../src/tui/commands/grouped/utils.js"
+			);
+
+			const ctx = createMockContext("/test foo bar baz", "foo bar baz");
+			const { subcommand, args, rewriteContext, customContext } =
+				parseSubcommand(ctx, "default");
+
+			expect(subcommand).toBe("foo");
+			expect(args).toEqual(["foo", "bar", "baz"]);
+
+			const rewritten = rewriteContext("cmd");
+			expect(rewritten.rawInput).toBe("/cmd bar baz");
+			expect(rewritten.argumentText).toBe("bar baz");
+
+			const custom = customContext("/custom input", "input");
+			expect(custom.rawInput).toBe("/custom input");
+			expect(custom.argumentText).toBe("input");
+		});
+
+		it("parseSubcommand uses default when argumentText is empty", async () => {
+			const { parseSubcommand } = await import(
+				"../src/tui/commands/grouped/utils.js"
+			);
+
+			const ctx = createMockContext("/test", "");
+			const { subcommand } = parseSubcommand(ctx, "default");
+
+			expect(subcommand).toBe("default");
+		});
+
+		it("isHelpRequest recognizes help aliases", async () => {
+			const { isHelpRequest } = await import(
+				"../src/tui/commands/grouped/utils.js"
+			);
+
+			expect(isHelpRequest("help")).toBe(true);
+			expect(isHelpRequest("?")).toBe(true);
+			expect(isHelpRequest("-h")).toBe(true);
+			expect(isHelpRequest("--help")).toBe(true);
+			expect(isHelpRequest("status")).toBe(false);
+		});
+
+		it("isNumericArg validates numeric strings", async () => {
+			const { isNumericArg } = await import(
+				"../src/tui/commands/grouped/utils.js"
+			);
+
+			expect(isNumericArg("123")).toBe(true);
+			expect(isNumericArg("0")).toBe(true);
+			expect(isNumericArg("abc")).toBe(false);
+			expect(isNumericArg("12abc")).toBe(false);
+			expect(isNumericArg("")).toBe(false);
+		});
+
+		it("isSessionId validates session IDs", async () => {
+			const { isSessionId } = await import(
+				"../src/tui/commands/grouped/utils.js"
+			);
+
+			expect(isSessionId("abc123")).toBe(true);
+			expect(isSessionId("abc-123-def")).toBe(true);
+			expect(isSessionId("12345")).toBe(true);
+			expect(isSessionId("ABCDEF")).toBe(true);
+			expect(isSessionId("new")).toBe(false);
+			expect(isSessionId("xyz!")).toBe(false);
+		});
+
+		it("matchesAlias checks against alias arrays", async () => {
+			const { matchesAlias, COMMON_ALIASES } = await import(
+				"../src/tui/commands/grouped/utils.js"
+			);
+
+			expect(matchesAlias("status", COMMON_ALIASES.status)).toBe(true);
+			expect(matchesAlias("st", COMMON_ALIASES.status)).toBe(true);
+			expect(matchesAlias("info", COMMON_ALIASES.status)).toBe(true);
+			expect(matchesAlias("other", COMMON_ALIASES.status)).toBe(false);
+
+			expect(matchesAlias("on", COMMON_ALIASES.enable)).toBe(true);
+			expect(matchesAlias("off", COMMON_ALIASES.disable)).toBe(true);
+		});
+	});
 });

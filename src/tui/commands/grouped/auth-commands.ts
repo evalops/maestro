@@ -11,6 +11,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, parseSubcommand } from "./utils.js";
 
 export interface AuthCommandDeps {
 	handleLogin: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -27,14 +28,10 @@ export function createAuthCommandHandler(deps: AuthCommandDeps) {
 	return async function handleAuthCommand(
 		ctx: CommandExecutionContext,
 	): Promise<void> {
-		const args = ctx.argumentText.trim().split(/\s+/);
-		const subcommand = args[0]?.toLowerCase() || "status";
-
-		const rewriteContext = (cmd: string): CommandExecutionContext => ({
-			...ctx,
-			rawInput: `/${cmd} ${args.slice(1).join(" ")}`.trim(),
-			argumentText: args.slice(1).join(" "),
-		});
+		const { subcommand, rewriteContext, customContext } = parseSubcommand(
+			ctx,
+			"status",
+		);
 
 		switch (subcommand) {
 			case "status":
@@ -53,21 +50,18 @@ export function createAuthCommandHandler(deps: AuthCommandDeps) {
 				await deps.handleLogout(rewriteContext("logout"));
 				break;
 
-			case "help":
-				showAuthHelp(ctx);
-				break;
-
 			default:
+				if (isHelpRequest(subcommand)) {
+					showAuthHelp(ctx);
+				}
 				// If it looks like a login mode, pass to login
-				if (
+				else if (
 					["pro", "console", "max"].includes(subcommand) ||
 					subcommand.includes(":")
 				) {
-					await deps.handleLogin({
-						...ctx,
-						rawInput: `/login ${ctx.argumentText}`,
-						argumentText: ctx.argumentText,
-					});
+					await deps.handleLogin(
+						customContext(`/login ${ctx.argumentText}`, ctx.argumentText),
+					);
 				} else {
 					ctx.showError(`Unknown subcommand: ${subcommand}`);
 					showAuthHelp(ctx);

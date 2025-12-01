@@ -41,3 +41,13 @@ export {
 	createUndoCommandHandler,
 	type UndoCommandDeps,
 } from "./undo-commands.js";
+
+export {
+	parseSubcommand,
+	isHelpRequest,
+	isNumericArg,
+	isSessionId,
+	matchesAlias,
+	COMMON_ALIASES,
+	type ParsedSubcommand,
+} from "./utils.js";

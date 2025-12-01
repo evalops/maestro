@@ -12,6 +12,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, isNumericArg, parseSubcommand } from "./utils.js";
 
 export interface UndoCommandDeps {
 	handleUndo: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -29,14 +30,10 @@ export function createUndoCommandHandler(deps: UndoCommandDeps) {
 	return async function handleUndoCommand(
 		ctx: CommandExecutionContext,
 	): Promise<void> {
-		const args = ctx.argumentText.trim().split(/\s+/);
-		const subcommand = args[0]?.toLowerCase() || "undo";
-
-		const rewriteContext = (cmd: string): CommandExecutionContext => ({
-			...ctx,
-			rawInput: `/${cmd} ${args.slice(1).join(" ")}`.trim(),
-			argumentText: args.slice(1).join(" "),
-		});
+		const { subcommand, args, rewriteContext, customContext } = parseSubcommand(
+			ctx,
+			"undo",
+		);
 
 		switch (subcommand) {
 			case "undo":
@@ -55,11 +52,12 @@ export function createUndoCommandHandler(deps: UndoCommandDeps) {
 			case "changes":
 			case "files":
 			case "tracked":
-				deps.handleChanges({
-					...ctx,
-					rawInput: `/changes ${args.slice(1).join(" ")}`,
-					argumentText: args.slice(1).join(" "),
-				});
+				deps.handleChanges(
+					customContext(
+						`/changes ${args.slice(1).join(" ")}`,
+						args.slice(1).join(" "),
+					),
+				);
 				break;
 
 			case "history":
@@ -68,26 +66,24 @@ export function createUndoCommandHandler(deps: UndoCommandDeps) {
 				showUndoHistory(deps);
 				break;
 
-			case "help":
-				showUndoHelp(ctx);
-				break;
-
 			default:
+				if (isHelpRequest(subcommand)) {
+					showUndoHelp(ctx);
+				}
 				// If argument is a number, treat as undo N
-				if (/^\d+$/.test(subcommand)) {
-					await deps.handleUndo({
-						...ctx,
-						rawInput: `/undo ${subcommand}`,
-						argumentText: subcommand,
-					});
+				else if (isNumericArg(subcommand)) {
+					await deps.handleUndo(
+						customContext(`/undo ${subcommand}`, subcommand),
+					);
 				}
 				// If argument looks like a checkpoint name, treat as checkpoint restore
 				else if (args[0] && !args[0].startsWith("-")) {
-					await deps.handleCheckpoint({
-						...ctx,
-						rawInput: `/checkpoint restore ${ctx.argumentText}`,
-						argumentText: `restore ${ctx.argumentText}`,
-					});
+					await deps.handleCheckpoint(
+						customContext(
+							`/checkpoint restore ${ctx.argumentText}`,
+							`restore ${ctx.argumentText}`,
+						),
+					);
 				} else {
 					ctx.showError(`Unknown subcommand: ${subcommand}`);
 					showUndoHelp(ctx);

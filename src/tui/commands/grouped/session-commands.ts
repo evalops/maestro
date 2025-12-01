@@ -19,6 +19,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, isSessionId, parseSubcommand } from "./utils.js";
 
 export interface SessionCommandDeps {
 	handleSessionInfo: (ctx: CommandExecutionContext) => void;
@@ -36,15 +37,10 @@ export function createSessionCommandHandler(deps: SessionCommandDeps) {
 	return async function handleSessionCommand(
 		ctx: CommandExecutionContext,
 	): Promise<void> {
-		const args = ctx.argumentText.trim().split(/\s+/);
-		const subcommand = args[0]?.toLowerCase() || "info";
-
-		// Rewrite context for subcommand handlers that expect original format
-		const rewriteContext = (prefix: string): CommandExecutionContext => ({
-			...ctx,
-			rawInput: `/${prefix} ${args.slice(1).join(" ")}`.trim(),
-			argumentText: args.slice(1).join(" "),
-		});
+		const { subcommand, args, rewriteContext, customContext } = parseSubcommand(
+			ctx,
+			"info",
+		);
 
 		switch (subcommand) {
 			case "info":
@@ -67,11 +63,12 @@ export function createSessionCommandHandler(deps: SessionCommandDeps) {
 				break;
 
 			case "load":
-				await deps.handleSessionsList({
-					...ctx,
-					rawInput: `/sessions load ${args.slice(1).join(" ")}`,
-					argumentText: `load ${args.slice(1).join(" ")}`,
-				});
+				await deps.handleSessionsList(
+					customContext(
+						`/sessions load ${args.slice(1).join(" ")}`,
+						`load ${args.slice(1).join(" ")}`,
+					),
+				);
 				break;
 
 			case "branch":
@@ -92,43 +89,37 @@ export function createSessionCommandHandler(deps: SessionCommandDeps) {
 
 			case "favorite":
 			case "fav":
-				await deps.handleSessionsList({
-					...ctx,
-					rawInput: "/sessions favorite",
-					argumentText: "favorite",
-				});
+				await deps.handleSessionsList(
+					customContext("/sessions favorite", "favorite"),
+				);
 				break;
 
 			case "unfavorite":
 			case "unfav":
-				await deps.handleSessionsList({
-					...ctx,
-					rawInput: "/sessions unfavorite",
-					argumentText: "unfavorite",
-				});
+				await deps.handleSessionsList(
+					customContext("/sessions unfavorite", "unfavorite"),
+				);
 				break;
 
 			case "summary":
 			case "summarize":
-				deps.handleSessionInfo({
-					...ctx,
-					rawInput: `/session summary ${args.slice(1).join(" ")}`,
-					argumentText: `summary ${args.slice(1).join(" ")}`,
-				});
-				break;
-
-			case "help":
-				showSessionHelp(ctx);
+				deps.handleSessionInfo(
+					customContext(
+						`/session summary ${args.slice(1).join(" ")}`,
+						`summary ${args.slice(1).join(" ")}`,
+					),
+				);
 				break;
 
 			default:
+				if (isHelpRequest(subcommand)) {
+					showSessionHelp(ctx);
+				}
 				// If it looks like an ID, try to load it
-				if (/^[a-f0-9-]+$/i.test(subcommand) || /^\d+$/.test(subcommand)) {
-					await deps.handleSessionsList({
-						...ctx,
-						rawInput: `/sessions load ${subcommand}`,
-						argumentText: `load ${subcommand}`,
-					});
+				else if (isSessionId(subcommand)) {
+					await deps.handleSessionsList(
+						customContext(`/sessions load ${subcommand}`, `load ${subcommand}`),
+					);
 				} else {
 					ctx.showError(`Unknown subcommand: ${subcommand}`);
 					showSessionHelp(ctx);
