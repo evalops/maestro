@@ -81,14 +81,15 @@ export function printHelp(version: string) {
   list   - List files in a directory
   find   - Fast file search using fd (glob patterns)
   search - Search files with ripgrep-style filtering
+  parallel_ripgrep - Run multiple ripgrep patterns in parallel and merge line ranges
   diff   - Show git diffs (workspace, staged, or ranges)
   bash   - Execute bash commands
   edit   - Edit files with find/replace
   write  - Write files (creates/overwrites)
   todo   - Create TodoWrite-style checklists
   
-  Read-only tools: batch,read,list,find,search,diff,status
-  Example: composer --tools batch,read,list,find,search,diff "Analyze this code"`,
+  Read-only tools: batch,read,list,find,search,parallel_ripgrep,diff,status
+  Example: composer --tools batch,read,list,find,search,parallel_ripgrep,diff "Analyze this code"`,
 	)}`;
 
 	const frameworkSection = `${sectionHeading("Framework Preference")}${muted(

@@ -141,9 +141,12 @@ export class CommandPaletteComponent extends Container {
 			const badgeText = this.renderBadges(cmd.tags ?? []);
 			const isFavorite = this.favoriteSet.has(cmd.name);
 			const isRecent = this.recentSet.has(cmd.name);
-			const labelPrefix = `${isFavorite ? "★" : " "}${
-				isRecent ? "↺" : " "
-			} /${cmd.name}`;
+
+			// Build compact marker prefix so "★ /name" is present when favorited
+			const markers = [isFavorite ? "★" : undefined, isRecent ? "↺" : undefined]
+				.filter(Boolean)
+				.join(" ");
+			const labelPrefix = markers ? `${markers} /${cmd.name}` : `/${cmd.name}`;
 			const item: SelectItem = {
 				value: this.buildSearchValue(cmd),
 				label: labelPrefix,

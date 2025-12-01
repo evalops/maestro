@@ -11,6 +11,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	list: "List files and directories safely using glob patterns",
 	find: "Fast file search using fd with glob patterns. Respects .gitignore. Use for discovering files across large codebases.",
 	search: "Search files with ripgrep (pattern, glob, context options)",
+	parallel_ripgrep:
+		"Run multiple ripgrep patterns in parallel and return merged line ranges with content for fast context gathering.",
 	diff: "Inspect git diffs (workspace, staged, or revision ranges)",
 	bash: "Execute bash commands (ls, grep, find, etc.)",
 	background_tasks:

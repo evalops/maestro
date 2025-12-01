@@ -17,6 +17,7 @@ import { parseStatusOutput } from "../src/tools/diff.js";
 import { editTool } from "../src/tools/edit.js";
 import { batchTool, codingTools } from "../src/tools/index.js";
 import { listTool } from "../src/tools/list.js";
+import { parallelRipgrepTool } from "../src/tools/parallel-ripgrep.js";
 import { readTool } from "../src/tools/read.js";
 import { searchTool } from "../src/tools/search.js";
 import { statusTool } from "../src/tools/status.js";
@@ -1438,6 +1439,54 @@ describe("Composer Tools", () => {
 		});
 	});
 
+	describe("parallel ripgrep tool", () => {
+		it("runs patterns in parallel and returns merged ranges with content", async () => {
+			const sampleFile = join(testDir, "parallel-rg.txt");
+			writeFileSync(
+				sampleFile,
+				"alpha match\n\nbeta match\nother line\nalpha again\n",
+			);
+
+			const result = await parallelRipgrepTool.execute("parallel-rg-1", {
+				patterns: ["alpha", "beta"],
+				paths: testDir,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("line range(s)");
+			expect(output).toContain("alpha match");
+			expect(output).toContain("beta match");
+
+			const ranges = (result.details as any).ranges;
+			expect(Array.isArray(ranges)).toBe(true);
+			expect(ranges.length).toBeGreaterThanOrEqual(2);
+			expect(ranges[0]).toMatchObject({
+				file: expect.stringContaining("parallel-rg.txt"),
+			});
+		});
+
+		it("honors headLimit and reports truncation", async () => {
+			const denseFile = join(testDir, "parallel-rg-truncate.txt");
+			writeFileSync(
+				denseFile,
+				"first match\nline one\nsecond match\nline two\nthird match\nline three\nfourth match\nline four\nfifth match\n",
+			);
+
+			const result = await parallelRipgrepTool.execute("parallel-rg-2", {
+				patterns: ["match", "first"],
+				paths: testDir,
+				headLimit: 1,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("showing 1 of");
+			const details = result.details as any;
+			expect(details.truncated).toBe(true);
+			expect(details.rangeCount).toBeGreaterThan(1);
+			expect(details.ranges).toHaveLength(1);
+		});
+	});
+
 	describe("todo tool", () => {
 		it("produces a summary checklist with default statuses", async () => {
 			const result = await todoTool.execute("todo-call-1", {
@@ -1602,6 +1651,7 @@ describe("codingTools bundle", () => {
 			"list",
 			"find",
 			"search",
+			"parallel_ripgrep",
 			"diff",
 			"bash",
 			"background_tasks",

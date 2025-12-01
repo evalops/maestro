@@ -15,6 +15,7 @@ import { findTool } from "./find.js";
 import { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 // Directory listing / globbing
 import { listTool } from "./list.js";
+import { parallelRipgrepTool } from "./parallel-ripgrep.js";
 // File reader with range support
 import { readTool } from "./read.js";
 // Ripgrep-style search
@@ -43,6 +44,7 @@ export { diffTool } from "./diff.js";
 export { editTool } from "./edit.js";
 export { findTool } from "./find.js";
 export { listTool } from "./list.js";
+export { parallelRipgrepTool } from "./parallel-ripgrep.js";
 export { readTool } from "./read.js";
 export { searchTool } from "./search.js";
 export { todoTool } from "./todo.js";
@@ -61,6 +63,7 @@ const allTools = [
 	listTool,
 	findTool,
 	searchTool,
+	parallelRipgrepTool,
 	diffTool,
 	bashTool,
 	backgroundTasksTool,
@@ -84,6 +87,7 @@ export const codingTools = [
 	listTool,
 	findTool,
 	searchTool,
+	parallelRipgrepTool,
 	diffTool,
 	bashTool,
 	backgroundTasksTool,
@@ -107,6 +111,7 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	list: listTool,
 	find: findTool,
 	search: searchTool,
+	parallel_ripgrep: parallelRipgrepTool,
 	diff: diffTool,
 	bash: bashTool,
 	background_tasks: backgroundTasksTool,
@@ -129,6 +134,7 @@ export const readOnlyToolNames = [
 	"list",
 	"find",
 	"search",
+	"parallel_ripgrep",
 	"diff",
 	"status",
 ] as const;

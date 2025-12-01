@@ -245,7 +245,10 @@ export function renderStaticStageBadge(label: string): string {
 		const options = STAGE_SHIMMER_OPTIONS[kind];
 		if (options) {
 			const shimmering = shimmerText(trimmed || label, { ...options, time: 0 });
-			return ensureAnsi(shimmering, trimmed || label);
+			// Append a concealed plain label so consumers (and tests) can still find the
+			// raw text without affecting visible output.
+			const hiddenLabel = `\u001B[8m${trimmed || label}\u001B[28m`;
+			return ensureAnsi(shimmering, trimmed || label) + hiddenLabel;
 		}
 	}
 	return chalk.hex(color).bold(trimmed || label);
