@@ -1157,5 +1157,68 @@ describe("Grouped Command Handlers", () => {
 			expect(matchesAlias("on", COMMON_ALIASES.enable)).toBe(true);
 			expect(matchesAlias("off", COMMON_ALIASES.disable)).toBe(true);
 		});
+
+		it("createSubcommandCompletions returns matching completions", async () => {
+			const { createSubcommandCompletions } = await import(
+				"../src/tui/commands/grouped/utils.js"
+			);
+
+			const completions = createSubcommandCompletions([
+				{ name: "status", description: "Show status", aliases: ["st"] },
+				{ name: "list", description: "List items", aliases: ["ls"] },
+				{ name: "new", description: "Create new" },
+			]);
+
+			// Empty prefix returns all
+			const all = completions("");
+			expect(all).toHaveLength(3);
+
+			// Prefix filters
+			const sMatches = completions("s");
+			expect(sMatches).toHaveLength(1);
+			expect(sMatches?.[0].value).toBe("status");
+
+			// Alias matches
+			const lsMatches = completions("ls");
+			expect(lsMatches).toHaveLength(1);
+			expect(lsMatches?.[0].value).toBe("list");
+
+			// No matches
+			const noMatches = completions("xyz");
+			expect(noMatches).toBeNull();
+
+			// Space in prefix returns null (past subcommand)
+			const pastSubcommand = completions("status arg");
+			expect(pastSubcommand).toBeNull();
+		});
+
+		it("predefined subcommand arrays are properly defined", async () => {
+			const {
+				SESSION_SUBCOMMANDS,
+				DIAG_SUBCOMMANDS,
+				UI_SUBCOMMANDS,
+				SAFETY_SUBCOMMANDS,
+				GIT_SUBCOMMANDS,
+				AUTH_SUBCOMMANDS,
+				USAGE_SUBCOMMANDS,
+				UNDO_SUBCOMMANDS,
+			} = await import("../src/tui/commands/grouped/utils.js");
+
+			// Check each array has entries with required fields
+			expect(SESSION_SUBCOMMANDS.length).toBeGreaterThan(5);
+			expect(DIAG_SUBCOMMANDS.length).toBeGreaterThan(5);
+			expect(UI_SUBCOMMANDS.length).toBeGreaterThan(3);
+			expect(SAFETY_SUBCOMMANDS.length).toBeGreaterThan(2);
+			expect(GIT_SUBCOMMANDS.length).toBeGreaterThan(1);
+			expect(AUTH_SUBCOMMANDS.length).toBeGreaterThan(1);
+			expect(USAGE_SUBCOMMANDS.length).toBeGreaterThan(2);
+			expect(UNDO_SUBCOMMANDS.length).toBeGreaterThan(2);
+
+			// Each entry should have name and description
+			for (const sub of SESSION_SUBCOMMANDS) {
+				expect(sub.name).toBeTruthy();
+				expect(sub.description).toBeTruthy();
+			}
+		});
 	});
 });
