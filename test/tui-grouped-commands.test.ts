@@ -1202,6 +1202,8 @@ describe("Grouped Command Handlers", () => {
 				AUTH_SUBCOMMANDS,
 				USAGE_SUBCOMMANDS,
 				UNDO_SUBCOMMANDS,
+				CONFIG_SUBCOMMANDS,
+				TOOLS_SUBCOMMANDS,
 			} = await import("../src/tui/commands/grouped/utils.js");
 
 			// Check each array has entries with required fields
@@ -1213,12 +1215,176 @@ describe("Grouped Command Handlers", () => {
 			expect(AUTH_SUBCOMMANDS.length).toBeGreaterThan(1);
 			expect(USAGE_SUBCOMMANDS.length).toBeGreaterThan(2);
 			expect(UNDO_SUBCOMMANDS.length).toBeGreaterThan(2);
+			expect(CONFIG_SUBCOMMANDS.length).toBeGreaterThan(5);
+			expect(TOOLS_SUBCOMMANDS.length).toBeGreaterThan(5);
 
 			// Each entry should have name and description
 			for (const sub of SESSION_SUBCOMMANDS) {
 				expect(sub.name).toBeTruthy();
 				expect(sub.description).toBeTruthy();
 			}
+		});
+	});
+
+	describe("ConfigCommandHandler", () => {
+		it("routes 'validate' to handleConfig", async () => {
+			const { createConfigCommandHandler } = await import(
+				"../src/tui/commands/grouped/config-commands.js"
+			);
+
+			const deps = {
+				handleConfig: vi.fn(),
+				handleImport: vi.fn(),
+				handleFramework: vi.fn(),
+				handleComposer: vi.fn(),
+				handleInit: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createConfigCommandHandler(deps);
+			const ctx = createMockContext("/cfg validate", "validate");
+
+			await handler(ctx);
+
+			expect(deps.handleConfig).toHaveBeenCalled();
+		});
+
+		it("routes 'import' to handleImport", async () => {
+			const { createConfigCommandHandler } = await import(
+				"../src/tui/commands/grouped/config-commands.js"
+			);
+
+			const deps = {
+				handleConfig: vi.fn(),
+				handleImport: vi.fn(),
+				handleFramework: vi.fn(),
+				handleComposer: vi.fn(),
+				handleInit: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createConfigCommandHandler(deps);
+			const ctx = createMockContext("/cfg import factory", "import factory");
+
+			await handler(ctx);
+
+			expect(deps.handleImport).toHaveBeenCalled();
+		});
+
+		it("routes 'framework' to handleFramework", async () => {
+			const { createConfigCommandHandler } = await import(
+				"../src/tui/commands/grouped/config-commands.js"
+			);
+
+			const deps = {
+				handleConfig: vi.fn(),
+				handleImport: vi.fn(),
+				handleFramework: vi.fn(),
+				handleComposer: vi.fn(),
+				handleInit: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createConfigCommandHandler(deps);
+			const ctx = createMockContext("/cfg framework react", "framework react");
+
+			await handler(ctx);
+
+			expect(deps.handleFramework).toHaveBeenCalled();
+		});
+	});
+
+	describe("ToolsCommandHandler", () => {
+		it("routes 'list' to handleTools", async () => {
+			const { createToolsCommandHandler } = await import(
+				"../src/tui/commands/grouped/tools-commands.js"
+			);
+
+			const deps = {
+				handleTools: vi.fn(),
+				handleMcp: vi.fn(),
+				handleLsp: vi.fn(),
+				handleWorkflow: vi.fn(),
+				handleRun: vi.fn(),
+				handleCommands: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createToolsCommandHandler(deps);
+			const ctx = createMockContext("/tools list", "list");
+
+			await handler(ctx);
+
+			expect(deps.handleTools).toHaveBeenCalled();
+		});
+
+		it("routes 'mcp' to handleMcp", async () => {
+			const { createToolsCommandHandler } = await import(
+				"../src/tui/commands/grouped/tools-commands.js"
+			);
+
+			const deps = {
+				handleTools: vi.fn(),
+				handleMcp: vi.fn(),
+				handleLsp: vi.fn(),
+				handleWorkflow: vi.fn(),
+				handleRun: vi.fn(),
+				handleCommands: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createToolsCommandHandler(deps);
+			const ctx = createMockContext("/tools mcp", "mcp");
+
+			await handler(ctx);
+
+			expect(deps.handleMcp).toHaveBeenCalled();
+		});
+
+		it("routes 'run' to handleRun", async () => {
+			const { createToolsCommandHandler } = await import(
+				"../src/tui/commands/grouped/tools-commands.js"
+			);
+
+			const deps = {
+				handleTools: vi.fn(),
+				handleMcp: vi.fn(),
+				handleLsp: vi.fn(),
+				handleWorkflow: vi.fn(),
+				handleRun: vi.fn(),
+				handleCommands: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createToolsCommandHandler(deps);
+			const ctx = createMockContext("/tools run test", "run test");
+
+			await handler(ctx);
+
+			expect(deps.handleRun).toHaveBeenCalled();
+		});
+
+		it("treats unknown subcommand as script name for run", async () => {
+			const { createToolsCommandHandler } = await import(
+				"../src/tui/commands/grouped/tools-commands.js"
+			);
+
+			const deps = {
+				handleTools: vi.fn(),
+				handleMcp: vi.fn(),
+				handleLsp: vi.fn(),
+				handleWorkflow: vi.fn(),
+				handleRun: vi.fn(),
+				handleCommands: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createToolsCommandHandler(deps);
+			const ctx = createMockContext("/tools test", "test");
+
+			await handler(ctx);
+
+			expect(deps.handleRun).toHaveBeenCalled();
 		});
 	});
 });

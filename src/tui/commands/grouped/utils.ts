@@ -341,3 +341,61 @@ export const UNDO_SUBCOMMANDS: SubcommandDef[] = [
 		aliases: ["list", "status"],
 	},
 ];
+
+export const CONFIG_SUBCOMMANDS: SubcommandDef[] = [
+	{
+		name: "validate",
+		description: "Validate configuration",
+		aliases: ["check", "status"],
+	},
+	{ name: "sources", description: "Show config sources" },
+	{ name: "providers", description: "Show provider configuration" },
+	{ name: "env", description: "Show environment variables" },
+	{
+		name: "import",
+		description: "Import configuration presets",
+		aliases: ["preset", "presets"],
+	},
+	{
+		name: "framework",
+		description: "Set/show default framework",
+		aliases: ["fw"],
+	},
+	{
+		name: "composer",
+		description: "Manage custom composer configs",
+		aliases: ["persona", "agent"],
+	},
+	{
+		name: "init",
+		description: "Create AGENTS.md scaffolding",
+		aliases: ["scaffold", "setup"],
+	},
+];
+
+export const TOOLS_SUBCOMMANDS: SubcommandDef[] = [
+	{
+		name: "list",
+		description: "List all tools",
+		aliases: ["all", "available"],
+	},
+	{
+		name: "failures",
+		description: "Show tool failures",
+		aliases: ["errors", "failed"],
+	},
+	{ name: "clear", description: "Clear tool logs", aliases: ["reset"] },
+	{ name: "mcp", description: "Show MCP servers", aliases: ["servers"] },
+	{ name: "lsp", description: "LSP server management", aliases: ["language"] },
+	{
+		name: "workflow",
+		description: "Run workflows",
+		aliases: ["workflows", "wf"],
+	},
+	{ name: "run", description: "Run npm scripts", aliases: ["script", "npm"] },
+	{
+		name: "commands",
+		description: "User command management",
+		aliases: ["cmd", "user"],
+	},
+];

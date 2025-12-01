@@ -43,6 +43,16 @@ export {
 } from "./undo-commands.js";
 
 export {
+	createConfigCommandHandler,
+	type ConfigCommandDeps,
+} from "./config-commands.js";
+
+export {
+	createToolsCommandHandler,
+	type ToolsCommandDeps,
+} from "./tools-commands.js";
+
+export {
 	parseSubcommand,
 	isHelpRequest,
 	isNumericArg,
@@ -58,6 +68,8 @@ export {
 	AUTH_SUBCOMMANDS,
 	USAGE_SUBCOMMANDS,
 	UNDO_SUBCOMMANDS,
+	CONFIG_SUBCOMMANDS,
+	TOOLS_SUBCOMMANDS,
 	type ParsedSubcommand,
 	type SubcommandDef,
 } from "./utils.js";

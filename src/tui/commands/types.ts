@@ -85,6 +85,8 @@ export interface CommandHandlers {
 	authCommand(context: CommandExecutionContext): void | Promise<void>;
 	usageCommand(context: CommandExecutionContext): void | Promise<void>;
 	undoCommand(context: CommandExecutionContext): void | Promise<void>;
+	configCommand(context: CommandExecutionContext): void | Promise<void>;
+	toolsCommand(context: CommandExecutionContext): void | Promise<void>;
 }
 
 export interface CommandEntry {

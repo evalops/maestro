@@ -94,6 +94,12 @@ interface CommandRegistryOptions {
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
 	handleUndoCommand: (context: CommandExecutionContext) => void | Promise<void>;
+	handleConfigCommand: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
+	handleToolsCommand: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -169,6 +175,8 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			authCommand: opts.handleAuthCommand,
 			usageCommand: opts.handleUsageCommand,
 			undoCommand: opts.handleUndoCommand,
+			configCommand: opts.handleConfigCommand,
+			toolsCommand: opts.handleToolsCommand,
 		},
 		createContext: opts.createContext,
 	});

@@ -969,6 +969,9 @@ export class TuiRenderer {
 			handleAuthCommand: (context) => this.handleGroupedAuthCommand(context),
 			handleUsageCommand: (context) => this.handleGroupedUsageCommand(context),
 			handleUndoCommand: (context) => this.handleGroupedUndoCommand(context),
+			handleConfigCommand: (context) =>
+				this.handleGroupedConfigCommand(context),
+			handleToolsCommand: (context) => this.handleGroupedToolsCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -3946,6 +3949,54 @@ export class TuiRenderer {
 						undoCount: 0, // Use /undo changes for details
 						checkpoints: [],
 					}),
+				});
+				return handler(context);
+			},
+		);
+	}
+
+	private handleGroupedConfigCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createConfigCommandHandler }) => {
+				const handler = createConfigCommandHandler({
+					handleConfig: (ctx: CommandExecutionContext) =>
+						this.configView.handleConfigCommand(ctx),
+					handleImport: (ctx: CommandExecutionContext) =>
+						this.importExportView.handleImportCommand(ctx.rawInput),
+					handleFramework: (ctx: CommandExecutionContext) =>
+						this.handleFrameworkCommand(ctx),
+					handleComposer: (ctx: CommandExecutionContext) =>
+						this.handleComposerCommand(ctx),
+					handleInit: (ctx: CommandExecutionContext) =>
+						this.handleInitCommand(ctx),
+					showInfo: (msg: string) => context.showInfo(msg),
+				});
+				return handler(context);
+			},
+		);
+	}
+
+	private handleGroupedToolsCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createToolsCommandHandler }) => {
+				const handler = createToolsCommandHandler({
+					handleTools: (ctx: CommandExecutionContext) =>
+						this.toolStatusView.handleToolsCommand(ctx.rawInput),
+					handleMcp: (ctx: CommandExecutionContext) =>
+						this.handleMcpCommand(ctx),
+					handleLsp: (ctx: CommandExecutionContext) =>
+						this.lspView.handleLspCommand(ctx.rawInput),
+					handleWorkflow: (ctx: CommandExecutionContext) =>
+						this.handleWorkflowCommand(ctx),
+					handleRun: (ctx: CommandExecutionContext) =>
+						this.runCommandView.handleRunCommand(ctx.rawInput),
+					handleCommands: (ctx: CommandExecutionContext) =>
+						this.handleCommandsCommand(ctx),
+					showInfo: (msg: string) => context.showInfo(msg),
 				});
 				return handler(context);
 			},

@@ -2,10 +2,12 @@ import type { SlashCommand } from "@evalops/tui";
 import { parseCommandArguments, shouldShowHelp } from "./argument-parser.js";
 import {
 	AUTH_SUBCOMMANDS,
+	CONFIG_SUBCOMMANDS,
 	DIAG_SUBCOMMANDS,
 	GIT_SUBCOMMANDS,
 	SAFETY_SUBCOMMANDS,
 	SESSION_SUBCOMMANDS,
+	TOOLS_SUBCOMMANDS,
 	UI_SUBCOMMANDS,
 	UNDO_SUBCOMMANDS,
 	USAGE_SUBCOMMANDS,
@@ -1038,6 +1040,46 @@ export function createCommandRegistry({
 			},
 			withArgs("undo"),
 			handlers.undoCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "cfg",
+				description:
+					"Configuration: validate, import, framework, composer, init",
+				usage: "/cfg [validate|import|framework|composer|init] [args]",
+				tags: ["config"],
+				examples: [
+					"/cfg",
+					"/cfg validate",
+					"/cfg import factory",
+					"/cfg framework react",
+					"/cfg composer code-reviewer",
+				],
+				getArgumentCompletions: createSubcommandCompletions(CONFIG_SUBCOMMANDS),
+			},
+			withArgs("cfg"),
+			handlers.configCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "tools",
+				description: "Tools: list, mcp, lsp, workflow, run, commands",
+				usage: "/tools [list|mcp|lsp|workflow|run|commands] [args]",
+				tags: ["tools"],
+				aliases: ["t"],
+				examples: [
+					"/tools",
+					"/tools list",
+					"/tools mcp",
+					"/tools lsp status",
+					"/tools run test",
+				],
+				getArgumentCompletions: createSubcommandCompletions(TOOLS_SUBCOMMANDS),
+			},
+			withArgs("tools", ["t"]),
+			handlers.toolsCommand,
 			createContext,
 		),
 	];
