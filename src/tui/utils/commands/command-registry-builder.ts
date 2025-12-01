@@ -75,6 +75,7 @@ interface CommandRegistryOptions {
 	handleFramework: (context: CommandExecutionContext) => void;
 	handleClean: (context: CommandExecutionContext) => void;
 	handleGuardian: (context: CommandExecutionContext) => void | Promise<void>;
+	handleWorkflow: (context: CommandExecutionContext) => void | Promise<void>;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -137,6 +138,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			framework: opts.handleFramework,
 			clean: opts.handleClean,
 			guardian: opts.handleGuardian,
+			workflow: opts.handleWorkflow,
 		},
 		createContext: opts.createContext,
 	});

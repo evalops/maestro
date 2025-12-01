@@ -72,6 +72,7 @@ export interface CommandHandlers {
 	framework(context: CommandExecutionContext): void;
 	clean(context: CommandExecutionContext): void;
 	guardian(context: CommandExecutionContext): void | Promise<void>;
+	workflow(context: CommandExecutionContext): void | Promise<void>;
 }
 
 export interface CommandEntry {

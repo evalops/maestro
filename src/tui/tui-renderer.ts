@@ -954,6 +954,7 @@ export class TuiRenderer {
 			handleFramework: (context) => this.handleFrameworkCommand(context),
 			handleClean: (context) => this.handleCleanCommand(context),
 			handleGuardian: (context) => this.handleGuardianCommand(context),
+			handleWorkflow: (context) => this.handleWorkflowCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -1552,6 +1553,31 @@ export class TuiRenderer {
 		} else if (result.status === "passed") {
 			this.notificationView.showToast("Guardian passed.", "success");
 		}
+	}
+
+	private async handleWorkflowCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const { handleWorkflowCommand } = await import(
+			"./commands/workflow-handlers.js"
+		);
+		// Build tool map from agent state
+		const toolMap = new Map(
+			(this.agent.state.tools ?? []).map((t) => [t.name, t]),
+		);
+		await handleWorkflowCommand({
+			rawInput: context.rawInput,
+			cwd: process.cwd(),
+			tools: toolMap,
+			addContent: (content) => {
+				this.chatContainer.addChild(new Markdown(content));
+			},
+			showError: (message) => this.notificationView.showError(message),
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showSuccess: (message) =>
+				this.notificationView.showToast(message, "success"),
+			requestRender: () => this.ui.requestRender(),
+		});
 	}
 
 	private handleCleanCommand(context: CommandExecutionContext): void {

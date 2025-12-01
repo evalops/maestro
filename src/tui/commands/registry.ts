@@ -95,6 +95,39 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "workflow",
+				description: "Run declarative multi-step tool workflows",
+				usage: "/workflow [list|run|validate|show] [name]",
+				tags: ["tools", "automation"],
+				arguments: [
+					{
+						name: "subcommand",
+						type: "enum",
+						required: false,
+						description: "Workflow subcommand",
+						choices: ["list", "run", "validate", "show"],
+					},
+					{
+						name: "name",
+						type: "string",
+						required: false,
+						description: "Workflow name",
+					},
+				],
+				examples: [
+					"/workflow",
+					"/workflow list",
+					"/workflow run setup-project",
+					"/workflow validate my-workflow",
+					"/workflow show my-workflow",
+				],
+			},
+			withArgs("workflow"),
+			handlers.workflow,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "framework",
 				description:
 					"Set or show default framework (supports --workspace and list)",
