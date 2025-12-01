@@ -9,6 +9,8 @@ import { getRegisteredModels } from "../models/registry.js";
 import { readOnlyToolNames } from "./index.js";
 import { createTool } from "./tool-dsl.js";
 
+const ORACLE_TIMEOUT_MS = 120_000;
+
 const oracleSchema = Type.Object({
 	task: Type.String({
 		description:
@@ -46,7 +48,7 @@ export const oracleTool = createTool<typeof oracleSchema, OracleToolDetails>({
 	description:
 		"Summon the Seer - a mystical systems advisor that foresees consequences of complex engineering decisions. Ideal for architecture reviews, deep debugging, and strategic guidance.",
 	schema: oracleSchema,
-	async run(params, { respond }) {
+	async run(params, { respond, signal }) {
 		const { task, context, files, model: modelOverride } = params;
 		const model = selectOracleModel(modelOverride);
 
@@ -116,12 +118,56 @@ Always flag uncertainties, assumptions, or blind spots so the summoner knows whe
 			];
 
 			const result = await new Promise<string>((resolve, reject) => {
+				if (signal?.aborted) {
+					cleanupFile();
+					reject(new Error("Seer invocation aborted"));
+					return;
+				}
+
 				const seer = spawn("composer", args, {
 					stdio: ["pipe", "pipe", "pipe"],
 				});
 
 				let output = "";
 				let errorOutput = "";
+				let timedOut = false;
+				let aborted = false;
+				let timeoutHandle: NodeJS.Timeout | null = null;
+
+				const killChild = () => {
+					if (seer.pid) {
+						try {
+							process.kill(seer.pid);
+						} catch {
+							// Already terminated
+						}
+					}
+				};
+
+				const cleanupListeners = () => {
+					if (timeoutHandle) {
+						clearTimeout(timeoutHandle);
+					}
+					signal?.removeEventListener("abort", onAbort);
+				};
+
+				const onAbort = () => {
+					aborted = true;
+					killChild();
+				};
+
+				if (signal) {
+					signal.addEventListener("abort", onAbort);
+				}
+
+				const startTimeout = () => {
+					timeoutHandle = setTimeout(() => {
+						timedOut = true;
+						killChild();
+					}, ORACLE_TIMEOUT_MS);
+				};
+
+				startTimeout();
 
 				seer.stdout.on("data", (data) => {
 					output += data.toString();
@@ -133,13 +179,18 @@ Always flag uncertainties, assumptions, or blind spots so the summoner knows whe
 
 				seer.on("close", (code) => {
 					cleanupFile();
+					cleanupListeners();
 
-					if (code === 0) {
+					if (code === 0 && !timedOut && !aborted) {
 						resolve(output.trim());
 					} else {
 						reject(
 							new Error(
-								`Seer divination failed (exit ${code}): ${errorOutput}`,
+								aborted
+									? "Seer invocation aborted"
+									: timedOut
+										? "Seer divination timed out"
+										: `Seer divination failed (exit ${code}): ${errorOutput}`,
 							),
 						);
 					}
@@ -147,6 +198,7 @@ Always flag uncertainties, assumptions, or blind spots so the summoner knows whe
 
 				seer.on("error", (err) => {
 					cleanupFile();
+					cleanupListeners();
 					reject(new Error(`Failed to summon the Seer: ${err.message}`));
 				});
 			});

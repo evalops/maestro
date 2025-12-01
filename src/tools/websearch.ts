@@ -205,9 +205,39 @@ export const websearchTool = createTool<
 
 		let outputChars = 0;
 		let truncated = false;
+		let printedResults = 0;
+		const maxDisplayResults = params.numResults ?? data.results.length;
 
 		for (let i = 0; i < data.results.length; i++) {
+			if (printedResults >= maxDisplayResults) {
+				truncated = true;
+				respond.text(
+					`[truncated] Additional results omitted to honor requested limit of ${maxDisplayResults}.`,
+				);
+				break;
+			}
 			const result = data.results[i];
+
+			const textPreview = result.text
+				? result.text.length > MAX_RESULT_TEXT_CHARS
+					? `${result.text.substring(0, MAX_RESULT_TEXT_CHARS)}...`
+					: result.text
+				: null;
+			const textWeight = result.text
+				? Math.min(result.text.length, MAX_RESULT_TEXT_CHARS * 2)
+				: 0;
+			const prospectiveOutput =
+				outputChars +
+				result.title.length +
+				(result.summary?.length ?? 0) +
+				textWeight;
+			if (printedResults > 0 && prospectiveOutput >= MAX_OUTPUT_CHARS) {
+				truncated = true;
+				respond.text(
+					`[truncated] Additional results omitted to keep output under ${MAX_OUTPUT_CHARS} characters.`,
+				);
+				break;
+			}
 			respond.text(`${i + 1}. ${result.title}`);
 			respond.text(`   URL: ${result.url}`);
 
@@ -224,13 +254,9 @@ export const websearchTool = createTool<
 				respond.text(`   Summary: ${result.summary}`);
 			}
 
-			if (result.text) {
-				const textPreview =
-					result.text.length > MAX_RESULT_TEXT_CHARS
-						? `${result.text.substring(0, MAX_RESULT_TEXT_CHARS)}...`
-						: result.text;
+			if (textPreview) {
 				respond.text(`   Text: ${textPreview}`);
-				if (result.text.length > textPreview.length) {
+				if (result.text && result.text.length > textPreview.length) {
 					respond.text("   [text truncated]");
 				}
 			}
@@ -244,16 +270,21 @@ export const websearchTool = createTool<
 
 			respond.text("");
 
-			// Rough output budget to avoid huge responses
-			outputChars += result.title.length + (result.text?.length ?? 0);
-			if (outputChars > MAX_OUTPUT_CHARS) {
-				truncated = true;
-				respond.text(
-					`[truncated] Additional results omitted to keep output under ${MAX_OUTPUT_CHARS} characters.`,
-				);
-				break;
-			}
+			// Update budget after printing
+			outputChars = prospectiveOutput;
+			printedResults += 1;
 		}
+
+		const detailResults = truncated
+			? data.results.slice(0, printedResults).map((result) => ({
+					...result,
+					text: result.text
+						? result.text.length > MAX_RESULT_TEXT_CHARS
+							? `${result.text.substring(0, MAX_RESULT_TEXT_CHARS)}...`
+							: result.text
+						: undefined,
+				}))
+			: data.results;
 
 		respond.detail({
 			requestId: data.requestId,
@@ -261,7 +292,7 @@ export const websearchTool = createTool<
 			resultsCount: data.results.length,
 			costDollars: totalCost ?? null,
 			context: data.context,
-			results: data.results,
+			results: detailResults,
 			truncated,
 		});
 

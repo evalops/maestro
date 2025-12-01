@@ -106,9 +106,22 @@ export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 
 		let outputChars = 0;
 		let truncatedOutput = false;
+		let printedResults = 0;
 
 		for (let i = 0; i < data.results.length; i++) {
 			const result = data.results[i];
+			const textWeight = result.text
+				? Math.min(result.text.length, MAX_CONTENT_CHARS * 2)
+				: 0;
+			const prospectiveOutput =
+				outputChars + (result.summary?.length ?? 0) + textWeight;
+			if (printedResults > 0 && prospectiveOutput >= MAX_OUTPUT_CHARS) {
+				truncatedOutput = true;
+				respond.text(
+					`[truncated] Additional content omitted to keep output under ${MAX_OUTPUT_CHARS} characters.`,
+				);
+				break;
+			}
 			respond.text(`${i + 1}. ${result.title || result.url}`);
 			respond.text(`   URL: ${result.url}`);
 
@@ -144,20 +157,25 @@ export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 
 			respond.text("");
 
-			outputChars += (result.text?.length ?? 0) + (result.summary?.length ?? 0);
-			if (outputChars > MAX_OUTPUT_CHARS) {
-				truncatedOutput = true;
-				respond.text(
-					`[truncated] Additional content omitted to keep output under ${MAX_OUTPUT_CHARS} characters.`,
-				);
-				break;
-			}
+			outputChars = prospectiveOutput;
+			printedResults += 1;
 		}
+
+		const detailResults = truncatedOutput
+			? data.results.slice(0, printedResults).map((result) => ({
+					...result,
+					text: result.text
+						? result.text.length > MAX_CONTENT_CHARS
+							? `${result.text.slice(0, MAX_CONTENT_CHARS)}...`
+							: result.text
+						: undefined,
+				}))
+			: data.results;
 
 		respond.detail({
 			resultsCount: data.results.length,
 			errors: errors.length > 0 ? errors : undefined,
-			results: data.results,
+			results: detailResults,
 			truncated: truncatedOutput,
 		});
 

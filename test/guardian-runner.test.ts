@@ -75,6 +75,7 @@ describe("guardian runner", () => {
 	it("detects destructive commands", () => {
 		const commands = [
 			"rm -rf /tmp/x",
+			"sudo rm -r /tmp/y",
 			"find . -delete",
 			"chmod 000 secret",
 			"dd if=/dev/zero of=/dev/sda",
@@ -84,6 +85,14 @@ describe("guardian runner", () => {
 		for (const cmd of commands) {
 			const result = shouldGuardCommand(cmd);
 			expect(result.shouldGuard).toBe(true);
+		}
+	});
+
+	it("does not flag rm without recursive flag", () => {
+		const commands = ["rm -v /home/user/file.txt", "rm -i parent/child"];
+		for (const cmd of commands) {
+			const result = shouldGuardCommand(cmd);
+			expect(result.shouldGuard).toBe(false);
 		}
 	});
 

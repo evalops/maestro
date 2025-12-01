@@ -529,6 +529,10 @@ export function shouldGuardCommand(command: string): {
 
 	const destructivePatterns: Array<{ regex: RegExp; label: string }> = [
 		{ regex: /\brm\s+-rf\b/i, label: "rm -rf" },
+		{
+			regex: /\brm\s+(?:-[a-z]*r[a-z]*\b|--recursive\b)/i,
+			label: "rm -r",
+		},
 		{ regex: /\bfind\s+[^\n]*-delete\b/i, label: "find -delete" },
 		{ regex: /\bchmod\s+0{3,4}\b/i, label: "chmod 000" },
 		{ regex: /\bchown\b[^\n]*\broot\b/i, label: "chown root" },

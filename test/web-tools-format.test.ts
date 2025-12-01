@@ -69,6 +69,9 @@ describe("websearch tool", () => {
 		expect(text).toContain("[text truncated]");
 		expect(text).toContain("[truncated] Additional results omitted");
 		expect(result.details?.truncated).toBe(true);
+		expect(result.details?.results?.length).toBe(2);
+		const firstText = result.details?.results?.[0]?.text ?? "";
+		expect(firstText.length).toBeLessThanOrEqual(900);
 	});
 
 	it("formats context output and forwards advanced options", async () => {
@@ -146,6 +149,9 @@ describe("webfetch tool", () => {
 		expect(text).toContain("[content truncated]");
 		expect(text).toContain("Additional content omitted");
 		expect(result.details?.truncated).toBe(true);
+		expect(result.details?.results?.length).toBe(1);
+		const detailText = result.details?.results?.[0]?.text ?? "";
+		expect(detailText.length).toBeLessThanOrEqual(2100);
 	});
 
 	it("supports highlight configuration", async () => {
