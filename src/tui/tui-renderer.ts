@@ -903,7 +903,7 @@ export class TuiRenderer {
 			handleClear: async (_context) => await this.handleClearCommand(),
 			showStatus: (_context) => this.diagnosticsView.handleStatusCommand(),
 			handleReview: (context) => this.handleReviewCommand(context),
-			handleUndo: (context) => this.gitView.handleUndoCommand(context.rawInput),
+			handleUndo: (context) => this.handleEnhancedUndoCommand(context),
 			handleMention: (context) =>
 				this.fileSearchView.handleMentionCommand(context.rawInput),
 			showHelp: (_context) => this.infoView.showHelp(),
@@ -955,6 +955,8 @@ export class TuiRenderer {
 			handleClean: (context) => this.handleCleanCommand(context),
 			handleGuardian: (context) => this.handleGuardianCommand(context),
 			handleWorkflow: (context) => this.handleWorkflowCommand(context),
+			handleChanges: (context) => this.handleChangesCommand(context),
+			handleCheckpoint: (context) => this.handleCheckpointCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -1578,6 +1580,58 @@ export class TuiRenderer {
 				this.notificationView.showToast(message, "success"),
 			requestRender: () => this.ui.requestRender(),
 		});
+	}
+
+	private handleEnhancedUndoCommand(context: CommandExecutionContext): void {
+		import("./commands/undo-handlers.js").then(
+			({ handleEnhancedUndoCommand }) => {
+				handleEnhancedUndoCommand({
+					rawInput: context.rawInput,
+					addContent: (content) => {
+						this.chatContainer.addChild(new Markdown(content));
+					},
+					showError: (message) => this.notificationView.showError(message),
+					showInfo: (message) => this.notificationView.showInfo(message),
+					showSuccess: (message) =>
+						this.notificationView.showToast(message, "success"),
+					requestRender: () => this.ui.requestRender(),
+				});
+			},
+		);
+	}
+
+	private handleChangesCommand(context: CommandExecutionContext): void {
+		import("./commands/undo-handlers.js").then(({ handleChangesCommand }) => {
+			handleChangesCommand({
+				rawInput: context.rawInput,
+				addContent: (content) => {
+					this.chatContainer.addChild(new Markdown(content));
+				},
+				showError: (message) => this.notificationView.showError(message),
+				showInfo: (message) => this.notificationView.showInfo(message),
+				showSuccess: (message) =>
+					this.notificationView.showToast(message, "success"),
+				requestRender: () => this.ui.requestRender(),
+			});
+		});
+	}
+
+	private handleCheckpointCommand(context: CommandExecutionContext): void {
+		import("./commands/undo-handlers.js").then(
+			({ handleCheckpointCommand }) => {
+				handleCheckpointCommand({
+					rawInput: context.rawInput,
+					addContent: (content) => {
+						this.chatContainer.addChild(new Markdown(content));
+					},
+					showError: (message) => this.notificationView.showError(message),
+					showInfo: (message) => this.notificationView.showInfo(message),
+					showSuccess: (message) =>
+						this.notificationView.showToast(message, "success"),
+					requestRender: () => this.ui.requestRender(),
+				});
+			},
+		);
 	}
 
 	private handleCleanCommand(context: CommandExecutionContext): void {

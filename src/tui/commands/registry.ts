@@ -436,12 +436,65 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "undo",
-				description: "Discard local changes in files via git checkout",
-				usage: "/undo <path>",
-				tags: ["git"],
+				description: "Undo last N file changes (beyond git) with preview",
+				usage: "/undo [N] [--preview] [--force]",
+				tags: ["undo", "safety"],
+				arguments: [
+					{
+						name: "count",
+						type: "number",
+						required: false,
+						description: "Number of changes to undo (default: 1)",
+					},
+				],
+				examples: ["/undo", "/undo 3", "/undo --preview", "/undo 2 --force"],
 			},
 			withArgs("undo"),
 			handlers.undoChanges,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "changes",
+				description: "List tracked file changes from this session",
+				usage: "/changes [--files|--tools]",
+				tags: ["undo", "diagnostics"],
+				examples: ["/changes", "/changes --files", "/changes --tools"],
+			},
+			withArgs("changes"),
+			handlers.changes,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "checkpoint",
+				description: "Save/restore named checkpoints for rollback",
+				usage: "/checkpoint [save|list|restore] [name]",
+				tags: ["undo", "safety"],
+				arguments: [
+					{
+						name: "subcommand",
+						type: "enum",
+						required: false,
+						description: "Checkpoint subcommand",
+						choices: ["save", "list", "restore"],
+					},
+					{
+						name: "name",
+						type: "string",
+						required: false,
+						description: "Checkpoint name",
+					},
+				],
+				examples: [
+					"/checkpoint",
+					"/checkpoint save before-refactor",
+					"/checkpoint list",
+					"/checkpoint restore before-refactor",
+				],
+			},
+			withArgs("checkpoint"),
+			handlers.checkpoint,
 			createContext,
 		),
 		buildEntry(
