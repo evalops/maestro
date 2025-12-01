@@ -263,13 +263,13 @@ export class TUI extends Container {
 		const viewportTop = this.cursorRow - height + 1;
 		if (firstChanged < viewportTop) {
 			// First change is above viewport - need full re-render
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
+			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
 				buffer += newLines[i];
 			}
-			buffer += "\x1b[?2026l"; // End synchronized output
+			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
 
 			this.cursorRow = newLines.length - 1;
