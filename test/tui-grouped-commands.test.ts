@@ -703,4 +703,374 @@ describe("Grouped Command Handlers", () => {
 			);
 		});
 	});
+
+	describe("Context Rewriting", () => {
+		it("session handler rewrites context for branch subcommand", async () => {
+			const { createSessionCommandHandler } = await import(
+				"../src/tui/commands/grouped/session-commands.js"
+			);
+
+			const deps = {
+				handleNewChat: vi.fn(),
+				handleClear: vi.fn(),
+				handleSessionInfo: vi.fn(),
+				handleSessionsList: vi.fn(),
+				handleBranch: vi.fn(),
+				handleQueue: vi.fn(),
+				handleExport: vi.fn(),
+				handleShare: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createSessionCommandHandler(deps);
+			const ctx = createMockContext("/ss branch 3", "branch 3");
+
+			await handler(ctx);
+
+			expect(deps.handleBranch).toHaveBeenCalled();
+			const receivedCtx = deps.handleBranch.mock.calls[0][0];
+			expect(receivedCtx.rawInput).toBe("/branch 3");
+			expect(receivedCtx.argumentText).toBe("3");
+		});
+
+		it("diag handler rewrites context for background subcommand", async () => {
+			const { createDiagCommandHandler } = await import(
+				"../src/tui/commands/grouped/diag-commands.js"
+			);
+
+			const deps = {
+				handleStatus: vi.fn(),
+				handleAbout: vi.fn(),
+				handleContext: vi.fn(),
+				handleStats: vi.fn(),
+				handleBackground: vi.fn(),
+				handleDiagnostics: vi.fn(),
+				handleTelemetry: vi.fn(),
+				handleTraining: vi.fn(),
+				handleOtel: vi.fn(),
+				handleConfig: vi.fn(),
+				handleLsp: vi.fn(),
+				handleMcp: vi.fn(),
+				showInfo: vi.fn(),
+				isDatabaseConfigured: vi.fn().mockReturnValue(false),
+			};
+
+			const handler = createDiagCommandHandler(deps);
+			const ctx = createMockContext("/diag bg notify on", "bg notify on");
+
+			await handler(ctx);
+
+			expect(deps.handleBackground).toHaveBeenCalled();
+			const receivedCtx = deps.handleBackground.mock.calls[0][0];
+			expect(receivedCtx.rawInput).toBe("/background notify on");
+			expect(receivedCtx.argumentText).toBe("notify on");
+		});
+
+		it("undo handler rewrites context for checkpoint subcommand", async () => {
+			const { createUndoCommandHandler } = await import(
+				"../src/tui/commands/grouped/undo-commands.js"
+			);
+
+			const deps = {
+				handleUndo: vi.fn(),
+				handleCheckpoint: vi.fn(),
+				handleChanges: vi.fn(),
+				showInfo: vi.fn(),
+				getUndoState: vi.fn().mockReturnValue({
+					canUndo: true,
+					undoCount: 0,
+					checkpoints: [],
+				}),
+			};
+
+			const handler = createUndoCommandHandler(deps);
+			const ctx = createMockContext(
+				"/undo checkpoint save my-checkpoint",
+				"checkpoint save my-checkpoint",
+			);
+
+			await handler(ctx);
+
+			expect(deps.handleCheckpoint).toHaveBeenCalled();
+			const receivedCtx = deps.handleCheckpoint.mock.calls[0][0];
+			expect(receivedCtx.rawInput).toBe("/checkpoint save my-checkpoint");
+			expect(receivedCtx.argumentText).toBe("save my-checkpoint");
+		});
+	});
+
+	describe("Alias Support", () => {
+		it("session handler supports 'ls' alias for list", async () => {
+			const { createSessionCommandHandler } = await import(
+				"../src/tui/commands/grouped/session-commands.js"
+			);
+
+			const deps = {
+				handleNewChat: vi.fn(),
+				handleClear: vi.fn(),
+				handleSessionInfo: vi.fn(),
+				handleSessionsList: vi.fn(),
+				handleBranch: vi.fn(),
+				handleQueue: vi.fn(),
+				handleExport: vi.fn(),
+				handleShare: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createSessionCommandHandler(deps);
+			const ctx = createMockContext("/ss ls", "ls");
+
+			await handler(ctx);
+
+			expect(deps.handleSessionsList).toHaveBeenCalled();
+		});
+
+		it("diag handler supports 'health' alias for status", async () => {
+			const { createDiagCommandHandler } = await import(
+				"../src/tui/commands/grouped/diag-commands.js"
+			);
+
+			const deps = {
+				handleStatus: vi.fn(),
+				handleAbout: vi.fn(),
+				handleContext: vi.fn(),
+				handleStats: vi.fn(),
+				handleBackground: vi.fn(),
+				handleDiagnostics: vi.fn(),
+				handleTelemetry: vi.fn(),
+				handleTraining: vi.fn(),
+				handleOtel: vi.fn(),
+				handleConfig: vi.fn(),
+				handleLsp: vi.fn(),
+				handleMcp: vi.fn(),
+				showInfo: vi.fn(),
+				isDatabaseConfigured: vi.fn().mockReturnValue(false),
+			};
+
+			const handler = createDiagCommandHandler(deps);
+			const ctx = createMockContext("/diag health", "health");
+
+			await handler(ctx);
+
+			expect(deps.handleStatus).toHaveBeenCalled();
+		});
+
+		it("ui handler supports 'color' alias for theme", async () => {
+			const { createUiCommandHandler } = await import(
+				"../src/tui/commands/grouped/ui-commands.js"
+			);
+
+			const deps = {
+				handleTheme: vi.fn(),
+				handleClean: vi.fn(),
+				handleFooter: vi.fn(),
+				handleZen: vi.fn(),
+				handleCompactTools: vi.fn(),
+				showInfo: vi.fn(),
+				getUiState: vi.fn().mockReturnValue({
+					zenMode: false,
+					cleanMode: "off",
+					footerMode: "ensemble",
+					compactTools: false,
+				}),
+			};
+
+			const handler = createUiCommandHandler(deps);
+			const ctx = createMockContext("/ui color", "color");
+
+			handler(ctx);
+
+			expect(deps.handleTheme).toHaveBeenCalled();
+		});
+
+		it("safety handler supports 'approve' alias for approvals", async () => {
+			const { createSafetyCommandHandler } = await import(
+				"../src/tui/commands/grouped/safety-commands.js"
+			);
+
+			const deps = {
+				handleApprovals: vi.fn(),
+				handlePlanMode: vi.fn(),
+				handleGuardian: vi.fn(),
+				showInfo: vi.fn(),
+				getSafetyState: vi.fn().mockReturnValue({
+					approvalMode: "prompt",
+					planMode: false,
+					guardianEnabled: true,
+				}),
+			};
+
+			const handler = createSafetyCommandHandler(deps);
+			const ctx = createMockContext("/safe approve auto", "approve auto");
+
+			await handler(ctx);
+
+			expect(deps.handleApprovals).toHaveBeenCalled();
+		});
+
+		it("auth handler supports 'signin' alias for login", async () => {
+			const { createAuthCommandHandler } = await import(
+				"../src/tui/commands/grouped/auth-commands.js"
+			);
+
+			const deps = {
+				handleLogin: vi.fn(),
+				handleLogout: vi.fn(),
+				showInfo: vi.fn(),
+				getAuthState: vi.fn().mockReturnValue({
+					authenticated: false,
+				}),
+			};
+
+			const handler = createAuthCommandHandler(deps);
+			const ctx = createMockContext("/auth signin pro", "signin pro");
+
+			await handler(ctx);
+
+			expect(deps.handleLogin).toHaveBeenCalled();
+		});
+	});
+
+	describe("Async Handler Support", () => {
+		it("awaits async stats handler", async () => {
+			const { createDiagCommandHandler } = await import(
+				"../src/tui/commands/grouped/diag-commands.js"
+			);
+
+			let resolved = false;
+			const deps = {
+				handleStatus: vi.fn(),
+				handleAbout: vi.fn(),
+				handleContext: vi.fn(),
+				handleStats: vi.fn().mockImplementation(async () => {
+					await new Promise((r) => setTimeout(r, 10));
+					resolved = true;
+				}),
+				handleBackground: vi.fn(),
+				handleDiagnostics: vi.fn(),
+				handleTelemetry: vi.fn(),
+				handleTraining: vi.fn(),
+				handleOtel: vi.fn(),
+				handleConfig: vi.fn(),
+				handleLsp: vi.fn(),
+				handleMcp: vi.fn(),
+				showInfo: vi.fn(),
+				isDatabaseConfigured: vi.fn().mockReturnValue(false),
+			};
+
+			const handler = createDiagCommandHandler(deps);
+			const ctx = createMockContext("/diag stats", "stats");
+
+			await handler(ctx);
+
+			expect(resolved).toBe(true);
+		});
+
+		it("awaits async config handler", async () => {
+			const { createDiagCommandHandler } = await import(
+				"../src/tui/commands/grouped/diag-commands.js"
+			);
+
+			let resolved = false;
+			const deps = {
+				handleStatus: vi.fn(),
+				handleAbout: vi.fn(),
+				handleContext: vi.fn(),
+				handleStats: vi.fn(),
+				handleBackground: vi.fn(),
+				handleDiagnostics: vi.fn(),
+				handleTelemetry: vi.fn(),
+				handleTraining: vi.fn(),
+				handleOtel: vi.fn(),
+				handleConfig: vi.fn().mockImplementation(async () => {
+					await new Promise((r) => setTimeout(r, 10));
+					resolved = true;
+				}),
+				handleLsp: vi.fn(),
+				handleMcp: vi.fn(),
+				showInfo: vi.fn(),
+				isDatabaseConfigured: vi.fn().mockReturnValue(false),
+			};
+
+			const handler = createDiagCommandHandler(deps);
+			const ctx = createMockContext("/diag config", "config");
+
+			await handler(ctx);
+
+			expect(resolved).toBe(true);
+		});
+	});
+
+	describe("Intelligent Fallbacks", () => {
+		it("session handler treats numeric input as session load", async () => {
+			const { createSessionCommandHandler } = await import(
+				"../src/tui/commands/grouped/session-commands.js"
+			);
+
+			const deps = {
+				handleNewChat: vi.fn(),
+				handleClear: vi.fn(),
+				handleSessionInfo: vi.fn(),
+				handleSessionsList: vi.fn(),
+				handleBranch: vi.fn(),
+				handleQueue: vi.fn(),
+				handleExport: vi.fn(),
+				handleShare: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createSessionCommandHandler(deps);
+			const ctx = createMockContext("/ss 5", "5");
+
+			await handler(ctx);
+
+			expect(deps.handleSessionsList).toHaveBeenCalled();
+			const receivedCtx = deps.handleSessionsList.mock.calls[0][0];
+			expect(receivedCtx.argumentText).toBe("load 5");
+		});
+
+		it("git handler treats path-like input as diff", async () => {
+			const { createGitCommandHandler } = await import(
+				"../src/tui/commands/grouped/git-commands.js"
+			);
+
+			const deps = {
+				handleDiff: vi.fn(),
+				handleReview: vi.fn(),
+				showInfo: vi.fn(),
+				runGitCommand: vi.fn().mockResolvedValue(""),
+			};
+
+			const handler = createGitCommandHandler(deps);
+			const ctx = createMockContext(
+				"/git src/components/Button.tsx",
+				"src/components/Button.tsx",
+			);
+
+			await handler(ctx);
+
+			expect(deps.handleDiff).toHaveBeenCalled();
+		});
+
+		it("auth handler treats 'pro' as login mode", async () => {
+			const { createAuthCommandHandler } = await import(
+				"../src/tui/commands/grouped/auth-commands.js"
+			);
+
+			const deps = {
+				handleLogin: vi.fn(),
+				handleLogout: vi.fn(),
+				showInfo: vi.fn(),
+				getAuthState: vi.fn().mockReturnValue({
+					authenticated: false,
+				}),
+			};
+
+			const handler = createAuthCommandHandler(deps);
+			const ctx = createMockContext("/auth pro", "pro");
+
+			await handler(ctx);
+
+			expect(deps.handleLogin).toHaveBeenCalled();
+		});
+	});
 });
