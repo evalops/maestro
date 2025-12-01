@@ -55,7 +55,9 @@ export class GenericRenderer implements ToolRenderer {
 	private getTextOutput(context: ToolRenderArgs): string {
 		if (!context.result) return "";
 		const textBlocks =
-			context.result.content?.filter((c: any) => c.type === "text") || [];
-		return textBlocks.map((c: any) => c.text).join("\n");
+			context.result.content?.filter(
+				(c): c is { type: "text"; text: string } => c.type === "text",
+			) || [];
+		return textBlocks.map((c) => c.text).join("\n");
 	}
 }

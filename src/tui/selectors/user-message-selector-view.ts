@@ -42,10 +42,10 @@ export class UserMessageSelectorView {
 					text = message.content;
 				} else if (Array.isArray(message.content)) {
 					const textBlocks = message.content.filter(
-						(c: any) => c.type === "text",
+						(c): c is { type: "text"; text: string } => c.type === "text",
 					);
 					text = textBlocks
-						.map((c: any) => c.text)
+						.map((c) => c.text)
 						.join(" ")
 						.replace(/\n/g, " ")
 						// biome-ignore lint/suspicious/noControlCharactersInRegex: Need to strip ANSI escape sequences
@@ -98,11 +98,11 @@ export class UserMessageSelectorView {
 			selectedText = selectedMessage.content;
 		} else if (Array.isArray(selectedMessage.content)) {
 			const textBlocks = selectedMessage.content.filter(
-				(c: any) => c.type === "text",
+				(c): c is { type: "text"; text: string } => c.type === "text",
 			);
 			// Preserve newlines when placing in editor (join with newline, not space)
 			selectedText = textBlocks
-				.map((c: any) => c.text)
+				.map((c) => c.text)
 				.join("\n")
 				.trim();
 		}

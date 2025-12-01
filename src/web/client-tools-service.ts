@@ -1,7 +1,10 @@
-import type { TextContent } from "../agent/types.js";
+import type { ImageContent, TextContent } from "../agent/types.js";
+
+/** Content types that can be returned from client tool execution */
+type ToolResultContent = TextContent | ImageContent;
 
 type PendingEntry = {
-	resolve: (result: { content: any[]; isError: boolean }) => void;
+	resolve: (result: { content: ToolResultContent[]; isError: boolean }) => void;
 	timestamp: number;
 };
 
@@ -13,7 +16,7 @@ export class ClientToolService {
 		toolName: string,
 		args: unknown,
 		signal?: AbortSignal,
-	): Promise<{ content: any[]; isError: boolean }> {
+	): Promise<{ content: ToolResultContent[]; isError: boolean }> {
 		if (signal?.aborted) {
 			return {
 				content: [{ type: "text", text: "Aborted" } as TextContent],
@@ -40,7 +43,7 @@ export class ClientToolService {
 		});
 	}
 
-	resolve(id: string, content: any[], isError: boolean) {
+	resolve(id: string, content: ToolResultContent[], isError: boolean) {
 		const entry = this.pending.get(id);
 		if (entry) {
 			this.pending.delete(id);

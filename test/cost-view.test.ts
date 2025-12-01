@@ -84,7 +84,7 @@ const makeSummary = (overrides: Partial<UsageSummary> = {}): UsageSummary => {
 	};
 };
 
-describe.sequential("CostView", () => {
+describe("CostView", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockSummary.mockReturnValue(makeSummary());

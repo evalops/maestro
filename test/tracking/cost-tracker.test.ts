@@ -27,32 +27,37 @@ import {
 	trackUsage,
 } from "../../src/tracking/cost-tracker.js";
 
-describe.sequential("Enhanced Cost Tracking", () => {
+describe("Enhanced Cost Tracking", () => {
 	let testDir: string;
+	let testUsageFile: string;
 	let originalEnv: string | undefined;
 
 	beforeEach(() => {
+		// Create isolated temp directory for each test
 		testDir = mkdtempSync(join(tmpdir(), "composer-cost-test-"));
-		originalEnv = process.env.HOME;
+		testUsageFile = join(testDir, "usage.json");
 
-		// Override HOME to use test directory
-		const testUsageFile = join(testDir, ".composer", "usage.json");
-		process.env.HOME = testDir;
+		// Save and override the usage file path via environment variable
+		originalEnv = process.env.COMPOSER_USAGE_FILE;
+		process.env.COMPOSER_USAGE_FILE = testUsageFile;
 
 		// Clear any existing data
 		clearUsage();
 	});
 
 	afterEach(() => {
-		try {
-			rmSync(testDir, { recursive: true, force: true });
-		} catch (error) {
-			console.warn("Failed to clean up test directory:", error);
+		// Restore original environment
+		if (originalEnv !== undefined) {
+			process.env.COMPOSER_USAGE_FILE = originalEnv;
+		} else {
+			process.env.COMPOSER_USAGE_FILE = undefined;
 		}
 
-		// Restore original HOME
-		if (originalEnv) {
-			process.env.HOME = originalEnv;
+		// Clean up temp directory
+		try {
+			rmSync(testDir, { recursive: true, force: true });
+		} catch {
+			// Ignore cleanup errors
 		}
 	});
 

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
+import type { AgentEvent } from "../../agent/types.js";
 import type { SessionManager } from "../../session/manager.js"; // Import type only if not used as value
 import {
 	SessionManager as SessionManagerImpl, // Rename value import
@@ -149,7 +150,7 @@ export async function handleChat(
 		sseSession.startHeartbeat();
 		let cleanedUp = false;
 
-		const unsubscribe = agent.subscribe((event: any) => {
+		const unsubscribe = agent.subscribe((event: AgentEvent) => {
 			sendSSE(sseSession, event);
 
 			if (event.type === "message_end") {

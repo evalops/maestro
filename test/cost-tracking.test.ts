@@ -1,4 +1,12 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type UsageEntry,
@@ -9,26 +17,41 @@ import {
 	trackUsage,
 } from "../src/tracking/cost-tracker.js";
 
-describe.sequential("Cost Tracking", () => {
-	const usageFile = getUsageFilePath();
-	let originalFileContent: string | null = null;
+describe("Cost Tracking", () => {
+	let testDir: string;
+	let testUsageFile: string;
+	let originalEnv: string | undefined;
 
 	beforeEach(() => {
-		// Backup existing usage file if it exists
-		if (existsSync(usageFile)) {
-			originalFileContent = readFileSync(usageFile, "utf-8");
-		}
+		// Create isolated temp directory for each test
+		testDir = join(
+			tmpdir(),
+			`composer-cost-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		mkdirSync(testDir, { recursive: true });
+		testUsageFile = join(testDir, "usage.json");
+
+		// Save and override the usage file path
+		originalEnv = process.env.COMPOSER_USAGE_FILE;
+		process.env.COMPOSER_USAGE_FILE = testUsageFile;
 
 		// Start with clean slate
 		clearUsage();
 	});
 
 	afterEach(() => {
-		// Restore original file
-		if (originalFileContent) {
-			writeFileSync(usageFile, originalFileContent);
-		} else if (existsSync(usageFile)) {
-			unlinkSync(usageFile);
+		// Restore original environment
+		if (originalEnv !== undefined) {
+			process.env.COMPOSER_USAGE_FILE = originalEnv;
+		} else {
+			process.env.COMPOSER_USAGE_FILE = undefined;
+		}
+
+		// Clean up temp directory
+		try {
+			rmSync(testDir, { recursive: true, force: true });
+		} catch {
+			// Ignore cleanup errors
 		}
 	});
 
@@ -109,8 +132,8 @@ describe.sequential("Cost Tracking", () => {
 				cost: 0.01,
 			});
 
-			// Simulate yesterday's usage by hacking the file
-			const entries = JSON.parse(readFileSync(usageFile, "utf-8"));
+			// Simulate yesterday's usage by writing directly to the file
+			const entries = JSON.parse(readFileSync(testUsageFile, "utf-8"));
 			entries.push({
 				timestamp: now - oneDayMs,
 				provider: "anthropic",
@@ -119,7 +142,7 @@ describe.sequential("Cost Tracking", () => {
 				tokensOutput: 250,
 				cost: 0.002,
 			});
-			writeFileSync(usageFile, JSON.stringify(entries));
+			writeFileSync(testUsageFile, JSON.stringify(entries));
 		});
 
 		it("should summarize all usage", () => {
@@ -219,14 +242,20 @@ describe.sequential("Cost Tracking", () => {
 				cost: 0.001,
 			});
 
-			expect(existsSync(usageFile)).toBe(true);
+			expect(existsSync(testUsageFile)).toBe(true);
 
-			const entries = JSON.parse(readFileSync(usageFile, "utf-8"));
+			const entries = JSON.parse(readFileSync(testUsageFile, "utf-8"));
 			expect(Array.isArray(entries)).toBe(true);
 			expect(entries[0]).toHaveProperty("timestamp");
 			expect(entries[0]).toHaveProperty("provider");
 			expect(entries[0]).toHaveProperty("model");
 			expect(entries[0]).toHaveProperty("cost");
+		});
+	});
+
+	describe("getUsageFilePath", () => {
+		it("should return the configured usage file path", () => {
+			expect(getUsageFilePath()).toBe(testUsageFile);
 		});
 	});
 });

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parseJsonOr } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -9,9 +9,15 @@ const logger = createLogger("cost-tracker");
 /**
  * Cost tracking for API usage
  * Stores usage data locally in ~/.composer/usage.json
+ * Can be overridden via COMPOSER_USAGE_FILE environment variable for testing
  */
 
-const USAGE_FILE = join(homedir(), ".composer", "usage.json");
+function getUsageFilePathInternal(): string {
+	if (process.env.COMPOSER_USAGE_FILE) {
+		return process.env.COMPOSER_USAGE_FILE;
+	}
+	return join(homedir(), ".composer", "usage.json");
+}
 
 export interface UsageEntry {
 	timestamp: number; // Unix timestamp
@@ -63,11 +69,12 @@ export interface UsageSummary {
  */
 function loadUsage(): UsageEntry[] {
 	try {
-		if (!existsSync(USAGE_FILE)) {
+		const usageFile = getUsageFilePathInternal();
+		if (!existsSync(usageFile)) {
 			return [];
 		}
 
-		const data = readFileSync(USAGE_FILE, "utf-8");
+		const data = readFileSync(usageFile, "utf-8");
 		return parseJsonOr<UsageEntry[]>(data, []);
 	} catch (error) {
 		logger.warn("Failed to load usage data", {
@@ -83,12 +90,13 @@ function loadUsage(): UsageEntry[] {
  */
 function saveUsage(entries: UsageEntry[]): void {
 	try {
-		const dir = join(homedir(), ".composer");
+		const usageFile = getUsageFilePathInternal();
+		const dir = dirname(usageFile);
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true });
 		}
 
-		writeFileSync(USAGE_FILE, JSON.stringify(entries, null, 2));
+		writeFileSync(usageFile, JSON.stringify(entries, null, 2));
 	} catch (error) {
 		logger.warn("Failed to save usage data", {
 			error: error instanceof Error ? error.message : String(error),
@@ -234,7 +242,7 @@ export function clearUsage(): void {
  * Get usage file path
  */
 export function getUsageFilePath(): string {
-	return USAGE_FILE;
+	return getUsageFilePathInternal();
 }
 
 /**

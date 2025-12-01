@@ -1,4 +1,12 @@
 export {
+	DEFAULT_GUARDIAN_CONFIG,
+	getConfigSummary,
+	getProjectConfigPath,
+	getUserConfigPath,
+	resolveGuardianConfig,
+	validateSecretPatterns,
+} from "./config.js";
+export {
 	formatGuardianResult,
 	runGuardian,
 	shouldGuardCommand,
@@ -10,6 +18,7 @@ export {
 	setGuardianEnabled,
 } from "./state.js";
 export type {
+	GuardianConfig,
 	GuardianRunOptions,
 	GuardianRunResult,
 	GuardianState,

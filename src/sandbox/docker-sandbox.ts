@@ -66,11 +66,16 @@ export class DockerSandbox implements Sandbox {
 		try {
 			const { stdout, stderr } = await execAsync(dockerCmd);
 			return { stdout, stderr, exitCode: 0 };
-		} catch (error: any) {
+		} catch (error: unknown) {
+			const execError = error as {
+				stdout?: string;
+				stderr?: string;
+				code?: number;
+			};
 			return {
-				stdout: error.stdout || "",
-				stderr: error.stderr || "",
-				exitCode: error.code || 1,
+				stdout: execError.stdout || "",
+				stderr: execError.stderr || "",
+				exitCode: execError.code || 1,
 			};
 		}
 	}
