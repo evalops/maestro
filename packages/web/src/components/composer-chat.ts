@@ -15,6 +15,8 @@ import {
 	type WorkspaceStatus,
 } from "../services/api-client.js";
 import { dataStore } from "../services/data-store.js";
+import "./command-drawer.js";
+import { WEB_SLASH_COMMANDS } from "./slash-commands.js";
 import "./composer-message.js";
 import "./composer-input.js";
 import "./composer-settings.js";
@@ -523,6 +525,11 @@ export class ComposerChat extends LitElement {
 	@state() private settingsOpen = false;
 	@state() private adminSettingsOpen = false;
 	@state() private status: WorkspaceStatus | null = null;
+	@state() private commandPrefs: { favorites: string[]; recents: string[] } = {
+		favorites: [],
+		recents: [],
+	};
+	@state() private commandDrawerOpen = false;
 	@state() private showModelSelector = false;
 	@state() private currentModelTokens: string | null = null;
 	@state() private models: Model[] = [];
@@ -570,6 +577,10 @@ export class ComposerChat extends LitElement {
 			e.preventDefault();
 			this.toggleCompact();
 		}
+		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+			e.preventDefault();
+			this.commandDrawerOpen = true;
+		}
 	};
 	private toggleShortcuts() {
 		this.showShortcuts = !this.showShortcuts;
@@ -592,6 +603,59 @@ export class ComposerChat extends LitElement {
 			"info",
 			1500,
 		);
+	}
+
+	private closeCommandDrawer() {
+		this.commandDrawerOpen = false;
+	}
+
+	private handleCommandSelect(name: string) {
+		const input = this.shadowRoot?.querySelector("composer-input") as
+			| any
+			| null;
+		if (input?.setValue) {
+			input.setValue(`/${name} `);
+		}
+		const recents = [
+			name,
+			...this.commandPrefs.recents.filter((n) => n !== name),
+		].slice(0, 20);
+		void this.saveCommandPrefs({
+			favorites: this.commandPrefs.favorites,
+			recents,
+		});
+		this.commandDrawerOpen = false;
+	}
+
+	private handleToggleFavorite(name: string) {
+		const favorites = this.commandPrefs.favorites.includes(name)
+			? this.commandPrefs.favorites.filter((n) => n !== name)
+			: [...this.commandPrefs.favorites, name];
+		void this.saveCommandPrefs({
+			favorites,
+			recents: this.commandPrefs.recents,
+		});
+	}
+
+	private async loadCommandPrefs() {
+		try {
+			const prefs = await this.apiClient.getCommandPrefs();
+			this.commandPrefs = prefs;
+		} catch (e) {
+			console.warn("Failed to load command prefs", e);
+		}
+	}
+
+	private async saveCommandPrefs(prefs: {
+		favorites: string[];
+		recents: string[];
+	}) {
+		this.commandPrefs = prefs;
+		try {
+			await this.apiClient.saveCommandPrefs(prefs);
+		} catch (e) {
+			console.warn("Failed to save command prefs", e);
+		}
 	}
 	private toggleReducedMotion() {
 		this.reducedMotion = !this.reducedMotion;
@@ -620,6 +684,7 @@ export class ComposerChat extends LitElement {
 		dataStore.ensureModels(this.apiClient);
 		dataStore.ensureUsage(this.apiClient);
 		this.hydrateDisplayPrefs();
+		this.loadCommandPrefs();
 		window.addEventListener("online", this.handleOnline);
 		window.addEventListener("offline", this.handleOffline);
 		window.addEventListener("keydown", this.handleKeydown);
@@ -1405,6 +1470,18 @@ export class ComposerChat extends LitElement {
 			`
 					: ""
 			}
+
+			<command-drawer
+				?open=${this.commandDrawerOpen}
+				.commands=${WEB_SLASH_COMMANDS}
+				.favorites=${this.commandPrefs.favorites}
+				.recents=${this.commandPrefs.recents}
+				@select-command=${(e: CustomEvent<string>) =>
+					this.handleCommandSelect(e.detail)}
+				@toggle-favorite=${(e: CustomEvent<string>) =>
+					this.handleToggleFavorite(e.detail)}
+				@close=${this.closeCommandDrawer}
+			></command-drawer>
 
 			${
 				this.showModelSelector

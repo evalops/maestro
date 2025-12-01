@@ -5,94 +5,7 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { ApiClient } from "../services/api-client.js";
-
-type SlashCommandHint = {
-	name: string;
-	description: string;
-	usage: string;
-	tags?: string[];
-};
-
-const SLASH_COMMANDS: SlashCommandHint[] = [
-	{
-		name: "help",
-		description: "List commands",
-		usage: "/help",
-		tags: ["support"],
-	},
-	{
-		name: "run",
-		description: "Run npm script",
-		usage: "/run <script>",
-		tags: ["automation"],
-	},
-	{
-		name: "diff",
-		description: "Show git diff",
-		usage: "/diff <path>",
-		tags: ["git"],
-	},
-	{
-		name: "review",
-		description: "Summarize git status/diff",
-		usage: "/review",
-		tags: ["git"],
-	},
-	{
-		name: "plan",
-		description: "Show saved plans",
-		usage: "/plan",
-		tags: ["planning"],
-	},
-	{
-		name: "model",
-		description: "Select model",
-		usage: "/model",
-		tags: ["session"],
-	},
-	{
-		name: "theme",
-		description: "Select theme",
-		usage: "/theme",
-		tags: ["ui"],
-	},
-	{
-		name: "config",
-		description: "Inspect config",
-		usage: "/config",
-		tags: ["config"],
-	},
-	{
-		name: "cost",
-		description: "Show usage/cost",
-		usage: "/cost",
-		tags: ["usage"],
-	},
-	{
-		name: "telemetry",
-		description: "Toggle telemetry",
-		usage: "/telemetry [on|off]",
-		tags: ["diagnostics"],
-	},
-	{
-		name: "approvals",
-		description: "Set approval mode",
-		usage: "/approvals [auto|prompt|fail]",
-		tags: ["safety"],
-	},
-	{
-		name: "queue",
-		description: "Manage prompt queue",
-		usage: "/queue [list|mode]",
-		tags: ["planning"],
-	},
-	{
-		name: "new",
-		description: "New session",
-		usage: "/new",
-		tags: ["session"],
-	},
-];
+import { WEB_SLASH_COMMANDS, type WebSlashCommand } from "./slash-commands.js";
 
 @customElement("composer-input")
 export class ComposerInput extends LitElement {
@@ -346,8 +259,8 @@ export class ComposerInput extends LitElement {
 	@state() private showSuggestions = false;
 	@state() private suggestionIndex = 0;
 	@state() private filteredFiles: string[] = [];
-	@state() private slashHint: SlashCommandHint | null = null;
-	@state() private slashMatches: SlashCommandHint[] = [];
+	@state() private slashHint: WebSlashCommand | null = null;
+	@state() private slashMatches: WebSlashCommand[] = [];
 	@state() private slashIndex = 0;
 
 	private maxLength = 10000;
@@ -479,7 +392,7 @@ export class ComposerInput extends LitElement {
 		}
 	}
 
-	private scoreCommand(cmd: SlashCommandHint, query: string): number {
+	private scoreCommand(cmd: WebSlashCommand, query: string): number {
 		let score = 0;
 		const q = query.trim();
 		const name = cmd.name.toLowerCase();
@@ -602,6 +515,17 @@ export class ComposerInput extends LitElement {
 		if (textarea) {
 			textarea.value = "";
 			textarea.style.height = "auto";
+		}
+	}
+
+	public setValue(text: string) {
+		this.value = text;
+		const textarea = this.shadowRoot?.querySelector("textarea");
+		if (textarea) {
+			textarea.value = text;
+			textarea.style.height = "auto";
+			textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
+			textarea.focus();
 		}
 	}
 

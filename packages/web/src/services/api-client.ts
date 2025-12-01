@@ -139,6 +139,11 @@ export interface UsageSummary {
 	>;
 }
 
+export interface CommandPrefs {
+	favorites: string[];
+	recents: string[];
+}
+
 async function safeJson(response: Response) {
 	const contentType = response.headers.get("content-type") || "";
 	if (!response.ok) {
@@ -508,5 +513,32 @@ export class ApiClient {
 				method: "DELETE",
 			});
 		}
+	}
+
+	async getCommandPrefs(): Promise<CommandPrefs> {
+		try {
+			const data = await this.fetchJsonWithFallback("/api/command-prefs");
+			return {
+				favorites: Array.isArray(data.favorites)
+					? (data.favorites as string[]).filter((x) => typeof x === "string")
+					: [],
+				recents: Array.isArray(data.recents)
+					? (data.recents as string[]).filter((x) => typeof x === "string")
+					: [],
+			};
+		} catch {
+			return { favorites: [], recents: [] };
+		}
+	}
+
+	async saveCommandPrefs(prefs: CommandPrefs): Promise<void> {
+		await this.tryFallbackFetch("/api/command-prefs", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Accept: "application/json",
+			},
+			body: JSON.stringify(prefs),
+		});
 	}
 }

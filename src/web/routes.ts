@@ -4,6 +4,7 @@ import type { WebServerContext } from "./app-context.js";
 import { handleApproval } from "./handlers/approval.js";
 import { handleChat } from "./handlers/chat.js";
 import { handleClientToolResult } from "./handlers/client-tools.js";
+import { handleCommandPrefs } from "./handlers/command-prefs.js";
 import { handleCommands } from "./handlers/commands.js";
 import { handleConfig } from "./handlers/config.js";
 import { handleFiles } from "./handlers/files.js";
@@ -69,6 +70,16 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "GET",
 			path: "/api/commands",
 			handler: (req, res) => handleCommands(req, res, context),
+		},
+		{
+			method: "GET",
+			path: "/api/command-prefs",
+			handler: (req, res) => handleCommandPrefs(req, res, context),
+		},
+		{
+			method: "POST",
+			path: "/api/command-prefs",
+			handler: (req, res) => handleCommandPrefs(req, res, context),
 		},
 		{
 			method: "GET",
