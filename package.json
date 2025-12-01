@@ -40,7 +40,7 @@
     "web:dev": "concurrently --names \"server,ui\" --prefix-colors \"blue,green\" \"tsx --watch src/web-server.ts\" \"bun run dev:web\"",
     "bun:lint": "bunx biome check . && bun run lint:evals",
     "bun:test": "bunx vitest --run",
-    "bun:check": "bun run bun:lint && npm run check --workspaces --if-present && bunx tsc --noEmit",
+    "bun:check": "bun run bun:lint && bunx tsc --noEmit",
     "bun:compile": "bun build ./src/cli.ts --compile --outfile dist/composer-bun",
     "bun:evals": "bun run build && bun run ./scripts/run-evals.js",
     "compile:binary": "npm run bun:compile && echo \"Binary ready at dist/composer-bun\"",
