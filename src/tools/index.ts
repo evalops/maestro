@@ -15,6 +15,7 @@ import { findTool } from "./find.js";
 import { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 // Directory listing / globbing
 import { listTool } from "./list.js";
+import { oracleTool } from "./oracle.js";
 import { parallelRipgrepTool } from "./parallel-ripgrep.js";
 // File reader with range support
 import { readTool } from "./read.js";
@@ -61,6 +62,7 @@ export { ensureTool, getToolPath } from "./tools-manager.js";
 const allTools = [
 	readTool,
 	listTool,
+	oracleTool,
 	findTool,
 	searchTool,
 	parallelRipgrepTool,
@@ -85,6 +87,7 @@ export const codingTools = [
 	batchTool,
 	readTool,
 	listTool,
+	oracleTool,
 	findTool,
 	searchTool,
 	parallelRipgrepTool,
@@ -109,6 +112,7 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	batch: batchTool,
 	read: readTool,
 	list: listTool,
+	oracle: oracleTool,
 	find: findTool,
 	search: searchTool,
 	parallel_ripgrep: parallelRipgrepTool,

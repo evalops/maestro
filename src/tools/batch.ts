@@ -6,7 +6,7 @@ export interface BatchAgentTool extends AgentTool {
 	setAvailableTools: (tools: AgentTool[]) => void;
 }
 
-const DISALLOWED_TOOLS = new Set(["batch", "edit", "write"]);
+const DISALLOWED_TOOLS = new Set(["batch", "edit", "write", "oracle"]);
 const GH_MUTATING_ACTIONS: Record<string, Set<string>> = {
 	gh_pr: new Set(["create", "checkout", "comment", "close"]),
 	gh_issue: new Set(["create", "comment", "close"]),

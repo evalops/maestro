@@ -1666,6 +1666,7 @@ describe("codingTools bundle", () => {
 			"batch",
 			"read",
 			"list",
+			"oracle",
 			"find",
 			"search",
 			"parallel_ripgrep",
