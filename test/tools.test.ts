@@ -809,7 +809,7 @@ describe("Composer Tools", () => {
 
 			await expect(
 				freshBashTool.execute("test-safe-mode", {
-					command: "echo hi > file.txt",
+					command: "rm -rf file.txt",
 				}),
 			).rejects.toThrow(/requires a plan/);
 

@@ -522,12 +522,28 @@ export function shouldGuardCommand(command: string): {
 	if (inlineDisable.test(command)) {
 		return { shouldGuard: false, trigger: null };
 	}
-	const regex = /\bgit\s+(commit|push)\b/i;
-	const match = command.match(regex);
-	if (!match) {
-		return { shouldGuard: false, trigger: null };
+	const gitMatch = command.match(/\bgit\s+(commit|push)\b/i);
+	if (gitMatch) {
+		return { shouldGuard: true, trigger: `git ${gitMatch[1].toLowerCase()}` };
 	}
-	return { shouldGuard: true, trigger: `git ${match[1].toLowerCase()}` };
+
+	const destructivePatterns: Array<{ regex: RegExp; label: string }> = [
+		{ regex: /\brm\s+-rf\b/i, label: "rm -rf" },
+		{ regex: /\bfind\s+[^\n]*-delete\b/i, label: "find -delete" },
+		{ regex: /\bchmod\s+0{3,4}\b/i, label: "chmod 000" },
+		{ regex: /\bchown\b[^\n]*\broot\b/i, label: "chown root" },
+		{ regex: /\bdd\s+if=.*\s+of=\/dev\//i, label: "dd to device" },
+		{ regex: /\bmkfs\./i, label: "mkfs" },
+		{ regex: /\btruncate\s+-s\s+0\b/i, label: "truncate -s 0" },
+	];
+
+	for (const pattern of destructivePatterns) {
+		if (pattern.regex.test(command)) {
+			return { shouldGuard: true, trigger: pattern.label };
+		}
+	}
+
+	return { shouldGuard: false, trigger: null };
 }
 
 export async function runGuardian(

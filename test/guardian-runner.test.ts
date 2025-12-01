@@ -72,6 +72,21 @@ describe("guardian runner", () => {
 		expect(result.shouldGuard).toBe(false);
 	});
 
+	it("detects destructive commands", () => {
+		const commands = [
+			"rm -rf /tmp/x",
+			"find . -delete",
+			"chmod 000 secret",
+			"dd if=/dev/zero of=/dev/sda",
+			"mkfs.ext4 /dev/sdb1",
+			"truncate -s 0 file.txt",
+		];
+		for (const cmd of commands) {
+			const result = shouldGuardCommand(cmd);
+			expect(result.shouldGuard).toBe(true);
+		}
+	});
+
 	it("skips when COMPOSER_GUARDIAN=0 env is set", async () => {
 		process.env.COMPOSER_GUARDIAN = "0";
 		const result = await runGuardian({ target: "staged", trigger: "test" });
