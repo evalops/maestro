@@ -64,6 +64,11 @@ import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { PolicyError, checkSessionLimits } from "./safety/policy.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
+import {
+	type SandboxMode,
+	createSandbox,
+	disposeSandbox,
+} from "./sandbox/index.js";
 import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import {
 	codingTools,
@@ -344,18 +349,17 @@ export async function main(args: string[]) {
 			);
 			process.exit(1);
 		}
-		if (
-			parsed.execSandbox &&
-			parsed.execSandbox !== "danger-full-access" &&
-			parsed.execSandbox !== "default"
-		) {
-			console.error(
-				chalk.red(
-					`Unknown sandbox mode "${parsed.execSandbox}". Supported: default, danger-full-access`,
-				),
-			);
-			process.exit(1);
-		}
+	}
+
+	// Validate sandbox mode (applies to both exec and interactive modes)
+	const validSandboxModes = ["docker", "local", "none"];
+	if (parsed.sandbox && !validSandboxModes.includes(parsed.sandbox)) {
+		console.error(
+			chalk.red(
+				`Unknown sandbox mode "${parsed.sandbox}". Supported: ${validSandboxModes.join(", ")}`,
+			),
+		);
+		process.exit(1);
 	}
 
 	if (parsed.safeMode) {
@@ -732,15 +736,39 @@ export async function main(args: string[]) {
 	}
 	const allTools = [...baseTools];
 
+	// Create sandbox if requested
+	const sandboxMode = (parsed.sandbox ?? process.env.COMPOSER_SANDBOX_MODE) as
+		| SandboxMode
+		| undefined;
+	const sandbox = sandboxMode
+		? await createSandbox({ mode: sandboxMode, cwd: process.cwd() })
+		: undefined;
+
+	// Register sandbox cleanup on exit (only if sandbox is active)
+	if (sandbox) {
+		const cleanupSandbox = async () => {
+			await disposeSandbox(sandbox);
+		};
+		process.once("beforeExit", () => void cleanupSandbox());
+		process.once("SIGINT", () => {
+			void cleanupSandbox();
+			process.exit(0);
+		});
+		process.once("SIGTERM", () => {
+			void cleanupSandbox();
+			process.exit(0);
+		});
+	}
+
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
 			model,
 			thinkingLevel: "off",
 			tools: allTools,
-			sandboxMode: parsed.execSandbox ?? process.env.COMPOSER_SANDBOX ?? null,
-			sandboxEnabled:
-				Boolean(parsed.execSandbox) || Boolean(process.env.COMPOSER_SANDBOX),
+			sandbox,
+			sandboxMode: sandboxMode ?? null,
+			sandboxEnabled: Boolean(sandbox),
 			user: (() => {
 				const u = enterpriseContext.getUser();
 				return u ? { id: u.userId, orgId: u.orgId } : undefined;
@@ -811,6 +839,11 @@ export async function main(args: string[]) {
 	const shouldPrintMessages = isInteractive || mode === "text";
 
 	const isGitRepository = isInsideGitRepository();
+
+	// Log sandbox status
+	if (sandbox && shouldPrintMessages) {
+		console.log(chalk.dim(`Sandbox enabled (mode: ${sandboxMode})`));
+	}
 
 	if (
 		approvalModeOverride === "auto" &&
@@ -1059,7 +1092,7 @@ export async function main(args: string[]) {
 			sessionManager,
 			prompts: parsed.messages,
 			jsonl: Boolean(parsed.execJson),
-			sandboxMode: parsed.execSandbox ?? "default",
+			sandboxMode: sandboxMode,
 			outputSchema: parsed.execOutputSchema,
 			outputLastMessage: parsed.execOutputLast,
 		});

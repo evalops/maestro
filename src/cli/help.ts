@@ -18,10 +18,12 @@ export function printHelp(version: string) {
 		"--mode <mode>           Output mode: text (default), json, or rpc",
 		"--auth <mode>           Credential mode: auto (default), api-key, chatgpt, claude",
 		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
+		"--sandbox <mode>        Sandbox mode: docker, local, none (see docs/SAFETY.md)",
 		"--continue, -c          Continue previous session",
 		"--resume, -r            Select a session to resume",
 		"--session <path>        Use specific session file",
 		"--no-session            Don't save session (ephemeral)",
+		"--safe-mode             Enable extra safety restrictions",
 		"--help, -h              Show this help",
 	]
 		.map((line) => `  ${muted(line)}`)
@@ -50,6 +52,7 @@ export function printHelp(version: string) {
   ANTHROPIC_OAUTH_TOKEN   - Alternate env for Claude Code bearer tokens
   CODEX_API_KEY           - Codex/ChatGPT API token for --auth chatgpt
   COMPOSER_AGENT_DIR      - Session storage directory (default: ~/.composer/agent)
+  COMPOSER_SANDBOX_MODE   - Sandbox mode: docker, local, none (default: none)
   COMPOSER_CHANGELOG      - Set to off/false/hide/hidden/skip/0 to hide startup changelog banner
   COMPOSER_TUI_MINIMAL    - Set to 1/true to disable animations and reduce TUI effects (SSH-friendly)
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,
@@ -62,7 +65,7 @@ export function printHelp(version: string) {
     --output-schema <file|json> Validate final assistant JSON against a schema
     --output-last-message <path> Write the final assistant message to disk
     --full-auto | --read-only   Force approval policy (auto or fail)
-    --sandbox danger-full-access Remove sandbox guardrails (default: safe)
+    --sandbox <mode>            Run in sandbox: docker, local, none
     --resume <sessionId>        Resume a prior exec session by id
     --last                      Resume the most recent exec session`,
 	)}`;

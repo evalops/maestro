@@ -22,7 +22,8 @@ export interface Args {
 	execJson?: boolean;
 	execFullAuto?: boolean;
 	execReadOnly?: boolean;
-	execSandbox?: string;
+	/** Sandbox mode: "docker", "local", or "none" (applies to both exec and interactive modes) */
+	sandbox?: string;
 	execOutputSchema?: string;
 	execOutputLast?: string;
 	execResumeId?: string;
@@ -127,7 +128,7 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--read-only") {
 			result.execReadOnly = true;
 		} else if (arg === "--sandbox" && i + 1 < args.length) {
-			result.execSandbox = args[++i];
+			result.sandbox = args[++i];
 		} else if (arg === "--output-schema" && i + 1 < args.length) {
 			result.execOutputSchema = args[++i];
 		} else if (arg === "--output-last-message" && i + 1 < args.length) {

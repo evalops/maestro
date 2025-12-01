@@ -42,10 +42,63 @@ Safe mode (`COMPOSER_SAFE_MODE=1` or `--safe-mode`) additionally disables shell
 writes (chmod, mv) unless explicitly approved and surfaces a shield icon in the
 footer.
 
+## Sandbox Mode
+
+Composer supports running tool operations in an isolated sandbox environment,
+providing an extra layer of protection when exploring untrusted code.
+
+### Available Modes
+
+| Mode    | Description                                           |
+| ------- | ----------------------------------------------------- |
+| `none`  | No sandbox (default) - tools run directly on the host |
+| `local` | Local sandbox - minimal isolation (same as `none`)    |
+| `docker`| Docker container - full isolation                     |
+
+### Enabling Sandbox Mode
+
+Via CLI flag:
+```bash
+composer --sandbox docker
+composer exec --sandbox docker "Analyze this codebase"
+```
+
+Via environment variable:
+```bash
+export COMPOSER_SANDBOX_MODE=docker
+composer
+```
+
+Via configuration file (`.composer/sandbox.json`):
+```json
+{
+  "mode": "docker",
+  "docker": {
+    "image": "node:20-slim",
+    "workspaceMount": "/workspace"
+  }
+}
+```
+
+### Docker Sandbox Details
+
+When using Docker mode:
+- A detached container is started with your workspace mounted
+- All bash commands execute inside the container
+- File operations (read, write, edit) are sandboxed
+- Container is cleaned up on exit
+
+Requirements:
+- Docker must be installed and running
+- Current user must have permission to run Docker commands
+
+If Docker is unavailable, Composer falls back to local mode with a warning.
+
 ## Best Practices
 
 - Keep the firewall enabled locally; treat `auto` mode as CI-only.
+- Use `--sandbox docker` when exploring untrusted repositories.
 - If a legitimate command trips a rule, prefer an explicit approval over
   disabling the rule. If you need a custom rule, submit a PR so others benefit.
-- Document approvals in team workflows: “Composer asked to run `rm -rf`.
-  Approved because we’re deleting `tmp/`.”
+- Document approvals in team workflows: "Composer asked to run `rm -rf`.
+  Approved because we're deleting `tmp/`."
