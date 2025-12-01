@@ -82,8 +82,8 @@ export class TUI extends Container {
 		this.features = features ?? detectTerminalFeatures();
 		this.syncOutput = this.features.supportsSyncOutput;
 		if (this.features.overSsh) {
-			// Avoid repaint storms on high-latency SSH links.
-			this.minRenderIntervalMs = 24;
+			// Avoid repaint storms on high-latency links (SSH/tmux/mosh).
+			this.minRenderIntervalMs = 48;
 		}
 	}
 

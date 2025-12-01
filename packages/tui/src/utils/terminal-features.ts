@@ -12,12 +12,14 @@ export interface TerminalFeatures {
 }
 
 const LOW_COLOR_TERMS = ["dumb", "linux", "vt100", "vt220", "ansi"];
+const MOSH_ENV_VARS = ["MOSH_CLIENT", "MOSH_IP", "MOSH_PREDICTION_DISPLAY"];
 
 export function detectTerminalFeatures(env = process.env): TerminalFeatures {
 	const term = (env.TERM || "").toLowerCase();
 	const colorterm = (env.COLORTERM || "").toLowerCase();
 	const ssh = Boolean(env.SSH_CONNECTION || env.SSH_CLIENT);
 	const tmux = Boolean(env.TMUX || env.STY);
+	const mosh = MOSH_ENV_VARS.some((key) => Boolean(env[key]));
 
 	const forceLowColor = LOW_COLOR_TERMS.includes(term);
 	const lowColor = forceLowColor || colorterm === "";
@@ -39,9 +41,12 @@ export function detectTerminalFeatures(env = process.env): TerminalFeatures {
 		syncOverrideRaw === "false";
 	const syncForcedOn = syncOverrideRaw === "1" || syncOverrideRaw === "true";
 
-	let supportsSyncOutput = !term.includes("dumb") && !term.includes("linux");
-	if (ssh || tmux) {
-		supportsSyncOutput = false;
+	// Default to OFF for remote / multiplexed terminals; only enable when explicitly forced on.
+	let supportsSyncOutput = false;
+	const maybeSupportSync =
+		!term.includes("dumb") && !term.includes("linux") && !forceLowColor;
+	if (maybeSupportSync && !ssh && !tmux && !mosh) {
+		supportsSyncOutput = true;
 	}
 	if (syncForcedOn) supportsSyncOutput = true;
 	if (syncForcedOff) supportsSyncOutput = false;
@@ -52,6 +57,6 @@ export function detectTerminalFeatures(env = process.env): TerminalFeatures {
 		supportsAltScreen: !term.includes("dumb"),
 		lowColor: forceLowColor,
 		lowUnicode,
-		overSsh: ssh,
+		overSsh: ssh || tmux || mosh,
 	};
 }
