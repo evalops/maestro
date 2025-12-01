@@ -33,6 +33,11 @@ import {
 } from "./cli/system-prompt.js";
 import { composerManager } from "./composers/index.js";
 import { validateFrameworkPreference } from "./config/framework.js";
+import {
+	createNotificationFromAgentEvent,
+	isNotificationEnabled,
+	sendNotification,
+} from "./hooks/notification-hooks.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig } from "./mcp/config.js";
@@ -1059,6 +1064,26 @@ export async function main(args: string[]) {
 		);
 		sessionManager.updateSnapshot(agent.state, modelMetadata);
 	});
+
+	// Subscribe to agent events for notification hooks (if configured)
+	if (
+		isNotificationEnabled("turn-complete") ||
+		isNotificationEnabled("session-start") ||
+		isNotificationEnabled("session-end") ||
+		isNotificationEnabled("tool-execution") ||
+		isNotificationEnabled("error")
+	) {
+		agent.subscribe((event) => {
+			const payload = createNotificationFromAgentEvent(event, {
+				cwd: process.cwd(),
+				sessionId: sessionManager.getSessionId(),
+				messages: agent.state.messages,
+			});
+			if (payload) {
+				void sendNotification(payload);
+			}
+		});
+	}
 
 	// Route to appropriate mode
 	if (agentsInitPrompt) {

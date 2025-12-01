@@ -1,4 +1,5 @@
 import { CLAUDE_CODE_BETA_HEADER } from "../../providers/anthropic-auth.js";
+import { fetchWithRetry } from "../../providers/network-config.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	AgentTool,
@@ -436,12 +437,16 @@ export async function* streamAnthropic(
 		headers["anthropic-beta"] = betaHeaders.join(",");
 	}
 
-	const response = await fetch(model.baseUrl, {
-		method: "POST",
-		headers,
-		body: JSON.stringify(requestBody),
-		signal: options.signal,
-	});
+	const response = await fetchWithRetry(
+		model.baseUrl,
+		{
+			method: "POST",
+			headers,
+			body: JSON.stringify(requestBody),
+			signal: options.signal,
+		},
+		model.provider,
+	);
 
 	if (!response.ok) {
 		const errorText = await response.text();

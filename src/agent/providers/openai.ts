@@ -1,4 +1,5 @@
 import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
+import { fetchWithRetry } from "../../providers/network-config.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	AssistantMessage,
@@ -229,12 +230,16 @@ async function* streamResponsesApi(
 		model.api,
 	);
 
-	const response = await fetch(targetUrl, {
-		method: "POST",
-		headers,
-		body: JSON.stringify(requestBody),
-		signal: options.signal,
-	});
+	const response = await fetchWithRetry(
+		targetUrl,
+		{
+			method: "POST",
+			headers,
+			body: JSON.stringify(requestBody),
+			signal: options.signal,
+		},
+		model.provider,
+	);
 
 	if (!response.ok) {
 		const errorText = await response.text();
@@ -740,12 +745,16 @@ export async function* streamOpenAI(
 		model.api,
 	);
 
-	const response = await fetch(targetUrl, {
-		method: "POST",
-		headers,
-		body: JSON.stringify(requestBody),
-		signal: options.signal,
-	});
+	const response = await fetchWithRetry(
+		targetUrl,
+		{
+			method: "POST",
+			headers,
+			body: JSON.stringify(requestBody),
+			signal: options.signal,
+		},
+		model.provider,
+	);
 
 	if (!response.ok) {
 		const errorText = await response.text();

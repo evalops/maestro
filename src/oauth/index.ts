@@ -6,6 +6,11 @@ import {
 	refreshAnthropicToken,
 } from "./anthropic.js";
 import {
+	loginGitHubCopilot,
+	migrateGitHubCopilotCredentials,
+	refreshGitHubCopilotToken,
+} from "./github-copilot.js";
+import {
 	loginOpenAI,
 	migrateOpenAICredentials,
 	refreshOpenAIToken,
@@ -54,7 +59,7 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 			id: "github-copilot",
 			name: "GitHub Copilot",
 			description: "GitHub Copilot subscription",
-			available: false, // TODO: Implement
+			available: true,
 		},
 	];
 }
@@ -76,6 +81,7 @@ export async function login(
 		onAuthUrl: (url: string) => void;
 		onPromptCode: () => Promise<string>;
 		onStatus?: (status: string) => void;
+		onDeviceCode?: (code: string, verificationUri: string) => void;
 	},
 ): Promise<void> {
 	switch (provider) {
@@ -90,7 +96,13 @@ export async function login(
 			await loginOpenAI(options.onAuthUrl, options.onStatus);
 			break;
 		case "github-copilot":
-			throw new Error("GitHub Copilot OAuth is not yet implemented");
+			if (!options.onDeviceCode) {
+				throw new Error(
+					"GitHub Copilot requires onDeviceCode callback for device flow",
+				);
+			}
+			await loginGitHubCopilot(options.onDeviceCode, options.onStatus);
+			break;
 		default:
 			throw new Error(`Unknown OAuth provider: ${provider}`);
 	}
@@ -130,7 +142,11 @@ export async function refreshToken(
 			);
 			break;
 		case "github-copilot":
-			throw new Error("GitHub Copilot OAuth is not yet implemented");
+			newCredentials = await refreshGitHubCopilotToken(
+				credentials.refresh,
+				credentials.metadata,
+			);
+			break;
 		default:
 			throw new Error(`Unknown OAuth provider: ${provider}`);
 	}
@@ -188,5 +204,9 @@ export async function migrateOAuthCredentials(): Promise<void> {
 		logger.info("Migrated OpenAI OAuth credentials to new format");
 	}
 
-	// Add more migrations here as needed
+	// Migrate GitHub Copilot credentials from environment
+	const copilotMigrated = await migrateGitHubCopilotCredentials();
+	if (copilotMigrated) {
+		logger.info("Migrated GitHub Copilot credentials from environment");
+	}
 }
