@@ -254,6 +254,7 @@ export class TuiRenderer {
 	private slashHintBar!: SlashHintBar;
 	private slashCycleQuery: string | null = null;
 	private slashCycleIndex = 0;
+	private slashHintDebounce?: NodeJS.Timeout;
 	private planView: PlanView;
 	private sessionView: SessionView;
 	private sessionDataProvider: SessionDataProvider;
@@ -433,16 +434,20 @@ export class TuiRenderer {
 		this.editor.onTyping = () => {
 			this.handleEditorTyping();
 		};
-		this.editor.onShiftTab = () => {
-			this.cycleThinkingLevel();
-		};
 		this.editor.onCtrlP = () => {
 			void this.cycleModel();
 		};
 		this.editor.onCtrlO = () => {
 			this.toggleToolOutputs();
 		};
-		this.editor.onTab = () => this.handleSlashCycle();
+		this.editor.onTab = () => this.handleSlashCycle(false);
+		this.editor.onShiftTab = () => {
+			// reverse cycle; if not handled, fall back to thinking level cycle
+			const handled = this.handleSlashCycle(true);
+			if (handled) return true;
+			this.cycleThinkingLevel();
+			return true;
+		};
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.slashHintBar = new SlashHintBar();
 		this.editorContainer.addChild(this.slashHintBar);
@@ -2011,7 +2016,7 @@ export class TuiRenderer {
 		});
 	}
 
-	private handleSlashCycle(): boolean {
+	private handleSlashCycle(reverse = false): boolean {
 		const text = this.editor.getText().trim();
 		if (!text.startsWith("/")) return false;
 		const [commandToken, ...restTokens] = text.split(/\s+/);
@@ -2022,7 +2027,12 @@ export class TuiRenderer {
 			this.slashCycleQuery = query;
 			this.slashCycleIndex = 0;
 		} else {
-			this.slashCycleIndex = (this.slashCycleIndex + 1) % matches.length;
+			if (reverse) {
+				this.slashCycleIndex =
+					(this.slashCycleIndex - 1 + matches.length) % matches.length;
+			} else {
+				this.slashCycleIndex = (this.slashCycleIndex + 1) % matches.length;
+			}
 		}
 		const replacement = matches[this.slashCycleIndex]?.name ?? query;
 		const rest =
@@ -2689,12 +2699,16 @@ export class TuiRenderer {
 
 	private handleEditorTyping(): void {
 		this.footer.clearToast();
-		this.refreshSlashHint();
+		this.refreshSlashHintDebounced();
 		this.ui.requestRender();
 	}
 
 	private refreshSlashHint(): void {
 		if (!this.slashHintBar) return;
+		if (this.editor.isShowingAutocomplete()) {
+			this.slashHintBar.clear();
+			return;
+		}
 		const text = this.editor.getText();
 		this.slashHintBar.update(
 			text,
@@ -2702,6 +2716,15 @@ export class TuiRenderer {
 			new Set(this.recentCommands),
 			this.favoriteCommands,
 		);
+	}
+
+	private refreshSlashHintDebounced(): void {
+		if (this.slashHintDebounce) {
+			clearTimeout(this.slashHintDebounce);
+		}
+		this.slashHintDebounce = setTimeout(() => {
+			this.refreshSlashHint();
+		}, 30);
 	}
 
 	private surfaceStartupWarnings(): void {

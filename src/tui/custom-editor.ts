@@ -8,19 +8,17 @@ export class CustomEditor extends Editor {
 	public onCtrlC?: () => void;
 	public onShortcut?: (shortcut: string) => boolean;
 	public onHistoryNavigate?: (direction: "prev" | "next") => boolean;
-	public onShiftTab?: () => void;
+	public onShiftTab?: () => boolean | undefined;
 	public onCtrlP?: () => void;
 	public onCtrlO?: () => void;
 	public onTyping?: () => void;
 	public onTab?: () => boolean;
 
 	handleInput(data: string): void {
-		// Tab cycles slash hints when provided
-		if (data === "\t" && this.onTab) {
+		// Tab cycles slash hints when provided (unless autocomplete is open)
+		if (data === "\t" && this.onTab && !this.isShowingAutocomplete()) {
 			const handled = this.onTab();
-			if (handled) {
-				return;
-			}
+			if (handled) return;
 		}
 
 		// Ctrl+P cycles models
@@ -35,10 +33,10 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		// Shift+Tab cycles thinking levels
+		// Shift+Tab cycles thinking levels (or slash reverse cycle)
 		if (data === "\x1b[Z" && this.onShiftTab) {
-			this.onShiftTab();
-			return;
+			const handled = this.onShiftTab();
+			if (handled) return;
 		}
 
 		// Intercept Escape key - but only if autocomplete is NOT active
