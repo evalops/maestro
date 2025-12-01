@@ -41,6 +41,7 @@ export interface CommandHandlers {
 	cost(context: CommandExecutionContext): Promise<void> | void;
 	quota(context: CommandExecutionContext): Promise<void> | void;
 	telemetry(context: CommandExecutionContext): void;
+	otel(context: CommandExecutionContext): void;
 	training(context: CommandExecutionContext): void;
 	stats(context: CommandExecutionContext): Promise<void> | void;
 	plan(context: CommandExecutionContext): void;

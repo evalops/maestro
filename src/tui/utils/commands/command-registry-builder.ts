@@ -43,6 +43,7 @@ interface CommandRegistryOptions {
 	handleCost: (context: CommandExecutionContext) => void | Promise<void>;
 	handleQuota: (context: CommandExecutionContext) => void | Promise<void>;
 	handleTelemetry: (context: CommandExecutionContext) => void;
+	handleOtel: (context: CommandExecutionContext) => void;
 	handleTraining: (context: CommandExecutionContext) => void;
 	handleStats: (context: CommandExecutionContext) => void | Promise<void>;
 	handlePlan: (context: CommandExecutionContext) => void | Promise<void>;
@@ -105,6 +106,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			cost: opts.handleCost,
 			quota: opts.handleQuota,
 			telemetry: opts.handleTelemetry,
+			otel: opts.handleOtel,
 			training: opts.handleTraining,
 			stats: opts.handleStats,
 			plan: opts.handlePlan,

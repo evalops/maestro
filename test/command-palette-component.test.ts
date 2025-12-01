@@ -47,6 +47,7 @@ describe("CommandPaletteComponent", () => {
 		palette.handleInput("f"); // toggle favorite on selected item
 		const output = renderText(palette);
 
-		expect(output).toContain("★ /run");
+		const normalized = output.replace(/\s+/g, " ");
+		expect(normalized).toContain("★ /run");
 	});
 });

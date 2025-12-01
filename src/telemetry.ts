@@ -1,7 +1,13 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { SpanStatusCode } from "@opentelemetry/api";
 
+import {
+	getTelemetryTracer,
+	initOpenTelemetry,
+	isOpenTelemetryEnabled,
+} from "./opentelemetry.js";
 import {
 	sanitizeOptionalWithStaticMask,
 	sanitizeWithStaticMask,
@@ -223,6 +229,93 @@ async function postToEndpoint(payload: string) {
 	}
 }
 
+function recordOpenTelemetrySpan(event: TelemetryEvent): void {
+	try {
+		const tracer = getTelemetryTracer();
+		tracer.startActiveSpan(`telemetry.${event.type}`, (span) => {
+			span.setAttributes({
+				"composer.telemetry.type": event.type,
+				"composer.telemetry.timestamp": event.timestamp,
+			});
+
+			switch (event.type) {
+				case "tool-execution":
+					span.setAttributes({
+						"composer.tool.name": event.toolName,
+						"composer.tool.success": event.success,
+						"composer.tool.duration_ms": event.durationMs,
+					});
+					span.setStatus({
+						code: event.success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+					});
+					break;
+				case "evaluation":
+					span.setAttributes({
+						"composer.eval.scenario": event.scenario,
+						"composer.eval.success": event.success,
+					});
+					span.setStatus({
+						code: event.success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+					});
+					break;
+				case "loader-stage":
+					span.setAttributes({
+						"composer.loader.stage": event.stage,
+						"composer.loader.duration_ms": event.durationMs,
+					});
+					span.setStatus({ code: SpanStatusCode.OK });
+					break;
+				case "sse":
+					span.setAttributes({
+						"composer.sse.sent": event.sent,
+						"composer.sse.skipped": event.skipped,
+					});
+					span.setStatus({ code: SpanStatusCode.OK });
+					break;
+				case "background-task":
+					span.setAttributes({
+						"composer.background.id": event.taskId,
+						"composer.background.event": event.event,
+						"composer.background.status": event.status,
+						"composer.background.restart_attempts": event.restartAttempts,
+						"composer.background.exit_code": event.exitCode ?? -1,
+						"composer.background.shell_mode": event.shellMode,
+					});
+					span.setStatus(
+						event.failureReason || event.status === "failed"
+							? { code: SpanStatusCode.ERROR, message: event.failureReason }
+							: { code: SpanStatusCode.OK },
+					);
+					break;
+				case "api-request":
+					span.setAttributes({
+						"http.method": event.method,
+						"http.route": event.path,
+						"http.status_code": event.statusCode,
+						"composer.api.duration_ms": event.durationMs,
+					});
+					span.setStatus({
+						code:
+							event.statusCode >= 500
+								? SpanStatusCode.ERROR
+								: SpanStatusCode.OK,
+					});
+					break;
+				default:
+					span.setStatus({ code: SpanStatusCode.UNSET });
+			}
+
+			if ("metadata" in event && event.metadata) {
+				span.setAttributes({ "composer.telemetry.has_metadata": true });
+			}
+
+			span.end();
+		});
+	} catch {
+		// Never let tracing failures affect runtime
+	}
+}
+
 async function persistTelemetry(event: TelemetryEvent) {
 	const payload = JSON.stringify(event);
 	const tasks: Promise<void>[] = [];
@@ -270,7 +363,13 @@ export function getBackgroundTaskHistory(
 }
 
 export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
-	if (!telemetryEnabled || samplingRate === 0) {
+	const openTelemetryEnabled = isOpenTelemetryEnabled();
+	if (openTelemetryEnabled) {
+		recordOpenTelemetrySpan(event);
+	}
+
+	const legacyEnabled = telemetryEnabled && samplingRate > 0;
+	if (!legacyEnabled) {
 		return;
 	}
 

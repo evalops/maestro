@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import type { AgentState } from "../../agent/types.js";
 import type { LspDiagnostic } from "../../lsp/index.js";
+import type { OpenTelemetryStatus } from "../../opentelemetry.js";
 import type { ApiKeyLookupResult } from "../../providers/api-keys.js";
 import type { SessionModelMetadata } from "../../session/manager.js";
 import type { TelemetryStatus } from "../../telemetry.js";
@@ -14,6 +15,7 @@ export interface DiagnosticsInput {
 	modelMetadata?: SessionModelMetadata;
 	apiKeyLookup: ApiKeyLookupResult;
 	telemetry: TelemetryStatus;
+	otel?: OpenTelemetryStatus;
 	training: TrainingStatus;
 	exaUsage?: ExaUsageSummary | null;
 	pendingTools: Array<{ id: string; name: string }>;
@@ -125,6 +127,35 @@ function formatTelemetrySection(status: TelemetryStatus): string {
 			chalk.dim(`Override: ${status.runtimeOverride.toUpperCase()}${reason}`),
 		);
 	}
+	return lines.join("\n");
+}
+
+function formatOpenTelemetrySection(
+	status?: OpenTelemetryStatus,
+): string | null {
+	if (!status) return null;
+	const lines: string[] = [];
+	lines.push(
+		`${chalk.bold("OTEL")}: ${status.enabled ? "enabled" : "disabled"} (${status.reason})`,
+	);
+	lines.push(chalk.dim(`Service: ${status.serviceName}`));
+	lines.push(
+		chalk.dim(
+			`Exporters: traces=${status.tracesExporter ?? "default"}, metrics=${status.metricsExporter ?? "default"}, logs=${status.logsExporter ?? "default"}`,
+		),
+	);
+	if (status.otlpEndpoint) {
+		lines.push(chalk.dim(`OTLP: ${status.otlpEndpoint}`));
+	}
+	if (status.sampler) {
+		lines.push(chalk.dim(`Sampler: ${status.sampler}`));
+	}
+	lines.push(
+		chalk.dim(
+			`Auto-instrumentation: ${status.autoInstrumentation ? "on" : "off"}`,
+		),
+	);
+	lines.push(chalk.dim(`SDK started: ${status.sdkStarted ? "yes" : "no"}`));
 	return lines.join("\n");
 }
 
@@ -282,6 +313,11 @@ export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	sections.push(formatApiKeySection(input.apiKeyLookup, input.explicitApiKey));
 	sections.push("");
 	sections.push(formatTelemetrySection(input.telemetry));
+	const otelSection = formatOpenTelemetrySection(input.otel);
+	if (otelSection) {
+		sections.push("");
+		sections.push(otelSection);
+	}
 	sections.push("");
 	sections.push(formatTrainingSection(input.training));
 	sections.push("");

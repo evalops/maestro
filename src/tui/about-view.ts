@@ -18,6 +18,18 @@ interface AboutViewOptions {
 	ui: TUI;
 	version: string;
 	telemetryStatus: () => string;
+	otelStatus?: () => {
+		enabled: boolean;
+		reason: string;
+		serviceName: string;
+		sdkStarted: boolean;
+		otlpEndpoint?: string;
+		tracesExporter?: string;
+		metricsExporter?: string;
+		logsExporter?: string;
+		autoInstrumentation: boolean;
+		sampler?: string;
+	};
 	getApprovalMode?: () => string;
 }
 
@@ -77,11 +89,21 @@ export class AboutView {
 		const approvalMode = this.options.getApprovalMode
 			? this.options.getApprovalMode()
 			: "unknown";
+		const otel = this.options.otelStatus
+			? this.options.otelStatus()
+			: {
+					enabled: false,
+					reason: "not configured",
+					serviceName: "composer",
+					sdkStarted: false,
+					autoInstrumentation: false,
+				};
 		const lines = [
 			`${this.badge("version")}${this.options.version}`,
 			`${this.badge("model")}${model}`,
 			`${this.badge("session")}${sessionId}`,
 			`${this.badge("telemetry")}${this.options.telemetryStatus()}`,
+			`${this.badge("otel")}${otel.enabled ? "on" : "off"} (${otel.reason})`,
 			`${this.badge("safe-mode")}${safeMode}`,
 			`${this.badge("approvals")}${approvalMode}`,
 			`${this.badge("pending")}${pendingTools} tools`,

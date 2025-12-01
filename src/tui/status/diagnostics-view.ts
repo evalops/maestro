@@ -48,6 +48,9 @@ interface DiagnosticsViewOptions {
 	todoStorePath: string;
 	getApprovalMode?: () => string;
 	getAlertCount?: () => number;
+	getOtelStatus?: () => ReturnType<
+		typeof import("../../opentelemetry.js").getOpenTelemetryStatus
+	>;
 }
 
 export class DiagnosticsView {
@@ -187,6 +190,7 @@ ${copyNote}`;
 			modelMetadata: this.options.getCurrentModelMetadata(),
 			apiKeyLookup: this.currentApiKeyInfo,
 			telemetry: this.telemetryStatus,
+			otel: this.options.getOtelStatus?.(),
 			training: this.trainingStatus,
 			exaUsage: getExaUsageSummary(),
 			pendingTools: Array.from(this.options.getPendingTools().entries()).map(

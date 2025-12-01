@@ -20,7 +20,7 @@ const UI_STATE_PATH =
 	process.env.COMPOSER_UI_STATE ??
 	join(homedir(), ".composer", "agent", "ui-state.json");
 
-const COMMAND_PREFS_PATH =
+const getCommandPrefsPath = () =>
 	process.env.COMPOSER_COMMAND_PREFS ??
 	join(homedir(), ".composer", "agent", "command-prefs.json");
 
@@ -78,11 +78,12 @@ export function loadCommandPrefs(): {
 	favorites: string[];
 	recents: string[];
 } {
-	if (!existsSync(COMMAND_PREFS_PATH)) {
+	const prefsPath = getCommandPrefsPath();
+	if (!existsSync(prefsPath)) {
 		return { favorites: [], recents: [] };
 	}
 	try {
-		const raw = readFileSync(COMMAND_PREFS_PATH, "utf-8");
+		const raw = readFileSync(prefsPath, "utf-8");
 		const parsed = JSON.parse(raw) as Record<string, unknown>;
 		const favorites = Array.isArray(parsed.favorites)
 			? (parsed.favorites as unknown[]).filter(
@@ -104,6 +105,7 @@ export function saveCommandPrefs(prefs: {
 	favorites: string[];
 	recents: string[];
 }): void {
-	mkdirSync(dirname(COMMAND_PREFS_PATH), { recursive: true });
-	writeFileSync(COMMAND_PREFS_PATH, JSON.stringify(prefs, null, 2), "utf-8");
+	const prefsPath = getCommandPrefsPath();
+	mkdirSync(dirname(prefsPath), { recursive: true });
+	writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), "utf-8");
 }

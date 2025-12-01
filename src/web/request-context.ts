@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 export interface RequestContext {
 	requestId: string;
@@ -22,14 +22,14 @@ export function parseTraceParent(header?: string | string[]): {
 } {
 	if (!header || typeof header !== "string") {
 		return {
-			traceId: randomBytes(16).toString("hex"),
+			traceId: randomUUID().replace(/-/g, ""),
 		};
 	}
 
 	const parts = header.split("-");
 	if (parts.length < 4 || parts[0] !== "00") {
 		return {
-			traceId: randomBytes(16).toString("hex"),
+			traceId: randomUUID().replace(/-/g, ""),
 		};
 	}
 

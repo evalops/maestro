@@ -2,7 +2,7 @@
  * Web server for Composer - HTTP/SSE API used by the web UI
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
 	type IncomingMessage,
 	type ServerResponse,
@@ -24,6 +24,7 @@ import {
 	getFactoryDefaultModelSelection,
 	reloadModelConfig,
 } from "./models/registry.js";
+import { initOpenTelemetry } from "./opentelemetry.js";
 import { getEnvVarsForProvider } from "./providers/api-keys.js";
 import {
 	type AuthCredential,
@@ -76,6 +77,7 @@ import { serveStatic } from "./web/static-server.js";
 export { SseSession } from "./web/sse-session.js";
 
 loadEnv();
+void initOpenTelemetry("composer-web-server");
 
 // Global crash handlers
 function registerCrashHandlers() {
@@ -368,13 +370,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	const start = performance.now();
 	const parsedUrl = parse(req.url || "/", true);
 	const pathname = parsedUrl.pathname || "/";
-	const requestId = Math.random().toString(36).substring(2, 15);
+	const requestId = randomUUID();
 
 	// Parse W3C Trace Context
 	// traceparent: 00-traceid-spanid-flags
 	const traceParent = req.headers.traceparent as string | undefined;
 	const { traceId, parentSpanId } = parseTraceParent(traceParent);
 	const spanId = randomBytes(8).toString("hex"); // New span for this service
+	const responseTraceParent = `00-${traceId}-${spanId}-01`;
+	res.setHeader("traceparent", responseTraceParent);
+	res.setHeader("server-timing", `traceparent;desc="${responseTraceParent}"`);
 
 	// Attach request to response for easy access in helpers
 	(res as any).req = req;

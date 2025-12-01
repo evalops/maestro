@@ -470,6 +470,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "otel",
+				description: "Show OpenTelemetry runtime configuration",
+				usage: "/otel",
+				tags: ["diagnostics", "telemetry"],
+			},
+			equals("otel"),
+			handlers.otel,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "training",
 				description: "Toggle model training preference or show status",
 				usage: "/training [status|on|off|reset]",

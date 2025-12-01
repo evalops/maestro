@@ -39,6 +39,7 @@ import {
 import type { CleanMode } from "../conversation/render-model.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
+import { getOpenTelemetryStatus } from "../opentelemetry.js";
 import {
 	getBackgroundTaskSettings,
 	subscribeBackgroundTaskSettings,
@@ -674,6 +675,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			version: this.version,
 			telemetryStatus: () => this.describeTelemetryStatus(),
+			otelStatus: () => getOpenTelemetryStatus(),
 			getApprovalMode: () => this.approvalService.getMode(),
 		});
 		this.changelogView = new ChangelogView({
@@ -905,6 +907,7 @@ export class TuiRenderer {
 			handleQuota: (context) => this.quotaView.handleQuotaCommand(context),
 			handleTelemetry: (context) =>
 				this.telemetryView.handleTelemetryCommand(context),
+			handleOtel: (context) => this.handleOtelCommand(context),
 			handleTraining: (context) =>
 				this.trainingView.handleTrainingCommand(context),
 			handleStats: (context) => this.handleStatsCommand(context),
@@ -1566,6 +1569,19 @@ export class TuiRenderer {
 			this.refreshFooterHint();
 		}
 		this.ui.requestRender();
+	}
+
+	private handleOtelCommand(_context: CommandExecutionContext): void {
+		const status = getOpenTelemetryStatus();
+		const lines = [
+			`OpenTelemetry: ${status.enabled ? "enabled" : "disabled"} (${status.reason})`,
+			`Service: ${status.serviceName}`,
+			`SDK started: ${status.sdkStarted ? "yes" : "no"}`,
+			`OTLP endpoint: ${status.otlpEndpoint ?? "none"}`,
+			`Exporters: traces=${status.tracesExporter}, metrics=${status.metricsExporter}, logs=${status.logsExporter}`,
+			`Auto-instrumentation: ${status.autoInstrumentation ? "enabled (http/undici/fs/db)" : "disabled"}`,
+		];
+		this.notificationView.showInfo(lines.join("\n"));
 	}
 
 	private parseFooterMode(value: string): FooterMode | null {

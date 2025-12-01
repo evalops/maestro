@@ -50,6 +50,7 @@ import {
 	resolveModel,
 } from "./models/registry.js";
 import { resolveModelScope } from "./models/scope.js";
+import { initOpenTelemetry } from "./opentelemetry.js";
 import {
 	getEnvVarsForProvider,
 	isKnownProvider,
@@ -234,6 +235,7 @@ async function runRpcMode(
 
 export async function main(args: string[]) {
 	loadEnv();
+	void initOpenTelemetry("composer-cli");
 
 	// Initialize enterprise context (user/org tracking for audit logging)
 	const { enterpriseContext } = await import("./enterprise/context.js");
