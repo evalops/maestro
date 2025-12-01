@@ -38,6 +38,7 @@ import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig } from "./mcp/config.js";
 import { mcpManager } from "./mcp/manager.js";
 import { getAllMcpTools } from "./mcp/tool-bridge.js";
+import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
 	getCustomConfigPath,
@@ -241,6 +242,9 @@ async function runRpcMode(
 export async function main(args: string[]) {
 	loadEnv();
 	void initOpenTelemetry("composer-cli");
+
+	// Load model registry early (async, before UI needs it)
+	await ensureModelsLoaded();
 
 	// Initialize enterprise context (user/org tracking for audit logging)
 	const { enterpriseContext } = await import("./enterprise/context.js");

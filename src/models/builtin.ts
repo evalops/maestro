@@ -194,7 +194,12 @@ const GROQ_RESPONSES_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
-// Convert generated models to our format
+// Cached converted models (built lazily on first access)
+let BUILTIN_MODELS: Record<string, Model<Api>[]> | null = null;
+
+/**
+ * Convert generated models to our format (called lazily on first access)
+ */
 function convertGeneratedModels(): Record<string, Model<Api>[]> {
 	const converted: Record<string, Model<Api>[]> = {};
 
@@ -208,80 +213,65 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 	}
 
 	// Apply overlay additions
-	for (const [provider, models] of Object.entries(ANTHROPIC_OPUS_45_OVERLAY)) {
-		if (!converted[provider]) {
-			converted[provider] = [];
-		}
-		for (const model of Object.values(models)) {
-			converted[provider] = converted[provider].filter(
-				(m) => m.id !== model.id,
-			);
-			converted[provider].push({
-				...model,
-				baseUrl: normalizeModelBaseUrl(model),
-			});
-		}
-	}
-
-	for (const [provider, models] of Object.entries(
+	const overlays: Record<string, Record<string, Model<Api>>>[] = [
+		ANTHROPIC_OPUS_45_OVERLAY,
 		OPENROUTER_RESPONSES_OVERLAY,
-	)) {
-		if (!converted[provider]) {
-			converted[provider] = [];
-		}
-		for (const model of Object.values(models)) {
-			converted[provider] = converted[provider].filter(
-				(m) => m.id !== model.id,
-			);
-			converted[provider].push({
-				...model,
-				baseUrl: normalizeModelBaseUrl(model),
-			});
-		}
-	}
+		OPENAI_CODEX_OVERLAY,
+		GROQ_RESPONSES_OVERLAY,
+	];
 
-	for (const [provider, models] of Object.entries(OPENAI_CODEX_OVERLAY)) {
-		if (!converted[provider]) {
-			converted[provider] = [];
-		}
-		for (const model of Object.values(models)) {
-			converted[provider] = converted[provider].filter(
-				(m) => m.id !== model.id,
-			);
-			converted[provider].push({
-				...model,
-				baseUrl: normalizeModelBaseUrl(model),
-			});
-		}
-	}
-
-	for (const [provider, models] of Object.entries(GROQ_RESPONSES_OVERLAY)) {
-		if (!converted[provider]) {
-			converted[provider] = [];
-		}
-		for (const model of Object.values(models)) {
-			converted[provider] = converted[provider].filter(
-				(m) => m.id !== model.id,
-			);
-			converted[provider].push({
-				...model,
-				baseUrl: normalizeModelBaseUrl(model),
-			});
+	for (const overlay of overlays) {
+		for (const [provider, models] of Object.entries(overlay)) {
+			if (!converted[provider]) {
+				converted[provider] = [];
+			}
+			for (const model of Object.values(models)) {
+				converted[provider] = converted[provider].filter(
+					(m) => m.id !== model.id,
+				);
+				converted[provider].push({
+					...model,
+					baseUrl: normalizeModelBaseUrl(model),
+				});
+			}
 		}
 	}
 
 	return converted;
 }
 
-// Get all models from generated registry
-const BUILTIN_MODELS = convertGeneratedModels();
+/**
+ * Ensure models are converted (call this early in app startup for predictable timing)
+ * The import is static, but conversion is deferred until first access.
+ */
+export async function ensureModelsLoaded(): Promise<void> {
+	if (BUILTIN_MODELS !== null) return;
+	BUILTIN_MODELS = convertGeneratedModels();
+}
+
+/**
+ * Check if models have been converted
+ */
+export function areModelsLoaded(): boolean {
+	return BUILTIN_MODELS !== null;
+}
+
+/**
+ * Get models, converting them lazily if needed
+ */
+function getBuiltinModels(): Record<string, Model<Api>[]> {
+	if (BUILTIN_MODELS === null) {
+		BUILTIN_MODELS = convertGeneratedModels();
+	}
+	return BUILTIN_MODELS;
+}
 
 export function getProviders(): string[] {
-	return Object.keys(BUILTIN_MODELS);
+	return Object.keys(getBuiltinModels());
 }
 
 export function getModels(provider: string): Model<Api>[] {
-	return BUILTIN_MODELS[provider] || [];
+	return getBuiltinModels()[provider] || [];
 }
 
 export function getModel(provider: string, modelId: string): Model<Api> | null {

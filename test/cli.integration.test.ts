@@ -73,6 +73,8 @@ vi.mock("../src/models/builtin.js", () => ({
 	getModel: (provider: string, id: string) => ({ provider, id }),
 	getProviders: () => ["anthropic"],
 	getModels: () => [{ id: "claude-sonnet-4-5", provider: "anthropic" }],
+	ensureModelsLoaded: async () => {},
+	areModelsLoaded: () => true,
 }));
 
 const fakeRegisteredModels = [
