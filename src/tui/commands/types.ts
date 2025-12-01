@@ -76,6 +76,15 @@ export interface CommandHandlers {
 	changes(context: CommandExecutionContext): void;
 	checkpoint(context: CommandExecutionContext): void;
 	memory(context: CommandExecutionContext): void;
+	// Grouped command handlers
+	sessionCommand(context: CommandExecutionContext): void | Promise<void>;
+	diagCommand(context: CommandExecutionContext): void | Promise<void>;
+	uiCommand(context: CommandExecutionContext): void;
+	safetyCommand(context: CommandExecutionContext): void | Promise<void>;
+	gitCommand(context: CommandExecutionContext): void | Promise<void>;
+	authCommand(context: CommandExecutionContext): void | Promise<void>;
+	usageCommand(context: CommandExecutionContext): void | Promise<void>;
+	undoCommand(context: CommandExecutionContext): void | Promise<void>;
 }
 
 export interface CommandEntry {

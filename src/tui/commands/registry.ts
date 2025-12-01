@@ -887,6 +887,138 @@ export function createCommandRegistry({
 			handlers.quit,
 			createContext,
 		),
+
+		// ═══════════════════════════════════════════════════════════════════
+		// GROUPED COMMANDS - Organize related commands under parent commands
+		// ═══════════════════════════════════════════════════════════════════
+
+		buildEntry(
+			{
+				name: "sess",
+				description:
+					"Session management: new, clear, list, load, branch, export, share",
+				usage:
+					"/sess [new|clear|list|load <id>|branch <n>|export|share|queue|info]",
+				tags: ["session"],
+				examples: [
+					"/sess",
+					"/sess new",
+					"/sess list",
+					"/sess load 3",
+					"/sess branch 2",
+					"/sess export",
+				],
+			},
+			withArgs("sess"),
+			handlers.sessionCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "dx",
+				description:
+					"Diagnostics: status, about, context, background, lsp, keys, pii, access, audit",
+				usage: "/dx [status|about|context|bg|lsp|keys|pii|access|audit]",
+				tags: ["diagnostics"],
+				examples: [
+					"/dx",
+					"/dx status",
+					"/dx lsp",
+					"/dx keys",
+					"/dx pii",
+					"/dx audit",
+				],
+			},
+			withArgs("dx"),
+			handlers.diagCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "look",
+				description:
+					"UI settings: theme, clean, footer, alerts, zen, compact-tools",
+				usage: "/look [theme|clean|footer|alerts|zen|compact]",
+				tags: ["ui"],
+				examples: ["/look", "/look theme", "/look zen on", "/look compact off"],
+			},
+			withArgs("look"),
+			handlers.uiCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "safe",
+				description: "Safety settings: approvals, plan-mode, guardian",
+				usage: "/safe [approvals|plan|guardian] [args]",
+				tags: ["safety"],
+				examples: [
+					"/safe",
+					"/safe approvals auto",
+					"/safe plan on",
+					"/safe guardian run",
+				],
+			},
+			withArgs("safe"),
+			handlers.safetyCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "vcs",
+				description: "Git operations: status, diff, review",
+				usage: "/vcs [status|diff <path>|review]",
+				tags: ["git"],
+				examples: ["/vcs", "/vcs diff src/index.ts", "/vcs review"],
+			},
+			withArgs("vcs"),
+			handlers.gitCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "auth",
+				description: "Authentication: login, logout, status",
+				usage: "/auth [login|logout|status] [mode]",
+				tags: ["auth"],
+				examples: ["/auth", "/auth login pro", "/auth logout"],
+			},
+			withArgs("auth"),
+			handlers.authCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "usage",
+				description: "Usage tracking: cost, quota, stats",
+				usage: "/usage [cost|quota|stats] [args]",
+				tags: ["usage"],
+				examples: [
+					"/usage",
+					"/usage cost breakdown week",
+					"/usage quota detailed",
+				],
+			},
+			withArgs("usage"),
+			handlers.usageCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "back",
+				description: "Undo/redo: undo, redo, checkpoint, history",
+				usage: "/back [undo|redo|checkpoint|history] [args]",
+				tags: ["undo"],
+				examples: [
+					"/back",
+					"/back redo",
+					"/back checkpoint save before-refactor",
+				],
+			},
+			withArgs("back"),
+			handlers.undoCommand,
+			createContext,
+		),
 	];
 
 	return entries;

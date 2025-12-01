@@ -958,6 +958,17 @@ export class TuiRenderer {
 			handleChanges: (context) => this.handleChangesCommand(context),
 			handleCheckpoint: (context) => this.handleCheckpointCommand(context),
 			handleMemory: (context) => this.handleMemoryCommand(context),
+			// Grouped command handlers
+			handleSessionCommand: (context) =>
+				this.handleGroupedSessionCommand(context),
+			handleDiagCommand: (context) => this.handleGroupedDiagCommand(context),
+			handleUiCommand: (context) => this.handleGroupedUiCommand(context),
+			handleSafetyCommand: (context) =>
+				this.handleGroupedSafetyCommand(context),
+			handleGitCommand: (context) => this.handleGroupedGitCommand(context),
+			handleAuthCommand: (context) => this.handleGroupedAuthCommand(context),
+			handleUsageCommand: (context) => this.handleGroupedUsageCommand(context),
+			handleUndoCommand: (context) => this.handleGroupedUndoCommand(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -3742,6 +3753,192 @@ export class TuiRenderer {
 			const message = error instanceof Error ? error.message : "Logout failed";
 			context.showError(message);
 		}
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// GROUPED COMMAND HANDLERS
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	private handleGroupedSessionCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createSessionCommandHandler }) => {
+				const handler = createSessionCommandHandler({
+					handleNewChat: () => this.handleNewChatCommand(context),
+					handleClear: () => this.handleClearCommand(),
+					handleSessionInfo: (ctx: CommandExecutionContext) =>
+						this.sessionView.handleSessionCommand(ctx.rawInput),
+					handleSessionsList: (ctx: CommandExecutionContext) =>
+						this.sessionView.handleSessionsCommand(ctx.rawInput),
+					handleBranch: (ctx: CommandExecutionContext) =>
+						this.handleBranchCommand(ctx),
+					handleQueue: (ctx: CommandExecutionContext) =>
+						this.handleQueueCommand(ctx),
+					handleExport: (ctx: CommandExecutionContext) =>
+						this.importExportView.handleExportCommand(ctx.rawInput),
+					handleShare: (ctx: CommandExecutionContext) =>
+						this.importExportView.handleShareCommand(ctx.rawInput),
+					showInfo: (msg: string) => context.showInfo(msg),
+				});
+				return handler(context);
+			},
+		);
+	}
+
+	private handleGroupedDiagCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createDiagCommandHandler }) => {
+				const handler = createDiagCommandHandler({
+					handleStatus: () => this.diagnosticsView.handleStatusCommand(),
+					handleAbout: () => this.aboutView.handleAboutCommand(),
+					handleContext: () => this.handleContextCommand(context),
+					handleBackground: (ctx: CommandExecutionContext) =>
+						this.handleBackgroundCommand(ctx),
+					handleDiagnostics: (ctx: CommandExecutionContext) =>
+						this.diagnosticsView.handleDiagnosticsCommand(ctx.rawInput),
+					showInfo: (msg: string) => context.showInfo(msg),
+					isDatabaseConfigured: () => false, // PII/Access/Audit enterprise features
+				});
+				return handler(context);
+			},
+		);
+	}
+
+	private handleGroupedUiCommand(context: CommandExecutionContext): void {
+		import("./commands/grouped/index.js").then(({ createUiCommandHandler }) => {
+			const handler = createUiCommandHandler({
+				handleTheme: () => this.themeSelectorView.show(),
+				handleClean: (ctx: CommandExecutionContext) =>
+					this.handleCleanCommand(ctx),
+				handleFooter: (ctx: CommandExecutionContext) =>
+					this.handleFooterCommand(ctx),
+				handleZen: (ctx: CommandExecutionContext) => this.handleZenCommand(ctx),
+				handleCompactTools: (ctx: CommandExecutionContext) =>
+					this.handleCompactToolsCommand(ctx.rawInput),
+				showInfo: (msg: string) => context.showInfo(msg),
+				getUiState: () => ({
+					zenMode: this.zenMode,
+					cleanMode: this.cleanMode,
+					footerMode: this.footerMode,
+					compactTools: this.toolOutputView?.isCompact() ?? false,
+				}),
+			});
+			handler(context);
+		});
+	}
+
+	private handleGroupedSafetyCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createSafetyCommandHandler }) => {
+				const handler = createSafetyCommandHandler({
+					handleApprovals: (ctx: CommandExecutionContext) =>
+						this.handleApprovalsCommand(ctx),
+					handlePlanMode: (ctx: CommandExecutionContext) =>
+						this.handlePlanModeCommand(ctx),
+					handleGuardian: (ctx: CommandExecutionContext) =>
+						this.handleGuardianCommand(ctx),
+					showInfo: (msg: string) => context.showInfo(msg),
+					getSafetyState: () => ({
+						approvalMode: process.env.COMPOSER_APPROVALS ?? "prompt",
+						planMode: process.env.COMPOSER_PLAN_MODE === "1",
+						guardianEnabled: true,
+					}),
+				});
+				return handler(context);
+			},
+		);
+	}
+
+	private handleGroupedGitCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createGitCommandHandler }) => {
+				const handler = createGitCommandHandler({
+					handleDiff: (ctx: CommandExecutionContext) =>
+						this.gitView.handlePreviewCommand(ctx.rawInput),
+					handleReview: () => this.handleReviewCommand(context),
+					showInfo: (msg: string) => context.showInfo(msg),
+					runGitCommand: async (cmd: string) => {
+						const { execSync } = await import("node:child_process");
+						return execSync(cmd, { encoding: "utf-8" });
+					},
+				});
+				return handler(context);
+			},
+		);
+	}
+
+	private handleGroupedAuthCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createAuthCommandHandler }) => {
+				const handler = createAuthCommandHandler({
+					handleLogin: (ctx: CommandExecutionContext) =>
+						this.handleLoginCommand(ctx),
+					handleLogout: (ctx: CommandExecutionContext) =>
+						this.handleLogoutCommand(ctx),
+					showInfo: (msg: string) => context.showInfo(msg),
+					getAuthState: () => ({
+						authenticated: false, // TODO: Check actual OAuth state
+						provider: "anthropic",
+						mode: undefined,
+					}),
+				});
+				return handler(context);
+			},
+		);
+	}
+
+	private handleGroupedUsageCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createUsageCommandHandler }) => {
+				const handler = createUsageCommandHandler({
+					handleCost: (ctx: CommandExecutionContext) =>
+						this.costView.handleCostCommand(ctx),
+					handleQuota: (ctx: CommandExecutionContext) =>
+						this.quotaView.handleQuotaCommand(ctx),
+					handleStats: (ctx: CommandExecutionContext) =>
+						this.handleStatsCommand(ctx),
+				});
+				return handler(context);
+			},
+		);
+	}
+
+	private handleGroupedUndoCommand(
+		context: CommandExecutionContext,
+	): void | Promise<void> {
+		return import("./commands/grouped/index.js").then(
+			({ createUndoCommandHandler }) => {
+				const handler = createUndoCommandHandler({
+					handleUndo: (ctx: CommandExecutionContext) =>
+						this.handleEnhancedUndoCommand(ctx),
+					handleRedo: () => {
+						context.showInfo("Redo is not yet implemented.");
+					},
+					handleCheckpoint: (ctx: CommandExecutionContext) =>
+						this.handleCheckpointCommand(ctx),
+					showInfo: (msg: string) => context.showInfo(msg),
+					getUndoState: () => ({
+						canUndo: false, // TODO: Check actual undo state
+						canRedo: false,
+						undoCount: 0,
+						redoCount: 0,
+						checkpoints: [],
+					}),
+				});
+				return handler(context);
+			},
+		);
 	}
 }
 

@@ -79,6 +79,21 @@ interface CommandRegistryOptions {
 	handleChanges: (context: CommandExecutionContext) => void;
 	handleCheckpoint: (context: CommandExecutionContext) => void;
 	handleMemory: (context: CommandExecutionContext) => void;
+	// Grouped command handlers
+	handleSessionCommand: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
+	handleDiagCommand: (context: CommandExecutionContext) => void | Promise<void>;
+	handleUiCommand: (context: CommandExecutionContext) => void;
+	handleSafetyCommand: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
+	handleGitCommand: (context: CommandExecutionContext) => void | Promise<void>;
+	handleAuthCommand: (context: CommandExecutionContext) => void | Promise<void>;
+	handleUsageCommand: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
+	handleUndoCommand: (context: CommandExecutionContext) => void | Promise<void>;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -145,6 +160,15 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			changes: opts.handleChanges,
 			checkpoint: opts.handleCheckpoint,
 			memory: opts.handleMemory,
+			// Grouped command handlers
+			sessionCommand: opts.handleSessionCommand,
+			diagCommand: opts.handleDiagCommand,
+			uiCommand: opts.handleUiCommand,
+			safetyCommand: opts.handleSafetyCommand,
+			gitCommand: opts.handleGitCommand,
+			authCommand: opts.handleAuthCommand,
+			usageCommand: opts.handleUsageCommand,
+			undoCommand: opts.handleUndoCommand,
 		},
 		createContext: opts.createContext,
 	});
