@@ -409,6 +409,19 @@ describe("batch tool", () => {
 			});
 			expect(result.isError).toBe(true);
 		});
+
+		it("rejects GitHub mutation actions in batch", async () => {
+			const batchTool = createBatchTool([mockSuccessTool]);
+
+			const result = await batchTool.execute("batch-call-gh", {
+				toolCalls: [
+					{ tool: "gh_pr", parameters: { action: "create", title: "X" } },
+				],
+			});
+
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toContain("GitHub mutation");
+		});
 	});
 
 	describe("limits", () => {

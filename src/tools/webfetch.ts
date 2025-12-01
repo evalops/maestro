@@ -9,6 +9,9 @@ import {
 import type { ExaContentsResponse } from "./exa-types.js";
 import { createTool } from "./tool-dsl.js";
 
+const MAX_CONTENT_CHARS = 2000;
+const MAX_OUTPUT_CHARS = 8000;
+
 const webfetchSchema = Type.Object({
 	urls: Type.Union(
 		[
@@ -35,6 +38,7 @@ export interface WebfetchDetails {
 	resultsCount: number;
 	errors?: string[];
 	results: ExaContentsResponse["results"];
+	truncated?: boolean;
 }
 
 // Retry on network errors
@@ -100,6 +104,9 @@ export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 		respond.text(`Fetched ${data.results.length} URL(s)`);
 		respond.text("");
 
+		let outputChars = 0;
+		let truncatedOutput = false;
+
 		for (let i = 0; i < data.results.length; i++) {
 			const result = data.results[i];
 			respond.text(`${i + 1}. ${result.title || result.url}`);
@@ -121,20 +128,37 @@ export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 			if (result.text) {
 				respond.text("   Content:");
 				respond.text(`   ${"─".repeat(78)}`);
-				const textLines = result.text.split("\n");
+				const limited =
+					result.text.length > MAX_CONTENT_CHARS
+						? `${result.text.slice(0, MAX_CONTENT_CHARS)}...`
+						: result.text;
+				const textLines = limited.split("\n");
 				for (const line of textLines) {
 					respond.text(`   ${line}`);
+				}
+				if (limited.length < result.text.length) {
+					respond.text("   [content truncated]");
 				}
 				respond.text(`   ${"─".repeat(78)}`);
 			}
 
 			respond.text("");
+
+			outputChars += (result.text?.length ?? 0) + (result.summary?.length ?? 0);
+			if (outputChars > MAX_OUTPUT_CHARS) {
+				truncatedOutput = true;
+				respond.text(
+					`[truncated] Additional content omitted to keep output under ${MAX_OUTPUT_CHARS} characters.`,
+				);
+				break;
+			}
 		}
 
 		respond.detail({
 			resultsCount: data.results.length,
 			errors: errors.length > 0 ? errors : undefined,
 			results: data.results,
+			truncated: truncatedOutput,
 		});
 
 		return respond;

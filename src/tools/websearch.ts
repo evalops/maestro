@@ -10,6 +10,9 @@ import {
 import type { ExaSearchResponse } from "./exa-types.js";
 import { createTool } from "./tool-dsl.js";
 
+const MAX_RESULT_TEXT_CHARS = 800;
+const MAX_OUTPUT_CHARS = 6000;
+
 const websearchSchema = Type.Object({
 	query: Type.String({
 		description: "Search query",
@@ -127,6 +130,7 @@ export interface WebsearchDetails {
 	costDollars: number | null;
 	context?: string;
 	results: ExaSearchResponse["results"];
+	truncated?: boolean;
 }
 
 export const websearchTool = createTool<
@@ -199,6 +203,9 @@ export const websearchTool = createTool<
 			respond.text("");
 		}
 
+		let outputChars = 0;
+		let truncated = false;
+
 		for (let i = 0; i < data.results.length; i++) {
 			const result = data.results[i];
 			respond.text(`${i + 1}. ${result.title}`);
@@ -219,10 +226,13 @@ export const websearchTool = createTool<
 
 			if (result.text) {
 				const textPreview =
-					result.text.length > 500
-						? `${result.text.substring(0, 500)}...`
+					result.text.length > MAX_RESULT_TEXT_CHARS
+						? `${result.text.substring(0, MAX_RESULT_TEXT_CHARS)}...`
 						: result.text;
 				respond.text(`   Text: ${textPreview}`);
+				if (result.text.length > textPreview.length) {
+					respond.text("   [text truncated]");
+				}
 			}
 
 			if (result.highlights && result.highlights.length > 0) {
@@ -233,6 +243,16 @@ export const websearchTool = createTool<
 			}
 
 			respond.text("");
+
+			// Rough output budget to avoid huge responses
+			outputChars += result.title.length + (result.text?.length ?? 0);
+			if (outputChars > MAX_OUTPUT_CHARS) {
+				truncated = true;
+				respond.text(
+					`[truncated] Additional results omitted to keep output under ${MAX_OUTPUT_CHARS} characters.`,
+				);
+				break;
+			}
 		}
 
 		respond.detail({
@@ -242,6 +262,7 @@ export const websearchTool = createTool<
 			costDollars: totalCost ?? null,
 			context: data.context,
 			results: data.results,
+			truncated,
 		});
 
 		return respond;
