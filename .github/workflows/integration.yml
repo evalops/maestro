@@ -1,0 +1,67 @@
+name: integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "src/web/**"
+      - "src/db/**"
+      - "test/web/**"
+      - "docker-compose.yml"
+
+jobs:
+  integration-tests:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: composer
+          POSTGRES_PASSWORD: composer
+          POSTGRES_DB: composer
+        options: >-
+          --health-cmd "pg_isready -U composer"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.1.31
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build packages
+        run: npm run build:all
+
+      - name: Run integration tests
+        env:
+          COMPOSER_REDIS_URL: redis://localhost:6379
+          COMPOSER_DATABASE_URL: postgresql://composer:composer@localhost:5432/composer
+        run: |
+          # Run Redis integration tests
+          bunx vitest run test/web/redis-rate-limiter.test.ts --reporter=verbose
+
+      - name: Run database migration tests
+        env:
+          COMPOSER_DATABASE_URL: postgresql://composer:composer@localhost:5432/composer
+        run: |
+          # Run any database-related tests
+          bunx vitest run test/web/ --reporter=verbose
