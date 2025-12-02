@@ -435,16 +435,17 @@ export class TieredRateLimiter {
 			return globalPeek;
 		}
 
-		// Find matching endpoint limiter
-		const endpointLimiter = this.findEndpointLimiter(endpoint);
-		if (!endpointLimiter) {
+		// Find matching endpoint limiter and pattern
+		const match = this.findEndpointLimiter(endpoint);
+		if (!match) {
 			// No endpoint limit - consume global token and return
 			return this.globalLimiter.check(ip);
 		}
 
-		// Peek at endpoint limit (no consumption)
-		const endpointKey = `${ip}:${endpoint}`;
-		const endpointPeek = endpointLimiter.peek(endpointKey);
+		// Use the matched pattern (not full path) for the key so all sub-routes
+		// share the same bucket. E.g., /api/chat/approval uses key "ip:/api/chat"
+		const endpointKey = `${ip}:${match.pattern}`;
+		const endpointPeek = match.limiter.peek(endpointKey);
 		if (!endpointPeek.allowed) {
 			// Endpoint limit would reject - return without consuming global token
 			return endpointPeek;
@@ -452,7 +453,7 @@ export class TieredRateLimiter {
 
 		// Both limits allow - consume tokens from both
 		const globalResult = this.globalLimiter.check(ip);
-		const endpointResult = endpointLimiter.check(endpointKey);
+		const endpointResult = match.limiter.check(endpointKey);
 
 		// Return the more restrictive result
 		return globalResult.remaining <= endpointResult.remaining
@@ -463,17 +464,25 @@ export class TieredRateLimiter {
 	/**
 	 * Find the rate limiter for a given endpoint path.
 	 * Supports exact match and prefix matching.
+	 * Returns both the limiter and the matched pattern for consistent key generation.
 	 */
-	private findEndpointLimiter(endpoint: string): RateLimiter | undefined {
+	private findEndpointLimiter(
+		endpoint: string,
+	): { limiter: RateLimiter; pattern: string } | undefined {
 		// Exact match
-		if (this.endpointLimiters.has(endpoint)) {
-			return this.endpointLimiters.get(endpoint);
+		const exactMatch = this.endpointLimiters.get(endpoint);
+		if (exactMatch) {
+			return {
+				limiter: exactMatch,
+				pattern: endpoint,
+			};
 		}
 
 		// Prefix match (e.g., /api/files/read matches /api/files)
+		// All sub-routes share the same bucket under the pattern
 		for (const [pattern, limiter] of this.endpointLimiters) {
 			if (endpoint.startsWith(pattern)) {
-				return limiter;
+				return { limiter, pattern };
 			}
 		}
 

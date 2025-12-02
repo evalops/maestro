@@ -479,6 +479,45 @@ describe("TieredRateLimiter", () => {
 			const blocked = tiered.check("192.168.1.3", "/api/test");
 			expect(blocked.allowed).toBe(false);
 		});
+
+		it("shares bucket across sub-routes with prefix matching", () => {
+			const tiered = new TieredRateLimiter(
+				{ windowMs: 60000, max: 1000 },
+				{
+					"/api/chat": { windowMs: 60000, max: 3 }, // Only 3 requests allowed
+				},
+			);
+
+			// Hit different sub-routes - they should all share the /api/chat bucket
+			tiered.check("192.168.1.5", "/api/chat");
+			tiered.check("192.168.1.5", "/api/chat/approval");
+			tiered.check("192.168.1.5", "/api/chat/client-tool-result");
+
+			// Fourth request to any sub-route should be blocked
+			const blocked = tiered.check("192.168.1.5", "/api/chat/stream");
+			expect(blocked.allowed).toBe(false);
+
+			// But a different endpoint pattern should still work
+			const tieredWithFiles = new TieredRateLimiter(
+				{ windowMs: 60000, max: 1000 },
+				{
+					"/api/chat": { windowMs: 60000, max: 3 },
+					"/api/files": { windowMs: 60000, max: 100 },
+				},
+			);
+
+			// Exhaust /api/chat
+			for (let i = 0; i < 3; i++) {
+				tieredWithFiles.check("192.168.1.6", `/api/chat/route${i}`);
+			}
+
+			// /api/files should still work
+			const filesResult = tieredWithFiles.check(
+				"192.168.1.6",
+				"/api/files/read",
+			);
+			expect(filesResult.allowed).toBe(true);
+		});
 	});
 
 	describe("peek method", () => {
