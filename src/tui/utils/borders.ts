@@ -186,6 +186,87 @@ export function themedTopLine(
 }
 
 /**
+ * Build a top line with both a left title and a right badge.
+ * Used for tool cards to show tool name and status.
+ */
+export function buildTopLineWithBadge(
+	width: number,
+	options: {
+		style?: BorderStyle;
+		title?: string;
+		badge?: string;
+		badgeColor?: ThemeColor;
+		borderColor?: ThemeColor;
+	} = {},
+): string {
+	const {
+		style = "square",
+		title,
+		badge,
+		badgeColor = "muted",
+		borderColor = "borderMuted",
+	} = options;
+	const chars = getBorderChars(style);
+	const innerWidth = Math.max(0, width - 2);
+
+	if (!title && !badge) {
+		return colorBorder(buildHorizontalLine(width, "top", style), borderColor);
+	}
+
+	const titlePart = title ? ` ${title} ` : "";
+	const badgePart = badge ? ` ${badge} ` : "";
+
+	// Calculate widths
+	const titleLen = titlePart.length;
+	const badgeLen = badgePart.length;
+	const dashesNeeded = Math.max(0, innerWidth - titleLen - badgeLen);
+
+	if (dashesNeeded < 1) {
+		// Not enough space, just show title
+		return colorBorder(buildTopLine(width, { style, title }), borderColor);
+	}
+
+	// Build the line: corner + title + dashes + badge + corner
+	const coloredTitle = title ? theme.bold(titlePart) : "";
+	const coloredBadge = badge ? theme.fg(badgeColor, badgePart) : "";
+	const dashes = theme.fg(borderColor, chars.horizontal.repeat(dashesNeeded));
+
+	return (
+		theme.fg(borderColor, chars.topLeft) +
+		coloredTitle +
+		dashes +
+		coloredBadge +
+		theme.fg(borderColor, chars.topRight)
+	);
+}
+
+/**
+ * Build a dashed separator line (for visual separation within cards).
+ */
+export function buildDashedSeparator(
+	width: number,
+	options: {
+		style?: BorderStyle;
+		color?: ThemeColor;
+	} = {},
+): string {
+	const { style = "square", color = "borderMuted" } = options;
+	const chars = getBorderChars(style);
+	const innerWidth = Math.max(0, width - 2);
+
+	// Alternating dash and space pattern
+	let pattern = "";
+	for (let i = 0; i < innerWidth; i++) {
+		pattern += i % 2 === 0 ? chars.horizontal : " ";
+	}
+
+	return theme.fg(
+		color,
+		`${chars.leftT}${pattern}${chars.rightT}`,
+	);
+}
+
+/**
  * Build a complete themed bottom line.
  */
 export function themedBottomLine(

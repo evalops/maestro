@@ -46,6 +46,13 @@ function stripAnsi(value: string): string {
 }
 
 function statsLineFrom(rendered: string[]): string {
+	// New layout: [rule, brand, rule, pathStats]
+	// Path+stats is now on line 3
+	return stripAnsi(rendered[3] ?? "");
+}
+
+function brandLineFrom(rendered: string[]): string {
+	// Brand line is now on line 1
 	return stripAnsi(rendered[1] ?? "");
 }
 
@@ -118,10 +125,10 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			const statsLine = statsLineFrom(rendered);
-			expect(statsLine).toContain("2.0k"); // Input: 1000 + 1000
-			expect(statsLine).toContain("1.0k"); // Output: 500 + 500
-			expect(statsLine).toContain("8.0k"); // Cache read: 5000 + 3000
-			expect(statsLine).toContain("3.0k"); // Cache write: 2000 + 1000
+			expect(statsLine).toContain("+2.0k"); // Input: 1000 + 1000
+			expect(statsLine).toContain("-1.0k"); // Output: 500 + 500
+			expect(statsLine).toContain("~8.0k"); // Cache read: 5000 + 3000
+			// Note: Cache write not shown in new compact format
 		});
 
 		it("should calculate context percentage from cumulative tokens", () => {
@@ -156,8 +163,9 @@ describe("FooterComponent", () => {
 
 			const statsLine = statsLineFrom(rendered);
 			// (2k input + 90k cacheRead + 1k output) / 200k = 93k / 200k = 46.5%
-			expect(statsLine).toContain("93k/200k (46.5%)");
-			expect(statsLine).not.toContain("(1.5%)");
+			// New format shows: ctx 46.5%
+			expect(statsLine).toContain("ctx 46.5%");
+			expect(statsLine).not.toContain("1.5%");
 		});
 
 		it("should format token counts correctly", () => {
@@ -187,12 +195,13 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			const statsLine = statsLineFrom(rendered);
-			expect(statsLine).toContain("$0.579"); // 0.123 + 0.456
+			// New format uses 2 decimal places: $0.58 (rounded from 0.579)
+			expect(statsLine).toContain("$0.58");
 		});
 	});
 
 	describe("Display Layout", () => {
-		it("should show composer branding on the right", () => {
+		it("should show composer branding on brand line", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),
 			]);
@@ -200,8 +209,8 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = statsLineFrom(rendered);
-			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
+			const brandLine = brandLineFrom(rendered);
+			expect(brandLine).toContain("* composer");
 		});
 
 		it("shows static responding stage badge", () => {
@@ -211,8 +220,9 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			footer.setStage("  Responding   ");
 			const rendered = footer.render(120);
-			const pathLine = stripAnsi(rendered[0] ?? "");
-			expect(pathLine).toContain("Responding");
+			// Stage badge is now on path+stats line (line 3)
+			const pathStatsLine = statsLineFrom(rendered);
+			expect(pathStatsLine).toContain("Responding");
 		});
 
 		it("shows static thinking stage badge", () => {
@@ -222,8 +232,8 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			footer.setStage("Thinking");
 			const rendered = footer.render(120);
-			const pathLine = stripAnsi(rendered[0] ?? "");
-			expect(pathLine).toContain("Thinking");
+			const pathStatsLine = statsLineFrom(rendered);
+			expect(pathStatsLine).toContain("Thinking");
 		});
 
 		it("shows static working stage badge with tool detail", () => {
@@ -233,9 +243,9 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			footer.setStage("Working · search (1/2)");
 			const rendered = footer.render(120);
-			const pathLine = stripAnsi(rendered[0] ?? "");
-			expect(pathLine).toContain("Working");
-			expect(pathLine).toContain("search (1/2)");
+			const pathStatsLine = statsLineFrom(rendered);
+			expect(pathStatsLine).toContain("Working");
+			expect(pathStatsLine).toContain("search (1/2)");
 		});
 
 		it("shows static dreaming stage badge", () => {
@@ -245,8 +255,8 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			footer.setStage("Dreaming");
 			const rendered = footer.render(120);
-			const pathLine = stripAnsi(rendered[0] ?? "");
-			expect(pathLine).toContain("Dreaming");
+			const pathStatsLine = statsLineFrom(rendered);
+			expect(pathStatsLine).toContain("Dreaming");
 		});
 
 		it("should show model name next to composer branding", () => {
@@ -257,9 +267,10 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = statsLineFrom(rendered);
-			expect(statsLine).toContain("claude-sonnet-4");
-			expect(statsLine).toContain("𝅘𝅥𝅮 composer");
+			// Model and brand are now on the brand line (line 1)
+			const brandLine = brandLineFrom(rendered);
+			expect(brandLine).toContain("claude-sonnet-4");
+			expect(brandLine).toContain("* composer");
 		});
 
 		it("should prioritize model name over brand when width is too small", () => {
@@ -272,9 +283,9 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(60); // Narrow width
 
-			const statsLine = statsLineFrom(rendered);
-			// Should contain model name but may drop brand to preserve it
-			expect(statsLine).toContain("very-long");
+			// Brand line should still have model name
+			const brandLine = brandLineFrom(rendered);
+			expect(brandLine).toContain("very-long");
 		});
 
 		it("should show pwd with home directory as ~", () => {
@@ -298,8 +309,9 @@ describe("FooterComponent", () => {
 				const footer = new FooterComponent(state);
 				const rendered = footer.render(120);
 
-				const pwdLine = rendered[0];
-				expect(pwdLine).toContain("~/projects/myproject");
+				// Path is now on line 3 (path+stats line)
+				const pathStatsLine = rendered[3];
+				expect(pathStatsLine).toContain("~/projects/myproject");
 			} finally {
 				// Restore original values
 				process.env.HOME = originalHome;
@@ -319,7 +331,8 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
+			// Stats are now on line 3 (path+stats line)
+			const statsLine = rendered[3];
 			expect(statsLine).toContain("85.0%");
 			// Note: Can't easily test color codes, but the percentage should be there
 		});
@@ -331,8 +344,8 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			expect(rendered).toHaveLength(2);
-			expect(rendered[1]).toContain("0.0%"); // Context percentage
+			// New layout: [rule, brand, rule, pathStats]
+			expect(rendered).toHaveLength(4);
 		});
 
 		it("should handle zero context window", () => {
@@ -344,8 +357,9 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(120);
 
-			const statsLine = rendered[1];
-			expect(statsLine).toContain("0.0%");
+			// With zero context window, no context % is shown
+			// Just verify it renders without error
+			expect(rendered).toHaveLength(4);
 		});
 
 		it("should handle very narrow terminal width", () => {
@@ -356,7 +370,8 @@ describe("FooterComponent", () => {
 			const footer = new FooterComponent(state);
 			const rendered = footer.render(20); // Very narrow
 
-			expect(rendered).toHaveLength(2);
+			// New layout: [rule, brand, rule, pathStats]
+			expect(rendered).toHaveLength(4);
 			// Should not crash, even if truncated
 		});
 	});

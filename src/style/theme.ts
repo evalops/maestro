@@ -42,27 +42,37 @@ const chalkTheme = new Chalk({
 });
 
 export const themePalette = {
-	text: "#e2e8f0",
+	// Text hierarchy
+	text: "#f8fafc",
 	muted: "#94a3b8",
-	separator: "#4b5563",
+	dim: "#64748b",
+	// Structural
+	separator: "#475569",
+	border: "#334155",
+	// Metrics
 	metric: "#f8fafc",
-	brandGlyph: "#dcdafa",
-	brand: "#cfd2f7",
-	model: "#aab2c8",
-	accentCool: "#a6d8ff",
-	accentWarm: "#f5b17a",
-	cacheRead: "#c6f7d6",
-	cacheWrite: "#f5bfd2",
-	cost: "#ffd6a5",
-	success: "#9ae6b4",
-	warning: "#ffb347",
-	danger: "#ff8c69",
-	info: "#c3b8ff",
-	rubyPrimary: "#e0115f",
-	rubyHighlight: "#ff4f8b",
-	// Italic styling colors - soft cyan for contemplative/secondary content
-	italic: "#7dd3fc", // Primary italic text (thinking blocks, emphasis)
-	italicBorder: "#38bdf8", // Borders for italic content (blockquotes)
+	// Brand
+	brandGlyph: "#c084fc",
+	brand: "#c084fc",
+	model: "#94a3b8",
+	// Accents
+	accentCool: "#7dd3fc",
+	accentWarm: "#fbbf24",
+	// Token stats
+	cacheRead: "#86efac",
+	cacheWrite: "#c4b5fd",
+	cost: "#fbbf24",
+	// Semantic
+	success: "#86efac",
+	warning: "#fde047",
+	danger: "#fca5a5",
+	info: "#93c5fd",
+	// Ruby (for stages)
+	rubyPrimary: "#c084fc",
+	rubyHighlight: "#e879f9",
+	// Italic styling
+	italic: "#7dd3fc",
+	italicBorder: "#0ea5e9",
 } as const;
 
 export type BadgeVariant = "info" | "success" | "warn" | "danger";
@@ -130,7 +140,7 @@ export function contextualBadge(
 }
 
 export const brand = {
-	glyph: (): string => chalkTheme.hex(themePalette.brandGlyph)("𝅘𝅥𝅮"),
+	glyph: (): string => chalkTheme.hex(themePalette.brandGlyph)("*"),
 	text: (): string => chalkTheme.hex(themePalette.brand).bold("composer"),
 	signature(modelName?: string, compact = false): string {
 		const tone = modelName

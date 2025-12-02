@@ -23,9 +23,9 @@ export class EditRenderer implements ToolRenderer {
 					? context.args.path
 					: "";
 		const path = shortenPath(pathValue);
-		let text = `${theme.fg("accent", "[edit]")} ${
-			path ? theme.fg("dim", path) : theme.fg("dim", "...")
-		}`;
+
+		// Show path as the first line
+		const pathLine = path ? theme.fg("muted", path) : theme.fg("dim", "...");
 
 		if (context.collapsed) {
 			const diffText =
@@ -36,11 +36,10 @@ export class EditRenderer implements ToolRenderer {
 						"string" &&
 					(context.result.details as { diff: string }).diff) ||
 				this.getTextOutput(context);
-			text += `\n${theme.fg("dim", buildCollapsedSummary(diffText))}`;
-			return text;
+			return `${pathLine}\n${theme.fg("dim", buildCollapsedSummary(diffText))}`;
 		}
 
-		const sections: string[] = [];
+		const sections: string[] = [pathLine];
 		const details =
 			typeof context.result?.details === "object"
 				? (context.result.details as Record<string, unknown>)
@@ -56,44 +55,30 @@ export class EditRenderer implements ToolRenderer {
 							.slice(0, 80)
 							.concat(
 								diffLines.length > 80
-									? [`${theme.fg("dim", "… truncated …")}`]
+									? [`${theme.fg("dim", "... truncated ...")}`]
 									: [],
 							),
 						maxDiffWidth,
 					)
 				: clampAnsiLines(diffLines, maxDiffWidth);
-			const diffSection = formatSection(
-				shouldCompact ? "diff (compact)" : "diff",
-				renderedLines,
-			);
-			if (diffSection) {
-				sections.push(diffSection);
-			}
+			sections.push(renderedLines.join("\n"));
 		} else if (
 			typeof context.args?.before === "string" &&
 			typeof context.args?.after === "string"
 		) {
-			const previewSection = formatSection(
-				"preview",
-				clampAnsiLines(
-					generateDiff(context.args.before, context.args.after).split("\n"),
-					maxDiffWidth,
-				),
+			const previewLines = clampAnsiLines(
+				generateDiff(context.args.before, context.args.after).split("\n"),
+				maxDiffWidth,
 			);
-			if (previewSection) {
-				sections.push(previewSection);
-			}
+			sections.push(previewLines.join("\n"));
 		}
 
 		const message = this.getTextOutput(context).trim();
 		if (message) {
-			const messageSection = formatSection(
-				"result",
-				message.split("\n").map((line) => theme.fg("dim", line)),
-			);
-			if (messageSection) {
-				sections.push(messageSection);
-			}
+			const messageLines = message
+				.split("\n")
+				.map((line) => theme.fg("dim", line));
+			sections.push(messageLines.join("\n"));
 		}
 
 		const detailSections = formatDetailSections(context.result?.details, {
@@ -101,11 +86,7 @@ export class EditRenderer implements ToolRenderer {
 		});
 		sections.push(...detailSections);
 
-		if (sections.length === 0) {
-			return text;
-		}
-
-		return `${text}\n\n${sections.filter(Boolean).join("\n\n")}`;
+		return sections.filter(Boolean).join("\n\n");
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

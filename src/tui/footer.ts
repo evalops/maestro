@@ -5,6 +5,9 @@ import { theme } from "../theme/theme.js";
 import {
 	GitBranchTracker,
 	buildBadgeAndPathLine,
+	buildBrandLine,
+	buildHorizontalRule,
+	buildPathAndStatsLine,
 	buildSoloStatsLine,
 	buildStatsLine,
 	calculateFooterStats,
@@ -230,17 +233,18 @@ export class FooterComponent {
 			return this.renderSoloFooter(stats, width);
 		}
 
-		// Use new 3-zone layout
-		const pathLine = buildBadgeAndPathLine(
+		// New footer layout with horizontal rules
+		const rule = buildHorizontalRule(width);
+		const brandLine = buildBrandLine(width, this.state);
+		const pathStatsLine = buildPathAndStatsLine(
 			process.cwd(),
-			this.activeStage,
-			this.runtimeBadges,
+			stats,
 			width,
 			branch,
+			this.activeStage,
 		);
-		const statsLine = buildStatsLine(stats, width, this.state);
 
-		const lines = [pathLine, chalk.gray(statsLine)];
+		const lines = [rule, brandLine, rule, pathStatsLine];
 
 		// Render Toast if active, otherwise Hints
 		if (this.activeToast) {

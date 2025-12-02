@@ -26,19 +26,20 @@ export class WriteRenderer implements ToolRenderer {
 			typeof args?.content === "string"
 				? args.content
 				: String(args?.content ?? "");
-		const lines = fileContent ? fileContent.split("\n") : [];
-		const totalLines = lines.length;
+		const contentLines = fileContent ? fileContent.split("\n") : [];
+		const totalLines = contentLines.length;
 
-		let text = `${theme.fg("accent", "[write]")} ${
-			path ? theme.fg("dim", path) : theme.fg("dim", "...")
-		}`;
+		// Build path line with optional line count
+		let pathLine = path ? theme.fg("muted", path) : theme.fg("dim", "...");
 		if (totalLines > 10) {
-			text += ` (${totalLines} lines)`;
+			pathLine += theme.fg("dim", ` (${totalLines} lines)`);
 		}
 
 		if (context.collapsed) {
-			return `${text}\n${theme.fg("dim", buildCollapsedSummary(fileContent))}`;
+			return `${pathLine}\n${theme.fg("dim", buildCollapsedSummary(fileContent))}`;
 		}
+
+		const sections: string[] = [pathLine];
 
 		if (fileContent) {
 			const { lines: preview, remaining } = summarizeLines(fileContent, 10);
@@ -49,10 +50,10 @@ export class WriteRenderer implements ToolRenderer {
 				maxWidth,
 			);
 			if (formatted.length) {
-				text += `\n\n${formatSection("content", formatted)}`;
+				sections.push(formatted.join("\n"));
 			}
 			if (remaining > 0) {
-				text += theme.fg("dim", `\n... (${remaining} more lines)`);
+				sections.push(theme.fg("dim", `... (${remaining} more lines)`));
 			}
 		}
 
@@ -61,10 +62,10 @@ export class WriteRenderer implements ToolRenderer {
 				excludeKeys: ["content"],
 			});
 			if (detailSections.length) {
-				text += `\n\n${detailSections.join("\n\n")}`;
+				sections.push(...detailSections);
 			}
 		}
 
-		return text;
+		return sections.filter(Boolean).join("\n\n");
 	}
 }

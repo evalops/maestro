@@ -3,11 +3,60 @@ import type { TUI } from "../tui.js";
 import { Text } from "./text.js";
 
 type LoaderMode = "default" | "compact";
+type SpinnerStyle = "braille" | "dots" | "pulse" | "line";
+
+/** Spinner frame definitions */
+const SPINNERS: Record<
+	SpinnerStyle,
+	Array<{ glyph: string; color: string }>
+> = {
+	braille: [
+		{ glyph: "⠋", color: "#7dd3fc" },
+		{ glyph: "⠙", color: "#7dd3fc" },
+		{ glyph: "⠹", color: "#93c5fd" },
+		{ glyph: "⠸", color: "#93c5fd" },
+		{ glyph: "⠼", color: "#c4b5fd" },
+		{ glyph: "⠴", color: "#c4b5fd" },
+		{ glyph: "⠦", color: "#93c5fd" },
+		{ glyph: "⠧", color: "#93c5fd" },
+		{ glyph: "⠇", color: "#7dd3fc" },
+		{ glyph: "⠏", color: "#7dd3fc" },
+	],
+	dots: [
+		{ glyph: "·  ", color: "#7dd3fc" },
+		{ glyph: "·· ", color: "#93c5fd" },
+		{ glyph: "···", color: "#c4b5fd" },
+		{ glyph: " ··", color: "#93c5fd" },
+		{ glyph: "  ·", color: "#7dd3fc" },
+		{ glyph: "   ", color: "#64748b" },
+	],
+	pulse: [
+		{ glyph: "◆", color: "#7dd3fc" },
+		{ glyph: "◇", color: "#64748b" },
+		{ glyph: "◇", color: "#64748b" },
+		{ glyph: "◇", color: "#64748b" },
+	],
+	line: [
+		{ glyph: "|", color: "#7dd3fc" },
+		{ glyph: "/", color: "#93c5fd" },
+		{ glyph: "-", color: "#c4b5fd" },
+		{ glyph: "\\", color: "#93c5fd" },
+	],
+};
+
+/** Low-unicode fallback spinners */
+const LOW_UNICODE_SPINNERS: Record<SpinnerStyle, string[]> = {
+	braille: ["|", "/", "-", "\\"],
+	dots: [".", "..", "...", "..", "."],
+	pulse: ["*", ".", ".", "."],
+	line: ["|", "/", "-", "\\"],
+};
 
 interface LoaderOptions {
 	mode?: LoaderMode;
 	lowColor?: boolean;
 	lowUnicode?: boolean;
+	spinner?: SpinnerStyle;
 }
 
 /**
@@ -15,12 +64,7 @@ interface LoaderOptions {
  */
 export class Loader extends Text {
 	private message: string;
-	private spinnerFrames = [
-		{ glyph: "●", color: "#a5b4fc" },
-		{ glyph: "●", color: "#c4b5fd" },
-		{ glyph: "●", color: "#f1c0e8" },
-		{ glyph: "●", color: "#c4b5fd" },
-	];
+	private spinnerStyle: SpinnerStyle;
 	private progressDots = [0, 1, 2];
 	private progressOffset = 0;
 	private intervalId: NodeJS.Timeout | null = null;
@@ -42,6 +86,7 @@ export class Loader extends Text {
 		this.mode = options.mode ?? "default";
 		this.lowColor = Boolean(options.lowColor);
 		this.lowUnicode = Boolean(options.lowUnicode);
+		this.spinnerStyle = options.spinner ?? "braille";
 		this.start();
 	}
 
@@ -51,11 +96,11 @@ export class Loader extends Text {
 
 	start(): void {
 		this.updateDisplay();
+		const frames = SPINNERS[this.spinnerStyle];
 		this.intervalId = setInterval(() => {
-			this.progressOffset =
-				(this.progressOffset + 1) % this.progressDots.length;
+			this.progressOffset = (this.progressOffset + 1) % frames.length;
 			this.updateDisplay();
-		}, 150);
+		}, 80); // Faster for smoother braille animation
 	}
 
 	stop(): void {
@@ -99,7 +144,7 @@ export class Loader extends Text {
 		const trimmed = this.message.trim();
 		if (!trimmed) return "";
 		const [first, ...rest] = trimmed.split(/\s+/);
-		const accent = this.lowColor ? (s: string) => s : chalk.hex("#f1c0e8");
+		const accent = this.lowColor ? (s: string) => s : chalk.hex("#7dd3fc");
 		const secondary = this.lowColor ? (s: string) => s : chalk.hex("#94a3b8");
 		const highlightedFirst = accent(first ?? "");
 		return rest.length
@@ -124,47 +169,51 @@ export class Loader extends Text {
 	private buildProgressLine(): string {
 		if (this.progressPercent !== null) {
 			const filledUnits = Math.round(this.progressPercent * this.segments);
-			const accentColors = ["#94a3b8", "#a5b4fc", "#c4b5fd"];
 			const blocks: string[] = [];
 			for (let i = 0; i < this.segments; i++) {
-				const color = accentColors[i % accentColors.length];
 				const char = i < filledUnits ? "━" : "─";
-				const tint = i < filledUnits ? color : "#475569";
-				blocks.push(chalk.hex(tint)(char));
+				const tint = i < filledUnits ? "#7dd3fc" : "#334155";
+				blocks.push(this.lowColor ? char : chalk.hex(tint)(char));
 			}
 			const percentText = `${Math.round(this.progressPercent * 100)}%`.padStart(
 				4,
 				" ",
 			);
-			return `${chalk.gray("⟪")}${blocks.join("")}${chalk.gray("⟫")} ${chalk.gray(percentText)}`;
+			const gray = this.lowColor ? (s: string) => s : chalk.gray;
+			return `${gray("[")}${blocks.join("")}${gray("]")} ${gray(percentText)}`;
 		}
 
-		const baseColor = this.lowColor ? undefined : "#475569";
-		const accentColor = this.lowColor ? undefined : "#c4b5fd";
-		const glyph = this.lowUnicode ? "*" : "●";
+		// Indeterminate progress: show animated dots
+		const baseColor = this.lowColor ? undefined : "#334155";
+		const accentColor = this.lowColor ? undefined : "#7dd3fc";
+		const glyph = this.lowUnicode ? "." : "·";
 		const dots = this.progressDots.map((dotIndex) => {
 			const isActive =
 				(this.progressOffset + dotIndex) % this.progressDots.length === 0;
-			if (this.lowColor) return isActive ? glyph : glyph.toLowerCase();
+			if (this.lowColor) return isActive ? glyph.toUpperCase() : glyph;
 			return isActive
 				? chalk.hex(accentColor ?? "")(glyph)
 				: chalk.hex(baseColor ?? "")(glyph);
 		});
 		const gray = this.lowColor ? (s: string) => s : chalk.gray;
-		return `${gray("·· ")}${dots.join(" ")}${gray(" ··")}`;
+		return `${gray("")}${dots.join(" ")}${gray("")}`;
 	}
 
 	private formatCompactStage(): string {
 		const trimmed = this.message.trim();
 		if (!trimmed) return "";
-		return chalk.hex("#f1c0e8")(trimmed.toUpperCase());
+		return (this.lowColor ? (s: string) => s : chalk.hex("#7dd3fc"))(
+			trimmed.toUpperCase(),
+		);
 	}
 
 	private formatCompactStepInfo(): string {
 		if (!this.stageInfo) return "";
 		const { step, total } = this.stageInfo;
 		const safeStep = Math.max(1, Math.min(step, total));
-		return chalk.hex("#94a3b8")(`step ${safeStep}/${total}`);
+		return (this.lowColor ? (s: string) => s : chalk.hex("#94a3b8"))(
+			`step ${safeStep}/${total}`,
+		);
 	}
 
 	private buildCompactProgressLine(): string {
@@ -174,15 +223,16 @@ export class Loader extends Text {
 		const filledUnits = Math.round(this.progressPercent * this.compactSegments);
 		const parts: string[] = [];
 		for (let index = 0; index < this.compactSegments; index++) {
-			const color = index < filledUnits ? "#f1c0e8" : "#334155";
+			const color = index < filledUnits ? "#7dd3fc" : "#334155";
 			const glyph = index < filledUnits ? "━" : "─";
-			parts.push(chalk.hex(color)(glyph));
+			parts.push(this.lowColor ? glyph : chalk.hex(color)(glyph));
 		}
 		const percent = `${Math.round(this.progressPercent * 100)}%`.padStart(
 			4,
 			" ",
 		);
-		return `${chalk.gray("progress")} ${parts.join("")}${chalk.gray(` ${percent}`)}`;
+		const gray = this.lowColor ? (s: string) => s : chalk.gray;
+		return `${gray("progress")} ${parts.join("")}${gray(` ${percent}`)}`;
 	}
 
 	private renderCompact(): void {
@@ -200,18 +250,32 @@ ${secondaryLine}`);
 		}
 	}
 
+	private getSpinnerFrame(): { glyph: string; color: string } {
+		const frames = SPINNERS[this.spinnerStyle];
+		const frameIndex = this.progressOffset % frames.length;
+		return frames[frameIndex];
+	}
+
+	private getLowUnicodeSpinnerFrame(): string {
+		const frames = LOW_UNICODE_SPINNERS[this.spinnerStyle];
+		const frameIndex = this.progressOffset % frames.length;
+		return frames[frameIndex];
+	}
+
 	private updateDisplay(): void {
 		if (this.mode === "compact") {
 			this.renderCompact();
 			return;
 		}
-		const spinner = this.spinnerFrames[this.progressOffset];
-		const glyph = this.lowUnicode ? "*" : spinner.glyph;
-		const spinnerGlyph = this.lowColor
-			? glyph
-			: chalk.hex(spinner.color)(glyph);
+
+		const frame = this.getSpinnerFrame();
+		const glyph = this.lowUnicode
+			? this.getLowUnicodeSpinnerFrame()
+			: frame.glyph;
+		const spinnerGlyph = this.lowColor ? glyph : chalk.hex(frame.color)(glyph);
+
 		const titlePart = this.title
-			? `${(this.lowColor ? (s: string) => s : chalk.hex("#b3b8ff"))(
+			? `${(this.lowColor ? (s: string) => s : chalk.hex("#7dd3fc"))(
 					this.title.toUpperCase(),
 				)} `
 			: "";

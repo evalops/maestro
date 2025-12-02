@@ -38,6 +38,152 @@ const ANSI_ESCAPE_SEQUENCE = new RegExp(
 	"g",
 );
 
+/**
+ * Build a horizontal rule line using box-drawing characters.
+ */
+export function buildHorizontalRule(width: number): string {
+	if (width <= 0) return "";
+	return chalk.hex(themePalette.dim)("─".repeat(width));
+}
+
+/**
+ * Build the brand line: `* composer` on left, model name on right
+ */
+export function buildBrandLine(
+	width: number,
+	state: Pick<AgentState, "model" | "thinkingLevel">,
+): string {
+	const glyph = brand.glyph();
+	const name = brand.text();
+	const brandLeft = `${glyph} ${name}`;
+	const brandLeftWidth = visibleWidth(brandLeft);
+
+	const modelLabel = formatModelLabel(state);
+	const modelRight = chalk.hex(themePalette.model)(modelLabel);
+	const modelRightWidth = visibleWidth(modelRight);
+
+	const totalNeeded = brandLeftWidth + MIN_PADDING + modelRightWidth;
+	if (totalNeeded <= width) {
+		const padding = " ".repeat(
+			Math.max(0, width - brandLeftWidth - modelRightWidth),
+		);
+		return `${brandLeft}${padding}${modelRight}`;
+	}
+
+	// Truncate model if needed
+	const availableForModel = width - brandLeftWidth - MIN_PADDING;
+	if (availableForModel > MIN_MODEL_LABEL_CHARS) {
+		const truncated = truncateModelLabel(modelLabel, availableForModel);
+		const truncatedColored = chalk.hex(themePalette.model)(truncated);
+		const padding = " ".repeat(
+			Math.max(0, width - brandLeftWidth - visibleWidth(truncatedColored)),
+		);
+		return `${brandLeft}${padding}${truncatedColored}`;
+	}
+
+	// Just brand if model doesn't fit
+	return brandLeft;
+}
+
+/**
+ * Build the path and stats line with pipe separators.
+ * Format: ~/project (main)       +1.2k  -500  ~3.2k  |  ctx 2.3%  |  $0.04
+ */
+export function buildPathAndStatsLine(
+	cwd: string,
+	stats: FooterStats,
+	width: number,
+	branch: string | null,
+	stageLabel: string | null,
+): string {
+	const pipeSep = chalk.hex(themePalette.dim)(" | ");
+
+	// Build right side: token stats | ctx % | cost
+	const statsParts: string[] = [];
+	if (stats.totalInput)
+		statsParts.push(
+			`${chalk.hex(themePalette.accentCool)("+")}${chalk
+				.hex(themePalette.text)
+				.bold(formatTokenCount(stats.totalInput))}`,
+		);
+	if (stats.totalOutput)
+		statsParts.push(
+			`${chalk.hex(themePalette.accentWarm)("-")}${chalk
+				.hex(themePalette.text)
+				.bold(formatTokenCount(stats.totalOutput))}`,
+		);
+	if (stats.totalCacheRead)
+		statsParts.push(
+			`${chalk.hex(themePalette.cacheRead)("~")}${chalk
+				.hex(themePalette.text)
+				.bold(formatTokenCount(stats.totalCacheRead))}`,
+		);
+
+	const tokensGroup = statsParts.join("  ");
+	const contextPercent =
+		stats.contextWindow > 0
+			? `ctx ${colorizeContextPercent(stats.contextPercent)}`
+			: "";
+	const costLabel =
+		stats.totalCost > 0
+			? `${chalk.hex(themePalette.cost)("$")}${chalk
+					.hex(themePalette.metric)
+					.bold(stats.totalCost.toFixed(2))}`
+			: "";
+
+	const rightParts: string[] = [];
+	if (tokensGroup) rightParts.push(tokensGroup);
+	if (contextPercent) rightParts.push(contextPercent);
+	if (costLabel) rightParts.push(costLabel);
+	const rightSide = rightParts.join(pipeSep);
+	const rightSideWidth = visibleWidth(rightSide);
+
+	// Build left side: stage (if any) + path with branch
+	const leftParts: string[] = [];
+	if (stageLabel) {
+		leftParts.push(renderStaticStageBadge(stageLabel));
+	}
+	const pathFormatted = formatPathWithBranch(
+		cwd,
+		Math.max(20, width - rightSideWidth - 6),
+		branch,
+	);
+	leftParts.push(chalk.hex(themePalette.muted)(pathFormatted));
+	const leftSide = leftParts.join("  ");
+	const leftSideWidth = visibleWidth(leftSide);
+
+	const totalNeeded = leftSideWidth + MIN_PADDING + rightSideWidth;
+	if (totalNeeded <= width) {
+		const padding = " ".repeat(
+			Math.max(MIN_PADDING, width - leftSideWidth - rightSideWidth),
+		);
+		return `${leftSide}${padding}${rightSide}`;
+	}
+
+	// Narrow width: just return what fits
+	if (width < 60) {
+		return leftSide;
+	}
+
+	// Truncate path to make room
+	const availableForPath = Math.max(
+		15,
+		width - rightSideWidth - MIN_PADDING - (stageLabel ? 15 : 0),
+	);
+	const truncatedPath = formatPathWithBranch(cwd, availableForPath, branch, 15);
+	const truncatedLeftParts: string[] = [];
+	if (stageLabel) {
+		truncatedLeftParts.push(renderStaticStageBadge(stageLabel));
+	}
+	truncatedLeftParts.push(chalk.hex(themePalette.muted)(truncatedPath));
+	const truncatedLeft = truncatedLeftParts.join("  ");
+	const truncatedLeftWidth = visibleWidth(truncatedLeft);
+	const padding = " ".repeat(
+		Math.max(MIN_PADDING, width - truncatedLeftWidth - rightSideWidth),
+	);
+	return `${truncatedLeft}${padding}${rightSide}`;
+}
+
 export type FooterMode = "ensemble" | "solo";
 
 export interface FooterStats {
@@ -61,12 +207,12 @@ export interface FooterHint {
 
 export type StageKind = "thinking" | "working" | "responding" | "dreaming";
 
-// Static color-coded badges for stages (no shimmer)
+// Static color-coded badges for stages
 const STAGE_COLORS: Record<StageKind, string> = {
-	thinking: themePalette.info, // soft purple
+	thinking: "#93c5fd", // soft blue
 	working: "#fbbf24", // amber
-	responding: "#e0115f", // ruby
-	dreaming: "#c084fc", // purple
+	responding: "#7dd3fc", // sky
+	dreaming: "#c084fc", // violet
 } as const;
 
 export function formatModelLabel(

@@ -74,10 +74,12 @@ export class AssistantMessageComponent extends Container {
 
 	private createThinkingBlock(text: string): Container {
 		const container = new Container();
-		// Thinking header
-		container.addChild(new Text(theme.fg("dim", "⚡ Thinking..."), 1, 0));
 
-		// Thinking content (dimmed)
+		// Dashed header line
+		const headerLine = theme.fg("dim", "-- thinking " + "-".repeat(40));
+		container.addChild(new Text(headerLine, 1, 0));
+
+		// Thinking content (dimmed, indented)
 		container.addChild(
 			new Markdown(
 				text,
@@ -86,14 +88,20 @@ export class AssistantMessageComponent extends Container {
 				undefined,
 				2, // Indent
 				0,
-				getMarkdownTheme(), // We might want a specific dimmed theme here
+				getMarkdownTheme(),
 			),
 		);
+
+		// Dashed footer line
+		const footerLine = theme.fg("dim", "-".repeat(53));
+		container.addChild(new Text(footerLine, 1, 0));
+
 		return container;
 	}
 
 	private buildHeader(cleaned: boolean): string {
-		const base = `${theme.fg("accent", "COMPOSER")} ${theme.fg("muted", "· response")}`;
+		const brand = theme.fg("accent", "* COMPOSER");
+		const base = `${brand} ${theme.fg("muted", "· response")}`;
 		return cleaned ? `${base} ${theme.fg("muted", "· cleaned")}` : base;
 	}
 }

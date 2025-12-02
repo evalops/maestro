@@ -1,11 +1,38 @@
 import { Container, Spacer, Text } from "@evalops/tui";
-import { theme } from "../theme/theme.js";
+import { theme, type ThemeColor } from "../theme/theme.js";
 import {
 	type ToolRenderer,
 	createToolRenderer,
 } from "./tool-renderers/index.js";
-import { themedBottomLine, themedTopLine } from "./utils/borders.js";
+import {
+	buildTopLineWithBadge,
+	themedBottomLine,
+	getBorderChars,
+} from "./utils/borders.js";
 import { PANEL_WIDTHS, responsiveWidth } from "./utils/layout.js";
+
+/** Tool execution status for visual display */
+type ToolStatus = "running" | "done" | "error" | "waiting";
+
+/** Tool icon glyphs (Unicode, no emoji) */
+const TOOL_ICONS: Record<string, string> = {
+	bash: "*",
+	edit: "~",
+	read: ">",
+	write: "+",
+	task: "?",
+	glob: "@",
+	grep: "#",
+	default: "*",
+};
+
+/** Status badge labels and colors */
+const STATUS_CONFIG: Record<ToolStatus, { label: string; color: ThemeColor }> = {
+	running: { label: "[...]", color: "warning" },
+	done: { label: "[done]", color: "success" },
+	error: { label: "[err]", color: "error" },
+	waiting: { label: "[wait]", color: "warning" },
+};
 
 /**
  * Component that renders a tool call with its result (updateable)
@@ -56,18 +83,42 @@ export class ToolExecutionComponent extends Container {
 
 	private static readonly PANEL_WIDTH = PANEL_WIDTHS.tool;
 
+	private getToolIcon(): string {
+		return TOOL_ICONS[this.toolName.toLowerCase()] ?? TOOL_ICONS.default;
+	}
+
+	private getStatus(): ToolStatus {
+		if (this.pendingStatus) {
+			return "waiting";
+		}
+		if (!this.result) {
+			return "running";
+		}
+		return this.result.isError ? "error" : "done";
+	}
+
 	private buildTopLine(): string {
-		const label = this.toolName.toUpperCase();
-		return themedTopLine(this.panelWidth(), {
-			title: theme.bold(label),
-			color: "borderMuted",
+		const icon = this.getToolIcon();
+		const label = `${icon} ${this.toolName.toLowerCase()}`;
+		const status = this.getStatus();
+		const { label: badge, color: badgeColor } = STATUS_CONFIG[status];
+
+		return buildTopLineWithBadge(this.panelWidth(), {
+			style: "square",
+			title: label,
+			badge,
+			badgeColor,
+			borderColor: "borderMuted",
 		});
 	}
 
 	private buildBottomLine(): string {
-		return themedBottomLine(this.panelWidth(), {
-			color: "borderMuted",
-		});
+		const chars = getBorderChars("square");
+		const innerWidth = Math.max(0, this.panelWidth() - 2);
+		return theme.fg(
+			"borderMuted",
+			`${chars.bottomLeft}${chars.horizontal.repeat(innerWidth)}${chars.bottomRight}`,
+		);
 	}
 
 	private panelWidth(): number {
@@ -128,7 +179,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		const banner = theme.fg(
 			"warning",
-			`⚠ ${this.pendingStatus.trim() || "Awaiting approval"}`,
+			`(!) ${this.pendingStatus.trim() || "Awaiting approval"}`,
 		);
 		return `${banner}\n\n${body}`;
 	}

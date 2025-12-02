@@ -18,11 +18,12 @@ export class BashRenderer implements ToolRenderer {
 			typeof args?.command === "string"
 				? args.command
 				: String(args?.command ?? "");
-		const text = theme.fg("accent", "⟢ bash");
 		const commandLines = formatShellSnippet(command ? `$ ${command}` : "$ ...");
 		const sections: string[] = [];
+
+		// Command section (always show)
 		if (commandLines.length) {
-			sections.push(formatSection("command", commandLines));
+			sections.push(commandLines.join("\n"));
 		}
 
 		if (context.collapsed) {
@@ -30,7 +31,9 @@ export class BashRenderer implements ToolRenderer {
 				? this.getTextOutput(context)
 				: command;
 			const summary = buildCollapsedSummary(summarySource);
-			return `${text}\n${theme.fg("dim", summary)}`;
+			return sections.length
+				? `${sections[0]}\n${theme.fg("dim", summary)}`
+				: theme.fg("dim", summary);
 		}
 
 		if (context.result) {
@@ -43,9 +46,9 @@ export class BashRenderer implements ToolRenderer {
 					lines.map((line) => theme.fg("dim", line)),
 					maxWidth,
 				);
-				sections.push(formatSection("output", dimmed));
+				sections.push(dimmed.join("\n"));
 				if (remaining > 0) {
-					sections.push(theme.fg("dim", `  ... (${remaining} more lines)`));
+					sections.push(theme.fg("dim", `... (${remaining} more lines)`));
 				}
 			}
 		}
@@ -58,10 +61,10 @@ export class BashRenderer implements ToolRenderer {
 		}
 
 		if (sections.length === 0) {
-			return `${text}\n${theme.fg("dim", "waiting for output...")}`;
+			return theme.fg("dim", "waiting for output...");
 		}
 
-		return `${text}\n\n${sections.filter(Boolean).join("\n\n")}`;
+		return sections.filter(Boolean).join("\n\n");
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

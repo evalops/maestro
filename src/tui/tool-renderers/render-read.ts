@@ -22,20 +22,22 @@ export class ReadRenderer implements ToolRenderer {
 					? args.path
 					: "";
 		const path = shortenPath(pathValue);
-		let text = `${theme.fg("accent", "[read]")} ${
-			path ? theme.fg("dim", path) : theme.fg("dim", "...")
-		}`;
+
+		// Build path line with optional range
+		let pathLine = path ? theme.fg("muted", path) : theme.fg("dim", "...");
 		const rangeLabel = this.formatRangeLabel(args, context.result?.details);
 		if (rangeLabel) {
-			text += theme.fg("dim", `:${rangeLabel}`);
+			pathLine += theme.fg("dim", `:${rangeLabel}`);
 		}
 
 		if (context.collapsed) {
 			const summary = context.result
 				? buildCollapsedSummary(this.getTextOutput(context))
 				: "output hidden: awaiting result";
-			return `${text}\n${theme.fg("dim", summary)}`;
+			return `${pathLine}\n${theme.fg("dim", summary)}`;
 		}
+
+		const sections: string[] = [pathLine];
 
 		if (context.result) {
 			const output = this.getTextOutput(context);
@@ -47,21 +49,21 @@ export class ReadRenderer implements ToolRenderer {
 				maxWidth,
 			);
 			if (displayLines.length) {
-				text += `\n\n${formatSection("content", displayLines)}`;
+				sections.push(displayLines.join("\n"));
 			}
 			if (remaining > 0) {
-				text += theme.fg("dim", `\n... (${remaining} more lines)`);
+				sections.push(theme.fg("dim", `... (${remaining} more lines)`));
 			}
 
 			const detailSections = formatDetailSections(context.result.details, {
 				excludeKeys: ["content"],
 			});
 			if (detailSections.length) {
-				text += `\n\n${detailSections.join("\n\n")}`;
+				sections.push(...detailSections);
 			}
 		}
 
-		return text;
+		return sections.filter(Boolean).join("\n\n");
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

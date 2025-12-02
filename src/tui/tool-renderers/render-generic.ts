@@ -3,7 +3,6 @@ import {
 	buildCollapsedSummary,
 	formatDetailSections,
 	formatJsonSnippet,
-	formatSection,
 } from "../utils/tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
@@ -12,10 +11,7 @@ export class GenericRenderer implements ToolRenderer {
 		const args = context.result
 			? context.args
 			: (context.partialArgs ?? context.args);
-		const label = context.toolName
-			? `${context.toolName}`
-			: (args?.name ?? "tool");
-		const text = chalk.bold(`${chalk.hex("#d4d8ff")(`[${label}]`)}`);
+
 		if (context.collapsed) {
 			const combined = [
 				JSON.stringify(context.args, null, 2),
@@ -23,20 +19,20 @@ export class GenericRenderer implements ToolRenderer {
 			]
 				.filter(Boolean)
 				.join("\n");
-			return `${text}\n${chalk.dim(buildCollapsedSummary(combined))}`;
+			return chalk.dim(buildCollapsedSummary(combined));
 		}
 
 		const sections: string[] = [];
 		const argsLines = formatJsonSnippet(args);
 		if (argsLines.length) {
-			sections.push(formatSection("arguments", argsLines));
+			sections.push(argsLines.join("\n"));
 		}
 
 		const output = this.getTextOutput(context);
 		if (output) {
 			const lines = output.split("\n").map((line) => chalk.dim(line));
 			if (lines.length) {
-				sections.push(formatSection("result", lines));
+				sections.push(lines.join("\n"));
 			}
 		}
 
@@ -46,10 +42,10 @@ export class GenericRenderer implements ToolRenderer {
 		}
 
 		if (sections.length === 0) {
-			return text;
+			return chalk.dim("no output");
 		}
 
-		return `${text}\n\n${sections.filter(Boolean).join("\n\n")}`;
+		return sections.filter(Boolean).join("\n\n");
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {
