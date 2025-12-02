@@ -108,7 +108,7 @@ describe("Config Features", () => {
 	});
 
 	describe("Environment Variable Substitution", () => {
-		it("should substitute {env:VAR} with environment variable", () => {
+		it("should substitute {env:VAR} with environment variable", async () => {
 			process.env.TEST_API_KEY = "test-key-123";
 
 			const configPath = join(testDir, "env-vars.json");
@@ -135,8 +135,10 @@ describe("Config Features", () => {
 			writeFileSync(configPath, JSON.stringify(config));
 			process.env.COMPOSER_CONFIG = configPath;
 
+			// Force config reload to pick up new COMPOSER_CONFIG
+			await reloadModelConfig();
+
 			const inspection = inspectConfig();
-			const provider = inspection.providers.find((p) => p.id === "test");
 
 			// Should have env vars tracked
 			expect(inspection.envVars.length).toBeGreaterThan(0);
