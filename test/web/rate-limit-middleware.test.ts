@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compose } from "../../src/web/middleware.js";
-import { RateLimiter } from "../../src/web/rate-limiter.js";
+import { RateLimiter, TieredRateLimiter } from "../../src/web/rate-limiter.js";
 import { createRateLimitMiddleware } from "../../src/web/server-middlewares.js";
 
 function makeReq(overrides: Record<string, unknown> = {}) {
@@ -412,6 +412,129 @@ describe("createRateLimitMiddleware", () => {
 
 			expect(res.statusCode).toBe(500);
 			expect(res.body).toContain("Internal server error");
+		});
+	});
+});
+
+describe("TieredRateLimiter", () => {
+	describe("token leak prevention", () => {
+		it("does not consume global tokens when endpoint limit rejects", () => {
+			const tiered = new TieredRateLimiter(
+				{ windowMs: 60000, max: 100 }, // Global: 100 req/min
+				{
+					"/api/chat": { windowMs: 60000, max: 3 }, // Endpoint: only 3 req/min
+				},
+			);
+
+			// Exhaust the endpoint limit
+			for (let i = 0; i < 3; i++) {
+				const result = tiered.check("192.168.1.1", "/api/chat");
+				expect(result.allowed).toBe(true);
+			}
+
+			// Fourth request should be blocked by endpoint limit
+			const blocked = tiered.check("192.168.1.1", "/api/chat");
+			expect(blocked.allowed).toBe(false);
+
+			// Global limit should still have ~97 tokens remaining (only 3 consumed)
+			// Test by hitting a non-endpoint-limited path
+			const globalResult = tiered.check("192.168.1.1", "/api/other");
+			expect(globalResult.allowed).toBe(true);
+			// Should have 96 remaining (100 - 3 - 1)
+			expect(globalResult.remaining).toBe(96);
+		});
+
+		it("consumes tokens from both limits when both allow", () => {
+			const tiered = new TieredRateLimiter(
+				{ windowMs: 60000, max: 10 },
+				{
+					"/api/test": { windowMs: 60000, max: 5 },
+				},
+			);
+
+			// First request
+			const result = tiered.check("192.168.1.2", "/api/test");
+			expect(result.allowed).toBe(true);
+
+			// Check that the lower remaining is returned (from endpoint limit)
+			// Endpoint: 5 - 1 = 4, Global: 10 - 1 = 9
+			expect(result.remaining).toBe(4);
+		});
+
+		it("respects global limit even when endpoint limit is not exceeded", () => {
+			const tiered = new TieredRateLimiter(
+				{ windowMs: 60000, max: 5 }, // Very strict global
+				{
+					"/api/test": { windowMs: 60000, max: 100 }, // Lenient endpoint
+				},
+			);
+
+			// Use up global limit
+			for (let i = 0; i < 5; i++) {
+				const result = tiered.check("192.168.1.3", "/api/test");
+				expect(result.allowed).toBe(true);
+			}
+
+			// Should be blocked by global limit
+			const blocked = tiered.check("192.168.1.3", "/api/test");
+			expect(blocked.allowed).toBe(false);
+		});
+
+		it("shares bucket across sub-routes with prefix matching", () => {
+			const tiered = new TieredRateLimiter(
+				{ windowMs: 60000, max: 1000 },
+				{
+					"/api/chat": { windowMs: 60000, max: 3 }, // Only 3 requests allowed
+				},
+			);
+
+			// Hit different sub-routes - they should all share the /api/chat bucket
+			tiered.check("192.168.1.5", "/api/chat");
+			tiered.check("192.168.1.5", "/api/chat/approval");
+			tiered.check("192.168.1.5", "/api/chat/client-tool-result");
+
+			// Fourth request to any sub-route should be blocked
+			const blocked = tiered.check("192.168.1.5", "/api/chat/stream");
+			expect(blocked.allowed).toBe(false);
+
+			// But a different endpoint pattern should still work
+			const tieredWithFiles = new TieredRateLimiter(
+				{ windowMs: 60000, max: 1000 },
+				{
+					"/api/chat": { windowMs: 60000, max: 3 },
+					"/api/files": { windowMs: 60000, max: 100 },
+				},
+			);
+
+			// Exhaust /api/chat
+			for (let i = 0; i < 3; i++) {
+				tieredWithFiles.check("192.168.1.6", `/api/chat/route${i}`);
+			}
+
+			// /api/files should still work
+			const filesResult = tieredWithFiles.check(
+				"192.168.1.6",
+				"/api/files/read",
+			);
+			expect(filesResult.allowed).toBe(true);
+		});
+	});
+
+	describe("peek method", () => {
+		it("does not consume tokens", () => {
+			const limiter = new RateLimiter({ windowMs: 60000, max: 3 });
+
+			// Peek multiple times
+			for (let i = 0; i < 10; i++) {
+				const result = limiter.peek("192.168.1.4");
+				expect(result.allowed).toBe(true);
+				expect(result.remaining).toBe(2); // Would have 2 left after consuming
+			}
+
+			// Now actually consume
+			const consumed = limiter.check("192.168.1.4");
+			expect(consumed.allowed).toBe(true);
+			expect(consumed.remaining).toBe(2); // Still 2 remaining after first consume
 		});
 	});
 });

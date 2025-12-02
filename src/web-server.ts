@@ -53,7 +53,7 @@ import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
 } from "./web/model-selection.js";
-import { RateLimiter } from "./web/rate-limiter.js";
+import { TieredRateLimiter } from "./web/rate-limiter.js";
 import {
 	type RequestContext,
 	parseTraceParent,
@@ -66,8 +66,8 @@ import {
 	createAuthMiddleware,
 	createCorsMiddleware,
 	createLoadSheddingMiddleware,
-	createRateLimitMiddleware,
 	createRouterMiddleware,
+	createTieredRateLimitMiddleware,
 } from "./web/server-middlewares.js";
 import {
 	ApiError,
@@ -370,7 +370,9 @@ const router = createRequestHandler(
 );
 
 // Active request tracking for graceful shutdown and debugging
-const rateLimiter = new RateLimiter({ windowMs: 60000, max: 1000 }); // 1000 requests per minute per IP
+// Tiered rate limiter with per-endpoint limits
+// Global: 1000/min, with stricter limits for expensive endpoints
+const rateLimiter = new TieredRateLimiter();
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	const start = performance.now();
@@ -461,7 +463,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
 		const app = compose([
 			createLoadSheddingMiddleware(CORS_HEADERS),
-			createRateLimitMiddleware(
+			createTieredRateLimitMiddleware(
 				rateLimiter,
 				CORS_HEADERS,
 				TRUST_PROXY,
