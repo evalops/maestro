@@ -862,6 +862,8 @@ export class SessionManager {
 			createdAt: string;
 			updatedAt: string;
 			messageCount: number;
+			favorite: boolean;
+			tags?: string[];
 		}>
 	> {
 		this.writer?.flushSync();
@@ -881,10 +883,12 @@ export class SessionManager {
 
 				sessions.push({
 					id: info.id,
-					title: info.summary,
+					title: info.title ?? info.summary,
 					createdAt: info.created.toISOString(),
 					updatedAt: stats.mtime.toISOString(),
 					messageCount: info.messageCount,
+					favorite: info.favorite,
+					tags: info.tags,
 				});
 			} catch (e) {
 				// Skip files that can't be read
