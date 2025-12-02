@@ -18,6 +18,7 @@ import {
 import { Agent, ProviderTransport } from "./agent/index.js";
 import type { ThinkingLevel } from "./agent/types.js";
 import { buildSystemPrompt } from "./cli/system-prompt.js";
+import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
 import { loadEnv } from "./load-env.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
@@ -494,6 +495,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 export async function startWebServer(port = 8080) {
 	registerCrashHandlers();
 	await reloadModelConfig();
+	await initLifecycle();
 
 	const server = createServer(handleRequest);
 	const sockets = new Set<Socket>();
@@ -518,6 +520,7 @@ export async function startWebServer(port = 8080) {
 		shuttingDown = true;
 		logger.info("SIGINT received. Starting graceful shutdown...");
 		stopStatsCollection();
+		await shutdownLifecycle();
 
 		// Stop accepting new connections
 		server.close();
