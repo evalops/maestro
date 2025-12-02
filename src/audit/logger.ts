@@ -3,12 +3,14 @@
  * Tracks all user actions, tool executions, and security events
  */
 
+import crypto from "node:crypto";
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { type AuditMetadata, alerts, auditLogs } from "../db/schema.js";
 import { redactCommandLine, redactPii } from "../security/pii-detector.js";
 import { createLogger } from "../utils/logger.js";
 import { sendAlertWebhooks } from "../webhooks/delivery.js";
+import { computeEntryHash, getLastHash, updateLastHash } from "./integrity.js";
 
 const logger = createLogger("audit");
 const ALERT_COOLDOWN_MS = 30 * 1000;
@@ -310,15 +312,43 @@ async function checkAlertThresholds(entry: AuditLogEntry): Promise<void> {
 // ============================================================================
 
 /**
- * Log an audit event
+ * Log an audit event with optional integrity hash chain.
+ * Set COMPOSER_AUDIT_INTEGRITY=true to enable hash chain.
  */
 export async function logAudit(entry: AuditLogEntry): Promise<void> {
 	try {
 		const db = getDb();
-
 		const redactedMetadata = redactMetadata(entry.metadata);
+		const enableIntegrity = process.env.COMPOSER_AUDIT_INTEGRITY === "true";
+
+		// Generate entry ID
+		const entryId = crypto.randomUUID();
+		const now = new Date();
+
+		// Compute integrity hash if enabled
+		let integrityHash: string | undefined;
+		let previousHash: string | undefined;
+
+		if (enableIntegrity) {
+			previousHash = await getLastHash(entry.orgId);
+			integrityHash = computeEntryHash(
+				{
+					id: entryId,
+					orgId: entry.orgId,
+					userId: entry.userId,
+					action: entry.action,
+					timestamp: now,
+					resourceType: entry.resourceType,
+					resourceId: entry.resourceId,
+					status: entry.status,
+					metadata: redactedMetadata,
+				},
+				previousHash,
+			);
+		}
 
 		await db.insert(auditLogs).values({
+			id: entryId,
 			orgId: entry.orgId,
 			userId: entry.userId,
 			sessionId: entry.sessionId,
@@ -332,7 +362,15 @@ export async function logAudit(entry: AuditLogEntry): Promise<void> {
 			traceId: entry.traceId,
 			metadata: redactedMetadata,
 			durationMs: entry.durationMs,
+			integrityHash,
+			previousHash,
+			createdAt: now,
 		});
+
+		// Update cache for next entry
+		if (enableIntegrity && integrityHash) {
+			updateLastHash(entry.orgId, integrityHash);
+		}
 
 		void checkAlertThresholds(entry);
 	} catch (error) {
