@@ -1,5 +1,8 @@
 # Tools Reference
 
+Audience: contributors and advanced users adding/debugging tools.  
+Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Features](FEATURES.md) · [Safety](SAFETY.md)
+
 Contents: [Validation](#parameter-validation) · [Error Handling](#error-handling-for-tool-authors) · [Built-in Tools](#built-in-tools) · [GitHub CLI Tools](#github-cli-tools) · [CLI Commands](#cli-commands) · [Common Errors](#common-errors--remedies)
 
 The agent and CLI expose a consistent set of tools. Use this sheet when adding
@@ -12,6 +15,8 @@ slash commands) are validated before execution. Defaults (e.g., `write.backup`,
 `read.limit`) are applied automatically, and invalid combinations (such as
 `search.context` alongside `beforeContext`/`afterContext`) are rejected with a
 clear error message in chat.
+
+Type definitions for tool payloads live in `packages/contracts/README.md`.
 
 ## Error Handling for Tool Authors
 

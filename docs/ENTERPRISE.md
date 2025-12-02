@@ -1,5 +1,10 @@
 # Composer Enterprise
 
+Updated: 2025-12-02
+
+Audience: operators/security teams evaluating multi-tenant deployments.  
+Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Models](MODELS.md) · [Sessions](SESSIONS.md)
+
 ## Executive Summary
 
 Composer Enterprise adds the controls required for regulated and security-conscious environments:

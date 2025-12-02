@@ -1,5 +1,8 @@
 # VS Code Extension Architecture
 
+Audience: VS Code extension contributors; read with `ARCHITECTURE_DIAGRAM.md` for core flow.  
+Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) · [Patterns](patterns/INDEX.md)
+
 This document outlines the architecture of the Composer VS Code extension, specifically focusing on its **Client-Server** design and the **Remote Tool Execution** pattern used to bridge the gap between the Agent (Backend) and the VS Code API (Frontend).
 
 ## 1. High-Level Overview
@@ -87,4 +90,3 @@ To prevent the Agent from "hallucinating" VS Code capabilities when running in o
 *   **`src/tools/vscode.ts`:** Definitions for VS Code-specific tools (marked `executionLocation: "client"`).
 *   **`src/web/client-tools-service.ts`:** Backend service to manage pending client tool requests.
 *   **`packages/vscode-extension/src/sidebar/composerSidebar.ts`:** Frontend logic handling events and tool execution.
-

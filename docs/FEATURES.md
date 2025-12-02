@@ -1,5 +1,8 @@
 # Feature Guide
 
+Audience: users exploring TUI/CLI flows; skim first.  
+Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference](TOOLS_REFERENCE.md) · [Web UI](WEB_UI.md)
+
 Composer ships with both an interactive TUI and a non-interactive CLI mode. This
 guide highlights the affordances that new users often miss.
 
@@ -24,7 +27,7 @@ Type `/` in the editor to see completions. Highlights:
 - `/sessions` – list or load session transcripts
 - `/report` – collect info for bug reports or feedback
 
-For the full catalog and options, see `docs/TOOLS_REFERENCE.md`. Web vs TUI availability is in the parity appendix of `docs/WEB_UI.md`.
+For the full catalog and options, see `docs/TOOLS_REFERENCE.md`. Web vs TUI availability lives in the parity appendix of `docs/WEB_UI.md` (single source of truth).
 
 ### Framework Preference
 
@@ -86,6 +89,8 @@ path/content being written) so you can audit actions before they complete.
 
 Keep this guide handy when onboarding teammates so they can discover the TUI’s
 power-user features quickly.
+
+For lower-level component APIs, see `packages/tui/README.md`.
 
 ## Background Tasks
 

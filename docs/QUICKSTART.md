@@ -1,5 +1,8 @@
 # Quickstart
 
+Audience: contributors setting up the repo.  
+Nav: [Docs index](README.md) · [Features](FEATURES.md) · [Tools Reference](TOOLS_REFERENCE.md) · [Safety](SAFETY.md)
+
 Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Build & Run](#build--run) · [Eval Suite](#eval-suite) · [Common Scripts](#common-scripts)
 
 Composer ships as a Bun + Nx workspace. The steps below get a contributor

@@ -1,5 +1,8 @@
 # Composer CLI - Visual Architecture
 
+Audience: contributors needing a system map; pair with `VSCODE_ARCHITECTURE.md` for extension specifics.  
+Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) · [Safety](SAFETY.md)
+
 ## System Overview
 
 ```

@@ -1,5 +1,8 @@
 # Session Storage & Continuation
 
+Audience: users/operators managing session persistence.  
+Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [Features](FEATURES.md)
+
 Composer persists conversation history in JSONL files under
 `~/.composer/agent/sessions/--<cwd>--`. Understanding the format helps when you
 want to inspect, back up, or clean up sessions.
