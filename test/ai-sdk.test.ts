@@ -66,7 +66,7 @@ describe("@evalops/ai facade", () => {
 		expect(candidate?.id).toBe(models[0]?.id);
 	});
 
-	it.skip("streams assistant events through ProviderTransport and tracks usage", async () => {
+	it("streams assistant events through ProviderTransport and tracks usage", async () => {
 		const transport = new ProviderTransport({
 			getApiKey: () => "sk-test",
 		});
