@@ -174,7 +174,7 @@ export class Editor implements Component {
 			return;
 		}
 
-		let data = inputData;
+		let data = this.normalizeArrowInput(inputData);
 		// Handle bracketed paste mode
 		// Start of paste: \x1b[200~
 		// End of paste: \x1b[201~
@@ -384,6 +384,23 @@ export class Editor implements Component {
 			this.insertCharacter(data);
 		}
 	}
+
+	protected normalizeArrowInput(data: string): string {
+		// Terminals in application-cursor mode emit SS3 sequences (e.g., ESC O A).
+		// Normalize them so the editor treats them the same as CSI arrows.
+		switch (data) {
+			case "\x1bOA":
+				return "\x1b[A";
+			case "\x1bOB":
+				return "\x1b[B";
+			case "\x1bOC":
+				return "\x1b[C";
+			case "\x1bOD":
+				return "\x1b[D";
+			default:
+				return data;
+		}
+	}
 	private layoutText(contentWidth: number): Array<{
 		text: string;
 		hasCursor: boolean;
@@ -482,6 +499,9 @@ export class Editor implements Component {
 	private maybeHandleBurstPaste(data: string): boolean {
 		// Ignore control characters and single key presses
 		if (data.length <= 1) return false;
+		// Ignore escape-driven control sequences (arrow keys, function keys, etc.)
+		// so they are processed by the normal input handler.
+		if (data.startsWith("\x1b")) return false;
 		// If bracketed paste markers are present, let the main handler manage them.
 		if (data.includes("\x1b[200~") || data.includes("\x1b[201~")) {
 			return false;

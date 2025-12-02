@@ -14,7 +14,8 @@ export class CustomEditor extends Editor {
 	public onTyping?: () => void;
 	public onTab?: () => boolean;
 
-	handleInput(data: string): void {
+	handleInput(rawData: string): void {
+		const data = this.normalizeArrowInput(rawData);
 		// Tab cycles slash hints when provided (unless autocomplete is open)
 		if (data === "\t" && this.onTab && !this.isShowingAutocomplete()) {
 			const handled = this.onTab();
