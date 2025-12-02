@@ -8,6 +8,7 @@ import { getDb } from "../db/client.js";
 import { type AuditMetadata, alerts, auditLogs } from "../db/schema.js";
 import { redactCommandLine, redactPii } from "../security/pii-detector.js";
 import { createLogger } from "../utils/logger.js";
+import { sendAlertWebhooks } from "../webhooks/delivery.js";
 
 const logger = createLogger("audit");
 const ALERT_COOLDOWN_MS = 30 * 1000;
@@ -174,6 +175,20 @@ async function createAlert(alert: {
 		type: alert.type,
 		severity: alert.severity,
 		orgId: alert.orgId,
+	});
+
+	// Send webhooks asynchronously (don't block alert creation)
+	sendAlertWebhooks(alert.orgId, {
+		type: alert.type,
+		severity: alert.severity,
+		message: alert.message,
+		metadata: alert.metadata,
+	}).catch((error) => {
+		logger.error(
+			"Failed to send alert webhooks",
+			error instanceof Error ? error : undefined,
+			{ alertType: alert.type },
+		);
 	});
 }
 
