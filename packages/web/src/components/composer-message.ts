@@ -21,7 +21,7 @@ marked.setOptions({
 		}
 		return hljs.highlightAuto(code).value;
 	},
-} as any); // Type assertion needed for marked options compatibility
+} as Parameters<typeof marked.use>[0]); // Type assertion needed for marked options compatibility
 
 @customElement("composer-message")
 export class ComposerMessage extends LitElement {
@@ -320,8 +320,8 @@ export class ComposerMessage extends LitElement {
 		toolCallId?: string;
 		name: string;
 		status: string;
-		args?: any;
-		result?: any;
+		args?: Record<string, unknown>;
+		result?: unknown;
 	}> = [];
 	@property({ type: Boolean }) compact = false;
 	@property({ type: Boolean, reflect: true, attribute: "reduced-motion" })
@@ -436,7 +436,7 @@ export class ComposerMessage extends LitElement {
 							hasThinking
 								? html`
 							<composer-thinking
-								.content=${(this as any).thinking}
+								.content=${this.thinking}
 								.isStreaming=${false}
 							></composer-thinking>
 						`

@@ -2,7 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "../src/agent/types.js";
 import { SseSession } from "../src/web-server.js";
 
-function createMockResponse(overrides: Partial<any> = {}) {
+interface MockResponse {
+	writable: boolean;
+	writableEnded: boolean;
+	destroyed: boolean;
+	write: ReturnType<typeof vi.fn>;
+	end: ReturnType<typeof vi.fn>;
+	flushHeaders: ReturnType<typeof vi.fn>;
+}
+
+function createMockResponse(
+	overrides: Partial<MockResponse> = {},
+): MockResponse {
 	return {
 		writable: true,
 		writableEnded: false,

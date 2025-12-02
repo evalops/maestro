@@ -355,7 +355,7 @@ export class ComposerSidebarProvider
 	private async _handleClientTool(
 		id: string,
 		name: string,
-		args: any,
+		args: Record<string, unknown>,
 		signal?: AbortSignal,
 	): Promise<void> {
 		const checkAbort = () => {

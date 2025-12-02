@@ -1,7 +1,26 @@
 import chalk from "chalk";
-import type { AutocompleteProvider } from "../autocomplete.js";
+import type {
+	AutocompleteItem,
+	AutocompleteProvider,
+} from "../autocomplete.js";
 import type { Component } from "../tui.js";
 import { SelectList, type SelectListTheme } from "./select-list.js";
+
+/**
+ * Extended autocomplete provider with optional file completion methods
+ */
+interface ExtendedAutocompleteProvider extends AutocompleteProvider {
+	shouldTriggerFileCompletion?(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+	): boolean;
+	getForceFileSuggestions?(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+	): { items: AutocompleteItem[]; prefix: string } | null;
+}
 
 export interface EditorTheme {
 	borderColor: (str: string) => string;
@@ -39,7 +58,7 @@ export class Editor implements Component {
 	};
 	private config: TextEditorConfig = {};
 	public placeholder?: string;
-	private autocompleteProvider?: AutocompleteProvider;
+	private autocompleteProvider?: ExtendedAutocompleteProvider;
 	private autocompleteList?: SelectList;
 	private isAutocompleting = false;
 	private autocompletePrefix = "";
@@ -864,8 +883,8 @@ export class Editor implements Component {
 		if (explicitTab) {
 			const provider = this.autocompleteProvider;
 			const shouldTrigger =
-				!("shouldTriggerFileCompletion" in provider) ||
-				(provider as any).shouldTriggerFileCompletion(
+				!provider.shouldTriggerFileCompletion ||
+				provider.shouldTriggerFileCompletion(
 					this.state.lines,
 					this.state.cursorLine,
 					this.state.cursorCol,
@@ -907,11 +926,11 @@ export class Editor implements Component {
 		if (!this.autocompleteProvider) return;
 		// Check if provider has the force method
 		const provider = this.autocompleteProvider;
-		if (!("getForceFileSuggestions" in provider)) {
+		if (!provider.getForceFileSuggestions) {
 			this.tryTriggerAutocomplete(true);
 			return;
 		}
-		const suggestions = (provider as any).getForceFileSuggestions(
+		const suggestions = provider.getForceFileSuggestions(
 			this.state.lines,
 			this.state.cursorLine,
 			this.state.cursorCol,

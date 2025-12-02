@@ -11,6 +11,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 ## Core Reference
 - [Tools Reference](file://docs/TOOLS_REFERENCE.md) — authoritative slash command and flag definitions.
 - [Safety](file://docs/SAFETY.md) — approvals, sandboxing, and firewall behavior.
+- [Threat Model](file://docs/THREAT_MODEL.md) — security architecture, trust boundaries, and attack mitigations.
 - [Models](file://docs/MODELS.md) — provider/model registry sources, overrides, and defaults.
 - [Sessions](file://docs/SESSIONS.md) — session formats, storage locations, and management commands.
 - [Prompt Queue](file://docs/PROMPT_QUEUE.md) — queue lifecycle, prioritization, and diagnostics hooks.

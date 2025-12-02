@@ -216,7 +216,7 @@ export class ModelSelector extends LitElement {
 		this.apiClient = new ApiClient(this.apiEndpoint);
 	}
 
-	async updated(changed: Map<string, any>) {
+	async updated(changed: Map<string, unknown>) {
 		if (changed.has("open") && this.open) {
 			await this.loadModels();
 		}

@@ -36,17 +36,33 @@ import type {
 	CleanupResult,
 } from "../src/web/handlers/admin.js";
 
+interface MockRequest {
+	method: string;
+	headers: Record<string, string>;
+}
+
+interface MockResponse {
+	writeHead: ReturnType<typeof vi.fn>;
+	setHeader: ReturnType<typeof vi.fn>;
+	end: ReturnType<typeof vi.fn>;
+	getStatusCode: () => number;
+	getBody: () => unknown;
+}
+
 // Helper to create mock request/response
-function createMockReqRes(method = "POST") {
-	const req = {
+function createMockReqRes(method = "POST"): {
+	req: MockRequest;
+	res: MockResponse;
+} {
+	const req: MockRequest = {
 		method,
 		headers: {
 			"accept-encoding": "",
 		},
-	} as any;
+	};
 	let statusCode = 0;
 	let body = "";
-	const res = {
+	const res: MockResponse = {
 		writeHead: vi.fn((code: number) => {
 			statusCode = code;
 		}),
@@ -56,7 +72,7 @@ function createMockReqRes(method = "POST") {
 		}),
 		getStatusCode: () => statusCode,
 		getBody: () => JSON.parse(body),
-	} as any;
+	};
 	return { req, res };
 }
 

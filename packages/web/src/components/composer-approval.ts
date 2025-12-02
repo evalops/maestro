@@ -8,7 +8,7 @@ import { customElement, property } from "lit/decorators.js";
 interface ApprovalRequest {
 	toolCallId: string;
 	toolName: string;
-	args: any;
+	args: Record<string, unknown>;
 	reason?: string;
 }
 
@@ -225,7 +225,7 @@ export class ComposerApproval extends LitElement {
 	private handleKeyDownRef = (event: KeyboardEvent) =>
 		this.handleKeyDown(event);
 
-	private formatValue(value: any): string {
+	private formatValue(value: unknown): string {
 		if (value === null || value === undefined) return "null";
 		if (typeof value === "string") return value;
 		if (typeof value === "number" || typeof value === "boolean")

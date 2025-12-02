@@ -59,7 +59,7 @@ describe("ComposerChat", () => {
 
 	it("displays error messages", async () => {
 		// Simulate error by triggering private state
-		(element as any).error = "Test error message";
+		(element as unknown as { error: string }).error = "Test error message";
 		await element.updateComplete;
 
 		const errorEl = element.shadowRoot?.querySelector(".error");
@@ -68,7 +68,7 @@ describe("ComposerChat", () => {
 	});
 
 	it("shows loading state", async () => {
-		(element as any).loading = true;
+		(element as unknown as { loading: boolean }).loading = true;
 		await element.updateComplete;
 
 		const loading = element.shadowRoot?.querySelector(".loading");
@@ -77,7 +77,8 @@ describe("ComposerChat", () => {
 	});
 
 	it("displays model info", async () => {
-		(element as any).currentModel = "anthropic/claude-sonnet-4-5";
+		(element as unknown as { currentModel: string }).currentModel =
+			"anthropic/claude-sonnet-4-5";
 		await element.updateComplete;
 
 		const modelInfo = element.shadowRoot?.querySelector(".model-info");

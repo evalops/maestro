@@ -58,7 +58,7 @@ describe("ComposerInput", () => {
 		textarea.dispatchEvent(new Event("input", { bubbles: true }));
 		await element.updateComplete;
 
-		assert.equal((element as any).value, "Hello");
+		assert.equal((element as unknown as { value: string }).value, "Hello");
 	});
 
 	it("dispatches submit event on button click", async () => {
@@ -148,7 +148,7 @@ describe("ComposerInput", () => {
 		button.click();
 		await element.updateComplete;
 
-		assert.equal((element as any).value, "");
+		assert.equal((element as unknown as { value: string }).value, "");
 		assert.equal(textarea.value, "");
 	});
 

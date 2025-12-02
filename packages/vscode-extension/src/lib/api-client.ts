@@ -9,7 +9,7 @@ export type ComposerToolCall = Contracts.ComposerToolCall;
 
 export interface AgentEvent {
 	type: string;
-	[key: string]: any;
+	[key: string]: unknown;
 }
 
 export interface Model {
@@ -189,7 +189,7 @@ export class ApiClient {
 
 	async submitClientToolResult(
 		toolCallId: string,
-		content: any[],
+		content: Array<{ type: string; text?: string; [key: string]: unknown }>,
 		isError: boolean,
 	) {
 		const response = await fetch(

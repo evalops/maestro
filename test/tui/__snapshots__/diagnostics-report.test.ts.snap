@@ -1,0 +1,83 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`formatDiagnosticsReport > matches snapshot when optional data missing 1`] = `
+"Diagnostics
+
+Session
+ID: session-123
+File: /tmp/session-123.json
+
+Provider: anthropic
+Model: claude-sonnet-4-5
+Provider Name: Anthropic
+Model Name: Claude Sonnet
+Source: custom
+Base URL: https://api.anthropic.com
+Context Window: 200,000
+Max Tokens: 8,192
+
+API Key: missing
+
+Telemetry: disabled
+Reason: disabled
+Sample Rate: 0
+
+Training: provider default
+Reason: provider default
+
+LSP: no diagnostics
+
+Pending tools: none"
+`;
+
+exports[`formatDiagnosticsReport > matches snapshot with full data 1`] = `
+"Diagnostics
+
+Session
+ID: session-123
+File: /tmp/session-123.json
+
+Provider: anthropic
+Model: claude-sonnet-4-5
+Provider Name: Anthropic
+Model Name: Claude Sonnet
+Source: custom
+Base URL: https://api.anthropic.com
+Context Window: 200,000
+Max Tokens: 8,192
+
+API Key: found
+Source: ANTHROPIC_API_KEY
+Checked: ANTHROPIC_API_KEY
+
+Telemetry: enabled
+Reason: config
+Endpoint: https://telemetry
+File: /tmp/telemetry.log
+Sample Rate: 1
+Flag: true
+
+Training: opted-out
+Reason: COMPOSER_TRAINING_OPT_OUT=1
+Flag: 1
+
+Exa Usage
+Calls: 3 (2 ok, 1 fail)
+Duration: 4.20s total
+Cost: $0.0123
+Recent
+- 16:13:20Z websearch (ok) $0.0040
+
+Health
+Tool failures: 0
+Git: clean
+Plans: 2 goals
+Pending tasks: 1
+
+LSP Diagnostics
+src/index.ts
+[WARN] Unused variable (1:5)
+
+Pending Tools
+1. websearch (tool-1)"
+`;
