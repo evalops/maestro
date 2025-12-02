@@ -201,23 +201,29 @@ export function createAuthMiddleware(
 		const pathname = getPathname(req);
 		if (pathname.startsWith("/api")) {
 			const missingKey = !apiKey || apiKey.length === 0;
-			// If requirement is enabled and key is missing, fail fast once.
-			if (requireApiKey && missingKey) {
-				sendJson(
-					res,
-					401,
-					{
-						error:
-							"COMPOSER_WEB_API_KEY is required for all API requests. Set the environment variable or disable requirement explicitly with COMPOSER_WEB_REQUIRE_KEY=0 for local testing only.",
-					},
-					corsHeaders,
-					req,
-				);
-				return;
+
+			// No key provided
+			if (missingKey) {
+				if (requireApiKey) {
+					sendJson(
+						res,
+						401,
+						{
+							error:
+								"COMPOSER_WEB_API_KEY is required for all API requests. Set the environment variable or disable requirement explicitly with COMPOSER_WEB_REQUIRE_KEY=0 for local testing only.",
+						},
+						corsHeaders,
+						req,
+					);
+					return;
+				}
+				// Requirement off and no key: allow through.
+				return next();
 			}
 
-			// If a key is configured (or requirement is off and key provided), validate it.
-			if (!missingKey && !authenticateRequest(req, res, corsHeaders, apiKey)) {
+			// Key provided: validate it.
+			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
+				sendJson(res, 401, { error: "Unauthorized" }, corsHeaders, req);
 				return;
 			}
 		}
