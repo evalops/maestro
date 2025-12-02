@@ -4,7 +4,7 @@ import type {
 	ComposerSession,
 	ComposerSessionSummary,
 } from "@evalops/contracts";
-import { eq, lt, sql } from "drizzle-orm";
+import { and, eq, gt, lt, or, sql } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../../db/client.js";
 import { sharedSessions as sharedSessionsTable } from "../../db/schema.js";
 import { SessionManager } from "../../session/manager.js";
@@ -111,18 +111,63 @@ async function getSharedSessionFromDb(shareToken: string): Promise<{
 	};
 }
 
-async function incrementShareAccessCount(shareToken: string): Promise<void> {
+/**
+ * Atomically try to access a shared session.
+ * Returns the session ID if access is allowed, null otherwise.
+ * This prevents race conditions by doing the check and increment in one operation.
+ */
+async function tryAccessShare(shareToken: string): Promise<{
+	allowed: boolean;
+	sessionId?: string;
+	reason?: "not_found" | "expired" | "max_accesses";
+}> {
 	if (!isDbAvailable()) {
 		const share = inMemoryShares.get(shareToken);
-		if (share) share.accessCount++;
-		return;
+		if (!share) return { allowed: false, reason: "not_found" };
+		if (share.expiresAt < new Date()) {
+			inMemoryShares.delete(shareToken);
+			return { allowed: false, reason: "expired" };
+		}
+		if (share.maxAccesses !== null && share.accessCount >= share.maxAccesses) {
+			return { allowed: false, reason: "max_accesses" };
+		}
+		share.accessCount++;
+		return { allowed: true, sessionId: share.sessionId };
 	}
 
 	const db = getDb();
-	await db
+	const now = new Date();
+
+	// Atomically increment access count only if:
+	// 1. Token exists
+	// 2. Not expired
+	// 3. Under max accesses (or no limit)
+	const result = await db
 		.update(sharedSessionsTable)
 		.set({ accessCount: sql`${sharedSessionsTable.accessCount} + 1` })
-		.where(eq(sharedSessionsTable.shareToken, shareToken));
+		.where(
+			and(
+				eq(sharedSessionsTable.shareToken, shareToken),
+				gt(sharedSessionsTable.expiresAt, now),
+				or(
+					sql`${sharedSessionsTable.maxAccesses} IS NULL`,
+					lt(sharedSessionsTable.accessCount, sharedSessionsTable.maxAccesses),
+				),
+			),
+		)
+		.returning({
+			sessionId: sharedSessionsTable.sessionId,
+		});
+
+	if (result.length > 0) {
+		return { allowed: true, sessionId: result[0].sessionId };
+	}
+
+	// Access denied - determine why
+	const share = await getSharedSessionFromDb(shareToken);
+	if (!share) return { allowed: false, reason: "not_found" };
+	if (share.expiresAt < now) return { allowed: false, reason: "expired" };
+	return { allowed: false, reason: "max_accesses" };
 }
 
 async function deleteExpiredShares(): Promise<number> {
@@ -376,41 +421,38 @@ export async function handleSharedSession(
 			return;
 		}
 
-		const share = await getSharedSessionFromDb(shareToken);
-		if (!share) {
-			sendJson(
-				res,
-				404,
-				{ error: "Share link not found or expired" },
-				cors,
-				req,
-			);
-			return;
+		// Atomic check and increment to prevent race conditions
+		const accessResult = await tryAccessShare(shareToken);
+		if (!accessResult.allowed) {
+			switch (accessResult.reason) {
+				case "not_found":
+					sendJson(
+						res,
+						404,
+						{ error: "Share link not found or expired" },
+						cors,
+						req,
+					);
+					return;
+				case "expired":
+					await deleteShareByToken(shareToken);
+					sendJson(res, 410, { error: "Share link has expired" }, cors, req);
+					return;
+				case "max_accesses":
+					sendJson(
+						res,
+						410,
+						{ error: "Share link has reached maximum accesses" },
+						cors,
+						req,
+					);
+					return;
+			}
 		}
 
-		// Check expiration
-		if (share.expiresAt < new Date()) {
-			await deleteShareByToken(shareToken);
-			sendJson(res, 410, { error: "Share link has expired" }, cors, req);
-			return;
-		}
-
-		// Check max accesses
-		if (share.maxAccesses !== null && share.accessCount >= share.maxAccesses) {
-			sendJson(
-				res,
-				410,
-				{ error: "Share link has reached maximum accesses" },
-				cors,
-				req,
-			);
-			return;
-		}
-
-		// Increment access count
-		await incrementShareAccessCount(shareToken);
-
-		const session = await sessionManager.loadSession(share.sessionId);
+		const session = await sessionManager.loadSession(
+			accessResult.sessionId as string,
+		);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;

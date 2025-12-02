@@ -9,11 +9,7 @@
 import { eq } from "drizzle-orm";
 import { createLogger } from "../utils/logger.js";
 import { getDb, isDatabaseConfigured } from "./client.js";
-import {
-	generateEncryptionKey,
-	initEncryption,
-	reEncryptField,
-} from "./encryption.js";
+import { generateEncryptionKey, reEncryptField } from "./encryption.js";
 import { organizations, users } from "./schema.js";
 
 const logger = createLogger("db:key-rotation");
