@@ -38,7 +38,7 @@ export interface SessionUpdateBody {
 
 export interface SessionShareOptions {
 	expiresInHours?: number;
-	maxAccesses?: number;
+	maxAccesses?: number | null;
 }
 
 export interface SessionExportFormat {
