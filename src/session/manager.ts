@@ -169,6 +169,8 @@ interface SessionFileInfo {
 	messages: AppMessage[];
 	messageCount: number;
 	summary?: string;
+	title?: string;
+	tags?: string[];
 	favorite: boolean;
 	firstMessage: string;
 	allMessagesText: string;
@@ -217,6 +219,8 @@ function buildSessionFileInfo(
 	let created = stats.birthtime;
 	let messageCount = 0;
 	let summary: string | undefined;
+	let title: string | undefined;
+	let tags: string[] | undefined;
 	let favorite = false;
 	const appMessages: AppMessage[] = [];
 
@@ -237,6 +241,12 @@ function buildSessionFileInfo(
 			case "session_meta":
 				if (typeof entry.summary === "string" && entry.summary.trim()) {
 					summary = entry.summary;
+				}
+				if (typeof entry.title === "string" && entry.title.trim()) {
+					title = entry.title;
+				}
+				if (Array.isArray(entry.tags)) {
+					tags = entry.tags;
 				}
 				if (typeof entry.favorite === "boolean") {
 					favorite = entry.favorite;
@@ -265,6 +275,8 @@ function buildSessionFileInfo(
 		messages: appMessages,
 		messageCount,
 		summary,
+		title,
+		tags,
 		favorite,
 		firstMessage,
 		allMessagesText,
@@ -577,10 +589,20 @@ export class SessionManager {
 
 	private appendSessionMetaEntry(
 		targetFile: string,
-		meta: { summary?: string; favorite?: boolean },
+		meta: {
+			summary?: string;
+			favorite?: boolean;
+			title?: string;
+			tags?: string[];
+		},
 	): void {
 		if (!existsSync(targetFile)) return;
-		if (meta.summary === undefined && meta.favorite === undefined) {
+		if (
+			meta.summary === undefined &&
+			meta.favorite === undefined &&
+			meta.title === undefined &&
+			meta.tags === undefined
+		) {
 			return;
 		}
 		const entry: SessionMetaEntry = {
@@ -609,6 +631,16 @@ export class SessionManager {
 	setSessionFavorite(sessionPath: string, favorite: boolean): void {
 		if (!sessionPath || !existsSync(sessionPath)) return;
 		this.appendSessionMetaEntry(sessionPath, { favorite });
+	}
+
+	setSessionTitle(sessionPath: string, title: string): void {
+		if (!sessionPath || !existsSync(sessionPath)) return;
+		this.appendSessionMetaEntry(sessionPath, { title });
+	}
+
+	setSessionTags(sessionPath: string, tags: string[]): void {
+		if (!sessionPath || !existsSync(sessionPath)) return;
+		this.appendSessionMetaEntry(sessionPath, { tags });
 	}
 
 	loadMessages(): AppMessage[] {
@@ -876,6 +908,8 @@ export class SessionManager {
 		createdAt: string;
 		updatedAt: string;
 		messageCount: number;
+		favorite: boolean;
+		tags?: string[];
 	} | null> {
 		this.writer?.flushSync();
 		const files = readdirSync(this.sessionDir);
@@ -895,11 +929,13 @@ export class SessionManager {
 
 		return {
 			id: info.id,
-			title: info.summary,
+			title: info.title ?? info.summary, // Prefer title over summary
 			messages: info.messages,
 			createdAt: info.created.toISOString(),
 			updatedAt: stats.mtime.toISOString(),
 			messageCount: info.messageCount,
+			favorite: info.favorite,
+			tags: info.tags,
 		};
 	}
 

@@ -19,6 +19,7 @@ import {
 import { TokenTracker } from "../billing/token-tracker.js";
 import { getDb } from "../db/client.js";
 import {
+	type OrganizationSettings,
 	alerts,
 	apiKeys,
 	auditLogs,
@@ -30,6 +31,10 @@ import {
 	sessions as sessionsTable,
 	users,
 } from "../db/schema.js";
+import {
+	decryptOrgSettings,
+	encryptOrgSettings,
+} from "../db/settings-encryption.js";
 import {
 	ACTIONS,
 	PermissionChecker,
@@ -815,7 +820,9 @@ async function handleGetOrgSettings(
 		return;
 	}
 
-	sendJson(res, 200, org.settings || {}, cors, req);
+	// Decrypt sensitive fields (webhookSigningSecret) before returning
+	const decryptedSettings = decryptOrgSettings(org.settings) || {};
+	sendJson(res, 200, decryptedSettings, cors, req);
 }
 
 async function handleUpdateOrgSettings(
@@ -839,16 +846,19 @@ async function handleUpdateOrgSettings(
 		return;
 	}
 
-	const body = await readJsonBody<Record<string, unknown>>(req);
+	const body = await readJsonBody<OrganizationSettings>(req);
 	if (!body) {
 		sendJson(res, 400, { error: "Settings body required" }, cors, req);
 		return;
 	}
 
+	// Encrypt sensitive fields (webhookSigningSecret) before storing
+	const encryptedSettings = encryptOrgSettings(body);
+
 	const db = getDb();
 	await db
 		.update(organizations)
-		.set({ settings: body })
+		.set({ settings: encryptedSettings })
 		.where(eq(organizations.id, auth.orgId));
 
 	sendJson(res, 200, { success: true }, cors, req);

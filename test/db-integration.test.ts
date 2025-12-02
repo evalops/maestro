@@ -11,6 +11,7 @@
  * @vitest-environment node
  */
 
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Check if database is configured
@@ -130,6 +131,258 @@ describeDb("Database Integration Tests", () => {
 			expect(Array.isArray(status.applied)).toBe(true);
 		});
 	});
+
+	describe("Real CRUD Operations", () => {
+		const testId = `test-${Date.now()}`;
+
+		it("should create and read an organization", async () => {
+			const db = getDb();
+			const eq = (await import("drizzle-orm")).eq;
+
+			// Create org with unique ID and slug to avoid conflicts
+			const orgId = randomUUID();
+			const slug = `test-org-${testId}`;
+			const [created] = await db
+				.insert(schema.organizations)
+				.values({
+					id: orgId,
+					name: `Test Org ${testId}`,
+					slug,
+					settings: {
+						alertWebhooks: ["https://example.com/webhook"],
+					},
+				})
+				.returning();
+
+			expect(created).toBeDefined();
+			expect(created.id).toBe(orgId);
+			expect(created.name).toBe(`Test Org ${testId}`);
+
+			// Read back
+			const [found] = await db
+				.select()
+				.from(schema.organizations)
+				.where(eq(schema.organizations.id, orgId));
+
+			expect(found).toBeDefined();
+			expect(found.name).toBe(`Test Org ${testId}`);
+			expect(found.settings).toEqual({
+				alertWebhooks: ["https://example.com/webhook"],
+			});
+
+			// Cleanup
+			await db
+				.delete(schema.organizations)
+				.where(eq(schema.organizations.id, orgId));
+		});
+
+		it("should update organization settings", async () => {
+			const db = getDb();
+			const eq = (await import("drizzle-orm")).eq;
+
+			// Create org
+			const orgId = randomUUID();
+			const slug = `update-test-${testId}`;
+			await db.insert(schema.organizations).values({
+				id: orgId,
+				name: `Update Test ${testId}`,
+				slug,
+				settings: { alertWebhooks: [] },
+			});
+
+			// Update settings
+			const [updated] = await db
+				.update(schema.organizations)
+				.set({
+					settings: {
+						alertWebhooks: ["https://new.webhook"],
+						webhookSigningSecret: "secret123",
+					},
+				})
+				.where(eq(schema.organizations.id, orgId))
+				.returning();
+
+			expect(updated.settings).toEqual({
+				alertWebhooks: ["https://new.webhook"],
+				webhookSigningSecret: "secret123",
+			});
+
+			// Cleanup
+			await db
+				.delete(schema.organizations)
+				.where(eq(schema.organizations.id, orgId));
+		});
+
+		it("should create and query users with settings", async () => {
+			const db = getDb();
+			const eq = (await import("drizzle-orm")).eq;
+
+			const userId = randomUUID();
+			const [created] = await db
+				.insert(schema.users)
+				.values({
+					id: userId,
+					email: `test-${testId}@example.com`,
+					passwordHash: "hashed",
+					name: "Test User",
+					settings: {
+						preferredModels: ["claude-3"],
+						defaultThinkingLevel: "medium",
+					},
+				})
+				.returning();
+
+			expect(created).toBeDefined();
+			expect(created.email).toBe(`test-${testId}@example.com`);
+			expect(created.settings?.preferredModels).toContain("claude-3");
+
+			// Cleanup
+			await db.delete(schema.users).where(eq(schema.users.id, userId));
+		});
+
+		it("should handle alerts CRUD", async () => {
+			const db = getDb();
+			const eq = (await import("drizzle-orm")).eq;
+
+			// Create org first (needed for foreign key)
+			const orgId = randomUUID();
+			const slug = `alert-test-${testId}`;
+			await db.insert(schema.organizations).values({
+				id: orgId,
+				name: `Alert Test Org ${testId}`,
+				slug,
+			});
+
+			// Create alert
+			const alertId = randomUUID();
+			const [created] = await db
+				.insert(schema.alerts)
+				.values({
+					id: alertId,
+					orgId,
+					type: "usage_spike",
+					severity: "medium", // Valid enum value
+					message: "Test alert",
+				})
+				.returning();
+
+			expect(created).toBeDefined();
+			expect(created.severity).toBe("medium");
+			expect(created.isRead).toBe(false);
+
+			// Update alert
+			const [updated] = await db
+				.update(schema.alerts)
+				.set({ isRead: true })
+				.where(eq(schema.alerts.id, alertId))
+				.returning();
+
+			expect(updated.isRead).toBe(true);
+
+			// Delete alert and org
+			await db.delete(schema.alerts).where(eq(schema.alerts.id, alertId));
+			await db
+				.delete(schema.organizations)
+				.where(eq(schema.organizations.id, orgId));
+		});
+
+		it("should handle audit logs creation", async () => {
+			const db = getDb();
+			const eq = (await import("drizzle-orm")).eq;
+
+			// Create org and user for foreign keys
+			const orgId = randomUUID();
+			const userId = randomUUID();
+			const slug = `audit-test-${testId}`;
+
+			await db.insert(schema.organizations).values({
+				id: orgId,
+				name: `Audit Test Org ${testId}`,
+				slug,
+			});
+
+			await db.insert(schema.users).values({
+				id: userId,
+				email: `audit-${testId}@example.com`,
+				passwordHash: "hashed",
+				name: "Audit User",
+			});
+
+			// Create audit log
+			const logId = randomUUID();
+			const [created] = await db
+				.insert(schema.auditLogs)
+				.values({
+					id: logId,
+					orgId,
+					userId,
+					action: "test.action",
+					resourceType: "test",
+					status: "success",
+					metadata: { toolName: "test-tool" },
+				})
+				.returning();
+
+			expect(created).toBeDefined();
+			expect(created.action).toBe("test.action");
+			expect(created.status).toBe("success");
+
+			// Cleanup
+			await db.delete(schema.auditLogs).where(eq(schema.auditLogs.id, logId));
+			await db.delete(schema.users).where(eq(schema.users.id, userId));
+			await db
+				.delete(schema.organizations)
+				.where(eq(schema.organizations.id, orgId));
+		});
+
+		it("should handle shared sessions CRUD", async () => {
+			const db = getDb();
+			const eq = (await import("drizzle-orm")).eq;
+
+			const shareId = randomUUID();
+			const shareToken = `token-${testId}`;
+			const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+			// Create shared session
+			const [created] = await db
+				.insert(schema.sharedSessions)
+				.values({
+					id: shareId,
+					sessionId: `session-${testId}`,
+					shareToken,
+					expiresAt,
+					maxAccesses: 10,
+				})
+				.returning();
+
+			expect(created).toBeDefined();
+			expect(created.shareToken).toBe(shareToken);
+			expect(created.accessCount).toBe(0);
+
+			// Increment access count
+			const [updated] = await db
+				.update(schema.sharedSessions)
+				.set({ accessCount: 1 })
+				.where(eq(schema.sharedSessions.id, shareId))
+				.returning();
+
+			expect(updated.accessCount).toBe(1);
+
+			// Query by token
+			const [found] = await db
+				.select()
+				.from(schema.sharedSessions)
+				.where(eq(schema.sharedSessions.shareToken, shareToken));
+
+			expect(found).toBeDefined();
+			expect(found.sessionId).toBe(`session-${testId}`);
+
+			// Cleanup
+			await db
+				.delete(schema.sharedSessions)
+				.where(eq(schema.sharedSessions.id, shareId));
+		});
+	});
 });
 
 // Additional tests that don't require DB connection
@@ -203,11 +456,15 @@ describe("Settings Encryption Helpers", () => {
 
 		expect(isUserTotpSecretEncrypted(null)).toBe(false);
 		expect(isUserTotpSecretEncrypted({})).toBe(false);
-		expect(isUserTotpSecretEncrypted({ twoFactor: { secret: "plain" } })).toBe(
-			false,
-		);
 		expect(
-			isUserTotpSecretEncrypted({ twoFactor: { secret: "enc:something" } }),
+			isUserTotpSecretEncrypted({
+				twoFactor: { enabled: true, secret: "plain" },
+			}),
+		).toBe(false);
+		expect(
+			isUserTotpSecretEncrypted({
+				twoFactor: { enabled: true, secret: "enc:something" },
+			}),
 		).toBe(true);
 	});
 });

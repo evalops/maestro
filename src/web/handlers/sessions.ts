@@ -4,17 +4,30 @@ import type {
 	ComposerSession,
 	ComposerSessionSummary,
 } from "@evalops/contracts";
+import { eq, lt, sql } from "drizzle-orm";
+import { getDb, isDbAvailable } from "../../db/client.js";
+import { sharedSessions as sharedSessionsTable } from "../../db/schema.js";
 import { SessionManager } from "../../session/manager.js";
-import { respondWithApiError, sendJson } from "../server-utils.js";
-import { readJsonBody } from "../server-utils.js";
+import { createLogger } from "../../utils/logger.js";
+import {
+	readJsonBody,
+	respondWithApiError,
+	sendJson,
+} from "../server-utils.js";
 import { convertAppMessagesToComposer } from "../session-serialization.js";
 
+const logger = createLogger("sessions-handler");
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 
-// In-memory store for shared session tokens (in production, use DB)
-const sharedSessions = new Map<
+// Fallback in-memory store when DB not available
+const inMemoryShares = new Map<
 	string,
-	{ sessionId: string; expiresAt: Date; accessCount: number }
+	{
+		sessionId: string;
+		expiresAt: Date;
+		maxAccesses: number | null;
+		accessCount: number;
+	}
 >();
 
 export interface SessionUpdateBody {
@@ -31,6 +44,124 @@ export interface SessionShareOptions {
 export interface SessionExportFormat {
 	format: "json" | "markdown" | "text";
 }
+
+// ============================================================================
+// SHARED SESSION DB OPERATIONS
+// ============================================================================
+
+async function createSharedSessionInDb(
+	sessionId: string,
+	shareToken: string,
+	expiresAt: Date,
+	maxAccesses: number | null,
+): Promise<void> {
+	if (!isDbAvailable()) {
+		// Fallback to in-memory
+		inMemoryShares.set(shareToken, {
+			sessionId,
+			expiresAt,
+			maxAccesses,
+			accessCount: 0,
+		});
+		return;
+	}
+
+	const db = getDb();
+	await db.insert(sharedSessionsTable).values({
+		shareToken,
+		sessionId,
+		expiresAt,
+		maxAccesses,
+		accessCount: 0,
+	});
+}
+
+async function getSharedSessionFromDb(shareToken: string): Promise<{
+	sessionId: string;
+	expiresAt: Date;
+	maxAccesses: number | null;
+	accessCount: number;
+} | null> {
+	if (!isDbAvailable()) {
+		// Fallback to in-memory
+		const share = inMemoryShares.get(shareToken);
+		if (!share) return null;
+		return share;
+	}
+
+	const db = getDb();
+	const [row] = await db
+		.select({
+			sessionId: sharedSessionsTable.sessionId,
+			expiresAt: sharedSessionsTable.expiresAt,
+			maxAccesses: sharedSessionsTable.maxAccesses,
+			accessCount: sharedSessionsTable.accessCount,
+		})
+		.from(sharedSessionsTable)
+		.where(eq(sharedSessionsTable.shareToken, shareToken))
+		.limit(1);
+
+	if (!row) return null;
+
+	return {
+		sessionId: row.sessionId,
+		expiresAt: row.expiresAt,
+		maxAccesses: row.maxAccesses,
+		accessCount: row.accessCount,
+	};
+}
+
+async function incrementShareAccessCount(shareToken: string): Promise<void> {
+	if (!isDbAvailable()) {
+		const share = inMemoryShares.get(shareToken);
+		if (share) share.accessCount++;
+		return;
+	}
+
+	const db = getDb();
+	await db
+		.update(sharedSessionsTable)
+		.set({ accessCount: sql`${sharedSessionsTable.accessCount} + 1` })
+		.where(eq(sharedSessionsTable.shareToken, shareToken));
+}
+
+async function deleteExpiredShares(): Promise<number> {
+	if (!isDbAvailable()) {
+		let deleted = 0;
+		const now = new Date();
+		for (const [token, share] of inMemoryShares.entries()) {
+			if (share.expiresAt < now) {
+				inMemoryShares.delete(token);
+				deleted++;
+			}
+		}
+		return deleted;
+	}
+
+	const db = getDb();
+	const result = await db
+		.delete(sharedSessionsTable)
+		.where(lt(sharedSessionsTable.expiresAt, new Date()))
+		.returning({ id: sharedSessionsTable.id });
+
+	return result.length;
+}
+
+async function deleteShareByToken(shareToken: string): Promise<void> {
+	if (!isDbAvailable()) {
+		inMemoryShares.delete(shareToken);
+		return;
+	}
+
+	const db = getDb();
+	await db
+		.delete(sharedSessionsTable)
+		.where(eq(sharedSessionsTable.shareToken, shareToken));
+}
+
+// ============================================================================
+// SESSION HANDLERS
+// ============================================================================
 
 /**
  * Handle session list and CRUD operations
@@ -106,27 +237,35 @@ export async function handleSessions(
 				return;
 			}
 
-			// Apply favorite update (supported by SessionManager)
 			const sessionPath = sessionManager.getSessionFileById(sessionId);
-			if (sessionPath && updates.favorite !== undefined) {
-				sessionManager.setSessionFavorite(sessionPath, updates.favorite);
+			if (!sessionPath) {
+				sendJson(res, 404, { error: "Session file not found" }, cors, req);
+				return;
 			}
 
-			// Note: title and tags updates require session file modification
-			// which is not fully supported by the current SessionManager API.
-			// For now, return current session data with acknowledged updates.
+			// Apply updates - SessionManager supports favorite, title, and tags via meta entries
+			if (updates.favorite !== undefined) {
+				sessionManager.setSessionFavorite(sessionPath, updates.favorite);
+			}
+			if (updates.title !== undefined) {
+				sessionManager.setSessionTitle(sessionPath, updates.title);
+			}
+			if (updates.tags !== undefined) {
+				sessionManager.setSessionTags(sessionPath, updates.tags);
+			}
 
+			// Return the updated values directly (writes are applied synchronously to the file)
 			sendJson(
 				res,
 				200,
 				{
-					id: session.id,
+					id: sessionId,
 					title: updates.title ?? session.title,
 					createdAt: session.createdAt,
 					updatedAt: new Date().toISOString(),
 					messageCount: session.messageCount,
-					favorite: updates.favorite,
-					tags: updates.tags,
+					favorite: updates.favorite ?? session.favorite,
+					tags: updates.tags ?? session.tags,
 				},
 				cors,
 				req,
@@ -183,25 +322,24 @@ export async function handleSessionShare(
 
 		const options = await readJsonBody<SessionShareOptions>(req);
 		const expiresInHours = Math.min(options.expiresInHours ?? 24, 168); // Max 1 week
-		const maxAccesses = options.maxAccesses ?? 100;
+		const maxAccesses = options.maxAccesses ?? null; // null = unlimited
 
 		// Generate a share token
 		const shareToken = crypto.randomBytes(32).toString("base64url");
 		const expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
 
-		// Store the share mapping
-		sharedSessions.set(shareToken, {
+		// Store in database (or fallback to memory)
+		await createSharedSessionInDb(
 			sessionId,
+			shareToken,
 			expiresAt,
-			accessCount: 0,
-		});
+			maxAccesses,
+		);
 
-		// Clean up old shares
-		for (const [token, share] of sharedSessions.entries()) {
-			if (share.expiresAt < new Date()) {
-				sharedSessions.delete(token);
-			}
-		}
+		// Cleanup expired shares in background
+		deleteExpiredShares().catch((err) => {
+			logger.error("Failed to cleanup expired shares", err);
+		});
 
 		sendJson(
 			res,
@@ -238,7 +376,7 @@ export async function handleSharedSession(
 			return;
 		}
 
-		const share = sharedSessions.get(shareToken);
+		const share = await getSharedSessionFromDb(shareToken);
 		if (!share) {
 			sendJson(
 				res,
@@ -250,13 +388,27 @@ export async function handleSharedSession(
 			return;
 		}
 
+		// Check expiration
 		if (share.expiresAt < new Date()) {
-			sharedSessions.delete(shareToken);
+			await deleteShareByToken(shareToken);
 			sendJson(res, 410, { error: "Share link has expired" }, cors, req);
 			return;
 		}
 
-		share.accessCount++;
+		// Check max accesses
+		if (share.maxAccesses !== null && share.accessCount >= share.maxAccesses) {
+			sendJson(
+				res,
+				410,
+				{ error: "Share link has reached maximum accesses" },
+				cors,
+				req,
+			);
+			return;
+		}
+
+		// Increment access count
+		await incrementShareAccessCount(shareToken);
 
 		const session = await sessionManager.loadSession(share.sessionId);
 		if (!session) {
@@ -357,8 +509,22 @@ export async function handleSessionExport(
 	}
 }
 
+// ============================================================================
+// EXPORT HELPERS - Handle complex message structures
+// ============================================================================
+
+interface ContentBlock {
+	type: string;
+	text?: string;
+	name?: string;
+	input?: unknown;
+	content?: string | ContentBlock[];
+	tool_use_id?: string;
+	is_error?: boolean;
+}
+
 /**
- * Export session to markdown format
+ * Export session to markdown format with full support for complex messages
  */
 function exportToMarkdown(
 	session: { id: string; title?: string; createdAt?: string },
@@ -374,22 +540,20 @@ function exportToMarkdown(
 	];
 
 	for (const msg of messages) {
-		const role = msg.role === "user" ? "**User:**" : "**Assistant:**";
+		const role = msg.role === "user" ? "## User" : "## Assistant";
 		lines.push(role);
 		lines.push("");
 
-		const content = extractTextContent(msg.content);
-		if (content) {
-			lines.push(content);
-			lines.push("");
-		}
+		const contentLines = formatMessageContent(msg.content, "markdown");
+		lines.push(...contentLines);
+		lines.push("");
 	}
 
 	return lines.join("\n");
 }
 
 /**
- * Export session to plain text format
+ * Export session to plain text format with full support for complex messages
  */
 function exportToText(
 	session: { id: string; title?: string; createdAt?: string },
@@ -406,11 +570,10 @@ function exportToText(
 	for (const msg of messages) {
 		const role = msg.role === "user" ? "USER:" : "ASSISTANT:";
 		lines.push(role);
+		lines.push("");
 
-		const content = extractTextContent(msg.content);
-		if (content) {
-			lines.push(content);
-		}
+		const contentLines = formatMessageContent(msg.content, "text");
+		lines.push(...contentLines);
 		lines.push("");
 		lines.push("-".repeat(40));
 		lines.push("");
@@ -420,22 +583,140 @@ function exportToText(
 }
 
 /**
- * Extract text content from message content (which can be string or array of blocks)
+ * Format message content handling all block types
  */
-function extractTextContent(content: unknown): string {
+function formatMessageContent(
+	content: unknown,
+	format: "markdown" | "text",
+): string[] {
+	const lines: string[] = [];
+
 	if (typeof content === "string") {
-		return content;
+		lines.push(content);
+		return lines;
+	}
+
+	if (!Array.isArray(content)) {
+		return lines;
+	}
+
+	for (const block of content as ContentBlock[]) {
+		if (!block || typeof block !== "object") continue;
+
+		switch (block.type) {
+			case "text":
+				if (block.text) {
+					lines.push(block.text);
+				}
+				break;
+
+			case "tool_use":
+				if (format === "markdown") {
+					lines.push(`### Tool: \`${block.name || "unknown"}\``);
+					lines.push("");
+					if (block.input) {
+						lines.push("```json");
+						lines.push(JSON.stringify(block.input, null, 2));
+						lines.push("```");
+					}
+				} else {
+					lines.push(`[TOOL CALL: ${block.name || "unknown"}]`);
+					if (block.input) {
+						lines.push(`Input: ${JSON.stringify(block.input, null, 2)}`);
+					}
+				}
+				lines.push("");
+				break;
+
+			case "tool_result":
+				if (format === "markdown") {
+					lines.push("#### Tool Result");
+					if (block.is_error) {
+						lines.push("**Error:**");
+					}
+					lines.push("");
+					const resultContent = formatToolResultContent(block.content, format);
+					lines.push(...resultContent);
+				} else {
+					lines.push("[TOOL RESULT]");
+					if (block.is_error) {
+						lines.push("(Error)");
+					}
+					const resultContent = formatToolResultContent(block.content, format);
+					lines.push(...resultContent);
+				}
+				lines.push("");
+				break;
+
+			case "image":
+				if (format === "markdown") {
+					lines.push("*[Image content]*");
+				} else {
+					lines.push("[IMAGE]");
+				}
+				break;
+
+			case "thinking":
+				if (format === "markdown") {
+					lines.push("<details>");
+					lines.push("<summary>Thinking...</summary>");
+					lines.push("");
+					if (block.text) {
+						lines.push(block.text);
+					}
+					lines.push("</details>");
+				} else {
+					lines.push("[THINKING]");
+					if (block.text) {
+						lines.push(block.text);
+					}
+					lines.push("[/THINKING]");
+				}
+				lines.push("");
+				break;
+
+			default:
+				// Handle unknown block types gracefully
+				if (block.text) {
+					lines.push(block.text);
+				}
+		}
+	}
+
+	return lines;
+}
+
+/**
+ * Format tool result content which can be string or nested blocks
+ */
+function formatToolResultContent(
+	content: string | ContentBlock[] | undefined,
+	format: "markdown" | "text",
+): string[] {
+	if (!content) return [];
+
+	if (typeof content === "string") {
+		if (format === "markdown") {
+			return ["```", content, "```"];
+		}
+		return [content];
 	}
 
 	if (Array.isArray(content)) {
-		return content
-			.filter(
-				(block): block is { type: "text"; text: string } =>
-					block && typeof block === "object" && block.type === "text",
-			)
-			.map((block) => block.text)
-			.join("\n");
+		const lines: string[] = [];
+		for (const block of content) {
+			if (block.type === "text" && block.text) {
+				if (format === "markdown") {
+					lines.push("```");
+					lines.push(block.text);
+					lines.push("```");
+				} else {
+					lines.push(block.text);
+				}
+			}
+		}
+		return lines;
 	}
 
-	return "";
+	return [];
 }

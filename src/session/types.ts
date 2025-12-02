@@ -59,12 +59,14 @@ export interface ModelChangeEntry extends BaseSessionEntry {
 }
 
 /**
- * Session metadata entry (summary, favorite status)
+ * Session metadata entry (summary, favorite status, title, tags)
  */
 export interface SessionMetaEntry extends BaseSessionEntry {
 	type: "session_meta";
 	summary?: string;
 	favorite?: boolean;
+	title?: string;
+	tags?: string[];
 }
 
 /**
@@ -210,4 +212,6 @@ export interface SessionMetadata {
 	summary: string;
 	favorite: boolean;
 	allMessagesText: string;
+	title?: string;
+	tags?: string[];
 }

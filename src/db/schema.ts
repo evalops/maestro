@@ -697,6 +697,40 @@ export const totpRateLimits = pgTable(
 );
 
 // ============================================================================
+// SHARED SESSIONS (for session sharing links)
+// ============================================================================
+
+export const sharedSessions = pgTable(
+	"shared_sessions",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		/** The token used in share URLs */
+		shareToken: varchar("share_token", { length: 64 }).notNull().unique(),
+		/** Reference to the session being shared (local file-based session ID) */
+		sessionId: varchar("session_id", { length: 255 }).notNull(),
+		/** User who created the share */
+		createdBy: uuid("created_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		/** When the share link expires */
+		expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+		/** Maximum number of accesses allowed (null = unlimited) */
+		maxAccesses: integer("max_accesses"),
+		/** Current access count */
+		accessCount: integer("access_count").default(0).notNull(),
+		/** When it was created */
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+	},
+	(table) => ({
+		tokenIdx: uniqueIndex("shared_session_token_idx").on(table.shareToken),
+		sessionIdx: index("shared_session_session_idx").on(table.sessionId),
+		expiresIdx: index("shared_session_expires_idx").on(table.expiresAt),
+	}),
+);
+
+// ============================================================================
 // TOTP USED CODES (replay protection)
 // ============================================================================
 

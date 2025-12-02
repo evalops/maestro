@@ -69,6 +69,8 @@ vi.mock("../src/session/manager.js", () => ({
 			return id === "not-found" ? null : `/sessions/${id}.jsonl`;
 		}),
 		setSessionFavorite: vi.fn(),
+		setSessionTitle: vi.fn(),
+		setSessionTags: vi.fn(),
 	})),
 }));
 

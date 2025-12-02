@@ -125,6 +125,17 @@ async function markMigrationApplied(tag: string): Promise<void> {
 }
 
 /**
+ * Remove a migration from the applied list (for rollback)
+ */
+async function markMigrationRolledBack(tag: string): Promise<void> {
+	const db = getDb();
+
+	await db.execute(sql`
+		DELETE FROM _composer_migrations WHERE tag = ${tag}
+	`);
+}
+
+/**
  * Parse and execute migration SQL with statement breakpoints
  *
  * drizzle-kit uses `--> statement-breakpoint` comments to separate statements
@@ -228,12 +239,133 @@ export async function getMigrationStatus(): Promise<{
 }
 
 /**
+ * Rollback the last applied migration.
+ *
+ * WARNING: This only removes the migration from the tracking table.
+ * It does NOT undo schema changes. For that, you need to manually
+ * write and execute reverse SQL or restore from backup.
+ *
+ * Returns the tag of the rolled back migration, or null if none.
+ */
+export async function rollbackLast(): Promise<string | null> {
+	if (!isDatabaseConfigured()) {
+		logger.warn("Database not configured, cannot rollback");
+		return null;
+	}
+
+	await ensureMigrationsTable();
+	const appliedMigrations = await getAppliedMigrations();
+	const migrationEntries = getMigrationEntries();
+
+	// Find the last applied migration
+	let lastApplied: string | null = null;
+	for (const entry of migrationEntries) {
+		if (appliedMigrations.has(entry.tag)) {
+			lastApplied = entry.tag;
+		}
+	}
+
+	if (!lastApplied) {
+		logger.info("No migrations to rollback");
+		return null;
+	}
+
+	logger.warn("Rolling back migration", { tag: lastApplied });
+	logger.warn(
+		"WARNING: This only removes the migration record. Schema changes are NOT reversed.",
+	);
+
+	await markMigrationRolledBack(lastApplied);
+
+	logger.info("Migration rolled back", { tag: lastApplied });
+	return lastApplied;
+}
+
+/**
+ * Force mark a migration as applied without running it.
+ * Useful for marking manually applied migrations.
+ */
+export async function forceMarkApplied(tag: string): Promise<void> {
+	if (!isDatabaseConfigured()) {
+		throw new Error("Database not configured");
+	}
+
+	await ensureMigrationsTable();
+	await markMigrationApplied(tag);
+	logger.info("Migration force-marked as applied", { tag });
+}
+
+/**
  * CLI entry point for running migrations
+ *
+ * Usage:
+ *   bun run src/db/migrate.ts              - Run pending migrations
+ *   bun run src/db/migrate.ts status       - Show migration status
+ *   bun run src/db/migrate.ts rollback     - Rollback last migration
+ *   bun run src/db/migrate.ts force <tag>  - Force mark a migration as applied
  */
 export async function runMigrationsCli(): Promise<void> {
+	const args = process.argv.slice(2);
+	const command = args[0] || "migrate";
+
 	try {
-		const applied = await migrate();
-		console.log(`Applied ${applied} migration(s)`);
+		switch (command) {
+			case "migrate": {
+				const applied = await migrate();
+				console.log(`Applied ${applied} migration(s)`);
+				break;
+			}
+
+			case "status": {
+				const status = await getMigrationStatus();
+				console.log("Migration Status:");
+				console.log(`  Applied: ${status.applied.length}`);
+				for (const tag of status.applied) {
+					console.log(`    ✓ ${tag}`);
+				}
+				console.log(`  Pending: ${status.pending.length}`);
+				for (const tag of status.pending) {
+					console.log(`    ○ ${tag}`);
+				}
+				break;
+			}
+
+			case "rollback": {
+				const rolledBack = await rollbackLast();
+				if (rolledBack) {
+					console.log(`Rolled back: ${rolledBack}`);
+					console.log(
+						"WARNING: Schema changes were NOT reversed. Manual cleanup may be needed.",
+					);
+				} else {
+					console.log("No migrations to rollback");
+				}
+				break;
+			}
+
+			case "force": {
+				const tag = args[1];
+				if (!tag) {
+					console.error("Usage: migrate force <tag>");
+					process.exit(1);
+				}
+				await forceMarkApplied(tag);
+				console.log(`Force-marked as applied: ${tag}`);
+				break;
+			}
+
+			default:
+				console.error(`Unknown command: ${command}`);
+				console.error("Usage:");
+				console.error("  migrate           - Run pending migrations");
+				console.error("  migrate status    - Show migration status");
+				console.error("  migrate rollback  - Rollback last migration");
+				console.error(
+					"  migrate force <tag> - Force mark migration as applied",
+				);
+				process.exit(1);
+		}
+
 		process.exit(0);
 	} catch (error) {
 		console.error("Migration failed:", error);
