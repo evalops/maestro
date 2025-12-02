@@ -6,7 +6,10 @@
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { createLogger } from "../utils/logger.js";
-import { isTokenRevokedSync } from "./token-revocation.js";
+import {
+	isTokenIssuedBeforeRevocation,
+	isTokenRevokedSync,
+} from "./token-revocation.js";
 
 const logger = createLogger("auth");
 
@@ -77,13 +80,25 @@ export function generateTokenPair(
  */
 export function verifyToken(token: string): JwtPayload | null {
 	try {
-		// First check revocation (fast, cache-based check)
+		// First check individual token revocation (fast, cache-based check)
 		if (isTokenRevokedSync(token)) {
 			logger.debug("Token is revoked");
 			return null;
 		}
 
-		const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
+		const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload & {
+			iat?: number;
+		};
+
+		// Check if user has a "revoke all before" timestamp
+		if (
+			decoded.iat &&
+			isTokenIssuedBeforeRevocation(decoded.userId, decoded.iat)
+		) {
+			logger.debug("Token was issued before user revocation timestamp");
+			return null;
+		}
+
 		return decoded;
 	} catch (error) {
 		logger.debug("Token verification failed", {
@@ -96,20 +111,36 @@ export function verifyToken(token: string): JwtPayload | null {
 /**
  * Verify token with async revocation check (checks database).
  * Use this when you need to ensure revocation is checked against DB.
+ * Fails closed by default - returns null if DB check fails.
  */
 export async function verifyTokenAsync(
 	token: string,
+	options: { failClosed?: boolean } = {},
 ): Promise<JwtPayload | null> {
 	try {
 		// Import dynamically to avoid circular dependency at module load
 		const { isTokenRevoked } = await import("./token-revocation.js");
 
-		if (await isTokenRevoked(token)) {
+		if (
+			await isTokenRevoked(token, { failClosed: options.failClosed ?? true })
+		) {
 			logger.debug("Token is revoked (async check)");
 			return null;
 		}
 
-		const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
+		const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload & {
+			iat?: number;
+		};
+
+		// Check if user has a "revoke all before" timestamp
+		if (
+			decoded.iat &&
+			isTokenIssuedBeforeRevocation(decoded.userId, decoded.iat)
+		) {
+			logger.debug("Token was issued before user revocation timestamp");
+			return null;
+		}
+
 		return decoded;
 	} catch (error) {
 		logger.debug("Token verification failed", {

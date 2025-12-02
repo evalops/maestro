@@ -11,8 +11,15 @@
 import crypto from "node:crypto";
 import { and, eq, lt, lte, or } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../db/client.js";
-import { organizations, webhookDeliveries } from "../db/schema.js";
+import {
+	distributedLocks,
+	organizations,
+	webhookDeliveries,
+} from "../db/schema.js";
 import { createLogger } from "../utils/logger.js";
+
+// Unique identifier for this process instance
+const INSTANCE_ID = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
 
 const logger = createLogger("webhooks:delivery");
 
@@ -195,11 +202,155 @@ async function deliverHttp(
 }
 
 // ============================================================================
+// DISTRIBUTED LOCKING
+// ============================================================================
+
+const LOCK_ID = "webhook_processor";
+const LOCK_DURATION_MS = 60_000; // 1 minute lock duration
+const LOCK_RENEWAL_MS = 30_000; // Renew every 30 seconds
+
+/**
+ * Try to acquire the webhook processor lock.
+ * Returns true if lock acquired, false if another instance holds it.
+ */
+async function tryAcquireLock(): Promise<boolean> {
+	if (!isDbAvailable()) {
+		return true; // No DB, no locking - just process
+	}
+
+	try {
+		const db = getDb();
+		const now = new Date();
+		const expiresAt = new Date(now.getTime() + LOCK_DURATION_MS);
+
+		// Try to insert lock, or update if expired
+		await db
+			.insert(distributedLocks)
+			.values({
+				id: LOCK_ID,
+				holderId: INSTANCE_ID,
+				acquiredAt: now,
+				expiresAt,
+			})
+			.onConflictDoUpdate({
+				target: distributedLocks.id,
+				set: {
+					holderId: INSTANCE_ID,
+					acquiredAt: now,
+					expiresAt,
+				},
+				// Only update if lock is expired or we already hold it
+				setWhere: or(
+					lt(distributedLocks.expiresAt, now),
+					eq(distributedLocks.holderId, INSTANCE_ID),
+				),
+			});
+
+		// Check if we got the lock
+		const [lock] = await db
+			.select()
+			.from(distributedLocks)
+			.where(eq(distributedLocks.id, LOCK_ID))
+			.limit(1);
+
+		return lock?.holderId === INSTANCE_ID;
+	} catch (error) {
+		logger.error(
+			"Failed to acquire lock",
+			error instanceof Error ? error : undefined,
+		);
+		return false;
+	}
+}
+
+/**
+ * Renew the lock if we hold it.
+ */
+async function renewLock(): Promise<boolean> {
+	if (!isDbAvailable()) {
+		return true;
+	}
+
+	try {
+		const db = getDb();
+		const now = new Date();
+		const expiresAt = new Date(now.getTime() + LOCK_DURATION_MS);
+
+		const result = await db
+			.update(distributedLocks)
+			.set({ expiresAt })
+			.where(
+				and(
+					eq(distributedLocks.id, LOCK_ID),
+					eq(distributedLocks.holderId, INSTANCE_ID),
+				),
+			)
+			.returning({ id: distributedLocks.id });
+
+		return result.length > 0;
+	} catch (error) {
+		logger.error(
+			"Failed to renew lock",
+			error instanceof Error ? error : undefined,
+		);
+		return false;
+	}
+}
+
+/**
+ * Release the lock if we hold it.
+ */
+async function releaseLock(): Promise<void> {
+	if (!isDbAvailable()) {
+		return;
+	}
+
+	try {
+		const db = getDb();
+		await db
+			.delete(distributedLocks)
+			.where(
+				and(
+					eq(distributedLocks.id, LOCK_ID),
+					eq(distributedLocks.holderId, INSTANCE_ID),
+				),
+			);
+	} catch (error) {
+		logger.error(
+			"Failed to release lock",
+			error instanceof Error ? error : undefined,
+		);
+	}
+}
+
+// ============================================================================
+// RETRY BACKOFF WITH JITTER
+// ============================================================================
+
+/**
+ * Calculate backoff with jitter to prevent thundering herd.
+ * Uses decorrelated jitter: sleep = min(cap, random_between(base, sleep * 3))
+ */
+function calculateBackoffWithJitter(
+	attempt: number,
+	baseMs = 1000,
+	capMs = 300_000,
+): number {
+	// Exponential base: 2^attempt * baseMs
+	const exponential = Math.min(capMs, baseMs * 2 ** attempt);
+	// Add jitter: random value between 50% and 150% of exponential
+	const jitter = exponential * (0.5 + Math.random());
+	return Math.min(capMs, Math.floor(jitter));
+}
+
+// ============================================================================
 // QUEUE OPERATIONS
 // ============================================================================
 
 /**
  * Queue a webhook for delivery.
+ * Note: Signature is generated at delivery time, not queue time,
+ * to ensure timestamp is fresh when the webhook is actually sent.
  */
 export async function queueWebhook(
 	options: WebhookDeliveryOptions,
@@ -208,6 +359,7 @@ export async function queueWebhook(
 		logger.warn("Database unavailable, delivering webhook immediately");
 		// Fall back to immediate delivery without persistence
 		const payload = JSON.stringify(options.payload);
+		// Sign at delivery time
 		const signature = options.signingSecret
 			? signPayload(payload, options.signingSecret).signature
 			: undefined;
@@ -224,18 +376,17 @@ export async function queueWebhook(
 
 	try {
 		const db = getDb();
-		const payload = JSON.stringify(options.payload);
-		const signature = options.signingSecret
-			? signPayload(payload, options.signingSecret).signature
-			: undefined;
 
+		// Don't pre-sign - signature will be generated at delivery time
+		// This ensures the timestamp is fresh when the webhook is sent
 		const [delivery] = await db
 			.insert(webhookDeliveries)
 			.values({
 				orgId: options.orgId,
 				url: options.url,
 				payload: options.payload,
-				signature,
+				// Store the secret reference, not the pre-computed signature
+				signature: null,
 				maxAttempts: options.maxAttempts ?? 5,
 				nextRetryAt: new Date(), // Immediate first attempt
 			})
@@ -261,9 +412,17 @@ export async function queueWebhook(
 /**
  * Process pending webhooks from the queue.
  * Call this periodically (e.g., every 10 seconds).
+ * Uses distributed locking to prevent multiple instances from processing the same webhooks.
  */
 export async function processWebhookQueue(batchSize = 10): Promise<number> {
 	if (!isDbAvailable()) {
+		return 0;
+	}
+
+	// Try to acquire the distributed lock
+	const hasLock = await tryAcquireLock();
+	if (!hasLock) {
+		logger.debug("Another instance holds the webhook processor lock");
 		return 0;
 	}
 
@@ -295,11 +454,26 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 
 		for (const delivery of pending) {
 			const payload = JSON.stringify(delivery.payload);
-			const result = await deliverHttp(
-				delivery.url,
-				payload,
-				delivery.signature ?? undefined,
-			);
+
+			// Sign at delivery time with fresh timestamp
+			let signature: string | undefined;
+			if (delivery.orgId) {
+				// Get the org's signing secret
+				const [org] = await db
+					.select({ settings: organizations.settings })
+					.from(organizations)
+					.where(eq(organizations.id, delivery.orgId))
+					.limit(1);
+
+				if (org?.settings?.webhookSigningSecret) {
+					signature = signPayload(
+						payload,
+						org.settings.webhookSigningSecret,
+					).signature;
+				}
+			}
+
+			const result = await deliverHttp(delivery.url, payload, signature);
 
 			const newAttempts = delivery.attempts + 1;
 
@@ -342,11 +516,8 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 					error: result.error,
 				});
 			} else {
-				// Schedule retry with exponential backoff
-				const backoffMs = Math.min(
-					1000 * 2 ** newAttempts, // 2s, 4s, 8s, 16s, 32s...
-					300_000, // Max 5 minutes
-				);
+				// Schedule retry with exponential backoff + jitter
+				const backoffMs = calculateBackoffWithJitter(newAttempts);
 				const nextRetry = new Date(Date.now() + backoffMs);
 
 				await db
@@ -365,12 +536,17 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 					id: delivery.id,
 					url: delivery.url,
 					attempts: newAttempts,
-					nextRetryIn: `${backoffMs / 1000}s`,
+					nextRetryIn: `${Math.round(backoffMs / 1000)}s`,
 					error: result.error,
 				});
 			}
 
 			processed++;
+
+			// Renew lock if we're processing many webhooks
+			if (processed % 5 === 0) {
+				await renewLock();
+			}
 		}
 
 		return processed;
@@ -499,6 +675,7 @@ export async function sendAlertWebhooks(
 // ============================================================================
 
 let processorInterval: ReturnType<typeof setInterval> | null = null;
+let lockRenewalInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Start the background webhook processor.
@@ -517,16 +694,35 @@ export function startWebhookProcessor(intervalMs = 10_000): void {
 		});
 	}, intervalMs);
 
-	logger.info("Webhook processor started", { intervalMs });
+	// Periodically renew the lock while we're running
+	lockRenewalInterval = setInterval(() => {
+		renewLock().catch((error) => {
+			logger.error(
+				"Lock renewal error",
+				error instanceof Error ? error : undefined,
+			);
+		});
+	}, LOCK_RENEWAL_MS);
+
+	logger.info("Webhook processor started", {
+		intervalMs,
+		instanceId: INSTANCE_ID,
+	});
 }
 
 /**
  * Stop the background webhook processor.
  */
-export function stopWebhookProcessor(): void {
+export async function stopWebhookProcessor(): Promise<void> {
 	if (processorInterval) {
 		clearInterval(processorInterval);
 		processorInterval = null;
+		// Release the lock so another instance can take over
+		await releaseLock();
 		logger.info("Webhook processor stopped");
+	}
+	if (lockRenewalInterval) {
+		clearInterval(lockRenewalInterval);
+		lockRenewalInterval = null;
 	}
 }

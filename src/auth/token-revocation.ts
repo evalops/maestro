@@ -6,9 +6,12 @@
  */
 
 import crypto from "node:crypto";
-import { and, eq, gt, lte } from "drizzle-orm";
+import { and, eq, gt, gte, lte } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../db/client.js";
-import { revokedTokens } from "../db/schema.js";
+import {
+	revokedTokens,
+	userRevocationTimestamps as userRevocationTimestampsTable,
+} from "../db/schema.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth:revocation");
@@ -25,6 +28,45 @@ export type RevocationReason =
 	| "admin_revoke"
 	| "security_incident"
 	| "token_refresh";
+
+// ============================================================================
+// USER REVOCATION TIMESTAMPS (for "revoke all" functionality)
+// ============================================================================
+
+/**
+ * Stores the "revoke all tokens before" timestamp per user.
+ * Any token issued before this time is considered revoked.
+ */
+const userRevocationTimestamps = new Map<string, number>();
+
+/**
+ * Check if a token was issued before the user's revocation timestamp.
+ */
+export function isTokenIssuedBeforeRevocation(
+	userId: string,
+	issuedAt: number,
+): boolean {
+	const revokedBefore = userRevocationTimestamps.get(userId);
+	if (!revokedBefore) return false;
+	return issuedAt < revokedBefore;
+}
+
+/**
+ * Set the revocation timestamp for a user (revoke all tokens before this time).
+ */
+export function setUserRevocationTimestamp(
+	userId: string,
+	timestamp: number,
+): void {
+	userRevocationTimestamps.set(userId, timestamp);
+}
+
+/**
+ * Get the revocation timestamp for a user.
+ */
+export function getUserRevocationTimestamp(userId: string): number | undefined {
+	return userRevocationTimestamps.get(userId);
+}
 
 export interface RevokeTokenOptions {
 	token: string;
@@ -196,59 +238,113 @@ export async function revokeToken(options: RevokeTokenOptions): Promise<void> {
 }
 
 /**
- * Revoke all tokens for a user (e.g., on password change or logout all)
+ * Revoke all tokens for a user (e.g., on password change or logout all).
+ * Sets a "revoked before" timestamp - any token issued before this is invalid.
  */
 export async function revokeAllUserTokens(
 	userId: string,
-	orgId: string,
 	reason: RevocationReason,
 	revokedBy?: string,
-): Promise<number> {
+): Promise<boolean> {
+	const now = Date.now();
+	const revokedBefore = new Date(now);
+
+	// Always update in-memory cache first
+	setUserRevocationTimestamp(userId, now);
+
 	if (!isDbAvailable()) {
-		logger.warn("Database unavailable, cannot revoke all user tokens");
-		return 0;
+		logger.warn("Database unavailable, user token revocation only in memory", {
+			userId,
+		});
+		return true; // In-memory revocation is still effective
 	}
 
 	try {
 		const db = getDb();
 
-		// We can't revoke tokens we don't know about, but we can mark
-		// a "revoke all before" timestamp in user settings or a separate table.
-		// For now, this logs the action - actual enforcement requires checking
-		// token issue time against this timestamp during verification.
-
-		// Insert a special marker that indicates "all tokens before now are revoked"
-		const marker = await db
-			.insert(revokedTokens)
+		// Upsert the revocation timestamp
+		await db
+			.insert(userRevocationTimestampsTable)
 			.values({
-				tokenHash: `user_all_${userId}_${Date.now()}`,
-				tokenType: "access",
 				userId,
-				orgId,
+				revokedBefore,
 				reason,
-				expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
 				revokedBy,
 			})
-			.returning();
+			.onConflictDoUpdate({
+				target: userRevocationTimestampsTable.userId,
+				set: {
+					revokedBefore,
+					reason,
+					revokedBy,
+					updatedAt: new Date(),
+				},
+			});
 
 		logger.info("All user tokens revoked", { userId, reason });
-		return marker.length;
+		return true;
 	} catch (error) {
 		logger.error(
-			"Failed to revoke all user tokens",
+			"Failed to persist user token revocation",
 			error instanceof Error ? error : undefined,
-			{
-				userId,
-			},
+			{ userId },
+		);
+		// In-memory revocation is still effective
+		return true;
+	}
+}
+
+/**
+ * Load user revocation timestamps from DB into memory cache.
+ * Call this on server startup for cache warming.
+ */
+export async function warmUserRevocationCache(): Promise<number> {
+	if (!isDbAvailable()) {
+		return 0;
+	}
+
+	try {
+		const db = getDb();
+		const entries = await db.select().from(userRevocationTimestampsTable);
+
+		for (const entry of entries) {
+			setUserRevocationTimestamp(entry.userId, entry.revokedBefore.getTime());
+		}
+
+		logger.info("User revocation cache warmed", { count: entries.length });
+		return entries.length;
+	} catch (error) {
+		logger.error(
+			"Failed to warm user revocation cache",
+			error instanceof Error ? error : undefined,
 		);
 		return 0;
 	}
 }
 
 /**
- * Check if a token is revoked. Checks cache first, then database.
+ * Options for revocation check behavior on DB errors.
  */
-export async function isTokenRevoked(token: string): Promise<boolean> {
+export interface RevocationCheckOptions {
+	/**
+	 * If true, return "revoked" when DB check fails (fail-closed).
+	 * If false, return "not revoked" when DB check fails (fail-open).
+	 * Default: true (fail-closed for security)
+	 */
+	failClosed?: boolean;
+}
+
+/**
+ * Check if a token is revoked. Checks cache first, then database.
+ *
+ * By default, fails closed (returns true/revoked) on DB errors for security.
+ * Set failClosed: false for availability-critical paths.
+ */
+export async function isTokenRevoked(
+	token: string,
+	options: RevocationCheckOptions = {},
+): Promise<boolean> {
+	const { failClosed = true } = options;
 	const tokenHash = hashToken(token);
 
 	// Fast path: check cache
@@ -258,8 +354,10 @@ export async function isTokenRevoked(token: string): Promise<boolean> {
 
 	// Slow path: check database
 	if (!isDbAvailable()) {
-		// If DB is down and not in cache, assume not revoked
-		// This is a conscious trade-off for availability
+		if (failClosed) {
+			logger.warn("Database unavailable, failing closed on revocation check");
+			return true;
+		}
 		return false;
 	}
 
@@ -289,7 +387,10 @@ export async function isTokenRevoked(token: string): Promise<boolean> {
 			"Failed to check token revocation",
 			error instanceof Error ? error : undefined,
 		);
-		// Fail open - if we can't check, assume not revoked
+		if (failClosed) {
+			logger.warn("Failing closed on revocation check due to error");
+			return true;
+		}
 		return false;
 	}
 }

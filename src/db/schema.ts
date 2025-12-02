@@ -382,6 +382,11 @@ export const auditLogs = pgTable(
 			table.createdAt,
 		),
 		traceIdx: index("audit_log_trace_idx").on(table.traceId),
+		// For hash chain verification queries that order by createdAt
+		orgCreatedIdx: index("audit_log_org_created_idx").on(
+			table.orgId,
+			table.createdAt,
+		),
 	}),
 );
 
@@ -635,6 +640,63 @@ export const webhookDeliveries = pgTable(
 );
 
 // ============================================================================
+// USER REVOCATION TIMESTAMPS (for "revoke all tokens" functionality)
+// ============================================================================
+
+export const userRevocationTimestamps = pgTable(
+	"user_revocation_timestamps",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" })
+			.unique(),
+		/** All tokens issued before this timestamp are revoked */
+		revokedBefore: timestamp("revoked_before", {
+			withTimezone: true,
+		}).notNull(),
+		/** Why the tokens were revoked */
+		reason: varchar("reason", { length: 100 }).notNull(),
+		/** Who initiated the revocation */
+		revokedBy: uuid("revoked_by").references(() => users.id),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+	},
+	(table) => ({
+		userIdx: uniqueIndex("user_revocation_user_idx").on(table.userId),
+	}),
+);
+
+// ============================================================================
+// TOTP RATE LIMITING (distributed across instances)
+// ============================================================================
+
+export const totpRateLimits = pgTable(
+	"totp_rate_limits",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" })
+			.unique(),
+		/** Number of failed attempts in current window */
+		attempts: integer("attempts").default(0).notNull(),
+		/** When the current rate limit window started */
+		windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+		/** When the lockout expires (null = not locked out) */
+		lockedUntil: timestamp("locked_until", { withTimezone: true }),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+	},
+	(table) => ({
+		userIdx: uniqueIndex("totp_rate_limit_user_idx").on(table.userId),
+		lockedIdx: index("totp_rate_limit_locked_idx").on(table.lockedUntil),
+	}),
+);
+
+// ============================================================================
 // TOTP USED CODES (replay protection)
 // ============================================================================
 
@@ -661,6 +723,44 @@ export const totpUsedCodes = pgTable(
 		windowIdx: index("totp_used_code_window_idx").on(table.windowStart),
 	}),
 );
+
+// ============================================================================
+// DISTRIBUTED LOCKS (for background processors)
+// ============================================================================
+
+export const distributedLocks = pgTable(
+	"distributed_locks",
+	{
+		id: varchar("id", { length: 100 }).primaryKey(), // e.g., "webhook_processor"
+		/** Which instance holds the lock */
+		holderId: varchar("holder_id", { length: 100 }).notNull(),
+		/** When the lock was acquired */
+		acquiredAt: timestamp("acquired_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		/** When the lock expires (for crash recovery) */
+		expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+	},
+	(table) => ({
+		expiresIdx: index("distributed_lock_expires_idx").on(table.expiresAt),
+	}),
+);
+
+// ============================================================================
+// AUDIT HASH CACHE (for multi-instance consistency)
+// ============================================================================
+
+export const auditHashCache = pgTable("audit_hash_cache", {
+	orgId: uuid("org_id")
+		.primaryKey()
+		.references(() => organizations.id, { onDelete: "cascade" }),
+	/** Last integrity hash in the chain for this org */
+	lastHash: varchar("last_hash", { length: 64 }).notNull(),
+	/** When this was last updated */
+	updatedAt: timestamp("updated_at", { withTimezone: true })
+		.defaultNow()
+		.notNull(),
+});
 
 // ============================================================================
 // RELATIONS (for Drizzle ORM joins)

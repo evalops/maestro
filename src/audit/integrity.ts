@@ -10,7 +10,7 @@
 import crypto from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../db/client.js";
-import { auditLogs } from "../db/schema.js";
+import { auditHashCache, auditLogs } from "../db/schema.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("audit:integrity");
@@ -18,8 +18,9 @@ const logger = createLogger("audit:integrity");
 // Genesis hash for new chains (all zeros)
 const GENESIS_HASH = "0".repeat(64);
 
-// In-memory cache of last hash per org (for performance)
-const lastHashCache = new Map<string, string>();
+// In-memory cache of last hash per org (for hot path performance)
+// This is synchronized with the database table for multi-instance consistency
+const lastHashMemoryCache = new Map<string, string>();
 
 // ============================================================================
 // HASH COMPUTATION
@@ -67,13 +68,13 @@ export function computeEntryHash(
 
 /**
  * Get the last hash in the chain for an organization.
- * Uses cache with DB fallback.
+ * Uses memory cache first, then DB cache table, then falls back to scanning audit logs.
  */
 export async function getLastHash(orgId: string): Promise<string> {
-	// Check cache first
-	const cached = lastHashCache.get(orgId);
-	if (cached) {
-		return cached;
+	// Check memory cache first (hot path)
+	const memoryCached = lastHashMemoryCache.get(orgId);
+	if (memoryCached) {
+		return memoryCached;
 	}
 
 	if (!isDbAvailable()) {
@@ -83,7 +84,19 @@ export async function getLastHash(orgId: string): Promise<string> {
 	try {
 		const db = getDb();
 
-		// Get most recent entry with integrity hash
+		// Check the persistent hash cache table first
+		const [cacheEntry] = await db
+			.select({ lastHash: auditHashCache.lastHash })
+			.from(auditHashCache)
+			.where(eq(auditHashCache.orgId, orgId))
+			.limit(1);
+
+		if (cacheEntry?.lastHash) {
+			lastHashMemoryCache.set(orgId, cacheEntry.lastHash);
+			return cacheEntry.lastHash;
+		}
+
+		// Fall back to scanning audit logs (slow, but only happens on first access)
 		const [lastEntry] = await db
 			.select({
 				integrityHash: auditLogs.integrityHash,
@@ -94,7 +107,10 @@ export async function getLastHash(orgId: string): Promise<string> {
 			.limit(1);
 
 		const hash = lastEntry?.integrityHash || GENESIS_HASH;
-		lastHashCache.set(orgId, hash);
+
+		// Persist to cache table and memory
+		await updateLastHash(orgId, hash);
+
 		return hash;
 	} catch (error) {
 		logger.error(
@@ -108,19 +124,108 @@ export async function getLastHash(orgId: string): Promise<string> {
 
 /**
  * Update the cached last hash for an organization.
+ * Updates both in-memory cache and persistent database cache.
  */
-export function updateLastHash(orgId: string, hash: string): void {
-	lastHashCache.set(orgId, hash);
+export async function updateLastHash(
+	orgId: string,
+	hash: string,
+): Promise<void> {
+	// Always update memory cache
+	lastHashMemoryCache.set(orgId, hash);
+
+	if (!isDbAvailable()) {
+		return;
+	}
+
+	try {
+		const db = getDb();
+
+		// Upsert to persistent cache
+		await db
+			.insert(auditHashCache)
+			.values({
+				orgId,
+				lastHash: hash,
+				updatedAt: new Date(),
+			})
+			.onConflictDoUpdate({
+				target: auditHashCache.orgId,
+				set: {
+					lastHash: hash,
+					updatedAt: new Date(),
+				},
+			});
+	} catch (error) {
+		logger.error(
+			"Failed to update last hash in DB",
+			error instanceof Error ? error : undefined,
+			{ orgId },
+		);
+	}
 }
 
 /**
  * Clear cached hash (e.g., after verification failure).
+ * Clears both memory and database cache.
  */
-export function clearHashCache(orgId?: string): void {
+export async function clearHashCache(orgId?: string): Promise<void> {
 	if (orgId) {
-		lastHashCache.delete(orgId);
+		lastHashMemoryCache.delete(orgId);
+
+		if (isDbAvailable()) {
+			try {
+				const db = getDb();
+				await db.delete(auditHashCache).where(eq(auditHashCache.orgId, orgId));
+			} catch (error) {
+				logger.error(
+					"Failed to clear hash cache in DB",
+					error instanceof Error ? error : undefined,
+					{ orgId },
+				);
+			}
+		}
 	} else {
-		lastHashCache.clear();
+		lastHashMemoryCache.clear();
+
+		if (isDbAvailable()) {
+			try {
+				const db = getDb();
+				await db.delete(auditHashCache);
+			} catch (error) {
+				logger.error(
+					"Failed to clear all hash caches in DB",
+					error instanceof Error ? error : undefined,
+				);
+			}
+		}
+	}
+}
+
+/**
+ * Warm the memory cache from the database.
+ * Call this on server startup.
+ */
+export async function warmHashCache(): Promise<number> {
+	if (!isDbAvailable()) {
+		return 0;
+	}
+
+	try {
+		const db = getDb();
+		const entries = await db.select().from(auditHashCache);
+
+		for (const entry of entries) {
+			lastHashMemoryCache.set(entry.orgId, entry.lastHash);
+		}
+
+		logger.info("Audit hash cache warmed", { count: entries.length });
+		return entries.length;
+	} catch (error) {
+		logger.error(
+			"Failed to warm hash cache",
+			error instanceof Error ? error : undefined,
+		);
+		return 0;
 	}
 }
 
@@ -254,6 +359,6 @@ export function getIntegrityMetrics(): {
 	cachedOrgs: number;
 } {
 	return {
-		cachedOrgs: lastHashCache.size,
+		cachedOrgs: lastHashMemoryCache.size,
 	};
 }

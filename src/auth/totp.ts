@@ -10,10 +10,10 @@
  */
 
 import crypto from "node:crypto";
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, isNull, lt, lte } from "drizzle-orm";
 import { authenticator } from "otplib";
 import { getDb, isDbAvailable } from "../db/client.js";
-import { totpUsedCodes } from "../db/schema.js";
+import { totpRateLimits, totpUsedCodes } from "../db/schema.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth:totp");
@@ -99,45 +99,108 @@ export function verifyBackupCode(
 }
 
 // ============================================================================
-// RATE LIMITING
+// RATE LIMITING (database-backed for multi-instance support)
 // ============================================================================
-
-interface RateLimitEntry {
-	attempts: number;
-	windowStart: number;
-	lockedUntil?: number;
-}
-
-const rateLimits = new Map<string, RateLimitEntry>();
 
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 const MAX_ATTEMPTS_PER_WINDOW = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
+// In-memory fallback when DB is unavailable
+const fallbackRateLimits = new Map<
+	string,
+	{ attempts: number; windowStart: number; lockedUntil?: number }
+>();
+
 /**
  * Check if user is rate limited.
+ * Uses database for distributed rate limiting across instances.
+ */
+export async function isRateLimitedAsync(userId: string): Promise<{
+	limited: boolean;
+	retryAfterMs?: number;
+}> {
+	if (!isDbAvailable()) {
+		return isRateLimitedFallback(userId);
+	}
+
+	try {
+		const db = getDb();
+		const now = new Date();
+
+		const [entry] = await db
+			.select()
+			.from(totpRateLimits)
+			.where(eq(totpRateLimits.userId, userId))
+			.limit(1);
+
+		if (!entry) {
+			return { limited: false };
+		}
+
+		// Check lockout
+		if (entry.lockedUntil && now < entry.lockedUntil) {
+			return {
+				limited: true,
+				retryAfterMs: entry.lockedUntil.getTime() - now.getTime(),
+			};
+		}
+
+		// Check window expiry
+		if (now.getTime() - entry.windowStart.getTime() > RATE_LIMIT_WINDOW_MS) {
+			// Window expired, clean up
+			await db.delete(totpRateLimits).where(eq(totpRateLimits.userId, userId));
+			return { limited: false };
+		}
+
+		// Check attempts
+		if (entry.attempts >= MAX_ATTEMPTS_PER_WINDOW) {
+			return {
+				limited: true,
+				retryAfterMs:
+					RATE_LIMIT_WINDOW_MS - (now.getTime() - entry.windowStart.getTime()),
+			};
+		}
+
+		return { limited: false };
+	} catch (error) {
+		logger.error(
+			"Failed to check rate limit",
+			error instanceof Error ? error : undefined,
+		);
+		return isRateLimitedFallback(userId);
+	}
+}
+
+/**
+ * Synchronous rate limit check (in-memory fallback only).
+ * Use isRateLimitedAsync for accurate distributed checks.
  */
 export function isRateLimited(userId: string): {
 	limited: boolean;
 	retryAfterMs?: number;
 } {
-	const entry = rateLimits.get(userId);
+	return isRateLimitedFallback(userId);
+}
+
+function isRateLimitedFallback(userId: string): {
+	limited: boolean;
+	retryAfterMs?: number;
+} {
+	const entry = fallbackRateLimits.get(userId);
 	if (!entry) return { limited: false };
 
 	const now = Date.now();
 
-	// Check lockout
 	if (entry.lockedUntil && now < entry.lockedUntil) {
 		return { limited: true, retryAfterMs: entry.lockedUntil - now };
 	}
 
-	// Check window expiry
 	if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-		rateLimits.delete(userId);
+		fallbackRateLimits.delete(userId);
 		return { limited: false };
 	}
 
-	// Check attempts
 	if (entry.attempts >= MAX_ATTEMPTS_PER_WINDOW) {
 		return {
 			limited: true,
@@ -148,14 +211,90 @@ export function isRateLimited(userId: string): {
 	return { limited: false };
 }
 
-function recordAttempt(userId: string, success: boolean): void {
+async function recordAttempt(userId: string, success: boolean): Promise<void> {
+	// Always update fallback cache
+	recordAttemptFallback(userId, success);
+
+	if (!isDbAvailable()) {
+		return;
+	}
+
+	try {
+		const db = getDb();
+		const now = new Date();
+
+		if (success) {
+			// Clear rate limit on success
+			await db.delete(totpRateLimits).where(eq(totpRateLimits.userId, userId));
+			return;
+		}
+
+		// Get current entry
+		const [entry] = await db
+			.select()
+			.from(totpRateLimits)
+			.where(eq(totpRateLimits.userId, userId))
+			.limit(1);
+
+		if (
+			!entry ||
+			now.getTime() - entry.windowStart.getTime() > RATE_LIMIT_WINDOW_MS
+		) {
+			// New window - insert fresh entry
+			await db
+				.insert(totpRateLimits)
+				.values({
+					userId,
+					attempts: 1,
+					windowStart: now,
+					lockedUntil: null,
+				})
+				.onConflictDoUpdate({
+					target: totpRateLimits.userId,
+					set: {
+						attempts: 1,
+						windowStart: now,
+						lockedUntil: null,
+						updatedAt: now,
+					},
+				});
+		} else {
+			// Increment attempts
+			const newAttempts = entry.attempts + 1;
+			const lockedUntil =
+				newAttempts >= MAX_ATTEMPTS_PER_WINDOW
+					? new Date(now.getTime() + LOCKOUT_DURATION_MS)
+					: null;
+
+			if (lockedUntil) {
+				logger.warn("User locked out from TOTP", { userId });
+			}
+
+			await db
+				.update(totpRateLimits)
+				.set({
+					attempts: newAttempts,
+					lockedUntil,
+					updatedAt: now,
+				})
+				.where(eq(totpRateLimits.userId, userId));
+		}
+	} catch (error) {
+		logger.error(
+			"Failed to record rate limit attempt",
+			error instanceof Error ? error : undefined,
+		);
+	}
+}
+
+function recordAttemptFallback(userId: string, success: boolean): void {
 	if (success) {
-		rateLimits.delete(userId);
+		fallbackRateLimits.delete(userId);
 		return;
 	}
 
 	const now = Date.now();
-	let entry = rateLimits.get(userId);
+	let entry = fallbackRateLimits.get(userId);
 
 	if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
 		entry = { attempts: 0, windowStart: now };
@@ -165,10 +304,9 @@ function recordAttempt(userId: string, success: boolean): void {
 
 	if (entry.attempts >= MAX_ATTEMPTS_PER_WINDOW) {
 		entry.lockedUntil = now + LOCKOUT_DURATION_MS;
-		logger.warn("User locked out from TOTP", { userId });
 	}
 
-	rateLimits.set(userId, entry);
+	fallbackRateLimits.set(userId, entry);
 }
 
 // ============================================================================
@@ -260,14 +398,15 @@ export interface TotpVerifyResult {
 
 /**
  * Verify a TOTP code with rate limiting and replay protection.
+ * Uses database for distributed rate limiting across instances.
  */
 export async function verifyTotpCode(
 	userId: string,
 	secret: string,
 	code: string,
 ): Promise<TotpVerifyResult> {
-	// Check rate limit
-	const rateStatus = isRateLimited(userId);
+	// Check rate limit (async for distributed check)
+	const rateStatus = await isRateLimitedAsync(userId);
 	if (rateStatus.limited) {
 		return {
 			valid: false,
@@ -280,7 +419,7 @@ export async function verifyTotpCode(
 	const isValid = authenticator.check(code, secret);
 
 	if (!isValid) {
-		recordAttempt(userId, false);
+		await recordAttempt(userId, false);
 		return { valid: false, error: "invalid_code" };
 	}
 
@@ -291,13 +430,13 @@ export async function verifyTotpCode(
 	const wasUsed = await isCodeUsed(userId, code, delta);
 	if (wasUsed) {
 		logger.warn("TOTP code reuse detected", { userId });
-		recordAttempt(userId, false);
+		await recordAttempt(userId, false);
 		return { valid: false, error: "code_reused" };
 	}
 
 	// Mark as used and clear rate limit
 	await markCodeUsed(userId, code, delta);
-	recordAttempt(userId, true);
+	await recordAttempt(userId, true);
 
 	return { valid: true };
 }
@@ -338,10 +477,65 @@ export async function cleanupUsedCodes(retentionMinutes = 10): Promise<number> {
 	}
 }
 
+/**
+ * Clean up expired rate limit entries.
+ * Call this periodically to prevent table bloat.
+ */
+export async function cleanupRateLimits(): Promise<number> {
+	if (!isDbAvailable()) return 0;
+
+	try {
+		const db = getDb();
+		const now = new Date();
+		const windowCutoff = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS);
+
+		// Delete entries where:
+		// - lockout has expired, OR
+		// - window has expired and not locked out
+		const result = await db
+			.delete(totpRateLimits)
+			.where(
+				and(
+					// Lockout expired
+					lt(totpRateLimits.lockedUntil, now),
+				),
+			)
+			.returning({ id: totpRateLimits.id });
+
+		// Also delete old windows without lockout
+		const result2 = await db
+			.delete(totpRateLimits)
+			.where(
+				and(
+					lt(totpRateLimits.windowStart, windowCutoff),
+					isNull(totpRateLimits.lockedUntil),
+				),
+			)
+			.returning({ id: totpRateLimits.id });
+
+		const total = result.length + result2.length;
+		if (total > 0) {
+			logger.debug("Cleaned up rate limit entries", { count: total });
+		}
+
+		return total;
+	} catch (error) {
+		logger.error(
+			"Failed to cleanup rate limits",
+			error instanceof Error ? error : undefined,
+		);
+		return 0;
+	}
+}
+
 // ============================================================================
 // METRICS
 // ============================================================================
 
+/**
+ * Get TOTP metrics (from in-memory fallback cache).
+ * For accurate distributed metrics, query the database directly.
+ */
 export function getTotpMetrics(): {
 	rateLimitedUsers: number;
 	lockedOutUsers: number;
@@ -350,7 +544,7 @@ export function getTotpMetrics(): {
 	let rateLimitedUsers = 0;
 	let lockedOutUsers = 0;
 
-	for (const entry of rateLimits.values()) {
+	for (const entry of fallbackRateLimits.values()) {
 		if (entry.lockedUntil && now < entry.lockedUntil) {
 			lockedOutUsers++;
 		} else if (
@@ -366,5 +560,5 @@ export function getTotpMetrics(): {
 
 /** Reset rate limits - for testing only */
 export function _resetRateLimitsForTesting(): void {
-	rateLimits.clear();
+	fallbackRateLimits.clear();
 }
