@@ -12,6 +12,7 @@ export interface UiState {
 	footerMode?: FooterMode;
 	zenMode?: boolean;
 	cleanMode?: CleanMode;
+	reducedMotion?: boolean;
 	recentCommands?: string[];
 	favoriteCommands?: string[];
 }
@@ -51,6 +52,10 @@ export function loadUiState(): UiState {
 					? parsed.cleanMode
 					: undefined,
 			zenMode: typeof parsed.zenMode === "boolean" ? parsed.zenMode : undefined,
+			reducedMotion:
+				typeof parsed.reducedMotion === "boolean"
+					? parsed.reducedMotion
+					: undefined,
 			recentCommands: Array.isArray(parsed.recentCommands)
 				? (parsed.recentCommands as string[]).filter(
 						(item) => typeof item === "string" && item.trim().length > 0,

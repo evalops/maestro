@@ -1,6 +1,7 @@
 import { Container, Markdown, Spacer, Text, visibleWidth } from "@evalops/tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { themedBottomLine, themedTopLine } from "./utils/borders.js";
+import { formatRelativeTime } from "./utils/footer-utils.js";
 import { PANEL_WIDTHS } from "./utils/layout.js";
 
 /**
@@ -24,13 +25,10 @@ export class UserMessageComponent extends Container {
 
 		this.addChild(new Text(this.buildTopLine(panelWidth), rightOffset, 0));
 
-		// Metadata line with timestamp right-aligned
-		const ts = timestamp ? new Date(timestamp) : new Date();
-		const timeStr = ts.toLocaleTimeString([], {
-			hour: "2-digit",
-			minute: "2-digit",
-		});
-		const header = `${theme.fg("muted", `${timeStr} ·`)} ${theme.fg("accent", "YOU")}`;
+		// Metadata line with relative timestamp right-aligned
+		const ts = timestamp ?? Date.now();
+		const relativeTime = formatRelativeTime(ts);
+		const header = `${theme.fg("muted", `${relativeTime} ·`)} ${theme.fg("accent", "YOU")}`;
 		this.addChild(new Text(header, rightOffset, 0));
 
 		this.markdown = new Markdown(

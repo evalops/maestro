@@ -311,6 +311,28 @@ export function themedSeparatorLine(
 	return colorBorder(buildSeparatorLine(width, style), color);
 }
 
+/** Error gutter character */
+const ERROR_GUTTER = "┃";
+
+/**
+ * Add an error gutter line (red vertical bar) to the left of text.
+ * Used for error messages to make them stand out.
+ */
+export function addErrorGutter(text: string): string {
+	const lines = text.split("\n");
+	const gutter = theme.fg("error", ERROR_GUTTER);
+	return lines.map((line) => `${gutter} ${line}`).join("\n");
+}
+
+/**
+ * Add a colored gutter line to the left of text.
+ */
+export function addGutter(text: string, color: ThemeColor): string {
+	const lines = text.split("\n");
+	const gutter = theme.fg(color, ERROR_GUTTER);
+	return lines.map((line) => `${gutter} ${line}`).join("\n");
+}
+
 /**
  * Dynamic border component that renders a horizontal line at full viewport width.
  * Useful for lightweight separators in selectors and lists.

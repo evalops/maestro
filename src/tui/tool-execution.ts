@@ -37,6 +37,10 @@ const STATUS_CONFIG: Record<ToolStatus, { label: string; color: ThemeColor }> = 
 /** Duration for border flash effect in ms */
 const FLASH_DURATION_MS = 400;
 
+/** Skeleton shimmer animation frames */
+const SKELETON_FRAMES = ["░", "▒", "▓", "▒"];
+const SKELETON_INTERVAL_MS = 150;
+
 /**
  * Component that renders a tool call with its result (updateable)
  */
@@ -66,6 +70,10 @@ export class ToolExecutionComponent extends Container {
 	private flashState: "success" | "error" | null = null;
 	private flashTimeout: NodeJS.Timeout | null = null;
 
+	/** Skeleton shimmer animation state */
+	private skeletonFrame = 0;
+	private skeletonTimer: NodeJS.Timeout | null = null;
+
 	constructor(toolName: string, args: Record<string, unknown>) {
 		super();
 		this.toolName = toolName;
@@ -81,6 +89,29 @@ export class ToolExecutionComponent extends Container {
 		this.addChild(this.bottomLine);
 		this.renderer = createToolRenderer(this.toolName);
 		this.updateDisplay();
+		this.startSkeletonAnimation();
+	}
+
+	private startSkeletonAnimation(): void {
+		if (this.skeletonTimer) return;
+		this.skeletonTimer = setInterval(() => {
+			if (!this.result) {
+				this.skeletonFrame = (this.skeletonFrame + 1) % SKELETON_FRAMES.length;
+				this.updateDisplay();
+			}
+		}, SKELETON_INTERVAL_MS);
+	}
+
+	private stopSkeletonAnimation(): void {
+		if (this.skeletonTimer) {
+			clearInterval(this.skeletonTimer);
+			this.skeletonTimer = null;
+		}
+	}
+
+	private buildSkeletonLine(width: number): string {
+		const frame = SKELETON_FRAMES[this.skeletonFrame] ?? "░";
+		return theme.fg("dim", frame.repeat(Math.min(width, 30)));
 	}
 
 	setCollapsed(collapsed: boolean): void {
@@ -180,6 +211,9 @@ export class ToolExecutionComponent extends Container {
 		const wasRunning = !this.result;
 		this.result = result;
 
+		// Stop skeleton animation once we have a result
+		this.stopSkeletonAnimation();
+
 		// Trigger border flash on completion
 		if (wasRunning) {
 			this.triggerFlash(result.isError ? "error" : "success");
@@ -203,6 +237,12 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private formatToolExecution(): string {
+		// Show skeleton shimmer while waiting for result
+		if (!this.result && !this.pendingStatus) {
+			const skeleton = this.buildSkeletonLine(this.panelWidth() - 4);
+			return `${skeleton}\n${skeleton}`;
+		}
+
 		const body = this.renderer.render({
 			toolName: this.toolName,
 			args: this.args,

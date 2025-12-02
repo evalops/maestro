@@ -29,6 +29,10 @@ export const FOOTER_MIN_PADDING = MIN_PADDING;
 export const FOOTER_MIN_MODEL_LABEL_CHARS = MIN_MODEL_LABEL_CHARS;
 export const FOOTER_MODEL_BRAND_SEPARATOR_WIDTH = MODEL_BRAND_SEPARATOR_WIDTH;
 
+/** Progress bar characters for visual display */
+const PROGRESS_FILLED = "━";
+const PROGRESS_EMPTY = "─";
+
 const ANSI_STRING_TERMINATORS = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
 const ANSI_OSC_SEQUENCE = `(?:\\u001B\\][\\s\\S]*?${ANSI_STRING_TERMINATORS})`;
 const ANSI_CSI_SEQUENCE =
@@ -120,9 +124,10 @@ export function buildPathAndStatsLine(
 		);
 
 	const tokensGroup = statsParts.join("  ");
+	// Context bar with visual progress indicator
 	const contextPercent =
 		stats.contextWindow > 0
-			? `ctx ${colorizeContextPercent(stats.contextPercent)}`
+			? `${buildContextBar(stats.contextPercent, 8)} ${colorizeContextPercent(stats.contextPercent)}`
 			: "";
 	const costLabel =
 		stats.totalCost > 0
@@ -573,6 +578,114 @@ function colorizeContextPercent(value: number): string {
 		return chalk.hex(themePalette.warning)(label);
 	}
 	return chalk.hex(themePalette.muted)(label);
+}
+
+/**
+ * Build a compact visual progress bar for context usage.
+ * Uses ━ for filled and ─ for empty segments.
+ */
+export function buildContextBar(percent: number, width = 10): string {
+	const clamped = Math.max(0, Math.min(100, percent));
+	const filled = Math.round((clamped / 100) * width);
+	const empty = width - filled;
+
+	// Color based on threshold
+	let filledColor: string = themePalette.accentCool;
+	if (clamped >= CONTEXT_DANGER_THRESHOLD) {
+		filledColor = themePalette.danger;
+	} else if (clamped >= CONTEXT_WARN_THRESHOLD) {
+		filledColor = themePalette.warning;
+	}
+
+	const filledPart = chalk.hex(filledColor)(PROGRESS_FILLED.repeat(filled));
+	const emptyPart = chalk.hex(themePalette.dim)(PROGRESS_EMPTY.repeat(empty));
+	return `${filledPart}${emptyPart}`;
+}
+
+/**
+ * Build a cost sparkline showing trend direction.
+ * Shows last N costs as a mini bar chart.
+ */
+export function buildCostSparkline(costs: number[], width = 5): string {
+	if (costs.length === 0) return "";
+
+	const recentCosts = costs.slice(-width);
+	const max = Math.max(...recentCosts, 0.001); // Avoid division by zero
+	const sparkChars = "▁▂▃▄▅▆▇█";
+
+	const bars = recentCosts.map((cost) => {
+		const normalized = cost / max;
+		const charIndex = Math.min(
+			sparkChars.length - 1,
+			Math.floor(normalized * sparkChars.length),
+		);
+		return sparkChars[charIndex];
+	});
+
+	return chalk.hex(themePalette.cost)(bars.join(""));
+}
+
+/**
+ * Git status indicator glyphs.
+ */
+export const GIT_STATUS_GLYPHS = {
+	clean: "○", // Clean working tree
+	dirty: "●", // Uncommitted changes
+	staged: "◐", // Staged changes
+	ahead: "↑", // Ahead of remote
+	behind: "↓", // Behind remote
+	diverged: "↕", // Diverged from remote
+} as const;
+
+export type GitStatusType = keyof typeof GIT_STATUS_GLYPHS;
+
+/**
+ * Build a git status glyph with color.
+ */
+export function buildGitStatusGlyph(status: GitStatusType): string {
+	const glyph = GIT_STATUS_GLYPHS[status];
+	let color: string = themePalette.muted;
+
+	switch (status) {
+		case "clean":
+			color = themePalette.success;
+			break;
+		case "dirty":
+			color = themePalette.warning;
+			break;
+		case "staged":
+			color = themePalette.accentCool;
+			break;
+		case "ahead":
+		case "behind":
+		case "diverged":
+			color = themePalette.info;
+			break;
+	}
+
+	return chalk.hex(color)(glyph);
+}
+
+/**
+ * Format a timestamp as relative time (e.g., "2m ago", "1h ago").
+ */
+export function formatRelativeTime(timestamp: number): string {
+	const now = Date.now();
+	const diff = now - timestamp;
+
+	if (diff < 0) return "now";
+
+	const seconds = Math.floor(diff / 1000);
+	if (seconds < 60) return "now";
+
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h`;
+
+	const days = Math.floor(hours / 24);
+	return `${days}d`;
 }
 
 function composeBrandLabel(modelLabel: string): {

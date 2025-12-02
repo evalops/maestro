@@ -107,7 +107,7 @@ type ThemeJson = Static<typeof ThemeJsonSchema>;
 
 const validateThemeJson = TypeCompiler.Compile(ThemeJsonSchema);
 
-const EMBEDDED_THEMES: Record<"dark" | "light", ThemeJson> = {
+const EMBEDDED_THEMES: Record<"dark" | "light" | "high-contrast", ThemeJson> = {
 	dark: {
 		$schema: "./theme-schema.json",
 		name: "dark",
@@ -271,6 +271,79 @@ const EMBEDDED_THEMES: Record<"dark" | "light", ThemeJson> = {
 			thinkingLow: "softBlue",
 			thinkingMedium: "sky",
 			thinkingHigh: "violet",
+		},
+	},
+	"high-contrast": {
+		$schema: "./theme-schema.json",
+		name: "high-contrast",
+		vars: {
+			// High contrast primary palette
+			brightCyan: "#00ffff",
+			brightYellow: "#ffff00",
+			brightMagenta: "#ff00ff",
+			// High contrast semantic colors
+			brightGreen: "#00ff00",
+			brightRed: "#ff0000",
+			brightWhite: "#ffffff",
+			brightBlue: "#0080ff",
+			// Text hierarchy - maximum contrast
+			textPrimary: "#ffffff",
+			textSecondary: "#e0e0e0",
+			// Borders - visible
+			borderBright: "#808080",
+			borderDim: "#404040",
+			// Backgrounds
+			userMsgBg: "#1a1a2e",
+			toolPendingBg: "#1a1a2e",
+			toolSuccessBg: "#002200",
+			toolErrorBg: "#220000",
+		},
+		colors: {
+			accent: "brightCyan",
+			accentWarm: "brightYellow",
+			border: "brightBlue",
+			borderAccent: "brightCyan",
+			borderMuted: "borderBright",
+			success: "brightGreen",
+			error: "brightRed",
+			warning: "brightYellow",
+			muted: "textSecondary",
+			dim: "textSecondary",
+			text: "textPrimary",
+			userMessageBg: "userMsgBg",
+			userMessageText: "textPrimary",
+			toolPendingBg: "toolPendingBg",
+			toolSuccessBg: "toolSuccessBg",
+			toolErrorBg: "toolErrorBg",
+			toolTitle: "textPrimary",
+			toolOutput: "textSecondary",
+			mdHeading: "brightYellow",
+			mdLink: "brightCyan",
+			mdLinkUrl: "brightBlue",
+			mdCode: "brightCyan",
+			mdCodeBlock: "brightGreen",
+			mdCodeBlockBorder: "borderBright",
+			mdQuote: "textSecondary",
+			mdQuoteBorder: "borderBright",
+			mdHr: "borderBright",
+			mdListBullet: "brightCyan",
+			toolDiffAdded: "brightGreen",
+			toolDiffRemoved: "brightRed",
+			toolDiffContext: "textSecondary",
+			syntaxComment: "textSecondary",
+			syntaxKeyword: "brightMagenta",
+			syntaxFunction: "brightCyan",
+			syntaxVariable: "textPrimary",
+			syntaxString: "brightGreen",
+			syntaxNumber: "brightYellow",
+			syntaxType: "brightBlue",
+			syntaxOperator: "textPrimary",
+			syntaxPunctuation: "textSecondary",
+			thinkingOff: "borderDim",
+			thinkingMinimal: "textSecondary",
+			thinkingLow: "brightBlue",
+			thinkingMedium: "brightCyan",
+			thinkingHigh: "brightMagenta",
 		},
 	},
 };
