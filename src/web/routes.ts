@@ -1,6 +1,7 @@
 import type { ApprovalMode } from "../agent/action-approval.js";
 import type { ThinkingLevel } from "../agent/types.js";
 import type { WebServerContext } from "./app-context.js";
+import { handleAdminCleanup, handleAdminWarmCaches } from "./handlers/admin.js";
 import { handleApproval } from "./handlers/approval.js";
 import { handleChat } from "./handlers/chat.js";
 import { handleClientToolResult } from "./handlers/client-tools.js";
@@ -8,6 +9,7 @@ import { handleCommandPrefs } from "./handlers/command-prefs.js";
 import { handleCommands } from "./handlers/commands.js";
 import { handleConfig } from "./handlers/config.js";
 import { handleFiles } from "./handlers/files.js";
+import { handleReadyz } from "./handlers/health.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
 import { handleSessions } from "./handlers/sessions.js";
@@ -30,6 +32,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 				res.writeHead(200, { "Content-Type": "text/plain" });
 				res.end("ok");
 			},
+		},
+		{
+			method: "GET",
+			path: "/readyz",
+			handler: (req, res) => handleReadyz(req, res, corsHeaders),
 		},
 		{
 			method: "GET",
@@ -122,9 +129,9 @@ export function createRoutes(context: WebServerContext): Route[] {
 		{
 			method: "GET",
 			path: "/api/metrics",
-			handler: (_req, res) => {
+			handler: async (_req, res) => {
 				// Expose Prometheus compatible metrics
-				const metrics = getPrometheusMetrics();
+				const metrics = await getPrometheusMetrics();
 				res.writeHead(200, {
 					"Content-Type": "text/plain; version=0.0.4",
 					...corsHeaders,
@@ -173,6 +180,16 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/policy/validate",
 			handler: (req, res) => handlePolicyValidate(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/admin/cleanup",
+			handler: (req, res) => handleAdminCleanup(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/admin/warm-caches",
+			handler: (req, res) => handleAdminWarmCaches(req, res, corsHeaders),
 		},
 	];
 }

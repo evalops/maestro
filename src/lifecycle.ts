@@ -6,18 +6,42 @@
 import { warmHashCache } from "./audit/integrity.js";
 import {
 	cleanupExpiredRevocations,
+	getRevocationMetrics,
 	warmUserRevocationCache,
 } from "./auth/token-revocation.js";
 import { cleanupRateLimits, cleanupUsedCodes } from "./auth/totp.js";
 import { isDbAvailable } from "./db/client.js";
 import { createLogger } from "./utils/logger.js";
+import { registerGauge } from "./web/logger.js";
 import {
 	cleanupWebhookQueue,
+	getWebhookQueueMetrics,
 	startWebhookProcessor,
 	stopWebhookProcessor,
 } from "./webhooks/delivery.js";
 
 const logger = createLogger("lifecycle");
+
+// Configuration from environment
+const CLEANUP_INTERVAL_MS = Number.parseInt(
+	process.env.COMPOSER_CLEANUP_INTERVAL_MS || String(5 * 60 * 1000),
+	10,
+);
+
+const WEBHOOK_RETENTION_DAYS = Number.parseInt(
+	process.env.COMPOSER_WEBHOOK_RETENTION_DAYS || "7",
+	10,
+);
+
+const TOTP_CODE_RETENTION_HOURS = Number.parseInt(
+	process.env.COMPOSER_TOTP_RETENTION_HOURS || "24",
+	10,
+);
+
+const REVOCATION_RETENTION_DAYS = Number.parseInt(
+	process.env.COMPOSER_REVOCATION_RETENTION_DAYS || "30",
+	10,
+);
 
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 let initialized = false;
@@ -41,25 +65,48 @@ export async function warmCaches(): Promise<void> {
 	}
 }
 
-/** Run all cleanup tasks. */
+// Delay between cleanup tasks to avoid DB spikes
+const CLEANUP_STAGGER_MS = Number.parseInt(
+	process.env.COMPOSER_CLEANUP_STAGGER_MS || "1000",
+	10,
+);
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Run all cleanup tasks with staggered execution. */
 async function runCleanupTasks(): Promise<void> {
 	if (!isDbAvailable()) {
 		return;
 	}
 
-	const results = await Promise.allSettled([
-		cleanupExpiredRevocations(),
-		cleanupUsedCodes(),
-		cleanupRateLimits(),
-		cleanupWebhookQueue(),
-	]);
+	const tasks = [
+		{ name: "revocations", fn: () => cleanupExpiredRevocations() },
+		{
+			name: "totp-codes",
+			fn: () => cleanupUsedCodes(TOTP_CODE_RETENTION_HOURS * 60),
+		},
+		{ name: "rate-limits", fn: () => cleanupRateLimits() },
+		{ name: "webhooks", fn: () => cleanupWebhookQueue(WEBHOOK_RETENTION_DAYS) },
+	];
 
 	let totalCleaned = 0;
-	for (const result of results) {
-		if (result.status === "fulfilled") {
-			totalCleaned += result.value;
-		} else {
-			logger.error("Cleanup task failed", result.reason);
+
+	for (const task of tasks) {
+		try {
+			const count = await task.fn();
+			totalCleaned += count;
+		} catch (error) {
+			logger.error(
+				`Cleanup task "${task.name}" failed`,
+				error instanceof Error ? error : undefined,
+			);
+		}
+
+		// Stagger tasks to avoid DB pressure
+		if (CLEANUP_STAGGER_MS > 0) {
+			await delay(CLEANUP_STAGGER_MS);
 		}
 	}
 
@@ -69,7 +116,7 @@ async function runCleanupTasks(): Promise<void> {
 }
 
 /** Start periodic cleanup tasks. */
-function startCleanupScheduler(intervalMs = 5 * 60 * 1000): void {
+function startCleanupScheduler(): void {
 	if (cleanupInterval) {
 		return;
 	}
@@ -84,9 +131,13 @@ function startCleanupScheduler(intervalMs = 5 * 60 * 1000): void {
 		runCleanupTasks().catch((err) => {
 			logger.error("Scheduled cleanup failed", err);
 		});
-	}, intervalMs);
+	}, CLEANUP_INTERVAL_MS);
 
-	logger.debug("Cleanup scheduler started", { intervalMs });
+	logger.debug("Cleanup scheduler started", {
+		intervalMs: CLEANUP_INTERVAL_MS,
+		webhookRetentionDays: WEBHOOK_RETENTION_DAYS,
+		totpRetentionHours: TOTP_CODE_RETENTION_HOURS,
+	});
 }
 
 function stopCleanupScheduler(): void {
@@ -94,6 +145,40 @@ function stopCleanupScheduler(): void {
 		clearInterval(cleanupInterval);
 		cleanupInterval = null;
 	}
+}
+
+function registerMetrics(): void {
+	// Token revocation cache metrics
+	registerGauge(
+		"composer_token_revocation_cache_size",
+		"Size of the token revocation cache",
+		() => getRevocationMetrics().cacheSize,
+	);
+
+	registerGauge(
+		"composer_token_revocation_cache_max_size",
+		"Maximum size of the token revocation cache",
+		() => getRevocationMetrics().cacheMaxSize,
+	);
+
+	// Webhook queue metrics
+	registerGauge(
+		"composer_webhook_queue_pending",
+		"Number of pending webhook deliveries",
+		async () => (await getWebhookQueueMetrics()).pendingCount,
+	);
+
+	registerGauge(
+		"composer_webhook_queue_failed",
+		"Number of failed webhook deliveries",
+		async () => (await getWebhookQueueMetrics()).failedCount,
+	);
+
+	registerGauge(
+		"composer_webhook_queue_total",
+		"Total number of webhook deliveries in queue",
+		async () => (await getWebhookQueueMetrics()).totalCount,
+	);
 }
 
 /**
@@ -106,6 +191,9 @@ export async function initLifecycle(): Promise<void> {
 	}
 
 	logger.info("Initializing lifecycle services");
+
+	// Register metrics
+	registerMetrics();
 
 	// Warm caches
 	await warmCaches();

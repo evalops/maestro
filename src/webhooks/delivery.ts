@@ -9,7 +9,7 @@
  */
 
 import crypto from "node:crypto";
-import { and, eq, lt, lte, or } from "drizzle-orm";
+import { and, count, eq, isNull, lt, lte, or } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../db/client.js";
 import {
 	distributedLocks,
@@ -680,5 +680,56 @@ export async function stopWebhookProcessor(): Promise<void> {
 	if (lockRenewalInterval) {
 		clearInterval(lockRenewalInterval);
 		lockRenewalInterval = null;
+	}
+}
+
+// ============================================================================
+// METRICS
+// ============================================================================
+
+export interface WebhookQueueMetrics {
+	pendingCount: number;
+	failedCount: number;
+	totalCount: number;
+}
+
+export async function getWebhookQueueMetrics(): Promise<WebhookQueueMetrics> {
+	if (!isDbAvailable()) {
+		return { pendingCount: 0, failedCount: 0, totalCount: 0 };
+	}
+
+	try {
+		const db = getDb();
+		const now = new Date();
+
+		const [pendingResult] = await db
+			.select({ value: count() })
+			.from(webhookDeliveries)
+			.where(
+				and(
+					eq(webhookDeliveries.status, "pending"),
+					or(
+						lte(webhookDeliveries.nextRetryAt, now),
+						isNull(webhookDeliveries.nextRetryAt),
+					),
+				),
+			);
+
+		const [failedResult] = await db
+			.select({ value: count() })
+			.from(webhookDeliveries)
+			.where(eq(webhookDeliveries.status, "failed"));
+
+		const [totalResult] = await db
+			.select({ value: count() })
+			.from(webhookDeliveries);
+
+		return {
+			pendingCount: pendingResult?.value ?? 0,
+			failedCount: failedResult?.value ?? 0,
+			totalCount: totalResult?.value ?? 0,
+		};
+	} catch {
+		return { pendingCount: 0, failedCount: 0, totalCount: 0 };
 	}
 }

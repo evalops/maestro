@@ -118,13 +118,21 @@ interface Counter {
 interface Gauge {
 	name: string;
 	help: string;
-	value: number;
+	getValue: () => number | Promise<number>;
 }
 
 const registry = {
 	counters: new Map<string, Counter>(),
 	gauges: new Map<string, Gauge>(),
 };
+
+export function registerGauge(
+	name: string,
+	help: string,
+	getValue: () => number | Promise<number>,
+): void {
+	registry.gauges.set(name, { name, help, getValue });
+}
 
 function getCounter(name: string, help: string): Counter {
 	if (!registry.counters.has(name)) {
@@ -234,7 +242,7 @@ export function getStatsSnapshot(): RequestStats {
 	return { ...stats };
 }
 
-export function getPrometheusMetrics(): string {
+export async function getPrometheusMetrics(): Promise<string> {
 	const lines: string[] = [];
 
 	// Counters
@@ -243,6 +251,18 @@ export function getPrometheusMetrics(): string {
 		lines.push(`# TYPE ${counter.name} counter`);
 		for (const [labels, value] of counter.values.entries()) {
 			lines.push(`${counter.name}{${labels}} ${value}`);
+		}
+	}
+
+	// Custom gauges
+	for (const gauge of registry.gauges.values()) {
+		lines.push(`# HELP ${gauge.name} ${gauge.help}`);
+		lines.push(`# TYPE ${gauge.name} gauge`);
+		try {
+			const value = await gauge.getValue();
+			lines.push(`${gauge.name} ${value}`);
+		} catch {
+			// Skip failed gauges
 		}
 	}
 

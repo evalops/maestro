@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
+import { isDatabaseConfigured, isDbAvailable } from "../../db/client.js";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
@@ -52,6 +53,10 @@ export function handleStatus(
 				uptime: process.uptime(),
 				version: process.version,
 				staticCacheMaxAgeSeconds: options.staticCacheMaxAge,
+			},
+			database: {
+				configured: isDatabaseConfigured(),
+				connected: isDbAvailable(),
 			},
 			backgroundTasks: backgroundTaskManager.getHealthSnapshot({
 				maxEntries: 5,
