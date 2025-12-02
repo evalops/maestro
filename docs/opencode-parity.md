@@ -1,5 +1,7 @@
 # OpenCode Parity Roadmap
 
+Updated: 2025-12-02
+
 This note captures the quickest path to close the gaps called out during the OpenCode comparison (2025-11-23). Items are ordered by implementation cost vs impact.
 
 ## 1) Plan Mode (ask-before-write/bash)

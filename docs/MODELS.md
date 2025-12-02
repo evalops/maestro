@@ -1,5 +1,8 @@
 # Providers & Factory Integration
 
+Audience: contributors/operator tweaking model registry and provider configs.  
+Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [AI SDK](../packages/ai/README.md)
+
 Composer loads model/provider metadata from multiple locations so you can mix
 built-in configs with Factory CLI settings. This page clarifies the resolution
 order and how to customize providers.

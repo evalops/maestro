@@ -1,8 +1,11 @@
 # Composer Web UI
 
+Audience: users running the browser UI; contributors touching web server/client.  
+Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [Features](FEATURES.md)
+
 Contents: [Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Configuration](#configuration) · [API Endpoints](#api-endpoints) · [Parity Appendix](#parity-appendix)
 
-A browser-based interface for the Composer AI coding assistant with core parity to the TUI. For gaps, see the Parity Appendix below.
+A browser-based interface for the Composer AI coding assistant with core parity to the TUI. Parity is documented once—in the appendix below—to keep a single source of truth.
 
 Parity at a glance:
 - Full: chat, sessions, models, config, usage, approvals.
@@ -39,6 +42,7 @@ Parity at a glance:
    - `<composer-message>` - Message display with markdown
    - `<composer-input>` - Multi-line input with shortcuts
    - `<model-selector>` - Model selection dialog
+   - More details: `packages/web/README.md`
 
 2. **Web Server** (`src/web-server.ts`) - HTTP API server
    - `/api/models` - List available models

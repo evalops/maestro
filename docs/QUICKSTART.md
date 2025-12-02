@@ -1,5 +1,8 @@
 # Quickstart
 
+Audience: contributors setting up the repo.  
+Nav: [Docs index](README.md) · [Features](FEATURES.md) · [Tools Reference](TOOLS_REFERENCE.md) · [Safety](SAFETY.md)
+
 Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Configure keys](#configure-keys) · [Build & Run](#build--run) · [Validate](#validate) · [Common Scripts](#common-scripts) · [Next Steps](#next-steps)
 
 Composer is a Bun + Nx workspace. Follow this path to go from a fresh clone to a working CLI/TUI/Web build.

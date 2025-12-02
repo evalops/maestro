@@ -1,10 +1,15 @@
 # Safety & Action Approvals
 
+Audience: operators and contributors configuring approvals/sandboxing.  
+Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Web UI](WEB_UI.md) · [Tools Reference](TOOLS_REFERENCE.md)
+
 Contents: [Action Firewall](#action-firewall) · [Approval Modes](#approval-modes) · [Safe Mode](#safe-mode) · [Sandbox Execution](#sandbox-execution) · [Guardian](#guardian) · [Troubleshooting](#troubleshooting)
 
 Composer executes shell commands and writes files on your machine, so it ships
 with a conservative “action firewall” and approval system. This guide explains
 how commands are vetted and how you can extend or relax the defaults.
+
+**Web auto-approval:** The web server runs with auto-approval for tools (see `docs/WEB_UI.md`). If you expose it outside a local sandbox, pair it with Docker/file mount constraints or add auth in front.
 
 ## Action Firewall
 
