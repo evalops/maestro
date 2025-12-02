@@ -16,6 +16,7 @@ import {
 	organizations,
 	webhookDeliveries,
 } from "../db/schema.js";
+import { decryptOrgSettings } from "../db/settings-encryption.js";
 import { createLogger } from "../utils/logger.js";
 
 // Unique identifier for this process instance
@@ -433,10 +434,12 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 					.where(eq(organizations.id, delivery.orgId))
 					.limit(1);
 
-				if (org?.settings?.webhookSigningSecret) {
+				// Decrypt settings to access the signing secret
+				const decryptedSettings = decryptOrgSettings(org?.settings);
+				if (decryptedSettings?.webhookSigningSecret) {
 					signature = signPayload(
 						payload,
-						org.settings.webhookSigningSecret,
+						decryptedSettings.webhookSigningSecret,
 					).signature;
 				}
 			}
@@ -594,7 +597,10 @@ export async function sendAlertWebhooks(
 			.where(eq(organizations.id, orgId))
 			.limit(1);
 
-		if (!org?.settings?.alertWebhooks?.length) {
+		// Decrypt settings to access sensitive fields
+		const decryptedSettings = decryptOrgSettings(org?.settings);
+
+		if (!decryptedSettings?.alertWebhooks?.length) {
 			return; // No webhooks configured
 		}
 
@@ -609,19 +615,19 @@ export async function sendAlertWebhooks(
 		};
 
 		// Queue webhooks to all configured URLs
-		for (const url of org.settings.alertWebhooks) {
+		for (const url of decryptedSettings.alertWebhooks) {
 			await queueWebhook({
 				orgId,
 				url,
 				payload,
-				signingSecret: org.settings.webhookSigningSecret,
+				signingSecret: decryptedSettings.webhookSigningSecret,
 			});
 		}
 
 		logger.debug("Alert webhooks queued", {
 			orgId,
 			alertType: alert.type,
-			webhookCount: org.settings.alertWebhooks.length,
+			webhookCount: decryptedSettings.alertWebhooks.length,
 		});
 	} catch (error) {
 		logger.error(

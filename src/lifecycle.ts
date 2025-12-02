@@ -11,6 +11,8 @@ import {
 } from "./auth/token-revocation.js";
 import { cleanupRateLimits, cleanupUsedCodes } from "./auth/totp.js";
 import { isDbAvailable } from "./db/client.js";
+import { initEncryption, isEncryptionEnabled } from "./db/encryption.js";
+import { migrate } from "./db/migrate.js";
 import { createLogger } from "./utils/logger.js";
 import { registerGauge } from "./web/logger.js";
 import {
@@ -192,6 +194,34 @@ export async function initLifecycle(): Promise<void> {
 
 	logger.info("Initializing lifecycle services");
 
+	// Initialize field encryption
+	const encryptionReady = initEncryption();
+	if (encryptionReady) {
+		logger.info("Field encryption enabled");
+	} else {
+		logger.warn(
+			"Field encryption disabled - set COMPOSER_DB_ENCRYPTION_KEY to enable",
+		);
+	}
+
+	// Run database migrations
+	if (isDbAvailable()) {
+		try {
+			const migrationsApplied = await migrate();
+			if (migrationsApplied > 0) {
+				logger.info("Database migrations completed", {
+					count: migrationsApplied,
+				});
+			}
+		} catch (error) {
+			logger.error(
+				"Database migration failed",
+				error instanceof Error ? error : undefined,
+			);
+			// Don't fail startup - the app can work with existing schema
+		}
+	}
+
 	// Register metrics
 	registerMetrics();
 
@@ -203,7 +233,9 @@ export async function initLifecycle(): Promise<void> {
 	startCleanupScheduler();
 
 	initialized = true;
-	logger.info("Lifecycle services initialized");
+	logger.info("Lifecycle services initialized", {
+		encryption: isEncryptionEnabled(),
+	});
 }
 
 /**

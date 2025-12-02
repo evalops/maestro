@@ -12,7 +12,12 @@ import { handleFiles } from "./handlers/files.js";
 import { handleReadyz } from "./handlers/health.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
-import { handleSessions } from "./handlers/sessions.js";
+import {
+	handleSessionExport,
+	handleSessionShare,
+	handleSessions,
+	handleSharedSession,
+} from "./handlers/sessions.js";
 import { handleStatus } from "./handlers/status.js";
 import { handleUsage } from "./handlers/usage.js";
 import { getPrometheusMetrics } from "./logger.js";
@@ -171,10 +176,34 @@ export function createRoutes(context: WebServerContext): Route[] {
 				handleSessions(req, res, params, corsHeaders),
 		},
 		{
+			method: "PATCH",
+			path: "/api/sessions/:id",
+			handler: (req, res, params) =>
+				handleSessions(req, res, params, corsHeaders),
+		},
+		{
 			method: "DELETE",
 			path: "/api/sessions/:id",
 			handler: (req, res, params) =>
 				handleSessions(req, res, params, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/sessions/:id/share",
+			handler: (req, res, params) =>
+				handleSessionShare(req, res, params as { id: string }, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/sessions/:id/export",
+			handler: (req, res, params) =>
+				handleSessionExport(req, res, params as { id: string }, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/shared/:token",
+			handler: (req, res, params) =>
+				handleSharedSession(req, res, params as { token: string }, corsHeaders),
 		},
 		{
 			method: "POST",
