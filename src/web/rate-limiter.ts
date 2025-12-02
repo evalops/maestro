@@ -315,10 +315,21 @@ export class RateLimiter {
 		} else {
 			this.clients.clear();
 			if (redis && redisAvailable) {
-				const keys = await redis.keys(`${this.keyPrefix}:*`).catch(() => []);
-				if (keys.length > 0) {
-					await redis.del(...keys).catch(() => {});
-				}
+				// Use SCAN instead of KEYS to avoid blocking Redis
+				let cursor = "0";
+				do {
+					const [nextCursor, keys] = await redis.scan(
+						cursor,
+						"MATCH",
+						`${this.keyPrefix}:*`,
+						"COUNT",
+						100,
+					);
+					cursor = nextCursor;
+					if (keys.length > 0) {
+						await redis.del(...keys).catch(() => {});
+					}
+				} while (cursor !== "0");
 			}
 		}
 	}
