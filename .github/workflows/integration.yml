@@ -56,12 +56,6 @@ jobs:
           COMPOSER_REDIS_URL: redis://localhost:6379
           COMPOSER_DATABASE_URL: postgresql://composer:composer@localhost:5432/composer
         run: |
-          # Run Redis integration tests
-          bunx vitest run test/web/redis-rate-limiter.test.ts --reporter=verbose
-
-      - name: Run database migration tests
-        env:
-          COMPOSER_DATABASE_URL: postgresql://composer:composer@localhost:5432/composer
-        run: |
-          # Run any database-related tests
+          # Run all web tests with Redis and PostgreSQL available
+          # Redis tests will use actual Redis instead of skipping
           bunx vitest run test/web/ --reporter=verbose
