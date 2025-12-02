@@ -1,34 +1,37 @@
 # Quickstart
 
-Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Build & Run](#build--run) · [Eval Suite](#eval-suite) · [Common Scripts](#common-scripts)
+Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Configure keys](#configure-keys) · [Build & Run](#build--run) · [Validate](#validate) · [Common Scripts](#common-scripts) · [Next Steps](#next-steps)
 
-Composer ships as a Bun + Nx workspace. The steps below get a contributor
-from a fresh clone to running the CLI, TUI, Web UI, and eval suite.
+Composer is a Bun + Nx workspace. Follow this path to go from a fresh clone to a working CLI/TUI/Web build.
 
-Doc conventions (read first):
-- Audience: contributors. For feature usage see `docs/FEATURES.md`; for tools see `docs/TOOLS_REFERENCE.md`.
+Doc conventions:
+- Audience: contributors. For feature usage see [Feature Guide](file://docs/FEATURES.md); for tools see [Tools Reference](file://docs/TOOLS_REFERENCE.md).
 - Defaults: provider/model default to `claude-opus-4-5-20251101` unless overridden.
 - Build targets: `composer:build` = CLI only; `composer:build:all` = CLI + TUI + Web.
 
 ## Prerequisites
-
-- Node.js 20+ (the repo uses ES modules and top-level `await`)
+- Node.js 20+ (ES modules + top-level `await`)
 - Bun 1.1+ (recommended) or npm 9+ for install
-- Git + a GitHub token if you plan to use the hosted evals/CI
+- Git + a GitHub token if you plan to run the hosted evals/CI
+- Optional: [MCP Guide](file://docs/MCP_GUIDE.md) if you need Model Context Protocol servers
 
 ## Install
-
 ```bash
 git clone https://github.com/evalops/composer.git
 cd composer
 bun install        # installs workspace deps with Bun
 ```
 
-Environment variables (API keys, etc.) can be stored in `.env` or exported in
-your shell. See the CLI help output for the list of supported keys.
+## Configure keys
+Store provider environment variables in `.env` or export them in your shell (see `composer --help` for supported keys). Examples:
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+```
+
+You can also keep keys in `~/.composer/keys.json`; see [Sessions](file://docs/SESSIONS.md) for how the client resolves config files and per-workspace overrides.
 
 ## Build & Run
-
 ```bash
 npx nx run composer:build --skip-nx-cache      # CLI-only build (fast path)
 # or when you need TUI + Web artifacts too
@@ -38,27 +41,22 @@ bun run cli -- --help                          # run the compiled CLI
 ```
 
 During development you can use:
-
 - `npx nx run composer:test --skip-nx-cache` – mirrors CI by building TUI/Web before tests
 - `bun run --filter @evalops/tui build` / `bun run --filter @evalops/composer-web build` – package-specific builds
 - `bun run dev` – optional watch mode (tsc --watch) for inner-loop work
-- `bun run cli -- --provider anthropic --model claude-opus-4-5-20251101 "hello"` – run
-  the CLI directly from `dist/cli.js` with the canonical model example
+- `bun run cli -- --provider anthropic --model claude-opus-4-5-20251101 "hello"` – run the CLI directly from `dist/cli.js` with the canonical model example
 
-## Eval Suite
-
-The eval runner ensures the CLI help text, tools, and telemetry commands behave
-as expected.
-
+## Validate
+Use these checks before opening a PR:
 ```bash
-npx nx run composer:evals --skip-nx-cache
+bunx biome check .                             # lint/format
+npx nx run composer:test --skip-nx-cache       # builds + Vitest (CI equivalent)
+npx nx run composer:evals --skip-nx-cache      # rebuild + eval scenarios
 ```
 
-It automatically rebuilds before executing scenarios. Keep the suite green
-before pushing.
+If you touch a specific package, pair the workspace checks with `bun run --filter @evalops/tui build` or `bun run --filter @evalops/composer-web build` for that target.
 
 ## Common Scripts
-
 | Command                                            | Description                                                    |
 | -------------------------------------------------- | -------------------------------------------------------------- |
 | `bunx biome check .`                               | Biome lint/format checks                                       |
@@ -71,4 +69,8 @@ before pushing.
 | `bun run dev`                                      | TypeScript watch mode (hot rebuild of `dist/`)                 |
 | `bun run cli --`                                   | Convenience wrapper around `node dist/cli.js ...` using Bun    |
 
-You’re ready to develop once lint/tests/evals pass locally.
+## Next Steps
+- Explore the [Feature Guide](file://docs/FEATURES.md) for TUI/CLI workflows.
+- Keep [Tools Reference](file://docs/TOOLS_REFERENCE.md) handy while running slash commands.
+- Review [Safety](file://docs/SAFETY.md) and [Prompt Queue](file://docs/PROMPT_QUEUE.md) to understand approvals and job flow.
+- Check [Web UI Guide](file://docs/WEB_UI.md) for browser usage and parity notes.
