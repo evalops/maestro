@@ -252,6 +252,10 @@ export async function shutdownLifecycle(): Promise<void> {
 	stopCleanupScheduler();
 	await stopWebhookProcessor();
 
+	// Shutdown rate limiter and Redis connection
+	const { shutdownRedis } = await import("./web/rate-limiter.js");
+	await shutdownRedis();
+
 	initialized = false;
 	logger.info("Lifecycle services shut down");
 }
