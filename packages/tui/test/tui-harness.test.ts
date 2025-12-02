@@ -82,9 +82,11 @@ describe("TUI harness", () => {
 	it("forwards input to focused component", async () => {
 		const term = new FakeTerminal(12, 4);
 		const tui = new TUI(term, sshFeatures);
-		const text = new Text("start", 0, 0);
+		const text = new Text("start", 0, 0) as Text & {
+			handleInput: (data: string) => void;
+		};
 		let received = "";
-		text.handleInput = (value) => {
+		text.handleInput = (value: string) => {
 			received += value;
 		};
 		tui.addChild(text);
