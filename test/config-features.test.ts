@@ -1,3 +1,9 @@
+/**
+ * @vitest-environment node
+ *
+ * These tests modify global model registry state via COMPOSER_CONFIG env var.
+ * They must run sequentially to avoid race conditions with parallel tests.
+ */
 import {
 	existsSync,
 	mkdirSync,
@@ -7,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type ConfigInspection,
 	type ConfigValidationResult,
@@ -22,32 +28,58 @@ import {
 
 describe("Config Features", () => {
 	let testDir: string;
-	let originalEnv: Record<string, string | undefined>;
+	let originalComposerConfig: string | undefined;
+	let originalComposerModelsFile: string | undefined;
 
 	beforeEach(() => {
 		// Create temp directory for test configs
-		testDir = join(tmpdir(), `composer-test-${Date.now()}`);
+		testDir = join(
+			tmpdir(),
+			`composer-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
 		mkdirSync(testDir, { recursive: true });
 
-		// Save original env
-		originalEnv = { ...process.env };
+		// Save and clear config env vars to ensure isolation
+		originalComposerConfig = process.env.COMPOSER_CONFIG;
+		originalComposerModelsFile = process.env.COMPOSER_MODELS_FILE;
+		process.env.COMPOSER_CONFIG = undefined;
+		process.env.COMPOSER_MODELS_FILE = undefined;
+
+		// Clear any cached config from previous tests
+		try {
+			reloadModelConfig();
+		} catch {
+			// Ignore errors during reset
+		}
 	});
 
 	afterEach(() => {
-		// Restore env first (before reloading config)
-		process.env = originalEnv;
+		// Restore original env vars
+		if (originalComposerConfig !== undefined) {
+			process.env.COMPOSER_CONFIG = originalComposerConfig;
+		} else {
+			process.env.COMPOSER_CONFIG = undefined;
+		}
+		if (originalComposerModelsFile !== undefined) {
+			process.env.COMPOSER_MODELS_FILE = originalComposerModelsFile;
+		} else {
+			process.env.COMPOSER_MODELS_FILE = undefined;
+		}
+
+		// Clean test-specific env vars
+		process.env.TEST_API_KEY = undefined;
 
 		// Clear config cache between tests
 		try {
 			reloadModelConfig();
-		} catch (e) {
+		} catch {
 			// Ignore reload errors from invalid test configs
 		}
 
 		// Cleanup test directory
 		try {
 			rmSync(testDir, { recursive: true, force: true });
-		} catch (e) {
+		} catch {
 			// Ignore cleanup errors
 		}
 	});
@@ -108,8 +140,7 @@ describe("Config Features", () => {
 	});
 
 	describe("Environment Variable Substitution", () => {
-		// TODO: This test is flaky in parallel execution due to shared registry state
-		it.skip("should substitute {env:VAR} with environment variable", async () => {
+		it("should substitute {env:VAR} with environment variable", async () => {
 			process.env.TEST_API_KEY = "test-key-123";
 
 			const configPath = join(testDir, "env-vars.json");
@@ -137,13 +168,20 @@ describe("Config Features", () => {
 			process.env.COMPOSER_CONFIG = configPath;
 
 			// Force config reload to pick up new COMPOSER_CONFIG
-			await reloadModelConfig();
+			reloadModelConfig();
 
 			const inspection = inspectConfig();
 
-			// Should have env vars tracked
-			expect(inspection.envVars.length).toBeGreaterThan(0);
+			// The config file should be in sources
+			const testSource = inspection.sources.find((s) =>
+				s.path.includes("env-vars.json"),
+			);
+			expect(testSource).toBeDefined();
+			expect(testSource?.exists).toBe(true);
+
+			// Should have env vars tracked from our config file
 			const envVar = inspection.envVars.find((v) => v.name === "TEST_API_KEY");
+			expect(envVar).toBeDefined();
 			expect(envVar?.set).toBe(true);
 		});
 
