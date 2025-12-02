@@ -187,7 +187,7 @@ function executeNotifyProgram(
 		const child = spawn(program, [payload], {
 			stdio: ["ignore", "ignore", "pipe"],
 			timeout,
-			shell: true,
+			shell: false,
 		});
 
 		let stderr = "";

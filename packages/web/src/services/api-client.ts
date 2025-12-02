@@ -219,7 +219,11 @@ export class ApiClient {
 			} catch (e) {
 				lastError = e;
 				// eslint-disable-next-line no-console
-				console.warn(`API fallback failed for ${base}${path}:`, e);
+				console.warn("API fallback failed", {
+					base,
+					path,
+					error: e instanceof Error ? e.message : String(e),
+				});
 			}
 		}
 		throw lastError instanceof Error
@@ -246,7 +250,11 @@ export class ApiClient {
 			} catch (e) {
 				lastError = e;
 				// eslint-disable-next-line no-console
-				console.warn(`API fallback failed for ${base}${path}:`, e);
+				console.warn("API fallback failed", {
+					base,
+					path,
+					error: e instanceof Error ? e.message : String(e),
+				});
 			}
 		}
 		throw lastError instanceof Error

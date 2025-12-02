@@ -409,7 +409,8 @@ Now using ${match.id} (${match.providerName}).`;
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 2000);
 		try {
-			const response = await fetch("http://127.0.0.1:11434/api/version", {
+			const versionUrl = resolveOllamaUrl("/api/version");
+			const response = await fetch(versionUrl, {
 				method: "GET",
 				signal: controller.signal,
 			});
@@ -475,4 +476,28 @@ Now using ${match.id} (${match.providerName}).`;
 		this.options.chatContainer.addChild(new Text(body, 1, 0));
 		this.options.ui.requestRender();
 	}
+}
+
+function resolveOllamaUrl(path: string): URL {
+	const rawHost = process.env.OLLAMA_HOST ?? "127.0.0.1:11434";
+	const hasProtocol =
+		rawHost.startsWith("http://") || rawHost.startsWith("https://");
+	const base = hasProtocol ? rawHost : `http://${rawHost}`;
+	const url = new URL(path, base);
+
+	// Require HTTPS for non-loopback addresses; allow plain HTTP on localhost.
+	if (!isLoopbackHost(url.hostname) && url.protocol !== "https:") {
+		url.protocol = "https:";
+	}
+
+	return url;
+}
+
+function isLoopbackHost(hostname: string): boolean {
+	return (
+		hostname === "localhost" ||
+		hostname === "127.0.0.1" ||
+		hostname === "::1" ||
+		hostname.startsWith("127.")
+	);
 }

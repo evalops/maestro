@@ -71,6 +71,7 @@ function topologicalSort(steps: WorkflowStep[]): WorkflowStep[] {
  * - ${vars.customVar}
  */
 function interpolate(template: string, context: WorkflowContext): string {
+	const forbiddenKeys = new Set(["__proto__", "prototype", "constructor"]);
 	return template.replace(/\$\{([^}]+)\}/g, (match, path: string) => {
 		const parts = path.trim().split(".");
 		let value: unknown = context;
@@ -80,7 +81,10 @@ function interpolate(template: string, context: WorkflowContext): string {
 				return match; // Keep original if path doesn't resolve
 			}
 			if (typeof value === "object") {
-				value = (value as Record<string, unknown>)[part];
+				value = safeLookup(value, part, forbiddenKeys);
+				if (value === undefined) {
+					return match;
+				}
 			} else {
 				return match;
 			}
@@ -100,6 +104,7 @@ function interpolateParams(
 	params: Record<string, unknown>,
 	context: WorkflowContext,
 ): Record<string, unknown> {
+	const forbiddenKeys = new Set(["__proto__", "prototype", "constructor"]);
 	const result: Record<string, unknown> = {};
 
 	for (const [key, value] of Object.entries(params)) {
@@ -124,6 +129,21 @@ function interpolateParams(
 	}
 
 	return result;
+}
+
+function safeLookup(
+	obj: object,
+	key: string,
+	forbiddenKeys: Set<string>,
+): unknown | undefined {
+	if (forbiddenKeys.has(key)) {
+		return undefined;
+	}
+	const record = obj as Record<string, unknown>;
+	if (!Object.prototype.hasOwnProperty.call(record, key)) {
+		return undefined;
+	}
+	return record[key];
 }
 
 /**
@@ -195,13 +215,15 @@ function evaluateCondition(
 function resolvePathValue(path: string, context: WorkflowContext): unknown {
 	const parts = path.split(".");
 	let value: unknown = context;
+	const forbiddenKeys = new Set(["__proto__", "prototype", "constructor"]);
 
 	for (const part of parts) {
 		if (value === null || value === undefined) {
 			return undefined;
 		}
 		if (typeof value === "object") {
-			value = (value as Record<string, unknown>)[part];
+			value = safeLookup(value as Record<string, unknown>, part, forbiddenKeys);
+			if (value === undefined) return undefined;
 		} else {
 			return undefined;
 		}

@@ -548,7 +548,9 @@ function buildRelaxedRegex(snippet: string): RegExp | null {
 	const escaped = trimmed
 		.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 		.replace(/\s+/g, "\\s+");
+	if (escaped.length > 500) return null;
 	try {
+		// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
 		return new RegExp(escaped, "gi");
 	} catch {
 		return null;

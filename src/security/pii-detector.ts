@@ -232,14 +232,7 @@ export class PiiDetector {
 		description: string,
 	): void {
 		try {
-			// Add global flag if not present
-			const flags = patternStr.includes("/g")
-				? patternStr.split("/").pop() || "g"
-				: "g";
-			const pattern = new RegExp(
-				patternStr.replace(/^\/|\/[gimuy]*$/g, ""),
-				flags,
-			);
+			const pattern = buildPatternFromString(patternStr);
 
 			this.addPattern({
 				name,
@@ -271,6 +264,33 @@ export class PiiDetector {
 			description: p.description,
 		}));
 	}
+}
+
+function buildPatternFromString(patternStr: string): RegExp {
+	const normalized = patternStr.trim();
+	if (!normalized) {
+		throw new Error("Empty regex pattern");
+	}
+
+	// Add global flag if not present, and whitelist common safe flags
+	const flagMatch = normalized.match(/\/([gimuy]*)$/);
+	const flagsFromInput = flagMatch ? flagMatch[1] : "";
+	const flags = (
+		flagsFromInput.includes("g") ? flagsFromInput : `${flagsFromInput}g`
+	)
+		.split("")
+		.filter(
+			(char, idx, arr) => "gimuy".includes(char) && arr.indexOf(char) === idx,
+		)
+		.join("");
+
+	const source = normalized.replace(/^\/|\/[gimuy]*$/g, "");
+	if (source.length > 500) {
+		throw new Error("Regex pattern too long");
+	}
+
+	// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+	return new RegExp(source, flags || "g");
 }
 
 // ============================================================================

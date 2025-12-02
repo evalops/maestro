@@ -63,19 +63,7 @@ for (const step of steps) {
 	console.log(`\n▶ ${step.title}`);
 	const result = spawnSync(step.command, step.args, {
 		stdio: "inherit",
-		shell: process.platform === "win32",
-	});
-	if (result.status !== 0) {
-		console.error(`\n✖ Step failed: ${step.title}`);
-		process.exit(result.status ?? 1);
-	}
-}
-
-const completionMessage = shouldLink
-	? "Composer linked globally. Run 'composer --help' to verify installation."
-	: "Composer built locally. Run 'npm link' to expose the CLI globally when ready.";
-
-console.log(`\n✅ ${completionMessage}`);
+		shell: false,
 	});
 	if (result.status !== 0) {
 		console.error(`\n✖ Step failed: ${step.title}`);

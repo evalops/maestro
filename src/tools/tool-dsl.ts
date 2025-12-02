@@ -12,7 +12,8 @@ const addFormats = (addFormatsModule as any).default || addFormatsModule;
 let ajv: ReturnType<typeof Ajv> | null = null;
 try {
 	ajv = new Ajv({
-		allErrors: true,
+		// Avoid unbounded error collection on large/invalid payloads
+		allErrors: false,
 		strict: false,
 		useDefaults: true, // Apply schema defaults to input
 	});

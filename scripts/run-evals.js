@@ -95,7 +95,11 @@ async function runScenario(scenario) {
 	for (const check of checks) {
 		if (!check.value) continue;
 		try {
-			const regex = new RegExp(check.value, "i");
+			const regex = buildExpectationRegex(check.value);
+			if (!regex) {
+				passed = false;
+				continue;
+			}
 			if (!regex.test(check.source)) {
 				passed = false;
 			}
@@ -176,6 +180,26 @@ async function main() {
 }
 
 await main();
+
+function buildExpectationRegex(
+	pattern,
+): RegExp | null {
+	if (pattern instanceof RegExp) return pattern;
+	if (typeof pattern !== "string") return null;
+	// Keep patterns small to avoid regex DoS; eval scenarios are repo-controlled.
+	if (pattern.length > 500) return null;
+
+	const literalMatch = pattern.match(/^\/(.+)\/([gimsuy]*)$/);
+	const source = literalMatch ? literalMatch[1] : pattern;
+	const flags = literalMatch ? literalMatch[2] : "i";
+
+	try {
+		// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+		return new RegExp(source, flags.includes("i") ? flags : `${flags}i`);
+	} catch {
+		return null;
+	}
+}
 
 function getChunkConfig() {
 	const argConfig = parseChunkArgs(cliArgs);

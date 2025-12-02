@@ -679,7 +679,7 @@ export class ComposerSidebarProvider
 						currentSize += content.length;
 						contextBlock += `File: ${vscode.workspace.asRelativePath(path)}\n\`\`\`${doc.languageId}\n${content}\n\`\`\`\n\n`;
 					} catch (e) {
-						console.error(`Failed to read pinned file ${path}`, e);
+						console.error("Failed to read pinned file", path, e);
 					}
 				}
 			}

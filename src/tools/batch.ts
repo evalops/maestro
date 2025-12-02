@@ -211,11 +211,12 @@ Example parallel:
 					if (current == null) return undefined;
 					const numeric = Number.parseInt(segment, 10);
 					if (!Number.isNaN(numeric) && Array.isArray(current)) {
-						current = current[numeric];
+						current = safeArrayLookup(current, numeric);
+						if (current === undefined) return undefined;
 						continue;
 					}
-					if (typeof current !== "object") return undefined;
-					current = (current as Record<string, unknown>)[segment];
+					current = safeObjectLookup(current, segment);
+					if (current === undefined) return undefined;
 				}
 				return current == null ? undefined : String(current);
 			};
@@ -255,6 +256,28 @@ Example parallel:
 					return value;
 				};
 				return interpolateValue(params) as Record<string, unknown>;
+			};
+
+			const forbiddenKeys = new Set(["__proto__", "prototype", "constructor"]);
+			const safeObjectLookup = (
+				target: unknown,
+				key: string,
+			): unknown | undefined => {
+				if (target === null || typeof target !== "object") return undefined;
+				if (forbiddenKeys.has(key)) return undefined;
+				const record = target as Record<string, unknown>;
+				if (!Object.prototype.hasOwnProperty.call(record, key))
+					return undefined;
+				return record[key];
+			};
+			const safeArrayLookup = (
+				target: unknown[],
+				index: number,
+			): unknown | undefined => {
+				if (!Number.isFinite(index) || index < 0 || index >= target.length) {
+					return undefined;
+				}
+				return target[index];
 			};
 
 			// Helper to execute a single tool call

@@ -1311,7 +1311,7 @@ export class AdminSettings extends LitElement {
 				}
 			}
 		} catch (e) {
-			console.error(`Failed to load ${tab} data:`, e);
+			console.error("Failed to load admin tab data", { tab, error: e });
 			// Don't show error toast - we have defaults
 		}
 	}

@@ -21,7 +21,8 @@ let ajv: ReturnType<typeof Ajv> | null = null;
 if (!isBrowserExtension) {
 	try {
 		ajv = new Ajv({
-			allErrors: true,
+			// Limit error output to avoid unbounded allocations on malformed input
+			allErrors: false,
 			strict: false,
 		});
 		addFormats(ajv);

@@ -174,18 +174,34 @@ export function validateSecretPatterns(patterns: string[]): {
 	const invalid: Array<{ pattern: string; error: string }> = [];
 
 	for (const pattern of patterns) {
-		try {
-			new RegExp(pattern);
+		const compiled = compileUserRegex(pattern);
+		if (compiled) {
 			valid.push(pattern);
-		} catch (error) {
+		} else {
 			invalid.push({
 				pattern,
-				error: error instanceof Error ? error.message : String(error),
+				error: "Invalid or unsafe regex pattern",
 			});
 		}
 	}
 
 	return { valid, invalid };
+}
+
+/**
+ * Compile a user-provided regex string with basic safety guards.
+ */
+function compileUserRegex(pattern: string): RegExp | null {
+	if (!pattern || pattern.length > 500) {
+		return null;
+	}
+
+	try {
+		// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+		return new RegExp(pattern);
+	} catch {
+		return null;
+	}
 }
 
 /**

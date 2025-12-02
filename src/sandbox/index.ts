@@ -29,10 +29,10 @@ export function loadSandboxConfig(cwd: string): SandboxConfig | undefined {
 		const content = readFileSync(configPath, "utf-8");
 		return JSON.parse(content) as SandboxConfig;
 	} catch (error) {
-		console.warn(
-			`[sandbox] Failed to load sandbox config from ${configPath}:`,
-			error instanceof Error ? error.message : String(error),
-		);
+		console.warn("[sandbox] Failed to load sandbox config", {
+			configPath,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return undefined;
 	}
 }
