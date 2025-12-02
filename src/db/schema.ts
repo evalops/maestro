@@ -87,6 +87,19 @@ export type OrganizationSettings = {
 	piiPatterns?: string[]; // Regex patterns for custom PII
 	auditRetentionDays?: number;
 	alertWebhooks?: string[];
+	/** Secret for HMAC signing webhook payloads */
+	webhookSigningSecret?: string;
+	/** IP access control configuration */
+	ipAccessControl?: {
+		defaultAction: "allow" | "deny";
+		rules: Array<{
+			pattern: string; // CIDR or IP
+			type: "allow" | "deny";
+			description?: string;
+		}>;
+	};
+	/** Require 2FA for all org members */
+	require2fa?: boolean;
 	customModelRestrictions?: {
 		providers?: string[];
 		maxContextWindow?: number;
@@ -131,6 +144,16 @@ export type UserSettings = {
 	};
 	preferredModels?: string[];
 	defaultThinkingLevel?: string;
+	/** 2FA configuration */
+	twoFactor?: {
+		enabled: boolean;
+		/** Base32-encoded TOTP secret (encrypted at rest in production) */
+		secret?: string;
+		/** Hashed backup codes for recovery */
+		backupCodeHashes?: string[];
+		/** When 2FA was enabled */
+		enabledAt?: string;
+	};
 };
 
 // ============================================================================
@@ -335,6 +358,10 @@ export const auditLogs = pgTable(
 		traceId: varchar("trace_id", { length: 100 }), // W3C Trace Context
 		metadata: jsonb("metadata").$type<AuditMetadata>().default({}),
 		durationMs: integer("duration_ms"),
+		/** Hash chain for tamper detection (SHA-256 of entry + previous hash) */
+		integrityHash: varchar("integrity_hash", { length: 64 }),
+		/** Reference to previous entry's hash for chain verification */
+		previousHash: varchar("previous_hash", { length: 64 }),
 		createdAt: timestamp("created_at", { withTimezone: true })
 			.defaultNow()
 			.notNull(),
