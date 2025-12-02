@@ -1,9 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { parse } from "node:url";
+import { createLogger } from "../utils/logger.js";
 import { isOverloaded, logRequest } from "./logger.js";
 import type { Middleware } from "./middleware.js";
 import type { RateLimiter } from "./rate-limiter.js";
 import { authenticateRequest, sendJson } from "./server-utils.js";
+
+const logger = createLogger("middleware:ip-access");
 
 // Helper for consistent safe URL parsing
 function getPathname(req: IncomingMessage): string {
@@ -165,5 +168,170 @@ export function createRouterMiddleware(
 		// but typically router is the end.
 		// If router doesn't handle it (e.g. 404), it might send response itself or return.
 		// Our current router sends 404/500 itself.
+	};
+}
+
+// ============================================================================
+// IP ACCESS CONTROL
+// ============================================================================
+
+export interface IpAccessRule {
+	/** CIDR notation (e.g., "192.168.1.0/24") or single IP */
+	pattern: string;
+	/** Whether this is an allow or deny rule */
+	type: "allow" | "deny";
+	/** Optional description */
+	description?: string;
+}
+
+export interface IpAccessConfig {
+	/** Default action when no rules match */
+	defaultAction: "allow" | "deny";
+	/** Rules evaluated in order, first match wins */
+	rules: IpAccessRule[];
+}
+
+/**
+ * Parse CIDR notation to IP range (IPv4 only for now)
+ */
+function parseCidr(cidr: string): { start: bigint; end: bigint } | null {
+	const parts = cidr.split("/");
+	const ip = parts[0];
+	const prefix = parts.length > 1 ? Number.parseInt(parts[1], 10) : 32;
+
+	if (Number.isNaN(prefix) || prefix < 0 || prefix > 32) {
+		return null;
+	}
+
+	const ipParts = ip.split(".").map(Number);
+	if (
+		ipParts.length !== 4 ||
+		ipParts.some((p) => Number.isNaN(p) || p < 0 || p > 255)
+	) {
+		return null;
+	}
+
+	const ipNum = BigInt(
+		((ipParts[0] << 24) |
+			(ipParts[1] << 16) |
+			(ipParts[2] << 8) |
+			ipParts[3]) >>>
+			0,
+	);
+	const mask = BigInt(0xffffffff) << BigInt(32 - prefix);
+	const start = ipNum & mask;
+	const end = start | (~mask & BigInt(0xffffffff));
+
+	return { start, end };
+}
+
+/**
+ * Convert IP string to numeric (IPv4)
+ */
+function ipToNumber(ip: string): bigint | null {
+	const cleanIp = normalizeIP(ip);
+
+	const parts = cleanIp.split(".").map(Number);
+	if (
+		parts.length !== 4 ||
+		parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)
+	) {
+		return null;
+	}
+
+	return BigInt(
+		((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0,
+	);
+}
+
+/**
+ * Check if IP matches a pattern (CIDR or exact)
+ */
+function ipMatchesPattern(ip: string, pattern: string): boolean {
+	const ipNum = ipToNumber(ip);
+	if (ipNum === null) return false;
+
+	const range = parseCidr(pattern);
+	if (!range) {
+		// Try exact match
+		const patternNum = ipToNumber(pattern);
+		return patternNum !== null && ipNum === patternNum;
+	}
+
+	return ipNum >= range.start && ipNum <= range.end;
+}
+
+/**
+ * Check if an IP is allowed based on access rules
+ */
+export function checkIpAccess(
+	ip: string,
+	config: IpAccessConfig,
+): { allowed: boolean; matchedRule?: IpAccessRule } {
+	for (const rule of config.rules) {
+		if (ipMatchesPattern(ip, rule.pattern)) {
+			return {
+				allowed: rule.type === "allow",
+				matchedRule: rule,
+			};
+		}
+	}
+
+	return { allowed: config.defaultAction === "allow" };
+}
+
+/**
+ * Create IP access control middleware.
+ * getConfig is called per-request to allow dynamic config updates.
+ */
+export function createIpAccessMiddleware(
+	getConfig: () => IpAccessConfig | null,
+	corsHeaders: Record<string, string>,
+	trustProxy = false,
+	trustProxyHops = 1,
+): Middleware {
+	return (req, res, next) => {
+		const config = getConfig();
+		if (!config) {
+			// No config means allow all
+			return next();
+		}
+
+		let ip = req.socket.remoteAddress || "unknown";
+
+		// Extract real client IP if behind proxy
+		if (trustProxy) {
+			const forwarded = req.headers["x-forwarded-for"];
+			if (typeof forwarded === "string") {
+				const ips = forwarded
+					.split(",")
+					.map((s) => s.trim())
+					.filter(Boolean);
+				if (ips.length > 0) {
+					const targetIndex = Math.max(0, ips.length - trustProxyHops - 1);
+					ip = ips[targetIndex] || ip;
+				}
+			}
+		}
+
+		ip = normalizeIP(ip);
+		const result = checkIpAccess(ip, config);
+
+		if (!result.allowed) {
+			logger.warn("IP access denied", {
+				ip,
+				matchedRule: result.matchedRule?.pattern,
+				description: result.matchedRule?.description,
+			});
+
+			res.writeHead(403, {
+				"Content-Type": "application/json",
+				...corsHeaders,
+			});
+			res.end(JSON.stringify({ error: "Forbidden: IP address not allowed" }));
+			return;
+		}
+
+		return next();
 	};
 }
