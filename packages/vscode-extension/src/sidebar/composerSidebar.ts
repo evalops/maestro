@@ -386,7 +386,10 @@ export class ComposerSidebarProvider
 					});
 			});
 
-		const submitResult = async (payload: any[], isError: boolean) => {
+		const submitResult = async (
+			payload: Array<{ type: string; text?: string; [key: string]: unknown }>,
+			isError: boolean,
+		) => {
 			checkAbort();
 			await raceWithAbort(
 				this._apiClient.submitClientToolResult(id, payload, isError),
@@ -487,7 +490,8 @@ export class ComposerSidebarProvider
 		};
 
 		try {
-			let result: any[] = [];
+			let result: Array<{ type: string; text?: string; [key: string]: unknown }> =
+				[];
 			if (name === "vscode_get_diagnostics") {
 				checkAbort();
 				const uri = args.uri ? validateWorkspacePath(args.uri) : undefined;

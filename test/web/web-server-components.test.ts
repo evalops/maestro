@@ -14,6 +14,15 @@ import {
 } from "../../src/web/server-utils.js";
 import { Code, Status } from "../../src/web/status.js";
 
+/** Mock HTTP response for testing */
+interface MockResponse {
+	writableEnded: boolean;
+	headersSent: boolean;
+	writeHead: (status: number, headers?: Record<string, string | number>) => void;
+	end: (body?: string) => void;
+	setHeader?: (name: string, value: string) => void;
+}
+
 beforeEach(() => {
 	circuitBreakers.clear();
 });
@@ -96,7 +105,10 @@ describe("CircuitBreaker", () => {
 		).rejects.toThrow("boom");
 
 		expect(breaker.getState()).toBe(CircuitState.OPEN);
-		const waitMs = (breaker as any).nextAttemptTime - Date.now();
+		// Access private nextAttemptTime for testing timing
+		const waitMs =
+			(breaker as unknown as { nextAttemptTime: number }).nextAttemptTime -
+			Date.now();
 		expect(waitMs).toBeGreaterThanOrEqual(0);
 		expect(waitMs).toBeLessThan(100);
 	});
@@ -107,15 +119,15 @@ describe("sendJson", () => {
 		const headers: Record<string, string | number> = {};
 		let statusCode = 0;
 		let body = "";
-		const res: any = {
+		const res: MockResponse = {
 			writableEnded: false,
 			headersSent: false,
-			writeHead: (status: number, h: Record<string, string | number>) => {
+			writeHead: (status: number, h?: Record<string, string | number>) => {
 				statusCode = status;
-				Object.assign(headers, h);
+				if (h) Object.assign(headers, h);
 			},
-			end: (b: string) => {
-				body = b;
+			end: (b?: string) => {
+				body = b ?? "";
 				res.writableEnded = true;
 			},
 		};
@@ -133,7 +145,7 @@ describe("sendJson", () => {
 describe("respondWithApiError", () => {
 	it("should not mutate the original status object", () => {
 		// Mock response object
-		const res: any = {
+		const res: MockResponse = {
 			writableEnded: false,
 			headersSent: false,
 			writeHead: () => {},

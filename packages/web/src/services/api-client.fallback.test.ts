@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "./api-client.js";
 
-declare const global: any;
+declare const global: typeof globalThis & {
+	window?: { location: { origin: string } };
+	fetch?: typeof fetch;
+};
 
 const makeJsonResponse = (body: unknown) =>
 	new Response(JSON.stringify(body), {

@@ -19,6 +19,7 @@ import "./command-drawer.js";
 import { WEB_SLASH_COMMANDS } from "./slash-commands.js";
 import "./composer-message.js";
 import "./composer-input.js";
+import type { ComposerInput } from "./composer-input.js";
 import "./composer-settings.js";
 import "./model-selector.js";
 import "./admin-settings.js";
@@ -31,6 +32,17 @@ const MODEL_OVERRIDE_KEY = "composer_model_override";
 interface ExtendedToolCall extends ComposerToolCall {
 	startTime?: number;
 	endTime?: number;
+}
+
+interface ActiveToolInfo {
+	name: string;
+	args: unknown;
+	index: number;
+}
+
+/** Extended message type with thinking support for streaming */
+interface MessageWithThinking extends Message {
+	thinking?: string;
 }
 
 @customElement("composer-chat")
@@ -610,9 +622,9 @@ export class ComposerChat extends LitElement {
 	}
 
 	private handleCommandSelect(name: string) {
-		const input = this.shadowRoot?.querySelector("composer-input") as
-			| any
-			| null;
+		const input = this.shadowRoot?.querySelector(
+			"composer-input",
+		) as ComposerInput | null;
 		if (input?.setValue) {
 			input.setValue(`/${name} `);
 		}
@@ -957,7 +969,7 @@ export class ComposerChat extends LitElement {
 		this.messages = [...this.messages, assistantMessage];
 
 		// Track active tool calls
-		const activeTools = new Map<string, any>();
+		const activeTools = new Map<string, ActiveToolInfo>();
 		const thinkingBlocks = new Map<number, string>();
 		let currentThinkingIndex: number | null = null;
 
@@ -1167,9 +1179,7 @@ export class ComposerChat extends LitElement {
 				: null;
 		const isOnline = Boolean(this.status) && this.clientOnline;
 		const latency = this.status?.lastLatencyMs || null;
-		const taskHealth = (this.status as any)?.backgroundTasks as
-			| WorkspaceStatus["backgroundTasks"]
-			| undefined;
+		const taskHealth = this.status?.backgroundTasks;
 		const taskRunning = taskHealth?.running ?? 0;
 		const taskFailed = taskHealth?.failed ?? 0;
 		const showSessionGallery =
@@ -1181,7 +1191,7 @@ export class ComposerChat extends LitElement {
 					role=${msg.role}
 					content=${msg.content}
 					timestamp=${msg.timestamp || ""}
-					.thinking=${(msg as any).thinking || ""}
+					.thinking=${(msg as MessageWithThinking).thinking || ""}
 					.tools=${msg.tools || []}
 					.compact=${this.compactMode}
 					.reducedMotion=${this.reducedMotion}
@@ -1190,7 +1200,7 @@ export class ComposerChat extends LitElement {
 		);
 		const recentSessions = showSessionGallery ? this.sessions.slice(0, 8) : [];
 		const sessionLoading = this.loading && this.messages.length === 0;
-		const lastUpdated = (this.status as any)?.lastUpdated || null;
+		const lastUpdated = this.status?.lastUpdated ?? null;
 
 		const healthClass = !isOnline
 			? "error"

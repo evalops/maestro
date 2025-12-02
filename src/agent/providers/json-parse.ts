@@ -18,7 +18,7 @@ import { parse as partialParse } from "partial-json";
  * parseStreamingJson('{"path": "/file.txt", "content": "Hello')
  * // => { path: "/file.txt", content: "Hello" }
  */
-export function parseStreamingJson<T = any>(
+export function parseStreamingJson<T = unknown>(
 	partialJson: string | undefined,
 ): T {
 	if (!partialJson || partialJson.trim() === "") {

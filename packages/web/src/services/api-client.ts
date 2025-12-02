@@ -15,7 +15,7 @@ export type { ComposerToolCall };
 
 export interface AgentEvent {
 	type: string;
-	[key: string]: any;
+	[key: string]: unknown;
 }
 
 export interface Model {
@@ -166,10 +166,9 @@ export class ApiClient {
 		let resolved = baseUrl;
 		// Window override via global (allows runtime swap without rebuild)
 		if (!resolved && typeof window !== "undefined") {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const winAny = window as any;
-			if (typeof winAny.__COMPOSER_API__ === "string") {
-				resolved = winAny.__COMPOSER_API__;
+			const winWithApi = window as Window & { __COMPOSER_API__?: string };
+			if (typeof winWithApi.__COMPOSER_API__ === "string") {
+				resolved = winWithApi.__COMPOSER_API__;
 			}
 			// ?api= URL param override
 			if (!resolved && window.location?.search) {

@@ -5,15 +5,21 @@ import type { AgentTool, ToolCall } from "../types.js";
 
 const logger = createLogger("agent:providers:validation");
 
-// Handle both default and named exports
+// Handle both default and named exports (AJV uses different export styles)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Ajv = (AjvModule as any).default || AjvModule;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const addFormats = (addFormatsModule as any).default || addFormatsModule;
 
 // Detect if we're in a browser extension environment with strict CSP
 // Chrome extensions with Manifest V3 don't allow eval/Function constructor
+interface ChromeRuntime {
+	chrome?: { runtime?: { id?: string } };
+}
 const isBrowserExtension =
 	typeof globalThis !== "undefined" &&
-	(globalThis as any).chrome?.runtime?.id !== undefined;
+	(globalThis as typeof globalThis & ChromeRuntime).chrome?.runtime?.id !==
+		undefined;
 
 // Create a singleton AJV instance with formats (only if not in browser extension)
 // AJV requires 'unsafe-eval' CSP which is not allowed in Manifest V3

@@ -1,4 +1,10 @@
-import type { AssistantMessage, Message, Model, ToolCall } from "../types.js";
+import type {
+	Api,
+	AssistantMessage,
+	Message,
+	Model,
+	ToolCall,
+} from "../types.js";
 
 /**
  * Transforms messages for cross-provider compatibility.
@@ -14,7 +20,7 @@ import type { AssistantMessage, Message, Model, ToolCall } from "../types.js";
  */
 export function transformMessages<T extends Message>(
 	messages: T[],
-	model: Model<any>,
+	model: Model<Api>,
 ): T[] {
 	// First pass: Transform thinking blocks when crossing provider/API boundaries
 	const transformedMessages = messages.map((msg) => {

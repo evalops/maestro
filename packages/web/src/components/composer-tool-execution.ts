@@ -9,7 +9,19 @@ import { unsafeHTML } from "lit/directives/unsafe-html.js";
 
 interface ToolArgument {
 	key: string;
-	value: any;
+	value: unknown;
+}
+
+interface ContentBlock {
+	type: string;
+	text?: string;
+	data?: string;
+	mimeType?: string;
+}
+
+interface ToolResult {
+	content?: ContentBlock[] | string;
+	isError?: boolean;
 }
 
 @customElement("composer-tool-execution")
@@ -348,8 +360,8 @@ export class ComposerToolExecution extends LitElement {
 
 	@property({ type: String }) toolName = "";
 	@property({ type: String }) toolCallId = "";
-	@property({ type: Object }) args: any = {};
-	@property({ type: Object }) result: any = null;
+	@property({ type: Object }) args: Record<string, unknown> = {};
+	@property({ type: Object }) result: ToolResult | string | null = null;
 	@property({ type: Boolean }) isError = false;
 	@property({ type: Boolean }) isRunning = true;
 	@property({ type: Number }) startTime = Date.now();
@@ -424,13 +436,16 @@ export class ComposerToolExecution extends LitElement {
 	}
 
 	private getFilePathFromArgs(): string | null {
-		if (this.args?.path) return this.args.path;
-		if (this.args?.file_path) return this.args.file_path;
-		if (this.args?.filePath) return this.args.filePath;
+		const path = this.args?.path;
+		if (typeof path === "string") return path;
+		const filePath = this.args?.file_path;
+		if (typeof filePath === "string") return filePath;
+		const filePathCamel = this.args?.filePath;
+		if (typeof filePathCamel === "string") return filePathCamel;
 		return null;
 	}
 
-	private formatValue(value: any): string {
+	private formatValue(value: unknown): string {
 		if (value === null || value === undefined) return "null";
 		if (typeof value === "string") return value;
 		if (typeof value === "number" || typeof value === "boolean")
@@ -491,8 +506,8 @@ export class ComposerToolExecution extends LitElement {
 			// Array of content blocks
 			if (Array.isArray(this.result.content)) {
 				content = this.result.content
-					.map((block: any) => {
-						if (block.type === "text") return block.text;
+					.map((block: ContentBlock) => {
+						if (block.type === "text") return block.text ?? "";
 						if (block.type === "image") return "[Image]";
 						return JSON.stringify(block);
 					})
