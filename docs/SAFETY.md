@@ -1,5 +1,7 @@
 # Safety & Action Approvals
 
+Contents: [Action Firewall](#action-firewall) · [Approval Modes](#approval-modes) · [Safe Mode](#safe-mode) · [Sandbox Execution](#sandbox-execution) · [Guardian](#guardian) · [Troubleshooting](#troubleshooting)
+
 Composer executes shell commands and writes files on your machine, so it ships
 with a conservative “action firewall” and approval system. This guide explains
 how commands are vetted and how you can extend or relax the defaults.

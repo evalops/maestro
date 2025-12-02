@@ -36,7 +36,7 @@ Composer exposes every capability through slash commands and git-aware helpers s
 
 Choose your interface:
 - **Terminal (TUI/CLI)**: Rich interactive terminal interface with keyboard shortcuts, file search, and command palette
-- **Web UI**: Modern browser-based interface for those who prefer a graphical environment
+- **Web UI**: Modern browser-based interface for those who prefer a graphical environment (core parity; see parity appendix in `docs/WEB_UI.md`)
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
 ### Who It's For
@@ -619,6 +619,8 @@ Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
 - [Providers & Factory](docs/MODELS.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
+
+Doc map (start here): `docs/README.md` → Quickstart → Feature Guide → Tools Reference → Safety. Web/TUI differences: parity appendix in `docs/WEB_UI.md`.
 
 ## License
 

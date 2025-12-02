@@ -17,15 +17,14 @@ source). The layout is split into four areas:
 
 ### Slash Commands
 
-Type `/` in the editor to see completions. Common commands:
+Type `/` in the editor to see completions. Highlights:
 
-- `/plan` – open or update the TODO/plan view (stored in `~/.composer/todos.json`)
-- `/queue` – inspect/cancel queued prompts when the agent is busy
-- `/run <script>` – run `npm run <script>` and stream the output in chat
+- `/plan` – open or update the TODO/plan view
+- `/run <script>` – run workspace scripts with streamed output
 - `/sessions` – list or load session transcripts
 - `/report` – collect info for bug reports or feedback
 
-Commands are discoverable via Ctrl+K (palette) or the inline autocomplete list.
+For the full catalog and options, see `docs/TOOLS_REFERENCE.md`. Web vs TUI availability is in the parity appendix of `docs/WEB_UI.md`.
 
 ### Framework Preference
 

@@ -1,5 +1,7 @@
 # MCP Server Integration Guide
 
+Contents: [What is MCP?](#what-is-mcp) · [Quick Start](#quick-start) · [Configuration](#configuration) · [Usage](#usage) · [Troubleshooting](#troubleshooting)
+
 This guide explains how to create, configure, and use custom MCP (Model Context Protocol) servers with Composer.
 
 ## What is MCP?
