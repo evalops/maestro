@@ -76,14 +76,22 @@ export class CustomEditor extends Editor {
 			return;
 		}
 
-		if (data === "\x1b[A" && this.onHistoryNavigate) {
+		if (
+			data === "\x1b[A" &&
+			this.onHistoryNavigate &&
+			!this.isShowingAutocomplete()
+		) {
 			const handled = this.onHistoryNavigate("prev");
 			if (handled) {
 				return;
 			}
 		}
 
-		if (data === "\x1b[B" && this.onHistoryNavigate) {
+		if (
+			data === "\x1b[B" &&
+			this.onHistoryNavigate &&
+			!this.isShowingAutocomplete()
+		) {
 			const handled = this.onHistoryNavigate("next");
 			if (handled) {
 				return;
