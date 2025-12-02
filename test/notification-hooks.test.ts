@@ -8,10 +8,10 @@ describe("Notification Hooks", () => {
 	const originalEnv = { ...process.env };
 
 	beforeEach(() => {
-		// Reset environment
-		process.env.COMPOSER_NOTIFY_PROGRAM = undefined;
-		process.env.COMPOSER_NOTIFY_EVENTS = undefined;
-		process.env.COMPOSER_NOTIFY_TIMEOUT = undefined;
+		// Reset environment by setting to empty string (not undefined which becomes "undefined")
+		process.env.COMPOSER_NOTIFY_PROGRAM = "";
+		process.env.COMPOSER_NOTIFY_EVENTS = "";
+		process.env.COMPOSER_NOTIFY_TIMEOUT = "";
 
 		// Create test directory
 		mkdirSync(testDir, { recursive: true });
