@@ -215,3 +215,16 @@ export interface SessionMetadata {
 	title?: string;
 	tags?: string[];
 }
+
+/**
+ * Session summary returned by listSessions()
+ */
+export interface SessionSummary {
+	id: string;
+	title?: string;
+	createdAt: string;
+	updatedAt: string;
+	messageCount: number;
+	favorite: boolean;
+	tags?: string[];
+}

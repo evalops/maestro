@@ -17,6 +17,8 @@ vi.mock("../src/session/manager.js", () => ({
 				createdAt: "2024-01-01T00:00:00Z",
 				updatedAt: "2024-01-02T00:00:00Z",
 				messageCount: 5,
+				favorite: false,
+				tags: ["work"],
 			},
 			{
 				id: "test-session-2",
@@ -24,6 +26,8 @@ vi.mock("../src/session/manager.js", () => ({
 				createdAt: "2024-01-03T00:00:00Z",
 				updatedAt: "2024-01-04T00:00:00Z",
 				messageCount: 10,
+				favorite: true,
+				tags: [],
 			},
 		]),
 		loadSession: vi.fn().mockImplementation((id: string) => {
@@ -83,6 +87,7 @@ function createMockRequest(method: string, body?: unknown): IncomingMessage {
 	const req = {
 		method,
 		headers: {},
+		socket: { remoteAddress: "127.0.0.1" },
 		on: vi.fn((event: string, callback: (chunk?: Buffer) => void) => {
 			if (event === "data" && body) {
 				callback(Buffer.from(JSON.stringify(body)));

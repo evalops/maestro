@@ -29,6 +29,7 @@ import {
 	type SessionMessageEntry,
 	type SessionMetaEntry,
 	type SessionMetadata,
+	type SessionSummary,
 	type ThinkingLevelChangeEntry,
 	tryParseSessionEntry,
 } from "./types.js";
@@ -855,17 +856,7 @@ export class SessionManager {
 	/**
 	 * List all sessions in the session directory
 	 */
-	async listSessions(): Promise<
-		Array<{
-			id: string;
-			title?: string;
-			createdAt: string;
-			updatedAt: string;
-			messageCount: number;
-			favorite: boolean;
-			tags?: string[];
-		}>
-	> {
+	async listSessions(): Promise<SessionSummary[]> {
 		this.writer?.flushSync();
 		const files = readdirSync(this.sessionDir);
 		const sessions = [];
