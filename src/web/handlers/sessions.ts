@@ -367,7 +367,10 @@ export async function handleSessionShare(
 
 		const options = await readJsonBody<SessionShareOptions>(req);
 		const expiresInHours = Math.min(options.expiresInHours ?? 24, 168); // Max 1 week
-		const maxAccesses = options.maxAccesses ?? null; // null = unlimited
+		const maxAccesses =
+			options.maxAccesses === null
+				? null // explicit unlimited
+				: Math.max(1, options.maxAccesses ?? 100); // default finite, clamp minimum
 
 		// Generate a share token
 		const shareToken = crypto.randomBytes(32).toString("base64url");
