@@ -3,7 +3,7 @@ import { parse } from "node:url";
 import { createLogger } from "../utils/logger.js";
 import { isOverloaded, logRequest } from "./logger.js";
 import type { Middleware } from "./middleware.js";
-import type { RateLimiter } from "./rate-limiter.js";
+import type { RateLimiter, TieredRateLimiter } from "./rate-limiter.js";
 import { authenticateRequest, sendJson } from "./server-utils.js";
 
 const logger = createLogger("middleware:ip-access");
@@ -55,6 +55,41 @@ function normalizeIP(ip: string): string {
 	return ip;
 }
 
+/**
+ * Extract client IP from request, handling proxy headers.
+ */
+function getClientIp(
+	req: IncomingMessage,
+	trustProxy: boolean,
+	trustProxyHops: number,
+): string {
+	let ip = req.socket.remoteAddress || "unknown";
+
+	if (trustProxy) {
+		const forwarded = req.headers["x-forwarded-for"];
+		if (typeof forwarded === "string") {
+			// Parse IPs and read from right-to-left to prevent spoofing
+			// X-Forwarded-For format: "client, proxy1, proxy2, ..."
+			// Each proxy appends its upstream IP to the right
+			// trustProxyHops = number of trusted proxies between us and the internet
+			// Example with CDN -> nginx -> app (2 hops):
+			//   Header: "client, cdn, nginx" -> skip 2 from right -> use "client"
+			const ips = forwarded
+				.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean);
+			if (ips.length > 0) {
+				// Skip trustProxyHops from the right to get the first untrusted IP
+				const targetIndex = Math.max(0, ips.length - trustProxyHops - 1);
+				ip = ips[targetIndex] || ip;
+			}
+		}
+	}
+
+	// Normalize IPv4-mapped IPv6 addresses for consistent rate limiting
+	return normalizeIP(ip);
+}
+
 export function createRateLimitMiddleware(
 	rateLimiter: RateLimiter,
 	corsHeaders: Record<string, string>,
@@ -63,7 +98,6 @@ export function createRateLimitMiddleware(
 ): Middleware {
 	return (req, res, next) => {
 		const pathname = getPathname(req);
-		// 2. Rate limiting check (Per-client fairness)
 		// Skip for static assets and critical health/metrics endpoints
 		const isRateLimited =
 			pathname.startsWith("/api") &&
@@ -71,38 +105,13 @@ export function createRateLimitMiddleware(
 			pathname !== "/healthz";
 
 		if (isRateLimited) {
-			let ip = req.socket.remoteAddress || "unknown";
-
-			if (trustProxy) {
-				const forwarded = req.headers["x-forwarded-for"];
-				if (typeof forwarded === "string") {
-					// Parse IPs and read from right-to-left to prevent spoofing
-					// X-Forwarded-For format: "client, proxy1, proxy2, ..."
-					// Each proxy appends its upstream IP to the right
-					// trustProxyHops = number of trusted proxies between us and the internet
-					// Example with CDN -> nginx -> app (2 hops):
-					//   Header: "client, cdn, nginx" -> skip 2 from right -> use "client"
-					const ips = forwarded
-						.split(",")
-						.map((s) => s.trim())
-						.filter(Boolean);
-					if (ips.length > 0) {
-						// Skip trustProxyHops from the right to get the first untrusted IP
-						const targetIndex = Math.max(0, ips.length - trustProxyHops - 1);
-						ip = ips[targetIndex] || ip;
-					}
-				}
-			}
-
-			// Normalize IPv4-mapped IPv6 addresses for consistent rate limiting
-			ip = normalizeIP(ip);
-
-			const { allowed, remaining, reset } = rateLimiter.check(ip);
+			const ip = getClientIp(req, trustProxy, trustProxyHops);
+			const { allowed, remaining, reset, limit } = rateLimiter.check(ip);
 
 			if (!allowed) {
 				res.writeHead(429, {
 					"Content-Type": "application/json",
-					"X-RateLimit-Limit": "1000",
+					"X-RateLimit-Limit": limit.toString(),
 					"X-RateLimit-Remaining": "0",
 					"X-RateLimit-Reset": Math.ceil(reset / 1000).toString(),
 					"Retry-After": Math.ceil((reset - Date.now()) / 1000).toString(),
@@ -111,14 +120,58 @@ export function createRateLimitMiddleware(
 				res.end(
 					JSON.stringify({ error: "Too Many Requests: Rate limit exceeded" }),
 				);
-				// Log the rejection immediately as it won't go through the router
-				// We need start time for logRequest, but we can approximate or pass it if needed.
-				// However, logRequest expects start time.
-				// For now, we'll let the outer handler handle logging on 'finish'.
 				return;
 			}
 			// Add rate limit headers to successful responses too
-			res.setHeader("X-RateLimit-Limit", "1000");
+			res.setHeader("X-RateLimit-Limit", limit.toString());
+			res.setHeader("X-RateLimit-Remaining", remaining.toString());
+			res.setHeader("X-RateLimit-Reset", Math.ceil(reset / 1000).toString());
+		}
+		return next();
+	};
+}
+
+/**
+ * Create tiered rate limit middleware with per-endpoint limits.
+ * Uses TieredRateLimiter for endpoint-specific rate limits.
+ */
+export function createTieredRateLimitMiddleware(
+	rateLimiter: TieredRateLimiter,
+	corsHeaders: Record<string, string>,
+	trustProxy = false,
+	trustProxyHops = 1,
+): Middleware {
+	return (req, res, next) => {
+		const pathname = getPathname(req);
+		// Skip for static assets and critical health/metrics endpoints
+		const isRateLimited =
+			pathname.startsWith("/api") &&
+			pathname !== "/api/metrics" &&
+			pathname !== "/healthz";
+
+		if (isRateLimited) {
+			const ip = getClientIp(req, trustProxy, trustProxyHops);
+			const { allowed, remaining, reset, limit } = rateLimiter.check(
+				ip,
+				pathname,
+			);
+
+			if (!allowed) {
+				res.writeHead(429, {
+					"Content-Type": "application/json",
+					"X-RateLimit-Limit": limit.toString(),
+					"X-RateLimit-Remaining": "0",
+					"X-RateLimit-Reset": Math.ceil(reset / 1000).toString(),
+					"Retry-After": Math.ceil((reset - Date.now()) / 1000).toString(),
+					...corsHeaders,
+				});
+				res.end(
+					JSON.stringify({ error: "Too Many Requests: Rate limit exceeded" }),
+				);
+				return;
+			}
+			// Add rate limit headers to successful responses too
+			res.setHeader("X-RateLimit-Limit", limit.toString());
 			res.setHeader("X-RateLimit-Remaining", remaining.toString());
 			res.setHeader("X-RateLimit-Reset", Math.ceil(reset / 1000).toString());
 		}
