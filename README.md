@@ -351,6 +351,38 @@ Payloads include tool name, success flag, duration, and evaluation context. Use 
 - **EvalOps-ready** – Built-in scenario runners and cost tracking
 - **Provider-agnostic** – Portable across Anthropic, OpenAI, Gemini, Groq, etc.
 
+## Development Services (Docker)
+
+Composer uses Redis for rate limiting and PostgreSQL for persistence. Start local services with Docker Compose:
+
+```bash
+# Start Redis and PostgreSQL
+docker compose up -d
+
+# Set environment variables
+export COMPOSER_REDIS_URL=redis://localhost:6379
+export COMPOSER_DATABASE_URL=postgresql://composer:composer@localhost:5432/composer
+
+# Verify services are running
+docker compose ps
+```
+
+### Available Services
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| Redis | 6379 | Rate limiting, caching |
+| PostgreSQL | 5432 | Sessions, webhooks, tokens |
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `COMPOSER_REDIS_URL` | Redis connection URL | (in-memory fallback) |
+| `COMPOSER_DATABASE_URL` | PostgreSQL connection URL | (file-based SQLite fallback) |
+
+Without these variables, Composer falls back to in-memory rate limiting and file-based storage, which works fine for local development.
+
 ## From Source (Bun + Nx)
 
 ```bash
