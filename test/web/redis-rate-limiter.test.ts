@@ -45,6 +45,10 @@ describe.skipIf(!REDIS_URL)("Redis Rate Limiter Integration", () => {
 			await limiter.reset();
 		});
 
+		afterEach(() => {
+			limiter.stop();
+		});
+
 		it("allows requests within limit", async () => {
 			const result = await limiter.checkAsync("192.168.1.1");
 			expect(result.allowed).toBe(true);
@@ -117,76 +121,6 @@ describe.skipIf(!REDIS_URL)("Redis Rate Limiter Integration", () => {
 		});
 	});
 
-	describe("TieredRateLimiter with Redis", () => {
-		let tieredLimiter: TieredRateLimiter;
-
-		beforeEach(() => {
-			tieredLimiter = new TieredRateLimiter(
-				{ windowMs: 60000, max: 100 }, // Global limit
-				{
-					"/api/chat": { windowMs: 60000, max: 5 }, // Strict endpoint limit
-					"/api/status": { windowMs: 60000, max: 50 }, // More lenient
-				},
-			);
-		});
-
-		it("applies endpoint-specific limits", () => {
-			// Use up /api/chat quota
-			for (let i = 0; i < 5; i++) {
-				tieredLimiter.check("192.168.2.1", "/api/chat");
-			}
-
-			// Next request should be blocked
-			const result = tieredLimiter.check("192.168.2.1", "/api/chat");
-			expect(result.allowed).toBe(false);
-		});
-
-		it("allows different endpoints independently", () => {
-			// Use up /api/chat quota
-			for (let i = 0; i < 5; i++) {
-				tieredLimiter.check("192.168.2.2", "/api/chat");
-			}
-
-			// /api/status should still work
-			const result = tieredLimiter.check("192.168.2.2", "/api/status");
-			expect(result.allowed).toBe(true);
-		});
-
-		it("respects global limit across endpoints", () => {
-			const strictGlobal = new TieredRateLimiter(
-				{ windowMs: 60000, max: 10 }, // Very strict global
-				{
-					"/api/status": { windowMs: 60000, max: 50 }, // Lenient endpoint
-				},
-			);
-
-			// Exhaust global limit via any endpoint
-			for (let i = 0; i < 10; i++) {
-				strictGlobal.check("192.168.2.3", "/api/status");
-			}
-
-			// Should be blocked by global limit
-			const result = strictGlobal.check("192.168.2.3", "/api/status");
-			expect(result.allowed).toBe(false);
-		});
-
-		it("returns correct limit information", () => {
-			const limits = tieredLimiter.getLimits();
-			expect(limits.global).toEqual({ windowMs: 60000, max: 100 });
-			expect(limits.endpoints["/api/chat"]).toEqual({
-				windowMs: 60000,
-				max: 5,
-			});
-		});
-
-		it("allows dynamic endpoint limit updates", () => {
-			tieredLimiter.setEndpointLimit("/api/new", { windowMs: 60000, max: 3 });
-
-			const limits = tieredLimiter.getLimits();
-			expect(limits.endpoints["/api/new"]).toEqual({ windowMs: 60000, max: 3 });
-		});
-	});
-
 	describe("Redis failover", () => {
 		it("falls back to memory when Redis unavailable", async () => {
 			// Create a limiter that will try Redis first
@@ -253,5 +187,90 @@ describe("Rate Limiter (in-memory only)", () => {
 		expect(result.allowed).toBe(true);
 
 		fastLimiter.stop();
+	});
+});
+
+describe("TieredRateLimiter (in-memory)", () => {
+	it("applies endpoint-specific limits", () => {
+		const tieredLimiter = new TieredRateLimiter(
+			{ windowMs: 60000, max: 100 },
+			{
+				"/api/chat": { windowMs: 60000, max: 5 },
+			},
+		);
+
+		// Use up /api/chat quota
+		for (let i = 0; i < 5; i++) {
+			tieredLimiter.check("192.168.2.1", "/api/chat");
+		}
+
+		// Next request should be blocked
+		const result = tieredLimiter.check("192.168.2.1", "/api/chat");
+		expect(result.allowed).toBe(false);
+	});
+
+	it("allows different endpoints independently", () => {
+		const tieredLimiter = new TieredRateLimiter(
+			{ windowMs: 60000, max: 100 },
+			{
+				"/api/chat": { windowMs: 60000, max: 5 },
+				"/api/status": { windowMs: 60000, max: 50 },
+			},
+		);
+
+		// Use up /api/chat quota
+		for (let i = 0; i < 5; i++) {
+			tieredLimiter.check("192.168.2.2", "/api/chat");
+		}
+
+		// /api/status should still work
+		const result = tieredLimiter.check("192.168.2.2", "/api/status");
+		expect(result.allowed).toBe(true);
+	});
+
+	it("respects global limit across endpoints", () => {
+		const tieredLimiter = new TieredRateLimiter(
+			{ windowMs: 60000, max: 10 }, // Very strict global
+			{
+				"/api/status": { windowMs: 60000, max: 50 }, // Lenient endpoint
+			},
+		);
+
+		// Exhaust global limit via any endpoint
+		for (let i = 0; i < 10; i++) {
+			tieredLimiter.check("192.168.2.3", "/api/status");
+		}
+
+		// Should be blocked by global limit
+		const result = tieredLimiter.check("192.168.2.3", "/api/status");
+		expect(result.allowed).toBe(false);
+	});
+
+	it("returns correct limit information", () => {
+		const tieredLimiter = new TieredRateLimiter(
+			{ windowMs: 60000, max: 100 },
+			{
+				"/api/chat": { windowMs: 60000, max: 5 },
+			},
+		);
+
+		const limits = tieredLimiter.getLimits();
+		expect(limits.global).toEqual({ windowMs: 60000, max: 100 });
+		expect(limits.endpoints["/api/chat"]).toEqual({
+			windowMs: 60000,
+			max: 5,
+		});
+	});
+
+	it("allows dynamic endpoint limit updates", () => {
+		const tieredLimiter = new TieredRateLimiter(
+			{ windowMs: 60000, max: 100 },
+			{},
+		);
+
+		tieredLimiter.setEndpointLimit("/api/new", { windowMs: 60000, max: 3 });
+
+		const limits = tieredLimiter.getLimits();
+		expect(limits.endpoints["/api/new"]).toEqual({ windowMs: 60000, max: 3 });
 	});
 });
