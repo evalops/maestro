@@ -195,10 +195,24 @@ export function createCorsMiddleware(
 export function createAuthMiddleware(
 	apiKey: string | null,
 	corsHeaders: Record<string, string>,
+	requireApiKey = false,
 ): Middleware {
 	return (req, res, next) => {
 		const pathname = getPathname(req);
 		if (pathname.startsWith("/api")) {
+			if (requireApiKey && (!apiKey || apiKey.length === 0)) {
+				sendJson(
+					res,
+					401,
+					{
+						error:
+							"COMPOSER_WEB_API_KEY is required for all API requests. Set the environment variable or disable requirement explicitly with COMPOSER_WEB_REQUIRE_KEY=0 for local testing only.",
+					},
+					corsHeaders,
+					req,
+				);
+				return;
+			}
 			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
 				return;
 			}

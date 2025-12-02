@@ -94,7 +94,7 @@
     "diff": "^8.0.2",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.44.7",
-    "glob": "^11.0.3",
+    "glob": "^11.1.0",
     "ioredis": "^5.8.2",
     "js-yaml": "^4.1.1",
     "jsonc-parser": "^3.3.1",

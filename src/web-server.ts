@@ -133,6 +133,8 @@ const DEFAULT_APPROVAL_MODE = normalizeApprovalMode(
 const AUTH_MODE = normalizeAuthMode(process.env.COMPOSER_AUTH_MODE);
 const CODEX_TOKEN = process.env.CODEX_API_KEY?.trim();
 const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
+const REQUIRE_WEB_API_KEY = process.env.COMPOSER_WEB_REQUIRE_KEY !== "0";
+const REQUIRE_REDIS = process.env.COMPOSER_WEB_REQUIRE_REDIS !== "0";
 const DEFAULT_WEB_ORIGIN =
 	process.env.COMPOSER_WEB_ORIGIN?.trim() || "http://localhost:4173";
 const STATIC_MAX_AGE =
@@ -146,6 +148,15 @@ const MAX_SSE_CONNECTIONS =
 const REQUEST_TIMEOUT_MS =
 	Number.parseInt(process.env.COMPOSER_REQUEST_TIMEOUT_MS || "60000", 10) ||
 	60000;
+
+// Harden defaults for hosted deployments.
+process.env.COMPOSER_WEB_SERVER = "1";
+if (!process.env.COMPOSER_SAFE_MODE) {
+	process.env.COMPOSER_SAFE_MODE = "1";
+}
+if (!process.env.COMPOSER_SAFE_REQUIRE_PLAN) {
+	process.env.COMPOSER_SAFE_REQUIRE_PLAN = "1";
+}
 
 // Parse and validate TRUST_PROXY setting
 // WARNING: Only enable if behind a trusted reverse proxy that sets X-Forwarded-For
@@ -185,6 +196,18 @@ if (TRUST_PROXY) {
 	);
 }
 
+if (REQUIRE_WEB_API_KEY && !WEB_API_KEY) {
+	throw new Error(
+		"COMPOSER_WEB_API_KEY is required. Set COMPOSER_WEB_REQUIRE_KEY=0 to allow unauthenticated APIs for local-only testing.",
+	);
+}
+
+if (REQUIRE_REDIS && !process.env.COMPOSER_REDIS_URL) {
+	throw new Error(
+		"COMPOSER_REDIS_URL must be set for shared rate limiting. Set COMPOSER_WEB_REQUIRE_REDIS=0 to bypass in single-node dev only.",
+	);
+}
+
 const sseLimiter = {
 	active: 0,
 	max: MAX_SSE_CONNECTIONS,
@@ -198,12 +221,6 @@ const sseLimiter = {
 		if (this.active > 0) this.active -= 1;
 	},
 };
-
-if (!WEB_API_KEY) {
-	logger.warn(
-		"COMPOSER_WEB_API_KEY is not set; API routes are running without authentication",
-	);
-}
 
 const authResolver = createAuthResolver({
 	mode: AUTH_MODE,
@@ -470,7 +487,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				TRUST_PROXY_HOPS,
 			),
 			createCorsMiddleware(CORS_HEADERS),
-			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS),
+			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS, REQUIRE_WEB_API_KEY),
 			createRouterMiddleware(router),
 		]);
 

@@ -84,6 +84,7 @@ export async function createSandbox(
 	options: CreateSandboxOptions = {},
 ): Promise<Sandbox | undefined> {
 	const cwd = options.cwd ?? process.cwd();
+	const isWebServer = process.env.COMPOSER_WEB_SERVER === "1";
 
 	// Priority: explicit mode > env var > config file > auto-detect
 	let mode: SandboxMode = options.mode ?? "none";
@@ -114,16 +115,22 @@ export async function createSandbox(
 			return undefined;
 
 		case "local":
+			if (isWebServer) {
+				throw new Error(
+					"Local sandbox is disabled in web-server mode. Use Docker sandbox or COMPOSER_SANDBOX_MODE=none.",
+				);
+			}
 			return new LocalSandbox();
 
 		case "docker": {
 			// Check Docker availability
 			const dockerAvailable = await isDockerAvailable();
 			if (!dockerAvailable) {
+				const fallback = isWebServer ? "none" : "local";
 				console.warn(
-					"[sandbox] Docker not available. Falling back to local sandbox.",
+					`[sandbox] Docker not available. Falling back to ${fallback} sandbox.`,
 				);
-				return new LocalSandbox();
+				return isWebServer ? undefined : new LocalSandbox();
 			}
 
 			const sandbox = new DockerSandbox({
@@ -140,8 +147,9 @@ export async function createSandbox(
 					"[sandbox] Failed to initialize Docker sandbox:",
 					error instanceof Error ? error.message : String(error),
 				);
-				console.warn("[sandbox] Falling back to local sandbox.");
-				return new LocalSandbox();
+				const fallback = isWebServer ? "none" : "local";
+				console.warn(`[sandbox] Falling back to ${fallback} sandbox.`);
+				return isWebServer ? undefined : new LocalSandbox();
 			}
 		}
 
