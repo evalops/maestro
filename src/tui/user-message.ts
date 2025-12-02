@@ -5,6 +5,7 @@ import { PANEL_WIDTHS } from "./utils/layout.js";
 
 /**
  * Component that renders a user message styled as a rounded card.
+ * Right-aligned for chat bubble effect.
  */
 export class UserMessageComponent extends Container {
 	private markdown: Markdown;
@@ -16,29 +17,33 @@ export class UserMessageComponent extends Container {
 			this.addChild(new Spacer(1));
 		}
 
+		const terminalWidth = process.stdout.columns ?? 80;
 		const panelWidth = this.computePanelWidth(text);
-		this.addChild(new Text(this.buildTopLine(panelWidth), 1, 0));
+		// Calculate right-align offset (terminal width - panel width - margin)
+		const rightOffset = Math.max(0, terminalWidth - panelWidth - 2);
 
-		// Metadata line
+		this.addChild(new Text(this.buildTopLine(panelWidth), rightOffset, 0));
+
+		// Metadata line with timestamp right-aligned
 		const ts = timestamp ? new Date(timestamp) : new Date();
 		const timeStr = ts.toLocaleTimeString([], {
 			hour: "2-digit",
 			minute: "2-digit",
 		});
-		const header = `${theme.fg("accent", "YOU")} ${theme.fg("muted", `· ${timeStr}`)}`;
-		this.addChild(new Text(header, 1, 0));
+		const header = `${theme.fg("muted", `${timeStr} ·`)} ${theme.fg("accent", "YOU")}`;
+		this.addChild(new Text(header, rightOffset, 0));
 
 		this.markdown = new Markdown(
 			text,
 			undefined,
 			undefined,
 			undefined, // Let markdown handle its own background or inherit
-			1,
+			rightOffset,
 			0,
 			getMarkdownTheme(),
 		);
 		this.addChild(this.markdown);
-		this.addChild(new Text(this.buildBottomLine(panelWidth), 1, 0));
+		this.addChild(new Text(this.buildBottomLine(panelWidth), rightOffset, 0));
 	}
 
 	private static readonly MIN_WIDTH = PANEL_WIDTHS.userMessage.min;

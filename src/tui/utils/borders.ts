@@ -7,8 +7,9 @@ import type { ThemeColor } from "../../theme/theme.js";
  *
  * "rounded" - Rounded corners (╭╮╰╯) - default for cards, messages, modals
  * "square"  - Sharp corners (┌┐└┘) - for diagrams, technical content
+ * "double"  - Double-line borders (╔╗╚╝) - for urgent modals (approvals)
  */
-export type BorderStyle = "rounded" | "square";
+export type BorderStyle = "rounded" | "square" | "double";
 
 export interface BorderChars {
 	topLeft: string;
@@ -52,11 +53,27 @@ const SQUARE_CHARS: BorderChars = {
 	cross: "┼",
 };
 
+const DOUBLE_CHARS: BorderChars = {
+	topLeft: "╔",
+	topRight: "╗",
+	bottomLeft: "╚",
+	bottomRight: "╝",
+	horizontal: "═",
+	vertical: "║",
+	leftT: "╠",
+	rightT: "╣",
+	topT: "╦",
+	bottomT: "╩",
+	cross: "╬",
+};
+
 /**
  * Get box-drawing characters for a given style.
  */
 export function getBorderChars(style: BorderStyle = "rounded"): BorderChars {
-	return style === "square" ? SQUARE_CHARS : ROUNDED_CHARS;
+	if (style === "square") return SQUARE_CHARS;
+	if (style === "double") return DOUBLE_CHARS;
+	return ROUNDED_CHARS;
 }
 
 /**

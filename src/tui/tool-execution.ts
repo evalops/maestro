@@ -34,6 +34,9 @@ const STATUS_CONFIG: Record<ToolStatus, { label: string; color: ThemeColor }> = 
 	waiting: { label: "[wait]", color: "warning" },
 };
 
+/** Duration for border flash effect in ms */
+const FLASH_DURATION_MS = 400;
+
 /**
  * Component that renders a tool call with its result (updateable)
  */
@@ -58,6 +61,10 @@ export class ToolExecutionComponent extends Container {
 	};
 
 	private renderer: ToolRenderer;
+
+	/** Border flash state: null = no flash, "success" | "error" = flashing */
+	private flashState: "success" | "error" | null = null;
+	private flashTimeout: NodeJS.Timeout | null = null;
 
 	constructor(toolName: string, args: Record<string, unknown>) {
 		super();
@@ -97,6 +104,12 @@ export class ToolExecutionComponent extends Container {
 		return this.result.isError ? "error" : "done";
 	}
 
+	private getBorderColor(): ThemeColor {
+		if (this.flashState === "success") return "success";
+		if (this.flashState === "error") return "error";
+		return "borderMuted";
+	}
+
 	private buildTopLine(): string {
 		const icon = this.getToolIcon();
 		const label = `${icon} ${this.toolName.toLowerCase()}`;
@@ -108,7 +121,7 @@ export class ToolExecutionComponent extends Container {
 			title: label,
 			badge,
 			badgeColor,
-			borderColor: "borderMuted",
+			borderColor: this.getBorderColor(),
 		});
 	}
 
@@ -116,9 +129,25 @@ export class ToolExecutionComponent extends Container {
 		const chars = getBorderChars("square");
 		const innerWidth = Math.max(0, this.panelWidth() - 2);
 		return theme.fg(
-			"borderMuted",
+			this.getBorderColor(),
 			`${chars.bottomLeft}${chars.horizontal.repeat(innerWidth)}${chars.bottomRight}`,
 		);
+	}
+
+	private triggerFlash(type: "success" | "error"): void {
+		// Clear any existing flash timeout
+		if (this.flashTimeout) {
+			clearTimeout(this.flashTimeout);
+		}
+		this.flashState = type;
+		this.updateDisplay();
+
+		// Reset flash after duration
+		this.flashTimeout = setTimeout(() => {
+			this.flashState = null;
+			this.flashTimeout = null;
+			this.updateDisplay();
+		}, FLASH_DURATION_MS);
 	}
 
 	private panelWidth(): number {
@@ -148,8 +177,15 @@ export class ToolExecutionComponent extends Container {
 		details?: unknown;
 		isError: boolean;
 	}): void {
+		const wasRunning = !this.result;
 		this.result = result;
-		this.updateDisplay();
+
+		// Trigger border flash on completion
+		if (wasRunning) {
+			this.triggerFlash(result.isError ? "error" : "success");
+		} else {
+			this.updateDisplay();
+		}
 	}
 
 	setPendingStatus(status: string | null): void {

@@ -1,11 +1,14 @@
 import { Container, Text, visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
+import { theme } from "../theme/theme.js";
 import { PANEL_WIDTHS } from "./utils/layout.js";
 import { shimmerText } from "./utils/shimmer.js";
 
-const HEADLINE = "𝅘𝅥𝅮 composer";
+const HEADLINE = "*  c o m p o s e r";
 const TAGLINE = "deterministic coding agent";
-const HINT = "type /help to explore commands";
+const TIPS = [
+	"Tab: autocomplete files  |  /help: commands  |  @: mention files",
+];
 const CANVAS_WIDTH = PANEL_WIDTHS.welcome;
 
 export class WelcomeAnimation extends Container {
@@ -35,6 +38,12 @@ export class WelcomeAnimation extends Container {
 		}
 	}
 
+	setModelName(modelName: string): void {
+		this.modelName = modelName;
+	}
+
+	private modelName = "";
+
 	private updateFrame(): void {
 		const nowSeconds = Date.now() / 1000;
 		const title = shimmerText(HEADLINE, {
@@ -42,8 +51,8 @@ export class WelcomeAnimation extends Container {
 			bandWidth: 3,
 			sweepSeconds: 2.4,
 			intensityScale: 0.8,
-			baseColor: "#cbd5f5",
-			highlightColor: "#ffffff",
+			baseColor: "#c084fc",
+			highlightColor: "#f5d0fe",
 			time: nowSeconds,
 		});
 		const subline = shimmerText(TAGLINE, {
@@ -56,14 +65,26 @@ export class WelcomeAnimation extends Container {
 			time: nowSeconds + 0.35,
 			bold: false,
 		});
-		const hint = chalk.hex("#64748b")(HINT);
+
+		// Model status line
+		const modelStatus = this.modelName
+			? theme.fg("muted", `model: ${this.modelName}`)
+			: "";
+
+		// Quick tips
+		const tips = TIPS.map((tip) => chalk.hex("#64748b")(tip));
+
 		const lines = [
+			"",
 			centerLine(title),
 			"",
 			centerLine(subline),
 			"",
-			centerLine(hint),
-		];
+			modelStatus ? centerLine(modelStatus) : "",
+			"",
+			...tips.map(centerLine),
+			"",
+		].filter((line) => line !== undefined);
 		this.textComponent.setText(lines.join("\n"));
 	}
 }

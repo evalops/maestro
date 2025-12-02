@@ -27,6 +27,11 @@ export interface EditorTheme {
 	selectList: SelectListTheme;
 }
 
+export interface EditorBorderOptions {
+	title?: string;
+	hints?: string;
+}
+
 export interface LargePasteEvent {
 	pasteId: number;
 	content: string;
@@ -37,6 +42,8 @@ export interface LargePasteEvent {
 
 export type TextEditorConfig = Record<string, unknown> & {
 	placeholder?: string;
+	title?: string;
+	hints?: string;
 };
 
 interface EditorState {
@@ -58,6 +65,8 @@ export class Editor implements Component {
 	};
 	private config: TextEditorConfig = {};
 	public placeholder?: string;
+	public title?: string;
+	public hints?: string;
 	private autocompleteProvider?: ExtendedAutocompleteProvider;
 	private autocompleteList?: SelectList;
 	private isAutocompleting = false;
@@ -90,12 +99,24 @@ export class Editor implements Component {
 			if (config.placeholder) {
 				this.placeholder = config.placeholder;
 			}
+			if (config.title) {
+				this.title = config.title;
+			}
+			if (config.hints) {
+				this.hints = config.hints;
+			}
 		}
 	}
 	configure(config: Partial<TextEditorConfig>): void {
 		this.config = { ...this.config, ...config };
 		if (config.placeholder) {
 			this.placeholder = config.placeholder;
+		}
+		if (config.title !== undefined) {
+			this.title = config.title;
+		}
+		if (config.hints !== undefined) {
+			this.hints = config.hints;
 		}
 	}
 	setAutocompleteProvider(provider: AutocompleteProvider): void {
@@ -106,9 +127,20 @@ export class Editor implements Component {
 		// Layout the text - use full width
 		const layoutLines = this.layoutText(width);
 		const result = [];
-		// Render top border
+		// Render top border with optional title
 		if (!options.hideBorders) {
-			result.push(horizontal.repeat(width));
+			if (this.title) {
+				const titlePart = ` ${this.title} `;
+				const leftDashes = 2;
+				const rightDashes = Math.max(0, width - leftDashes - titlePart.length);
+				result.push(
+					chalk.gray("╭─") +
+						chalk.gray(titlePart) +
+						chalk.gray(`${"─".repeat(rightDashes - 1)}╮`),
+				);
+			} else {
+				result.push(horizontal.repeat(width));
+			}
 		}
 		// Render each layout line
 		for (const layoutLine of layoutLines) {
@@ -174,9 +206,20 @@ export class Editor implements Component {
 			// Render the line (no side borders, just horizontal lines above and below if not hidden)
 			result.push(displayText + padding);
 		}
-		// Render bottom border
+		// Render bottom border with optional hints
 		if (!options.hideBorders) {
-			result.push(horizontal.repeat(width));
+			if (this.hints) {
+				const hintPart = ` ${this.hints} `;
+				const leftDashes = 2;
+				const rightDashes = Math.max(0, width - leftDashes - hintPart.length);
+				result.push(
+					chalk.gray("╰─") +
+						chalk.dim(hintPart) +
+						chalk.gray(`${"─".repeat(rightDashes - 1)}╯`),
+				);
+			} else {
+				result.push(horizontal.repeat(width));
+			}
 		}
 		// Add autocomplete list if active
 		if (this.isAutocompleting && this.autocompleteList) {

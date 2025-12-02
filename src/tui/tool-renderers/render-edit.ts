@@ -10,6 +10,36 @@ import {
 } from "../utils/tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
+/** Count additions and deletions in a unified diff string */
+function countDiffChanges(diffStr: string): { added: number; removed: number } {
+	let added = 0;
+	let removed = 0;
+	for (const line of diffStr.split("\n")) {
+		if (line.startsWith("+") && !line.startsWith("+++")) {
+			added++;
+		} else if (line.startsWith("-") && !line.startsWith("---")) {
+			removed++;
+		}
+	}
+	return { added, removed };
+}
+
+/** Build a summary bar for diff changes */
+function buildDiffSummary(diffStr: string): string {
+	const { added, removed } = countDiffChanges(diffStr);
+	const parts: string[] = [];
+	if (added > 0) {
+		parts.push(theme.fg("success", `+${added}`));
+	}
+	if (removed > 0) {
+		parts.push(theme.fg("error", `-${removed}`));
+	}
+	if (parts.length === 0) {
+		return theme.fg("muted", "no changes");
+	}
+	return parts.join("  ");
+}
+
 export class EditRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
 		const terminalWidth = process.stdout.columns ?? 80;
@@ -47,6 +77,10 @@ export class EditRenderer implements ToolRenderer {
 		const diffValue =
 			details && typeof details.diff === "string" ? details.diff : null;
 		if (diffValue) {
+			// Add summary bar
+			const summary = buildDiffSummary(diffValue);
+			sections.push(summary);
+
 			const diffLines = highlightCodeLines(diffValue, "diff");
 			const shouldCompact = diffStyle === "auto" && terminalWidth < 90;
 			const renderedLines = shouldCompact

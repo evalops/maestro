@@ -2,6 +2,7 @@ import type { Component } from "@evalops/tui";
 import chalk from "chalk";
 import type { ActionApprovalRequest } from "../../agent/action-approval.js";
 import {
+	type BorderStyle,
 	getBorderChars,
 	themedBottomLine,
 	themedSeparatorLine,
@@ -34,11 +35,12 @@ export class ApprovalModal implements Component {
 		this.queueSize = size;
 	}
 
-	private static readonly BORDER_COLOR = "#8b5cf6";
+	private static readonly BORDER_COLOR = "#fbbf24";
+	private static readonly BORDER_STYLE: BorderStyle = "double";
 
 	render(width: number): string[] {
 		const borderColor = ApprovalModal.BORDER_COLOR;
-		const chars = getBorderChars("rounded");
+		const chars = getBorderChars(ApprovalModal.BORDER_STYLE);
 		const innerWidth = Math.max(1, width - 4);
 		const lines: string[] = [];
 		const borderV = chalk.hex(borderColor)(chars.vertical);

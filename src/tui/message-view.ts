@@ -1,4 +1,4 @@
-import type { Container, TUI } from "@evalops/tui";
+import { Container, Spacer, type TUI, Text } from "@evalops/tui";
 import type { AgentState, AppMessage } from "../agent/types.js";
 import {
 	createRenderableMessage,
@@ -6,6 +6,7 @@ import {
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
 } from "../conversation/render-model.js";
+import { theme } from "../theme/theme.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
@@ -16,12 +17,32 @@ interface MessageViewOptions {
 	toolComponents: Set<ToolExecutionComponent>;
 	pendingTools: Map<string, ToolExecutionComponent>;
 	registerToolComponent: (component: ToolExecutionComponent) => void;
+	getZenMode?: () => boolean;
+}
+
+/** Centered dot separator for zen mode */
+function createZenSeparator(): Container {
+	const container = new Container();
+	container.addChild(new Spacer(1));
+	const terminalWidth = process.stdout.columns ?? 80;
+	const dots = "·  ·  ·";
+	const padding = Math.max(0, Math.floor((terminalWidth - dots.length) / 2));
+	container.addChild(
+		new Text(theme.fg("dim", " ".repeat(padding) + dots), 0, 0),
+	);
+	container.addChild(new Spacer(1));
+	return container;
 }
 
 export class MessageView {
 	private isFirstUserMessage = true;
+	private messageCount = 0;
 
 	constructor(private readonly options: MessageViewOptions) {}
+
+	private isZenMode(): boolean {
+		return this.options.getZenMode?.() ?? false;
+	}
 
 	addMessage(message: AppMessage): void {
 		const renderable = createRenderableMessage(message);
@@ -31,6 +52,10 @@ export class MessageView {
 
 		if (isRenderableUserMessage(renderable)) {
 			if (renderable.text) {
+				// Add zen separator between messages (not before first)
+				if (this.isZenMode() && this.messageCount > 0) {
+					this.options.chatContainer.addChild(createZenSeparator());
+				}
 				const userComponent = new UserMessageComponent(
 					renderable.text,
 					this.isFirstUserMessage,
@@ -38,13 +63,19 @@ export class MessageView {
 				);
 				this.options.chatContainer.addChild(userComponent);
 				this.isFirstUserMessage = false;
+				this.messageCount++;
 			}
 			return;
 		}
 
 		if (isRenderableAssistantMessage(renderable)) {
+			// Add zen separator before assistant messages
+			if (this.isZenMode() && this.messageCount > 0) {
+				this.options.chatContainer.addChild(createZenSeparator());
+			}
 			const assistantComponent = new AssistantMessageComponent(renderable);
 			this.options.chatContainer.addChild(assistantComponent);
+			this.messageCount++;
 			for (const toolCall of renderable.toolCalls) {
 				const component = new ToolExecutionComponent(
 					toolCall.name,
@@ -85,6 +116,7 @@ export class MessageView {
 
 	renderInitialMessages(state: AgentState): void {
 		this.isFirstUserMessage = true;
+		this.messageCount = 0;
 		this.options.toolComponents.clear();
 		this.options.pendingTools.clear();
 		for (const message of state.messages) {
