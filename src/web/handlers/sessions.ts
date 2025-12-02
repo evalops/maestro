@@ -9,6 +9,7 @@ import { getDb, isDbAvailable } from "../../db/client.js";
 import { sharedSessions as sharedSessionsTable } from "../../db/schema.js";
 import { SessionManager } from "../../session/manager.js";
 import { createLogger } from "../../utils/logger.js";
+import { RateLimiter } from "../rate-limiter.js";
 import {
 	readJsonBody,
 	respondWithApiError,
@@ -19,47 +20,51 @@ import { convertAppMessagesToComposer } from "../session-serialization.js";
 const logger = createLogger("sessions-handler");
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 
-// Rate limiter for share access (prevents brute-force attacks)
-const shareAccessAttempts = new Map<
-	string,
-	{ count: number; resetAt: number }
->();
-const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-const RATE_LIMIT_MAX_ATTEMPTS = 10; // 10 attempts per minute per IP
+// ============================================================================
+// RATE LIMITING (uses Redis when COMPOSER_REDIS_URL is configured)
+// ============================================================================
 
-function checkShareRateLimit(clientIp: string): {
+const shareRateLimiter = new RateLimiter(
+	{
+		windowMs: Number(process.env.COMPOSER_SHARE_RATE_LIMIT_WINDOW_MS ?? 60_000),
+		max: Number(process.env.COMPOSER_SHARE_RATE_LIMIT_MAX ?? 10),
+	},
+	"share",
+);
+
+/**
+ * Check if a client IP is rate limited for share access.
+ * Uses Redis when configured, falls back to in-memory.
+ * Exported for testing.
+ */
+export async function checkShareRateLimit(clientIp: string): Promise<{
 	allowed: boolean;
 	retryAfterSeconds?: number;
-} {
-	const now = Date.now();
-	const record = shareAccessAttempts.get(clientIp);
-
-	if (!record || record.resetAt < now) {
-		shareAccessAttempts.set(clientIp, {
-			count: 1,
-			resetAt: now + RATE_LIMIT_WINDOW_MS,
-		});
-		return { allowed: true };
+}> {
+	const result = await shareRateLimiter.checkAsync(clientIp);
+	if (!result.allowed) {
+		const retryAfterSeconds = Math.ceil((result.reset - Date.now()) / 1000);
+		return {
+			allowed: false,
+			retryAfterSeconds: Math.max(1, retryAfterSeconds),
+		};
 	}
-
-	if (record.count >= RATE_LIMIT_MAX_ATTEMPTS) {
-		const retryAfterSeconds = Math.ceil((record.resetAt - now) / 1000);
-		return { allowed: false, retryAfterSeconds };
-	}
-
-	record.count++;
 	return { allowed: true };
 }
 
-// Periodically clean up old rate limit entries
-setInterval(() => {
-	const now = Date.now();
-	for (const [ip, record] of shareAccessAttempts.entries()) {
-		if (record.resetAt < now) {
-			shareAccessAttempts.delete(ip);
-		}
-	}
-}, 60_000);
+/**
+ * Reset rate limit state for a client IP. Exported for testing.
+ */
+export async function resetShareRateLimit(clientIp?: string): Promise<void> {
+	await shareRateLimiter.reset(clientIp);
+}
+
+/**
+ * Stop the rate limiter cleanup. Call during graceful shutdown.
+ */
+export function stopShareRateLimiter(): void {
+	shareRateLimiter.stop();
+}
 
 // Fallback in-memory store when DB not available
 const inMemoryShares = new Map<
@@ -471,7 +476,7 @@ export async function handleSharedSession(
 			(req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
 			req.socket.remoteAddress ||
 			"unknown";
-		const rateLimit = checkShareRateLimit(clientIp);
+		const rateLimit = await checkShareRateLimit(clientIp);
 		if (!rateLimit.allowed) {
 			res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds ?? 60));
 			sendJson(
