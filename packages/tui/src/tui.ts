@@ -152,14 +152,24 @@ export class TUI extends Container {
 		this.terminal.stop();
 	}
 
-	requestRender(): void {
-		if (this.renderRequested) return;
+	requestRender(priority: "normal" | "interactive" = "normal"): void {
+		// Interactive requests (e.g., arrow-key navigation) should feel instant even
+		// when we're throttling renders for SSH/tmux sessions. We bypass the throttle
+		// and collapse any pending timer so the next frame paints immediately.
+		const interactive = priority === "interactive";
+
+		if (interactive && this.renderTimer) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = null;
+		}
+
+		if (this.renderRequested && !interactive) return;
 		this.renderRequested = true;
+
 		const now = Date.now();
-		const delay = Math.max(
-			0,
-			this.minRenderIntervalMs - (now - this.lastRenderTs),
-		);
+		const effectiveMinInterval = interactive ? 0 : this.minRenderIntervalMs;
+		const delay = Math.max(0, effectiveMinInterval - (now - this.lastRenderTs));
+
 		if (delay > 0) {
 			if (this.renderTimer) {
 				return;
@@ -187,7 +197,7 @@ export class TUI extends Container {
 		// The focused component can decide how to handle Ctrl+C
 		if (this.focusedComponent?.handleInput) {
 			this.focusedComponent.handleInput(data);
-			this.requestRender();
+			this.requestRender("interactive");
 		}
 	}
 

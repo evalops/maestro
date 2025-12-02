@@ -85,8 +85,9 @@ export class Row extends Container {
 	render(width: number): string[] {
 		if (this.children.length === 0) return ["".padEnd(width, " ")];
 
+		type LineEntry = { child: Component; index: number };
 		const lines: string[][] = [];
-		let currentLine: Component[] = [];
+		let currentLine: LineEntry[] = [];
 		let currentMinWidth = 0;
 
 		const commitLine = () => {
@@ -96,8 +97,8 @@ export class Row extends Container {
 			currentMinWidth = 0;
 		};
 
-		for (const child of this.children) {
-			const minWidth = this.getMinWidth(child, currentLine.length);
+		this.children.forEach((child, originalIndex) => {
+			const minWidth = this.getMinWidth(child, originalIndex);
 			const projected =
 				currentLine.length === 0
 					? minWidth
@@ -105,14 +106,14 @@ export class Row extends Container {
 
 			if (this.wrap && projected > width && currentLine.length > 0) {
 				commitLine();
-				currentLine.push(child);
+				currentLine.push({ child, index: originalIndex });
 				currentMinWidth = minWidth;
 			} else {
-				currentLine.push(child);
+				currentLine.push({ child, index: originalIndex });
 				if (currentLine.length === 1) currentMinWidth = minWidth;
 				else currentMinWidth += this.gap + minWidth;
 			}
-		}
+		});
 		commitLine();
 
 		return lines.flat();
@@ -140,32 +141,35 @@ export class Row extends Container {
 		return Math.max(1, minWidth ?? 1);
 	}
 
-	private renderLine(children: Component[], width: number): string[] {
-		const gapTotal = this.gap * Math.max(0, children.length - 1);
+	private renderLine(
+		items: Array<{ child: Component; index: number }>,
+		width: number,
+	): string[] {
+		const gapTotal = this.gap * Math.max(0, items.length - 1);
 		const availableWidth = Math.max(1, width - gapTotal);
 
-		const weights = children.map((child, idx) => {
-			const opt = this.getChildOptions(child, idx);
+		const weights = items.map(({ child, index }) => {
+			const opt = this.getChildOptions(child, index);
 			return opt.weight ?? 1;
 		});
-		const minWidths = children.map((child, idx) => {
-			const opt = this.getChildOptions(child, idx);
+		const minWidths = items.map(({ child, index }) => {
+			const opt = this.getChildOptions(child, index);
 			return Math.max(1, opt.minWidth ?? 1);
 		});
-		const maxWidths = children.map((child, idx) => {
-			const opt = this.getChildOptions(child, idx);
+		const maxWidths = items.map(({ child, index }) => {
+			const opt = this.getChildOptions(child, index);
 			return opt.maxWidth ?? Number.POSITIVE_INFINITY;
 		});
 
 		const totalWeight = weights.reduce((sum, value) => sum + value, 0);
 		const assigned: number[] = [];
 		let remaining = availableWidth;
-		for (let i = 0; i < children.length; i++) {
+		for (let i = 0; i < items.length; i++) {
 			const raw = Math.floor((availableWidth * weights[i]) / totalWeight);
 			const target = clampValue(raw, minWidths[i], maxWidths[i]);
 			const colWidth = Math.max(
 				1,
-				Math.min(target, remaining - (children.length - i - 1)),
+				Math.min(target, remaining - (items.length - i - 1)),
 			);
 			assigned.push(colWidth);
 			remaining -= colWidth;
@@ -175,7 +179,7 @@ export class Row extends Container {
 			assigned[i] += 1;
 		}
 
-		const rendered = children.map((child, idx) => {
+		const rendered = items.map(({ child }, idx) => {
 			const childLines = child.render(assigned[idx]);
 			return childLines.map((line) => padToWidth(line, assigned[idx]));
 		});
@@ -184,7 +188,10 @@ export class Row extends Container {
 			const filler = " ".repeat(assigned[idx]);
 			const deficit = maxHeight - lines.length;
 			if (deficit <= 0) return lines;
-			const alignSelf = this.getChildOptions(children[idx], idx).alignSelf;
+			const alignSelf = this.getChildOptions(
+				items[idx].child,
+				items[idx].index,
+			).alignSelf;
 			const verticalAlign = alignSelf ?? this.align;
 			if (verticalAlign === "start") {
 				for (let i = 0; i < deficit; i++) lines.push(filler);
@@ -202,21 +209,21 @@ export class Row extends Container {
 		const combined: string[] = [];
 
 		const baseGap = this.gap;
-		const baseGapTotal = baseGap * Math.max(0, children.length - 1);
+		const baseGapTotal = baseGap * Math.max(0, items.length - 1);
 		const contentWidth = assigned.reduce((sum, v) => sum + v, 0);
 		const extraSpace = Math.max(0, width - contentWidth - baseGapTotal);
 
 		const gapSizes: number[] = [];
-		if (this.justify === "space-between" && children.length > 1) {
-			const extraPerGap = Math.floor(extraSpace / (children.length - 1));
-			let remainder = extraSpace - extraPerGap * (children.length - 1);
-			for (let i = 0; i < children.length - 1; i++) {
+		if (this.justify === "space-between" && items.length > 1) {
+			const extraPerGap = Math.floor(extraSpace / (items.length - 1));
+			let remainder = extraSpace - extraPerGap * (items.length - 1);
+			for (let i = 0; i < items.length - 1; i++) {
 				const extra = remainder > 0 ? 1 : 0;
 				gapSizes.push(baseGap + extraPerGap + extra);
 				remainder -= extra;
 			}
 		} else {
-			for (let i = 0; i < children.length - 1; i++) {
+			for (let i = 0; i < items.length - 1; i++) {
 				gapSizes.push(baseGap);
 			}
 		}
@@ -318,7 +325,7 @@ export class Box extends Container {
 		const leftPad = " ".repeat(this.paddingX);
 		const rightPadLength = Math.max(
 			0,
-			contentWidth - this.paddingX - paddedWidth - this.paddingX,
+			contentWidth - this.paddingX - paddedWidth,
 		);
 		const rightPad = " ".repeat(rightPadLength);
 
