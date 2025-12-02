@@ -133,8 +133,13 @@ const DEFAULT_APPROVAL_MODE = normalizeApprovalMode(
 const AUTH_MODE = normalizeAuthMode(process.env.COMPOSER_AUTH_MODE);
 const CODEX_TOKEN = process.env.CODEX_API_KEY?.trim();
 const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
-const REQUIRE_WEB_API_KEY = process.env.COMPOSER_WEB_REQUIRE_KEY !== "0";
-const REQUIRE_REDIS = process.env.COMPOSER_WEB_REQUIRE_REDIS !== "0";
+const requireKeyEnv = process.env.COMPOSER_WEB_REQUIRE_KEY;
+const requireRedisEnv = process.env.COMPOSER_WEB_REQUIRE_REDIS;
+// Default: require in normal runtime, but don't break tests unless explicitly opted in.
+const REQUIRE_WEB_API_KEY =
+	(requireKeyEnv ?? (process.env.NODE_ENV === "test" ? "0" : "1")) !== "0";
+const REQUIRE_REDIS =
+	(requireRedisEnv ?? (process.env.NODE_ENV === "test" ? "0" : "1")) !== "0";
 const DEFAULT_WEB_ORIGIN =
 	process.env.COMPOSER_WEB_ORIGIN?.trim() || "http://localhost:4173";
 const STATIC_MAX_AGE =
