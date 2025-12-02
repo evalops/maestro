@@ -6,6 +6,7 @@
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { createLogger } from "../utils/logger.js";
+import { isTokenRevokedSync } from "./token-revocation.js";
 
 const logger = createLogger("auth");
 
@@ -71,10 +72,43 @@ export function generateTokenPair(
 }
 
 /**
- * Verify and decode JWT token
+ * Verify and decode JWT token.
+ * Checks both JWT validity and revocation status.
  */
 export function verifyToken(token: string): JwtPayload | null {
 	try {
+		// First check revocation (fast, cache-based check)
+		if (isTokenRevokedSync(token)) {
+			logger.debug("Token is revoked");
+			return null;
+		}
+
+		const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
+		return decoded;
+	} catch (error) {
+		logger.debug("Token verification failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+}
+
+/**
+ * Verify token with async revocation check (checks database).
+ * Use this when you need to ensure revocation is checked against DB.
+ */
+export async function verifyTokenAsync(
+	token: string,
+): Promise<JwtPayload | null> {
+	try {
+		// Import dynamically to avoid circular dependency at module load
+		const { isTokenRevoked } = await import("./token-revocation.js");
+
+		if (await isTokenRevoked(token)) {
+			logger.debug("Token is revoked (async check)");
+			return null;
+		}
+
 		const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
 		return decoded;
 	} catch (error) {

@@ -543,6 +543,126 @@ export const apiKeys = pgTable(
 );
 
 // ============================================================================
+// TOKEN REVOCATION
+// ============================================================================
+
+export const revokedTokens = pgTable(
+	"revoked_tokens",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		/** SHA-256 hash of the token (never store raw tokens) */
+		tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+		/** Token type for metrics/debugging */
+		tokenType: varchar("token_type", { length: 20 }).notNull(), // 'access' | 'refresh' | 'api_key'
+		/** User who owned the token */
+		userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
+		/** Org context */
+		orgId: uuid("org_id").references(() => organizations.id, {
+			onDelete: "cascade",
+		}),
+		/** Why the token was revoked */
+		reason: varchar("reason", { length: 100 }), // 'logout', 'password_change', 'admin_revoke', 'security_incident'
+		/** When the token naturally expires (for cleanup) */
+		expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+		/** When the token was revoked */
+		revokedAt: timestamp("revoked_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		/** Who revoked it (null = user themselves) */
+		revokedBy: uuid("revoked_by").references(() => users.id),
+	},
+	(table) => ({
+		tokenHashIdx: uniqueIndex("revoked_token_hash_idx").on(table.tokenHash),
+		userIdx: index("revoked_token_user_idx").on(table.userId),
+		expiresIdx: index("revoked_token_expires_idx").on(table.expiresAt),
+	}),
+);
+
+// ============================================================================
+// WEBHOOK DELIVERY QUEUE
+// ============================================================================
+
+export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", [
+	"pending",
+	"delivered",
+	"failed",
+	"retrying",
+]);
+
+export const webhookDeliveries = pgTable(
+	"webhook_deliveries",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		orgId: uuid("org_id")
+			.notNull()
+			.references(() => organizations.id, { onDelete: "cascade" }),
+		/** Target URL */
+		url: text("url").notNull(),
+		/** JSON payload */
+		payload: jsonb("payload").notNull(),
+		/** HMAC signature */
+		signature: varchar("signature", { length: 200 }),
+		/** Delivery status */
+		status: webhookDeliveryStatusEnum("status").default("pending").notNull(),
+		/** Number of delivery attempts */
+		attempts: integer("attempts").default(0).notNull(),
+		/** Max retry attempts */
+		maxAttempts: integer("max_attempts").default(5).notNull(),
+		/** Next retry time (exponential backoff) */
+		nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+		/** Last error message */
+		lastError: text("last_error"),
+		/** HTTP status code from last attempt */
+		lastStatusCode: integer("last_status_code"),
+		/** Response time in ms */
+		lastResponseTimeMs: integer("last_response_time_ms"),
+		/** When successfully delivered */
+		deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+	},
+	(table) => ({
+		orgStatusIdx: index("webhook_delivery_org_status_idx").on(
+			table.orgId,
+			table.status,
+		),
+		retryIdx: index("webhook_delivery_retry_idx").on(
+			table.status,
+			table.nextRetryAt,
+		),
+	}),
+);
+
+// ============================================================================
+// TOTP USED CODES (replay protection)
+// ============================================================================
+
+export const totpUsedCodes = pgTable(
+	"totp_used_codes",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		/** The code that was used */
+		codeHash: varchar("code_hash", { length: 64 }).notNull(),
+		/** Time window the code was valid for */
+		windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+		usedAt: timestamp("used_at", { withTimezone: true }).defaultNow().notNull(),
+	},
+	(table) => ({
+		userCodeIdx: uniqueIndex("totp_used_code_user_idx").on(
+			table.userId,
+			table.codeHash,
+			table.windowStart,
+		),
+		// For cleanup of old entries
+		windowIdx: index("totp_used_code_window_idx").on(table.windowStart),
+	}),
+);
+
+// ============================================================================
 // RELATIONS (for Drizzle ORM joins)
 // ============================================================================
 

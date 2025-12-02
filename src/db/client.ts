@@ -85,6 +85,14 @@ export function isDatabaseConfigured(): boolean {
 }
 
 /**
+ * Check if database connection is currently available.
+ * Returns true if configured and connected, false otherwise.
+ */
+export function isDbAvailable(): boolean {
+	return isDatabaseConfigured() && dbInstance !== null;
+}
+
+/**
  * Test database connection
  */
 export async function testConnection(): Promise<boolean> {
