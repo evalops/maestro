@@ -200,7 +200,9 @@ export function createAuthMiddleware(
 	return (req, res, next) => {
 		const pathname = getPathname(req);
 		if (pathname.startsWith("/api")) {
-			if (requireApiKey && (!apiKey || apiKey.length === 0)) {
+			const missingKey = !apiKey || apiKey.length === 0;
+			// If requirement is enabled and key is missing, fail fast once.
+			if (requireApiKey && missingKey) {
 				sendJson(
 					res,
 					401,
@@ -213,7 +215,9 @@ export function createAuthMiddleware(
 				);
 				return;
 			}
-			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
+
+			// If a key is configured (or requirement is off and key provided), validate it.
+			if (!missingKey && !authenticateRequest(req, res, corsHeaders, apiKey)) {
 				return;
 			}
 		}
