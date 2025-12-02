@@ -38,10 +38,6 @@ export interface AuditEntryData {
 	metadata?: unknown;
 }
 
-/**
- * Compute integrity hash for an audit entry.
- * Hash = SHA-256(JSON(entry data) + previousHash)
- */
 export function computeEntryHash(
 	entry: AuditEntryData,
 	previousHash: string,
@@ -66,10 +62,6 @@ export function computeEntryHash(
 // CHAIN OPERATIONS
 // ============================================================================
 
-/**
- * Get the last hash in the chain for an organization.
- * Uses memory cache first, then DB cache table, then falls back to scanning audit logs.
- */
 export async function getLastHash(orgId: string): Promise<string> {
 	// Check memory cache first (hot path)
 	const memoryCached = lastHashMemoryCache.get(orgId);
@@ -122,10 +114,6 @@ export async function getLastHash(orgId: string): Promise<string> {
 	}
 }
 
-/**
- * Update the cached last hash for an organization.
- * Updates both in-memory cache and persistent database cache.
- */
 export async function updateLastHash(
 	orgId: string,
 	hash: string,
@@ -164,10 +152,6 @@ export async function updateLastHash(
 	}
 }
 
-/**
- * Clear cached hash (e.g., after verification failure).
- * Clears both memory and database cache.
- */
 export async function clearHashCache(orgId?: string): Promise<void> {
 	if (orgId) {
 		lastHashMemoryCache.delete(orgId);
@@ -201,10 +185,7 @@ export async function clearHashCache(orgId?: string): Promise<void> {
 	}
 }
 
-/**
- * Warm the memory cache from the database.
- * Call this on server startup.
- */
+/** Warm the memory cache from the database. Call on startup. */
 export async function warmHashCache(): Promise<number> {
 	if (!isDbAvailable()) {
 		return 0;
@@ -245,10 +226,6 @@ export interface VerificationResult {
 	error?: string;
 }
 
-/**
- * Verify the integrity of audit log chain for an organization.
- * Checks that each entry's hash matches the expected value.
- */
 export async function verifyAuditChain(
 	orgId: string,
 	options?: {

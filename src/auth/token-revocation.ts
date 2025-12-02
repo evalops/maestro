@@ -6,7 +6,7 @@
  */
 
 import crypto from "node:crypto";
-import { and, eq, gt, gte, lte } from "drizzle-orm";
+import { and, eq, gt, lte } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../db/client.js";
 import {
 	revokedTokens,
@@ -33,15 +33,9 @@ export type RevocationReason =
 // USER REVOCATION TIMESTAMPS (for "revoke all" functionality)
 // ============================================================================
 
-/**
- * Stores the "revoke all tokens before" timestamp per user.
- * Any token issued before this time is considered revoked.
- */
+// Per-user "revoke all tokens before" timestamps
 const userRevocationTimestamps = new Map<string, number>();
 
-/**
- * Check if a token was issued before the user's revocation timestamp.
- */
 export function isTokenIssuedBeforeRevocation(
 	userId: string,
 	issuedAt: number,
@@ -51,9 +45,6 @@ export function isTokenIssuedBeforeRevocation(
 	return issuedAt < revokedBefore;
 }
 
-/**
- * Set the revocation timestamp for a user (revoke all tokens before this time).
- */
 export function setUserRevocationTimestamp(
 	userId: string,
 	timestamp: number,
@@ -61,9 +52,6 @@ export function setUserRevocationTimestamp(
 	userRevocationTimestamps.set(userId, timestamp);
 }
 
-/**
- * Get the revocation timestamp for a user.
- */
 export function getUserRevocationTimestamp(userId: string): number | undefined {
 	return userRevocationTimestamps.get(userId);
 }
@@ -178,9 +166,6 @@ function getCache(): RevocationCache {
 // HASH UTILITY
 // ============================================================================
 
-/**
- * Hash a token for storage. Never store raw tokens.
- */
 export function hashToken(token: string): string {
 	return crypto.createHash("sha256").update(token).digest("hex");
 }
@@ -189,9 +174,6 @@ export function hashToken(token: string): string {
 // REVOCATION OPERATIONS
 // ============================================================================
 
-/**
- * Revoke a token. Stores in database and cache.
- */
 export async function revokeToken(options: RevokeTokenOptions): Promise<void> {
 	const tokenHash = hashToken(options.token);
 
@@ -238,8 +220,7 @@ export async function revokeToken(options: RevokeTokenOptions): Promise<void> {
 }
 
 /**
- * Revoke all tokens for a user (e.g., on password change or logout all).
- * Sets a "revoked before" timestamp - any token issued before this is invalid.
+ * Revoke all tokens for a user. Sets a "revoked before" timestamp.
  */
 export async function revokeAllUserTokens(
 	userId: string,
@@ -294,10 +275,7 @@ export async function revokeAllUserTokens(
 	}
 }
 
-/**
- * Load user revocation timestamps from DB into memory cache.
- * Call this on server startup for cache warming.
- */
+/** Load user revocation timestamps from DB into memory. Call on startup. */
 export async function warmUserRevocationCache(): Promise<number> {
 	if (!isDbAvailable()) {
 		return 0;
@@ -322,24 +300,12 @@ export async function warmUserRevocationCache(): Promise<number> {
 	}
 }
 
-/**
- * Options for revocation check behavior on DB errors.
- */
 export interface RevocationCheckOptions {
-	/**
-	 * If true, return "revoked" when DB check fails (fail-closed).
-	 * If false, return "not revoked" when DB check fails (fail-open).
-	 * Default: true (fail-closed for security)
-	 */
+	/** If true (default), return "revoked" on DB errors. Set false to fail-open. */
 	failClosed?: boolean;
 }
 
-/**
- * Check if a token is revoked. Checks cache first, then database.
- *
- * By default, fails closed (returns true/revoked) on DB errors for security.
- * Set failClosed: false for availability-critical paths.
- */
+/** Check if a token is revoked. Fails closed by default. */
 export async function isTokenRevoked(
 	token: string,
 	options: RevocationCheckOptions = {},
@@ -395,11 +361,7 @@ export async function isTokenRevoked(
 	}
 }
 
-/**
- * Synchronous revocation check (cache only).
- * Use this in hot paths where async is not acceptable.
- * Note: May miss recently revoked tokens not yet in cache.
- */
+/** Sync revocation check (cache only). May miss recent revocations. */
 export function isTokenRevokedSync(token: string): boolean {
 	const tokenHash = hashToken(token);
 	return getCache().has(tokenHash);
@@ -409,10 +371,7 @@ export function isTokenRevokedSync(token: string): boolean {
 // CLEANUP
 // ============================================================================
 
-/**
- * Clean up expired revocation entries from database.
- * Run this periodically (e.g., daily cron job).
- */
+/** Clean up expired revocation entries from database. */
 export async function cleanupExpiredRevocations(): Promise<number> {
 	if (!isDbAvailable()) {
 		return 0;

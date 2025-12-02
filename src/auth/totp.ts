@@ -1,12 +1,6 @@
 /**
  * TOTP 2FA Service
- *
- * Provides secure TOTP verification with:
- * - Rate limiting to prevent brute force
- * - Replay protection to prevent code reuse
- * - Database-backed used code storage
- *
- * Uses otplib for TOTP - a well-tested, audited library.
+ * Rate limiting, replay protection, database-backed storage.
  */
 
 import crypto from "node:crypto";
@@ -29,16 +23,10 @@ authenticator.options = {
 // SECRET GENERATION
 // ============================================================================
 
-/**
- * Generate a new TOTP secret.
- */
 export function generateTotpSecret(): string {
 	return authenticator.generateSecret();
 }
 
-/**
- * Generate otpauth:// URI for QR code enrollment.
- */
 export function generateTotpUri(
 	secret: string,
 	email: string,
@@ -51,9 +39,6 @@ export function generateTotpUri(
 // BACKUP CODES
 // ============================================================================
 
-/**
- * Generate backup codes for 2FA recovery.
- */
 export function generateBackupCodes(count = 10): string[] {
 	const codes: string[] = [];
 	for (let i = 0; i < count; i++) {
@@ -64,18 +49,12 @@ export function generateBackupCodes(count = 10): string[] {
 	return codes;
 }
 
-/**
- * Hash a backup code for storage.
- */
 export function hashBackupCode(code: string): string {
 	// Normalize: remove dashes, uppercase
 	const normalized = code.replace(/-/g, "").toUpperCase();
 	return crypto.createHash("sha256").update(normalized).digest("hex");
 }
 
-/**
- * Verify a backup code against stored hashes.
- */
 export function verifyBackupCode(
 	code: string,
 	hashedCodes: string[],
@@ -112,10 +91,6 @@ const fallbackRateLimits = new Map<
 	{ attempts: number; windowStart: number; lockedUntil?: number }
 >();
 
-/**
- * Check if user is rate limited.
- * Uses database for distributed rate limiting across instances.
- */
 export async function isRateLimitedAsync(userId: string): Promise<{
 	limited: boolean;
 	retryAfterMs?: number;
@@ -172,10 +147,7 @@ export async function isRateLimitedAsync(userId: string): Promise<{
 	}
 }
 
-/**
- * Synchronous rate limit check (in-memory fallback only).
- * Use isRateLimitedAsync for accurate distributed checks.
- */
+/** Sync rate limit check (in-memory only). */
 export function isRateLimited(userId: string): {
 	limited: boolean;
 	retryAfterMs?: number;
@@ -396,10 +368,6 @@ export interface TotpVerifyResult {
 	retryAfterMs?: number;
 }
 
-/**
- * Verify a TOTP code with rate limiting and replay protection.
- * Uses database for distributed rate limiting across instances.
- */
 export async function verifyTotpCode(
 	userId: string,
 	secret: string,
@@ -441,9 +409,7 @@ export async function verifyTotpCode(
 	return { valid: true };
 }
 
-/**
- * Generate a TOTP code (for testing only).
- */
+/** Generate a TOTP code (for testing only). */
 export function generateTotpCode(secret: string): string {
 	return authenticator.generate(secret);
 }
@@ -452,9 +418,6 @@ export function generateTotpCode(secret: string): string {
 // CLEANUP
 // ============================================================================
 
-/**
- * Clean up old used codes.
- */
 export async function cleanupUsedCodes(retentionMinutes = 10): Promise<number> {
 	if (!isDbAvailable()) return 0;
 
@@ -477,10 +440,6 @@ export async function cleanupUsedCodes(retentionMinutes = 10): Promise<number> {
 	}
 }
 
-/**
- * Clean up expired rate limit entries.
- * Call this periodically to prevent table bloat.
- */
 export async function cleanupRateLimits(): Promise<number> {
 	if (!isDbAvailable()) return 0;
 
@@ -532,10 +491,6 @@ export async function cleanupRateLimits(): Promise<number> {
 // METRICS
 // ============================================================================
 
-/**
- * Get TOTP metrics (from in-memory fallback cache).
- * For accurate distributed metrics, query the database directly.
- */
 export function getTotpMetrics(): {
 	rateLimitedUsers: number;
 	lockedOutUsers: number;

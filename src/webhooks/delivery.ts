@@ -52,10 +52,7 @@ export interface DeliveryResult {
 // HMAC SIGNING
 // ============================================================================
 
-/**
- * Sign a webhook payload with HMAC-SHA256.
- * Format: t=timestamp,v1=signature
- */
+/** Sign a webhook payload with HMAC-SHA256. Format: t=timestamp,v1=signature */
 export function signPayload(
 	payload: string,
 	secret: string,
@@ -75,9 +72,6 @@ export function signPayload(
 	};
 }
 
-/**
- * Verify a webhook signature.
- */
 export function verifySignature(
 	payload: string,
 	signature: string,
@@ -132,9 +126,6 @@ export function verifySignature(
 // HTTP DELIVERY
 // ============================================================================
 
-/**
- * Deliver a webhook via HTTP POST.
- */
 async function deliverHttp(
 	url: string,
 	payload: string,
@@ -209,10 +200,6 @@ const LOCK_ID = "webhook_processor";
 const LOCK_DURATION_MS = 60_000; // 1 minute lock duration
 const LOCK_RENEWAL_MS = 30_000; // Renew every 30 seconds
 
-/**
- * Try to acquire the webhook processor lock.
- * Returns true if lock acquired, false if another instance holds it.
- */
 async function tryAcquireLock(): Promise<boolean> {
 	if (!isDbAvailable()) {
 		return true; // No DB, no locking - just process
@@ -263,9 +250,6 @@ async function tryAcquireLock(): Promise<boolean> {
 	}
 }
 
-/**
- * Renew the lock if we hold it.
- */
 async function renewLock(): Promise<boolean> {
 	if (!isDbAvailable()) {
 		return true;
@@ -297,9 +281,6 @@ async function renewLock(): Promise<boolean> {
 	}
 }
 
-/**
- * Release the lock if we hold it.
- */
 async function releaseLock(): Promise<void> {
 	if (!isDbAvailable()) {
 		return;
@@ -327,10 +308,6 @@ async function releaseLock(): Promise<void> {
 // RETRY BACKOFF WITH JITTER
 // ============================================================================
 
-/**
- * Calculate backoff with jitter to prevent thundering herd.
- * Uses decorrelated jitter: sleep = min(cap, random_between(base, sleep * 3))
- */
 function calculateBackoffWithJitter(
 	attempt: number,
 	baseMs = 1000,
@@ -347,11 +324,7 @@ function calculateBackoffWithJitter(
 // QUEUE OPERATIONS
 // ============================================================================
 
-/**
- * Queue a webhook for delivery.
- * Note: Signature is generated at delivery time, not queue time,
- * to ensure timestamp is fresh when the webhook is actually sent.
- */
+/** Queue a webhook for delivery. Signature is generated at delivery time. */
 export async function queueWebhook(
 	options: WebhookDeliveryOptions,
 ): Promise<string | null> {
@@ -409,11 +382,6 @@ export async function queueWebhook(
 	}
 }
 
-/**
- * Process pending webhooks from the queue.
- * Call this periodically (e.g., every 10 seconds).
- * Uses distributed locking to prevent multiple instances from processing the same webhooks.
- */
 export async function processWebhookQueue(batchSize = 10): Promise<number> {
 	if (!isDbAvailable()) {
 		return 0;
@@ -559,9 +527,6 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 	}
 }
 
-/**
- * Clean up old delivered/failed webhooks.
- */
 export async function cleanupWebhookQueue(retentionDays = 7): Promise<number> {
 	if (!isDbAvailable()) {
 		return 0;
@@ -605,9 +570,6 @@ export async function cleanupWebhookQueue(retentionDays = 7): Promise<number> {
 // ALERT WEBHOOK INTEGRATION
 // ============================================================================
 
-/**
- * Send alert webhooks to all configured endpoints for an organization.
- */
 export async function sendAlertWebhooks(
 	orgId: string,
 	alert: {
@@ -677,9 +639,6 @@ export async function sendAlertWebhooks(
 let processorInterval: ReturnType<typeof setInterval> | null = null;
 let lockRenewalInterval: ReturnType<typeof setInterval> | null = null;
 
-/**
- * Start the background webhook processor.
- */
 export function startWebhookProcessor(intervalMs = 10_000): void {
 	if (processorInterval) {
 		return; // Already running
@@ -710,9 +669,6 @@ export function startWebhookProcessor(intervalMs = 10_000): void {
 	});
 }
 
-/**
- * Stop the background webhook processor.
- */
 export async function stopWebhookProcessor(): Promise<void> {
 	if (processorInterval) {
 		clearInterval(processorInterval);
