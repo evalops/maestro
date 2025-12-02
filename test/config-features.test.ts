@@ -12,7 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type ConfigInspection,
@@ -25,6 +25,12 @@ import {
 	resolveAlias,
 	validateConfig,
 } from "../src/models/registry.js";
+
+function writeConfigFile(path: string, data: string | object): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const payload = typeof data === "string" ? data : JSON.stringify(data);
+	writeFileSync(path, payload);
+}
 
 describe("Config Features", () => {
 	let testDir: string;
@@ -103,7 +109,7 @@ describe("Config Features", () => {
 				}]
 			}`;
 
-			writeFileSync(configPath, config);
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			const result = validateConfig();
@@ -131,7 +137,7 @@ describe("Config Features", () => {
 				}],
 			}`;
 
-			writeFileSync(configPath, config);
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			const result = validateConfig();
@@ -164,7 +170,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			// Force config reload to pick up new COMPOSER_CONFIG
@@ -207,7 +213,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			const result = validateConfig();
@@ -221,7 +227,7 @@ describe("Config Features", () => {
 	describe("File References", () => {
 		it("should resolve {file:path} references", () => {
 			const promptPath = join(testDir, "prompt.txt");
-			writeFileSync(promptPath, "This is my system prompt");
+			writeConfigFile(promptPath, "This is my system prompt");
 
 			const configPath = join(testDir, "file-ref.json");
 			const config = {
@@ -243,7 +249,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			const result = validateConfig();
@@ -273,7 +279,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			const result = validateConfig();
@@ -321,7 +327,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 			reloadModelConfig(); // Force reload with new config
 
@@ -360,7 +366,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			const resolved = resolveAlias("nonexistent");
@@ -390,7 +396,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			const result: ConfigValidationResult = validateConfig();
@@ -422,7 +428,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 
 			const result = validateConfig();
@@ -459,7 +465,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 			reloadModelConfig(); // Force reload with new config
 
@@ -497,7 +503,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 			reloadModelConfig();
 
@@ -529,7 +535,7 @@ describe("Config Features", () => {
 				],
 			};
 
-			writeFileSync(configPath, JSON.stringify(config));
+			writeConfigFile(configPath, config);
 			process.env.COMPOSER_CONFIG = configPath;
 			reloadModelConfig();
 

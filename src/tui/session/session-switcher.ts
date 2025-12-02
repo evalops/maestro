@@ -1,4 +1,4 @@
-import { Container, Spacer, Text } from "@evalops/tui";
+import { Column, Row, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type {
 	SessionDataProvider,
@@ -13,30 +13,27 @@ interface SessionSwitcherComponentOptions {
 	onSummarize: (session: SessionItem) => Promise<void> | void;
 }
 
-export class SessionSwitcherComponent extends Container {
+export class SessionSwitcherComponent extends Column {
 	private sessions: SessionItem[] = [];
 	private filteredSessions: SessionItem[] = [];
 	private selectedIndex = 0;
 	private showFavoritesOnly = false;
 	private tabsText: Text;
-	private listContainer: Container;
+	private listContainer: Column;
 	private statusText: Text;
 
 	constructor(private readonly options: SessionSwitcherComponentOptions) {
-		super();
+		super([], { gap: 1 });
 
 		const cwd = process.cwd();
 		this.addChild(new Text(chalk.gray(`Current folder: ${cwd}`), 0, 0));
-		this.addChild(new Spacer(1));
 		this.addChild(new Text(chalk.bold("Select a session"), 0, 0));
 
 		this.tabsText = new Text("", 0, 0);
 		this.addChild(this.tabsText);
-		this.addChild(new Spacer(1));
 
-		this.listContainer = new Container();
+		this.listContainer = new Column([], { gap: 0 });
 		this.addChild(this.listContainer);
-		this.addChild(new Spacer(1));
 
 		this.statusText = new Text("", 0, 0);
 		this.addChild(this.statusText);
@@ -115,8 +112,8 @@ export class SessionSwitcherComponent extends Container {
 			const session = this.filteredSessions[i];
 			if (!session) continue;
 			const isSelected = i === this.selectedIndex;
-			const line = this.renderRow(session, isSelected);
-			this.listContainer.addChild(new Text(line, 0, 0));
+			const row = this.renderRow(session, isSelected);
+			this.listContainer.addChild(row);
 		}
 
 		const rangeInfo = chalk.gray(
@@ -126,15 +123,37 @@ export class SessionSwitcherComponent extends Container {
 		this.updateStatus();
 	}
 
-	private renderRow(session: SessionItem, isSelected: boolean): string {
+	private renderRow(session: SessionItem, isSelected: boolean): Row {
 		const pointer = isSelected ? chalk.blue("→") : " ";
 		const star = session.favorite ? chalk.yellow("*") : " ";
-		const modified = this.formatRelative(session.modified).padEnd(8);
-		const created = this.formatRelative(session.created).padEnd(8);
-		const size = this.formatSize(session.size).padStart(6);
+		const modified = this.formatRelative(session.modified);
+		const created = this.formatRelative(session.created);
+		const size = this.formatSize(session.size);
 		const summary = this.truncate(session.summary || session.firstMessage, 60);
-		const line = `${pointer} ${star} ${modified}  ${created}  ${size}  ${summary}`;
-		return isSelected ? chalk.blue(line) : line;
+
+		const colorize = (value: string) =>
+			isSelected ? chalk.blue(value) : value;
+
+		const row = new Row(
+			[
+				new Text(colorize(`${pointer} ${star}`), 0, 0),
+				new Text(colorize(modified), 0, 0),
+				new Text(colorize(created), 0, 0),
+				new Text(colorize(size), 0, 0),
+				new Text(colorize(summary), 0, 0),
+			],
+			{
+				gap: 2,
+				weights: [1, 1, 1, 1, 4],
+				minWidths: [4, 6, 6, 4, 10],
+				justify: "space-between",
+				wrap: true,
+				align: "center",
+			},
+		);
+		row.setChildOptions(row.children[0], { maxWidth: 4 });
+		row.setChildOptions(row.children[4], { minWidth: 10 });
+		return row;
 	}
 
 	private updateStatus(): void {

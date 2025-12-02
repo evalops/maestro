@@ -1,4 +1,4 @@
-import { Container, Spacer, Text } from "@evalops/tui";
+import { Box, Column, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { SessionManager } from "../../session/manager.js";
 import { DynamicBorder } from "../utils/borders.js";
@@ -8,7 +8,7 @@ import { SessionList } from "./session-list.js";
 /**
  * Component that renders a session selector
  */
-export class SessionSelectorComponent extends Container {
+export class SessionSelectorComponent extends Column {
 	private sessionList: SessionList;
 
 	constructor(
@@ -16,27 +16,27 @@ export class SessionSelectorComponent extends Container {
 		onSelect: (sessionPath: string) => void,
 		onCancel: () => void,
 	) {
-		super();
+		super([], { gap: 1 });
 
 		const dataProvider = new SessionDataProvider(sessionManager);
 		const sessions = dataProvider.loadSessions();
 
-		// Add header
-		this.addChild(new Spacer(1));
 		this.addChild(new Text(chalk.bold("Resume Session"), 1, 0));
-		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
 
 		// Create session list
 		this.sessionList = new SessionList(sessions);
 		this.sessionList.onSelect = onSelect;
 		this.sessionList.onCancel = onCancel;
 
-		this.addChild(this.sessionList);
+		const boxed = new Box([this.sessionList], {
+			paddingX: 1,
+			paddingY: 0,
+			marginY: 0,
+			border: "rounded",
+		});
+		this.addChild(boxed);
 
-		// Add bottom border
-		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 
 		// Auto-cancel if no sessions
