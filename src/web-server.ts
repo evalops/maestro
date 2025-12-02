@@ -201,18 +201,6 @@ if (TRUST_PROXY) {
 	);
 }
 
-if (REQUIRE_WEB_API_KEY && !WEB_API_KEY) {
-	throw new Error(
-		"COMPOSER_WEB_API_KEY is required. Set COMPOSER_WEB_REQUIRE_KEY=0 to allow unauthenticated APIs for local-only testing.",
-	);
-}
-
-if (REQUIRE_REDIS && !process.env.COMPOSER_REDIS_URL) {
-	throw new Error(
-		"COMPOSER_REDIS_URL must be set for shared rate limiting. Set COMPOSER_WEB_REQUIRE_REDIS=0 to bypass in single-node dev only.",
-	);
-}
-
 const sseLimiter = {
 	active: 0,
 	max: MAX_SSE_CONNECTIONS,
@@ -520,6 +508,18 @@ export async function startWebServer(port = 8080) {
 	registerCrashHandlers();
 	await reloadModelConfig();
 	await initLifecycle();
+
+	if (REQUIRE_WEB_API_KEY && !WEB_API_KEY) {
+		throw new Error(
+			"COMPOSER_WEB_API_KEY is required. Set COMPOSER_WEB_REQUIRE_KEY=0 to allow unauthenticated APIs for local-only testing.",
+		);
+	}
+
+	if (REQUIRE_REDIS && !process.env.COMPOSER_REDIS_URL) {
+		throw new Error(
+			"COMPOSER_REDIS_URL must be set for shared rate limiting. Set COMPOSER_WEB_REQUIRE_REDIS=0 to bypass in single-node dev only.",
+		);
+	}
 
 	const server = createServer(handleRequest);
 	const sockets = new Set<Socket>();
