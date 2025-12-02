@@ -223,7 +223,6 @@ export function createAuthMiddleware(
 
 			// Key provided: validate it.
 			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
-				sendJson(res, 401, { error: "Unauthorized" }, corsHeaders, req);
 				return;
 			}
 		}
