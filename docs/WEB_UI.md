@@ -1,6 +1,12 @@
 # Composer Web UI
 
-A browser-based interface for Composer AI coding assistant with full feature parity to the TUI.
+Contents: [Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Configuration](#configuration) · [API Endpoints](#api-endpoints) · [Parity Appendix](#parity-appendix)
+
+A browser-based interface for the Composer AI coding assistant with core parity to the TUI. For gaps, see the Parity Appendix below.
+
+Parity at a glance:
+- Full: chat, sessions, models, config, usage, approvals.
+- Not included by design: git operations, queue controls, diagnostics/LSP/MCP, guardian scans, export/share, theming tweaks, and other terminal-only UX.
 
 ## Features
 
@@ -48,6 +54,8 @@ A browser-based interface for Composer AI coding assistant with full feature par
 
 ## Quick Start
 
+Prereqs and installation: follow `docs/QUICKSTART.md` (same setup as TUI/CLI).
+
 ### Development Mode
 
 Run both server and UI with hot reload:
@@ -65,7 +73,7 @@ This starts:
 Build and run:
 
 ```bash
-# Build everything
+# Full stack build (CLI + TUI + Web)
 npx nx run composer:build:all --skip-nx-cache
 
 # Start web server
@@ -152,7 +160,7 @@ List available models:
 {
   "models": [
     {
-      "id": "claude-sonnet-4-5",
+      "id": "claude-opus-4-5-20251101",
       "provider": "anthropic",
       "name": "Claude Sonnet 4.5",
       "capabilities": {
@@ -172,7 +180,7 @@ Send message and receive streaming response:
 **Request:**
 ```json
 {
-  "model": "anthropic:claude-sonnet-4-5",
+  "model": "anthropic:claude-opus-4-5-20251101",
   "messages": [
     { "role": "user", "content": "Create a hello world function" }
   ],
@@ -409,7 +417,7 @@ PORT=3001 bun run web
 ```bash
 curl -N -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"model":"anthropic:claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"anthropic:claude-opus-4-5-20251101","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ### Tools not executing
@@ -419,6 +427,14 @@ curl -N -X POST http://localhost:8080/api/chat \
 3. Check server logs for tool execution events
 
 ## Future Enhancements
+
+## Parity Appendix (summary)
+
+Full parity (Web + TUI): chat streaming, session create/list/load/delete, model select/list, thinking level, config get/set, cost/usage, status/health, approval mode, policy validation, file list, commands list.
+
+TUI-only (not in Web by design): git operations (`/diff`, `/review`, `/undo`), queue controls, diagnostics/LSP/MCP/telemetry, guardian scans and plan-mode prompts, theming/zen/footer tweaks, export/share, OAuth login/logout, workspace script runner, session branching/favorites/compaction, tools list/failures/clear, Ollama/local model control.
+
+Security note: Web API stays stateless and limits filesystem/git access; keep using TUI for those workflows.
 
 - [ ] Authentication (JWT/OAuth)
 - [ ] Session persistence and resume

@@ -1,5 +1,7 @@
 # Tools Reference
 
+Contents: [Validation](#parameter-validation) · [Error Handling](#error-handling-for-tool-authors) · [Built-in Tools](#built-in-tools) · [GitHub CLI Tools](#github-cli-tools) · [CLI Commands](#cli-commands) · [Common Errors](#common-errors--remedies)
+
 The agent and CLI expose a consistent set of tools. Use this sheet when adding
 new tools or debugging existing ones.
 
@@ -99,11 +101,7 @@ export const myTool = createTool({
 
 ## CLI Commands
 
-| Command | Purpose |
-| ------- | ------- |
-| `bun run cli -- --help` | Display CLI/TUI usage. |
-| `npx nx run composer:evals --skip-nx-cache` | Run regression scenarios (helps when editing help text or tools). |
-| `bun run telemetry:report` | Summarize tool/agent telemetry logs. |
+For install/build/test entrypoints, use `docs/QUICKSTART.md` (canonical). Key dev helpers: `bun run cli -- --help`, `npx nx run composer:evals --skip-nx-cache`, `bun run telemetry:report`.
 
 ## Common Errors & Remedies
 

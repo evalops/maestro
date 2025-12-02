@@ -1,7 +1,14 @@
 # Quickstart
 
+Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Build & Run](#build--run) · [Eval Suite](#eval-suite) · [Common Scripts](#common-scripts)
+
 Composer ships as a Bun + Nx workspace. The steps below get a contributor
 from a fresh clone to running the CLI, TUI, Web UI, and eval suite.
+
+Doc conventions (read first):
+- Audience: contributors. For feature usage see `docs/FEATURES.md`; for tools see `docs/TOOLS_REFERENCE.md`.
+- Defaults: provider/model default to `claude-opus-4-5-20251101` unless overridden.
+- Build targets: `composer:build` = CLI only; `composer:build:all` = CLI + TUI + Web.
 
 ## Prerequisites
 
@@ -23,17 +30,20 @@ your shell. See the CLI help output for the list of supported keys.
 ## Build & Run
 
 ```bash
-npx nx run composer:build --skip-nx-cache  # emits dist/cli.js via Bun
-bun run cli -- --help                      # run the compiled CLI
+npx nx run composer:build --skip-nx-cache      # CLI-only build (fast path)
+# or when you need TUI + Web artifacts too
+npx nx run composer:build:all --skip-nx-cache
+
+bun run cli -- --help                          # run the compiled CLI
 ```
 
 During development you can use:
 
 - `npx nx run composer:test --skip-nx-cache` – mirrors CI by building TUI/Web before tests
 - `bun run --filter @evalops/tui build` / `bun run --filter @evalops/composer-web build` – package-specific builds
-- `bun run dev` – watch builds (tsc --watch)
-- `bun run cli -- --provider anthropic --model claude-sonnet-4-5 "hello"` – run
-  the CLI directly from `dist/cli.js`
+- `bun run dev` – optional watch mode (tsc --watch) for inner-loop work
+- `bun run cli -- --provider anthropic --model claude-opus-4-5-20251101 "hello"` – run
+  the CLI directly from `dist/cli.js` with the canonical model example
 
 ## Eval Suite
 
@@ -53,7 +63,8 @@ before pushing.
 | -------------------------------------------------- | -------------------------------------------------------------- |
 | `bunx biome check .`                               | Biome lint/format checks                                       |
 | `npx nx run composer:test --skip-nx-cache`         | Build TUI/Web then run Vitest (CI equivalent)                  |
-| `npx nx run composer:build --skip-nx-cache`        | TypeScript build + mark CLI executable                         |
+| `npx nx run composer:build --skip-nx-cache`        | CLI-only build + mark CLI executable                           |
+| `npx nx run composer:build:all --skip-nx-cache`    | Full stack build (CLI + TUI + Web)                             |
 | `npx nx run composer:evals --skip-nx-cache`        | Build + run `scripts/run-evals.js` scenarios                   |
 | `bun run --filter @evalops/tui build`              | Package-specific build for TUI                                 |
 | `bun run --filter @evalops/composer-web build`     | Package-specific build for Web UI                              |
