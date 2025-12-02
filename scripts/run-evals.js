@@ -181,9 +181,7 @@ async function main() {
 
 await main();
 
-function buildExpectationRegex(
-	pattern,
-): RegExp | null {
+function buildExpectationRegex(pattern) {
 	if (pattern instanceof RegExp) return pattern;
 	if (typeof pattern !== "string") return null;
 	// Keep patterns small to avoid regex DoS; eval scenarios are repo-controlled.
