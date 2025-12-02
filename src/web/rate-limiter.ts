@@ -28,7 +28,7 @@ export const DEFAULT_ENDPOINT_LIMITS: EndpointRateLimits = {
 	// File operations - moderate limit
 	"/api/files": { windowMs: 60000, max: 200 },
 	// Commands can trigger expensive operations
-	"/api/command": { windowMs: 60000, max: 100 },
+	"/api/commands": { windowMs: 60000, max: 100 },
 	// Status endpoints are cheap
 	"/api/status": { windowMs: 60000, max: 500 },
 	"/api/config": { windowMs: 60000, max: 500 },
@@ -304,6 +304,48 @@ export class RateLimiter {
 	}
 
 	/**
+	 * Check if a request would be allowed without consuming a token.
+	 * Used by TieredRateLimiter to avoid token leaks.
+	 */
+	peek(ip: string): RateLimitResult {
+		const now = Date.now();
+		const client = this.clients.get(ip);
+
+		if (!client) {
+			// New client would have full tokens
+			return {
+				allowed: true,
+				remaining: this.max - 1, // Would have this many after consuming
+				reset: now,
+				limit: this.max,
+			};
+		}
+
+		// Calculate current tokens (with refill) without mutating state
+		const timePassed = now - client.lastRefill;
+		const refillAmount = timePassed * this.refillRate;
+		const currentTokens = Math.min(this.max, client.tokens + refillAmount);
+
+		if (currentTokens >= 1) {
+			return {
+				allowed: true,
+				remaining: Math.floor(currentTokens - 1),
+				reset: now,
+				limit: this.max,
+			};
+		}
+
+		const tokensNeeded = 1 - currentTokens;
+		const msNeeded = tokensNeeded / this.refillRate;
+		return {
+			allowed: false,
+			remaining: 0,
+			reset: now + msNeeded,
+			limit: this.max,
+		};
+	}
+
+	/**
 	 * Reset rate limit for an IP (for testing).
 	 */
 	async reset(ip?: string): Promise<void> {
@@ -381,32 +423,38 @@ export class TieredRateLimiter {
 	/**
 	 * Check rate limit for a specific IP and endpoint.
 	 * Returns the most restrictive result between global and endpoint limits.
+	 *
+	 * Uses peek-then-consume pattern to avoid token leaks:
+	 * - First peeks at both limits without consuming
+	 * - Only consumes tokens if both limits allow the request
 	 */
 	check(ip: string, endpoint: string): RateLimitResult {
-		// Always check global limit
-		const globalResult = this.globalLimiter.check(ip);
-
-		// If global limit exceeded, return immediately
-		if (!globalResult.allowed) {
-			return globalResult;
+		// Peek at global limit first (no consumption)
+		const globalPeek = this.globalLimiter.peek(ip);
+		if (!globalPeek.allowed) {
+			return globalPeek;
 		}
 
-		// Find matching endpoint limiter (supports prefix matching)
+		// Find matching endpoint limiter
 		const endpointLimiter = this.findEndpointLimiter(endpoint);
 		if (!endpointLimiter) {
-			return globalResult;
+			// No endpoint limit - consume global token and return
+			return this.globalLimiter.check(ip);
 		}
 
-		// Check endpoint-specific limit
+		// Peek at endpoint limit (no consumption)
 		const endpointKey = `${ip}:${endpoint}`;
+		const endpointPeek = endpointLimiter.peek(endpointKey);
+		if (!endpointPeek.allowed) {
+			// Endpoint limit would reject - return without consuming global token
+			return endpointPeek;
+		}
+
+		// Both limits allow - consume tokens from both
+		const globalResult = this.globalLimiter.check(ip);
 		const endpointResult = endpointLimiter.check(endpointKey);
 
 		// Return the more restrictive result
-		if (!endpointResult.allowed) {
-			return endpointResult;
-		}
-
-		// Both allowed - return with lower remaining
 		return globalResult.remaining <= endpointResult.remaining
 			? globalResult
 			: endpointResult;
