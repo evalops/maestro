@@ -17,7 +17,7 @@ import {
 import type { SessionHeaderEntry, SessionManager } from "./session/manager.js";
 
 // Get version from package.json
-import packageJson from "../package.json" assert { type: "json" };
+import packageJson from "../package.json";
 const VERSION = packageJson.version;
 
 interface SessionFileParseResult {

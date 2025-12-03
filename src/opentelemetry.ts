@@ -20,7 +20,7 @@ let configuredServiceName: string | null = null;
 let configuredSampler: string | null = null;
 let sdkInstance: NodeSDK | null = null;
 
-import packageJson from "../package.json" assert { type: "json" };
+import packageJson from "../package.json";
 
 const packageVersion = (): string => {
 	const version = packageJson.version;

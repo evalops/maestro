@@ -95,7 +95,7 @@ import { type UpdateCheckResult, checkForUpdate } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
 
 // Get version from package.json (bundled via JSON import so it works in Bun binaries)
-import packageJson from "../package.json" assert { type: "json" };
+import packageJson from "../package.json";
 const VERSION = packageJson.version;
 
 interface InteractiveOptions {
