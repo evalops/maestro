@@ -61,6 +61,30 @@ describe("MCP multi-scope precedence and env expansion", () => {
 		expect(cfg.servers[0].command).toBe("enterprise-cmd");
 	});
 
+	it("allows higher-precedence configs to disable servers from lower-precedence", () => {
+		// user enables
+		write(join(baseDir, "user.json"), {
+			servers: [{ name: "svc", transport: "stdio", command: "user-cmd" }],
+		});
+		// enterprise disables
+		write(join(baseDir, "enterprise.json"), {
+			servers: [
+				{
+					name: "svc",
+					transport: "stdio",
+					command: "noop",
+					disabled: true,
+				},
+			],
+		});
+
+		process.env.COMPOSER_ENTERPRISE_MCP_PATH = join(baseDir, "enterprise.json");
+		process.env.COMPOSER_USER_MCP_PATH = join(baseDir, "user.json");
+
+		const cfg = loadMcpConfig(projectDir, { includeEnvLimits: true });
+		expect(cfg.servers).toHaveLength(0);
+	});
+
 	it("expands ${VAR} and ${VAR:-fallback}", () => {
 		process.env.TEST_FOO = "hello";
 		write(join(projectDir, ".composer/mcp.json"), {

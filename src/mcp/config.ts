@@ -53,7 +53,11 @@ export function loadMcpConfig(
 	// lower precedence first, higher precedence last so later overrides earlier
 	for (const src of [userCfg, localCfg, projectCfg, pluginCfg, enterpriseCfg]) {
 		for (const server of src.servers) {
-			if (server.enabled === false || server.disabled === true) continue;
+			// A higher-precedence config can explicitly disable a server defined earlier.
+			if (server.enabled === false || server.disabled === true) {
+				merged.delete(server.name);
+				continue;
+			}
 			merged.set(server.name, server);
 		}
 	}
