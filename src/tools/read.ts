@@ -4,6 +4,12 @@ import { extname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { getLspConfig } from "../config/lsp-config.js";
 import { getDiagnostics } from "../lsp/index.js";
+import {
+	isSharpAvailable,
+	isSupportedImageFormat,
+	processImageForClaude,
+} from "./image-processor.js";
+import { formatNotebookForDisplay, isNotebookFile } from "./notebook.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
@@ -13,6 +19,33 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 	".gif": "image/gif",
 	".webp": "image/webp",
 };
+
+function isPdfFile(filePath: string): boolean {
+	return extname(filePath).toLowerCase() === ".pdf";
+}
+
+// Lazy-load pdf-parse to avoid issues when not installed
+type PdfParseResult = {
+	text: string;
+	numpages: number;
+	info: Record<string, unknown>;
+};
+type PdfParseFunction = (buffer: Buffer) => Promise<PdfParseResult>;
+let pdfParse: PdfParseFunction | null | undefined = undefined;
+
+async function getPdfParser(): Promise<PdfParseFunction | null> {
+	if (pdfParse === undefined) {
+		try {
+			// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any cast
+			const module = (await import("pdf-parse")) as any;
+			pdfParse = (module.default || module) as PdfParseFunction;
+		} catch {
+			// pdf-parse not available
+			pdfParse = null;
+		}
+	}
+	return pdfParse;
+}
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 	".ts": "ts",
@@ -138,6 +171,12 @@ type ReadToolDetails = {
 	endLine?: number;
 	totalLines?: number;
 	mode?: string;
+	// Image processing details
+	originalWidth?: number;
+	originalHeight?: number;
+	width?: number;
+	height?: number;
+	wasOptimized?: boolean;
 };
 
 export const readTool = createTool<
@@ -146,7 +185,7 @@ export const readTool = createTool<
 >({
 	name: "read",
 	label: "read",
-	description: `Read file contents. Supports text and images (JPEG, PNG, GIF, WebP).
+	description: `Read file contents. Supports text, images (JPEG, PNG, GIF, WebP), PDFs, and Jupyter notebooks (.ipynb).
 
 Parameters:
 - path: File path (relative/absolute, supports ~/)
@@ -155,7 +194,7 @@ Parameters:
 - mode: "normal", "head", "tail"
 - encoding: utf-8 (default), utf-16le, latin1, ascii
 
-Auto-detects images, provides syntax highlighting, handles large files.
+Auto-detects images, PDFs, and notebooks. Provides syntax highlighting and handles large files.
 Use 'batch' to read multiple files in parallel.`,
 	schema: readSchema,
 	async run(
@@ -228,14 +267,94 @@ Use 'batch' to read multiple files in parallel.`,
 			);
 		}
 
-		if (mimeType) {
+		if (mimeType || isSupportedImageFormat(absolutePath)) {
 			const buffer = await readFile(absolutePath);
 			throwIfAborted();
+
+			// Try to optimize image with Sharp if available
+			const sharpAvailable = await isSharpAvailable();
+			if (sharpAvailable && isSupportedImageFormat(absolutePath)) {
+				try {
+					const processed = await processImageForClaude(buffer);
+					const sizeInfo =
+						processed.wasResized || processed.wasCompressed
+							? ` (optimized: ${Math.round(processed.processedSize / 1024)}KB)`
+							: "";
+					return respond
+						.text(`Read image file [${processed.mimeType}]${sizeInfo}`)
+						.image(processed.base64, processed.mimeType)
+						.detail({
+							mode: "image",
+							originalWidth: processed.originalWidth,
+							originalHeight: processed.originalHeight,
+							width: processed.width,
+							height: processed.height,
+							wasOptimized: processed.wasResized || processed.wasCompressed,
+						});
+				} catch {
+					// Fall back to unprocessed image
+				}
+			}
+
+			// Fallback: return unprocessed image
 			const base64 = buffer.toString("base64");
+			const detectedMime = mimeType || "image/png";
 			return respond
-				.text(`Read image file [${mimeType}]`)
-				.image(base64, mimeType)
+				.text(`Read image file [${detectedMime}]`)
+				.image(base64, detectedMime)
 				.detail({ mode: "image" });
+		}
+
+		// Handle Jupyter notebooks
+		if (isNotebookFile(absolutePath)) {
+			const content = await readFile(absolutePath, "utf-8");
+			throwIfAborted();
+			const formatted = formatNotebookForDisplay(content);
+			const lines = formatted.split("\n");
+			return respond
+				.text(`\`\`\`python\n${formatted}\n\`\`\``)
+				.detail({ mode: "notebook", totalLines: lines.length });
+		}
+
+		// Handle PDF files
+		if (isPdfFile(absolutePath)) {
+			const parser = await getPdfParser();
+			if (!parser) {
+				return respond.error(
+					"PDF reading requires the 'pdf-parse' package. Install with: npm install pdf-parse",
+				);
+			}
+			const buffer = await readFile(absolutePath);
+			throwIfAborted();
+			try {
+				const data = await parser(buffer);
+				const text = data.text.trim();
+				const lines = text.split("\n");
+				const pageInfo = `PDF Document: ${data.numpages} page(s)`;
+
+				// Apply pagination if requested
+				let displayText = text;
+				const startLine = offset ? Math.max(0, offset - 1) : 0;
+				const maxLines = limit || MAX_LINES;
+
+				if (offset || limit) {
+					const selectedLines = lines.slice(startLine, startLine + maxLines);
+					displayText = selectedLines.join("\n");
+				} else if (lines.length > MAX_LINES) {
+					displayText = lines.slice(0, MAX_LINES).join("\n");
+				}
+
+				return respond.text(`${pageInfo}\n\n${displayText}`).detail({
+					mode: "pdf",
+					totalLines: lines.length,
+					startLine: startLine + 1,
+					endLine: Math.min(startLine + maxLines, lines.length),
+				});
+			} catch (err) {
+				return respond.error(
+					`Failed to parse PDF: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
 		}
 
 		// Warn about large text files if not using pagination
