@@ -1,6 +1,9 @@
 /**
  * Minimal TUI implementation with differential rendering
  */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { Terminal } from "./terminal.js";
 import { visibleWidth, wrapAnsiLines } from "./utils.js";
 import {
@@ -320,17 +323,46 @@ export class TUI extends Container {
 			buffer += `\x1b[${-lineDiff}A`; // Move up
 		}
 		buffer += "\r"; // Move to column 0
-		buffer += "\x1b[J"; // Clear from cursor to end of screen
 
-		// Render from first changed line to end
+		// Render from first changed line to end, clearing each line individually to avoid
+		// cursor-to-end flashes in buffered terminals (e.g., xterm.js over SSH).
 		for (let i = firstChanged; i < newLines.length; i++) {
 			if (i > firstChanged) buffer += "\r\n";
-			if (visibleWidth(newLines[i]) > width) {
+			buffer += "\x1b[2K"; // Clear current line before writing
+			const line = newLines[i];
+			if (visibleWidth(line) > width) {
+				const crashLogPath = path.join(
+					os.homedir(),
+					".composer",
+					"agent",
+					"tui-crash.log",
+				);
+				const crashData = [
+					`Crash at ${new Date().toISOString()}`,
+					`Terminal width: ${width}`,
+					`Line ${i} visible width: ${visibleWidth(line)}`,
+					"",
+					"=== Rendered lines ===",
+					...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
+					"",
+				].join("\n");
+				fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
+				fs.writeFileSync(crashLogPath, crashData);
 				throw new Error(
-					`Rendered line ${i} exceeds terminal width\n\n${newLines[i]}`,
+					`Rendered line ${i} exceeds terminal width. Debug log written to ${crashLogPath}`,
 				);
 			}
-			buffer += newLines[i];
+			buffer += line;
+		}
+
+		// If we rendered fewer lines than previously, clear the leftovers so stale
+		// content cannot flicker before the next full render.
+		if (this.previousLines.length > newLines.length) {
+			const extraLines = this.previousLines.length - newLines.length;
+			for (let i = newLines.length; i < this.previousLines.length; i++) {
+				buffer += "\r\n\x1b[2K";
+			}
+			buffer += `\x1b[${extraLines}A`;
 		}
 
 		if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
