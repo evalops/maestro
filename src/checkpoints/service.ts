@@ -5,7 +5,8 @@
  * before file-modifying operations.
  */
 
-import { isAbsolute, realpathSync, relative, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { minimatch } from "minimatch";
 import { registerHook } from "../hooks/config.js";
 import type { HookInput, PreToolUseHookInput } from "../hooks/types.js";
