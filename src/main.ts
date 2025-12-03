@@ -1,3 +1,93 @@
+/**
+ * Main Entry Point - Composer CLI Application
+ *
+ * This module orchestrates the complete initialization sequence for the Composer CLI,
+ * including authentication, model resolution, session management, and runtime mode
+ * selection. It serves as the single entry point that routes execution to the
+ * appropriate mode (interactive TUI, single-shot, RPC, or exec).
+ *
+ * ## Initialization Sequence
+ *
+ * The startup process follows a specific order to ensure proper dependency resolution:
+ *
+ * ```
+ * 1. Environment Loading
+ *    ├── Load .env files (via dotenv)
+ *    ├── Initialize OpenTelemetry for tracing
+ *    └── Load model registry (async, before UI)
+ *
+ * 2. Enterprise Context (optional)
+ *    ├── Initialize user/org tracking
+ *    └── Set up audit logging if enterprise features enabled
+ *
+ * 3. CLI Argument Parsing
+ *    ├── Parse command-line flags
+ *    └── Handle --help, config commands, and other early exits
+ *
+ * 4. Authentication Resolution
+ *    ├── Determine auth mode (auto, api-key, oauth, codex)
+ *    ├── Resolve credentials for the selected provider
+ *    └── Build error messages for missing credentials
+ *
+ * 5. Safety & Sandboxing
+ *    ├── Configure safe mode
+ *    ├── Register background task shutdown hooks
+ *    ├── Bootstrap LSP
+ *    └── Initialize checkpointing for undo/redo
+ *
+ * 6. Model Resolution
+ *    ├── Resolve provider and model from CLI args or defaults
+ *    ├── Validate against policy restrictions
+ *    └── Require valid credentials for selected provider
+ *
+ * 7. Session Initialization
+ *    ├── Create or load session manager
+ *    ├── Handle --continue, --resume, and exec resume modes
+ *    └── Load previous messages if continuing session
+ *
+ * 8. Agent & Tool Setup
+ *    ├── Build system prompt with project context
+ *    ├── Configure approval service (prompt, auto, fail modes)
+ *    ├── Initialize sandbox if requested (docker, local, none)
+ *    ├── Create Agent with transport, tools, and context sources
+ *    └── Initialize MCP servers for additional tools
+ *
+ * 9. Runtime Mode Selection
+ *    ├── Interactive TUI: Full terminal interface with input/output
+ *    ├── Single-shot: Process messages and output result
+ *    ├── RPC: JSON-over-stdin/stdout for programmatic control
+ *    └── Exec: Non-interactive batch execution with structured output
+ * ```
+ *
+ * ## Authentication Modes
+ *
+ * The CLI supports multiple authentication strategies:
+ *
+ * | Mode     | Description                                      |
+ * |----------|--------------------------------------------------|
+ * | auto     | Try OAuth first, fall back to API key env vars   |
+ * | api-key  | Require explicit API key (--api-key or env var)  |
+ * | oauth    | Use OAuth flow (anthropic login, openai login)   |
+ * | codex    | Use CODEX_API_KEY for ChatGPT compatibility      |
+ *
+ * ## Runtime Modes
+ *
+ * | Mode        | Trigger                       | Behavior                    |
+ * |-------------|-------------------------------|-----------------------------|
+ * | Interactive | No messages, not RPC          | Full TUI with readline      |
+ * | Single-shot | Messages provided, text/json  | Process and exit            |
+ * | RPC         | --mode=rpc                    | JSON protocol over stdio    |
+ * | Exec        | composer exec [prompt]        | Batch with structured output|
+ *
+ * ## Error Handling
+ *
+ * Critical errors during initialization will print colored error messages
+ * and exit with appropriate codes. The initialization is designed to fail
+ * fast and provide actionable error messages.
+ *
+ * @module main
+ */
+
 import { createRequire } from "node:module";
 import chalk from "chalk";
 import {
@@ -100,18 +190,50 @@ import {
 import { type UpdateCheckResult, checkForUpdate } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
 
-// Get version from package.json (works under Node/Bun without import assertions)
+/**
+ * Load version from package.json at runtime.
+ * Uses Node's createRequire for compatibility with ESM imports
+ * (avoids experimental import assertions syntax).
+ */
 const packageJson = createRequire(import.meta.url)("../package.json") as {
 	version?: string;
 };
 const VERSION = packageJson.version ?? "unknown";
 
+/**
+ * Configuration options passed to the interactive TUI renderer.
+ * These options customize the startup experience shown to users.
+ */
 interface InteractiveOptions {
+	/** Subset of models available for switching (from --models flag) */
 	modelScope?: RegisteredModel[];
+	/** Changelog summary to display on startup (e.g., "v1.2.0 — New features") */
 	startupChangelogSummary?: string | null;
+	/** Update notification if a newer version is available */
 	updateNotice?: UpdateCheckResult | null;
 }
 
+/**
+ * Runs the full interactive Terminal UI (TUI) mode.
+ *
+ * This is the primary user-facing mode when composer is invoked without
+ * command-line messages. It provides:
+ * - Real-time streaming of model responses
+ * - Interactive input with readline and autocomplete
+ * - Tool execution with approval prompts
+ * - Session persistence and recovery
+ * - View switching (chat, tools, sessions, etc.)
+ *
+ * The function sets up the TUI renderer, subscribes to agent events,
+ * and runs the main input loop until the user exits.
+ *
+ * @param agent - Configured Agent instance for LLM communication
+ * @param sessionManager - Handles session persistence and recovery
+ * @param version - Current CLI version for display
+ * @param approvalService - Controls tool execution approval behavior
+ * @param explicitApiKey - API key from --api-key flag (for display purposes)
+ * @param options - Additional startup configuration (model scope, changelog, etc.)
+ */
 async function runInteractiveMode(
 	agent: Agent,
 	sessionManager: SessionManager,
@@ -120,6 +242,7 @@ async function runInteractiveMode(
 	explicitApiKey?: string,
 	options: InteractiveOptions = {},
 ): Promise<void> {
+	// Initialize the TUI renderer which manages all terminal output
 	const renderer = new TuiRenderer(
 		agent,
 		sessionManager,
@@ -138,37 +261,68 @@ async function runInteractiveMode(
 		},
 	});
 
-	// Initialize TUI
+	// Initialize TUI - sets up terminal raw mode, cursor handling, and rendering
 	await renderer.init();
 
-	// Render any existing messages (from --continue mode)
+	// Render any existing messages from a continued session (--continue mode)
+	// This allows users to see their previous conversation context
 	renderer.renderInitialMessages(agent.state);
 
-	// Subscribe to agent events
+	// Subscribe to agent events for real-time UI updates
+	// The renderer handles streaming text, tool execution, errors, and completion
 	agent.subscribe(async (event) => {
-		// Pass all events to the renderer
 		await renderer.handleEvent(event, agent.state);
 	});
 
+	// Run the main interactive loop - blocks until user exits
 	await runtime.runInteractiveLoop(renderer);
 }
 
+/**
+ * Runs the CLI in single-shot (non-interactive) mode.
+ *
+ * Processes one or more messages from the command line and outputs
+ * the result. Supports two output formats:
+ *
+ * - **text**: Outputs only the final assistant text response (human-readable)
+ * - **json**: Outputs JSONL event stream for machine processing
+ *
+ * This mode is useful for scripting and automation:
+ * ```bash
+ * composer "What time is it?" --mode text
+ * composer "Generate code" --mode json > output.jsonl
+ * ```
+ *
+ * @param agent - Configured Agent instance
+ * @param sessionManager - For session ID tracking
+ * @param messages - Array of user messages to process sequentially
+ * @param mode - Output format: "text" for human-readable, "json" for JSONL
+ */
 async function runSingleShotMode(
 	agent: Agent,
 	sessionManager: SessionManager,
 	messages: string[],
 	mode: Extract<Mode, "text" | "json">,
 ): Promise<void> {
+	// Use session ID as thread ID for JSONL output correlation
 	const threadId = sessionManager.getSessionId();
+
+	// Set up JSONL writer for structured output in json mode
+	// This enables machine-readable event streaming for integrations
 	const jsonlWriter =
 		mode === "json" ? new JsonlEventWriter(true, process.stdout) : null;
+
+	// Turn ID generator for correlating user messages with responses
 	const nextTurnId = (() => {
 		let counter = 0;
 		return () => `turn-${++counter}`;
 	})();
+
+	// Adapter translates agent events to JSONL format
 	const adapter =
 		jsonlWriter && createAgentJsonlAdapter(jsonlWriter, nextTurnId);
 
+	// In JSON mode, emit thread start and subscribe to all events
 	if (jsonlWriter) {
 		emitThreadStart(jsonlWriter, threadId, { sessionId: threadId });
 		agent.subscribe((event) => {
@@ -177,6 +331,8 @@ async function runSingleShotMode(
 	}
 
 	try {
+		// Process each message sequentially
+		// This allows multi-message conversations in single-shot mode
 		for (const message of messages) {
 			if (jsonlWriter) {
 				emitUserTurnEvent(jsonlWriter, nextTurnId, message);
@@ -184,7 +340,8 @@ async function runSingleShotMode(
 			await agent.prompt(message);
 		}
 
-		// In text mode, only output the final assistant message
+		// In text mode, extract and output only the final text response
+		// This provides clean output for shell pipelines and scripts
 		if (mode === "text") {
 			const lastMessage = agent.state.messages[agent.state.messages.length - 1];
 			if (lastMessage.role === "assistant") {
@@ -200,6 +357,7 @@ async function runSingleShotMode(
 			emitThreadEnd(jsonlWriter, threadId, "ok", threadId);
 		}
 	} catch (error) {
+		// Ensure error is recorded in JSONL output for machine processing
 		if (jsonlWriter) {
 			emitThreadEnd(jsonlWriter, threadId, "error", threadId);
 		}
@@ -207,63 +365,130 @@ async function runSingleShotMode(
 	}
 }
 
+/**
+ * Runs the CLI in RPC (Remote Procedure Call) mode.
+ *
+ * This mode provides a JSON-over-stdio protocol for programmatic control
+ * of the agent. It's designed for IDE integrations, language servers,
+ * and other tools that need to embed composer functionality.
+ *
+ * ## Protocol
+ *
+ * **Input (stdin)**: JSON objects, one per line
+ * ```json
+ * {"type": "prompt", "message": "Hello"}
+ * {"type": "abort"}
+ * ```
+ *
+ * **Output (stdout)**: Agent events as JSON objects, one per line
+ * ```json
+ * {"type": "message_start", ...}
+ * {"type": "content_block_delta", ...}
+ * {"type": "message_end", ...}
+ * ```
+ *
+ * The process runs indefinitely until stdin closes or it receives
+ * a termination signal.
+ *
+ * @param agent - Configured Agent instance
+ * @param _sessionManager - Unused but kept for consistent function signature
+ */
 async function runRpcMode(
 	agent: Agent,
 	_sessionManager: SessionManager,
 ): Promise<void> {
-	// Subscribe to all events and output as JSON
+	// Subscribe to all events and emit as JSON for client consumption
 	agent.subscribe((event) => {
 		console.log(JSON.stringify(event));
 	});
 
-	// Listen for JSON input on stdin
+	// Set up JSON-over-stdin readline interface
+	// Each line is expected to be a complete JSON object
 	const readline = await import("node:readline");
 	const rl = readline.createInterface({
 		input: process.stdin,
 		output: process.stdout,
-		terminal: false,
+		terminal: false, // Disable terminal features for raw JSON I/O
 	});
 
+	// Process incoming RPC commands line by line
 	rl.on("line", async (line: string) => {
 		try {
 			const input = JSON.parse(line);
 
-			// Handle different RPC commands
+			// Dispatch based on command type
+			// Currently supports: prompt (send message) and abort (cancel)
 			if (input.type === "prompt" && input.message) {
 				await agent.prompt(input.message);
 			} else if (input.type === "abort") {
 				agent.abort();
 			}
 		} catch (error: unknown) {
-			// Output error as JSON
+			// Emit parsing/execution errors as JSON for client handling
 			const message = error instanceof Error ? error.message : String(error);
 			console.log(JSON.stringify({ type: "error", error: message }));
 		}
 	});
 
-	// Keep process alive
+	// Keep process alive indefinitely - exits when stdin closes
 	return new Promise(() => {});
 }
 
+/**
+ * Main entry point for the Composer CLI application.
+ *
+ * This function orchestrates the complete initialization sequence and routes
+ * to the appropriate runtime mode. It performs all setup synchronously where
+ * possible and handles errors with user-friendly messages.
+ *
+ * ## Execution Phases
+ *
+ * 1. **Early Initialization**: Environment, telemetry, model registry
+ * 2. **Enterprise Setup**: Audit logging, user tracking (if applicable)
+ * 3. **CLI Parsing**: Handle help, version, and subcommands (config, cost, models)
+ * 4. **Authentication**: Resolve credentials for the selected provider
+ * 5. **Session Setup**: Create or restore session state
+ * 6. **Agent Creation**: Configure transport, tools, context sources
+ * 7. **MCP Integration**: Connect to Model Context Protocol servers
+ * 8. **Mode Dispatch**: Route to interactive, single-shot, RPC, or exec mode
+ *
+ * @param args - Command-line arguments (typically process.argv.slice(2))
+ */
 export async function main(args: string[]) {
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 1: Environment and Telemetry Initialization
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Load environment variables from .env files (project and user level)
 	loadEnv();
+
+	// Initialize OpenTelemetry tracing for observability
+	// This is non-blocking (void) to avoid startup latency
 	void initOpenTelemetry("composer-cli");
 
-	// Load model registry early (async, before UI needs it)
+	// Pre-load model registry before any UI needs it
+	// This includes built-in models and any custom models from user config
 	await ensureModelsLoaded();
 
-	// Initialize enterprise context (user/org tracking for audit logging)
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 2: Enterprise Context Initialization
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Initialize enterprise context for user/org tracking
+	// This enables audit logging and policy enforcement in enterprise deployments
 	const { enterpriseContext } = await import("./enterprise/context.js");
 	await enterpriseContext.initialize();
 
 	// Initialize audit integration if enterprise features are available
+	// This logs all tool executions, model interactions, and session events
 	if (enterpriseContext.isEnterprise()) {
 		const { initializeAuditIntegration } = await import(
 			"./enterprise/audit-integration.js"
 		);
 		initializeAuditIntegration();
 
-		// Register cleanup to end enterprise session on exit
+		// Register cleanup handlers to properly end enterprise session on exit
+		// This ensures audit logs capture session termination
 		const cleanup = () => {
 			enterpriseContext.endSession();
 		};
@@ -278,12 +503,33 @@ export async function main(args: string[]) {
 		});
 	}
 
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 3: CLI Argument Parsing
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Parse command-line arguments into structured options
+	// This handles flags like --model, --provider, --continue, --resume, etc.
 	const parsed = parseArgs(args);
 
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 4: Authentication Setup
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Determine authentication mode:
+	// - auto: Try OAuth first, fall back to API key environment variables
+	// - api-key: Require explicit API key from --api-key or env var
+	// - oauth: Force OAuth flow (anthropic login, openai login)
+	// - codex: Use CODEX_API_KEY for ChatGPT compatibility
 	const authMode: AuthMode = parsed.authMode ?? "auto";
+
+	// Check for Codex token (ChatGPT-compatible API key)
+	// Priority: CLI flag > environment variable
 	const codexCliToken = parsed.codexApiKey;
 	const codexEnvToken = process.env.CODEX_API_KEY;
 	const effectiveCodexToken = codexCliToken ?? codexEnvToken;
+
+	// Create authentication resolver that handles credential lookup
+	// The resolver is called when making API requests to determine auth headers
 	const authResolver = createAuthResolver({
 		mode: authMode,
 		explicitApiKey: parsed.apiKey,
@@ -291,6 +537,8 @@ export async function main(args: string[]) {
 		codexSource: codexCliToken ? "flag" : codexEnvToken ? "env" : undefined,
 	});
 
+	// Helper to build user-friendly error messages for missing credentials
+	// Returns both plain text (for errors) and colored (for terminal) versions
 	type AuthLine = { plain: string; colored: string };
 	const buildMissingAuthLines = (providerName: string): AuthLine[] => {
 		const lines: AuthLine[] = [];
@@ -372,27 +620,43 @@ export async function main(args: string[]) {
 		process.exit(1);
 	}
 
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 5: Safety, LSP, and Checkpointing
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Enable safe mode if requested (restricts dangerous operations)
 	if (parsed.safeMode) {
 		process.env.COMPOSER_SAFE_MODE = "1";
 	}
 
+	// Load custom models file if specified
+	// This allows users to define additional models beyond the built-in ones
 	if (parsed.modelsFile) {
 		process.env.COMPOSER_MODELS_FILE = parsed.modelsFile;
 		reloadModelConfig();
 	}
 
+	// Configure safe mode settings (e.g., disabling certain tools in sandboxed environments)
 	configureSafeMode(true);
+
+	// Register shutdown hooks for background tasks to ensure clean cleanup
 	registerBackgroundTaskShutdownHooks();
 
-	// Bootstrap LSP with workspace root resolver and config overrides
+	// Bootstrap Language Server Protocol for IDE integration
+	// This enables features like go-to-definition, hover info, and diagnostics
 	await bootstrapLsp();
 
-	// Initialize checkpointing so PreToolUse hooks capture file snapshots
+	// Initialize checkpointing service for undo/redo functionality
+	// PreToolUse hooks capture file snapshots before tool execution
 	initCheckpointService(process.cwd());
 	const disposeCheckpoint = (): void => disposeCheckpointService();
 	process.once("beforeExit", disposeCheckpoint);
 	process.once("SIGINT", disposeCheckpoint);
 	process.once("SIGTERM", disposeCheckpoint);
+
+	// ─────────────────────────────────────────────────────────────────────────────
+	// Early Exit: Help Command
+	// ─────────────────────────────────────────────────────────────────────────────
 
 	if (parsed.help) {
 		printHelp(VERSION);
@@ -553,9 +817,15 @@ export async function main(args: string[]) {
 		}
 	}
 
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 6: Special Command Handling (agents init)
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Track agents init state for deferred execution
 	let agentsInitPrompt: string | null = null;
 	let agentsInitPath: string | null = null;
 
+	// Handle "composer agents init" command to generate AGENTS.md
 	if (parsed.command === "agents") {
 		const { buildAgentsInitPrompt, handleAgentsInit } = await import(
 			"./cli/commands/agents.js"
@@ -586,10 +856,19 @@ export async function main(args: string[]) {
 		}
 	}
 
-	// Setup session manager
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 7: Session Management
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Create session manager for conversation persistence
+	// The session manager handles:
+	// - Session file creation and storage (~/.composer/agent/sessions/)
+	// - Message persistence in JSONL format
+	// - Session resume and continuation
+	// - Model/thinking level tracking across restarts
 	const sessionManager = new SessionManager(
-		parsed.continue && !parsed.resume,
-		parsed.session,
+		parsed.continue && !parsed.resume, // continueSession: auto-load most recent
+		parsed.session, // customSessionPath: explicit session file
 	);
 
 	let execResumeApplied = false;
@@ -638,7 +917,12 @@ export async function main(args: string[]) {
 		sessionManager.setSessionFile(selectedSession);
 	}
 
-	// Determine provider and model
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 8: Model Resolution
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Resolve the provider and model to use for this session
+	// Priority: CLI args > alias resolution > factory defaults > hardcoded defaults
 	let provider = parsed.provider;
 	let modelId = parsed.model;
 
@@ -704,30 +988,49 @@ export async function main(args: string[]) {
 		);
 		process.exit(1);
 	}
-	// Build system prompt - defer until after tools are filtered if needed
-	// We need to know the tool names for dynamic system prompt generation
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 9: System Prompt and Tool Configuration
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Build the system prompt with project context
+	// The system prompt includes:
+	// - Base instructions for the agent
+	// - Project context files (COMPOSER.md, AGENTS.md, etc.)
+	// - Tool-specific instructions based on available tools
 	const systemPromptToolNames = parsed.tools;
 	const systemPrompt = buildSystemPrompt(
 		parsed.systemPrompt,
 		systemPromptToolNames,
 	);
 
+	// Determine approval mode for tool execution:
+	// - "prompt": Ask user before each tool execution (default for interactive)
+	// - "auto": Automatically approve all tools (default for non-interactive)
+	// - "fail": Reject all tool executions (for read-only mode)
 	const isInteractiveTui =
 		parsed.messages.length === 0 && (parsed.mode ?? "text") !== "rpc";
 	const defaultApprovalMode: ApprovalMode = isInteractiveTui
 		? "prompt"
 		: "auto";
+
+	// Override approval mode based on exec flags
 	const approvalModeOverride = (() => {
 		if (parsed.command === "exec") {
-			if (parsed.execReadOnly) return "fail";
-			if (parsed.execFullAuto) return "auto";
+			if (parsed.execReadOnly) return "fail"; // Read-only: reject all writes
+			if (parsed.execFullAuto) return "auto"; // Full-auto: approve everything
 		}
 		return parsed.approvalMode ?? defaultApprovalMode;
 	})();
+
+	// Create approval service that controls tool execution authorization
 	const approvalService = new ActionApprovalService(approvalModeOverride);
 
-	// Build initial tools list (MCP tools added dynamically after connection)
-	// Apply --tools filter if specified
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 10: Tool Registry and Sandbox Setup
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Build initial tools list - MCP tools will be added dynamically after connection
+	// Apply --tools filter if user specified a subset of tools
 	let baseTools = codingTools;
 	if (parsed.tools && parsed.tools.length > 0) {
 		const filteredTools = filterTools(parsed.tools);
@@ -753,7 +1056,11 @@ export async function main(args: string[]) {
 	}
 	const allTools = [...baseTools];
 
-	// Create sandbox if requested
+	// Create sandbox for isolated tool execution if requested
+	// Sandbox modes:
+	// - "docker": Run tools in a Docker container for isolation
+	// - "local": Run tools locally with limited permissions
+	// - "none": No sandboxing (default)
 	const sandboxMode = (parsed.sandbox ?? process.env.COMPOSER_SANDBOX_MODE) as
 		| SandboxMode
 		| undefined;
@@ -777,37 +1084,58 @@ export async function main(args: string[]) {
 		});
 	}
 
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 11: Agent Creation
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Create the main Agent instance that orchestrates LLM communication
+	// The Agent handles:
+	// - Message history management
+	// - Streaming response handling
+	// - Tool execution orchestration
+	// - Context injection from various sources
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
 			model,
-			thinkingLevel: "off",
+			thinkingLevel: "off", // Extended thinking disabled by default
 			tools: allTools,
 			sandbox,
 			sandboxMode: sandboxMode ?? null,
 			sandboxEnabled: Boolean(sandbox),
+			// Inject enterprise user context for audit logging
 			user: (() => {
 				const u = enterpriseContext.getUser();
 				return u ? { id: u.userId, orgId: u.orgId } : undefined;
 			})(),
 		},
+		// Transport handles LLM API communication with auth resolution
 		transport: new ProviderTransport({
 			getAuthContext: (providerName) => requireCredential(providerName, false),
 			approvalService,
 		}),
+		// Context sources inject dynamic information into the system prompt
+		// These provide real-time context like todos, background tasks, LSP state, etc.
 		contextSources: [
-			new TodoContextSource(),
-			new BackgroundTaskContextSource(),
-			new LspContextSource(),
-			new FrameworkPreferenceContextSource(),
-			new IDEContextSource(),
+			new TodoContextSource(), // Active todo list items
+			new BackgroundTaskContextSource(), // Running background processes
+			new LspContextSource(), // Language Server diagnostics
+			new FrameworkPreferenceContextSource(), // Framework preferences
+			new IDEContextSource(), // IDE integration state
 		],
 	});
 
-	// Initialize composer manager with base config first
+	// Initialize composer manager for multi-agent orchestration
+	// The composer manager handles spawning sub-agents and coordinating workflows
 	composerManager.initialize(agent, systemPrompt, allTools, process.cwd());
 
-	// Initialize MCP servers (non-blocking) and update agent tools when connected
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 12: MCP (Model Context Protocol) Integration
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Initialize MCP servers to extend available tools
+	// MCP servers provide additional capabilities like database access,
+	// file system operations, API integrations, etc.
 	const mcpConfig = loadMcpConfig(process.cwd(), { includeEnvLimits: true });
 	if (mcpConfig.servers.length > 0) {
 		// Listen for MCP server connections to add their tools
@@ -887,7 +1215,12 @@ export async function main(args: string[]) {
 		}
 	}
 
-	// Load previous messages if continuing or resuming
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 13: Session Restoration
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Restore previous session state if continuing or resuming
+	// This includes messages, model selection, and thinking level
 	const shouldRestoreSession =
 		parsed.continue || parsed.resume || execResumeApplied;
 	if (shouldRestoreSession) {
@@ -1094,7 +1427,16 @@ export async function main(args: string[]) {
 		});
 	}
 
-	// Route to appropriate mode
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 14: Runtime Mode Dispatch
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Route to the appropriate runtime mode based on command and arguments:
+	// 1. agents init: Generate AGENTS.md file
+	// 2. RPC mode: JSON-over-stdio protocol for programmatic control
+	// 3. Interactive TUI: Full terminal interface
+	// 4. Exec mode: Non-interactive batch execution
+	// 5. Single-shot: Process CLI messages and exit
 	if (agentsInitPrompt) {
 		const cwd = process.cwd();
 		const targetPath = agentsInitPath ?? "AGENTS.md";

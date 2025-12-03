@@ -1,3 +1,97 @@
+/**
+ * OpenAI Provider - LLM Integration for OpenAI-Compatible APIs
+ *
+ * This module implements streaming communication with OpenAI's API and
+ * any OpenAI-compatible endpoints (e.g., Azure OpenAI, local models via
+ * LM Studio, Ollama, vLLM, etc.).
+ *
+ * ## Supported APIs
+ *
+ * This provider supports two OpenAI API variants:
+ *
+ * ### 1. Chat Completions API (`openai-completions`)
+ *
+ * The standard OpenAI chat API at `/v1/chat/completions`:
+ *
+ * ```json
+ * {
+ *   "model": "gpt-4o",
+ *   "messages": [{"role": "user", "content": "Hello"}],
+ *   "stream": true,
+ *   "tools": [...]
+ * }
+ * ```
+ *
+ * **Event Types:**
+ * - `chat.completion.chunk`: Streaming text/tool_call deltas
+ * - Final chunk has `finish_reason` and optional usage stats
+ *
+ * ### 2. Responses API (`openai-responses`)
+ *
+ * The newer stateful API at `/v1/responses`:
+ *
+ * ```json
+ * {
+ *   "model": "gpt-4o",
+ *   "input": [{"role": "user", "content": [...]}],
+ *   "stream": true,
+ *   "tools": [...]
+ * }
+ * ```
+ *
+ * **Event Types:**
+ * - `response.output_text.delta`: Text streaming
+ * - `response.function_call_arguments.delta`: Tool call streaming
+ * - `response.completed`: Final response with usage
+ *
+ * ## Streaming Architecture
+ *
+ * Both APIs use Server-Sent Events (SSE) for streaming:
+ *
+ * ```
+ * Client                          Server
+ *   │                                │
+ *   │── POST /v1/chat/completions ──>│
+ *   │                                │
+ *   │<── data: {"choices":[...]} ────│
+ *   │<── data: {"choices":[...]} ────│
+ *   │<── data: {"choices":[...]} ────│
+ *   │<── data: [DONE] ───────────────│
+ *   │                                │
+ * ```
+ *
+ * ## Tool Calling
+ *
+ * Tools are converted to OpenAI function format:
+ *
+ * ```json
+ * {
+ *   "type": "function",
+ *   "function": {
+ *     "name": "read_file",
+ *     "description": "Reads a file from disk",
+ *     "parameters": {...json-schema...}
+ *   }
+ * }
+ * ```
+ *
+ * Tool calls are streamed as deltas and accumulated before execution.
+ *
+ * ## Extended Thinking / Reasoning
+ *
+ * For models that support it (e.g., o1, o1-mini), reasoning effort
+ * can be specified via `reasoning_effort` parameter:
+ *
+ * | Effort  | Behavior                           |
+ * |---------|------------------------------------|
+ * | minimal | Brief chain-of-thought             |
+ * | low     | Short reasoning                    |
+ * | medium  | Moderate exploration               |
+ * | high    | Deep reasoning with alternatives   |
+ *
+ * @module agent/providers/openai
+ */
+
 import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
 import { fetchWithRetry } from "../../providers/network-config.js";
 import { createLogger } from "../../utils/logger.js";

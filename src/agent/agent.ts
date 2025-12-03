@@ -1,3 +1,85 @@
+/**
+ * Agent Core - Event-Driven LLM Interaction Engine
+ *
+ * This module provides the central Agent class that orchestrates all LLM
+ * communication, tool execution, and state management for the Composer CLI.
+ * It implements an event-driven architecture that enables real-time streaming,
+ * concurrent tool execution, and extensible transport layers.
+ *
+ * ## Architecture Overview
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────────────────┐
+ * │                              Agent                                       │
+ * │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────────────────┐ │
+ * │  │   State     │  │  Transport   │  │     Context Sources             │ │
+ * │  │ - messages  │  │ - Anthropic  │  │ - TodoContextSource             │ │
+ * │  │ - model     │  │ - OpenAI     │  │ - BackgroundTaskContextSource   │ │
+ * │  │ - tools     │  │ - Google     │  │ - LspContextSource              │ │
+ * │  │ - streaming │  │ - Custom     │  │ - FrameworkPreferenceContext    │ │
+ * │  └─────────────┘  └──────────────┘  └─────────────────────────────────┘ │
+ * │         │                │                         │                     │
+ * │         ▼                ▼                         ▼                     │
+ * │  ┌─────────────────────────────────────────────────────────────────────┐│
+ * │  │                     Event Emitter                                   ││
+ * │  │  message_start, message_update, message_end, tool_execution_*       ││
+ * │  └─────────────────────────────────────────────────────────────────────┘│
+ * │                                 │                                        │
+ * └─────────────────────────────────┼────────────────────────────────────────┘
+ *                                   ▼
+ *                          ┌───────────────────┐
+ *                          │    Subscribers    │
+ *                          │  - TUI Renderer   │
+ *                          │  - Session Mgr    │
+ *                          │  - JSONL Writer   │
+ *                          └───────────────────┘
+ * ```
+ *
+ * ## Event Flow
+ *
+ * When `agent.prompt()` is called, the following sequence occurs:
+ *
+ * 1. **agent_start**: Signals the beginning of a prompt cycle
+ * 2. **message_start**: New assistant message being constructed
+ * 3. **content_block_delta**: Streaming text/thinking content
+ * 4. **tool_execution_start**: Tool call initiated
+ * 5. **tool_execution_end**: Tool call completed
+ * 6. **message_update**: Partial message with accumulated content
+ * 7. **message_end**: Complete assistant message
+ * 8. **agent_end**: Prompt cycle completed
+ *
+ * ## Message Transformation
+ *
+ * Messages are transformed through a pipeline before being sent to the LLM:
+ *
+ * 1. **App Messages**: Internal format with attachments, metadata
+ * 2. **Message Transform**: Convert attachments to content blocks
+ * 3. **Provider Normalization**: Adapt to target provider's format
+ * 4. **System Prompt Injection**: Add context from context sources
+ *
+ * ## Thinking/Reasoning Support
+ *
+ * The agent supports extended thinking for compatible models:
+ *
+ * | Level   | Description                              |
+ * |---------|------------------------------------------|
+ * | off     | No extended thinking                     |
+ * | minimal | Brief chain-of-thought                   |
+ * | low     | Short reasoning steps                    |
+ * | medium  | Moderate reasoning depth                 |
+ * | high    | Deep reasoning with exploration          |
+ * | max     | Maximum reasoning effort                 |
+ *
+ * ## Abort and Partial Handling
+ *
+ * The agent supports graceful interruption:
+ *
+ * - `abort()`: Cancel current request, discard partial response
+ * - `abortAndKeepPartial()`: Cancel but preserve partial content
+ *
+ * @module agent/agent
+ */
+
 import { validate as uuidValidate } from "uuid";
 import { createLogger } from "../utils/logger.js";
 import {
@@ -27,35 +109,56 @@ import type {
 	UserMessageWithAttachments,
 } from "./types.js";
 
+/**
+ * Default message transformer that converts app messages to LLM-ready format.
+ *
+ * This transformer handles:
+ * - Filtering to valid message roles (user, assistant, toolResult)
+ * - Expanding user message attachments into content blocks
+ * - Converting images to base64 image content
+ * - Converting documents to text content with filename headers
+ *
+ * @param messages - Array of app messages to transform
+ * @returns Array of messages ready for LLM consumption
+ */
 function defaultMessageTransformer(messages: AppMessage[]): Message[] {
 	return messages
+		// Filter to only roles the LLM understands
 		.filter(
 			(m) =>
 				m.role === "user" || m.role === "assistant" || m.role === "toolResult",
 		)
 		.map((message) => {
+			// Non-user messages pass through unchanged
 			if (message.role !== "user") {
 				return message as Message;
 			}
 
+			// Handle user messages with attachments
 			const { attachments, ...rest } = message as UserMessageWithAttachments;
 			if (!attachments || attachments.length === 0) {
 				return rest as Message;
 			}
 
+			// Expand attachments into content array
+			// Start with existing content (may be string or array)
 			const content: Array<TextContent | ImageContent> = Array.isArray(
 				rest.content,
 			)
 				? [...rest.content]
 				: [{ type: "text", text: rest.content }];
+
+			// Convert each attachment to appropriate content type
 			for (const attachment of attachments) {
 				if (attachment.type === "image") {
+					// Images become image content blocks with base64 data
 					content.push({
 						type: "image",
 						data: attachment.content,
 						mimeType: attachment.mimeType,
 					} as ImageContent);
 				} else if (attachment.type === "document" && attachment.extractedText) {
+					// Documents become text blocks with filename headers
 					content.push({
 						type: "text",
 						text: `\n\n[Document: ${attachment.fileName}]\n${attachment.extractedText}`,
@@ -67,19 +170,28 @@ function defaultMessageTransformer(messages: AppMessage[]): Message[] {
 		});
 }
 
+/**
+ * Maps internal thinking level to provider reasoning effort parameter.
+ *
+ * Different providers have different reasoning/thinking capabilities.
+ * This function normalizes our internal levels to what providers support.
+ *
+ * @param level - Internal thinking level
+ * @returns Provider-specific reasoning effort, or undefined if disabled
+ */
 function mapThinkingLevel(level: ThinkingLevel): ReasoningEffort | undefined {
 	switch (level) {
 		case "off":
-			return undefined;
+			return undefined; // No extended thinking
 		case "minimal":
-			return "minimal";
+			return "minimal"; // Brief chain-of-thought
 		case "low":
-			return "low";
+			return "low"; // Short reasoning steps
 		case "medium":
-			return "medium";
+			return "medium"; // Moderate depth
 		case "high":
 		case "max":
-			return "high";
+			return "high"; // Maximum reasoning (max maps to high for providers)
 		default:
 			return undefined;
 	}
@@ -87,8 +199,24 @@ function mapThinkingLevel(level: ThinkingLevel): ReasoningEffort | undefined {
 
 /**
  * Ensures prior assistant messages remain provider-compatible when switching models mid-session.
- * Thinking blocks from other providers are converted to tagged text so target providers that
- * don't understand foreign "thinking" payloads still receive the full context.
+ *
+ * When users switch between providers (e.g., Anthropic → OpenAI), previous assistant
+ * messages may contain provider-specific content like "thinking" blocks. This function
+ * converts those blocks to a format all providers can understand.
+ *
+ * ## Problem
+ *
+ * Anthropic's thinking blocks look like: `{ type: "thinking", thinking: "..." }`
+ * OpenAI doesn't understand this format and may error or ignore it.
+ *
+ * ## Solution
+ *
+ * Convert thinking blocks to text: `<thinking>...</thinking>` which all providers
+ * can process as regular text content.
+ *
+ * @param messages - Messages from conversation history
+ * @param targetModel - The model that will receive these messages
+ * @returns Messages with thinking blocks normalized for the target provider
  */
 function normalizeMessagesForProvider(
 	messages: Message[],

@@ -1,3 +1,77 @@
+/**
+ * Model Registry - Provider and Model Configuration
+ *
+ * This module manages the registration, validation, and resolution of LLM
+ * models and providers. It supports both built-in models and custom user
+ * configurations, with schema validation and policy enforcement.
+ *
+ * ## Configuration Hierarchy
+ *
+ * Model configuration is loaded from multiple sources with the following
+ * priority (later sources override earlier ones):
+ *
+ * 1. **Built-in Models**: Hardcoded in `src/models/builtin.ts`
+ * 2. **User Config**: `~/.composer/models.json` or `~/.composer/models.jsonc`
+ * 3. **Project Config**: `.composer/models.json` in current directory
+ * 4. **Environment Variable**: `COMPOSER_MODELS_FILE` for custom path
+ * 5. **CLI Flag**: `--models-file` for runtime override
+ *
+ * ## Configuration Format
+ *
+ * ```jsonc
+ * {
+ *   "$schema": "https://example.com/models.schema.json",
+ *   "providers": [
+ *     {
+ *       "id": "my-provider",
+ *       "name": "My Local LLM",
+ *       "api": "openai-completions",
+ *       "baseUrl": "http://localhost:8080/v1",
+ *       "apiKeyEnv": "MY_API_KEY",
+ *       "models": [
+ *         {
+ *           "id": "local-model",
+ *           "name": "Local Model 7B",
+ *           "contextWindow": 8192,
+ *           "maxTokens": 4096
+ *         }
+ *       ]
+ *     }
+ *   ],
+ *   "aliases": {
+ *     "fast": "anthropic/claude-3-5-haiku-latest",
+ *     "smart": "anthropic/claude-opus-4-5-20251101"
+ *   }
+ * }
+ * ```
+ *
+ * ## Supported APIs
+ *
+ * | API                   | Description                              |
+ * |-----------------------|------------------------------------------|
+ * | openai-completions    | OpenAI Chat Completions API              |
+ * | openai-responses      | OpenAI Responses API (newer)             |
+ * | anthropic-messages    | Anthropic Messages API                   |
+ * | google-generative-ai  | Google Generative AI API                 |
+ *
+ * ## Model Resolution
+ *
+ * When resolving a model by `provider/modelId`:
+ *
+ * 1. Check alias mappings first
+ * 2. Look up in registered models (custom + built-in)
+ * 3. Validate against enterprise policy if applicable
+ * 4. Return resolved model configuration or error
+ *
+ * ## Policy Enforcement
+ *
+ * Enterprise deployments can restrict available models via policy.
+ * The `checkModelPolicy()` function validates model access and throws
+ * `PolicyError` if the model is not allowed.
+ *
+ * @module models/registry
+ */
+
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -20,6 +94,10 @@ import { normalizeLLMBaseUrl } from "./url-normalize.js";
 
 const logger = createLogger("models:registry");
 
+/**
+ * Default cost values for models without pricing information.
+ * All costs are in USD per 1M tokens.
+ */
 const COST_DEFAULT = {
 	input: 0,
 	output: 0,
@@ -27,8 +105,20 @@ const COST_DEFAULT = {
 	cacheWrite: 0,
 } as const;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Configuration Schemas (TypeBox)
+// These schemas define the structure and validation rules for model configuration
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Optional custom headers to send with API requests */
 const headersSchema = Type.Optional(Type.Record(Type.String(), Type.String()));
 
+/**
+ * Schema for individual model configuration within a provider.
+ *
+ * Each model defines its capabilities, limits, and optional overrides
+ * for API endpoints and headers.
+ */
 const modelSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
 	name: Type.String({ minLength: 1 }),
