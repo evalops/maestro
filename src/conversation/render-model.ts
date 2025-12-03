@@ -176,7 +176,11 @@ export function toRenderableAssistantMessage(
 		if (cleanMode === "off") {
 			return { text: value, changed: false };
 		}
-		const windowSize = cleanMode === "aggressive" ? 8 : 1;
+		// Keep a larger recent-line window so we can collapse content when
+		// providers resend cumulative chunks (e.g., entire bullet lists on each
+		// delta). Soft mode gets a generous window; aggressive mode gets an
+		// even larger one, but both are bounded to avoid unbounded growth.
+		const windowSize = cleanMode === "aggressive" ? 120 : 40;
 		return collapseRepeatedLinesWithHistory(value, {
 			windowSize,
 			crossBlock: true,

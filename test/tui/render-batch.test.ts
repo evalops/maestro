@@ -12,13 +12,26 @@ const baseArgs: ToolRenderArgs = {
 		isError: false,
 		details: {
 			results: [
-				{ tool: "read", summary: "ok", success: true, details: { durationMs: 120 } },
-				{ tool: "write", summary: "wrote file", success: true, details: { durationMs: 240 } },
+				{
+					tool: "read",
+					summary: "ok",
+					success: true,
+					details: { durationMs: 120 },
+				},
+				{
+					tool: "write",
+					summary: "wrote file",
+					success: true,
+					details: { durationMs: 240 },
+				},
 				{
 					tool: "bash",
 					summary: "failed to run",
 					success: false,
-					result: { isError: true, content: [{ type: "text", text: "exit 1" }] },
+					result: {
+						isError: true,
+						content: [{ type: "text", text: "exit 1" }],
+					},
 					details: { durationMs: 300 },
 				},
 			],

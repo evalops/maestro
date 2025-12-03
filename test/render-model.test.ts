@@ -82,4 +82,24 @@ describe("render-model helpers", () => {
 		);
 		expect(renderable.cleaned).toBe(true);
 	});
+
+	it("dedupes cumulative re-sent blocks (emoji bullets)", () => {
+		const message: AssistantMessage = {
+			...baseAssistant,
+			content: [
+				{ type: "text", text: "✅ A\n✅ B" },
+				{ type: "text", text: "✅ A\n✅ B\n✅ C" },
+				{ type: "text", text: "✅ A\n✅ B\n✅ C\n✅ D" },
+			],
+		};
+
+		const renderable = toRenderableAssistantMessage(message, {
+			cleanMode: "soft",
+		});
+
+		expect(renderable.textBlocks.join("\n")).toBe(
+			["✅ A", "✅ B", "✅ C", "✅ D"].join("\n"),
+		);
+		expect(renderable.cleaned).toBe(true);
+	});
 });
