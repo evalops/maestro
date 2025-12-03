@@ -22,6 +22,13 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [VS Code Architecture](file://docs/VSCODE_ARCHITECTURE.md) — extension-specific architecture and flows.
 - [Patterns](file://docs/patterns/INDEX.md) — implementation patterns (e.g., event suppression, tool error handling).
 
+## Feature Design Docs
+- [Design Index](file://docs/design/INDEX.md) — comprehensive design documentation for all major subsystems.
+  - Core Systems: Tool System, Agent State Machine, Context Management, Session Persistence
+  - User Interface: TUI Rendering, Web UI Architecture
+  - Safety & Security: Safety Firewall, Enterprise RBAC, OAuth Authentication
+  - Supporting Systems: Hooks, MCP Integration, LSP Integration, Telemetry, Database
+
 ## Deployment & Operations
 - [Enterprise](file://docs/ENTERPRISE.md) — deployment, configuration, and hardening guidance for controlled environments.
 - [Open Code Parity](file://docs/opencode-parity.md) — notes on parity with open code releases.
