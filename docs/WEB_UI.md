@@ -234,47 +234,32 @@ Available tools:
 
 ## Security Considerations
 
-### Auto-Approval Mode
+### Hardened profile (recommended for hosted use)
 
-The web server runs with `ActionApprovalService("auto")`, meaning:
-- ⚠️ **All tool calls execute automatically**
-- ⚠️ **No user confirmation prompts**
-- ⚠️ **Full file system access**
+Set `COMPOSER_PROFILE=prod` (or `COMPOSER_WEB_PROFILE=prod`) when running the web server to enable secure defaults:
+- Requires `COMPOSER_WEB_API_KEY` for all `/api` routes (401 otherwise).
+- Approval mode defaults to `fail`.
+- CSRF enforced on mutating routes when `COMPOSER_WEB_CSRF_TOKEN` is set (auto-required in prod profile; override with `COMPOSER_WEB_REQUIRE_CSRF=0` for dev).
+- Strict CSP and security headers emitted for static assets; customize with `COMPOSER_WEB_CSP` if you need extra origins.
+- Background shell tasks (`background_tasks` with `shell:true`) are blocked; untagged human-facing egress tools are blocked unless explicitly disabled.
 
-**Recommended Setup:**
-1. Run in Docker/container
-2. Use read-only mounts where possible
-3. Limit network access
-4. Set up authentication (not included yet)
-5. Run as non-root user
-
-### Authentication
-
-Currently **NO AUTHENTICATION** is implemented. To add:
-
-```typescript
-// Example: Add JWT middleware
-function authMiddleware(req, res, next) {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!verifyJWT(token)) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Unauthorized' }));
-    return;
-  }
-  next();
-}
+Example hardened run:
+```bash
+COMPOSER_PROFILE=prod \
+COMPOSER_WEB_API_KEY=<strong-token> \
+COMPOSER_WEB_CSRF_TOKEN=<csrf-secret> \
+COMPOSER_WEB_ORIGIN=https://your.host \
+composer web
 ```
+
+### Development convenience
+- For local hacking, keep `COMPOSER_PROFILE` unset or `dev`, and you can opt out of strict egress/background-shell blocks with:
+  - `COMPOSER_FAIL_UNTAGGED_EGRESS=0`
+  - `COMPOSER_BACKGROUND_SHELL_DISABLE=0`
+- Set `COMPOSER_WEB_REQUIRE_KEY=0` to skip API key checks locally.
 
 ### CORS
-
-Currently allows all origins (`Access-Control-Allow-Origin: *`). Restrict in production:
-
-```typescript
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "https://your-domain.com",
-  // ...
-};
-```
+`COMPOSER_WEB_ORIGIN` sets `Access-Control-Allow-Origin` and related headers. Use your real host in production.
 
 ## Deployment
 

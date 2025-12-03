@@ -24,6 +24,10 @@ import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 import type { SemanticJudge, SemanticJudgeContext } from "./semantic-judge.js";
 
 const logger = createLogger("safety:action-firewall");
+const STRICT_UNTAGGED_EGRESS =
+	process.env.COMPOSER_FAIL_UNTAGGED_EGRESS === "1";
+const BLOCK_BACKGROUND_SHELL =
+	process.env.COMPOSER_BACKGROUND_SHELL_DISABLE === "1";
 
 // Type for policy check result caching
 interface PolicyCheckResult {
@@ -403,6 +407,34 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		},
 		remediation: () =>
 			"The file path is outside the allowed workspace. Please use a path within the current project or a temporary directory, or ask the user to add this path to 'containment.trustedPaths' in ~/.composer/firewall.json.",
+	},
+	{
+		id: "untagged-human-egress",
+		description:
+			"Block human-facing tool calls without explicit TOOL_TAGS annotations when strict mode is enabled",
+		action: "block",
+		match: (ctx) => {
+			if (!STRICT_UNTAGGED_EGRESS) {
+				return false;
+			}
+			if (!isHumanFacingTool(ctx.toolName)) {
+				return false;
+			}
+			return TOOL_TAGS[ctx.toolName] === undefined;
+		},
+		reason: () =>
+			"Human-facing tool is missing TOOL_TAGS; annotate the tool or disable strict mode via COMPOSER_FAIL_UNTAGGED_EGRESS=0.",
+		remediation: () =>
+			"Add TOOL_TAGS entry marking egress intent (human/http) before invoking the tool.",
+	},
+	{
+		id: "background-shell-block",
+		description: "Block shell-based background tasks when disabled by policy",
+		action: "block",
+		match: (ctx) =>
+			BLOCK_BACKGROUND_SHELL && isBackgroundTaskShellStart(ctx) === true,
+		reason: () =>
+			"Starting background_tasks with shell=true is disabled by policy. Set COMPOSER_BACKGROUND_SHELL_DISABLE=0 to allow.",
 	},
 	{
 		id: "mcp-destructive-tool",

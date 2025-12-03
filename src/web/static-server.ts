@@ -9,6 +9,7 @@ interface ServeStaticOptions {
 	webRoot: string;
 	corsHeaders?: Record<string, string>;
 	maxAgeSeconds?: number;
+	securityHeaders?: Record<string, string>;
 }
 
 export function serveStatic(
@@ -18,6 +19,7 @@ export function serveStatic(
 	options: ServeStaticOptions,
 ) {
 	const { webRoot, corsHeaders, maxAgeSeconds = 0 } = options;
+	const securityHeaders = options.securityHeaders || {};
 	const safeRoot = resolve(webRoot);
 	let filePath: string;
 
@@ -77,6 +79,7 @@ export function serveStatic(
 				? { "Cache-Control": `public, max-age=${maxAgeSeconds}` }
 				: { "Cache-Control": "no-cache" }),
 			...(corsHeaders || {}),
+			...securityHeaders,
 		});
 
 		const stream = createReadStream(filePath);

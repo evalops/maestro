@@ -65,6 +65,7 @@ import { createRoutes } from "./web/routes.js";
 import {
 	createAuthMiddleware,
 	createCorsMiddleware,
+	createCsrfMiddleware,
 	createLoadSheddingMiddleware,
 	createRouterMiddleware,
 	createTieredRateLimitMiddleware,
@@ -127,14 +128,31 @@ function normalizeAuthMode(value?: string | null): AuthMode {
 	return "auto";
 }
 
+const PROFILE = (
+	process.env.COMPOSER_PROFILE ||
+	process.env.COMPOSER_WEB_PROFILE ||
+	""
+)
+	.trim()
+	.toLowerCase();
+const PROD_PROFILE =
+	PROFILE === "prod" ||
+	PROFILE === "production" ||
+	PROFILE === "secure" ||
+	PROFILE === "hardened";
+
 const DEFAULT_APPROVAL_MODE = normalizeApprovalMode(
-	process.env.COMPOSER_APPROVAL_MODE,
+	process.env.COMPOSER_APPROVAL_MODE ?? (PROD_PROFILE ? "fail" : null),
 );
 const AUTH_MODE = normalizeAuthMode(process.env.COMPOSER_AUTH_MODE);
 const CODEX_TOKEN = process.env.CODEX_API_KEY?.trim();
 const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
 const requireKeyEnv = process.env.COMPOSER_WEB_REQUIRE_KEY;
 const requireRedisEnv = process.env.COMPOSER_WEB_REQUIRE_REDIS;
+const CSRF_TOKEN = process.env.COMPOSER_WEB_CSRF_TOKEN?.trim() || null;
+const REQUIRE_CSRF =
+	(PROD_PROFILE && process.env.COMPOSER_WEB_REQUIRE_CSRF !== "0") ||
+	Boolean(process.env.COMPOSER_WEB_CSRF_TOKEN);
 // Default: require in normal runtime, but don't break tests unless explicitly opted in.
 const REQUIRE_WEB_API_KEY =
 	(requireKeyEnv ?? (process.env.NODE_ENV === "test" ? "0" : "1")) !== "0";
@@ -156,11 +174,14 @@ const REQUEST_TIMEOUT_MS =
 
 // Harden defaults for hosted deployments.
 process.env.COMPOSER_WEB_SERVER = "1";
-if (!process.env.COMPOSER_SAFE_MODE) {
-	process.env.COMPOSER_SAFE_MODE = "1";
-}
-if (!process.env.COMPOSER_SAFE_REQUIRE_PLAN) {
+if (!process.env.COMPOSER_SAFE_MODE) process.env.COMPOSER_SAFE_MODE = "1";
+if (!process.env.COMPOSER_SAFE_REQUIRE_PLAN)
 	process.env.COMPOSER_SAFE_REQUIRE_PLAN = "1";
+if (PROD_PROFILE && !process.env.COMPOSER_FAIL_UNTAGGED_EGRESS) {
+	process.env.COMPOSER_FAIL_UNTAGGED_EGRESS = "1";
+}
+if (PROD_PROFILE && !process.env.COMPOSER_BACKGROUND_SHELL_DISABLE) {
+	process.env.COMPOSER_BACKGROUND_SHELL_DISABLE = "1";
 }
 
 // Parse and validate TRUST_PROXY setting
@@ -345,6 +366,27 @@ const __dirname = dirname(__filename);
 const WEB_ROOT = join(__dirname, "../packages/web");
 const ALLOWED_ORIGIN = DEFAULT_WEB_ORIGIN;
 const CORS_HEADERS = createCorsHeaders(ALLOWED_ORIGIN);
+const SECURITY_HEADERS: Record<string, string> =
+	PROD_PROFILE || process.env.COMPOSER_WEB_CSP?.trim()
+		? {
+				"Content-Security-Policy":
+					process.env.COMPOSER_WEB_CSP ||
+					[
+						"default-src 'none'",
+						`connect-src 'self' ${ALLOWED_ORIGIN}`,
+						"img-src 'self' data:",
+						"style-src 'self' 'unsafe-inline'",
+						"script-src 'self'",
+						"font-src 'self' data:",
+						"frame-ancestors 'none'",
+						"base-uri 'self'",
+						"form-action 'self'",
+					].join("; "),
+				"Referrer-Policy": "no-referrer",
+				"X-Content-Type-Options": "nosniff",
+				"Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+			}
+		: {};
 
 const context: WebServerContext = {
 	corsHeaders: CORS_HEADERS,
@@ -374,6 +416,7 @@ const router = createRequestHandler(
 			webRoot: WEB_ROOT,
 			corsHeaders: CORS_HEADERS,
 			maxAgeSeconds: STATIC_MAX_AGE,
+			securityHeaders: SECURITY_HEADERS,
 		});
 	},
 	CORS_HEADERS,
@@ -481,6 +524,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 			),
 			createCorsMiddleware(CORS_HEADERS),
 			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS, REQUIRE_WEB_API_KEY),
+			createCsrfMiddleware(CSRF_TOKEN, CORS_HEADERS, REQUIRE_CSRF),
 			createRouterMiddleware(router),
 		]);
 

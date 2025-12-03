@@ -64,7 +64,7 @@ export function createCorsHeaders(origin: string): Record<string, string> {
 		"Access-Control-Allow-Origin": origin,
 		"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 		"Access-Control-Allow-Headers":
-			"Content-Type, Authorization, X-Composer-Api-Key, X-Composer-Approval-Mode",
+			"Content-Type, Authorization, X-Composer-Api-Key, X-Composer-Approval-Mode, X-Composer-Csrf, X-Csrf-Token, X-Xsrf-Token",
 		"Access-Control-Max-Age": "86400",
 	};
 	if (origin !== "*") {

@@ -109,3 +109,31 @@ If Docker is unavailable, Composer falls back to local mode with a warning.
   disabling the rule. If you need a custom rule, submit a PR so others benefit.
 - Document approvals in team workflows: "Composer asked to run `rm -rf`.
   Approved because we're deleting `tmp/`."
+
+## Hardened “prod” profile
+
+Enable secure defaults by setting `COMPOSER_PROFILE=prod` (or `COMPOSER_WEB_PROFILE=prod` for web-only). This is meant for hosted or shared environments; local dev stays lenient unless you opt in.
+
+What it flips on by default:
+- Approval mode defaults to `fail` (can still be overridden explicitly).
+- Strict egress tagging: human-facing tools must be annotated in `TOOL_TAGS`; untagged egress is blocked unless `COMPOSER_FAIL_UNTAGGED_EGRESS=0`.
+- Background shell tasks blocked when launched with `background_tasks` + `shell:true` unless `COMPOSER_BACKGROUND_SHELL_DISABLE=0`.
+- Safe mode and plan-required guards are enabled.
+- Web security headers (CSP, Referrer-Policy, Permissions-Policy, X-Content-Type-Options) are emitted for static assets.
+- CSRF enforcement is activated when `COMPOSER_WEB_CSRF_TOKEN` is set (auto-required in prod profile unless `COMPOSER_WEB_REQUIRE_CSRF=0`).
+
+Recommended hardened web start:
+```bash
+COMPOSER_PROFILE=prod \
+COMPOSER_WEB_API_KEY=<strong-token> \
+COMPOSER_WEB_CSRF_TOKEN=<csrf-secret> \
+COMPOSER_WEB_ORIGIN=https://your.host \
+composer web
+```
+
+Temporarily relax for local hacking:
+```bash
+COMPOSER_PROFILE=dev \
+COMPOSER_FAIL_UNTAGGED_EGRESS=0 \
+COMPOSER_BACKGROUND_SHELL_DISABLE=0
+```

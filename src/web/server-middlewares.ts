@@ -4,7 +4,11 @@ import { createLogger } from "../utils/logger.js";
 import { isOverloaded, logRequest } from "./logger.js";
 import type { Middleware } from "./middleware.js";
 import type { RateLimiter, TieredRateLimiter } from "./rate-limiter.js";
-import { authenticateRequest, sendJson } from "./server-utils.js";
+import {
+	authenticateRequest,
+	secureCompare,
+	sendJson,
+} from "./server-utils.js";
 
 const logger = createLogger("middleware:ip-access");
 
@@ -225,6 +229,42 @@ export function createAuthMiddleware(
 			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
 				return;
 			}
+		}
+		return next();
+	};
+}
+
+export function createCsrfMiddleware(
+	token: string | null,
+	corsHeaders: Record<string, string>,
+	enabled = false,
+): Middleware {
+	if (!enabled || !token) {
+		return (_req, _res, next) => next();
+	}
+	return (req, res, next) => {
+		const method = (req.method || "GET").toUpperCase();
+		if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+			return next();
+		}
+		const pathname = getPathname(req);
+		if (!pathname.startsWith("/api")) {
+			return next();
+		}
+		const header =
+			req.headers["x-composer-csrf"] ||
+			req.headers["x-csrf-token"] ||
+			req.headers["x-xsrf-token"];
+		const value = Array.isArray(header) ? header[0] : header;
+		if (!value || !secureCompare(String(value), token)) {
+			sendJson(
+				res,
+				403,
+				{ error: "Forbidden: missing or invalid CSRF token" },
+				corsHeaders,
+				req,
+			);
+			return;
 		}
 		return next();
 	};
