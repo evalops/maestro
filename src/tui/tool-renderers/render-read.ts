@@ -11,6 +11,8 @@ import {
 import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
+const OUTPUT_TRUNCATION_CHARS = 12000;
+
 export class ReadRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
 		const args = context.result
@@ -48,7 +50,14 @@ export class ReadRenderer implements ToolRenderer {
 		const sections: string[] = [pathLine];
 
 		if (context.result) {
-			const output = this.getTextOutput(context);
+			let output = this.getTextOutput(context);
+			if (output.length > OUTPUT_TRUNCATION_CHARS) {
+				const omitted = output.length - OUTPUT_TRUNCATION_CHARS;
+				output = `${output.slice(
+					0,
+					OUTPUT_TRUNCATION_CHARS,
+				)}\n[output truncated, ${omitted.toLocaleString()} chars omitted]`;
+			}
 			const { lines, remaining } = summarizeLines(output, 10);
 			const terminalWidth = process.stdout.columns ?? 80;
 			const maxWidth = Math.max(48, Math.min(120, terminalWidth - 8));

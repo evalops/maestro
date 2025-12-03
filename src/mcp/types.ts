@@ -1,6 +1,7 @@
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 
 export type McpTransport = "stdio" | "http" | "sse";
+export type McpScope = "enterprise" | "plugin" | "project" | "local" | "user";
 
 export interface McpServerConfig {
 	name: string;
@@ -15,11 +16,17 @@ export interface McpServerConfig {
 	headers?: Record<string, string>;
 	// Common options
 	enabled?: boolean;
+	disabled?: boolean;
 	timeout?: number;
+	scope?: McpScope;
 }
 
 export interface McpConfig {
 	servers: McpServerConfig[];
+	envLimits?: Record<
+		string,
+		{ effective: number; status: string; message?: string }
+	>;
 }
 
 export interface McpServerStatus {

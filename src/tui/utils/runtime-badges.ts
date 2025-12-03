@@ -4,6 +4,7 @@ import { composerManager } from "../../composers/index.js";
 import { mcpManager } from "../../mcp/index.js";
 import { isSafeModeEnabled } from "../../safety/safe-mode.js";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
+import { isDockerEnv, isJetBrainsTerminal, isWslEnv } from "./env-detect.js";
 
 export interface RuntimeBadgeParams {
 	approvalMode: ApprovalMode | null | undefined;
@@ -82,6 +83,16 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 	}
 	if (params.compactForced) {
 		badges.push("compact:auto");
+	}
+
+	// Environment hints
+	if (isDockerEnv()) {
+		badges.push("env:docker");
+	} else if (isWslEnv()) {
+		badges.push("env:wsl");
+	}
+	if (isJetBrainsTerminal()) {
+		badges.push("term:jetbrains");
 	}
 
 	// Active composer

@@ -57,6 +57,8 @@ interface HistoryEntry {
 	timestamp: number;
 }
 
+const WORD_BOUNDARY = /[(){}\[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+
 export class Editor implements Component {
 	private state: EditorState = {
 		lines: [""],
@@ -87,6 +89,11 @@ export class Editor implements Component {
 	private static readonly MAX_HISTORY = 100;
 	private lastSaveTime = 0;
 	private static readonly SAVE_DEBOUNCE_MS = 300;
+
+	// Column the user intends to stay at when moving vertically
+	private preferredCol: number | null = null;
+	// Simple kill buffer for yank-after-kill flows
+	private killBuffer = "";
 
 	onSubmit?: (text: string) => void;
 	onChange?: (text: string) => void;
@@ -350,13 +357,35 @@ export class Editor implements Component {
 		else if (data.charCodeAt(0) === 23) {
 			this.deleteWordBackwards();
 		}
+		// Alt/Meta + B or Ctrl+Left
+		else if (
+			data === "\x1bb" ||
+			data === "\x1b[1;5D" ||
+			data === "\x1b[5D" ||
+			data === "\x1b[1;3D"
+		) {
+			this.moveWordBackwards();
+		}
+		// Alt/Meta + F or Ctrl+Right
+		else if (
+			data === "\x1bf" ||
+			data === "\x1b[1;5C" ||
+			data === "\x1b[5C" ||
+			data === "\x1b[1;3C"
+		) {
+			this.moveWordForwards();
+		}
+		// Alt+Y - yank last kill buffer
+		else if (data === "\x1by") {
+			this.yankKillBuffer();
+		}
 		// Option/Alt+Backspace (e.g. Ghostty sends ESC + DEL)
 		else if (data === "\x1b\x7f") {
 			this.deleteWordBackwards();
 		}
 		// Ctrl+A - Move to start of line
 		else if (data.charCodeAt(0) === 1) {
-			this.moveToLineStart();
+			this.moveToSmartLineStart();
 		}
 		// Ctrl+E - Move to end of line
 		else if (data.charCodeAt(0) === 5) {
@@ -417,7 +446,7 @@ export class Editor implements Component {
 		// Line navigation shortcuts (Home/End keys)
 		else if (data === "\x1b[H" || data === "\x1b[1~" || data === "\x1b[7~") {
 			// Home key
-			this.moveToLineStart();
+			this.moveToSmartLineStart();
 		} else if (data === "\x1b[F" || data === "\x1b[4~" || data === "\x1b[8~") {
 			// End key
 			this.moveToLineEnd();
@@ -584,8 +613,13 @@ export class Editor implements Component {
 	setLargePasteMode(mode: "placeholder" | "verbatim"): void {
 		this.largePasteMode = mode;
 	}
-	private insertCharacter(char: string): void {
-		this.saveToHistory();
+	private insertCharacter(
+		char: string,
+		opts?: { skipHistory?: boolean },
+	): void {
+		if (!opts?.skipHistory) {
+			this.saveToHistory();
+		}
 		const line = this.state.lines[this.state.cursorLine] || "";
 		const before = line.slice(0, this.state.cursorCol);
 		const after = line.slice(this.state.cursorCol);
@@ -622,8 +656,46 @@ export class Editor implements Component {
 	}
 
 	insertText(text: string): void {
-		for (const char of text) {
-			this.insertCharacter(char);
+		if (!text) return;
+
+		// Normalize line breaks so we can treat "\n" uniformly.
+		const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+		const parts = normalized.split("\n");
+
+		// Fast path: single-line insert
+		if (parts.length === 1) {
+			this.insertCharacter(parts[0], { skipHistory: false });
+			return;
+		}
+
+		// Multi-line insert (also used for yanking a newline)
+		this.saveToHistory();
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const beforeCursor = currentLine.slice(0, this.state.cursorCol);
+		const afterCursor = currentLine.slice(this.state.cursorCol);
+
+		const newLines: string[] = [];
+		for (let i = 0; i < this.state.cursorLine; i++) {
+			newLines.push(this.state.lines[i] || "");
+		}
+
+		newLines.push(beforeCursor + (parts[0] || ""));
+		for (let i = 1; i < parts.length - 1; i++) {
+			newLines.push(parts[i] || "");
+		}
+		newLines.push((parts[parts.length - 1] || "") + afterCursor);
+
+		for (let i = this.state.cursorLine + 1; i < this.state.lines.length; i++) {
+			newLines.push(this.state.lines[i] || "");
+		}
+
+		this.state.lines = newLines;
+		this.state.cursorLine += parts.length - 1;
+		this.state.cursorCol = (parts[parts.length - 1] || "").length;
+		this.preferredCol = this.state.cursorCol;
+
+		if (this.onChange) {
+			this.onChange(this.getText());
 		}
 	}
 	setPasteReplacement(pasteId: number, replacement: string): void {
@@ -777,9 +849,23 @@ export class Editor implements Component {
 	private moveToLineStart(): void {
 		this.state.cursorCol = 0;
 	}
+
+	private moveToSmartLineStart(): void {
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const firstNonBlank = Math.max(0, currentLine.search(/\S|$/));
+		// Toggle between first non-blank and column 0
+		if (this.state.cursorCol === firstNonBlank) {
+			this.moveToLineStart();
+		} else {
+			this.state.cursorCol = firstNonBlank;
+		}
+		this.preferredCol = this.state.cursorCol;
+	}
+
 	private moveToLineEnd(): void {
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		this.state.cursorCol = currentLine.length;
+		this.preferredCol = this.state.cursorCol;
 	}
 	private handleForwardDelete(): void {
 		this.saveToHistory();
@@ -805,6 +891,7 @@ export class Editor implements Component {
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		if (this.state.cursorCol > 0) {
 			// Delete from start of line up to cursor
+			this.killBuffer = currentLine.slice(0, this.state.cursorCol);
 			this.state.lines[this.state.cursorLine] = currentLine.slice(
 				this.state.cursorCol,
 			);
@@ -812,6 +899,7 @@ export class Editor implements Component {
 		} else if (this.state.cursorLine > 0) {
 			// At start of line - merge with previous line
 			const previousLine = this.state.lines[this.state.cursorLine - 1] || "";
+			this.killBuffer = "\n";
 			this.state.lines[this.state.cursorLine - 1] = previousLine + currentLine;
 			this.state.lines.splice(this.state.cursorLine, 1);
 			this.state.cursorLine--;
@@ -827,6 +915,7 @@ export class Editor implements Component {
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		if (this.state.cursorCol < currentLine.length) {
 			// Delete from cursor to end of line
+			this.killBuffer = currentLine.slice(this.state.cursorCol);
 			this.state.lines[this.state.cursorLine] = currentLine.slice(
 				0,
 				this.state.cursorCol,
@@ -834,6 +923,7 @@ export class Editor implements Component {
 		} else if (this.state.cursorLine < this.state.lines.length - 1) {
 			// At end of line - merge with next line
 			const nextLine = this.state.lines[this.state.cursorLine + 1] || "";
+			this.killBuffer = "\n";
 			this.state.lines[this.state.cursorLine] = currentLine + nextLine;
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
@@ -854,13 +944,14 @@ export class Editor implements Component {
 				this.state.lines.splice(this.state.cursorLine, 1);
 				this.state.cursorLine--;
 				this.state.cursorCol = previousLine.length;
+				this.killBuffer = "\n";
 			}
 		} else {
 			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
 			const isWhitespace = (char: string): boolean => /\s/.test(char);
 			const isPunctuation = (char: string): boolean => {
 				// Treat obvious code punctuation as boundaries
-				return /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/.test(char);
+				return WORD_BOUNDARY.test(char);
 			};
 			let deleteFrom = this.state.cursorCol;
 
@@ -888,20 +979,94 @@ export class Editor implements Component {
 			this.state.lines[this.state.cursorLine] =
 				currentLine.slice(0, deleteFrom) +
 				currentLine.slice(this.state.cursorCol);
+			this.killBuffer = currentLine.slice(deleteFrom, this.state.cursorCol);
 			this.state.cursorCol = deleteFrom;
 		}
 		if (this.onChange) {
 			this.onChange(this.getText());
 		}
 	}
+
+	private moveWordBackwards(): void {
+		const isBoundary = (ch: string): boolean =>
+			/\s/.test(ch) || WORD_BOUNDARY.test(ch);
+
+		let lineIdx = this.state.cursorLine;
+		let colIdx = this.state.cursorCol;
+
+		while (true) {
+			const line = this.state.lines[lineIdx] || "";
+
+			while (colIdx > 0 && isBoundary(line[colIdx - 1] ?? "")) {
+				colIdx--;
+			}
+			while (colIdx > 0 && !isBoundary(line[colIdx - 1] ?? "")) {
+				colIdx--;
+			}
+
+			// Stop only at absolute file start; otherwise continue to previous line
+			if (colIdx === 0 && lineIdx === 0) {
+				this.state.cursorLine = lineIdx;
+				this.state.cursorCol = colIdx;
+				break;
+			}
+
+			// Move to previous line and continue searching
+			lineIdx -= 1;
+			colIdx = (this.state.lines[lineIdx] || "").length;
+		}
+
+		this.preferredCol = this.state.cursorCol;
+	}
+
+	private moveWordForwards(): void {
+		const isBoundary = (ch: string): boolean =>
+			/\s/.test(ch) || WORD_BOUNDARY.test(ch);
+
+		let lineIdx = this.state.cursorLine;
+		let colIdx = this.state.cursorCol;
+
+		while (true) {
+			const line = this.state.lines[lineIdx] || "";
+
+			while (colIdx < line.length && !isBoundary(line[colIdx] ?? "")) {
+				colIdx++;
+			}
+			while (colIdx < line.length && isBoundary(line[colIdx] ?? "")) {
+				colIdx++;
+			}
+
+			// Stop only at absolute file end; otherwise continue to next line
+			if (colIdx >= line.length && lineIdx >= this.state.lines.length - 1) {
+				this.state.cursorLine = lineIdx;
+				this.state.cursorCol = Math.min(colIdx, line.length);
+				break;
+			}
+
+			// Move to next line and continue searching
+			lineIdx += 1;
+			colIdx = 0;
+		}
+
+		this.preferredCol = this.state.cursorCol;
+	}
+
+	private yankKillBuffer(): void {
+		if (!this.killBuffer) return;
+		this.insertText(this.killBuffer);
+	}
 	private moveCursor(deltaLine: number, deltaCol: number): void {
 		if (deltaLine !== 0) {
+			if (this.preferredCol === null) {
+				this.preferredCol = this.state.cursorCol;
+			}
 			const newLine = this.state.cursorLine + deltaLine;
 			if (newLine >= 0 && newLine < this.state.lines.length) {
 				this.state.cursorLine = newLine;
 				// Clamp cursor column to new line length
 				const line = this.state.lines[this.state.cursorLine] || "";
-				this.state.cursorCol = Math.min(this.state.cursorCol, line.length);
+				const targetCol = this.preferredCol ?? this.state.cursorCol;
+				this.state.cursorCol = Math.min(targetCol, line.length);
 			}
 		}
 		if (deltaCol !== 0) {
@@ -910,6 +1075,7 @@ export class Editor implements Component {
 			const currentLine = this.state.lines[this.state.cursorLine] || "";
 			const maxCol = currentLine.length;
 			this.state.cursorCol = Math.max(0, Math.min(maxCol, newCol));
+			this.preferredCol = this.state.cursorCol;
 		}
 	}
 	// Helper method to check if cursor is at start of message (for slash command detection)

@@ -2,6 +2,7 @@ import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { type TSchema, Type } from "@sinclair/typebox";
 import { createTool } from "../tools/tool-dsl.js";
 import { mcpManager } from "./manager.js";
+import { buildMcpToolName, parseMcpToolName } from "./names.js";
 
 interface McpToolDetails {
 	server: string;
@@ -53,7 +54,7 @@ function convertJsonSchemaToTypebox(schema: unknown): TSchema {
 }
 
 export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
-	const toolName = `mcp_${serverName}_${mcpTool.name}`;
+	const toolName = buildMcpToolName(serverName, mcpTool.name);
 	const schema = mcpTool.inputSchema
 		? convertJsonSchemaToTypebox(mcpTool.inputSchema)
 		: Type.Object({});
