@@ -628,6 +628,81 @@ echo '{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalCo
 
 			expect(result.additionalContext).toBe("Subagent context injected");
 		});
+
+		it("should run SubagentStop hooks on success", async () => {
+			registerHook("SubagentStop", {
+				type: "callback",
+				callback: async (input) => {
+					if ("success" in input && input.success) {
+						const duration = (input as { duration_ms: number }).duration_ms;
+						return {
+							continue: true,
+							hookSpecificOutput: {
+								hookEventName: "SubagentStop" as const,
+								additionalContext: `Subagent completed in ${duration}ms`,
+							},
+						};
+					}
+					return { continue: true };
+				},
+			});
+
+			const service = createSessionHookService({
+				cwd: testDir,
+				sessionId: "test-session",
+			});
+
+			const result = await service.runSubagentStopHooks(
+				"explorer",
+				"agent-123",
+				true,
+				5000,
+				3,
+				{ parentSessionId: "parent-session" },
+			);
+
+			expect(result.blocked).toBe(false);
+			expect(result.hookResults.length).toBeGreaterThan(0);
+		});
+
+		it("should run SubagentStop hooks on failure", async () => {
+			registerHook("SubagentStop", {
+				type: "callback",
+				callback: async (input) => {
+					if ("success" in input && !input.success) {
+						const err = (input as { error?: string }).error ?? "Unknown error";
+						return {
+							continue: true,
+							hookSpecificOutput: {
+								hookEventName: "SubagentStop" as const,
+								additionalContext: `Subagent failed: ${err}`,
+							},
+						};
+					}
+					return { continue: true };
+				},
+			});
+
+			const service = createSessionHookService({
+				cwd: testDir,
+				sessionId: "test-session",
+			});
+
+			const result = await service.runSubagentStopHooks(
+				"explorer",
+				"agent-456",
+				false,
+				1000,
+				1,
+				{
+					error: "Connection timeout",
+					transcriptPath: "/tmp/transcript.json",
+				},
+			);
+
+			expect(result.blocked).toBe(false);
+			expect(result.hookResults.length).toBeGreaterThan(0);
+		});
 	});
 
 	describe("Configuration Loading", () => {

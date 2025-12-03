@@ -17,6 +17,7 @@ export type HookEventType =
 	| "SessionStart"
 	| "SessionEnd"
 	| "SubagentStart"
+	| "SubagentStop"
 	| "UserPromptSubmit"
 	| "Notification"
 	| "PreCompact"
@@ -121,6 +122,29 @@ export interface SubagentStartHookInput extends HookInputBase {
 }
 
 /**
+ * Input for SubagentStop hooks - called when a subagent completes.
+ */
+export interface SubagentStopHookInput extends HookInputBase {
+	hook_event_name: "SubagentStop";
+	/** Type of agent that completed */
+	agent_type: string;
+	/** Agent's unique ID */
+	agent_id: string;
+	/** Whether the agent completed successfully */
+	success: boolean;
+	/** Error message if failed */
+	error?: string;
+	/** Duration of subagent execution in milliseconds */
+	duration_ms: number;
+	/** Number of turns the subagent took */
+	turn_count: number;
+	/** Path to the subagent transcript */
+	transcript_path?: string;
+	/** Parent session ID */
+	parent_session_id?: string;
+}
+
+/**
  * Input for UserPromptSubmit hooks - called when user submits a prompt.
  */
 export interface UserPromptSubmitHookInput extends HookInputBase {
@@ -180,6 +204,7 @@ export type HookInput =
 	| SessionStartHookInput
 	| SessionEndHookInput
 	| SubagentStartHookInput
+	| SubagentStopHookInput
 	| UserPromptSubmitHookInput
 	| NotificationHookInput
 	| PreCompactHookInput
@@ -242,6 +267,15 @@ export interface SubagentStartHookOutput {
 }
 
 /**
+ * Hook-specific output for SubagentStop events.
+ */
+export interface SubagentStopHookOutput {
+	hookEventName: "SubagentStop";
+	/** Additional context about subagent completion */
+	additionalContext?: string;
+}
+
+/**
  * Hook-specific output for UserPromptSubmit events.
  */
 export interface UserPromptSubmitHookOutput {
@@ -271,6 +305,7 @@ export type HookSpecificOutput =
 	| PostToolUseFailureHookOutput
 	| SessionStartHookOutput
 	| SubagentStartHookOutput
+	| SubagentStopHookOutput
 	| UserPromptSubmitHookOutput
 	| PermissionRequestHookOutput;
 

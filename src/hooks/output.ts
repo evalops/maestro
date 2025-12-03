@@ -19,6 +19,7 @@ const VALID_HOOK_EVENT_NAMES = new Set([
 	"SessionStart",
 	"SessionEnd",
 	"SubagentStart",
+	"SubagentStop",
 	"UserPromptSubmit",
 	"Notification",
 	"PreCompact",

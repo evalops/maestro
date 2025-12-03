@@ -19,6 +19,7 @@ import type {
 	SessionEndHookInput,
 	SessionStartHookInput,
 	SubagentStartHookInput,
+	SubagentStopHookInput,
 	UserPromptSubmitHookInput,
 } from "./types.js";
 
@@ -99,6 +100,23 @@ export interface SessionHookService {
 	): Promise<SessionHookResult>;
 
 	/**
+	 * Run SubagentStop hooks when a subagent completes.
+	 */
+	runSubagentStopHooks(
+		agentType: string,
+		agentId: string,
+		success: boolean,
+		durationMs: number,
+		turnCount: number,
+		options?: {
+			error?: string;
+			transcriptPath?: string;
+			parentSessionId?: string;
+		},
+		signal?: AbortSignal,
+	): Promise<SessionHookResult>;
+
+	/**
 	 * Run UserPromptSubmit hooks when user submits a prompt.
 	 */
 	runUserPromptSubmitHooks(
@@ -134,6 +152,7 @@ export interface SessionHookService {
 			| "SessionStart"
 			| "SessionEnd"
 			| "SubagentStart"
+			| "SubagentStop"
 			| "UserPromptSubmit"
 			| "PreCompact"
 			| "Notification",
@@ -282,6 +301,49 @@ export function createSessionHookService(
 			return processed;
 		},
 
+		async runSubagentStopHooks(
+			agentType: string,
+			agentId: string,
+			success: boolean,
+			durationMs: number,
+			turnCount: number,
+			options?: {
+				error?: string;
+				transcriptPath?: string;
+				parentSessionId?: string;
+			},
+			signal?: AbortSignal,
+		): Promise<SessionHookResult> {
+			const input: SubagentStopHookInput = {
+				hook_event_name: "SubagentStop",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				agent_type: agentType,
+				agent_id: agentId,
+				success,
+				error: options?.error,
+				duration_ms: durationMs,
+				turn_count: turnCount,
+				transcript_path: options?.transcriptPath,
+				parent_session_id: options?.parentSessionId,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+			const processed = processResults(results);
+
+			logger.debug("SubagentStop hooks completed", {
+				agentType,
+				agentId,
+				success,
+				durationMs,
+				turnCount,
+				resultCount: results.length,
+			});
+
+			return processed;
+		},
+
 		async runUserPromptSubmitHooks(
 			prompt: string,
 			attachmentCount: number,
@@ -368,6 +430,7 @@ export function createSessionHookService(
 				| "SessionStart"
 				| "SessionEnd"
 				| "SubagentStart"
+				| "SubagentStop"
 				| "UserPromptSubmit"
 				| "PreCompact"
 				| "Notification",

@@ -12,6 +12,7 @@
  * - **SessionStart**: When a session begins
  * - **SessionEnd**: When a session ends
  * - **SubagentStart**: Before spawning a subagent
+ * - **SubagentStop**: When a subagent completes
  * - **UserPromptSubmit**: When user submits a prompt
  * - **Notification**: On various notifications
  * - **PreCompact**: Before context compaction
@@ -56,6 +57,7 @@ export type {
 	SessionStartHookInput,
 	SessionEndHookInput,
 	SubagentStartHookInput,
+	SubagentStopHookInput,
 	UserPromptSubmitHookInput,
 	NotificationHookInput,
 	PreCompactHookInput,
@@ -69,6 +71,7 @@ export type {
 	PostToolUseFailureHookOutput,
 	SessionStartHookOutput,
 	SubagentStartHookOutput,
+	SubagentStopHookOutput,
 	UserPromptSubmitHookOutput,
 	PermissionRequestHookOutput,
 	// Result types
