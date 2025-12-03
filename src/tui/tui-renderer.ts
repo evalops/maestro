@@ -49,7 +49,12 @@ import {
 	toSessionModelMetadata,
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
-import { getTelemetryStatus } from "../telemetry.js";
+import {
+	getTelemetryStatus,
+	recordCompaction,
+	recordSessionStart,
+	recordTokenUsage,
+} from "../telemetry.js";
 import { getCurrentThemeName, setTheme } from "../theme/theme.js";
 import {
 	type BackgroundTaskNotification,
@@ -57,6 +62,15 @@ import {
 } from "../tools/background-tasks.js";
 import { getTrainingStatus } from "../training.js";
 
+import {
+	type AutoCompactionConfig,
+	AutoCompactionMonitor,
+	type CompactionStats,
+} from "../agent/auto-compaction.js";
+import {
+	type SessionBackup,
+	SessionRecoveryManager,
+} from "../agent/session-recovery.js";
 import { composerManager } from "../composers/index.js";
 import { mcpManager } from "../mcp/index.js";
 import { getChangelogPath, parseChangelog } from "../update/changelog.js";
@@ -248,8 +262,10 @@ export class TuiRenderer {
 	private readonly idleFooterHint =
 		"Try /help for commands or /tools for status";
 	private readonly workingFooterHint = "Working… press esc to interrupt";
-	private readonly autoCompactThreshold = 85;
-	private readonly autoCompactMinimumMessages = 10;
+	private autoCompactionMonitor: AutoCompactionMonitor;
+	private sessionRecoveryManager: SessionRecoveryManager;
+	private sessionStartTime: number | null = null;
+	private sessionTelemetryRecorded = false;
 	private planHint: string | null = null;
 	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
@@ -438,6 +454,12 @@ export class TuiRenderer {
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;
 		this.modelScope = options.modelScope ?? [];
+		this.autoCompactionMonitor = new AutoCompactionMonitor({
+			onCompactionRecommended: (stats) => {
+				this.handleAutoCompactionRecommendation(stats);
+			},
+		});
+		this.sessionRecoveryManager = new SessionRecoveryManager();
 		this.backgroundSettingsUnsubscribe = subscribeBackgroundTaskSettings(
 			(settings) => {
 				this.backgroundSettings = settings;
@@ -1131,25 +1153,72 @@ export class TuiRenderer {
 		if (!state?.model?.contextWindow) {
 			return;
 		}
-		if (state.messages.length < this.autoCompactMinimumMessages) {
+
+		// Use AutoCompactionMonitor for rate-limited context checking
+		const compactionStats = this.autoCompactionMonitor.check(
+			state.messages,
+			state.model,
+		);
+
+		if (!compactionStats.shouldCompact) {
 			return;
 		}
-		const stats = calculateFooterStats(state);
-		if (
-			!stats.contextWindow ||
-			stats.contextPercent < this.autoCompactThreshold
-		) {
-			return;
-		}
-		const percentLabel = stats.contextPercent.toFixed(1);
+
+		const percentLabel = compactionStats.usagePercent.toFixed(1);
 		this.notificationView.showInfo(
 			`Context ${percentLabel}% full – compacting history before sending prompt…`,
 		);
+		const footerStats = calculateFooterStats(state);
 		const compacted = await this.runCompactionTask(() =>
 			this.conversationCompactor.compactHistory(),
 		);
 		if (compacted) {
-			this.recordCompactionDelta(stats, "auto");
+			this.autoCompactionMonitor.recordCompaction();
+			this.recordCompactionDelta(footerStats, "auto");
+		}
+	}
+
+	/**
+	 * Handle auto-compaction recommendation from the monitor.
+	 */
+	private handleAutoCompactionRecommendation(stats: CompactionStats): void {
+		// Update context warning level based on usage
+		const thresholds = this.autoCompactionMonitor.getWarningThresholds();
+		if (stats.usagePercent >= thresholds.critical) {
+			this.contextWarningLevel = "danger";
+		} else if (stats.usagePercent >= thresholds.warning) {
+			this.contextWarningLevel = "warn";
+		} else {
+			this.contextWarningLevel = "none";
+		}
+		this.refreshFooterHint();
+	}
+
+	/**
+	 * Record token usage telemetry from the latest assistant messages.
+	 */
+	private recordTokenUsageFromMessages(state: AgentState): void {
+		// Find the most recent assistant message with usage info
+		for (let i = state.messages.length - 1; i >= 0; i--) {
+			const message = state.messages[i];
+			if (message.role === "assistant" && message.usage) {
+				recordTokenUsage(
+					this.sessionManager.getSessionId(),
+					{
+						input: message.usage.input,
+						output: message.usage.output,
+						cacheRead: message.usage.cacheRead,
+						cacheWrite: message.usage.cacheWrite,
+					},
+					{
+						model: state.model
+							? `${state.model.provider}/${state.model.id}`
+							: undefined,
+						provider: state.model?.provider,
+					},
+				);
+				break;
+			}
 		}
 	}
 
@@ -1285,9 +1354,35 @@ export class TuiRenderer {
 		}
 		if (event.type === "agent_start") {
 			this.isAgentRunning = true;
+			// Start session recovery tracking if not already started
+			if (!this.sessionRecoveryManager.getCurrentBackup()) {
+				this.sessionRecoveryManager.startSession({
+					sessionId: this.sessionManager.getSessionId(),
+					systemPrompt: state.systemPrompt,
+					modelId: state.model
+						? `${state.model.provider}/${state.model.id}`
+						: undefined,
+					cwd: process.cwd(),
+				});
+			}
+			// Record session start telemetry (once per session)
+			if (!this.sessionTelemetryRecorded) {
+				this.sessionStartTime = Date.now();
+				this.sessionTelemetryRecorded = true;
+				recordSessionStart(this.sessionManager.getSessionId(), {
+					model: state.model
+						? `${state.model.provider}/${state.model.id}`
+						: undefined,
+					provider: state.model?.provider,
+				});
+			}
 		} else if (event.type === "agent_end") {
 			this.isAgentRunning = false;
 			this.clearInterruptArm();
+			// Update session recovery with latest messages
+			this.sessionRecoveryManager.updateMessages([...state.messages]);
+			// Record token usage from the latest assistant message
+			this.recordTokenUsageFromMessages(state);
 		}
 
 		// Update footer with current stats
@@ -3049,6 +3144,16 @@ export class TuiRenderer {
 			afterTokens: after.contextTokens,
 			trigger,
 		});
+		// Record compaction telemetry
+		recordCompaction(this.sessionManager.getSessionId(), {
+			model: this.agent.state.model
+				? `${this.agent.state.model.provider}/${this.agent.state.model.id}`
+				: undefined,
+			provider: this.agent.state.model?.provider,
+			trigger,
+			tokensBefore: before.contextTokens,
+			tokensAfter: after.contextTokens,
+		});
 		const beforeLabel = formatTokenCount(before.contextTokens);
 		const afterLabel = formatTokenCount(after.contextTokens);
 		const prefix = trigger === "auto" ? "Auto-" : "";
@@ -3274,6 +3379,8 @@ export class TuiRenderer {
 			this.ui.stop();
 			this.isInitialized = false;
 		}
+		// End session recovery tracking and create final backup
+		this.sessionRecoveryManager.endSession();
 		this.footer.dispose();
 	}
 

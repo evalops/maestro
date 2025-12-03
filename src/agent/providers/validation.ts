@@ -25,6 +25,12 @@ const isBrowserExtension =
 // Create a singleton AJV instance with formats (only if not in browser extension)
 // AJV requires 'unsafe-eval' CSP which is not allowed in Manifest V3
 let ajv: ReturnType<typeof Ajv> | null = null;
+const validatorCache = new WeakMap<
+	object,
+	Ajv.ValidateFunction & {
+		errors?: ErrorObject[] | null;
+	}
+>();
 if (!isBrowserExtension) {
 	try {
 		ajv = new Ajv({
@@ -61,9 +67,7 @@ export function validateToolArguments(
 	}
 
 	// Compile (or reuse) the schema
-	let validate = validatorCache.get(tool.parameters) as
-		| (Ajv.ValidateFunction & { errors?: ErrorObject[] | null })
-		| undefined;
+	let validate = validatorCache.get(tool.parameters);
 	if (!validate) {
 		validate = ajv.compile(tool.parameters) as Ajv.ValidateFunction & {
 			errors?: ErrorObject[] | null;
@@ -79,7 +83,7 @@ export function validateToolArguments(
 	// Format validation errors nicely
 	const errors =
 		(validate.errors ?? [])
-			.map((err: ErrorObject) => {
+			.map((err) => {
 				const path =
 					err.instancePath && err.instancePath.length > 1
 						? err.instancePath.substring(1)
@@ -89,7 +93,13 @@ export function validateToolArguments(
 			})
 			.join("\n") || "Unknown validation error";
 
-	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`;
+	const argsJson = JSON.stringify(toolCall.arguments, null, 2) ?? "{}";
+	const trimmedArgsJson =
+		argsJson.length > 2000
+			? `${argsJson.slice(0, 2000)}\n... (truncated ${argsJson.length - 2000} chars)`
+			: argsJson;
+
+	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${trimmedArgsJson}`;
 
 	throw new Error(errorMessage);
 }

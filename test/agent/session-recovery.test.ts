@@ -49,8 +49,29 @@ describe("Session Recovery", () => {
 	describe("saveSessionBackup / loadSessionBackup", () => {
 		it("saves and loads backup", () => {
 			const messages: AppMessage[] = [
-				{ role: "user", content: "Hello" },
-				{ role: "assistant", content: "Hi there!" },
+				{ role: "user", content: "Hello", timestamp: Date.now() },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Hi there!" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-3-opus",
+					usage: {
+						input: 10,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
 			];
 
 			const backup: SessionBackup = {
@@ -107,7 +128,7 @@ describe("Session Recovery", () => {
 		it("lists unique sessions", () => {
 			const backup1: SessionBackup = {
 				sessionId: "session-1",
-				messages: [{ role: "user", content: "Hello 1" }],
+				messages: [{ role: "user", content: "Hello 1", timestamp: Date.now() }],
 				createdAt: new Date().toISOString(),
 				sessionStartedAt: new Date().toISOString(),
 				recoveryAttempts: 0,
@@ -115,7 +136,7 @@ describe("Session Recovery", () => {
 
 			const backup2: SessionBackup = {
 				sessionId: "session-2",
-				messages: [{ role: "user", content: "Hello 2" }],
+				messages: [{ role: "user", content: "Hello 2", timestamp: Date.now() }],
 				createdAt: new Date().toISOString(),
 				sessionStartedAt: new Date().toISOString(),
 				recoveryAttempts: 0,
@@ -137,7 +158,7 @@ describe("Session Recovery", () => {
 		it("deletes backups for a session", () => {
 			const backup: SessionBackup = {
 				sessionId: "test-session",
-				messages: [{ role: "user", content: "Hello" }],
+				messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
 				createdAt: new Date().toISOString(),
 				sessionStartedAt: new Date().toISOString(),
 				recoveryAttempts: 0,
@@ -164,7 +185,9 @@ describe("Session Recovery", () => {
 			const oldDate = new Date(Date.now() - 120000).toISOString(); // 2 minutes ago
 			const backup: SessionBackup = {
 				sessionId: "old-session",
-				messages: [{ role: "user", content: "Old" }],
+				messages: [
+					{ role: "user", content: "Old", timestamp: Date.now() - 120000 },
+				],
 				createdAt: oldDate,
 				sessionStartedAt: oldDate,
 				recoveryAttempts: 0,
@@ -182,7 +205,7 @@ describe("Session Recovery", () => {
 		it("keeps recent backups", () => {
 			const backup: SessionBackup = {
 				sessionId: "recent-session",
-				messages: [{ role: "user", content: "Recent" }],
+				messages: [{ role: "user", content: "Recent", timestamp: Date.now() }],
 				createdAt: new Date().toISOString(),
 				sessionStartedAt: new Date().toISOString(),
 				recoveryAttempts: 0,
@@ -226,8 +249,29 @@ describe("Session Recovery", () => {
 			manager.startSession({ sessionId: "test" });
 
 			const messages: AppMessage[] = [
-				{ role: "user", content: "Hello" },
-				{ role: "assistant", content: "Hi!" },
+				{ role: "user", content: "Hello", timestamp: Date.now() },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Hi!" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-3-opus",
+					usage: {
+						input: 10,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
 			];
 			manager.updateMessages(messages);
 
@@ -246,7 +290,9 @@ describe("Session Recovery", () => {
 		it("forces backup", () => {
 			const manager = new SessionRecoveryManager(testConfig);
 			manager.startSession({ sessionId: "test-force" });
-			manager.updateMessages([{ role: "user", content: "Hello" }]);
+			manager.updateMessages([
+				{ role: "user", content: "Hello", timestamp: Date.now() },
+			]);
 
 			const filePath = manager.forceBackup();
 
@@ -270,7 +316,9 @@ describe("Session Recovery", () => {
 		it("ends session and creates final backup", () => {
 			const manager = new SessionRecoveryManager(testConfig);
 			manager.startSession({ sessionId: "test-end" });
-			manager.updateMessages([{ role: "user", content: "Hello" }]);
+			manager.updateMessages([
+				{ role: "user", content: "Hello", timestamp: Date.now() },
+			]);
 
 			manager.endSession();
 
@@ -284,7 +332,7 @@ describe("Session Recovery", () => {
 			// Create a backup first
 			const backup: SessionBackup = {
 				sessionId: "recoverable",
-				messages: [{ role: "user", content: "Hello" }],
+				messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
 				createdAt: new Date().toISOString(),
 				sessionStartedAt: new Date().toISOString(),
 				recoveryAttempts: 0,
@@ -297,7 +345,7 @@ describe("Session Recovery", () => {
 
 		it("recovers a session", () => {
 			const originalMessages: AppMessage[] = [
-				{ role: "user", content: "Original message" },
+				{ role: "user", content: "Original message", timestamp: Date.now() },
 			];
 
 			const backup: SessionBackup = {

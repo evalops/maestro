@@ -3,6 +3,7 @@ import {
 	resolveFrameworkPreference,
 } from "../config/framework.js";
 import { getLspConfig } from "../config/lsp-config.js";
+import { type IDEInfo, getPrimaryIDE } from "../ide/auto-connect.js";
 import { collectDiagnostics, getClients } from "../lsp/index.js";
 import { formatTaskFailures } from "../tools/background-tasks.js";
 import {
@@ -162,5 +163,77 @@ export class FrameworkPreferenceContextSource implements AgentContextSource {
 		const info = getFrameworkSummary(pref.id);
 		if (!info) return null;
 		return `${info.summary} (source: ${pref.source})`;
+	}
+}
+
+/**
+ * IDE context source that injects detected IDE information.
+ * This helps the agent provide IDE-specific suggestions and commands.
+ */
+export class IDEContextSource implements AgentContextSource {
+	name = "ide";
+
+	async getSystemPromptAdditions(): Promise<string | null> {
+		try {
+			const ide = getPrimaryIDE();
+			if (!ide) {
+				return null;
+			}
+
+			const parts: string[] = [`IDE: ${ide.name}`];
+
+			if (ide.version) {
+				parts.push(`Version: ${ide.version}`);
+			}
+
+			if (ide.connectionMethod && ide.connectionMethod !== "none") {
+				parts.push(`Integration: ${ide.connectionMethod}`);
+			}
+
+			// Add IDE-specific hints
+			const hints = this.getIDEHints(ide);
+			if (hints) {
+				parts.push(`\n${hints}`);
+			}
+
+			return `# Development Environment\n${parts.join("\n")}`;
+		} catch (error) {
+			logger.warn("Failed to load IDE context", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		}
+	}
+
+	private getIDEHints(ide: IDEInfo): string | null {
+		switch (ide.type) {
+			case "vscode":
+			case "vscode-insiders":
+				return "User is in VS Code. Prefer VS Code keyboard shortcuts and extension suggestions.";
+			case "cursor":
+				return "User is in Cursor (AI-native VS Code fork). They have AI features built-in.";
+			case "windsurf":
+				return "User is in Windsurf. Suggest Windsurf-compatible workflows.";
+			case "jetbrains-idea":
+			case "jetbrains-webstorm":
+			case "jetbrains-pycharm":
+			case "jetbrains-goland":
+			case "jetbrains-rider":
+			case "jetbrains-clion":
+			case "jetbrains-rubymine":
+			case "jetbrains-datagrip":
+				return "User is in a JetBrains IDE. Prefer JetBrains keyboard shortcuts and plugin suggestions.";
+			case "vim":
+			case "neovim":
+				return "User is in Vim/Neovim. They likely prefer terminal-based workflows.";
+			case "emacs":
+				return "User is in Emacs. They likely prefer keyboard-driven workflows.";
+			case "sublime":
+				return "User is in Sublime Text. Suggest Sublime-compatible workflows.";
+			case "zed":
+				return "User is in Zed editor. They likely value performance and modern features.";
+			default:
+				return null;
+		}
 	}
 }
