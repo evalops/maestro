@@ -1,22 +1,40 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+	PromptQueue,
+	PromptQueueEvent,
+} from "../../src/tui/prompt-queue.js";
 import {
 	QueueController,
 	type QueueControllerCallbacks,
-	type QueueMode,
+	type QueueControllerOptions,
 } from "../../src/tui/queue/queue-controller.js";
 
-function createMockNotificationView() {
+function createMockNotificationView(): QueueControllerOptions["notificationView"] {
 	return {
 		showInfo: vi.fn(),
 		showToast: vi.fn(),
 		showError: vi.fn(),
+		showSuccess: vi.fn(),
+		showWarning: vi.fn(),
+		clear: vi.fn(),
 	};
 }
 
-function createMockEditor() {
+function createMockEditor(): QueueControllerOptions["editor"] {
 	return {
 		disableSubmit: false,
 		setText: vi.fn(),
+		getText: vi.fn().mockReturnValue(""),
+		clear: vi.fn(),
+		focus: vi.fn(),
+		blur: vi.fn(),
+		setPlaceholder: vi.fn(),
+		setDisabled: vi.fn(),
+		getHeight: vi.fn().mockReturnValue(1),
+		onSubmit: vi.fn(),
+		render: vi.fn().mockReturnValue(""),
+		handleInput: vi.fn().mockReturnValue(false),
+		handleMouse: vi.fn().mockReturnValue(false),
 	};
 }
 
@@ -34,10 +52,14 @@ function createMockCallbacks(
 	};
 }
 
-function createMockPromptQueue() {
-	let subscribers: Array<(event: any) => void> = [];
+interface MockPromptQueue extends Partial<PromptQueue> {
+	_emit: (event: PromptQueueEvent) => void;
+}
+
+function createMockPromptQueue(): MockPromptQueue {
+	let subscribers: Array<(event: PromptQueueEvent) => void> = [];
 	return {
-		subscribe: vi.fn((fn: (event: any) => void) => {
+		subscribe: vi.fn((fn: (event: PromptQueueEvent) => void) => {
 			subscribers.push(fn);
 			return () => {
 				subscribers = subscribers.filter((s) => s !== fn);
@@ -47,7 +69,7 @@ function createMockPromptQueue() {
 		cancelAll: vi.fn(),
 		clearActive: vi.fn(),
 		getSnapshot: vi.fn().mockReturnValue({ pending: [] }),
-		_emit: (event: any) => {
+		_emit: (event: PromptQueueEvent) => {
 			for (const sub of subscribers) {
 				sub(event);
 			}
@@ -59,8 +81,8 @@ describe("QueueController", () => {
 	describe("initialization", () => {
 		it("defaults to 'all' mode", () => {
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
 			expect(controller.getMode()).toBe("all");
@@ -69,8 +91,8 @@ describe("QueueController", () => {
 
 		it("uses initialMode when provided", () => {
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 				initialMode: "one",
 			});
@@ -83,12 +105,12 @@ describe("QueueController", () => {
 		it("attaches queue and subscribes to events", () => {
 			const queue = createMockPromptQueue();
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
 
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 
 			expect(controller.hasQueue()).toBe(true);
 			expect(queue.subscribe).toHaveBeenCalled();
@@ -97,12 +119,12 @@ describe("QueueController", () => {
 		it("detaches queue and unsubscribes", () => {
 			const queue = createMockPromptQueue();
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
 
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 			controller.detach();
 
 			expect(controller.hasQueue()).toBe(false);
@@ -114,8 +136,8 @@ describe("QueueController", () => {
 			const callbacks = createMockCallbacks();
 			const notificationView = createMockNotificationView();
 			const controller = new QueueController({
-				notificationView: notificationView as any,
-				editor: createMockEditor() as any,
+				notificationView: notificationView,
+				editor: createMockEditor(),
 				callbacks,
 				initialMode: "one",
 			});
@@ -137,8 +159,8 @@ describe("QueueController", () => {
 		it("sets mode to one and disables queue", () => {
 			const callbacks = createMockCallbacks();
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks,
 				initialMode: "all",
 			});
@@ -155,8 +177,8 @@ describe("QueueController", () => {
 			});
 			const editor = createMockEditor();
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: editor as any,
+				notificationView: createMockNotificationView(),
+				editor: editor,
 				callbacks,
 				initialMode: "all",
 			});
@@ -170,8 +192,8 @@ describe("QueueController", () => {
 	describe("cancel", () => {
 		it("returns false when no queue attached", () => {
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
 
@@ -182,11 +204,11 @@ describe("QueueController", () => {
 			const queue = createMockPromptQueue();
 			const callbacks = createMockCallbacks();
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks,
 			});
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 
 			const result = controller.cancel(1);
 
@@ -200,11 +222,11 @@ describe("QueueController", () => {
 		it("cancels all prompts and clears preview", () => {
 			const queue = createMockPromptQueue();
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 
 			controller.cancelAll();
 
@@ -217,8 +239,8 @@ describe("QueueController", () => {
 		it("does nothing when no queue attached", () => {
 			const editor = createMockEditor();
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: editor as any,
+				notificationView: createMockNotificationView(),
+				editor: editor,
 				callbacks: createMockCallbacks(),
 			});
 
@@ -239,11 +261,11 @@ describe("QueueController", () => {
 			const editor = createMockEditor();
 			const notificationView = createMockNotificationView();
 			const controller = new QueueController({
-				notificationView: notificationView as any,
-				editor: editor as any,
+				notificationView: notificationView,
+				editor: editor,
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 
 			controller.restoreQueuedPrompts();
 
@@ -263,11 +285,11 @@ describe("QueueController", () => {
 			queue.getSnapshot.mockReturnValue({ pending: [] });
 			const editor = createMockEditor();
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: editor as any,
+				notificationView: createMockNotificationView(),
+				editor: editor,
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 
 			controller.restoreQueuedPrompts();
 
@@ -281,8 +303,8 @@ describe("QueueController", () => {
 				isAgentRunning: vi.fn().mockReturnValue(true),
 			});
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks,
 			});
 
@@ -291,8 +313,8 @@ describe("QueueController", () => {
 
 		it("returns null when no queued prompts", () => {
 			const controller = new QueueController({
-				notificationView: createMockNotificationView() as any,
-				editor: createMockEditor() as any,
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
 
@@ -305,11 +327,11 @@ describe("QueueController", () => {
 			const queue = createMockPromptQueue();
 			const notificationView = createMockNotificationView();
 			const controller = new QueueController({
-				notificationView: notificationView as any,
-				editor: createMockEditor() as any,
+				notificationView: notificationView,
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 
 			queue._emit({
 				type: "error",
@@ -326,11 +348,11 @@ describe("QueueController", () => {
 			const queue = createMockPromptQueue();
 			const notificationView = createMockNotificationView();
 			const controller = new QueueController({
-				notificationView: notificationView as any,
-				editor: createMockEditor() as any,
+				notificationView: notificationView,
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 
 			queue._emit({
 				type: "enqueue",
@@ -348,11 +370,11 @@ describe("QueueController", () => {
 			const queue = createMockPromptQueue();
 			const notificationView = createMockNotificationView();
 			const controller = new QueueController({
-				notificationView: notificationView as any,
-				editor: createMockEditor() as any,
+				notificationView: notificationView,
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as any);
+			controller.attach(queue as PromptQueue);
 
 			queue._emit({
 				type: "cancel",

@@ -1,11 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 import {
 	type PasteEditorInterface,
 	PasteHandler,
+	type PasteHandlerOptions,
 } from "../../src/tui/paste/paste-handler.js";
 
-// Mock agent
-function createMockAgent() {
+interface MockAgent {
+	generateSummary: Mock;
+}
+
+function createMockAgent(): MockAgent {
 	return {
 		generateSummary: vi.fn().mockResolvedValue({
 			content: "Summary of the pasted content",
@@ -13,23 +18,20 @@ function createMockAgent() {
 	};
 }
 
-// Mock notification view
-function createMockNotificationView() {
+function createMockNotificationView(): PasteHandlerOptions["notificationView"] {
 	return {
 		showInfo: vi.fn(),
 		showToast: vi.fn(),
 		showError: vi.fn(),
-	};
+	} as unknown as PasteHandlerOptions["notificationView"];
 }
 
-// Mock session context
-function createMockSessionContext() {
+function createMockSessionContext(): PasteHandlerOptions["sessionContext"] {
 	return {
 		recordPasteSummaryArtifact: vi.fn(),
-	};
+	} as unknown as PasteHandlerOptions["sessionContext"];
 }
 
-// Mock editor
 function createMockEditor(): PasteEditorInterface {
 	return {
 		replacePasteMarker: vi.fn().mockReturnValue(true),
@@ -40,9 +42,9 @@ describe("PasteHandler", () => {
 	describe("hasPending / pendingCount", () => {
 		it("returns false/0 initially", () => {
 			const handler = new PasteHandler({
-				agent: createMockAgent() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent() as unknown as PasteHandlerOptions["agent"],
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint: vi.fn(),
 			});
@@ -56,9 +58,9 @@ describe("PasteHandler", () => {
 		it("ignores empty content", async () => {
 			const notificationView = createMockNotificationView();
 			const handler = new PasteHandler({
-				agent: createMockAgent() as any,
-				notificationView: notificationView as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent() as unknown as PasteHandlerOptions["agent"],
+				notificationView: notificationView,
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint: vi.fn(),
 			});
@@ -82,9 +84,9 @@ describe("PasteHandler", () => {
 			);
 
 			const handler = new PasteHandler({
-				agent: agent as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: agent as unknown as PasteHandlerOptions["agent"],
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint: vi.fn(),
 			});
@@ -110,9 +112,9 @@ describe("PasteHandler", () => {
 		it("shows info notification on start", async () => {
 			const notificationView = createMockNotificationView();
 			const handler = new PasteHandler({
-				agent: createMockAgent() as any,
-				notificationView: notificationView as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent() as unknown as PasteHandlerOptions["agent"],
+				notificationView: notificationView,
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint: vi.fn(),
 			});
@@ -133,9 +135,9 @@ describe("PasteHandler", () => {
 		it("calls refreshFooterHint at start and end", async () => {
 			const refreshFooterHint = vi.fn();
 			const handler = new PasteHandler({
-				agent: createMockAgent() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent() as unknown as PasteHandlerOptions["agent"],
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint,
 			});
@@ -156,9 +158,9 @@ describe("PasteHandler", () => {
 			const notificationView = createMockNotificationView();
 			const sessionContext = createMockSessionContext();
 			const handler = new PasteHandler({
-				agent: createMockAgent() as any,
-				notificationView: notificationView as any,
-				sessionContext: sessionContext as any,
+				agent: createMockAgent() as unknown as PasteHandlerOptions["agent"],
+				notificationView: notificationView,
+				sessionContext: sessionContext,
 				editor,
 				refreshFooterHint: vi.fn(),
 			});
@@ -186,14 +188,14 @@ describe("PasteHandler", () => {
 
 		it("shows info when marker not found", async () => {
 			const editor = createMockEditor();
-			(editor.replacePasteMarker as any).mockReturnValue(false);
+			(editor.replacePasteMarker as Mock).mockReturnValue(false);
 			const notificationView = createMockNotificationView();
 			const sessionContext = createMockSessionContext();
 
 			const handler = new PasteHandler({
-				agent: createMockAgent() as any,
-				notificationView: notificationView as any,
-				sessionContext: sessionContext as any,
+				agent: createMockAgent() as unknown as PasteHandlerOptions["agent"],
+				notificationView: notificationView,
+				sessionContext: sessionContext,
 				editor,
 				refreshFooterHint: vi.fn(),
 			});
@@ -218,9 +220,9 @@ describe("PasteHandler", () => {
 			const notificationView = createMockNotificationView();
 
 			const handler = new PasteHandler({
-				agent: agent as any,
-				notificationView: notificationView as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: agent as unknown as PasteHandlerOptions["agent"],
+				notificationView: notificationView,
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint: vi.fn(),
 			});
@@ -244,9 +246,9 @@ describe("PasteHandler", () => {
 			const notificationView = createMockNotificationView();
 
 			const handler = new PasteHandler({
-				agent: agent as any,
-				notificationView: notificationView as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: agent as unknown as PasteHandlerOptions["agent"],
+				notificationView: notificationView,
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint: vi.fn(),
 			});
@@ -267,9 +269,9 @@ describe("PasteHandler", () => {
 			agent.generateSummary.mockRejectedValue(new Error("API error"));
 
 			const handler = new PasteHandler({
-				agent: agent as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: agent as unknown as PasteHandlerOptions["agent"],
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint: vi.fn(),
 			});
@@ -293,9 +295,9 @@ describe("PasteHandler", () => {
 			const editor = createMockEditor();
 
 			const handler = new PasteHandler({
-				agent: agent as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: agent as unknown as PasteHandlerOptions["agent"],
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				editor,
 				refreshFooterHint: vi.fn(),
 			});
@@ -319,9 +321,9 @@ describe("PasteHandler", () => {
 			const longContent = "x".repeat(15000);
 
 			const handler = new PasteHandler({
-				agent: agent as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: agent as unknown as PasteHandlerOptions["agent"],
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				editor: createMockEditor(),
 				refreshFooterHint: vi.fn(),
 			});

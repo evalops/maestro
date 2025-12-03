@@ -1,40 +1,44 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AppMessage } from "../../src/agent/types.js";
 import {
 	BranchController,
 	type BranchControllerCallbacks,
+	type BranchControllerOptions,
 } from "../../src/tui/session/branch-controller.js";
 
-function createMockAgent(messages: any[] = []) {
+function createMockAgent(
+	messages: AppMessage[] = [],
+): BranchControllerOptions["agent"] {
 	return {
 		state: {
 			messages,
 		},
-	};
+	} as BranchControllerOptions["agent"];
 }
 
-function createMockSessionManager() {
-	return {};
+function createMockSessionManager(): BranchControllerOptions["sessionManager"] {
+	return {} as BranchControllerOptions["sessionManager"];
 }
 
-function createMockChatContainer() {
+function createMockChatContainer(): BranchControllerOptions["chatContainer"] {
 	return {
 		addChild: vi.fn(),
-	};
+	} as unknown as BranchControllerOptions["chatContainer"];
 }
 
-function createMockUI() {
-	return {};
+function createMockUI(): BranchControllerOptions["ui"] {
+	return {} as BranchControllerOptions["ui"];
 }
 
-function createMockNotificationView() {
+function createMockNotificationView(): BranchControllerOptions["notificationView"] {
 	return {
 		showError: vi.fn(),
 		showInfo: vi.fn(),
-	};
+	} as unknown as BranchControllerOptions["notificationView"];
 }
 
-function createMockSessionContext() {
-	return {};
+function createMockSessionContext(): BranchControllerOptions["sessionContext"] {
+	return {} as BranchControllerOptions["sessionContext"];
 }
 
 function createMockCallbacks(
@@ -59,12 +63,12 @@ describe("BranchController", () => {
 			const showInfo = vi.fn();
 
 			const controller = new BranchController({
-				agent: createMockAgent() as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks,
 			});
 
@@ -80,12 +84,12 @@ describe("BranchController", () => {
 			const showInfo = vi.fn();
 
 			const controller = new BranchController({
-				agent: createMockAgent([]) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent([]),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks: createMockCallbacks(),
 			});
 
@@ -98,15 +102,15 @@ describe("BranchController", () => {
 
 		it("shows interactive selector when no argument provided", () => {
 			const callbacks = createMockCallbacks();
-			const messages = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks,
 			});
 
@@ -118,19 +122,19 @@ describe("BranchController", () => {
 		it("renders branch list when argument is 'list'", () => {
 			const chatContainer = createMockChatContainer();
 			const callbacks = createMockCallbacks();
-			const messages = [
+			const messages: AppMessage[] = [
 				{ role: "user", content: "First message" },
 				{ role: "assistant", content: "Response" },
 				{ role: "user", content: "Second message" },
 			];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: chatContainer as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: chatContainer,
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks,
 			});
 
@@ -142,15 +146,15 @@ describe("BranchController", () => {
 
 		it("shows error for invalid branch number", () => {
 			const showError = vi.fn();
-			const messages = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks: createMockCallbacks(),
 			});
 
@@ -163,15 +167,15 @@ describe("BranchController", () => {
 
 		it("shows error for zero or negative number", () => {
 			const showError = vi.fn();
-			const messages = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks: createMockCallbacks(),
 			});
 
@@ -189,15 +193,15 @@ describe("BranchController", () => {
 
 		it("shows error when branch number exceeds available messages", () => {
 			const showError = vi.fn();
-			const messages = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks: createMockCallbacks(),
 			});
 
@@ -208,7 +212,7 @@ describe("BranchController", () => {
 
 		it("resets conversation at correct message index", () => {
 			const callbacks = createMockCallbacks();
-			const messages = [
+			const messages: AppMessage[] = [
 				{ role: "user", content: "First user message" },
 				{ role: "assistant", content: "Response 1" },
 				{ role: "user", content: "Second user message" },
@@ -216,12 +220,12 @@ describe("BranchController", () => {
 			];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks,
 			});
 
@@ -241,15 +245,15 @@ describe("BranchController", () => {
 	describe("branchToIndex", () => {
 		it("shows error when message index not found", () => {
 			const notificationView = createMockNotificationView();
-			const messages = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: notificationView as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: notificationView,
+				sessionContext: createMockSessionContext(),
 				callbacks: createMockCallbacks(),
 			});
 
@@ -262,18 +266,18 @@ describe("BranchController", () => {
 
 		it("resets conversation for valid index", () => {
 			const callbacks = createMockCallbacks();
-			const messages = [
+			const messages: AppMessage[] = [
 				{ role: "user", content: "First message" },
 				{ role: "assistant", content: "Response" },
 			];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks,
 			});
 
@@ -292,15 +296,17 @@ describe("BranchController", () => {
 	describe("content extraction", () => {
 		it("extracts text from string content", () => {
 			const callbacks = createMockCallbacks();
-			const messages = [{ role: "user", content: "Simple string content" }];
+			const messages: AppMessage[] = [
+				{ role: "user", content: "Simple string content" },
+			];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks,
 			});
 
@@ -315,7 +321,7 @@ describe("BranchController", () => {
 
 		it("extracts text from array content", () => {
 			const callbacks = createMockCallbacks();
-			const messages = [
+			const messages: AppMessage[] = [
 				{
 					role: "user",
 					content: [{ type: "text", text: "Array text content" }],
@@ -323,12 +329,12 @@ describe("BranchController", () => {
 			];
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks,
 			});
 
@@ -343,15 +349,15 @@ describe("BranchController", () => {
 
 		it("returns empty string for missing content", () => {
 			const callbacks = createMockCallbacks();
-			const messages = [{ role: "user" }]; // No content
+			const messages: AppMessage[] = [{ role: "user" }]; // No content
 
 			const controller = new BranchController({
-				agent: createMockAgent(messages) as any,
-				sessionManager: createMockSessionManager() as any,
-				chatContainer: createMockChatContainer() as any,
-				ui: createMockUI() as any,
-				notificationView: createMockNotificationView() as any,
-				sessionContext: createMockSessionContext() as any,
+				agent: createMockAgent(messages),
+				sessionManager: createMockSessionManager(),
+				chatContainer: createMockChatContainer(),
+				ui: createMockUI(),
+				notificationView: createMockNotificationView(),
+				sessionContext: createMockSessionContext(),
 				callbacks,
 			});
 

@@ -2,20 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type InterruptCallbacks,
 	InterruptController,
+	type InterruptControllerOptions,
 } from "../../src/tui/interrupt-controller.js";
 
-// Mock footer and notification view
-function createMockFooter() {
+function createMockFooter(): InterruptControllerOptions["footer"] {
 	return {
 		setHint: vi.fn(),
-	};
+	} as unknown as InterruptControllerOptions["footer"];
 }
 
-function createMockNotificationView() {
+function createMockNotificationView(): InterruptControllerOptions["notificationView"] {
 	return {
 		showInfo: vi.fn(),
 		showToast: vi.fn(),
-	};
+	} as unknown as InterruptControllerOptions["notificationView"];
 }
 
 function createMockCallbacks(
@@ -44,8 +44,8 @@ describe("InterruptController", () => {
 	describe("isArmed", () => {
 		it("returns false initially", () => {
 			const controller = new InterruptController({
-				footer: createMockFooter() as any,
-				notificationView: createMockNotificationView() as any,
+				footer: createMockFooter(),
+				notificationView: createMockNotificationView(),
 				callbacks: createMockCallbacks(),
 			});
 			expect(controller.isArmed()).toBe(false);
@@ -59,8 +59,8 @@ describe("InterruptController", () => {
 			});
 			const footer = createMockFooter();
 			const controller = new InterruptController({
-				footer: footer as any,
-				notificationView: createMockNotificationView() as any,
+				footer: footer,
+				notificationView: createMockNotificationView(),
 				callbacks,
 			});
 
@@ -75,8 +75,8 @@ describe("InterruptController", () => {
 			const footer = createMockFooter();
 			const notificationView = createMockNotificationView();
 			const controller = new InterruptController({
-				footer: footer as any,
-				notificationView: notificationView as any,
+				footer: footer,
+				notificationView: notificationView,
 				callbacks,
 			});
 
@@ -97,8 +97,8 @@ describe("InterruptController", () => {
 			});
 			const notificationView = createMockNotificationView();
 			const controller = new InterruptController({
-				footer: createMockFooter() as any,
-				notificationView: notificationView as any,
+				footer: createMockFooter(),
+				notificationView: notificationView,
 				callbacks,
 			});
 
@@ -111,8 +111,8 @@ describe("InterruptController", () => {
 			const callbacks = createMockCallbacks();
 			const notificationView = createMockNotificationView();
 			const controller = new InterruptController({
-				footer: createMockFooter() as any,
-				notificationView: notificationView as any,
+				footer: createMockFooter(),
+				notificationView: notificationView,
 				callbacks,
 			});
 
@@ -134,8 +134,8 @@ describe("InterruptController", () => {
 	describe("handleKeepPartialRequest", () => {
 		it("returns false when not armed", () => {
 			const controller = new InterruptController({
-				footer: createMockFooter() as any,
-				notificationView: createMockNotificationView() as any,
+				footer: createMockFooter(),
+				notificationView: createMockNotificationView(),
 				callbacks: createMockCallbacks(),
 			});
 
@@ -146,8 +146,8 @@ describe("InterruptController", () => {
 			const callbacks = createMockCallbacks();
 			const notificationView = createMockNotificationView();
 			const controller = new InterruptController({
-				footer: createMockFooter() as any,
-				notificationView: notificationView as any,
+				footer: createMockFooter(),
+				notificationView: notificationView,
 				callbacks,
 			});
 
@@ -168,8 +168,8 @@ describe("InterruptController", () => {
 		it("clears armed state", () => {
 			const callbacks = createMockCallbacks();
 			const controller = new InterruptController({
-				footer: createMockFooter() as any,
-				notificationView: createMockNotificationView() as any,
+				footer: createMockFooter(),
+				notificationView: createMockNotificationView(),
 				callbacks,
 			});
 
@@ -187,8 +187,8 @@ describe("InterruptController", () => {
 			});
 			const footer = createMockFooter();
 			const controller = new InterruptController({
-				footer: footer as any,
-				notificationView: createMockNotificationView() as any,
+				footer: footer,
+				notificationView: createMockNotificationView(),
 				callbacks,
 			});
 
@@ -205,15 +205,19 @@ describe("InterruptController", () => {
 				isAgentRunning: vi.fn().mockReturnValue(false),
 			});
 			const controller = new InterruptController({
-				footer: createMockFooter() as any,
-				notificationView: createMockNotificationView() as any,
+				footer: createMockFooter(),
+				notificationView: createMockNotificationView(),
 				callbacks,
 			});
 
 			// Force arm state
-			(callbacks.isAgentRunning as any).mockReturnValue(true);
+			(callbacks.isAgentRunning as ReturnType<typeof vi.fn>).mockReturnValue(
+				true,
+			);
 			controller.handleInterruptRequest();
-			(callbacks.isAgentRunning as any).mockReturnValue(false);
+			(callbacks.isAgentRunning as ReturnType<typeof vi.fn>).mockReturnValue(
+				false,
+			);
 
 			controller.clear();
 
@@ -225,8 +229,8 @@ describe("InterruptController", () => {
 		it("auto-clears after 5 seconds", () => {
 			const callbacks = createMockCallbacks();
 			const controller = new InterruptController({
-				footer: createMockFooter() as any,
-				notificationView: createMockNotificationView() as any,
+				footer: createMockFooter(),
+				notificationView: createMockNotificationView(),
 				callbacks,
 			});
 
@@ -244,8 +248,8 @@ describe("InterruptController", () => {
 			});
 			const footer = createMockFooter();
 			const controller = new InterruptController({
-				footer: footer as any,
-				notificationView: createMockNotificationView() as any,
+				footer: footer,
+				notificationView: createMockNotificationView(),
 				callbacks,
 			});
 

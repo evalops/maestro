@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { OAuthFlowController } from "../../src/tui/oauth/oauth-flow-controller.js";
+import type { Mock } from "vitest";
+import {
+	type OAuthEditorCallbacks,
+	OAuthFlowController,
+	type OAuthFlowControllerOptions,
+	type OAuthRenderContext,
+} from "../../src/tui/oauth/oauth-flow-controller.js";
 
 // Mock the oauth module
 vi.mock("../../src/oauth/index.js", () => ({
@@ -13,32 +19,32 @@ vi.mock("../../src/oauth/index.js", () => ({
 	logout: vi.fn().mockResolvedValue(undefined),
 }));
 
-function createMockModalManager() {
+function createMockModalManager(): OAuthFlowControllerOptions["modalManager"] {
 	return {
 		push: vi.fn(),
 		pop: vi.fn(),
-	};
+	} as unknown as OAuthFlowControllerOptions["modalManager"];
 }
 
-function createMockNotificationView() {
+function createMockNotificationView(): OAuthFlowControllerOptions["notificationView"] {
 	return {
 		showInfo: vi.fn(),
 		showToast: vi.fn(),
 		showError: vi.fn(),
-	};
+	} as unknown as OAuthFlowControllerOptions["notificationView"];
 }
 
-function createMockRenderContext() {
+function createMockRenderContext(): OAuthRenderContext {
 	return {
 		chatContainer: {
 			addChild: vi.fn(),
 		},
 		ui: {},
 		requestRender: vi.fn(),
-	};
+	} as unknown as OAuthRenderContext;
 }
 
-function createMockEditorCallbacks() {
+function createMockEditorCallbacks(): OAuthEditorCallbacks {
 	return {
 		clearEditor: vi.fn(),
 		getText: vi.fn().mockReturnValue(""),
@@ -55,9 +61,9 @@ describe("OAuthFlowController", () => {
 	describe("isActive", () => {
 		it("returns false initially", () => {
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -68,9 +74,9 @@ describe("OAuthFlowController", () => {
 	describe("handleLoginCommand", () => {
 		it("shows error when OAuth flow is already active", async () => {
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -89,9 +95,9 @@ describe("OAuthFlowController", () => {
 
 		it("shows error for invalid mode", async () => {
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -105,14 +111,14 @@ describe("OAuthFlowController", () => {
 
 		it("shows error for unknown provider", async () => {
 			const { getOAuthProviders } = await import("../../src/oauth/index.js");
-			(getOAuthProviders as any).mockReturnValue([
+			(getOAuthProviders as Mock).mockReturnValue([
 				{ id: "anthropic", available: true },
 			]);
 
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -126,12 +132,12 @@ describe("OAuthFlowController", () => {
 
 		it("shows error when no providers available", async () => {
 			const { getOAuthProviders } = await import("../../src/oauth/index.js");
-			(getOAuthProviders as any).mockReturnValue([]);
+			(getOAuthProviders as Mock).mockReturnValue([]);
 
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -145,14 +151,14 @@ describe("OAuthFlowController", () => {
 			const { getOAuthProviders, login } = await import(
 				"../../src/oauth/index.js"
 			);
-			(getOAuthProviders as any).mockReturnValue([
+			(getOAuthProviders as Mock).mockReturnValue([
 				{ id: "anthropic", available: true },
 			]);
 
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -168,15 +174,15 @@ describe("OAuthFlowController", () => {
 			const { getOAuthProviders, login } = await import(
 				"../../src/oauth/index.js"
 			);
-			(getOAuthProviders as any).mockReturnValue([
+			(getOAuthProviders as Mock).mockReturnValue([
 				{ id: "anthropic", available: true },
 				{ id: "openai", available: true },
 			]);
 
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -192,9 +198,9 @@ describe("OAuthFlowController", () => {
 	describe("handleLogoutCommand", () => {
 		it("shows error when OAuth flow is already active", async () => {
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -213,12 +219,12 @@ describe("OAuthFlowController", () => {
 
 		it("shows info when no providers logged in", async () => {
 			const { listOAuthProviders } = await import("../../src/oauth/index.js");
-			(listOAuthProviders as any).mockReturnValue([]);
+			(listOAuthProviders as Mock).mockReturnValue([]);
 
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -232,12 +238,12 @@ describe("OAuthFlowController", () => {
 
 		it("shows error when specified provider not logged in", async () => {
 			const { listOAuthProviders } = await import("../../src/oauth/index.js");
-			(listOAuthProviders as any).mockReturnValue(["anthropic"]);
+			(listOAuthProviders as Mock).mockReturnValue(["anthropic"]);
 
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: createMockNotificationView() as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: createMockNotificationView(),
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
@@ -253,13 +259,13 @@ describe("OAuthFlowController", () => {
 			const { listOAuthProviders, logout } = await import(
 				"../../src/oauth/index.js"
 			);
-			(listOAuthProviders as any).mockReturnValue(["anthropic"]);
+			(listOAuthProviders as Mock).mockReturnValue(["anthropic"]);
 
 			const notificationView = createMockNotificationView();
 			const controller = new OAuthFlowController({
-				modalManager: createMockModalManager() as any,
-				notificationView: notificationView as any,
-				renderContext: createMockRenderContext() as any,
+				modalManager: createMockModalManager(),
+				notificationView: notificationView,
+				renderContext: createMockRenderContext(),
 				editorCallbacks: createMockEditorCallbacks(),
 			});
 
