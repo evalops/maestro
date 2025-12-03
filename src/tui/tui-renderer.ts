@@ -457,6 +457,7 @@ export class TuiRenderer {
 			this.favoriteCommands.add(fav);
 		}
 		this.agent = agent;
+		this.agent.setQueueMode(this.promptQueueMode === "all" ? "all" : "one");
 		this.sessionManager = sessionManager;
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;
@@ -2302,6 +2303,7 @@ export class TuiRenderer {
 	}
 
 	private setQueueMode(mode: "one" | "all"): void {
+		this.agent.setQueueMode(mode === "all" ? "all" : "one");
 		this.promptQueueMode = mode;
 		this.queueEnabled = mode === "all";
 		if (this.isAgentRunning) {

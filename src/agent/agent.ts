@@ -86,6 +86,35 @@ function mapThinkingLevel(level: ThinkingLevel): ReasoningEffort | undefined {
 }
 
 /**
+ * Ensures prior assistant messages remain provider-compatible when switching models mid-session.
+ * Thinking blocks from other providers are converted to tagged text so target providers that
+ * don't understand foreign "thinking" payloads still receive the full context.
+ */
+function normalizeMessagesForProvider(
+	messages: Message[],
+	targetModel: Model<Api>,
+): Message[] {
+	return messages.map((msg) => {
+		if (msg.role !== "assistant") {
+			return msg;
+		}
+		if (msg.provider === targetModel.provider && msg.api === targetModel.api) {
+			return msg;
+		}
+		const content = msg.content.map((block) => {
+			if (block.type === "thinking") {
+				return {
+					type: "text",
+					text: `<thinking>${block.thinking}</thinking>`,
+				} as TextContent;
+			}
+			return block;
+		});
+		return { ...msg, content };
+	});
+}
+
+/**
  * Configuration options for creating an Agent instance.
  */
 export interface AgentOptions {
@@ -132,6 +161,7 @@ export class Agent {
 		messages: AppMessage[],
 	) => Message[] | Promise<Message[]>;
 	private messageQueue: Array<QueuedMessage<AppMessage>> = [];
+	private queueMode: "all" | "one" = "all";
 	private runningPrompt?: Promise<void>;
 	private resolveRunningPrompt?: () => void;
 	private contextManager: AgentContextManager;
@@ -154,8 +184,15 @@ export class Agent {
 			}
 		}
 
-		const { systemPrompt, model, thinkingLevel, tools, ...restInitialState } =
-			opts.initialState ?? {};
+		const {
+			systemPrompt,
+			model,
+			thinkingLevel,
+			tools,
+			queueMode,
+			...restInitialState
+		} = opts.initialState ?? {};
+		this.queueMode = queueMode ?? "all";
 
 		if (restInitialState.user) {
 			if (
@@ -184,6 +221,7 @@ export class Agent {
 			sandboxEnabled:
 				restInitialState.sandboxEnabled ?? Boolean(restInitialState.sandbox),
 			...restInitialState,
+			queueMode: this.queueMode,
 		};
 	}
 
@@ -245,6 +283,10 @@ export class Agent {
 		if (this.messageQueue.length === 0) {
 			return [];
 		}
+		if (this.queueMode === "one") {
+			const next = this.messageQueue.shift();
+			return next ? ([next] as unknown as QueuedMessage<T>[]) : [];
+		}
 		const queued = this.messageQueue.splice(0);
 		return queued as unknown as QueuedMessage<T>[];
 	}
@@ -274,6 +316,15 @@ export class Agent {
 	 */
 	setThinkingLevel(l: ThinkingLevel): void {
 		this._state.thinkingLevel = l;
+	}
+
+	/**
+	 * Controls how queued messages are drained between turns.
+	 * "all" (default) sends the full queue; "one" sends a single item per turn.
+	 */
+	setQueueMode(mode: "all" | "one"): void {
+		this.queueMode = mode;
+		this._state.queueMode = mode;
 	}
 
 	/**
@@ -484,8 +535,12 @@ export class Agent {
 		let aborted = false;
 
 		try {
-			const messagesToSend = await this.messageTransformer(
+			const transformedMessages = await this.messageTransformer(
 				this._state.messages,
+			);
+			const messagesToSend = normalizeMessagesForProvider(
+				transformedMessages,
+				this._state.model,
 			);
 
 			// Determine reasoning level

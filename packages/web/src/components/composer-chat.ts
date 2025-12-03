@@ -1022,20 +1022,99 @@ export class ComposerChat extends LitElement {
 							}
 
 							// Tool call tracking
-							else if (msgEvent.type === "toolcall_end") {
+							else if (msgEvent.type === "toolcall_start") {
+								const partial = msgEvent.partial.content[msgEvent.contentIndex];
+								if (partial?.type === "toolCall" && partial.id) {
+									const args = partial.arguments ?? {};
+									const name = partial.name || "tool";
+									if (!assistantMessage.tools) assistantMessage.tools = [];
+									const existingIndex = assistantMessage.tools.findIndex(
+										(t) => t.toolCallId === partial.id,
+									);
+									const entry: ExtendedToolCall = {
+										toolCallId: partial.id,
+										name,
+										status: "pending",
+										args,
+										startTime: Date.now(),
+									};
+									if (existingIndex >= 0) {
+										assistantMessage.tools[existingIndex] = {
+											...assistantMessage.tools[existingIndex],
+											...entry,
+										};
+									} else {
+										assistantMessage.tools.push(entry);
+									}
+									activeTools.set(partial.id, {
+										name,
+										args,
+										index:
+											existingIndex >= 0
+												? existingIndex
+												: assistantMessage.tools.length - 1,
+									});
+									this.messages = [...this.messages];
+								}
+							} else if (msgEvent.type === "toolcall_delta") {
+								const partial = msgEvent.partial.content[msgEvent.contentIndex];
+								if (partial?.type === "toolCall" && partial.id) {
+									const args = partial.arguments ?? {};
+									if (!assistantMessage.tools) assistantMessage.tools = [];
+									const existingIndex = assistantMessage.tools.findIndex(
+										(t) => t.toolCallId === partial.id,
+									);
+									if (existingIndex >= 0) {
+										assistantMessage.tools[existingIndex] = {
+											...assistantMessage.tools[existingIndex],
+											args,
+											status: "pending",
+										};
+									} else {
+										assistantMessage.tools.push({
+											toolCallId: partial.id,
+											name: partial.name || "tool",
+											status: "pending",
+											args,
+										});
+									}
+									activeTools.set(partial.id, {
+										name: partial.name || "tool",
+										args,
+										index:
+											existingIndex >= 0
+												? existingIndex
+												: assistantMessage.tools.length - 1,
+									});
+									this.messages = [...this.messages];
+								}
+							} else if (msgEvent.type === "toolcall_end") {
 								const toolCall = msgEvent.toolCall;
 								if (!assistantMessage.tools) assistantMessage.tools = [];
+								const existingIndex = assistantMessage.tools.findIndex(
+									(t) => t.toolCallId === toolCall.id,
+								);
 								const extendedTool: ExtendedToolCall = {
 									toolCallId: toolCall.id,
 									name: toolCall.name,
 									status: "pending",
 									args: toolCall.arguments,
 								};
-								assistantMessage.tools.push(extendedTool);
+								if (existingIndex >= 0) {
+									assistantMessage.tools[existingIndex] = {
+										...assistantMessage.tools[existingIndex],
+										...extendedTool,
+									};
+								} else {
+									assistantMessage.tools.push(extendedTool);
+								}
 								activeTools.set(toolCall.id, {
 									name: toolCall.name,
 									args: toolCall.arguments,
-									index: assistantMessage.tools.length - 1,
+									index:
+										existingIndex >= 0
+											? existingIndex
+											: assistantMessage.tools.length - 1,
 								});
 								this.messages = [...this.messages];
 							}

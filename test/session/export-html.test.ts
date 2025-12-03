@@ -38,6 +38,7 @@ function buildAgentState(): AgentState {
 		},
 		thinkingLevel: "off",
 		tools: [],
+		queueMode: "all",
 		messages: [],
 		isStreaming: false,
 		streamMessage: null,

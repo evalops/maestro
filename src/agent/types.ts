@@ -282,6 +282,8 @@ export interface AgentState {
 	model: Model<Api>;
 	thinkingLevel: ThinkingLevel;
 	tools: AgentTool[];
+	/** Controls how queued messages are sent between turns */
+	queueMode: "all" | "one";
 	messages: AppMessage[];
 	isStreaming: boolean;
 	streamMessage: Message | null;
