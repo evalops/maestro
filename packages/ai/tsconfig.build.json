@@ -6,7 +6,7 @@
 		"composite": true,
 		"emitDeclarationOnly": true
 	},
-	"include": ["src/**/*.ts", "../../src/**/*.ts"],
+	"include": ["src/**/*.ts", "../../src/**/*.ts", "../../package.json"],
 	"exclude": ["node_modules", "dist"],
 	"references": []
 }
