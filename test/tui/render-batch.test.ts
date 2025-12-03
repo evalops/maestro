@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { BatchRenderer } from "../../src/tui/tool-renderers/render-batch.js";
 import type { ToolRenderArgs } from "../../src/tui/tool-renderers/types.js";
+
+// Force truecolor mode for consistent snapshots across environments
+// Must be set before importing theme-dependent modules
+process.env.COLORTERM = "truecolor";
+
+// Import after setting COLORTERM
+const { BatchRenderer } = await import(
+	"../../src/tui/tool-renderers/render-batch.js"
+);
 
 const renderer = new BatchRenderer();
 
