@@ -51,11 +51,11 @@ describe("Box", () => {
 		expect(renderLines(box, 34)).toMatchInlineSnapshot(
 			`
 			" +------------------------------+ 
-			 |                             |  
-			 | Header                      |  
-			 |                             |  
-			 | Body content that wraps     |  
-			 |                             |  
+			 |                              | 
+			 | Header                       | 
+			 |                              | 
+			 | Body content that wraps      | 
+			 |                              | 
 			 +------------------------------+ "
 		`,
 		);

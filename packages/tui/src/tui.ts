@@ -243,10 +243,10 @@ export class TUI extends Container {
 		const lineCountDecreased = newLines.length < this.previousLines.length;
 		const shouldFullRender =
 			widthChanged || overflowChanged || lineCountDecreased;
-		const overflowRerenderThrottled =
-			overflowChanged &&
-			!lineCountDecreased &&
-			now - this.lastFullRenderTs < 32; // ~2 frames at 60Hz
+		// When overflow state changes, clipping changes which lines are visible.
+		// We MUST do a full re-render because previousLines indices no longer
+		// correspond to the same content positions. Never throttle overflow changes.
+		const overflowRerenderThrottled = false;
 
 		// First render - just output everything without clearing
 		if (this.previousLines.length === 0) {
