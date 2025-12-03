@@ -8,6 +8,7 @@
  */
 
 import chalk from "chalk";
+import { getCheckpointService } from "../../checkpoints/index.js";
 import { getChangeTracker } from "../../undo/index.js";
 import type { FileChange } from "../../undo/types.js";
 
@@ -55,9 +56,22 @@ export function handleEnhancedUndoCommand(ctx: UndoRenderContext): void {
 	const stats = tracker.getStats();
 
 	if (stats.totalChanges === 0) {
-		ctx.showInfo(
-			"No changes to undo. File changes are tracked during this session.",
-		);
+		const checkpointSvc = getCheckpointService();
+		if (checkpointSvc?.canUndo()) {
+			const result = checkpointSvc.undo();
+			if (result.success) {
+				const restored = result.files?.length ?? 0;
+				ctx.showSuccess(
+					`Restored ${restored} file${restored === 1 ? "" : "s"} from last checkpoint.`,
+				);
+			} else {
+				ctx.showError(result.message);
+			}
+		} else {
+			ctx.showInfo(
+				"No changes to undo. File changes are tracked during this session.",
+			);
+		}
 		return;
 	}
 

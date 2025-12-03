@@ -5,7 +5,9 @@
  * before file-modifying operations.
  */
 
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { minimatch } from "minimatch";
 import { registerHook } from "../hooks/config.js";
 import type { HookInput, PreToolUseHookInput } from "../hooks/types.js";
 import { createLogger } from "../utils/logger.js";
@@ -13,6 +15,13 @@ import { type CheckpointStore, createCheckpointStore } from "./store.js";
 import { type CheckpointConfig, DEFAULT_CHECKPOINT_CONFIG } from "./types.js";
 
 const logger = createLogger("checkpoints:service");
+
+/**
+ * Normalize a relative path to POSIX-style separators for glob matching.
+ */
+function normalizeRelPath(relPath: string): string {
+	return relPath.split(sep).join("/");
+}
 
 /**
  * Extract file paths from tool input based on tool name.
@@ -127,19 +136,9 @@ function shouldExcludeFile(
 	filePath: string,
 	config: CheckpointConfig,
 ): boolean {
-	for (const pattern of config.excludePatterns) {
-		// Simple glob matching
-		const regex = new RegExp(
-			`^${pattern
-				.replace(/\*\*/g, ".*")
-				.replace(/\*/g, "[^/]*")
-				.replace(/\?/g, ".")}$`,
-		);
-		if (regex.test(filePath)) {
-			return true;
-		}
-	}
-	return false;
+	return config.excludePatterns.some((pattern) =>
+		minimatch(filePath, pattern, { dot: true }),
+	);
 }
 
 /**
@@ -150,16 +149,27 @@ export class CheckpointService {
 	private config: CheckpointConfig;
 	private unregisterHook: (() => void) | null = null;
 	private enabled: boolean;
+	private cwd: string;
+	private cwdReal: string;
 
 	constructor(cwd: string, config?: Partial<CheckpointConfig>) {
 		this.config = { ...DEFAULT_CHECKPOINT_CONFIG, ...config };
 		this.enabled =
 			this.config.enabled && !process.env.COMPOSER_DISABLE_FILE_CHECKPOINTING;
+		this.cwd = cwd;
+		this.cwdReal = (() => {
+			try {
+				return realpathSync(cwd);
+			} catch {
+				return cwd;
+			}
+		})();
 
 		this.store = createCheckpointStore({
-			cwd,
+			cwd: this.cwdReal,
 			maxCheckpoints: 50,
 			persistToDisk: false, // In-memory by default for performance
+			maxFileSize: this.config.maxFileSize,
 		});
 
 		if (this.enabled) {
@@ -204,19 +214,58 @@ export class CheckpointService {
 			return;
 		}
 
-		const filePaths = extractFilePaths(
+		const rawPaths = extractFilePaths(
 			toolName,
 			toolInput as Record<string, unknown>,
 		);
 
-		if (filePaths.length === 0) {
+		if (rawPaths.length === 0) {
 			return;
 		}
 
-		// Filter out excluded files
-		const checkpointPaths = filePaths.filter(
-			(path) => !shouldExcludeFile(path, this.config),
+		// Resolve to absolute paths and contain to workspace
+		const resolvedPaths = rawPaths.map((p) =>
+			isAbsolute(p) ? resolve(p) : resolve(this.cwdReal, p),
 		);
+
+		const realPaths = resolvedPaths
+			.map((p) => {
+				try {
+					return realpathSync(p);
+				} catch {
+					// File may not exist yet (e.g., about to be created) — keep the resolved path
+					return p;
+				}
+			})
+			.filter((p): p is string => Boolean(p));
+
+		const containedPaths = realPaths.filter((p) => {
+			const pNorm = process.platform === "win32" ? p.toLowerCase() : p;
+			const cwdNorm =
+				process.platform === "win32"
+					? this.cwdReal.toLowerCase()
+					: this.cwdReal;
+
+			if (!(pNorm === cwdNorm || pNorm.startsWith(`${cwdNorm}${sep}`))) {
+				return false;
+			}
+
+			const rel = relative(this.cwdReal, p);
+			if (rel.startsWith("..") || rel.includes(`..${sep}`)) {
+				return false;
+			}
+
+			return true;
+		});
+
+		const uniquePaths = Array.from(new Set(containedPaths));
+
+		// Filter out excluded files
+		const checkpointPaths = uniquePaths.filter((path) => {
+			const rel = relative(this.cwdReal, path) || ".";
+			const normalizedRel = normalizeRelPath(rel);
+			return !shouldExcludeFile(normalizedRel, this.config);
+		});
 
 		if (checkpointPaths.length === 0) {
 			return;

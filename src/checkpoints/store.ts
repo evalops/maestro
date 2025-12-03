@@ -43,6 +43,7 @@ export class CheckpointStore {
 			persistDir:
 				options.persistDir ?? join(options.cwd, ".composer", "checkpoints"),
 			cwd: options.cwd,
+			maxFileSize: options.maxFileSize ?? 1024 * 1024,
 		};
 
 		if (this.options.persistToDisk) {
@@ -83,8 +84,8 @@ export class CheckpointStore {
 
 			if (existed) {
 				const stats = require("node:fs").statSync(filePath);
-				if (stats.size > 1024 * 1024) {
-					// Skip files > 1MB
+				if (stats.size > this.options.maxFileSize) {
+					// Skip files over configured limit
 					logger.debug("Skipping large file for checkpoint", {
 						filePath,
 						size: stats.size,
