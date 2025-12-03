@@ -225,7 +225,7 @@ export class CheckpointService {
 
 		// Resolve to absolute paths and contain to workspace
 		const resolvedPaths = rawPaths.map((p) =>
-			isAbsolute(p) ? resolve(p) : resolve(this.cwd, p),
+			isAbsolute(p) ? resolve(p) : resolve(this.cwdReal, p),
 		);
 
 		const realPaths = resolvedPaths
@@ -233,7 +233,8 @@ export class CheckpointService {
 				try {
 					return realpathSync(p);
 				} catch {
-					return null;
+					// File may not exist yet (e.g., about to be created) — keep the resolved path
+					return p;
 				}
 			})
 			.filter((p): p is string => Boolean(p));
