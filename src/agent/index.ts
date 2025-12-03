@@ -34,6 +34,44 @@ export {
 	type AgentTranscript,
 	type TranscriptStore,
 } from "./agent-resume.js";
+export {
+	AutoCompactionMonitor,
+	createAutoCompactionMonitor,
+	getAutoCompactionConfig,
+	calculateContextUsage,
+	shouldAutoCompact,
+	type AutoCompactionConfig,
+	type CompactionStats,
+} from "./auto-compaction.js";
+export {
+	enterPlanMode,
+	exitPlanMode,
+	isPlanModeActive,
+	getCurrentPlanFilePath,
+	readPlanFile,
+	writePlanFile,
+	appendToPlanFile,
+	listPlanFiles,
+	loadPlanModeState,
+	savePlanModeState,
+	clearPlanModeState,
+	generatePlanFilePath,
+	getPlanModeConfig,
+	type PlanModeState,
+	type PlanModeConfig,
+} from "./plan-mode.js";
+export {
+	SessionRecoveryManager,
+	createSessionRecoveryManager,
+	saveSessionBackup,
+	loadSessionBackup,
+	listSessionBackups,
+	cleanupExpiredBackups,
+	deleteSessionBackups,
+	getSessionRecoveryConfig,
+	type SessionBackup,
+	type SessionRecoveryConfig,
+} from "./session-recovery.js";
 export type {
 	AgentEvent,
 	AgentRunConfig,

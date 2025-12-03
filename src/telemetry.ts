@@ -20,7 +20,9 @@ type BaseTelemetryEvent = {
 		| "loader-stage"
 		| "sse"
 		| "background-task"
-		| "api-request";
+		| "api-request"
+		| "business-metric"
+		| "sandbox-violation";
 	timestamp: string;
 };
 
@@ -95,13 +97,61 @@ export interface BackgroundTaskTelemetry extends BaseTelemetryEvent {
 	};
 }
 
+/**
+ * Business metrics for tracking usage patterns.
+ * Inspired by Claude Code's telemetry events.
+ */
+export interface BusinessMetricTelemetry extends BaseTelemetryEvent {
+	type: "business-metric";
+	metric:
+		| "session.count"
+		| "session.duration"
+		| "lines_of_code.count"
+		| "tokens.input"
+		| "tokens.output"
+		| "tokens.cache_read"
+		| "tokens.cache_write"
+		| "cost.usd"
+		| "compaction.triggered"
+		| "model.switch";
+	value: number;
+	metadata?: {
+		sessionId?: string;
+		model?: string;
+		provider?: string;
+		gitBranch?: string;
+		gitCommitSha?: string;
+		[key: string]: unknown;
+	};
+}
+
+/**
+ * Sandbox violation tracking for security auditing.
+ */
+export interface SandboxViolationTelemetry extends BaseTelemetryEvent {
+	type: "sandbox-violation";
+	event: "blocked" | "warned" | "allowed";
+	tool: string;
+	action: string;
+	reason: string;
+	path?: string;
+	command?: string;
+	metadata?: {
+		sessionId?: string;
+		userId?: string;
+		[key: string]: unknown;
+	};
+}
+
 type TelemetryEvent =
 	| ToolExecutionTelemetry
 	| EvaluationTelemetry
 	| LoaderStageTelemetry
 	| SseTelemetry
 	| BackgroundTaskTelemetry
-	| ApiRequestTelemetry;
+	| ApiRequestTelemetry
+	| BusinessMetricTelemetry
+	| SandboxViolationTelemetry;
 
 const telemetryFlag =
 	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
@@ -301,6 +351,39 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 								: SpanStatusCode.OK,
 					});
 					break;
+				case "business-metric":
+					span.setAttributes({
+						"composer.metric.name": event.metric,
+						"composer.metric.value": event.value,
+					});
+					if (event.metadata?.model) {
+						span.setAttribute("composer.metric.model", event.metadata.model);
+					}
+					if (event.metadata?.provider) {
+						span.setAttribute(
+							"composer.metric.provider",
+							event.metadata.provider,
+						);
+					}
+					span.setStatus({ code: SpanStatusCode.OK });
+					break;
+				case "sandbox-violation":
+					span.setAttributes({
+						"composer.sandbox.event": event.event,
+						"composer.sandbox.tool": event.tool,
+						"composer.sandbox.action": event.action,
+						"composer.sandbox.reason": event.reason,
+					});
+					if (event.path) {
+						span.setAttribute("composer.sandbox.path", event.path);
+					}
+					span.setStatus({
+						code:
+							event.event === "blocked"
+								? SpanStatusCode.ERROR
+								: SpanStatusCode.OK,
+					});
+					break;
 				default:
 					span.setStatus({ code: SpanStatusCode.UNSET });
 			}
@@ -488,5 +571,157 @@ export function recordApiRequest(
 		statusCode,
 		durationMs,
 		metadata,
+	});
+}
+
+/**
+ * Record a business metric for usage tracking.
+ */
+export function recordBusinessMetric(
+	metric: BusinessMetricTelemetry["metric"],
+	value: number,
+	metadata?: BusinessMetricTelemetry["metadata"],
+): void {
+	void recordTelemetry({
+		type: "business-metric",
+		timestamp: new Date().toISOString(),
+		metric,
+		value,
+		metadata,
+	});
+}
+
+/**
+ * Record session start.
+ */
+export function recordSessionStart(
+	sessionId: string,
+	metadata?: Omit<BusinessMetricTelemetry["metadata"], "sessionId">,
+): void {
+	recordBusinessMetric("session.count", 1, { ...metadata, sessionId });
+}
+
+/**
+ * Record session duration on end.
+ */
+export function recordSessionDuration(
+	sessionId: string,
+	durationMs: number,
+	metadata?: Omit<BusinessMetricTelemetry["metadata"], "sessionId">,
+): void {
+	recordBusinessMetric("session.duration", durationMs, {
+		...metadata,
+		sessionId,
+	});
+}
+
+/**
+ * Record token usage metrics.
+ */
+export function recordTokenUsage(
+	sessionId: string,
+	tokens: {
+		input?: number;
+		output?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+	},
+	metadata?: Omit<BusinessMetricTelemetry["metadata"], "sessionId">,
+): void {
+	if (tokens.input !== undefined && tokens.input > 0) {
+		recordBusinessMetric("tokens.input", tokens.input, {
+			...metadata,
+			sessionId,
+		});
+	}
+	if (tokens.output !== undefined && tokens.output > 0) {
+		recordBusinessMetric("tokens.output", tokens.output, {
+			...metadata,
+			sessionId,
+		});
+	}
+	if (tokens.cacheRead !== undefined && tokens.cacheRead > 0) {
+		recordBusinessMetric("tokens.cache_read", tokens.cacheRead, {
+			...metadata,
+			sessionId,
+		});
+	}
+	if (tokens.cacheWrite !== undefined && tokens.cacheWrite > 0) {
+		recordBusinessMetric("tokens.cache_write", tokens.cacheWrite, {
+			...metadata,
+			sessionId,
+		});
+	}
+}
+
+/**
+ * Record cost in USD.
+ */
+export function recordCost(
+	sessionId: string,
+	costUsd: number,
+	metadata?: Omit<BusinessMetricTelemetry["metadata"], "sessionId">,
+): void {
+	recordBusinessMetric("cost.usd", costUsd, { ...metadata, sessionId });
+}
+
+/**
+ * Record compaction event.
+ */
+export function recordCompaction(
+	sessionId: string,
+	metadata?: Omit<BusinessMetricTelemetry["metadata"], "sessionId">,
+): void {
+	recordBusinessMetric("compaction.triggered", 1, { ...metadata, sessionId });
+}
+
+/**
+ * Record model switch.
+ */
+export function recordModelSwitch(
+	sessionId: string,
+	fromModel: string,
+	toModel: string,
+	metadata?: Omit<BusinessMetricTelemetry["metadata"], "sessionId">,
+): void {
+	recordBusinessMetric("model.switch", 1, {
+		...metadata,
+		sessionId,
+		model: toModel,
+		previousModel: fromModel,
+	});
+}
+
+/**
+ * Record a sandbox violation event.
+ */
+export function recordSandboxViolation(
+	event: SandboxViolationTelemetry["event"],
+	tool: string,
+	action: string,
+	reason: string,
+	options?: {
+		path?: string;
+		command?: string;
+		sessionId?: string;
+		metadata?: Record<string, unknown>;
+	},
+): void {
+	void recordTelemetry({
+		type: "sandbox-violation",
+		timestamp: new Date().toISOString(),
+		event,
+		tool,
+		action,
+		reason,
+		path: options?.path,
+		command: options?.command
+			? sanitizeWithStaticMask(options.command)
+			: undefined,
+		metadata: options?.metadata
+			? { ...options.metadata, sessionId: options.sessionId }
+			: options?.sessionId
+				? { sessionId: options.sessionId }
+				: undefined,
 	});
 }
