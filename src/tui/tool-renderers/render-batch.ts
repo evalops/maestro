@@ -17,7 +17,9 @@ export class BatchRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
 		const results = this.getResults(context);
 		const total = results.length;
-		const failures = results.filter((r) => r.success === false).length;
+		const failures = results.filter(
+			(r) => r.success === false || r.result?.isError,
+		).length;
 		const successes = total - failures;
 
 		if (context.collapsed) {
@@ -90,6 +92,8 @@ export class BatchRenderer implements ToolRenderer {
 		if (!result?.content) return undefined;
 		const firstText = result.content.find((c) => c.type === "text");
 		if (!firstText?.text) return undefined;
-		return this.cleanSummary(firstText.text) ?? buildCollapsedSummary(firstText.text);
+		return (
+			this.cleanSummary(firstText.text) ?? buildCollapsedSummary(firstText.text)
+		);
 	}
 }

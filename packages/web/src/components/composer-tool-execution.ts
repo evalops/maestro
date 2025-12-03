@@ -586,7 +586,7 @@ export class ComposerToolExecution extends LitElement {
 	}
 
 	protected firstUpdated(): void {
-		if (this.toolName === "batch" && !this.bodyCollapsed) {
+		if (this.isBatchTool() && !this.bodyCollapsed) {
 			this.bodyCollapsed = true;
 		}
 	}
@@ -648,9 +648,11 @@ export class ComposerToolExecution extends LitElement {
 					${stats.failures} err
 				</span>
 				<span class="batch-chip muted">${statusText}</span>
-				${preview
-					? html`<span class="batch-preview" title="${preview}">${preview}</span>`
-					: ""}
+				${
+					preview
+						? html`<span class="batch-preview" title="${preview}">${preview}</span>`
+						: ""
+				}
 			</div>
 		`;
 	}
@@ -662,9 +664,11 @@ export class ComposerToolExecution extends LitElement {
 				${preview || "No batch results yet."}
 			</div>`;
 		}
-		const limit = this.showAllBatch ? results.length : 6;
+		const collapsedLimit = 6;
+		const limit = this.showAllBatch ? results.length : collapsedLimit;
 		const rows = results.slice(0, limit);
 		const remaining = Math.max(0, results.length - rows.length);
+		const hasMore = results.length > collapsedLimit;
 		return html`
 			<div class="batch-list">
 				${rows.map((entry, index) => {
@@ -696,13 +700,19 @@ export class ComposerToolExecution extends LitElement {
 						</div>
 					`;
 				})}
-				${remaining
-					? html`
+				${
+					hasMore || this.showAllBatch
+						? html`
 							<button class="collapse-toggle" @click=${this.toggleBatchShowAll}>
-								${this.showAllBatch ? "Show Less" : `Show All (${remaining} more)`}
+								${
+									this.showAllBatch
+										? "Show Less"
+										: `Show All (${Math.max(results.length - collapsedLimit, 0)} more)`
+								}
 							</button>
 					  `
-					: ""}
+						: ""
+				}
 			</div>
 		`;
 	}
@@ -730,11 +740,13 @@ export class ComposerToolExecution extends LitElement {
 				<div class="tool-header">
 					<div class="tool-name">
 						<div class="tool-icon">
-							${this.isRunning
-								? html`<div class="spinner"></div>`
-								: this.isError
-									? html`<span style="color: #f85149;">✕</span>`
-									: html`<span style="color: #3fb950;">✓</span>`}
+							${
+								this.isRunning
+									? html`<div class="spinner"></div>`
+									: this.isError
+										? html`<span style="color: #f85149;">✕</span>`
+										: html`<span style="color: #3fb950;">✓</span>`
+							}
 						</div>
 						<span class="tool-glyph">${this.getToolGlyph(this.toolName)}</span>
 						<span>${this.toolName}</span>
@@ -747,13 +759,15 @@ export class ComposerToolExecution extends LitElement {
 					</div>
 				</div>
 
-				${this.bodyCollapsed
-					? this.renderBatchSummary(results, statusText)
-					: html`
+				${
+					this.bodyCollapsed
+						? this.renderBatchSummary(results, statusText)
+						: html`
 							<div class="tool-body">
 								${this.renderBatchRows(results)} ${this.renderMetadata()}
 							</div>
-					  `}
+					  `
+				}
 			</div>
 		`;
 	}
