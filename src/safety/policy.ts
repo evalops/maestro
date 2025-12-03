@@ -58,12 +58,12 @@
  *
  * Patterns support glob syntax via the `minimatch` library:
  *
- * | Pattern          | Matches                              |
- * |------------------|--------------------------------------|
- * | `*`              | Any single segment                   |
- * | `**`             | Any number of segments               |
- * | `*.md`           | Any file ending in .md               |
- * | `src/**/*.ts`    | Any .ts file under src/              |
+ * | Pattern             | Matches                              |
+ * |---------------------|--------------------------------------|
+ * | `*`                 | Any single segment                   |
+ * | `**`                | Any number of segments               |
+ * | `*.md`              | Any file ending in .md               |
+ * | `src/** (all .ts)`  | Any .ts file under src/              |
  *
  * ## Network Safety
  *

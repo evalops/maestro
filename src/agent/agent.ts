@@ -122,52 +122,59 @@ import type {
  * @returns Array of messages ready for LLM consumption
  */
 function defaultMessageTransformer(messages: AppMessage[]): Message[] {
-	return messages
-		// Filter to only roles the LLM understands
-		.filter(
-			(m) =>
-				m.role === "user" || m.role === "assistant" || m.role === "toolResult",
-		)
-		.map((message) => {
-			// Non-user messages pass through unchanged
-			if (message.role !== "user") {
-				return message as Message;
-			}
-
-			// Handle user messages with attachments
-			const { attachments, ...rest } = message as UserMessageWithAttachments;
-			if (!attachments || attachments.length === 0) {
-				return rest as Message;
-			}
-
-			// Expand attachments into content array
-			// Start with existing content (may be string or array)
-			const content: Array<TextContent | ImageContent> = Array.isArray(
-				rest.content,
+	return (
+		messages
+			// Filter to only roles the LLM understands
+			.filter(
+				(m) =>
+					m.role === "user" ||
+					m.role === "assistant" ||
+					m.role === "toolResult",
 			)
-				? [...rest.content]
-				: [{ type: "text", text: rest.content }];
-
-			// Convert each attachment to appropriate content type
-			for (const attachment of attachments) {
-				if (attachment.type === "image") {
-					// Images become image content blocks with base64 data
-					content.push({
-						type: "image",
-						data: attachment.content,
-						mimeType: attachment.mimeType,
-					} as ImageContent);
-				} else if (attachment.type === "document" && attachment.extractedText) {
-					// Documents become text blocks with filename headers
-					content.push({
-						type: "text",
-						text: `\n\n[Document: ${attachment.fileName}]\n${attachment.extractedText}`,
-					} as TextContent);
+			.map((message) => {
+				// Non-user messages pass through unchanged
+				if (message.role !== "user") {
+					return message as Message;
 				}
-			}
 
-			return { ...rest, content } as Message;
-		});
+				// Handle user messages with attachments
+				const { attachments, ...rest } = message as UserMessageWithAttachments;
+				if (!attachments || attachments.length === 0) {
+					return rest as Message;
+				}
+
+				// Expand attachments into content array
+				// Start with existing content (may be string or array)
+				const content: Array<TextContent | ImageContent> = Array.isArray(
+					rest.content,
+				)
+					? [...rest.content]
+					: [{ type: "text", text: rest.content }];
+
+				// Convert each attachment to appropriate content type
+				for (const attachment of attachments) {
+					if (attachment.type === "image") {
+						// Images become image content blocks with base64 data
+						content.push({
+							type: "image",
+							data: attachment.content,
+							mimeType: attachment.mimeType,
+						} as ImageContent);
+					} else if (
+						attachment.type === "document" &&
+						attachment.extractedText
+					) {
+						// Documents become text blocks with filename headers
+						content.push({
+							type: "text",
+							text: `\n\n[Document: ${attachment.fileName}]\n${attachment.extractedText}`,
+						} as TextContent);
+					}
+				}
+
+				return { ...rest, content } as Message;
+			})
+	);
 }
 
 /**

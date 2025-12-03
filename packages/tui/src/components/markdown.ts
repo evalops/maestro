@@ -8,7 +8,14 @@ import {
 import type { Component } from "../tui.js";
 import { visibleWidth, wrapAnsiLine, wrapAnsiLines } from "../utils.js";
 
-const ANSI_ESCAPE_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`);
+// General ANSI escape matchers (CSI sequences, final byte @-~)
+const ANSI_CONTAINS_ESCAPE_REGEX = new RegExp(
+	`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`,
+);
+const ANSI_STICKY_ESCAPE_REGEX = new RegExp(
+	`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`,
+	"y",
+);
 
 /**
  * Theme functions for markdown elements.
@@ -79,7 +86,7 @@ export class Markdown implements Component {
 		applyTheme?: (text: string) => string,
 		fallback?: (text: string) => string,
 	): string {
-		if (ANSI_ESCAPE_REGEX.test(text)) {
+		if (ANSI_CONTAINS_ESCAPE_REGEX.test(text)) {
 			return text;
 		}
 		if (applyTheme) {
@@ -318,7 +325,7 @@ export class Markdown implements Component {
 			}
 			case "table": {
 				if ("header" in token && "rows" in token) {
-					const tableLines = this.renderTable(token as Tokens.Table);
+					const tableLines = this.renderTable(token as Tokens.Table, width);
 					lines.push(...tableLines);
 				}
 				break;
@@ -547,10 +554,11 @@ export class Markdown implements Component {
 	/**
 	 * Render a table
 	 */
-	private renderTable(token: Tokens.Table): string[] {
+	private renderTable(token: Tokens.Table, availableWidth: number): string[] {
 		const lines: string[] = [];
 		// Calculate column widths
 		const columnWidths: number[] = [];
+		const columnCount = token.header.length;
 		// Check header
 		for (let i = 0; i < token.header.length; i++) {
 			const headerText = this.renderInlineTokens(token.header[i].tokens || []);
@@ -570,11 +578,84 @@ export class Markdown implements Component {
 		for (let i = 0; i < columnWidths.length; i++) {
 			columnWidths[i] = Math.min(columnWidths[i], maxColWidth);
 		}
+		// If the table would overflow the available width, shrink columns proportionally.
+		const fixedWidth = 3 * columnCount + 1; // borders + separators (│ + │)
+		const sumCols = columnWidths.reduce((a, b) => a + b, 0);
+		const maxTableWidth = Math.max(1, availableWidth);
+		const availableForColumns = maxTableWidth - fixedWidth;
+		if (availableForColumns > 0 && availableForColumns < sumCols) {
+			// If even a width of 1 per column won't fit, bail out early with minimal widths.
+			if (availableForColumns < columnCount) {
+				for (let i = 0; i < columnWidths.length; i++) {
+					columnWidths[i] = 1;
+				}
+			} else {
+				const scale = availableForColumns / sumCols;
+				const resized = columnWidths.map((col) =>
+					Math.max(1, Math.floor(col * scale)),
+				);
+				const resizedSum = resized.reduce((a, b) => a + b, 0);
+				let deficit = resizedSum - availableForColumns;
+				if (deficit > 0) {
+					// Reduce widest columns first to close the deficit in a bounded number of steps.
+					const sortedIndexes = resized
+						.map((value, index) => ({ value, index }))
+						.sort((a, b) => b.value - a.value)
+						.map((item) => item.index);
+					for (const idx of sortedIndexes) {
+						if (deficit <= 0) break;
+						const current = resized[idx];
+						const possibleReduction = Math.min(
+							deficit,
+							Math.max(0, current - 1),
+						);
+						if (possibleReduction === 0) continue;
+						resized[idx] = current - possibleReduction;
+						deficit -= possibleReduction;
+					}
+				}
+				for (let i = 0; i < resized.length; i++) {
+					columnWidths[i] = resized[i];
+				}
+			}
+		}
+
+		const padCell = (text: string, targetWidth: number) => {
+			const padLength = Math.max(0, targetWidth - visibleWidth(text));
+			return text + " ".repeat(padLength);
+		};
+
+		const truncateCell = (text: string, targetWidth: number) => {
+			if (visibleWidth(text) <= targetWidth) return text;
+			let result = "";
+			let widthSoFar = 0;
+			const ansiPattern = ANSI_STICKY_ESCAPE_REGEX;
+			for (let i = 0; i < text.length; ) {
+				ansiPattern.lastIndex = i;
+				const match = ansiPattern.exec(text);
+				if (match && match.index === i) {
+					// Preserve full escape sequence
+					result += match[0];
+					i += match[0].length;
+					continue;
+				}
+				const codePoint = text.codePointAt(i);
+				const char =
+					codePoint !== undefined ? String.fromCodePoint(codePoint) : text[i];
+				const charWidth = visibleWidth(char);
+				if (widthSoFar + charWidth > targetWidth) break;
+				result += char;
+				widthSoFar += charWidth;
+				i += char.length;
+			}
+			return result;
+		};
 		// Render header
 		const headerCells = token.header.map(
 			(cell: Tokens.TableCell, i: number) => {
-				const text = this.renderInlineTokens(cell.tokens || []);
-				return chalk.bold(text.padEnd(columnWidths[i]));
+				const raw = this.renderInlineTokens(cell.tokens || []);
+				const text = truncateCell(raw, columnWidths[i]);
+				return chalk.bold(padCell(text, columnWidths[i]));
 			},
 		);
 		lines.push(`│ ${headerCells.join(" │ ")} │`);
@@ -584,10 +665,9 @@ export class Markdown implements Component {
 		// Render rows
 		for (const row of token.rows) {
 			const rowCells = row.map((cell: Tokens.TableCell, i: number) => {
-				const text = this.renderInlineTokens(cell.tokens || []);
-				const visWidth = visibleWidth(text);
-				const padding = " ".repeat(Math.max(0, columnWidths[i] - visWidth));
-				return text + padding;
+				const raw = this.renderInlineTokens(cell.tokens || []);
+				const text = truncateCell(raw, columnWidths[i]);
+				return padCell(text, columnWidths[i]);
 			});
 			lines.push(`│ ${rowCells.join(" │ ")} │`);
 		}
