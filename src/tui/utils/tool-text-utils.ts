@@ -273,5 +273,10 @@ function clampAnsiLine(line: string, maxWidth: number): string {
 		out = out.slice(0, -1);
 	}
 	out += ellipsis;
+	// Ensure we reset styling if we truncated mid-ANSI sequence so downstream
+	// output doesn't inherit colors.
+	if (/\x1b\[[0-9;?]*[ -/]*[@-~]/.test(out) && !out.endsWith("\x1b[0m")) {
+		out += "\x1b[0m";
+	}
 	return out;
 }

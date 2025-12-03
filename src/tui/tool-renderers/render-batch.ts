@@ -1,4 +1,5 @@
-import chalk from "chalk";
+import { theme } from "../../theme/theme.js";
+import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import { buildCollapsedSummary } from "../utils/tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
@@ -21,40 +22,55 @@ export class BatchRenderer implements ToolRenderer {
 			(r) => r.success === false || r.result?.isError,
 		).length;
 		const successes = total - failures;
+		const status: "success" | "error" | "pending" =
+			failures > 0 ? "error" : context.result ? "success" : "pending";
+		const summaryMeta =
+			total === 0
+				? "no tool calls"
+				: `${total} tool${total === 1 ? "" : "s"} · ${successes} ok${
+						failures ? ` · ${failures} err` : ""
+					}`;
+		const preview = this.getPreviewText(context);
 
 		if (context.collapsed) {
-			const headline =
-				total === 0
-					? "batch: no tool calls"
-					: `batch: ${total} tool${total === 1 ? "" : "s"} · ${successes} ok${
-							failures ? ` · ${failures} err` : ""
-						}`;
-			const preview = this.getPreviewText(context) ?? "";
-			return chalk.dim(preview ? `${headline} — ${preview}` : headline);
+			const headline = `${statusGlyph(status)} ${formatHeadline("batch", summaryMeta)}`;
+			return preview
+				? `${headline} ${theme.fg("dim", "— " + preview)}`
+				: headline;
 		}
 
 		const lines: string[] = [];
-		lines.push(
-			chalk.bold(`batch · ${total || "no"} tool${total === 1 ? "" : "s"}`),
-			chalk.dim(`${successes} ok${failures ? ` · ${failures} err` : ""}`),
-		);
+		lines.push(`${statusGlyph(status)} ${formatHeadline("batch", summaryMeta)}`);
+		if (preview) {
+			lines.push(theme.fg("dim", preview));
+		}
 
 		const itemsToShow = results.slice(0, 8);
+		const rowLines: string[] = [];
 		for (let i = 0; i < itemsToShow.length; i++) {
 			const entry = itemsToShow[i];
-			const icon = entry.success === false ? "✕" : "✓";
-			const color = entry.success === false ? chalk.red : chalk.green;
+			const rowStatus =
+				entry.success === false || entry.result?.isError ? "error" : "success";
 			const summary =
 				this.cleanSummary(entry.summary) ||
 				this.extractTextSnippet(entry.result) ||
 				"completed";
 			const label = entry.tool ? entry.tool.toLowerCase() : `call ${i + 1}`;
-			lines.push(`${color(icon)} ${chalk.bold(label)} — ${chalk.dim(summary)}`);
+			rowLines.push(
+				`${statusGlyph(rowStatus)} ${theme.bold(label)} ${theme.fg("dim", "—")} ${theme.fg("muted", summary)}`,
+			);
+		}
+
+		if (rowLines.length) {
+			lines.push(renderCard(rowLines, { padding: 1 }));
 		}
 
 		if (results.length > itemsToShow.length) {
 			lines.push(
-				chalk.dim(`… +${results.length - itemsToShow.length} more tool calls`),
+				theme.fg(
+					"muted",
+					`… +${results.length - itemsToShow.length} more tool calls`,
+				),
 			);
 		}
 
