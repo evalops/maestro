@@ -840,9 +840,10 @@ describe("background launcher", () => {
 
 	describe("startBackgroundTask", () => {
 		it("starts tasks with provided options", () => {
-			const spy = vi
-				.spyOn(backgroundTaskManager, "start")
-				.mockReturnValue({ id: "task-42", command: "npm run dev" } as any);
+			const spy = vi.spyOn(backgroundTaskManager, "start").mockReturnValue({
+				id: "task-42",
+				command: "npm run dev",
+			} as ReturnType<typeof backgroundTaskManager.start>);
 			const result = startBackgroundTask("npm run dev", {
 				cwd: "/tmp/project",
 				env: { NODE_ENV: "test" },

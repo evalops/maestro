@@ -55,7 +55,9 @@ class MockContainer {
 	}
 }
 
-const noopToolOutputView = {
+type ToolOutputViewType = Parameters<typeof StreamingView>[0]["toolOutputView"];
+
+const noopToolOutputView: ToolOutputViewType = {
 	registerToolComponent: () => {},
 	clearTrackedComponents: () => {},
 	getTrackedComponents: () => new Set(),
@@ -70,7 +72,7 @@ describe("StreamingView clean mode handling", () => {
 		const chatContainer = new MockContainer();
 		const view = new StreamingView({
 			chatContainer,
-			toolOutputView: noopToolOutputView as any,
+			toolOutputView: noopToolOutputView,
 			pendingTools: new Map(),
 			lowBandwidth: { enabled: false, batchIntervalMs: 0, scrollbackLimit: 10 },
 			getCleanMode: () => "soft",
@@ -95,7 +97,7 @@ describe("StreamingView clean mode handling", () => {
 		const chatContainer = new MockContainer();
 		const view = new StreamingView({
 			chatContainer,
-			toolOutputView: noopToolOutputView as any,
+			toolOutputView: noopToolOutputView,
 			pendingTools: new Map(),
 			lowBandwidth: { enabled: false, batchIntervalMs: 0, scrollbackLimit: 10 },
 			getCleanMode: () => "off",

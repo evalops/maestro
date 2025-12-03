@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AgentState, AssistantMessage } from "../../src/agent/types.js";
+import type {
+	AgentState,
+	AppMessage,
+	AssistantMessage,
+} from "../../src/agent/types.js";
 import { FooterComponent } from "../../src/tui/footer.js";
 
 // Helper to create a mock assistant message
@@ -56,7 +60,10 @@ function brandLineFrom(rendered: string[]): string {
 	return stripAnsi(rendered[1] ?? "");
 }
 
-function createMockState(messages: any[], contextWindow = 200000): AgentState {
+function createMockState(
+	messages: AppMessage[],
+	contextWindow = 200000,
+): AgentState {
 	return {
 		messages,
 		systemPrompt: "test",
@@ -163,8 +170,8 @@ describe("FooterComponent", () => {
 
 			const statsLine = statsLineFrom(rendered);
 			// (2k input + 90k cacheRead + 1k output) / 200k = 93k / 200k = 46.5%
-			// New format shows: ctx 46.5%
-			expect(statsLine).toContain("ctx 46.5%");
+			// Format shows percentage after progress bar
+			expect(statsLine).toContain("46.5%");
 			expect(statsLine).not.toContain("1.5%");
 		});
 

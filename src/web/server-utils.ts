@@ -132,7 +132,11 @@ export function sendJson(
 	};
 
 	// Prefer explicit request; fall back to ServerResponse.req when available.
-	const request = req || ((res as any).req as IncomingMessage | undefined);
+	const request =
+		req ||
+		((res as unknown as { req?: IncomingMessage }).req as
+			| IncomingMessage
+			| undefined);
 	const acceptEncoding =
 		request?.headers["accept-encoding"]?.toLowerCase() || "";
 

@@ -4,14 +4,33 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../../src/main.js";
 
-type SubscriptionHandler = (event: any) => void | Promise<void>;
+interface MockAgentState {
+	model?: unknown;
+	thinkingLevel?: string;
+	messages: Array<{
+		role: string;
+		content: Array<{ type: string; text: string }>;
+		stopReason?: string;
+	}>;
+}
+
+interface MockAgentConfig {
+	initialState?: Partial<MockAgentState>;
+}
+
+interface MockAgentEvent {
+	type: string;
+	message?: unknown;
+}
+
+type SubscriptionHandler = (event: MockAgentEvent) => void | Promise<void>;
 
 vi.mock("../../src/agent/agent.js", async () => {
 	class Agent {
-		public state: any;
+		public state: MockAgentState;
 		private subscribers: SubscriptionHandler[] = [];
 
-		constructor(config: any) {
+		constructor(config: MockAgentConfig) {
 			this.state = {
 				...config.initialState,
 				messages: [],
@@ -47,11 +66,16 @@ vi.mock("../../src/agent/agent.js", async () => {
 			// no-op for tests
 		}
 
-		replaceMessages(messages: any[]) {
+		replaceMessages(
+			messages: Array<{
+				role: string;
+				content: Array<{ type: string; text: string }>;
+			}>,
+		) {
 			this.state.messages = [...messages];
 		}
 
-		setModel(model: any) {
+		setModel(model: unknown) {
 			this.state.model = model;
 		}
 
@@ -63,9 +87,13 @@ vi.mock("../../src/agent/agent.js", async () => {
 	return { Agent };
 });
 
+interface MockTransportOptions {
+	getApiKey?: () => string;
+}
+
 vi.mock("../../src/agent/transport.js", () => ({
 	ProviderTransport: class ProviderTransport {
-		constructor(public readonly options: any) {}
+		constructor(public readonly options: MockTransportOptions) {}
 	},
 }));
 
@@ -177,10 +205,10 @@ describe("CLI integration", () => {
 			output.push(args.map((arg) => String(arg)).join(" "));
 		};
 		// Mock stdout.write to capture JSONL output
-		process.stdout.write = ((chunk: any) => {
+		process.stdout.write = ((chunk: unknown) => {
 			output.push(String(chunk));
 			return true;
-		}) as any;
+		}) as typeof process.stdout.write;
 	});
 
 	afterEach(() => {
@@ -243,12 +271,10 @@ describe("CLI integration", () => {
 
 	it("prints models list command output", async () => {
 		const exitCodes: number[] = [];
-		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
-			code?: number,
-		) => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(code ?? 0);
 			return undefined as never;
-		}) as any);
+		});
 		await main(["models", "list"]);
 		expect(exitCodes).toEqual([0]);
 		expect(output.some((line) => line.includes("anthropic"))).toBe(true);
@@ -257,12 +283,10 @@ describe("CLI integration", () => {
 
 	it("prints providers summary for filter", async () => {
 		const exitCodes: number[] = [];
-		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
-			code?: number,
-		) => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(code ?? 0);
 			return undefined as never;
-		}) as any);
+		});
 		await main(["models", "providers", "--provider", "openrouter"]);
 		expect(exitCodes).toEqual([0]);
 		expect(output.join("\n")).toContain("openrouter");
@@ -278,12 +302,10 @@ describe("CLI integration", () => {
 	it("streams JSON events in composer exec", async () => {
 		const originalWrite = process.stdout.write;
 		let streamed = "";
-		(process.stdout.write as unknown as (chunk: string) => boolean) = ((
-			chunk: any,
-		) => {
+		process.stdout.write = ((chunk: unknown) => {
 			streamed += String(chunk);
 			return true;
-		}) as any;
+		}) as typeof process.stdout.write;
 		try {
 			await main(["exec", "Plan work", "--json"]);
 		} finally {
@@ -336,12 +358,10 @@ describe("CLI integration", () => {
 
 	it("fails when chatgpt auth mode lacks a Codex token", async () => {
 		const exitCodes: number[] = [];
-		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
-			code?: number,
-		) => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(code ?? 0);
 			throw new Error("exit");
-		}) as never);
+		});
 		await expect(
 			main([
 				"--provider",
@@ -376,12 +396,10 @@ describe("CLI integration", () => {
 
 	it("fails when claude auth mode lacks OAuth tokens", async () => {
 		const exitCodes: number[] = [];
-		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
-			code?: number,
-		) => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(code ?? 0);
 			throw new Error("exit");
-		}) as never);
+		});
 		await expect(
 			main([
 				"--provider",

@@ -180,7 +180,9 @@ describe("LSP functions", () => {
 
 		// Mock lspManager to return our mock client
 		vi.spyOn(lspManager, "getClientsForFile").mockResolvedValue([
-			mockClient as any,
+			mockClient as unknown as Awaited<
+				ReturnType<typeof lspManager.getClientsForFile>
+			>[number],
 		]);
 
 		const locations = await definition(testFile, 0, 0);

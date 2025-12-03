@@ -1,15 +1,17 @@
 import type { IncomingMessage } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
-import AjvPkg, { type ErrorObject } from "ajv";
+import AjvPkg, { type ErrorObject, type Options as AjvOptions } from "ajv";
 import addFormats from "ajv-formats";
 import { ApiError, readRequestBody } from "./server-utils.js";
 
-type AjvConstructor = new (...args: any[]) => import("ajv").default;
-const AjvCtor: AjvConstructor = (AjvPkg as any).default ?? AjvPkg;
-const ajvInstance: import("ajv").default = new AjvCtor({
+const AjvCtor: new (options?: AjvOptions) => import("ajv").default =
+	// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any for module default
+	(AjvPkg as any).default ?? AjvPkg;
+const ajvInstance = new AjvCtor({
 	allErrors: true,
 	strict: false,
 });
+// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any for module default
 const addFormatsFn = (addFormats as any).default ?? addFormats;
 addFormatsFn(ajvInstance);
 
@@ -46,6 +48,7 @@ export async function parseAndValidateJson<T>(
 	} catch {
 		throw new ApiError(400, "Invalid JSON payload");
 	}
+	// biome-ignore lint/suspicious/noExplicitAny: AJV schema type incompatible with unknown
 	const validate = ajvInstance.compile<T>(schema as any);
 	if (!validate(parsed)) {
 		const message =

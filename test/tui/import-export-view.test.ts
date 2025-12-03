@@ -45,8 +45,10 @@ const buildView = (overrides: Partial<SessionManager> = {}) => {
 			chatEntries.push(child);
 		},
 		clear: vi.fn(),
-	} as any;
-	const ui = { requestRender: vi.fn() } as any;
+	} as unknown as Parameters<typeof ImportExportView>[0]["chatContainer"];
+	const ui = { requestRender: vi.fn() } as unknown as Parameters<
+		typeof ImportExportView
+	>[0]["ui"];
 	const view = new ImportExportView({
 		agent,
 		sessionManager,
@@ -60,7 +62,7 @@ const buildView = (overrides: Partial<SessionManager> = {}) => {
 };
 
 describe("ImportExportView.handleExportCommand", () => {
-	const spies: Array<any> = [];
+	const spies: Array<ReturnType<typeof vi.spyOn>> = [];
 
 	beforeEach(() => {
 		vi.restoreAllMocks();
@@ -125,14 +127,18 @@ describe("ImportExportView.handleExportCommand", () => {
 
 	it("expands bare tilde to home directory", () => {
 		const { view } = buildView();
-		const expanded = (view as any).expandPath("~") as string;
+		const expanded = (
+			view as unknown as { expandPath: (path: string) => string }
+		).expandPath("~");
 		expect(expanded).toBe(homedir());
 	});
 
 	it("rejects export paths outside allowed directories", () => {
 		const { view } = buildView();
 		expect(() =>
-			(view as any).resolveExportPath("/etc/composer-export.html"),
+			(
+				view as unknown as { resolveExportPath: (path: string) => string }
+			).resolveExportPath("/etc/composer-export.html"),
 		).toThrow(/Export path must be inside/);
 	});
 });

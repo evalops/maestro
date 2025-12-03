@@ -45,11 +45,17 @@ afterAll(() => {
 	rmSync(settingsRoot, { recursive: true, force: true });
 });
 
-function getTextOutput(result: any): string {
+type ToolResult = { content?: Array<{ type: string; text?: string }> };
+type TaskDetails = { id?: string; status?: string };
+
+function getTextOutput(result: ToolResult): string {
 	return (
 		result.content
-			?.filter((c: any) => c.type === "text")
-			.map((c: any) => c.text)
+			?.filter(
+				(c): c is { type: "text"; text: string } =>
+					c.type === "text" && typeof c.text === "string",
+			)
+			.map((c) => c.text)
 			.join("\n") || ""
 	);
 }
@@ -136,7 +142,7 @@ describe("backgroundTasksTool", () => {
 			command:
 				"node -e \"console.log('log-line'); setTimeout(() => {}, 5000)\"",
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 
 		await sleep(200);
 		const logText = await waitForLogEntry(taskId, "log-line");
@@ -147,7 +153,7 @@ describe("backgroundTasksTool", () => {
 			taskId,
 		});
 
-		const details = stopResult.details as any;
+		const details = stopResult.details as TaskDetails;
 		expect(details.id).toBe(taskId);
 		expect(["stopped", "exited"]).toContain(details.status);
 
@@ -161,7 +167,7 @@ describe("backgroundTasksTool", () => {
 			action: "start",
 			command: 'node -e "setTimeout(() => {}, 2000)"',
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 
 		await expect(
 			backgroundTasksTool.execute("bg-start-limit-2", {
@@ -181,7 +187,7 @@ describe("backgroundTasksTool", () => {
 			action: "start",
 			command: "node -e \"console.log('usage'); setTimeout(() => {}, 1000)\"",
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		const supportsUsage = ["linux", "darwin"].includes(process.platform);
 
 		await waitForCondition(() => {
@@ -214,7 +220,7 @@ describe("backgroundTasksTool", () => {
 				command: 'node -e "setTimeout(() => {}, 2000)"',
 			},
 		);
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		expect(taskId).toBeTruthy();
 
 		const snapshotWithoutDetails = backgroundTaskManager.getHealthSnapshot({
@@ -287,7 +293,7 @@ describe("backgroundTasksTool", () => {
 			command,
 			restart: { maxAttempts: 1, delayMs: 100 },
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 
 		try {
 			await waitForCondition(
@@ -317,7 +323,7 @@ describe("backgroundTasksTool", () => {
 			command,
 			restart: { maxAttempts: 1, delayMs: 50 },
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 
 		try {
 			await waitForCondition(
@@ -354,7 +360,7 @@ describe("backgroundTasksTool", () => {
 			restart: { maxAttempts: 1, delayMs: 50 },
 			limits: { logSizeLimit: 512, logSegments: 1 },
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 
 		try {
 			await waitForCondition(
@@ -392,7 +398,7 @@ describe("backgroundTasksTool", () => {
 				"node -e \"process.stdout.write('hello world'); setTimeout(() => {}, 1000);\"",
 			limits: { logSizeLimit: 0 },
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(
 			() => backgroundTaskManager.getTask(taskId)?.status === "running",
 		);
@@ -411,7 +417,7 @@ describe("backgroundTasksTool", () => {
 			command: 'node -e "setTimeout(() => {}, 2000)"',
 			limits: { retentionMs: 1_000 },
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await backgroundTaskManager.stopTask(taskId);
 		await waitForCondition(
 			() => backgroundTaskManager.getTask(taskId) === undefined,
@@ -421,9 +427,17 @@ describe("backgroundTasksTool", () => {
 	});
 
 	it("supports exponential restart strategy with jitter", () => {
+		type RestartPolicy = {
+			delayMs: number;
+			maxAttempts: number;
+			attempts: number;
+			strategy: string;
+			maxDelayMs: number;
+			jitterRatio: number;
+		};
 		const computeRestartDelay = (
 			backgroundTaskManager as unknown as {
-				computeRestartDelay: (policy: any) => number;
+				computeRestartDelay: (policy: RestartPolicy) => number;
 			}
 		).computeRestartDelay.bind(backgroundTaskManager);
 		const policy = {
@@ -474,7 +488,7 @@ describe("backgroundTasksTool", () => {
 			action: "start",
 			command: 'node -e "process.exit(0)"',
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 
 		await waitForCondition(() => {
 			const task = backgroundTaskManager.getTask(taskId);
@@ -502,7 +516,7 @@ describe("backgroundTasksTool", () => {
 			startedAt: Date.now(),
 			status: "running" as const,
 			logPath: zombieLog,
-			process: {} as any,
+			process: {} as unknown as NodeJS.Process,
 			completion: Promise.resolve(),
 			shellMode: "exec" as const,
 			limits: {
@@ -533,7 +547,7 @@ describe("backgroundTasksTool", () => {
 			command:
 				"node -e \"console.log('health-check'); setTimeout(() => {}, 2000)\"",
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(
 			() => backgroundTaskManager.getTask(taskId)?.status === "running",
 		);
@@ -559,7 +573,7 @@ describe("backgroundTasksTool", () => {
 			command:
 				"node -e \"console.log('sk-secret-1234567890abcdef1234567890'); setTimeout(() => {}, 2000)\"",
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(() => {
 			const snapshot = backgroundTaskManager.getHealthSnapshot({
 				maxEntries: 1,
@@ -583,7 +597,7 @@ describe("backgroundTasksTool", () => {
 			action: "start",
 			command: "node -e \"console.log('one'); setTimeout(() => {}, 2000)\"",
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(() => {
 			const snapshot = backgroundTaskManager.getHealthSnapshot({
 				maxEntries: 1,
@@ -607,7 +621,7 @@ describe("backgroundTasksTool", () => {
 			action: "start",
 			command: "node -e \"console.log('history');\"",
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(() => {
 			const task = backgroundTaskManager.getTask(taskId);
 			return task?.status === "exited" || task?.status === "failed";
@@ -628,7 +642,7 @@ describe("backgroundTasksTool", () => {
 				"node -e \"const chunk = 'A'.repeat(2048); let count = 0; const timer = setInterval(() => { process.stdout.write(chunk); count += 1; if (count === 4) { clearInterval(timer); process.exit(0); } }, 20);\"",
 			limits: { logSizeLimit: 1024, logSegments: 2 },
 		});
-		const taskId = (startResult.details as any)?.id as string;
+		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(() => {
 			const task = backgroundTaskManager.getTask(taskId);
 			return task?.status === "exited" || task?.status === "failed";

@@ -1,7 +1,7 @@
-import { TextDecoder, TextEncoder } from "node:util";
+import { TextEncoder } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { streamOpenAI } from "../../src/agent/providers/openai.js";
-import type { Context, Model } from "../../src/agent/types.js";
+import type { Context, Model, StreamEvent } from "../../src/agent/types.js";
 
 const encoder = new TextEncoder();
 
@@ -16,7 +16,13 @@ function makeStream(lines: string[]): ReadableStream {
 	});
 }
 
-const baseContext: Context = { systemPrompt: "", messages: [] } as any;
+const baseContext: Context = {
+	systemPrompt: "",
+	messages: [],
+	model: {} as Context["model"],
+	tools: [],
+	thinkingLevel: "off",
+};
 
 const responsesModel: Model<"openai-responses"> = {
 	id: "gpt-test",
@@ -38,8 +44,11 @@ const completionsModel: Model<"openai-completions"> = {
 };
 
 describe("OpenAI streaming", () => {
+	let mockFetch: ReturnType<typeof vi.fn>;
+
 	beforeEach(() => {
-		vi.spyOn(global, "fetch");
+		mockFetch = vi.fn();
+		vi.stubGlobal("fetch", mockFetch);
 	});
 
 	afterEach(() => {
@@ -54,9 +63,9 @@ describe("OpenAI streaming", () => {
 		];
 
 		const mockResponse = new Response(makeStream(lines), { status: 200 });
-		(global.fetch as any).mockResolvedValue(mockResponse);
+		mockFetch.mockResolvedValue(mockResponse);
 
-		const events: any[] = [];
+		const events: StreamEvent[] = [];
 		for await (const ev of streamOpenAI(responsesModel, baseContext, {
 			apiKey: "k",
 		})) {
@@ -79,7 +88,7 @@ describe("OpenAI streaming", () => {
 		];
 
 		const mockResponse = new Response(makeStream(lines), { status: 200 });
-		(global.fetch as any).mockResolvedValue(mockResponse);
+		mockFetch.mockResolvedValue(mockResponse);
 
 		let messageText = "";
 		for await (const ev of streamOpenAI(completionsModel, baseContext, {

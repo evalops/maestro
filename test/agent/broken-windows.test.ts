@@ -11,18 +11,26 @@ vi.mock("../../src/lsp/index.js", () => {
 });
 
 // Import tools after mocking
+import type { AgentToolResult } from "../../src/agent/types.js";
 import { collectDiagnostics } from "../../src/lsp/index.js";
 import { editTool } from "../../src/tools/edit.js";
 import { writeTool } from "../../src/tools/write.js";
 
-function getTextOutput(result: any): string {
+interface TextContent {
+	type: "text";
+	text: string;
+}
+
+function getTextOutput(result: AgentToolResult<unknown>): string {
 	return (
 		result.content
-			?.filter((c: any) => c.type === "text")
-			.map((c: any) => c.text)
+			?.filter((c): c is TextContent => c.type === "text")
+			.map((c) => c.text)
 			.join("\n") || ""
 	);
 }
+
+const mockCollectDiagnostics = vi.mocked(collectDiagnostics);
 
 describe("The Law of Broken Windows (Tool Diagnostics)", () => {
 	let testDir: string;
@@ -42,7 +50,7 @@ describe("The Law of Broken Windows (Tool Diagnostics)", () => {
 		const absolutePath = resolve(filePath);
 
 		// Mock diagnostics return
-		(collectDiagnostics as any).mockResolvedValue({
+		mockCollectDiagnostics.mockResolvedValue({
 			[absolutePath]: [
 				{
 					message: "Expected expression",
@@ -69,7 +77,7 @@ describe("The Law of Broken Windows (Tool Diagnostics)", () => {
 
 	it("writeTool does not append diagnostics if none found", async () => {
 		const filePath = join(testDir, "good.ts");
-		(collectDiagnostics as any).mockResolvedValue({});
+		mockCollectDiagnostics.mockResolvedValue({});
 
 		const result = await writeTool.execute("write-2", {
 			path: filePath,
@@ -86,7 +94,7 @@ describe("The Law of Broken Windows (Tool Diagnostics)", () => {
 		const absolutePath = resolve(filePath);
 		writeFileSync(filePath, "const x = 1;");
 
-		(collectDiagnostics as any).mockResolvedValue({
+		mockCollectDiagnostics.mockResolvedValue({
 			[absolutePath]: [
 				{
 					message: "Type error",

@@ -2313,7 +2313,7 @@ export class TuiRenderer {
 		const messages = this.agent.state.messages ?? [];
 		const userMessages = messages
 			.map((msg, index) => ({ msg, index }))
-			.filter(({ msg }) => (msg as any)?.role === "user");
+			.filter(({ msg }) => "role" in msg && msg.role === "user");
 		if (userMessages.length === 0) {
 			context.showInfo("No user messages available to branch from yet.");
 			return;
@@ -2368,7 +2368,7 @@ export class TuiRenderer {
 	}
 
 	private getMessageTimestamp(message: AppMessage): string | null {
-		const ts = (message as any)?.timestamp;
+		const ts = "timestamp" in message ? message.timestamp : undefined;
 		if (!ts || typeof ts !== "number") return null;
 		try {
 			return new Date(ts).toLocaleString();
@@ -2378,14 +2378,18 @@ export class TuiRenderer {
 	}
 
 	private extractUserText(message: AppMessage): string {
-		const content = (message as any).content;
+		const content = "content" in message ? message.content : undefined;
 		if (typeof content === "string") {
 			return content;
 		}
 		if (Array.isArray(content)) {
 			const textBlock = content.find(
-				(block) => block && (block as any).type === "text",
-			) as { text?: string } | undefined;
+				(block): block is { type: "text"; text: string } =>
+					block != null &&
+					typeof block === "object" &&
+					"type" in block &&
+					block.type === "text",
+			);
 			return textBlock?.text ?? "";
 		}
 		return "";
@@ -3334,7 +3338,7 @@ export class TuiRenderer {
 				return;
 			}
 
-			await this.performOAuthLogin(provider.id as any, selectedMode, context);
+			await this.performOAuthLogin(provider.id, selectedMode, context);
 			return;
 		}
 
@@ -3514,6 +3518,7 @@ export class TuiRenderer {
 
 		// Import OAuth system
 		const { listOAuthProviders, logout } = await import("../oauth/index.js");
+		type SupportedProvider = "anthropic" | "openai" | "github-copilot";
 
 		// Get logged-in providers
 		const loggedInProviders = listOAuthProviders();
@@ -3538,7 +3543,7 @@ export class TuiRenderer {
 				return;
 			}
 
-			await this.performOAuthLogout(provider as any, context);
+			await this.performOAuthLogout(provider as SupportedProvider, context);
 			this.isOAuthFlowActive = false;
 			return;
 		}
@@ -3608,12 +3613,15 @@ export class TuiRenderer {
 			throw new Error("No default model configured. Use /model to select one.");
 		}
 		// If transport exposes a light ping, use it without sending user content
-		const transport: any = (this.agent as any).transport;
+		const transport = (
+			this.agent as unknown as { transport?: { ping?: () => Promise<void> } }
+		).transport;
 		if (transport?.ping) {
-			await transport.ping().catch((error: any) => {
+			await transport.ping().catch((error: unknown) => {
 				const message =
-					error?.message ??
-					"Model connectivity probe failed. Check API key and network.";
+					error instanceof Error
+						? error.message
+						: "Model connectivity probe failed. Check API key and network.";
 				throw new Error(message);
 			});
 		}

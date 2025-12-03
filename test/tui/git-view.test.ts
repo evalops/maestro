@@ -3,14 +3,25 @@ import { GitView } from "../../src/tui/git/git-view.js";
 
 type GitResult = { ok: boolean; stdout: string; stderr: string };
 
+type GitViewOptions = ConstructorParameters<typeof GitView>[0];
+
 class StubGitView extends GitView {
 	constructor(private readonly responses: Record<string, GitResult>) {
 		super({
-			chatContainer: { addChild: () => {}, clear: () => {} } as any,
-			ui: { setFocus: () => {}, requestRender: () => {} } as any,
+			chatContainer: {
+				addChild: () => {},
+				clear: () => {},
+			} as unknown as GitViewOptions["chatContainer"],
+			ui: {
+				setFocus: () => {},
+				requestRender: () => {},
+			} as unknown as GitViewOptions["ui"],
 			showInfoMessage: () => {},
 			showToast: () => {},
-			modalManager: { push: () => {}, pop: () => {} } as any,
+			modalManager: {
+				push: () => {},
+				pop: () => {},
+			} as unknown as GitViewOptions["modalManager"],
 		});
 	}
 

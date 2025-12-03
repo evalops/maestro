@@ -2,6 +2,7 @@ import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ActionApprovalContext } from "../../src/agent/types.js";
 import {
 	checkPolicy,
 	checkSessionLimits,
@@ -42,12 +43,12 @@ describe("Policy Enhancements", () => {
 		];
 
 		for (const cmd of dangerousCommands) {
-			const context = {
+			const context: ActionApprovalContext = {
 				toolName: "bash",
 				args: { command: cmd },
 				user: { id: "test", orgId: "test" },
 			};
-			const result = await checkPolicy(context as any);
+			const result = await checkPolicy(context);
 			expect(result.allowed).toBe(false);
 			expect(result.reason).toContain("obfuscated or dangerous patterns");
 		}

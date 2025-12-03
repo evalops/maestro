@@ -1,18 +1,24 @@
 import { Type } from "@sinclair/typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderTransport } from "../../src/agent/transport.js";
-import type { AgentTool, Message, Model } from "../../src/agent/types.js";
+import type {
+	AgentEvent,
+	AgentTool,
+	Message,
+	Model,
+	TextContent,
+} from "../../src/agent/types.js";
 
 const openaiMock = vi.hoisted(() => {
 	let invocation = 0;
-	let nextToolArgs: Record<string, any> = {};
+	let nextToolArgs: Record<string, unknown> = {};
 
 	const reset = () => {
 		invocation = 0;
 		nextToolArgs = {};
 	};
 
-	const setArgs = (args: Record<string, any>) => {
+	const setArgs = (args: Record<string, unknown>) => {
 		nextToolArgs = args;
 	};
 
@@ -76,7 +82,7 @@ const openaiMock = vi.hoisted(() => {
 }) as {
 	streamOpenAI: ReturnType<typeof vi.fn>;
 	__resetStreamState: () => void;
-	__setNextToolArgs: (args: Record<string, any>) => void;
+	__setNextToolArgs: (args: Record<string, unknown>) => void;
 };
 
 vi.mock("../../src/agent/providers/openai.js", () => openaiMock);
@@ -104,6 +110,21 @@ const createUserMessage = (): Message => ({
 	timestamp: Date.now(),
 });
 
+type ToolExecutionEndEvent = Extract<
+	AgentEvent,
+	{ type: "tool_execution_end" }
+>;
+
+const isToolExecutionEnd = (e: AgentEvent): e is ToolExecutionEndEvent =>
+	e.type === "tool_execution_end";
+
+const getResultText = (event: ToolExecutionEndEvent): string => {
+	const textContent = event.result.content.find(
+		(c): c is TextContent => c.type === "text",
+	);
+	return textContent?.text ?? "";
+};
+
 describe("ProviderTransport tool validation", () => {
 	const executeSpy = vi.fn();
 
@@ -128,7 +149,7 @@ describe("ProviderTransport tool validation", () => {
 	it("returns validation errors and does not execute the tool", async () => {
 		openaiMock.__setNextToolArgs({}); // Missing required path
 
-		const events: any[] = [];
+		const events: AgentEvent[] = [];
 		for await (const event of transport.run(
 			[createUserMessage()],
 			createUserMessage(),
@@ -142,11 +163,11 @@ describe("ProviderTransport tool validation", () => {
 			events.push(event);
 		}
 
-		const endEvent = events.find((e) => e.type === "tool_execution_end") as any;
+		const endEvent = events.find(isToolExecutionEnd);
 		expect(endEvent).toBeDefined();
-		expect(endEvent.isError).toBe(true);
+		expect(endEvent?.isError).toBe(true);
 
-		const resultContent = (endEvent.result.content[0] as any).text;
+		const resultContent = endEvent ? getResultText(endEvent) : "";
 		expect(resultContent).toContain('Validation failed for tool "write_file"');
 		expect(resultContent).toContain("path");
 		expect(executeSpy).not.toHaveBeenCalled();
@@ -159,7 +180,7 @@ describe("ProviderTransport tool validation", () => {
 			isError: false,
 		});
 
-		const events: any[] = [];
+		const events: AgentEvent[] = [];
 		for await (const event of transport.run(
 			[createUserMessage()],
 			createUserMessage(),
@@ -181,9 +202,9 @@ describe("ProviderTransport tool validation", () => {
 			undefined, // context (sandbox) parameter
 		);
 
-		const endEvent = events.find((e) => e.type === "tool_execution_end") as any;
-		expect(endEvent.isError).toBe(false);
-		const resultContent = (endEvent.result.content[0] as any).text;
+		const endEvent = events.find(isToolExecutionEnd);
+		expect(endEvent?.isError).toBe(false);
+		const resultContent = endEvent ? getResultText(endEvent) : "";
 		expect(resultContent).toBe("ok");
 
 		// Under the hood, run should stop after the second turn (no tool calls)
@@ -196,9 +217,9 @@ describe("ProviderTransport tool validation", () => {
 	it("treats array arguments as invalid input", async () => {
 		openaiMock.__setNextToolArgs([
 			{ path: "/tmp/file.ts" },
-		] as unknown as Record<string, any>);
+		] as unknown as Record<string, unknown>);
 
-		const events: any[] = [];
+		const events: AgentEvent[] = [];
 		for await (const event of transport.run(
 			[createUserMessage()],
 			createUserMessage(),
@@ -212,11 +233,11 @@ describe("ProviderTransport tool validation", () => {
 			events.push(event);
 		}
 
-		const endEvent = events.find((e) => e.type === "tool_execution_end") as any;
+		const endEvent = events.find(isToolExecutionEnd);
 		expect(endEvent).toBeDefined();
-		expect(endEvent.isError).toBe(true);
+		expect(endEvent?.isError).toBe(true);
 		expect(executeSpy).not.toHaveBeenCalled();
-		const resultContent = (endEvent.result.content[0] as any).text;
+		const resultContent = endEvent ? getResultText(endEvent) : "";
 		expect(resultContent).toContain("path");
 	});
 });

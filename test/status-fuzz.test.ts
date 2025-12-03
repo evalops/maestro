@@ -52,7 +52,19 @@ const entryTemplate = fc.oneof(
 	renameEntry,
 );
 
-function buildEntries(entries: Array<any>): string[] {
+type StatusEntry =
+	| { kind: "change"; xy: string; path: string }
+	| { kind: "untracked"; path: string }
+	| { kind: "ignored"; path: string }
+	| {
+			kind: "rename";
+			xy: string;
+			score: string;
+			oldPath: string;
+			newPath: string;
+	  };
+
+function buildEntries(entries: StatusEntry[]): string[] {
 	const lines: string[] = [];
 	for (const entry of entries) {
 		switch (entry.kind) {

@@ -11,11 +11,20 @@ import {
 	saveTodoStore,
 } from "../../src/tui/plan-view.js";
 
+interface MockPlanViewOptions {
+	filePath: string;
+	chatContainer: Container;
+	ui: { requestRender: ReturnType<typeof vi.fn> };
+	showInfoMessage: ReturnType<typeof vi.fn>;
+	setPlanHint: ReturnType<typeof vi.fn>;
+	onStoreChanged: ReturnType<typeof vi.fn>;
+}
+
 describe("PlanView editor functionality", () => {
 	let tempDir: string;
 	let planFilePath: string;
 	let planView: PlanView;
-	let mockOptions: any;
+	let mockOptions: MockPlanViewOptions;
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(join(tmpdir(), "plan-view-editor-test-"));

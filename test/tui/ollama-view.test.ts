@@ -1,3 +1,4 @@
+import type { SpawnSyncReturns } from "node:child_process";
 import { Text } from "@evalops/tui";
 import { Container, type TUI } from "@evalops/tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -86,7 +87,11 @@ const createView = (models: RegisteredModel[] = LOCAL_MODELS) => {
 describe("OllamaView", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockSpawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "" } as any);
+		mockSpawnSync.mockReturnValue({
+			status: 0,
+			stdout: "",
+			stderr: "",
+		} as SpawnSyncReturns<string>);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(
@@ -119,7 +124,7 @@ describe("OllamaView", () => {
 			status: 0,
 			stdout: JSON.stringify([{ name: "llama3", size: 1024 }]),
 			stderr: "",
-		} as any);
+		} as SpawnSyncReturns<string>);
 		const { container, view } = createView();
 		await view.handleOllamaCommand("/ollama list");
 		expect(mockSpawnSync).toHaveBeenCalledWith(
@@ -174,7 +179,7 @@ describe("OllamaView", () => {
 			stdout: "",
 			stderr: "",
 			error: Object.assign(new Error("not found"), { code: "ENOENT" }),
-		} as any);
+		} as SpawnSyncReturns<string>);
 		const { showErrorMessage, view } = createView();
 		await view.handleOllamaCommand("/ollama list");
 		expect(showErrorMessage).toHaveBeenCalledWith(
@@ -183,11 +188,14 @@ describe("OllamaView", () => {
 	});
 
 	it("adds daemon hint when Ollama app is closed", async () => {
-		const errorResult = {
+		const errorResult: SpawnSyncReturns<string> = {
 			status: 1,
 			stdout: "",
 			stderr: "ollama server not responding - could not find ollama app",
-		} as any;
+			pid: 0,
+			output: [],
+			signal: null,
+		};
 		mockSpawnSync
 			.mockReturnValueOnce(errorResult)
 			.mockReturnValueOnce(errorResult);

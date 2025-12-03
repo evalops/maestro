@@ -12,25 +12,60 @@ import {
 	saveTodoStore,
 } from "../../src/tui/plan-view.js";
 
+interface MockPlanViewOptions {
+	filePath: string;
+	chatContainer: Container;
+	ui: { requestRender: ReturnType<typeof vi.fn> };
+	showInfoMessage: ReturnType<typeof vi.fn>;
+	setPlanHint: ReturnType<typeof vi.fn>;
+	onStoreChanged?: ReturnType<typeof vi.fn>;
+}
+
 describe("calculatePlanHint", () => {
 	it("returns null when no goals exist", () => {
 		expect(calculatePlanHint({})).toBeNull();
 	});
 
 	it("prefers the most recently updated goal", () => {
-		const store = {
+		const store: TodoStore = {
 			One: {
 				goal: "One",
 				updatedAt: new Date("2024-01-01").toISOString(),
-				items: [{ status: "pending" }, { status: "completed" }],
+				items: [
+					{
+						id: randomUUID(),
+						content: "Task",
+						status: "pending",
+						priority: "medium",
+					},
+					{
+						id: randomUUID(),
+						content: "Task",
+						status: "completed",
+						priority: "medium",
+					},
+				],
 			},
 			Two: {
 				goal: "Ship CLI",
 				updatedAt: new Date("2024-05-01").toISOString(),
-				items: [{ status: "completed" }, { status: "completed" }],
+				items: [
+					{
+						id: randomUUID(),
+						content: "Task",
+						status: "completed",
+						priority: "medium",
+					},
+					{
+						id: randomUUID(),
+						content: "Task",
+						status: "completed",
+						priority: "medium",
+					},
+				],
 			},
 		};
-		const hint = calculatePlanHint(store as any);
+		const hint = calculatePlanHint(store);
 		expect(hint).toBe("Ship CLI: 2/2 done");
 	});
 });
@@ -39,7 +74,7 @@ describe("PlanView clear functionality", () => {
 	let tempDir: string;
 	let planFilePath: string;
 	let planView: PlanView;
-	let mockOptions: any;
+	let mockOptions: MockPlanViewOptions;
 
 	beforeEach(() => {
 		// Create a temporary directory for test files

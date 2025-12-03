@@ -20,7 +20,7 @@ import { editTool } from "../../src/tools/edit.js";
 import { readTool } from "../../src/tools/read.js";
 import { writeTool } from "../../src/tools/write.js";
 
-const mockModel: Model<any> = {
+const mockModel: Model<"openai-completions"> = {
 	id: "mock",
 	name: "Mock",
 	provider: "mock",

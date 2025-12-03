@@ -276,9 +276,11 @@ describe("Enhanced Cost Tracking", () => {
 			const data = JSON.parse(json);
 
 			expect(data.entries.length).toBe(2);
-			expect(data.entries.every((e: any) => e.provider === "openai")).toBe(
-				true,
-			);
+			expect(
+				data.entries.every(
+					(e: { provider: string }) => e.provider === "openai",
+				),
+			).toBe(true);
 		});
 
 		it("should filter by model", () => {

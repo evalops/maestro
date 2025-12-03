@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentState } from "../../src/agent/types.js";
+import type { AgentState, AppMessage } from "../../src/agent/types.js";
 import { buildConversationModel } from "../../src/conversation/render-model.js";
 process.env.TZ = "UTC";
 
@@ -69,10 +69,8 @@ describe("exporters", () => {
 			.map((line) => JSON.parse(line))
 			.filter((entry) => entry.type === "message")
 			.map((entry) => entry.message);
-		const renderables = buildConversationModel(messages as any);
-		expect(renderables.some((msg: any) => msg.kind === "toolResult")).toBe(
-			true,
-		);
+		const renderables = buildConversationModel(messages as AppMessage[]);
+		expect(renderables.some((msg) => msg.kind === "toolResult")).toBe(true);
 	});
 
 	it("exports HTML using shared render model", async () => {

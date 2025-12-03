@@ -12,21 +12,25 @@ import { searchTool } from "../../src/tools/search.js";
 import { createTool } from "../../src/tools/tool-dsl.js";
 
 // Helper to extract text from content blocks
-function getTextOutput(result: AgentToolResult<any>): string {
+function getTextOutput(result: AgentToolResult<unknown>): string {
 	return (
 		result.content
-			?.filter((c: any) => c.type === "text")
-			.map((c: any) => c.text)
+			?.filter((c): c is { type: "text"; text: string } => {
+				return (
+					c != null && typeof c === "object" && "type" in c && c.type === "text"
+				);
+			})
+			.map((c) => c.text)
 			.join("\n") || ""
 	);
 }
 
 // Mock tool that succeeds
-const mockSuccessTool: AgentTool<any, any> = {
+const mockSuccessTool: AgentTool<Record<string, unknown>, unknown> = {
 	name: "mock-success",
 	label: "mock-success",
 	description: "A mock tool that always succeeds",
-	parameters: {} as any,
+	parameters: {} as Record<string, unknown>,
 	execute: async (_toolCallId, params) => ({
 		content: [
 			{ type: "text", text: `Success with params: ${JSON.stringify(params)}` },
@@ -35,22 +39,22 @@ const mockSuccessTool: AgentTool<any, any> = {
 };
 
 // Mock tool that fails
-const mockFailTool: AgentTool<any, any> = {
+const mockFailTool: AgentTool<Record<string, unknown>, unknown> = {
 	name: "mock-fail",
 	label: "mock-fail",
 	description: "A mock tool that always fails",
-	parameters: {} as any,
+	parameters: {} as Record<string, unknown>,
 	execute: async () => {
 		throw new Error("Mock tool failure");
 	},
 };
 
 // Mock tool that delays
-const mockSlowTool: AgentTool<any, any> = {
+const mockSlowTool: AgentTool<Record<string, unknown>, unknown> = {
 	name: "mock-slow",
 	label: "mock-slow",
 	description: "A mock tool that takes time",
-	parameters: {} as any,
+	parameters: {} as Record<string, unknown>,
 	execute: async () => {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		return {
@@ -59,11 +63,11 @@ const mockSlowTool: AgentTool<any, any> = {
 	},
 };
 
-const mockHangingTool: AgentTool<any, any> = {
+const mockHangingTool: AgentTool<Record<string, unknown>, unknown> = {
 	name: "mock-hang",
 	label: "mock-hang",
 	description: "A mock tool that never resolves until aborted",
-	parameters: {} as any,
+	parameters: {} as Record<string, unknown>,
 	execute: (_toolCallId, _params, signal) =>
 		new Promise((_, reject) => {
 			if (signal?.aborted) {
@@ -76,11 +80,11 @@ const mockHangingTool: AgentTool<any, any> = {
 		}),
 };
 
-const mockSummaryTool: AgentTool<any, any> = {
+const mockSummaryTool: AgentTool<Record<string, unknown>, unknown> = {
 	name: "mock-summary",
 	label: "mock-summary",
 	description: "A mock tool that returns a summary in details",
-	parameters: {} as any,
+	parameters: {} as Record<string, unknown>,
 	execute: async (_toolCallId, params) => {
 		const id =
 			typeof params.id === "string" ? params.id : String(params.id ?? "");
@@ -198,11 +202,11 @@ describe("batch tool", () => {
 
 			it("supports serial mode for ordered execution", async () => {
 				const events: string[] = [];
-				const mockOrderTool: AgentTool<any, any> = {
+				const mockOrderTool: AgentTool<Record<string, unknown>, unknown> = {
 					name: "mock-order",
 					label: "mock-order",
 					description: "Records start/finish events",
-					parameters: {} as any,
+					parameters: {} as Record<string, unknown>,
 					execute: async (_toolCallId, params) => {
 						const id = getStringParam(params, "id");
 						const delay = getNumberParam(params, "delay");
@@ -710,11 +714,11 @@ describe("batch tool", () => {
 
 	describe("abort handling", () => {
 		it("throws when batch is aborted before execution", async () => {
-			const mockAbortableTool: AgentTool<any, any> = {
+			const mockAbortableTool: AgentTool<Record<string, unknown>, unknown> = {
 				name: "mock-abortable",
 				label: "mock-abortable",
 				description: "A mock tool that respects abort",
-				parameters: {} as any,
+				parameters: {} as Record<string, unknown>,
 				execute: async () => ({
 					content: [{ type: "text", text: "Completed" }],
 				}),

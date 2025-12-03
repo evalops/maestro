@@ -69,12 +69,12 @@ function createSessionView(messages: AssistantMessage[]): SessionView {
 		requestRender: vi.fn(),
 	} as unknown as TUI;
 
-	const sessionContext = {
+	const sessionContext: Parameters<typeof SessionView>[0]["sessionContext"] = {
 		getArtifacts: () => ({}),
 		getLastUserMessage: () => undefined,
 		getLastAssistantMessage: () => undefined,
 		getLastRunToolNames: () => [],
-	} as any;
+	};
 
 	return new SessionView({
 		agent,

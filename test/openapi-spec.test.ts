@@ -4,6 +4,12 @@ import { describe, expect, it } from "vitest";
 const spec = JSON.parse(readFileSync("openapi.json", "utf8"));
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 
+interface OpenApiParameter {
+	name: string;
+	in: string;
+	required?: boolean;
+}
+
 describe("OpenAPI spec", () => {
 	it("keeps version in sync with package.json", () => {
 		expect(spec.info.version).toBe(pkg.version);
@@ -14,7 +20,8 @@ describe("OpenAPI spec", () => {
 		expect(getSession).toBeTruthy();
 		expect(
 			getSession.parameters?.some(
-				(p: any) => p.name === "id" && p.in === "path" && p.required,
+				(p: OpenApiParameter) =>
+					p.name === "id" && p.in === "path" && p.required,
 			),
 		).toBe(true);
 	});

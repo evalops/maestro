@@ -24,10 +24,9 @@ class StubAutocomplete implements AutocompleteProvider {
 
 class ExposedEditor extends Editor {
 	getCursor() {
-		const state = (this as any).state as {
-			cursorLine: number;
-			cursorCol: number;
-		};
+		const state = (
+			this as unknown as { state: { cursorLine: number; cursorCol: number } }
+		).state;
 		return { line: state.cursorLine, col: state.cursorCol };
 	}
 }
