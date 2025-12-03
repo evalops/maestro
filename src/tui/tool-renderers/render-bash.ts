@@ -10,6 +10,8 @@ import {
 import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
+const OUTPUT_TRUNCATION_CHARS = 12000;
+
 export class BashRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
 		const args = context.result
@@ -46,7 +48,14 @@ export class BashRenderer implements ToolRenderer {
 		}
 
 		if (context.result) {
-			const output = this.getTextOutput(context).trim();
+			let output = this.getTextOutput(context).trim();
+			if (output.length > OUTPUT_TRUNCATION_CHARS) {
+				const omitted = output.length - OUTPUT_TRUNCATION_CHARS;
+				output = `${output.slice(
+					0,
+					OUTPUT_TRUNCATION_CHARS,
+				)}\n[output truncated, ${omitted.toLocaleString()} chars omitted]`;
+			}
 			if (output) {
 				const { lines, remaining } = summarizeLines(output, 5);
 				const terminalWidth = process.stdout.columns ?? 80;

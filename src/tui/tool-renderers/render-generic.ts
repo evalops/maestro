@@ -7,6 +7,8 @@ import {
 import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
+const OUTPUT_TRUNCATION_CHARS = 12000;
+
 export class GenericRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
 		const args = context.result
@@ -38,7 +40,11 @@ export class GenericRenderer implements ToolRenderer {
 
 		const output = this.getTextOutput(context);
 		if (output) {
-			const lines = output.split("\n").map((line) => chalk.dim(line));
+			const bounded =
+				output.length > OUTPUT_TRUNCATION_CHARS
+					? `${output.slice(0, OUTPUT_TRUNCATION_CHARS)}\n[output truncated, ${(output.length - OUTPUT_TRUNCATION_CHARS).toLocaleString()} chars omitted]`
+					: output;
+			const lines = bounded.split("\n").map((line) => chalk.dim(line));
 			if (lines.length) {
 				sections.push(lines.join("\n"));
 			}

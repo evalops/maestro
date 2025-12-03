@@ -10,6 +10,8 @@ import {
 } from "../utils/tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
+const OUTPUT_TRUNCATION_CHARS = 12000;
+
 export class WriteRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
 		const args = context.result
@@ -26,6 +28,10 @@ export class WriteRenderer implements ToolRenderer {
 			typeof args?.content === "string"
 				? args.content
 				: String(args?.content ?? "");
+		const boundedContent =
+			fileContent.length > OUTPUT_TRUNCATION_CHARS
+				? `${fileContent.slice(0, OUTPUT_TRUNCATION_CHARS)}\n[output truncated, ${(fileContent.length - OUTPUT_TRUNCATION_CHARS).toLocaleString()} chars omitted]`
+				: fileContent;
 		const contentLines = fileContent ? fileContent.split("\n") : [];
 		const totalLines = contentLines.length;
 
@@ -36,13 +42,13 @@ export class WriteRenderer implements ToolRenderer {
 		}
 
 		if (context.collapsed) {
-			return `${pathLine}\n${theme.fg("dim", buildCollapsedSummary(fileContent))}`;
+			return `${pathLine}\n${theme.fg("dim", buildCollapsedSummary(boundedContent))}`;
 		}
 
 		const sections: string[] = [pathLine];
 
-		if (fileContent) {
-			const { lines: preview, remaining } = summarizeLines(fileContent, 10);
+		if (boundedContent) {
+			const { lines: preview, remaining } = summarizeLines(boundedContent, 10);
 			const terminalWidth = process.stdout.columns ?? 80;
 			const maxWidth = Math.max(48, Math.min(120, terminalWidth - 8));
 			const formatted = clampAnsiLines(

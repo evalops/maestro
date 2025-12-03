@@ -11,6 +11,8 @@ import {
 import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
+const OUTPUT_TRUNCATION_CHARS = 12000;
+
 /** Count additions and deletions in a unified diff string */
 function countDiffChanges(diffStr: string): { added: number; removed: number } {
 	let added = 0;
@@ -120,7 +122,11 @@ export class EditRenderer implements ToolRenderer {
 
 		const message = this.getTextOutput(context).trim();
 		if (message) {
-			const messageLines = message
+			const bounded =
+				message.length > OUTPUT_TRUNCATION_CHARS
+					? `${message.slice(0, OUTPUT_TRUNCATION_CHARS)}\n[output truncated, ${(message.length - OUTPUT_TRUNCATION_CHARS).toLocaleString()} chars omitted]`
+					: message;
+			const messageLines = bounded
 				.split("\n")
 				.map((line) => theme.fg("dim", line));
 			sections.push(messageLines.join("\n"));
