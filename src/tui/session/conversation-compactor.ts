@@ -191,10 +191,11 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
 		compactedCount: number,
 		fromModel: boolean,
 	): string {
-		const meta = fromModel
-			? "_Model-generated summary of prior discussion._"
-			: "_Local summary of prior discussion (model unavailable)._";
-		return `${meta}\n\n${text}\n\n(Compacted ${compactedCount} messages on ${new Date().toLocaleString()})`;
+		// OAI-style handoff prefix that tells the resuming model it's continuing work
+		const handoffPrefix = fromModel
+			? "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:\n\n"
+			: "_Local summary of prior discussion (model unavailable)._\n\n";
+		return `${handoffPrefix}${text}\n\n(Compacted ${compactedCount} messages on ${new Date().toLocaleString()})`;
 	}
 
 	private truncateText(text: string, limit = 160): string {

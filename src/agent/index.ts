@@ -82,6 +82,15 @@ export {
 	type CacheStats,
 	type PromptCacheConfig,
 } from "./prompt-cache.js";
+export {
+	CourseCorrector,
+	createCourseCorrector,
+	createCourseCorrectionProvider,
+	formatCorrectionMessage,
+	type CourseCorrectorConfig,
+	type CourseIssueType,
+	type DetectedIssue,
+} from "./course-correction.js";
 export type {
 	AgentEvent,
 	AgentRunConfig,
