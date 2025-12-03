@@ -92,10 +92,13 @@ async function executeCommandHook(
 		let stdout = "";
 		let stderr = "";
 		let resolved = false;
+		// biome-ignore lint/style/useConst: timeout must be declared before cleanup but assigned after
+		let timeout: ReturnType<typeof setTimeout>;
 
 		const cleanup = (reason: "abort" | "timeout") => {
 			if (!resolved) {
 				resolved = true;
+				clearTimeout(timeout);
 				child.kill("SIGTERM");
 				if (reason === "abort") {
 					resolve({
@@ -114,7 +117,7 @@ async function executeCommandHook(
 		}
 
 		// Timeout handling
-		const timeout = setTimeout(() => {
+		timeout = setTimeout(() => {
 			if (!resolved) {
 				resolved = true;
 				child.kill("SIGTERM");
