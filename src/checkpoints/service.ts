@@ -208,18 +208,27 @@ export class CheckpointService {
 		}
 
 		// Resolve to absolute paths and contain to workspace
-		const resolvedPaths = rawPaths
-			.map((p) => (isAbsolute(p) ? p : resolve(this.cwd, p)))
-			.filter((p) => p.startsWith(this.cwd + sep) || p === this.cwd);
-		const uniquePaths = Array.from(new Set(resolvedPaths));
+		const resolvedPaths = rawPaths.map((p) =>
+			isAbsolute(p) ? resolve(p) : resolve(this.cwd, p),
+		);
+
+		const containedPaths = resolvedPaths.filter((p) => {
+			const rel = relative(this.cwd, p);
+			// Outside workspace if it climbs up or is absolute after relativizing
+			if (rel.startsWith("..") || rel.includes(`..${sep}`)) {
+				return false;
+			}
+			return !isAbsolute(rel);
+		});
+
+		const uniquePaths = Array.from(new Set(containedPaths));
 
 		// Filter out excluded files
-		const checkpointPaths = uniquePaths.filter((path) =>
-			(() => {
-				const rel = relative(this.cwd, path) || ".";
-				return !shouldExcludeFile(rel, this.config);
-			})(),
-		);
+		const checkpointPaths = uniquePaths.filter((path) => {
+			const rel = relative(this.cwd, path) || ".";
+			const normalizedRel = rel.split(sep).join("/");
+			return !shouldExcludeFile(normalizedRel, this.config);
+		});
 
 		if (checkpointPaths.length === 0) {
 			return;
