@@ -70,15 +70,22 @@ async function executeCommandHook(
 	const jsonInput = JSON.stringify(input);
 
 	return new Promise((resolve) => {
+		// Build environment, filtering out undefined values to avoid "undefined" strings
+		const hookEnv: Record<string, string> = {
+			...process.env,
+			COMPOSER_PROJECT_DIR: input.cwd,
+			COMPOSER_HOOK_EVENT: input.hook_event_name,
+		} as Record<string, string>;
+
+		// Only set session ID if defined
+		if (input.session_id) {
+			hookEnv.COMPOSER_SESSION_ID = input.session_id;
+		}
+
 		const child = spawn(hook.command, [], {
 			shell: true,
 			cwd: input.cwd,
-			env: {
-				...process.env,
-				COMPOSER_PROJECT_DIR: input.cwd,
-				COMPOSER_HOOK_EVENT: input.hook_event_name,
-				COMPOSER_SESSION_ID: input.session_id,
-			},
+			env: hookEnv,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 
@@ -163,13 +170,27 @@ async function executeCommandHook(
 			}
 		});
 
-		// Write input to stdin
-		child.stdin?.write(jsonInput, (err) => {
-			if (err) {
-				logger.warn("Failed to write to hook stdin", {
+		// Handle stdin errors (e.g., EPIPE when command doesn't exist)
+		child.stdin?.on("error", (err) => {
+			// EPIPE is expected when process exits before we finish writing
+			if ((err as NodeJS.ErrnoException).code !== "EPIPE") {
+				logger.warn("Hook stdin error", {
 					error: err.message,
 					command: hook.command,
 				});
+			}
+		});
+
+		// Write input to stdin
+		child.stdin?.write(jsonInput, (err) => {
+			if (err) {
+				// Ignore EPIPE - process may have exited
+				if ((err as NodeJS.ErrnoException).code !== "EPIPE") {
+					logger.warn("Failed to write to hook stdin", {
+						error: err.message,
+						command: hook.command,
+					});
+				}
 			}
 			child.stdin?.end();
 		});

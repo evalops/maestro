@@ -44,10 +44,13 @@ interface RawHooksConfig {
 }
 
 /**
- * Cache for loaded configuration.
+ * Cache for loaded configuration, keyed by cwd.
  */
-let cachedConfig: HookConfiguration | null = null;
-let configLoadedAt = 0;
+interface CacheEntry {
+	config: HookConfiguration;
+	loadedAt: number;
+}
+const configCache = new Map<string, CacheEntry>();
 const CONFIG_CACHE_TTL_MS = 30_000; // 30 seconds
 
 /**
@@ -234,9 +237,10 @@ function mergeHookConfigs(...configs: HookConfiguration[]): HookConfiguration {
 export function loadHookConfiguration(cwd: string): HookConfiguration {
 	const now = Date.now();
 
-	// Return cached config if still valid
-	if (cachedConfig && now - configLoadedAt < CONFIG_CACHE_TTL_MS) {
-		return mergeHookConfigs(cachedConfig, registeredHooks);
+	// Return cached config if still valid for this cwd
+	const cached = configCache.get(cwd);
+	if (cached && now - cached.loadedAt < CONFIG_CACHE_TTL_MS) {
+		return mergeHookConfigs(cached.config, registeredHooks);
 	}
 
 	// Load from all sources
@@ -245,25 +249,25 @@ export function loadHookConfiguration(cwd: string): HookConfiguration {
 	const projectHooks = loadHooksFromFile(getProjectHooksConfigPath(cwd));
 
 	// Merge in order of precedence (project > user > env)
-	cachedConfig = mergeHookConfigs(envHooks, userHooks, projectHooks);
-	configLoadedAt = now;
+	const config = mergeHookConfigs(envHooks, userHooks, projectHooks);
+	configCache.set(cwd, { config, loadedAt: now });
 
 	logger.debug("Loaded hook configuration", {
-		eventTypes: Object.keys(cachedConfig),
+		cwd,
+		eventTypes: Object.keys(config),
 		envHookCount: Object.keys(envHooks).length,
 		userHookCount: Object.keys(userHooks).length,
 		projectHookCount: Object.keys(projectHooks).length,
 	});
 
-	return mergeHookConfigs(cachedConfig, registeredHooks);
+	return mergeHookConfigs(config, registeredHooks);
 }
 
 /**
  * Clear the configuration cache (useful for testing).
  */
 export function clearHookConfigCache(): void {
-	cachedConfig = null;
-	configLoadedAt = 0;
+	configCache.clear();
 }
 
 /**

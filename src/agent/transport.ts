@@ -987,11 +987,22 @@ export class ProviderTransport implements AgentTransport {
 											},
 										];
 									}
+									// If hook wants to prevent continuation, mark the result
+									if (postHookResult.preventContinuation) {
+										toolResultMsg.content = [
+											...toolResultMsg.content,
+											{
+												type: "text" as const,
+												text: `\n[Hook stop]: ${postHookResult.stopReason ?? "Hook requested stop"}`,
+											},
+										];
+										toolResultMsg.isError = true;
+									}
 								}
 
 								return {
 									message: toolResultMsg,
-									isError: result.isError || false,
+									isError: toolResultMsg.isError,
 								};
 							})
 							.catch(async (error: unknown) => {
