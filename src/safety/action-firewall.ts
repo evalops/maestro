@@ -24,9 +24,10 @@ import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 import type { SemanticJudge, SemanticJudgeContext } from "./semantic-judge.js";
 
 const logger = createLogger("safety:action-firewall");
-const STRICT_UNTAGGED_EGRESS =
+// Evaluate env flags lazily to honor profile overrides set after initial import.
+const isStrictUntaggedEgress = () =>
 	process.env.COMPOSER_FAIL_UNTAGGED_EGRESS === "1";
-const BLOCK_BACKGROUND_SHELL =
+const isBackgroundShellBlocked = () =>
 	process.env.COMPOSER_BACKGROUND_SHELL_DISABLE === "1";
 
 // Type for policy check result caching
@@ -414,7 +415,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			"Block human-facing tool calls without explicit TOOL_TAGS annotations when strict mode is enabled",
 		action: "block",
 		match: (ctx) => {
-			if (!STRICT_UNTAGGED_EGRESS) {
+			if (!isStrictUntaggedEgress()) {
 				return false;
 			}
 			if (!isHumanFacingTool(ctx.toolName)) {
@@ -432,7 +433,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		description: "Block shell-based background tasks when disabled by policy",
 		action: "block",
 		match: (ctx) =>
-			BLOCK_BACKGROUND_SHELL && isBackgroundTaskShellStart(ctx) === true,
+			isBackgroundShellBlocked() && isBackgroundTaskShellStart(ctx) === true,
 		reason: () =>
 			"Starting background_tasks with shell=true is disabled by policy. Set COMPOSER_BACKGROUND_SHELL_DISABLE=0 to allow.",
 	},
