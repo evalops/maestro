@@ -1,3 +1,110 @@
+/**
+ * Anthropic Provider - Claude LLM Integration
+ *
+ * This module implements streaming communication with Anthropic's Messages API
+ * for all Claude models. It handles the full request/response lifecycle including
+ * tool calls, extended thinking, and prompt caching.
+ *
+ * ## API Endpoint
+ *
+ * The provider communicates with `https://api.anthropic.com/v1/messages`:
+ *
+ * ```json
+ * {
+ *   "model": "claude-opus-4-5-20251101",
+ *   "max_tokens": 8192,
+ *   "system": "You are a helpful assistant...",
+ *   "messages": [{"role": "user", "content": "Hello"}],
+ *   "tools": [...],
+ *   "stream": true
+ * }
+ * ```
+ *
+ * ## Streaming Architecture
+ *
+ * Anthropic uses Server-Sent Events (SSE) with typed event payloads:
+ *
+ * ```
+ * event: message_start
+ * data: {"type":"message_start","message":{...}}
+ *
+ * event: content_block_start
+ * data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}
+ *
+ * event: content_block_delta
+ * data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+ *
+ * event: content_block_stop
+ * data: {"type":"content_block_stop","index":0}
+ *
+ * event: message_stop
+ * data: {"type":"message_stop"}
+ * ```
+ *
+ * ## Content Block Types
+ *
+ * | Type       | Description                                    |
+ * |------------|------------------------------------------------|
+ * | text       | Regular text content                           |
+ * | thinking   | Extended thinking/reasoning (Claude 3.5+)      |
+ * | tool_use   | Tool call request                              |
+ * | tool_result| Result returned to the model                   |
+ *
+ * ## Extended Thinking
+ *
+ * Claude models support extended thinking for complex reasoning:
+ *
+ * ```json
+ * {
+ *   "thinking": {
+ *     "type": "enabled",
+ *     "budget_tokens": 16000
+ *   }
+ * }
+ * ```
+ *
+ * Thinking content is streamed in `thinking` content blocks and can be
+ * displayed to users or hidden. Budget is calculated based on reasoning effort:
+ *
+ * | Effort  | Budget Tokens |
+ * |---------|---------------|
+ * | minimal | 1,024         |
+ * | low     | 4,096         |
+ * | medium  | 8,192         |
+ * | high    | 16,000        |
+ *
+ * ## Prompt Caching
+ *
+ * Anthropic supports prompt caching to reduce latency and costs:
+ *
+ * ```json
+ * {
+ *   "cache_control": { "type": "ephemeral" }
+ * }
+ * ```
+ *
+ * Cache control can be applied to:
+ * - System prompt
+ * - Messages
+ * - Tool definitions
+ *
+ * ## Tool Calling
+ *
+ * Tools are converted to Anthropic's format:
+ *
+ * ```json
+ * {
+ *   "name": "read_file",
+ *   "description": "Reads a file from disk",
+ *   "input_schema": {...json-schema...}
+ * }
+ * ```
+ *
+ * Tool results are sent as user messages with `tool_result` content blocks.
+ *
+ * @module agent/providers/anthropic
+ */
+
 import { CLAUDE_CODE_BETA_HEADER } from "../../providers/anthropic-auth.js";
 import { fetchWithRetry } from "../../providers/network-config.js";
 import { createLogger } from "../../utils/logger.js";

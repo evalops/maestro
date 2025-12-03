@@ -1,3 +1,94 @@
+/**
+ * Enterprise Policy System - Access Control and Safety Enforcement
+ *
+ * This module implements enterprise-grade policy enforcement for the Composer CLI,
+ * enabling organizations to control what tools, models, paths, and network hosts
+ * can be accessed during agent execution.
+ *
+ * ## Policy File Location
+ *
+ * Policies are loaded from `~/.composer/policy.json`. This file is typically
+ * deployed by enterprise IT and should be protected with appropriate permissions.
+ *
+ * ## Policy Structure
+ *
+ * ```json
+ * {
+ *   "orgId": "org-12345",
+ *   "tools": {
+ *     "allowed": ["Read", "Grep", "Glob"],
+ *     "blocked": ["Bash", "Write"]
+ *   },
+ *   "models": {
+ *     "allowed": ["anthropic/claude-*"],
+ *     "blocked": ["openai/*"]
+ *   },
+ *   "paths": {
+ *     "allowed": ["/home/user/projects/**"],
+ *     "blocked": ["/etc/**", "/root/**"]
+ *   },
+ *   "network": {
+ *     "allowedHosts": ["api.github.com"],
+ *     "blockedHosts": ["*.internal.corp"],
+ *     "blockLocalhost": true,
+ *     "blockPrivateIPs": true
+ *   },
+ *   "limits": {
+ *     "maxTokensPerSession": 100000,
+ *     "maxSessionDurationMinutes": 60,
+ *     "maxConcurrentSessions": 3
+ *   }
+ * }
+ * ```
+ *
+ * ## Rule Evaluation
+ *
+ * Policies use an allow/block list pattern with the following evaluation order:
+ *
+ * 1. If `blocked` list exists and matches → **DENY**
+ * 2. If `allowed` list exists and doesn't match → **DENY**
+ * 3. Otherwise → **ALLOW**
+ *
+ * This means:
+ * - If only `allowed` is specified, everything else is blocked
+ * - If only `blocked` is specified, everything else is allowed
+ * - If both are specified, blocked takes precedence
+ *
+ * ## Pattern Matching
+ *
+ * Patterns support glob syntax via the `minimatch` library:
+ *
+ * | Pattern          | Matches                              |
+ * |------------------|--------------------------------------|
+ * | `*`              | Any single segment                   |
+ * | `**`             | Any number of segments               |
+ * | `*.md`           | Any file ending in .md               |
+ * | `src/**/*.ts`    | Any .ts file under src/              |
+ *
+ * ## Network Safety
+ *
+ * Network policies can block:
+ * - Specific hosts by name or pattern
+ * - Localhost (127.0.0.1, ::1)
+ * - Private IP ranges (10.x, 172.16-31.x, 192.168.x)
+ *
+ * DNS resolution is performed to validate hosts before connection.
+ *
+ * ## Hot Reloading
+ *
+ * The policy file is watched for changes and automatically reloaded.
+ * This enables policy updates without restarting active sessions.
+ *
+ * ## Error Handling
+ *
+ * Policy violations throw `PolicyError` which includes:
+ * - The violated rule type (tool, model, path, network)
+ * - A user-friendly error message
+ * - Context about what was blocked
+ *
+ * @module safety/policy
+ */
+
 import { lookup } from "node:dns/promises";
 import {
 	type FSWatcher,
@@ -18,38 +109,73 @@ import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 
 const logger = createLogger("safety:policy");
 
+/**
+ * Enterprise policy configuration interface.
+ *
+ * Defines all available policy controls that organizations can configure
+ * to restrict agent behavior according to their security requirements.
+ */
 export interface EnterprisePolicy {
+	/** Organization identifier for audit logging and policy association */
 	orgId?: string;
+
+	/** Tool execution restrictions (e.g., block Bash, allow only Read) */
 	tools?: {
+		/** Whitelist of allowed tool names (glob patterns supported) */
 		allowed?: string[];
+		/** Blacklist of blocked tool names (takes precedence over allowed) */
 		blocked?: string[];
 	};
+
+	/** Package/dependency installation restrictions */
 	dependencies?: {
+		/** Whitelist of allowed package patterns */
 		allowed?: string[];
+		/** Blacklist of blocked package patterns */
 		blocked?: string[];
 	};
+
+	/** Model access restrictions (format: "provider/model-id") */
 	models?: {
+		/** Whitelist of allowed model patterns (e.g., "anthropic/*") */
 		allowed?: string[];
+		/** Blacklist of blocked model patterns */
 		blocked?: string[];
 	};
+
+	/** File system path restrictions */
 	paths?: {
+		/** Whitelist of allowed path patterns (e.g., "/home/user/projects/**") */
 		allowed?: string[];
+		/** Blacklist of blocked path patterns (e.g., "/etc/**") */
 		blocked?: string[];
 	};
+
+	/** Network access restrictions */
 	network?: {
+		/** Whitelist of allowed hostnames (e.g., "api.github.com") */
 		allowedHosts?: string[];
+		/** Blacklist of blocked hostnames (e.g., "*.internal.corp") */
 		blockedHosts?: string[];
+		/** Block access to localhost (127.0.0.1, ::1) */
 		blockLocalhost?: boolean;
+		/** Block access to private IP ranges (10.x, 172.16-31.x, 192.168.x) */
 		blockPrivateIPs?: boolean;
 	};
+
 	/**
-	 * Session limits - NOTE: These are schema definitions for future enforcement.
+	 * Session limits for resource control.
+	 *
+	 * NOTE: These are schema definitions for policy configuration.
 	 * Actual enforcement requires integration with the billing/token-tracker system.
 	 * Currently exposed via getPolicyLimits() for consumers that want to implement limits.
 	 */
 	limits?: {
+		/** Maximum tokens per session before termination */
 		maxTokensPerSession?: number;
+		/** Maximum session duration in minutes */
 		maxSessionDurationMinutes?: number;
+		/** Maximum concurrent active sessions */
 		maxConcurrentSessions?: number;
 	};
 }

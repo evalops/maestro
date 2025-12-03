@@ -1,3 +1,72 @@
+/**
+ * Session Manager - Conversation Persistence and Recovery
+ *
+ * This module manages session state persistence for the Composer CLI, enabling
+ * users to continue conversations across restarts, branch from previous points,
+ * and maintain conversation history for auditing and review.
+ *
+ * ## Storage Architecture
+ *
+ * Sessions are stored as JSONL (JSON Lines) files in a user-specific directory:
+ *
+ * ```
+ * ~/.composer/agent/sessions/
+ * └── --home-user-projects-myapp--/
+ *     ├── 2024-01-15T10-30-00-000Z_uuid1.jsonl
+ *     ├── 2024-01-15T14-45-00-000Z_uuid2.jsonl
+ *     └── ...
+ * ```
+ *
+ * The directory structure uses a sanitized version of the working directory
+ * to separate sessions by project. This allows different projects to have
+ * independent session histories.
+ *
+ * ## JSONL Format
+ *
+ * Each line in a session file is a JSON object representing an entry:
+ *
+ * ```jsonl
+ * {"type":"session","id":"uuid","timestamp":"...","cwd":"/path/to/project","model":"anthropic/claude-opus-4-5-20251101"}
+ * {"type":"message","timestamp":"...","message":{"role":"user","content":"Hello"}}
+ * {"type":"message","timestamp":"...","message":{"role":"assistant","content":[...]}}
+ * {"type":"thinking_level_change","timestamp":"...","thinkingLevel":"high"}
+ * {"type":"model_change","timestamp":"...","model":"openai/gpt-4o"}
+ * {"type":"session_meta","timestamp":"...","summary":"Discussed project setup","favorite":true}
+ * ```
+ *
+ * ## Entry Types
+ *
+ * | Type                   | Purpose                                          |
+ * |------------------------|--------------------------------------------------|
+ * | session                | Session header with ID, cwd, model, tools        |
+ * | message                | User or assistant message                        |
+ * | thinking_level_change  | Record when thinking level is changed            |
+ * | model_change           | Record when model is switched                    |
+ * | session_meta           | Metadata: summary, title, tags, favorite flag    |
+ *
+ * ## Lazy Initialization
+ *
+ * Sessions are not initialized until the first message exchange completes.
+ * This prevents creating empty session files when users immediately exit
+ * or encounter errors. Messages are queued in memory until initialization.
+ *
+ * ## Buffered Writing
+ *
+ * Writes are batched for performance using `SessionFileWriter`. The buffer
+ * is flushed:
+ * - When batch size is reached (configurable)
+ * - On explicit flush() calls
+ * - On process exit (SIGINT, SIGTERM, beforeExit, uncaughtException)
+ *
+ * ## Metadata Caching
+ *
+ * `SessionMetadataCache` tracks the current model and thinking level without
+ * re-reading the entire session file. This is updated as entries are written
+ * and seeded from existing files when resuming sessions.
+ *
+ * @module session/manager
+ */
+
 import {
 	type Stats,
 	appendFileSync,
@@ -36,25 +105,62 @@ import {
 
 const logger = createLogger("session-manager");
 
+/**
+ * Buffered writer for session files.
+ *
+ * This class batches writes to the session file to improve I/O performance.
+ * It maintains a static registry of all writers to ensure proper cleanup
+ * on process exit, preventing data loss.
+ *
+ * ## Lifecycle
+ *
+ * 1. Created when a session is initialized
+ * 2. Buffers writes until batch size is reached or flush is called
+ * 3. Automatically registered for cleanup on process exit
+ * 4. Disposed when session ends or new session is started
+ *
+ * ## Thread Safety
+ *
+ * Writes are synchronous (appendFileSync) to avoid race conditions
+ * when multiple rapid writes occur. The buffer provides the performance
+ * benefit while maintaining data integrity.
+ */
 class SessionFileWriter {
+	/** Global registry of all active writers for cleanup on exit */
 	private static readonly writers = new Set<SessionFileWriter>();
+	/** Tracks if process exit handlers have been registered */
 	private static beforeExitRegistered = false;
 
+	/** In-memory buffer of pending writes (JSON strings) */
 	private buffer: string[] = [];
 
+	/**
+	 * Creates a new session file writer.
+	 *
+	 * @param filePath - Absolute path to the session file
+	 * @param batchSize - Number of entries to buffer before auto-flush
+	 */
 	constructor(
 		private readonly filePath: string,
 		private readonly batchSize = SESSION_CONFIG.WRITE_BATCH_SIZE,
 	) {
+		// Register process exit handlers (once per process)
 		SessionFileWriter.registerBeforeExit();
+		// Track this writer for cleanup
 		SessionFileWriter.writers.add(this);
 	}
 
+	/**
+	 * Registers process exit handlers to flush all writers.
+	 * This ensures no data is lost on unexpected termination.
+	 */
 	private static registerBeforeExit(): void {
 		if (SessionFileWriter.beforeExitRegistered) {
 			return;
 		}
 		SessionFileWriter.beforeExitRegistered = true;
+
+		// Flush all writers on process exit
 		const flushAll = (signal?: string) => {
 			for (const writer of SessionFileWriter.writers) {
 				try {
@@ -68,24 +174,36 @@ class SessionFileWriter {
 				}
 			}
 		};
+
+		// Register handlers for various exit scenarios
 		process.once("beforeExit", () => flushAll());
 		process.once("SIGINT", () => {
 			flushAll("SIGINT");
-			// re-emit to allow default shutdown behaviour
-			process.exit();
+			process.exit(); // Re-emit to allow default shutdown behaviour
 		});
 		process.once("SIGTERM", () => {
 			flushAll("SIGTERM");
 			process.exit();
 		});
+		// Also catch unhandled errors to preserve as much data as possible
 		process.once("uncaughtException", () => flushAll("uncaughtException"));
 		process.once("unhandledRejection", () => flushAll("unhandledRejection"));
 	}
 
+	/**
+	 * Removes this writer from the global registry.
+	 * Call this when the session is complete or being replaced.
+	 */
 	dispose(): void {
 		SessionFileWriter.writers.delete(this);
 	}
 
+	/**
+	 * Buffers a session entry for later writing.
+	 * Auto-flushes when buffer reaches configured batch size.
+	 *
+	 * @param entry - Session entry to write
+	 */
 	write(entry: SessionEntry): void {
 		this.buffer.push(JSON.stringify(entry));
 		if (this.buffer.length >= this.batchSize) {
@@ -93,6 +211,10 @@ class SessionFileWriter {
 		}
 	}
 
+	/**
+	 * Drains the buffer and returns the combined content.
+	 * @returns Newline-separated JSON strings, or null if empty
+	 */
 	private drainBuffer(): string | null {
 		if (this.buffer.length === 0) return null;
 		const chunk = `${this.buffer.join("\n")}\n`;
@@ -100,6 +222,10 @@ class SessionFileWriter {
 		return chunk;
 	}
 
+	/**
+	 * Synchronously writes a chunk to the file.
+	 * Uses sync I/O to ensure data integrity during rapid writes.
+	 */
 	private writeChunkSync(chunk: string): void {
 		try {
 			appendFileSync(this.filePath, chunk);
@@ -113,10 +239,16 @@ class SessionFileWriter {
 		}
 	}
 
+	/**
+	 * Flushes all buffered entries to disk (async wrapper).
+	 */
 	async flush(): Promise<void> {
 		this.flushSync();
 	}
 
+	/**
+	 * Synchronously flushes all buffered entries to disk.
+	 */
 	flushSync(): void {
 		const chunk = this.drainBuffer();
 		if (chunk) {
@@ -125,11 +257,28 @@ class SessionFileWriter {
 	}
 }
 
+/**
+ * In-memory cache for session metadata.
+ *
+ * Tracks the current model and thinking level without requiring
+ * a full re-read of the session file. This is updated as entries
+ * are written and seeded from existing files when resuming.
+ *
+ * This enables efficient access to current settings when displaying
+ * status information or making model/thinking level decisions.
+ */
 class SessionMetadataCache {
+	/** Current thinking level: "off", "minimal", "low", "medium", "high", "max" */
 	private thinkingLevel = "off";
+	/** Current model in format "provider/modelId" (e.g., "anthropic/claude-opus-4-5-20251101") */
 	private model: string | null = null;
+	/** Full metadata for the current model (capabilities, context window, etc.) */
 	private metadata?: SessionModelMetadata;
 
+	/**
+	 * Updates the cache based on a session entry.
+	 * Called when writing new entries or loading existing sessions.
+	 */
 	apply(entry: SessionEntry): void {
 		if (entry.type === "session") {
 			if (typeof entry.thinkingLevel === "string") {
@@ -347,18 +496,74 @@ function findRegisteredModel(modelKey: string): RegisteredModel | undefined {
 	);
 }
 
+/**
+ * Main session management class.
+ *
+ * Handles all aspects of session lifecycle:
+ * - Creating new sessions
+ * - Continuing/resuming existing sessions
+ * - Saving messages and state changes
+ * - Loading session history
+ * - Session branching for "undo" functionality
+ * - Session metadata (favorites, tags, summaries)
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * // Create new session
+ * const manager = new SessionManager();
+ *
+ * // Continue most recent session
+ * const manager = new SessionManager(true);
+ *
+ * // Load specific session
+ * const manager = new SessionManager(false, "/path/to/session.jsonl");
+ *
+ * // Save messages as they're exchanged
+ * manager.saveMessage(userMessage);
+ * manager.saveMessage(assistantMessage);
+ *
+ * // Initialize session after first exchange
+ * if (manager.shouldInitializeSession(messages)) {
+ *   manager.startSession(agentState);
+ * }
+ * ```
+ *
+ * ## Session Lifecycle
+ *
+ * 1. **Pre-initialization**: Messages queued in memory
+ * 2. **Initialization**: Session file created with header
+ * 3. **Active**: Messages written to file
+ * 4. **Completed**: File remains for future resumption
+ */
 export class SessionManager {
+	/** Unique identifier for this session (UUID v4) */
 	private sessionId!: string;
+	/** Absolute path to the session JSONL file */
 	private sessionFile!: string;
+	/** Directory containing all session files for current project */
 	private sessionDir: string;
+	/** Whether session persistence is enabled (disabled by --no-session) */
 	private enabled = true;
+	/** Whether the session header has been written */
 	private sessionInitialized = false;
+	/** Messages waiting to be written (before initialization) */
 	private pendingMessages: PendingSessionEntry[] = [];
+	/** Buffered file writer for efficient I/O */
 	private writer?: SessionFileWriter;
+	/** Snapshot of agent state for recovery purposes */
 	private agentSnapshot?: AgentState;
+	/** Metadata for the last used model */
 	private lastModelMetadata?: SessionModelMetadata;
+	/** Cache for current model/thinking level */
 	private metadataCache = new SessionMetadataCache();
 
+	/**
+	 * Creates a new SessionManager.
+	 *
+	 * @param continueSession - If true, loads the most recently modified session
+	 * @param customSessionPath - Optional specific session file to load
+	 */
 	constructor(continueSession = false, customSessionPath?: string) {
 		this.sessionDir = this.getSessionDirectory();
 
