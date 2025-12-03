@@ -79,6 +79,7 @@ export class TUI extends Container {
 	private interruptHandler?: () => void;
 	private overlayActive = false;
 	private wrapCache = new Map<number, Map<string, string[]>>();
+	private static readonly MAX_WRAP_CACHE_ENTRIES = 500;
 
 	constructor(
 		private terminal: Terminal,
@@ -394,6 +395,12 @@ export class TUI extends Container {
 			}
 			const result = wrapAnsiLines([key], width);
 			cache.set(key, result);
+
+			// Prevent unbounded growth per width: drop oldest entries when we exceed the cap.
+			if (cache.size > TUI.MAX_WRAP_CACHE_ENTRIES) {
+				const oldestKey = cache.keys().next().value as string | undefined;
+				if (oldestKey !== undefined) cache.delete(oldestKey);
+			}
 			wrapped.push(...result);
 		}
 		// Keep only a small number of width caches to avoid unbounded growth
