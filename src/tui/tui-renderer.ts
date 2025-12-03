@@ -1640,88 +1640,97 @@ export class TuiRenderer {
 		});
 	}
 
-	private handleEnhancedUndoCommand(context: CommandExecutionContext): void {
-		import("./commands/undo-handlers.js").then(
-			({ handleEnhancedUndoCommand }) => {
-				handleEnhancedUndoCommand({
-					rawInput: context.rawInput,
-					addContent: (content) => {
-						this.chatContainer.addChild(new Markdown(content));
-					},
-					showError: (message) => this.notificationView.showError(message),
-					showInfo: (message) => this.notificationView.showInfo(message),
-					showSuccess: (message) =>
-						this.notificationView.showToast(message, "success"),
-					requestRender: () => this.ui.requestRender(),
-				});
-			},
+	private async handleEnhancedUndoCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const { handleEnhancedUndoCommand } = await import(
+			"./commands/undo-handlers.js"
 		);
-	}
-
-	private handleChangesCommand(context: CommandExecutionContext): void {
-		import("./commands/undo-handlers.js").then(({ handleChangesCommand }) => {
-			handleChangesCommand({
-				rawInput: context.rawInput,
-				addContent: (content) => {
-					this.chatContainer.addChild(new Markdown(content));
-				},
-				showError: (message) => this.notificationView.showError(message),
-				showInfo: (message) => this.notificationView.showInfo(message),
-				showSuccess: (message) =>
-					this.notificationView.showToast(message, "success"),
-				requestRender: () => this.ui.requestRender(),
-			});
+		handleEnhancedUndoCommand({
+			rawInput: context.rawInput,
+			addContent: (content) => {
+				this.chatContainer.addChild(new Markdown(content));
+			},
+			showError: (message) => this.notificationView.showError(message),
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showSuccess: (message) =>
+				this.notificationView.showToast(message, "success"),
+			requestRender: () => this.ui.requestRender(),
 		});
 	}
 
-	private handleCheckpointCommand(context: CommandExecutionContext): void {
-		import("./commands/undo-handlers.js").then(
-			({ handleCheckpointCommand }) => {
-				handleCheckpointCommand({
-					rawInput: context.rawInput,
-					addContent: (content) => {
-						this.chatContainer.addChild(new Markdown(content));
-					},
-					showError: (message) => this.notificationView.showError(message),
-					showInfo: (message) => this.notificationView.showInfo(message),
-					showSuccess: (message) =>
-						this.notificationView.showToast(message, "success"),
-					requestRender: () => this.ui.requestRender(),
-				});
-			},
+	private async handleChangesCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const { handleChangesCommand } = await import(
+			"./commands/undo-handlers.js"
 		);
-	}
-
-	private handleMemoryCommand(context: CommandExecutionContext): void {
-		import("./commands/memory-handlers.js").then(({ handleMemoryCommand }) => {
-			handleMemoryCommand({
-				rawInput: context.rawInput,
-				cwd: process.cwd(),
-				sessionId: this.agent.state.session?.id,
-				addContent: (content) => {
-					this.chatContainer.addChild(new Markdown(content));
-				},
-				showError: (message) => this.notificationView.showError(message),
-				showInfo: (message) => this.notificationView.showInfo(message),
-				showSuccess: (message) =>
-					this.notificationView.showToast(message, "success"),
-				requestRender: () => this.ui.requestRender(),
-			});
+		handleChangesCommand({
+			rawInput: context.rawInput,
+			addContent: (content) => {
+				this.chatContainer.addChild(new Markdown(content));
+			},
+			showError: (message) => this.notificationView.showError(message),
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showSuccess: (message) =>
+				this.notificationView.showToast(message, "success"),
+			requestRender: () => this.ui.requestRender(),
 		});
 	}
 
-	private handleModeCommand(context: CommandExecutionContext): void {
-		import("./commands/handlers/mode-handler.js").then(
-			({ createModeCommandHandler }) => {
-				const handler = createModeCommandHandler({
-					onModeChange: (_mode, model) => {
-						// Could update agent config here in the future
-						this.notificationView.showToast(`Model: ${model}`, "info");
-					},
-				});
-				handler(context);
-			},
+	private async handleCheckpointCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const { handleCheckpointCommand } = await import(
+			"./commands/undo-handlers.js"
 		);
+		handleCheckpointCommand({
+			rawInput: context.rawInput,
+			addContent: (content) => {
+				this.chatContainer.addChild(new Markdown(content));
+			},
+			showError: (message) => this.notificationView.showError(message),
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showSuccess: (message) =>
+				this.notificationView.showToast(message, "success"),
+			requestRender: () => this.ui.requestRender(),
+		});
+	}
+
+	private async handleMemoryCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const { handleMemoryCommand } = await import(
+			"./commands/memory-handlers.js"
+		);
+		handleMemoryCommand({
+			rawInput: context.rawInput,
+			cwd: process.cwd(),
+			sessionId: this.agent.state.session?.id,
+			addContent: (content) => {
+				this.chatContainer.addChild(new Markdown(content));
+			},
+			showError: (message) => this.notificationView.showError(message),
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showSuccess: (message) =>
+				this.notificationView.showToast(message, "success"),
+			requestRender: () => this.ui.requestRender(),
+		});
+	}
+
+	private async handleModeCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const { createModeCommandHandler } = await import(
+			"./commands/handlers/mode-handler.js"
+		);
+		const handler = createModeCommandHandler({
+			onModeChange: (_mode, model) => {
+				// Could update agent config here in the future
+				this.notificationView.showToast(`Model: ${model}`, "info");
+			},
+		});
+		handler(context);
 	}
 
 	private handleCleanCommand(context: CommandExecutionContext): void {
@@ -3646,244 +3655,234 @@ export class TuiRenderer {
 	// GROUPED COMMAND HANDLERS
 	// ═══════════════════════════════════════════════════════════════════════════
 
-	private handleGroupedSessionCommand(
+	private async handleGroupedSessionCommand(
 		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createSessionCommandHandler }) => {
-				const handler = createSessionCommandHandler({
-					handleNewChat: () => this.handleNewChatCommand(context),
-					handleClear: () => this.handleClearCommand(),
-					handleSessionInfo: (ctx: CommandExecutionContext) =>
-						this.sessionView.handleSessionCommand(ctx.rawInput),
-					handleSessionsList: (ctx: CommandExecutionContext) =>
-						this.sessionView.handleSessionsCommand(ctx.rawInput),
-					handleBranch: (ctx: CommandExecutionContext) =>
-						this.handleBranchCommand(ctx),
-					handleQueue: (ctx: CommandExecutionContext) =>
-						this.handleQueueCommand(ctx),
-					handleExport: (ctx: CommandExecutionContext) =>
-						this.importExportView.handleExportCommand(ctx.rawInput),
-					handleShare: (ctx: CommandExecutionContext) =>
-						this.importExportView.handleShareCommand(ctx.rawInput),
-					showInfo: (msg: string) => context.showInfo(msg),
-				});
-				return handler(context);
-			},
+	): Promise<void> {
+		const { createSessionCommandHandler } = await import(
+			"./commands/grouped/index.js"
 		);
-	}
-
-	private handleGroupedDiagCommand(
-		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createDiagCommandHandler }) => {
-				const handler = createDiagCommandHandler({
-					handleStatus: () => this.diagnosticsView.handleStatusCommand(),
-					handleAbout: () => this.aboutView.handleAboutCommand(),
-					handleContext: () => this.handleContextCommand(context),
-					handleStats: (ctx: CommandExecutionContext) =>
-						this.handleStatsCommand(ctx),
-					handleBackground: (ctx: CommandExecutionContext) =>
-						this.handleBackgroundCommand(ctx),
-					handleDiagnostics: (ctx: CommandExecutionContext) =>
-						this.diagnosticsView.handleDiagnosticsCommand(ctx.rawInput),
-					handleTelemetry: (ctx: CommandExecutionContext) =>
-						this.telemetryView.handleTelemetryCommand(ctx),
-					handleTraining: (ctx: CommandExecutionContext) =>
-						this.trainingView.handleTrainingCommand(ctx),
-					handleOtel: (ctx: CommandExecutionContext) =>
-						this.handleOtelCommand(ctx),
-					handleConfig: (ctx: CommandExecutionContext) =>
-						this.configView.handleConfigCommand(ctx),
-					handleLsp: (ctx: CommandExecutionContext) =>
-						this.lspView.handleLspCommand(ctx.rawInput),
-					handleMcp: (ctx: CommandExecutionContext) =>
-						this.handleMcpCommand(ctx),
-					showInfo: (msg: string) => context.showInfo(msg),
-					isDatabaseConfigured: () => false, // PII/Access/Audit enterprise features
-				});
-				return handler(context);
-			},
-		);
-	}
-
-	private handleGroupedUiCommand(context: CommandExecutionContext): void {
-		import("./commands/grouped/index.js").then(({ createUiCommandHandler }) => {
-			const handler = createUiCommandHandler({
-				handleTheme: () => this.themeSelectorView.show(),
-				handleClean: (ctx: CommandExecutionContext) =>
-					this.handleCleanCommand(ctx),
-				handleFooter: (ctx: CommandExecutionContext) =>
-					this.handleFooterCommand(ctx),
-				handleZen: (ctx: CommandExecutionContext) => this.handleZenCommand(ctx),
-				handleCompactTools: (ctx: CommandExecutionContext) =>
-					this.handleCompactToolsCommand(ctx.rawInput),
-				showInfo: (msg: string) => context.showInfo(msg),
-				getUiState: () => ({
-					zenMode: this.zenMode,
-					cleanMode: this.cleanMode,
-					footerMode: this.footerMode,
-					compactTools: this.toolOutputView?.isCompact() ?? false,
-				}),
-			});
-			handler(context);
+		const handler = createSessionCommandHandler({
+			handleNewChat: () => this.handleNewChatCommand(context),
+			handleClear: () => this.handleClearCommand(),
+			handleSessionInfo: (ctx: CommandExecutionContext) =>
+				this.sessionView.handleSessionCommand(ctx.rawInput),
+			handleSessionsList: (ctx: CommandExecutionContext) =>
+				this.sessionView.handleSessionsCommand(ctx.rawInput),
+			handleBranch: (ctx: CommandExecutionContext) =>
+				this.handleBranchCommand(ctx),
+			handleQueue: (ctx: CommandExecutionContext) =>
+				this.handleQueueCommand(ctx),
+			handleExport: (ctx: CommandExecutionContext) =>
+				this.importExportView.handleExportCommand(ctx.rawInput),
+			handleShare: (ctx: CommandExecutionContext) =>
+				this.importExportView.handleShareCommand(ctx.rawInput),
+			showInfo: (msg: string) => context.showInfo(msg),
 		});
+		await handler(context);
 	}
 
-	private handleGroupedSafetyCommand(
+	private async handleGroupedDiagCommand(
 		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createSafetyCommandHandler }) => {
-				const handler = createSafetyCommandHandler({
-					handleApprovals: (ctx: CommandExecutionContext) =>
-						this.handleApprovalsCommand(ctx),
-					handlePlanMode: (ctx: CommandExecutionContext) =>
-						this.handlePlanModeCommand(ctx),
-					handleGuardian: (ctx: CommandExecutionContext) =>
-						this.handleGuardianCommand(ctx),
-					showInfo: (msg: string) => context.showInfo(msg),
-					getSafetyState: () => ({
-						approvalMode: process.env.COMPOSER_APPROVALS ?? "prompt",
-						planMode: process.env.COMPOSER_PLAN_MODE === "1",
-						guardianEnabled: true,
-					}),
-				});
-				return handler(context);
-			},
+	): Promise<void> {
+		const { createDiagCommandHandler } = await import(
+			"./commands/grouped/index.js"
 		);
+		const handler = createDiagCommandHandler({
+			handleStatus: () => this.diagnosticsView.handleStatusCommand(),
+			handleAbout: () => this.aboutView.handleAboutCommand(),
+			handleContext: () => this.handleContextCommand(context),
+			handleStats: (ctx: CommandExecutionContext) =>
+				this.handleStatsCommand(ctx),
+			handleBackground: (ctx: CommandExecutionContext) =>
+				this.handleBackgroundCommand(ctx),
+			handleDiagnostics: (ctx: CommandExecutionContext) =>
+				this.diagnosticsView.handleDiagnosticsCommand(ctx.rawInput),
+			handleTelemetry: (ctx: CommandExecutionContext) =>
+				this.telemetryView.handleTelemetryCommand(ctx),
+			handleTraining: (ctx: CommandExecutionContext) =>
+				this.trainingView.handleTrainingCommand(ctx),
+			handleOtel: (ctx: CommandExecutionContext) => this.handleOtelCommand(ctx),
+			handleConfig: (ctx: CommandExecutionContext) =>
+				this.configView.handleConfigCommand(ctx),
+			handleLsp: (ctx: CommandExecutionContext) =>
+				this.lspView.handleLspCommand(ctx.rawInput),
+			handleMcp: (ctx: CommandExecutionContext) => this.handleMcpCommand(ctx),
+			showInfo: (msg: string) => context.showInfo(msg),
+			isDatabaseConfigured: () => false, // PII/Access/Audit enterprise features
+		});
+		await handler(context);
 	}
 
-	private handleGroupedGitCommand(
+	private async handleGroupedUiCommand(
 		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createGitCommandHandler }) => {
-				const handler = createGitCommandHandler({
-					handleDiff: (ctx: CommandExecutionContext) =>
-						this.gitView.handlePreviewCommand(ctx.rawInput),
-					handleReview: () => this.handleReviewCommand(context),
-					showInfo: (msg: string) => context.showInfo(msg),
-					runGitCommand: async (cmd: string) => {
-						const { execSync } = await import("node:child_process");
-						return execSync(cmd, { encoding: "utf-8" });
-					},
-				});
-				return handler(context);
-			},
+	): Promise<void> {
+		const { createUiCommandHandler } = await import(
+			"./commands/grouped/index.js"
 		);
+		const handler = createUiCommandHandler({
+			handleTheme: () => this.themeSelectorView.show(),
+			handleClean: (ctx: CommandExecutionContext) =>
+				this.handleCleanCommand(ctx),
+			handleFooter: (ctx: CommandExecutionContext) =>
+				this.handleFooterCommand(ctx),
+			handleZen: (ctx: CommandExecutionContext) => this.handleZenCommand(ctx),
+			handleCompactTools: (ctx: CommandExecutionContext) =>
+				this.handleCompactToolsCommand(ctx.rawInput),
+			showInfo: (msg: string) => context.showInfo(msg),
+			getUiState: () => ({
+				zenMode: this.zenMode,
+				cleanMode: this.cleanMode,
+				footerMode: this.footerMode,
+				compactTools: this.toolOutputView?.isCompact() ?? false,
+			}),
+		});
+		handler(context);
 	}
 
-	private handleGroupedAuthCommand(
+	private async handleGroupedSafetyCommand(
 		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createAuthCommandHandler }) => {
-				const handler = createAuthCommandHandler({
-					handleLogin: (ctx: CommandExecutionContext) =>
-						this.handleLoginCommand(ctx),
-					handleLogout: (ctx: CommandExecutionContext) =>
-						this.handleLogoutCommand(ctx),
-					showInfo: (msg: string) => context.showInfo(msg),
-					getAuthState: () => ({
-						authenticated: false, // TODO: Check actual OAuth state
-						provider: "anthropic",
-						mode: undefined,
-					}),
-				});
-				return handler(context);
-			},
+	): Promise<void> {
+		const { createSafetyCommandHandler } = await import(
+			"./commands/grouped/index.js"
 		);
+		const handler = createSafetyCommandHandler({
+			handleApprovals: (ctx: CommandExecutionContext) =>
+				this.handleApprovalsCommand(ctx),
+			handlePlanMode: (ctx: CommandExecutionContext) =>
+				this.handlePlanModeCommand(ctx),
+			handleGuardian: (ctx: CommandExecutionContext) =>
+				this.handleGuardianCommand(ctx),
+			showInfo: (msg: string) => context.showInfo(msg),
+			getSafetyState: () => ({
+				approvalMode: process.env.COMPOSER_APPROVALS ?? "prompt",
+				planMode: process.env.COMPOSER_PLAN_MODE === "1",
+				guardianEnabled: true,
+			}),
+		});
+		await handler(context);
 	}
 
-	private handleGroupedUsageCommand(
+	private async handleGroupedGitCommand(
 		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createUsageCommandHandler }) => {
-				const handler = createUsageCommandHandler({
-					handleCost: (ctx: CommandExecutionContext) =>
-						this.costView.handleCostCommand(ctx),
-					handleQuota: (ctx: CommandExecutionContext) =>
-						this.quotaView.handleQuotaCommand(ctx),
-					handleStats: (ctx: CommandExecutionContext) =>
-						this.handleStatsCommand(ctx),
-				});
-				return handler(context);
-			},
+	): Promise<void> {
+		const { createGitCommandHandler } = await import(
+			"./commands/grouped/index.js"
 		);
+		const handler = createGitCommandHandler({
+			handleDiff: (ctx: CommandExecutionContext) =>
+				this.gitView.handlePreviewCommand(ctx.rawInput),
+			handleReview: () => this.handleReviewCommand(context),
+			showInfo: (msg: string) => context.showInfo(msg),
+			runGitCommand: async (cmd: string) => {
+				const { execSync } = await import("node:child_process");
+				return execSync(cmd, { encoding: "utf-8" });
+			},
+		});
+		await handler(context);
 	}
 
-	private handleGroupedUndoCommand(
+	private async handleGroupedAuthCommand(
 		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createUndoCommandHandler }) => {
-				const handler = createUndoCommandHandler({
-					handleUndo: (ctx: CommandExecutionContext) =>
-						this.handleEnhancedUndoCommand(ctx),
-					handleCheckpoint: (ctx: CommandExecutionContext) =>
-						this.handleCheckpointCommand(ctx),
-					handleChanges: (ctx: CommandExecutionContext) =>
-						this.handleChangesCommand(ctx),
-					showInfo: (msg: string) => context.showInfo(msg),
-					getUndoState: () => ({
-						canUndo: true, // Actual state tracked in undo-handlers
-						undoCount: 0, // Use /undo changes for details
-						checkpoints: [],
-					}),
-				});
-				return handler(context);
-			},
+	): Promise<void> {
+		const { createAuthCommandHandler } = await import(
+			"./commands/grouped/index.js"
 		);
+		const handler = createAuthCommandHandler({
+			handleLogin: (ctx: CommandExecutionContext) =>
+				this.handleLoginCommand(ctx),
+			handleLogout: (ctx: CommandExecutionContext) =>
+				this.handleLogoutCommand(ctx),
+			showInfo: (msg: string) => context.showInfo(msg),
+			getAuthState: () => ({
+				authenticated: false, // TODO: Check actual OAuth state
+				provider: "anthropic",
+				mode: undefined,
+			}),
+		});
+		await handler(context);
 	}
 
-	private handleGroupedConfigCommand(
+	private async handleGroupedUsageCommand(
 		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createConfigCommandHandler }) => {
-				const handler = createConfigCommandHandler({
-					handleConfig: (ctx: CommandExecutionContext) =>
-						this.configView.handleConfigCommand(ctx),
-					handleImport: (ctx: CommandExecutionContext) =>
-						this.importExportView.handleImportCommand(ctx.rawInput),
-					handleFramework: (ctx: CommandExecutionContext) =>
-						this.handleFrameworkCommand(ctx),
-					handleComposer: (ctx: CommandExecutionContext) =>
-						this.handleComposerCommand(ctx),
-					handleInit: (ctx: CommandExecutionContext) =>
-						this.handleInitCommand(ctx),
-					showInfo: (msg: string) => context.showInfo(msg),
-				});
-				return handler(context);
-			},
+	): Promise<void> {
+		const { createUsageCommandHandler } = await import(
+			"./commands/grouped/index.js"
 		);
+		const handler = createUsageCommandHandler({
+			handleCost: (ctx: CommandExecutionContext) =>
+				this.costView.handleCostCommand(ctx),
+			handleQuota: (ctx: CommandExecutionContext) =>
+				this.quotaView.handleQuotaCommand(ctx),
+			handleStats: (ctx: CommandExecutionContext) =>
+				this.handleStatsCommand(ctx),
+		});
+		await handler(context);
 	}
 
-	private handleGroupedToolsCommand(
+	private async handleGroupedUndoCommand(
 		context: CommandExecutionContext,
-	): void | Promise<void> {
-		return import("./commands/grouped/index.js").then(
-			({ createToolsCommandHandler }) => {
-				const handler = createToolsCommandHandler({
-					handleTools: (ctx: CommandExecutionContext) =>
-						this.toolStatusView.handleToolsCommand(ctx.rawInput),
-					handleMcp: (ctx: CommandExecutionContext) =>
-						this.handleMcpCommand(ctx),
-					handleLsp: (ctx: CommandExecutionContext) =>
-						this.lspView.handleLspCommand(ctx.rawInput),
-					handleWorkflow: (ctx: CommandExecutionContext) =>
-						this.handleWorkflowCommand(ctx),
-					handleRun: (ctx: CommandExecutionContext) =>
-						this.runCommandView.handleRunCommand(ctx.rawInput),
-					handleCommands: (ctx: CommandExecutionContext) =>
-						this.handleCommandsCommand(ctx),
-					showInfo: (msg: string) => context.showInfo(msg),
-				});
-				return handler(context);
-			},
+	): Promise<void> {
+		const { createUndoCommandHandler } = await import(
+			"./commands/grouped/index.js"
 		);
+		const handler = createUndoCommandHandler({
+			handleUndo: (ctx: CommandExecutionContext) =>
+				this.handleEnhancedUndoCommand(ctx),
+			handleCheckpoint: (ctx: CommandExecutionContext) =>
+				this.handleCheckpointCommand(ctx),
+			handleChanges: (ctx: CommandExecutionContext) =>
+				this.handleChangesCommand(ctx),
+			showInfo: (msg: string) => context.showInfo(msg),
+			getUndoState: () => ({
+				canUndo: true, // Actual state tracked in undo-handlers
+				undoCount: 0, // Use /undo changes for details
+				checkpoints: [],
+			}),
+		});
+		await handler(context);
+	}
+
+	private async handleGroupedConfigCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const { createConfigCommandHandler } = await import(
+			"./commands/grouped/index.js"
+		);
+		const handler = createConfigCommandHandler({
+			handleConfig: (ctx: CommandExecutionContext) =>
+				this.configView.handleConfigCommand(ctx),
+			handleImport: (ctx: CommandExecutionContext) =>
+				this.importExportView.handleImportCommand(ctx.rawInput),
+			handleFramework: (ctx: CommandExecutionContext) =>
+				this.handleFrameworkCommand(ctx),
+			handleComposer: (ctx: CommandExecutionContext) =>
+				this.handleComposerCommand(ctx),
+			handleInit: (ctx: CommandExecutionContext) => this.handleInitCommand(ctx),
+			showInfo: (msg: string) => context.showInfo(msg),
+		});
+		await handler(context);
+	}
+
+	private async handleGroupedToolsCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		const { createToolsCommandHandler } = await import(
+			"./commands/grouped/index.js"
+		);
+		const handler = createToolsCommandHandler({
+			handleTools: (ctx: CommandExecutionContext) =>
+				this.toolStatusView.handleToolsCommand(ctx.rawInput),
+			handleMcp: (ctx: CommandExecutionContext) => this.handleMcpCommand(ctx),
+			handleLsp: (ctx: CommandExecutionContext) =>
+				this.lspView.handleLspCommand(ctx.rawInput),
+			handleWorkflow: (ctx: CommandExecutionContext) =>
+				this.handleWorkflowCommand(ctx),
+			handleRun: (ctx: CommandExecutionContext) =>
+				this.runCommandView.handleRunCommand(ctx.rawInput),
+			handleCommands: (ctx: CommandExecutionContext) =>
+				this.handleCommandsCommand(ctx),
+			showInfo: (msg: string) => context.showInfo(msg),
+		});
+		await handler(context);
 	}
 }

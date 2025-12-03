@@ -110,6 +110,8 @@ interface CacheEntry {
 	result: unknown;
 	/** When the entry was created */
 	createdAt: number;
+	/** When the entry was last accessed (for true LRU) */
+	lastAccessedAt: number;
 	/** When the entry expires */
 	expiresAt: number;
 	/** Hash of the input arguments */
@@ -364,6 +366,7 @@ export class ToolResultCache {
 
 		// Cache hit!
 		entry.hitCount++;
+		entry.lastAccessedAt = Date.now();
 		this.updateStats(toolName, true);
 
 		logger.debug("Cache hit", {
@@ -407,6 +410,7 @@ export class ToolResultCache {
 		const entry: CacheEntry = {
 			result,
 			createdAt: now,
+			lastAccessedAt: now,
 			expiresAt: now + ttl * 1000,
 			inputHash: key,
 			toolName,
@@ -605,10 +609,9 @@ export class ToolResultCache {
 		let oldestTime = Number.POSITIVE_INFINITY;
 
 		for (const [key, entry] of this.cache) {
-			// Use a combination of creation time and hit count
-			const score = entry.createdAt - entry.hitCount * 10000;
-			if (score < oldestTime) {
-				oldestTime = score;
+			// True LRU: evict the entry that was accessed least recently
+			if (entry.lastAccessedAt < oldestTime) {
+				oldestTime = entry.lastAccessedAt;
 				oldestKey = key;
 			}
 		}
