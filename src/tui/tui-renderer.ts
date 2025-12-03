@@ -1,14 +1,11 @@
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
-import type { LargePasteEvent } from "@evalops/tui";
 import type { SlashCommand } from "@evalops/tui";
 import {
-	CombinedAutocompleteProvider,
 	Container,
 	Markdown,
 	ProcessTerminal,
 	Spacer,
-	StatusBar,
 	TUI,
 	Text,
 	detectTerminalFeatures,
@@ -25,10 +22,7 @@ import type {
 	AgentEvent,
 	AgentState,
 	AppMessage,
-	AssistantMessage,
-	Message,
 	ThinkingLevel,
-	ToolResultMessage,
 } from "../agent/types.js";
 import {
 	loadCommandCatalog,
@@ -63,14 +57,10 @@ import {
 import { getTrainingStatus } from "../training.js";
 
 import {
-	type AutoCompactionConfig,
 	AutoCompactionMonitor,
 	type CompactionStats,
 } from "../agent/auto-compaction.js";
-import {
-	type SessionBackup,
-	SessionRecoveryManager,
-} from "../agent/session-recovery.js";
+import { SessionRecoveryManager } from "../agent/session-recovery.js";
 import { composerManager } from "../composers/index.js";
 import { mcpManager } from "../mcp/index.js";
 import {
@@ -79,7 +69,6 @@ import {
 	formatTestResult,
 	registerTestVerificationHooks,
 } from "../testing/index.js";
-import { getChangelogPath, parseChangelog } from "../update/changelog.js";
 import { createLogger } from "../utils/logger.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
@@ -156,10 +145,7 @@ import {
 import { UpdateView } from "./update-view.js";
 import { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildCommandRegistry } from "./utils/commands/command-registry-builder.js";
-import {
-	REVIEW_INSTRUCTIONS,
-	buildReviewPrompt,
-} from "./utils/commands/review-prompt.js";
+import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
 import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
 import {
 	type FooterHint,
@@ -172,28 +158,29 @@ import { formatLink } from "./utils/links.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { handleAgentsInit } from "../cli/commands/agents.js";
-import {
-	getDefaultFramework,
-	validateFrameworkPreference,
-} from "../config/framework.js";
+import { validateFrameworkPreference } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { ApprovalController } from "./approval/approval-controller.js";
+import { parseCleanMode, readCleanModeFromEnv } from "./clean-mode.js";
 import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
 import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
 import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
+import { InterruptController } from "./interrupt-controller.js";
 import { ModalManager } from "./modal-manager.js";
+import { PasteHandler } from "./paste/paste-handler.js";
+import {
+	type LowBandwidthConfig,
+	SSH_RENDER_INTERVAL_MS,
+	type TerminalCapabilities,
+	isMinimalMode as checkMinimalMode,
+	getLowBandwidthConfig,
+	getTerminalCapabilities,
+	probeTerminalBackground,
+} from "./terminal/terminal-utils.js";
 import { isReducedMotionEnabled, setReducedMotionEnv } from "./utils/motion.js";
 import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
-const SSH_RENDER_INTERVAL_MS = 50;
-
-type TerminalCapabilities = {
-	isTTY: boolean;
-	columns: number;
-	rows: number;
-	colorLevel: number;
-};
 
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
@@ -361,18 +348,11 @@ export class TuiRenderer {
 	private reducedMotion = false;
 	private reducedMotionForced = false;
 	private zenMode = false;
-	private readonly minimalMode =
-		process.env.COMPOSER_TUI_MINIMAL === "1" ||
-		process.env.COMPOSER_TUI_MINIMAL?.toLowerCase() === "true" ||
-		typeof process.env.SSH_TTY === "string" ||
-		typeof process.env.SSH_CONNECTION === "string";
+	private readonly minimalMode = checkMinimalMode();
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
 	private approvalService: ActionApprovalService;
-	private interruptArmed = false;
-	private interruptTimeout: NodeJS.Timeout | null = null;
 	private compactionInProgress = false;
-	private pendingPasteSummaries = new Set<number>();
 	private contextWarningLevel: "none" | "warn" | "danger" = "none";
 	private modelScope: RegisteredModel[] = [];
 	private startupChangelog?: string | null;
@@ -382,24 +362,12 @@ export class TuiRenderer {
 	private isCyclingModel = false;
 	private isOAuthFlowActive = false;
 	private modalManager: ModalManager;
-	private terminalCapabilities: TerminalCapabilities = {
-		isTTY: Boolean(process.stdout.isTTY && process.stdin.isTTY),
-		columns: process.stdout.columns ?? 80,
-		rows: process.stdout.rows ?? 24,
-		colorLevel: chalk.level || 0,
-	};
+	private terminalCapabilities: TerminalCapabilities =
+		getTerminalCapabilities();
 	private terminalFeatures = detectTerminalFeatures();
-	private lowBandwidthConfig = {
-		enabled:
-			process.env.COMPOSER_TUI_LOW_BW === "1" ||
-			process.env.COMPOSER_TUI_LOW_BW?.toLowerCase() === "true" ||
-			Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY),
-		batchIntervalMs:
-			Number.parseInt(process.env.COMPOSER_TUI_LOW_BW_BATCH_MS ?? "", 10) ||
-			120,
-		scrollbackLimit:
-			Number.parseInt(process.env.COMPOSER_TUI_SCROLLBACK ?? "", 10) || 600,
-	};
+	private lowBandwidthConfig: LowBandwidthConfig = getLowBandwidthConfig();
+	private interruptController!: InterruptController;
+	private pasteHandler!: PasteHandler;
 
 	constructor(
 		agent: Agent,
@@ -421,7 +389,7 @@ export class TuiRenderer {
 		if (this.uiState.cleanMode) {
 			this.cleanMode = this.uiState.cleanMode;
 		}
-		const envCleanMode = this.readCleanModeFromEnv();
+		const envCleanMode = readCleanModeFromEnv();
 		if (envCleanMode) {
 			this.cleanMode = envCleanMode;
 		}
@@ -495,7 +463,7 @@ export class TuiRenderer {
 		this.statusContainer = new Container();
 		this.editor = new CustomEditor();
 		this.editor.onLargePaste = (event) => {
-			void this.handleLargePaste(event);
+			void this.pasteHandler.handleLargePaste(event);
 		};
 		this.editor.onTyping = () => {
 			this.handleEditorTyping();
@@ -530,6 +498,21 @@ export class TuiRenderer {
 			ui: this.ui,
 			footer: this.footer,
 		});
+
+		// Initialize interrupt controller
+		this.interruptController = new InterruptController({
+			footer: this.footer,
+			notificationView: this.notificationView,
+			callbacks: {
+				onInterrupt: (options) => this.onInterruptCallback?.(options),
+				restoreQueuedPrompts: () => this.restoreQueuedPromptIfAny(),
+				getWorkingHint: () => this.workingFooterHint,
+				isMinimalMode: () => this.isMinimalMode(),
+				isAgentRunning: () => this.isAgentRunning,
+				refreshFooterHint: () => this.refreshFooterHint(),
+			},
+		});
+
 		this.surfaceStartupWarnings();
 		this.registerBackgroundTaskNotifications();
 		this.approvalController = new ApprovalController({
@@ -632,6 +615,16 @@ export class TuiRenderer {
 			summarizeSession: (session) =>
 				this.sessionSummaryController.summarize(session),
 		});
+
+		// Initialize paste handler
+		this.pasteHandler = new PasteHandler({
+			agent: this.agent,
+			notificationView: this.notificationView,
+			sessionContext: this.sessionContext,
+			editor: this.editor,
+			refreshFooterHint: () => this.refreshFooterHint(),
+		});
+
 		this.diagnosticsView = new DiagnosticsView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1042,7 +1035,8 @@ export class TuiRenderer {
 			onSubmit: (text) => {
 				void this.handleTextSubmit(text);
 			},
-			shouldInterrupt: () => this.isAgentRunning || this.interruptArmed,
+			shouldInterrupt: () =>
+				this.isAgentRunning || this.interruptController.isArmed(),
 			onInterrupt: () => this.handleInterruptRequest(),
 			onKeepPartial: () => this.handleKeepPartialRequest(),
 			onCtrlC: () => this.runController.handleCtrlC(),
@@ -1424,7 +1418,7 @@ export class TuiRenderer {
 			}
 		} else if (event.type === "agent_end") {
 			this.isAgentRunning = false;
-			this.clearInterruptArm();
+			this.interruptController.clear();
 			// Update session recovery with latest messages
 			this.sessionRecoveryManager.updateMessages([...state.messages]);
 			// Record token usage from the latest assistant message
@@ -1458,7 +1452,7 @@ export class TuiRenderer {
 	}
 
 	private async handleTextSubmit(text: string): Promise<void> {
-		if (this.pendingPasteSummaries.size > 0) {
+		if (this.pasteHandler.hasPending()) {
 			this.notificationView.showInfo(
 				"Still summarizing pasted content — please wait a moment.",
 			);
@@ -1479,14 +1473,7 @@ export class TuiRenderer {
 	}
 
 	private handleInterruptRequest(): void {
-		if (!this.isAgentRunning && !this.interruptArmed) {
-			return;
-		}
-		if (!this.interruptArmed) {
-			this.armInterrupt();
-			return;
-		}
-		this.executeInterrupt({ keepPartial: false });
+		this.interruptController.handleInterruptRequest();
 	}
 
 	/**
@@ -1495,45 +1482,7 @@ export class TuiRenderer {
 	 * @returns true if the key was handled (interrupt was armed), false otherwise
 	 */
 	handleKeepPartialRequest(): boolean {
-		if (!this.interruptArmed) {
-			return false;
-		}
-		this.executeInterrupt({ keepPartial: true });
-		return true;
-	}
-
-	private armInterrupt(): void {
-		this.interruptArmed = true;
-		if (this.interruptTimeout) {
-			clearTimeout(this.interruptTimeout);
-		}
-		if (!this.isMinimalMode()) {
-			this.notificationView.showInfo(
-				"Press Esc to discard, K to keep partial response",
-			);
-		}
-		this.footer.setHint("Esc=discard | K=keep partial");
-		this.interruptTimeout = setTimeout(() => {
-			this.clearInterruptArm();
-		}, 5000);
-	}
-
-	private executeInterrupt(options: { keepPartial: boolean }): void {
-		this.clearInterruptArm();
-
-		if (options.keepPartial) {
-			this.notificationView.showToast(
-				"Interrupted - keeping partial response",
-				"info",
-			);
-		} else {
-			this.notificationView.showToast("Interrupted current run", "warn");
-		}
-
-		if (this.onInterruptCallback) {
-			this.onInterruptCallback({ keepPartial: options.keepPartial });
-		}
-		this.restoreQueuedPromptIfAny();
+		return this.interruptController.handleKeepPartialRequest();
 	}
 
 	private restoreQueuedPromptIfAny(): void {
@@ -1562,21 +1511,6 @@ export class TuiRenderer {
 		);
 		this.updateQueuedPromptCount();
 		this.refreshFooterHint();
-	}
-
-	private clearInterruptArm(): void {
-		if (this.interruptTimeout) {
-			clearTimeout(this.interruptTimeout);
-			this.interruptTimeout = null;
-		}
-		if (this.interruptArmed) {
-			this.interruptArmed = false;
-			if (this.isAgentRunning) {
-				this.footer.setHint(this.workingFooterHint);
-			} else {
-				this.refreshFooterHint();
-			}
-		}
 	}
 
 	private async runCompactionTask(work: () => Promise<void>): Promise<boolean> {
@@ -1784,7 +1718,7 @@ export class TuiRenderer {
 			return;
 		}
 
-		const parsed = this.parseCleanMode(arg);
+		const parsed = parseCleanMode(arg);
 		if (!parsed) {
 			context.showError("Usage: /clean [off|soft|aggressive]");
 			return;
@@ -1958,13 +1892,7 @@ export class TuiRenderer {
 			this.pendingTools.clear();
 
 			// Clear interrupt state if armed
-			if (this.interruptArmed) {
-				if (this.interruptTimeout) {
-					clearTimeout(this.interruptTimeout);
-				}
-				this.interruptArmed = false;
-				this.interruptTimeout = null;
-			}
+			this.interruptController.clear();
 
 			// Reset message view state and render initial messages
 			this.renderInitialMessages(this.agent.state);
@@ -2428,35 +2356,6 @@ export class TuiRenderer {
 			favorites: Array.from(this.favoriteCommands),
 			recents: this.recentCommands,
 		});
-	}
-
-	private parseCleanMode(value: string): CleanMode | null {
-		const normalized = value.toLowerCase();
-		if (
-			normalized === "off" ||
-			normalized === "disable" ||
-			normalized === "0"
-		) {
-			return "off";
-		}
-		if (
-			normalized === "on" ||
-			normalized === "true" ||
-			normalized === "soft" ||
-			normalized === "1"
-		) {
-			return "soft";
-		}
-		if (normalized === "aggressive") {
-			return "aggressive";
-		}
-		return null;
-	}
-
-	private readCleanModeFromEnv(): CleanMode | null {
-		const raw = process.env.COMPOSER_TUI_CLEAN;
-		if (!raw) return null;
-		return this.parseCleanMode(raw);
 	}
 
 	private handleBranchCommand(context: CommandExecutionContext): void {
@@ -2971,7 +2870,7 @@ export class TuiRenderer {
 		if (this.compactionInProgress) {
 			hints.push("Compacting history…");
 		}
-		if (this.pendingPasteSummaries.size > 0) {
+		if (this.pasteHandler.hasPending()) {
 			hints.push("Summarizing pasted text…");
 		}
 		if (this.bashModeView?.isActive()) {
@@ -3232,104 +3131,6 @@ export class TuiRenderer {
 			return;
 		}
 		this.notificationView.showInfo(`Hint: ${hints.join(" • ")}`);
-	}
-
-	private async handleLargePaste(event: LargePasteEvent): Promise<void> {
-		if (!event.content.trim()) {
-			return;
-		}
-		if (this.pendingPasteSummaries.has(event.pasteId)) {
-			return;
-		}
-		this.pendingPasteSummaries.add(event.pasteId);
-		this.refreshFooterHint();
-		this.notificationView.showInfo(
-			`Summarizing pasted block (~${event.lineCount} lines)…`,
-		);
-		try {
-			const summaryMessage = await this.agent.generateSummary(
-				[
-					{
-						role: "user",
-						content: [
-							{
-								type: "text",
-								text: this.buildPasteSummaryContext(event.content),
-							},
-						],
-						timestamp: Date.now(),
-					} as Message,
-				],
-				this.buildPasteSummaryPrompt(event.lineCount, event.charCount),
-				"You turn large clipboard snippets into concise summaries highlighting key takeaways, files, and follow-ups.",
-			);
-			const summaryText = this.extractTextFromAppMessage(
-				summaryMessage as AppMessage,
-			).trim();
-			if (!summaryText) {
-				throw new Error("Empty summary");
-			}
-			const decorated = this.decoratePasteSummary(
-				summaryText,
-				event.lineCount,
-				event.charCount,
-			);
-			const replaced = this.editor.replacePasteMarker(event.pasteId, decorated);
-			if (replaced) {
-				this.notificationView.showToast(
-					`Summarized pasted block (~${event.lineCount} lines)`,
-					"success",
-				);
-				this.sessionContext.recordPasteSummaryArtifact({
-					placeholder: event.marker,
-					lineCount: event.lineCount,
-					charCount: event.charCount,
-					summaryPreview: summaryText.split("\n")[0]?.slice(0, 120) ?? "",
-				});
-			} else {
-				this.notificationView.showInfo(
-					"Generated paste summary but it was no longer needed.",
-				);
-			}
-		} catch (error) {
-			logger.error(
-				"Failed to summarize pasted content",
-				error instanceof Error ? error : undefined,
-			);
-			this.notificationView.showError(
-				"Couldn't summarize pasted content. The original text will be sent.",
-			);
-		} finally {
-			this.pendingPasteSummaries.delete(event.pasteId);
-			this.refreshFooterHint();
-		}
-	}
-
-	private buildPasteSummaryPrompt(lines: number, chars: number): string {
-		const formatter = new Intl.NumberFormat("en-US");
-		return `Summarize the preceding clipboard snippet (~${formatter.format(
-			lines,
-		)} lines, ${formatter.format(chars)} chars). Provide concise bullet points highlighting what the snippet contains, key issues, and any follow-up actions. Limit to 120 words.`;
-	}
-
-	private buildPasteSummaryContext(content: string): string {
-		const limit = 12000;
-		if (content.length <= limit) {
-			return content;
-		}
-		return `${content.slice(0, limit)}\n\n[truncated ${content.length - limit} additional chars]`;
-	}
-
-	private decoratePasteSummary(
-		summary: string,
-		lines: number,
-		chars: number,
-	): string {
-		const formatter = new Intl.NumberFormat("en-US");
-		const meta = `[[Pasted ${formatter.format(lines)} lines (~${formatter.format(
-			chars,
-		)} chars) summarized]]`;
-		return `${meta}\n${summary.trim()}\n[[End paste summary]]`;
 	}
 
 	private applyLoadedSessionContext(): void {
@@ -4070,85 +3871,4 @@ export class TuiRenderer {
 			},
 		);
 	}
-}
-
-async function probeTerminalBackground(): Promise<"dark" | "light" | null> {
-	if (!process.stdout.isTTY || !process.stdin.isTTY) return null;
-
-	const prevRaw = process.stdin.isRaw;
-	return await new Promise((resolve) => {
-		let settled = false;
-		const cleanup = () => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timeout);
-			try {
-				if (process.stdin.setRawMode && prevRaw === false) {
-					process.stdin.setRawMode(false);
-				}
-			} catch {
-				// ignore
-			}
-			process.stdin.off("data", handler);
-		};
-
-		const timeout = setTimeout(() => {
-			cleanup();
-			resolve(null);
-		}, 300);
-
-		const handler = (data: Buffer) => {
-			const escIndex = data.indexOf(0x1b);
-			if (escIndex === -1) return;
-			const slice = data.slice(escIndex);
-			const text = slice.toString();
-			const start = text.indexOf("]11;");
-			if (start === -1) return;
-			const payloadStart = start + 4;
-			const end = text.indexOf("\u0007", payloadStart);
-			if (end === -1) return;
-			const color = text.slice(payloadStart, end);
-			const luminance = parseLuminance(color);
-			cleanup();
-			resolve(luminance);
-		};
-
-		try {
-			if (process.stdin.setRawMode && prevRaw === false) {
-				process.stdin.setRawMode(true);
-			}
-		} catch {
-			resolve(null);
-			return;
-		}
-
-		process.stdin.on("data", handler);
-		process.stdout.write("\u001b]11;?\u0007");
-	});
-}
-
-function parseLuminance(color: string): "dark" | "light" | null {
-	let r = 0;
-	let g = 0;
-	let b = 0;
-	if (color.startsWith("rgb:")) {
-		const parts = color.substring(4).split("/");
-		r = Number.parseInt(parts[0] ?? "0", 16) >> 8;
-		g = Number.parseInt(parts[1] ?? "0", 16) >> 8;
-		b = Number.parseInt(parts[2] ?? "0", 16) >> 8;
-	} else if (color.startsWith("#")) {
-		r = Number.parseInt(color.substring(1, 3) || "0", 16);
-		g = Number.parseInt(color.substring(3, 5) || "0", 16);
-		b = Number.parseInt(color.substring(5, 7) || "0", 16);
-	} else if (color.startsWith("rgb(")) {
-		const parts = color.substring(4, color.length - 1).split(",");
-		r = Number.parseInt(parts[0] ?? "0", 10);
-		g = Number.parseInt(parts[1] ?? "0", 10);
-		b = Number.parseInt(parts[2] ?? "0", 10);
-	} else {
-		return null;
-	}
-
-	const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-	return luminance > 0.5 ? "light" : "dark";
 }
