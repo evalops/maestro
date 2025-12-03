@@ -63,4 +63,23 @@ describe("render-model helpers", () => {
 		expect(text).toBe(["Header", "", "Body", "Tail"].join("\n"));
 		expect(changed).toBe(true);
 	});
+
+	it("dedupes repeated numbered lines across separate content blocks", () => {
+		const message: AssistantMessage = {
+			...baseAssistant,
+			content: [
+				{ type: "text", text: "1. One\n2. Two\n3. Three" },
+				{ type: "text", text: "3. Three\n4. Four" },
+			],
+		};
+
+		const renderable = toRenderableAssistantMessage(message, {
+			cleanMode: "soft",
+		});
+
+		expect(renderable.textBlocks.join("\n")).toBe(
+			["1. One", "2. Two", "3. Three", "4. Four"].join("\n"),
+		);
+		expect(renderable.cleaned).toBe(true);
+	});
 });

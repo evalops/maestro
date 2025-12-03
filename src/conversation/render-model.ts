@@ -27,10 +27,29 @@ export function collapseRepeatedLines(
 	text: string,
 	options: { windowSize?: number; crossBlock?: boolean } = {},
 ): { text: string; changed: boolean } {
+	return collapseRepeatedLinesWithHistory(text, {
+		...options,
+		sharedHistory: options.crossBlock ? [] : undefined,
+	});
+}
+
+/**
+ * Collapse duplicate lines while sharing history across multiple blocks.
+ * This lets us dedupe repetitions that get split into separate text blocks
+ * during streaming (e.g., numbered list items being re-sent).
+ */
+export function collapseRepeatedLinesWithHistory(
+	text: string,
+	options: {
+		windowSize?: number;
+		crossBlock?: boolean;
+		sharedHistory?: string[];
+	} = {},
+): { text: string; changed: boolean } {
 	const lines = text.split(/\r?\n/);
 	const result: string[] = [];
 	const windowSize = options.windowSize ?? 1;
-	const recent: string[] = [];
+	const recent: string[] = options.sharedHistory ?? [];
 	let changed = false;
 
 	for (const line of lines) {
@@ -149,17 +168,29 @@ export function toRenderableAssistantMessage(
 	const toolCalls: RenderableToolCall[] = [];
 	const cleanMode = options.cleanMode ?? "off";
 	let cleaned = false;
+	// Share recent-line history across blocks so duplicated numbered items that
+	// arrive as separate chunks during streaming get collapsed.
+	const recentLines: string[] = [];
+
+	const cleanText = (value: string): { text: string; changed: boolean } => {
+		if (cleanMode === "off") {
+			return { text: value, changed: false };
+		}
+		const windowSize = cleanMode === "aggressive" ? 8 : 1;
+		return collapseRepeatedLinesWithHistory(value, {
+			windowSize,
+			crossBlock: true,
+			sharedHistory: recentLines,
+		});
+	};
 
 	for (const content of message.content) {
 		if (content.type === "text" && content.text.trim()) {
-			const { text, changed } = maybeCleanText(content.text.trim(), cleanMode);
+			const { text, changed } = cleanText(content.text.trim());
 			textBlocks.push(text);
 			cleaned = cleaned || changed;
 		} else if (content.type === "thinking" && content.thinking.trim()) {
-			const { text, changed } = maybeCleanText(
-				content.thinking.trim(),
-				cleanMode,
-			);
+			const { text, changed } = cleanText(content.thinking.trim());
 			thinkingBlocks.push(text);
 			cleaned = cleaned || changed;
 		} else if (content.type === "toolCall") {
