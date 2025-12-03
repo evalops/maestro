@@ -93,16 +93,24 @@ async function executeCommandHook(
 		let stderr = "";
 		let resolved = false;
 
-		const cleanup = () => {
+		const cleanup = (reason: "abort" | "timeout") => {
 			if (!resolved) {
 				resolved = true;
 				child.kill("SIGTERM");
+				if (reason === "abort") {
+					resolve({
+						stdout,
+						stderr: `${stderr}\nHook aborted`,
+						status: 130, // Standard interrupt exit code
+						aborted: true,
+					});
+				}
 			}
 		};
 
 		// Handle abort signal
 		if (signal) {
-			signal.addEventListener("abort", cleanup, { once: true });
+			signal.addEventListener("abort", () => cleanup("abort"), { once: true });
 		}
 
 		// Timeout handling
