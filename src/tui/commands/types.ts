@@ -76,6 +76,7 @@ export interface CommandHandlers {
 	changes(context: CommandExecutionContext): void;
 	checkpoint(context: CommandExecutionContext): void;
 	memory(context: CommandExecutionContext): void;
+	mode(context: CommandExecutionContext): void;
 	// Grouped command handlers
 	sessionCommand(context: CommandExecutionContext): void | Promise<void>;
 	diagCommand(context: CommandExecutionContext): void | Promise<void>;

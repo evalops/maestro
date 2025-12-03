@@ -995,6 +995,7 @@ export class TuiRenderer {
 			handleChanges: (context) => this.handleChangesCommand(context),
 			handleCheckpoint: (context) => this.handleCheckpointCommand(context),
 			handleMemory: (context) => this.handleMemoryCommand(context),
+			handleMode: (context) => this.handleModeCommand(context),
 			// Grouped command handlers
 			handleSessionCommand: (context) =>
 				this.handleGroupedSessionCommand(context),
@@ -1707,6 +1708,20 @@ export class TuiRenderer {
 				requestRender: () => this.ui.requestRender(),
 			});
 		});
+	}
+
+	private handleModeCommand(context: CommandExecutionContext): void {
+		import("./commands/handlers/mode-handler.js").then(
+			({ createModeCommandHandler }) => {
+				const handler = createModeCommandHandler({
+					onModeChange: (_mode, model) => {
+						// Could update agent config here in the future
+						this.notificationView.showToast(`Model: ${model}`, "info");
+					},
+				});
+				handler(context);
+			},
+		);
 	}
 
 	private handleCleanCommand(context: CommandExecutionContext): void {

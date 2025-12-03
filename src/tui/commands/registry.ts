@@ -217,6 +217,18 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "mode",
+				description: "Switch agent mode (smart/rush/free)",
+				usage: "/mode [smart|rush|free|list|suggest]",
+				tags: ["session", "model"],
+				examples: ["/mode", "/mode smart", "/mode rush", "/mode free"],
+			},
+			withArgs("mode"),
+			handlers.mode,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "theme",
 				description: "Select color theme (opens selector with live preview)",
 				usage: "/theme",
