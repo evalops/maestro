@@ -10,3 +10,14 @@ exports[`BatchRenderer > renders expanded batch with bar and durations 1`] = `
 [38;2;80;80;80m│[39m  [38;2;181;189;104m✓ [39m write [38;2;102;102;102m—[39m [38;2;128;128;128mwrote file[39m[38;2;102;102;102m (240ms)[39m
 [38;2;80;80;80m│[39m  [38;2;204;102;102m✕ [39m bash [38;2;102;102;102m—[39m [38;2;128;128;128mfailed to run[39m[38;2;102;102;102m (300ms)[39m"
 `;
+
+exports[`BatchRenderer renders expanded batch with bar and durations 1`] = `
+"[38;2;204;102;102m✕ [39m [38;2;138;190;183mbatch[39m [38;2;128;128;128m3 tools · 2 ok · 1 err · ■■□[39m
+[38;2;102;102;102mBatch preview content[39m
+[38;2;204;102;102mfailed to run[39m
+[38;2;80;80;80m│[39m  [38;2;181;189;104m✓ [39m read [38;2;102;102;102m—[39m [38;2;128;128;128mok[39m[38;2;102;102;102m (120ms)[39m
+[38;2;80;80;80m│[39m  [38;2;181;189;104m✓ [39m write [38;2;102;102;102m—[39m [38;2;128;128;128mwrote file[39m[38;2;102;102;102m (240ms)[39m
+[38;2;80;80;80m│[39m  [38;2;204;102;102m✕ [39m bash [38;2;102;102;102m—[39m [38;2;128;128;128mfailed to run[39m[38;2;102;102;102m (300ms)[39m"
+`;
+
+exports[`BatchRenderer renders collapsed batch with error snippet 1`] = `"[38;2;204;102;102m✕ [39m [38;2;138;190;183mbatch[39m [38;2;128;128;128m3 tools · 2 ok · 1 err · ■■□[39m [38;2;102;102;102m— Batch preview content[39m [38;2;204;102;102mfailed to run[39m"`;
