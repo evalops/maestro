@@ -63,6 +63,7 @@ export class Container implements Component {
 export class TUI extends Container {
 	private previousLines: string[] = [];
 	private previousWidth = 0;
+	private overflowedLastRender = false;
 	private focusedComponent: Component | null = null;
 	private renderRequested = false;
 	private cursorRow = 0; // Track where cursor is (0-indexed, relative to our first line)
@@ -204,15 +205,24 @@ export class TUI extends Container {
 
 	private doRender(): void {
 		const width = Math.max(1, this.terminal.columns);
-		const height = this.terminal.rows;
+		const height = Math.max(1, this.terminal.rows);
 		this.lastRenderTs = Date.now();
 
 		// Render all components and hard-wrap to the viewport so we never exceed the terminal width
-		const newLines = this.wrapWithCache(this.render(width), width);
+		let newLines = this.wrapWithCache(this.render(width), width);
+
+		// Clip to viewport height to prevent the UI from scrolling upward and leaving
+		// duplicate input boxes in the scrollback. We always render the bottom-most
+		// portion of the layout.
+		const isOverflowing = newLines.length > height;
+		if (isOverflowing) {
+			newLines = newLines.slice(-height);
+		}
 
 		// Width changed - need full re-render
 		const widthChanged =
 			this.previousWidth !== 0 && this.previousWidth !== width;
+		const overflowChanged = isOverflowing || this.overflowedLastRender;
 
 		// First render - just output everything without clearing
 		if (this.previousLines.length === 0) {
@@ -228,11 +238,12 @@ export class TUI extends Container {
 			this.cursorRow = newLines.length - 1;
 			this.previousLines = newLines;
 			this.previousWidth = width;
+			this.overflowedLastRender = isOverflowing;
 			return;
 		}
 
-		// Width changed - full re-render
-		if (widthChanged) {
+		// Width change or overflow -> full re-render so the editor stays pinned at the bottom
+		if (widthChanged || overflowChanged) {
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
 			for (let i = 0; i < newLines.length; i++) {
@@ -245,6 +256,7 @@ export class TUI extends Container {
 			this.cursorRow = newLines.length - 1;
 			this.previousLines = newLines;
 			this.previousWidth = width;
+			this.overflowedLastRender = isOverflowing;
 			return;
 		}
 
@@ -322,6 +334,7 @@ export class TUI extends Container {
 		this.cursorRow = newLines.length - 1;
 		this.previousLines = newLines;
 		this.previousWidth = width;
+		this.overflowedLastRender = isOverflowing;
 	}
 
 	private wrapWithCache(lines: string[], width: number): string[] {
