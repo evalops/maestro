@@ -1,6 +1,9 @@
 /**
  * Minimal TUI implementation with differential rendering
  */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { Terminal } from "./terminal.js";
 import { visibleWidth, wrapAnsiLines } from "./utils.js";
 import {
@@ -76,6 +79,7 @@ export class TUI extends Container {
 	private interruptHandler?: () => void;
 	private overlayActive = false;
 	private wrapCache = new Map<number, Map<string, string[]>>();
+	private static readonly MAX_WRAP_CACHE_ENTRIES = 500;
 
 	constructor(
 		private terminal: Terminal,
@@ -96,6 +100,14 @@ export class TUI extends Container {
 
 	setMinRenderInterval(ms: number): void {
 		this.minRenderIntervalMs = Math.max(0, ms);
+	}
+
+	/**
+	 * Toggle synchronized output (DECSET 2026) at runtime. Useful for live user toggles
+	 * without restarting the TUI. The feature flag still gates support detection.
+	 */
+	setSyncOutput(enabled: boolean): void {
+		this.syncOutput = enabled && this.features.supportsSyncOutput;
 	}
 
 	setFocus(component: Component | null): void {
@@ -320,17 +332,46 @@ export class TUI extends Container {
 			buffer += `\x1b[${-lineDiff}A`; // Move up
 		}
 		buffer += "\r"; // Move to column 0
-		buffer += "\x1b[J"; // Clear from cursor to end of screen
 
-		// Render from first changed line to end
+		// Render from first changed line to end, clearing each line individually to avoid
+		// cursor-to-end flashes in buffered terminals (e.g., xterm.js over SSH).
 		for (let i = firstChanged; i < newLines.length; i++) {
 			if (i > firstChanged) buffer += "\r\n";
-			if (visibleWidth(newLines[i]) > width) {
+			buffer += "\x1b[2K"; // Clear current line before writing
+			const line = newLines[i];
+			if (visibleWidth(line) > width) {
+				const crashLogPath = path.join(
+					os.homedir(),
+					".composer",
+					"agent",
+					"tui-crash.log",
+				);
+				const crashData = [
+					`Crash at ${new Date().toISOString()}`,
+					`Terminal width: ${width}`,
+					`Line ${i} visible width: ${visibleWidth(line)}`,
+					"",
+					"=== Rendered lines ===",
+					...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
+					"",
+				].join("\n");
+				fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
+				fs.writeFileSync(crashLogPath, crashData);
 				throw new Error(
-					`Rendered line ${i} exceeds terminal width\n\n${newLines[i]}`,
+					`Rendered line ${i} exceeds terminal width. Debug log written to ${crashLogPath}`,
 				);
 			}
-			buffer += newLines[i];
+			buffer += line;
+		}
+
+		// If we rendered fewer lines than previously, clear the leftovers so stale
+		// content cannot flicker before the next full render.
+		if (this.previousLines.length > newLines.length) {
+			const extraLines = this.previousLines.length - newLines.length;
+			for (let i = newLines.length; i < this.previousLines.length; i++) {
+				buffer += "\r\n\x1b[2K";
+			}
+			buffer += `\x1b[${extraLines}A`;
 		}
 
 		if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
@@ -362,6 +403,12 @@ export class TUI extends Container {
 			}
 			const result = wrapAnsiLines([key], width);
 			cache.set(key, result);
+
+			// Prevent unbounded growth per width: drop oldest entries when we exceed the cap.
+			if (cache.size > TUI.MAX_WRAP_CACHE_ENTRIES) {
+				const oldestKey = cache.keys().next().value as string | undefined;
+				if (oldestKey !== undefined) cache.delete(oldestKey);
+			}
 			wrapped.push(...result);
 		}
 		// Keep only a small number of width caches to avoid unbounded growth
