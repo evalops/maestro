@@ -60,11 +60,16 @@ export function validateToolArguments(
 		return isRecord(toolCall.arguments) ? toolCall.arguments : {};
 	}
 
-	// Compile the schema
-	const validate = ajv.compile(tool.parameters) as {
-		(data: unknown): boolean;
-		errors?: ErrorObject[] | null;
-	};
+	// Compile (or reuse) the schema
+	let validate = validatorCache.get(tool.parameters) as
+		| (Ajv.ValidateFunction & { errors?: ErrorObject[] | null })
+		| undefined;
+	if (!validate) {
+		validate = ajv.compile(tool.parameters) as Ajv.ValidateFunction & {
+			errors?: ErrorObject[] | null;
+		};
+		validatorCache.set(tool.parameters, validate);
+	}
 
 	// Validate the arguments
 	if (validate(toolCall.arguments)) {
@@ -74,7 +79,7 @@ export function validateToolArguments(
 	// Format validation errors nicely
 	const errors =
 		(validate.errors ?? [])
-			.map((err) => {
+			.map((err: ErrorObject) => {
 				const path =
 					err.instancePath && err.instancePath.length > 1
 						? err.instancePath.substring(1)
