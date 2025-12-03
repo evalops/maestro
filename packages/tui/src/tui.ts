@@ -237,9 +237,16 @@ export class TUI extends Container {
 		const widthChanged =
 			this.previousWidth !== 0 && this.previousWidth !== width;
 		const overflowChanged = isOverflowing !== this.overflowedLastRender;
-		const shouldFullRender = widthChanged || overflowChanged;
+		// If the layout shrinks (e.g., closing a modal or finishing a long toast),
+		// force a full redraw so any lines from the prior frame—including the input
+		// prompt—are wiped instead of lingering and appearing as “duplicate” boxes.
+		const lineCountDecreased = newLines.length < this.previousLines.length;
+		const shouldFullRender =
+			widthChanged || overflowChanged || lineCountDecreased;
 		const overflowRerenderThrottled =
-			overflowChanged && now - this.lastFullRenderTs < 32; // ~2 frames at 60Hz
+			overflowChanged &&
+			!lineCountDecreased &&
+			now - this.lastFullRenderTs < 32; // ~2 frames at 60Hz
 
 		// First render - just output everything without clearing
 		if (this.previousLines.length === 0) {
