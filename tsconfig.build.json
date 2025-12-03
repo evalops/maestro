@@ -5,8 +5,8 @@
 		"rootDir": "./src",
 		"composite": true
 	},
-	"include": ["src/**/*.ts"],
-	"exclude": ["node_modules", "dist", "**/*.d.ts", "src/**/*.d.ts"],
+	"include": ["src/**/*.ts", "types/**/*.d.ts"],
+	"exclude": ["node_modules", "dist"],
 	"references": [
 		{ "path": "./packages/tui/tsconfig.build.json" },
 		{ "path": "./packages/contracts/tsconfig.build.json" }
