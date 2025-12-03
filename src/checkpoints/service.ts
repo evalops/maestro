@@ -17,6 +17,13 @@ import { type CheckpointConfig, DEFAULT_CHECKPOINT_CONFIG } from "./types.js";
 const logger = createLogger("checkpoints:service");
 
 /**
+ * Normalize a relative path to POSIX-style separators for glob matching.
+ */
+function normalizeRelPath(relPath: string): string {
+	return relPath.split(sep).join("/");
+}
+
+/**
  * Extract file paths from tool input based on tool name.
  */
 function extractFilePaths(
@@ -254,8 +261,8 @@ export class CheckpointService {
 
 		// Filter out excluded files
 		const checkpointPaths = uniquePaths.filter((path) => {
-			const rel = relative(this.cwd, path) || ".";
-			const normalizedRel = rel.split(sep).join("/");
+			const rel = relative(this.cwdReal, path) || ".";
+			const normalizedRel = normalizeRelPath(rel);
 			return !shouldExcludeFile(normalizedRel, this.config);
 		});
 
