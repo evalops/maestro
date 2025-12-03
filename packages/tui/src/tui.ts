@@ -102,6 +102,14 @@ export class TUI extends Container {
 		this.minRenderIntervalMs = Math.max(0, ms);
 	}
 
+	/**
+	 * Toggle synchronized output (DECSET 2026) at runtime. Useful for live user toggles
+	 * without restarting the TUI. The feature flag still gates support detection.
+	 */
+	setSyncOutput(enabled: boolean): void {
+		this.syncOutput = enabled && this.features.supportsSyncOutput;
+	}
+
 	setFocus(component: Component | null): void {
 		this.focusedComponent = component;
 	}
