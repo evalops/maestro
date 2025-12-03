@@ -141,6 +141,24 @@ export {
 	type ColumnStats,
 	type SheetSummary,
 } from "./bookkeeper.js";
+export {
+	SUBAGENT_SPECS,
+	TOOL_CATEGORIES,
+	createCustomSpec,
+	filterToolsForSubagent,
+	formatSubagentDisplay,
+	getAllSubagentTypes,
+	getAllowedTools,
+	getCurrentSubagentType,
+	getSubagentSpec,
+	getSubagentTypeFromEnv,
+	isToolAllowed,
+	parseSubagentType,
+	setCurrentSubagentType,
+	validateSpec,
+	type SubagentSpec,
+	type SubagentType,
+} from "./subagent-specs.js";
 export type {
 	AgentEvent,
 	AgentRunConfig,

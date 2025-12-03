@@ -197,3 +197,27 @@ export {
 	type ToolCacheConfig,
 	type ToolCacheStats,
 } from "./tool-result-cache.js";
+
+// File watching
+export {
+	FileWatcher,
+	createFileWatcher,
+	getGlobalFileWatcher,
+	initGlobalFileWatcher,
+	resetGlobalFileWatcher,
+	type FileChangeEvent,
+	type FileChangeType,
+	type FileWatcherConfig,
+	type GitStateChangeEvent,
+} from "./file-watcher.js";
+
+// Cache invalidation
+export {
+	CacheInvalidationService,
+	createCacheInvalidationService,
+	getGlobalCacheInvalidation,
+	initGlobalCacheInvalidation,
+	resetGlobalCacheInvalidation,
+	type CacheInvalidationConfig,
+	type InvalidationStats,
+} from "./cache-invalidation.js";
