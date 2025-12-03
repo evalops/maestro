@@ -109,6 +109,38 @@ export {
 	type ModelMapping,
 	type ModelTier,
 } from "./modes.js";
+export {
+	ContextHandoffManager,
+	createContextHandoffManager,
+	estimateTokenCount,
+	formatContextUsage,
+	DEFAULT_THRESHOLDS,
+	type ContextThresholds,
+	type ContextStatus,
+	type ContextUsage,
+	type HandoffContext,
+} from "./context-handoff.js";
+export {
+	ToolLedger,
+	createToolLedger,
+	formatDuration,
+	type ToolCallRecord,
+	type ToolStats,
+	type SessionStats,
+	type UsagePattern,
+} from "./tool-ledger.js";
+export {
+	Bookkeeper,
+	createBookkeeper,
+	SUPPORTED_EXTENSIONS as BOOKKEEPER_SUPPORTED_EXTENSIONS,
+	type CellValue,
+	type Row,
+	type SheetData,
+	type WorkbookData,
+	type QueryResult,
+	type ColumnStats,
+	type SheetSummary,
+} from "./bookkeeper.js";
 export type {
 	AgentEvent,
 	AgentRunConfig,
