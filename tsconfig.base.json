@@ -20,9 +20,6 @@
 		"emitDecoratorMetadata": true,
 		"useDefineForClassFields": false,
 		"types": ["node"],
-		"typeRoots": ["./types", "./node_modules/@types"],
-		"paths": {
-			"jsonc-parser/lib/umd/jsonc-parser.js": ["types/jsonc-parser-umd.d.ts"]
-		}
+		"typeRoots": ["./types", "./node_modules/@types"]
 	}
 }
