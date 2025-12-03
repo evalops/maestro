@@ -27,6 +27,7 @@ import { pipeline } from "node:stream/promises";
 import { createGzip, gunzipSync } from "node:zlib";
 
 import { Type } from "@sinclair/typebox";
+import { StringEnum } from "../agent/providers/typebox-helpers.js";
 
 import {
 	type BackgroundTaskSettings,
@@ -588,7 +589,7 @@ class BackgroundTaskManager extends EventEmitter {
 			return undefined;
 		}
 		const delayMs = Math.min(Math.max(restart.delayMs, 50), 60_000);
-		const strategy =
+		const strategy: RestartPolicy["strategy"] =
 			restart.strategy === "exponential" ? "exponential" : "fixed";
 		const rawMaxDelay =
 			restart.maxDelayMs !== undefined
@@ -1801,9 +1802,7 @@ const backgroundTaskSchema = Type.Union([
 					minimum: 50,
 					maximum: 60_000,
 				}),
-				strategy: Type.Optional(
-					Type.Union([Type.Literal("fixed"), Type.Literal("exponential")]),
-				),
+				strategy: Type.Optional(StringEnum(["fixed", "exponential"])),
 				maxDelayMs: Type.Optional(
 					Type.Integer({
 						description: "Upper bound for exponential backoff delays",
@@ -1976,11 +1975,18 @@ export const backgroundTasksTool = createTool<
 	schema: backgroundTaskSchema,
 	async run(params, { respond }) {
 		if (params.action === "start") {
+			const restart =
+				params.restart &&
+				({
+					...params.restart,
+					strategy:
+						params.restart.strategy === "exponential" ? "exponential" : "fixed",
+				} satisfies TaskStartOptions["restart"]);
 			const task = backgroundTaskManager.start(params.command, {
 				cwd: params.cwd,
 				env: params.env,
 				useShell: params.shell ?? false,
-				restart: params.restart,
+				restart,
 				limits: params.limits,
 			});
 			respond
