@@ -399,6 +399,23 @@ bun run compile:binary
 # Output: dist/composer-bun
 ```
 
+### Using the native Bun binary
+
+Build and distribute a single-file executable (no Node or repo needed):
+
+```bash
+npm run bun:compile          # emits dist/composer-bun
+chmod +x dist/composer-bun   # if needed
+./dist/composer-bun --help   # run it
+```
+
+Notes:
+- Output is a glibc ELF; run on compatible Linux systems.
+- If you want tree-sitter bash parsing without the startup warning, keep these alongside the binary (or preserve their relative paths):
+  - `node_modules/tree-sitter/prebuilds/linux-x64/tree-sitter.node`
+  - `node_modules/tree-sitter-bash/prebuilds/linux-x64/tree-sitter-bash.node`
+- Bun’s bytecode mode (`--compile --bytecode`) currently fails on async-heavy bundles; the native binary above is the supported deliverable.
+
 ## Workspace Commands (Bun + Nx)
 
 | Command | Purpose |
