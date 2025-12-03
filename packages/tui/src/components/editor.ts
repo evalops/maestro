@@ -613,8 +613,13 @@ export class Editor implements Component {
 	setLargePasteMode(mode: "placeholder" | "verbatim"): void {
 		this.largePasteMode = mode;
 	}
-	private insertCharacter(char: string): void {
-		this.saveToHistory();
+	private insertCharacter(
+		char: string,
+		opts?: { skipHistory?: boolean },
+	): void {
+		if (!opts?.skipHistory) {
+			this.saveToHistory();
+		}
 		const line = this.state.lines[this.state.cursorLine] || "";
 		const before = line.slice(0, this.state.cursorCol);
 		const after = line.slice(this.state.cursorCol);
@@ -651,8 +656,46 @@ export class Editor implements Component {
 	}
 
 	insertText(text: string): void {
-		for (const char of text) {
-			this.insertCharacter(char);
+		if (!text) return;
+
+		// Normalize line breaks so we can treat "\n" uniformly.
+		const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+		const parts = normalized.split("\n");
+
+		// Fast path: single-line insert
+		if (parts.length === 1) {
+			this.insertCharacter(parts[0], { skipHistory: false });
+			return;
+		}
+
+		// Multi-line insert (also used for yanking a newline)
+		this.saveToHistory();
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const beforeCursor = currentLine.slice(0, this.state.cursorCol);
+		const afterCursor = currentLine.slice(this.state.cursorCol);
+
+		const newLines: string[] = [];
+		for (let i = 0; i < this.state.cursorLine; i++) {
+			newLines.push(this.state.lines[i] || "");
+		}
+
+		newLines.push(beforeCursor + (parts[0] || ""));
+		for (let i = 1; i < parts.length - 1; i++) {
+			newLines.push(parts[i] || "");
+		}
+		newLines.push((parts[parts.length - 1] || "") + afterCursor);
+
+		for (let i = this.state.cursorLine + 1; i < this.state.lines.length; i++) {
+			newLines.push(this.state.lines[i] || "");
+		}
+
+		this.state.lines = newLines;
+		this.state.cursorLine += parts.length - 1;
+		this.state.cursorCol = (parts[parts.length - 1] || "").length;
+		this.preferredCol = this.state.cursorCol;
+
+		if (this.onChange) {
+			this.onChange(this.getText());
 		}
 	}
 	setPasteReplacement(pasteId: number, replacement: string): void {
@@ -856,7 +899,7 @@ export class Editor implements Component {
 		} else if (this.state.cursorLine > 0) {
 			// At start of line - merge with previous line
 			const previousLine = this.state.lines[this.state.cursorLine - 1] || "";
-			this.killBuffer = previousLine;
+			this.killBuffer = "\n";
 			this.state.lines[this.state.cursorLine - 1] = previousLine + currentLine;
 			this.state.lines.splice(this.state.cursorLine, 1);
 			this.state.cursorLine--;
@@ -880,7 +923,7 @@ export class Editor implements Component {
 		} else if (this.state.cursorLine < this.state.lines.length - 1) {
 			// At end of line - merge with next line
 			const nextLine = this.state.lines[this.state.cursorLine + 1] || "";
-			this.killBuffer = nextLine;
+			this.killBuffer = "\n";
 			this.state.lines[this.state.cursorLine] = currentLine + nextLine;
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
@@ -945,52 +988,64 @@ export class Editor implements Component {
 	}
 
 	private moveWordBackwards(): void {
-		const currentLine = this.state.lines[this.state.cursorLine] || "";
-		let idx = this.state.cursorCol;
 		const isBoundary = (ch: string): boolean =>
 			/\s/.test(ch) || WORD_BOUNDARY.test(ch);
 
-		while (idx > 0 && isBoundary(currentLine[idx - 1] ?? "")) {
-			idx--;
-		}
-		while (idx > 0 && !isBoundary(currentLine[idx - 1] ?? "")) {
-			idx--;
+		let lineIdx = this.state.cursorLine;
+		let colIdx = this.state.cursorCol;
+
+		while (true) {
+			const line = this.state.lines[lineIdx] || "";
+
+			while (colIdx > 0 && isBoundary(line[colIdx - 1] ?? "")) {
+				colIdx--;
+			}
+			while (colIdx > 0 && !isBoundary(line[colIdx - 1] ?? "")) {
+				colIdx--;
+			}
+
+			if (colIdx > 0 || lineIdx === 0) {
+				this.state.cursorLine = lineIdx;
+				this.state.cursorCol = colIdx;
+				break;
+			}
+
+			// Move to previous line and continue searching
+			lineIdx -= 1;
+			colIdx = (this.state.lines[lineIdx] || "").length;
 		}
 
-		if (idx === 0 && this.state.cursorLine > 0) {
-			this.state.cursorLine -= 1;
-			const prevLine = this.state.lines[this.state.cursorLine] || "";
-			this.state.cursorCol = prevLine.length;
-			this.moveWordBackwards();
-			return;
-		}
-		this.state.cursorCol = idx;
 		this.preferredCol = this.state.cursorCol;
 	}
 
 	private moveWordForwards(): void {
-		const currentLine = this.state.lines[this.state.cursorLine] || "";
-		let idx = this.state.cursorCol;
 		const isBoundary = (ch: string): boolean =>
 			/\s/.test(ch) || WORD_BOUNDARY.test(ch);
 
-		while (idx < currentLine.length && !isBoundary(currentLine[idx] ?? "")) {
-			idx++;
-		}
-		while (idx < currentLine.length && isBoundary(currentLine[idx] ?? "")) {
-			idx++;
+		let lineIdx = this.state.cursorLine;
+		let colIdx = this.state.cursorCol;
+
+		while (true) {
+			const line = this.state.lines[lineIdx] || "";
+
+			while (colIdx < line.length && !isBoundary(line[colIdx] ?? "")) {
+				colIdx++;
+			}
+			while (colIdx < line.length && isBoundary(line[colIdx] ?? "")) {
+				colIdx++;
+			}
+
+			if (colIdx < line.length || lineIdx >= this.state.lines.length - 1) {
+				this.state.cursorLine = lineIdx;
+				this.state.cursorCol = Math.min(colIdx, line.length);
+				break;
+			}
+
+			// Move to next line and continue searching
+			lineIdx += 1;
+			colIdx = 0;
 		}
 
-		if (
-			idx >= currentLine.length &&
-			this.state.cursorLine < this.state.lines.length - 1
-		) {
-			this.state.cursorLine += 1;
-			this.state.cursorCol = 0;
-			this.moveWordForwards();
-			return;
-		}
-		this.state.cursorCol = Math.min(idx, currentLine.length);
 		this.preferredCol = this.state.cursorCol;
 	}
 
