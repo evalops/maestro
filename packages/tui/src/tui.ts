@@ -61,24 +61,89 @@ export class Container implements Component {
 }
 
 /**
- * TUI - Main class for managing terminal UI with differential rendering
+ * TUI - Main class for managing terminal UI with differential rendering.
+ *
+ * ## Rendering Architecture
+ *
+ * The TUI uses differential rendering to minimize terminal writes:
+ * 1. Components render to string[] lines
+ * 2. Lines are wrapped to terminal width (cached)
+ * 3. If content exceeds viewport, clip to bottom N lines (overflow)
+ * 4. Compare newLines vs previousLines to find changes
+ * 5. Only redraw changed lines (or full redraw if layout shifted)
+ *
+ * ## Render Strategies
+ *
+ * - **First render**: Write all lines, no clear needed
+ * - **Full re-render**: Clear screen + write all (width change, overflow change, shrink)
+ * - **Differential**: Move cursor to first changed line, clear+write only changes
+ *
+ * ## Critical Invariant
+ *
+ * `previousLines[i]` must always correspond to the same screen position as `newLines[i]`.
+ * When overflow state changes, this invariant breaks (clipping shifts indices), so we
+ * MUST do a full re-render to reset the mapping.
  */
 export class TUI extends Container {
+	/**
+	 * Lines rendered in the previous frame. Used for diffing to determine what changed.
+	 * After overflow clipping, this contains only the visible (bottom N) lines.
+	 */
 	private previousLines: string[] = [];
+
+	/** Terminal width from the previous render. Used to detect resize. */
 	private previousWidth = 0;
+
+	/**
+	 * Whether the previous render was clipped due to overflow.
+	 * When this changes, line indices shift and we must do a full re-render.
+	 */
 	private overflowedLastRender = false;
+
+	/** Currently focused component that receives keyboard input. */
 	private focusedComponent: Component | null = null;
+
+	/** Flag to coalesce multiple render requests into one. */
 	private renderRequested = false;
-	private cursorRow = 0; // Track where cursor is (0-indexed, relative to our first line)
+
+	/**
+	 * Current cursor row position (0-indexed, relative to TUI's first line).
+	 * Used to calculate cursor movement for differential rendering.
+	 * After each render, this is set to the last line rendered.
+	 */
+	private cursorRow = 0;
+
+	/** Minimum milliseconds between renders. Higher over SSH to reduce "repaint storms". */
 	private minRenderIntervalMs = 0;
+
+	/** Timestamp of the last render (for throttling). */
 	private lastRenderTs = 0;
+
+	/** Timestamp of the last full re-render (cleared screen). */
 	private lastFullRenderTs = 0;
+
+	/** Timer for throttled render scheduling. */
 	private renderTimer: NodeJS.Timeout | null = null;
+
+	/** Detected terminal capabilities (SSH, sync output support, etc). */
 	private features: TerminalFeatures;
+
+	/** Whether to use synchronized output (DECSET 2026) to prevent tearing. */
 	private syncOutput = true;
+
+	/** Handler called on Ctrl+C or Esc for interrupt behavior. */
 	private interruptHandler?: () => void;
+
+	/** Whether an overlay (alt screen) is currently active. */
 	private overlayActive = false;
+
+	/**
+	 * Cache for line wrapping results. Map<width, Map<lineContent, wrappedLines[]>>.
+	 * Avoids re-wrapping unchanged lines on every render.
+	 */
 	private wrapCache = new Map<number, Map<string, string[]>>();
+
+	/** Maximum entries per width in the wrap cache to prevent unbounded growth. */
 	private static readonly MAX_WRAP_CACHE_ENTRIES = 500;
 
 	constructor(
@@ -216,39 +281,79 @@ export class TUI extends Container {
 		}
 	}
 
+	/**
+	 * Core rendering method. Chooses between full and differential rendering strategies.
+	 *
+	 * ## Algorithm Overview
+	 *
+	 * 1. Render all components to lines, wrap to terminal width
+	 * 2. If content exceeds viewport height, clip to bottom N lines (overflow)
+	 * 3. Detect if layout changed significantly (width, overflow state, shrink)
+	 * 4. If significant change → full re-render (clear screen, write all)
+	 * 5. Otherwise → differential render (find changed lines, update only those)
+	 *
+	 * ## Why Overflow Changes Require Full Re-render
+	 *
+	 * When overflow state changes, the clipping shifts which lines are visible:
+	 *
+	 * ```
+	 * Before (5 lines, no overflow):    After (15 lines, clipped to 10):
+	 * previousLines[0] = actual line 0   newLines[0] = actual line 5 (!)
+	 * previousLines[1] = actual line 1   newLines[1] = actual line 6
+	 * ...                                ...
+	 * ```
+	 *
+	 * If we did differential rendering, we'd compare previousLines[0] to newLines[0],
+	 * but they represent DIFFERENT content positions. The cursor movement would be
+	 * wrong, causing duplicated/overlapping content. Hence: always full re-render
+	 * when overflow state changes.
+	 */
 	private doRender(): void {
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 		this.lastRenderTs = Date.now();
 		const now = this.lastRenderTs;
 
-		// Render all components and hard-wrap to the viewport so we never exceed the terminal width
+		// ─────────────────────────────────────────────────────────────────────────
+		// STEP 1: Render components to lines and wrap to terminal width
+		// ─────────────────────────────────────────────────────────────────────────
 		let newLines = this.wrapWithCache(this.render(width), width);
 
-		// Clip to viewport height to prevent the UI from scrolling upward and leaving
-		// duplicate input boxes in the scrollback. We always render the bottom-most
-		// portion of the layout.
+		// ─────────────────────────────────────────────────────────────────────────
+		// STEP 2: Handle viewport overflow (clip to bottom N lines)
+		// ─────────────────────────────────────────────────────────────────────────
+		// When content exceeds viewport, we show only the bottom portion.
+		// This keeps the input prompt visible and prevents the terminal from
+		// scrolling our UI off-screen.
 		const isOverflowing = newLines.length > height;
 		if (isOverflowing) {
 			newLines = newLines.slice(-height);
 		}
 
-		// Width changed - need full re-render
+		// ─────────────────────────────────────────────────────────────────────────
+		// STEP 3: Detect significant layout changes requiring full re-render
+		// ─────────────────────────────────────────────────────────────────────────
 		const widthChanged =
 			this.previousWidth !== 0 && this.previousWidth !== width;
+
+		// CRITICAL: When overflow state changes, line indices no longer match
+		// between previousLines and newLines. We MUST do a full re-render.
 		const overflowChanged = isOverflowing !== this.overflowedLastRender;
-		// If the layout shrinks (e.g., closing a modal or finishing a long toast),
-		// force a full redraw so any lines from the prior frame—including the input
-		// prompt—are wiped instead of lingering and appearing as “duplicate” boxes.
+
+		// If content shrinks, stale lines would remain visible without full clear
 		const lineCountDecreased = newLines.length < this.previousLines.length;
+
 		const shouldFullRender =
 			widthChanged || overflowChanged || lineCountDecreased;
-		// When overflow state changes, clipping changes which lines are visible.
-		// We MUST do a full re-render because previousLines indices no longer
-		// correspond to the same content positions. Never throttle overflow changes.
+
+		// Never throttle when overflow changes - the index mismatch makes
+		// differential rendering produce garbled output (see class docstring).
+		// This was previously a bug where throttling caused duplicate content.
 		const overflowRerenderThrottled = false;
 
-		// First render - just output everything without clearing
+		// ─────────────────────────────────────────────────────────────────────────
+		// RENDER PATH A: First render (no previous state)
+		// ─────────────────────────────────────────────────────────────────────────
 		if (this.previousLines.length === 0) {
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			for (let i = 0; i < newLines.length; i++) {
@@ -267,7 +372,11 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Width change or overflow -> full re-render so the editor stays pinned at the bottom
+		// ─────────────────────────────────────────────────────────────────────────
+		// RENDER PATH B: Full re-render (layout changed significantly)
+		// ─────────────────────────────────────────────────────────────────────────
+		// Clear entire screen and scrollback, then redraw everything.
+		// Required when: width changed, overflow state changed, or content shrunk.
 		if (shouldFullRender && !overflowRerenderThrottled) {
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
@@ -286,7 +395,13 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Find first and last changed lines
+		// ─────────────────────────────────────────────────────────────────────────
+		// RENDER PATH C: Differential render (only content changed)
+		// ─────────────────────────────────────────────────────────────────────────
+		// Find the range of lines that changed, then update only those.
+		// This is the fast path for streaming updates and minor changes.
+
+		// Step C1: Find first and last changed line indices
 		let firstChanged = -1;
 		let lastChanged = -1;
 		const maxLines = Math.max(newLines.length, this.previousLines.length);
@@ -303,15 +418,16 @@ export class TUI extends Container {
 			}
 		}
 
-		// No changes
+		// Step C2: Early exit if nothing changed
 		if (firstChanged === -1) {
 			return;
 		}
 
-		// Check if firstChanged is outside the viewport
+		// Step C3: Check if changes are within the visible viewport
+		// If first change is above viewport (scrolled out), need full re-render
 		const viewportTop = this.cursorRow - height + 1;
 		if (firstChanged < viewportTop) {
-			// First change is above viewport - need full re-render
+			// First change is above viewport - fall back to full re-render
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
 			for (let i = 0; i < newLines.length; i++) {
@@ -328,20 +444,22 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Render from first changed line to end
+		// Step C4: Differential update - only redraw changed lines
 		let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 
-		// Move cursor to first changed line
+		// Move cursor from current position to the first changed line.
+		// cursorRow tracks where the cursor is; we need to move up or down.
 		const lineDiff = firstChanged - this.cursorRow;
 		if (lineDiff > 0) {
-			buffer += `\x1b[${lineDiff}B`; // Move down
+			buffer += `\x1b[${lineDiff}B`; // CSI n B = Cursor Down n lines
 		} else if (lineDiff < 0) {
-			buffer += `\x1b[${-lineDiff}A`; // Move up
+			buffer += `\x1b[${-lineDiff}A`; // CSI n A = Cursor Up n lines
 		}
-		buffer += "\r"; // Move to column 0
+		buffer += "\r"; // CR = Carriage Return (move to column 0)
 
-		// Render from first changed line to end, clearing each line individually to avoid
-		// cursor-to-end flashes in buffered terminals (e.g., xterm.js over SSH).
+		// Step C5: Clear and write each changed line
+		// We clear each line individually (not cursor-to-end) to avoid
+		// visual flashes in buffered terminals like xterm.js over SSH.
 		for (let i = firstChanged; i < newLines.length; i++) {
 			if (i > firstChanged) buffer += "\r\n";
 			buffer += "\x1b[2K"; // Clear current line before writing
@@ -371,22 +489,25 @@ export class TUI extends Container {
 			buffer += line;
 		}
 
-		// If we rendered fewer lines than previously, clear the leftovers so stale
-		// content cannot flicker before the next full render.
+		// Step C6: Clean up stale lines if content shrunk
+		// If previous render had more lines, those old lines are still on screen.
+		// Move down to each stale line and clear it, then move back up.
 		if (this.previousLines.length > newLines.length) {
 			const extraLines = this.previousLines.length - newLines.length;
 			for (let i = newLines.length; i < this.previousLines.length; i++) {
-				buffer += "\r\n\x1b[2K";
+				buffer += "\r\n\x1b[2K"; // Move to next line and clear it
 			}
-			buffer += `\x1b[${extraLines}A`;
+			// Move cursor back up to the last actual content line
+			buffer += `\x1b[${extraLines}A`; // CSI n A = Cursor Up n lines
 		}
 
 		if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 
-		// Write entire buffer at once
+		// Step C7: Flush the buffer and update state
+		// Write entire buffer atomically to minimize visual artifacts
 		this.terminal.write(buffer);
 
-		// Cursor is now at end of last line
+		// Update cursor tracking - cursor ends at the last line we wrote
 		this.cursorRow = newLines.length - 1;
 		this.previousLines = newLines;
 		this.previousWidth = width;
