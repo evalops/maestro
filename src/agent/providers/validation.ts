@@ -1,4 +1,4 @@
-import AjvModule, { type ErrorObject } from "ajv";
+import AjvModule, { type ErrorObject, type ValidateFunction } from "ajv";
 import addFormatsModule from "ajv-formats";
 import { createLogger } from "../../utils/logger.js";
 import type { AgentTool, ToolCall } from "../types.js";
@@ -27,7 +27,7 @@ const isBrowserExtension =
 let ajv: ReturnType<typeof Ajv> | null = null;
 const validatorCache = new WeakMap<
 	object,
-	Ajv.ValidateFunction & {
+	ValidateFunction & {
 		errors?: ErrorObject[] | null;
 	}
 >();
@@ -69,7 +69,7 @@ export function validateToolArguments(
 	// Compile (or reuse) the schema
 	let validate = validatorCache.get(tool.parameters);
 	if (!validate) {
-		validate = ajv.compile(tool.parameters) as Ajv.ValidateFunction & {
+		validate = ajv.compile(tool.parameters) as ValidateFunction & {
 			errors?: ErrorObject[] | null;
 		};
 		validatorCache.set(tool.parameters, validate);
@@ -83,7 +83,7 @@ export function validateToolArguments(
 	// Format validation errors nicely
 	const errors =
 		(validate.errors ?? [])
-			.map((err) => {
+			.map((err: ErrorObject) => {
 				const path =
 					err.instancePath && err.instancePath.length > 1
 						? err.instancePath.substring(1)
