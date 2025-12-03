@@ -53,6 +53,7 @@ export class ToolExecutionComponent extends Container {
 	private args: Record<string, unknown>;
 	private partialArgs: Record<string, unknown>;
 	private collapsed = false;
+	private defaultCollapsed = false;
 	private pendingStatus: string | null = null;
 	private result?: {
 		content: Array<{
@@ -80,6 +81,8 @@ export class ToolExecutionComponent extends Container {
 		this.toolName = toolName;
 		this.args = args;
 		this.partialArgs = args;
+		this.defaultCollapsed = toolName.toLowerCase() === "batch";
+		this.collapsed = this.defaultCollapsed;
 		this.addChild(new Spacer(1));
 		this.topLine = new Text(this.buildTopLine(), 1, 0);
 		this.addChild(this.topLine);
@@ -263,5 +266,9 @@ export class ToolExecutionComponent extends Container {
 
 	getToolName(): string {
 		return this.toolName;
+	}
+
+	prefersCollapsedByDefault(): boolean {
+		return this.defaultCollapsed;
 	}
 }

@@ -69,15 +69,18 @@ export class BashRenderer implements ToolRenderer {
 
 	private getTextOutput(context: ToolRenderArgs): string {
 		if (!context.result) return "";
-		const textBlocks =
-			context.result.content?.filter(
-				(c): c is { type: "text"; text: string } => c.type === "text",
-			) || [];
-		const imageBlocks =
-			context.result.content?.filter(
-				(c): c is { type: "image"; mimeType: string; data: string } =>
-					c.type === "image",
-			) || [];
+		const { content } = context.result;
+		if (typeof content === "string") {
+			return content;
+		}
+		const blocks = Array.isArray(content) ? content : [];
+		const textBlocks = blocks.filter(
+			(c): c is { type: "text"; text: string } => c.type === "text",
+		);
+		const imageBlocks = blocks.filter(
+			(c): c is { type: "image"; mimeType: string; data: string } =>
+				c.type === "image",
+		);
 
 		let output = textBlocks.map((c) => c.text).join("\n");
 		if (imageBlocks.length > 0) {

@@ -13,11 +13,13 @@
 		"inlineSources": true,
 		"inlineSourceMap": false,
 		"moduleResolution": "Node16",
+		"baseUrl": ".",
 		"resolveJsonModule": true,
 		"allowImportingTsExtensions": false,
 		"experimentalDecorators": true,
 		"emitDecoratorMetadata": true,
 		"useDefineForClassFields": false,
-		"types": ["node"]
+		"types": ["node"],
+		"typeRoots": ["./types", "./node_modules/@types"]
 	}
 }

@@ -4,15 +4,15 @@ import { dirname, join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import type { ErrorObject } from "ajv";
-import {
-	type ParseError as JsoncParseError,
-	parse as parseJsonc,
-	printParseErrorCode,
-} from "jsonc-parser/lib/esm/main.js";
 import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { PolicyError, checkModelPolicy } from "../safety/policy.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
+import {
+	type ParseError as JsoncParseError,
+	parseJsonc,
+	printParseErrorCode,
+} from "../utils/jsonc-umd.js";
 import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { getModel, getModels, getProviders } from "./builtin.js";

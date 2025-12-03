@@ -14,7 +14,9 @@ export class ToolOutputView {
 
 	registerToolComponent(component: ToolExecutionComponent): void {
 		this.toolComponents.add(component);
-		component.setCollapsed(this.compactToolOutputs);
+		const shouldCollapse =
+			this.compactToolOutputs || component.prefersCollapsedByDefault();
+		component.setCollapsed(shouldCollapse);
 	}
 
 	clearTrackedComponents(): void {
@@ -76,7 +78,9 @@ export class ToolOutputView {
 
 	private applyCompactModeToTools(): void {
 		for (const component of this.toolComponents) {
-			component.setCollapsed(this.compactToolOutputs);
+			const shouldCollapse =
+				this.compactToolOutputs || component.prefersCollapsedByDefault();
+			component.setCollapsed(shouldCollapse);
 		}
 		this.options.ui.requestRender();
 	}

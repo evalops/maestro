@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
-import { parse as parseJsonc } from "jsonc-parser/lib/esm/main.js";
 import {
 	type ConfigInspection,
 	type ConfigValidationResult,
@@ -16,6 +15,8 @@ import {
 	sectionHeading,
 	separator as themedSeparator,
 } from "../../style/theme.js";
+// Use the UMD build to avoid ESM subpath resolution issues in some environments
+import { parseJsonc } from "../../utils/jsonc-umd.js";
 
 import type { Api } from "../../agent/types.js";
 import { getEnvVarsForProvider } from "../../providers/api-keys.js";

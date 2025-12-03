@@ -24,6 +24,17 @@ interface ToolResult {
 	isError?: boolean;
 }
 
+type BatchResultEntry = {
+	tool?: string;
+	summary?: string;
+	success?: boolean;
+	result?: {
+		content?: ContentBlock[] | string;
+		details?: unknown;
+		isError?: boolean;
+	};
+};
+
 @customElement("composer-tool-execution")
 export class ComposerToolExecution extends LitElement {
 	static styles = css`
@@ -195,6 +206,87 @@ export class ComposerToolExecution extends LitElement {
 		gap: 0.75rem;
 		align-items: center;
 		flex-wrap: wrap;
+	}
+
+	.tool-execution.batch .tool-body {
+		padding: 0.6rem 0.75rem;
+	}
+
+	.tool-summary.batch-summary {
+		justify-content: flex-start;
+		gap: 0.5rem;
+	}
+
+	.batch-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		padding: 0.2rem 0.45rem;
+		border-radius: 999px;
+		border: 1px solid #30363d;
+		background: #10141a;
+		color: #9ba7b4;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+	}
+
+	.batch-chip.good { border-color: #2ea043; color: #7ee0a3; }
+	.batch-chip.bad { border-color: #f85149; color: #f85149; }
+	.batch-chip.muted { border-color: #21262d; color: #8b949e; }
+
+	.batch-preview {
+		color: #8b949e;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 100%;
+	}
+
+	.batch-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+
+	.batch-row {
+		display: grid;
+		grid-template-columns: 18px 1fr;
+		gap: 0.5rem;
+		align-items: center;
+		background: #0f1218;
+		border: 1px solid #1f242b;
+		border-radius: 6px;
+		padding: 0.45rem 0.55rem;
+	}
+
+	.batch-row .batch-status {
+		font-size: 0.8rem;
+		line-height: 1;
+	}
+
+	.batch-row .batch-summary-text {
+		font-size: 0.75rem;
+		color: #c9d1d9;
+		word-break: break-word;
+	}
+
+	.batch-row .batch-title {
+		display: inline-flex;
+		gap: 0.35rem;
+		font-weight: 700;
+		text-transform: lowercase;
+		color: #8b949e;
+	}
+
+	.batch-row.error {
+		border-color: #392226;
+		background: #1b0f11;
+	}
+
+	.batch-empty {
+		color: #8b949e;
+		font-size: 0.75rem;
+		padding: 0.5rem 0.25rem;
 	}
 
 		.tool-section {
@@ -372,6 +464,7 @@ export class ComposerToolExecution extends LitElement {
 
 	@state() private bodyCollapsed = false;
 	@state() private showFullResult = false;
+	@state() private showAllBatch = false;
 
 	private getLanguageFromFilename(filename: string): string {
 		if (!filename) return "plaintext";
@@ -492,6 +585,192 @@ export class ComposerToolExecution extends LitElement {
 		}
 	}
 
+	protected firstUpdated(): void {
+		if (this.isBatchTool() && !this.bodyCollapsed) {
+			this.bodyCollapsed = true;
+		}
+	}
+
+	private isBatchTool(): boolean {
+		return this.toolName?.toLowerCase() === "batch";
+	}
+
+	private toggleBatchShowAll = () => {
+		this.showAllBatch = !this.showAllBatch;
+	};
+
+	private truncate(text?: string, max = 120): string {
+		if (!text) return "";
+		const normalized = text.replace(/\s+/g, " ").trim();
+		if (normalized.length <= max) return normalized;
+		return `${normalized.slice(0, max - 1)}…`;
+	}
+
+	private getBatchResults(): BatchResultEntry[] {
+		if (!this.result || typeof this.result !== "object") return [];
+		const details = (this.result as { details?: unknown }).details;
+		if (!details || typeof details !== "object") return [];
+		const results = (details as { results?: unknown }).results;
+		if (!Array.isArray(results)) return [];
+		return results.filter(Boolean) as BatchResultEntry[];
+	}
+
+	private getBatchStats(results: BatchResultEntry[]) {
+		const total = results.length;
+		const failures = results.filter(
+			(r) => r.success === false || r.result?.isError,
+		).length;
+		return { total, failures, successes: Math.max(0, total - failures) };
+	}
+
+	private extractPreviewText(): string | null {
+		if (!this.result) return null;
+		if (typeof this.result === "string") return this.truncate(this.result, 140);
+		if (Array.isArray(this.result.content)) {
+			const textBlock = this.result.content.find(
+				(block) => block.type === "text",
+			);
+			if (textBlock?.text) return this.truncate(textBlock.text, 140);
+		} else if (typeof this.result.content === "string") {
+			return this.truncate(this.result.content, 140);
+		}
+		return null;
+	}
+
+	private renderBatchSummary(results: BatchResultEntry[], statusText: string) {
+		const stats = this.getBatchStats(results);
+		const preview = this.extractPreviewText();
+		return html`
+			<div class="tool-summary batch-summary">
+				<span class="batch-chip muted">Batch</span>
+				<span class="batch-chip good">${stats.successes} ok</span>
+				<span class="batch-chip ${stats.failures ? "bad" : "muted"}">
+					${stats.failures} err
+				</span>
+				<span class="batch-chip muted">${statusText}</span>
+				${
+					preview
+						? html`<span class="batch-preview" title="${preview}">${preview}</span>`
+						: ""
+				}
+			</div>
+		`;
+	}
+
+	private renderBatchRows(results: BatchResultEntry[]) {
+		if (!results.length) {
+			const preview = this.extractPreviewText();
+			return html`<div class="batch-empty">
+				${preview || "No batch results yet."}
+			</div>`;
+		}
+		const collapsedLimit = 6;
+		const limit = this.showAllBatch ? results.length : collapsedLimit;
+		const rows = results.slice(0, limit);
+		const hasMore = results.length > collapsedLimit;
+		return html`
+			<div class="batch-list">
+				${rows.map((entry, index) => {
+					const isError = entry.success === false || entry.result?.isError;
+					const status = isError ? "✕" : "✓";
+					const summary =
+						this.truncate(entry.summary, 110) ||
+						this.truncate(
+							typeof entry.result?.content === "string"
+								? entry.result.content
+								: Array.isArray(entry.result?.content)
+									? entry.result?.content
+											.filter((c) => c.type === "text")
+											.map((c) => c.text || "")
+											.join(" ")
+									: "",
+							110,
+						) ||
+						"Completed";
+					return html`
+						<div class="batch-row ${isError ? "error" : ""}">
+							<span class="batch-status" aria-label=${isError ? "error" : "ok"}>${status}</span>
+							<div class="batch-summary-text">
+								<span class="batch-title">
+									${entry.tool || `call ${index + 1}`}
+								</span>
+								${summary}
+							</div>
+						</div>
+					`;
+				})}
+				${
+					hasMore || this.showAllBatch
+						? html`
+							<button class="collapse-toggle" @click=${this.toggleBatchShowAll}>
+								${
+									this.showAllBatch
+										? "Show Less"
+										: `Show All (${results.length - collapsedLimit} more)`
+								}
+							</button>
+					  `
+						: ""
+				}
+			</div>
+		`;
+	}
+
+	private renderMetadata() {
+		if (this.isRunning) return null;
+		return html`
+			<div class="metadata">
+				<div class="metadata-item">
+					<span class="metadata-label">ID:</span>
+					<span class="metadata-value">${this.toolCallId.slice(0, 8)}</span>
+				</div>
+				<div class="metadata-item">
+					<span class="metadata-label">Duration:</span>
+					<span class="metadata-value">${this.formatDuration()}</span>
+				</div>
+			</div>
+		`;
+	}
+
+	private renderBatchExecution(statusClass: string, statusText: string) {
+		const results = this.getBatchResults();
+		return html`
+			<div class="tool-execution ${statusClass} batch">
+				<div class="tool-header">
+					<div class="tool-name">
+						<div class="tool-icon">
+							${
+								this.isRunning
+									? html`<div class="spinner"></div>`
+									: this.isError
+										? html`<span style="color: #f85149;">✕</span>`
+										: html`<span style="color: #3fb950;">✓</span>`
+							}
+						</div>
+						<span class="tool-glyph">${this.getToolGlyph(this.toolName)}</span>
+						<span>${this.toolName}</span>
+					</div>
+					<div style="display:flex; align-items:center; gap:0.35rem;">
+						<button class="collapse-toggle" @click=${this.toggleBodyCollapse}>
+							${this.bodyCollapsed ? "Expand" : "Collapse"}
+						</button>
+						<div class="tool-status ${statusClass}">${statusText}</div>
+					</div>
+				</div>
+
+				${
+					this.bodyCollapsed
+						? this.renderBatchSummary(results, statusText)
+						: html`
+							<div class="tool-body">
+								${this.renderBatchRows(results)} ${this.renderMetadata()}
+							</div>
+					  `
+				}
+			</div>
+		`;
+	}
+
 	private renderResult() {
 		if (!this.result) return html``;
 
@@ -561,6 +840,10 @@ export class ComposerToolExecution extends LitElement {
 				? "Error"
 				: "Completed";
 		const formattedArgs = this.formatArgs();
+
+		if (this.isBatchTool()) {
+			return this.renderBatchExecution(statusClass, statusText);
+		}
 
 		return html`
 			<div class="tool-execution ${statusClass}">
@@ -656,17 +939,8 @@ export class ComposerToolExecution extends LitElement {
 							${
 								!this.isRunning
 									? html`
-								<div class="metadata">
-									<div class="metadata-item">
-										<span class="metadata-label">ID:</span>
-										<span class="metadata-value">${this.toolCallId.slice(0, 8)}</span>
-									</div>
-									<div class="metadata-item">
-										<span class="metadata-label">Duration:</span>
-										<span class="metadata-value">${this.formatDuration()}</span>
-									</div>
-								</div>
-							`
+								${this.renderMetadata()}
+						  `
 									: ""
 							}
 						</div>
