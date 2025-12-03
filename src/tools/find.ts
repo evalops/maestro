@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve as resolvePath } from "node:path";
+import { relative, resolve as resolvePath, sep } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { globSync } from "glob";
 import { createTool } from "./tool-dsl.js";
@@ -83,6 +83,11 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			String(effectiveLimit),
 		];
 
+		// If pattern includes path separators, match against the full path so nested globs work.
+		if (pattern.includes("/") || pattern.includes("\\")) {
+			args.push("--full-path");
+		}
+
 		if (includeHidden) {
 			args.push("--hidden");
 		}
@@ -112,13 +117,14 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			args.push("--ignore-file", gitignorePath);
 		}
 
-		args.push(pattern, searchPath);
+		args.push(pattern);
 
 		const command = [fdPath, ...args].join(" ");
 
 		const result = spawnSync(fdPath, args, {
 			encoding: "utf-8",
 			maxBuffer: 10 * 1024 * 1024,
+			cwd: searchPath,
 		});
 
 		if (signal?.aborted) {
@@ -142,6 +148,41 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 		}
 
 		if (!output) {
+			// Fallback to globbing when fd returns nothing (handles patterns with subdirectories on some platforms)
+			const globMatches = globSync(pattern, {
+				cwd: searchPath,
+				dot: includeHidden,
+				nodir: false,
+				absolute: true,
+			});
+			const searchRoot = searchPath.endsWith(sep)
+				? searchPath
+				: `${searchPath}${sep}`;
+			const constrained = globMatches.filter((match) => {
+				const resolved = resolvePath(match);
+				return resolved === searchPath || resolved.startsWith(searchRoot);
+			});
+
+			if (constrained.length > 0) {
+				const limited = constrained.slice(0, effectiveLimit);
+				const truncated = constrained.length > effectiveLimit;
+				const text = limited
+					.map((abs) => relative(searchPath, abs) || ".")
+					.join("\n");
+				return respond
+					.text(
+						truncated
+							? `${text}\n\n(truncated, ${effectiveLimit} results shown)`
+							: text,
+					)
+					.detail({
+						command,
+						cwd: searchPath,
+						fileCount: constrained.length,
+						truncated,
+					});
+			}
+
 			return respond
 				.text("No files found matching pattern")
 				.detail({ command, cwd: searchPath, fileCount: 0, truncated: false });
@@ -156,19 +197,10 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 				continue;
 			}
 
-			const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
 			let relativePath = line;
-			if (line.startsWith(searchPath)) {
-				relativePath = line.slice(searchPath.length + 1);
-			} else {
-				relativePath = resolvePath(searchPath, line);
-				if (relativePath.startsWith(searchPath)) {
-					relativePath = relativePath.slice(searchPath.length + 1);
-				}
-			}
-
-			if (hadTrailingSlash && !relativePath.endsWith("/")) {
-				relativePath += "/";
+			if (line.endsWith("\\")) {
+				// Normalize Windows-style trailing backslash to a single forward slash
+				relativePath = `${line.slice(0, -1)}/`;
 			}
 
 			if (relativePath) {

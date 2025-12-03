@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import {
 	DiagConsoleLogger,
 	DiagLogLevel,
@@ -20,7 +21,9 @@ let configuredServiceName: string | null = null;
 let configuredSampler: string | null = null;
 let sdkInstance: NodeSDK | null = null;
 
-import packageJson from "../package.json";
+const packageJson = createRequire(import.meta.url)("../package.json") as {
+	version?: string;
+};
 
 const packageVersion = (): string => {
 	const version = packageJson.version;

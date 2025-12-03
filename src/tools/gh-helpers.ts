@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "../agent/types.js";
-import { bashTool } from "./bash.js";
+import { type BashBackgroundDetails, bashTool } from "./bash.js";
 
 /**
  * Check if GitHub CLI is installed and authenticated.
@@ -7,7 +7,7 @@ import { bashTool } from "./bash.js";
  */
 export async function checkGhCliAvailable(
 	signal?: AbortSignal,
-): Promise<AgentToolResult<undefined> | null> {
+): Promise<AgentToolResult<BashBackgroundDetails | undefined> | null> {
 	// Check if gh CLI is installed
 	const checkResult = await bashTool.execute(
 		"gh-check",
@@ -79,7 +79,7 @@ export async function executeGhCommand(
 	toolCallId: string,
 	command: string,
 	signal?: AbortSignal,
-): Promise<AgentToolResult<undefined>> {
+): Promise<AgentToolResult<BashBackgroundDetails | undefined>> {
 	const result = await bashTool.execute(toolCallId, { command }, signal);
 
 	const resultContent = result.content[0];

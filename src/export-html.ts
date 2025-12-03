@@ -1,4 +1,5 @@
 import { createReadStream, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -16,9 +17,11 @@ import {
 } from "./conversation/render-model.js";
 import type { SessionHeaderEntry, SessionManager } from "./session/manager.js";
 
-// Get version from package.json
-import packageJson from "../package.json";
-const VERSION = packageJson.version;
+// Get version from package.json without import assertions (Node16 compatible)
+const packageJson = createRequire(import.meta.url)("../package.json") as {
+	version?: string;
+};
+const VERSION = packageJson.version ?? "unknown";
 
 interface SessionFileParseResult {
 	header: SessionHeaderEntry | null;
