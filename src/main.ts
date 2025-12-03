@@ -10,6 +10,10 @@ import {
 	TodoContextSource,
 } from "./agent/context-providers.js";
 import { Agent, ProviderTransport, type ThinkingLevel } from "./agent/index.js";
+import {
+	disposeCheckpointService,
+	initCheckpointService,
+} from "./checkpoints/index.js";
 import { type Args, type Mode, parseArgs } from "./cli/args.js";
 import {
 	EXEC_SESSION_SUMMARY_PREFIX,
@@ -378,6 +382,13 @@ export async function main(args: string[]) {
 
 	// Bootstrap LSP with workspace root resolver and config overrides
 	await bootstrapLsp();
+
+	// Initialize checkpointing so PreToolUse hooks capture file snapshots
+	initCheckpointService(process.cwd());
+	const disposeCheckpoint = (): void => disposeCheckpointService();
+	process.once("beforeExit", disposeCheckpoint);
+	process.once("SIGINT", disposeCheckpoint);
+	process.once("SIGTERM", disposeCheckpoint);
 
 	if (parsed.help) {
 		printHelp(VERSION);

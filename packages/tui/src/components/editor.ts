@@ -997,6 +997,25 @@ export class Editor implements Component {
 		while (true) {
 			const line = this.state.lines[lineIdx] || "";
 
+			if (colIdx === 0) {
+				// Hop to end of previous line unless we're at absolute file start
+				if (lineIdx === 0) {
+					this.state.cursorLine = lineIdx;
+					this.state.cursorCol = colIdx;
+					break;
+				}
+				lineIdx -= 1;
+				const prevLine = this.state.lines[lineIdx] || "";
+				if (prevLine.length === 0) {
+					// Empty line - continue searching upward
+					colIdx = 0;
+					continue;
+				}
+				this.state.cursorLine = lineIdx;
+				this.state.cursorCol = prevLine.length;
+				break;
+			}
+
 			while (colIdx > 0 && isBoundary(line[colIdx - 1] ?? "")) {
 				colIdx--;
 			}
@@ -1004,16 +1023,9 @@ export class Editor implements Component {
 				colIdx--;
 			}
 
-			// Stop only at absolute file start; otherwise continue to previous line
-			if (colIdx === 0 && lineIdx === 0) {
-				this.state.cursorLine = lineIdx;
-				this.state.cursorCol = colIdx;
-				break;
-			}
-
-			// Move to previous line and continue searching
-			lineIdx -= 1;
-			colIdx = (this.state.lines[lineIdx] || "").length;
+			this.state.cursorLine = lineIdx;
+			this.state.cursorCol = colIdx;
+			break;
 		}
 
 		this.preferredCol = this.state.cursorCol;

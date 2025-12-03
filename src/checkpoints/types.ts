@@ -66,6 +66,8 @@ export interface CheckpointStoreOptions {
 	persistDir?: string;
 	/** Working directory for the project */
 	cwd: string;
+	/** Maximum file size to snapshot (in bytes) */
+	maxFileSize?: number;
 }
 
 /**

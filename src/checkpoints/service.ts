@@ -5,7 +5,8 @@
  * before file-modifying operations.
  */
 
-import { join } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { minimatch } from "minimatch";
 import { registerHook } from "../hooks/config.js";
 import type { HookInput, PreToolUseHookInput } from "../hooks/types.js";
 import { createLogger } from "../utils/logger.js";
@@ -127,19 +128,9 @@ function shouldExcludeFile(
 	filePath: string,
 	config: CheckpointConfig,
 ): boolean {
-	for (const pattern of config.excludePatterns) {
-		// Simple glob matching
-		const regex = new RegExp(
-			`^${pattern
-				.replace(/\*\*/g, ".*")
-				.replace(/\*/g, "[^/]*")
-				.replace(/\?/g, ".")}$`,
-		);
-		if (regex.test(filePath)) {
-			return true;
-		}
-	}
-	return false;
+	return config.excludePatterns.some((pattern) =>
+		minimatch(filePath, pattern, { dot: true }),
+	);
 }
 
 /**
@@ -150,16 +141,19 @@ export class CheckpointService {
 	private config: CheckpointConfig;
 	private unregisterHook: (() => void) | null = null;
 	private enabled: boolean;
+	private cwd: string;
 
 	constructor(cwd: string, config?: Partial<CheckpointConfig>) {
 		this.config = { ...DEFAULT_CHECKPOINT_CONFIG, ...config };
 		this.enabled =
 			this.config.enabled && !process.env.COMPOSER_DISABLE_FILE_CHECKPOINTING;
+		this.cwd = cwd;
 
 		this.store = createCheckpointStore({
 			cwd,
 			maxCheckpoints: 50,
 			persistToDisk: false, // In-memory by default for performance
+			maxFileSize: this.config.maxFileSize,
 		});
 
 		if (this.enabled) {
@@ -204,18 +198,27 @@ export class CheckpointService {
 			return;
 		}
 
-		const filePaths = extractFilePaths(
+		const rawPaths = extractFilePaths(
 			toolName,
 			toolInput as Record<string, unknown>,
 		);
 
-		if (filePaths.length === 0) {
+		if (rawPaths.length === 0) {
 			return;
 		}
 
+		// Resolve to absolute paths and contain to workspace
+		const resolvedPaths = rawPaths
+			.map((p) => (isAbsolute(p) ? p : resolve(this.cwd, p)))
+			.filter((p) => p.startsWith(this.cwd + sep) || p === this.cwd);
+		const uniquePaths = Array.from(new Set(resolvedPaths));
+
 		// Filter out excluded files
-		const checkpointPaths = filePaths.filter(
-			(path) => !shouldExcludeFile(path, this.config),
+		const checkpointPaths = uniquePaths.filter((path) =>
+			(() => {
+				const rel = relative(this.cwd, path) || ".";
+				return !shouldExcludeFile(rel, this.config);
+			})(),
 		);
 
 		if (checkpointPaths.length === 0) {

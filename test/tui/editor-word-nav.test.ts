@@ -22,7 +22,7 @@ describe("Editor word navigation across lines", () => {
 		editor.moveWordBackwards();
 
 		expect(editor.state.cursorLine).toBe(0);
-		expect(editor.state.cursorCol).toBe(0); // start of "hello"
+		expect(editor.state.cursorCol).toBe(5); // end of "hello"
 	});
 
 	it("moves forward across line boundary to next line word end", () => {
