@@ -8,7 +8,7 @@ import {
 	type ParseError as JsoncParseError,
 	parse as parseJsonc,
 	printParseErrorCode,
-} from "jsonc-parser";
+} from "jsonc-parser/lib/esm/main.js";
 import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { PolicyError, checkModelPolicy } from "../safety/policy.js";
