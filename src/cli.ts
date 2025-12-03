@@ -23,12 +23,24 @@ process.emit = (event, ...args) => {
 	return originalEmit.apply(process, [event, ...args]);
 };
 
-const resolveEntry = () => (process.versions?.bun ? "./main.ts" : "./main.js");
-
 const run = async () => {
 	try {
-		const modulePath = resolveEntry();
-		const { main } = await import(modulePath);
+		// Prefer the TypeScript entry when running under Bun during development,
+		// but fall back to the compiled JS for bundled/compiled binaries.
+		const loadMain = async () => {
+			if (process.versions?.bun) {
+				const tsEntry = "./main." + "ts";
+				try {
+					return await import(tsEntry);
+				} catch {
+					// In compiled binaries the .ts source isn't present; use JS output.
+					return await import("./main.js");
+				}
+			}
+			return await import("./main.js");
+		};
+
+		const { main } = await loadMain();
 		await main(process.argv.slice(2));
 	} catch (err) {
 		console.error(err);
