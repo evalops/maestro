@@ -53,42 +53,42 @@ export function handleEnhancedUndoCommand(ctx: UndoRenderContext): void {
 	const count = countArg ? Number.parseInt(countArg, 10) : 1;
 
 	const tracker = getChangeTracker();
-        const stats = tracker.getStats();
+	const stats = tracker.getStats();
 
-        if (stats.totalChanges === 0) {
-                const checkpointSvc = getCheckpointService();
-                if (checkpointSvc?.canUndo()) {
-                        if (isPreview) {
-                                const history = checkpointSvc.getHistory();
-                                const lastCheckpoint = history.at(-1);
-                                if (!lastCheckpoint) {
-                                        ctx.showInfo("No checkpoints available to undo.");
-                                } else {
-                                        const lines = [
-                                                "Checkpoint Undo Preview",
-                                                "",
-                                                `Would restore ${lastCheckpoint.fileCount} file${lastCheckpoint.fileCount === 1 ? "" : "s"} to state before "${lastCheckpoint.description}"`,
-                                                chalk.dim("Run /undo to apply"),
-                                        ];
-                                        ctx.addContent(lines.join("\n"));
-                                        ctx.requestRender();
-                                }
-                        } else {
-                                const result = checkpointSvc.undo();
-                                if (result.success) {
-                                        const restored = result.files?.length ?? 0;
-                                        ctx.showSuccess(
-                                                `Restored ${restored} file${restored === 1 ? "" : "s"} from last checkpoint.`,
-                                        );
-                                } else {
-                                        ctx.showError(result.message);
-                                }
-                        }
-                } else {
-                        ctx.showInfo(
-                                "No changes to undo. File changes are tracked during this session.",
-                        );
-                }
+	if (stats.totalChanges === 0) {
+		const checkpointSvc = getCheckpointService();
+		if (checkpointSvc?.canUndo()) {
+			if (isPreview) {
+				const history = checkpointSvc.getHistory();
+				const lastCheckpoint = history.at(-1);
+				if (!lastCheckpoint) {
+					ctx.showInfo("No checkpoints available to undo.");
+				} else {
+					const lines = [
+						"Checkpoint Undo Preview",
+						"",
+						`Would restore ${lastCheckpoint.fileCount} file${lastCheckpoint.fileCount === 1 ? "" : "s"} to state before "${lastCheckpoint.description}"`,
+						chalk.dim("Run /undo to apply"),
+					];
+					ctx.addContent(lines.join("\n"));
+					ctx.requestRender();
+				}
+			} else {
+				const result = checkpointSvc.undo();
+				if (result.success) {
+					const restored = result.files?.length ?? 0;
+					ctx.showSuccess(
+						`Restored ${restored} file${restored === 1 ? "" : "s"} from last checkpoint.`,
+					);
+				} else {
+					ctx.showError(result.message);
+				}
+			}
+		} else {
+			ctx.showInfo(
+				"No changes to undo. File changes are tracked during this session.",
+			);
+		}
 		return;
 	}
 
