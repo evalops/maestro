@@ -164,6 +164,12 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 				content: longContent,
 			});
 
+			// Set a result to trigger rendering of the content
+			component.updateResult({
+				content: [{ type: "text", text: "File written" }],
+				isError: false,
+			});
+
 			const rendered = getRenderedText(component);
 
 			// Should contain truncation indicator
@@ -340,6 +346,9 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 				command: "echo 'building...'",
 			});
 
+			// Set pending status to trigger args display (simulates approval flow)
+			component.setPendingStatus("Awaiting approval");
+
 			const rendered = getRenderedText(component);
 
 			// Should show command even without result
@@ -351,6 +360,9 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 			const component = new ToolExecutionComponent("bash", {
 				command: "echo",
 			});
+
+			// Set pending status to trigger args display
+			component.setPendingStatus("Awaiting approval");
 
 			let rendered = getRenderedText(component);
 			expect(rendered).toContain("echo");
@@ -372,6 +384,12 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 				file_path: filePath,
 			});
 
+			// Set a result to trigger content rendering
+			component.updateResult({
+				content: [{ type: "text", text: "file contents" }],
+				isError: false,
+			});
+
 			const rendered = getRenderedText(component);
 
 			// Should show tilde notation
@@ -382,6 +400,12 @@ describe("ToolExecutionComponent - Output Truncation", () => {
 		it("should not shorten non-home paths", () => {
 			const component = new ToolExecutionComponent("read", {
 				file_path: "/usr/local/bin/tool",
+			});
+
+			// Set a result to trigger content rendering
+			component.updateResult({
+				content: [{ type: "text", text: "file contents" }],
+				isError: false,
 			});
 
 			const rendered = getRenderedText(component);

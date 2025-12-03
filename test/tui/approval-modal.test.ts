@@ -63,13 +63,14 @@ describe("ApprovalModal", () => {
 		for (let i = commandIndex + 1; i < lines.length; i++) {
 			const line = lines[i];
 			if (
-				line.startsWith("├") ||
-				line.startsWith("╰") ||
+				line.startsWith("╠") ||
+				line.startsWith("╚") ||
 				line.toUpperCase().includes("QUEUE STATUS")
 			) {
 				break;
 			}
-			if (!line.includes("│")) {
+			// Double border uses ║ for vertical
+			if (!line.includes("║")) {
 				continue;
 			}
 			const inner = line.slice(2, Math.max(2, line.length - 2));
@@ -178,7 +179,8 @@ describe("ApprovalModal", () => {
 		let captured = "";
 		for (let i = reasonHeaderIndex + 1; i < lines.length; i++) {
 			const line = lines[i];
-			if (!line.includes("│")) {
+			// Double border uses ║ for vertical
+			if (!line.includes("║")) {
 				continue;
 			}
 			const inner = line.slice(2, Math.max(2, line.length - 2));
