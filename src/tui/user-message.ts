@@ -1,8 +1,34 @@
-import { Container, Markdown, Spacer, Text, visibleWidth } from "@evalops/tui";
+import {
+	type Component,
+	Container,
+	Markdown,
+	Spacer,
+	Text,
+	visibleWidth,
+} from "@evalops/tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { themedBottomLine, themedTopLine } from "./utils/borders.js";
 import { formatRelativeTime } from "./utils/footer-utils.js";
 import { PANEL_WIDTHS } from "./utils/layout.js";
+
+/**
+ * Simple wrapper component that adds left offset to a child component.
+ * Used for right-aligning content within a container.
+ */
+class OffsetWrapper implements Component {
+	constructor(
+		private child: Component,
+		private offsetX: number,
+		private fixedWidth: number,
+	) {}
+
+	render(_width: number): string[] {
+		// Render child at fixed width, then add left offset
+		const childLines = this.child.render(this.fixedWidth);
+		const leftPad = " ".repeat(this.offsetX);
+		return childLines.map((line) => leftPad + line);
+	}
+}
 
 /**
  * Component that renders a user message styled as a rounded card.
@@ -35,12 +61,13 @@ export class UserMessageComponent extends Container {
 			text,
 			undefined,
 			undefined,
-			undefined, // Let markdown handle its own background or inherit
-			1, // Small padding, not rightOffset which caused vertical text
+			undefined,
+			1, // Internal padding
 			0,
 			getMarkdownTheme(),
 		);
-		this.addChild(this.markdown);
+		// Wrap markdown with offset to match border positioning
+		this.addChild(new OffsetWrapper(this.markdown, rightOffset, panelWidth));
 		this.addChild(new Text(this.buildBottomLine(panelWidth), rightOffset, 0));
 	}
 
