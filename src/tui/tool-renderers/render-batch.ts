@@ -7,7 +7,7 @@ type BatchResultEntry = {
 	summary?: string;
 	success?: boolean;
 	result?: {
-		content?: Array<{ type: string; text?: string }>;
+		content?: Array<{ type: string; text?: string }> | string;
 		details?: unknown;
 		isError?: boolean;
 	};
@@ -70,9 +70,14 @@ export class BatchRenderer implements ToolRenderer {
 	}
 
 	private getPreviewText(context: ToolRenderArgs): string | undefined {
-		const textBlock = context.result?.content?.find(
-			(block) => block.type === "text",
-		) as { text?: string } | undefined;
+		const content = context.result?.content;
+		if (!content) return undefined;
+
+		if (typeof content === "string") {
+			return this.cleanSummary(content);
+		}
+
+		const textBlock = content.find((block) => block.type === "text");
 		if (!textBlock?.text) return undefined;
 		return this.cleanSummary(textBlock.text);
 	}
@@ -90,6 +95,14 @@ export class BatchRenderer implements ToolRenderer {
 		result?: BatchResultEntry["result"],
 	): string | undefined {
 		if (!result?.content) return undefined;
+
+		if (typeof result.content === "string") {
+			return (
+				this.cleanSummary(result.content) ??
+				buildCollapsedSummary(result.content)
+			);
+		}
+
 		const firstText = result.content.find((c) => c.type === "text");
 		if (!firstText?.text) return undefined;
 		return (

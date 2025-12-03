@@ -3,12 +3,14 @@ export interface ToolRenderArgs {
 	args: Record<string, unknown>;
 	partialArgs?: Record<string, unknown>;
 	result?: {
-		content: Array<{
-			type: string;
-			text?: string;
-			data?: string;
-			mimeType?: string;
-		}>;
+		content?:
+			| Array<{
+					type: string;
+					text?: string;
+					data?: string;
+					mimeType?: string;
+			  }>
+			| string;
 		isError: boolean;
 		details?: unknown;
 	};
