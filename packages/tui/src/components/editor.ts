@@ -1004,8 +1004,8 @@ export class Editor implements Component {
 				colIdx--;
 			}
 
-			// Stop when we hit the start of the current line (or file)
-			if (colIdx === 0 || lineIdx === 0) {
+			// Stop only at absolute file start; otherwise continue to previous line
+			if (colIdx === 0 && lineIdx === 0) {
 				this.state.cursorLine = lineIdx;
 				this.state.cursorCol = colIdx;
 				break;
@@ -1036,8 +1036,8 @@ export class Editor implements Component {
 				colIdx++;
 			}
 
-			// Stop when we hit the end of the current line (or file)
-			if (colIdx >= line.length || lineIdx >= this.state.lines.length - 1) {
+			// Stop only at absolute file end; otherwise continue to next line
+			if (colIdx >= line.length && lineIdx >= this.state.lines.length - 1) {
 				this.state.cursorLine = lineIdx;
 				this.state.cursorCol = Math.min(colIdx, line.length);
 				break;
