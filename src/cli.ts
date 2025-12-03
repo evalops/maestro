@@ -36,4 +36,5 @@ const run = async () => {
 	}
 };
 
-await run();
+// Call without top-level await so Bun's bytecode compilation (which forbids TLA) can bundle this entry.
+void run();
