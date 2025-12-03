@@ -1,37 +1,115 @@
 /**
- * Bash command parser using tree-sitter for accurate safety analysis.
- * Provides structured parsing of shell commands to detect dangerous patterns.
+ * Bash Command Parser - Tree-sitter based shell command analysis for safety
+ *
+ * This module provides structured parsing of shell commands using tree-sitter,
+ * enabling accurate detection of dangerous patterns that regex-based approaches
+ * often miss or incorrectly flag.
+ *
+ * ## Why Tree-Sitter?
+ *
+ * Regex-based command detection is fundamentally limited:
+ * - `rm -rf /` is dangerous, but `echo "rm -rf /"` is not
+ * - `git push --force` is dangerous, but only in certain contexts
+ * - Command substitution `$(...)` can hide dangerous commands
+ *
+ * Tree-sitter produces a proper AST, letting us:
+ * - Distinguish command names from arguments and strings
+ * - Detect pipes, redirects, and subshells structurally
+ * - Unwrap shell wrappers (`bash -c "..."`) for inner analysis
+ *
+ * ## Lazy Initialization
+ *
+ * Tree-sitter requires native bindings that may not be available:
+ * - Development: Usually available via npm install
+ * - Production: May be stripped in minimal deployments
+ * - CI/CD: May not have build tools for native compilation
+ *
+ * We use lazy initialization with graceful fallback:
+ * 1. Try to load native modules on first use
+ * 2. Cache the result (available or not)
+ * 3. Fall back to regex-based checks if unavailable
+ *
+ * ## Parse Result Structure
+ *
+ * ```typescript
+ * {
+ *   success: true,
+ *   commands: [{ program: "rm", args: ["-rf", "/tmp/foo"], raw: "rm -rf /tmp/foo" }],
+ *   hasPipes: false,
+ *   hasRedirects: true,
+ *   hasSubshell: false,
+ *   hasBackgroundJob: false,
+ *   hasCommandSubstitution: false
+ * }
+ * ```
+ *
+ * @module safety/bash-parser
  */
 
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:bash-parser");
 
-// Dynamic import types - use typeof for the default export class
+// Dynamic import types - tree-sitter is loaded at runtime to handle missing bindings
 type ParserType = InstanceType<typeof import("tree-sitter")>;
 type SyntaxNode = import("tree-sitter").SyntaxNode;
 
-// Initialize parser lazily to handle missing native bindings
+/**
+ * Parser State - Lazy initialization with singleton pattern
+ *
+ * We use three variables to track initialization state:
+ * - parser: The tree-sitter parser instance (null if not available)
+ * - parserInitialized: Whether we've attempted initialization
+ * - parserAvailable: Whether initialization succeeded
+ *
+ * This pattern ensures we only try to load native modules once,
+ * even if multiple code paths check for parser availability.
+ */
 let parser: ParserType | null = null;
 let parserInitialized = false;
 let parserAvailable = false;
 
+/**
+ * Initialize Tree-Sitter Parser
+ *
+ * Attempts to load tree-sitter and the bash grammar. This is async because
+ * dynamic imports are promises, and we want to handle errors gracefully.
+ *
+ * ## Initialization Steps
+ *
+ * 1. Check if already initialized (return cached result)
+ * 2. Dynamically import tree-sitter and tree-sitter-bash
+ * 3. Create parser instance and set language
+ * 4. Cache result for future calls
+ *
+ * ## Error Handling
+ *
+ * If native modules aren't available, we log a warning and set
+ * parserAvailable=false. All subsequent parsing attempts will
+ * return {success: false} and callers should fall back to regex.
+ *
+ * @returns Promise resolving to whether parser is available
+ */
 async function initParser(): Promise<boolean> {
+	// Already initialized - return cached result
 	if (parserInitialized) return parserAvailable;
 	parserInitialized = true;
 
 	try {
+		// Dynamic imports for native modules - may fail if bindings missing
 		const [Parser, BashLanguage] = await Promise.all([
 			import("tree-sitter").then((m) => m.default),
 			import("tree-sitter-bash").then((m) => m.default),
 		]);
 		parser = new Parser();
+		// Type cast needed because tree-sitter-bash types don't perfectly align
 		parser.setLanguage(
 			BashLanguage as unknown as import("tree-sitter").Language,
 		);
 		parserAvailable = true;
 		logger.debug("Tree-sitter bash parser initialized successfully");
 	} catch (error) {
+		// Graceful degradation - parser features will be disabled
 		logger.warn(
 			"Tree-sitter bash parser not available (native bindings missing)",
 			{
@@ -43,7 +121,8 @@ async function initParser(): Promise<boolean> {
 	return parserAvailable;
 }
 
-// Eagerly try to init but don't block
+// Kick off initialization eagerly but don't block module loading
+// This way the parser may be ready by the time we need it
 initParser().catch(() => {});
 
 /**
@@ -78,33 +157,67 @@ export interface BashParseResult {
 	error?: string;
 }
 
-// Known safe read-only commands
+/**
+ * Safe Command Allowlist - Read-only commands that don't modify system state
+ *
+ * These commands are considered safe for autonomous execution without approval
+ * because they only read data, never write. This enables the agent to explore
+ * the filesystem and gather information freely.
+ *
+ * ## Criteria for inclusion
+ *
+ * 1. Command is purely read-only by default
+ * 2. No common flags that enable writing (or we check for them separately)
+ * 3. Cannot be used to exfiltrate sensitive data in dangerous ways
+ *
+ * ## Notable edge cases
+ *
+ * - `sed`: Listed here because it's read-only without -i flag. We check for
+ *   -i separately in analyzeCommandSafety().
+ * - `tee`: Can write to files, but primarily used for reading in pipelines.
+ *   Included because blocking it breaks common patterns.
+ * - `xargs`: Executes other commands, but the executed command is analyzed.
+ */
 const SAFE_COMMANDS = new Set([
+	// File reading
 	"cat",
 	"head",
 	"tail",
 	"less",
 	"more",
+	// Search and filtering
 	"grep",
 	"rg",
 	"find",
+	// Directory listing
 	"ls",
 	"pwd",
+	"tree",
+	// Output formatting
 	"echo",
 	"printf",
+	// Text processing (read-only)
 	"wc",
 	"sort",
 	"uniq",
 	"diff",
+	"cut",
+	"tr",
+	"awk",
+	"sed", // read-only when not using -i
+	// File metadata
 	"file",
 	"stat",
 	"du",
 	"df",
+	// Command lookup
 	"which",
 	"whereis",
 	"type",
+	// Documentation
 	"man",
 	"help",
+	// System info
 	"date",
 	"cal",
 	"whoami",
@@ -114,64 +227,89 @@ const SAFE_COMMANDS = new Set([
 	"uname",
 	"env",
 	"printenv",
-	"tree",
+	// Modern tools
 	"bat",
 	"jq",
 	"yq",
-	"awk",
-	"sed", // read-only when not using -i
-	"cut",
-	"tr",
+	// Pipeline utilities
 	"tee",
 	"xargs",
 ]);
 
-// Git read-only subcommands
+/**
+ * Safe Git Subcommands - Read-only git operations
+ *
+ * These git subcommands don't modify repository state and are safe for
+ * autonomous execution. The agent can freely explore git history.
+ */
 const SAFE_GIT_SUBCOMMANDS = new Set([
-	"status",
-	"log",
-	"diff",
-	"show",
-	"branch",
-	"tag",
-	"remote",
-	"config",
-	"describe",
-	"rev-parse",
-	"ls-files",
-	"ls-tree",
-	"blame",
-	"shortlog",
-	"reflog",
-	"stash", // listing
+	"status", // Working tree status
+	"log", // Commit history
+	"diff", // Changes between commits/trees
+	"show", // Show objects
+	"branch", // List branches (without -d/-D)
+	"tag", // List tags (without -d)
+	"remote", // List remotes
+	"config", // Read config values
+	"describe", // Find tag/commit description
+	"rev-parse", // Parse revision specifications
+	"ls-files", // List tracked files
+	"ls-tree", // List tree contents
+	"blame", // Show line-by-line authorship
+	"shortlog", // Summarize log output
+	"reflog", // Reference logs
+	"stash", // When just listing (stash list)
 ]);
 
-// Dangerous git subcommands
+/**
+ * Dangerous Git Subcommands - Operations that modify repository state
+ *
+ * These require approval because they can lose work or affect remote state.
+ */
 const DANGEROUS_GIT_SUBCOMMANDS = new Set([
-	"reset",
-	"clean",
-	"rm",
-	"push",
-	"rebase",
-	"merge",
-	"cherry-pick",
+	"reset", // Can lose uncommitted changes
+	"clean", // Removes untracked files
+	"rm", // Removes files from working tree
+	"push", // Modifies remote repository
+	"rebase", // Rewrites history
+	"merge", // Creates merge commits
+	"cherry-pick", // Applies commits
 ]);
 
-// Commands that are always dangerous
+/**
+ * Dangerous Commands - Operations that should always require approval
+ *
+ * These commands can cause data loss, system damage, or security issues.
+ * They require explicit user approval before execution.
+ *
+ * ## Categories
+ *
+ * - **Destructive**: rm, rmdir, shred - delete files/directories
+ * - **Disk operations**: mkfs, dd, fdisk, parted, format - modify disks
+ * - **Permissions**: chmod, chown - modify file access controls
+ * - **Process control**: kill, killall, pkill - terminate processes
+ * - **System control**: reboot, shutdown, halt, poweroff, init - system state
+ * - **Service management**: systemctl, service - modify running services
+ */
 const DANGEROUS_COMMANDS = new Set([
+	// Destructive file operations
 	"rm",
 	"rmdir",
+	"shred",
+	// Low-level disk operations
 	"mkfs",
 	"dd",
 	"fdisk",
 	"parted",
 	"format",
-	"shred",
+	// Permission modifications
 	"chmod",
 	"chown",
+	// Process termination
 	"kill",
 	"killall",
 	"pkill",
+	// System control
 	"reboot",
 	"shutdown",
 	"halt",

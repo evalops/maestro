@@ -1,3 +1,40 @@
+/**
+ * Render Model - Transforms raw messages into UI-ready format with content deduplication
+ *
+ * This module provides the transformation layer between raw agent messages and the
+ * renderable structures consumed by the TUI. Its primary responsibilities:
+ *
+ * 1. **Message Normalization**: Extracts text, thinking blocks, tool calls, and
+ *    attachments into consistent, typed structures.
+ *
+ * 2. **Content Deduplication**: Removes repeated lines that occur during streaming,
+ *    particularly when LLM providers resend cumulative content on each delta.
+ *
+ * 3. **Clean Mode Support**: Three levels of content cleaning (off/soft/aggressive)
+ *    to balance rendering accuracy vs visual cleanliness.
+ *
+ * ## The Duplicate Line Problem
+ *
+ * When streaming responses, some LLM providers (especially for reasoning/thinking
+ * blocks) resend all previous content with each update rather than just the delta.
+ * This manifests as:
+ * - Numbered list items appearing multiple times
+ * - Paragraph beginnings repeated
+ * - Code blocks with duplicated lines
+ *
+ * ## Deduplication Strategy
+ *
+ * We maintain a sliding window of recently-seen lines. Each new line is checked
+ * against this window; if found, it's collapsed. The window size varies by mode:
+ * - **Soft mode**: Small window (40 lines) catches local repetition
+ * - **Aggressive mode**: Large window (120 lines) catches re-sent blocks
+ *
+ * Cross-block mode shares history between text blocks in the same message,
+ * catching duplicates that span the streaming chunk boundaries.
+ *
+ * @module conversation/render-model
+ */
+
 import type {
 	AppMessage,
 	AssistantMessage,
@@ -12,6 +49,13 @@ export type RenderableMessage =
 	| RenderableAssistantMessage
 	| RenderableToolResultMessage;
 
+/**
+ * Content cleaning modes for handling streaming artifacts
+ *
+ * - `off`: No cleaning, render exactly as received (for debugging)
+ * - `soft`: Light deduplication for adjacent duplicate lines
+ * - `aggressive`: Heavy deduplication with large sliding window and cross-block history
+ */
 export type CleanMode = "off" | "soft" | "aggressive";
 
 export interface RenderOptions {
@@ -19,9 +63,17 @@ export interface RenderOptions {
 }
 
 /**
- * Collapse duplicate lines with configurable window.
- * - soft: consecutive only (default windowSize 1)
- * - aggressive: dedupe within a small recent window and across blocks
+ * Collapse Duplicate Lines - Removes streaming-induced repetition
+ *
+ * Primary entry point for line deduplication. Creates a fresh history array
+ * for single-block use, or delegates to the history-sharing variant for
+ * cross-block deduplication.
+ *
+ * @param text - The text content to deduplicate
+ * @param options - Configuration for deduplication behavior
+ * @param options.windowSize - How many recent lines to remember (default: 1)
+ * @param options.crossBlock - If true, initializes shared history for cross-block mode
+ * @returns Object with deduplicated text and whether any changes were made
  */
 export function collapseRepeatedLines(
 	text: string,
@@ -34,9 +86,52 @@ export function collapseRepeatedLines(
 }
 
 /**
- * Collapse duplicate lines while sharing history across multiple blocks.
- * This lets us dedupe repetitions that get split into separate text blocks
- * during streaming (e.g., numbered list items being re-sent).
+ * History-Aware Line Deduplication - Core algorithm with shared state
+ *
+ * This is the workhorse function that actually performs deduplication. It maintains
+ * a sliding window of recently-seen lines and filters out repetitions.
+ *
+ * ## Algorithm
+ *
+ * For each line in the input:
+ * 1. Normalize by trimming trailing whitespace (leading preserved for code)
+ * 2. Collapse consecutive blank lines to single blank
+ * 3. Check if line exists in recent history window
+ * 4. If duplicate: skip it (and any trailing blank before it)
+ * 5. If unique: add to output and update history window
+ *
+ * ## Window Semantics
+ *
+ * The `windowSize` parameter controls how far back we look for duplicates:
+ * - windowSize=1: Only catches immediately consecutive duplicates
+ * - windowSize=40: Catches duplicates within ~40 lines (soft mode)
+ * - windowSize=120: Catches duplicates from large re-sent blocks (aggressive)
+ *
+ * The window is FIFO: oldest lines drop off as new ones are added.
+ *
+ * ## Cross-Block Mode
+ *
+ * When `sharedHistory` is provided, the history array persists across multiple
+ * calls. This is essential for streaming where content arrives in chunks:
+ *
+ *   Chunk 1: "1. First item\n2. Second item"
+ *   Chunk 2: "2. Second item\n3. Third item"  <- "2. Second item" is duplicate
+ *
+ * Without cross-block mode, chunk 2's duplicate wouldn't be detected since
+ * each call would start with empty history.
+ *
+ * ## Blank Line Handling
+ *
+ * Blank lines receive special treatment:
+ * - Multiple consecutive blanks collapse to one (visual spacing)
+ * - Trailing blanks before duplicates are also removed (prevents orphan whitespace)
+ * - Empty lines don't enter the history window (they're never "duplicate content")
+ *
+ * @param text - The text content to deduplicate
+ * @param options.windowSize - Size of the sliding history window (default: 1)
+ * @param options.crossBlock - Whether we're in cross-block mode (affects duplicate check)
+ * @param options.sharedHistory - External history array for cross-block persistence
+ * @returns Object with deduplicated text and whether any changes were made
  */
 export function collapseRepeatedLinesWithHistory(
 	text: string,
@@ -46,16 +141,21 @@ export function collapseRepeatedLinesWithHistory(
 		sharedHistory?: string[];
 	} = {},
 ): { text: string; changed: boolean } {
+	// Split on both Unix and Windows line endings
 	const lines = text.split(/\r?\n/);
 	const result: string[] = [];
 	const windowSize = options.windowSize ?? 1;
+	// Use shared history if provided (cross-block mode), otherwise local array
 	const recent: string[] = options.sharedHistory ?? [];
 	let changed = false;
 
 	for (const line of lines) {
+		// Normalize: trim trailing whitespace but preserve leading (for code indentation)
 		const normalized = line.trimEnd();
 		const isEmpty = normalized.length === 0;
-		// Collapse runs of blank lines to a single blank.
+
+		// Rule 1: Collapse runs of blank lines to a single blank
+		// This prevents visual gaps from accumulating during streaming
 		if (
 			isEmpty &&
 			result.length > 0 &&
@@ -64,6 +164,10 @@ export function collapseRepeatedLinesWithHistory(
 			changed = true;
 			continue;
 		}
+
+		// Rule 2: Check for duplicate content lines
+		// In cross-block mode: search entire history window
+		// In local mode: only check the immediately previous line
 		const isDuplicate =
 			!isEmpty &&
 			(options.crossBlock
@@ -71,7 +175,8 @@ export function collapseRepeatedLinesWithHistory(
 				: recent.length > 0 && recent[recent.length - 1] === normalized);
 
 		if (isDuplicate) {
-			// Also remove a trailing blank we may have kept right before the duplicate.
+			// Clean up trailing blank that precedes the duplicate
+			// This prevents orphaned whitespace when duplicates are removed
 			if (result.length > 0 && result[result.length - 1].length === 0) {
 				result.pop();
 			}
@@ -79,9 +184,13 @@ export function collapseRepeatedLinesWithHistory(
 			continue;
 		}
 
+		// Line is unique - add to output
 		result.push(line);
+
+		// Update sliding window history (only for non-empty lines)
 		if (!isEmpty) {
 			recent.push(normalized);
+			// Maintain window size by dropping oldest entry
 			if (recent.length > windowSize) {
 				recent.shift();
 			}

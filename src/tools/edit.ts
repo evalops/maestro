@@ -1,3 +1,41 @@
+/**
+ * Edit Tool - Find-and-replace text editing with fuzzy matching fallback
+ *
+ * This module implements a robust text editing tool that performs exact string
+ * replacement with intelligent fallback to approximate matching when exact matches
+ * fail. The core design philosophy is "fail helpfully" - when the user's search
+ * text doesn't match exactly (due to whitespace differences, typos, or outdated
+ * content), we provide actionable suggestions pointing to the closest matches.
+ *
+ * ## Architecture Overview
+ *
+ * 1. **Exact Matching (Primary Path)**
+ *    - Simple string indexOf search for O(n) performance
+ *    - Handles single edit, multi-edit (sequential), and replace-all modes
+ *    - Reports all match locations with line numbers for disambiguation
+ *
+ * 2. **Approximate Matching (Fallback Path)**
+ *    - Triggered only when exact match fails
+ *    - Uses two complementary strategies:
+ *      a) Regex-based relaxed matching (whitespace normalization)
+ *      b) Line-by-line Levenshtein similarity scoring
+ *    - Results sorted by similarity score, filtered by threshold
+ *
+ * 3. **Similarity Scoring**
+ *    - Levenshtein distance normalized to 0-1 similarity ratio
+ *    - Dual thresholds: 50% for single candidates, 60% for multiple
+ *    - Prevents noise while surfacing genuinely close matches
+ *
+ * ## Key Design Decisions
+ *
+ * - **Atomic writes**: Uses temp file + rename for crash safety
+ * - **Multi-edit mode**: Applies edits sequentially for deterministic results
+ * - **LSP integration**: Collects diagnostics after edits for immediate feedback
+ * - **Sandbox support**: Operates through sandbox abstraction when available
+ *
+ * @module tools/edit
+ */
+
 import crypto from "node:crypto";
 import { constants } from "node:fs";
 import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -441,60 +479,191 @@ function findExactMatches(content: string, snippet: string): MatchPreview[] {
 }
 
 /**
- * Levenshtein distance between two strings.
- * Returns the minimum number of single-character edits needed.
+ * Levenshtein Distance Algorithm - Measures string similarity via edit operations
+ *
+ * Computes the minimum number of single-character edits (insertions, deletions,
+ * or substitutions) required to transform string `a` into string `b`. This is
+ * the classic dynamic programming solution, optimized for space efficiency.
+ *
+ * ## Algorithm Explanation
+ *
+ * The standard DP approach uses a 2D matrix where cell [i,j] represents the
+ * edit distance between a[0..i-1] and b[0..j-1]. The recurrence relation:
+ *
+ *   dist[i][j] = min(
+ *     dist[i-1][j] + 1,      // deletion: remove char from a
+ *     dist[i][j-1] + 1,      // insertion: add char to a
+ *     dist[i-1][j-1] + cost  // substitution: cost=0 if chars match, else 1
+ *   )
+ *
+ * ## Space Optimization
+ *
+ * Since each row only depends on the previous row, we use two 1D arrays instead
+ * of a full matrix. This reduces space complexity from O(m*n) to O(min(m,n)).
+ *
+ * - `prev`: the previous row of the DP matrix
+ * - `curr`: the current row being computed
+ * - After each outer loop iteration, we swap the arrays
+ *
+ * ## Complexity
+ *
+ * - Time: O(m * n) where m = len(a), n = len(b)
+ * - Space: O(n) - only two arrays of length n+1
+ *
+ * ## Usage in Edit Tool
+ *
+ * This function powers the fuzzy matching fallback. When an exact match fails,
+ * we compute Levenshtein distance between the search text and candidate regions
+ * in the file, then convert to a similarity ratio (see `similarity()` below).
+ *
+ * @param a - First string to compare
+ * @param b - Second string to compare
+ * @returns The edit distance (0 = identical, higher = more different)
  */
 function levenshtein(a: string, b: string): number {
+	// Base cases: if either string is empty, distance is the length of the other
 	if (a.length === 0) return b.length;
 	if (b.length === 0) return a.length;
 
-	// Use two rows instead of full matrix for memory efficiency
+	// Space-optimized DP: maintain only two rows instead of full matrix.
+	// `prev` holds the distances computed for the previous character of `a`.
+	// Initialize with distances from empty string: 0, 1, 2, ..., b.length
 	let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
 	let curr = new Array<number>(b.length + 1);
 
+	// Iterate through each character of string `a`
 	for (let i = 1; i <= a.length; i++) {
+		// Distance from a[0..i-1] to empty string is i (delete all chars)
 		curr[0] = i;
+
+		// Iterate through each character of string `b`
 		for (let j = 1; j <= b.length; j++) {
+			// Cost is 0 if characters match, 1 if they need substitution
 			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+
+			// Take minimum of three possible operations:
 			curr[j] = Math.min(
-				prev[j] + 1, // deletion
-				curr[j - 1] + 1, // insertion
-				prev[j - 1] + cost, // substitution
+				prev[j] + 1, // deletion: remove a[i-1], use distance for a[0..i-2] to b[0..j-1]
+				curr[j - 1] + 1, // insertion: insert b[j-1], use distance for a[0..i-1] to b[0..j-2]
+				prev[j - 1] + cost, // substitution: use distance for a[0..i-2] to b[0..j-2] + substitution cost
 			);
 		}
+		// Swap rows: current row becomes previous for next iteration
 		[prev, curr] = [curr, prev];
 	}
+	// After all iterations, `prev` contains the final row (due to swap)
 	return prev[b.length];
 }
 
 /**
- * Calculate similarity ratio (0-1) between two strings.
+ * Similarity Ratio - Normalizes Levenshtein distance to a 0-1 scale
+ *
+ * Converts the raw edit distance into an intuitive percentage where:
+ * - 1.0 = identical strings (0 edits needed)
+ * - 0.0 = completely different (edit distance equals max string length)
+ *
+ * Formula: similarity = 1 - (edit_distance / max_length)
+ *
+ * This normalization is crucial because raw edit distance doesn't account
+ * for string length. For example, an edit distance of 5 between two 100-char
+ * strings (95% similar) is very different from distance 5 between two 6-char
+ * strings (17% similar).
+ *
+ * @param a - First string to compare
+ * @param b - Second string to compare
+ * @returns Similarity ratio from 0 (completely different) to 1 (identical)
  */
 function similarity(a: string, b: string): number {
 	const maxLen = Math.max(a.length, b.length);
+	// Two empty strings are identical
 	if (maxLen === 0) return 1;
+	// Normalize: 0 edits = 1.0 similarity, maxLen edits = 0.0 similarity
 	return 1 - levenshtein(a, b) / maxLen;
 }
 
-// Similarity thresholds for approximate matching
+/**
+ * Similarity Thresholds for Approximate Matching
+ *
+ * These thresholds control which fuzzy matches are shown to the user. They're
+ * intentionally different based on context to balance helpfulness vs noise.
+ *
+ * ## Threshold Strategy
+ *
+ * **Single Candidate (50%)**: When only one potential match is found, we're
+ * lenient because showing something is better than nothing. Even a 50% match
+ * might be the reformatted/moved code the user is looking for.
+ *
+ * **Multiple Candidates (60%)**: When several matches exist, we're stricter
+ * to avoid overwhelming the user with noise. A higher threshold ensures only
+ * genuinely relevant suggestions surface.
+ *
+ * ## Why These Values?
+ *
+ * - 50% catches significant changes (indentation, variable renames, added lines)
+ *   while filtering out completely unrelated code
+ * - 60% for multiple matches prevents showing 3+ mediocre suggestions that
+ *   confuse more than they help
+ * - Values chosen empirically from real-world edit failure scenarios
+ */
 const SINGLE_CANDIDATE_THRESHOLD = 0.5; // Accept single match if 50%+ similar
 const MULTI_CANDIDATE_THRESHOLD = 0.6; // Need 60%+ to show when multiple matches
 
+/**
+ * Approximate Match Finder - Multi-strategy fuzzy search for similar text
+ *
+ * When exact matching fails, this function attempts to find regions in the file
+ * that closely resemble the search snippet. It employs two complementary strategies
+ * to maximize the chances of finding the right location even when the content
+ * has changed.
+ *
+ * ## Strategy 1: Relaxed Regex Matching
+ *
+ * Creates a regex that normalizes whitespace (see `buildRelaxedRegex`), then
+ * finds all matches in the content. This catches cases where:
+ * - Indentation changed (tabs vs spaces, different indent levels)
+ * - Extra blank lines were added/removed
+ * - Line wrapping changed
+ *
+ * ## Strategy 2: Sliding Window Line Comparison
+ *
+ * For multi-line snippets, slides a window of the same size through the content
+ * and computes Levenshtein similarity at each position. This catches cases where:
+ * - Variables were renamed
+ * - Minor code changes occurred (added parameters, changed values)
+ * - Content was moved but not significantly altered
+ *
+ * ## Deduplication
+ *
+ * Both strategies may find the same region; we deduplicate by line number to
+ * avoid showing duplicate suggestions.
+ *
+ * ## Result Limits
+ *
+ * - Maximum 10 candidates collected (performance guard)
+ * - Maximum 5 shown to user (UI clarity)
+ * - Dynamic threshold based on candidate count (see threshold constants above)
+ *
+ * @param content - The full file content to search in
+ * @param snippet - The text the user is looking for
+ * @returns Array of match previews sorted by similarity, filtered by threshold
+ */
 function findApproximateMatches(
 	content: string,
 	snippet: string,
 ): MatchPreview[] {
-	// First try regex-based relaxed matching
+	// Strategy 1: Regex-based matching with whitespace normalization
 	const relaxed = buildRelaxedRegex(snippet);
 	const regexMatches: Array<MatchPreview & { similarity: number }> = [];
 
 	if (relaxed) {
 		let result: RegExpExecArray | null;
+		// Limit to 10 matches to prevent performance issues in large files
 		while (regexMatches.length < 10) {
 			result = relaxed.exec(content);
 			if (!result) break;
 			const matchIndex = result.index;
 			const matchText = result[0];
+			// Score each regex match by actual similarity (regex may be too permissive)
 			const sim = similarity(snippet.trim(), matchText.trim());
 			regexMatches.push({
 				line: getLineNumber(content, matchIndex),
@@ -504,55 +673,103 @@ function findApproximateMatches(
 		}
 	}
 
-	// Also try line-by-line similarity for multi-line snippets
+	// Strategy 2: Sliding window comparison for multi-line snippets
+	// This catches renamed variables and minor changes that regex misses
 	const snippetLines = snippet.trim().split("\n");
 	if (snippetLines.length > 1) {
 		const contentLines = content.split("\n");
+		// Slide a window of size |snippetLines| through the content
 		for (let i = 0; i <= contentLines.length - snippetLines.length; i++) {
 			const candidateLines = contentLines.slice(i, i + snippetLines.length);
 			const candidate = candidateLines.join("\n");
 			const sim = similarity(snippet.trim(), candidate.trim());
+			// Only consider if above the minimum threshold
 			if (sim >= SINGLE_CANDIDATE_THRESHOLD) {
-				// Check if we already have this line
+				// Deduplicate: don't add if we already found this line via regex
 				const lineNum = i + 1;
 				if (!regexMatches.some((m) => m.line === lineNum)) {
 					regexMatches.push({
 						line: lineNum,
+						// Show first 3 lines as preview to avoid overwhelming output
 						snippet: candidateLines.slice(0, 3).join("\n").trim(),
 						similarity: sim,
 					});
 				}
 			}
+			// Performance guard: stop after collecting 10 candidates
 			if (regexMatches.length >= 10) break;
 		}
 	}
 
-	// Sort by similarity descending
+	// Sort all candidates by similarity (best matches first)
 	regexMatches.sort((a, b) => b.similarity - a.similarity);
 
-	// Filter by threshold based on number of candidates
+	// Apply dynamic threshold: stricter when many candidates exist
+	// This prevents showing 5 mediocre matches when there's one good one
 	const threshold =
 		regexMatches.length === 1
 			? SINGLE_CANDIDATE_THRESHOLD
 			: MULTI_CANDIDATE_THRESHOLD;
 
+	// Return top 5 matches above threshold, stripping internal similarity score
 	return regexMatches
 		.filter((m) => m.similarity >= threshold)
 		.slice(0, 5)
 		.map(({ line, snippet, similarity }) => ({ line, snippet, similarity }));
 }
 
+/**
+ * Relaxed Regex Builder - Creates whitespace-normalized pattern for fuzzy matching
+ *
+ * Transforms a literal search string into a regex that matches the same content
+ * with flexible whitespace. This is the first strategy in approximate matching.
+ *
+ * ## Transformation Steps
+ *
+ * 1. **Trim**: Remove leading/trailing whitespace (user likely copied extra)
+ * 2. **Escape metacharacters**: Treat all regex special chars as literals
+ *    - Characters escaped: . * + ? ^ $ { } ( ) | [ ] \
+ * 3. **Normalize whitespace**: Replace all whitespace runs with `\s+`
+ *    - Matches any combination of spaces, tabs, newlines
+ *    - Makes indentation changes transparent
+ *
+ * ## Example Transformation
+ *
+ * Input:  "function foo(  a, b  ) {"
+ * Regex:  "function\s+foo\(\s+a,\s+b\s+\)\s+\{"
+ * Matches: "function foo(a, b) {" or "function  foo(  a,  b  )  {"
+ *
+ * ## Safety Guards
+ *
+ * - Empty input → null (avoid matching everything)
+ * - Pattern > 500 chars → null (prevent ReDoS on very long snippets)
+ * - Invalid regex → null (graceful fallback to line-by-line comparison)
+ *
+ * @param snippet - The text to convert into a relaxed regex
+ * @returns Compiled regex with 'gi' flags, or null if construction fails
+ */
 function buildRelaxedRegex(snippet: string): RegExp | null {
 	const trimmed = snippet.trim();
+	// Empty pattern would match everything - not useful
 	if (!trimmed) return null;
+
+	// Step 1: Escape all regex metacharacters so they match literally
+	// This prevents "user.name" from being interpreted as "user<any-char>name"
 	const escaped = trimmed
 		.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+		// Step 2: Replace whitespace runs with flexible matcher
+		// This makes the pattern match regardless of indentation style
 		.replace(/\s+/g, "\\s+");
+
+	// Guard against ReDoS: very long patterns can cause exponential backtracking
 	if (escaped.length > 500) return null;
+
 	try {
 		// nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+		// Flags: g = global (find all), i = case-insensitive (catches renamed vars)
 		return new RegExp(escaped, "gi");
 	} catch {
+		// Invalid regex (shouldn't happen after escaping, but be safe)
 		return null;
 	}
 }

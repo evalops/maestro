@@ -1,3 +1,52 @@
+/**
+ * Action Firewall - Rule-based safety enforcement for tool execution
+ *
+ * The action firewall is the central decision point for tool safety. Before
+ * any tool executes, it passes through the firewall which evaluates a series
+ * of rules and returns a verdict: allow, require_approval, or block.
+ *
+ * ## Architecture
+ *
+ * ```
+ * Tool Call → ActionFirewall.evaluate() → Rules (sequential) → Verdict
+ *                      ↓                        ↓
+ *              Context Object           Match + Reason + Remediation
+ * ```
+ *
+ * ## Verdict Types
+ *
+ * - **allow**: Tool executes immediately without user interaction
+ * - **require_approval**: User must explicitly approve before execution
+ * - **block**: Tool is prevented from executing entirely (hard block)
+ *
+ * ## Rule Evaluation Order
+ *
+ * Rules are evaluated sequentially in priority order. The first matching
+ * rule determines the verdict. This means:
+ *
+ * 1. Enterprise policy rules (hard blocks) come first
+ * 2. System path protection (hard blocks) second
+ * 3. Workspace containment (soft approval) third
+ * 4. Dangerous command patterns (soft approval) later
+ *
+ * ## Caching Strategy
+ *
+ * Policy checks and tree-sitter analysis can be expensive. We use WeakMaps
+ * keyed by the context object to cache results within a single evaluation.
+ * The WeakMap ensures entries are garbage collected when the context is
+ * no longer referenced.
+ *
+ * ## Integration Points
+ *
+ * The firewall integrates with:
+ * - **Enterprise Policy**: Organizational restrictions on tools/paths
+ * - **Workflow State**: PII tracking for egress prevention
+ * - **Bash Parser**: Structured command analysis
+ * - **Semantic Judge**: LLM-based intent analysis (optional, slow path)
+ *
+ * @module safety/action-firewall
+ */
+
 import type {
 	ActionApprovalContext,
 	ActionFirewallVerdict,
@@ -30,27 +79,70 @@ const isStrictUntaggedEgress = () =>
 const isBackgroundShellBlocked = () =>
 	process.env.COMPOSER_BACKGROUND_SHELL_DISABLE === "1";
 
-// Type for policy check result caching
+/**
+ * Policy Check Result - Cached result of enterprise policy evaluation
+ */
 interface PolicyCheckResult {
 	allowed: boolean;
 	reason?: string;
 }
 
-// WeakMap for caching policy check results per context object.
-// This cache relies on match() being called before reason() for the same context,
-// which is guaranteed by the firewall evaluation flow in evaluateFirewall().
-// WeakMap ensures entries are garbage collected when context is no longer referenced.
+/**
+ * Policy Check Cache - Avoids redundant policy evaluations
+ *
+ * The firewall evaluation flow calls match() to check if a rule applies,
+ * then reason() to get the human-readable explanation. For policy checks,
+ * both need the same expensive async evaluation.
+ *
+ * We cache the result on match() and reuse it in reason(). The WeakMap
+ * key is the context object itself, ensuring:
+ * 1. Each context gets its own cached result
+ * 2. Cache entries are automatically garbage collected when context is freed
+ * 3. No memory leaks from long-running processes
+ */
 const policyCheckCache = new WeakMap<
 	ActionApprovalContext,
 	PolicyCheckResult
 >();
 
+/**
+ * Action Firewall Rule Interface
+ *
+ * Defines the structure of a firewall rule. Rules are the building blocks
+ * of the firewall; each rule checks for a specific condition and returns
+ * a verdict if matched.
+ *
+ * ## Rule Anatomy
+ *
+ * - **id**: Unique identifier for logging and debugging
+ * - **description**: Human-readable explanation of what the rule checks
+ * - **action**: What happens if rule matches (default: require_approval)
+ * - **match()**: Predicate that returns true if rule applies
+ * - **reason()**: Optional function returning why rule matched
+ * - **remediation()**: Optional function suggesting how to fix the issue
+ *
+ * ## Match Evaluation
+ *
+ * The match function receives the full tool context including:
+ * - toolName: Name of the tool being called
+ * - args: Arguments passed to the tool
+ * - metadata: Additional context (workflow state, annotations)
+ * - user/session: Authentication context
+ *
+ * Rules can be sync or async. Async rules are awaited during evaluation.
+ */
 export interface ActionFirewallRule {
+	/** Unique identifier for this rule (used in logs and verdicts) */
 	id: string;
+	/** Human-readable description of what this rule checks */
 	description: string;
+	/** Verdict if rule matches: allow, require_approval (default), or block */
 	action?: "allow" | "require_approval" | "block";
+	/** Predicate function - returns true if this rule applies to the context */
 	match: (context: ActionApprovalContext) => boolean | Promise<boolean>;
+	/** Optional: returns human-readable reason why rule matched */
 	reason?: (context: ActionApprovalContext) => string | Promise<string>;
+	/** Optional: returns suggestion for how user can proceed */
 	remediation?: (context: ActionApprovalContext) => string | Promise<string>;
 }
 
@@ -225,9 +317,36 @@ const treeSitterCommandRule: ActionFirewallRule = {
 };
 
 /**
- * Critical system paths to protect
+ * Critical System Paths - Directories that should never be modified
+ *
+ * These paths are protected with a HARD BLOCK (not just approval required).
+ * Modifying files in these directories can:
+ * - Break the operating system
+ * - Compromise system security
+ * - Affect other users on the system
+ *
+ * ## Linux Paths
+ *
+ * - /etc: System configuration
+ * - /usr: System programs and libraries
+ * - /var: Variable data (logs, databases)
+ * - /boot: Bootloader and kernel
+ * - /sys, /proc: Kernel virtual filesystems
+ * - /dev: Device files
+ * - /bin, /sbin: Essential system binaries
+ * - /lib, /lib64: Shared libraries
+ * - /opt: Optional/third-party software
+ *
+ * ## Windows Paths
+ *
+ * - C:\Windows: Operating system
+ * - C:\Program Files: Installed applications
+ *
+ * Note: /var/folders (macOS temp) and /tmp are explicitly allowed
+ * through the isContainedInWorkspace check before system path blocking.
  */
 const SYSTEM_PATHS = [
+	// Linux system directories
 	"/etc",
 	"/usr",
 	"/var",
@@ -240,7 +359,7 @@ const SYSTEM_PATHS = [
 	"/lib",
 	"/lib64",
 	"/opt",
-	// Windows
+	// Windows system directories
 	"C:\\Windows",
 	"C:\\Program Files",
 	"C:\\Program Files (x86)",
@@ -280,38 +399,69 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 }
 
 /**
- * Check if a path is inside the current workspace or temporary directory.
- * Returns true if the path is contained (safe), false if it escapes.
+ * Workspace Containment Check - Determines if a path is in a "safe zone"
+ *
+ * The firewall uses containment to prevent accidental writes outside the
+ * project directory. This function checks if a file path is within one of
+ * the allowed zones.
+ *
+ * ## Safe Zones (in order of check)
+ *
+ * 1. **Workspace root**: Current working directory and subdirectories
+ * 2. **System temp directory**: /tmp, /var/folders, etc.
+ * 3. **Trusted paths**: User-configured paths in firewall.json
+ *
+ * ## Path Resolution Complexity
+ *
+ * We must handle several path edge cases:
+ *
+ * - **Symlinks**: macOS /tmp → /private/tmp, so we resolve real paths
+ * - **Non-existent files**: Can't realpath a file being created, use logical path
+ * - **Relative paths**: Convert to absolute before comparison
+ * - **Path traversal**: Detect ../ escapes using relative() output
+ *
+ * ## Detection Method
+ *
+ * For each safe zone, we compute relative(zone, targetPath). If the result:
+ * - Starts with ".." → path escapes the zone (unsafe)
+ * - Is an absolute path → completely outside (unsafe)
+ * - Otherwise → contained within zone (safe)
+ *
+ * @param filePath - The path to check (may be relative or absolute)
+ * @returns true if path is contained in a safe zone, false otherwise
  */
 function isContainedInWorkspace(filePath: string): boolean {
+	// Resolve to absolute path for consistent comparison
 	const resolvedPath = resolve(filePath);
 	const workspaceRoot = process.cwd();
 	const tempDir = tmpdir();
 
-	// Check if path is within workspace root
+	// Check 1: Is path within the current working directory?
 	const relToWorkspace = relative(workspaceRoot, resolvedPath);
 	const isInsideWorkspace =
 		!relToWorkspace.startsWith("..") && !isAbsolute(relToWorkspace);
 
-	// Check if path is within temp dir
-	// Resolve symlinks for temp dir (macOS /var vs /private/var)
+	// Check 2: Is path within the system temp directory?
+	// Handle symlinks: on macOS, /var/folders is the real path for $TMPDIR
 	let resolvedTemp = tempDir;
 	try {
 		resolvedTemp = realpathSync(tempDir);
 	} catch {
-		// keep original if realpath fails
+		// Keep original if realpath fails (shouldn't happen for temp dir)
 	}
-	// Also check realpath of file path
+
+	// Also try to resolve the target file's real path
 	let realFilePath = resolvedPath;
 	try {
 		realFilePath = realpathSync(resolvedPath);
 	} catch {
-		// File might not exist yet (writing new file), so checking realpath might fail
-		// In that case we rely on the logical path
+		// File might not exist yet (creating new file), use logical path
+		// This is expected and not an error
 	}
 
+	// Check both the resolved real path and the logical path
+	// This handles cases where temp is symlinked
 	const relToTemp = relative(resolvedTemp, realFilePath);
-	// On macOS, temp dir might be symlinked. We check both logical and physical paths.
 	const relToTempLogical = relative(tempDir, resolvedPath);
 
 	const isInsideTemp =
@@ -322,7 +472,8 @@ function isContainedInWorkspace(filePath: string): boolean {
 		return true;
 	}
 
-	// Check trusted paths from config
+	// Check 3: Is path within a user-configured trusted path?
+	// Users can add paths to ~/.composer/firewall.json containment.trustedPaths
 	const config = getFirewallConfig();
 	if (config.containment?.trustedPaths) {
 		for (const trustedPath of config.containment.trustedPaths) {
@@ -334,6 +485,7 @@ function isContainedInWorkspace(filePath: string): boolean {
 		}
 	}
 
+	// Path is outside all safe zones
 	return false;
 }
 
