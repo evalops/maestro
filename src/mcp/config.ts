@@ -1,133 +1,208 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { z } from "zod";
 import { createLogger } from "../utils/logger.js";
-import type { McpConfig, McpServerConfig } from "./types.js";
+import { defaultEnvValidators, evaluateEnvValidators } from "./env-limits.js";
+import {
+	type McpServerInput,
+	mcpConfigSchema,
+	mcpServerSchema,
+} from "./schema.js";
+import type { McpConfig, McpScope, McpServerConfig } from "./types.js";
 
 const logger = createLogger("mcp:config");
 
-const GLOBAL_CONFIG_PATH = join(homedir(), ".composer", "mcp.json");
+const ENTERPRISE_CONFIG_PATH = join(
+	homedir(),
+	".composer",
+	"enterprise",
+	"mcp.json",
+);
+const USER_CONFIG_PATH = join(homedir(), ".composer", "mcp.json");
 const PROJECT_CONFIG_NAME = ".composer/mcp.json";
+const LOCAL_CONFIG_NAME = ".composer/mcp.local.json";
 
-function parseConfigFile(path: string): McpConfig | null {
-	if (!existsSync(path)) {
-		return null;
-	}
-	try {
-		const content = readFileSync(path, "utf-8");
-		const parsed = JSON.parse(content);
-		return validateConfig(parsed);
-	} catch (error) {
-		logger.warn("Failed to parse config", {
-			path,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return null;
-	}
+type ParsedConfig = { servers: McpServerConfig[] };
+
+export interface LoadMcpOptions {
+	pluginServers?: McpServerConfig[];
 }
 
-function validateConfig(config: unknown): McpConfig | null {
-	if (!config || typeof config !== "object") {
-		return null;
-	}
+export function loadMcpConfig(
+	projectRoot?: string,
+	options: LoadMcpOptions = {},
+): McpConfig {
+	const userCfg = parseConfigFile(USER_CONFIG_PATH, "user");
+	const enterpriseCfg = parseConfigFile(ENTERPRISE_CONFIG_PATH, "enterprise");
+	const projectCfg = projectRoot
+		? parseConfigFile(resolve(projectRoot, PROJECT_CONFIG_NAME), "project")
+		: { servers: [] };
+	const localCfg = projectRoot
+		? parseConfigFile(resolve(projectRoot, LOCAL_CONFIG_NAME), "local")
+		: { servers: [] };
+	const pluginCfg: ParsedConfig = { servers: options.pluginServers ?? [] };
 
-	const cfg = config as Record<string, unknown>;
-
-	// Handle both { servers: [...] } and { mcpServers: {...} } formats
-	let servers: McpServerConfig[] = [];
-
-	if (Array.isArray(cfg.servers)) {
-		servers = cfg.servers.filter(isValidServerConfig);
-	} else if (cfg.mcpServers && typeof cfg.mcpServers === "object") {
-		// Claude Desktop / VS Code format: { mcpServers: { name: { command, args, ... } } }
-		const mcpServers = cfg.mcpServers as Record<string, unknown>;
-		for (const [name, serverCfg] of Object.entries(mcpServers)) {
-			if (serverCfg && typeof serverCfg === "object") {
-				const srv = serverCfg as Record<string, unknown>;
-				const normalized: McpServerConfig = {
-					name,
-					transport: "stdio",
-					command: typeof srv.command === "string" ? srv.command : undefined,
-					args: Array.isArray(srv.args) ? srv.args : undefined,
-					env:
-						srv.env && typeof srv.env === "object"
-							? (srv.env as Record<string, string>)
-							: undefined,
-					cwd: typeof srv.cwd === "string" ? srv.cwd : undefined,
-					url: typeof srv.url === "string" ? srv.url : undefined,
-					enabled: srv.disabled !== true,
-				};
-				// Determine transport from config
-				// Default to http for URL-based servers; use sse only if explicitly indicated
-				if (normalized.url) {
-					normalized.transport =
-						normalized.url.endsWith("/sse") ||
-						normalized.url.includes("/sse/") ||
-						normalized.url.includes("://sse.")
-							? "sse"
-							: "http";
-				}
-				if (isValidServerConfig(normalized)) {
-					servers.push(normalized);
-				}
-			}
+	const merged = new Map<string, McpServerConfig>();
+	// precedence: enterprise -> plugin -> project -> local -> user
+	for (const src of [enterpriseCfg, pluginCfg, projectCfg, localCfg, userCfg]) {
+		for (const server of src.servers) {
+			if (server.enabled === false || server.disabled === true) continue;
+			merged.set(server.name, server);
 		}
 	}
 
-	return { servers };
-}
+	const envLimits = evaluateEnvValidators(defaultEnvValidators);
 
-function isValidServerConfig(cfg: unknown): cfg is McpServerConfig {
-	if (!cfg || typeof cfg !== "object") {
-		return false;
-	}
-	const c = cfg as Record<string, unknown>;
-	if (typeof c.name !== "string" || !c.name) {
-		return false;
-	}
-	const transport = c.transport ?? "stdio";
-	if (transport !== "stdio" && transport !== "http" && transport !== "sse") {
-		return false;
-	}
-	// Stdio requires command
-	if (transport === "stdio" && typeof c.command !== "string") {
-		return false;
-	}
-	// HTTP/SSE requires url
-	if (
-		(transport === "http" || transport === "sse") &&
-		typeof c.url !== "string"
-	) {
-		return false;
-	}
-	return true;
-}
-
-export function loadMcpConfig(projectRoot?: string): McpConfig {
-	const globalConfig = parseConfigFile(GLOBAL_CONFIG_PATH);
-	const projectConfig = projectRoot
-		? parseConfigFile(join(projectRoot, PROJECT_CONFIG_NAME))
-		: null;
-
-	// Merge configs: project overrides global by server name
-	const serverMap = new Map<string, McpServerConfig>();
-
-	for (const server of globalConfig?.servers ?? []) {
-		serverMap.set(server.name, server);
-	}
-	for (const server of projectConfig?.servers ?? []) {
-		serverMap.set(server.name, server);
-	}
-
-	return {
-		servers: Array.from(serverMap.values()).filter((s) => s.enabled !== false),
-	};
+	return { servers: Array.from(merged.values()), envLimits };
 }
 
 export function getConfigPaths(projectRoot?: string): string[] {
-	const paths = [GLOBAL_CONFIG_PATH];
+	const paths = [USER_CONFIG_PATH, ENTERPRISE_CONFIG_PATH];
 	if (projectRoot) {
-		paths.push(join(projectRoot, PROJECT_CONFIG_NAME));
+		paths.push(resolve(projectRoot, PROJECT_CONFIG_NAME));
+		paths.push(resolve(projectRoot, LOCAL_CONFIG_NAME));
 	}
 	return paths;
+}
+
+function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
+	if (!existsSync(path)) {
+		return { servers: [] };
+	}
+	try {
+		const content = readFileSync(path, "utf-8");
+		const json = JSON.parse(content);
+		const parsed = mcpConfigSchema.safeParse(json);
+		if (!parsed.success) {
+			logger.warn("Invalid MCP config", {
+				scope,
+				path,
+				error: parsed.error.issues.map((e) => e.message).join("; "),
+			});
+			return { servers: [] };
+		}
+
+		const servers: McpServerConfig[] = [];
+		if (Array.isArray(parsed.data.servers)) {
+			for (const server of parsed.data.servers) {
+				const normalized = normalizeServer(server, server.name, scope);
+				if (normalized) servers.push(normalized);
+			}
+		}
+		if (parsed.data.mcpServers) {
+			for (const [name, raw] of Object.entries(parsed.data.mcpServers)) {
+				const merged: McpServerInput = { ...raw, name };
+				const normalized = normalizeServer(merged, name, scope);
+				if (normalized) servers.push(normalized);
+			}
+		}
+		return { servers };
+	} catch (error) {
+		logger.warn("Failed to parse MCP config file", {
+			path,
+			scope,
+			error: error instanceof Error ? error.message : String(error),
+			stack: error instanceof Error ? error.stack : undefined,
+		});
+		return { servers: [] };
+	}
+}
+
+function normalizeServer(
+	server: McpServerInput,
+	name: string,
+	scope: McpScope,
+): McpServerConfig | null {
+	const transport = resolveTransport(server);
+	const expanded = expandEnv({ ...server, name, transport });
+
+	const validated = mcpServerSchema.safeParse(expanded);
+	if (!validated.success) {
+		logger.warn("Invalid MCP server entry", {
+			scope,
+			name,
+			error: validated.error.issues.map((e) => e.message).join("; "),
+		});
+		return null;
+	}
+
+	return {
+		...validated.data,
+		transport,
+		scope,
+		enabled: validated.data.enabled ?? validated.data.disabled !== true,
+	};
+}
+
+function resolveTransport(
+	server: McpServerInput,
+): McpServerConfig["transport"] {
+	if (
+		server.transport &&
+		(server.transport === "stdio" ||
+			server.transport === "http" ||
+			server.transport === "sse")
+	) {
+		return server.transport;
+	}
+	if (server.url) {
+		return isSseUrl(server.url) ? "sse" : "http";
+	}
+	return "stdio";
+}
+
+function isSseUrl(rawUrl: string): boolean {
+	try {
+		const parsed = new URL(rawUrl);
+		if (parsed.hostname.startsWith("sse.")) return true;
+		const path = parsed.pathname || "";
+		if (path.endsWith("/sse")) return true;
+		if (path.includes("/sse/")) return true;
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+function expandEnv(
+	server: McpServerInput & {
+		transport: McpServerConfig["transport"];
+		name: string;
+	},
+): McpServerInput {
+	const expand = (value?: string) => {
+		if (!value) return value;
+		return value.replace(/\$\{([^}]+)\}/g, (_match, expr) => {
+			const [name, fallback] = String(expr).split(":-");
+			const val = process.env[name];
+			if (val !== undefined) return val;
+			if (fallback !== undefined) return fallback;
+			logger.debug("Missing environment variable during MCP expansion", {
+				server: server.name,
+				variable: name,
+			});
+			return _match;
+		});
+	};
+
+	return {
+		...server,
+		command: expand(server.command),
+		args: server.args?.map(expand),
+		env: server.env
+			? Object.fromEntries(
+					Object.entries(server.env).map(([k, v]) => [k, expand(v)] as const),
+				)
+			: undefined,
+		url: expand(server.url),
+		headers: server.headers
+			? Object.fromEntries(
+					Object.entries(server.headers).map(
+						([k, v]) => [k, expand(v)] as const,
+					),
+				)
+			: undefined,
+		cwd: expand(server.cwd),
+	};
 }
