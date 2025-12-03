@@ -2885,7 +2885,7 @@ export class TuiRenderer {
 		if (this.compactionInProgress) {
 			hints.push("Compacting history…");
 		}
-		if (this.pasteHandler.hasPending()) {
+		if (this.pasteHandler?.hasPending()) {
 			hints.push("Summarizing pasted text…");
 		}
 		if (this.bashModeView?.isActive()) {
