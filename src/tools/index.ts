@@ -1,3 +1,5 @@
+// Structured user questions
+import { askUserTool } from "./ask-user.js";
 import { backgroundTasksTool } from "./background-tasks.js";
 // Shell execution (bash -lc) with support for cwd tracking during bash mode
 import { bashTool } from "./bash.js";
@@ -15,6 +17,8 @@ import { findTool } from "./find.js";
 import { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 // Directory listing / globbing
 import { listTool } from "./list.js";
+// Jupyter notebook editing
+import { notebookEditTool } from "./notebook.js";
 import { oracleTool } from "./oracle.js";
 import { parallelRipgrepTool } from "./parallel-ripgrep.js";
 // File reader with range support
@@ -37,6 +41,13 @@ import { websearchTool } from "./websearch.js";
 // Free-form file writer (create/overwrite)
 import { writeTool } from "./write.js";
 
+export {
+	askUserTool,
+	type Question,
+	type QuestionOption,
+	type AskUserInput,
+	type AskUserResult,
+} from "./ask-user.js";
 export { bashTool } from "./bash.js";
 export { backgroundTasksTool } from "./background-tasks.js";
 export { createBatchTool } from "./batch.js";
@@ -45,6 +56,7 @@ export { diffTool } from "./diff.js";
 export { editTool } from "./edit.js";
 export { findTool } from "./find.js";
 export { listTool } from "./list.js";
+export { notebookEditTool } from "./notebook.js";
 export { parallelRipgrepTool } from "./parallel-ripgrep.js";
 export { readTool } from "./read.js";
 export { searchTool } from "./search.js";
@@ -71,7 +83,9 @@ const allTools = [
 	backgroundTasksTool,
 	editTool,
 	writeTool,
+	notebookEditTool,
 	todoTool,
+	askUserTool,
 	websearchTool,
 	codesearchTool,
 	webfetchTool,
@@ -96,7 +110,9 @@ export const codingTools = [
 	backgroundTasksTool,
 	editTool,
 	writeTool,
+	notebookEditTool,
 	todoTool,
+	askUserTool,
 	websearchTool,
 	codesearchTool,
 	webfetchTool,
@@ -121,7 +137,9 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	background_tasks: backgroundTasksTool,
 	edit: editTool,
 	write: writeTool,
+	notebook_edit: notebookEditTool,
 	todo: todoTool,
+	ask_user: askUserTool,
 	websearch: websearchTool,
 	codesearch: codesearchTool,
 	webfetch: webfetchTool,

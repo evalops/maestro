@@ -3,7 +3,7 @@
 Audience: contributors and advanced users adding/debugging tools.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Features](FEATURES.md) · [Safety](SAFETY.md)
 
-Contents: [Validation](#parameter-validation) · [Error Handling](#error-handling-for-tool-authors) · [Built-in Tools](#built-in-tools) · [GitHub CLI Tools](#github-cli-tools) · [CLI Commands](#cli-commands) · [Common Errors](#common-errors--remedies)
+Contents: [Validation](#parameter-validation) · [Error Handling](#error-handling-for-tool-authors) · [Built-in Tools](#built-in-tools) · [GitHub CLI Tools](#github-cli-tools) · [SDK Tool Types](#sdk-tool-types) · [CLI Commands](#cli-commands) · [Common Errors](#common-errors--remedies)
 
 The agent and CLI expose a consistent set of tools. Use this sheet when adding
 new tools or debugging existing ones.
@@ -56,7 +56,7 @@ export const myTool = createTool({
 | ---- | ----------- | ------------------- |
 | `batch` | Executes multiple independent tools in parallel (1-10 tools). | Accepts `toolCalls` array. Disallows `batch`, `edit`, `write`, and GitHub mutations (`gh_pr create/checkout/comment/close`, `gh_issue create/comment/close`, `gh_repo fork/clone`). Ideal for parallel reads/searches/listings. |
 | `background_tasks` | Runs commands in the background and manages lifecycle. | `action` one of `start | list | stop | logs`; `start` supports `cwd`, `env`, `shell`, `restart` (maxAttempts, delayMs, strategy, maxDelayMs, jitterRatio), and `limits` (maxTasks, maxRssKb, maxCpuMs, logSizeLimit, logSegments, retentionMs). Logs are tailed via `action=logs`. TUI notifications/history detail depend on `~/.composer/agent/background-settings.json` (or `COMPOSER_BACKGROUND_SETTINGS`) flags `notificationsEnabled` and `statusDetailsEnabled`; manual edits are hot-reloaded and summaries are secret-redacted. |
-| `read` | Reads file contents with syntax-aware chunking. | Accepts `path`, optional `startLine`/`endLine`. Errors with "File not found". |
+| `read` | Reads file contents with syntax-aware chunking. Supports text, images, PDFs, and Jupyter notebooks. | Accepts `path`, optional `startLine`/`endLine`. Images are optimized with Sharp if available. PDFs are extracted to text. Notebooks display formatted cells with outputs. |
 | `list` | Lists files in a directory (non-recursive by default). | Supports glob filters and depth. Used for context discovery. |
 | `search` | Ripgrep-style text search. | Args mirror `rg` (`pattern`, `path`, `glob`). Output includes file:line matches. Default max results now capped to avoid huge responses; oversized outputs are truncated and marked. |
 | `diff` | Wrapper around `git diff`. | Modes: workspace, staged, or custom ranges. Also supports `mode: "status"` (legacy) but prefer the dedicated `status` tool. |
@@ -65,6 +65,8 @@ export const myTool = createTool({
 | `edit` | Structured find/replace writer. | Accepts `path`, `oldText`, `newText`. Supports `edits` array for multiple sequential edits, `replaceAll` for bulk replacements, and `dryRun` for previews. |
 | `write` | Writes or overwrites files. | Takes `path` + `contents`. Creates directories automatically. |
 | `todo` | Generates TodoWrite-style task lists. | Stored near the project (`~/.composer/todos.json`). Integrates with `/plan`. |
+| `notebook_edit` | Edit Jupyter notebook (.ipynb) files at the cell level. | Modes: `replace` (default), `insert`, `delete`. Identify cells by `cell_id` or `cell_index`. Specify `cell_type` (code/markdown) for inserts. |
+| `ask_user` | Ask structured questions with predefined options. | 1-4 questions per call, each with 2-4 options. Supports `multiSelect` for non-exclusive choices. "Other" option auto-added. |
 | `websearch` | Search the web via Exa AI for real-time information. | Supports neural/keyword search, domain filtering, date ranges. Requires `EXA_API_KEY` env var. Large result text is previewed with truncation and overall output is capped. |
 | `codesearch` | Search GitHub/docs/Stack Overflow for code examples via Exa Code. | Returns working code snippets with context. Requires `EXA_API_KEY` env var. |
 | `webfetch` | Fetch content from specific URLs via Exa. | Converts HTML to markdown, truncates very long content, and caps total output. Requires `EXA_API_KEY` env var. |
@@ -103,6 +105,35 @@ export const myTool = createTool({
 // View repo info as JSON
 {action: "view", json: true}
 ```
+
+## SDK Tool Types
+
+For external SDK consumers, tool input schemas are exported from `@evalops/composer`:
+
+```typescript
+import {
+  ReadInputSchema,
+  EditInputSchema,
+  BashInputSchema,
+  NotebookEditInputSchema,
+  AskUserInputSchema,
+  getToolSchema,
+  type ReadInput,
+  type EditInput,
+} from '@evalops/composer';
+
+// Get schema at runtime
+const schema = getToolSchema('read');
+
+// Type-safe tool parameters
+const readParams: ReadInput = {
+  path: '/path/to/file',
+  offset: 1,
+  limit: 100,
+};
+```
+
+Available schemas: `ReadInputSchema`, `EditInputSchema`, `WriteInputSchema`, `BashInputSchema`, `SearchInputSchema`, `ListInputSchema`, `NotebookEditInputSchema`, `TodoInputSchema`, `AskUserInputSchema`, `WebSearchInputSchema`, `WebFetchInputSchema`, `AgentInputSchema`.
 
 ## CLI Commands
 

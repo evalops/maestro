@@ -105,6 +105,7 @@
     "minimatch": "^10.1.1",
     "otplib": "^12.0.1",
     "partial-json": "^0.1.7",
+    "pdf-parse": "^2.4.5",
     "postgres": "^3.4.7",
     "string-width": "^8.1.0",
     "tree-sitter": "^0.25.0",
@@ -125,6 +126,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/mime-types": "^3.0.1",
     "@types/node": "^24.10.1",
+    "@types/pdf-parse": "^1.1.5",
     "@types/uuid": "^11.0.0",
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.7",
@@ -154,6 +156,9 @@
   "engines": {
     "node": ">=20.0.0",
     "bun": ">=1.1.0"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.33.5"
   },
   "packageManager": "bun@1.1.31",
   "trustedDependencies": [
