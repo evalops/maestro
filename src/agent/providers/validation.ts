@@ -25,6 +25,8 @@ const isBrowserExtension =
 // Create a singleton AJV instance with formats (only if not in browser extension)
 // AJV requires 'unsafe-eval' CSP which is not allowed in Manifest V3
 let ajv: ReturnType<typeof Ajv> | null = null;
+// Cache compiled validators per schema to avoid recompiling on every tool call.
+const validatorCache = new WeakMap<object, (data: unknown) => boolean>();
 if (!isBrowserExtension) {
 	try {
 		ajv = new Ajv({
@@ -60,11 +62,17 @@ export function validateToolArguments(
 		return isRecord(toolCall.arguments) ? toolCall.arguments : {};
 	}
 
-	// Compile the schema
-	const validate = ajv.compile(tool.parameters) as {
-		(data: unknown): boolean;
-		errors?: ErrorObject[] | null;
-	};
+	// Compile (or reuse) the schema
+	let validate = validatorCache.get(tool.parameters) as
+		| ((data: unknown) => boolean)
+		| undefined;
+	if (!validate) {
+		validate = ajv.compile(tool.parameters) as {
+			(data: unknown): boolean;
+			errors?: ErrorObject[] | null;
+		};
+		validatorCache.set(tool.parameters, validate);
+	}
 
 	// Validate the arguments
 	if (validate(toolCall.arguments)) {
@@ -84,7 +92,12 @@ export function validateToolArguments(
 			})
 			.join("\n") || "Unknown validation error";
 
-	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`;
+	const argsJson = JSON.stringify(toolCall.arguments, null, 2) ?? "{}";
+	const trimmedArgsJson = argsJson.length > 2000
+		? `${argsJson.slice(0, 2000)}\n... (truncated ${argsJson.length - 2000} chars)`
+		: argsJson;
+
+	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${trimmedArgsJson}`;
 
 	throw new Error(errorMessage);
 }
