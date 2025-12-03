@@ -69,6 +69,7 @@ export class TUI extends Container {
 	private cursorRow = 0; // Track where cursor is (0-indexed, relative to our first line)
 	private minRenderIntervalMs = 0;
 	private lastRenderTs = 0;
+	private lastFullRenderTs = 0;
 	private renderTimer: NodeJS.Timeout | null = null;
 	private features: TerminalFeatures;
 	private syncOutput = true;
@@ -207,6 +208,7 @@ export class TUI extends Container {
 		const width = Math.max(1, this.terminal.columns);
 		const height = Math.max(1, this.terminal.rows);
 		this.lastRenderTs = Date.now();
+		const now = this.lastRenderTs;
 
 		// Render all components and hard-wrap to the viewport so we never exceed the terminal width
 		let newLines = this.wrapWithCache(this.render(width), width);
@@ -223,6 +225,9 @@ export class TUI extends Container {
 		const widthChanged =
 			this.previousWidth !== 0 && this.previousWidth !== width;
 		const overflowChanged = isOverflowing !== this.overflowedLastRender;
+		const shouldFullRender = widthChanged || overflowChanged;
+		const overflowRerenderThrottled =
+			overflowChanged && now - this.lastFullRenderTs < 32; // ~2 frames at 60Hz
 
 		// First render - just output everything without clearing
 		if (this.previousLines.length === 0) {
@@ -239,11 +244,12 @@ export class TUI extends Container {
 			this.previousLines = newLines;
 			this.previousWidth = width;
 			this.overflowedLastRender = isOverflowing;
+			this.lastFullRenderTs = now;
 			return;
 		}
 
 		// Width change or overflow -> full re-render so the editor stays pinned at the bottom
-		if (widthChanged || overflowChanged) {
+		if (shouldFullRender && !overflowRerenderThrottled) {
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
 			for (let i = 0; i < newLines.length; i++) {
@@ -257,6 +263,7 @@ export class TUI extends Container {
 			this.previousLines = newLines;
 			this.previousWidth = width;
 			this.overflowedLastRender = isOverflowing;
+			this.lastFullRenderTs = now;
 			return;
 		}
 
