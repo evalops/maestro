@@ -13,28 +13,33 @@ import type { McpConfig, McpScope, McpServerConfig } from "./types.js";
 
 const logger = createLogger("mcp:config");
 
-const ENTERPRISE_CONFIG_PATH = join(
-	homedir(),
-	".composer",
-	"enterprise",
-	"mcp.json",
-);
-const USER_CONFIG_PATH = join(homedir(), ".composer", "mcp.json");
 const PROJECT_CONFIG_NAME = ".composer/mcp.json";
 const LOCAL_CONFIG_NAME = ".composer/mcp.local.json";
+
+const getEnterpriseConfigPath = (): string =>
+	process.env.COMPOSER_ENTERPRISE_MCP_PATH ??
+	join(homedir(), ".composer", "enterprise", "mcp.json");
+
+const getUserConfigPath = (): string =>
+	process.env.COMPOSER_USER_MCP_PATH ??
+	join(homedir(), ".composer", "mcp.json");
 
 type ParsedConfig = { servers: McpServerConfig[] };
 
 export interface LoadMcpOptions {
 	pluginServers?: McpServerConfig[];
+	includeEnvLimits?: boolean;
 }
 
 export function loadMcpConfig(
 	projectRoot?: string,
 	options: LoadMcpOptions = {},
 ): McpConfig {
-	const userCfg = parseConfigFile(USER_CONFIG_PATH, "user");
-	const enterpriseCfg = parseConfigFile(ENTERPRISE_CONFIG_PATH, "enterprise");
+	const userCfg = parseConfigFile(getUserConfigPath(), "user");
+	const enterpriseCfg = parseConfigFile(
+		getEnterpriseConfigPath(),
+		"enterprise",
+	);
 	const projectCfg = projectRoot
 		? parseConfigFile(resolve(projectRoot, PROJECT_CONFIG_NAME), "project")
 		: { servers: [] };
@@ -45,20 +50,23 @@ export function loadMcpConfig(
 
 	const merged = new Map<string, McpServerConfig>();
 	// precedence: enterprise -> plugin -> project -> local -> user
-	for (const src of [enterpriseCfg, pluginCfg, projectCfg, localCfg, userCfg]) {
+	// lower precedence first, higher precedence last so later overrides earlier
+	for (const src of [userCfg, localCfg, projectCfg, pluginCfg, enterpriseCfg]) {
 		for (const server of src.servers) {
 			if (server.enabled === false || server.disabled === true) continue;
 			merged.set(server.name, server);
 		}
 	}
 
-	const envLimits = evaluateEnvValidators(defaultEnvValidators);
+	const envLimits = options.includeEnvLimits
+		? evaluateEnvValidators(defaultEnvValidators)
+		: undefined;
 
 	return { servers: Array.from(merged.values()), envLimits };
 }
 
 export function getConfigPaths(projectRoot?: string): string[] {
-	const paths = [USER_CONFIG_PATH, ENTERPRISE_CONFIG_PATH];
+	const paths = [getUserConfigPath(), getEnterpriseConfigPath()];
 	if (projectRoot) {
 		paths.push(resolve(projectRoot, PROJECT_CONFIG_NAME));
 		paths.push(resolve(projectRoot, LOCAL_CONFIG_NAME));
@@ -92,7 +100,9 @@ function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 		}
 		if (parsed.data.mcpServers) {
 			for (const [name, raw] of Object.entries(parsed.data.mcpServers)) {
-				const merged: McpServerInput = { ...raw, name };
+				const merged: McpServerInput | { name: string } = isRecord(raw)
+					? ({ ...raw, name } as McpServerInput)
+					: { name };
 				const normalized = normalizeServer(merged, name, scope);
 				if (normalized) servers.push(normalized);
 			}
@@ -127,8 +137,29 @@ function normalizeServer(
 		return null;
 	}
 
+	const cleanEnv =
+		validated.data.env && typeof validated.data.env === "object"
+			? (Object.fromEntries(
+					Object.entries(validated.data.env).map(([k, v]) => [
+						k,
+						String(v ?? ""),
+					]),
+				) as Record<string, string>)
+			: undefined;
+	const cleanHeaders =
+		validated.data.headers && typeof validated.data.headers === "object"
+			? (Object.fromEntries(
+					Object.entries(validated.data.headers).map(([k, v]) => [
+						k,
+						String(v ?? ""),
+					]),
+				) as Record<string, string>)
+			: undefined;
+
 	return {
 		...validated.data,
+		env: cleanEnv,
+		headers: cleanHeaders,
 		transport,
 		scope,
 		enabled: validated.data.enabled ?? validated.data.disabled !== true,
@@ -173,7 +204,7 @@ function expandEnv(
 ): McpServerInput {
 	const expand = (value?: string) => {
 		if (!value) return value;
-		return value.replace(/\$\{([^}]+)\}/g, (_match, expr) => {
+		return value.replace(/\$\{([^}]+)\}/g, (_match, expr: unknown) => {
 			const [name, fallback] = String(expr).split(":-");
 			const val = process.env[name];
 			if (val !== undefined) return val;
@@ -189,20 +220,31 @@ function expandEnv(
 	return {
 		...server,
 		command: expand(server.command),
-		args: server.args?.map(expand),
+		args: server.args
+			? server.args.map((v) => expand(String(v)) ?? "")
+			: undefined,
 		env: server.env
 			? Object.fromEntries(
-					Object.entries(server.env).map(([k, v]) => [k, expand(v)] as const),
+					Object.entries(server.env).map(([k, v]) => [
+						k,
+						expand(typeof v === "string" ? v : undefined) ?? "",
+					]),
 				)
 			: undefined,
 		url: expand(server.url),
 		headers: server.headers
 			? Object.fromEntries(
-					Object.entries(server.headers).map(
-						([k, v]) => [k, expand(v)] as const,
-					),
+					Object.entries(server.headers).map(([k, v]) => {
+						const expanded =
+							expand(typeof v === "string" ? v : undefined) ?? "";
+						return [k, expanded] as [string, string];
+					}),
 				)
 			: undefined,
 		cwd: expand(server.cwd),
 	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

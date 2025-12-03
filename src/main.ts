@@ -792,7 +792,7 @@ export async function main(args: string[]) {
 	composerManager.initialize(agent, systemPrompt, allTools, process.cwd());
 
 	// Initialize MCP servers (non-blocking) and update agent tools when connected
-	const mcpConfig = loadMcpConfig(process.cwd());
+	const mcpConfig = loadMcpConfig(process.cwd(), { includeEnvLimits: true });
 	if (mcpConfig.servers.length > 0) {
 		// Listen for MCP server connections to add their tools
 		mcpManager.on("connected", () => {

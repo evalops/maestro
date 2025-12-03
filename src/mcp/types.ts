@@ -23,7 +23,10 @@ export interface McpServerConfig {
 
 export interface McpConfig {
 	servers: McpServerConfig[];
-	envLimits?: Record<string, { effective: number; status: string; message?: string }>;
+	envLimits?: Record<
+		string,
+		{ effective: number; status: string; message?: string }
+	>;
 }
 
 export interface McpServerStatus {

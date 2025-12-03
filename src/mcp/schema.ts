@@ -19,11 +19,11 @@ export const mcpServerSchema = z
 		// stdio
 		command: z.string().optional(),
 		args: z.array(z.string()).optional(),
-		env: z.record(z.string()).optional(),
+		env: z.record(z.string(), z.string()).optional(),
 		cwd: z.string().optional(),
 		// http/sse
 		url: z.string().url().optional(),
-		headers: z.record(z.string()).optional(),
+		headers: z.record(z.string(), z.string()).optional(),
 		// common
 		timeout: z.number().int().positive().optional(),
 		enabled: z.boolean().optional(),
@@ -51,12 +51,10 @@ export const mcpServerSchema = z
 export type McpServerInput = z.infer<typeof mcpServerSchema>;
 
 // Accept both array format and Claude-style { mcpServers: { name: {...} } }
-export const mcpConfigSchema = z
-	.object({
-		servers: z.array(mcpServerSchema).optional(),
-		// allow loose objects; we normalize/validate per-entry later
-		mcpServers: z.record(z.string(), z.unknown()).optional(),
-	})
-	.strict();
+export const mcpConfigSchema = z.object({
+	servers: z.array(mcpServerSchema).optional(),
+	// allow loose objects; we normalize/validate per-entry later
+	mcpServers: z.record(z.string(), z.unknown()).optional(),
+});
 
 export type McpConfigInput = z.infer<typeof mcpConfigSchema>;
