@@ -66,6 +66,16 @@ async function executeCommandHook(
 	input: HookInput,
 	signal?: AbortSignal,
 ): Promise<HookCommandResult> {
+	// Check if already aborted before spawning process
+	if (signal?.aborted) {
+		return {
+			stdout: "",
+			stderr: "Hook aborted before execution",
+			status: 130,
+			aborted: true,
+		};
+	}
+
 	const timeoutMs = (hook.timeout ?? 60) * 1000;
 	const jsonInput = JSON.stringify(input);
 
