@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import chalk from "chalk";
 import {
 	ActionApprovalService,
@@ -99,9 +100,11 @@ import {
 import { type UpdateCheckResult, checkForUpdate } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
 
-// Get version from package.json (bundled via JSON import so it works in Bun binaries)
-import packageJson from "../package.json";
-const VERSION = packageJson.version;
+// Get version from package.json (works under Node/Bun without import assertions)
+const packageJson = createRequire(import.meta.url)("../package.json") as {
+	version?: string;
+};
+const VERSION = packageJson.version ?? "unknown";
 
 interface InteractiveOptions {
 	modelScope?: RegisteredModel[];
