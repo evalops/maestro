@@ -1,7 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import {
 	DiagConsoleLogger,
 	DiagLogLevel,
@@ -24,17 +20,11 @@ let configuredServiceName: string | null = null;
 let configuredSampler: string | null = null;
 let sdkInstance: NodeSDK | null = null;
 
+import packageJson from "../package.json" assert { type: "json" };
+
 const packageVersion = (): string => {
-	try {
-		const __filename = fileURLToPath(import.meta.url);
-		const __dirname = dirname(__filename);
-		const pkg = JSON.parse(
-			readFileSync(join(__dirname, "../package.json"), "utf-8"),
-		);
-		return typeof pkg.version === "string" ? pkg.version : "unknown";
-	} catch {
-		return "unknown";
-	}
+	const version = packageJson.version;
+	return typeof version === "string" ? version : "unknown";
 };
 
 export const isOpenTelemetryEnabled = (): boolean => {

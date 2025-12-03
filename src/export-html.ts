@@ -1,8 +1,7 @@
-import { createReadStream, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import type { AgentState, AppMessage } from "./agent/types.js";
 import {
 	type RenderableAssistantMessage,
@@ -18,11 +17,7 @@ import {
 import type { SessionHeaderEntry, SessionManager } from "./session/manager.js";
 
 // Get version from package.json
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const packageJson = JSON.parse(
-	readFileSync(join(__dirname, "../package.json"), "utf-8"),
-);
+import packageJson from "../package.json" assert { type: "json" };
 const VERSION = packageJson.version;
 
 interface SessionFileParseResult {
