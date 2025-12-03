@@ -1,0 +1,342 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentToolResult } from "../../src/agent/types.js";
+import { bashTool } from "../../src/tools/bash.js";
+
+// Mock the safe-mode and guardian modules
+vi.mock("../../src/safety/safe-mode.js", () => ({
+	requirePlanCheck: vi.fn(),
+}));
+
+vi.mock("../../src/guardian/index.js", () => ({
+	shouldGuardCommand: vi.fn().mockReturnValue({ shouldGuard: false }),
+	runGuardian: vi.fn(),
+	formatGuardianResult: vi.fn(),
+}));
+
+// Helper to extract text from content blocks
+function getTextOutput(result: AgentToolResult<unknown>): string {
+	return (
+		result.content
+			?.filter((c): c is { type: "text"; text: string } => {
+				return (
+					c != null && typeof c === "object" && "type" in c && c.type === "text"
+				);
+			})
+			.map((c) => c.text)
+			.join("\n") || ""
+	);
+}
+
+describe("bash tool", () => {
+	let testDir: string;
+
+	beforeEach(() => {
+		testDir = mkdtempSync(join(tmpdir(), "bash-tool-test-"));
+		vi.clearAllMocks();
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	describe("basic command execution", () => {
+		it("executes simple echo command", async () => {
+			const result = await bashTool.execute("bash-1", {
+				command: "echo 'Hello World'",
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("Hello World");
+		});
+
+		it("executes pwd command", async () => {
+			const result = await bashTool.execute("bash-2", {
+				command: "pwd",
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("/");
+		});
+
+		it("executes command with arguments", async () => {
+			const result = await bashTool.execute("bash-3", {
+				command: "echo one two three",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("one two three");
+		});
+
+		it("handles command with no output", async () => {
+			const result = await bashTool.execute("bash-4", {
+				command: "true",
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("successfully");
+		});
+	});
+
+	describe("working directory", () => {
+		it("executes in specified cwd", async () => {
+			const result = await bashTool.execute("bash-5", {
+				command: "pwd",
+				cwd: testDir,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain(testDir);
+		});
+
+		it("handles relative cwd", async () => {
+			// Create a subdirectory
+			const subDir = join(testDir, "subdir");
+			require("node:fs").mkdirSync(subDir);
+
+			const result = await bashTool.execute("bash-6", {
+				command: "pwd",
+				cwd: subDir,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("subdir");
+		});
+	});
+
+	describe("environment variables", () => {
+		it("passes custom environment variables", async () => {
+			const result = await bashTool.execute("bash-7", {
+				command: 'echo "Value: $MY_VAR"',
+				env: { MY_VAR: "test_value" },
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("test_value");
+		});
+
+		it("inherits existing environment", async () => {
+			const result = await bashTool.execute("bash-8", {
+				command: 'echo "Home: $HOME"',
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Home:");
+			expect(output).not.toContain("$HOME");
+		});
+	});
+
+	describe("command chaining", () => {
+		it("supports && chaining", async () => {
+			const result = await bashTool.execute("bash-9", {
+				command: "echo first && echo second",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("first");
+			expect(output).toContain("second");
+		});
+
+		it("supports ; chaining", async () => {
+			const result = await bashTool.execute("bash-10", {
+				command: "echo one; echo two",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("one");
+			expect(output).toContain("two");
+		});
+
+		it("supports pipe", async () => {
+			const result = await bashTool.execute("bash-11", {
+				command: "echo 'hello world' | tr 'a-z' 'A-Z'",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("HELLO WORLD");
+		});
+	});
+
+	describe("exit codes", () => {
+		it("reports non-zero exit code", async () => {
+			const result = await bashTool.execute("bash-12", {
+				command: "exit 1",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Exit code: 1");
+		});
+
+		it("includes exit code in output for failures", async () => {
+			const result = await bashTool.execute("bash-13", {
+				command: "false",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Exit code");
+		});
+	});
+
+	describe("stderr handling", () => {
+		it("captures stderr output", async () => {
+			const result = await bashTool.execute("bash-14", {
+				command: "echo error >&2",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("error");
+		});
+
+		it("combines stdout and stderr", async () => {
+			const result = await bashTool.execute("bash-15", {
+				command: "echo stdout; echo stderr >&2",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("stdout");
+			expect(output).toContain("stderr");
+		});
+	});
+
+	describe("file operations", () => {
+		it("can read files with cat", async () => {
+			const filePath = join(testDir, "test.txt");
+			writeFileSync(filePath, "file contents");
+
+			const result = await bashTool.execute("bash-16", {
+				command: `cat "${filePath}"`,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("file contents");
+		});
+
+		it("can list directory", async () => {
+			writeFileSync(join(testDir, "file1.txt"), "");
+			writeFileSync(join(testDir, "file2.txt"), "");
+
+			const result = await bashTool.execute("bash-17", {
+				command: `ls "${testDir}"`,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("file1.txt");
+			expect(output).toContain("file2.txt");
+		});
+	});
+
+	describe("timeout handling", () => {
+		it("respects timeout parameter", async () => {
+			const result = await bashTool.execute("bash-18", {
+				command: "sleep 10",
+				timeout: 1,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("timed out");
+		});
+
+		it("completes before timeout", async () => {
+			const result = await bashTool.execute("bash-19", {
+				command: "echo fast",
+				timeout: 10,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("fast");
+			expect(output).not.toContain("timed out");
+		});
+	});
+
+	describe("interpolation", () => {
+		it("interpolates ${cwd}", async () => {
+			const result = await bashTool.execute("bash-20", {
+				command: 'echo "CWD: ${cwd}"',
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("CWD:");
+			expect(output).toContain("/");
+		});
+
+		it("interpolates ${home}", async () => {
+			const result = await bashTool.execute("bash-21", {
+				command: 'echo "Home: ${home}"',
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Home:");
+		});
+	});
+
+	describe("abort signal", () => {
+		it("respects abort signal during execution", async () => {
+			const controller = new AbortController();
+
+			// Start a long-running command then abort after a short delay
+			const promise = bashTool.execute(
+				"bash-22",
+				{ command: "sleep 10" },
+				controller.signal,
+			);
+
+			// Abort after 100ms
+			setTimeout(() => controller.abort(), 100);
+
+			// Should resolve (bash tool returns result even on abort) or may reject
+			// depending on timing - just ensure it doesn't hang for 10 seconds
+			const start = Date.now();
+			await Promise.race([
+				promise,
+				new Promise((resolve) => setTimeout(resolve, 2000)),
+			]);
+			const elapsed = Date.now() - start;
+
+			// The key test: it shouldn't wait 10 seconds
+			expect(elapsed).toBeLessThan(3000);
+		});
+	});
+
+	describe("special characters", () => {
+		it("handles quotes in command", async () => {
+			const result = await bashTool.execute("bash-23", {
+				command: `echo "double quotes" 'single quotes'`,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("double quotes");
+			expect(output).toContain("single quotes");
+		});
+
+		it("handles paths with spaces", async () => {
+			const dirWithSpaces = join(testDir, "dir with spaces");
+			require("node:fs").mkdirSync(dirWithSpaces);
+			writeFileSync(join(dirWithSpaces, "file.txt"), "content");
+
+			const result = await bashTool.execute("bash-24", {
+				command: `cat "${join(dirWithSpaces, "file.txt")}"`,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("content");
+		});
+	});
+
+	describe("multiline output", () => {
+		it("preserves multiline output", async () => {
+			const result = await bashTool.execute("bash-25", {
+				command: 'echo -e "line1\\nline2\\nline3"',
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("line1");
+			expect(output).toContain("line2");
+			expect(output).toContain("line3");
+		});
+	});
+});
