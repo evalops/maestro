@@ -1,5 +1,4 @@
 import { BashRenderer } from "./render-bash.js";
-import { BatchRenderer } from "./render-batch.js";
 import { EditRenderer } from "./render-edit.js";
 import { GenericRenderer } from "./render-generic.js";
 import { ReadRenderer } from "./render-read.js";
@@ -8,7 +7,6 @@ import type { ToolRenderer } from "./types.js";
 
 const RENDERERS: Record<string, new () => ToolRenderer> = {
 	bash: BashRenderer,
-	batch: BatchRenderer,
 	read: ReadRenderer,
 	write: WriteRenderer,
 	edit: EditRenderer,

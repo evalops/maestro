@@ -462,7 +462,6 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			const name = ctx.toolName;
 			if (name === "write" || name === "edit" || name === "bash") return true;
 			if (name === "todo") return true;
-			if (name === "batch") return true;
 			if (name === "gh_pr") {
 				const action = getStringArg(ctx, "action");
 				return !action || !["list", "view", "checks", "diff"].includes(action);

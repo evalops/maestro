@@ -90,9 +90,9 @@ export function printHelp(version: string) {
   edit   - Edit files with find/replace
   write  - Write files (creates/overwrites)
   todo   - Create TodoWrite-style checklists
-  
-  Read-only tools: batch,read,list,find,search,parallel_ripgrep,diff,status
-  Example: composer --tools batch,read,list,find,search,parallel_ripgrep,diff "Analyze this code"`,
+
+  Read-only tools: read,list,find,search,parallel_ripgrep,diff,status
+  Example: composer --tools read,list,find,search,parallel_ripgrep,diff "Analyze this code"`,
 	)}`;
 
 	const frameworkSection = `${sectionHeading("Framework Preference")}${muted(

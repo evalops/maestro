@@ -195,7 +195,7 @@ Parameters:
 - encoding: utf-8 (default), utf-16le, latin1, ascii
 
 Auto-detects images, PDFs, and notebooks. Provides syntax highlighting and handles large files.
-Use 'batch' to read multiple files in parallel.`,
+Emit multiple read tool calls in one turn when you need parallel reads; the runtime will execute them concurrently—no batch wrapper required.`,
 	schema: readSchema,
 	async run(
 		{

@@ -81,7 +81,7 @@ export class ToolExecutionComponent extends Container {
 		this.toolName = toolName;
 		this.args = args;
 		this.partialArgs = args;
-		this.defaultCollapsed = toolName.toLowerCase() === "batch";
+		this.defaultCollapsed = false;
 		this.collapsed = this.defaultCollapsed;
 		this.addChild(new Spacer(1));
 		this.topLine = new Text(this.buildTopLine(), 1, 0);

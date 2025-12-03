@@ -54,7 +54,6 @@ export const myTool = createTool({
 
 | Tool | Description | Key Options / Notes |
 | ---- | ----------- | ------------------- |
-| `batch` | Executes multiple independent tools in parallel (1-10 tools). | Accepts `toolCalls` array. Disallows `batch`, `edit`, `write`, and GitHub mutations (`gh_pr create/checkout/comment/close`, `gh_issue create/comment/close`, `gh_repo fork/clone`). Ideal for parallel reads/searches/listings. |
 | `background_tasks` | Runs commands in the background and manages lifecycle. | `action` one of `start | list | stop | logs`; `start` supports `cwd`, `env`, `shell`, `restart` (maxAttempts, delayMs, strategy, maxDelayMs, jitterRatio), and `limits` (maxTasks, maxRssKb, maxCpuMs, logSizeLimit, logSegments, retentionMs). Logs are tailed via `action=logs`. TUI notifications/history detail depend on `~/.composer/agent/background-settings.json` (or `COMPOSER_BACKGROUND_SETTINGS`) flags `notificationsEnabled` and `statusDetailsEnabled`; manual edits are hot-reloaded and summaries are secret-redacted. |
 | `read` | Reads file contents with syntax-aware chunking. Supports text, images, PDFs, and Jupyter notebooks. | Accepts `path`, optional `startLine`/`endLine`. Images are optimized with Sharp if available. PDFs are extracted to text. Notebooks display formatted cells with outputs. |
 | `list` | Lists files in a directory (non-recursive by default). | Supports glob filters and depth. Used for context discovery. |
@@ -85,8 +84,7 @@ export const myTool = createTool({
 - Must be in a git repository with GitHub remote (for PR/issue operations)
 
 **Batch Tool Usage:**
-- ✅ Safe for batch: `view`, `list` actions (read-only operations)
-- ❌ Do NOT batch: `create`, `comment`, `close`, `checkout` actions (mutations where order/outcome matters)
+- Parallelism is native: emit multiple tool calls in one response when you need concurrent reads/searches; the runtime will execute independent calls in parallel without a batch wrapper.
 
 **Examples:**
 ```javascript

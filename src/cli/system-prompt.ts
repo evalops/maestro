@@ -5,8 +5,6 @@ import chalk from "chalk";
 
 // Tool descriptions for dynamic system prompt generation
 const TOOL_DESCRIPTIONS: Record<string, string> = {
-	batch:
-		"Execute multiple independent tool calls in parallel (1-10 tools). Reduces latency when gathering context. Accepts array of { tool, parameters } objects. Disallows batch/edit/write (no nesting, run mutations separately). **Always prefer batch for parallel reads/searches/listings.**",
 	read: "Read file contents",
 	list: "List files and directories safely using glob patterns",
 	find: "Fast file search using fd with glob patterns. Respects .gitignore. Use for discovering files across large codebases.",
@@ -46,11 +44,9 @@ function buildToolsSection(toolNames: string[]): string {
 function buildGuidelines(toolNames: Set<string>): string {
 	const guidelines: string[] = [];
 
-	if (toolNames.has("batch")) {
-		guidelines.push(
-			"**Use batch tool for parallel operations**: When you need to read multiple files, run multiple searches, or list multiple directories, use batch instead of sequential tool calls to reduce latency.",
-		);
-	}
+	guidelines.push(
+		"You can emit multiple tool calls in a single turn; the runtime will execute independent calls in parallel. No batch tool is needed—just include separate tool calls when parallelism helps.",
+	);
 
 	if (toolNames.has("codesearch")) {
 		guidelines.push(
@@ -225,7 +221,6 @@ export function loadProjectContextFiles(): ContextFile[] {
 
 // Default tool names when no filter is applied
 const DEFAULT_TOOL_NAMES = [
-	"batch",
 	"read",
 	"list",
 	"find",

@@ -15,7 +15,7 @@ import { bashTool } from "../../src/tools/bash.js";
 import { diffTool } from "../../src/tools/diff.js";
 import { parseStatusOutput } from "../../src/tools/diff.js";
 import { editTool } from "../../src/tools/edit.js";
-import { batchTool, codingTools } from "../../src/tools/index.js";
+import { codingTools } from "../../src/tools/index.js";
 import { listTool } from "../../src/tools/list.js";
 import { parallelRipgrepTool } from "../../src/tools/parallel-ripgrep.js";
 import { readTool } from "../../src/tools/read.js";
@@ -44,7 +44,6 @@ type RangeDetails = {
 	truncated?: boolean;
 	rangeCount?: number;
 };
-type BatchDetails = { results?: Array<{ tool: string; success: boolean }> };
 
 function getTextOutput(result: ToolResult): string {
 	return (
@@ -1691,7 +1690,6 @@ describe("codingTools bundle", () => {
 	it("exposes every built-in tool", () => {
 		const toolNames = codingTools.map((tool) => tool.name);
 		expect(toolNames).toEqual([
-			"batch",
 			"read",
 			"list",
 			"oracle",
@@ -1714,19 +1712,6 @@ describe("codingTools bundle", () => {
 			"gh_issue",
 			"gh_repo",
 		]);
-	});
-
-	it("makes status available through batch", async () => {
-		const result = await batchTool.execute("batch-status", {
-			toolCalls: [{ tool: "status", parameters: {} }],
-			mode: "serial",
-		});
-
-		const details = result.details as BatchDetails;
-		expect(details?.results?.[0]).toMatchObject({
-			tool: "status",
-			success: true,
-		});
 	});
 });
 

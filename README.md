@@ -173,7 +173,8 @@ Every operation is exposed as an explicit slash command. Type `/help` for the fu
 **Git & Shell:**
 - **diff** – Inspect git diffs
 - **bash** – Execute shell commands
-- **batch** – Run multiple read-only tools in parallel
+
+*Parallelism is native*: you can emit multiple tool calls in one turn and the runtime will execute independent calls concurrently—no separate batch tool required.
 
 **Web & Search** (requires `EXA_API_KEY`):
 - **websearch** – Search the web via Exa AI

@@ -53,7 +53,7 @@ export const TOOL_CATEGORIES = {
 	/** GitHub tools */
 	github: ["gh_pr", "gh_issue", "gh_repo"],
 	/** Advanced tools */
-	advanced: ["oracle", "batch"],
+	advanced: ["oracle"],
 } as const;
 
 /**
@@ -85,8 +85,6 @@ export interface SubagentSpec {
 	allowMcp: boolean;
 	/** Whether toolbox tools are allowed */
 	allowToolbox: boolean;
-	/** Whether to include batch tool wrapping allowed tools */
-	includeBatch: boolean;
 	/** Maximum number of tool calls per turn */
 	maxToolCallsPerTurn?: number;
 	/** Whether dangerous operations require extra confirmation */
@@ -104,17 +102,15 @@ export const SUBAGENT_SPECS: Record<SubagentType, SubagentSpec> = {
 		deniedTools: ["oracle"], // Explorers shouldn't invoke oracle
 		allowMcp: false,
 		allowToolbox: false,
-		includeBatch: true,
 		maxToolCallsPerTurn: 20,
 		requireConfirmation: false,
 	},
 	planner: {
 		displayName: "Planner",
 		description: "Planning mode - can read files and manage todos",
-		allowedTools: [...toolsFromCategories("read", "interactive"), "batch"],
+		allowedTools: [...toolsFromCategories("read", "interactive")],
 		allowMcp: false,
 		allowToolbox: false,
-		includeBatch: true,
 		maxToolCallsPerTurn: 15,
 		requireConfirmation: false,
 	},
@@ -131,32 +127,24 @@ export const SUBAGENT_SPECS: Record<SubagentType, SubagentSpec> = {
 		),
 		allowMcp: true,
 		allowToolbox: true,
-		includeBatch: true,
 		maxToolCallsPerTurn: 30,
 		requireConfirmation: true,
 	},
 	reviewer: {
 		displayName: "Reviewer",
 		description: "Code review mode - can read files and search web",
-		allowedTools: [...toolsFromCategories("read", "web"), "ask_user", "batch"],
+		allowedTools: [...toolsFromCategories("read", "web"), "ask_user"],
 		allowMcp: false,
 		allowToolbox: false,
-		includeBatch: true,
 		maxToolCallsPerTurn: 15,
 		requireConfirmation: false,
 	},
 	researcher: {
 		displayName: "Researcher",
 		description: "Research mode - focused on web search and analysis",
-		allowedTools: [
-			...toolsFromCategories("web", "read"),
-			"ask_user",
-			"todo",
-			"batch",
-		],
+		allowedTools: [...toolsFromCategories("web", "read"), "ask_user", "todo"],
 		allowMcp: true,
 		allowToolbox: false,
-		includeBatch: true,
 		maxToolCallsPerTurn: 20,
 		requireConfirmation: false,
 	},
@@ -166,7 +154,6 @@ export const SUBAGENT_SPECS: Record<SubagentType, SubagentSpec> = {
 		allowedTools: ["read", "list", "search"],
 		allowMcp: false,
 		allowToolbox: false,
-		includeBatch: false,
 		maxToolCallsPerTurn: 10,
 		requireConfirmation: false,
 	},
@@ -182,7 +169,6 @@ export const SUBAGENT_SPECS: Record<SubagentType, SubagentSpec> = {
 		),
 		allowMcp: true,
 		allowToolbox: true,
-		includeBatch: true,
 		requireConfirmation: true,
 	},
 };

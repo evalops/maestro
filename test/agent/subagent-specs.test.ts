@@ -63,7 +63,6 @@ describe("subagent-specs", () => {
 		it("minimal should have very few tools", () => {
 			const spec = SUBAGENT_SPECS.minimal;
 			expect(spec.allowedTools.length).toBeLessThan(5);
-			expect(spec.includeBatch).toBe(false);
 		});
 	});
 

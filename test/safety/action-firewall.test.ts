@@ -77,10 +77,6 @@ function makeGhIssueContext(action: string): ActionApprovalContext {
 	return { toolName: "gh_issue", args: { action } };
 }
 
-function makeBatchContext(): ActionApprovalContext {
-	return { toolName: "batch", args: { tasks: [] } };
-}
-
 function makeWorkflowContext(
 	toolName: string,
 	pendingPii: Array<{ id: string; label: string; redacted?: boolean }>,
@@ -198,11 +194,6 @@ describe("ActionFirewall", () => {
 				makeGhIssueContext("create"),
 			);
 			expect(ghIssueVerdict.action).toBe("require_approval");
-
-			const batchVerdict = await defaultActionFirewall.evaluate(
-				makeBatchContext(),
-			);
-			expect(batchVerdict.action).toBe("require_approval");
 
 			const bgVerdict = await defaultActionFirewall.evaluate(
 				makeShellBackgroundTaskContext("echo"),

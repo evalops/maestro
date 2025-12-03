@@ -3,8 +3,6 @@ import { askUserTool } from "./ask-user.js";
 import { backgroundTasksTool } from "./background-tasks.js";
 // Shell execution (bash -lc) with support for cwd tracking during bash mode
 import { bashTool } from "./bash.js";
-// Parallel tool execution for reads/searches/listings
-import { createBatchTool } from "./batch.js";
 // Exa Code API for programming context (optional - requires EXA_API_KEY)
 import { codesearchTool } from "./codesearch.js";
 // Git diff inspection (workspace/staged/custom ranges)
@@ -50,7 +48,6 @@ export {
 } from "./ask-user.js";
 export { bashTool } from "./bash.js";
 export { backgroundTasksTool } from "./background-tasks.js";
-export { createBatchTool } from "./batch.js";
 export { codesearchTool } from "./codesearch.js";
 export { diffTool } from "./diff.js";
 export { editTool } from "./edit.js";
@@ -68,37 +65,7 @@ export { statusTool } from "./status.js";
 export { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 export { ensureTool, getToolPath } from "./tools-manager.js";
 
-// Create batch tool with all available tools (excluding batch itself)
-// Note: GitHub tools are included for read-only operations (list, view)
-// but the batch tool will still validate they're not doing mutations
-const allTools = [
-	readTool,
-	listTool,
-	oracleTool,
-	findTool,
-	searchTool,
-	parallelRipgrepTool,
-	diffTool,
-	bashTool,
-	backgroundTasksTool,
-	editTool,
-	writeTool,
-	notebookEditTool,
-	todoTool,
-	askUserTool,
-	websearchTool,
-	codesearchTool,
-	webfetchTool,
-	statusTool,
-	ghPrTool,
-	ghIssueTool,
-	ghRepoTool,
-];
-
-export const batchTool = createBatchTool(allTools);
-
 export const codingTools = [
-	batchTool,
 	readTool,
 	listTool,
 	oracleTool,
@@ -125,7 +92,6 @@ export const codingTools = [
 
 // Tool registry for --tools flag filtering
 export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
-	batch: batchTool,
 	read: readTool,
 	list: listTool,
 	oracle: oracleTool,
@@ -151,7 +117,6 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 
 // Read-only tools for restricted subagents (Oracle-style)
 export const readOnlyToolNames = [
-	"batch",
 	"read",
 	"list",
 	"find",
@@ -170,12 +135,6 @@ export function filterTools(
 		if (tool) {
 			filtered.push(tool);
 		}
-	}
-	// Recreate batch tool with only the filtered tools (excluding batch itself)
-	const batchableTools = filtered.filter((t) => t.name !== "batch");
-	if (filtered.some((t) => t.name === "batch") && batchableTools.length > 0) {
-		const filteredBatch = createBatchTool(batchableTools);
-		return [filteredBatch, ...batchableTools];
 	}
 	return filtered;
 }

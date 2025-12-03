@@ -37,19 +37,6 @@ export const TOOL_CONFIG = {
 		process.env.COMPOSER_BASH_TIMEOUT_MS ?? "90000",
 		10,
 	),
-	/** Default timeout for individual tools in batch (in milliseconds) */
-	BATCH_TOOL_TIMEOUT_MS: Number.parseInt(
-		process.env.COMPOSER_BATCH_TIMEOUT_MS ?? "30000",
-		10,
-	),
-	/** Minimum batch tool timeout (in milliseconds) */
-	BATCH_MIN_TIMEOUT_MS: 1_000,
-	/** Maximum batch tool timeout (in milliseconds) */
-	BATCH_MAX_TIMEOUT_MS: 300_000,
-	/** Minimum number of tools in a batch */
-	BATCH_MIN_ITEMS: 1,
-	/** Maximum number of tools in a batch */
-	BATCH_MAX_ITEMS: 10,
 	/** Default file read limit (lines) */
 	READ_DEFAULT_LIMIT: 2400,
 	/** Maximum context lines for search results */
@@ -132,8 +119,6 @@ export const FEATURES = {
  * Validation helpers
  */
 export const VALIDATION = {
-	/** Disallowed tool names in batch operations */
-	BATCH_DISALLOWED_TOOLS: new Set(["batch", "edit", "write"]),
 	/** File extensions considered safe for reading */
 	SAFE_FILE_EXTENSIONS: new Set([
 		".ts",
