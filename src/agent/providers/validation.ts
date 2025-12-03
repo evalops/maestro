@@ -1,4 +1,4 @@
-import AjvModule, { type ErrorObject } from "ajv";
+import AjvModule, { type ErrorObject, type ValidateFunction } from "ajv";
 import addFormatsModule from "ajv-formats";
 import { createLogger } from "../../utils/logger.js";
 import type { AgentTool, ToolCall } from "../types.js";
@@ -25,8 +25,12 @@ const isBrowserExtension =
 // Create a singleton AJV instance with formats (only if not in browser extension)
 // AJV requires 'unsafe-eval' CSP which is not allowed in Manifest V3
 let ajv: ReturnType<typeof Ajv> | null = null;
-// Cache compiled validators per schema to avoid recompiling on every tool call.
-const validatorCache = new WeakMap<object, (data: unknown) => boolean>();
+const validatorCache = new WeakMap<
+	object,
+	ValidateFunction & {
+		errors?: ErrorObject[] | null;
+	}
+>();
 if (!isBrowserExtension) {
 	try {
 		ajv = new Ajv({
@@ -63,12 +67,9 @@ export function validateToolArguments(
 	}
 
 	// Compile (or reuse) the schema
-	let validate = validatorCache.get(tool.parameters) as
-		| ((data: unknown) => boolean)
-		| undefined;
+	let validate = validatorCache.get(tool.parameters);
 	if (!validate) {
-		validate = ajv.compile(tool.parameters) as {
-			(data: unknown): boolean;
+		validate = ajv.compile(tool.parameters) as ValidateFunction & {
 			errors?: ErrorObject[] | null;
 		};
 		validatorCache.set(tool.parameters, validate);
@@ -82,7 +83,7 @@ export function validateToolArguments(
 	// Format validation errors nicely
 	const errors =
 		(validate.errors ?? [])
-			.map((err) => {
+			.map((err: ErrorObject) => {
 				const path =
 					err.instancePath && err.instancePath.length > 1
 						? err.instancePath.substring(1)
@@ -93,9 +94,10 @@ export function validateToolArguments(
 			.join("\n") || "Unknown validation error";
 
 	const argsJson = JSON.stringify(toolCall.arguments, null, 2) ?? "{}";
-	const trimmedArgsJson = argsJson.length > 2000
-		? `${argsJson.slice(0, 2000)}\n... (truncated ${argsJson.length - 2000} chars)`
-		: argsJson;
+	const trimmedArgsJson =
+		argsJson.length > 2000
+			? `${argsJson.slice(0, 2000)}\n... (truncated ${argsJson.length - 2000} chars)`
+			: argsJson;
 
 	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${trimmedArgsJson}`;
 

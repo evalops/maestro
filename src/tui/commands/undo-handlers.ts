@@ -58,14 +58,31 @@ export function handleEnhancedUndoCommand(ctx: UndoRenderContext): void {
 	if (stats.totalChanges === 0) {
 		const checkpointSvc = getCheckpointService();
 		if (checkpointSvc?.canUndo()) {
-			const result = checkpointSvc.undo();
-			if (result.success) {
-				const restored = result.files?.length ?? 0;
-				ctx.showSuccess(
-					`Restored ${restored} file${restored === 1 ? "" : "s"} from last checkpoint.`,
-				);
+			if (isPreview) {
+				const history = checkpointSvc.getHistory();
+				const lastCheckpoint = history.at(-1);
+				if (!lastCheckpoint) {
+					ctx.showInfo("No checkpoints available to undo.");
+				} else {
+					const lines = [
+						"Checkpoint Undo Preview",
+						"",
+						`Would restore ${lastCheckpoint.fileCount} file${lastCheckpoint.fileCount === 1 ? "" : "s"} to state before "${lastCheckpoint.description}"`,
+						chalk.dim("Run /undo to apply"),
+					];
+					ctx.addContent(lines.join("\n"));
+					ctx.requestRender();
+				}
 			} else {
-				ctx.showError(result.message);
+				const result = checkpointSvc.undo();
+				if (result.success) {
+					const restored = result.files?.length ?? 0;
+					ctx.showSuccess(
+						`Restored ${restored} file${restored === 1 ? "" : "s"} from last checkpoint.`,
+					);
+				} else {
+					ctx.showError(result.message);
+				}
 			}
 		} else {
 			ctx.showInfo(
