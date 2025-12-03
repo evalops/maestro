@@ -1,13 +1,13 @@
 import { Container, Spacer, Text } from "@evalops/tui";
-import { theme, type ThemeColor } from "../theme/theme.js";
+import { type ThemeColor, theme } from "../theme/theme.js";
 import {
 	type ToolRenderer,
 	createToolRenderer,
 } from "./tool-renderers/index.js";
 import {
 	buildTopLineWithBadge,
-	themedBottomLine,
 	getBorderChars,
+	themedBottomLine,
 } from "./utils/borders.js";
 import { PANEL_WIDTHS, responsiveWidth } from "./utils/layout.js";
 
@@ -27,12 +27,13 @@ const TOOL_ICONS: Record<string, string> = {
 };
 
 /** Status badge labels and colors */
-const STATUS_CONFIG: Record<ToolStatus, { label: string; color: ThemeColor }> = {
-	running: { label: "[...]", color: "warning" },
-	done: { label: "[done]", color: "success" },
-	error: { label: "[err]", color: "error" },
-	waiting: { label: "[wait]", color: "warning" },
-};
+const STATUS_CONFIG: Record<ToolStatus, { label: string; color: ThemeColor }> =
+	{
+		running: { label: "[...]", color: "warning" },
+		done: { label: "[done]", color: "success" },
+		error: { label: "[err]", color: "error" },
+		waiting: { label: "[wait]", color: "warning" },
+	};
 
 /** Duration for border flash effect in ms */
 const FLASH_DURATION_MS = 400;

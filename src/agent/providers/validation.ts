@@ -6,10 +6,11 @@ import type { AgentTool, ToolCall } from "../types.js";
 const logger = createLogger("agent:providers:validation");
 
 // Handle both default and named exports (AJV uses different export styles)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const Ajv = (AjvModule as any).default || AjvModule;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const addFormats = (addFormatsModule as any).default || addFormatsModule;
+// ESM/CJS interop requires any for modules that may have .default property
+// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any
+const Ajv = (AjvModule as any).default ?? AjvModule;
+// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any
+const addFormats = (addFormatsModule as any).default ?? addFormatsModule;
 
 // Detect if we're in a browser extension environment with strict CSP
 // Chrome extensions with Manifest V3 don't allow eval/Function constructor

@@ -36,7 +36,7 @@ export class UserMessageComponent extends Container {
 			undefined,
 			undefined,
 			undefined, // Let markdown handle its own background or inherit
-			rightOffset,
+			1, // Small padding, not rightOffset which caused vertical text
 			0,
 			getMarkdownTheme(),
 		);

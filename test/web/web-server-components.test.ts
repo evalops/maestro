@@ -18,7 +18,10 @@ import { Code, Status } from "../../src/web/status.js";
 interface MockResponse {
 	writableEnded: boolean;
 	headersSent: boolean;
-	writeHead: (status: number, headers?: Record<string, string | number>) => void;
+	writeHead: (
+		status: number,
+		headers?: Record<string, string | number>,
+	) => void;
 	end: (body?: string) => void;
 	setHeader?: (name: string, value: string) => void;
 }

@@ -1,19 +1,37 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it } from "vitest";
 import { compose } from "../../src/web/middleware.js";
 import { RateLimiter, TieredRateLimiter } from "../../src/web/rate-limiter.js";
 import { createRateLimitMiddleware } from "../../src/web/server-middlewares.js";
 
-function makeReq(overrides: Record<string, unknown> = {}) {
+interface MockRequest {
+	url: string;
+	socket: { remoteAddress: string };
+	headers: Record<string, string>;
+}
+
+interface MockResponse {
+	statusCode: number;
+	headers: Record<string, string>;
+	body: string;
+	headersSent: boolean;
+	writableEnded: boolean;
+	writeHead(status: number, headers?: Record<string, string>): void;
+	setHeader(name: string, value: string): void;
+	end(chunk?: string): void;
+}
+
+function makeReq(overrides: Partial<MockRequest> = {}): IncomingMessage {
 	return {
 		url: "/api/test",
 		socket: { remoteAddress: "192.168.1.1" },
 		headers: {},
 		...overrides,
-	} as any;
+	} as unknown as IncomingMessage;
 }
 
-function makeRes() {
-	const res: any = {
+function makeRes(): MockResponse & ServerResponse {
+	const res: MockResponse = {
 		statusCode: 200,
 		headers: {} as Record<string, string>,
 		body: "",
@@ -32,7 +50,7 @@ function makeRes() {
 			this.writableEnded = true;
 		},
 	};
-	return res;
+	return res as MockResponse & ServerResponse;
 }
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };

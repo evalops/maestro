@@ -1,9 +1,20 @@
+import type { ServerResponse } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentEvent } from "../../src/agent/types.js";
 import { SseSession } from "../../src/web/sse-session.js";
 
-const createRes = () => {
-	const res: any = {
-		chunks: [] as string[],
+interface MockResponse {
+	chunks: string[];
+	writable: boolean;
+	writableEnded: boolean;
+	destroyed: boolean;
+	write(chunk: string): void;
+	end(): void;
+}
+
+const createRes = (): MockResponse => {
+	const res: MockResponse = {
+		chunks: [],
 		writable: true,
 		writableEnded: false,
 		destroyed: false,
@@ -24,8 +35,14 @@ describe("SseSession", () => {
 
 	it("writes events and heartbeats", () => {
 		const res = createRes();
-		const session = new SseSession(res, undefined, undefined, 50);
-		session.sendEvent({ type: "message_delta", delta: "hi" } as any);
+		const session = new SseSession(
+			res as unknown as ServerResponse,
+			undefined,
+			undefined,
+			50,
+		);
+		const event: AgentEvent = { type: "message_delta", delta: "hi" };
+		session.sendEvent(event);
 		session.startHeartbeat();
 		vi.advanceTimersByTime(120);
 		session.stopHeartbeat();
@@ -36,9 +53,11 @@ describe("SseSession", () => {
 		const res = createRes();
 		res.writable = false;
 		const onSkip = vi.fn();
-		const session = new SseSession(res, onSkip);
-		session.sendEvent({ type: "message_delta", delta: "hi" } as any);
-		session.sendEvent({ type: "message_delta", delta: "hi again" } as any);
+		const session = new SseSession(res as unknown as ServerResponse, onSkip);
+		const event1: AgentEvent = { type: "message_delta", delta: "hi" };
+		const event2: AgentEvent = { type: "message_delta", delta: "hi again" };
+		session.sendEvent(event1);
+		session.sendEvent(event2);
 		expect(onSkip).toHaveBeenCalled();
 		const metrics = session.getMetrics();
 		expect(metrics.skipped).toBeGreaterThan(0);

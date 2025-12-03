@@ -7,10 +7,116 @@ import type * as Contracts from "@evalops/contracts";
 export type Message = Contracts.ComposerMessage;
 export type ComposerToolCall = Contracts.ComposerToolCall;
 
-export interface AgentEvent {
+/** Base event properties */
+interface BaseAgentEvent {
+	type: string;
+}
+
+/** Message update event with text/thinking deltas */
+interface MessageUpdateEvent extends BaseAgentEvent {
+	type: "message_update";
+	assistantMessageEvent: {
+		type: "text_delta" | "thinking_start" | "thinking_delta" | "thinking_end";
+		delta?: string;
+	};
+}
+
+/** Message end event with final message */
+interface MessageEndEvent extends BaseAgentEvent {
+	type: "message_end";
+	message: {
+		role: string;
+		content:
+			| string
+			| Array<{
+					type: string;
+					text?: string;
+					thinking?: string;
+					name?: string;
+					arguments?: Record<string, unknown>;
+					id?: string;
+			  }>;
+		timestamp?: number | string;
+		toolName?: string;
+		isError?: boolean;
+		usage?: Contracts.ComposerUsage;
+	};
+}
+
+/** Tool execution events */
+interface ToolExecutionStartEvent extends BaseAgentEvent {
+	type: "tool_execution_start";
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+}
+
+interface ToolExecutionEndEvent extends BaseAgentEvent {
+	type: "tool_execution_end";
+	toolCallId: string;
+	result?: unknown;
+}
+
+/** Thinking events for streaming */
+interface ThinkingStartEvent extends BaseAgentEvent {
+	type: "thinking_start";
+}
+
+interface ThinkingEndEvent extends BaseAgentEvent {
+	type: "thinking_end";
+}
+
+/** Approval events */
+interface ApprovalRequiredEvent extends BaseAgentEvent {
+	type: "action_approval_required";
+	request: {
+		id: string;
+		toolName: string;
+		args: Record<string, unknown>;
+		reason: string;
+	};
+}
+
+interface ApprovalResolvedEvent extends BaseAgentEvent {
+	type: "action_approval_resolved";
+	request: { id: string };
+	decision: "approved" | "denied";
+}
+
+/** Client tool request */
+interface ClientToolRequestEvent extends BaseAgentEvent {
+	type: "client_tool_request";
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+}
+
+/** Error event */
+interface StreamErrorEvent extends BaseAgentEvent {
+	type: "stream_error";
+	message: string;
+	raw?: string;
+}
+
+/** Unknown event type for fallback handling */
+interface UnknownAgentEvent {
 	type: string;
 	[key: string]: unknown;
 }
+
+/** Union of all agent event types */
+export type AgentEvent =
+	| MessageUpdateEvent
+	| MessageEndEvent
+	| ToolExecutionStartEvent
+	| ToolExecutionEndEvent
+	| ThinkingStartEvent
+	| ThinkingEndEvent
+	| ApprovalRequiredEvent
+	| ApprovalResolvedEvent
+	| ClientToolRequestEvent
+	| StreamErrorEvent
+	| UnknownAgentEvent;
 
 export interface Model {
 	id: string;

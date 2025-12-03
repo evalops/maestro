@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { handleConfig } from "../../src/web/handlers/config.js";
 import { handleStatus } from "../../src/web/handlers/status.js";
@@ -6,7 +7,20 @@ import * as serverUtils from "../../src/web/server-utils.js";
 
 const cors = {};
 
-function createRes() {
+interface MockRequest {
+	method: string;
+	url: string;
+	headers: Record<string, string>;
+}
+
+interface MockResponse {
+	writableEnded: boolean;
+	headersSent: boolean;
+	writeHead: ReturnType<typeof vi.fn>;
+	end: ReturnType<typeof vi.fn>;
+}
+
+function createRes(): MockResponse {
 	return {
 		writableEnded: false,
 		headersSent: false,
@@ -21,12 +35,12 @@ afterEach(() => {
 
 describe("handler compression forwarding", () => {
 	it("handleStatus forwards req to respondWithApiError on failure", async () => {
-		const req: any = {
+		const req: MockRequest = {
 			method: "GET",
 			url: "/api/status",
 			headers: { "accept-encoding": "gzip" },
 		};
-		const res: any = createRes();
+		const res = createRes();
 
 		const sendJsonSpy = vi
 			.spyOn(serverUtils, "sendJson")
@@ -37,7 +51,11 @@ describe("handler compression forwarding", () => {
 			.spyOn(serverUtils, "respondWithApiError")
 			.mockImplementation(() => true);
 
-		handleStatus(req, res, cors);
+		handleStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			cors,
+		);
 
 		expect(sendJsonSpy).toHaveBeenCalled();
 		expect(errorSpy).toHaveBeenCalledWith(
@@ -50,12 +68,12 @@ describe("handler compression forwarding", () => {
 	});
 
 	it("handleUsage forwards req to respondWithApiError on failure", () => {
-		const req: any = {
+		const req: MockRequest = {
 			method: "GET",
 			url: "/api/usage",
 			headers: { "accept-encoding": "gzip" },
 		};
-		const res: any = createRes();
+		const res = createRes();
 
 		vi.spyOn(serverUtils, "sendJson").mockImplementation(() => {
 			throw new Error("fail");
@@ -64,7 +82,11 @@ describe("handler compression forwarding", () => {
 			.spyOn(serverUtils, "respondWithApiError")
 			.mockImplementation(() => true);
 
-		handleUsage(req, res, cors);
+		handleUsage(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			cors,
+		);
 
 		expect(errorSpy).toHaveBeenCalledWith(
 			res,
@@ -76,18 +98,22 @@ describe("handler compression forwarding", () => {
 	});
 
 	it("handleConfig forwards req to sendJson for compression negotiation", async () => {
-		const req: any = {
+		const req: MockRequest = {
 			method: "GET",
 			url: "/api/config",
 			headers: { "accept-encoding": "gzip" },
 		};
-		const res: any = createRes();
+		const res = createRes();
 
 		const sendJsonSpy = vi
 			.spyOn(serverUtils, "sendJson")
 			.mockImplementation(() => {});
 
-		await handleConfig(req, res, cors);
+		await handleConfig(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			cors,
+		);
 
 		expect(sendJsonSpy).toHaveBeenCalledWith(
 			res,

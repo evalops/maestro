@@ -1,29 +1,34 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it } from "vitest";
-import { compose } from "../../src/web/middleware.js";
+import {
+	type Middleware,
+	type NextFunction,
+	compose,
+} from "../../src/web/middleware.js";
 
-function makeReq() {
-	return {} as any;
+function makeReq(): IncomingMessage {
+	return {} as IncomingMessage;
 }
 
-function makeRes() {
+function makeRes(): ServerResponse {
 	return {
 		statusCode: 200,
 		headersSent: false,
 		writableEnded: false,
-	} as any;
+	} as unknown as ServerResponse;
 }
 
 describe("compose middleware", () => {
 	it("executes middlewares in order", async () => {
 		const order: number[] = [];
 
-		const middleware1 = async (_req: any, _res: any, next: () => void) => {
+		const middleware1: Middleware = async (_req, _res, next) => {
 			order.push(1);
 			await next();
 			order.push(4);
 		};
 
-		const middleware2 = async (_req: any, _res: any, next: () => void) => {
+		const middleware2: Middleware = async (_req, _res, next) => {
 			order.push(2);
 			await next();
 			order.push(3);
@@ -61,7 +66,7 @@ describe("compose middleware", () => {
 	});
 
 	it("throws if next() called multiple times", async () => {
-		const badMiddleware = async (_req: any, _res: any, next: () => void) => {
+		const badMiddleware: Middleware = async (_req, _res, next) => {
 			await next();
 			await next();
 		};
@@ -81,7 +86,7 @@ describe("compose middleware", () => {
 			// Does not call next
 		};
 
-		const middleware2 = async (_req: any, _res: any, next: () => void) => {
+		const middleware2: Middleware = async (_req, _res, next) => {
 			order.push(2);
 			await next();
 		};
@@ -95,7 +100,7 @@ describe("compose middleware", () => {
 	it("calls final handler after all middlewares", async () => {
 		let finalCalled = false;
 
-		const middleware = async (_req: any, _res: any, next: () => void) => {
+		const middleware: Middleware = async (_req, _res, next) => {
 			await next();
 		};
 

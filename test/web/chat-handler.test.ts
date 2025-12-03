@@ -1,7 +1,11 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { RegisteredModel } from "../../src/models/registry.js";
-import { handleChat } from "../../src/web/handlers/chat.js";
+import {
+	type ChatHandlerContext,
+	handleChat,
+} from "../../src/web/handlers/chat.js";
 
 const mockModel: RegisteredModel = {
 	id: "claude-sonnet-4-5",
@@ -21,8 +25,20 @@ const mockModel: RegisteredModel = {
 
 const cors = { "Access-Control-Allow-Origin": "*" };
 
-function makeRes() {
-	const res: any = {
+interface MockResponse {
+	statusCode: number;
+	headers: Record<string, string>;
+	body: string;
+	writableEnded: boolean;
+	on: () => void;
+	off: () => void;
+	writeHead(status: number, headers?: Record<string, string>): void;
+	write(chunk: string | Buffer): void;
+	end(chunk?: string | Buffer): void;
+}
+
+function makeRes(): MockResponse {
+	const res: MockResponse = {
 		statusCode: 200,
 		headers: {} as Record<string, string>,
 		body: "",
@@ -44,9 +60,15 @@ function makeRes() {
 	return res;
 }
 
+interface MockPassThrough extends PassThrough {
+	method: string;
+	url: string;
+	headers: Record<string, string>;
+}
+
 describe("handleChat", () => {
 	it("returns 400 when no messages supplied", async () => {
-		const req = new PassThrough() as any;
+		const req = new PassThrough() as MockPassThrough;
 		req.method = "POST";
 		req.url = "/api/chat";
 		req.headers = {};
@@ -54,7 +76,7 @@ describe("handleChat", () => {
 
 		const res = makeRes();
 
-		const context: any = {
+		const context: Partial<ChatHandlerContext> = {
 			createAgent: async () => {
 				throw new Error("should not create agent");
 			},
@@ -65,14 +87,18 @@ describe("handleChat", () => {
 			corsHeaders: cors,
 		};
 
-		await handleChat(req, res, context);
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as ChatHandlerContext,
+		);
 
 		expect(res.statusCode).toBe(400);
 		expect(res.body).toContain("No messages supplied");
 	});
 
 	it("streams DONE for valid request", async () => {
-		const req = new PassThrough() as any;
+		const req = new PassThrough() as MockPassThrough;
 		req.method = "POST";
 		req.url = "/api/chat";
 		req.headers = {};
@@ -82,11 +108,11 @@ describe("handleChat", () => {
 		req.end(JSON.stringify(body));
 
 		const res = makeRes();
-		const events: any[] = [];
 
-		const context: any = {
+		const context: Partial<ChatHandlerContext> = {
 			createAgent: async () => {
-				let subscriber: ((e: any) => void) | undefined;
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
 				return {
 					state: {
 						systemPrompt: "",
@@ -98,7 +124,7 @@ describe("handleChat", () => {
 						streamMessage: null,
 						pendingToolCalls: new Map(),
 					},
-					subscribe: (fn: any) => {
+					subscribe: (fn: EventCallback) => {
 						subscriber = fn;
 						return () => {
 							subscriber = undefined;
@@ -122,7 +148,11 @@ describe("handleChat", () => {
 			corsHeaders: cors,
 		};
 
-		await handleChat(req, res, context);
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as ChatHandlerContext,
+		);
 
 		// SSE stream writes contain DONE marker
 		expect(res.body).toContain("[DONE]");

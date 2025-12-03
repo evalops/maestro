@@ -10,7 +10,10 @@ import {
 	type Session,
 } from "../lib/api-client.js";
 import type { ThinkingManager } from "../lib/decorations.js";
-import { convertToComposerMessage } from "../lib/message-converter.js";
+import {
+	type RawMessage,
+	convertToComposerMessage,
+} from "../lib/message-converter.js";
 import { getWebviewHtml } from "./webview-template.js";
 
 export class ComposerSidebarProvider
@@ -413,14 +416,15 @@ export class ComposerSidebarProvider
 
 			const path = require("node:path");
 			// If caller provided a workspaceFolder hint, prefer that
-			let targetWorkspace =
-				args?.workspaceFolder && typeof args.workspaceFolder === "string"
-					? workspaceFolders.find(
-							(wf) =>
-								wf.name === args.workspaceFolder ||
-								args.workspaceFolder.startsWith(wf.uri.fsPath),
-						)
-					: undefined;
+			const workspaceFolderHint =
+				typeof args?.workspaceFolder === "string" ? args.workspaceFolder : null;
+			let targetWorkspace = workspaceFolderHint
+				? workspaceFolders.find(
+						(wf) =>
+							wf.name === workspaceFolderHint ||
+							workspaceFolderHint.startsWith(wf.uri.fsPath),
+					)
+				: undefined;
 
 			// Otherwise use the workspace that contains the active editor, else first
 			if (!targetWorkspace) {
@@ -490,11 +494,15 @@ export class ComposerSidebarProvider
 		};
 
 		try {
-			let result: Array<{ type: string; text?: string; [key: string]: unknown }> =
-				[];
+			let result: Array<{
+				type: string;
+				text?: string;
+				[key: string]: unknown;
+			}> = [];
 			if (name === "vscode_get_diagnostics") {
 				checkAbort();
-				const uri = args.uri ? validateWorkspacePath(args.uri) : undefined;
+				const uriArg = typeof args.uri === "string" ? args.uri : undefined;
+				const uri = uriArg ? validateWorkspacePath(uriArg) : undefined;
 				let allDiagnosticItems: vscode.Diagnostic[] = [];
 
 				if (uri) {
@@ -530,6 +538,15 @@ export class ComposerSidebarProvider
 				];
 			} else if (name === "vscode_get_definition") {
 				checkAbort();
+				if (
+					typeof args.uri !== "string" ||
+					typeof args.line !== "number" ||
+					typeof args.character !== "number"
+				) {
+					throw new Error(
+						"vscode_get_definition requires uri (string), line (number), and character (number)",
+					);
+				}
 				const uri = validateWorkspacePath(args.uri);
 				const pos = new vscode.Position(args.line, args.character);
 				const definitions = await raceWithAbort(
@@ -572,6 +589,15 @@ export class ComposerSidebarProvider
 				result = [{ type: "text", text: JSON.stringify(formatted, null, 2) }];
 			} else if (name === "vscode_find_references") {
 				checkAbort();
+				if (
+					typeof args.uri !== "string" ||
+					typeof args.line !== "number" ||
+					typeof args.character !== "number"
+				) {
+					throw new Error(
+						"vscode_find_references requires uri (string), line (number), and character (number)",
+					);
+				}
 				const uri = validateWorkspacePath(args.uri);
 				const pos = new vscode.Position(args.line, args.character);
 				const references =
@@ -598,7 +624,10 @@ export class ComposerSidebarProvider
 				result = [{ type: "text", text: JSON.stringify(formatted, null, 2) }];
 			} else if (name === "vscode_read_file_range") {
 				checkAbort();
-				// Validate line numbers
+				// Validate args
+				if (typeof args.uri !== "string") {
+					throw new Error("vscode_read_file_range requires uri (string)");
+				}
 				if (
 					typeof args.startLine !== "number" ||
 					typeof args.endLine !== "number" ||
@@ -762,8 +791,15 @@ export class ComposerSidebarProvider
 			for await (const event of stream) {
 				if (signal.aborted) break;
 
+				// Type helper for event properties (handles index signature returning unknown)
+				const getEventProp = <T>(key: string): T | undefined =>
+					(event as Record<string, unknown>)[key] as T | undefined;
+
 				if (event.type === "message_update") {
-					const evt = event.assistantMessageEvent;
+					const evt = getEventProp<{ type: string; delta?: string }>(
+						"assistantMessageEvent",
+					);
+					if (!evt) continue;
 					if (evt.type === "text_delta" && evt.delta) {
 						assistantMsg.content += evt.delta;
 						assistantHasContent = true;
@@ -789,7 +825,9 @@ export class ComposerSidebarProvider
 					}
 				} else if (event.type === "message_end") {
 					// Update history with the authoritative message
-					const msg = convertToComposerMessage(event.message);
+					const message = getEventProp<RawMessage>("message");
+					if (!message) continue;
+					const msg = convertToComposerMessage(message);
 					if (msg.role === "assistant") {
 						// Update the assistant message we are building
 						// We replace it in the array to ensure we have tools/usage etc.
@@ -811,25 +849,28 @@ export class ComposerSidebarProvider
 				} else if (event.type === "tool_execution_start") {
 					this._view?.webview.postMessage({
 						type: "tool_start",
-						id: event.toolCallId,
-						name: event.toolName,
-						args: event.args,
+						id: getEventProp<string>("toolCallId"),
+						name: getEventProp<string>("toolName"),
+						args: getEventProp<Record<string, unknown>>("args"),
 					});
 				} else if (event.type === "tool_execution_end") {
 					this._view?.webview.postMessage({
 						type: "tool_end",
-						id: event.toolCallId,
-						result: event.result,
-						isError: event.isError,
+						id: getEventProp<string>("toolCallId"),
+						result: getEventProp<unknown>("result"),
+						isError: getEventProp<boolean>("isError"),
 					});
-				} else if (event.type === "text_delta" && event.text) {
+				} else if (event.type === "text_delta") {
 					// Fallback for flat events if any
-					assistantMsg.content += event.text;
-					assistantHasContent = true;
-					this._view?.webview.postMessage({
-						type: "token",
-						value: event.text,
-					});
+					const text = getEventProp<string>("text");
+					if (text) {
+						assistantMsg.content += text;
+						assistantHasContent = true;
+						this._view?.webview.postMessage({
+							type: "token",
+							value: text,
+						});
+					}
 				} else if (event.type === "thinking_start") {
 					if (thinkingEditor && thinkingLine !== undefined) {
 						this._thinkingManager.setThinking(thinkingEditor, thinkingLine);
@@ -841,41 +882,55 @@ export class ComposerSidebarProvider
 					}
 					this._view?.webview.postMessage({ type: "thinking_end" });
 				} else if (event.type === "action_approval_required") {
-					this._view?.webview.postMessage({
-						type: "approval_required",
-						requestId: event.request.id,
-						toolName: event.request.toolName,
-						args: event.request.args,
-						reason: event.request.reason,
-					});
+					const request = getEventProp<{
+						id: string;
+						toolName: string;
+						args: Record<string, unknown>;
+						reason: string;
+					}>("request");
+					if (request) {
+						this._view?.webview.postMessage({
+							type: "approval_required",
+							requestId: request.id,
+							toolName: request.toolName,
+							args: request.args,
+							reason: request.reason,
+						});
+					}
 				} else if (event.type === "action_approval_resolved") {
-					this._view?.webview.postMessage({
-						type: "approval_resolved",
-						requestId: event.request.id,
-						decision: event.decision,
-					});
+					const request = getEventProp<{ id: string }>("request");
+					const decision = getEventProp<string>("decision");
+					if (request) {
+						this._view?.webview.postMessage({
+							type: "approval_resolved",
+							requestId: request.id,
+							decision,
+						});
+					}
 				} else if (event.type === "client_tool_request") {
 					// Execute client tool - await to catch and report errors properly
-					this._handleClientTool(
-						event.toolCallId,
-						event.toolName,
-						event.args,
-						signal,
-					).catch((err) => {
-						console.error("Client tool execution failed:", err);
-						// Try to submit error result so backend doesn't wait forever
-						this._apiClient
-							.submitClientToolResult(
-								event.toolCallId,
-								[{ type: "text", text: String(err) }],
-								true,
-							)
-							.catch(() => {
-								// Ignore if submission fails - backend will timeout
-							});
-					});
+					const toolCallId = getEventProp<string>("toolCallId");
+					const toolName = getEventProp<string>("toolName");
+					const args = getEventProp<Record<string, unknown>>("args") ?? {};
+					if (!toolCallId || !toolName) continue;
+					this._handleClientTool(toolCallId, toolName, args, signal).catch(
+						(err) => {
+							console.error("Client tool execution failed:", err);
+							// Try to submit error result so backend doesn't wait forever
+							this._apiClient
+								.submitClientToolResult(
+									toolCallId,
+									[{ type: "text", text: String(err) }],
+									true,
+								)
+								.catch(() => {
+									// Ignore if submission fails - backend will timeout
+								});
+						},
+					);
 				} else if (event.type === "error" || event.type === "stream_error") {
-					throw new Error(event.message || "Stream error");
+					const errorMsg = getEventProp<string>("message") || "Stream error";
+					throw new Error(errorMsg);
 				}
 			}
 

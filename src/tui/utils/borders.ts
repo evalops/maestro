@@ -277,10 +277,7 @@ export function buildDashedSeparator(
 		pattern += i % 2 === 0 ? chars.horizontal : " ";
 	}
 
-	return theme.fg(
-		color,
-		`${chars.leftT}${pattern}${chars.rightT}`,
-	);
+	return theme.fg(color, `${chars.leftT}${pattern}${chars.rightT}`);
 }
 
 /**
