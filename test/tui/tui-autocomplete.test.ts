@@ -5,9 +5,11 @@ describe("CombinedAutocompleteProvider - Path Extraction", () => {
 	describe("extractPathPrefix", () => {
 		const provider = new CombinedAutocompleteProvider([], "/test");
 		// Access private method for testing via type assertion
-		const extractPathPrefix = (provider as any).extractPathPrefix.bind(
-			provider,
-		);
+		const extractPathPrefix = (
+			provider as unknown as {
+				extractPathPrefix: (text: string, inQuote: boolean) => string;
+			}
+		).extractPathPrefix.bind(provider);
 
 		describe("ReDoS prevention", () => {
 			it("should handle URLs with many slashes without hanging", () => {

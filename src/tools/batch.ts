@@ -206,7 +206,7 @@ Example parallel:
 				source: unknown,
 				segments: string[],
 			): string | undefined => {
-				let current: any = source;
+				let current: unknown = source;
 				for (const segment of segments) {
 					if (current == null) return undefined;
 					const numeric = Number.parseInt(segment, 10);
@@ -447,21 +447,25 @@ function extractSummaryFromDetails(details: unknown): string | undefined {
 	if (!details || typeof details !== "object") {
 		return undefined;
 	}
-	if ("summary" in details && typeof (details as any).summary === "string") {
-		return (details as any).summary;
+	if (
+		"summary" in details &&
+		typeof (details as { summary?: unknown }).summary === "string"
+	) {
+		return (details as { summary: string }).summary;
 	}
 	return undefined;
 }
 
-function buildPreview(result: AgentToolResult<any>): {
+function buildPreview(result: AgentToolResult<unknown>): {
 	previewText: string;
 	summaryText?: string;
 } {
-	if (!result.details || !result.details.results) {
+	const details = result.details as { results?: unknown[] } | null | undefined;
+	if (!details || !details.results) {
 		return { previewText: "Batch execution completed" };
 	}
 
-	const results = result.details.results as {
+	const results = details.results as {
 		tool: string;
 		result: AgentToolResult<unknown>;
 		success: boolean;
@@ -471,13 +475,18 @@ function buildPreview(result: AgentToolResult<any>): {
 		const status = r.success ? "[OK]" : "[ERROR]";
 		let detail = "";
 		if (r.tool === "read") {
-			const path = (r.result.details as any)?.path || "file";
+			const readDetails = r.result.details as { path?: string } | undefined;
+			const path = readDetails?.path || "file";
 			detail = `read ${path}`;
 		} else if (r.tool === "search") {
-			const pattern = (r.result.details as any)?.command || "pattern";
+			const searchDetails = r.result.details as
+				| { command?: string }
+				| undefined;
+			const pattern = searchDetails?.command || "pattern";
 			detail = `search "${pattern}"`;
 		} else if (r.tool === "bash") {
-			const cmd = (r.result.content[0] as any)?.text?.split("\n")[0] || "cmd";
+			const firstContent = r.result.content[0] as { text?: string } | undefined;
+			const cmd = firstContent?.text?.split("\n")[0] || "cmd";
 			detail = `bash "${cmd.slice(0, 30)}${cmd.length > 30 ? "..." : ""}"`;
 		} else {
 			detail = r.tool;

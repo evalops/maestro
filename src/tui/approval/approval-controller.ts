@@ -49,11 +49,11 @@ export class ApprovalController {
 		} else {
 			this.queue = this.queue.filter((entry) => entry.id !== request.id);
 		}
-		const tone = decision.approved ? "success" : "warn";
+		const tone: "success" | "warn" = decision.approved ? "success" : "warn";
 		const message = decision.approved
 			? "Approved high-risk action"
 			: "Denied high-risk action";
-		this.options.notificationView.showToast(message, tone as any);
+		this.options.notificationView.showToast(message, tone);
 		this.scheduleNext();
 	}
 

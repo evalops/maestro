@@ -5,7 +5,9 @@ import type { AgentToolResult, ToolAnnotations } from "../agent/types.js";
 import type { Sandbox } from "../sandbox/types.js";
 
 // Handle both default and named exports
+// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any
 const Ajv = (AjvModule as any).default || AjvModule;
+// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any
 const addFormats = (addFormatsModule as any).default || addFormatsModule;
 
 // Create a singleton AJV instance for schema validation
@@ -188,6 +190,7 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 
 				try {
 					const builder = new ToolResponseBuilder<Details>();
+					// biome-ignore lint/suspicious/noExplicitAny: params validated against schema but typed as Record<string, unknown>
 					const result = await options.run(params as any, {
 						toolCallId,
 						signal,
@@ -302,6 +305,7 @@ export function createJsonTool<Schema extends TSchema, Details = undefined>(
 			) {
 				return context.respond.text(JSON.stringify(result, null, 2));
 			}
+			// biome-ignore lint/suspicious/noExplicitAny: result type narrowed by checks above but still typed as unknown
 			return result as any;
 		},
 	});

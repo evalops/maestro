@@ -36,6 +36,7 @@ interface CreateTypeboxToolOptions<Schema extends TSchema, Details> {
 
 export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 	options: CreateTypeboxToolOptions<Schema, Details>,
+	// biome-ignore lint/suspicious/noExplicitAny: Generic tool return type requires any for flexibility
 ): AgentTool<any, Details> {
 	const schema = Type.Strict(options.schema) as Schema;
 	const parameters = schema;

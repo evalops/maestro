@@ -31,21 +31,26 @@ export function handleUsage(
 			total: summary.totalTokens,
 		};
 
-		const mapBreakdowns = <T extends Record<string, any>>(record: T) => {
-			const mapped: Record<string, any> = {};
+		interface BreakdownDetail {
+			cost: number;
+			tokens: number;
+			requests: number;
+			tokensDetailed?: {
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+				total: number;
+			};
+		}
+
+		const mapBreakdowns = (record: Record<string, BreakdownDetail>) => {
+			const mapped: Record<
+				string,
+				BreakdownDetail & { calls: number; cachedTokens: number }
+			> = {};
 			for (const [key, value] of Object.entries(record)) {
-				const detail = value as {
-					cost: number;
-					tokens: number;
-					requests: number;
-					tokensDetailed?: {
-						input: number;
-						output: number;
-						cacheRead: number;
-						cacheWrite: number;
-						total: number;
-					};
-				};
+				const detail = value;
 				const tokenDetails = detail.tokensDetailed || {
 					input: 0,
 					output: 0,
