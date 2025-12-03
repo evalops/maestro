@@ -1,5 +1,6 @@
 import { TokenTracker } from "../billing/token-tracker.js";
 import { isDatabaseConfigured } from "../db/client.js";
+import { type ToolHookService, createToolHookService } from "../hooks/index.js";
 import { envApiKeyMap } from "../providers/api-keys.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -65,6 +66,10 @@ export interface ProviderTransportOptions {
 	approvalService?: ActionApprovalService;
 	clientToolService?: ClientToolService;
 	maxConcurrentToolExecutions?: number;
+	/** Hook service for tool lifecycle hooks (PreToolUse, PostToolUse, etc.) */
+	hookService?: ToolHookService;
+	/** Current working directory for hook execution (required if hookService not provided) */
+	cwd?: string;
 }
 
 function resolveEnvCredential(provider: string): AuthCredential | undefined {
@@ -250,6 +255,16 @@ export class ProviderTransport implements AgentTransport {
 		if (cfg.runLLM) {
 			firewall.setSemanticJudge(new SemanticJudge(cfg.runLLM));
 		}
+
+		// Initialize hook service for tool lifecycle hooks
+		const hookService =
+			this.options.hookService ??
+			(this.options.cwd
+				? createToolHookService({
+						cwd: this.options.cwd,
+						sessionId: cfg.session?.id,
+					})
+				: undefined);
 
 		this.workflowState.reset();
 		this.recentToolCalls = [];
@@ -648,14 +663,68 @@ export class ProviderTransport implements AgentTransport {
 						args: toolCall.arguments,
 					};
 
+					// Run PreToolUse hooks before firewall check
+					let effectiveToolCall = toolCall;
+					if (hookService) {
+						const hookResult = await hookService.runPreToolUseHooks(
+							toolCall,
+							signal,
+						);
+
+						// Check if hook blocked execution
+						if (hookResult.blocked) {
+							const hookBlockedResult: ToolResultMessage = {
+								role: "toolResult",
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								content: [
+									{
+										type: "text",
+										text: `Blocked by hook: ${hookResult.blockReason ?? "Hook denied execution"}`,
+									},
+								],
+								isError: true,
+								timestamp: Date.now(),
+							};
+							await logToolExecutionAudit(
+								toolCall.name,
+								toolCall.arguments as Record<string, unknown>,
+								"denied",
+								0,
+								hookResult.blockReason,
+							);
+							for (const event of emitToolResult(
+								hookBlockedResult,
+								toolCall,
+								true,
+							)) {
+								yield event;
+							}
+							continue;
+						}
+
+						// Apply updated input from hook if provided
+						if (hookResult.updatedInput) {
+							effectiveToolCall = {
+								...toolCall,
+								arguments: hookResult.updatedInput,
+							};
+							logger.debug("Hook modified tool input", {
+								toolName: toolCall.name,
+								originalArgs: Object.keys(toolCall.arguments),
+								updatedArgs: Object.keys(hookResult.updatedInput),
+							});
+						}
+					}
+
 					let approvalAllowed = true;
 					let approvalReason: string | undefined;
 					const workflowSnapshot = this.workflowState.snapshot();
 					// Look up tool to get annotations for firewall decisions
-					const toolDef = tools.find((t) => t.name === toolCall.name);
+					const toolDef = tools.find((t) => t.name === effectiveToolCall.name);
 					const verdict = await firewall.evaluate({
-						toolName: toolCall.name,
-						args: toolCall.arguments,
+						toolName: effectiveToolCall.name,
+						args: effectiveToolCall.arguments,
 						metadata: {
 							workflowState: workflowSnapshot,
 							annotations: toolDef?.annotations,
@@ -801,7 +870,8 @@ export class ProviderTransport implements AgentTransport {
 
 					let validatedArgs: Record<string, unknown>;
 					try {
-						validatedArgs = validateToolArguments(tool, toolCall);
+						// Use effectiveToolCall to include any hook-modified arguments
+						validatedArgs = validateToolArguments(tool, effectiveToolCall);
 					} catch (error: unknown) {
 						const validationErrorResult: ToolResultMessage = {
 							role: "toolResult",
@@ -889,47 +959,94 @@ export class ProviderTransport implements AgentTransport {
 									result.isError ? "failure" : "success",
 									Date.now() - startTime,
 								);
+
+								const toolResultMsg: ToolResultMessage = {
+									role: "toolResult" as const,
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									content: result.content,
+									details: result.details,
+									isError: result.isError || false,
+									timestamp: Date.now(),
+								};
+
+								// Run PostToolUse hooks for successful execution
+								if (hookService && !result.isError) {
+									const postHookResult = await hookService.runPostToolUseHooks(
+										effectiveToolCall,
+										toolResultMsg,
+										signal,
+									);
+									// If hook adds context, append to result content
+									if (postHookResult.additionalContext) {
+										toolResultMsg.content = [
+											...toolResultMsg.content,
+											{
+												type: "text" as const,
+												text: `\n[Hook context]: ${postHookResult.additionalContext}`,
+											},
+										];
+									}
+								}
+
 								return {
-									message: {
-										role: "toolResult" as const,
-										toolCallId: toolCall.id,
-										toolName: toolCall.name,
-										content: result.content,
-										details: result.details,
-										isError: result.isError || false,
-										timestamp: Date.now(),
-									},
+									message: toolResultMsg,
 									isError: result.isError || false,
 								};
 							})
 							.catch(async (error: unknown) => {
+								const errorMessage =
+									error instanceof Error
+										? error.message
+										: `Error: ${String(error)}`;
+
 								// Log failed tool execution
 								await logToolExecutionAudit(
 									toolCall.name,
 									validatedArgs,
 									"failure",
 									Date.now() - startTime,
-									error instanceof Error ? error.message : String(error),
+									errorMessage,
 								);
-								return {
-									message: {
-										role: "toolResult" as const,
-										toolCallId: toolCall.id,
-										toolName: toolCall.name,
-										content: [
+
+								const toolResultMsg: ToolResultMessage = {
+									role: "toolResult" as const,
+									toolCallId: toolCall.id,
+									toolName: toolCall.name,
+									content: [
+										{
+											type: "text" as const,
+											text: errorMessage,
+										},
+									],
+									details:
+										error instanceof ToolError ? error.details : undefined,
+									isError: true,
+									timestamp: Date.now(),
+								};
+
+								// Run PostToolUseFailure hooks
+								if (hookService) {
+									const failureHookResult =
+										await hookService.runPostToolUseFailureHooks(
+											effectiveToolCall,
+											errorMessage,
+											signal,
+										);
+									// If hook adds context, append to result content
+									if (failureHookResult.additionalContext) {
+										toolResultMsg.content = [
+											...toolResultMsg.content,
 											{
-												type: "text",
-												text:
-													error instanceof Error
-														? error.message
-														: `Error: ${String(error)}`,
+												type: "text" as const,
+												text: `\n[Hook context]: ${failureHookResult.additionalContext}`,
 											},
-										],
-										details:
-											error instanceof ToolError ? error.details : undefined,
-										isError: true,
-										timestamp: Date.now(),
-									},
+										];
+									}
+								}
+
+								return {
+									message: toolResultMsg,
 									isError: true,
 								};
 							});

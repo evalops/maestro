@@ -162,8 +162,8 @@ import { handleFrameworkCommand as frameworkHandler } from "./commands/framework
 import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
 import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
 import { ModalManager } from "./modal-manager.js";
-import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 import { isReducedMotionEnabled, setReducedMotionEnv } from "./utils/motion.js";
+import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
 const SSH_RENDER_INTERVAL_MS = 50;
