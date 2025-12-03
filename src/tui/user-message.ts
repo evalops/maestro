@@ -49,14 +49,24 @@ export class UserMessageComponent extends Container {
 		// Calculate right-align offset (terminal width - panel width - margin)
 		const rightOffset = Math.max(0, terminalWidth - panelWidth - 2);
 
-		this.addChild(new Text(this.buildTopLine(panelWidth), rightOffset, 0));
+		// Top border - use OffsetWrapper instead of paddingX (paddingX * 2 breaks width calculation)
+		this.addChild(
+			new OffsetWrapper(
+				new Text(this.buildTopLine(panelWidth), 0, 0),
+				rightOffset,
+				panelWidth,
+			),
+		);
 
-		// Metadata line with relative timestamp right-aligned
+		// Metadata line with relative timestamp
 		const ts = timestamp ?? Date.now();
 		const relativeTime = formatRelativeTime(ts);
 		const header = `${theme.fg("muted", `${relativeTime} ·`)} ${theme.fg("accent", "YOU")}`;
-		this.addChild(new Text(header, rightOffset, 0));
+		this.addChild(
+			new OffsetWrapper(new Text(header, 1, 0), rightOffset, panelWidth),
+		);
 
+		// Message content
 		this.markdown = new Markdown(
 			text,
 			undefined,
@@ -66,9 +76,16 @@ export class UserMessageComponent extends Container {
 			0,
 			getMarkdownTheme(),
 		);
-		// Wrap markdown with offset to match border positioning
 		this.addChild(new OffsetWrapper(this.markdown, rightOffset, panelWidth));
-		this.addChild(new Text(this.buildBottomLine(panelWidth), rightOffset, 0));
+
+		// Bottom border
+		this.addChild(
+			new OffsetWrapper(
+				new Text(this.buildBottomLine(panelWidth), 0, 0),
+				rightOffset,
+				panelWidth,
+			),
+		);
 	}
 
 	private static readonly MIN_WIDTH = PANEL_WIDTHS.userMessage.min;
