@@ -222,7 +222,7 @@ export class TUI extends Container {
 		// Width changed - need full re-render
 		const widthChanged =
 			this.previousWidth !== 0 && this.previousWidth !== width;
-		const overflowChanged = isOverflowing || this.overflowedLastRender;
+		const overflowChanged = isOverflowing !== this.overflowedLastRender;
 
 		// First render - just output everything without clearing
 		if (this.previousLines.length === 0) {
@@ -298,6 +298,7 @@ export class TUI extends Container {
 			this.cursorRow = newLines.length - 1;
 			this.previousLines = newLines;
 			this.previousWidth = width;
+			this.overflowedLastRender = isOverflowing;
 			return;
 		}
 
