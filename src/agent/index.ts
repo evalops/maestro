@@ -72,6 +72,16 @@ export {
 	type SessionBackup,
 	type SessionRecoveryConfig,
 } from "./session-recovery.js";
+export {
+	PromptCacheManager,
+	createPromptCacheManager,
+	getPromptCacheConfig,
+	estimateTokens,
+	type CacheControl,
+	type CacheableBlock,
+	type CacheStats,
+	type PromptCacheConfig,
+} from "./prompt-cache.js";
 export type {
 	AgentEvent,
 	AgentRunConfig,

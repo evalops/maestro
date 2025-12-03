@@ -186,3 +186,14 @@ export const vscodeTools = [
 	vscodeFindReferencesTool,
 	vscodeReadFileRangeTool,
 ];
+
+// Tool result caching
+export {
+	ToolResultCache,
+	createToolResultCache,
+	getGlobalToolResultCache,
+	resetGlobalToolResultCache,
+	getToolResultCacheConfig,
+	type ToolCacheConfig,
+	type ToolCacheStats,
+} from "./tool-result-cache.js";

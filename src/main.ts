@@ -6,6 +6,7 @@ import {
 import {
 	BackgroundTaskContextSource,
 	FrameworkPreferenceContextSource,
+	IDEContextSource,
 	LspContextSource,
 	TodoContextSource,
 } from "./agent/context-providers.js";
@@ -796,6 +797,7 @@ export async function main(args: string[]) {
 			new BackgroundTaskContextSource(),
 			new LspContextSource(),
 			new FrameworkPreferenceContextSource(),
+			new IDEContextSource(),
 		],
 	});
 

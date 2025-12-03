@@ -81,15 +81,40 @@ describe("Auto-Compaction", () => {
 			id: "claude-3-opus",
 			name: "Claude 3 Opus",
 			contextWindow: 200000,
-			inputCostPer1MTokens: 15,
-			outputCostPer1MTokens: 75,
+			cost: { input: 15, output: 75, cacheRead: 0.15, cacheWrite: 18.75 },
 			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: false,
+			input: ["text"],
+			maxTokens: 4096,
 		};
 
 		it("calculates usage for simple text messages", () => {
 			const messages: AppMessage[] = [
-				{ role: "user", content: "Hello world" },
-				{ role: "assistant", content: "Hi there!" },
+				{ role: "user", content: "Hello world", timestamp: Date.now() },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Hi there!" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-3-opus",
+					usage: {
+						input: 10,
+						output: 5,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
 			];
 
 			const stats = calculateContextUsage(messages, mockModel, 0);
@@ -102,7 +127,9 @@ describe("Auto-Compaction", () => {
 		});
 
 		it("includes system prompt tokens", () => {
-			const messages: AppMessage[] = [{ role: "user", content: "Test" }];
+			const messages: AppMessage[] = [
+				{ role: "user", content: "Test", timestamp: Date.now() },
+			];
 
 			const withoutSystem = calculateContextUsage(messages, mockModel, 0);
 			const withSystem = calculateContextUsage(messages, mockModel, 10000);
@@ -112,11 +139,28 @@ describe("Auto-Compaction", () => {
 
 		it("uses actual usage when available on assistant messages", () => {
 			const messages: AppMessage[] = [
-				{ role: "user", content: "Hello" },
+				{ role: "user", content: "Hello", timestamp: Date.now() },
 				{
 					role: "assistant",
-					content: "Response",
-					usage: { input: 100, output: 50 },
+					content: [{ type: "text", text: "Response" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-3-opus",
+					usage: {
+						input: 100,
+						output: 50,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
 				},
 			];
 
@@ -134,6 +178,7 @@ describe("Auto-Compaction", () => {
 						{ type: "text", text: "Hello" },
 						{ type: "text", text: "World" },
 					],
+					timestamp: Date.now(),
 				},
 			];
 
@@ -148,9 +193,13 @@ describe("Auto-Compaction", () => {
 			id: "claude-3-opus",
 			name: "Claude 3 Opus",
 			contextWindow: 1000, // Small for testing
-			inputCostPer1MTokens: 15,
-			outputCostPer1MTokens: 75,
+			cost: { input: 15, output: 75, cacheRead: 0.15, cacheWrite: 18.75 },
 			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: false,
+			input: ["text"],
+			maxTokens: 4096,
 		};
 
 		const config: AutoCompactionConfig = {
@@ -163,7 +212,11 @@ describe("Auto-Compaction", () => {
 		it("returns false when disabled", () => {
 			const messages: AppMessage[] = Array(10)
 				.fill(null)
-				.map(() => ({ role: "user" as const, content: "x".repeat(100) }));
+				.map(() => ({
+					role: "user" as const,
+					content: "x".repeat(100),
+					timestamp: Date.now(),
+				}));
 
 			const stats = shouldAutoCompact(messages, mockModel, {
 				...config,
@@ -176,7 +229,7 @@ describe("Auto-Compaction", () => {
 
 		it("returns false when message count is below minimum", () => {
 			const messages: AppMessage[] = [
-				{ role: "user", content: "x".repeat(1000) },
+				{ role: "user", content: "x".repeat(1000), timestamp: Date.now() },
 			];
 
 			const stats = shouldAutoCompact(messages, mockModel, config);
@@ -189,7 +242,11 @@ describe("Auto-Compaction", () => {
 			// Create messages that will exceed 80% of 1000 token context
 			const messages: AppMessage[] = Array(10)
 				.fill(null)
-				.map(() => ({ role: "user" as const, content: "x".repeat(400) }));
+				.map(() => ({
+					role: "user" as const,
+					content: "x".repeat(400),
+					timestamp: Date.now(),
+				}));
 
 			const stats = shouldAutoCompact(messages, mockModel, config);
 
@@ -200,7 +257,11 @@ describe("Auto-Compaction", () => {
 		it("returns false when below threshold", () => {
 			const messages: AppMessage[] = Array(10)
 				.fill(null)
-				.map(() => ({ role: "user" as const, content: "x" }));
+				.map(() => ({
+					role: "user" as const,
+					content: "x",
+					timestamp: Date.now(),
+				}));
 
 			const stats = shouldAutoCompact(messages, mockModel, config);
 
@@ -214,9 +275,13 @@ describe("Auto-Compaction", () => {
 			id: "claude-3-opus",
 			name: "Claude 3 Opus",
 			contextWindow: 1000,
-			inputCostPer1MTokens: 15,
-			outputCostPer1MTokens: 75,
+			cost: { input: 15, output: 75, cacheRead: 0.15, cacheWrite: 18.75 },
 			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: false,
+			input: ["text"],
+			maxTokens: 4096,
 		};
 
 		it("creates with default config", () => {
@@ -244,7 +309,9 @@ describe("Auto-Compaction", () => {
 
 		it("rate limits checks", () => {
 			const monitor = new AutoCompactionMonitor();
-			const messages: AppMessage[] = [{ role: "user", content: "test" }];
+			const messages: AppMessage[] = [
+				{ role: "user", content: "test", timestamp: Date.now() },
+			];
 
 			const first = monitor.check(messages, mockModel);
 			const second = monitor.check(messages, mockModel);
@@ -283,7 +350,11 @@ describe("Auto-Compaction", () => {
 
 			const messages: AppMessage[] = Array(5)
 				.fill(null)
-				.map(() => ({ role: "user" as const, content: "x".repeat(200) }));
+				.map(() => ({
+					role: "user" as const,
+					content: "x".repeat(200),
+					timestamp: Date.now(),
+				}));
 
 			// Force check by waiting and checking
 			monitor.check(messages, mockModel);
