@@ -21,7 +21,7 @@ import type { SessionHeaderEntry, SessionManager } from "./session/manager.js";
 const packageJson = createRequire(import.meta.url)("../package.json") as {
 	version?: string;
 };
-const VERSION = packageJson.version;
+const VERSION = packageJson.version ?? "unknown";
 
 interface SessionFileParseResult {
 	header: SessionHeaderEntry | null;

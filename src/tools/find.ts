@@ -199,8 +199,9 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 
 			const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
 			let relativePath = line;
-			if (hadTrailingSlash && !line.endsWith("/")) {
-				relativePath = `${line}/`;
+			if (hadTrailingSlash && line.endsWith("\\")) {
+				// Normalize Windows-style trailing backslash to a single forward slash
+				relativePath = `${line.slice(0, -1)}/`;
 			}
 
 			if (relativePath) {
