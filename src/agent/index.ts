@@ -91,6 +91,24 @@ export {
 	type CourseIssueType,
 	type DetectedIssue,
 } from "./course-correction.js";
+export {
+	MODE_CONFIGS,
+	MODEL_BY_TIER,
+	formatModeDisplay,
+	getAllModes,
+	getCurrentMode,
+	getModeConfig,
+	getModeFromEnv,
+	getModelForMode,
+	getModelForTier,
+	parseMode,
+	setCurrentMode,
+	suggestMode,
+	type AgentMode,
+	type ModeConfig,
+	type ModelMapping,
+	type ModelTier,
+} from "./modes.js";
 export type {
 	AgentEvent,
 	AgentRunConfig,
