@@ -206,8 +206,8 @@ export class TUI extends Container {
 		const height = this.terminal.rows;
 		this.lastRenderTs = Date.now();
 
-		// Render all components to get new lines
-		const newLines = this.render(width);
+		// Render all components and hard-wrap to the viewport so we never exceed the terminal width
+		const newLines = wrapAnsiLines(this.render(width), width);
 
 		// Width changed - need full re-render
 		const widthChanged =
