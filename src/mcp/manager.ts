@@ -1,3 +1,40 @@
+/**
+ * MCP Client Manager - Model Context Protocol integration.
+ *
+ * This module manages connections to MCP (Model Context Protocol) servers,
+ * which provide extended capabilities to the agent through a standardized
+ * interface. MCP servers can expose:
+ *
+ * - **Tools**: Functions the agent can call (e.g., database queries, APIs)
+ * - **Resources**: Data the agent can read (e.g., files, configurations)
+ * - **Prompts**: Pre-defined prompt templates
+ *
+ * ## Architecture
+ *
+ * The McpClientManager maintains connections to multiple MCP servers
+ * simultaneously. Each server can use either:
+ * - **Stdio transport**: Spawns a subprocess, communicates via stdin/stdout
+ * - **SSE transport**: Connects to HTTP server using Server-Sent Events
+ *
+ * ## Security
+ *
+ * - Environment variables are NOT passed to MCP server subprocesses
+ * - Only essential variables (PATH, HOME, USER, SHELL, TERM) are included
+ * - Server-specific env vars must be explicitly configured
+ *
+ * ## Events
+ *
+ * The manager emits events for monitoring:
+ * - `connected`: Server successfully connected
+ * - `disconnected`: Server disconnected
+ * - `error`: Connection or operation error
+ * - `tools_changed`: Server's tool list updated
+ * - `resources_changed`: Server's resource list updated
+ * - `prompts_changed`: Server's prompt list updated
+ * - `progress`: Progress update from long-running operations
+ * - `log`: Log message from server
+ */
+
 import { EventEmitter } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -21,6 +58,10 @@ import type {
 
 const logger = createLogger("mcp:manager");
 
+/**
+ * Result from calling an MCP tool.
+ * Content can be text, binary data, or other MIME types.
+ */
 export interface McpToolCallResult {
 	content: Array<{
 		type: string;
@@ -31,26 +72,63 @@ export interface McpToolCallResult {
 	isError?: boolean;
 }
 
+// Connection timeout for initial server handshake
 const DEFAULT_TIMEOUT_MS = 30000;
+
+// Delay between reconnection attempts (doubles each retry)
 const DEFAULT_RECONNECT_DELAY_MS = 5000;
+
+// Maximum number of automatic reconnection attempts
 const MAX_RECONNECT_ATTEMPTS = 3;
 
+/**
+ * Internal state for a connected MCP server.
+ * Tracks the client, transport, and cached capabilities.
+ */
 interface ConnectedServer {
+	/** Original configuration */
 	config: McpServerConfig;
+	/** MCP client instance */
 	client: Client;
+	/** Transport layer (stdio or SSE) */
 	transport: Transport;
+	/** Cached list of available tools */
 	tools: McpTool[];
+	/** Cached list of resource URIs */
 	resources: string[];
+	/** Cached list of prompt names */
 	prompts: string[];
+	/** Counter for reconnection attempts */
 	reconnectAttempts: number;
 }
 
+/**
+ * Manager for MCP (Model Context Protocol) server connections.
+ *
+ * Handles connection lifecycle, tool discovery, and message routing
+ * for multiple MCP servers. Supports automatic reconnection on failure.
+ */
 export class McpClientManager extends EventEmitter {
+	/** Map of server name to connected server state */
 	private servers = new Map<string, ConnectedServer>();
+
+	/** Map of server name to in-flight connection promise (prevents duplicates) */
 	private connecting = new Map<string, Promise<void>>();
+
+	/** Map of server name to pending reconnect timer */
 	private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+	/** Current configuration */
 	private config: McpConfig = { servers: [] };
 
+	/**
+	 * Apply a new configuration, connecting/disconnecting servers as needed.
+	 *
+	 * Compares old and new configs to determine which servers to add or remove,
+	 * then performs the necessary connect/disconnect operations.
+	 *
+	 * @param config - New MCP configuration with server list
+	 */
 	async configure(config: McpConfig): Promise<void> {
 		const oldServerNames = new Set(this.config.servers.map((s) => s.name));
 		const newServerNames = new Set(config.servers.map((s) => s.name));
@@ -63,15 +141,19 @@ export class McpClientManager extends EventEmitter {
 
 		this.config = config;
 
-		// Disconnect removed servers
+		// Disconnect removed servers (don't wait for success)
 		await Promise.allSettled(
 			toRemove.map((name) => this.disconnectServer(name)),
 		);
 
-		// Connect new servers
+		// Connect new servers (don't wait for success)
 		await Promise.allSettled(toAdd.map((server) => this.connectServer(server)));
 	}
 
+	/**
+	 * Connect to all configured servers.
+	 * Non-blocking - returns after connection attempts are started.
+	 */
 	async connectAll(): Promise<void> {
 		const promises = this.config.servers.map((server) =>
 			this.connectServer(server),
@@ -79,19 +161,27 @@ export class McpClientManager extends EventEmitter {
 		await Promise.allSettled(promises);
 	}
 
+	/**
+	 * Disconnect from all servers and cancel pending reconnects.
+	 */
 	async disconnectAll(): Promise<void> {
-		// Clear all pending reconnect timers
+		// Clear all pending reconnect timers first
 		for (const [name, timer] of this.reconnectTimers) {
 			clearTimeout(timer);
 		}
 		this.reconnectTimers.clear();
 
+		// Disconnect all servers
 		const promises = Array.from(this.servers.keys()).map((name) =>
 			this.disconnectServer(name),
 		);
 		await Promise.allSettled(promises);
 	}
 
+	/**
+	 * Internal: Connect to a single server.
+	 * Handles deduplication of concurrent connection attempts.
+	 */
 	private async connectServer(config: McpServerConfig): Promise<void> {
 		const { name } = config;
 
@@ -100,12 +190,13 @@ export class McpClientManager extends EventEmitter {
 			return;
 		}
 
-		// Check for in-flight connection
+		// Check for in-flight connection (prevent race conditions)
 		const existing = this.connecting.get(name);
 		if (existing) {
 			return existing;
 		}
 
+		// Track this connection attempt
 		const task = this.doConnect(config);
 		this.connecting.set(name, task);
 
@@ -116,6 +207,16 @@ export class McpClientManager extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Internal: Perform the actual connection to an MCP server.
+	 *
+	 * Creates the appropriate transport (stdio or SSE), establishes connection,
+	 * fetches server capabilities (tools, resources, prompts), and sets up
+	 * notification handlers.
+	 *
+	 * @param config - Server configuration
+	 * @param isReconnect - Whether this is a reconnection attempt
+	 */
 	private async doConnect(
 		config: McpServerConfig,
 		isReconnect = false,
@@ -125,22 +226,23 @@ export class McpClientManager extends EventEmitter {
 		try {
 			let transport: Transport;
 
+			// Create transport based on configuration
 			if (transportType === "http" || transportType === "sse") {
-				// HTTP/SSE transport
+				// HTTP/SSE transport - connect to remote server
 				if (!config.url) {
 					logger.warn("No URL specified for HTTP server", { name });
 					return;
 				}
 				transport = new SSEClientTransport(new URL(config.url));
 			} else {
-				// Default to stdio transport
+				// Stdio transport - spawn subprocess
 				if (!config.command) {
 					logger.warn("No command specified for server", { name });
 					return;
 				}
 
-				// Only pass explicitly configured env vars plus essential PATH
-				// Do NOT pass process.env to avoid leaking secrets (API keys, tokens)
+				// SECURITY: Only pass essential env vars plus explicit config
+				// Do NOT pass process.env - this would leak API keys and secrets
 				const safeBaseEnv: Record<string, string> = {};
 				if (process.env.PATH) safeBaseEnv.PATH = process.env.PATH;
 				if (process.env.HOME) safeBaseEnv.HOME = process.env.HOME;
@@ -148,6 +250,7 @@ export class McpClientManager extends EventEmitter {
 				if (process.env.SHELL) safeBaseEnv.SHELL = process.env.SHELL;
 				if (process.env.TERM) safeBaseEnv.TERM = process.env.TERM;
 
+				// Merge explicit config env vars with safe base
 				const mergedEnv = config.env
 					? Object.fromEntries(
 							Object.entries({ ...safeBaseEnv, ...config.env }).filter(
@@ -571,5 +674,10 @@ export class McpClientManager extends EventEmitter {
 	}
 }
 
-// Singleton instance
+/**
+ * Singleton MCP client manager instance.
+ *
+ * Use this for all MCP operations in the application.
+ * Configure with `mcpManager.configure(config)` at startup.
+ */
 export const mcpManager = new McpClientManager();

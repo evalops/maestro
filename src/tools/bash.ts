@@ -1,3 +1,34 @@
+/**
+ * Bash Tool - Shell command execution for the agent.
+ *
+ * This module provides the agent with the ability to execute arbitrary bash
+ * commands in the user's shell environment. It's one of the most powerful
+ * tools in the toolbox, enabling system operations, file manipulation,
+ * git commands, and running build/test scripts.
+ *
+ * ## Security Features
+ *
+ * - **Guardian Integration**: Commands matching certain patterns (git push, npm publish)
+ *   trigger the Guardian system for additional security checks.
+ * - **Safe Mode**: Mutating commands require a plan to be set when safe mode is enabled.
+ * - **Output Limits**: stdout/stderr capped at 40KB to prevent memory issues.
+ * - **Timeout**: Default 90s timeout, max 600s to prevent runaway processes.
+ * - **Process Tree Killing**: On abort/timeout, kills the entire process tree.
+ *
+ * ## Execution Modes
+ *
+ * 1. **Foreground (default)**: Waits for command completion, returns output.
+ * 2. **Background**: Starts as managed background task, returns immediately.
+ * 3. **Sandbox**: Routes execution through sandbox environment when enabled.
+ *
+ * ## Variable Interpolation
+ *
+ * Commands support variable interpolation for common paths:
+ * - `${cwd}` - Current working directory
+ * - `${home}` - User's home directory
+ * - `${env.VAR}` - Environment variables
+ */
+
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import {
@@ -14,6 +45,10 @@ import {
 } from "./shell-utils.js";
 import { createTool, interpolateContext } from "./tool-dsl.js";
 
+/**
+ * Schema for bash tool parameters.
+ * Defines the structure and validation for command execution options.
+ */
 const bashSchema = Type.Object({
 	command: Type.String({
 		description: "Bash command to execute",
@@ -45,29 +80,71 @@ const bashSchema = Type.Object({
 	),
 });
 
+// Default timeout for command execution (90 seconds)
+// Most commands complete quickly, but builds/tests may take longer
 const DEFAULT_TIMEOUT_SECONDS = 90;
-const MAX_TIMEOUT_SECONDS = 600;
-const MAX_BUFFER = 40 * 1024; // 40KB stdout/stderr cap to avoid runaway output
 
+// Maximum allowed timeout (10 minutes) to prevent indefinite hangs
+const MAX_TIMEOUT_SECONDS = 600;
+
+// Output buffer limit (40KB) to prevent memory exhaustion from verbose commands
+// Commands that exceed this will have output truncated with a warning
+const MAX_BUFFER = 40 * 1024;
+
+/**
+ * Details returned when a command is started as a background task.
+ * Used to track and manage long-running processes.
+ */
 export type BashBackgroundDetails = {
+	/** Unique identifier for the background task */
 	taskId: string;
+	/** Path to the log file containing command output */
 	logPath: string;
+	/** The command that was executed */
 	command: string;
+	/** Working directory where command is running */
 	cwd?: string;
+	/** Current status of the background task */
 	status: "running" | "stopped" | "exited" | "failed" | "restarting";
 };
 
+/**
+ * Check if a command is likely to modify the filesystem.
+ *
+ * Used by safe mode to determine if a command requires plan approval.
+ * Matches common file-modifying commands and patterns.
+ *
+ * @param command - The command string to analyze
+ * @returns true if the command appears to modify files
+ */
 function isMutatingCommand(command: string): boolean {
 	const mutationPatterns = [
+		// File operations: rm, mv, cp, chmod, chown, truncate, dd, mkfs, ln
 		/(^|\s)(rm|mv|cp|chmod|chown|truncate|dd|mkfs|ln)\b/i,
+		// tee writes to files
 		/\btee\b/i,
+		// sed with -i flag modifies files in place
 		/\bsed\b[^|;]*\s-i\b/i,
+		// sudo can modify protected files
 		/(^|\s)sudo\b/i,
-		/>|>>/, // file redirection
+		// Output redirection creates/overwrites files
+		/>|>>/,
 	];
 	return mutationPatterns.some((re) => re.test(command));
 }
 
+/**
+ * The bash tool instance created using the tool DSL.
+ *
+ * This tool executes shell commands and handles:
+ * - Variable interpolation (${cwd}, ${home}, ${env.VAR})
+ * - Safe mode checks for mutating commands
+ * - Guardian integration for sensitive operations
+ * - Background task management
+ * - Sandbox execution when enabled
+ * - Output capture with truncation
+ * - Timeout handling with process tree cleanup
+ */
 export const bashTool = createTool<typeof bashSchema, BashBackgroundDetails>({
 	name: "bash",
 	label: "bash",
@@ -91,19 +168,23 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 		{ command, timeout, cwd, env, runInBackground },
 		{ signal, sandbox, respond },
 	) {
-		// Interpolate ${cwd}, ${home}, ${env.VAR} in command
+		// Step 1: Interpolate variables in the command string
+		// Replaces ${cwd}, ${home}, ${env.VAR} with actual values
 		const interpolatedCommand = interpolateContext(command);
 
+		// Step 2: Safe mode check - mutating commands require a plan
 		if (isMutatingCommand(interpolatedCommand)) {
 			requirePlanCheck("bash");
 		}
 
+		// Step 3: Guardian check - sensitive commands (git push, npm publish) may be blocked
 		const guardCheck = shouldGuardCommand(interpolatedCommand);
 		if (guardCheck.shouldGuard) {
 			const guardian = await runGuardian({
 				trigger: guardCheck.trigger ?? "git",
 				target: "staged",
 			});
+			// Block execution if guardian check fails
 			if (guardian.status === "failed" || guardian.status === "error") {
 				return {
 					content: [
@@ -117,30 +198,39 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			}
 		}
 
+		// Step 4: Calculate effective timeout (user timeout clamped to max)
 		const effectiveTimeout = Math.min(
 			timeout ?? DEFAULT_TIMEOUT_SECONDS,
 			MAX_TIMEOUT_SECONDS,
 		);
 
+		// ============================================
+		// Background execution mode
+		// ============================================
 		if (runInBackground) {
+			// Background tasks can't run in sandbox - sandbox doesn't support detached processes
 			if (sandbox) {
 				return respond.text(
 					"Background execution is not available in sandbox mode. Retry without runInBackground or disable sandbox.",
 				);
 			}
 
+			// Validate and resolve the working directory
 			const { resolvedCwd } = validateShellParams(
 				interpolatedCommand,
 				cwd,
 				env,
 			);
 
+			// Start the command as a managed background task
+			// Output is captured to a log file instead of returned directly
 			const task = backgroundTaskManager.start(interpolatedCommand, {
 				cwd: resolvedCwd,
 				env: env as Record<string, string> | undefined,
 				useShell: true,
 			});
 
+			// Provide instructions for monitoring the background task
 			const lines = [
 				`Started background task ${task.id} (status=${task.status})`,
 				`Logs: ${task.logPath}`,
@@ -156,9 +246,14 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			});
 		}
 
+		// ============================================
+		// Sandbox execution mode
+		// ============================================
 		if (sandbox) {
+			// Execute in isolated sandbox environment (e.g., Docker container)
 			const result = await sandbox.exec(interpolatedCommand, cwd, env);
 
+			// Combine stdout and stderr for output
 			let output = "";
 			if (result.stdout) {
 				output += result.stdout;
@@ -168,6 +263,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				output += result.stderr;
 			}
 
+			// Include exit code for non-zero exits to help with debugging
 			if (result.exitCode !== 0) {
 				output += `\n\nExit code: ${result.exitCode}`;
 			}
@@ -183,10 +279,15 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			};
 		}
 
+		// ============================================
+		// Foreground execution mode (default)
+		// ============================================
+		// Execute command synchronously and capture output
 		return new Promise<{
 			content: Array<{ type: "text"; text: string }>;
 			details: undefined;
 		}>((resolve, reject) => {
+			// Validate working directory and environment
 			let resolvedCwd: string | undefined;
 			try {
 				({ resolvedCwd } = validateShellParams(interpolatedCommand, cwd, env));
@@ -195,21 +296,27 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				return;
 			}
 
+			// Get shell configuration (bash -lc on most systems)
 			const { shell, args } = getShellConfig();
+			// Merge custom env vars with process environment
 			const mergedEnv = { ...process.env, ...env } as Record<string, string>;
+
+			// Spawn the child process in detached mode for clean process tree handling
 			const child = spawn(shell, [...args, interpolatedCommand], {
-				detached: true,
-				stdio: ["ignore", "pipe", "pipe"],
+				detached: true, // Allows killProcessTree to work correctly
+				stdio: ["ignore", "pipe", "pipe"], // No stdin, capture stdout/stderr
 				cwd: resolvedCwd,
 				env: mergedEnv,
 			});
 
+			// Output buffers with truncation tracking
 			let stdout = "";
 			let stderr = "";
 			let timedOut = false;
 			let stdoutTruncated = false;
 			let stderrTruncated = false;
 
+			// Set up timeout handler
 			let timeoutHandle: NodeJS.Timeout | undefined;
 			if (effectiveTimeout > 0) {
 				timeoutHandle = setTimeout(() => {
@@ -218,12 +325,14 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				}, effectiveTimeout * 1000);
 			}
 
+			// Abort handler - kills the entire process tree
 			const onAbort = () => {
 				if (child.pid) {
 					killProcessTree(child.pid);
 				}
 			};
 
+			// Cleanup function to remove event listeners and clear timeout
 			const cleanup = () => {
 				if (timeoutHandle) {
 					clearTimeout(timeoutHandle);
@@ -233,6 +342,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				}
 			};
 
+			// Capture stdout with buffer limit
 			if (child.stdout) {
 				child.stdout.on("data", (data) => {
 					if (stdout.length < MAX_BUFFER) {
@@ -243,6 +353,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				});
 			}
 
+			// Capture stderr with buffer limit
 			if (child.stderr) {
 				child.stderr.on("data", (data) => {
 					if (stderr.length < MAX_BUFFER) {
@@ -253,20 +364,24 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				});
 			}
 
+			// Handle spawn errors (e.g., command not found)
 			child.on("error", (error) => {
 				cleanup();
 				reject(error);
 			});
 
+			// Handle process completion
 			child.on("close", (code) => {
 				cleanup();
+
+				// Combine stdout and stderr
 				let output = stdout;
 				if (stderr) {
 					if (output) output += "\n";
 					output += stderr;
 				}
 
-				// Provide detailed truncation feedback
+				// Provide helpful truncation feedback
 				const truncationMessages: string[] = [];
 				if (stdoutTruncated) {
 					const displayedKB = Math.round(MAX_BUFFER / 1024);
@@ -284,6 +399,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 					output += `\n\n⚠️ Output truncated: ${truncationMessages.join("; ")}. Consider piping output to a file or using head/tail.`;
 				}
 
+				// Add timeout or exit code information
 				if (timedOut) {
 					output += `\n\n⏱️ Command timed out after ${effectiveTimeout}s`;
 				} else if (code !== 0) {
@@ -302,6 +418,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				});
 			});
 
+			// Allow external abort signal to cancel execution
 			if (signal) {
 				signal.addEventListener("abort", onAbort);
 			}

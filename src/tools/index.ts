@@ -1,43 +1,94 @@
-// Structured user questions
+/**
+ * Tool Registry - Central index of all available tools.
+ *
+ * This module serves as the main entry point for all tool definitions in Composer.
+ * It organizes tools into logical groups and provides utilities for filtering and
+ * accessing tools by name.
+ *
+ * ## Tool Categories
+ *
+ * **Core File Operations:**
+ * - read: Read file contents (text, images, PDFs, notebooks)
+ * - write: Create or overwrite files
+ * - edit: Structured find/replace editing
+ * - list: Directory listing and globbing
+ * - find: Fast file finder using fd
+ *
+ * **Search & Navigation:**
+ * - search: Ripgrep-style content search
+ * - parallel_ripgrep: Parallelized search for large codebases
+ * - codesearch: Exa Code API integration (optional)
+ *
+ * **Shell & System:**
+ * - bash: Shell command execution
+ * - background_tasks: Long-running process management
+ * - status: System and session status
+ *
+ * **Git & GitHub:**
+ * - diff: Git diff inspection
+ * - gh_pr/gh_issue/gh_repo: GitHub CLI integration
+ *
+ * **AI & Automation:**
+ * - oracle: Sub-agent for complex reasoning
+ * - todo: Task list management
+ * - ask_user: Structured user prompts
+ *
+ * **Web:**
+ * - websearch: Web search (requires EXA_API_KEY)
+ * - webfetch: Fetch and parse web content
+ *
+ * **VS Code Integration:**
+ * - vscode tools: IDE features when running in VS Code context
+ */
+
+// =============================================================================
+// Tool Imports - Organized by category
+// =============================================================================
+
+// User interaction tools
 import { askUserTool } from "./ask-user.js";
 import { backgroundTasksTool } from "./background-tasks.js";
-// Shell execution (bash -lc) with support for cwd tracking during bash mode
+
+// Shell execution with cwd tracking and safety checks
 import { bashTool } from "./bash.js";
-// Exa Code API for programming context (optional - requires EXA_API_KEY)
+
+// External API integrations (optional - requires API keys)
 import { codesearchTool } from "./codesearch.js";
-// Git diff inspection (workspace/staged/custom ranges)
+
+// Git operations
 import { diffTool } from "./diff.js";
-// Structured find/replace editing
+
+// File manipulation
 import { editTool } from "./edit.js";
-// Fast file finder using fd
 import { findTool } from "./find.js";
-// GitHub CLI tools (requires gh CLI)
-import { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
-// Directory listing / globbing
 import { listTool } from "./list.js";
-// Jupyter notebook editing
 import { notebookEditTool } from "./notebook.js";
-import { oracleTool } from "./oracle.js";
-import { parallelRipgrepTool } from "./parallel-ripgrep.js";
-// File reader with range support
 import { readTool } from "./read.js";
-// Ripgrep-style search
+import { writeTool } from "./write.js";
+
+// GitHub CLI integration (requires gh CLI installed)
+import { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
+
+// Search tools
+import { parallelRipgrepTool } from "./parallel-ripgrep.js";
 import { searchTool } from "./search.js";
+
+// AI and automation
+import { oracleTool } from "./oracle.js";
 import { statusTool } from "./status.js";
-// TodoWrite checklist helper
 import { todoTool } from "./todo.js";
+
+// VS Code IDE integration
 import {
 	vscodeFindReferencesTool,
 	vscodeGetDefinitionTool,
 	vscodeGetDiagnosticsTool,
 	vscodeReadFileRangeTool,
 } from "./vscode.js";
-// Exa web content fetching (optional - requires EXA_API_KEY)
+
+// Web tools (optional - requires EXA_API_KEY)
 import { webfetchTool } from "./webfetch.js";
-// Exa web search (optional - requires EXA_API_KEY)
 import { websearchTool } from "./websearch.js";
-// Free-form file writer (create/overwrite)
-import { writeTool } from "./write.js";
 
 export {
 	askUserTool,
@@ -65,24 +116,43 @@ export { statusTool } from "./status.js";
 export { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 export { ensureTool, getToolPath } from "./tools-manager.js";
 
+// =============================================================================
+// Tool Collections
+// =============================================================================
+
+/**
+ * Complete set of coding tools available to the agent.
+ *
+ * This array defines the default tool set used in interactive sessions.
+ * Tools are ordered roughly by frequency of use, though order doesn't
+ * affect functionality.
+ */
 export const codingTools = [
+	// File reading and navigation (most common)
 	readTool,
 	listTool,
 	oracleTool,
 	findTool,
+	// Search capabilities
 	searchTool,
 	parallelRipgrepTool,
+	// Git operations
 	diffTool,
+	// Shell access
 	bashTool,
 	backgroundTasksTool,
+	// File modification
 	editTool,
 	writeTool,
 	notebookEditTool,
+	// Workflow tools
 	todoTool,
 	askUserTool,
+	// Web and external services
 	websearchTool,
 	codesearchTool,
 	webfetchTool,
+	// System info
 	statusTool,
 	// GitHub CLI tools
 	ghPrTool,
@@ -90,7 +160,12 @@ export const codingTools = [
 	ghRepoTool,
 ];
 
-// Tool registry for --tools flag filtering
+/**
+ * Tool registry mapping tool names to tool instances.
+ *
+ * Used by the --tools CLI flag to filter available tools.
+ * Keys are the canonical tool names used in configuration.
+ */
 export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	read: readTool,
 	list: listTool,
@@ -115,7 +190,15 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	gh_repo: ghRepoTool,
 };
 
-// Read-only tools for restricted subagents (Oracle-style)
+/**
+ * Read-only tool names for restricted contexts.
+ *
+ * These tools are safe to use in subagents (like Oracle) that should
+ * only observe the codebase without making changes. They cannot:
+ * - Write or edit files
+ * - Execute shell commands
+ * - Make external API calls
+ */
 export const readOnlyToolNames = [
 	"read",
 	"list",
@@ -126,6 +209,15 @@ export const readOnlyToolNames = [
 	"status",
 ] as const;
 
+/**
+ * Filter tools by name from the registry.
+ *
+ * Used to create custom tool sets based on user configuration
+ * or security requirements.
+ *
+ * @param toolNames - Array of tool names to include
+ * @returns Array of matching tool instances
+ */
 export function filterTools(
 	toolNames: string[],
 ): (typeof codingTools)[number][] {
@@ -139,6 +231,17 @@ export function filterTools(
 	return filtered;
 }
 
+/**
+ * VS Code-specific tools for IDE integration.
+ *
+ * These tools provide IDE features when running in VS Code context:
+ * - Language server diagnostics
+ * - Go-to-definition
+ * - Find references
+ * - Smart file range reading
+ *
+ * Only included when a VS Code client is connected.
+ */
 export const vscodeTools = [
 	vscodeGetDiagnosticsTool,
 	vscodeGetDefinitionTool,
@@ -146,7 +249,14 @@ export const vscodeTools = [
 	vscodeReadFileRangeTool,
 ];
 
-// Tool result caching
+// =============================================================================
+// Performance Infrastructure
+// =============================================================================
+
+/**
+ * Tool result caching - Caches expensive tool results to avoid redundant work.
+ * Particularly useful for read and search operations on unchanged files.
+ */
 export {
 	ToolResultCache,
 	createToolResultCache,
@@ -157,7 +267,10 @@ export {
 	type ToolCacheStats,
 } from "./tool-result-cache.js";
 
-// File watching
+/**
+ * File watching - Monitors filesystem changes to trigger cache invalidation.
+ * Supports both file changes and git state changes (branch switches, etc.).
+ */
 export {
 	FileWatcher,
 	createFileWatcher,
@@ -170,7 +283,10 @@ export {
 	type GitStateChangeEvent,
 } from "./file-watcher.js";
 
-// Cache invalidation
+/**
+ * Cache invalidation - Coordinates cache clearing when files change.
+ * Links file watcher events to tool result cache invalidation.
+ */
 export {
 	CacheInvalidationService,
 	createCacheInvalidationService,

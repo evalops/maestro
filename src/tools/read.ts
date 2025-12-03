@@ -1,3 +1,30 @@
+/**
+ * Read Tool - File reading capabilities for the agent.
+ *
+ * This module provides comprehensive file reading functionality supporting:
+ * - Text files with line numbers, syntax highlighting, and pagination
+ * - Images (JPEG, PNG, GIF, WebP) with optional Sharp optimization
+ * - PDF documents (requires pdf-parse package)
+ * - Jupyter notebooks (.ipynb) with cell formatting
+ * - Binary files with base64 encoding option
+ *
+ * ## Key Features
+ *
+ * - **Pagination**: Large files can be read in chunks using offset/limit
+ * - **Line Numbers**: Output includes line numbers for easy reference
+ * - **Code Fencing**: Text wrapped in markdown code blocks with language hints
+ * - **LSP Integration**: Optionally includes diagnostics (errors/warnings)
+ * - **Image Optimization**: Uses Sharp (when available) to resize large images
+ * - **Binary Detection**: Automatically detects and handles binary files
+ *
+ * ## Safety Limits
+ *
+ * - Max 2000 lines per read (use pagination for larger files)
+ * - Max 2000 characters per line (truncated with warning)
+ * - Max 10MB file size (with error for text, allowed for images)
+ * - Large file warnings at 1MB threshold
+ */
+
 import { constants } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { extname, resolve as resolvePath } from "node:path";
@@ -12,6 +39,10 @@ import {
 import { formatNotebookForDisplay, isNotebookFile } from "./notebook.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
+/**
+ * MIME type mapping for supported image formats.
+ * Used to determine if a file is an image and set proper content type.
+ */
 const IMAGE_MIME_TYPES: Record<string, string> = {
 	".jpg": "image/jpeg",
 	".jpeg": "image/jpeg",
@@ -20,33 +51,56 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 	".webp": "image/webp",
 };
 
+/**
+ * Check if a file is a PDF based on extension.
+ */
 function isPdfFile(filePath: string): boolean {
 	return extname(filePath).toLowerCase() === ".pdf";
 }
 
-// Lazy-load pdf-parse to avoid issues when not installed
+/**
+ * Result structure from pdf-parse library.
+ */
 type PdfParseResult = {
 	text: string;
 	numpages: number;
 	info: Record<string, unknown>;
 };
+
 type PdfParseFunction = (buffer: Buffer) => Promise<PdfParseResult>;
+
+// Lazy-loaded pdf-parse module (undefined = not yet loaded, null = not available)
 let pdfParse: PdfParseFunction | null | undefined = undefined;
 
+/**
+ * Lazily load the pdf-parse library.
+ *
+ * This function implements lazy loading to:
+ * 1. Avoid startup overhead when PDF reading isn't needed
+ * 2. Allow the tool to function without pdf-parse installed
+ * 3. Handle ESM/CJS interoperability
+ *
+ * @returns The pdf-parse function, or null if not available
+ */
 async function getPdfParser(): Promise<PdfParseFunction | null> {
 	if (pdfParse === undefined) {
 		try {
 			// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any cast
 			const module = (await import("pdf-parse")) as any;
+			// Handle both default export and module export patterns
 			pdfParse = (module.default || module) as PdfParseFunction;
 		} catch {
-			// pdf-parse not available
+			// pdf-parse not installed - mark as unavailable
 			pdfParse = null;
 		}
 	}
 	return pdfParse;
 }
 
+/**
+ * Language identifiers for code fence syntax highlighting.
+ * Maps file extensions to markdown code fence language hints.
+ */
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 	".ts": "ts",
 	".tsx": "tsx",
@@ -68,19 +122,44 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 	".sql": "sql",
 };
 
+/**
+ * Check if a file is an image based on extension.
+ *
+ * @param filePath - Path to check
+ * @returns MIME type string if image, null otherwise
+ */
 function isImageFile(filePath: string): string | null {
 	const ext = extname(filePath).toLowerCase();
 	return IMAGE_MIME_TYPES[ext] || null;
 }
 
+/**
+ * Guess the programming language from file extension.
+ *
+ * Used to provide syntax highlighting hints in code fences.
+ *
+ * @param filePath - Path to analyze
+ * @returns Language identifier for code fence, or undefined
+ */
 function guessLanguage(filePath: string): string | undefined {
 	const ext = extname(filePath).toLowerCase();
 	return LANGUAGE_BY_EXTENSION[ext];
 }
 
+/**
+ * Detect if a buffer contains binary data.
+ *
+ * Uses a simple heuristic: checks the first 2KB for null bytes.
+ * Null bytes are very rare in text files but common in binary files.
+ *
+ * @param buffer - Buffer to analyze
+ * @returns true if the file appears to be binary
+ */
 function isProbablyBinary(buffer: Buffer): boolean {
+	// Sample the first 2KB for efficiency
 	const sample = buffer.subarray(0, 2048);
 	for (const byte of sample) {
+		// Null bytes indicate binary content
 		if (byte === 0) {
 			return true;
 		}
@@ -88,6 +167,10 @@ function isProbablyBinary(buffer: Buffer): boolean {
 	return false;
 }
 
+/**
+ * Schema for read tool parameters.
+ * Defines all options for customizing file reading behavior.
+ */
 const readSchema = Type.Object({
 	path: Type.String({
 		description: "Path to the file to read (relative or absolute)",
@@ -161,17 +244,36 @@ const readSchema = Type.Object({
 	),
 });
 
-const MAX_LINES = 2000;
-const MAX_LINE_LENGTH = 2000;
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB - warn for very large files
-const LARGE_FILE_THRESHOLD = 1 * 1024 * 1024; // 1MB - suggest pagination
+// =============================================================================
+// Safety Limits
+// =============================================================================
 
+// Maximum lines to return in a single read (prevents memory exhaustion)
+const MAX_LINES = 2000;
+
+// Maximum characters per line (prevents extremely long lines from causing issues)
+const MAX_LINE_LENGTH = 2000;
+
+// Hard limit for file size - files larger than this cannot be read as text
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+// Threshold for "large file" warning - suggests pagination for files this size
+const LARGE_FILE_THRESHOLD = 1 * 1024 * 1024; // 1MB
+
+/**
+ * Details returned from the read tool for context and debugging.
+ * Includes pagination info, image processing details, etc.
+ */
 type ReadToolDetails = {
+	/** First line number returned (1-indexed) */
 	startLine?: number;
+	/** Last line number returned */
 	endLine?: number;
+	/** Total lines in the file */
 	totalLines?: number;
+	/** Reading mode used */
 	mode?: string;
-	// Image processing details
+	// Image processing details (when reading images with Sharp)
 	originalWidth?: number;
 	originalHeight?: number;
 	width?: number;
@@ -179,6 +281,16 @@ type ReadToolDetails = {
 	wasOptimized?: boolean;
 };
 
+/**
+ * The read tool instance created using the tool DSL.
+ *
+ * This tool handles multiple file types with specialized processing:
+ * 1. Images → Base64 encoded with optional Sharp optimization
+ * 2. PDFs → Text extraction via pdf-parse
+ * 3. Notebooks → Cell-by-cell formatted display
+ * 4. Binary → Detection with base64 option
+ * 5. Text → Line-numbered, syntax-highlighted output
+ */
 export const readTool = createTool<
 	typeof readSchema,
 	ReadToolDetails | undefined
@@ -212,13 +324,16 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 		},
 		{ signal, respond, sandbox },
 	) {
+		// Helper to check for operation cancellation
 		const throwIfAborted = () => {
 			if (signal?.aborted) {
 				throw new Error("Operation aborted");
 			}
 		};
 
-		// Use sandbox if available
+		// ============================================
+		// Sandbox Mode - Use isolated environment if available
+		// ============================================
 		if (sandbox) {
 			try {
 				const content = await sandbox.readFile(path);
@@ -236,13 +351,18 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 			}
 		}
 
+		// ============================================
+		// Path Resolution and Access Check
+		// ============================================
+		// Resolve path (expand ~, handle relative paths)
 		const absolutePath = resolvePath(expandUserPath(path));
 		const mimeType = isImageFile(absolutePath);
 
+		// Verify file exists and is readable
 		try {
 			await access(absolutePath, constants.R_OK);
 		} catch {
-			// Provide helpful hints for common path issues
+			// Provide helpful hints for common path mistakes
 			let hint = "";
 			if (path.includes("//")) {
 				hint = " (path contains double slashes - possible typo)";
@@ -256,22 +376,29 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 
 		throwIfAborted();
 
-		// Check file size and provide appropriate feedback for large files
+		// ============================================
+		// File Size Validation
+		// ============================================
 		const fileStats = await stat(absolutePath);
 		const fileSizeBytes = fileStats.size;
 		const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2);
 
+		// Reject oversized text files (images are allowed to be larger)
 		if (fileSizeBytes > MAX_FILE_SIZE && !mimeType) {
 			return respond.error(
 				`File is too large (${fileSizeMB}MB). Maximum size is 10MB.\nFor large files, use:\n  - read("${path}", offset=1, limit=1000) to read specific sections\n  - bash("head -n 100 '${path}'") for first 100 lines\n  - bash("tail -n 100 '${path}'") for last 100 lines`,
 			);
 		}
 
+		// ============================================
+		// Image File Handling
+		// ============================================
 		if (mimeType || isSupportedImageFormat(absolutePath)) {
 			const buffer = await readFile(absolutePath);
 			throwIfAborted();
 
 			// Try to optimize image with Sharp if available
+			// Sharp can resize large images to reduce token usage
 			const sharpAvailable = await isSharpAvailable();
 			if (sharpAvailable && isSupportedImageFormat(absolutePath)) {
 				try {
@@ -292,11 +419,11 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 							wasOptimized: processed.wasResized || processed.wasCompressed,
 						});
 				} catch {
-					// Fall back to unprocessed image
+					// Fall back to unprocessed image if Sharp fails
 				}
 			}
 
-			// Fallback: return unprocessed image
+			// Fallback: return unprocessed image as base64
 			const base64 = buffer.toString("base64");
 			const detectedMime = mimeType || "image/png";
 			return respond
@@ -305,10 +432,13 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 				.detail({ mode: "image" });
 		}
 
-		// Handle Jupyter notebooks
+		// ============================================
+		// Jupyter Notebook Handling
+		// ============================================
 		if (isNotebookFile(absolutePath)) {
 			const content = await readFile(absolutePath, "utf-8");
 			throwIfAborted();
+			// Format notebook cells for readable display
 			const formatted = formatNotebookForDisplay(content);
 			const lines = formatted.split("\n");
 			return respond
@@ -316,8 +446,11 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 				.detail({ mode: "notebook", totalLines: lines.length });
 		}
 
-		// Handle PDF files
+		// ============================================
+		// PDF File Handling
+		// ============================================
 		if (isPdfFile(absolutePath)) {
+			// Lazy-load PDF parser
 			const parser = await getPdfParser();
 			if (!parser) {
 				return respond.error(
@@ -341,6 +474,7 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 					const selectedLines = lines.slice(startLine, startLine + maxLines);
 					displayText = selectedLines.join("\n");
 				} else if (lines.length > MAX_LINES) {
+					// Auto-truncate very long PDFs
 					displayText = lines.slice(0, MAX_LINES).join("\n");
 				}
 
@@ -357,17 +491,25 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 			}
 		}
 
-		// Warn about large text files if not using pagination
+		// ============================================
+		// Text File Handling (default path)
+		// ============================================
+
+		// Prepare large file warning for display
 		let largeFileWarning = "";
 		if (fileSizeBytes > LARGE_FILE_THRESHOLD && !offset && !limit) {
 			largeFileWarning = `\n\n📊 Note: This file is ${fileSizeMB}MB. Only showing first ${MAX_LINES} lines. Use offset/limit parameters for pagination.`;
 		}
 
+		// Read raw file content
 		const rawBuffer = await readFile(absolutePath);
 		throwIfAborted();
+
+		// Check for binary content
 		const probablyBinary = isProbablyBinary(rawBuffer);
 
 		if (probablyBinary && !asBase64) {
+			// Binary file without base64 flag - prompt user for explicit handling
 			return respond
 				.text(
 					"Binary file detected. Re-run with asBase64=true or use the bash tool for inspection.",
@@ -376,6 +518,7 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 		}
 
 		if (probablyBinary && asBase64) {
+			// Binary file with base64 flag - return encoded content
 			const base64 = rawBuffer.toString("base64");
 			return respond
 				.text(`Read binary file (${base64.length} base64 chars)`)
@@ -383,24 +526,35 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 				.detail({ mode: "binary-base64" });
 		}
 
+		// ============================================
+		// Text Processing and Pagination
+		// ============================================
+
+		// Decode text content with specified encoding
 		const textContent = rawBuffer.toString(encoding);
 		const lines = textContent.split("\n");
+
+		// Calculate line range based on mode and parameters
 		let startLine = offset ? Math.max(0, offset - 1) : 0;
 		let maxLines = limit || MAX_LINES;
 
 		switch (mode) {
 			case "head":
+				// Read from beginning
 				startLine = 0;
 				maxLines = limit || MAX_LINES;
 				break;
 			case "tail":
+				// Read from end
 				maxLines = limit || MAX_LINES;
 				startLine = Math.max(lines.length - maxLines, 0);
 				break;
 			default:
+				// Normal mode - use offset/limit as provided
 				break;
 		}
 
+		// Validate offset is within file bounds
 		if (startLine >= lines.length) {
 			return respond
 				.error(
@@ -409,12 +563,16 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 				.detail({ mode, totalLines: lines.length });
 		}
 
+		// Extract the requested line range
 		const endLine = Math.min(startLine + maxLines, lines.length);
 		const selectedLines = lines.slice(startLine, endLine);
+
+		// Format lines with optional line numbers
 		let hadTruncatedLines = false;
-		const width = String(endLine).length;
+		const width = String(endLine).length; // Padding width for line numbers
 		const numberedLines = selectedLines.map((line, index) => {
 			let displayLine = line;
+			// Truncate extremely long lines
 			if (line.length > MAX_LINE_LENGTH) {
 				hadTruncatedLines = true;
 				displayLine = line.slice(0, MAX_LINE_LENGTH);
@@ -422,16 +580,23 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 			if (!lineNumbers) {
 				return displayLine;
 			}
+			// Format: "  42 | code here"
 			const lineNumber = String(startLine + index + 1).padStart(width, " ");
 			return `${lineNumber} | ${displayLine}`;
 		});
 
+		// ============================================
+		// Output Formatting
+		// ============================================
+
+		// Determine language for syntax highlighting
 		const fenceLanguage = language ?? guessLanguage(absolutePath) ?? "";
 		let formattedText = numberedLines.join("\n");
 		if (wrapInCodeFence) {
 			formattedText = `\`\`\`${fenceLanguage}\n${formattedText}\n\`\`\``;
 		}
 
+		// Build helpful notices about what's shown
 		const notices: string[] = [];
 		if (hadTruncatedLines) {
 			notices.push(
@@ -456,17 +621,21 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 			formattedText += `\n\n... (${notices.join(". ")})`;
 		}
 
-		// Add large file warning if applicable
+		// Append large file warning if applicable
 		if (largeFileWarning) {
 			formattedText += largeFileWarning;
 		}
 
-		// Append LSP diagnostics if available
+		// ============================================
+		// LSP Diagnostics (optional)
+		// ============================================
+		// Fetch and append errors/warnings from the Language Server if available
 		if (withDiagnostics) {
 			try {
 				const diagnostics = await getDiagnostics(absolutePath);
 				if (diagnostics.length > 0) {
-					// Treat undefined severity as error (severity 1) per LSP spec
+					// Categorize by severity (1 = error, 2 = warning per LSP spec)
+					// Treat undefined severity as error for safety
 					const errors = diagnostics.filter(
 						(d) => d.severity === 1 || d.severity === undefined,
 					);
@@ -479,7 +648,10 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 						const maxDiagnostics = config.maxDiagnosticsPerFile ?? 10;
 						let count = 0;
 
-						// Sanitize and limit message length to prevent injection and overflow
+						// Sanitize diagnostic messages to prevent:
+						// - Markdown injection (backticks)
+						// - Control character exploits
+						// - Overly long messages consuming context
 						const sanitizeMessage = (msg: string): string => {
 							// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally removing control chars for security
 							const controlChars = /[\x00-\x1F\x7F]/g;
@@ -489,6 +661,7 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 								.slice(0, 500); // Limit length
 						};
 
+						// Output errors first (higher priority)
 						for (const d of errors) {
 							if (count >= maxDiagnostics) break;
 							const message = sanitizeMessage(d.message);
@@ -496,6 +669,7 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 							count++;
 						}
 
+						// Then warnings
 						for (const d of warnings) {
 							if (count >= maxDiagnostics) break;
 							const message = sanitizeMessage(d.message);
@@ -503,6 +677,7 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 							count++;
 						}
 
+						// Indicate if more diagnostics were hidden
 						if (errors.length + warnings.length > maxDiagnostics) {
 							const remaining =
 								errors.length + warnings.length - maxDiagnostics;
@@ -511,7 +686,7 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 					}
 				}
 			} catch (error) {
-				// Ignore LSP errors during read, but log for debug
+				// LSP errors are non-fatal - file read still succeeds
 				console.debug("[read] Failed to get LSP diagnostics:", error);
 			}
 		}
