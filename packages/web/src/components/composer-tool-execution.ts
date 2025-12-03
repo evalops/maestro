@@ -667,7 +667,6 @@ export class ComposerToolExecution extends LitElement {
 		const collapsedLimit = 6;
 		const limit = this.showAllBatch ? results.length : collapsedLimit;
 		const rows = results.slice(0, limit);
-		const remaining = Math.max(0, results.length - rows.length);
 		const hasMore = results.length > collapsedLimit;
 		return html`
 			<div class="batch-list">
@@ -707,7 +706,7 @@ export class ComposerToolExecution extends LitElement {
 								${
 									this.showAllBatch
 										? "Show Less"
-										: `Show All (${Math.max(results.length - collapsedLimit, 0)} more)`
+										: `Show All (${results.length - collapsedLimit} more)`
 								}
 							</button>
 					  `
