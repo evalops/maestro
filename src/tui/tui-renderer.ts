@@ -73,6 +73,12 @@ import {
 } from "../agent/session-recovery.js";
 import { composerManager } from "../composers/index.js";
 import { mcpManager } from "../mcp/index.js";
+import {
+	type AutoVerifyService,
+	type TestResult,
+	formatTestResult,
+	registerTestVerificationHooks,
+} from "../testing/index.js";
 import { getChangelogPath, parseChangelog } from "../update/changelog.js";
 import { createLogger } from "../utils/logger.js";
 import { AboutView } from "./about-view.js";
@@ -264,6 +270,7 @@ export class TuiRenderer {
 	private readonly workingFooterHint = "Working… press esc to interrupt";
 	private autoCompactionMonitor: AutoCompactionMonitor;
 	private sessionRecoveryManager: SessionRecoveryManager;
+	private testVerificationService: AutoVerifyService | null = null;
 	private sessionStartTime: number | null = null;
 	private sessionTelemetryRecorded = false;
 	private planHint: string | null = null;
@@ -460,6 +467,15 @@ export class TuiRenderer {
 			},
 		});
 		this.sessionRecoveryManager = new SessionRecoveryManager();
+		// Initialize test verification with auto-test hooks
+		this.testVerificationService = registerTestVerificationHooks(
+			process.cwd(),
+			{
+				onTestComplete: (result) => {
+					this.handleTestVerificationResult(result);
+				},
+			},
+		);
 		this.backgroundSettingsUnsubscribe = subscribeBackgroundTaskSettings(
 			(settings) => {
 				this.backgroundSettings = settings;
@@ -1192,6 +1208,35 @@ export class TuiRenderer {
 			this.contextWarningLevel = "none";
 		}
 		this.refreshFooterHint();
+	}
+
+	/**
+	 * Handle test verification result.
+	 * Shows a notification with test results - success is brief, failures are detailed.
+	 */
+	private handleTestVerificationResult(result: TestResult): void {
+		if (result.success) {
+			// Show brief success notification
+			this.notificationView.showInfo(
+				`✓ Tests passed: ${result.passedTests}/${result.totalTests} (${result.durationMs}ms)`,
+			);
+		} else {
+			// Show detailed failure notification
+			const formatted = formatTestResult(result);
+			this.notificationView.showError(formatted);
+
+			// If we have specific failures, add them to the context for the agent
+			if (result.failures.length > 0) {
+				const failureSummary = result.failures
+					.slice(0, 3)
+					.map((f) => `• ${f.testName}: ${f.errorMessage.split("\n")[0]}`)
+					.join("\n");
+				logger.warn("Test failures detected", {
+					failedTests: result.failedTests,
+					failures: failureSummary,
+				});
+			}
+		}
 	}
 
 	/**
@@ -3381,6 +3426,8 @@ export class TuiRenderer {
 		}
 		// End session recovery tracking and create final backup
 		this.sessionRecoveryManager.endSession();
+		// Stop test verification service
+		this.testVerificationService?.stop();
 		this.footer.dispose();
 	}
 
