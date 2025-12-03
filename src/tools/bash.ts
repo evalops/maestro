@@ -6,6 +6,7 @@ import {
 	shouldGuardCommand,
 } from "../guardian/index.js";
 import { requirePlanCheck } from "../safety/safe-mode.js";
+import { backgroundTaskManager } from "./background-tasks.js";
 import {
 	getShellConfig,
 	killProcessTree,
@@ -35,11 +36,26 @@ const bashSchema = Type.Object({
 			description: "Additional environment variables for the command",
 		}),
 	),
+	runInBackground: Type.Optional(
+		Type.Boolean({
+			description:
+				"Run command as a managed background task (use background_tasks tool to inspect/stop)",
+			default: false,
+		}),
+	),
 });
 
 const DEFAULT_TIMEOUT_SECONDS = 90;
 const MAX_TIMEOUT_SECONDS = 600;
 const MAX_BUFFER = 40 * 1024; // 40KB stdout/stderr cap to avoid runaway output
+
+export type BashBackgroundDetails = {
+	taskId: string;
+	logPath: string;
+	command: string;
+	cwd?: string;
+	status: "running" | "stopped" | "exited" | "failed" | "restarting";
+};
 
 function isMutatingCommand(command: string): boolean {
 	const mutationPatterns = [
@@ -52,7 +68,7 @@ function isMutatingCommand(command: string): boolean {
 	return mutationPatterns.some((re) => re.test(command));
 }
 
-export const bashTool = createTool<typeof bashSchema>({
+export const bashTool = createTool<typeof bashSchema, BashBackgroundDetails>({
 	name: "bash",
 	label: "bash",
 	description: `Execute bash commands.
@@ -71,7 +87,10 @@ Supports interpolation in command:
 
 Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 	schema: bashSchema,
-	async run({ command, timeout, cwd, env }, { signal, sandbox }) {
+	async run(
+		{ command, timeout, cwd, env, runInBackground },
+		{ signal, sandbox, respond },
+	) {
 		// Interpolate ${cwd}, ${home}, ${env.VAR} in command
 		const interpolatedCommand = interpolateContext(command);
 
@@ -102,6 +121,40 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			timeout ?? DEFAULT_TIMEOUT_SECONDS,
 			MAX_TIMEOUT_SECONDS,
 		);
+
+		if (runInBackground) {
+			if (sandbox) {
+				return respond.text(
+					"Background execution is not available in sandbox mode. Retry without runInBackground or disable sandbox.",
+				);
+			}
+
+			const { resolvedCwd } = validateShellParams(
+				interpolatedCommand,
+				cwd,
+				env,
+			);
+
+			const task = backgroundTaskManager.start(interpolatedCommand, {
+				cwd: resolvedCwd,
+				env: env as Record<string, string> | undefined,
+				useShell: true,
+			});
+
+			const lines = [
+				`Started background task ${task.id} (status=${task.status})`,
+				`Logs: ${task.logPath}`,
+				"Use background_tasks action=logs taskId=<id> to view output, action=stop to terminate.",
+			];
+
+			return respond.text(lines.join("\n")).detail({
+				taskId: task.id,
+				logPath: task.logPath,
+				command: interpolatedCommand,
+				cwd: resolvedCwd,
+				status: task.status,
+			});
+		}
 
 		if (sandbox) {
 			const result = await sandbox.exec(interpolatedCommand, cwd, env);

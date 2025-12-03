@@ -83,6 +83,11 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			String(effectiveLimit),
 		];
 
+		// If pattern includes path separators, match against the full path so nested globs work.
+		if (pattern.includes("/") || pattern.includes("\\")) {
+			args.push("--full-path");
+		}
+
 		if (includeHidden) {
 			args.push("--hidden");
 		}
@@ -112,13 +117,14 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			args.push("--ignore-file", gitignorePath);
 		}
 
-		args.push(pattern, searchPath);
+		args.push(pattern);
 
 		const command = [fdPath, ...args].join(" ");
 
 		const result = spawnSync(fdPath, args, {
 			encoding: "utf-8",
 			maxBuffer: 10 * 1024 * 1024,
+			cwd: searchPath,
 		});
 
 		if (signal?.aborted) {
@@ -142,6 +148,30 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 		}
 
 		if (!output) {
+			// Fallback to globbing when fd returns nothing (handles patterns with subdirectories on some platforms)
+			const globMatches = globSync(pattern, {
+				cwd: searchPath,
+				dot: includeHidden,
+				nodir: false,
+			});
+			if (globMatches.length > 0) {
+				const limited = globMatches.slice(0, effectiveLimit);
+				const truncated = globMatches.length > effectiveLimit;
+				const text = limited.join("\n");
+				return respond
+					.text(
+						truncated
+							? `${text}\n\n(truncated, ${effectiveLimit} results shown)`
+							: text,
+					)
+					.detail({
+						command,
+						cwd: searchPath,
+						fileCount: globMatches.length,
+						truncated,
+					});
+			}
+
 			return respond
 				.text("No files found matching pattern")
 				.detail({ command, cwd: searchPath, fileCount: 0, truncated: false });
@@ -158,17 +188,8 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 
 			const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
 			let relativePath = line;
-			if (line.startsWith(searchPath)) {
-				relativePath = line.slice(searchPath.length + 1);
-			} else {
-				relativePath = resolvePath(searchPath, line);
-				if (relativePath.startsWith(searchPath)) {
-					relativePath = relativePath.slice(searchPath.length + 1);
-				}
-			}
-
-			if (hadTrailingSlash && !relativePath.endsWith("/")) {
-				relativePath += "/";
+			if (hadTrailingSlash && !line.endsWith("/")) {
+				relativePath = `${line}/`;
 			}
 
 			if (relativePath) {

@@ -1,4 +1,5 @@
 import { Type } from "@sinclair/typebox";
+import type { BashBackgroundDetails } from "./bash.js";
 import { checkGhCliAvailable, executeGhCommand } from "./gh-helpers.js";
 import { createTool } from "./tool-dsl.js";
 
@@ -46,7 +47,10 @@ const isGhRetryable = (error: unknown): boolean => {
 	);
 };
 
-export const ghPrTool = createTool<typeof ghPrSchema>({
+export const ghPrTool = createTool<
+	typeof ghPrSchema,
+	BashBackgroundDetails | undefined
+>({
 	name: "gh_pr",
 	label: "gh pr",
 	description: `GitHub pull request operations via gh CLI.
@@ -152,7 +156,10 @@ const ghIssueSchema = Type.Object({
 	json: Type.Optional(Type.Boolean({ default: false })),
 });
 
-export const ghIssueTool = createTool<typeof ghIssueSchema>({
+export const ghIssueTool = createTool<
+	typeof ghIssueSchema,
+	BashBackgroundDetails | undefined
+>({
 	name: "gh_issue",
 	label: "gh issue",
 	description: `GitHub issue operations via gh CLI.
@@ -221,7 +228,10 @@ const ghRepoSchema = Type.Object({
 	json: Type.Optional(Type.Boolean({ default: false })),
 });
 
-export const ghRepoTool = createTool<typeof ghRepoSchema>({
+export const ghRepoTool = createTool<
+	typeof ghRepoSchema,
+	BashBackgroundDetails | undefined
+>({
 	name: "gh_repo",
 	label: "gh repo",
 	description: `GitHub repository operations via gh CLI.
