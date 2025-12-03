@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve as resolvePath } from "node:path";
+import { relative, resolve as resolvePath, sep } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { globSync } from "glob";
 import { createTool } from "./tool-dsl.js";
@@ -153,11 +153,22 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 				cwd: searchPath,
 				dot: includeHidden,
 				nodir: false,
+				absolute: true,
 			});
-			if (globMatches.length > 0) {
-				const limited = globMatches.slice(0, effectiveLimit);
-				const truncated = globMatches.length > effectiveLimit;
-				const text = limited.join("\n");
+			const searchRoot = searchPath.endsWith(sep)
+				? searchPath
+				: `${searchPath}${sep}`;
+			const constrained = globMatches.filter((match) => {
+				const resolved = resolvePath(match);
+				return resolved === searchPath || resolved.startsWith(searchRoot);
+			});
+
+			if (constrained.length > 0) {
+				const limited = constrained.slice(0, effectiveLimit);
+				const truncated = constrained.length > effectiveLimit;
+				const text = limited
+					.map((abs) => relative(searchPath, abs) || ".")
+					.join("\n");
 				return respond
 					.text(
 						truncated
@@ -167,7 +178,7 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 					.detail({
 						command,
 						cwd: searchPath,
-						fileCount: globMatches.length,
+						fileCount: constrained.length,
 						truncated,
 					});
 			}
