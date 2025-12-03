@@ -229,6 +229,9 @@ export function clampAnsiLines(lines: string[], maxWidth: number): string[] {
 
 function clampAnsiLine(line: string, maxWidth: number): string {
 	if (maxWidth <= 0) return line;
+	const lineWidth = visibleWidth(line);
+	if (lineWidth <= maxWidth) return line;
+
 	let visible = 0;
 	let i = 0;
 	let out = "";
@@ -250,21 +253,25 @@ function clampAnsiLine(line: string, maxWidth: number): string {
 			i = j;
 			continue;
 		}
-		if (visible >= maxWidth) {
+		// Handle multi-byte characters (emoji, etc.)
+		const codePoint = line.codePointAt(i);
+		if (codePoint === undefined) break;
+		const grapheme = String.fromCodePoint(codePoint);
+		const charWidth = visibleWidth(grapheme);
+
+		if (visible + charWidth > maxWidth) {
 			break;
 		}
-		out += char;
-		i += 1;
-		visible += 1;
+		out += grapheme;
+		i += grapheme.length;
+		visible += charWidth;
 	}
-	if (visibleWidth(line) > maxWidth) {
-		// Reserve space for ellipsis
-		const ellipsis = "…";
-		// Remove last visible char if necessary
-		while (visibleWidth(out) > Math.max(1, maxWidth - 1)) {
-			out = out.slice(0, -1);
-		}
-		out += ellipsis;
+	// Reserve space for ellipsis
+	const ellipsis = "…";
+	// Remove last visible char if necessary
+	while (visibleWidth(out) > Math.max(1, maxWidth - 1)) {
+		out = out.slice(0, -1);
 	}
+	out += ellipsis;
 	return out;
 }
