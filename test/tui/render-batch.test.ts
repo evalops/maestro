@@ -1,6 +1,4 @@
-// Force deterministic output (no ANSI) in CI snapshots
-process.env.FORCE_COLOR = "0";
-
+import stripAnsi from "strip-ansi";
 import { describe, expect, it } from "vitest";
 import type { ToolRenderArgs } from "../../src/tui/tool-renderers/types.js";
 
@@ -53,13 +51,13 @@ const baseArgs: ToolRenderArgs = {
 
 describe("BatchRenderer", () => {
 	it("renders expanded batch with bar and durations", () => {
-		const output = renderer.render(baseArgs);
+		const output = stripAnsi(renderer.render(baseArgs));
 		expect(output).toMatchSnapshot();
 	});
 
 	it("renders collapsed batch with error snippet", () => {
 		const collapsed: ToolRenderArgs = { ...baseArgs, collapsed: true };
-		const output = renderer.render(collapsed);
+		const output = stripAnsi(renderer.render(collapsed));
 		expect(output).toMatchSnapshot();
 	});
 });
