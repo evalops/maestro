@@ -3541,6 +3541,45 @@ export class TuiRenderer {
 		}
 	}
 
+	/**
+	 * Get the actual OAuth authentication state by checking stored credentials.
+	 * Returns info about which provider the user is authenticated with.
+	 */
+	private getActualAuthState(): {
+		authenticated: boolean;
+		provider?: string;
+		mode?: string;
+	} {
+		// Lazy import to avoid circular dependencies
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		// biome-ignore format: TypeScript doesn't support trailing commas in typeof import()
+		const storage: typeof import("../oauth/storage.js") = require("../oauth/storage.js");
+		const providers = storage.listOAuthProviders();
+
+		if (providers.length === 0) {
+			return { authenticated: false };
+		}
+
+		// Get the primary provider (prefer current model provider if authenticated)
+		const currentProvider = this.agent.state.model?.provider;
+		let activeProvider = providers[0];
+
+		// If we're using a provider that has OAuth credentials, use that one
+		if (currentProvider && providers.includes(currentProvider)) {
+			activeProvider = currentProvider;
+		}
+
+		// Load credentials to get metadata (like mode)
+		const credentials = storage.loadOAuthCredentials(activeProvider);
+		const mode = credentials?.metadata?.mode as string | undefined;
+
+		return {
+			authenticated: true,
+			provider: activeProvider,
+			mode,
+		};
+	}
+
 	private async handleLogoutCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
@@ -3840,11 +3879,7 @@ export class TuiRenderer {
 			handleLogout: (ctx: CommandExecutionContext) =>
 				this.handleLogoutCommand(ctx),
 			showInfo: (msg: string) => context.showInfo(msg),
-			getAuthState: () => ({
-				authenticated: false, // TODO: Check actual OAuth state
-				provider: "anthropic",
-				mode: undefined,
-			}),
+			getAuthState: () => this.getActualAuthState(),
 		});
 		await handler(context);
 	}
