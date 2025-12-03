@@ -183,6 +183,11 @@ if (PROD_PROFILE && !process.env.COMPOSER_FAIL_UNTAGGED_EGRESS) {
 if (PROD_PROFILE && !process.env.COMPOSER_BACKGROUND_SHELL_DISABLE) {
 	process.env.COMPOSER_BACKGROUND_SHELL_DISABLE = "1";
 }
+if (REQUIRE_CSRF && !CSRF_TOKEN) {
+	throw new Error(
+		"COMPOSER_WEB_CSRF_TOKEN is required when CSRF enforcement is enabled (COMPOSER_PROFILE=prod or COMPOSER_WEB_REQUIRE_CSRF=1).",
+	);
+}
 
 // Parse and validate TRUST_PROXY setting
 // WARNING: Only enable if behind a trusted reverse proxy that sets X-Forwarded-For
