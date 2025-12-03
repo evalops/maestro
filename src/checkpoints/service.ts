@@ -5,7 +5,7 @@
  * before file-modifying operations.
  */
 
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, realpathSync, relative, resolve, sep } from "node:path";
 import { minimatch } from "minimatch";
 import { registerHook } from "../hooks/config.js";
 import type { HookInput, PreToolUseHookInput } from "../hooks/types.js";
@@ -142,15 +142,23 @@ export class CheckpointService {
 	private unregisterHook: (() => void) | null = null;
 	private enabled: boolean;
 	private cwd: string;
+	private cwdReal: string;
 
 	constructor(cwd: string, config?: Partial<CheckpointConfig>) {
 		this.config = { ...DEFAULT_CHECKPOINT_CONFIG, ...config };
 		this.enabled =
 			this.config.enabled && !process.env.COMPOSER_DISABLE_FILE_CHECKPOINTING;
 		this.cwd = cwd;
+		this.cwdReal = (() => {
+			try {
+				return realpathSync(cwd);
+			} catch {
+				return cwd;
+			}
+		})();
 
 		this.store = createCheckpointStore({
-			cwd,
+			cwd: this.cwdReal,
 			maxCheckpoints: 50,
 			persistToDisk: false, // In-memory by default for performance
 			maxFileSize: this.config.maxFileSize,
@@ -212,13 +220,33 @@ export class CheckpointService {
 			isAbsolute(p) ? resolve(p) : resolve(this.cwd, p),
 		);
 
-		const containedPaths = resolvedPaths.filter((p) => {
-			const rel = relative(this.cwd, p);
-			// Outside workspace if it climbs up or is absolute after relativizing
+		const realPaths = resolvedPaths
+			.map((p) => {
+				try {
+					return realpathSync(p);
+				} catch {
+					return null;
+				}
+			})
+			.filter((p): p is string => Boolean(p));
+
+		const containedPaths = realPaths.filter((p) => {
+			const pNorm = process.platform === "win32" ? p.toLowerCase() : p;
+			const cwdNorm =
+				process.platform === "win32"
+					? this.cwdReal.toLowerCase()
+					: this.cwdReal;
+
+			if (!(pNorm === cwdNorm || pNorm.startsWith(`${cwdNorm}${sep}`))) {
+				return false;
+			}
+
+			const rel = relative(this.cwdReal, p);
 			if (rel.startsWith("..") || rel.includes(`..${sep}`)) {
 				return false;
 			}
-			return !isAbsolute(rel);
+
+			return true;
 		});
 
 		const uniquePaths = Array.from(new Set(containedPaths));
