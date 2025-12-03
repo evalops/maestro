@@ -30,6 +30,7 @@ export interface SessionCommandDeps {
 	handleQueue: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleExport: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleShare: (ctx: CommandExecutionContext) => Promise<void> | void;
+	handleRecover: (ctx: CommandExecutionContext) => Promise<void> | void;
 	showInfo: (message: string) => void;
 }
 
@@ -111,6 +112,10 @@ export function createSessionCommandHandler(deps: SessionCommandDeps) {
 				);
 				break;
 
+			case "recover":
+				await deps.handleRecover(rewriteContext("recover"));
+				break;
+
 			default:
 				if (isHelpRequest(subcommand)) {
 					showSessionHelp(ctx);
@@ -142,6 +147,7 @@ function showSessionHelp(ctx: CommandExecutionContext): void {
   /session favorite     Mark as favorite
   /session unfavorite   Remove favorite mark
   /session summary "x"  Add manual summary
+  /session recover      Restore from latest auto-recovery backup
 
 Aliases: /s`);
 }

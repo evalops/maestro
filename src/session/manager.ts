@@ -55,7 +55,7 @@ class SessionFileWriter {
 			return;
 		}
 		SessionFileWriter.beforeExitRegistered = true;
-		process.once("beforeExit", () => {
+		const flushAll = (signal?: string) => {
 			for (const writer of SessionFileWriter.writers) {
 				try {
 					writer.flushSync();
@@ -63,10 +63,23 @@ class SessionFileWriter {
 					logger.error(
 						"Failed to flush session file on exit",
 						error instanceof Error ? error : undefined,
+						signal ? { signal } : undefined,
 					);
 				}
 			}
+		};
+		process.once("beforeExit", () => flushAll());
+		process.once("SIGINT", () => {
+			flushAll("SIGINT");
+			// re-emit to allow default shutdown behaviour
+			process.exit();
 		});
+		process.once("SIGTERM", () => {
+			flushAll("SIGTERM");
+			process.exit();
+		});
+		process.once("uncaughtException", () => flushAll("uncaughtException"));
+		process.once("unhandledRejection", () => flushAll("unhandledRejection"));
 	}
 
 	dispose(): void {
@@ -856,16 +869,29 @@ export class SessionManager {
 	/**
 	 * List all sessions in the session directory
 	 */
-	async listSessions(): Promise<SessionSummary[]> {
+	async listSessions(options?: {
+		limit?: number;
+		offset?: number;
+	}): Promise<SessionSummary[]> {
 		this.writer?.flushSync();
 		const files = readdirSync(this.sessionDir);
 		const sessions = [];
+		const sortedFiles = files
+			.filter((f) => f.endsWith(".jsonl"))
+			.map((file) => {
+				const filePath = join(this.sessionDir, file);
+				const stats = statSync(filePath);
+				return { filePath, stats };
+			})
+			.sort((a, b) => b.stats.mtime.getTime() - a.stats.mtime.getTime());
 
-		for (const file of files) {
-			if (!file.endsWith(".jsonl")) continue;
+		const offset = Math.max(0, options?.offset ?? 0);
+		const limit = Math.max(1, options?.limit ?? sortedFiles.length);
 
-			const filePath = join(this.sessionDir, file);
-			const stats = statSync(filePath);
+		for (const [index, entry] of sortedFiles.entries()) {
+			if (index < offset) continue;
+			if (sessions.length >= limit) break;
+			const { filePath, stats } = entry;
 
 			try {
 				const entries = safeReadSessionEntries(filePath);
@@ -886,11 +912,7 @@ export class SessionManager {
 			}
 		}
 
-		// Sort by updated date, most recent first
-		return sessions.sort(
-			(a, b) =>
-				new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-		);
+		return sessions;
 	}
 
 	/**
@@ -907,16 +929,13 @@ export class SessionManager {
 		tags?: string[];
 	} | null> {
 		this.writer?.flushSync();
-		const files = readdirSync(this.sessionDir);
-		const sessionFile = files.find((f) => f.includes(sessionId));
-
+		const sessionFile = this.getSessionFileById(sessionId);
 		if (!sessionFile) {
 			return null;
 		}
 
-		const filePath = join(this.sessionDir, sessionFile);
-		const stats = statSync(filePath);
-		const entries = safeReadSessionEntries(filePath);
+		const stats = statSync(sessionFile);
+		const entries = safeReadSessionEntries(sessionFile);
 		const info = buildSessionFileInfo(entries, stats);
 		if (!info) {
 			return null;
@@ -952,7 +971,7 @@ export class SessionManager {
 			const entry: SessionMetaEntry = {
 				type: "session_meta",
 				timestamp: new Date().toISOString(),
-				summary: options.title,
+				title: options.title,
 			};
 			this.writer?.write(entry);
 		}
@@ -972,14 +991,11 @@ export class SessionManager {
 	 * Delete a session
 	 */
 	async deleteSession(sessionId: string): Promise<void> {
-		const files = readdirSync(this.sessionDir);
-		const sessionFile = files.find((f) => f.includes(sessionId));
-
+		const sessionFile = this.getSessionFileById(sessionId);
 		if (!sessionFile) {
 			throw new Error(`Session ${sessionId} not found`);
 		}
 
-		const filePath = join(this.sessionDir, sessionFile);
-		unlinkSync(filePath);
+		unlinkSync(sessionFile);
 	}
 }

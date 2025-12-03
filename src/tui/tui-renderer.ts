@@ -60,7 +60,10 @@ import {
 	AutoCompactionMonitor,
 	type CompactionStats,
 } from "../agent/auto-compaction.js";
-import { SessionRecoveryManager } from "../agent/session-recovery.js";
+import {
+	SessionRecoveryManager,
+	listSessionBackups,
+} from "../agent/session-recovery.js";
 import { composerManager } from "../composers/index.js";
 import { mcpManager } from "../mcp/index.js";
 import {
@@ -1155,6 +1158,36 @@ export class TuiRenderer {
 		this.promptQueueUnsubscribe = queue.subscribe((event) =>
 			this.handlePromptQueueEvent(event),
 		);
+	}
+
+	private handleSessionRecoverCommand(context: CommandExecutionContext): void {
+		const backups = listSessionBackups();
+		if (!backups.length) {
+			context.showInfo("No session backups available to recover.");
+			return;
+		}
+
+		// Prefer backup for current cwd, fall back to most recent overall
+		const cwd = process.cwd();
+		const backup =
+			backups.find((b) => b.cwd === cwd) ??
+			backups.sort(
+				(a, b) =>
+					new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+			)[0];
+
+		if (!backup) {
+			context.showInfo("No session backups available to recover.");
+			return;
+		}
+
+		this.resetConversation(
+			backup.messages,
+			undefined,
+			`Recovered session ${backup.sessionId.slice(0, 8)} from backup.`,
+			{ persistMessages: true },
+		);
+		this.sessionRecoveryManager.markRecovered("manual_recovery");
 	}
 
 	public async ensureContextBudgetBeforePrompt(): Promise<void> {
@@ -2424,10 +2457,16 @@ export class TuiRenderer {
 		const selection = userMessages[targetIndex - 1];
 		const slice = messages.slice(0, selection.index);
 		const editorSeed = this.extractUserText(selection.msg as AppMessage);
+		const newSessionFile = this.sessionManager.createBranchedSession(
+			this.agent.state,
+			slice.length,
+		);
+		this.sessionManager.setSessionFile(newSessionFile);
 		this.resetConversation(
 			slice,
 			editorSeed,
 			`Branched to new session before user message #${targetIndex}.`,
+			{ preserveSession: true },
 		);
 	}
 
@@ -2610,8 +2649,11 @@ export class TuiRenderer {
 		messages: AppMessage[],
 		editorSeed?: string,
 		toastMessage?: string,
+		options?: { preserveSession?: boolean; persistMessages?: boolean },
 	): void {
-		this.sessionManager.startFreshSession();
+		if (!options?.preserveSession) {
+			this.sessionManager.startFreshSession();
+		}
 		this.agent.clearMessages();
 		this.sessionContext.resetArtifacts();
 		this.toolOutputView.clearTrackedComponents();
@@ -2621,6 +2663,9 @@ export class TuiRenderer {
 		this.planHint = null;
 		for (const message of messages) {
 			this.agent.appendMessage(message);
+			if (options?.persistMessages) {
+				this.sessionManager.saveMessage(message);
+			}
 		}
 		this.footer.updateState(this.agent.state);
 		this.refreshFooterHint();
@@ -3676,6 +3721,8 @@ export class TuiRenderer {
 				this.importExportView.handleExportCommand(ctx.rawInput),
 			handleShare: (ctx: CommandExecutionContext) =>
 				this.importExportView.handleShareCommand(ctx.rawInput),
+			handleRecover: (ctx: CommandExecutionContext) =>
+				this.handleSessionRecoverCommand(ctx),
 			showInfo: (msg: string) => context.showInfo(msg),
 		});
 		await handler(context);

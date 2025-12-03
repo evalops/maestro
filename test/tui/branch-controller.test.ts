@@ -17,7 +17,10 @@ function createMockAgent(
 }
 
 function createMockSessionManager(): BranchControllerOptions["sessionManager"] {
-	return {} as BranchControllerOptions["sessionManager"];
+	return {
+		createBranchedSession: vi.fn().mockReturnValue("/tmp/session.jsonl"),
+		setSessionFile: vi.fn(),
+	} as unknown as BranchControllerOptions["sessionManager"];
 }
 
 function createMockChatContainer(): BranchControllerOptions["chatContainer"] {
@@ -235,9 +238,8 @@ describe("BranchController", () => {
 			expect(callbacks.resetConversation).toHaveBeenCalledWith(
 				[messages[0], messages[1]], // Messages before second user message
 				"Second user message", // Editor seed
-				expect.stringContaining(
-					"Branched to new session before user message #2",
-				),
+				"Branched to new session before user message #2.",
+				expect.objectContaining({ preserveSession: true }),
 			);
 		});
 	});
@@ -286,9 +288,8 @@ describe("BranchController", () => {
 			expect(callbacks.resetConversation).toHaveBeenCalledWith(
 				[], // No messages before first user message
 				"First message",
-				expect.stringContaining(
-					"Branched to new session before user message #1",
-				),
+				"Branched to new session before user message #1.",
+				expect.objectContaining({ preserveSession: true }),
 			);
 		});
 	});
@@ -315,7 +316,8 @@ describe("BranchController", () => {
 			expect(callbacks.resetConversation).toHaveBeenCalledWith(
 				[],
 				"Simple string content",
-				expect.any(String),
+				"Branched to new session before user message #1.",
+				expect.objectContaining({ preserveSession: true }),
 			);
 		});
 
@@ -343,7 +345,8 @@ describe("BranchController", () => {
 			expect(callbacks.resetConversation).toHaveBeenCalledWith(
 				[],
 				"Array text content",
-				expect.any(String),
+				"Branched to new session before user message #1.",
+				expect.objectContaining({ preserveSession: true }),
 			);
 		});
 
@@ -366,7 +369,8 @@ describe("BranchController", () => {
 			expect(callbacks.resetConversation).toHaveBeenCalledWith(
 				[],
 				"",
-				expect.any(String),
+				"Branched to new session before user message #1.",
+				expect.objectContaining({ preserveSession: true }),
 			);
 		});
 	});

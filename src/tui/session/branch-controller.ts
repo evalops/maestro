@@ -17,6 +17,7 @@ export interface BranchControllerCallbacks {
 		messages: AppMessage[],
 		editorSeed?: string,
 		toastMessage?: string,
+		options?: { preserveSession?: boolean; persistMessages?: boolean },
 	): void;
 	/** Request UI render */
 	requestRender(): void;
@@ -113,11 +114,7 @@ export class BranchController {
 		const selection = userMessages[targetIndex - 1];
 		const slice = messages.slice(0, selection.index);
 		const editorSeed = this.extractUserText(selection.msg as AppMessage);
-		this.callbacks.resetConversation(
-			slice,
-			editorSeed,
-			`Branched to new session before user message #${targetIndex}.`,
-		);
+		this.createBranch(slice, targetIndex, editorSeed);
 	}
 
 	/**
@@ -139,10 +136,26 @@ export class BranchController {
 
 		const slice = messages.slice(0, selection.index);
 		const editorSeed = this.extractUserText(selection.msg as AppMessage);
+		this.createBranch(slice, messageIndex, editorSeed);
+	}
+
+	private createBranch(
+		truncatedMessages: AppMessage[],
+		userMessageIndex: number,
+		editorSeed: string,
+	): void {
+		// Create branched session file with preserved history
+		const newSessionFile = this.sessionManager.createBranchedSession(
+			this.agent.state,
+			truncatedMessages.length,
+		);
+		this.sessionManager.setSessionFile(newSessionFile);
+
 		this.callbacks.resetConversation(
-			slice,
+			truncatedMessages,
 			editorSeed,
-			`Branched to new session before user message #${messageIndex}.`,
+			`Branched to new session before user message #${userMessageIndex}.`,
+			{ preserveSession: true },
 		);
 	}
 

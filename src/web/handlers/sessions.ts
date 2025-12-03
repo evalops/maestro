@@ -266,16 +266,26 @@ export async function handleSessions(
 ) {
 	const sessionManager = new SessionManager(true);
 	const sessionId = params.id;
+	const url = new URL(req.url || "/api/sessions", "http://localhost");
+	const limitParam = url.searchParams.get("limit");
+	const offsetParam = url.searchParams.get("offset");
+	const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+	const offset = offsetParam ? Number.parseInt(offsetParam, 10) : undefined;
 
 	try {
 		if (req.method === "GET" && !sessionId) {
-			const sessions = await sessionManager.listSessions();
+			const sessions = await sessionManager.listSessions({
+				limit,
+				offset,
+			});
 			const sessionList: ComposerSessionSummary[] = sessions.map((s) => ({
 				id: s.id,
 				title: s.title || `Session ${s.id.slice(0, 8)}`,
 				createdAt: s.createdAt || new Date().toISOString(),
 				updatedAt: s.updatedAt || new Date().toISOString(),
 				messageCount: s.messageCount || 0,
+				favorite: s.favorite,
+				tags: s.tags,
 			}));
 
 			sendJson(res, 200, { sessions: sessionList }, cors, req);
@@ -297,6 +307,8 @@ export async function handleSessions(
 				createdAt: session.createdAt,
 				updatedAt: session.updatedAt,
 				messageCount: session.messageCount,
+				favorite: session.favorite,
+				tags: session.tags,
 				messages: convertAppMessagesToComposer(session.messages || []),
 			};
 
@@ -310,6 +322,8 @@ export async function handleSessions(
 				createdAt: session.createdAt,
 				updatedAt: session.updatedAt,
 				messageCount: session.messageCount,
+				favorite: false,
+				tags: undefined,
 				messages: convertAppMessagesToComposer(session.messages || []),
 			};
 
@@ -631,6 +645,7 @@ interface ContentBlock {
 	text?: string;
 	name?: string;
 	input?: unknown;
+	arguments?: unknown;
 	content?: string | ContentBlock[];
 	tool_use_id?: string;
 	is_error?: boolean;
@@ -653,7 +668,12 @@ function exportToMarkdown(
 	];
 
 	for (const msg of messages) {
-		const role = msg.role === "user" ? "## User" : "## Assistant";
+		const role =
+			msg.role === "user"
+				? "## User"
+				: msg.role === "toolResult"
+					? "## Tool Result"
+					: "## Assistant";
 		lines.push(role);
 		lines.push("");
 
@@ -681,7 +701,12 @@ function exportToText(
 	];
 
 	for (const msg of messages) {
-		const role = msg.role === "user" ? "USER:" : "ASSISTANT:";
+		const role =
+			msg.role === "user"
+				? "USER:"
+				: msg.role === "toolResult"
+					? "TOOL RESULT:"
+					: "ASSISTANT:";
 		lines.push(role);
 		lines.push("");
 
@@ -736,6 +761,24 @@ function formatMessageContent(
 					lines.push(`[TOOL CALL: ${block.name || "unknown"}]`);
 					if (block.input) {
 						lines.push(`Input: ${JSON.stringify(block.input, null, 2)}`);
+					}
+				}
+				lines.push("");
+				break;
+
+			case "toolCall":
+				if (format === "markdown") {
+					lines.push(`### Tool: \`${block.name || "unknown"}\``);
+					if (block.arguments) {
+						lines.push("");
+						lines.push("```json");
+						lines.push(JSON.stringify(block.arguments, null, 2));
+						lines.push("```");
+					}
+				} else {
+					lines.push(`[TOOL CALL: ${block.name || "unknown"}]`);
+					if (block.arguments) {
+						lines.push(`Args: ${JSON.stringify(block.arguments, null, 2)}`);
 					}
 				}
 				lines.push("");

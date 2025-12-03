@@ -56,6 +56,8 @@ export interface ComposerSessionSummary {
 	createdAt: string;
 	updatedAt: string;
 	messageCount: number;
+	favorite?: boolean;
+	tags?: string[];
 }
 
 export interface ComposerSession extends ComposerSessionSummary {
