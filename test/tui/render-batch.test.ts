@@ -1,6 +1,5 @@
-// Force deterministic ANSI output (truecolor) in CI snapshots
-process.env.FORCE_COLOR = "3";
-process.env.COLORTERM = "truecolor";
+// Force deterministic output (no ANSI) in CI snapshots
+process.env.FORCE_COLOR = "0";
 
 import { describe, expect, it } from "vitest";
 import type { ToolRenderArgs } from "../../src/tui/tool-renderers/types.js";
