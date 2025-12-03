@@ -3,7 +3,10 @@ import { theme } from "../../theme/theme.js";
 
 type Status = "success" | "error" | "pending" | "info";
 
-const STATUS_GLYPHS: Record<Status, { icon: string; color: Parameters<typeof theme.fg>[0] }> = {
+const STATUS_GLYPHS: Record<
+	Status,
+	{ icon: string; color: Parameters<typeof theme.fg>[0] }
+> = {
 	success: { icon: "✓", color: "success" },
 	error: { icon: "✕", color: "error" },
 	pending: { icon: "…", color: "warning" },
@@ -22,7 +25,10 @@ function padToWidth(text: string, width: number): string {
  */
 export function renderCard(
 	lines: string[],
-	options: { padding?: number; gutterColor?: Parameters<typeof theme.fg>[0] } = {},
+	options: {
+		padding?: number;
+		gutterColor?: Parameters<typeof theme.fg>[0];
+	} = {},
 ): string {
 	if (!lines.length) return "";
 	const padding = Math.max(0, options.padding ?? 1);

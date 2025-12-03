@@ -8,6 +8,7 @@ import {
 	shortenPath,
 	summarizeLines,
 } from "../utils/tool-text-utils.js";
+import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class ReadRenderer implements ToolRenderer {
@@ -29,12 +30,19 @@ export class ReadRenderer implements ToolRenderer {
 		if (rangeLabel) {
 			pathLine += theme.fg("dim", `:${rangeLabel}`);
 		}
+		const status: "success" | "error" | "pending" =
+			context.result?.isError === true
+				? "error"
+				: context.result
+					? "success"
+					: "pending";
+		const headline = `${statusGlyph(status)} ${formatHeadline("read", path || "file")}`;
 
 		if (context.collapsed) {
 			const summary = context.result
 				? buildCollapsedSummary(this.getTextOutput(context))
-				: "output hidden: awaiting result";
-			return `${pathLine}\n${theme.fg("dim", summary)}`;
+				: "awaiting result";
+			return `${headline}\n${renderCard([pathLine, theme.fg("dim", summary)])}`;
 		}
 
 		const sections: string[] = [pathLine];
@@ -63,7 +71,12 @@ export class ReadRenderer implements ToolRenderer {
 			}
 		}
 
-		return sections.filter(Boolean).join("\n\n");
+		return `${headline}\n${renderCard(
+			sections
+				.filter(Boolean)
+				.flatMap((block) => block.split("\n"))
+				.map((line) => line),
+		)}`;
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

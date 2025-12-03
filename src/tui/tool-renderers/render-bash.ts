@@ -7,6 +7,7 @@ import {
 	formatShellSnippet,
 	summarizeLines,
 } from "../utils/tool-text-utils.js";
+import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class BashRenderer implements ToolRenderer {
@@ -20,6 +21,13 @@ export class BashRenderer implements ToolRenderer {
 				: String(args?.command ?? "");
 		const commandLines = formatShellSnippet(command ? `$ ${command}` : "$ ...");
 		const sections: string[] = [];
+		const status: "success" | "error" | "pending" =
+			context.result?.isError === true
+				? "error"
+				: context.result
+					? "success"
+					: "pending";
+		const headline = `${statusGlyph(status)} ${formatHeadline("bash", command || "command")}`;
 
 		// Command section (always show)
 		if (commandLines.length) {
@@ -31,9 +39,10 @@ export class BashRenderer implements ToolRenderer {
 				? this.getTextOutput(context)
 				: command;
 			const summary = buildCollapsedSummary(summarySource);
-			return sections.length
+			const body = sections.length
 				? `${sections[0]}\n${theme.fg("dim", summary)}`
 				: theme.fg("dim", summary);
+			return `${headline}\n${renderCard(body.split("\n"))}`;
 		}
 
 		if (context.result) {
@@ -61,10 +70,15 @@ export class BashRenderer implements ToolRenderer {
 		}
 
 		if (sections.length === 0) {
-			return theme.fg("dim", "waiting for output...");
+			return `${headline}\n${renderCard([theme.fg("dim", "waiting for output...")])}`;
 		}
 
-		return sections.filter(Boolean).join("\n\n");
+		return `${headline}\n${renderCard(
+			sections
+				.filter(Boolean)
+				.flatMap((block) => block.split("\n"))
+				.map((line) => line),
+		)}`;
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

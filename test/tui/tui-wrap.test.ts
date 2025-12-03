@@ -52,4 +52,12 @@ describe("wrapAnsiLines", () => {
 		const wrapped = wrapAnsiLines(["abcd", "efgh"], 3);
 		expect(wrapped).toEqual(["abc", "d", "efg", "h"]);
 	});
+
+	it("handles combining characters and ansi together", () => {
+		const colored = chalk.blue("Z͑â");
+		const wrapped = wrapAnsiLines([colored], 2);
+		for (const line of wrapped) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(2);
+		}
+	});
 });

@@ -8,6 +8,7 @@ import {
 	generateDiff,
 	shortenPath,
 } from "../utils/tool-text-utils.js";
+import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 /** Count additions and deletions in a unified diff string */
@@ -53,6 +54,13 @@ export class EditRenderer implements ToolRenderer {
 					? context.args.path
 					: "";
 		const path = shortenPath(pathValue);
+		const status: "success" | "error" | "pending" =
+			context.result?.isError === true
+				? "error"
+				: context.result
+					? "success"
+					: "pending";
+		const headline = `${statusGlyph(status)} ${formatHeadline("edit", path || "file")}`;
 
 		// Show path as the first line
 		const pathLine = path ? theme.fg("muted", path) : theme.fg("dim", "...");
@@ -66,7 +74,10 @@ export class EditRenderer implements ToolRenderer {
 						"string" &&
 					(context.result.details as { diff: string }).diff) ||
 				this.getTextOutput(context);
-			return `${pathLine}\n${theme.fg("dim", buildCollapsedSummary(diffText))}`;
+			return `${headline}\n${renderCard([
+				pathLine,
+				theme.fg("dim", buildCollapsedSummary(diffText)),
+			])}`;
 		}
 
 		const sections: string[] = [pathLine];
@@ -120,7 +131,12 @@ export class EditRenderer implements ToolRenderer {
 		});
 		sections.push(...detailSections);
 
-		return sections.filter(Boolean).join("\n\n");
+		return `${headline}\n${renderCard(
+			sections
+				.filter(Boolean)
+				.flatMap((block) => block.split("\n"))
+				.map((line) => line),
+		)}`;
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

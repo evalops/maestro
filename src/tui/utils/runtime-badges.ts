@@ -15,6 +15,8 @@ export interface RuntimeBadgeParams {
 	isSafeMode?: boolean;
 	sandboxRequestedButMissing?: boolean;
 	alertCount?: number;
+	reducedMotion?: boolean;
+	compactForced?: boolean;
 }
 
 export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
@@ -73,6 +75,13 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 		const failureSuffix =
 			backgroundCounts.failed > 0 ? `!${backgroundCounts.failed}` : "";
 		badges.push(`bg:${backgroundCounts.running}${failureSuffix}`);
+	}
+
+	if (params.reducedMotion) {
+		badges.push("motion:reduced");
+	}
+	if (params.compactForced) {
+		badges.push("compact:auto");
 	}
 
 	// Active composer

@@ -73,6 +73,7 @@ export class TUI extends Container {
 	private syncOutput = true;
 	private interruptHandler?: () => void;
 	private overlayActive = false;
+	private wrapCache = new Map<number, Map<string, string[]>>();
 
 	constructor(
 		private terminal: Terminal,
@@ -207,7 +208,7 @@ export class TUI extends Container {
 		this.lastRenderTs = Date.now();
 
 		// Render all components and hard-wrap to the viewport so we never exceed the terminal width
-		const newLines = wrapAnsiLines(this.render(width), width);
+		const newLines = this.wrapWithCache(this.render(width), width);
 
 		// Width changed - need full re-render
 		const widthChanged =
@@ -321,5 +322,34 @@ export class TUI extends Container {
 		this.cursorRow = newLines.length - 1;
 		this.previousLines = newLines;
 		this.previousWidth = width;
+	}
+
+	private wrapWithCache(lines: string[], width: number): string[] {
+		if (width <= 0) return [""];
+		let cache = this.wrapCache.get(width);
+		if (!cache) {
+			cache = new Map();
+			this.wrapCache.set(width, cache);
+		}
+		const wrapped: string[] = [];
+		for (const line of lines) {
+			const key = line ?? "";
+			const cached = cache.get(key);
+			if (cached) {
+				wrapped.push(...cached);
+				continue;
+			}
+			const result = wrapAnsiLines([key], width);
+			cache.set(key, result);
+			wrapped.push(...result);
+		}
+		// Keep only a small number of width caches to avoid unbounded growth
+		if (this.wrapCache.size > 3) {
+			const widths = Array.from(this.wrapCache.keys()).sort((a, b) => b - a);
+			for (const w of widths.slice(3)) {
+				this.wrapCache.delete(w);
+			}
+		}
+		return wrapped;
 	}
 }

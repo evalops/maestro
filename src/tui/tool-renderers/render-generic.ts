@@ -4,6 +4,7 @@ import {
 	formatDetailSections,
 	formatJsonSnippet,
 } from "../utils/tool-text-utils.js";
+import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
 
 export class GenericRenderer implements ToolRenderer {
@@ -11,6 +12,13 @@ export class GenericRenderer implements ToolRenderer {
 		const args = context.result
 			? context.args
 			: (context.partialArgs ?? context.args);
+		const status: "success" | "error" | "pending" =
+			context.result?.isError === true
+				? "error"
+				: context.result
+					? "success"
+					: "pending";
+		const headline = `${statusGlyph(status)} ${formatHeadline("tool", "generic")}`;
 
 		if (context.collapsed) {
 			const combined = [
@@ -19,7 +27,7 @@ export class GenericRenderer implements ToolRenderer {
 			]
 				.filter(Boolean)
 				.join("\n");
-			return chalk.dim(buildCollapsedSummary(combined));
+			return `${headline}\n${renderCard([chalk.dim(buildCollapsedSummary(combined))])}`;
 		}
 
 		const sections: string[] = [];
@@ -42,10 +50,15 @@ export class GenericRenderer implements ToolRenderer {
 		}
 
 		if (sections.length === 0) {
-			return chalk.dim("no output");
+			return `${headline}\n${renderCard([chalk.dim("no output")])}`;
 		}
 
-		return sections.filter(Boolean).join("\n\n");
+		return `${headline}\n${renderCard(
+			sections
+				.filter(Boolean)
+				.flatMap((block) => block.split("\n"))
+				.map((line) => line),
+		)}`;
 	}
 
 	private getTextOutput(context: ToolRenderArgs): string {

@@ -163,6 +163,7 @@ import { handleGuardianCommand as guardianHandler } from "./commands/guardian-ha
 import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
 import { ModalManager } from "./modal-manager.js";
 import { buildRuntimeBadges } from "./utils/runtime-badges.js";
+import { isReducedMotionEnabled, setReducedMotionEnv } from "./utils/motion.js";
 
 const logger = createLogger("tui:renderer");
 const SSH_RENDER_INTERVAL_MS = 50;
@@ -334,6 +335,8 @@ export class TuiRenderer {
 	private nextQueuedPreview: string | null = null;
 	private uiState: UiState = {};
 	private footerMode: FooterMode = "ensemble";
+	private reducedMotion = false;
+	private reducedMotionForced = false;
 	private zenMode = false;
 	private readonly minimalMode =
 		process.env.COMPOSER_TUI_MINIMAL === "1" ||
@@ -402,6 +405,16 @@ export class TuiRenderer {
 		if (this.uiState.footerMode) {
 			this.footerMode = this.uiState.footerMode;
 		}
+		const envReducedMotion = isReducedMotionEnabled();
+		if (typeof this.uiState.reducedMotion === "boolean") {
+			this.reducedMotion = this.uiState.reducedMotion;
+		} else {
+			this.reducedMotion = envReducedMotion;
+		}
+		if (envReducedMotion && this.uiState.reducedMotion !== false) {
+			this.reducedMotionForced = true;
+		}
+		setReducedMotionEnv(this.reducedMotion);
 		if (typeof this.uiState.zenMode === "boolean") {
 			this.zenMode = this.uiState.zenMode;
 		}
@@ -2263,6 +2276,7 @@ export class TuiRenderer {
 			queueMode: this.promptQueueMode,
 			compactTools: this.toolOutputView.isCompact(),
 			footerMode: this.footerMode,
+			reducedMotion: this.reducedMotion,
 			cleanMode: this.cleanMode,
 			recentCommands: this.recentCommands,
 			favoriteCommands: Array.from(this.favoriteCommands),
@@ -2770,6 +2784,8 @@ export class TuiRenderer {
 				isSafeMode: process.env.COMPOSER_SAFE_MODE === "1",
 				sandboxRequestedButMissing: sandboxRequested && !sandboxActive,
 				alertCount: this.footer.getUnseenAlertCount(),
+				reducedMotion: this.reducedMotion,
+				compactForced: this.minimalMode,
 			}),
 		);
 		if (this.isAgentRunning) {

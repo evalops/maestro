@@ -21,9 +21,17 @@ describe("clampAnsiLines", () => {
 		const [line] = clampAnsiLines([colored], 6);
 		expect(visibleWidth(line)).toBeLessThanOrEqual(6);
 		const appended = `${line}plain`;
-		const strippedTail = appended
-			.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
-			.slice(-5);
+		const strippedTail = stripAnsiMinimal(appended).slice(-5);
 		expect(strippedTail).toBe("plain");
 	});
 });
+
+function stripAnsiMinimal(value: string): string {
+	if (!value.includes("\x1b")) return value;
+	return value
+		.split("\x1b")
+		.map((chunk, index) =>
+			index === 0 ? chunk : chunk.replace(/^\[[0-9;?]*[ -/]*[@-~]/, ""),
+		)
+		.join("");
+}

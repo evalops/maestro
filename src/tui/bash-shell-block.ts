@@ -2,6 +2,7 @@ import { Container, Spacer, Text, visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import { getBorderChars } from "./utils/borders.js";
 import { PANEL_WIDTHS } from "./utils/layout.js";
+import { isReducedMotionEnabled } from "./utils/motion.js";
 
 export type ShellBlockStatus = "pending" | "success" | "error";
 
@@ -102,6 +103,9 @@ export class BashShellBlock extends Container {
 	 * Get a spinner frame based on elapsed time.
 	 */
 	private getSpinnerFrame(): string {
+		if (isReducedMotionEnabled()) {
+			return chalk.hex(LABEL_COLOR)("•");
+		}
 		const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 		const elapsed = Date.now() - this.startTime;
 		const idx = Math.floor(elapsed / 80) % frames.length;
