@@ -202,6 +202,8 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			if (hadTrailingSlash && line.endsWith("\\")) {
 				// Normalize Windows-style trailing backslash to a single forward slash
 				relativePath = `${line.slice(0, -1)}/`;
+			} else if (hadTrailingSlash && !relativePath.endsWith("/")) {
+				relativePath += "/";
 			}
 
 			if (relativePath) {
