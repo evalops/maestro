@@ -1,3 +1,68 @@
+/**
+ * Background Tasks Tool - Long-running process management with resource monitoring
+ *
+ * This module provides infrastructure for running, monitoring, and managing
+ * background processes (dev servers, watchers, build tasks, etc.). It's designed
+ * for reliability and observability in an AI agent context where processes may
+ * run for extended periods without direct human oversight.
+ *
+ * ## Architecture Overview
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────────────┐
+ * │                    BackgroundTaskManager                            │
+ * │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐ │
+ * │  │ Task Start  │→ │ Process     │→ │ Resource Monitor            │ │
+ * │  │ & Spawn     │  │ Lifecycle   │  │ (CPU/Memory Polling)        │ │
+ * │  └─────────────┘  └─────────────┘  └─────────────────────────────┘ │
+ * │        ↓                ↓                       ↓                  │
+ * │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐ │
+ * │  │ Log Writer  │  │ Restart     │  │ Limit Enforcement           │ │
+ * │  │ (Rotating)  │  │ Controller  │  │ (Kill on Breach)            │ │
+ * │  └─────────────┘  └─────────────┘  └─────────────────────────────┘ │
+ * └─────────────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## Key Features
+ *
+ * ### 1. Resource Monitoring
+ * Polls /proc/<pid>/stat (Linux) or ps (macOS) to track:
+ * - Resident Set Size (RSS) memory usage
+ * - User and system CPU time
+ * - Enforces configurable limits with automatic termination
+ *
+ * ### 2. Automatic Restart
+ * Configurable restart policy with:
+ * - Fixed or exponential backoff delays
+ * - Jitter to prevent thundering herd
+ * - Maximum attempt limits
+ * - Notifications on restart threshold
+ *
+ * ### 3. Log Management
+ * - Per-task log files with configurable size limits
+ * - Automatic rotation with gzip compression
+ * - Tail access for recent output retrieval
+ * - Secret redaction in log output
+ *
+ * ### 4. Lifecycle Management
+ * - Graceful shutdown with process tree killing
+ * - Automatic cleanup of finished task metadata
+ * - Task retention period for post-mortem analysis
+ *
+ * ## Configuration via Environment Variables
+ *
+ * | Variable                              | Description                      | Default    |
+ * |---------------------------------------|----------------------------------|------------|
+ * | COMPOSER_BACKGROUND_TASK_MAX          | Max concurrent tasks             | 4          |
+ * | COMPOSER_BACKGROUND_TASK_LOG_BYTES    | Per-task log size limit          | 5MB        |
+ * | COMPOSER_BACKGROUND_TASK_RETENTION_MS | How long to keep finished tasks  | 10 min     |
+ * | COMPOSER_BACKGROUND_TASK_MAX_RSS_KB   | Memory limit per task            | 768MB      |
+ * | COMPOSER_BACKGROUND_TASK_MAX_CPU_MS   | CPU time limit per task          | 10 min     |
+ * | COMPOSER_BACKGROUND_TASK_TICKS        | Clock ticks per second (Linux)   | 100        |
+ *
+ * @module tools/background-tasks
+ */
+
 import {
 	type ChildProcess,
 	type SpawnOptions,
@@ -170,26 +235,105 @@ export interface TaskResourceUsage {
 	maxRssKb?: number;
 }
 
+/**
+ * Parse Linux /proc/<pid>/stat file format
+ *
+ * The /proc/[pid]/stat file contains process status information in a single line.
+ * The format is tricky because the command name (field 2) can contain spaces and
+ * parentheses, which complicates parsing.
+ *
+ * ## Format
+ *
+ * ```
+ * pid (comm) state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt
+ * cmajflt utime stime cutime cstime priority nice num_threads itrealvalue
+ * starttime vsize rss ...
+ * ```
+ *
+ * ## Parsing Strategy
+ *
+ * 1. Find the LAST occurrence of ") " (closing paren of comm field + space)
+ * 2. Everything after that splits cleanly on whitespace
+ * 3. Fields are 0-indexed from the position after the comm field
+ *
+ * ## Relevant Fields (0-indexed from our return array)
+ *
+ * - Index 11 (utime): User mode CPU time in clock ticks
+ * - Index 12 (stime): Kernel mode CPU time in clock ticks
+ * - Index 21 (rss): Resident set size in pages (not used, we read /proc/status instead)
+ *
+ * ## Why lastIndexOf?
+ *
+ * The command name can contain ")" characters. For example:
+ * `12345 (node (v18)) S 1234 ...`
+ * Using lastIndexOf(") ") ensures we find the real end of the comm field.
+ *
+ * @param statRaw - Raw content of /proc/<pid>/stat
+ * @returns Array of fields starting from field 3 (state), or null if parse fails
+ */
 export function extractProcStatFields(statRaw: string): string[] | null {
 	const trimmed = statRaw.trim();
+	// Find the closing parenthesis of the command name field
+	// Use lastIndexOf because command name itself can contain ")"
 	const splitIndex = trimmed.lastIndexOf(") ");
 	if (splitIndex === -1) {
 		return null;
 	}
+	// Everything after ") " is the remaining fields, space-separated
 	const remainder = trimmed.slice(splitIndex + 2).trim();
 	if (!remainder) {
 		return null;
 	}
+	// Split on whitespace to get individual fields
 	return remainder.split(/\s+/);
 }
 
+/**
+ * Restart Policy Configuration
+ *
+ * Defines how a task should be restarted after non-zero exit. The policy
+ * supports two backoff strategies and includes jitter to prevent thundering
+ * herd when multiple tasks restart simultaneously.
+ *
+ * ## Strategies
+ *
+ * ### Fixed Delay
+ * Always waits `delayMs` between restart attempts. Simple and predictable.
+ * Use when: restart failures are likely transient and short-lived.
+ *
+ * ### Exponential Backoff
+ * Delay doubles with each attempt: delayMs, 2*delayMs, 4*delayMs, ...
+ * Capped at `maxDelayMs` to prevent unbounded waits.
+ * Use when: failures may indicate resource contention or need recovery time.
+ *
+ * ## Jitter
+ *
+ * Random variation applied to delay to prevent synchronized restarts:
+ * `actualDelay = delay ± (delay * jitterRatio)`
+ *
+ * This is critical when multiple background tasks fail together (e.g., database
+ * goes down). Without jitter, they'd all retry at the exact same time, potentially
+ * overwhelming the recovering service.
+ *
+ * ## Notification Threshold
+ *
+ * `nextNotifyAttempt` tracks when to emit a user-visible notification about
+ * repeated restarts. Uses exponential growth (2, 4, 8, ...) to avoid spamming.
+ */
 interface RestartPolicy {
+	/** Maximum restart attempts before giving up (task fails permanently) */
 	maxAttempts: number;
+	/** Base delay between restart attempts in milliseconds */
 	delayMs: number;
+	/** Current restart attempt counter (0 = no restarts yet) */
 	attempts: number;
+	/** "fixed" = constant delay, "exponential" = doubles each attempt */
 	strategy: "fixed" | "exponential";
+	/** Upper bound for exponential backoff (prevents multi-minute waits) */
 	maxDelayMs: number;
+	/** Random variation factor: 0.0 = no jitter, 1.0 = ±100% variation */
 	jitterRatio: number;
+	/** Next attempt count that triggers a notification (grows exponentially) */
 	nextNotifyAttempt?: number;
 }
 
@@ -383,15 +527,47 @@ export interface ResourceLimitBreach {
 	actual: number;
 }
 
+/**
+ * Evaluate Resource Usage Against Limits
+ *
+ * Checks whether a task's resource consumption has exceeded its configured
+ * limits. Returns information about the first breach found (memory takes
+ * priority over CPU since it's usually more urgent).
+ *
+ * ## Check Order
+ *
+ * 1. Memory (RSS): Checked first because memory exhaustion can crash the system
+ * 2. CPU Time: Checked second; CPU-bound tasks are less dangerous but wasteful
+ *
+ * ## Limit Values
+ *
+ * A limit of 0 means "unlimited" - the check is skipped for that resource.
+ * This allows users to disable specific limits while keeping others.
+ *
+ * ## Usage in Monitoring Loop
+ *
+ * This function is called every RESOURCE_POLL_INTERVAL_MS (200ms) by the
+ * monitoring timer. If a breach is detected, the task is terminated via
+ * enforceRuntimeLimits().
+ *
+ * @param usage - Current resource usage snapshot (may be undefined early in lifecycle)
+ * @param limits - Configured limits from task or global defaults
+ * @returns Breach info if limit exceeded, null if within limits
+ */
 export function evaluateResourceLimitBreach(
 	usage: TaskResourceUsage | undefined,
 	limits: Pick<TaskRuntimeLimits, "maxRssKb" | "maxCpuMs">,
 ): ResourceLimitBreach | null {
+	// No usage data yet (process just started)
 	if (!usage) {
 		return null;
 	}
+
+	// Check memory limit first (more critical - can crash system)
 	const rssLimit = limits.maxRssKb ?? 0;
 	const cpuLimit = limits.maxCpuMs ?? 0;
+
+	// Memory check: 0 means unlimited
 	if (rssLimit > 0 && (usage.maxRssKb ?? 0) > rssLimit) {
 		return {
 			kind: "memory",
@@ -399,6 +575,8 @@ export function evaluateResourceLimitBreach(
 			actual: usage.maxRssKb ?? 0,
 		};
 	}
+
+	// CPU check: combine user + system time
 	const totalCpu = (usage.userMs ?? 0) + (usage.systemMs ?? 0);
 	if (cpuLimit > 0 && totalCpu > cpuLimit) {
 		return {
@@ -407,6 +585,8 @@ export function evaluateResourceLimitBreach(
 			actual: totalCpu,
 		};
 	}
+
+	// All limits satisfied
 	return null;
 }
 
@@ -802,20 +982,62 @@ class BackgroundTaskManager extends EventEmitter {
 		return true;
 	}
 
+	/**
+	 * Compute Restart Delay with Backoff and Jitter
+	 *
+	 * Calculates the actual delay before the next restart attempt, applying
+	 * the configured backoff strategy and jitter.
+	 *
+	 * ## Exponential Backoff Calculation
+	 *
+	 * For exponential strategy, delay doubles with each attempt:
+	 * - Attempt 1: delayMs * 2^0 = delayMs
+	 * - Attempt 2: delayMs * 2^1 = 2 * delayMs
+	 * - Attempt 3: delayMs * 2^2 = 4 * delayMs
+	 * - etc., capped at maxDelayMs
+	 *
+	 * ## Jitter Application
+	 *
+	 * Jitter adds randomness to prevent synchronized restarts (thundering herd):
+	 *
+	 * ```
+	 * jitterRange = delay * jitterRatio
+	 * actualDelay = random(delay - jitterRange, delay + jitterRange)
+	 * ```
+	 *
+	 * Example with delay=1000ms and jitterRatio=0.25:
+	 * - jitterRange = 250ms
+	 * - actualDelay = random value between 750ms and 1250ms
+	 *
+	 * A minimum of 50ms is enforced to prevent near-instant retries.
+	 *
+	 * @param policy - The restart policy configuration
+	 * @returns Delay in milliseconds before next restart attempt
+	 */
 	private computeRestartDelay(policy: RestartPolicy): number {
 		let delay = policy.delayMs;
+
+		// Apply exponential backoff if configured
 		if (policy.strategy === "exponential") {
+			// Exponent is attempts-1 so first restart uses base delay
 			const exponent = Math.max(policy.attempts - 1, 0);
+			// 2^exponent scaling: 1x, 2x, 4x, 8x, ...
 			const scaled = policy.delayMs * 2 ** exponent;
+			// Clamp between base delay and maximum
 			delay = Math.min(Math.max(scaled, policy.delayMs), policy.maxDelayMs);
 		}
+
+		// Apply jitter to prevent synchronized restarts
 		if (policy.jitterRatio > 0 && delay > 0) {
 			const jitter = delay * policy.jitterRatio;
+			// Minimum 50ms to prevent near-instant retries after jitter subtraction
 			const min = Math.max(50, delay - jitter);
 			const max = delay + jitter;
 			const range = Math.max(max - min, 0);
+			// Uniform random distribution within jitter range
 			delay = Math.round(min + Math.random() * range);
 		}
+
 		return delay;
 	}
 
