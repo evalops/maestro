@@ -6,7 +6,7 @@ import {
 	readPlanFile,
 	writePlanFile,
 } from "../../agent/plan-mode.js";
-import { sendJson } from "../server-utils.js";
+import { readJsonBody, sendJson } from "../server-utils.js";
 
 export async function handlePlan(
 	req: IncomingMessage,
@@ -30,57 +30,67 @@ export async function handlePlan(
 	}
 
 	if (req.method === "POST") {
-		let body = "";
-		req.on("data", (chunk) => {
-			body += chunk;
-		});
+		try {
+			const data = await readJsonBody<{
+				action?: string;
+				name?: string;
+				sessionId?: string;
+				content?: string;
+			}>(req);
+			const { action } = data;
 
-		req.on("end", () => {
-			try {
-				const data = JSON.parse(body);
-				const { action } = data;
-
-				if (action === "enter") {
-					const state = enterPlanMode({
-						name: data.name,
-					});
-					sendJson(res, 200, { success: true, state }, corsHeaders);
-				} else if (action === "exit") {
-					const state = exitPlanMode();
-					sendJson(res, 200, { success: true, state }, corsHeaders);
-				} else if (action === "update") {
-					if (typeof data.content !== "string") {
-						sendJson(
-							res,
-							400,
-							{ error: "Content is required for update" },
-							corsHeaders,
-						);
-						return;
-					}
-					const success = writePlanFile(data.content);
-					if (success) {
-						sendJson(res, 200, { success: true }, corsHeaders);
-					} else {
-						sendJson(
-							res,
-							400,
-							{
-								error:
-									"Failed to write plan file (plan mode might be inactive)",
-							},
-							corsHeaders,
-						);
-					}
+			if (action === "enter") {
+				const state = enterPlanMode({
+					name: data.name,
+					sessionId: data.sessionId,
+				});
+				sendJson(res, 200, { success: true, state }, corsHeaders);
+			} else if (action === "exit") {
+				const state = exitPlanMode();
+				sendJson(res, 200, { success: true, state }, corsHeaders);
+			} else if (action === "update") {
+				if (typeof data.content !== "string") {
+					sendJson(
+						res,
+						400,
+						{ error: "Content is required for update" },
+						corsHeaders,
+					);
+					return;
+				}
+				const success = writePlanFile(data.content);
+				if (success) {
+					sendJson(res, 200, { success: true }, corsHeaders);
 				} else {
 					sendJson(
 						res,
 						400,
-						{ error: "Invalid action. Use 'enter', 'exit', or 'update'" },
+						{
+							error: "Failed to write plan file (plan mode might be inactive)",
+						},
 						corsHeaders,
 					);
 				}
-			} catch (error) {
+			} else {
+				sendJson(
+					res,
+					400,
+					{ error: "Invalid action. Use 'enter', 'exit', or 'update'" },
+					corsHeaders,
+				);
+			}
+		} catch (error) {
+			if (error instanceof Error && "statusCode" in error) {
+				// ApiError from readJsonBody
+				sendJson(
+					res,
+					(error as { statusCode: number }).statusCode,
+					{
+						error: error.message,
+					},
+					corsHeaders,
+				);
+			} else {
 				sendJson(
 					res,
 					500,
@@ -91,7 +101,7 @@ export async function handlePlan(
 					corsHeaders,
 				);
 			}
-		});
+		}
 		return;
 	}
 

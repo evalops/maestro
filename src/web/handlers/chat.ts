@@ -29,6 +29,7 @@ import {
 	isNotificationEnabled,
 	sendNotification,
 } from "../../hooks/notification-hooks.js";
+import { checkSessionLimits } from "../../safety/policy.js";
 import { createLogger } from "../../utils/logger.js";
 
 const logger = createLogger("web:chat");
@@ -237,6 +238,41 @@ export async function handleChat(
 
 				// Auto-initialize session on first assistant message
 				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
+					// Check concurrent session limit before starting
+					// We define "active" as updated in the last hour
+					let activeCount: number | undefined;
+					try {
+						const sessions = sessionManager.loadAllSessions();
+						activeCount = sessions.filter(
+							(s) => Date.now() - s.modified.getTime() < 60 * 60 * 1000,
+						).length;
+					} catch (error) {
+						// Fallback to undefined to let checkSessionLimits decide (it will fail-closed if limit exists)
+						logger.warn("Failed to count active sessions", {
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+
+					// Check against policy (+1 for the session we are about to create)
+					const limitCheck = checkSessionLimits(
+						{ startedAt: new Date() },
+						// If loadAllSessions failed (activeCount undefined), we pass undefined to trigger fail-closed
+						// If successful (activeCount number), we pass count + 1
+						activeCount !== undefined
+							? { activeSessionCount: activeCount + 1 }
+							: undefined,
+					);
+
+					if (!limitCheck.allowed) {
+						// Send error to client via SSE
+						sendSSE(sseSession, {
+							type: "error",
+							message: `[Policy] ${limitCheck.reason}`,
+						});
+						sseSession.end();
+						return;
+					}
+
 					sessionManager.startSession(agent.state);
 
 					// Record session start in enterprise context for audit logging

@@ -5,7 +5,7 @@ import {
 	runGuardian,
 	setGuardianEnabled,
 } from "../../guardian/index.js";
-import { sendJson } from "../server-utils.js";
+import { readJsonBody, sendJson } from "../server-utils.js";
 
 export async function handleGuardianStatus(
 	req: IncomingMessage,
@@ -69,38 +69,43 @@ export async function handleGuardianConfig(
 	res: ServerResponse,
 	corsHeaders: Record<string, string>,
 ) {
-	let body = "";
-	req.on("data", (chunk) => {
-		body += chunk;
-	});
+	try {
+		const data = await readJsonBody<{ enabled?: boolean }>(req);
 
-	req.on("end", async () => {
-		try {
-			const data = JSON.parse(body);
+		if (typeof data.enabled === "boolean") {
+			setGuardianEnabled(data.enabled);
 
-			if (typeof data.enabled === "boolean") {
-				setGuardianEnabled(data.enabled);
-
-				sendJson(
-					res,
-					200,
-					{
-						success: true,
-						enabled: data.enabled,
-					},
-					corsHeaders,
-				);
-			} else {
-				sendJson(
-					res,
-					400,
-					{
-						error: "Invalid request. 'enabled' boolean is required.",
-					},
-					corsHeaders,
-				);
-			}
-		} catch (error) {
+			sendJson(
+				res,
+				200,
+				{
+					success: true,
+					enabled: data.enabled,
+				},
+				corsHeaders,
+			);
+		} else {
+			sendJson(
+				res,
+				400,
+				{
+					error: "Invalid request. 'enabled' boolean is required.",
+				},
+				corsHeaders,
+			);
+		}
+	} catch (error) {
+		if (error instanceof Error && "statusCode" in error) {
+			// ApiError from readJsonBody
+			sendJson(
+				res,
+				(error as { statusCode: number }).statusCode,
+				{
+					error: error.message,
+				},
+				corsHeaders,
+			);
+		} else {
 			sendJson(
 				res,
 				500,
@@ -111,5 +116,5 @@ export async function handleGuardianConfig(
 				corsHeaders,
 			);
 		}
-	});
+	}
 }
