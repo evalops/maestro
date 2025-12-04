@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { type JWTPayload, jwtVerify } from "jose";
+import { type JWTPayload, createRemoteJWKSet, jwtVerify } from "jose";
 import {
 	authenticateRequest,
 	getRequestToken,
@@ -12,6 +12,7 @@ const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
 const CSRF_TOKEN = process.env.COMPOSER_WEB_CSRF_TOKEN?.trim() || null;
 const SHARED_SECRET = process.env.COMPOSER_AUTH_SHARED_SECRET?.trim() || null;
 const JWT_SECRET = process.env.COMPOSER_JWT_SECRET?.trim() || null;
+const JWT_JWKS_URL = process.env.COMPOSER_JWT_JWKS_URL?.trim() || null;
 const JWT_AUDIENCE = process.env.COMPOSER_JWT_AUD?.trim() || undefined;
 const JWT_ISSUER = process.env.COMPOSER_JWT_ISS?.trim() || undefined;
 const JWT_ALG = process.env.COMPOSER_JWT_ALG?.trim() || "HS256";
@@ -44,17 +45,26 @@ function verifySharedToken(token: string): string | null {
 }
 
 async function verifyJwt(token: string): Promise<JWTPayload | null> {
-	if (!JWT_SECRET) return null;
+	if (!JWT_SECRET && !JWT_JWKS_URL) return null;
 	try {
-		const { payload, protectedHeader } = await jwtVerify(
-			token,
-			new TextEncoder().encode(JWT_SECRET),
-			{
+		let payload: JWTPayload | null = null;
+		if (JWT_JWKS_URL?.length) {
+			const jwks = createRemoteJWKSet(new URL(JWT_JWKS_URL));
+			const verified = await jwtVerify(token, jwks, {
 				algorithms: [JWT_ALG],
 				audience: JWT_AUDIENCE,
 				issuer: JWT_ISSUER,
-			},
-		);
+			});
+			payload = verified.payload;
+		} else {
+			const secret = new TextEncoder().encode(JWT_SECRET ?? "");
+			const verified = await jwtVerify(token, secret, {
+				algorithms: [JWT_ALG],
+				audience: JWT_AUDIENCE,
+				issuer: JWT_ISSUER,
+			});
+			payload = verified.payload;
+		}
 		if (!payload.sub) return null;
 		// basic exp/nbf checks handled by jose
 		return payload;
