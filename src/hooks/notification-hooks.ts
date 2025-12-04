@@ -196,10 +196,12 @@ function executeNotifyProgram(
 		});
 
 		child.on("error", (error) => {
+			clearTimeout(safetyTimer);
 			reject(error);
 		});
 
 		child.on("close", (code) => {
+			clearTimeout(safetyTimer);
 			if (code === 0) {
 				resolve();
 			} else {
@@ -208,7 +210,7 @@ function executeNotifyProgram(
 		});
 
 		// Safety timeout
-		setTimeout(() => {
+		const safetyTimer = setTimeout(() => {
 			child.kill("SIGTERM");
 			reject(new Error("Notify program timed out"));
 		}, timeout + 1000);

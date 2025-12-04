@@ -122,8 +122,10 @@ async function executeCommandHook(
 		};
 
 		// Handle abort signal
+		let abortListener: (() => void) | undefined;
 		if (signal) {
-			signal.addEventListener("abort", () => cleanup("abort"), { once: true });
+			abortListener = () => cleanup("abort");
+			signal.addEventListener("abort", abortListener, { once: true });
 		}
 
 		// Timeout handling
@@ -131,6 +133,9 @@ async function executeCommandHook(
 			if (!resolved) {
 				resolved = true;
 				child.kill("SIGTERM");
+				if (abortListener && signal) {
+					signal.removeEventListener("abort", abortListener);
+				}
 				resolve({
 					stdout,
 					stderr: `${stderr}\nHook timed out`,
@@ -171,6 +176,9 @@ async function executeCommandHook(
 			if (!resolved) {
 				resolved = true;
 				clearTimeout(timeout);
+				if (abortListener && signal) {
+					signal.removeEventListener("abort", abortListener);
+				}
 				resolve({
 					stdout,
 					stderr: `${stderr}\n${error.message}`,
@@ -183,6 +191,9 @@ async function executeCommandHook(
 			if (!resolved) {
 				resolved = true;
 				clearTimeout(timeout);
+				if (abortListener && signal) {
+					signal.removeEventListener("abort", abortListener);
+				}
 				resolve({
 					stdout,
 					stderr,
@@ -558,6 +569,9 @@ export async function executeHooks(
 		return [];
 	}
 
+	// Clean up any stale async hook bookkeeping before starting new work
+	cleanupAsyncHooks();
+
 	logger.debug("Executing hooks", {
 		eventType: input.hook_event_name,
 		hookCount: hooks.length,
@@ -576,6 +590,9 @@ export async function executeHooks(
 			}
 		}
 	}
+
+	// Clean up async bookkeeping after execution in case hooks marked themselves async
+	cleanupAsyncHooks();
 
 	return results;
 }
