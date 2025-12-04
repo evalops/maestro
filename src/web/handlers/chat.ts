@@ -24,6 +24,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
 import type { AgentEvent } from "../../agent/types.js";
+import {
+	createNotificationFromAgentEvent,
+	isNotificationEnabled,
+	sendNotification,
+} from "../../hooks/notification-hooks.js";
 import { createLogger } from "../../utils/logger.js";
 
 const logger = createLogger("web:chat");
@@ -219,6 +224,9 @@ export async function handleChat(
 
 		// ===== Phase 5: Agent Event Subscription =====
 		// Subscribe to agent events and forward them to the SSE stream
+		// Pre-load enterprise context for session tracking
+		const { enterpriseContext } = await import("../../enterprise/context.js");
+
 		const unsubscribe = agent.subscribe((event: AgentEvent) => {
 			// Forward event to client
 			sendSSE(sseSession, event);
@@ -230,6 +238,22 @@ export async function handleChat(
 				// Auto-initialize session on first assistant message
 				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
 					sessionManager.startSession(agent.state);
+
+					// Record session start in enterprise context for audit logging
+					if (enterpriseContext.isEnterprise()) {
+						enterpriseContext.startSession(
+							sessionManager.getSessionId(),
+							registeredModel.id,
+						);
+						const session = enterpriseContext.getSession();
+						if (session) {
+							agent.setSession({
+								id: session.sessionId,
+								startedAt: session.startedAt,
+							});
+						}
+					}
+
 					const sessionId = sessionManager.getSessionId();
 					sendSessionUpdate(sseSession, sessionId);
 					sseSession.setContext({ sessionId });
@@ -242,6 +266,26 @@ export async function handleChat(
 				toSessionModelMetadata(registeredModel),
 			);
 		});
+
+		// Subscribe to agent events for notification hooks (if configured)
+		if (
+			isNotificationEnabled("turn-complete") ||
+			isNotificationEnabled("session-start") ||
+			isNotificationEnabled("session-end") ||
+			isNotificationEnabled("tool-execution") ||
+			isNotificationEnabled("error")
+		) {
+			agent.subscribe((event) => {
+				const payload = createNotificationFromAgentEvent(event, {
+					cwd: process.cwd(),
+					sessionId: sessionManager.getSessionId(),
+					messages: agent.state.messages,
+				});
+				if (payload) {
+					void sendNotification(payload);
+				}
+			});
+		}
 
 		// ===== Phase 6: Connection Close Handling =====
 		// Abort agent and cleanup when client disconnects
