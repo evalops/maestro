@@ -103,6 +103,12 @@ import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { minimatch } from "minimatch";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
+import {
+	isLoopbackIPv4,
+	isPrivateIPv4,
+	parseIPv4,
+	parseIPv4MappedHex,
+} from "../utils/ip-address-parser.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
@@ -575,64 +581,6 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 	}
 
 	return paths;
-}
-
-/**
- * Parse an IPv4 address and validate octets are in range 0-255
- * Returns the octets array if valid, null otherwise
- */
-function parseIPv4(host: string): number[] | null {
-	const parts = host.split(".");
-	if (parts.length !== 4) return null;
-
-	const octets: number[] = [];
-	for (const part of parts) {
-		const num = Number.parseInt(part, 10);
-		if (Number.isNaN(num) || num < 0 || num > 255 || String(num) !== part) {
-			return null; // Invalid octet or leading zeros
-		}
-		octets.push(num);
-	}
-	return octets;
-}
-
-/**
- * Check if an IPv4 address is in the localhost range (127.0.0.0/8)
- */
-function isLoopbackIPv4(octets: number[]): boolean {
-	return octets[0] === 127;
-}
-
-/**
- * Check if an IPv4 address is in a private range
- */
-function isPrivateIPv4(octets: number[]): boolean {
-	const [a, b] = octets;
-	return (
-		a === 10 || // 10.0.0.0/8
-		(a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
-		(a === 192 && b === 168) || // 192.168.0.0/16
-		(a === 169 && b === 254) || // 169.254.0.0/16 link-local
-		(a === 100 && b >= 64 && b <= 127) // 100.64.0.0/10 carrier-grade NAT
-	);
-}
-
-/**
- * Parse an IPv4-mapped IPv6 address in hex format (e.g., ::ffff:c0a8:101)
- * Returns the IPv4 octets if valid, null otherwise
- */
-function parseIPv4MappedHex(host: string): number[] | null {
-	// Match ::ffff:XXXX:XXXX format (hex representation of IPv4)
-	const match = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-	if (!match) return null;
-
-	const high = Number.parseInt(match[1], 16);
-	const low = Number.parseInt(match[2], 16);
-
-	if (Number.isNaN(high) || Number.isNaN(low)) return null;
-
-	// Convert to octets: high = (octet1 << 8) | octet2, low = (octet3 << 8) | octet4
-	return [(high >> 8) & 0xff, high & 0xff, (low >> 8) & 0xff, low & 0xff];
 }
 
 /**
