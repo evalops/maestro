@@ -25,6 +25,28 @@ import { isAsyncHookResponse } from "./types.js";
 const logger = createLogger("hooks:executor");
 
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // 60 seconds
+const HOOK_MAX_CONCURRENCY =
+	Number.parseInt(process.env.COMPOSER_HOOKS_MAX_CONCURRENCY ?? "0", 10) || 0;
+
+let activeHookSlots = 0;
+const hookWaiters: Array<() => void> = [];
+
+async function acquireHookSlot(): Promise<void> {
+	if (HOOK_MAX_CONCURRENCY <= 0) return;
+	if (activeHookSlots < HOOK_MAX_CONCURRENCY) {
+		activeHookSlots += 1;
+		return;
+	}
+	await new Promise<void>((resolve) => hookWaiters.push(resolve));
+	activeHookSlots += 1;
+}
+
+function releaseHookSlot(): void {
+	if (HOOK_MAX_CONCURRENCY <= 0) return;
+	activeHookSlots = Math.max(0, activeHookSlots - 1);
+	const next = hookWaiters.shift();
+	if (next) next();
+}
 
 /**
  * Tracking for background/async hooks.
@@ -349,6 +371,10 @@ function parseStructuredHookOutput(
 			toolUseID,
 			stdout: rawResult?.stdout,
 			stderr: rawResult?.stderr,
+			content:
+				rawResult?.stderr && rawResult.stderr.trim().length > 0
+					? rawResult.stderr.trim()
+					: undefined,
 			exitCode: rawResult?.status,
 		}),
 	};
@@ -580,14 +606,19 @@ export async function executeHooks(
 	const results: HookExecutionResult[] = [];
 
 	for (const hook of hooks) {
-		const result = await executeHook(hook, input, signal);
-		if (result) {
-			results.push(result);
+		await acquireHookSlot();
+		try {
+			const result = await executeHook(hook, input, signal);
+			if (result) {
+				results.push(result);
 
-			// Stop executing more hooks if one blocked or prevented continuation
-			if (result.blockingError || result.preventContinuation) {
-				break;
+				// Stop executing more hooks if one blocked or prevented continuation
+				if (result.blockingError || result.preventContinuation) {
+					break;
+				}
 			}
+		} finally {
+			releaseHookSlot();
 		}
 	}
 
@@ -623,9 +654,19 @@ export function cleanupAsyncHooks(): void {
 	const now = Date.now();
 	const maxAge = 10 * 60 * 1000; // 10 minutes
 
+	let removed = 0;
 	for (const [id, proc] of asyncHookProcesses) {
 		if (now - proc.startedAt > maxAge) {
 			asyncHookProcesses.delete(id);
+			removed += 1;
 		}
+	}
+
+	if (removed > 0 || asyncHookProcesses.size > 0) {
+		logger.debug("Async hook registry sweep", {
+			removed,
+			remaining: asyncHookProcesses.size,
+			maxAgeMs: maxAge,
+		});
 	}
 }
