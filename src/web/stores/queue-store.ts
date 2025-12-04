@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { tryParseJson } from "../../utils/json.js";
 
 type QueueMode = "one" | "all";
 
@@ -82,12 +83,8 @@ function normalizeState(raw: unknown): QueueStateFile {
 
 export function loadQueueState(): QueueStateFile {
 	if (!existsSync(QUEUE_STATE_PATH)) return { sessions: {} };
-	try {
-		const raw = JSON.parse(readFileSync(QUEUE_STATE_PATH, "utf-8")) as unknown;
-		return normalizeState(raw);
-	} catch {
-		return { sessions: {} };
-	}
+	const raw = tryParseJson(readFileSync(QUEUE_STATE_PATH, "utf-8"));
+	return normalizeState(raw);
 }
 
 export function saveQueueState(state: QueueStateFile): void {

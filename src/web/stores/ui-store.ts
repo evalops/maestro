@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { UiState } from "../../tui/ui-state.js";
+import { tryParseJson } from "../../utils/json.js";
 
 const UI_STATE_PATH =
 	process.env.COMPOSER_WEB_UI_STATE ??
@@ -46,12 +47,8 @@ function normalize(raw: unknown): UiStateFile {
 
 export function loadWebUiState(): UiStateFile {
 	if (!existsSync(UI_STATE_PATH)) return { sessions: {} };
-	try {
-		const raw = JSON.parse(readFileSync(UI_STATE_PATH, "utf-8")) as unknown;
-		return normalize(raw);
-	} catch {
-		return { sessions: {} };
-	}
+	const raw = tryParseJson(readFileSync(UI_STATE_PATH, "utf-8"));
+	return normalize(raw);
 }
 
 export function saveWebUiState(state: UiStateFile): void {

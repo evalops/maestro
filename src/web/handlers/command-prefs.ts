@@ -48,12 +48,18 @@ export async function handleCommandPrefs(
 			return;
 		}
 		if (req.method === "POST") {
-			const chunks: Buffer[] = [];
-			for await (const chunk of req) {
-				chunks.push(chunk as Buffer);
+			let body: Record<string, unknown>;
+			try {
+				const chunks: Buffer[] = [];
+				for await (const chunk of req) {
+					chunks.push(chunk as Buffer);
+				}
+				const bodyRaw = Buffer.concat(chunks).toString("utf8");
+				body = bodyRaw ? (JSON.parse(bodyRaw) as Record<string, unknown>) : {};
+			} catch {
+				sendJson(res, 400, { error: "Invalid JSON payload" }, corsHeaders, req);
+				return;
 			}
-			const bodyRaw = Buffer.concat(chunks).toString("utf8");
-			const body = bodyRaw ? JSON.parse(bodyRaw) : {};
 			const prefs: CommandPrefs = {
 				favorites: Array.isArray(body.favorites)
 					? body.favorites.filter((x: unknown) => typeof x === "string")

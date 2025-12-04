@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import {
+	type MemoryStore,
 	addMemory,
 	clearAllMemories,
 	deleteMemory,
@@ -174,7 +175,18 @@ export async function handleMemory(
 					return;
 				}
 				const content = readFileSync(inputPath, "utf-8");
-				const store = JSON.parse(content);
+				let store: MemoryStore;
+				try {
+					store = JSON.parse(content) as MemoryStore;
+				} catch {
+					sendJson(
+						res,
+						400,
+						{ error: `Invalid JSON in file: ${inputPath}` },
+						corsHeaders,
+					);
+					return;
+				}
 				const result = importMemories(store);
 				sendJson(
 					res,
