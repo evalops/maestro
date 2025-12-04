@@ -40,11 +40,23 @@ describe("shell-utils", () => {
 	describe("killProcessTree", () => {
 		it("handles non-existent pid gracefully", () => {
 			// Should not throw for invalid PID
+			// Use a very high PID that won't exist
 			expect(() => killProcessTree(999999999)).not.toThrow();
 		});
 
 		it("handles negative pid gracefully", () => {
+			// Negative PIDs are invalid and should return early without error
 			expect(() => killProcessTree(-1)).not.toThrow();
+		});
+
+		it("handles zero pid gracefully", () => {
+			// Zero is invalid and should return early without error
+			expect(() => killProcessTree(0)).not.toThrow();
+		});
+
+		it("handles PID 1 gracefully", () => {
+			// PID 1 (init) should be protected and return early
+			expect(() => killProcessTree(1)).not.toThrow();
 		});
 	});
 

@@ -81,7 +81,8 @@ describe("cache-invalidation", () => {
 				mockCache,
 			);
 			const invalidated = service.invalidateFile(join(testDir, "test.ts"));
-			expect(invalidated).toBe(1);
+			// TypeScript files invalidate read (2 calls), list, and search caches = 4 total
+			expect(invalidated).toBe(4);
 		});
 
 		it("clears all cache manually", async () => {

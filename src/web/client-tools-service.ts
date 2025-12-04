@@ -25,29 +25,46 @@ export class ClientToolService {
 		}
 
 		return new Promise((resolve) => {
-			this.pending.set(id, { resolve, timestamp: Date.now() });
+			// Track if we've already resolved to guard against race conditions
+			let resolved = false;
+
+			const safeResolve = (result: {
+				content: ToolResultContent[];
+				isError: boolean;
+			}) => {
+				if (resolved) return;
+				resolved = true;
+				this.pending.delete(id);
+				if (signal && onAbort) {
+					signal.removeEventListener("abort", onAbort);
+				}
+				resolve(result);
+			};
+
+			// Define abort handler before registering to avoid reference issues
+			let onAbort: (() => void) | undefined;
 
 			if (signal) {
-				const onAbort = () => {
-					this.pending.delete(id);
-					resolve({
+				onAbort = () => {
+					safeResolve({
 						content: [{ type: "text", text: "Aborted" } as TextContent],
 						isError: true,
 					});
 				};
-
 				signal.addEventListener("abort", onAbort, { once: true });
 
-				// Store the original resolve to wrap it with cleanup
-				const originalResolve = resolve;
-				this.pending.set(id, {
-					resolve: (result) => {
-						signal.removeEventListener("abort", onAbort);
-						originalResolve(result);
-					},
-					timestamp: Date.now(),
-				});
+				// Check again after registering in case signal fired synchronously
+				if (signal.aborted) {
+					safeResolve({
+						content: [{ type: "text", text: "Aborted" } as TextContent],
+						isError: true,
+					});
+					return;
+				}
 			}
+
+			// Add entry only once, after abort listener is registered
+			this.pending.set(id, { resolve: safeResolve, timestamp: Date.now() });
 		});
 	}
 

@@ -274,13 +274,13 @@ function goodbye() {
 		});
 
 		it("handles non-existent path", async () => {
-			const result = await parallelRipgrepTool.execute("prg-19", {
-				patterns: ["hello"],
-				paths: ["/nonexistent/path/xyz"],
-			});
-
-			// ripgrep may return empty or error for non-existent paths
-			expect(result).toBeDefined();
+			// ripgrep throws for non-existent paths with exit code 2
+			await expect(
+				parallelRipgrepTool.execute("prg-19", {
+					patterns: ["hello"],
+					paths: ["/nonexistent/path/xyz"],
+				}),
+			).rejects.toThrow(/No such file or directory|IO error/);
 		});
 	});
 });

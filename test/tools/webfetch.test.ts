@@ -116,7 +116,8 @@ describe("webfetch tool", () => {
 		});
 
 		it("handles network errors", async () => {
-			mockCallExa.mockRejectedValueOnce(new Error("Network timeout"));
+			// Use mockRejectedValue (not Once) to cover all retry attempts
+			mockCallExa.mockRejectedValue(new Error("Network timeout"));
 
 			await expect(
 				webfetchTool.execute("wf-4", {

@@ -37,6 +37,11 @@ export function getShellConfig(): { shell: string; args: string[] } {
 }
 
 export function killProcessTree(pid: number): void {
+	// Safety: never try to kill PID 1 (init) or invalid PIDs
+	if (pid <= 0 || pid === 1) {
+		return;
+	}
+
 	if (process.platform === "win32") {
 		try {
 			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
