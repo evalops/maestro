@@ -47,6 +47,8 @@ import {
 	type AuthMode,
 	createAuthResolver,
 } from "./providers/auth.js";
+import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
+import { configureSafeMode } from "./safety/safe-mode.js";
 import { recordApiRequest } from "./telemetry.js";
 import { codingTools, vscodeTools } from "./tools/index.js";
 import { createLogger } from "./utils/logger.js";
@@ -586,6 +588,24 @@ export async function startWebServer(port = 8080) {
 	await reloadModelConfig();
 	await initLifecycle();
 
+	// Initialize enterprise context for user/org tracking (optional, only if enterprise features enabled)
+	const { enterpriseContext } = await import("./enterprise/context.js");
+	await enterpriseContext.initialize();
+
+	// Initialize audit integration if enterprise features are available
+	if (enterpriseContext.isEnterprise()) {
+		const { initializeAuditIntegration } = await import(
+			"./enterprise/audit-integration.js"
+		);
+		initializeAuditIntegration();
+	}
+
+	// Configure safe mode settings (e.g., disabling certain tools in sandboxed environments)
+	configureSafeMode(true);
+
+	// Register shutdown hooks for background tasks to ensure clean cleanup
+	registerBackgroundTaskShutdownHooks();
+
 	// Bootstrap LSP for IDE integration (enables diagnostics, hover, etc.)
 	await bootstrapLsp();
 
@@ -655,6 +675,11 @@ export async function startWebServer(port = 8080) {
 			logger.info("SIGINT received. Starting graceful shutdown...");
 			stopStatsCollection();
 			disposeCheckpointService();
+			// End enterprise session if initialized
+			const { enterpriseContext } = await import("./enterprise/context.js");
+			if (enterpriseContext.isEnterprise()) {
+				enterpriseContext.endSession();
+			}
 			await shutdownLifecycle();
 
 			// Stop accepting new connections
