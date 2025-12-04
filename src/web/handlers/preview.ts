@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
+import { requireApiAuth } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
 const PREVIEW_TIMEOUT_MS = 1_000;
@@ -21,6 +22,7 @@ export async function handlePreview(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
 		const url = new URL(
 			req.url || "/api/preview",
 			`http://${req.headers.host || "localhost"}`,

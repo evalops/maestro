@@ -1,6 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { SessionManager } from "../../session/manager.js";
+import { requireApiAuth } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
+import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
+import {
+	approximateTokensFromJson,
+	approximateTokensFromText,
+} from "../utils/token-estimator.js";
 
 function assertSessionId(sessionId: string): void {
 	if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) {
@@ -17,6 +23,7 @@ export async function handleContext(
 		sendJson(res, 405, { error: "Method not allowed" }, corsHeaders);
 		return;
 	}
+	if (!requireApiAuth(req, res, corsHeaders)) return;
 
 	const url = new URL(req.url || "/api/context", `http://${req.headers.host}`);
 	const sessionId = url.searchParams.get("sessionId");
@@ -33,6 +40,11 @@ export async function handleContext(
 		}
 
 		assertSessionId(sessionId);
+		const rate = checkSessionRateLimit(sessionId);
+		if (!rate.allowed) {
+			sendJson(res, 429, { error: "Too many context requests" }, corsHeaders);
+			return;
+		}
 		const sessionManager = new SessionManager(false);
 		const sessionFile = sessionManager.getSessionFileById(sessionId);
 		if (!sessionFile) {
@@ -57,10 +69,12 @@ export async function handleContext(
 		}
 
 		const items = session.messages.map(
-			(msg: { role: string }, index: number) => ({
+			(msg: { role: string; content?: unknown }, index: number) => ({
 				type: msg.role,
 				index,
-				tokenEstimate: Math.round(JSON.stringify(msg).length / 4),
+				tokenEstimate: approximateTokensFromJson(msg),
+				snippet:
+					typeof msg.content === "string" ? msg.content.slice(0, 160) : "",
 			}),
 		);
 

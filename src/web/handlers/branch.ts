@@ -1,7 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Type } from "@sinclair/typebox";
+import { type Static, Type } from "@sinclair/typebox";
 import { SessionManager } from "../../session/manager.js";
+import { requireApiAuth, requireCsrf } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
+import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
 import { parseAndValidateJson } from "../validation.js";
 
 const BranchRequestSchema = Type.Object({
@@ -9,6 +11,8 @@ const BranchRequestSchema = Type.Object({
 	messageIndex: Type.Optional(Type.Integer({ minimum: 0 })),
 	userMessageNumber: Type.Optional(Type.Integer({ minimum: 1 })),
 });
+
+type BranchRequestInput = Static<typeof BranchRequestSchema>;
 
 function assertSessionId(sessionId: string): void {
 	if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) {
@@ -42,6 +46,7 @@ export async function handleBranch(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
 		const url = new URL(
 			req.url || "/api/branch",
 			`http://${req.headers.host || "localhost"}`,
@@ -62,6 +67,16 @@ export async function handleBranch(
 				}
 
 				assertSessionId(sessionId);
+				const rate = checkSessionRateLimit(sessionId);
+				if (!rate.allowed) {
+					sendJson(
+						res,
+						429,
+						{ error: "Too many branch requests" },
+						corsHeaders,
+					);
+					return;
+				}
 
 				const sessionManager = new SessionManager(false);
 				const sessionFile = sessionManager.getSessionFileById(sessionId);
@@ -112,9 +127,19 @@ export async function handleBranch(
 	}
 
 	if (req.method === "POST") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!requireCsrf(req, res, corsHeaders)) return;
 		try {
-			const data = await parseAndValidateJson(req, BranchRequestSchema);
+			const data = await parseAndValidateJson<BranchRequestInput>(
+				req,
+				BranchRequestSchema,
+			);
 			assertSessionId(data.sessionId);
+			const rate = checkSessionRateLimit(data.sessionId);
+			if (!rate.allowed) {
+				sendJson(res, 429, { error: "Too many branch requests" }, corsHeaders);
+				return;
+			}
 
 			const sessionManager = new SessionManager(false);
 			const sessionFile = sessionManager.getSessionFileById(data.sessionId);

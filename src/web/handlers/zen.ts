@@ -1,10 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadUiState, saveUiState } from "../../tui/ui-state.js";
+import { requireApiAuth, requireCsrf } from "../authz.js";
 import {
 	readJsonBody,
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
+import { loadZenState, saveZenState } from "../stores/zen-store.js";
+import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
 
 const sessionZenState = new Map<string, boolean>();
 const DEFAULT_SESSION_KEY = "default";
@@ -21,6 +24,7 @@ export async function handleZen(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
 		try {
 			const url = new URL(
 				req.url || "/api/zen",
@@ -37,8 +41,18 @@ export async function handleZen(
 				return;
 			}
 			const sessionKey = getSessionKey(sessionId);
+			const rate = checkSessionRateLimit(sessionKey);
+			if (!rate.allowed) {
+				sendJson(res, 429, { error: "Too many zen requests" }, corsHeaders);
+				return;
+			}
 			const state = loadUiState();
-			const enabled = sessionZenState.get(sessionKey) ?? state.zenMode ?? false;
+			const persisted = loadZenState();
+			const enabled =
+				sessionZenState.get(sessionKey) ??
+				persisted[sessionKey] ??
+				state.zenMode ??
+				false;
 			sendJson(res, 200, { enabled }, corsHeaders);
 		} catch (error) {
 			respondWithApiError(res, error, 500, corsHeaders, req);
@@ -47,6 +61,8 @@ export async function handleZen(
 	}
 
 	if (req.method === "POST") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!requireCsrf(req, res, corsHeaders)) return;
 		try {
 			const url = new URL(
 				req.url || "/api/zen",
@@ -65,11 +81,17 @@ export async function handleZen(
 			const sessionKey = getSessionKey(sessionId);
 			const data = await readJsonBody<{ enabled?: boolean }>(req);
 			const currentState = loadUiState();
+			const persisted = loadZenState();
 			const currentValue =
-				sessionZenState.get(sessionKey) ?? currentState.zenMode ?? false;
+				sessionZenState.get(sessionKey) ??
+				persisted[sessionKey] ??
+				currentState.zenMode ??
+				false;
 			const newEnabled =
 				typeof data.enabled === "boolean" ? data.enabled : !currentValue;
 			sessionZenState.set(sessionKey, newEnabled);
+			const nextPersisted = { ...persisted, [sessionKey]: newEnabled };
+			saveZenState(nextPersisted);
 			if (sessionKey === DEFAULT_SESSION_KEY) {
 				saveUiState({ zenMode: newEnabled });
 			}

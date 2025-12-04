@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadUiState, saveUiState } from "../../tui/ui-state.js";
+import { requireApiAuth, requireCsrf } from "../authz.js";
 import {
 	readJsonBody,
 	respondWithApiError,
@@ -32,6 +33,7 @@ export async function handleUI(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
 		const url = new URL(
 			req.url || "/api/ui",
 			`http://${req.headers.host || "localhost"}`,
@@ -78,6 +80,8 @@ export async function handleUI(
 	}
 
 	if (req.method === "POST") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!requireCsrf(req, res, corsHeaders)) return;
 		try {
 			const data = await readJsonBody<{
 				action: string;

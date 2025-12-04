@@ -44,24 +44,27 @@ function normalizeState(raw: unknown): QueueStateFile {
 		const state = v as Partial<QueueSessionState>;
 		const mode =
 			state.mode === "one" || state.mode === "all" ? state.mode : "all";
-		const pending = Array.isArray(state.pending)
-			? state.pending
-					.map((p) => ({
-						id:
-							typeof (p as { id?: unknown }).id === "number"
-								? (p as { id: number }).id
-								: undefined,
-						text:
-							typeof (p as { text?: unknown }).text === "string"
-								? (p as { text: string }).text
-								: undefined,
-						createdAt:
-							typeof (p as { createdAt?: unknown }).createdAt === "number"
-								? (p as { createdAt: number }).createdAt
-								: undefined,
-					}))
-					.filter((p) => typeof p.id === "number")
-			: [];
+		const pending: QueuedPrompt[] = [];
+		if (Array.isArray(state.pending)) {
+			for (const p of state.pending) {
+				const id =
+					typeof (p as { id?: unknown }).id === "number"
+						? (p as { id: number }).id
+						: null;
+				if (id === null) continue;
+				pending.push({
+					id,
+					text:
+						typeof (p as { text?: unknown }).text === "string"
+							? (p as { text: string }).text
+							: undefined,
+					createdAt:
+						typeof (p as { createdAt?: unknown }).createdAt === "number"
+							? (p as { createdAt: number }).createdAt
+							: undefined,
+				});
+			}
+		}
 		result[key] = { mode, pending };
 	}
 	const entries = Object.entries(result);

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadUiState, saveUiState } from "../../tui/ui-state.js";
+import { requireApiAuth, requireCsrf } from "../authz.js";
 import {
 	readJsonBody,
 	respondWithApiError,
@@ -10,6 +11,7 @@ import {
 	loadQueueState,
 	saveQueueState,
 } from "../stores/queue-store.js";
+import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
 
 const MAX_QUEUE_ITEMS = 50;
 
@@ -37,6 +39,7 @@ export async function handleQueue(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
 		const url = new URL(
 			req.url || "/api/queue",
 			`http://${req.headers.host || "localhost"}`,
@@ -56,6 +59,16 @@ export async function handleQueue(
 
 		try {
 			assertSessionId(sessionId);
+			const rate = checkSessionRateLimit(sessionId);
+			if (!rate.allowed) {
+				sendJson(
+					res,
+					429,
+					{ error: "Too many requests for this session" },
+					corsHeaders,
+				);
+				return;
+			}
 			const queueState = getQueueState(sessionId);
 			if (action === "list") {
 				sendJson(
@@ -94,6 +107,8 @@ export async function handleQueue(
 	}
 
 	if (req.method === "POST") {
+		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!requireCsrf(req, res, corsHeaders)) return;
 		try {
 			const data = await readJsonBody<{
 				action: string;
@@ -108,6 +123,16 @@ export async function handleQueue(
 			}
 
 			assertSessionId(data.sessionId);
+			const rate = checkSessionRateLimit(data.sessionId);
+			if (!rate.allowed) {
+				sendJson(
+					res,
+					429,
+					{ error: "Too many requests for this session" },
+					corsHeaders,
+				);
+				return;
+			}
 
 			const queueState = getQueueState(data.sessionId);
 
