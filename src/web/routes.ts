@@ -9,8 +9,14 @@ import { handleCommandPrefs } from "./handlers/command-prefs.js";
 import { handleCommands } from "./handlers/commands.js";
 import { handleConfig } from "./handlers/config.js";
 import { handleFiles } from "./handlers/files.js";
+import {
+	handleGuardianConfig,
+	handleGuardianRun,
+	handleGuardianStatus,
+} from "./handlers/guardian.js";
 import { handleReadyz } from "./handlers/health.js";
 import { handleModel, handleModels } from "./handlers/models.js";
+import { handlePlan } from "./handlers/plan.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
 import {
 	handleSessionExport,
@@ -115,6 +121,31 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/config",
 			handler: (req, res) => handleConfig(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/guardian/status",
+			handler: (req, res) => handleGuardianStatus(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/guardian/run",
+			handler: (req, res) => handleGuardianRun(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/guardian/config",
+			handler: (req, res) => handleGuardianConfig(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/plan",
+			handler: (req, res) => handlePlan(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/plan",
+			handler: (req, res) => handlePlan(req, res, corsHeaders),
 		},
 		{
 			method: "GET",

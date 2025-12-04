@@ -15,11 +15,20 @@ import {
 	ActionApprovalService,
 	type ApprovalMode,
 } from "./agent/action-approval.js";
+import {
+	BackgroundTaskContextSource,
+	FrameworkPreferenceContextSource,
+	IDEContextSource,
+	LspContextSource,
+	TodoContextSource,
+} from "./agent/context-providers.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
 import type { ThinkingLevel } from "./agent/types.js";
 import { buildSystemPrompt } from "./cli/system-prompt.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
 import { loadEnv } from "./load-env.js";
+import { loadMcpConfig, mcpManager } from "./mcp/index.js";
+import { getAllMcpTools } from "./mcp/tool-bridge.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
 	getFactoryDefaultModelSelection,
@@ -349,9 +358,10 @@ async function createAgent(
 
 	// Only include vscodeTools if a client is connected (indicated by includeClientTools)
 	// Without a connected VS Code client, these tools will hang waiting for responses
+	const mcpTools = getAllMcpTools();
 	const tools = options?.includeClientTools
-		? [...codingTools, ...vscodeTools]
-		: codingTools;
+		? [...codingTools, ...vscodeTools, ...mcpTools]
+		: [...codingTools, ...mcpTools];
 
 	const agent = new Agent({
 		transport,
@@ -363,6 +373,13 @@ async function createAgent(
 			sandboxMode: process.env.COMPOSER_SANDBOX ?? null,
 			sandboxEnabled: Boolean(process.env.COMPOSER_SANDBOX),
 		},
+		contextSources: [
+			new TodoContextSource(),
+			new BackgroundTaskContextSource(),
+			new LspContextSource(),
+			new FrameworkPreferenceContextSource(),
+			new IDEContextSource(),
+		],
 	});
 
 	return agent;
@@ -559,6 +576,29 @@ export async function startWebServer(port = 8080) {
 	registerCrashHandlers();
 	await reloadModelConfig();
 	await initLifecycle();
+
+	// Initialize MCP servers
+	try {
+		const mcpConfig = loadMcpConfig(process.cwd(), { includeEnvLimits: true });
+		if (mcpConfig.servers.length > 0) {
+			logger.info("Initializing MCP servers...");
+
+			// Listen for connection events
+			mcpManager.on("connected", (event) => {
+				logger.info(`MCP server connected: ${event.name}`);
+			});
+
+			mcpManager.on("disconnected", (event) => {
+				logger.info(`MCP server disconnected: ${event.name}`);
+			});
+
+			await mcpManager.configure(mcpConfig);
+		}
+	} catch (error) {
+		logger.warn("Failed to initialize MCP servers", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
 
 	if (REQUIRE_WEB_API_KEY && !WEB_API_KEY) {
 		throw new Error(
