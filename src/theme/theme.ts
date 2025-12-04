@@ -13,6 +13,13 @@ import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@evalops/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import chalk from "chalk";
+import {
+	type ColorMode,
+	bgAnsi,
+	detectColorMode,
+	fgAnsi,
+	resolveThemeColors,
+} from "./color-utils.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -396,107 +403,6 @@ export type ThemeBg =
 	| "toolPendingBg"
 	| "toolSuccessBg"
 	| "toolErrorBg";
-
-type ColorMode = "truecolor" | "256color";
-
-// ============================================================================
-// Color Utilities
-// ============================================================================
-
-function detectColorMode(): ColorMode {
-	const colorterm = process.env.COLORTERM;
-	if (colorterm === "truecolor" || colorterm === "24bit") {
-		return "truecolor";
-	}
-	const term = process.env.TERM || "";
-	if (term.includes("256color")) {
-		return "256color";
-	}
-	return "256color";
-}
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-	const cleaned = hex.replace("#", "");
-	if (cleaned.length !== 6) {
-		throw new Error(`Invalid hex color: ${hex}`);
-	}
-	const r = Number.parseInt(cleaned.substring(0, 2), 16);
-	const g = Number.parseInt(cleaned.substring(2, 4), 16);
-	const b = Number.parseInt(cleaned.substring(4, 6), 16);
-	if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
-		throw new Error(`Invalid hex color: ${hex}`);
-	}
-	return { r, g, b };
-}
-
-function rgbTo256(r: number, g: number, b: number): number {
-	const rIndex = Math.round((r / 255) * 5);
-	const gIndex = Math.round((g / 255) * 5);
-	const bIndex = Math.round((b / 255) * 5);
-	return 16 + 36 * rIndex + 6 * gIndex + bIndex;
-}
-
-function hexTo256(hex: string): number {
-	const { r, g, b } = hexToRgb(hex);
-	return rgbTo256(r, g, b);
-}
-
-function fgAnsi(color: string | number, mode: ColorMode): string {
-	if (color === "") return "\x1b[39m";
-	if (typeof color === "number") return `\x1b[38;5;${color}m`;
-	if (color.startsWith("#")) {
-		if (mode === "truecolor") {
-			const { r, g, b } = hexToRgb(color);
-			return `\x1b[38;2;${r};${g};${b}m`;
-		}
-		const index = hexTo256(color);
-		return `\x1b[38;5;${index}m`;
-	}
-	throw new Error(`Invalid color value: ${color}`);
-}
-
-function bgAnsi(color: string | number, mode: ColorMode): string {
-	if (color === "") return "\x1b[49m";
-	if (typeof color === "number") return `\x1b[48;5;${color}m`;
-	if (color.startsWith("#")) {
-		if (mode === "truecolor") {
-			const { r, g, b } = hexToRgb(color);
-			return `\x1b[48;2;${r};${g};${b}m`;
-		}
-		const index = hexTo256(color);
-		return `\x1b[48;5;${index}m`;
-	}
-	throw new Error(`Invalid color value: ${color}`);
-}
-
-function resolveVarRefs(
-	value: ColorValue,
-	vars: Record<string, ColorValue>,
-	visited = new Set<string>(),
-): string | number {
-	if (typeof value === "number" || value === "" || value.startsWith("#")) {
-		return value;
-	}
-	if (visited.has(value)) {
-		throw new Error(`Circular variable reference detected: ${value}`);
-	}
-	if (!(value in vars)) {
-		throw new Error(`Variable reference not found: ${value}`);
-	}
-	visited.add(value);
-	return resolveVarRefs(vars[value], vars, visited);
-}
-
-function resolveThemeColors<T extends Record<string, ColorValue>>(
-	colors: T,
-	vars: Record<string, ColorValue> = {},
-): Record<keyof T, string | number> {
-	const resolved: Record<string, string | number> = {};
-	for (const [key, value] of Object.entries(colors)) {
-		resolved[key] = resolveVarRefs(value, vars);
-	}
-	return resolved as Record<keyof T, string | number>;
-}
 
 // ============================================================================
 // Theme Class
