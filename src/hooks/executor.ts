@@ -6,6 +6,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { createConcurrencySlotsFromEnv } from "../utils/concurrency-slots.js";
 import { createLogger } from "../utils/logger.js";
 import { getMatchingHooks, loadHookConfiguration } from "./config.js";
 import { parseHookOutput } from "./output.js";
@@ -25,32 +26,26 @@ import { isAsyncHookResponse } from "./types.js";
 const logger = createLogger("hooks:executor");
 
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // 60 seconds
-const HOOK_MAX_CONCURRENCY =
-	Number.parseInt(process.env.COMPOSER_HOOKS_MAX_CONCURRENCY ?? "0", 10) || 0;
 
-let activeHookSlots = 0;
-const hookWaiters: Array<() => void> = [];
+const hookSlots = createConcurrencySlotsFromEnv(
+	"COMPOSER_HOOKS_MAX_CONCURRENCY",
+	0,
+);
 
 async function acquireHookSlot(): Promise<void> {
-	if (HOOK_MAX_CONCURRENCY <= 0) return;
-	if (activeHookSlots < HOOK_MAX_CONCURRENCY) {
-		activeHookSlots += 1;
-		return;
+	const snapshot = hookSlots.getSnapshot();
+	if (hookSlots.isEnabled() && snapshot.active >= snapshot.max) {
+		logger.debug("Hook concurrency limit reached; waiting for slot", {
+			max: snapshot.max,
+			active: snapshot.active,
+			queued: snapshot.queued + 1,
+		});
 	}
-	logger.debug("Hook concurrency limit reached; waiting for slot", {
-		max: HOOK_MAX_CONCURRENCY,
-		active: activeHookSlots,
-		queued: hookWaiters.length + 1,
-	});
-	await new Promise<void>((resolve) => hookWaiters.push(resolve));
-	activeHookSlots += 1;
+	await hookSlots.acquire();
 }
 
 function releaseHookSlot(): void {
-	if (HOOK_MAX_CONCURRENCY <= 0) return;
-	activeHookSlots = Math.max(0, activeHookSlots - 1);
-	const next = hookWaiters.shift();
-	if (next) next();
+	hookSlots.release();
 }
 
 export function getHookConcurrencySnapshot(): {
@@ -58,11 +53,7 @@ export function getHookConcurrencySnapshot(): {
 	active: number;
 	queued: number;
 } {
-	return {
-		max: HOOK_MAX_CONCURRENCY,
-		active: activeHookSlots,
-		queued: hookWaiters.length,
-	};
+	return hookSlots.getSnapshot();
 }
 
 /**
