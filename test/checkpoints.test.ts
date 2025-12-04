@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type Checkpoint,
 	type CheckpointConfig,
+	type CheckpointEvent,
 	type CheckpointStore,
 	DEFAULT_CHECKPOINT_CONFIG,
 	type FileSnapshot,
@@ -149,8 +150,7 @@ describe("Checkpoint System", () => {
 				const filePath = join(tempDir, "test.txt");
 				writeFileSync(filePath, "content", "utf-8");
 
-				let emittedEvent: { type: string; checkpoint?: Checkpoint } | null =
-					null;
+				let emittedEvent: CheckpointEvent | null = null;
 				store.addEventListener((event) => {
 					emittedEvent = event as { type: string; checkpoint?: Checkpoint };
 				});

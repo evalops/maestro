@@ -25,6 +25,8 @@ export interface SessionHeaderEntry extends BaseSessionEntry {
 	thinkingLevel: string;
 	systemPrompt?: string;
 	tools?: SessionToolInfo[];
+	/** Path to parent session file if this session was branched */
+	branchedFrom?: string;
 }
 
 export interface SessionToolInfo {
@@ -70,6 +72,27 @@ export interface SessionMetaEntry extends BaseSessionEntry {
 }
 
 /**
+ * Compaction entry recording when context was compacted.
+ *
+ * When context window usage approaches limits, older messages are summarized
+ * and this entry records the compaction event. The session loader uses this
+ * to reconstruct the conversation with the summary replacing compacted messages.
+ */
+export interface CompactionEntry extends BaseSessionEntry {
+	type: "compaction";
+	/** Generated summary of the compacted messages */
+	summary: string;
+	/** Index of the first entry to keep (entries before this were summarized) */
+	firstKeptEntryIndex: number;
+	/** Token count before compaction (for metrics/debugging) */
+	tokensBefore: number;
+	/** Whether this was auto-triggered vs manual /compact command */
+	auto?: boolean;
+	/** Custom instructions provided to focus the summary (if any) */
+	customInstructions?: string;
+}
+
+/**
  * Union type of all possible session entry types
  */
 export type SessionEntry =
@@ -77,7 +100,8 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
-	| SessionMetaEntry;
+	| SessionMetaEntry
+	| CompactionEntry;
 
 /**
  * Type guard to check if an entry is a session header
@@ -153,6 +177,22 @@ export function isSessionMetaEntry(entry: unknown): entry is SessionMetaEntry {
 }
 
 /**
+ * Type guard to check if an entry is a compaction event
+ */
+export function isCompactionEntry(entry: unknown): entry is CompactionEntry {
+	return (
+		typeof entry === "object" &&
+		entry !== null &&
+		"type" in entry &&
+		entry.type === "compaction" &&
+		"summary" in entry &&
+		typeof (entry as CompactionEntry).summary === "string" &&
+		"firstKeptEntryIndex" in entry &&
+		typeof (entry as CompactionEntry).firstKeptEntryIndex === "number"
+	);
+}
+
+/**
  * Parse a JSONL line into a typed session entry
  * @throws {SessionParseError} if the line is invalid JSON or doesn't match any entry type
  */
@@ -165,6 +205,7 @@ export function parseSessionEntry(line: string): SessionEntry {
 		if (isThinkingLevelChangeEntry(parsed)) return parsed;
 		if (isModelChangeEntry(parsed)) return parsed;
 		if (isSessionMetaEntry(parsed)) return parsed;
+		if (isCompactionEntry(parsed)) return parsed;
 
 		throw new SessionParseError(
 			`Unknown entry type: ${typeof parsed === "object" && parsed !== null && "type" in parsed ? (parsed as { type: unknown }).type : "unknown"}`,

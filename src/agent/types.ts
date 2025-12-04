@@ -370,6 +370,22 @@ export type AgentEvent =
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
+	  }
+	| {
+			/** Emitted when context is compacted (older messages summarized) */
+			type: "compaction";
+			/** Generated summary of compacted messages */
+			summary: string;
+			/** Index of first entry to keep (entries before were summarized) */
+			firstKeptEntryIndex: number;
+			/** Token count before compaction */
+			tokensBefore: number;
+			/** Whether this was auto-triggered vs manual /compact */
+			auto?: boolean;
+			/** Custom instructions used for summarization */
+			customInstructions?: string;
+			/** Timestamp of compaction */
+			timestamp: string;
 	  };
 
 export interface QueuedMessage<TOriginal = AppMessage> {

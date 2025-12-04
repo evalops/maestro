@@ -793,11 +793,33 @@ export function createCommandRegistry({
 			{
 				name: "compact",
 				description: "Summarize older messages to reclaim context",
-				usage: "/compact",
+				usage: "/compact [custom instructions]",
 				tags: ["planning"],
+				examples: [
+					"/compact",
+					"/compact Focus on the API changes",
+					"/compact Emphasize database migrations",
+				],
 			},
-			equals("compact"),
+			withArgs("compact"),
 			handlers.compact,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "autocompact",
+				description: "Toggle or configure auto-compaction",
+				usage: "/autocompact [on|off|status]",
+				tags: ["planning"],
+				examples: [
+					"/autocompact",
+					"/autocompact on",
+					"/autocompact off",
+					"/autocompact status",
+				],
+			},
+			withArgs("autocompact"),
+			handlers.autocompact,
 			createContext,
 		),
 		buildEntry(

@@ -971,7 +971,15 @@ export class TuiRenderer {
 			handleDiagnostics: (context) =>
 				this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
 			handleBackground: (context) => this.handleBackgroundCommand(context),
-			handleCompact: (_context) => this.handleCompactCommand(),
+			handleCompact: (context) => {
+				// Extract custom instructions from rawInput (e.g., "/compact Focus on API changes")
+				const customInstructions = context.rawInput
+					.replace(/^\/compact\s*/i, "")
+					.trim();
+				return this.handleCompactCommand(customInstructions || undefined);
+			},
+			handleAutocompact: (context) =>
+				this.handleAutocompactCommand(context.rawInput),
 			handleFooter: (context) => this.handleFooterCommand(context),
 			handleCompactTools: (context) =>
 				this.handleCompactToolsCommand(context.rawInput),
@@ -1562,17 +1570,49 @@ export class TuiRenderer {
 		}
 	}
 
-	private async handleCompactCommand(): Promise<void> {
+	private async handleCompactCommand(
+		customInstructions?: string,
+	): Promise<void> {
 		if (this.compactionInProgress) {
 			this.notificationView.showInfo("Already compacting history…");
 			return;
 		}
 		const beforeStats = calculateFooterStats(this.agent.state);
 		const compacted = await this.runCompactionTask(() =>
-			this.conversationCompactor.compactHistory(),
+			this.conversationCompactor.compactHistory({
+				customInstructions,
+				auto: false,
+			}),
 		);
 		if (compacted) {
 			this.recordCompactionDelta(beforeStats, "manual");
+		}
+	}
+
+	private handleAutocompactCommand(rawInput: string): void {
+		const parts = rawInput.trim().split(/\s+/);
+		const arg = parts[1]?.toLowerCase();
+
+		if (arg === "on" || arg === "true" || arg === "enable") {
+			this.conversationCompactor.updateSettings({ enabled: true });
+			this.notificationView.showInfo("Auto-compaction enabled.");
+		} else if (arg === "off" || arg === "false" || arg === "disable") {
+			this.conversationCompactor.updateSettings({ enabled: false });
+			this.notificationView.showInfo("Auto-compaction disabled.");
+		} else if (arg === "status" || !arg) {
+			const enabled = this.conversationCompactor.isAutoCompactionEnabled();
+			const settings = this.conversationCompactor.getSettings();
+			this.notificationView.showInfo(
+				`Auto-compaction: ${enabled ? "enabled" : "disabled"}\n` +
+					`Reserve tokens: ${settings.reserveTokens}\n` +
+					`Keep recent tokens: ${settings.keepRecentTokens}`,
+			);
+		} else {
+			// Toggle
+			const newState = this.conversationCompactor.toggleAutoCompaction();
+			this.notificationView.showInfo(
+				`Auto-compaction ${newState ? "enabled" : "disabled"}.`,
+			);
 		}
 	}
 

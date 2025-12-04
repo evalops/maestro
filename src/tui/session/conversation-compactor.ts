@@ -1,16 +1,24 @@
 import type { Container, TUI } from "@evalops/tui";
 import type { Agent } from "../../agent/agent.js";
+import {
+	type CompactionSettings,
+	DEFAULT_COMPACTION_SETTINGS,
+	adjustBoundaryForToolResults,
+	buildLocalSummary,
+	buildSummarizationPrompt,
+	calculateContextTokens,
+	decorateSummaryText,
+	findCutPoint,
+	findPreviousSummary,
+	getLastAssistantUsage,
+} from "../../agent/compaction.js";
 import type {
 	AppMessage,
 	AssistantMessage,
 	Message,
 } from "../../agent/types.js";
 import {
-	buildConversationModel,
 	createRenderableMessage,
-	isRenderableAssistantMessage,
-	isRenderableToolResultMessage,
-	isRenderableUserMessage,
 	renderMessageToPlainText,
 } from "../../conversation/render-model.js";
 import type { SessionManager } from "../../session/manager.js";
@@ -32,12 +40,63 @@ interface ConversationCompactorOptions {
 	showInfoMessage: (message: string) => void;
 }
 
+/**
+ * Options for compactHistory operation.
+ */
+export interface CompactHistoryOptions {
+	/** Custom instructions to focus the summary (e.g., "Focus on database changes") */
+	customInstructions?: string;
+	/** Whether this is an auto-triggered compaction (vs manual /compact) */
+	auto?: boolean;
+}
+
 export class ConversationCompactor {
+	private settings: CompactionSettings = { ...DEFAULT_COMPACTION_SETTINGS };
+
 	constructor(private readonly options: ConversationCompactorOptions) {}
 
-	async compactHistory(): Promise<void> {
+	/**
+	 * Get current compaction settings.
+	 */
+	getSettings(): CompactionSettings {
+		return { ...this.settings };
+	}
+
+	/**
+	 * Update compaction settings.
+	 */
+	updateSettings(updates: Partial<CompactionSettings>): void {
+		this.settings = { ...this.settings, ...updates };
+	}
+
+	/**
+	 * Toggle auto-compaction on/off.
+	 * @returns The new enabled state
+	 */
+	toggleAutoCompaction(): boolean {
+		this.settings.enabled = !this.settings.enabled;
+		return this.settings.enabled;
+	}
+
+	/**
+	 * Check if auto-compaction is enabled.
+	 */
+	isAutoCompactionEnabled(): boolean {
+		return this.settings.enabled;
+	}
+
+	/**
+	 * Compact conversation history by summarizing older messages.
+	 *
+	 * Uses token-based cut point detection to determine how much to keep,
+	 * preserves turn integrity, and supports cascading summaries.
+	 *
+	 * @param options - Optional configuration for this compaction
+	 */
+	async compactHistory(options?: CompactHistoryOptions): Promise<void> {
 		const messages = [...this.options.agent.state.messages];
 		const keepCount = 6;
+
 		if (messages.length <= keepCount + 1) {
 			this.options.showInfoMessage(
 				"Not enough history to compact. Keep chatting!",
@@ -45,38 +104,65 @@ export class ConversationCompactor {
 			return;
 		}
 
+		// Calculate boundary using token-based cut point detection
 		let boundary = Math.max(0, messages.length - keepCount);
-		boundary = this.adjustBoundaryForToolResults(
-			messages as Message[],
-			boundary,
-		);
+
+		// Use token-based cut point if we have usage data
+		const lastUsage = getLastAssistantUsage(messages);
+		if (lastUsage) {
+			const tokenBasedCut = findCutPoint(
+				messages,
+				0,
+				messages.length,
+				this.settings.keepRecentTokens,
+			);
+			// Use the more conservative of the two (keep more messages)
+			boundary = Math.max(boundary, tokenBasedCut);
+		}
+
+		// Adjust for tool result integrity
+		boundary = adjustBoundaryForToolResults(messages, boundary);
+
 		const older = messages.slice(0, boundary);
 		if (!older.length) {
 			this.options.showInfoMessage("No earlier messages to compact.");
 			return;
 		}
 
+		// Look for previous compaction summary (cascading summaries)
+		const previousSummary = findPreviousSummary(messages);
+
+		// Prepare messages for summarization
+		const summaryInput: Message[] = [];
+		if (previousSummary) {
+			// Include previous summary as context for cascading
+			summaryInput.push({
+				role: "user",
+				content: `Previous session summary:\n${previousSummary}`,
+				timestamp: Date.now(),
+			});
+		}
 		const sliceSize = Math.min(40, older.length);
-		const summaryInput = older.slice(-sliceSize) as Message[];
+		summaryInput.push(...(older.slice(-sliceSize) as Message[]));
+
 		this.options.footer.setHint("Summarizing history…");
 		let summaryMessage: AssistantMessage | null = null;
 		let usedModel = false;
+		let summaryText = "";
+
 		try {
-			const prompt = this.buildSummarizationPrompt(summaryInput.length);
+			const prompt = buildSummarizationPrompt(options?.customInstructions);
 			const summary = await this.options.agent.generateSummary(
 				summaryInput,
 				prompt,
-				this.buildSummarizationSystemPrompt(),
+				"You are a careful note-taker that distills coding conversations into actionable summaries.",
 			);
 			const summaryRenderable = createRenderableMessage(summary as AppMessage);
 			const llmText = summaryRenderable
 				? renderMessageToPlainText(summaryRenderable).trim()
 				: "";
-			const decorated = this.decorateSummaryText(
-				llmText || this.buildCompactSummary(summaryInput),
-				older.length,
-				true,
-			);
+			summaryText = llmText || buildLocalSummary(older as AppMessage[], 32);
+			const decorated = decorateSummaryText(summaryText, older.length, true);
 			summaryMessage = {
 				...summary,
 				content: [{ type: "text", text: decorated }],
@@ -92,8 +178,9 @@ export class ConversationCompactor {
 		}
 
 		if (!summaryMessage) {
-			const fallbackText = this.decorateSummaryText(
-				this.buildCompactSummary(older),
+			summaryText = buildLocalSummary(older as AppMessage[], 32);
+			const fallbackText = decorateSummaryText(
+				summaryText,
 				older.length,
 				false,
 			);
@@ -114,6 +201,20 @@ export class ConversationCompactor {
 				timestamp: Date.now(),
 			};
 		}
+
+		// Calculate token count before compaction for metrics
+		const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
+
+		// Save compaction entry to session (for history reconstruction)
+		this.options.sessionManager.saveCompaction(
+			summaryText,
+			boundary,
+			tokensBefore,
+			{
+				auto: options?.auto,
+				customInstructions: options?.customInstructions,
+			},
+		);
 
 		const resumeMessage: AppMessage = {
 			role: "user",
@@ -139,111 +240,5 @@ export class ConversationCompactor {
 				? `Compacted ${older.length} messages via model summary.`
 				: `Compacted ${older.length} messages with a local summary.`,
 		);
-	}
-
-	private buildCompactSummary(messages: Message[]): string {
-		const lines: string[] = [];
-		let exchange = 1;
-		const renderables = buildConversationModel(messages as AppMessage[]);
-		for (const renderable of renderables) {
-			const text = renderMessageToPlainText(renderable).trim();
-			if (!text) continue;
-			const truncated = this.truncateText(text, 180);
-			if (isRenderableUserMessage(renderable)) {
-				lines.push(`• User ${exchange}: ${truncated}`);
-			} else if (isRenderableAssistantMessage(renderable)) {
-				lines.push(`  ↳ Assistant: ${truncated}`);
-				exchange += 1;
-			} else if (isRenderableToolResultMessage(renderable)) {
-				lines.push(
-					`  ↳ Tool ${renderable.toolName}: ${this.truncateText(
-						renderMessageToPlainText(renderable),
-						160,
-					)}`,
-				);
-			}
-			if (lines.length >= 32) break;
-		}
-		if (!lines.length) {
-			return "(conversation summary placeholder: no textual content to compact)";
-		}
-		return `Conversation summary generated at ${new Date().toLocaleString()}\n${lines.join("\n")}`;
-	}
-
-	private buildSummarizationPrompt(messageCount: number): string {
-		return `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
-
-Include:
-- Current progress and key decisions made
-- Important context, constraints, or user preferences
-- What remains to be done (clear next steps)
-- Any critical data, examples, or references needed to continue
-
-Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`;
-	}
-
-	private buildSummarizationSystemPrompt(): string {
-		return "You are a careful note-taker that distills coding conversations into actionable summaries.";
-	}
-
-	private decorateSummaryText(
-		text: string,
-		compactedCount: number,
-		fromModel: boolean,
-	): string {
-		// OAI-style handoff prefix that tells the resuming model it's continuing work
-		const handoffPrefix = fromModel
-			? "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:\n\n"
-			: "_Local summary of prior discussion (model unavailable)._\n\n";
-		return `${handoffPrefix}${text}\n\n(Compacted ${compactedCount} messages on ${new Date().toLocaleString()})`;
-	}
-
-	private truncateText(text: string, limit = 160): string {
-		if (text.length <= limit) return text;
-		return `${text.slice(0, limit - 1).trim()}…`;
-	}
-
-	private adjustBoundaryForToolResults(
-		messages: Message[],
-		boundary: number,
-	): number {
-		let adjusted = boundary;
-		const seenToolCalls = new Set<string>();
-		const missingToolCalls = new Set<string>();
-		// Tool executions in Composer always follow the pattern: assistant toolCall content
-		// followed by a separate toolResult message. We rely on that ordering when walking
-		// backwards from the boundary; if we encounter a toolResult whose toolCall was trimmed,
-		// we pull the boundary back until the originating assistant message is kept.
-		const processAssistantMessage = (message: Message) => {
-			if (message.role !== "assistant") return;
-			for (const part of message.content ?? []) {
-				if (part?.type === "toolCall") {
-					seenToolCalls.add(part.id);
-					if (missingToolCalls.has(part.id)) {
-						missingToolCalls.delete(part.id);
-					}
-				}
-			}
-		};
-		const processToolResultMessage = (message: Message) => {
-			if (message.role !== "toolResult") return;
-			if (!seenToolCalls.has(message.toolCallId)) {
-				missingToolCalls.add(message.toolCallId);
-			}
-		};
-
-		for (const message of messages.slice(adjusted)) {
-			processAssistantMessage(message);
-			processToolResultMessage(message);
-		}
-
-		while (missingToolCalls.size > 0 && adjusted > 0) {
-			adjusted -= 1;
-			const candidate = messages[adjusted];
-			processAssistantMessage(candidate);
-			processToolResultMessage(candidate);
-		}
-
-		return adjusted;
 	}
 }

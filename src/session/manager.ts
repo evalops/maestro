@@ -92,6 +92,7 @@ import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { createLogger } from "../utils/logger.js";
 import {
+	type CompactionEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionHeaderEntry,
@@ -466,6 +467,7 @@ export interface SessionModelMetadata {
 }
 
 export type {
+	CompactionEntry,
 	SessionHeaderEntry,
 	SessionMessageEntry,
 	SessionMetaEntry,
@@ -778,6 +780,59 @@ export class SessionManager {
 		this.queueEntry(entry);
 	}
 
+	/**
+	 * Save a compaction event to the session file.
+	 *
+	 * This records when context was compacted, including the generated summary
+	 * and metadata about the compaction. The session loader uses this to
+	 * reconstruct conversations with summaries replacing compacted messages.
+	 *
+	 * @param summary - Generated summary of compacted messages
+	 * @param firstKeptEntryIndex - Index of first entry to keep
+	 * @param tokensBefore - Token count before compaction
+	 * @param options - Additional options (auto, customInstructions)
+	 */
+	saveCompaction(
+		summary: string,
+		firstKeptEntryIndex: number,
+		tokensBefore: number,
+		options?: { auto?: boolean; customInstructions?: string },
+	): void {
+		if (!this.enabled) return;
+		const entry: CompactionEntry = {
+			type: "compaction",
+			timestamp: new Date().toISOString(),
+			summary,
+			firstKeptEntryIndex,
+			tokensBefore,
+			auto: options?.auto,
+			customInstructions: options?.customInstructions,
+		};
+
+		// Compaction entries are written directly (not queued) since they should
+		// persist immediately after the compaction operation completes
+		if (this.sessionInitialized) {
+			this.writer?.write(entry);
+			this.writer?.flushSync();
+		}
+	}
+
+	/**
+	 * Find the most recent compaction entry in the current session.
+	 *
+	 * @returns The most recent compaction entry or null if none exists
+	 */
+	findLatestCompaction(): CompactionEntry | null {
+		this.writer?.flushSync();
+		const entries = safeReadSessionEntries(this.sessionFile);
+		for (let i = entries.length - 1; i >= 0; i--) {
+			if (entries[i].type === "compaction") {
+				return entries[i] as CompactionEntry;
+			}
+		}
+		return null;
+	}
+
 	private getLatestPendingThinkingLevel(): string | undefined {
 		for (let i = this.pendingMessages.length - 1; i >= 0; i--) {
 			const entry = this.pendingMessages[i];
@@ -1033,7 +1088,7 @@ export class SessionManager {
 
 		// Use transactional write (temp file + atomic rename)
 		try {
-			// Write session header
+			// Write session header with branch source tracking
 			const modelKey = state.model
 				? `${state.model.provider}/${state.model.id}`
 				: "unknown/unknown";
@@ -1045,6 +1100,7 @@ export class SessionManager {
 				model: modelKey,
 				modelMetadata: this.lastModelMetadata,
 				thinkingLevel: state.thinkingLevel,
+				branchedFrom: this.sessionFile, // Track parent session for lineage
 			};
 			appendFileSync(tempFile, `${JSON.stringify(entry)}\n`);
 

@@ -51,6 +51,7 @@ export interface CommandHandlers {
 	diagnostics(context: CommandExecutionContext): void;
 	background(context: CommandExecutionContext): void;
 	compact(context: CommandExecutionContext): Promise<void> | void;
+	autocompact(context: CommandExecutionContext): void;
 	footer(context: CommandExecutionContext): void;
 	compactTools(context: CommandExecutionContext): void;
 	queue(context: CommandExecutionContext): Promise<void> | void;

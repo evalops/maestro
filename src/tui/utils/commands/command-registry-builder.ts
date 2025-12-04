@@ -53,6 +53,7 @@ interface CommandRegistryOptions {
 	handleDiagnostics: (context: CommandExecutionContext) => void | Promise<void>;
 	handleBackground: (context: CommandExecutionContext) => void;
 	handleCompact: (context: CommandExecutionContext) => void | Promise<void>;
+	handleAutocompact: (context: CommandExecutionContext) => void;
 	handleFooter: (context: CommandExecutionContext) => void | Promise<void>;
 	handleCompactTools: (
 		context: CommandExecutionContext,
@@ -143,6 +144,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			diagnostics: opts.handleDiagnostics,
 			background: opts.handleBackground,
 			compact: opts.handleCompact,
+			autocompact: opts.handleAutocompact,
 			footer: opts.handleFooter,
 			compactTools: opts.handleCompactTools,
 			commands: opts.handleCommands,
