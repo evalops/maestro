@@ -81,6 +81,10 @@ import type { ErrorObject } from "ajv";
 import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
 import { PolicyError, checkModelPolicy } from "../safety/policy.js";
+import {
+	substituteEnvVars,
+	substituteFileRefs,
+} from "../utils/config-substitution.js";
 import { parseJsonOr, safeJsonParse } from "../utils/json.js";
 import {
 	type ParseError as JsoncParseError,
@@ -442,79 +446,6 @@ function applyProviderLoader(
 }
 
 /**
- * Substitute environment variables in config text
- * Replaces {env:VAR_NAME} with the value of process.env.VAR_NAME
- */
-function substituteEnvVars(text: string): string {
-	return text.replace(/\{env:([^}]+)\}/g, (match, varName) => {
-		const value = process.env[varName];
-		if (value === undefined) {
-			logger.warn("Environment variable not set, using empty string", {
-				varName,
-			});
-			return "";
-		}
-		return value;
-	});
-}
-
-/**
- * Substitute file references in config text
- * Replaces {file:path} with the contents of the file
- * Supports relative paths (resolved from config directory) and absolute paths
- * Supports ~/path for home directory
- */
-function substituteFileRefs(text: string, configDir: string): string {
-	const lines = text.split("\n");
-	let result = "";
-
-	for (const line of lines) {
-		// Skip commented lines (don't process file refs in comments)
-		const trimmed = line.trim();
-		if (
-			trimmed.startsWith("//") ||
-			trimmed.startsWith("/*") ||
-			trimmed.startsWith("*")
-		) {
-			result += `${line}\n`;
-			continue;
-		}
-
-		let processedLine = line;
-		const matches = [...line.matchAll(/\{file:([^}]+)\}/g)];
-
-		for (const match of matches) {
-			let filePath = match[1];
-
-			// Handle home directory (~/)
-			if (filePath.startsWith("~/")) {
-				filePath = join(homedir(), filePath.slice(2));
-			}
-			// Handle relative paths
-			else if (!filePath.startsWith("/")) {
-				filePath = join(configDir, filePath);
-			}
-
-			try {
-				const fileContent = readFileSync(filePath, "utf-8").trim();
-				// Escape for JSON string (handle newlines, quotes, etc.)
-				const escaped = JSON.stringify(fileContent).slice(1, -1);
-				processedLine = processedLine.replace(match[0], escaped);
-			} catch (error) {
-				const errMsg = error instanceof Error ? error.message : String(error);
-				throw new Error(
-					`Failed to read file reference "${match[0]}" in config: ${filePath}\n${errMsg}`,
-				);
-			}
-		}
-
-		result += `${processedLine}\n`;
-	}
-
-	return result;
-}
-
-/**
  * Parse JSONC (JSON with comments) with helpful error messages
  */
 function parseJsoncWithErrors(text: string, filePath: string): unknown {
@@ -579,7 +510,7 @@ function loadConfigFile(path: string): CustomModelConfig | null {
 		let processed = substituteFileRefs(raw, configDir);
 
 		// Process environment variable substitution
-		processed = substituteEnvVars(processed);
+		processed = substituteEnvVars(processed, logger);
 
 		// Parse JSONC (supports comments and trailing commas)
 		const data = parseJsoncWithErrors(processed, path);
