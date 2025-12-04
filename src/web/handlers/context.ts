@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { SessionManager } from "../../session/manager.js";
-import { requireApiAuth } from "../authz.js";
+import { getAuthSubject, requireApiAuth } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
+import { redactPii } from "../utils/redact.js";
 import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
 import {
 	approximateTokensFromJson,
@@ -40,7 +41,9 @@ export async function handleContext(
 		}
 
 		assertSessionId(sessionId);
-		const rate = checkSessionRateLimit(sessionId);
+		const subject = getAuthSubject(req);
+		const sessionKey = `${subject}:${sessionId}`;
+		const rate = checkSessionRateLimit(sessionKey);
 		if (!rate.allowed) {
 			sendJson(res, 429, { error: "Too many context requests" }, corsHeaders);
 			return;
@@ -74,7 +77,9 @@ export async function handleContext(
 				index,
 				tokenEstimate: approximateTokensFromJson(msg),
 				snippet:
-					typeof msg.content === "string" ? msg.content.slice(0, 160) : "",
+					typeof msg.content === "string"
+						? redactPii(msg.content).slice(0, 160)
+						: "",
 			}),
 		);
 
