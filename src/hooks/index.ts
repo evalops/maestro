@@ -113,6 +113,8 @@ export {
 	createHookMessage,
 	getAsyncHookCount,
 	cleanupAsyncHooks,
+	getHookConcurrencySnapshot,
+	markAsyncHookCompleted,
 } from "./executor.js";
 
 // Output parsing exports

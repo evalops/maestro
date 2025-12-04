@@ -37,6 +37,11 @@ async function acquireHookSlot(): Promise<void> {
 		activeHookSlots += 1;
 		return;
 	}
+	logger.debug("Hook concurrency limit reached; waiting for slot", {
+		max: HOOK_MAX_CONCURRENCY,
+		active: activeHookSlots,
+		queued: hookWaiters.length + 1,
+	});
 	await new Promise<void>((resolve) => hookWaiters.push(resolve));
 	activeHookSlots += 1;
 }
@@ -46,6 +51,18 @@ function releaseHookSlot(): void {
 	activeHookSlots = Math.max(0, activeHookSlots - 1);
 	const next = hookWaiters.shift();
 	if (next) next();
+}
+
+export function getHookConcurrencySnapshot(): {
+	max: number;
+	active: number;
+	queued: number;
+} {
+	return {
+		max: HOOK_MAX_CONCURRENCY,
+		active: activeHookSlots,
+		queued: hookWaiters.length,
+	};
 }
 
 /**
@@ -645,6 +662,15 @@ export function hasHooksForEvent(
  */
 export function getAsyncHookCount(): number {
 	return asyncHookProcesses.size;
+}
+
+/**
+ * Mark an async hook as completed (for future async completion plumbing).
+ */
+export function markAsyncHookCompleted(processId: string): void {
+	if (asyncHookProcesses.delete(processId)) {
+		logger.debug("Async hook reported complete", { processId });
+	}
 }
 
 /**
