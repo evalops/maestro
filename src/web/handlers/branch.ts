@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
 import { SessionManager } from "../../session/manager.js";
-import { requireApiAuth, requireCsrf } from "../authz.js";
+import { getAuthSubject, requireApiAuth, requireCsrf } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
 import { parseAndValidateJson } from "../validation.js";
@@ -67,7 +67,9 @@ export async function handleBranch(
 				}
 
 				assertSessionId(sessionId);
-				const rate = checkSessionRateLimit(sessionId);
+				const subject = getAuthSubject(req);
+				const sessionKey = `${subject}:${sessionId}`;
+				const rate = checkSessionRateLimit(sessionKey);
 				if (!rate.allowed) {
 					sendJson(
 						res,
@@ -135,7 +137,9 @@ export async function handleBranch(
 				BranchRequestSchema,
 			);
 			assertSessionId(data.sessionId);
-			const rate = checkSessionRateLimit(data.sessionId);
+			const subject = getAuthSubject(req);
+			const sessionKey = `${subject}:${data.sessionId}`;
+			const rate = checkSessionRateLimit(sessionKey);
 			if (!rate.allowed) {
 				sendJson(res, 429, { error: "Too many branch requests" }, corsHeaders);
 				return;

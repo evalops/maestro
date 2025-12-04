@@ -24,6 +24,11 @@ const QUEUE_STATE_PATH =
 	join(homedir(), ".composer", "agent", "queue-state.json");
 
 const MAX_SESSIONS = 200;
+const MAX_AGE_MS =
+	Number.parseInt(
+		process.env.COMPOSER_QUEUE_MAX_AGE_MS || `${7 * 24 * 60 * 60 * 1000}`,
+		10,
+	) || 7 * 24 * 60 * 60 * 1000;
 const KEY_REGEX = /^[A-Za-z0-9._-]+$/;
 
 function sanitizeKey(key: string): string | null {
@@ -87,6 +92,15 @@ export function loadQueueState(): QueueStateFile {
 
 export function saveQueueState(state: QueueStateFile): void {
 	const normalized = normalizeState(state);
+	// Prune old pending items
+	const now = Date.now();
+	for (const session of Object.values(normalized.sessions)) {
+		if (!Array.isArray(session.pending)) continue;
+		session.pending = session.pending.filter((p) => {
+			if (!p.createdAt) return true;
+			return now - p.createdAt <= MAX_AGE_MS;
+		});
+	}
 	mkdirSync(dirname(QUEUE_STATE_PATH), { recursive: true });
 	writeFileSync(QUEUE_STATE_PATH, JSON.stringify(normalized, null, 2), "utf-8");
 }

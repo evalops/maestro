@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
 	authenticateRequest,
+	getRequestToken,
 	secureCompare,
 	sendJson,
 } from "./server-utils.js";
@@ -67,4 +69,12 @@ export function requireCsrf(
 		return false;
 	}
 	return true;
+}
+
+// Derive a stable subject key from provided token (API key) for per-user scoping
+export function getAuthSubject(req: IncomingMessage): string {
+	const token = getRequestToken(req);
+	if (!token) return "anon";
+	const digest = createHash("sha256").update(token).digest("hex");
+	return `key:${digest.slice(0, 16)}`;
 }

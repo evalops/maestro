@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadUiState, saveUiState } from "../../tui/ui-state.js";
-import { requireApiAuth, requireCsrf } from "../authz.js";
+import { getAuthSubject, requireApiAuth, requireCsrf } from "../authz.js";
 import {
 	readJsonBody,
 	respondWithApiError,
@@ -26,14 +26,14 @@ function assertSessionId(sessionId: string): void {
 	}
 }
 
-function getQueueState(sessionId: string) {
+function getQueueState(sessionKey: string) {
 	const uiState = loadUiState();
 	const webState = loadWebUiState();
-	const perSession = getSessionUiState(webState, sessionId);
+	const perSession = getSessionUiState(webState, sessionKey);
 	const state = loadQueueState();
 	const sessionState = getSessionQueue(
 		state,
-		sessionId,
+		sessionKey,
 		perSession.queueMode ?? uiState.queueMode ?? "all",
 	);
 	saveQueueState(state);
@@ -64,10 +64,11 @@ export async function handleQueue(
 			);
 			return;
 		}
-
+		const subject = getAuthSubject(req);
+		const sessionKey = `${subject}:${sessionId}`;
 		try {
 			assertSessionId(sessionId);
-			const rate = checkSessionRateLimit(sessionId);
+			const rate = checkSessionRateLimit(sessionKey);
 			if (!rate.allowed) {
 				sendJson(
 					res,
@@ -77,7 +78,7 @@ export async function handleQueue(
 				);
 				return;
 			}
-			const queueState = getQueueState(sessionId);
+			const queueState = getQueueState(sessionKey);
 			if (action === "list") {
 				sendJson(
 					res,
@@ -131,7 +132,9 @@ export async function handleQueue(
 			}
 
 			assertSessionId(data.sessionId);
-			const rate = checkSessionRateLimit(data.sessionId);
+			const subject = getAuthSubject(req);
+			const sessionKey = `${subject}:${data.sessionId}`;
+			const rate = checkSessionRateLimit(sessionKey);
 			if (!rate.allowed) {
 				sendJson(
 					res,
@@ -142,7 +145,7 @@ export async function handleQueue(
 				return;
 			}
 
-			const queueState = getQueueState(data.sessionId);
+			const queueState = getQueueState(sessionKey);
 
 			if (action === "mode" && data.mode) {
 				if (!["one", "all"].includes(data.mode)) {
