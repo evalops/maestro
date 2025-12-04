@@ -198,6 +198,9 @@ const packageJson = createRequire(import.meta.url)("../package.json") as {
 	version?: string;
 };
 const VERSION = packageJson.version ?? "unknown";
+let enterpriseCleanupRegistered = false;
+let checkpointCleanupRegistered = false;
+let sandboxCleanupRegistered = false;
 
 /**
  * Configuration options passed to the interactive TUI renderer.
@@ -488,18 +491,21 @@ export async function main(args: string[]) {
 
 		// Register cleanup handlers to properly end enterprise session on exit
 		// This ensures audit logs capture session termination
-		const cleanup = () => {
-			enterpriseContext.endSession();
-		};
-		process.once("beforeExit", cleanup);
-		process.once("SIGINT", () => {
-			cleanup();
-			process.exit(0);
-		});
-		process.once("SIGTERM", () => {
-			cleanup();
-			process.exit(0);
-		});
+		if (!enterpriseCleanupRegistered) {
+			const cleanup = () => {
+				enterpriseContext.endSession();
+			};
+			process.once("beforeExit", cleanup);
+			process.once("SIGINT", () => {
+				cleanup();
+				process.exit(0);
+			});
+			process.once("SIGTERM", () => {
+				cleanup();
+				process.exit(0);
+			});
+			enterpriseCleanupRegistered = true;
+		}
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -667,9 +673,12 @@ export async function main(args: string[]) {
 	// PreToolUse hooks capture file snapshots before tool execution
 	initCheckpointService(process.cwd());
 	const disposeCheckpoint = (): void => disposeCheckpointService();
-	process.once("beforeExit", disposeCheckpoint);
-	process.once("SIGINT", disposeCheckpoint);
-	process.once("SIGTERM", disposeCheckpoint);
+	if (!checkpointCleanupRegistered) {
+		process.once("beforeExit", disposeCheckpoint);
+		process.once("SIGINT", disposeCheckpoint);
+		process.once("SIGTERM", disposeCheckpoint);
+		checkpointCleanupRegistered = true;
+	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// Early Exit: Help Command
@@ -1090,15 +1099,18 @@ export async function main(args: string[]) {
 		const cleanupSandbox = async () => {
 			await disposeSandbox(sandbox);
 		};
-		process.once("beforeExit", () => void cleanupSandbox());
-		process.once("SIGINT", () => {
-			void cleanupSandbox();
-			process.exit(0);
-		});
-		process.once("SIGTERM", () => {
-			void cleanupSandbox();
-			process.exit(0);
-		});
+		if (!sandboxCleanupRegistered) {
+			process.once("beforeExit", () => void cleanupSandbox());
+			process.once("SIGINT", () => {
+				void cleanupSandbox();
+				process.exit(0);
+			});
+			process.once("SIGTERM", () => {
+				void cleanupSandbox();
+				process.exit(0);
+			});
+			sandboxCleanupRegistered = true;
+		}
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
