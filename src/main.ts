@@ -747,6 +747,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "hooks") {
+		const { handleHooksCommand } = await import("./cli/commands/hooks.js");
+		await handleHooksCommand(parsed.subcommand);
+		return;
+	}
+
 	if (parsed.command === "anthropic") {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"
