@@ -10,6 +10,18 @@ vi.mock("../../src/lsp/index.js", () => {
 	};
 });
 
+// Mock safe mode to allow write/edit operations in tests
+vi.mock("../../src/safety/safe-mode.js", () => {
+	return {
+		requirePlanCheck: vi.fn(),
+		isSafeModeEnabled: () => false,
+		configureSafeMode: vi.fn(),
+		setPlanSatisfied: vi.fn(),
+		runValidatorsOnSuccess: vi.fn().mockResolvedValue(undefined),
+		resetSafeModeForTests: vi.fn(),
+	};
+});
+
 // Import tools after mocking
 import type { AgentToolResult } from "../../src/agent/types.js";
 import { collectDiagnostics } from "../../src/lsp/index.js";

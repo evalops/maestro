@@ -23,6 +23,11 @@ const diffSchema = Type.Intersect([
 		mode: Type.Optional(
 			Type.Literal("diff", { description: "Show patch output (default)." }),
 		),
+		cwd: Type.Optional(
+			Type.String({
+				description: "Working directory for git commands (internal/testing).",
+			}),
+		),
 		staged: Type.Optional(
 			Type.Boolean({
 				description:
@@ -97,9 +102,10 @@ function normalizePaths(paths: string | string[] | undefined): string[] {
 async function runGitCommand(
 	args: string[],
 	signal?: AbortSignal,
+	cwd?: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const child = spawn("git", args, {
-		cwd: process.cwd(),
+		cwd: cwd ?? process.cwd(),
 		stdio: ["ignore", "pipe", "pipe"],
 		signal,
 	});
@@ -143,6 +149,7 @@ export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 	async run(params, { signal, respond }) {
 		const {
 			mode = "diff",
+			cwd,
 			staged,
 			range,
 			context,
@@ -210,7 +217,7 @@ export const diffTool = createTool<typeof diffSchema, DiffToolDetails>({
 
 		let result: { stdout: string; stderr: string; exitCode: number };
 		try {
-			result = await runGitCommand(args, signal);
+			result = await runGitCommand(args, signal, cwd);
 		} catch (error) {
 			const reason =
 				error instanceof Error

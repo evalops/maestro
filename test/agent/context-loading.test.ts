@@ -6,12 +6,10 @@ import { loadProjectContextFiles } from "../../src/cli/system-prompt.js";
 
 describe("Hierarchical Context File Loading", () => {
 	let testDir: string;
-	let originalCwd: string;
 	let originalEnv: string | undefined;
 
 	beforeEach(() => {
 		// Save original state
-		originalCwd = process.cwd();
 		originalEnv = process.env.COMPOSER_AGENT_DIR;
 
 		// Create temp test directory
@@ -21,7 +19,6 @@ describe("Hierarchical Context File Loading", () => {
 
 	afterEach(() => {
 		// Restore original state
-		process.chdir(originalCwd);
 		process.env.COMPOSER_AGENT_DIR = originalEnv;
 
 		// Cleanup test directory
@@ -40,9 +37,8 @@ describe("Hierarchical Context File Loading", () => {
 			);
 
 			process.env.COMPOSER_AGENT_DIR = globalDir;
-			process.chdir(testDir);
 
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(testDir);
 			const globalContext = contextFiles.find((f) =>
 				f.path.endsWith("AGENTS.md"),
 			);
@@ -59,9 +55,8 @@ describe("Hierarchical Context File Loading", () => {
 			);
 
 			process.env.COMPOSER_AGENT_DIR = globalDir;
-			process.chdir(testDir);
 
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(testDir);
 
 			expect(contextFiles.length).toBeGreaterThanOrEqual(1);
 			const globalContext = contextFiles.find((f) =>
@@ -84,9 +79,8 @@ describe("Hierarchical Context File Loading", () => {
 			);
 
 			process.env.COMPOSER_AGENT_DIR = globalDir;
-			process.chdir(testDir);
 
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(testDir);
 
 			expect(contextFiles.length).toBeGreaterThanOrEqual(1);
 			const globalContext = contextFiles.find((f) => f.path.includes("global"));
@@ -109,9 +103,8 @@ describe("Hierarchical Context File Loading", () => {
 			);
 
 			process.env.COMPOSER_AGENT_DIR = globalDir;
-			process.chdir(testDir);
 
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(testDir);
 			const globalContext = contextFiles.find((f) => f.path.includes("global"));
 
 			expect(globalContext?.path).toContain("AGENTS.override.md");
@@ -136,10 +129,7 @@ describe("Hierarchical Context File Loading", () => {
 			);
 			writeFileSync(join(childDir, "AGENT.md"), "# Child Context\nChild level");
 
-			// Change to child directory
-			process.chdir(childDir);
-
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(childDir);
 
 			// Should have at least 3 files (might have global too)
 			expect(contextFiles.length).toBeGreaterThanOrEqual(3);
@@ -182,9 +172,7 @@ describe("Hierarchical Context File Loading", () => {
 			writeFileSync(join(childDir, "AGENT.md"), "# Child Context");
 			// No file in parentDir
 
-			process.chdir(childDir);
-
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(childDir);
 
 			// Should find exactly 2 project context files (excluding possible global)
 			const projectContexts = contextFiles.filter(
@@ -213,9 +201,7 @@ describe("Hierarchical Context File Loading", () => {
 				"# Claude Context\nUsing CLAUDE.md",
 			);
 
-			process.chdir(projectDir);
-
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(projectDir);
 
 			const claudeContext = contextFiles.find((f) =>
 				f.path.includes("CLAUDE.md"),
@@ -241,9 +227,8 @@ describe("Hierarchical Context File Loading", () => {
 			);
 
 			process.env.COMPOSER_AGENT_DIR = globalDir;
-			process.chdir(projectDir);
 
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(projectDir);
 
 			expect(contextFiles.length).toBeGreaterThanOrEqual(2);
 
@@ -284,9 +269,8 @@ describe("Hierarchical Context File Loading", () => {
 			writeFileSync(join(appDir, "AGENT.md"), "# App");
 
 			process.env.COMPOSER_AGENT_DIR = globalDir;
-			process.chdir(appDir);
 
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(appDir);
 
 			expect(contextFiles.length).toBeGreaterThanOrEqual(4);
 
@@ -310,9 +294,8 @@ describe("Hierarchical Context File Loading", () => {
 
 			// Don't set COMPOSER_AGENT_DIR so no global either
 			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
-			process.chdir(emptyDir);
 
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(emptyDir);
 
 			// Might still have global from default location, so just check it doesn't crash
 			expect(Array.isArray(contextFiles)).toBe(true);
@@ -325,10 +308,8 @@ describe("Hierarchical Context File Loading", () => {
 			const filePath = join(projectDir, "AGENT.md");
 			writeFileSync(filePath, "Valid content");
 
-			process.chdir(projectDir);
-
 			// Should load successfully
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(projectDir);
 			expect(contextFiles.length).toBeGreaterThanOrEqual(1);
 		});
 
@@ -337,10 +318,8 @@ describe("Hierarchical Context File Loading", () => {
 			const deepDir = join(testDir, "a", "b", "c", "d", "e", "f");
 			mkdirSync(deepDir, { recursive: true });
 
-			process.chdir(deepDir);
-
 			// Should complete without hanging
-			const contextFiles = loadProjectContextFiles();
+			const contextFiles = loadProjectContextFiles(deepDir);
 			expect(Array.isArray(contextFiles)).toBe(true);
 		});
 	});

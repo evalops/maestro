@@ -32,11 +32,9 @@ function git(testDir: string, ...args: string[]): string {
 
 describe("diff tool", () => {
 	let testDir: string;
-	let originalCwd: string;
 
 	beforeEach(() => {
 		testDir = mkdtempSync(join(tmpdir(), "diff-tool-test-"));
-		originalCwd = process.cwd();
 
 		// Initialize git repo
 		git(testDir, "init");
@@ -47,13 +45,9 @@ describe("diff tool", () => {
 		writeFileSync(join(testDir, "file.txt"), "initial content\n");
 		git(testDir, "add", ".");
 		git(testDir, "commit", "-m", "initial");
-
-		// Change to test directory for diff tool
-		process.chdir(testDir);
 	});
 
 	afterEach(() => {
-		process.chdir(originalCwd);
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -61,7 +55,7 @@ describe("diff tool", () => {
 		it("shows working tree changes", async () => {
 			writeFileSync(join(testDir, "file.txt"), "modified content\n");
 
-			const result = await diffTool.execute("diff-1", {});
+			const result = await diffTool.execute("diff-1", { cwd: testDir });
 
 			expect(result.isError).toBeFalsy();
 			const output = getTextOutput(result);
@@ -70,7 +64,7 @@ describe("diff tool", () => {
 		});
 
 		it("shows no changes message when clean", async () => {
-			const result = await diffTool.execute("diff-2", {});
+			const result = await diffTool.execute("diff-2", { cwd: testDir });
 
 			const output = getTextOutput(result);
 			expect(output).toContain("No changes");
@@ -79,7 +73,7 @@ describe("diff tool", () => {
 		it("includes file path in diff output", async () => {
 			writeFileSync(join(testDir, "file.txt"), "changed\n");
 
-			const result = await diffTool.execute("diff-3", {});
+			const result = await diffTool.execute("diff-3", { cwd: testDir });
 
 			const output = getTextOutput(result);
 			expect(output).toContain("file.txt");
@@ -92,6 +86,7 @@ describe("diff tool", () => {
 			git(testDir, "add", "file.txt");
 
 			const result = await diffTool.execute("diff-4", {
+				cwd: testDir,
 				staged: true,
 			});
 
@@ -106,6 +101,7 @@ describe("diff tool", () => {
 			// Don't stage the changes
 
 			const result = await diffTool.execute("diff-5", {
+				cwd: testDir,
 				staged: true,
 			});
 
@@ -122,6 +118,7 @@ describe("diff tool", () => {
 			git(testDir, "commit", "-m", "second");
 
 			const result = await diffTool.execute("diff-6", {
+				cwd: testDir,
 				range: "HEAD~1..HEAD",
 			});
 
@@ -134,6 +131,7 @@ describe("diff tool", () => {
 			writeFileSync(join(testDir, "file.txt"), "working changes\n");
 
 			const result = await diffTool.execute("diff-7", {
+				cwd: testDir,
 				range: "HEAD",
 			});
 
@@ -165,6 +163,7 @@ describe("diff tool", () => {
 			);
 
 			const result = await diffTool.execute("diff-8", {
+				cwd: testDir,
 				context: 1,
 			});
 
@@ -179,6 +178,7 @@ describe("diff tool", () => {
 			writeFileSync(join(testDir, "file.txt"), "modified\n");
 
 			const result = await diffTool.execute("diff-9", {
+				cwd: testDir,
 				stat: true,
 			});
 
@@ -195,6 +195,7 @@ describe("diff tool", () => {
 			git(testDir, "add", "new.txt");
 
 			const result = await diffTool.execute("diff-10", {
+				cwd: testDir,
 				nameOnly: true,
 			});
 
@@ -215,6 +216,7 @@ describe("diff tool", () => {
 			writeFileSync(join(testDir, "file.txt"), "content    here\n");
 
 			const result = await diffTool.execute("diff-11", {
+				cwd: testDir,
 				ignoreWhitespace: true,
 			});
 
@@ -229,6 +231,7 @@ describe("diff tool", () => {
 			writeFileSync(join(testDir, "other.txt"), "other\n");
 
 			const result = await diffTool.execute("diff-12", {
+				cwd: testDir,
 				paths: "file.txt",
 			});
 
@@ -244,6 +247,7 @@ describe("diff tool", () => {
 			writeFileSync(join(testDir, "src", "code.ts"), "code\n");
 
 			const result = await diffTool.execute("diff-13", {
+				cwd: testDir,
 				paths: ["file.txt", "src/code.ts"],
 			});
 
@@ -257,6 +261,7 @@ describe("diff tool", () => {
 		it("throws when both wordDiff and nameOnly are set", async () => {
 			await expect(
 				diffTool.execute("diff-14", {
+					cwd: testDir,
 					wordDiff: true,
 					nameOnly: true,
 				}),
@@ -268,7 +273,7 @@ describe("diff tool", () => {
 		it("includes command in details", async () => {
 			writeFileSync(join(testDir, "file.txt"), "changed\n");
 
-			const result = await diffTool.execute("diff-15", {});
+			const result = await diffTool.execute("diff-15", { cwd: testDir });
 
 			expect(result.details).toHaveProperty("command");
 			const command = (result.details as { command: string }).command;

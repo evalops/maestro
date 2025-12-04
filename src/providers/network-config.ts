@@ -102,7 +102,11 @@ function loadGlobalOverrides(): Partial<ProviderNetworkConfig> {
 function loadProviderConfigs(): Map<string, Partial<ProviderNetworkConfig>> {
 	const configs = new Map<string, Partial<ProviderNetworkConfig>>();
 
-	const configPath = join(homedir(), ".composer", "providers.json");
+	const configPath = join(
+		process.env.HOME ?? homedir(),
+		".composer",
+		"providers.json",
+	);
 	if (!existsSync(configPath)) {
 		return configs;
 	}

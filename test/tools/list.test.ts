@@ -58,19 +58,13 @@ describe("list tool", () => {
 			expect(output).toContain("file.txt");
 		});
 
-		it("defaults to current directory when path not specified", async () => {
-			const originalCwd = process.cwd();
-			try {
-				process.chdir(testDir);
-				writeFileSync(join(testDir, "test.txt"), "");
+		it("lists from specified path", async () => {
+			writeFileSync(join(testDir, "test.txt"), "");
 
-				const result = await listTool.execute("list-3", {});
+			const result = await listTool.execute("list-3", { path: testDir });
 
-				const output = getTextOutput(result);
-				expect(output).toContain("test.txt");
-			} finally {
-				process.chdir(originalCwd);
-			}
+			const output = getTextOutput(result);
+			expect(output).toContain("test.txt");
 		});
 	});
 

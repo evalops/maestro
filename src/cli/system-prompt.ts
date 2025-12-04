@@ -180,7 +180,7 @@ function loadContextFileFromDir(dir: string): ContextFile | null {
 	return null;
 }
 
-export function loadProjectContextFiles(): ContextFile[] {
+export function loadProjectContextFiles(cwdOverride?: string): ContextFile[] {
 	const contextFiles: ContextFile[] = [];
 
 	const homeDir = homedir();
@@ -195,7 +195,7 @@ export function loadProjectContextFiles(): ContextFile[] {
 		contextFiles.push(globalContext);
 	}
 
-	const cwd = process.cwd();
+	const cwd = cwdOverride ?? process.cwd();
 	const ancestorContextFiles: ContextFile[] = [];
 
 	let currentDir = cwd;
