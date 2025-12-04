@@ -9,6 +9,7 @@ export interface Args {
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
+	version?: boolean;
 	mode?: Mode;
 	noSession?: boolean;
 	session?: string;
@@ -62,6 +63,8 @@ export function parseArgs(args: string[]): Args {
 
 		if (arg === "--help" || arg === "-h") {
 			result.help = true;
+		} else if (arg === "--version" || arg === "-v") {
+			result.version = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
 			if (mode === "text" || mode === "json" || mode === "rpc") {

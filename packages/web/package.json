@@ -8,7 +8,7 @@
 	"files": ["dist", "README.md"],
 	"scripts": {
 		"clean": "rm -rf dist",
-		"build": "vite build",
+		"build": "node ../../node_modules/vite/bin/vite.js build",
 		"dev": "vite",
 		"preview": "vite preview",
 		"check": "tsc --noEmit",

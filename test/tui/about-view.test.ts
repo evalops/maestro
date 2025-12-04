@@ -1,5 +1,12 @@
+import type * as fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-vi.mock("node:fs", () => ({ existsSync: () => false }));
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof fs>();
+	return {
+		...actual,
+		existsSync: () => false,
+	};
+});
 
 import { AboutView } from "../../src/tui/about-view.js";
 

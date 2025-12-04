@@ -11,7 +11,15 @@ import {
 	loadPolicy,
 } from "../../src/safety/policy.js";
 
-vi.mock("node:fs");
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof fs>();
+	return {
+		...actual,
+		existsSync: vi.fn(),
+		readFileSync: vi.fn(),
+		watch: vi.fn(),
+	};
+});
 vi.mock("node:os", () => ({
 	homedir: () => "/mock-home",
 }));

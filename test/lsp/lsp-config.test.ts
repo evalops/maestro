@@ -1,11 +1,13 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import type * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LspServerConfig } from "../../src/lsp/index.js";
 
-vi.mock("node:fs", () => {
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof fs>();
 	return {
+		...actual,
 		existsSync: vi.fn(() => false),
 		readFileSync: vi.fn(() => JSON.stringify({})),
 		writeFileSync: vi.fn(),

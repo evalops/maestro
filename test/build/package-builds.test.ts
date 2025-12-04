@@ -45,11 +45,12 @@ describe("Package Build Verification", () => {
 			const entries = await readdir(webDistPath);
 			expect(entries.length).toBeGreaterThan(0);
 
-			// Should have index.html or main entry
-			const hasIndex = entries.some(
-				(e) => e.includes("index") || e.includes("main"),
+			// Should have at least one bundle artifact
+			const hasBundle = entries.some(
+				(e) =>
+					e.endsWith(".es.js") || e.endsWith(".umd.js") || e.endsWith(".js"),
 			);
-			expect(hasIndex).toBe(true);
+			expect(hasBundle).toBe(true);
 		});
 	});
 

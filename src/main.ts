@@ -458,11 +458,24 @@ async function runRpcMode(
  */
 export async function main(args: string[]) {
 	// ─────────────────────────────────────────────────────────────────────────────
-	// PHASE 1: Environment and Telemetry Initialization
+	// PHASE 0: Early Exit Checks (before any async initialization)
 	// ─────────────────────────────────────────────────────────────────────────────
 
 	// Load environment variables from .env files (project and user level)
 	loadEnv();
+
+	// Parse arguments early to check for version/help flags before heavy initialization
+	const parsed = parseArgs(args);
+
+	// Handle --version early exit (before any async operations)
+	if (parsed.version) {
+		console.log(`Composer v${VERSION}`);
+		return;
+	}
+
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 1: Environment and Telemetry Initialization
+	// ─────────────────────────────────────────────────────────────────────────────
 
 	// Initialize OpenTelemetry tracing for observability
 	// This is non-blocking (void) to avoid startup latency
@@ -514,12 +527,11 @@ export async function main(args: string[]) {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
-	// PHASE 3: CLI Argument Parsing
+	// PHASE 3: CLI Argument Parsing (already done earlier for early exits)
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Parse command-line arguments into structured options
-	// This handles flags like --model, --provider, --continue, --resume, etc.
-	const parsed = parseArgs(args);
+	// Arguments were already parsed earlier to check for --version flag
+	// The parsed result is reused here
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 4: Authentication Setup
