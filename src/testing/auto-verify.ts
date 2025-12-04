@@ -12,7 +12,7 @@
  * - COMPOSER_AUTO_TEST_COMMAND: Custom test command (auto-detected if not set)
  */
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { createLogger } from "../utils/logger.js";
 
@@ -148,7 +148,7 @@ export function detectTestRunner(cwd: string): TestRunner {
 	}
 
 	try {
-		const pkg = require(packageJsonPath);
+		const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
 		const deps = {
 			...pkg.dependencies,
 			...pkg.devDependencies,

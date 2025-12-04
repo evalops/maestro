@@ -271,7 +271,11 @@ async function handleLogin(
 					resourceType: "user",
 					status: "failure",
 					metadata: { error: "Invalid credentials" },
-				}).catch(() => {});
+				}).catch((err) => {
+					logger.warn("Failed to log auth failure audit event", {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				});
 			}
 			return;
 		}

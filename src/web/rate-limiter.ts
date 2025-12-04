@@ -129,7 +129,11 @@ export function getRedisClient(): Redis | null {
  */
 export async function shutdownRedis(): Promise<void> {
 	if (redis) {
-		await redis.quit().catch(() => {});
+		await redis.quit().catch((err) => {
+			logger.debug("Redis quit failed during shutdown", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
 		redis = null;
 		redisAvailable = false;
 		redisInitPromise = null;
@@ -137,7 +141,11 @@ export async function shutdownRedis(): Promise<void> {
 }
 
 // Initialize Redis on module load (non-blocking)
-initRedis().catch(() => {});
+initRedis().catch((err) => {
+	logger.warn("Redis initialization failed", {
+		error: err instanceof Error ? err.message : String(err),
+	});
+});
 
 // ============================================================================
 // RATE LIMITER
@@ -352,7 +360,11 @@ export class RateLimiter {
 		if (ip) {
 			this.clients.delete(ip);
 			if (redis && redisAvailable) {
-				await redis.del(`${this.keyPrefix}:${ip}`).catch(() => {});
+				await redis.del(`${this.keyPrefix}:${ip}`).catch((err) => {
+					logger.debug("Redis del failed during reset", {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				});
 			}
 		} else {
 			this.clients.clear();
@@ -369,7 +381,11 @@ export class RateLimiter {
 					);
 					cursor = nextCursor;
 					if (keys.length > 0) {
-						await redis.del(...keys).catch(() => {});
+						await redis.del(...keys).catch((err) => {
+							logger.debug("Redis bulk del failed during reset", {
+								error: err instanceof Error ? err.message : String(err),
+							});
+						});
 					}
 				} while (cursor !== "0");
 			}

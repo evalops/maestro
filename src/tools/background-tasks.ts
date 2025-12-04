@@ -1903,7 +1903,12 @@ class RotatingLogWriter extends Writable {
 				createGzip(),
 				createWriteStream(destination),
 			);
-			await fsPromises.unlink(tmpPath).catch(() => {});
+			await fsPromises.unlink(tmpPath).catch((err) => {
+				this.logger.debug("Failed to unlink temp file after rotation", {
+					tmpPath,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
 			this.currentSize = 0;
 			return true;
 		} catch (error) {

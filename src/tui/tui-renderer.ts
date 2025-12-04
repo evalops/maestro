@@ -33,6 +33,7 @@ import {
 import type { CleanMode } from "../conversation/render-model.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
+import { listOAuthProviders, loadOAuthCredentials } from "../oauth/storage.js";
 import { getOpenTelemetryStatus } from "../opentelemetry.js";
 import {
 	getBackgroundTaskSettings,
@@ -108,6 +109,7 @@ import { LoaderView } from "./loader/loader-view.js";
 import { LspView } from "./lsp-view.js";
 import { MessageView } from "./message-view.js";
 import { NotificationView } from "./notification-view.js";
+import { OAuthFlowController } from "./oauth/index.js";
 import { OllamaView } from "./ollama-view.js";
 import { PlanPanelModal } from "./plan-panel-modal.js";
 import { PlanView, type TodoStore, loadTodoStore } from "./plan-view.js";
@@ -117,7 +119,6 @@ import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
 import { FileSearchView } from "./search/file-search-view.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
-import { OAuthSelectorView } from "./selectors/oauth-selector-view.js";
 import { QueueModeSelectorView } from "./selectors/queue-mode-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
 import { ThemeSelectorView } from "./selectors/theme-selector-view.js";
@@ -302,8 +303,7 @@ export class TuiRenderer {
 	private themeSelectorView: ThemeSelectorView;
 	private modelSelectorView: ModelSelectorView;
 	private reportSelectorView: ReportSelectorView;
-	private oauthLoginView?: OAuthSelectorView;
-	private oauthLogoutView?: OAuthSelectorView;
+	private oauthFlowController!: OAuthFlowController;
 	private queueModeSelectorView: QueueModeSelectorView;
 	private userMessageSelectorView: UserMessageSelectorView;
 	private queuePanelModal?: QueuePanelModal;
@@ -364,7 +364,6 @@ export class TuiRenderer {
 	private updateNotice?: UpdateCheckResult | null;
 	private startupWarnings: FooterHint[] = [];
 	private isCyclingModel = false;
-	private isOAuthFlowActive = false;
 	private modalManager: ModalManager;
 	private terminalCapabilities: TerminalCapabilities =
 		getTerminalCapabilities();
@@ -502,6 +501,29 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			footer: this.footer,
+		});
+
+		// Initialize OAuth flow controller
+		const editorRef = this.editor;
+		this.oauthFlowController = new OAuthFlowController({
+			modalManager: this.modalManager,
+			notificationView: this.notificationView,
+			renderContext: {
+				chatContainer: this.chatContainer,
+				ui: this.ui,
+				requestRender: () => this.ui.requestRender(),
+			},
+			editorCallbacks: {
+				clearEditor: () => this.clearEditor(),
+				getText: () => editorRef.getText(),
+				setText: (text) => editorRef.setText(text),
+				get onSubmit() {
+					return editorRef.onSubmit;
+				},
+				set onSubmit(handler) {
+					editorRef.onSubmit = handler;
+				},
+			},
 		});
 
 		// Initialize interrupt controller
@@ -986,8 +1008,17 @@ export class TuiRenderer {
 			handleCommands: (context) => this.handleCommandsCommand(context),
 			handleQueue: (context) => this.handleQueueCommand(context),
 			handleBranch: (context) => this.handleBranchCommand(context),
-			handleLogin: (context) => this.handleLoginCommand(context),
-			handleLogout: (context) => this.handleLogoutCommand(context),
+			handleLogin: (context) =>
+				this.oauthFlowController.handleLoginCommand(
+					context.argumentText,
+					(msg) => context.showError(msg),
+				),
+			handleLogout: (context) =>
+				this.oauthFlowController.handleLogoutCommand(
+					context.argumentText,
+					(msg) => context.showError(msg),
+					(msg) => context.showInfo(msg),
+				),
 			handleQuit: (_context) => {
 				this.stop();
 				process.exit(0);
@@ -3346,244 +3377,6 @@ export class TuiRenderer {
 		process.stdout.off("resize", this.resizeHandler);
 	}
 
-	private async handleLoginCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		// Prevent concurrent OAuth flows
-		if (this.isOAuthFlowActive) {
-			context.showError(
-				"An OAuth flow is already in progress. Please complete or cancel it first.",
-			);
-			return;
-		}
-
-		// Set flag immediately to prevent race condition during async operations
-		this.isOAuthFlowActive = true;
-
-		const args = context.argumentText.trim().toLowerCase();
-
-		// Parse argument: can be either "mode" or "provider:mode"
-		let requestedProvider: string | undefined;
-		let selectedMode = "pro";
-		const validModes = ["pro", "console"];
-
-		if (args) {
-			// Check if format is provider:mode
-			if (args.includes(":")) {
-				const parts = args.split(":").map((s) => s.trim());
-				requestedProvider = parts[0];
-				const mode = parts[1];
-				if (mode && !validModes.includes(mode)) {
-					this.isOAuthFlowActive = false;
-					context.showError(
-						`Invalid mode: ${mode}. Valid modes: ${validModes.join(", ")}`,
-					);
-					return;
-				}
-				selectedMode = mode && validModes.includes(mode) ? mode : "pro";
-			} else {
-				// Single argument - could be mode or provider
-				if (validModes.includes(args)) {
-					selectedMode = args;
-				} else {
-					requestedProvider = args;
-				}
-			}
-		}
-
-		// Import OAuth system
-		const { getOAuthProviders, login, migrateOAuthCredentials } = await import(
-			"../oauth/index.js"
-		);
-
-		// Migrate old credentials if needed
-		await migrateOAuthCredentials();
-
-		// Get available providers
-		const providers = getOAuthProviders().filter((p) => p.available);
-
-		if (providers.length === 0) {
-			this.isOAuthFlowActive = false;
-			context.showError("No OAuth providers available");
-			return;
-		}
-
-		// If only one provider or specific provider requested, use it directly
-		if (providers.length === 1 || requestedProvider) {
-			const provider = requestedProvider
-				? providers.find(
-						(p) =>
-							p.id === requestedProvider || p.id.includes(requestedProvider),
-					)
-				: providers[0];
-
-			if (!provider) {
-				this.isOAuthFlowActive = false;
-				context.showError(`Unknown provider: ${requestedProvider}`);
-				return;
-			}
-
-			await this.performOAuthLogin(provider.id, selectedMode, context);
-			return;
-		}
-
-		// Multiple providers - show selector
-		// Always create new selector to avoid stale closure over selectedMode and context
-		this.oauthLoginView = new OAuthSelectorView({
-			modalManager: this.modalManager,
-			ui: this.ui,
-			mode: "login",
-			onProviderSelected: async (providerId) => {
-				try {
-					await this.performOAuthLogin(providerId, selectedMode, context);
-				} finally {
-					this.isOAuthFlowActive = false;
-				}
-			},
-			onCancel: () => {
-				this.isOAuthFlowActive = false;
-				this.notificationView.showInfo("Login cancelled");
-			},
-		});
-
-		this.oauthLoginView.show();
-	}
-
-	private async performOAuthLogin(
-		providerId: "anthropic" | "openai" | "github-copilot",
-		mode: string,
-		context: CommandExecutionContext,
-	): Promise<void> {
-		const { login } = await import("../oauth/index.js");
-		const { execFile } = await import("node:child_process");
-
-		// Flag is already set by handleLoginCommand, no need to set again
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(
-			new Text(`Logging in to ${providerId}...`, 1, 0),
-		);
-		this.ui.requestRender();
-
-		try {
-			await login(providerId, {
-				mode: mode as "pro" | "console" | undefined,
-				onAuthUrl: (url: string) => {
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text("Opening browser to:", 1, 0));
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(url, 1, 0));
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(
-						new Text(
-							"Paste the authorization code below (or type 'cancel' to abort):",
-							1,
-							0,
-						),
-					);
-					this.ui.requestRender();
-
-					// Auto-open browser using execFile for security
-					const openCmd =
-						process.platform === "darwin"
-							? "open"
-							: process.platform === "win32"
-								? "cmd"
-								: "xdg-open";
-					const args =
-						process.platform === "win32"
-							? ["/c", "start", "", url] // Empty string after 'start' prevents URL from being treated as window title
-							: [url];
-					execFile(openCmd, args, (error) => {
-						if (error) {
-							this.notificationView.showInfo(
-								"Could not auto-open browser. Please copy the URL manually.",
-							);
-						}
-					});
-				},
-				onPromptCode: async () => {
-					const originalOnSubmit = this.editor.onSubmit;
-					return new Promise<string>((resolve, reject) => {
-						const timeout = setTimeout(
-							() => {
-								reject(new Error("OAuth flow timed out after 5 minutes"));
-							},
-							5 * 60 * 1000,
-						); // 5 minute timeout
-
-						this.editor.onSubmit = (text) => {
-							const trimmedText = text.trim();
-
-							// Handle cancellation
-							if (trimmedText.toLowerCase() === "cancel") {
-								clearTimeout(timeout);
-								this.clearEditor();
-								reject(new Error("OAuth flow cancelled by user"));
-								return;
-							}
-
-							// Basic authorization code validation
-							// Allow alphanumeric, underscore, hyphen, and # (for Anthropic's code#state format)
-							if (
-								trimmedText.length < 10 ||
-								!/^[a-zA-Z0-9_#-]+$/.test(trimmedText)
-							) {
-								this.notificationView.showError(
-									"Invalid authorization code format. Please try again or type 'cancel'.",
-								);
-								this.clearEditor();
-								// Don't clear timeout - allow user to retry
-								return;
-							}
-
-							clearTimeout(timeout);
-							this.clearEditor();
-							resolve(trimmedText);
-						};
-					}).finally(() => {
-						// Always restore original handler in finally block
-						this.editor.onSubmit = originalOnSubmit;
-					});
-				},
-			});
-
-			this.notificationView.showToast(
-				`Successfully authenticated with ${providerId}!`,
-				"success",
-			);
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(
-					`Authentication complete. ${providerId} OAuth credentials saved.`,
-					1,
-					0,
-				),
-			);
-			this.ui.requestRender();
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Login failed";
-
-			// Provide better error context
-			let errorDetail = message;
-			if (message.includes("timeout")) {
-				errorDetail = "OAuth flow timed out after 5 minutes. Please try again.";
-			} else if (message.includes("cancel")) {
-				errorDetail = "OAuth flow cancelled by user.";
-			} else if (message.includes("Invalid") || message.includes("failed")) {
-				errorDetail = `${message}. The authorization code may be expired or invalid.`;
-			}
-
-			context.showError(errorDetail);
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(`Login failed: ${errorDetail}`, 1, 0),
-			);
-			this.ui.requestRender();
-		} finally {
-			this.isOAuthFlowActive = false;
-		}
-	}
-
 	/**
 	 * Get the actual OAuth authentication state by checking stored credentials.
 	 * Returns info about which provider the user is authenticated with.
@@ -3593,11 +3386,7 @@ export class TuiRenderer {
 		provider?: string;
 		mode?: string;
 	} {
-		// Lazy import to avoid circular dependencies
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		// biome-ignore format: TypeScript doesn't support trailing commas in typeof import()
-		const storage: typeof import("../oauth/storage.js") = require("../oauth/storage.js");
-		const providers = storage.listOAuthProviders();
+		const providers = listOAuthProviders();
 
 		if (providers.length === 0) {
 			return { authenticated: false };
@@ -3613,7 +3402,7 @@ export class TuiRenderer {
 		}
 
 		// Load credentials to get metadata (like mode)
-		const credentials = storage.loadOAuthCredentials(activeProvider);
+		const credentials = loadOAuthCredentials(activeProvider);
 		const mode = credentials?.metadata?.mode as string | undefined;
 
 		return {
@@ -3621,77 +3410,6 @@ export class TuiRenderer {
 			provider: activeProvider,
 			mode,
 		};
-	}
-
-	private async handleLogoutCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		// Check if OAuth flow is already active
-		if (this.isOAuthFlowActive) {
-			context.showError(
-				"An OAuth flow is already in progress. Please complete or cancel it first.",
-			);
-			return;
-		}
-
-		// Set flag immediately to prevent race condition during async operations
-		this.isOAuthFlowActive = true;
-
-		const args = context.argumentText.trim().toLowerCase();
-		const requestedProvider = args || null;
-
-		// Import OAuth system
-		const { listOAuthProviders, logout } = await import("../oauth/index.js");
-		type SupportedProvider = "anthropic" | "openai" | "github-copilot";
-
-		// Get logged-in providers
-		const loggedInProviders = listOAuthProviders();
-
-		if (loggedInProviders.length === 0) {
-			this.isOAuthFlowActive = false;
-			context.showInfo("No OAuth providers logged in. Use /login first.");
-			return;
-		}
-
-		// If specific provider requested or only one logged in, use it directly
-		if (loggedInProviders.length === 1 || requestedProvider) {
-			const provider = requestedProvider
-				? loggedInProviders.find(
-						(p) => p === requestedProvider || p.includes(requestedProvider),
-					)
-				: loggedInProviders[0];
-
-			if (!provider) {
-				this.isOAuthFlowActive = false;
-				context.showError(`Not logged in to: ${requestedProvider}`);
-				return;
-			}
-
-			await this.performOAuthLogout(provider as SupportedProvider, context);
-			this.isOAuthFlowActive = false;
-			return;
-		}
-
-		// Multiple providers - show selector
-		// Always create new selector to avoid stale closure over context
-		this.oauthLogoutView = new OAuthSelectorView({
-			modalManager: this.modalManager,
-			ui: this.ui,
-			mode: "logout",
-			onProviderSelected: async (providerId) => {
-				try {
-					await this.performOAuthLogout(providerId, context);
-				} finally {
-					this.isOAuthFlowActive = false;
-				}
-			},
-			onCancel: () => {
-				this.isOAuthFlowActive = false;
-				this.notificationView.showInfo("Logout cancelled");
-			},
-		});
-
-		this.oauthLogoutView.show();
 	}
 
 	private async detectAndApplyTerminalTheme(): Promise<void> {
@@ -3748,33 +3466,6 @@ export class TuiRenderer {
 						: "Model connectivity probe failed. Check API key and network.";
 				throw new Error(message);
 			});
-		}
-	}
-
-	private async performOAuthLogout(
-		providerId: "anthropic" | "openai" | "github-copilot",
-		context: CommandExecutionContext,
-	): Promise<void> {
-		try {
-			const { logout } = await import("../oauth/index.js");
-			await logout(providerId);
-
-			this.notificationView.showToast(
-				`${providerId} OAuth credentials removed`,
-				"success",
-			);
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(
-					`Logged out from ${providerId}. OAuth credentials removed.`,
-					1,
-					0,
-				),
-			);
-			this.ui.requestRender();
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Logout failed";
-			context.showError(message);
 		}
 	}
 
@@ -3918,9 +3609,15 @@ export class TuiRenderer {
 		);
 		const handler = createAuthCommandHandler({
 			handleLogin: (ctx: CommandExecutionContext) =>
-				this.handleLoginCommand(ctx),
+				this.oauthFlowController.handleLoginCommand(ctx.argumentText, (msg) =>
+					ctx.showError(msg),
+				),
 			handleLogout: (ctx: CommandExecutionContext) =>
-				this.handleLogoutCommand(ctx),
+				this.oauthFlowController.handleLogoutCommand(
+					ctx.argumentText,
+					(msg) => ctx.showError(msg),
+					(msg) => ctx.showInfo(msg),
+				),
 			showInfo: (msg: string) => context.showInfo(msg),
 			getAuthState: () => this.getActualAuthState(),
 		});

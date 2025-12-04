@@ -6,7 +6,7 @@
  * - .composer/workflows/*.json
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { createLogger } from "../utils/logger.js";
@@ -118,7 +118,6 @@ export function hasWorkflowsDirectory(cwd: string): boolean {
  * Create the workflows directory if it doesn't exist.
  */
 export function ensureWorkflowsDirectory(cwd: string): string {
-	const { mkdirSync } = require("node:fs");
 	const workflowDir = join(cwd, WORKFLOW_DIR);
 
 	if (!existsSync(workflowDir)) {

@@ -6,7 +6,13 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { createLogger } from "../utils/logger.js";
 import type {
@@ -265,7 +271,6 @@ export class ChangeTracker {
 					case "delete":
 						// Recreate the deleted file
 						if (change.before !== null) {
-							const { mkdirSync } = require("node:fs");
 							mkdirSync(dirname(change.path), { recursive: true });
 							writeFileSync(change.path, change.before, "utf-8");
 							undone++;

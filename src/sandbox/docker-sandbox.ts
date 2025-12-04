@@ -1,7 +1,10 @@
 import { exec } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import { createLogger } from "../utils/logger.js";
 import type { ExecResult, Sandbox } from "./types.js";
+
+const logger = createLogger("sandbox:docker");
 
 const execAsync = promisify(exec);
 
@@ -108,8 +111,11 @@ export class DockerSandbox implements Sandbox {
 		if (this.containerId) {
 			try {
 				await execAsync(`docker stop ${this.containerId}`); // --rm handles removal
-			} catch {
-				// ignore
+			} catch (err) {
+				logger.debug("Failed to stop docker container during dispose", {
+					containerId: this.containerId,
+					error: err instanceof Error ? err.message : String(err),
+				});
 			}
 			this.containerId = null;
 		}

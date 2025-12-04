@@ -123,7 +123,11 @@ async function initParser(): Promise<boolean> {
 
 // Kick off initialization eagerly but don't block module loading
 // This way the parser may be ready by the time we need it
-initParser().catch(() => {});
+initParser().catch((err) => {
+	logger.debug("Parser initialization failed", {
+		error: err instanceof Error ? err.message : String(err),
+	});
+});
 
 /**
  * Ensure the parser is ready. Call this before using parser functions in tests.

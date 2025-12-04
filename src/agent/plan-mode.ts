@@ -40,7 +40,13 @@
  * - `COMPOSER_PLAN_DIR`: Override the directory for plan files
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createLogger } from "../utils/logger.js";
@@ -512,8 +518,6 @@ export function listPlanFiles(
 		if (!existsSync(config.planDir)) {
 			return [];
 		}
-		// Dynamic require to avoid circular dependency issues
-		const { readdirSync } = require("node:fs") as typeof import("node:fs");
 		return readdirSync(config.planDir)
 			.filter((f: string) => f.endsWith(".md"))
 			.map((f: string) => join(config.planDir, f));

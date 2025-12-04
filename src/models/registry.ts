@@ -1315,7 +1315,9 @@ export function inspectConfig(): ConfigInspection {
 			if (exists) {
 				try {
 					size = statSync(filePath).size;
-				} catch {}
+				} catch {
+					// File may have been deleted between existsSync and statSync
+				}
 			}
 
 			inspection.fileReferences.push({

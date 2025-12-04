@@ -5,7 +5,14 @@
  * Supports both in-memory and disk-persisted checkpoints.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { createLogger } from "../utils/logger.js";
 import type {
@@ -83,7 +90,7 @@ export class CheckpointStore {
 			let content: string | null = null;
 
 			if (existed) {
-				const stats = require("node:fs").statSync(filePath);
+				const stats = statSync(filePath);
 				if (stats.size > this.options.maxFileSize) {
 					// Skip files over configured limit
 					logger.debug("Skipping large file for checkpoint", {
@@ -229,7 +236,7 @@ export class CheckpointStore {
 					restoredFiles.push(snapshot.path);
 				} else if (!snapshot.existed && existsSync(snapshot.path)) {
 					// File was created after checkpoint - delete it
-					require("node:fs").unlinkSync(snapshot.path);
+					unlinkSync(snapshot.path);
 					restoredFiles.push(snapshot.path);
 				}
 			} catch (error) {
@@ -304,7 +311,7 @@ export class CheckpointStore {
 					writeFileSync(snapshot.path, snapshot.content, "utf-8");
 					restoredFiles.push(snapshot.path);
 				} else if (!snapshot.existed && existsSync(snapshot.path)) {
-					require("node:fs").unlinkSync(snapshot.path);
+					unlinkSync(snapshot.path);
 					restoredFiles.push(snapshot.path);
 				}
 			} catch (error) {
