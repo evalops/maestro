@@ -9,6 +9,8 @@ import type { ToolCall, ToolResultMessage } from "../agent/types.js";
 import { createLogger } from "../utils/logger.js";
 import { executeHooks } from "./executor.js";
 import type {
+	EvalAssertion,
+	EvalGateHookInput,
 	HookExecutionResult,
 	PostToolUseFailureHookInput,
 	PostToolUseHookInput,
@@ -61,8 +63,19 @@ export interface PostToolUseHookResult {
 	preventContinuation: boolean;
 	/** Stop reason if preventing continuation */
 	stopReason?: string;
+	/** Structured assertions to attach to audit trail */
+	assertions?: EvalAssertion[];
+	/** Evaluation summary */
+	evaluation?: HookEvaluation;
 	/** Hook execution results for UI display */
 	hookResults: HookExecutionResult[];
+}
+
+export interface HookEvaluation {
+	score?: number;
+	threshold?: number;
+	passed?: boolean;
+	rationale?: string;
 }
 
 /**
@@ -81,6 +94,15 @@ export interface ToolHookService {
 	 * Run PostToolUse hooks after successful tool execution.
 	 */
 	runPostToolUseHooks(
+		toolCall: ToolCall,
+		result: ToolResultMessage,
+		signal?: AbortSignal,
+	): Promise<PostToolUseHookResult>;
+
+	/**
+	 * Run EvalGate hooks to generate evaluation assertions and scores.
+	 */
+	runEvalGateHooks(
 		toolCall: ToolCall,
 		result: ToolResultMessage,
 		signal?: AbortSignal,
@@ -217,6 +239,8 @@ export function createToolHookService(
 			let systemMessage: string | undefined;
 			let preventContinuation = false;
 			let stopReason: string | undefined;
+			let assertions: EvalAssertion[] | undefined;
+			let evaluation: HookEvaluation | undefined;
 
 			for (const hookResult of results) {
 				// Check for continuation prevention
@@ -244,11 +268,25 @@ export function createToolHookService(
 						? `${systemMessage}\n${hookResult.systemMessage}`
 						: hookResult.systemMessage;
 				}
+
+				if (hookResult.assertions?.length) {
+					assertions = assertions
+						? [...assertions, ...hookResult.assertions]
+						: [...hookResult.assertions];
+				}
+
+				if (hookResult.evaluation) {
+					evaluation = {
+						...evaluation,
+						...hookResult.evaluation,
+					};
+				}
 			}
 
 			logger.debug("PostToolUse hooks completed", {
 				toolName: toolCall.name,
 				preventContinuation,
+				hasAssertions: Boolean(assertions?.length),
 				hasAdditionalContext: Boolean(additionalContext),
 				resultCount: results.length,
 			});
@@ -259,6 +297,92 @@ export function createToolHookService(
 				systemMessage,
 				preventContinuation,
 				stopReason,
+				assertions,
+				evaluation,
+				hookResults: results,
+			};
+		},
+
+		async runEvalGateHooks(
+			toolCall: ToolCall,
+			result: ToolResultMessage,
+			signal?: AbortSignal,
+		): Promise<PostToolUseHookResult> {
+			const outputText = result.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("\n")
+				.slice(0, 10000);
+
+			const input: EvalGateHookInput = {
+				hook_event_name: "EvalGate",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				tool_name: toolCall.name,
+				tool_call_id: toolCall.id,
+				tool_input: toolCall.arguments,
+				tool_output: outputText,
+				is_error: result.isError,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+
+			let additionalContext: string | undefined;
+			let systemMessage: string | undefined;
+			let preventContinuation = false;
+			let stopReason: string | undefined;
+			let assertions: EvalAssertion[] | undefined;
+			let evaluation: HookEvaluation | undefined;
+
+			for (const hookResult of results) {
+				if (hookResult.preventContinuation) {
+					preventContinuation = true;
+					stopReason = hookResult.stopReason;
+					break;
+				}
+
+				if (hookResult.additionalContext) {
+					additionalContext = additionalContext
+						? `${additionalContext}\n${hookResult.additionalContext}`
+						: hookResult.additionalContext;
+				}
+
+				if (hookResult.systemMessage) {
+					systemMessage = systemMessage
+						? `${systemMessage}\n${hookResult.systemMessage}`
+						: hookResult.systemMessage;
+				}
+
+				if (hookResult.assertions?.length) {
+					assertions = assertions
+						? [...assertions, ...hookResult.assertions]
+						: [...hookResult.assertions];
+				}
+
+				if (hookResult.evaluation) {
+					evaluation = {
+						...evaluation,
+						...hookResult.evaluation,
+					};
+				}
+			}
+
+			logger.debug("EvalGate hooks completed", {
+				toolName: toolCall.name,
+				preventContinuation,
+				hasAssertions: Boolean(assertions?.length),
+				hasEvaluation: Boolean(evaluation),
+				resultCount: results.length,
+			});
+
+			return {
+				additionalContext,
+				systemMessage,
+				preventContinuation,
+				stopReason,
+				assertions,
+				evaluation,
 				hookResults: results,
 			};
 		},

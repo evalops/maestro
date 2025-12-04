@@ -8,6 +8,7 @@
  *
  * - **PreToolUse**: Before a tool is executed (can block or modify input)
  * - **PostToolUse**: After successful tool execution (can add context)
+ * - **EvalGate**: After tool execution to emit structured assertions/scores
  * - **PostToolUseFailure**: After tool execution fails
  * - **SessionStart**: When a session begins
  * - **SessionEnd**: When a session ends
@@ -54,6 +55,7 @@ export type {
 	PreToolUseHookInput,
 	PostToolUseHookInput,
 	PostToolUseFailureHookInput,
+	EvalGateHookInput,
 	SessionStartHookInput,
 	SessionEndHookInput,
 	SubagentStartHookInput,
@@ -69,11 +71,13 @@ export type {
 	PreToolUseHookOutput,
 	PostToolUseHookOutput,
 	PostToolUseFailureHookOutput,
+	EvalGateHookOutput,
 	SessionStartHookOutput,
 	SubagentStartHookOutput,
 	SubagentStopHookOutput,
 	UserPromptSubmitHookOutput,
 	PermissionRequestHookOutput,
+	EvalAssertion,
 	// Result types
 	HookExecutionResult,
 	HookResultMessage,

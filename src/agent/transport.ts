@@ -1166,6 +1166,90 @@ export class ProviderTransport implements AgentTransport {
 										];
 										toolResultMsg.isError = true;
 									}
+									// Merge assertions and evaluation into details
+									if (
+										postHookResult.assertions?.length ||
+										postHookResult.evaluation
+									) {
+										const mergedDetails: Record<string, unknown> =
+											toolResultMsg.details &&
+											typeof toolResultMsg.details === "object"
+												? {
+														...(toolResultMsg.details as Record<
+															string,
+															unknown
+														>),
+													}
+												: {};
+
+										if (postHookResult.evaluation) {
+											mergedDetails.evaluation = postHookResult.evaluation;
+										}
+										if (postHookResult.assertions?.length) {
+											mergedDetails.assertions = postHookResult.assertions;
+										}
+
+										toolResultMsg.details =
+											mergedDetails as typeof toolResultMsg.details;
+									}
+
+									const evalHookResult = await hookService.runEvalGateHooks(
+										effectiveToolCall,
+										toolResultMsg,
+										signal,
+									);
+
+									if (evalHookResult.additionalContext) {
+										toolResultMsg.content = [
+											...toolResultMsg.content,
+											{
+												type: "text" as const,
+												text: `\n[Hook context]: ${evalHookResult.additionalContext}`,
+											},
+										];
+									}
+
+									if (
+										evalHookResult.assertions?.length ||
+										evalHookResult.evaluation
+									) {
+										const mergedDetails: Record<string, unknown> =
+											toolResultMsg.details &&
+											typeof toolResultMsg.details === "object"
+												? {
+														...(toolResultMsg.details as Record<
+															string,
+															unknown
+														>),
+													}
+												: {};
+
+										// Only assign evaluation if it's actually defined and has content
+										if (
+											evalHookResult.evaluation &&
+											Object.keys(evalHookResult.evaluation).length > 0
+										) {
+											mergedDetails.evaluation = evalHookResult.evaluation;
+										}
+										// Only assign assertions if they exist and have length
+										if (evalHookResult.assertions?.length) {
+											mergedDetails.assertions = evalHookResult.assertions;
+										}
+
+										toolResultMsg.details =
+											mergedDetails as typeof toolResultMsg.details;
+									}
+
+									if (evalHookResult.preventContinuation) {
+										toolResultMsg.content = [
+											...toolResultMsg.content,
+											{
+												type: "text" as const,
+												text: `\n[Hook stop]: ${evalHookResult.stopReason ?? "Hook requested stop"}`,
+											},
+										];
+										toolResultMsg.isError = true;
+									}
 								}
 
 								return {

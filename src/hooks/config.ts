@@ -174,6 +174,7 @@ function loadHooksFromEnv(): HookConfiguration {
 		PRE_TOOL_USE: "PreToolUse",
 		POST_TOOL_USE: "PostToolUse",
 		POST_TOOL_USE_FAILURE: "PostToolUseFailure",
+		EVAL_GATE: "EvalGate",
 		SESSION_START: "SessionStart",
 		SESSION_END: "SessionEnd",
 		SUBAGENT_START: "SubagentStart",
@@ -351,6 +352,7 @@ export function getMatchTarget(input: HookInput): string | undefined {
 		case "PreToolUse":
 		case "PostToolUse":
 		case "PostToolUseFailure":
+		case "EvalGate":
 		case "PermissionRequest":
 			return input.tool_name;
 		case "SessionStart":

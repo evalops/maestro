@@ -14,6 +14,7 @@ export type HookEventType =
 	| "PreToolUse"
 	| "PostToolUse"
 	| "PostToolUseFailure"
+	| "EvalGate"
 	| "SessionStart"
 	| "SessionEnd"
 	| "SubagentStart"
@@ -55,6 +56,23 @@ export interface PreToolUseHookInput extends HookInputBase {
  */
 export interface PostToolUseHookInput extends HookInputBase {
 	hook_event_name: "PostToolUse";
+	/** Name of the tool that was executed */
+	tool_name: string;
+	/** Tool call ID */
+	tool_call_id: string;
+	/** Arguments that were passed to the tool */
+	tool_input: Record<string, unknown>;
+	/** Result from tool execution (truncated if large) */
+	tool_output: string;
+	/** Whether the tool result was an error */
+	is_error: boolean;
+}
+
+/**
+ * Input for EvalGate hooks - called to score tool execution.
+ */
+export interface EvalGateHookInput extends HookInputBase {
+	hook_event_name: "EvalGate";
 	/** Name of the tool that was executed */
 	tool_name: string;
 	/** Tool call ID */
@@ -201,6 +219,7 @@ export type HookInput =
 	| PreToolUseHookInput
 	| PostToolUseHookInput
 	| PostToolUseFailureHookInput
+	| EvalGateHookInput
 	| SessionStartHookInput
 	| SessionEndHookInput
 	| SubagentStartHookInput
@@ -237,6 +256,49 @@ export interface PostToolUseHookOutput {
 	additionalContext?: string;
 	/** Updated MCP tool output (for MCP tools only) */
 	updatedMCPToolOutput?: unknown;
+	/** Structured assertions produced by the tool */
+	assertions?: EvalAssertion[];
+}
+
+/**
+ * Structured evaluation assertion.
+ */
+export interface EvalAssertion {
+	/** Unique identifier for the assertion */
+	id?: string;
+	/** Human-friendly assertion name */
+	name: string;
+	/** Description or notes about the assertion */
+	description?: string;
+	/** Whether the assertion passed */
+	passed?: boolean;
+	/** Numerical score for the assertion */
+	score?: number;
+	/** Passing threshold */
+	threshold?: number;
+	/** Severity if the assertion fails */
+	severity?: "info" | "warn" | "error";
+	/** Evidence string supporting the assertion */
+	evidence?: string;
+	/** Additional metadata */
+	metadata?: Record<string, unknown>;
+}
+
+/**
+ * Hook-specific output for EvalGate events.
+ */
+export interface EvalGateHookOutput {
+	hookEventName: "EvalGate";
+	/** Assertions reported by the evaluation */
+	assertions?: EvalAssertion[];
+	/** Aggregate evaluation score */
+	score?: number;
+	/** Required threshold */
+	threshold?: number;
+	/** Whether the evaluation passed */
+	passed?: boolean;
+	/** Optional rationale */
+	rationale?: string;
 }
 
 /**
@@ -303,6 +365,7 @@ export type HookSpecificOutput =
 	| PreToolUseHookOutput
 	| PostToolUseHookOutput
 	| PostToolUseFailureHookOutput
+	| EvalGateHookOutput
 	| SessionStartHookOutput
 	| SubagentStartHookOutput
 	| SubagentStopHookOutput
@@ -356,6 +419,15 @@ export interface HookExecutionResult {
 	updatedInput?: Record<string, unknown>;
 	/** Updated MCP tool output */
 	updatedMCPToolOutput?: unknown;
+	/** Evaluation assertions */
+	assertions?: EvalAssertion[];
+	/** Evaluation summary */
+	evaluation?: {
+		score?: number;
+		threshold?: number;
+		passed?: boolean;
+		rationale?: string;
+	};
 	/** Permission request result */
 	permissionRequestResult?: {
 		behavior: "allow" | "deny";
@@ -376,7 +448,8 @@ export type HookResultMessageType =
 	| "hook_cancelled"
 	| "hook_system_message"
 	| "hook_additional_context"
-	| "hook_stopped_continuation";
+	| "hook_stopped_continuation"
+	| "hook_evaluation";
 
 /**
  * Message attachment from hook execution.

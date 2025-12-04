@@ -650,5 +650,103 @@ describe("Hook System", () => {
 				"Note: File was modified successfully.",
 			);
 		});
+
+		it("should collect PostToolUse assertions", async () => {
+			registerHook("PostToolUse", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "PostToolUse",
+						assertions: [
+							{
+								name: "file-updated",
+								passed: true,
+								score: 0.9,
+								threshold: 0.5,
+							},
+						],
+					},
+				}),
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+			});
+
+			const result = await service.runPostToolUseHooks(
+				{
+					type: "toolCall",
+					id: "test-1",
+					name: "edit",
+					arguments: { file: "test.ts" },
+				},
+				{
+					role: "toolResult",
+					toolCallId: "test-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "File edited" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			);
+
+			expect(result.assertions).toEqual([
+				{
+					name: "file-updated",
+					passed: true,
+					score: 0.9,
+					threshold: 0.5,
+				},
+			]);
+		});
+
+		it("should aggregate EvalGate scores and assertions", async () => {
+			registerHook("EvalGate", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "EvalGate",
+						score: 0.82,
+						threshold: 0.75,
+						passed: true,
+						assertions: [
+							{
+								name: "formatting",
+								passed: true,
+								evidence: "Applied formatter",
+							},
+						],
+					},
+				}),
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+			});
+
+			const result = await service.runEvalGateHooks(
+				{
+					type: "toolCall",
+					id: "test-1",
+					name: "edit",
+					arguments: { file: "test.ts" },
+				},
+				{
+					role: "toolResult",
+					toolCallId: "test-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "File edited" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			);
+
+			expect(result.evaluation).toEqual({
+				score: 0.82,
+				threshold: 0.75,
+				passed: true,
+			});
+			expect(result.assertions?.[0]?.name).toBe("formatting");
+		});
 	});
 });

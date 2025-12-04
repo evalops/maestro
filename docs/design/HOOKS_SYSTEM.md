@@ -237,6 +237,25 @@ interface PostToolUseHookOutput {
   contextToAdd?: string;
   suppressOutput?: boolean;
 }
+
+### EvalGate Output
+
+```typescript
+interface EvalGateHookOutput {
+  hookEventName: "EvalGate";
+  score?: number;
+  threshold?: number;
+  passed?: boolean;
+  rationale?: string;
+  assertions?: Array<{
+    name: string;
+    passed?: boolean;
+    score?: number;
+    threshold?: number;
+    evidence?: string;
+  }>;
+}
+```
 ```
 
 ## Hook Execution

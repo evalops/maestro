@@ -493,6 +493,74 @@ function parseStructuredHookOutput(
 				if (specific.updatedMCPToolOutput) {
 					result.updatedMCPToolOutput = specific.updatedMCPToolOutput;
 				}
+				if (specific.assertions?.length) {
+					result.assertions = specific.assertions;
+					if (result.message.type === "hook_success") {
+						result.message = createHookMessage({
+							type: "hook_evaluation",
+							hookName,
+							hookEvent,
+							toolUseID,
+							content: `Hook reported ${specific.assertions.length} assertion${
+								specific.assertions.length === 1 ? "" : "s"
+							}`,
+						});
+					}
+				}
+				break;
+
+			case "EvalGate":
+				if (specific.assertions?.length) {
+					result.assertions = specific.assertions;
+				}
+				if (
+					specific.score !== undefined ||
+					specific.threshold !== undefined ||
+					specific.passed !== undefined ||
+					specific.rationale
+				) {
+					result.evaluation = {};
+					if (specific.score !== undefined) {
+						result.evaluation.score = specific.score;
+					}
+					if (specific.threshold !== undefined) {
+						result.evaluation.threshold = specific.threshold;
+					}
+					if (specific.passed !== undefined) {
+						result.evaluation.passed = specific.passed;
+					}
+					if (specific.rationale) {
+						result.evaluation.rationale = specific.rationale;
+					}
+				}
+
+				if (result.assertions || result.evaluation) {
+					const parts = [] as string[];
+					if (result.evaluation?.score !== undefined) {
+						parts.push(`score=${result.evaluation.score}`);
+					}
+					if (result.evaluation?.threshold !== undefined) {
+						parts.push(`threshold=${result.evaluation.threshold}`);
+					}
+					if (result.evaluation?.passed !== undefined) {
+						parts.push(`passed=${result.evaluation.passed}`);
+					}
+					if (result.assertions?.length) {
+						parts.push(
+							`${result.assertions.length} assertion${
+								result.assertions.length === 1 ? "" : "s"
+							}`,
+						);
+					}
+
+					result.message = createHookMessage({
+						type: "hook_evaluation",
+						hookName,
+						hookEvent,
+						toolUseID,
+						content: parts.join(", "),
+					});
+				}
 				break;
 
 			case "PostToolUseFailure":

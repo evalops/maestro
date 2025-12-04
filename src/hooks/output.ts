@@ -16,6 +16,7 @@ const VALID_HOOK_EVENT_NAMES = new Set([
 	"PreToolUse",
 	"PostToolUse",
 	"PostToolUseFailure",
+	"EvalGate",
 	"SessionStart",
 	"SessionEnd",
 	"SubagentStart",
@@ -175,6 +176,8 @@ function validateHookSpecificOutput(
 			return validatePreToolUseOutput(obj);
 		case "PostToolUse":
 			return validatePostToolUseOutput(obj);
+		case "EvalGate":
+			return validateEvalGateOutput(obj);
 		case "PostToolUseFailure":
 		case "SessionStart":
 		case "SubagentStart":
@@ -242,6 +245,54 @@ function validatePostToolUseOutput(
 	}
 
 	// updatedMCPToolOutput can be any type, no validation needed
+
+	if ("assertions" in obj) {
+		const assertionResult = validateAssertions(obj.assertions);
+		if (!assertionResult.valid) {
+			return assertionResult;
+		}
+	}
+
+	return { valid: true };
+}
+
+/**
+ * Validate EvalGate hook-specific output.
+ */
+function validateEvalGateOutput(
+	obj: Record<string, unknown>,
+): { valid: true } | { valid: false; error: string } {
+	if ("score" in obj && typeof obj.score !== "number") {
+		return { valid: false, error: "hookSpecificOutput.score must be a number" };
+	}
+
+	if ("threshold" in obj && typeof obj.threshold !== "number") {
+		return {
+			valid: false,
+			error: "hookSpecificOutput.threshold must be a number",
+		};
+	}
+
+	if ("passed" in obj && typeof obj.passed !== "boolean") {
+		return {
+			valid: false,
+			error: "hookSpecificOutput.passed must be a boolean",
+		};
+	}
+
+	if ("rationale" in obj && typeof obj.rationale !== "string") {
+		return {
+			valid: false,
+			error: "hookSpecificOutput.rationale must be a string",
+		};
+	}
+
+	if ("assertions" in obj) {
+		const assertionResult = validateAssertions(obj.assertions);
+		if (!assertionResult.valid) {
+			return assertionResult;
+		}
+	}
 
 	return { valid: true };
 }
@@ -333,6 +384,109 @@ function validatePermissionRequestOutput(
 	return { valid: true };
 }
 
+function validateAssertions(
+	assertions: unknown,
+): { valid: true } | { valid: false; error: string } {
+	if (!Array.isArray(assertions)) {
+		return {
+			valid: false,
+			error: "hookSpecificOutput.assertions must be an array",
+		};
+	}
+
+	for (const assertion of assertions) {
+		if (typeof assertion !== "object" || assertion === null) {
+			return {
+				valid: false,
+				error: "hookSpecificOutput.assertions entries must be objects",
+			};
+		}
+
+		const entry = assertion as Record<string, unknown>;
+
+		if (!("name" in entry) || typeof entry.name !== "string") {
+			return {
+				valid: false,
+				error:
+					"hookSpecificOutput.assertions entries must include a string name field",
+			};
+		}
+
+		if ("description" in entry && typeof entry.description !== "string") {
+			return {
+				valid: false,
+				error:
+					"hookSpecificOutput.assertions entries must have string description when provided",
+			};
+		}
+
+		if ("id" in entry && typeof entry.id !== "string") {
+			return {
+				valid: false,
+				error:
+					"hookSpecificOutput.assertions entries must have string id when provided",
+			};
+		}
+
+		if ("passed" in entry && typeof entry.passed !== "boolean") {
+			return {
+				valid: false,
+				error:
+					"hookSpecificOutput.assertions entries must have boolean passed when provided",
+			};
+		}
+
+		if ("score" in entry && typeof entry.score !== "number") {
+			return {
+				valid: false,
+				error:
+					"hookSpecificOutput.assertions entries must have numeric score when provided",
+			};
+		}
+
+		if ("threshold" in entry && typeof entry.threshold !== "number") {
+			return {
+				valid: false,
+				error:
+					"hookSpecificOutput.assertions entries must have numeric threshold when provided",
+			};
+		}
+
+		if ("severity" in entry) {
+			if (
+				typeof entry.severity !== "string" ||
+				!["info", "warn", "error"].includes(entry.severity)
+			) {
+				return {
+					valid: false,
+					error:
+						"hookSpecificOutput.assertions entries severity must be info, warn, or error",
+				};
+			}
+		}
+
+		if ("evidence" in entry && typeof entry.evidence !== "string") {
+			return {
+				valid: false,
+				error:
+					"hookSpecificOutput.assertions entries must have string evidence when provided",
+			};
+		}
+
+		if ("metadata" in entry) {
+			if (typeof entry.metadata !== "object" || entry.metadata === null) {
+				return {
+					valid: false,
+					error:
+						"hookSpecificOutput.assertions entries metadata must be an object when provided",
+				};
+			}
+		}
+	}
+
+	return { valid: true };
+}
+
 /**
  * Safely parse and validate hook output.
  */
@@ -379,6 +533,17 @@ export function getHookOutputSchema(): string {
 				"for PostToolUse": {
 					hookEventName: '"PostToolUse"',
 					additionalContext: "string (optional)",
+					assertions:
+						"array (optional) - assertions matching eval schema with name, score, passed",
+				},
+				"for EvalGate": {
+					hookEventName: '"EvalGate"',
+					score: "number (optional)",
+					threshold: "number (optional)",
+					passed: "boolean (optional)",
+					rationale: "string (optional)",
+					assertions:
+						"array (optional) - assertions matching eval schema with name, score, passed",
 				},
 				"for PermissionRequest": {
 					hookEventName: '"PermissionRequest"',
