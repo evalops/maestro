@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	isLocalhostAlias,
+	isLoopbackIP,
 	isLoopbackIPv4,
+	isPrivateIP,
 	isPrivateIPv4,
 	parseIPv4,
+	parseIPv4MappedDecimal,
 	parseIPv4MappedHex,
 } from "../../src/utils/ip-address-parser.js";
 
@@ -191,5 +195,157 @@ describe("parseIPv4MappedHex", () => {
 	it("returns null for hex values out of range", () => {
 		expect(parseIPv4MappedHex("::ffff:10000:0001")).toBeNull();
 		expect(parseIPv4MappedHex("::ffff:0001:10000")).toBeNull();
+	});
+});
+
+describe("parseIPv4MappedDecimal", () => {
+	it("parses valid IPv4-mapped IPv6 addresses in decimal format", () => {
+		expect(parseIPv4MappedDecimal("::ffff:192.168.1.1")).toEqual([
+			192, 168, 1, 1,
+		]);
+		expect(parseIPv4MappedDecimal("::ffff:127.0.0.1")).toEqual([127, 0, 0, 1]);
+		expect(parseIPv4MappedDecimal("::ffff:10.0.0.1")).toEqual([10, 0, 0, 1]);
+		expect(parseIPv4MappedDecimal("::ffff:0.0.0.0")).toEqual([0, 0, 0, 0]);
+	});
+
+	it("handles case insensitivity", () => {
+		expect(parseIPv4MappedDecimal("::FFFF:192.168.1.1")).toEqual([
+			192, 168, 1, 1,
+		]);
+	});
+
+	it("returns null for invalid formats", () => {
+		expect(parseIPv4MappedDecimal("192.168.1.1")).toBeNull();
+		expect(parseIPv4MappedDecimal("::ffff:c0a8:0101")).toBeNull(); // hex format
+		expect(parseIPv4MappedDecimal("::192.168.1.1")).toBeNull(); // missing ffff
+		expect(parseIPv4MappedDecimal("")).toBeNull();
+	});
+});
+
+describe("isLoopbackIP", () => {
+	describe("IPv4 loopback", () => {
+		it("returns true for 127.x.x.x addresses", () => {
+			expect(isLoopbackIP("127.0.0.1")).toBe(true);
+			expect(isLoopbackIP("127.0.0.0")).toBe(true);
+			expect(isLoopbackIP("127.255.255.255")).toBe(true);
+		});
+
+		it("returns false for non-loopback IPv4", () => {
+			expect(isLoopbackIP("192.168.1.1")).toBe(false);
+			expect(isLoopbackIP("10.0.0.1")).toBe(false);
+		});
+	});
+
+	describe("IPv6 loopback", () => {
+		it("returns true for ::1", () => {
+			expect(isLoopbackIP("::1")).toBe(true);
+		});
+
+		it("returns true for expanded ::1 forms", () => {
+			expect(isLoopbackIP("0:0:0:0:0:0:0:1")).toBe(true);
+			expect(isLoopbackIP("0000:0000:0000:0000:0000:0000:0000:0001")).toBe(
+				true,
+			);
+		});
+	});
+
+	describe("IPv4-mapped loopback", () => {
+		it("returns true for ::ffff:127.x.x.x (decimal)", () => {
+			expect(isLoopbackIP("::ffff:127.0.0.1")).toBe(true);
+			expect(isLoopbackIP("::ffff:127.255.255.255")).toBe(true);
+		});
+
+		it("returns true for ::ffff:7f00:x (hex)", () => {
+			expect(isLoopbackIP("::ffff:7f00:1")).toBe(true);
+			expect(isLoopbackIP("::ffff:7f00:0001")).toBe(true);
+		});
+	});
+
+	it("returns false for non-loopback addresses", () => {
+		expect(isLoopbackIP("8.8.8.8")).toBe(false);
+		expect(isLoopbackIP("::ffff:c0a8:101")).toBe(false); // 192.168.1.1
+		expect(isLoopbackIP("fe80::1")).toBe(false);
+	});
+});
+
+describe("isPrivateIP", () => {
+	describe("IPv4 private ranges", () => {
+		it("returns true for 10.x.x.x", () => {
+			expect(isPrivateIP("10.0.0.1")).toBe(true);
+			expect(isPrivateIP("10.255.255.255")).toBe(true);
+		});
+
+		it("returns true for 172.16-31.x.x", () => {
+			expect(isPrivateIP("172.16.0.1")).toBe(true);
+			expect(isPrivateIP("172.31.255.255")).toBe(true);
+		});
+
+		it("returns true for 192.168.x.x", () => {
+			expect(isPrivateIP("192.168.0.1")).toBe(true);
+			expect(isPrivateIP("192.168.255.255")).toBe(true);
+		});
+
+		it("returns true for 169.254.x.x (link-local)", () => {
+			expect(isPrivateIP("169.254.0.1")).toBe(true);
+		});
+
+		it("returns true for 100.64-127.x.x (CGNAT)", () => {
+			expect(isPrivateIP("100.64.0.1")).toBe(true);
+			expect(isPrivateIP("100.127.255.255")).toBe(true);
+		});
+	});
+
+	describe("IPv6 private ranges", () => {
+		it("returns true for fe80:: (link-local)", () => {
+			expect(isPrivateIP("fe80::1")).toBe(true);
+			expect(isPrivateIP("fe80:1234::5678")).toBe(true);
+		});
+
+		it("returns true for fc00::/7 (unique local)", () => {
+			expect(isPrivateIP("fc00::1")).toBe(true);
+			expect(isPrivateIP("fcff::1")).toBe(true);
+		});
+
+		it("returns true for fd00::/8 (unique local)", () => {
+			expect(isPrivateIP("fd00::1")).toBe(true);
+			expect(isPrivateIP("fd12::1")).toBe(true);
+		});
+	});
+
+	describe("IPv4-mapped private", () => {
+		it("returns true for ::ffff:10.x.x.x", () => {
+			expect(isPrivateIP("::ffff:10.0.0.1")).toBe(true);
+		});
+
+		it("returns true for ::ffff:a00:1 (hex)", () => {
+			expect(isPrivateIP("::ffff:a00:1")).toBe(true); // 10.0.0.1
+		});
+	});
+
+	it("returns false for public addresses", () => {
+		expect(isPrivateIP("8.8.8.8")).toBe(false);
+		expect(isPrivateIP("1.1.1.1")).toBe(false);
+		expect(isPrivateIP("2001:4860:4860::8888")).toBe(false); // Google DNS IPv6
+	});
+});
+
+describe("isLocalhostAlias", () => {
+	it("returns true for localhost", () => {
+		expect(isLocalhostAlias("localhost")).toBe(true);
+	});
+
+	it("returns true for localhost.localdomain", () => {
+		expect(isLocalhostAlias("localhost.localdomain")).toBe(true);
+	});
+
+	it("returns true for 0.0.0.0", () => {
+		expect(isLocalhostAlias("0.0.0.0")).toBe(true);
+	});
+
+	it("returns false for other hostnames", () => {
+		expect(isLocalhostAlias("example.com")).toBe(false);
+		expect(isLocalhostAlias("127.0.0.1")).toBe(false); // IP, not alias
+		expect(isLocalhostAlias("local")).toBe(false);
+		expect(isLocalhostAlias("")).toBe(false);
 	});
 });

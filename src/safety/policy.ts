@@ -103,8 +103,9 @@ import { Type } from "@sinclair/typebox";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
 import { extractDependencies } from "../utils/dependency-extractor.js";
 import {
-	isLoopbackIPv4,
-	isPrivateIPv4,
+	isLocalhostAlias,
+	isLoopbackIP,
+	isPrivateIP,
 	parseIPv4,
 	parseIPv4MappedHex,
 } from "../utils/ip-address-parser.js";
@@ -505,67 +506,9 @@ async function checkNetworkRestrictions(
 			resolvedIPs.push(normalizedHost);
 		}
 
-		// Helper to check if an IP is blocked
-		const isIpBlocked = (ip: string): boolean => {
-			// Check IPv4 localhost
-			const ipv4Octets = parseIPv4(ip);
-			if (ipv4Octets && isLoopbackIPv4(ipv4Octets)) return true;
-
-			// Check IPv4-mapped localhost
-			const mappedHexOctets = parseIPv4MappedHex(ip);
-			if (mappedHexOctets && isLoopbackIPv4(mappedHexOctets)) return true;
-
-			// Check IPv6/aliases
-			if (
-				ip === "::1" ||
-				/^0*:0*:0*:0*:0*:0*:0*:0*1$/i.test(ip) ||
-				/^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/i.test(ip)
-			)
-				return true;
-
-			return false;
-		};
-
-		// Helper to check if an IP is private
-		const isIpPrivate = (ip: string): boolean => {
-			const ipv4Octets = parseIPv4(ip);
-			if (ipv4Octets && isPrivateIPv4(ipv4Octets)) return true;
-
-			const mappedHexOctets = parseIPv4MappedHex(ip);
-			if (mappedHexOctets && isPrivateIPv4(mappedHexOctets)) return true;
-
-			// Check IPv6 private
-			if (
-				/^fe80:/i.test(ip) ||
-				/^fc[0-9a-f]{2}:/i.test(ip) ||
-				/^fd[0-9a-f]{0,2}:/i.test(ip) ||
-				/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.test(ip)
-			) {
-				if (ip.startsWith("::ffff:")) {
-					// Extract embedded IPv4 and check
-					const match = ip.match(
-						/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i,
-					);
-					if (match) {
-						const embeddedOctets = parseIPv4(match[1]);
-						if (embeddedOctets && isPrivateIPv4(embeddedOctets)) return true;
-					}
-				} else {
-					return true;
-				}
-			}
-			return false;
-		};
-
 		// Check localhost blocking (full 127.0.0.0/8 range + IPv6 loopback + common aliases)
 		if (network.blockLocalhost) {
-			// Check hostname aliases
-			const isLocalhostAlias =
-				normalizedHost === "localhost" ||
-				normalizedHost === "localhost.localdomain" ||
-				normalizedHost === "0.0.0.0";
-
-			if (isLocalhostAlias || resolvedIPs.some(isIpBlocked)) {
+			if (isLocalhostAlias(normalizedHost) || resolvedIPs.some(isLoopbackIP)) {
 				return {
 					allowed: false,
 					reason: "Access to localhost is blocked by enterprise policy.",
@@ -575,7 +518,7 @@ async function checkNetworkRestrictions(
 
 		// Check private IP blocking (IPv4 + IPv6)
 		if (network.blockPrivateIPs) {
-			if (resolvedIPs.some(isIpPrivate)) {
+			if (resolvedIPs.some(isPrivateIP)) {
 				return {
 					allowed: false,
 					reason:
