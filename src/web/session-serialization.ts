@@ -1,3 +1,26 @@
+/**
+ * Session Serialization Module
+ *
+ * This module handles bidirectional conversion between internal agent message
+ * types (AppMessage, AssistantMessage, etc.) and the external Composer protocol
+ * messages (ComposerMessage). This conversion is essential for:
+ *
+ * - Web API: Converting agent output to JSON for the web client
+ * - Session persistence: Storing/loading sessions in a portable format
+ * - History hydration: Reconstructing agent state from saved sessions
+ *
+ * The conversion handles several complexities:
+ * - Multi-content messages (text, images, thinking blocks, tool calls)
+ * - Tool call/result pairing across message boundaries
+ * - Usage/cost tracking with nested structures
+ * - Timestamp normalization between formats
+ *
+ * Key design decisions:
+ * - Images are replaced with placeholders (too large for JSON)
+ * - Thinking blocks are extracted to a separate field
+ * - Tool calls are serialized with their results as separate messages
+ */
+
 import type {
 	ComposerMessage,
 	ComposerToolCall,
@@ -15,14 +38,26 @@ import type {
 } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 
+/** Direction of conversion for error context */
 export type SessionSerializationDirection = "app->composer" | "composer->app";
 
+/**
+ * Context provided in serialization errors for debugging.
+ * Includes message index and direction to locate the problematic message.
+ */
 export interface SessionSerializationContext {
+	/** Index of the message in the array (0-based) */
 	index?: number;
+	/** Role of the message being converted */
 	role?: string;
+	/** Direction of the conversion */
 	source?: SessionSerializationDirection;
 }
 
+/**
+ * Convert internal Usage to Composer protocol format.
+ * Handles missing/undefined fields by defaulting to zero.
+ */
 function toComposerUsage(usage?: Usage): ComposerUsage | undefined {
 	if (!usage) return undefined;
 	return {
@@ -30,6 +65,7 @@ function toComposerUsage(usage?: Usage): ComposerUsage | undefined {
 		output: usage.output ?? 0,
 		cacheRead: usage.cacheRead ?? 0,
 		cacheWrite: usage.cacheWrite ?? 0,
+		// Ensure cost object always has all required fields
 		cost: usage.cost
 			? {
 					input: usage.cost.input ?? 0,
@@ -48,6 +84,10 @@ function toComposerUsage(usage?: Usage): ComposerUsage | undefined {
 	};
 }
 
+/**
+ * Error thrown when serialization/deserialization fails.
+ * Includes context about which message caused the failure.
+ */
 export class SessionSerializationError extends Error {
 	readonly context?: SessionSerializationContext;
 
@@ -58,9 +98,14 @@ export class SessionSerializationError extends Error {
 	}
 }
 
+// Placeholder strings used when images can't be serialized to JSON
 const IMAGE_PLACEHOLDER_PREFIX = "[image:";
 const UNKNOWN_IMAGE_PLACEHOLDER = "[image]";
 
+/**
+ * Safely stringify a value, returning a placeholder if serialization fails.
+ * Handles circular references and BigInt values gracefully.
+ */
 function safeStringify(value: unknown): string {
 	try {
 		return JSON.stringify(value);
@@ -69,10 +114,12 @@ function safeStringify(value: unknown): string {
 	}
 }
 
+/** Type guard for plain objects (not arrays or null) */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Helper to construct error context from conversion parameters */
 function buildContext(
 	source: SessionSerializationDirection,
 	index: number,
@@ -81,6 +128,10 @@ function buildContext(
 	return { source, index, role };
 }
 
+/**
+ * Create a zero-initialized usage object.
+ * Used when converting messages that don't have usage data.
+ */
 export function createEmptyUsage(): Usage {
 	return {
 		input: 0,
@@ -97,42 +148,63 @@ export function createEmptyUsage(): Usage {
 	};
 }
 
+/**
+ * Serialize tool call content to a string for the tool result message.
+ * Handles various result types: strings, primitives, objects.
+ * Falls back to serializing args if result is missing.
+ */
 export function serializeToolContent(tool: ComposerToolCall): string {
+	// String results are used directly
 	if (typeof tool.result === "string") {
 		return tool.result;
 	}
+	// Primitives are converted to string
 	if (typeof tool.result === "number" || typeof tool.result === "boolean") {
 		return String(tool.result);
 	}
+	// Objects are JSON-serialized
 	if (tool.result && typeof tool.result === "object") {
 		return safeStringify(tool.result);
 	}
+	// Fallback: serialize the args if no result
 	if (tool.args && typeof tool.args === "object") {
 		return safeStringify(tool.args);
 	}
 	return "";
 }
 
+/**
+ * Convert a timestamp to ISO string format.
+ * Handles both numeric (ms since epoch) and string inputs.
+ * Returns current time if input is undefined.
+ */
 function toIsoString(
 	input: number | string | undefined,
 	context: SessionSerializationContext,
 ): string {
 	if (typeof input === "number") {
+		// Validate numeric timestamp (reject NaN, Infinity)
 		if (!Number.isFinite(input)) {
 			throw new SessionSerializationError("Invalid numeric timestamp", context);
 		}
 		return new Date(input).toISOString();
 	}
 	if (typeof input === "string") {
+		// Parse and validate string timestamp
 		const parsed = Date.parse(input);
 		if (!Number.isFinite(parsed)) {
 			throw new SessionSerializationError("Invalid timestamp", context);
 		}
 		return new Date(parsed).toISOString();
 	}
+	// Default to current time if not provided
 	return new Date().toISOString();
 }
 
+/**
+ * Convert an ISO string timestamp to numeric (ms since epoch).
+ * Returns current time if input is undefined.
+ */
 function toTimestamp(
 	input: string | undefined,
 	context: SessionSerializationContext,
@@ -145,6 +217,14 @@ function toTimestamp(
 	return parsed;
 }
 
+/**
+ * Extract text content from a message's content array.
+ * Handles mixed content types:
+ * - Text blocks are concatenated
+ * - Images are replaced with placeholders
+ * - Thinking and tool calls are skipped (handled separately)
+ * - Unknown types get a placeholder
+ */
 function extractTextContent(
 	content?:
 		| string
@@ -152,13 +232,18 @@ function extractTextContent(
 ): string {
 	if (!content) return "";
 	if (typeof content === "string") return content;
+
 	const fragments: string[] = [];
 	for (const block of content) {
 		if (!block) continue;
+
+		// Text blocks - include as-is
 		if (block.type === "text") {
 			fragments.push(block.text);
 			continue;
 		}
+
+		// Image blocks - replace with placeholder (too large for JSON)
 		if (block.type === "image") {
 			const descriptor = block.mimeType
 				? `${IMAGE_PLACEHOLDER_PREFIX}${block.mimeType}]`
@@ -166,35 +251,52 @@ function extractTextContent(
 			fragments.push(descriptor);
 			continue;
 		}
+
+		// Thinking and tool calls are extracted separately, skip here
 		if (block.type === "thinking" || block.type === "toolCall") {
 			continue;
 		}
+
+		// Unknown content type - add placeholder with type info
 		const fallbackType = (block as { type?: string }).type || "unknown";
 		fragments.push(`[content:${fallbackType}]`);
 	}
+
 	return fragments.join("\n\n");
 }
 
+/**
+ * Extract thinking content from a message into a single string.
+ * Returns undefined if no thinking blocks are present.
+ */
 function extractThinking(
 	content?:
 		| string
 		| Array<TextContent | ThinkingContent | ToolCall | ImageContent>,
 ): string | undefined {
 	if (!content || typeof content === "string") return undefined;
+
+	// Filter to thinking blocks, extract text, and join
 	const thought = content
 		.filter((block): block is ThinkingContent => block.type === "thinking")
 		.map((block) => block.thinking.trim())
 		.filter(Boolean)
 		.join("\n\n");
+
 	return thought.length ? thought : undefined;
 }
 
+/**
+ * Extract tool calls from a message into Composer format.
+ * Returns empty array if no tool calls are present.
+ */
 function extractToolCalls(
 	content?:
 		| string
 		| Array<TextContent | ThinkingContent | ToolCall | ImageContent>,
 ): ComposerToolCall[] {
 	if (!content || typeof content === "string") return [];
+
 	return content
 		.filter((block): block is ToolCall => block.type === "toolCall")
 		.map((toolCall) => ({
@@ -205,6 +307,18 @@ function extractToolCalls(
 		}));
 }
 
+/**
+ * Convert a single internal AppMessage to Composer protocol format.
+ *
+ * This is the main App -> Composer conversion function. It handles:
+ * - User messages: Extract text content
+ * - Assistant messages: Extract text, thinking, and tool calls
+ * - Tool results: Extract result content and error status
+ * - System messages: Extract text content
+ *
+ * @param message - The internal message to convert
+ * @param index - Position in the message array (for error context)
+ */
 export function convertAppMessageToComposer(
 	message: AppMessage,
 	index = 0,
@@ -214,6 +328,8 @@ export function convertAppMessageToComposer(
 		"timestamp" in message ? message.timestamp : undefined,
 		context,
 	);
+
+	// User messages - simple text extraction
 	if (message.role === "user") {
 		return {
 			role: "user",
@@ -221,6 +337,8 @@ export function convertAppMessageToComposer(
 			timestamp,
 		};
 	}
+
+	// Assistant messages - extract text, thinking, and tool calls
 	if (message.role === "assistant") {
 		const assistant = message as AssistantMessage;
 		const tools = extractToolCalls(assistant.content);
@@ -233,6 +351,8 @@ export function convertAppMessageToComposer(
 			usage: toComposerUsage(assistant.usage),
 		};
 	}
+
+	// Tool result messages - include tool name and error status
 	if (message.role === "toolResult") {
 		const toolMessage = message as ToolResultMessage;
 		return {
@@ -243,6 +363,8 @@ export function convertAppMessageToComposer(
 			isError: toolMessage.isError,
 		};
 	}
+
+	// System messages (rare, but supported)
 	const systemLike = message as {
 		role?: string;
 		content?: string | Array<TextContent | ImageContent>;
@@ -258,6 +380,10 @@ export function convertAppMessageToComposer(
 	throw new SessionSerializationError("Unsupported App role", context);
 }
 
+/**
+ * Convert an array of AppMessages to Composer format.
+ * Preserves message order and provides index context for errors.
+ */
 export function convertAppMessagesToComposer(
 	messages: AppMessage[],
 ): ComposerMessage[] {
@@ -266,15 +392,26 @@ export function convertAppMessagesToComposer(
 	);
 }
 
+/**
+ * Normalize a Composer tool call to internal ToolCall format.
+ * Generates stable IDs if not provided.
+ *
+ * @param tool - The Composer tool call to normalize
+ * @param messageIndex - Message position (for generating fallback IDs)
+ * @param contentIndex - Content block position (for generating fallback IDs)
+ */
 function normalizeToolCall(
 	tool: ComposerToolCall,
 	messageIndex: number,
 	contentIndex: number,
 ): ToolCall {
+	// Generate fallback name/ID if not provided
 	const name = tool.name?.trim() || `tool_${messageIndex}_${contentIndex}`;
 	const toolCallId =
 		tool.toolCallId || `web-tool-${messageIndex}-${contentIndex}`;
+	// Ensure args is a record (not array or primitive)
 	const args: Record<string, unknown> = isRecord(tool.args) ? tool.args : {};
+
 	return {
 		type: "toolCall",
 		id: toolCallId,
@@ -283,6 +420,10 @@ function normalizeToolCall(
 	};
 }
 
+/**
+ * Create a ToolResultMessage from a Composer tool call.
+ * The result is derived from the tool call's embedded result field.
+ */
 function normalizeToolResult(
 	tool: ComposerToolCall,
 	normalizedCall: ToolCall,
@@ -304,12 +445,26 @@ function normalizeToolResult(
 	};
 }
 
+/**
+ * Convert a single Composer message to internal AppMessage format.
+ *
+ * This is the main Composer -> App conversion function. Note that a single
+ * Composer message may expand to multiple AppMessages when tool calls are
+ * present (the assistant message + one toolResult per tool).
+ *
+ * @param message - The Composer message to convert
+ * @param model - Model metadata to attach to assistant messages
+ * @param index - Position in the message array (for error context)
+ * @returns Array of AppMessages (may be 1+ messages)
+ */
 export function convertComposerMessageToApp(
 	message: ComposerMessage,
 	model: RegisteredModel,
 	index = 0,
 ): AppMessage[] {
 	const context = buildContext("composer->app", index, message.role);
+
+	// User messages - wrap content in text block
 	if (message.role === "user") {
 		return [
 			{
@@ -320,21 +475,29 @@ export function convertComposerMessageToApp(
 		];
 	}
 
+	// Assistant messages - reconstruct content array from components
 	if (message.role === "assistant") {
+		// Build content array: thinking first, then text, then tool calls
 		const normalizedSequence: Array<TextContent | ThinkingContent | ToolCall> =
 			[];
+
+		// Add thinking block if present
 		if (message.thinking?.trim()) {
 			normalizedSequence.push({
 				type: "thinking",
 				thinking: message.thinking.trim(),
 			});
 		}
+
+		// Add text content if present
 		if (message.content) {
 			normalizedSequence.push({
 				type: "text",
 				text: message.content,
 			});
 		}
+
+		// Convert and add tool calls
 		const tools = message.tools ?? [];
 		const baseContentLength = normalizedSequence.length;
 		const toolCalls: ToolCall[] = tools.map((tool, toolIndex) =>
@@ -342,6 +505,7 @@ export function convertComposerMessageToApp(
 		);
 		normalizedSequence.push(...toolCalls);
 
+		// Build the assistant message with model metadata
 		const assistantMessage: AssistantMessage = {
 			role: "assistant",
 			content: normalizedSequence,
@@ -369,6 +533,8 @@ export function convertComposerMessageToApp(
 
 		const results: AppMessage[] = [assistantMessage];
 
+		// Generate tool result messages for each tool call
+		// These follow the assistant message in the conversation
 		tools.forEach((tool, toolIndex) => {
 			const normalizedCall = toolCalls[toolIndex];
 			results.push(
@@ -379,6 +545,7 @@ export function convertComposerMessageToApp(
 		return results;
 	}
 
+	// Standalone tool messages (less common, but supported)
 	if (message.role === "tool") {
 		const toolName = message.toolName || "web_tool";
 		return [
@@ -398,6 +565,8 @@ export function convertComposerMessageToApp(
 		];
 	}
 
+	// System messages are converted to assistant messages
+	// (internal format doesn't have a separate system role in conversation)
 	if (message.role === "system") {
 		return [
 			{
@@ -416,6 +585,12 @@ export function convertComposerMessageToApp(
 	throw new SessionSerializationError("Unsupported Composer role", context);
 }
 
+/**
+ * Convert an array of Composer messages to internal AppMessage format.
+ *
+ * Note: The output array may be longer than the input because assistant
+ * messages with tool calls expand to multiple AppMessages.
+ */
 export function convertComposerMessagesToApp(
 	messages: ComposerMessage[],
 	model: RegisteredModel,

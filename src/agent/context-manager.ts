@@ -1,9 +1,31 @@
+/**
+ * Agent Context Manager
+ *
+ * This module manages dynamic context loading from multiple sources to build
+ * the agent's system prompt. Context sources can include:
+ * - Todo lists and task state
+ * - LSP diagnostics and symbols
+ * - Background task outputs
+ * - Custom user-defined sources
+ *
+ * Key features:
+ * - Parallel loading of all context sources for performance
+ * - Per-source timeouts to prevent slow sources from blocking
+ * - Content truncation to stay within token limits
+ * - Detailed status reporting for debugging and monitoring
+ *
+ * The manager uses a defensive approach: individual source failures
+ * don't block the entire context assembly. Failed sources are logged
+ * and skipped, allowing the agent to continue with partial context.
+ */
+
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("context-manager");
 
 /**
  * Custom error for context source timeouts.
+ * Thrown when a source exceeds its allowed time budget.
  */
 export class ContextTimeoutError extends Error {
 	readonly sourceName: string;
@@ -33,16 +55,38 @@ export class ContextSourceError extends Error {
 	}
 }
 
+/**
+ * Interface for pluggable context sources.
+ *
+ * Each source provides additional content to append to the system prompt.
+ * Sources should:
+ * - Return null if they have no content to contribute
+ * - Respect the abort signal for cancellation
+ * - Handle their own errors gracefully
+ */
 export interface AgentContextSource {
+	/** Unique identifier for this source (used for filtering and logging) */
 	name: string;
+
+	/**
+	 * Fetch the context content to add to the system prompt.
+	 * @param options.signal - Abort signal for cancellation support
+	 * @returns The content string, or null if no content to contribute
+	 */
 	getSystemPromptAdditions(options?: { signal?: AbortSignal }): Promise<
 		string | null
 	>;
 }
 
+/**
+ * Configuration options for the context manager.
+ */
 interface AgentContextOptions {
+	/** Maximum time to wait for each source (default: 1500ms) */
 	sourceTimeoutMs?: number;
+	/** Maximum characters allowed from each source (default: 4000) */
 	maxCharsPerSource?: number;
+	/** Whitelist of source names to enable (null = all enabled) */
 	enabledSources?: string[] | null;
 }
 
@@ -65,11 +109,26 @@ export interface ContextLoadResult {
 	failureCount: number;
 }
 
+/**
+ * Manages multiple context sources and assembles their content into
+ * a combined system prompt addition.
+ *
+ * Usage:
+ * ```typescript
+ * const manager = new AgentContextManager({ sourceTimeoutMs: 2000 });
+ * manager.addSource(todoContextSource);
+ * manager.addSource(lspDiagnosticsSource);
+ * const result = await manager.getCombinedSystemPromptWithStatus();
+ * ```
+ */
 export class AgentContextManager {
+	/** Registered context sources, loaded in parallel */
 	private sources: AgentContextSource[] = [];
+	/** Resolved configuration with defaults applied */
 	private readonly options: Required<AgentContextOptions>;
 
 	constructor(options: AgentContextOptions = {}) {
+		// Apply defaults for any unspecified options
 		this.options = {
 			sourceTimeoutMs: options.sourceTimeoutMs ?? 1500,
 			maxCharsPerSource: options.maxCharsPerSource ?? 4000,
@@ -77,6 +136,10 @@ export class AgentContextManager {
 		};
 	}
 
+	/**
+	 * Register a context source.
+	 * Sources are loaded in parallel when getCombinedSystemPrompt is called.
+	 */
 	addSource(source: AgentContextSource): void {
 		this.sources.push(source);
 	}
@@ -92,18 +155,27 @@ export class AgentContextManager {
 
 	/**
 	 * Get combined system prompt with detailed status for each source.
+	 * This is the main entry point for context assembly.
+	 *
+	 * The method:
+	 * 1. Filters sources based on enabledSources whitelist
+	 * 2. Loads all enabled sources in parallel
+	 * 3. Applies per-source timeout and truncation limits
+	 * 4. Collects detailed status for monitoring
+	 * 5. Joins successful results into a single prompt
 	 */
 	async getCombinedSystemPromptWithStatus(): Promise<ContextLoadResult> {
 		const startTime = Date.now();
-		const parts: string[] = [];
-		const sourceStatuses: SourceLoadStatus[] = [];
+		const parts: string[] = []; // Successful content fragments
+		const sourceStatuses: SourceLoadStatus[] = []; // Status for each source
 
-		// Run in parallel for performance
+		// Run all sources in parallel for optimal latency.
+		// Each source has its own timeout, so slow sources don't block fast ones.
 		const results = await Promise.all(
 			this.sources.map(async (source) => {
 				const sourceStart = Date.now();
 
-				// Check if source is enabled
+				// Skip disabled sources immediately (no timeout overhead)
 				if (
 					this.options.enabledSources &&
 					!this.options.enabledSources.includes(source.name)
@@ -116,6 +188,7 @@ export class AgentContextManager {
 					};
 				}
 
+				// Each source gets its own AbortController for independent cancellation
 				const controller = new AbortController();
 
 				try {
@@ -257,6 +330,18 @@ export class AgentContextManager {
 	}
 }
 
+/**
+ * Wraps a promise with a timeout, aborting if the timeout is exceeded.
+ *
+ * Uses Promise.race to compete the original promise against a timeout.
+ * If the timeout wins, it aborts the controller (allowing the source
+ * to clean up) and rejects with a ContextTimeoutError.
+ *
+ * @param promise - The promise to wrap
+ * @param timeoutMs - Maximum time to wait in milliseconds
+ * @param controller - AbortController to signal cancellation
+ * @param sourceName - Name of the source (for error messages)
+ */
 async function withTimeout<T>(
 	promise: Promise<T>,
 	timeoutMs: number,
@@ -269,20 +354,33 @@ async function withTimeout<T>(
 			promise,
 			new Promise<never>((_, reject) => {
 				timeoutHandle = setTimeout(() => {
+					// Abort the controller first to signal the source to stop
 					controller.abort(new ContextTimeoutError(sourceName, timeoutMs));
+					// Then reject to complete the race
 					reject(new ContextTimeoutError(sourceName, timeoutMs));
 				}, timeoutMs);
 			}),
 		]);
 	} finally {
+		// Always clean up the timer to prevent memory leaks
 		if (timeoutHandle) clearTimeout(timeoutHandle);
 	}
 }
 
+/**
+ * Truncates a string to a maximum length, appending a suffix indicating
+ * how much content was removed.
+ *
+ * Example output: "content here...\n\n[truncated 1234 chars]"
+ *
+ * @param value - The string to truncate
+ * @param maxChars - Maximum allowed length
+ */
 function truncate(value: string, maxChars: number): string {
 	if (value.length <= maxChars) {
 		return value;
 	}
+	// Build suffix first to know how much space it needs
 	const suffix = `\n\n[truncated ${value.length - maxChars} chars]`;
 	const available = Math.max(0, maxChars - suffix.length);
 	const head = available > 0 ? value.slice(0, available) : "";

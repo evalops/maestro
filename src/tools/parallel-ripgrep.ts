@@ -1,3 +1,25 @@
+/**
+ * Parallel Ripgrep Tool
+ *
+ * This tool enables searching for multiple regex patterns simultaneously
+ * across a codebase. Unlike running separate ripgrep searches, this tool:
+ *
+ * 1. Runs all pattern searches in parallel for performance
+ * 2. Merges overlapping line ranges to avoid duplicate context
+ * 3. Returns consolidated results with per-pattern attribution
+ *
+ * Use cases:
+ * - Finding function definitions AND their usages
+ * - Searching for multiple related patterns (e.g., import + export)
+ * - Finding all occurrences of related symbols
+ *
+ * The merging algorithm:
+ * 1. Each pattern search returns line matches with context
+ * 2. Matches are grouped by file
+ * 3. Overlapping/adjacent ranges within a file are merged
+ * 4. Final output shows which patterns matched each range
+ */
+
 import { promises as fs } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
@@ -10,7 +32,9 @@ import {
 } from "./ripgrep-utils.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
+/** Maximum number of line ranges to include in detailed output */
 const RANGE_DETAIL_LIMIT = 200;
+/** Default max matches per pattern (prevents runaway searches) */
 const DEFAULT_MAX_RESULTS = 500;
 
 const parallelRipgrepSchema = Type.Object({
@@ -102,23 +126,55 @@ const parallelRipgrepSchema = Type.Object({
 	),
 });
 
+/**
+ * A single merged line range with its content.
+ * Represents a contiguous block of lines that matched one or more patterns.
+ */
 type RangeDetail = {
+	/** Relative path to the file */
 	file: string;
+	/** First line number (1-based) */
 	start: number;
+	/** Last line number (1-based, inclusive) */
 	end: number;
+	/** List of patterns that matched within this range */
 	patterns: string[];
+	/** Actual content of the lines */
 	content: string;
 };
 
+/**
+ * Detailed output from the parallel ripgrep tool.
+ * Includes both summary statistics and the full range details.
+ */
 type ParallelRipgrepDetails = {
+	/** The ripgrep commands that were executed */
 	commands: string[];
+	/** Working directory for the search */
 	cwd: string;
+	/** Total number of individual matches across all patterns */
 	matchCount: number;
+	/** Number of merged line ranges in output */
 	rangeCount: number;
+	/** The merged and deduplicated line ranges */
 	ranges: RangeDetail[];
+	/** Whether output was truncated due to limits */
 	truncated: boolean;
 };
 
+/**
+ * Merge overlapping or adjacent line ranges within a single file.
+ *
+ * This is the core deduplication logic. Given ranges like:
+ *   [1-5, 3-8, 10-12]
+ * It produces:
+ *   [1-8, 10-12]
+ *
+ * Ranges are considered mergeable if they overlap or are exactly adjacent
+ * (e.g., 1-5 and 6-10 merge to 1-10).
+ *
+ * Pattern sets are unioned when ranges merge.
+ */
 function mergeRanges(
 	ranges: Array<{ start: number; end: number; patterns: Set<string> }>,
 ): Array<{
@@ -126,18 +182,23 @@ function mergeRanges(
 	end: number;
 	patterns: Set<string>;
 }> {
+	// Sort by start line to enable single-pass merging
 	const sorted = [...ranges].sort((a, b) => a.start - b.start);
 	const merged: Array<{ start: number; end: number; patterns: Set<string> }> =
 		[];
 
 	for (const range of sorted) {
 		const last = merged.at(-1);
+		// Check if this range overlaps or is adjacent to the previous one
+		// (start <= end + 1 allows for adjacent ranges to merge)
 		if (last && range.start <= last.end + 1) {
+			// Extend the previous range and merge patterns
 			last.end = Math.max(last.end, range.end);
 			for (const pattern of range.patterns) {
 				last.patterns.add(pattern);
 			}
 		} else {
+			// Start a new merged range
 			merged.push({
 				start: range.start,
 				end: range.end,
@@ -149,6 +210,19 @@ function mergeRanges(
 	return merged;
 }
 
+/**
+ * Read file contents for each merged range and build detailed output.
+ *
+ * This function:
+ * 1. Sorts ranges by file then line number for consistent output
+ * 2. Reads file contents (with caching to avoid re-reading)
+ * 3. Extracts the actual line content for each range
+ * 4. Applies the limit to avoid excessive output
+ *
+ * @param commandCwd - Working directory to resolve relative paths
+ * @param ranges - The merged ranges to populate with content
+ * @param limit - Maximum number of ranges to include
+ */
 async function buildRangeContent(
 	commandCwd: string,
 	ranges: Array<{
@@ -159,6 +233,7 @@ async function buildRangeContent(
 	}>,
 	limit: number,
 ): Promise<{ ranges: RangeDetail[]; truncated: boolean }> {
+	// Sort for deterministic output: by file, then by line number
 	const mergedRanges = ranges.sort((a, b) => {
 		if (a.file === b.file) {
 			return a.start - b.start;
@@ -168,12 +243,16 @@ async function buildRangeContent(
 
 	const truncated = mergedRanges.length > limit;
 	const selected = mergedRanges.slice(0, limit);
+
+	// Cache file contents to avoid re-reading the same file multiple times
 	const fileCache = new Map<string, string[]>();
 	const results: RangeDetail[] = [];
 
 	for (const range of selected) {
 		const absolutePath = resolvePath(commandCwd, range.file);
 		let lines: string[];
+
+		// Check cache first
 		if (fileCache.has(absolutePath)) {
 			lines = fileCache.get(absolutePath) as string[];
 		} else {
@@ -182,15 +261,19 @@ async function buildRangeContent(
 				lines = content.split(/\r?\n/);
 				fileCache.set(absolutePath, lines);
 			} catch {
+				// Skip files that can't be read (deleted, permissions, etc.)
 				continue;
 			}
 		}
 
+		// Clamp range to actual file bounds
 		const start = Math.max(1, range.start);
 		const end = Math.min(range.end, lines.length);
 		if (end < start) {
 			continue;
 		}
+
+		// Extract the content (lines array is 0-indexed, our ranges are 1-indexed)
 		const snippet = lines.slice(start - 1, end).join("\n");
 		results.push({
 			file: range.file,
