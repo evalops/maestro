@@ -60,13 +60,11 @@ import { getFirewallConfig } from "../config/firewall-config.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	analyzeCommandSafety,
-	isParserAvailable,
-	unwrapShellCommand,
-} from "./bash-parser.js";
-import {
 	dangerousPatternDescriptions,
 	dangerousPatterns,
-} from "./dangerous-patterns.js";
+	isParserAvailable,
+	unwrapShellCommand,
+} from "./bash-safety-analyzer.js";
 import { checkPolicy } from "./policy.js";
 import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 
