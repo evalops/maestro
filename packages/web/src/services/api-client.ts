@@ -654,4 +654,490 @@ export class ApiClient {
 			body: JSON.stringify(prefs),
 		});
 	}
+
+	// Guardian
+	async getGuardianStatus(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/guardian/status");
+	}
+
+	async runGuardian(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/guardian/run", {
+			method: "POST",
+		});
+	}
+
+	async setGuardianEnabled(enabled: boolean): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/guardian/config", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ enabled }),
+		});
+	}
+
+	// Plan Mode
+	async getPlan(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/plan");
+	}
+
+	async enterPlanMode(
+		name?: string,
+		sessionId?: string,
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/plan", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "enter", name, sessionId }),
+		});
+	}
+
+	async exitPlanMode(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/plan", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "exit" }),
+		});
+	}
+
+	async updatePlan(content: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/plan", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "update", content }),
+		});
+	}
+
+	// MCP
+	async getMcpStatus(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/mcp");
+	}
+
+	// Background Tasks
+	async getBackgroundStatus(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/background?action=status");
+	}
+
+	async getBackgroundHistory(limit = 10): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/background?action=history&limit=${limit}`,
+		);
+	}
+
+	async setBackgroundNotifications(
+		enabled: boolean,
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/background?action=notify", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ enabled }),
+		});
+	}
+
+	// Undo/Checkpoint
+	async getUndoStatus(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/undo?action=status");
+	}
+
+	async undoChanges(count = 1): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/undo", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "undo", count }),
+		});
+	}
+
+	async getChanges(
+		filter?: "all" | "files" | "tools",
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/changes${filter ? `?filter=${filter}` : ""}`,
+		);
+	}
+
+	// Approvals
+	async getApprovalMode(
+		sessionId = "default",
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/approvals?sessionId=${sessionId}`,
+		);
+	}
+
+	async setApprovalMode(
+		mode: "auto" | "prompt" | "fail",
+		sessionId = "default",
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/approvals?sessionId=${sessionId}`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ mode }),
+			},
+		);
+	}
+
+	// Framework
+	async getFrameworkPreference(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/framework?action=status");
+	}
+
+	async listFrameworks(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/framework?action=list");
+	}
+
+	async setFramework(
+		framework: string | null,
+		scope: "user" | "workspace" = "user",
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/framework", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ framework, scope }),
+		});
+	}
+
+	// Tools
+	async getTools(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/tools?action=list");
+	}
+
+	// Review
+	async getReview(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/review");
+	}
+
+	// Context
+	async getContext(sessionId?: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/context${sessionId ? `?sessionId=${sessionId}` : ""}`,
+		);
+	}
+
+	// Stats
+	async getStats(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/stats");
+	}
+
+	// Telemetry
+	async getTelemetryStatus(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/telemetry");
+	}
+
+	async setTelemetry(
+		action: "on" | "off" | "reset",
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/telemetry", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action }),
+		});
+	}
+
+	// Training
+	async getTrainingStatus(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/training");
+	}
+
+	async setTraining(
+		action: "on" | "off" | "reset",
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/training", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action }),
+		});
+	}
+
+	// Diagnostics
+	async getDiagnostics(
+		subcommand = "status",
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/diagnostics?subcommand=${subcommand}`,
+		);
+	}
+
+	// LSP
+	async getLspStatus(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/lsp?action=status");
+	}
+
+	async detectLspServers(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/lsp?action=detect");
+	}
+
+	async startLspServers(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/lsp", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "start" }),
+		});
+	}
+
+	async stopLspServers(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/lsp", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "stop" }),
+		});
+	}
+
+	async restartLspServers(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/lsp", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "restart" }),
+		});
+	}
+
+	// Workflow
+	async listWorkflows(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/workflow?action=list");
+	}
+
+	async getWorkflow(name: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/workflow?action=show&name=${name}`,
+		);
+	}
+
+	async validateWorkflow(name: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/workflow?action=validate&name=${name}`,
+		);
+	}
+
+	async runWorkflow(name: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/workflow", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "run", name }),
+		});
+	}
+
+	// Run (npm scripts)
+	async getRunScripts(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/run?action=scripts");
+	}
+
+	async runScript(
+		script: string,
+		args?: string,
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/run", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ script, args }),
+		});
+	}
+
+	// Ollama
+	async listOllamaModels(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/ollama?action=list");
+	}
+
+	async getOllamaPs(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/ollama?action=ps");
+	}
+
+	async pullOllamaModel(model: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/ollama", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "pull", model }),
+		});
+	}
+
+	async showOllamaModel(model: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/ollama", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "show", model }),
+		});
+	}
+
+	// Preview
+	async getPreview(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/preview");
+	}
+
+	// Composer
+	async listComposers(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/composer");
+	}
+
+	async getComposer(name: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(`/api/composer?name=${name}`);
+	}
+
+	async activateComposer(name: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/composer", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "activate", name }),
+		});
+	}
+
+	async deactivateComposer(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/composer", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "deactivate" }),
+		});
+	}
+
+	// Cost
+	async getCostSummary(period?: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/cost?action=summary${period ? `&period=${period}` : ""}`,
+		);
+	}
+
+	async getCostBreakdown(period?: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/cost?action=breakdown${period ? `&period=${period}` : ""}`,
+		);
+	}
+
+	async clearCostData(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/cost", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "clear" }),
+		});
+	}
+
+	// Quota
+	async getQuotaStatus(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/quota?action=status");
+	}
+
+	async getQuotaDetailed(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/quota?action=detailed");
+	}
+
+	async getQuotaModels(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/quota?action=models");
+	}
+
+	async setQuotaLimit(limit: number): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/quota", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "limit", limit }),
+		});
+	}
+
+	// Memory
+	async listMemoryTopics(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/memory?action=list");
+	}
+
+	async listMemoryTopic(topic: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/memory?action=list&topic=${topic}`,
+		);
+	}
+
+	async searchMemory(
+		query: string,
+		limit = 10,
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/memory?action=search&query=${encodeURIComponent(query)}&limit=${limit}`,
+		);
+	}
+
+	async getRecentMemories(limit = 10): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/memory?action=recent&limit=${limit}`,
+		);
+	}
+
+	async getMemoryStats(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/memory?action=stats");
+	}
+
+	async saveMemory(
+		topic: string,
+		content: string,
+		tags?: string[],
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/memory", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "save", topic, content, tags }),
+		});
+	}
+
+	async deleteMemory(
+		id?: string,
+		topic?: string,
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/memory", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "delete", id, topic }),
+		});
+	}
+
+	async exportMemory(path?: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/memory", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "export", path }),
+		});
+	}
+
+	async importMemory(path: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/memory", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "import", path }),
+		});
+	}
+
+	async clearMemory(force = false): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/memory", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "clear", force }),
+		});
+	}
+
+	// Mode
+	async getCurrentMode(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/mode?action=current");
+	}
+
+	async listModes(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/mode?action=list");
+	}
+
+	async suggestMode(task?: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/mode?action=suggest${task ? `&task=${encodeURIComponent(task)}` : ""}`,
+		);
+	}
+
+	async setMode(mode: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/mode", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ mode }),
+		});
+	}
+
+	// Zen
+	async getZenMode(): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/zen");
+	}
+
+	async setZenMode(enabled: boolean): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback("/api/zen", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ enabled }),
+		});
+	}
 }

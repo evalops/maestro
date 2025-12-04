@@ -9,8 +9,10 @@ import { handleChat } from "./handlers/chat.js";
 import { handleClientToolResult } from "./handlers/client-tools.js";
 import { handleCommandPrefs } from "./handlers/command-prefs.js";
 import { handleCommands } from "./handlers/commands.js";
+import { handleComposer } from "./handlers/composer.js";
 import { handleConfig } from "./handlers/config.js";
 import { handleContext } from "./handlers/context.js";
+import { handleCost } from "./handlers/cost.js";
 import { handleDiagnostics } from "./handlers/diagnostics.js";
 import { handleFiles } from "./handlers/files.js";
 import { handleFramework } from "./handlers/framework.js";
@@ -20,11 +22,18 @@ import {
 	handleGuardianStatus,
 } from "./handlers/guardian.js";
 import { handleReadyz } from "./handlers/health.js";
+import { handleLsp } from "./handlers/lsp.js";
 import { handleMcpStatus } from "./handlers/mcp.js";
+import { handleMemory } from "./handlers/memory.js";
+import { handleMode } from "./handlers/mode.js";
 import { handleModel, handleModels } from "./handlers/models.js";
+import { handleOllama } from "./handlers/ollama.js";
 import { handlePlan } from "./handlers/plan.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
+import { handlePreview } from "./handlers/preview.js";
+import { handleQuota } from "./handlers/quota.js";
 import { handleReview } from "./handlers/review.js";
+import { handleRun } from "./handlers/run.js";
 import {
 	handleSessionExport,
 	handleSessionShare,
@@ -39,6 +48,8 @@ import { handleTraining } from "./handlers/training.js";
 import { handleChanges } from "./handlers/undo.js";
 import { handleUndo } from "./handlers/undo.js";
 import { handleUsage } from "./handlers/usage.js";
+import { handleWorkflow } from "./handlers/workflow.js";
+import { handleZen } from "./handlers/zen.js";
 import { getPrometheusMetrics } from "./logger.js";
 import { requestTracker } from "./request-tracker.js";
 import type { Route } from "./router.js";
@@ -259,6 +270,111 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "GET",
 			path: "/api/diagnostics",
 			handler: (req, res) => handleDiagnostics(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/lsp",
+			handler: (req, res) => handleLsp(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/lsp",
+			handler: (req, res) => handleLsp(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/workflow",
+			handler: (req, res) => handleWorkflow(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/workflow",
+			handler: (req, res) => handleWorkflow(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/run",
+			handler: (req, res) => handleRun(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/run",
+			handler: (req, res) => handleRun(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/ollama",
+			handler: (req, res) => handleOllama(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/ollama",
+			handler: (req, res) => handleOllama(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/preview",
+			handler: (req, res) => handlePreview(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/composer",
+			handler: (req, res) => handleComposer(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/composer",
+			handler: (req, res) => handleComposer(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/cost",
+			handler: (req, res) => handleCost(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/cost",
+			handler: (req, res) => handleCost(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/quota",
+			handler: (req, res) => handleQuota(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/quota",
+			handler: (req, res) => handleQuota(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/memory",
+			handler: (req, res) => handleMemory(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/memory",
+			handler: (req, res) => handleMemory(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/mode",
+			handler: (req, res) => handleMode(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/mode",
+			handler: (req, res) => handleMode(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/zen",
+			handler: (req, res) => handleZen(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/zen",
+			handler: (req, res) => handleZen(req, res, corsHeaders),
 		},
 		{
 			method: "GET",
