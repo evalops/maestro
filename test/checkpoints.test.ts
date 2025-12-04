@@ -150,18 +150,19 @@ describe("Checkpoint System", () => {
 				const filePath = join(tempDir, "test.txt");
 				writeFileSync(filePath, "content", "utf-8");
 
-				let emittedEvent: CheckpointEvent | null = null;
+				let emittedEvent: CheckpointEvent | undefined;
 				store.addEventListener((event) => {
-					emittedEvent = event as { type: string; checkpoint?: Checkpoint };
+					emittedEvent = event;
 				});
 
 				store.createCheckpoint("Write", "call-123", [filePath]);
 
-				expect(emittedEvent).not.toBeNull();
-				// biome-ignore lint/style/noNonNullAssertion: Validated by expect above
-				expect(emittedEvent!.type).toBe("checkpoint_created");
-				// biome-ignore lint/style/noNonNullAssertion: Validated by expect above
-				expect(emittedEvent!.checkpoint?.toolName).toBe("Write");
+				expect(emittedEvent).toBeDefined();
+				expect(emittedEvent?.type).toBe("checkpoint_created");
+				// Type narrow for the checkpoint_created event
+				if (emittedEvent && emittedEvent.type === "checkpoint_created") {
+					expect(emittedEvent.checkpoint.toolName).toBe("Write");
+				}
 			});
 		});
 

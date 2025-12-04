@@ -172,10 +172,11 @@ async function verifyCLIFunctionality() {
 
 	const runCli = (args: string[]) => {
 		const result = spawnSync("node", [cliPath, ...args], spawnOpts);
-		if (result.timedOut) {
-			throw new Error(`Process timed out after ${spawnOpts.timeout}ms`);
-		}
 		if (result.error) {
+			// spawnSync throws ETIMEDOUT as error when timeout is exceeded
+			if ((result.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+				throw new Error(`Process timed out after ${spawnOpts.timeout}ms`);
+			}
 			throw result.error;
 		}
 		if (result.signal) {
@@ -189,18 +190,18 @@ async function verifyCLIFunctionality() {
 		return result.stdout?.toString() ?? "";
 	};
 
-	await check("CLI help command", () => {
+	await check("CLI help command", async () => {
 		runCli(["--help"]);
 	});
 
-	await check("CLI version command", () => {
+	await check("CLI version command", async () => {
 		const output = runCli(["--version"]);
 		if (!output.includes("Composer")) {
 			throw new Error("Version output doesn't contain 'Composer'");
 		}
 	});
 
-	await check("CLI json mode", () => {
+	await check("CLI json mode", async () => {
 		runCli(["--mode", "json", "--help"]);
 	});
 }

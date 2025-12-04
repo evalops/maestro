@@ -339,11 +339,11 @@ export class ApiClient {
 		return bases;
 	}
 
-	private async fetchJsonWithFallback(path: string) {
+	private async fetchJsonWithFallback(path: string, init?: RequestInit) {
 		let lastError: unknown;
 		for (const base of this.fallbackBases) {
 			try {
-				const res = await fetch(`${base}${path}`);
+				const res = await fetch(`${base}${path}`, init);
 				return await safeJson(res);
 			} catch (e) {
 				lastError = e;
