@@ -211,16 +211,10 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 }
 
 import os from "node:os";
+import { expandUserPath as expandUserPathBase } from "../utils/path-validation.js";
 
-export function expandUserPath(path: string): string {
-	if (path === "~") {
-		return os.homedir();
-	}
-	if (path.startsWith("~/")) {
-		return path.replace("~", os.homedir());
-	}
-	return path;
-}
+// Re-export shared path expansion utility to keep tool-dsl API stable
+export const expandUserPath = expandUserPathBase;
 
 /**
  * Interpolate environment variables and context in a string.

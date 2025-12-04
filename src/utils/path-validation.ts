@@ -5,6 +5,7 @@
 
 import { constants } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { ERRORS, LIMITS } from "../config/constants.js";
 import { createLogger } from "./logger.js";
@@ -30,14 +31,7 @@ export class PathValidationError extends Error {
  */
 export function expandUserPath(path: string): string {
 	if (path.startsWith("~/") || path === "~") {
-		const homeDir = process.env.HOME ?? process.env.USERPROFILE;
-		if (!homeDir) {
-			throw new PathValidationError(
-				"Cannot expand ~ because HOME is not set",
-				path,
-				"missing_home",
-			);
-		}
+		const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 		return path.replace(/^~/, homeDir);
 	}
 	return path;
