@@ -25,7 +25,7 @@
  *    └── Handle --help, config commands, and other early exits
  *
  * 4. Authentication Resolution
- *    ├── Determine auth mode (auto, api-key, oauth, codex)
+ *    ├── Determine auth mode (auto, api-key, or claude-only)
  *    ├── Resolve credentials for the selected provider
  *    └── Build error messages for missing credentials
  *
@@ -67,8 +67,7 @@
  * |----------|--------------------------------------------------|
  * | auto     | Try OAuth first, fall back to API key env vars   |
  * | api-key  | Require explicit API key (--api-key or env var)  |
- * | oauth    | Use OAuth flow (anthropic login, openai login)   |
- * | codex    | Use CODEX_API_KEY for ChatGPT compatibility      |
+ * | claude   | Force Anthropic OAuth (no API key fallback)      |
  *
  * ## Runtime Modes
  *
@@ -518,23 +517,41 @@ export async function main(args: string[]) {
 	// Determine authentication mode:
 	// - auto: Try OAuth first, fall back to API key environment variables
 	// - api-key: Require explicit API key from --api-key or env var
-	// - oauth: Force OAuth flow (anthropic login, openai login)
-	// - codex: Use CODEX_API_KEY for ChatGPT compatibility
+	// - claude: Force Anthropic OAuth (no API key fallback)
 	const authMode: AuthMode = parsed.authMode ?? "auto";
 
-	// Check for Codex token (ChatGPT-compatible API key)
-	// Priority: CLI flag > environment variable
-	const codexCliToken = parsed.codexApiKey;
-	const codexEnvToken = process.env.CODEX_API_KEY;
-	const effectiveCodexToken = codexCliToken ?? codexEnvToken;
+	// Explicitly disallow Codex/ChatGPT subscription tokens.
+	if (process.env.CODEX_API_KEY) {
+		console.warn(
+			chalk.yellow(
+				"CODEX_API_KEY detected but Codex subscriptions are not supported. The value will be ignored.",
+			),
+		);
+	}
+	if (parsed.command !== "help" && parsed.command !== "config") {
+		const codexFlagsUsed = args.some((arg, index) => {
+			if (arg === "--codex-api-key" || arg.startsWith("--codex-api-key=")) {
+				return true;
+			}
+			if (arg === "--auth" && args[index + 1] === "chatgpt") return true;
+			if (arg.startsWith("--auth=chatgpt")) return true;
+			return false;
+		});
+		if (codexFlagsUsed) {
+			console.error(
+				chalk.red(
+					"Codex/ChatGPT auth mode is no longer supported. Use a standard OpenAI API key instead.",
+				),
+			);
+			process.exit(1);
+		}
+	}
 
 	// Create authentication resolver that handles credential lookup
 	// The resolver is called when making API requests to determine auth headers
 	const authResolver = createAuthResolver({
 		mode: authMode,
 		explicitApiKey: parsed.apiKey,
-		codexApiKey: effectiveCodexToken,
-		codexSource: codexCliToken ? "flag" : codexEnvToken ? "env" : undefined,
 	});
 
 	// Helper to build user-friendly error messages for missing credentials
@@ -551,9 +568,9 @@ export async function main(args: string[]) {
 		);
 		if (authMode !== "api-key") {
 			push(
-				'Set CODEX_API_KEY/CODEX token (chatgpt) or run "composer anthropic login" (claude) before retrying.',
+				'Run "composer anthropic login" (claude) or provide an API key for the selected provider before retrying.',
 				chalk.dim(
-					'Set CODEX_API_KEY/CODEX token (chatgpt) or run "composer anthropic login" (claude) before retrying.',
+					'Run "composer anthropic login" (claude) or provide an API key for the selected provider before retrying.',
 				),
 			);
 		}

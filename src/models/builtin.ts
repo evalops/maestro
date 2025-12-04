@@ -104,64 +104,6 @@ const OPENROUTER_RESPONSES_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
-// Manual overlay for OpenAI Codex Responses models
-const OPENAI_CODEX_OVERLAY = {
-	openai: {
-		"gpt-5.1-codex-max": {
-			id: "gpt-5.1-codex-max",
-			name: "GPT-5.1 Codex Max",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1/responses",
-			reasoning: true,
-			toolUse: true,
-			input: ["text", "image"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 200000,
-			maxTokens: 64000,
-		} as Model<"openai-responses">,
-		"gpt-5.1-codex-mini": {
-			id: "gpt-5.1-codex-mini",
-			name: "GPT-5.1 Codex Mini",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1/responses",
-			reasoning: true,
-			toolUse: true,
-			input: ["text", "image"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 200000,
-			maxTokens: 32000,
-		} as Model<"openai-responses">,
-		"gpt-5-codex-mini": {
-			id: "gpt-5-codex-mini",
-			name: "GPT-5 Codex Mini",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1/responses",
-			reasoning: true,
-			toolUse: true,
-			input: ["text", "image"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 200000,
-			maxTokens: 32000,
-		} as Model<"openai-responses">,
-		"gpt-5.1-codex": {
-			id: "gpt-5.1-codex",
-			name: "GPT-5.1 Codex",
-			api: "openai-responses",
-			provider: "openai",
-			baseUrl: "https://api.openai.com/v1/responses",
-			reasoning: true,
-			toolUse: true,
-			input: ["text", "image"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 200000,
-			maxTokens: 32000,
-		} as Model<"openai-responses">,
-	},
-} satisfies Record<string, Record<string, Model<Api>>>;
-
 // Manual overlay for Groq Responses models
 const GROQ_RESPONSES_OVERLAY = {
 	groq: {
@@ -196,6 +138,7 @@ const GROQ_RESPONSES_OVERLAY = {
 
 // Cached converted models (built lazily on first access)
 let BUILTIN_MODELS: Record<string, Model<Api>[]> | null = null;
+const CODEX_MODEL_PATTERN = /codex/i;
 
 /**
  * Convert generated models to our format (called lazily on first access)
@@ -205,18 +148,19 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 
 	// Start with generated models
 	for (const [provider, models] of Object.entries(GENERATED_MODELS)) {
-		converted[provider] = Object.values(models).map((model) => ({
-			...model,
-			// Ensure baseUrl format consistency across providers
-			baseUrl: normalizeModelBaseUrl(model),
-		}));
+		converted[provider] = Object.values(models)
+			.filter((model) => !CODEX_MODEL_PATTERN.test(model.id))
+			.map((model) => ({
+				...model,
+				// Ensure baseUrl format consistency across providers
+				baseUrl: normalizeModelBaseUrl(model),
+			}));
 	}
 
 	// Apply overlay additions
 	const overlays: Record<string, Record<string, Model<Api>>>[] = [
 		ANTHROPIC_OPUS_45_OVERLAY,
 		OPENROUTER_RESPONSES_OVERLAY,
-		OPENAI_CODEX_OVERLAY,
 		GROQ_RESPONSES_OVERLAY,
 	];
 

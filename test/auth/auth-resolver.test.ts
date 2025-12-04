@@ -1,23 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getFreshAnthropicOAuthCredential } from "../../src/providers/anthropic-auth.js";
 import { createAuthResolver } from "../../src/providers/auth.js";
+import { getFreshOpenAIOAuthCredential } from "../../src/providers/openai-auth.js";
 
 vi.mock("../../src/providers/anthropic-auth.js", () => ({
 	getFreshAnthropicOAuthCredential: vi.fn(),
+}));
+
+vi.mock("../../src/providers/openai-auth.js", () => ({
+	getFreshOpenAIOAuthCredential: vi.fn(),
 }));
 
 describe("auth resolver", () => {
 	const originalAnthropic = process.env.ANTHROPIC_API_KEY;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
+	const originalCodex = process.env.CODEX_API_KEY;
 
 	beforeEach(() => {
 		// biome-ignore lint/performance/noDelete: resetting env vars for isolated tests
 		delete process.env.ANTHROPIC_API_KEY;
 		// biome-ignore lint/performance/noDelete: resetting env vars for isolated tests
 		delete process.env.OPENAI_API_KEY;
-		// biome-ignore lint/performance/noDelete: resetting env vars for isolated tests
-		delete process.env.CODEX_API_KEY;
 		// biome-ignore lint/performance/noDelete: resetting env vars for isolated tests
 		delete process.env.CLAUDE_CODE_TOKEN;
 	});
@@ -41,32 +45,24 @@ describe("auth resolver", () => {
 		} else {
 			process.env.CLAUDE_CODE_TOKEN = originalClaude;
 		}
+		if (originalCodex === undefined) {
+			// biome-ignore lint/performance/noDelete: restoring env var state
+			delete process.env.CODEX_API_KEY;
+		} else {
+			process.env.CODEX_API_KEY = originalCodex;
+		}
 		vi.clearAllMocks();
 	});
 
 	it("prefers explicit API key when provided", async () => {
 		const resolver = createAuthResolver({
-			mode: "chatgpt",
+			mode: "auto",
 			explicitApiKey: "cli-key",
-			codexApiKey: "codex-key",
-			codexSource: "flag",
 		});
 		const credential = await resolver("openai");
 		expect(credential).toBeDefined();
 		expect(credential?.token).toBe("cli-key");
 		expect(credential?.type).toBe("api-key");
-	});
-
-	it("uses Codex token in chatgpt mode for OpenAI", async () => {
-		const resolver = createAuthResolver({
-			mode: "chatgpt",
-			codexApiKey: "codex-token",
-			codexSource: "env",
-		});
-		const credential = await resolver("openai");
-		expect(credential).toBeDefined();
-		expect(credential?.token).toBe("codex-token");
-		expect(credential?.type).toBe("chatgpt");
 	});
 
 	it("falls back to provider env vars in api-key mode", async () => {
@@ -76,6 +72,16 @@ describe("auth resolver", () => {
 		expect(credential).toBeDefined();
 		expect(credential?.token).toBe("anthropic-env");
 		expect(credential?.type).toBe("api-key");
+	});
+
+	it("ignores Codex subscription tokens", async () => {
+		vi.mocked(getFreshOpenAIOAuthCredential).mockResolvedValue(null);
+		process.env.CODEX_API_KEY = "codex-token";
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("openai");
+		expect(credential).toBeUndefined();
+		// biome-ignore lint/performance/noDelete: resetting env var state
+		delete process.env.CODEX_API_KEY;
 	});
 
 	it("returns undefined when credentials are missing", async () => {

@@ -411,7 +411,7 @@ export interface StreamOptions {
 	signal?: AbortSignal;
 	apiKey?: string;
 	headers?: Record<string, string>;
-	authType?: "api-key" | "chatgpt" | "anthropic-oauth";
+	authType?: "api-key" | "anthropic-oauth";
 }
 
 export interface PromptCacheControl {

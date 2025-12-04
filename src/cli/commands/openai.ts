@@ -95,7 +95,7 @@ async function handleLogin(): Promise<void> {
 						idToken: tokens.idToken,
 						expiresAt: tokens.expiresAt,
 						apiKey,
-						mode: "chatgpt",
+						mode: "openai-oauth",
 					});
 
 					res.writeHead(200, { "Content-Type": "text/html" });
@@ -105,7 +105,7 @@ async function handleLogin(): Promise<void> {
 					console.log(chalk.green("\nOpenAI credentials saved successfully."));
 					console.log(
 						chalk.dim(
-							"Future runs can use --auth chatgpt or set it as default.",
+							"Future runs can use --auth auto (default) or provide an OpenAI API key.",
 						),
 					);
 				} catch (error) {

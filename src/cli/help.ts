@@ -13,10 +13,9 @@ export function printHelp(version: string) {
 		"--models <patterns>     Comma-separated patterns for Ctrl+P model cycling",
 		"--tools <names>         Comma-separated tool names to enable (e.g., read,search,list,find)",
 		"--api-key <key>         API key (defaults to env vars)",
-		"--codex-api-key <key>   Codex/ChatGPT API token (defaults to CODEX_API_KEY)",
 		"--system-prompt <text>  System prompt (default: coding assistant prompt)",
 		"--mode <mode>           Output mode: text (default), json, or rpc",
-		"--auth <mode>           Credential mode: auto (default), api-key, chatgpt, claude",
+		"--auth <mode>           Credential mode: auto (default), api-key, claude",
 		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
 		"--sandbox <mode>        Sandbox mode: docker, local, none (see docs/SAFETY.md)",
 		"--continue, -c          Continue previous session",
@@ -50,7 +49,6 @@ export function printHelp(version: string) {
   ANTHROPIC_API_KEY       - Anthropic API key
   CLAUDE_CODE_TOKEN       - Claude Code access token for --auth claude
   ANTHROPIC_OAUTH_TOKEN   - Alternate env for Claude Code bearer tokens
-  CODEX_API_KEY           - Codex/ChatGPT API token for --auth chatgpt
   COMPOSER_AGENT_DIR      - Session storage directory (default: ~/.composer/agent)
   COMPOSER_SANDBOX_MODE   - Sandbox mode: docker, local, none (default: none)
   COMPOSER_CHANGELOG      - Set to off/false/hide/hidden/skip/0 to hide startup changelog banner

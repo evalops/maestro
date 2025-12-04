@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 
 type StoredKey = {
 	apiKey?: string;
-	authType?: "api-key" | "chatgpt" | "anthropic-oauth";
+	authType?: "api-key" | "anthropic-oauth";
 };
 
 type KeyStore = Record<string, StoredKey>;
@@ -87,7 +87,15 @@ export function getStoredCredentials(providerId: string): {
 
 	for (const store of stores) {
 		const cred = store[providerId];
-		if (cred?.apiKey) return cred;
+		if (cred?.apiKey) {
+			const authType =
+				cred.authType === "anthropic-oauth"
+					? "anthropic-oauth"
+					: cred.authType === "api-key"
+						? "api-key"
+						: undefined;
+			return { apiKey: cred.apiKey, authType };
+		}
 	}
 	return {};
 }

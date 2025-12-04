@@ -120,7 +120,6 @@ function normalizeAuthMode(value?: string | null): AuthMode {
 	if (
 		normalized === "auto" ||
 		normalized === "api-key" ||
-		normalized === "chatgpt" ||
 		normalized === "claude"
 	) {
 		return normalized;
@@ -145,7 +144,6 @@ const DEFAULT_APPROVAL_MODE = normalizeApprovalMode(
 	process.env.COMPOSER_APPROVAL_MODE ?? (PROD_PROFILE ? "fail" : null),
 );
 const AUTH_MODE = normalizeAuthMode(process.env.COMPOSER_AUTH_MODE);
-const CODEX_TOKEN = process.env.CODEX_API_KEY?.trim();
 const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
 const requireKeyEnv = process.env.COMPOSER_WEB_REQUIRE_KEY;
 const requireRedisEnv = process.env.COMPOSER_WEB_REQUIRE_REDIS;
@@ -171,6 +169,12 @@ const MAX_SSE_CONNECTIONS =
 const REQUEST_TIMEOUT_MS =
 	Number.parseInt(process.env.COMPOSER_REQUEST_TIMEOUT_MS || "60000", 10) ||
 	60000;
+
+if (process.env.CODEX_API_KEY) {
+	logger.warn(
+		"CODEX_API_KEY detected but Codex subscriptions are not supported. The value will be ignored.",
+	);
+}
 
 // Harden defaults for hosted deployments.
 process.env.COMPOSER_WEB_SERVER = "1";
@@ -243,8 +247,6 @@ const sseLimiter = {
 
 const authResolver = createAuthResolver({
 	mode: AUTH_MODE,
-	codexApiKey: CODEX_TOKEN,
-	codexSource: CODEX_TOKEN ? "env" : undefined,
 });
 
 const DEFAULT_PROVIDER = "anthropic";
@@ -291,7 +293,7 @@ function logMissingCredentialHints(provider: string): void {
 			"Run `composer anthropic login` to provision OAuth credentials.",
 		);
 	} else if (provider === "openai") {
-		hints.push("Set OPENAI_API_KEY or configure ChatGPT/Codex credentials.");
+		hints.push("Set OPENAI_API_KEY or run `composer openai login`.");
 	}
 	logger.warn(hints.join(" "), { provider });
 }

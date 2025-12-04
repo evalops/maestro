@@ -71,9 +71,6 @@ generator, so you can use them out of the box:
 
 - **OpenRouter (Responses API):** `openai/o4`, `openai/o4-mini`, and their
   `:online` variants, all routed to `https://openrouter.ai/api/v1/responses`.
-- **OpenAI Codex (Responses API):** `gpt-5.1-codex-max`, `gpt-5.1-codex`,
-  `gpt-5.1-codex-mini`, `gpt-5-codex-mini`, routed to
-  `https://api.openai.com/v1/responses`.
 - **Groq (Responses API):** `openai/gpt-oss-20b`, `openai/gpt-oss-120b`,
   routed via Groq’s OpenAI-compatible endpoint
   `https://api.groq.com/openai/v1/responses`.
@@ -81,6 +78,10 @@ generator, so you can use them out of the box:
 To add more Responses-capable models (or override these), drop them into
 `.composer/config.json` with `api: "openai-responses"`; Composer will normalize
 the base URL to `/responses` automatically.
+
+> Note: Codex subscription models are intentionally excluded. The Codex endpoint
+> requires the Codex CLI system prompt and tool set verbatim, which Composer
+> does not forward for security and transparency reasons.
 
 ## Factory Commands
 

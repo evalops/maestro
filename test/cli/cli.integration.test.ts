@@ -174,7 +174,6 @@ describe("CLI integration", () => {
 	const originalEnv = process.env.ANTHROPIC_API_KEY;
 	const originalAgentDir = process.env.COMPOSER_AGENT_DIR;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
-	const originalCodex = process.env.CODEX_API_KEY;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
 	const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
 	const originalLog = console.log;
@@ -193,8 +192,6 @@ describe("CLI integration", () => {
 		process.env.ANTHROPIC_API_KEY = "test-key";
 		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
 		delete process.env.OPENAI_API_KEY;
-		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
-		delete process.env.CODEX_API_KEY;
 		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
 		delete process.env.CLAUDE_CODE_TOKEN;
 		output = [];
@@ -226,12 +223,6 @@ describe("CLI integration", () => {
 			delete process.env.OPENAI_API_KEY;
 		} else {
 			process.env.OPENAI_API_KEY = originalOpenAI;
-		}
-		if (originalCodex === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.CODEX_API_KEY;
-		} else {
-			process.env.CODEX_API_KEY = originalCodex;
 		}
 		if (originalClaude === undefined) {
 			// biome-ignore lint/performance/noDelete: restoring env var state
@@ -341,22 +332,7 @@ describe("CLI integration", () => {
 		expect(output.join("\n")).toContain("Echo: Follow up run");
 	});
 
-	it("uses chatgpt auth when Codex token is provided", async () => {
-		await main([
-			"--provider",
-			"openai",
-			"--model",
-			"gpt-test",
-			"--auth",
-			"chatgpt",
-			"--codex-api-key",
-			"codex-token",
-			"hello",
-		]);
-		expect(output.join("\n")).toContain("Echo: hello");
-	});
-
-	it("fails when chatgpt auth mode lacks a Codex token", async () => {
+	it("rejects Codex/ChatGPT auth flags", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(code ?? 0);
@@ -374,7 +350,25 @@ describe("CLI integration", () => {
 			]),
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
-		expect(output.join("\n")).toContain("CODEX_API_KEY");
+		expect(output.join("\n")).toContain(
+			"Codex/ChatGPT auth mode is no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
+	it("rejects Codex subscription tokens", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(code ?? 0);
+			throw new Error("exit");
+		});
+		await expect(
+			main(["--codex-api-key", "codex-token", "hello"]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Codex/ChatGPT auth mode is no longer supported",
+		);
 		exitSpy.mockRestore();
 	});
 

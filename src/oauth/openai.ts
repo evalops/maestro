@@ -173,7 +173,7 @@ export async function loginOpenAI(
 							idToken: tokens.idToken,
 							expiresAt: tokens.expiresAt,
 							apiKey,
-							mode: "chatgpt",
+							mode: "openai-oauth",
 						};
 
 						res.writeHead(200, { "Content-Type": "text/html" });
@@ -280,7 +280,7 @@ export async function refreshOpenAIToken(
 		expires: tokens.expiresAt,
 		metadata: {
 			...(metadata ?? {}),
-			mode: "chatgpt",
+			mode: "openai-oauth",
 			idToken: tokens.idToken,
 			originalAccessToken: apiKey ? tokens.accessToken : undefined,
 		},

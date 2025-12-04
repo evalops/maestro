@@ -5,17 +5,15 @@ import {
 import { lookupApiKey } from "./api-keys.js";
 import { getFreshOpenAIOAuthCredential } from "./openai-auth.js";
 
-export type AuthMode = "auto" | "api-key" | "chatgpt" | "claude";
+export type AuthMode = "auto" | "api-key" | "claude";
 
-export type AuthCredentialType = "api-key" | "chatgpt" | "anthropic-oauth";
+export type AuthCredentialType = "api-key" | "anthropic-oauth";
 
 export type AuthCredentialSource =
 	| "explicit"
 	| "env"
 	| "custom_literal"
 	| "custom_env"
-	| "codex_env"
-	| "codex_flag"
 	| "anthropic_oauth_env"
 	| "anthropic_oauth_file"
 	| "openai_oauth_file";
@@ -32,13 +30,10 @@ export interface AuthCredential {
 export interface AuthResolverOptions {
 	mode: AuthMode;
 	explicitApiKey?: string;
-	codexApiKey?: string;
-	codexSource?: "env" | "flag";
 }
 
 type AuthResolver = (provider: string) => Promise<AuthCredential | undefined>;
 
-const CODEX_DEFAULT_ENV = "CODEX_API_KEY";
 const ANTHROPIC_OAUTH_ENV_VARS = [
 	"CLAUDE_CODE_TOKEN",
 	"ANTHROPIC_OAUTH_TOKEN",
@@ -49,7 +44,6 @@ function isOpenAIProvider(provider: string): boolean {
 	const normalized = provider.toLowerCase();
 	return (
 		normalized === "openai" ||
-		normalized === "chatgpt" ||
 		normalized.startsWith("openai/") ||
 		normalized.includes("openai-")
 	);
@@ -57,7 +51,6 @@ function isOpenAIProvider(provider: string): boolean {
 
 export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 	const explicitKey = options.explicitApiKey?.trim();
-	const codexToken = options.codexApiKey?.trim();
 	return async (provider: string): Promise<AuthCredential | undefined> => {
 		const normalizedProvider = provider.toLowerCase();
 
@@ -70,20 +63,9 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 			};
 		}
 
-		// Handle OpenAI/ChatGPT Auth
+		// Handle OpenAI Auth
 		if (isOpenAIProvider(provider) && options.mode !== "api-key") {
-			// 1. Codex Token (Env/Flag)
-			if (codexToken) {
-				return {
-					provider,
-					token: codexToken,
-					type: "chatgpt",
-					source: options.codexSource === "flag" ? "codex_flag" : "codex_env",
-					envVar: options.codexSource === "env" ? CODEX_DEFAULT_ENV : undefined,
-				};
-			}
-
-			// 2. OpenAI OAuth
+			// OpenAI OAuth
 			const oauthCred = await getFreshOpenAIOAuthCredential();
 			if (oauthCred?.apiKey) {
 				return {
@@ -97,9 +79,7 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 		}
 
 		const preferAnthropicOAuth =
-			normalizedProvider === "anthropic" &&
-			options.mode !== "chatgpt" &&
-			options.mode !== "api-key";
+			normalizedProvider === "anthropic" && options.mode !== "api-key";
 
 		if (preferAnthropicOAuth) {
 			const envTokenEntry = ANTHROPIC_OAUTH_ENV_VARS.map((envVar) => ({
@@ -131,10 +111,6 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 			}
 		}
 
-		if (options.mode === "chatgpt") {
-			return undefined;
-		}
-
 		const lookup = lookupApiKey(provider, explicitKey);
 		if (lookup.key) {
 			if (lookup.source === "missing") {
@@ -151,5 +127,3 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 		return undefined;
 	};
 }
-
-export { CODEX_DEFAULT_ENV };

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { safeJsonParse } from "../utils/json.js";
 
-export type OpenAILoginMode = "chatgpt";
+export type OpenAILoginMode = "openai-oauth";
 
 export interface OpenAIOAuthCredential {
 	accessToken: string;
@@ -97,7 +97,7 @@ export async function getStoredOpenAIOAuthCredential(): Promise<OpenAIOAuthCrede
 				idToken: parsed.idToken,
 				expiresAt: parsed.expiresAt,
 				apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : undefined,
-				mode: "chatgpt",
+				mode: "openai-oauth",
 			};
 		}
 		return null;

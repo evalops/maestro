@@ -20,11 +20,9 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("https://openrouter.ai/api/v1/responses");
 	});
 
-	it("includes OpenAI Codex responses overlay models normalized to /responses", () => {
+	it("omits Codex subscription models entirely", () => {
 		const model = getModel("openai", "gpt-5.1-codex-mini");
-		expect(model).toBeTruthy();
-		expect(model?.api).toBe("openai-responses");
-		expect(model?.baseUrl).toBe("https://api.openai.com/v1/responses");
+		expect(model).toBeNull();
 	});
 
 	it("includes Groq responses overlay models normalized to /responses", () => {
