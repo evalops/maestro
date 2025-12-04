@@ -95,13 +95,11 @@ import {
 	existsSync,
 	lstatSync,
 	readFileSync,
-	realpathSync,
 	watch,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
-import { minimatch } from "minimatch";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
 import {
 	isLoopbackIPv4,
@@ -111,6 +109,12 @@ import {
 } from "../utils/ip-address-parser.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import {
+	expandHomeDir,
+	matchesModelPattern,
+	matchesPathPattern,
+	resolveRealPath,
+} from "../utils/path-matcher.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 
 const logger = createLogger("safety:policy");
@@ -369,98 +373,6 @@ function extractDependencies(command: string): string[] {
 		}
 	}
 	return results;
-}
-
-/**
- * Expand ~ to user's home directory
- */
-function expandHomeDir(filePath: string): string {
-	if (filePath === "~" || filePath.startsWith("~/")) {
-		return join(homedir(), filePath.slice(1));
-	}
-	return filePath;
-}
-
-/**
- * Resolve a path to its real location, following symlinks
- * Returns the resolved path, or the original if resolution fails
- */
-function resolveRealPath(filePath: string): string {
-	try {
-		const expanded = expandHomeDir(filePath);
-		const resolved = resolve(expanded);
-		// Check if path exists and resolve symlinks
-		if (existsSync(resolved)) {
-			return realpathSync(resolved);
-		}
-		// For non-existent paths, resolve parent directory symlinks if possible
-		const parentDir = resolve(expanded, "..");
-		if (existsSync(parentDir)) {
-			const realParent = realpathSync(parentDir);
-			const basename = resolve(expanded).split("/").pop() || "";
-			return join(realParent, basename);
-		}
-		return resolved;
-	} catch {
-		return resolve(expandHomeDir(filePath));
-	}
-}
-
-/**
- * Check if a path matches any pattern in a list using glob syntax
- * SECURITY:
- * - matchBase is disabled to prevent patterns like "*.txt" from matching anywhere
- * - Symlinks are resolved to prevent bypasses via symbolic links
- * - Both original and resolved paths are checked for defense in depth
- */
-function matchesPathPattern(filePath: string, patterns: string[]): boolean {
-	const expandedPath = expandHomeDir(filePath);
-	const normalizedPath = resolve(expandedPath);
-	// Also check the real path (symlinks resolved) for security
-	const realPath = resolveRealPath(filePath);
-
-	for (const pattern of patterns) {
-		// Resolve pattern to absolute path for consistent matching, unless it's a glob
-		const expandedPattern = expandHomeDir(pattern);
-		// If pattern contains glob characters, do not resolve (avoids pinning to CWD)
-		// If pattern is relative and NOT a glob, resolve it to absolute CWD-based path
-		const isGlob = /[*?{\[]/.test(expandedPattern);
-		const resolvedPattern = isGlob ? expandedPattern : resolve(expandedPattern);
-
-		// Check both the original path and the symlink-resolved path
-		for (const pathToCheck of [normalizedPath, realPath]) {
-			// Use minimatch for glob patterns (**, *, ?)
-			// IMPORTANT: matchBase: false ensures patterns must match from root
-			if (minimatch(pathToCheck, resolvedPattern, { dot: true })) {
-				return true;
-			}
-
-			// For directory patterns without globs, check proper hierarchy (with separator)
-			// This handles cases like "/home/user" matching "/home/user/file.txt"
-			if (
-				!pattern.includes("*") &&
-				!pattern.includes("?") &&
-				(pathToCheck === resolvedPattern ||
-					pathToCheck.startsWith(`${resolvedPattern}/`))
-			) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-/**
- * Check if a model ID matches any pattern (supports wildcards)
- * Uses minimatch for safe, consistent glob matching (avoids ReDoS)
- */
-function matchesModelPattern(modelId: string, patterns: string[]): boolean {
-	for (const pattern of patterns) {
-		if (minimatch(modelId, pattern, { nocase: true, dot: true })) {
-			return true;
-		}
-	}
-	return false;
 }
 
 /**
