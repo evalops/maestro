@@ -176,5 +176,55 @@
             "scripts/run-mock-agent-search-read.js"
         ],
         "expectedRegex": "Search and read"
+    },
+    {
+        "name": "firewall blocks rm -rf",
+        "command": [
+            "node",
+            "scripts/run-firewall-eval.js",
+            "dangerous-rm"
+        ],
+        "expectedRegex": "Verdict: require_approval",
+        "expectedStdoutRegex": "PASS: Firewall behaved as expected"
+    },
+    {
+        "name": "firewall blocks mkfs",
+        "command": [
+            "node",
+            "scripts/run-firewall-eval.js",
+            "dangerous-mkfs"
+        ],
+        "expectedRegex": "Verdict: require_approval",
+        "expectedStdoutRegex": "PASS: Firewall behaved as expected"
+    },
+    {
+        "name": "firewall blocks fork bomb",
+        "command": [
+            "node",
+            "scripts/run-firewall-eval.js",
+            "dangerous-fork"
+        ],
+        "expectedRegex": "Verdict: require_approval",
+        "expectedStdoutRegex": "PASS: Firewall behaved as expected"
+    },
+    {
+        "name": "firewall blocks system path write",
+        "command": [
+            "node",
+            "scripts/run-firewall-eval.js",
+            "system-path"
+        ],
+        "expectedRegex": "Verdict: block",
+        "expectedStdoutRegex": "PASS: Firewall behaved as expected"
+    },
+    {
+        "name": "firewall allows safe echo",
+        "command": [
+            "node",
+            "scripts/run-firewall-eval.js",
+            "safe-echo"
+        ],
+        "expectedRegex": "Verdict: allow",
+        "expectedStdoutRegex": "PASS: Firewall behaved as expected"
     }
 ]
