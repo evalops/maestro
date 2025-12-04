@@ -24,7 +24,7 @@ export async function handleZen(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		try {
 			const url = new URL(
 				req.url || "/api/zen",
@@ -61,7 +61,7 @@ export async function handleZen(
 	}
 
 	if (req.method === "POST") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		if (!requireCsrf(req, res, corsHeaders)) return;
 		try {
 			const url = new URL(

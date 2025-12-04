@@ -53,7 +53,7 @@ export async function handleUI(
 	}
 
 	if (req.method === "GET") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		const action = url.searchParams.get("action") || "status";
 
 		try {
@@ -100,7 +100,7 @@ export async function handleUI(
 	}
 
 	if (req.method === "POST") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		if (!requireCsrf(req, res, corsHeaders)) return;
 		try {
 			const data = await readJsonBody<{

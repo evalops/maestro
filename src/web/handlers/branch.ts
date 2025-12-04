@@ -46,7 +46,7 @@ export async function handleBranch(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		const url = new URL(
 			req.url || "/api/branch",
 			`http://${req.headers.host || "localhost"}`,
@@ -129,7 +129,7 @@ export async function handleBranch(
 	}
 
 	if (req.method === "POST") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		if (!requireCsrf(req, res, corsHeaders)) return;
 		try {
 			const data = await parseAndValidateJson<BranchRequestInput>(

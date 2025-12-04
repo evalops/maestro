@@ -47,7 +47,7 @@ export async function handleQueue(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		const url = new URL(
 			req.url || "/api/queue",
 			`http://${req.headers.host || "localhost"}`,
@@ -116,7 +116,7 @@ export async function handleQueue(
 	}
 
 	if (req.method === "POST") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		if (!requireCsrf(req, res, corsHeaders)) return;
 		try {
 			const data = await readJsonBody<{

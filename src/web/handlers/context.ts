@@ -24,7 +24,7 @@ export async function handleContext(
 		sendJson(res, 405, { error: "Method not allowed" }, corsHeaders);
 		return;
 	}
-	if (!requireApiAuth(req, res, corsHeaders)) return;
+	if (!(await requireApiAuth(req, res, corsHeaders))) return;
 
 	const url = new URL(req.url || "/api/context", `http://${req.headers.host}`);
 	const sessionId = url.searchParams.get("sessionId");

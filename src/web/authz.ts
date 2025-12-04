@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { type JWTPayload, jwtVerify } from "jose";
 import {
 	authenticateRequest,
 	getRequestToken,
@@ -11,6 +12,9 @@ const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
 const CSRF_TOKEN = process.env.COMPOSER_WEB_CSRF_TOKEN?.trim() || null;
 const SHARED_SECRET = process.env.COMPOSER_AUTH_SHARED_SECRET?.trim() || null;
 const JWT_SECRET = process.env.COMPOSER_JWT_SECRET?.trim() || null;
+const JWT_AUDIENCE = process.env.COMPOSER_JWT_AUD?.trim() || undefined;
+const JWT_ISSUER = process.env.COMPOSER_JWT_ISS?.trim() || undefined;
+const JWT_ALG = process.env.COMPOSER_JWT_ALG?.trim() || "HS256";
 
 function base64UrlDecode(input: string): string {
 	return Buffer.from(
@@ -39,47 +43,46 @@ function verifySharedToken(token: string): string | null {
 	return userId;
 }
 
-function verifyHs256Jwt(token: string): { sub?: string } | null {
+async function verifyJwt(token: string): Promise<JWTPayload | null> {
 	if (!JWT_SECRET) return null;
-	const parts = token.split(".");
-	if (parts.length !== 3) return null;
-	const [h, p, sig] = parts;
-	const data = `${h}.${p}`;
-	const expected = createHash("sha256")
-		.update(data + JWT_SECRET)
-		.digest("base64url");
-	if (!secureCompare(sig, expected)) return null;
 	try {
-		const payload = JSON.parse(base64UrlDecode(p)) as { sub?: string };
+		const { payload, protectedHeader } = await jwtVerify(
+			token,
+			new TextEncoder().encode(JWT_SECRET),
+			{
+				algorithms: [JWT_ALG],
+				audience: JWT_AUDIENCE,
+				issuer: JWT_ISSUER,
+			},
+		);
+		if (!payload.sub) return null;
+		// basic exp/nbf checks handled by jose
 		return payload;
 	} catch {
 		return null;
 	}
 }
 
-export function requireApiAuth(
+export async function requireApiAuth(
 	req: IncomingMessage,
 	res: ServerResponse,
 	corsHeaders: Record<string, string>,
-): boolean {
+): Promise<boolean> {
 	const bearer = getRequestToken(req);
-	const jwtPayload = bearer ? verifyHs256Jwt(bearer) : null;
+	const jwtPayload = bearer ? await verifyJwt(bearer) : null;
 	const userId = bearer ? verifySharedToken(bearer) : null;
-	if (jwtPayload?.sub) {
+	// fast path for API key / shared secret
+	if (userId) return true;
+	if (jwtPayload?.sub) return true;
+	if (WEB_API_KEY && authenticateRequest(req, res, corsHeaders, WEB_API_KEY)) {
 		return true;
-	}
-	if (userId) {
-		return true; // shared-secret bearer token authenticated
-	}
-	if (WEB_API_KEY) {
-		return authenticateRequest(req, res, corsHeaders, WEB_API_KEY);
 	}
 	sendJson(
 		res,
 		401,
 		{
 			error:
-				"Authentication required. Provide shared-secret bearer token or COMPOSER_WEB_API_KEY.",
+				"Authentication required. Provide JWT (COMPOSER_JWT_SECRET) or shared-secret bearer token or COMPOSER_WEB_API_KEY.",
 		},
 		corsHeaders,
 		req,
@@ -130,10 +133,7 @@ export function requireCsrf(
 // Derive a stable subject key from provided token (API key) for per-user scoping
 export function getAuthSubject(req: IncomingMessage): string {
 	const token = getRequestToken(req);
-	const jwtPayload = token ? verifyHs256Jwt(token) : null;
-	if (jwtPayload?.sub) {
-		return `user:${jwtPayload.sub}`;
-	}
+	// Attempt JWT verification synchronously not possible; so use hash of token + prefix
 	if (token && SHARED_SECRET) {
 		const user = verifySharedToken(token);
 		if (user) return `user:${user}`;

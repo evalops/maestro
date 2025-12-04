@@ -22,7 +22,7 @@ export async function handlePreview(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
-		if (!requireApiAuth(req, res, corsHeaders)) return;
+		if (!(await requireApiAuth(req, res, corsHeaders))) return;
 		const url = new URL(
 			req.url || "/api/preview",
 			`http://${req.headers.host || "localhost"}`,
