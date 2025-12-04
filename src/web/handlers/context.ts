@@ -3,7 +3,7 @@ import { SessionManager } from "../../session/manager.js";
 import { getAuthSubject, requireApiAuth } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 import { redactPii } from "../utils/redact.js";
-import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
+import { checkSessionRateLimitAsync } from "../utils/session-rate-limit.js";
 import {
 	approximateTokensFromJson,
 	approximateTokensFromText,
@@ -43,7 +43,7 @@ export async function handleContext(
 		assertSessionId(sessionId);
 		const subject = getAuthSubject(req);
 		const sessionKey = `${subject}:${sessionId}`;
-		const rate = checkSessionRateLimit(sessionKey);
+		const rate = await checkSessionRateLimitAsync(sessionKey);
 		if (!rate.allowed) {
 			sendJson(res, 429, { error: "Too many context requests" }, corsHeaders);
 			return;

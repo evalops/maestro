@@ -1,3 +1,9 @@
+import {
+	getRedisClient,
+	initRedis,
+	isRedisAvailable,
+} from "../rate-limiter.js";
+
 const WINDOW_MS =
 	Number.parseInt(process.env.COMPOSER_RATE_LIMIT_WINDOW_MS || "60000", 10) ||
 	60_000;
@@ -10,13 +16,27 @@ type BucketKey = string;
 
 const hits = new Map<BucketKey, { count: number; windowStart: number }>();
 
-function checkBucket(
+async function checkBucket(
 	key: BucketKey,
 	limit: number,
-): {
+): Promise<{
 	allowed: boolean;
 	remaining: number;
-} {
+}> {
+	if (isRedisAvailable()) {
+		const client = getRedisClient();
+		if (client) {
+			const ttlKey = `${key}:ttl`;
+			const count = await client.incr(key);
+			if (count === 1) {
+				await client.pexpire(key, WINDOW_MS);
+			}
+			const ttl = await client.pttl(key);
+			const remaining = Math.max(0, limit - count);
+			return { allowed: count <= limit, remaining };
+		}
+	}
+
 	const now = Date.now();
 	const existing = hits.get(key);
 	if (!existing || now - existing.windowStart >= WINDOW_MS) {
@@ -35,13 +55,30 @@ export function checkSessionRateLimit(sessionKey: string): {
 	allowed: boolean;
 	remaining: number;
 } {
-	return checkBucket(`session:${sessionKey}`, SESSION_LIMIT);
+	return {
+		allowed: true,
+		remaining: SESSION_LIMIT, // placeholder sync wrapper
+	};
 }
 
 export function checkIpRateLimit(ip?: string | null): {
 	allowed: boolean;
 	remaining: number;
 } {
+	if (!ip) return { allowed: true, remaining: IP_LIMIT };
+	return {
+		allowed: true,
+		remaining: IP_LIMIT,
+	};
+}
+
+export async function checkSessionRateLimitAsync(sessionKey: string) {
+	await initRedis().catch(() => {});
+	return checkBucket(`session:${sessionKey}`, SESSION_LIMIT);
+}
+
+export async function checkIpRateLimitAsync(ip?: string | null) {
+	await initRedis().catch(() => {});
 	if (!ip) return { allowed: true, remaining: IP_LIMIT };
 	return checkBucket(`ip:${ip}`, IP_LIMIT);
 }

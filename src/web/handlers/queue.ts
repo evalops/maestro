@@ -16,7 +16,7 @@ import {
 	loadWebUiState,
 	saveWebUiState,
 } from "../stores/ui-store.js";
-import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
+import { checkSessionRateLimitAsync } from "../utils/session-rate-limit.js";
 
 const MAX_QUEUE_ITEMS = 50;
 
@@ -68,7 +68,7 @@ export async function handleQueue(
 		const sessionKey = `${subject}:${sessionId}`;
 		try {
 			assertSessionId(sessionId);
-			const rate = checkSessionRateLimit(sessionKey);
+			const rate = await checkSessionRateLimitAsync(sessionKey);
 			if (!rate.allowed) {
 				sendJson(
 					res,
@@ -134,7 +134,7 @@ export async function handleQueue(
 			assertSessionId(data.sessionId);
 			const subject = getAuthSubject(req);
 			const sessionKey = `${subject}:${data.sessionId}`;
-			const rate = checkSessionRateLimit(sessionKey);
+			const rate = await checkSessionRateLimitAsync(sessionKey);
 			if (!rate.allowed) {
 				sendJson(
 					res,

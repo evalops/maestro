@@ -7,7 +7,7 @@ import {
 	sendJson,
 } from "../server-utils.js";
 import { loadZenState, saveZenState } from "../stores/zen-store.js";
-import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
+import { checkSessionRateLimitAsync } from "../utils/session-rate-limit.js";
 
 const sessionZenState = new Map<string, boolean>();
 const DEFAULT_SESSION_KEY = "default";
@@ -41,7 +41,7 @@ export async function handleZen(
 				return;
 			}
 			const sessionKey = getSessionKey(sessionId);
-			const rate = checkSessionRateLimit(sessionKey);
+			const rate = await checkSessionRateLimitAsync(sessionKey);
 			if (!rate.allowed) {
 				sendJson(res, 429, { error: "Too many zen requests" }, corsHeaders);
 				return;
