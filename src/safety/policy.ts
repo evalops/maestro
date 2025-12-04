@@ -117,6 +117,10 @@ import {
 	resolveRealPath,
 } from "../utils/path-matcher.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
+import {
+	extractUrlsFromShellCommand,
+	extractUrlsFromValue,
+} from "../utils/url-extractor.js";
 
 const logger = createLogger("safety:policy");
 
@@ -632,61 +636,13 @@ function extractUrls(context: ActionApprovalContext): string[] {
 	const args = getArgsObject(context);
 	if (!args) return [];
 
-	const urls: string[] = [];
-	const urlPattern = /https?:\/\/[^\s"'<>]+/gi;
-
-	// Recursively extract URLs from any value
-	function extractFromValue(value: unknown): void {
-		if (typeof value === "string") {
-			const matches = value.match(urlPattern);
-			if (matches) {
-				// Trim common trailing punctuation that gets captured
-				for (const match of matches) {
-					urls.push(match.replace(/[)}\],.;:]+$/, ""));
-				}
-			}
-		} else if (Array.isArray(value)) {
-			for (const item of value) {
-				extractFromValue(item);
-			}
-		} else if (value && typeof value === "object") {
-			for (const v of Object.values(value)) {
-				extractFromValue(v);
-			}
-		}
-	}
-
-	extractFromValue(args);
+	const urls = extractUrlsFromValue(args);
 
 	// For bash commands, also extract URLs from curl/wget that may not have http:// prefix
 	if (context.toolName === "bash" || context.toolName === "background_tasks") {
 		const command = getStringArg(context, "command");
 		if (command) {
-			// Extract URLs from curl/wget commands (may not have http prefix)
-			// Capture all arguments to handle flags interspersed with URLs
-			const curlWgetPattern =
-				/(?:curl|wget)\s+((?:[^\s;&|<>`$()]|\\.)+(?:\s+(?:[^\s;&|<>`$()]|\\.)+)*)/gi;
-			const matches = command.matchAll(curlWgetPattern);
-			for (const match of matches) {
-				const argsStr = match[1];
-				// Split by spaces, respecting quotes
-				const argParts = argsStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-
-				for (const arg of argParts) {
-					let url = arg.replace(/^["']|["']$/g, ""); // strip quotes
-
-					// Skip flags
-					if (url.startsWith("-")) continue;
-
-					// Add http:// if no protocol specified
-					if (url && !url.match(/^https?:\/\//i)) {
-						url = `http://${url}`;
-					}
-					if (url) {
-						urls.push(url.replace(/[)}\],.;:]+$/, ""));
-					}
-				}
-			}
+			urls.push(...extractUrlsFromShellCommand(command));
 		}
 	}
 
