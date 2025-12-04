@@ -31,7 +31,9 @@ export class PathValidationError extends Error {
  */
 export function expandUserPath(path: string): string {
 	if (path.startsWith("~/") || path === "~") {
-		const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? homedir();
+		const envHome = process.env.HOME?.trim();
+		const envUserProfile = process.env.USERPROFILE?.trim();
+		const homeDir = envHome || envUserProfile || homedir();
 		return path.replace(/^~/, homeDir);
 	}
 	return path;

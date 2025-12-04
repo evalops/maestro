@@ -118,6 +118,16 @@ const searchFiles = createJsonTool({
 });
 ```
 
+### Path expansion helper
+
+`expandUserPath` lives in `src/utils/path-validation.ts` and is re-exported by the tool DSL. Use it instead of ad-hoc `~` handling to keep behavior consistent:
+
+```typescript
+import { expandUserPath } from "../../src/tools/tool-dsl.js";
+
+const absolute = expandUserPath("~/projects/my-app");
+```
+
 ## Tool Response Builder
 
 The `ToolResponseBuilder` provides a fluent API for constructing tool results:

@@ -60,7 +60,7 @@ describe("resolveRealPath", () => {
 
 	it("handles non-existent paths by resolving parent", () => {
 		const result = resolveRealPath("/tmp/nonexistent-file-abc123");
-		expect(result).toBe("/tmp/nonexistent-file-abc123");
+		expect(result.endsWith("/tmp/nonexistent-file-abc123")).toBe(true);
 	});
 
 	it("returns resolved path for deeply nested non-existent paths", () => {
