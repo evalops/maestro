@@ -71,25 +71,9 @@ import {
 } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import {
-	closeSync,
-	createReadStream,
-	createWriteStream,
-	existsSync,
-	promises as fsPromises,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	readSync,
-	renameSync,
-	statSync,
-	unlinkSync,
-} from "node:fs";
+import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import { dirname, join } from "node:path";
-import { Writable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import { createGzip, gunzipSync } from "node:zlib";
 
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "../agent/providers/typebox-helpers.js";
@@ -128,6 +112,13 @@ import {
 	shouldNotifyRestart,
 	updateNotifyThreshold,
 } from "./background/index.js";
+import {
+	archivedLogPath,
+	deleteArchives,
+	previewLastLine,
+	rotateArchives,
+	tailLogs,
+} from "./background/log-files.js";
 import {
 	getShellConfig,
 	killProcessTree,
@@ -982,7 +973,8 @@ class BackgroundTaskManager extends EventEmitter {
 			markTruncated: () => {
 				task.logTruncated = true;
 			},
-			shiftArchives: () => this.shiftArchivedLogs(task),
+			shiftArchives: () =>
+				rotateArchives(task.logPath, task.limits.logSegments),
 			archivedPath: (index) => this.getArchivedLogPath(task.logPath, index),
 		});
 
@@ -1014,60 +1006,7 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	private getArchivedLogPath(logPath: string, index: number): string {
-		return `${logPath}.${index}.gz`;
-	}
-
-	private shiftArchivedLogs(task: BackgroundTask): void {
-		const logPath = task.logPath;
-		const max = task.limits.logSegments;
-		for (let index = max; index >= 1; index -= 1) {
-			const currentPath = this.getArchivedLogPath(logPath, index);
-			if (!existsSync(currentPath)) {
-				continue;
-			}
-			if (index === max) {
-				try {
-					unlinkSync(currentPath);
-				} catch {}
-			} else {
-				const nextPath = this.getArchivedLogPath(logPath, index + 1);
-				try {
-					renameSync(currentPath, nextPath);
-				} catch {}
-			}
-		}
-	}
-
-	private deleteArchivedLogs(task: BackgroundTask): void {
-		const logPath = task.logPath;
-		const max = Math.max(task.limits.logSegments + 5, 5);
-		for (let index = 1; index <= max; index += 1) {
-			const archived = this.getArchivedLogPath(logPath, index);
-			if (existsSync(archived)) {
-				try {
-					unlinkSync(archived);
-				} catch {}
-			}
-		}
-	}
-
-	private readLogSegment(logPath: string): string {
-		try {
-			const data = readFileSync(logPath);
-			if (logPath.endsWith(".gz")) {
-				return gunzipSync(data).toString("utf8");
-			}
-			return data.toString("utf8");
-		} catch {
-			return "";
-		}
-	}
-
-	private trimLogText(text: string): string {
-		if (text.length <= LOG_TAIL_BYTES) {
-			return text;
-		}
-		return text.slice(-LOG_TAIL_BYTES);
+		return archivedLogPath(logPath, index);
 	}
 
 	private generateTaskId(): string {
@@ -1122,7 +1061,7 @@ class BackgroundTaskManager extends EventEmitter {
 		} catch {
 			// Ignore cleanup errors
 		}
-		this.deleteArchivedLogs(task);
+		deleteArchives(task.logPath, task.limits.logSegments);
 	}
 
 	private cleanupExpiredTasks(force = false): void {
@@ -1145,50 +1084,25 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	private tailLog(task: BackgroundTask, lines: number): string {
-		const logPath = task.logPath;
-		const segments: string[] = [];
-		for (let index = task.limits.logSegments; index >= 1; index -= 1) {
-			const archivedPath = this.getArchivedLogPath(logPath, index);
-			if (existsSync(archivedPath)) {
-				const text = this.trimLogText(this.readLogSegment(archivedPath));
-				if (text) {
-					segments.push(text);
-				}
-			}
-		}
-		if (existsSync(logPath)) {
-			const stat = statSync(logPath);
-			if (stat.size > 0) {
-				const readSize = Math.min(stat.size, LOG_TAIL_BYTES);
-				const buffer = Buffer.alloc(readSize);
-				const fd = openSync(logPath, "r");
-				readSync(fd, buffer, 0, readSize, stat.size - readSize);
-				closeSync(fd);
-				segments.push(this.trimLogText(buffer.toString("utf8")));
-			}
-		}
-		if (segments.length === 0) {
-			return "No logs available.";
-		}
-		const combined = segments.join("\n").trimEnd();
-		if (!combined) {
-			return "No logs available.";
-		}
-		const logLines = combined.split(/\r?\n/);
-		const tail = logLines.slice(-lines);
-		return tail.join("\n");
+		return tailLogs(
+			task.logPath,
+			task.limits.logSegments,
+			LOG_TAIL_BYTES,
+			lines,
+		);
 	}
 
 	private previewLogLine(
 		task: BackgroundTask,
 		lines: number,
 	): string | undefined {
-		const text = this.tailLog(task, lines).trim();
-		if (!text || text === "No logs available.") {
-			return undefined;
-		}
-		const entries = text.split(/\r?\n/).filter(Boolean);
-		return this.sanitizeLogSnippet(entries[entries.length - 1]);
+		return previewLastLine(
+			task.logPath,
+			task.limits.logSegments,
+			LOG_TAIL_BYTES,
+			lines,
+			(value) => this.sanitizeLogSnippet(value),
+		);
 	}
 
 	private sanitizeLogSnippet(value: string): string {

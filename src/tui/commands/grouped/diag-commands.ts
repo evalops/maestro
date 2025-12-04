@@ -30,7 +30,7 @@ import { isHelpRequest, parseSubcommand } from "./utils.js";
 export interface DiagCommandDeps {
 	handleStatus: () => void;
 	handleAbout: () => void;
-	handleContext: () => void;
+	handleContext: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleStats: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleBackground: (ctx: CommandExecutionContext) => void;
 	handleDiagnostics: (ctx: CommandExecutionContext) => void;
@@ -64,7 +64,7 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 
 			case "context":
 			case "tokens":
-				deps.handleContext();
+				await deps.handleContext(ctx);
 				break;
 
 			case "stats":
