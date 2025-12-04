@@ -6,6 +6,11 @@ import {
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
+import {
+	getSessionUiState,
+	loadWebUiState,
+	saveWebUiState,
+} from "../stores/ui-store.js";
 
 function parseCleanMode(value: string): "off" | "soft" | "aggressive" | null {
 	const normalized = value.toLowerCase();
@@ -32,26 +37,41 @@ export async function handleUI(
 	res: ServerResponse,
 	corsHeaders: Record<string, string>,
 ) {
+	const url = new URL(
+		req.url || "/api/ui",
+		`http://${req.headers.host || "localhost"}`,
+	);
+	const sessionId = url.searchParams.get("sessionId");
+	if (!sessionId) {
+		sendJson(
+			res,
+			400,
+			{ error: "sessionId query parameter is required" },
+			corsHeaders,
+		);
+		return;
+	}
+
 	if (req.method === "GET") {
 		if (!requireApiAuth(req, res, corsHeaders)) return;
-		const url = new URL(
-			req.url || "/api/ui",
-			`http://${req.headers.host || "localhost"}`,
-		);
 		const action = url.searchParams.get("action") || "status";
 
 		try {
 			if (action === "status") {
 				const state = loadUiState();
+				const webState = loadWebUiState();
+				const sessionState = getSessionUiState(webState, sessionId);
 				sendJson(
 					res,
 					200,
 					{
-						zenMode: state.zenMode ?? false,
-						cleanMode: state.cleanMode ?? "off",
-						footerMode: state.footerMode ?? "ensemble",
-						compactTools: state.compactTools ?? false,
-						queueMode: state.queueMode ?? "all",
+						zenMode: sessionState.zenMode ?? state.zenMode ?? false,
+						cleanMode: sessionState.cleanMode ?? state.cleanMode ?? "off",
+						footerMode:
+							sessionState.footerMode ?? state.footerMode ?? "ensemble",
+						compactTools:
+							sessionState.compactTools ?? state.compactTools ?? false,
+						queueMode: sessionState.queueMode ?? state.queueMode ?? "all",
 					},
 					corsHeaders,
 				);
@@ -90,6 +110,9 @@ export async function handleUI(
 				compactTools?: boolean;
 			}>(req);
 			const { action } = data;
+			const baseState = loadUiState();
+			const webState = loadWebUiState();
+			const sessionState = getSessionUiState(webState, sessionId);
 
 			if (action === "clean" && data.cleanMode) {
 				const parsed = parseCleanMode(data.cleanMode);
@@ -102,6 +125,8 @@ export async function handleUI(
 					);
 					return;
 				}
+				sessionState.cleanMode = parsed;
+				saveWebUiState(webState);
 				saveUiState({ cleanMode: parsed });
 				sendJson(
 					res,
@@ -124,6 +149,8 @@ export async function handleUI(
 					);
 					return;
 				}
+				sessionState.footerMode = parsed;
+				saveWebUiState(webState);
 				saveUiState({ footerMode: parsed });
 				sendJson(
 					res,
@@ -139,6 +166,8 @@ export async function handleUI(
 				action === "compact" &&
 				typeof data.compactTools === "boolean"
 			) {
+				sessionState.compactTools = data.compactTools;
+				saveWebUiState(webState);
 				saveUiState({ compactTools: data.compactTools });
 				sendJson(
 					res,

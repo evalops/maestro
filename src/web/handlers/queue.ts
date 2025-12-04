@@ -11,6 +11,11 @@ import {
 	loadQueueState,
 	saveQueueState,
 } from "../stores/queue-store.js";
+import {
+	getSessionUiState,
+	loadWebUiState,
+	saveWebUiState,
+} from "../stores/ui-store.js";
 import { checkSessionRateLimit } from "../utils/session-rate-limit.js";
 
 const MAX_QUEUE_ITEMS = 50;
@@ -23,13 +28,16 @@ function assertSessionId(sessionId: string): void {
 
 function getQueueState(sessionId: string) {
 	const uiState = loadUiState();
+	const webState = loadWebUiState();
+	const perSession = getSessionUiState(webState, sessionId);
 	const state = loadQueueState();
 	const sessionState = getSessionQueue(
 		state,
 		sessionId,
-		uiState.queueMode ?? "all",
+		perSession.queueMode ?? uiState.queueMode ?? "all",
 	);
 	saveQueueState(state);
+	saveWebUiState(webState);
 	return sessionState;
 }
 

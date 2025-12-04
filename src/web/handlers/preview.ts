@@ -40,8 +40,18 @@ export async function handlePreview(
 				return;
 			}
 
+			if (filePath.includes("..") || filePath.includes("/node_modules/")) {
+				sendJson(res, 400, { error: "Invalid file path" }, corsHeaders);
+				return;
+			}
+
 			try {
 				const safePath = assertPathWithinRepo(filePath, process.cwd());
+				execFileSync("git", ["ls-files", "--error-unmatch", safePath], {
+					cwd: process.cwd(),
+					stdio: "ignore",
+					encoding: "utf-8",
+				});
 				const diff = execFileSync(
 					"git",
 					["diff", "--no-color", "--", safePath],
