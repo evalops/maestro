@@ -31,6 +31,7 @@ import {
 	evaluateResourceLimitBreach,
 	extractProcStatFields,
 } from "../../src/tools/background-tasks.js";
+import { computeRestartDelay } from "../../src/tools/background/index.js";
 
 const settingsRoot = mkdtempSync(join(tmpdir(), "composer-bg-settings-"));
 const settingsPath = join(settingsRoot, "settings.json");
@@ -427,33 +428,21 @@ describe("backgroundTasksTool", () => {
 	});
 
 	it("supports exponential restart strategy with jitter", () => {
-		type RestartPolicy = {
-			delayMs: number;
-			maxAttempts: number;
-			attempts: number;
-			strategy: string;
-			maxDelayMs: number;
-			jitterRatio: number;
-		};
-		const computeRestartDelay = (
-			backgroundTaskManager as unknown as {
-				computeRestartDelay: (policy: RestartPolicy) => number;
-			}
-		).computeRestartDelay.bind(backgroundTaskManager);
 		const policy = {
 			delayMs: 100,
 			maxAttempts: 3,
 			attempts: 2,
-			strategy: "exponential",
+			strategy: "exponential" as const,
 			maxDelayMs: 800,
 			jitterRatio: 0,
 		};
+		// Exponential: 100 * 2^(2-1) = 200ms
 		expect(computeRestartDelay(policy)).toBe(200);
 		const jitterPolicy = { ...policy, jitterRatio: 0.5 };
-		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
-		const jitterDelay = computeRestartDelay(jitterPolicy);
+		// With jitter: delay=200, jitter=100, min=max(50,100)=100, max=300
+		// randomFn()=0 → delay = 100 + 0 * 200 = 100
+		const jitterDelay = computeRestartDelay(jitterPolicy, () => 0);
 		expect(jitterDelay).toBe(100);
-		randomSpy.mockRestore();
 	});
 
 	it("parses /proc stat fields with nested parentheses", () => {

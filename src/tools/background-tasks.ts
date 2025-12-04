@@ -115,10 +115,18 @@ import { safejoin } from "../utils/path-validation.js";
 import { redactSecrets } from "../utils/secret-redactor.js";
 import {
 	ResourceMonitor,
+	type RestartPolicy,
+	type RestartPolicyOptions,
 	RotatingLogWriter,
 	type RotatingLogWriterOptions,
 	type TaskResourceUsage,
+	canRestart,
+	computeRestartDelay,
+	createRestartPolicy,
 	extractProcStatFields,
+	incrementAttempts,
+	shouldNotifyRestart,
+	updateNotifyThreshold,
 } from "./background/index.js";
 import {
 	getShellConfig,
@@ -182,55 +190,6 @@ type BackgroundTaskStatus =
 // Re-export for backwards compatibility
 export { type TaskResourceUsage, extractProcStatFields };
 
-/**
- * Restart Policy Configuration
- *
- * Defines how a task should be restarted after non-zero exit. The policy
- * supports two backoff strategies and includes jitter to prevent thundering
- * herd when multiple tasks restart simultaneously.
- *
- * ## Strategies
- *
- * ### Fixed Delay
- * Always waits `delayMs` between restart attempts. Simple and predictable.
- * Use when: restart failures are likely transient and short-lived.
- *
- * ### Exponential Backoff
- * Delay doubles with each attempt: delayMs, 2*delayMs, 4*delayMs, ...
- * Capped at `maxDelayMs` to prevent unbounded waits.
- * Use when: failures may indicate resource contention or need recovery time.
- *
- * ## Jitter
- *
- * Random variation applied to delay to prevent synchronized restarts:
- * `actualDelay = delay ± (delay * jitterRatio)`
- *
- * This is critical when multiple background tasks fail together (e.g., database
- * goes down). Without jitter, they'd all retry at the exact same time, potentially
- * overwhelming the recovering service.
- *
- * ## Notification Threshold
- *
- * `nextNotifyAttempt` tracks when to emit a user-visible notification about
- * repeated restarts. Uses exponential growth (2, 4, 8, ...) to avoid spamming.
- */
-interface RestartPolicy {
-	/** Maximum restart attempts before giving up (task fails permanently) */
-	maxAttempts: number;
-	/** Base delay between restart attempts in milliseconds */
-	delayMs: number;
-	/** Current restart attempt counter (0 = no restarts yet) */
-	attempts: number;
-	/** "fixed" = constant delay, "exponential" = doubles each attempt */
-	strategy: "fixed" | "exponential";
-	/** Upper bound for exponential backoff (prevents multi-minute waits) */
-	maxDelayMs: number;
-	/** Random variation factor: 0.0 = no jitter, 1.0 = ±100% variation */
-	jitterRatio: number;
-	/** Next attempt count that triggers a notification (grows exponentially) */
-	nextNotifyAttempt?: number;
-}
-
 interface BackgroundTask {
 	id: string;
 	command: string;
@@ -263,13 +222,7 @@ interface TaskStartOptions {
 	cwd?: string;
 	env?: Record<string, string>;
 	useShell?: boolean;
-	restart?: {
-		maxAttempts: number;
-		delayMs: number;
-		strategy?: "fixed" | "exponential";
-		maxDelayMs?: number;
-		jitterRatio?: number;
-	};
+	restart?: RestartPolicyOptions;
 	limits?: TaskLimitOverrides;
 }
 
@@ -566,8 +519,7 @@ class BackgroundTaskManager extends EventEmitter {
 		if (!Number.isFinite(RESTART_NOTIFY_THRESHOLD)) {
 			return;
 		}
-		const nextNotify = policy.nextNotifyAttempt ?? RESTART_NOTIFY_THRESHOLD;
-		if (policy.attempts < nextNotify) {
+		if (!shouldNotifyRestart(policy)) {
 			return;
 		}
 		this.emitTaskNotification({
@@ -586,12 +538,7 @@ class BackgroundTaskManager extends EventEmitter {
 						? `signal ${task.signal}`
 						: undefined,
 		});
-		const next = nextNotify * 2;
-		if (!Number.isFinite(next) || next > policy.maxAttempts) {
-			policy.nextNotifyAttempt = Number.POSITIVE_INFINITY;
-		} else {
-			policy.nextNotifyAttempt = next;
-		}
+		updateNotifyThreshold(policy);
 	}
 
 	private notifyFailure(
@@ -656,34 +603,10 @@ class BackgroundTaskManager extends EventEmitter {
 	private normalizeRestartOptions(
 		restart?: TaskStartOptions["restart"],
 	): RestartPolicy | undefined {
-		if (!restart || restart.maxAttempts <= 0) {
+		if (!restart) {
 			return undefined;
 		}
-		const maxAttempts = Math.min(Math.max(restart.maxAttempts, 0), 5);
-		if (maxAttempts === 0) {
-			return undefined;
-		}
-		const delayMs = Math.min(Math.max(restart.delayMs, 50), 60_000);
-		const strategy: RestartPolicy["strategy"] =
-			restart.strategy === "exponential" ? "exponential" : "fixed";
-		const rawMaxDelay =
-			restart.maxDelayMs !== undefined
-				? Math.max(restart.maxDelayMs, delayMs)
-				: delayMs * 8;
-		const maxDelayMs = Math.min(Math.max(rawMaxDelay, delayMs), 10 * 60 * 1000);
-		const jitterRatio = Math.min(Math.max(restart.jitterRatio ?? 0, 0), 1);
-		const policy: RestartPolicy = {
-			maxAttempts,
-			delayMs,
-			attempts: 0,
-			strategy,
-			maxDelayMs,
-			jitterRatio,
-		};
-		if (Number.isFinite(RESTART_NOTIFY_THRESHOLD)) {
-			policy.nextNotifyAttempt = RESTART_NOTIFY_THRESHOLD;
-		}
-		return policy;
+		return createRestartPolicy(restart, RESTART_NOTIFY_THRESHOLD);
 	}
 
 	private createChildProcess(task: BackgroundTask): ChildProcess {
@@ -858,15 +781,15 @@ class BackgroundTaskManager extends EventEmitter {
 		if (!policy || task.stopRequested) {
 			return false;
 		}
-		if (policy.attempts >= policy.maxAttempts) {
+		if (!canRestart(policy)) {
 			return false;
 		}
-		policy.attempts += 1;
+		incrementAttempts(policy);
 		task.status = "restarting";
 		this.emitTaskTelemetry(task, "restarted");
 		this.maybeNotifyRestart(task, policy);
 		this.cancelRestart(task);
-		const delay = this.computeRestartDelay(policy);
+		const delay = computeRestartDelay(policy);
 		task.restartTimer = setTimeout(() => {
 			task.restartTimer = null;
 			this.launchProcess(task);
@@ -875,65 +798,6 @@ class BackgroundTaskManager extends EventEmitter {
 			task.restartTimer.unref();
 		}
 		return true;
-	}
-
-	/**
-	 * Compute Restart Delay with Backoff and Jitter
-	 *
-	 * Calculates the actual delay before the next restart attempt, applying
-	 * the configured backoff strategy and jitter.
-	 *
-	 * ## Exponential Backoff Calculation
-	 *
-	 * For exponential strategy, delay doubles with each attempt:
-	 * - Attempt 1: delayMs * 2^0 = delayMs
-	 * - Attempt 2: delayMs * 2^1 = 2 * delayMs
-	 * - Attempt 3: delayMs * 2^2 = 4 * delayMs
-	 * - etc., capped at maxDelayMs
-	 *
-	 * ## Jitter Application
-	 *
-	 * Jitter adds randomness to prevent synchronized restarts (thundering herd):
-	 *
-	 * ```
-	 * jitterRange = delay * jitterRatio
-	 * actualDelay = random(delay - jitterRange, delay + jitterRange)
-	 * ```
-	 *
-	 * Example with delay=1000ms and jitterRatio=0.25:
-	 * - jitterRange = 250ms
-	 * - actualDelay = random value between 750ms and 1250ms
-	 *
-	 * A minimum of 50ms is enforced to prevent near-instant retries.
-	 *
-	 * @param policy - The restart policy configuration
-	 * @returns Delay in milliseconds before next restart attempt
-	 */
-	private computeRestartDelay(policy: RestartPolicy): number {
-		let delay = policy.delayMs;
-
-		// Apply exponential backoff if configured
-		if (policy.strategy === "exponential") {
-			// Exponent is attempts-1 so first restart uses base delay
-			const exponent = Math.max(policy.attempts - 1, 0);
-			// 2^exponent scaling: 1x, 2x, 4x, 8x, ...
-			const scaled = policy.delayMs * 2 ** exponent;
-			// Clamp between base delay and maximum
-			delay = Math.min(Math.max(scaled, policy.delayMs), policy.maxDelayMs);
-		}
-
-		// Apply jitter to prevent synchronized restarts
-		if (policy.jitterRatio > 0 && delay > 0) {
-			const jitter = delay * policy.jitterRatio;
-			// Minimum 50ms to prevent near-instant retries after jitter subtraction
-			const min = Math.max(50, delay - jitter);
-			const max = delay + jitter;
-			const range = Math.max(max - min, 0);
-			// Uniform random distribution within jitter range
-			delay = Math.round(min + Math.random() * range);
-		}
-
-		return delay;
 	}
 
 	private cancelRestart(task: BackgroundTask): void {
