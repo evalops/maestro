@@ -3,12 +3,17 @@ import type { ThinkingLevel } from "../agent/types.js";
 import type { WebServerContext } from "./app-context.js";
 import { handleAdminCleanup, handleAdminWarmCaches } from "./handlers/admin.js";
 import { handleApproval } from "./handlers/approval.js";
+import { handleApprovals } from "./handlers/approvals.js";
+import { handleBackground } from "./handlers/background.js";
 import { handleChat } from "./handlers/chat.js";
 import { handleClientToolResult } from "./handlers/client-tools.js";
 import { handleCommandPrefs } from "./handlers/command-prefs.js";
 import { handleCommands } from "./handlers/commands.js";
 import { handleConfig } from "./handlers/config.js";
+import { handleContext } from "./handlers/context.js";
+import { handleDiagnostics } from "./handlers/diagnostics.js";
 import { handleFiles } from "./handlers/files.js";
+import { handleFramework } from "./handlers/framework.js";
 import {
 	handleGuardianConfig,
 	handleGuardianRun,
@@ -19,13 +24,20 @@ import { handleMcpStatus } from "./handlers/mcp.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handlePlan } from "./handlers/plan.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
+import { handleReview } from "./handlers/review.js";
 import {
 	handleSessionExport,
 	handleSessionShare,
 	handleSessions,
 	handleSharedSession,
 } from "./handlers/sessions.js";
+import { handleStats } from "./handlers/stats.js";
 import { handleStatus } from "./handlers/status.js";
+import { handleTelemetry } from "./handlers/telemetry.js";
+import { handleTools } from "./handlers/tools.js";
+import { handleTraining } from "./handlers/training.js";
+import { handleChanges } from "./handlers/undo.js";
+import { handleUndo } from "./handlers/undo.js";
 import { handleUsage } from "./handlers/usage.js";
 import { getPrometheusMetrics } from "./logger.js";
 import { requestTracker } from "./request-tracker.js";
@@ -157,6 +169,96 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "GET",
 			path: "/api/usage",
 			handler: (req, res) => handleUsage(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/background",
+			handler: (req, res) => handleBackground(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/background",
+			handler: (req, res) => handleBackground(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/undo",
+			handler: (req, res) => handleUndo(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/undo",
+			handler: (req, res) => handleUndo(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/changes",
+			handler: (req, res) => handleChanges(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/approvals",
+			handler: (req, res) => handleApprovals(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/approvals",
+			handler: (req, res) => handleApprovals(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/framework",
+			handler: (req, res) => handleFramework(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/framework",
+			handler: (req, res) => handleFramework(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/tools",
+			handler: (req, res) => handleTools(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/review",
+			handler: (req, res) => handleReview(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/context",
+			handler: (req, res) => handleContext(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/stats",
+			handler: (req, res) => handleStats(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/telemetry",
+			handler: (req, res) => handleTelemetry(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/telemetry",
+			handler: (req, res) => handleTelemetry(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/training",
+			handler: (req, res) => handleTraining(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/training",
+			handler: (req, res) => handleTraining(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/diagnostics",
+			handler: (req, res) => handleDiagnostics(req, res, corsHeaders),
 		},
 		{
 			method: "GET",
