@@ -103,6 +103,12 @@ import {
 	getBackgroundTaskHistory,
 	recordBackgroundTaskEvent,
 } from "../telemetry.js";
+import {
+	readBooleanEnv,
+	readNonNegativeInt,
+	readPositiveInt,
+	readThresholdEnv,
+} from "../utils/env-parser.js";
 import { isErrno } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { safejoin } from "../utils/path-validation.js";
@@ -143,64 +149,6 @@ type ChildProcessWithUsage = ChildProcess & {
 		systemCPUTime: number;
 	};
 };
-
-function readBooleanEnv(name: string, fallback = false): boolean {
-	const raw = process.env[name];
-	if (!raw) {
-		return fallback;
-	}
-	const normalized = raw.trim().toLowerCase();
-	if (["1", "true", "yes", "on"].includes(normalized)) {
-		return true;
-	}
-	if (["0", "false", "no", "off"].includes(normalized)) {
-		return false;
-	}
-	return fallback;
-}
-
-function readNonNegativeInt(envName: string, fallback: number): number {
-	const raw = process.env[envName];
-	if (!raw) {
-		return fallback;
-	}
-	const parsed = Number.parseInt(raw, 10);
-	if (Number.isNaN(parsed) || parsed < 0) {
-		return fallback;
-	}
-	return parsed;
-}
-
-function readThresholdEnv(envName: string, fallback: number): number {
-	const raw = process.env[envName];
-	if (!raw) {
-		return fallback;
-	}
-	const parsed = Number.parseInt(raw, 10);
-	if (Number.isNaN(parsed)) {
-		return fallback;
-	}
-	if (parsed <= 0) {
-		return Number.POSITIVE_INFINITY;
-	}
-	return parsed;
-}
-
-function readPositiveInt(
-	envName: string,
-	fallback: number,
-	minimum = 1,
-): number {
-	const raw = process.env[envName];
-	if (!raw) {
-		return fallback;
-	}
-	const parsed = Number.parseInt(raw, 10);
-	if (Number.isNaN(parsed) || parsed < minimum) {
-		return fallback;
-	}
-	return parsed;
-}
 
 const MAX_CONCURRENT_TASKS = readPositiveInt(
 	"COMPOSER_BACKGROUND_TASK_MAX",
