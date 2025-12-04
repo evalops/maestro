@@ -46,6 +46,17 @@ This document defines the operational parameters for **Composer**. It serves two
 
   * **Vitest Filter:** `bunx vitest --run -t "<test name>"`
 
+### Git Commit Standards
+
+**CRITICAL - Never violate these rules:**
+
+1. **Never amend commits that have been pushed.** Make a new commit instead.
+2. **Never force-push to main.** This rewrites shared history and breaks collaborators.
+3. **Atomic commits only.** Each commit should be one logical change. Don't mix unrelated changes.
+4. **Never use `--force` or `--force-with-lease` on shared branches.**
+
+If you make a mistake, fix it with a new commit. Do not rewrite history to cover it up.
+
 ### Pull Request Standards
 
 **Pre-Commit Checklist:**
