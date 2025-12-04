@@ -43,4 +43,10 @@ describe("rule-evaluator", () => {
 		expect(result.allowed).toBe(true);
 		expect(result.reason).toBe("ok");
 	});
+
+	it("allows by default when no rules are provided", () => {
+		const result = evaluateRules([], { value: 0 });
+		expect(result.allowed).toBe(true);
+		expect(result.reason).toBeUndefined();
+	});
 });

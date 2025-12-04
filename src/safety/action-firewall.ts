@@ -66,6 +66,7 @@ import {
 	unwrapShellCommand,
 } from "./bash-safety-analyzer.js";
 import { checkPolicy } from "./policy.js";
+import { RuleCache } from "./rule-cache.js";
 import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
 
 import type { SemanticJudge, SemanticJudgeContext } from "./semantic-judge.js";
@@ -98,7 +99,7 @@ interface PolicyCheckResult {
  * 2. Cache entries are automatically garbage collected when context is freed
  * 3. No memory leaks from long-running processes
  */
-const policyCheckCache = new WeakMap<
+const policyCheckCache = new RuleCache<
 	ActionApprovalContext,
 	PolicyCheckResult
 >();
@@ -129,19 +130,26 @@ const policyCheckCache = new WeakMap<
  *
  * Rules can be sync or async. Async rules are awaited during evaluation.
  */
+type RuleOutcome = { allowed: boolean; reason?: string; remediation?: string };
+
 export interface ActionFirewallRule {
-	/** Unique identifier for this rule (used in logs and verdicts) */
-	id: string;
-	/** Human-readable description of what this rule checks */
+	/** Optional legacy identifier used in existing logs/tests */
+	id?: string;
+	/** Optional name for logging */
+	name?: string;
+	/** Human-readable description */
 	description: string;
-	/** Verdict if rule matches: allow, require_approval (default), or block */
+	/** Verdict override */
 	action?: "allow" | "require_approval" | "block";
-	/** Predicate function - returns true if this rule applies to the context */
-	match: (context: ActionApprovalContext) => boolean | Promise<boolean>;
-	/** Optional: returns human-readable reason why rule matched */
-	reason?: (context: ActionApprovalContext) => string | Promise<string>;
-	/** Optional: returns suggestion for how user can proceed */
+	/** Modern evaluation hook (preferred) */
+	evaluate?: (
+		context: ActionApprovalContext,
+	) => RuleOutcome | Promise<RuleOutcome>;
+	/** Optional remediation helper */
 	remediation?: (context: ActionApprovalContext) => string | Promise<string>;
+	/** Legacy match/reason hooks kept for backward compatibility */
+	match?: (context: ActionApprovalContext) => boolean | Promise<boolean>;
+	reason?: (context: ActionApprovalContext) => string | Promise<string>;
 }
 
 const untaggedEgressWarnings = new Set<string>();
@@ -247,49 +255,43 @@ function isMcpTool(toolName: string): boolean {
 const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 	dangerousPatterns,
 ).map(([key, pattern]) => ({
-	id: `command-${key}`,
+	name: `command-${key}`,
 	description:
 		dangerousPatternDescriptions[
 			key as keyof typeof dangerousPatternDescriptions
 		],
-	// rmRf is high risk, keep as require_approval (or block if we want to be stricter)
-	// For now, require_approval is standard for dangerous commands unless policy blocks them.
 	action: "require_approval",
-	match: (ctx) => {
+	evaluate: (ctx) => {
 		const command = getCommandArg(ctx);
-		return !!command && pattern.test(command);
-	},
-	reason: (ctx) => {
-		const command = getCommandArg(ctx) ?? "";
-		return `Detected ${dangerousPatternDescriptions[key as keyof typeof dangerousPatternDescriptions]}: ${command.trim()}`;
+		if (!command || !pattern.test(command)) {
+			return { allowed: true };
+		}
+		return {
+			allowed: false,
+			reason: `Detected ${dangerousPatternDescriptions[key as keyof typeof dangerousPatternDescriptions]}: ${command.trim()}`,
+		};
 	},
 }));
-
-// Cache for tree-sitter analysis results
-const treeSitterAnalysisCache = new WeakMap<
-	ActionApprovalContext,
-	{ safe: boolean; reason?: string }
->();
 
 /**
  * Tree-sitter based command safety rule.
  * Provides more accurate analysis than regex patterns.
  */
 const treeSitterCommandRule: ActionFirewallRule = {
-	id: "command-treesitter-analysis",
+	name: "command-treesitter-analysis",
 	description: "Tree-sitter based command safety analysis",
 	action: "require_approval",
-	match: (ctx) => {
+	evaluate: (ctx) => {
 		// Only run if tree-sitter parser is available (has native bindings)
 		if (!isParserAvailable()) {
-			return false;
+			return { allowed: true };
 		}
 
 		if (ctx.toolName !== "bash" && !isBackgroundTaskShellStart(ctx)) {
-			return false;
+			return { allowed: true };
 		}
 		let command = getCommandArg(ctx);
-		if (!command) return false;
+		if (!command) return { allowed: true };
 
 		// Try to unwrap bash -c "..." style commands
 		const unwrapped = unwrapShellCommand(command);
@@ -298,19 +300,13 @@ const treeSitterCommandRule: ActionFirewallRule = {
 		}
 
 		const analysis = analyzeCommandSafety(command);
-		// Cache the result for reason()
-		treeSitterAnalysisCache.set(ctx, {
-			safe: analysis.safe,
-			reason: analysis.reason,
-		});
-		return !analysis.safe;
-	},
-	reason: (ctx) => {
-		const cached = treeSitterAnalysisCache.get(ctx);
-		if (cached?.reason) {
-			return cached.reason;
+		if (analysis.safe) {
+			return { allowed: true };
 		}
-		return "Command failed tree-sitter safety analysis";
+		return {
+			allowed: false,
+			reason: analysis.reason ?? "Command failed tree-sitter safety analysis",
+		};
 	},
 };
 
@@ -489,33 +485,40 @@ function isContainedInWorkspace(filePath: string): boolean {
 
 export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
-		id: "enterprise-policy",
+		name: "enterprise-policy",
 		description: "Enforce enterprise policies on tools and dependencies",
 		action: "block", // HARD BLOCK for policy violations
-		match: async (ctx) => {
-			const result = await checkPolicy(ctx);
-			// Cache result to avoid re-evaluating in reason()
-			policyCheckCache.set(ctx, result);
-			return !result.allowed;
-		},
-		reason: async (ctx) => {
+		evaluate: async (ctx) => {
 			const cached = policyCheckCache.get(ctx);
-			const result = cached ?? (await checkPolicy(ctx));
-			return result.reason ?? "Action blocked by enterprise policy";
+			if (cached) {
+				return cached.allowed
+					? { allowed: true }
+					: {
+							allowed: false,
+							reason: cached.reason ?? "Action blocked by enterprise policy",
+						};
+			}
+			const result = await checkPolicy(ctx);
+			policyCheckCache.set(ctx, result);
+			if (result.allowed) return { allowed: true };
+			return {
+				allowed: false,
+				reason: result.reason ?? "Action blocked by enterprise policy",
+			};
 		},
 	},
 	{
-		id: "system-path-protection",
+		name: "system-path-protection",
 		description: "Prevent modification of critical system directories",
 		action: "block", // HARD BLOCK for system paths
-		match: (ctx) => {
+		evaluate: (ctx) => {
 			// Only check file mutation tools
 			if (
 				!["write", "edit", "delete_file", "move_file", "copy_file"].includes(
 					ctx.toolName,
 				)
 			) {
-				return false;
+				return { allowed: true };
 			}
 			const paths = extractFilePaths(ctx);
 			// We check system paths first, but if it's in temp (safe), we should allow it.
@@ -526,35 +529,40 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			const unsafePaths = paths.filter((p) => !isContainedInWorkspace(p));
 
 			// Only check remaining paths against system blocklist
-			return unsafePaths.some(isSystemPath);
+			if (unsafePaths.some(isSystemPath)) {
+				return {
+					allowed: false,
+					reason:
+						"Modification of critical system directories is blocked for safety.",
+				};
+			}
+			return { allowed: true };
 		},
-		reason: (ctx) =>
-			"Modification of critical system directories is blocked for safety.",
 		remediation: () =>
 			"Do not modify critical system paths. If you need to write a file, use the current workspace directory or a temporary folder.",
 	},
 	{
-		id: "workspace-containment",
+		name: "workspace-containment",
 		description:
 			"Require approval for file modifications outside the workspace",
 		action: "require_approval",
-		match: (ctx) => {
+		evaluate: (ctx) => {
 			// Only check file mutation tools
 			if (
 				!["write", "edit", "delete_file", "move_file", "copy_file"].includes(
 					ctx.toolName,
 				)
 			) {
-				return false;
+				return { allowed: true };
 			}
 			const paths = extractFilePaths(ctx);
 			// Return true (match rule) if ANY path is NOT contained
-			return paths.some((p) => !isContainedInWorkspace(p));
-		},
-		reason: (ctx) => {
-			const paths = extractFilePaths(ctx);
 			const outsidePaths = paths.filter((p) => !isContainedInWorkspace(p));
-			return `File modification outside workspace detected: ${outsidePaths.join(", ")}. This requires explicit approval.`;
+			if (outsidePaths.length === 0) return { allowed: true };
+			return {
+				allowed: false,
+				reason: `File modification outside workspace detected: ${outsidePaths.join(", ")}. This requires explicit approval.`,
+			};
 		},
 		remediation: () =>
 			"The file path is outside the allowed workspace. Please use a path within the current project or a temporary directory, or ask the user to add this path to 'containment.trustedPaths' in ~/.composer/firewall.json.",
@@ -681,12 +689,26 @@ export class ActionFirewall {
 		context: ActionApprovalContext,
 	): Promise<ActionFirewallVerdict> {
 		for (const rule of this.rules) {
-			if (await rule.match(context)) {
+			const evaluation: RuleOutcome = rule.evaluate
+				? await rule.evaluate(context)
+				: (await rule.match?.(context))
+					? {
+							allowed: false,
+							reason:
+								(await rule.reason?.(context)) ??
+								`Action matched rule: ${rule.description}`,
+						}
+					: { allowed: true };
+
+			if (!evaluation.allowed) {
 				const action = rule.action ?? "require_approval";
 				const reason =
-					(await rule.reason?.(context)) ??
-					`Action matched rule: ${rule.description}`;
-				const remediation = await rule.remediation?.(context);
+					evaluation.reason ??
+					`Action matched rule: ${rule.description ?? rule.name}`;
+				const remediation =
+					evaluation.remediation ?? (await rule.remediation?.(context));
+				const ruleId =
+					(rule as { id?: string }).id ?? rule.name ?? "unknown-rule";
 
 				if (action === "allow") {
 					return { action: "allow" };
@@ -695,7 +717,7 @@ export class ActionFirewall {
 				if (action === "block") {
 					return {
 						action,
-						ruleId: rule.id,
+						ruleId,
 						reason,
 						remediation,
 					};
@@ -703,7 +725,7 @@ export class ActionFirewall {
 
 				return {
 					action,
-					ruleId: rule.id,
+					ruleId,
 					reason,
 				};
 			}

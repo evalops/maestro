@@ -22,6 +22,7 @@ describe("ActionFirewall - Blocking Rules", () => {
 		expect(verdict).toMatchObject({
 			ruleId: "system-path-protection",
 		});
+		expect(verdict.remediation).toContain("workspace directory");
 	});
 
 	if (process.platform === "win32") {
@@ -55,5 +56,20 @@ describe("ActionFirewall - Blocking Rules", () => {
 		expect(verdict).toMatchObject({
 			ruleId: "command-bashReverse",
 		});
+	});
+
+	it("requires approval via legacy match/reason rules (plan mode)", async () => {
+		const originalPlanMode = process.env.COMPOSER_PLAN_MODE;
+		process.env.COMPOSER_PLAN_MODE = "1";
+		try {
+			const verdict = await defaultActionFirewall.evaluate(
+				makeBashContext("echo ok"),
+			);
+			expect(verdict.action).toBe("require_approval");
+			expect(verdict.ruleId).toBe("plan-mode-confirm");
+			expect(verdict.reason).toContain("Plan mode requires confirmation");
+		} finally {
+			process.env.COMPOSER_PLAN_MODE = originalPlanMode;
+		}
 	});
 });
