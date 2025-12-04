@@ -419,17 +419,17 @@ curl -N -X POST http://localhost:8080/api/chat \
 
 ## Parity Appendix (summary)
 
-Full parity (Web + TUI): chat streaming, session create/list/load/delete, model select/list, thinking level, config get/set, cost/usage, status/health, approval mode, policy validation, file list, commands list.
+Full parity (Web + TUI): chat streaming, session create/list/load/delete, model select/list, thinking level, config get/set, cost/usage, status/health, approval mode, policy validation, file list, commands list, queue mode/status, zen/clean/footer/compact toggles, branching.
 
-TUI-only (not in Web by design): git operations (`/diff`, `/review`, `/undo`), queue controls, diagnostics/LSP/MCP/telemetry, guardian scans and plan-mode prompts, theming/zen/footer tweaks, export/share, OAuth login/logout, workspace script runner, session branching/favorites/compaction, tools list/failures/clear, Ollama/local model control.
+TUI-only (by design): git operations (`/diff`, `/review`, `/undo`), diagnostics/LSP/MCP/telemetry, guardian scans and plan-mode prompts, favorites/compaction, export/share, OAuth login/logout, workspace script runner, tools list/failures/clear, Ollama/local model control.
 
 Security note: Web API stays stateless and limits filesystem/git access; keep using TUI for those workflows.
 
-- [ ] Authentication (JWT/OAuth)
+- [x] Authentication (JWT/shared-secret). OAuth still pending
 - [ ] Session persistence and resume
 - [ ] File upload for attachments
 - [ ] Multi-user support
-- [ ] Rate limiting
+- [x] Rate limiting (session/IP)
 - [ ] WebSocket alternative to SSE
 - [ ] Dark/Light theme toggle
 - [ ] Mobile responsive design
