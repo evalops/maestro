@@ -24,9 +24,15 @@ import {
 } from "./agent/context-providers.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
 import type { ThinkingLevel } from "./agent/types.js";
+import {
+	disposeCheckpointService,
+	initCheckpointService,
+} from "./checkpoints/index.js";
 import { buildSystemPrompt } from "./cli/system-prompt.js";
+import { composerManager } from "./composers/index.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
 import { loadEnv } from "./load-env.js";
+import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig, mcpManager } from "./mcp/index.js";
 import { getAllMcpTools } from "./mcp/tool-bridge.js";
 import type { RegisteredModel } from "./models/registry.js";
@@ -382,6 +388,9 @@ async function createAgent(
 		],
 	});
 
+	// Initialize composer manager for this agent (enables sub-agents/composers)
+	composerManager.initialize(agent, systemPrompt, tools, process.cwd());
+
 	return agent;
 }
 
@@ -577,6 +586,12 @@ export async function startWebServer(port = 8080) {
 	await reloadModelConfig();
 	await initLifecycle();
 
+	// Bootstrap LSP for IDE integration (enables diagnostics, hover, etc.)
+	await bootstrapLsp();
+
+	// Initialize checkpoint service for undo/redo functionality
+	initCheckpointService(process.cwd());
+
 	// Initialize MCP servers
 	try {
 		const mcpConfig = loadMcpConfig(process.cwd(), { includeEnvLimits: true });
@@ -639,6 +654,7 @@ export async function startWebServer(port = 8080) {
 			shuttingDown = true;
 			logger.info("SIGINT received. Starting graceful shutdown...");
 			stopStatsCollection();
+			disposeCheckpointService();
 			await shutdownLifecycle();
 
 			// Stop accepting new connections

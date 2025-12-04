@@ -15,6 +15,7 @@ import {
 	handleGuardianStatus,
 } from "./handlers/guardian.js";
 import { handleReadyz } from "./handlers/health.js";
+import { handleMcpStatus } from "./handlers/mcp.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handlePlan } from "./handlers/plan.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
@@ -146,6 +147,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/plan",
 			handler: (req, res) => handlePlan(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/mcp",
+			handler: (req, res) => handleMcpStatus(req, res, corsHeaders),
 		},
 		{
 			method: "GET",
