@@ -31,6 +31,7 @@ const baseInput: DiagnosticsInput = {
 		},
 		thinkingLevel: "medium",
 		tools: [],
+		queueMode: "all",
 		messages: [],
 		isStreaming: false,
 		streamMessage: null,

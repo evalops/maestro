@@ -86,6 +86,7 @@ function createMockState(
 		},
 		tools: [],
 		thinkingLevel: "off",
+		queueMode: "all",
 		isStreaming: false,
 		streamMessage: null,
 		pendingToolCalls: new Map(),

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClient } from "./api-client.js";
 
-declare const global: typeof globalThis & {
+declare const global: {
 	window?: { location: { origin: string } };
 	fetch?: typeof fetch;
 };
@@ -23,8 +23,7 @@ describe("ApiClient fallback resolution", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
-		if (originalWindow === undefined) global.window = undefined;
-		else global.window = originalWindow;
+		global.window = originalWindow;
 		global.fetch = originalFetch;
 	});
 

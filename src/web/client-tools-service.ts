@@ -28,17 +28,25 @@ export class ClientToolService {
 			this.pending.set(id, { resolve, timestamp: Date.now() });
 
 			if (signal) {
-				signal.addEventListener(
-					"abort",
-					() => {
-						this.pending.delete(id);
-						resolve({
-							content: [{ type: "text", text: "Aborted" } as TextContent],
-							isError: true,
-						});
+				const onAbort = () => {
+					this.pending.delete(id);
+					resolve({
+						content: [{ type: "text", text: "Aborted" } as TextContent],
+						isError: true,
+					});
+				};
+
+				signal.addEventListener("abort", onAbort, { once: true });
+
+				// Store the original resolve to wrap it with cleanup
+				const originalResolve = resolve;
+				this.pending.set(id, {
+					resolve: (result) => {
+						signal.removeEventListener("abort", onAbort);
+						originalResolve(result);
 					},
-					{ once: true },
-				);
+					timestamp: Date.now(),
+				});
 			}
 		});
 	}

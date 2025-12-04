@@ -590,44 +590,49 @@ export async function startWebServer(port = 8080) {
 		startStatsCollection();
 	});
 
-	process.on("SIGINT", async () => {
-		if (shuttingDown) return;
-		shuttingDown = true;
-		logger.info("SIGINT received. Starting graceful shutdown...");
-		stopStatsCollection();
-		await shutdownLifecycle();
+	// Don't register signal handlers in test mode - vitest manages process lifecycle
+	const isTestMode =
+		process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+	if (!isTestMode) {
+		process.on("SIGINT", async () => {
+			if (shuttingDown) return;
+			shuttingDown = true;
+			logger.info("SIGINT received. Starting graceful shutdown...");
+			stopStatsCollection();
+			await shutdownLifecycle();
 
-		// Stop accepting new connections
-		server.close();
+			// Stop accepting new connections
+			server.close();
 
-		// Drain existing requests
-		const activeCount = requestTracker.getCount();
-		if (activeCount > 0) {
-			logger.info("Waiting for active requests to complete...", {
-				activeCount,
-			});
-			drainTimeout = setTimeout(() => {
-				logger.warn("Drain timeout reached. Forcing shutdown...");
-				for (const socket of sockets) {
-					socket.destroy();
-				}
-				process.exit(0);
-			}, 10000); // 10s drain timeout
-
-			// Poll for drain
-			drainInterval = setInterval(() => {
-				if (requestTracker.getCount() === 0) {
-					if (drainInterval) clearInterval(drainInterval);
-					if (drainTimeout) clearTimeout(drainTimeout);
-					logger.info("All requests completed. Exiting.");
+			// Drain existing requests
+			const activeCount = requestTracker.getCount();
+			if (activeCount > 0) {
+				logger.info("Waiting for active requests to complete...", {
+					activeCount,
+				});
+				drainTimeout = setTimeout(() => {
+					logger.warn("Drain timeout reached. Forcing shutdown...");
+					for (const socket of sockets) {
+						socket.destroy();
+					}
 					process.exit(0);
-				}
-			}, 100);
-		} else {
-			logger.info("No active requests. Exiting.");
-			process.exit(0);
-		}
-	});
+				}, 10000); // 10s drain timeout
+
+				// Poll for drain
+				drainInterval = setInterval(() => {
+					if (requestTracker.getCount() === 0) {
+						if (drainInterval) clearInterval(drainInterval);
+						if (drainTimeout) clearTimeout(drainTimeout);
+						logger.info("All requests completed. Exiting.");
+						process.exit(0);
+					}
+				}, 100);
+			} else {
+				logger.info("No active requests. Exiting.");
+				process.exit(0);
+			}
+		});
+	}
 
 	return server;
 }

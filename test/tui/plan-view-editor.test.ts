@@ -6,6 +6,7 @@ import { Container } from "@evalops/tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	PlanView,
+	type PlanViewOptions,
 	type TodoStore,
 	loadTodoStore,
 	saveTodoStore,
@@ -41,7 +42,7 @@ describe("PlanView editor functionality", () => {
 			onStoreChanged: vi.fn(),
 		};
 
-		planView = new PlanView(mockOptions);
+		planView = new PlanView(mockOptions as unknown as PlanViewOptions);
 	});
 
 	afterEach(() => {

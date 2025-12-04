@@ -1006,7 +1006,7 @@ describe("Composer Tools", () => {
 				const result = await statusTool.execute("status-rename", {});
 
 				const parsed = (result.details as StatusDetails)?.status ?? {};
-				const renameEntry = parsed.files.find(
+				const renameEntry = (parsed.files ?? []).find(
 					(f: StatusFile) =>
 						f.kind === "rename" &&
 						f.path === "new.txt" &&
@@ -1041,7 +1041,7 @@ describe("Composer Tools", () => {
 
 				const result = await statusTool.execute("status-rename-spaces", {});
 				const parsed = (result.details as StatusDetails)?.status ?? {};
-				const renameEntry = parsed.files.find(
+				const renameEntry = (parsed.files ?? []).find(
 					(f: StatusFile) =>
 						f.kind === "rename" && f.path === newPath && f.origPath === oldPath,
 				);
@@ -1082,7 +1082,7 @@ describe("Composer Tools", () => {
 				const result = await statusTool.execute("status-unmerged", {});
 
 				const parsed = (result.details as StatusDetails)?.status ?? {};
-				const unmerged = parsed.files.find(
+				const unmerged = (parsed.files ?? []).find(
 					(f: StatusFile) => f.kind === "unmerged",
 				);
 				expect(unmerged).toBeDefined();
@@ -1106,7 +1106,7 @@ describe("Composer Tools", () => {
 				});
 
 				const parsed = (result.details as StatusDetails)?.status ?? {};
-				const ignored = parsed.files.find(
+				const ignored = (parsed.files ?? []).find(
 					(f: StatusFile) => f.kind === "ignored" && f.path === "app.log",
 				);
 				expect(ignored).toBeDefined();
@@ -1151,7 +1151,7 @@ describe("Composer Tools", () => {
 				});
 
 				const parsed = (result.details as StatusDetails)?.status ?? {};
-				const entry = parsed.files.find(
+				const entry = (parsed.files ?? []).find(
 					(f: StatusFile) => f.path === "file with space.txt",
 				);
 				expect(entry).toBeDefined();
@@ -1169,7 +1169,9 @@ describe("Composer Tools", () => {
 			const raw =
 				"2 C. N... 100644 100644 100644 45b983be 45b983be C050 new.txt\0old.txt\0";
 			const parsed = parseStatusOutput(raw);
-			const entry = parsed.files.find((f: StatusFile) => f.path === "new.txt");
+			const entry = (parsed.files ?? []).find(
+				(f) => "path" in f && f.path === "new.txt",
+			);
 			expect(entry).toEqual(
 				expect.objectContaining({
 					kind: "rename",
@@ -1501,7 +1503,7 @@ describe("Composer Tools", () => {
 			expect(output).toContain("alpha match");
 			expect(output).toContain("beta match");
 
-			const ranges = (result.details as RangeDetails).ranges;
+			const ranges = (result.details as RangeDetails).ranges ?? [];
 			expect(Array.isArray(ranges)).toBe(true);
 			expect(ranges.length).toBeGreaterThanOrEqual(2);
 			expect(ranges[0]).toMatchObject({

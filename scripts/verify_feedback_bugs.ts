@@ -1,6 +1,7 @@
 
 import { checkPolicy, EnterprisePolicy } from "../src/safety/policy.js";
 import { defaultActionFirewall } from "../src/safety/action-firewall.js";
+import type { ActionApprovalContext } from "../src/agent/action-approval.js";
 import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -11,12 +12,12 @@ function cleanup() {
     if (existsSync(POLICY_PATH)) unlinkSync(POLICY_PATH);
 }
 
-function createCtx(toolName: string, command?: string) {
+function createCtx(toolName: string, command?: string): ActionApprovalContext {
     return {
         toolName,
         args: command ? { command } : {},
-        metadata: {}
-    } as any;
+        metadata: {},
+    };
 }
 
 async function testAllowListLogic() {
@@ -61,4 +62,3 @@ async function main() {
 }
 
 main();
-

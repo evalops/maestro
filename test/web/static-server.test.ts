@@ -1,10 +1,30 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { serveStatic } from "../../src/web/static-server.js";
+
+// Track temp directories for cleanup
+const tempDirs: string[] = [];
+
+afterEach(() => {
+	for (const dir of tempDirs) {
+		try {
+			rmSync(dir, { recursive: true, force: true });
+		} catch {
+			// Ignore cleanup errors
+		}
+	}
+	tempDirs.length = 0;
+});
+
+function createTempDir(): string {
+	const dir = mkdtempSync(join(tmpdir(), "static-"));
+	tempDirs.push(dir);
+	return dir;
+}
 
 interface MockResponse extends PassThrough {
 	statusCode: number;
@@ -40,7 +60,7 @@ interface MockRequest {
 
 describe("serveStatic", () => {
 	it("returns 304 when ETag matches", () => {
-		const root = mkdtempSync(join(tmpdir(), "static-"));
+		const root = createTempDir();
 		const file = join(root, "index.html");
 		writeFileSync(file, "<h1>hi</h1>");
 		const res1 = makeRes();
@@ -67,7 +87,7 @@ describe("serveStatic", () => {
 	});
 
 	it("blocks path traversal", () => {
-		const root = mkdtempSync(join(tmpdir(), "static-"));
+		const root = createTempDir();
 		const res = makeRes();
 		const req: MockRequest = { headers: {} };
 		serveStatic(

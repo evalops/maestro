@@ -32,11 +32,11 @@ describe("websearch tool", () => {
 
 	describe("schema validation", () => {
 		it("has correct name", () => {
-			expect(websearchTool.definition.name).toBe("websearch");
+			expect(websearchTool.name).toBe("websearch");
 		});
 
 		it("has description", () => {
-			expect(websearchTool.definition.description).toBeTruthy();
+			expect(websearchTool.description).toBeTruthy();
 		});
 	});
 

@@ -32,7 +32,7 @@ function createToolCallMessage(
 			cacheWrite: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: "toolCall",
+		stopReason: "toolUse",
 		timestamp: Date.now(),
 	};
 }
@@ -40,11 +40,14 @@ function createToolCallMessage(
 function createToolResultMessage(
 	toolCallId: string,
 	content: string,
+	toolName = "TestTool",
 ): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
+		toolName,
 		content: [{ type: "text", text: content }],
+		isError: false,
 		timestamp: Date.now(),
 	};
 }

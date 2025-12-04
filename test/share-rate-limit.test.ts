@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import {
 	checkShareRateLimit,
 	resetShareRateLimit,
@@ -13,6 +21,11 @@ describe("Share Rate Limiting", () => {
 
 	afterEach(async () => {
 		await resetShareRateLimit();
+	});
+
+	afterAll(() => {
+		// Stop the rate limiter's cleanup interval
+		stopShareRateLimiter();
 	});
 
 	it("allows requests under the limit", async () => {

@@ -1,11 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
+import type { Agent } from "../../src/agent/agent.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
-import {
-	type ChatHandlerContext,
-	handleChat,
-} from "../../src/web/handlers/chat.js";
+import type { WebServerContext } from "../../src/web/app-context.js";
+import { handleChat } from "../../src/web/handlers/chat.js";
 
 const mockModel: RegisteredModel = {
 	id: "claude-sonnet-4-5",
@@ -76,7 +75,7 @@ describe("handleChat", () => {
 
 		const res = makeRes();
 
-		const context: Partial<ChatHandlerContext> = {
+		const context: Partial<WebServerContext> = {
 			createAgent: async () => {
 				throw new Error("should not create agent");
 			},
@@ -90,7 +89,7 @@ describe("handleChat", () => {
 		await handleChat(
 			req as unknown as IncomingMessage,
 			res as unknown as ServerResponse,
-			context as ChatHandlerContext,
+			context as WebServerContext,
 		);
 
 		expect(res.statusCode).toBe(400);
@@ -109,7 +108,7 @@ describe("handleChat", () => {
 
 		const res = makeRes();
 
-		const context: Partial<ChatHandlerContext> = {
+		const context: Partial<WebServerContext> = {
 			createAgent: async () => {
 				type EventCallback = (e: unknown) => void;
 				let subscriber: EventCallback | undefined;
@@ -139,7 +138,7 @@ describe("handleChat", () => {
 						});
 					},
 					abort: () => {},
-				};
+				} as unknown as Agent;
 			},
 			getRegisteredModel: async () => mockModel,
 			defaultApprovalMode: "prompt",
@@ -151,7 +150,7 @@ describe("handleChat", () => {
 		await handleChat(
 			req as unknown as IncomingMessage,
 			res as unknown as ServerResponse,
-			context as ChatHandlerContext,
+			context as WebServerContext,
 		);
 
 		// SSE stream writes contain DONE marker

@@ -89,7 +89,8 @@ function loadRawConfig(): LspConfig {
 					.join("; ") ?? "Invalid config";
 			throw new Error(message);
 		}
-		cachedConfig = data.lsp;
+		// After validation, lsp is guaranteed to exist (schema has default)
+		cachedConfig = data.lsp ?? { enabled: true };
 		return cachedConfig;
 	} catch (error) {
 		logger.error(

@@ -72,6 +72,19 @@ type PdfParseFunction = (buffer: Buffer) => Promise<PdfParseResult>;
 // Lazy-loaded pdf-parse module (undefined = not yet loaded, null = not available)
 let pdfParse: PdfParseFunction | null | undefined = undefined;
 
+function resolvePdfParseModule(mod: unknown): PdfParseFunction | null {
+	if (typeof mod === "function") {
+		return mod as PdfParseFunction;
+	}
+	if (mod && typeof mod === "object") {
+		const maybeDefault = (mod as { default?: unknown }).default;
+		if (typeof maybeDefault === "function") {
+			return maybeDefault as PdfParseFunction;
+		}
+	}
+	return null;
+}
+
 /**
  * Lazily load the pdf-parse library.
  *
@@ -85,10 +98,8 @@ let pdfParse: PdfParseFunction | null | undefined = undefined;
 async function getPdfParser(): Promise<PdfParseFunction | null> {
 	if (pdfParse === undefined) {
 		try {
-			// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any cast
-			const module = (await import("pdf-parse")) as any;
-			// Handle both default export and module export patterns
-			pdfParse = (module.default || module) as PdfParseFunction;
+			const module = (await import("pdf-parse")) as unknown;
+			pdfParse = resolvePdfParseModule(module);
 		} catch {
 			// pdf-parse not installed - mark as unavailable
 			pdfParse = null;

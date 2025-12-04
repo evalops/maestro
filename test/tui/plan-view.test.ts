@@ -6,6 +6,7 @@ import { Container } from "@evalops/tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	PlanView,
+	type PlanViewOptions,
 	type TodoStore,
 	calculatePlanHint,
 	loadTodoStore,
@@ -92,7 +93,7 @@ describe("PlanView clear functionality", () => {
 			setPlanHint: vi.fn(),
 		};
 
-		planView = new PlanView(mockOptions);
+		planView = new PlanView(mockOptions as unknown as PlanViewOptions);
 	});
 
 	afterEach(() => {

@@ -26,7 +26,7 @@ interface ToolResult {
 	details?: {
 		truncated?: boolean;
 		results?: Array<{ text?: string }>;
-		costDollars?: number;
+		costDollars?: number | null;
 	};
 }
 

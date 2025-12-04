@@ -1,13 +1,11 @@
 import type { Static, TSchema } from "@sinclair/typebox";
-import AjvPkg from "ajv";
-import type { Ajv as AjvInstance } from "ajv";
+import AjvModule, { Ajv as AjvClass, type AnySchema } from "ajv";
 
-// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any for constructor type
-const AjvConstructor: new (options?: any) => AjvInstance =
-	// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any for module default
-	((AjvPkg as any).default ?? AjvPkg) as any;
+// ESM/CJS interop: extract constructor from module (may be nested under .default)
+const Ajv =
+	(AjvModule as unknown as { default?: typeof AjvClass }).default ?? AjvClass;
 
-const ajv = new AjvConstructor({
+const ajv = new Ajv({
 	allErrors: true,
 	useDefaults: true,
 	strict: false,
@@ -15,8 +13,7 @@ const ajv = new AjvConstructor({
 });
 
 export function compileTypeboxSchema<T extends TSchema>(schema: T) {
-	// biome-ignore lint/suspicious/noExplicitAny: TypeBox TSchema not directly assignable to AJV schema type
-	return ajv.compile<Static<T>>(schema as any);
+	return ajv.compile<Static<T>>(schema as AnySchema);
 }
 
 export type CompileResult<T extends TSchema> = ReturnType<

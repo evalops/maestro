@@ -202,7 +202,7 @@ describe("agent/bookkeeper", () => {
 				select: ["name", "age"],
 			});
 			expect(result.success).toBe(true);
-			expect(Object.keys(result.data?.[0])).toEqual(["name", "age"]);
+			expect(Object.keys(result.data?.[0] ?? {})).toEqual(["name", "age"]);
 		});
 
 		it("limits results", () => {

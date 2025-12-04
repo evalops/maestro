@@ -1,19 +1,19 @@
 import type { IncomingMessage } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
-import AjvPkg, { type ErrorObject, type Options as AjvOptions } from "ajv";
-import addFormats from "ajv-formats";
+import { Ajv, type AnySchema, type ErrorObject } from "ajv";
+import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
 import { ApiError, readRequestBody } from "./server-utils.js";
 
-const AjvCtor: new (options?: AjvOptions) => import("ajv").default =
-	// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any for module default
-	(AjvPkg as any).default ?? AjvPkg;
-const ajvInstance = new AjvCtor({
+// ESM/CJS interop: ajv-formats default may be nested under .default in some loaders
+const addFormats: FormatsPlugin =
+	(addFormatsModule as unknown as { default?: FormatsPlugin }).default ??
+	(addFormatsModule as unknown as FormatsPlugin);
+
+const ajvInstance = new Ajv({
 	allErrors: true,
 	strict: false,
 });
-// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any for module default
-const addFormatsFn = (addFormats as any).default ?? addFormats;
-addFormatsFn(ajvInstance);
+addFormats(ajvInstance);
 
 export const ChatRequestSchema = Type.Object({
 	messages: Type.Array(
@@ -36,7 +36,7 @@ export type ModelSetInput = Static<typeof ModelSetSchema>;
 
 export async function parseAndValidateJson<T>(
 	req: IncomingMessage,
-	schema: unknown,
+	schema: AnySchema,
 ): Promise<T> {
 	const raw = await readRequestBody(req);
 	if (!raw.length) {
@@ -48,8 +48,7 @@ export async function parseAndValidateJson<T>(
 	} catch {
 		throw new ApiError(400, "Invalid JSON payload");
 	}
-	// biome-ignore lint/suspicious/noExplicitAny: AJV schema type incompatible with unknown
-	const validate = ajvInstance.compile<T>(schema as any);
+	const validate = ajvInstance.compile<T>(schema);
 	if (!validate(parsed)) {
 		const message =
 			validate.errors

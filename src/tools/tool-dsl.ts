@@ -1,17 +1,16 @@
-import type { TSchema } from "@sinclair/typebox";
-import AjvModule, { type ErrorObject } from "ajv";
-import addFormatsModule from "ajv-formats";
+import type { Static, TSchema } from "@sinclair/typebox";
+import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
+import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
 import type { AgentToolResult, ToolAnnotations } from "../agent/types.js";
 import type { Sandbox } from "../sandbox/types.js";
 
-// Handle both default and named exports
-// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any
-const Ajv = (AjvModule as any).default || AjvModule;
-// biome-ignore lint/suspicious/noExplicitAny: ESM/CJS interop requires any
-const addFormats = (addFormatsModule as any).default || addFormatsModule;
+// ESM/CJS interop: ajv-formats default may be nested under .default in some loaders
+const addFormats: FormatsPlugin =
+	(addFormatsModule as unknown as { default?: FormatsPlugin }).default ??
+	(addFormatsModule as unknown as FormatsPlugin);
 
 // Create a singleton AJV instance for schema validation
-let ajv: ReturnType<typeof Ajv> | null = null;
+let ajv: Ajv | null = null;
 try {
 	ajv = new Ajv({
 		// Avoid unbounded error collection on large/invalid payloads
@@ -26,22 +25,14 @@ try {
 }
 
 // Cache compiled validators per schema to avoid recompiling on every execute()
-const validatorCache = new WeakMap<
-	TSchema,
-	{ (data: unknown): boolean; errors?: ErrorObject[] | null }
->();
+const validatorCache = new WeakMap<TSchema, ValidateFunction>();
 
-function getOrCompileValidator(
-	schema: TSchema,
-): { (data: unknown): boolean; errors?: ErrorObject[] | null } | null {
+function getOrCompileValidator(schema: TSchema): ValidateFunction | null {
 	if (!ajv) return null;
 
 	let validate = validatorCache.get(schema);
 	if (!validate) {
-		validate = ajv.compile(schema) as {
-			(data: unknown): boolean;
-			errors?: ErrorObject[] | null;
-		};
+		validate = ajv.compile(schema);
 		validatorCache.set(schema, validate);
 	}
 	return validate;
@@ -117,6 +108,8 @@ export interface CreateToolOptions<Schema extends TSchema, Details> {
 	shouldRetry?: (error: unknown) => boolean;
 }
 
+type StaticSchema<Schema extends TSchema> = Static<Schema>;
+
 export class ToolError extends Error {
 	constructor(
 		message: string,
@@ -176,6 +169,7 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 			const maxRetries = options.maxRetries ?? 0;
 			const retryDelayMs = options.retryDelayMs ?? 1000;
 			const shouldRetry = options.shouldRetry ?? (() => true);
+			const typedParams = params as StaticSchema<Schema>;
 
 			let lastError: unknown;
 			for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -190,8 +184,7 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 
 				try {
 					const builder = new ToolResponseBuilder<Details>();
-					// biome-ignore lint/suspicious/noExplicitAny: params validated against schema but typed as Record<string, unknown>
-					const result = await options.run(params as any, {
+					const result = await options.run(typedParams, {
 						toolCallId,
 						signal,
 						respond: builder,
@@ -298,15 +291,16 @@ export function createJsonTool<Schema extends TSchema, Details = undefined>(
 		...options,
 		run: async (params, context) => {
 			const result = await options.run(params, context);
-			if (
-				result !== undefined &&
-				!(result instanceof ToolResponseBuilder) &&
-				!isAgentToolResult(result)
-			) {
-				return context.respond.text(JSON.stringify(result, null, 2));
+			if (result === undefined) {
+				return result;
 			}
-			// biome-ignore lint/suspicious/noExplicitAny: result type narrowed by checks above but still typed as unknown
-			return result as any;
+			if (result instanceof ToolResponseBuilder) {
+				return result;
+			}
+			if (isAgentToolResult<Details>(result)) {
+				return result;
+			}
+			return context.respond.text(JSON.stringify(result, null, 2));
 		},
 	});
 }

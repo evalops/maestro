@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { Editor } from "../../packages/tui/src/components/editor.js";
 
 // Access private methods for targeted behavior tests
-type EditorPrivate = Editor & {
+// Using Record type to avoid intersection conflict with private properties
+interface EditorPrivate {
 	state: {
 		lines: string[];
 		cursorLine: number;
@@ -10,11 +11,11 @@ type EditorPrivate = Editor & {
 	};
 	moveWordBackwards: () => void;
 	moveWordForwards: () => void;
-};
+}
 
 describe("Editor word navigation across lines", () => {
 	it("moves backward across line boundary to previous line end", () => {
-		const editor = new Editor() as EditorPrivate;
+		const editor = new Editor() as unknown as EditorPrivate;
 		editor.state.lines = ["hello", "world"];
 		editor.state.cursorLine = 1;
 		editor.state.cursorCol = 0; // at start of second line
@@ -26,7 +27,7 @@ describe("Editor word navigation across lines", () => {
 	});
 
 	it("moves forward across line boundary to next line word end", () => {
-		const editor = new Editor() as EditorPrivate;
+		const editor = new Editor() as unknown as EditorPrivate;
 		editor.state.lines = ["hello", "world"];
 		editor.state.cursorLine = 0;
 		editor.state.cursorCol = 5; // end of first line

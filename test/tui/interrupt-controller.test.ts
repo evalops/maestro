@@ -5,10 +5,14 @@ import {
 	type InterruptControllerOptions,
 } from "../../src/tui/interrupt-controller.js";
 
-function createMockFooter(): InterruptControllerOptions["footer"] {
+interface MockFooter {
+	setHint: ReturnType<typeof vi.fn>;
+}
+
+function createMockFooter(): MockFooter & InterruptControllerOptions["footer"] {
 	return {
 		setHint: vi.fn(),
-	} as unknown as InterruptControllerOptions["footer"];
+	} as MockFooter & InterruptControllerOptions["footer"];
 }
 
 function createMockNotificationView(): InterruptControllerOptions["notificationView"] {

@@ -495,15 +495,20 @@ export async function main(args: string[]) {
 			const cleanup = () => {
 				enterpriseContext.endSession();
 			};
-			process.once("beforeExit", cleanup);
-			process.once("SIGINT", () => {
-				cleanup();
-				process.exit(0);
-			});
-			process.once("SIGTERM", () => {
-				cleanup();
-				process.exit(0);
-			});
+			// Don't register signal handlers in test mode - vitest manages process lifecycle
+			const isTestMode =
+				process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+			if (!isTestMode) {
+				process.once("beforeExit", cleanup);
+				process.once("SIGINT", () => {
+					cleanup();
+					process.exit(0);
+				});
+				process.once("SIGTERM", () => {
+					cleanup();
+					process.exit(0);
+				});
+			}
 			enterpriseCleanupRegistered = true;
 		}
 	}

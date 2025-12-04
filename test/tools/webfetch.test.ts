@@ -31,11 +31,11 @@ describe("webfetch tool", () => {
 
 	describe("schema validation", () => {
 		it("has correct name", () => {
-			expect(webfetchTool.definition.name).toBe("webfetch");
+			expect(webfetchTool.name).toBe("webfetch");
 		});
 
 		it("has description", () => {
-			expect(webfetchTool.definition.description).toBeTruthy();
+			expect(webfetchTool.description).toBeTruthy();
 		});
 	});
 

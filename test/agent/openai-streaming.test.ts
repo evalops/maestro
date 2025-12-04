@@ -1,7 +1,11 @@
 import { TextEncoder } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { streamOpenAI } from "../../src/agent/providers/openai.js";
-import type { Context, Model, StreamEvent } from "../../src/agent/types.js";
+import type {
+	AssistantMessageEvent,
+	Context,
+	Model,
+} from "../../src/agent/types.js";
 
 const encoder = new TextEncoder();
 
@@ -19,9 +23,7 @@ function makeStream(lines: string[]): ReadableStream {
 const baseContext: Context = {
 	systemPrompt: "",
 	messages: [],
-	model: {} as Context["model"],
 	tools: [],
-	thinkingLevel: "off",
 };
 
 const responsesModel: Model<"openai-responses"> = {
@@ -65,7 +67,7 @@ describe("OpenAI streaming", () => {
 		const mockResponse = new Response(makeStream(lines), { status: 200 });
 		mockFetch.mockResolvedValue(mockResponse);
 
-		const events: StreamEvent[] = [];
+		const events: AssistantMessageEvent[] = [];
 		for await (const ev of streamOpenAI(responsesModel, baseContext, {
 			apiKey: "k",
 		})) {
@@ -76,8 +78,12 @@ describe("OpenAI streaming", () => {
 		const end = events.find((e) => e.type === "toolcall_end");
 		expect(start).toBeTruthy();
 		expect(end).toBeTruthy();
-		// ensure sequence
-		expect(events.indexOf(start)).toBeLessThan(events.indexOf(end));
+		// ensure sequence - assertions above ensure these aren't undefined
+		// biome-ignore lint/style/noNonNullAssertion: asserted above
+		expect(events.indexOf(start!)).toBeLessThan(
+			// biome-ignore lint/style/noNonNullAssertion: asserted above
+			events.indexOf(end!),
+		);
 	});
 
 	it("handles array content deltas safely (Completions API)", async () => {

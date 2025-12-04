@@ -7,9 +7,18 @@ export default defineConfig({
     include: ['test/**/*.test.ts'],
     testTimeout: 30000, // 30 seconds for API calls
     setupFiles: ['test/setup/suppress-warnings.ts', 'test/setup/todo-store.ts'],
-    // File parallelism enabled - cost-tracking tests now use isolated temp directories
-    // via COMPOSER_USAGE_FILE environment variable
-    fileParallelism: true,
+    // Disable file parallelism to reduce memory pressure and prevent test hangs
+    // Each test file runs sequentially, reducing concurrent memory usage
+    fileParallelism: false,
+    // Isolate tests to prevent module state leakage between test files
+    isolate: true,
+    // Pool configuration for better memory management
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        singleFork: true,
+      },
+    },
     // Benchmark configuration
     benchmark: {
       include: ['test/**/*.bench.ts'],

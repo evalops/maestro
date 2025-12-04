@@ -669,6 +669,12 @@ export function startWebhookProcessor(intervalMs = 10_000): void {
 		});
 	}, LOCK_RENEWAL_MS);
 
+	// In test mode, unref intervals so they don't keep the process alive
+	if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") {
+		processorInterval.unref();
+		lockRenewalInterval.unref();
+	}
+
 	logger.info("Webhook processor started", {
 		intervalMs,
 		instanceId: INSTANCE_ID,

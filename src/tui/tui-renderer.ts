@@ -327,6 +327,7 @@ export class TuiRenderer {
 	private mcpToolsChangedTimeout?: ReturnType<typeof setTimeout>;
 	private composerActivatedHandler?: (composer: { name: string }) => void;
 	private composerDeactivatedHandler?: (composer: { name: string }) => void;
+	private resizeHandler: () => void;
 	private updateView: UpdateView;
 	private configView: ConfigView;
 	private costView: CostView;
@@ -459,7 +460,8 @@ export class TuiRenderer {
 		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
 		this.configureRenderThrottle();
 		this.refreshTerminalCapabilities();
-		process.stdout.on("resize", () => this.refreshTerminalCapabilities());
+		this.resizeHandler = () => this.refreshTerminalCapabilities();
+		process.stdout.on("resize", this.resizeHandler);
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
@@ -3301,6 +3303,7 @@ export class TuiRenderer {
 		// Stop test verification service
 		this.testVerificationService?.stop();
 		this.footer.dispose();
+		process.stdout.off("resize", this.resizeHandler);
 	}
 
 	private async handleLoginCommand(

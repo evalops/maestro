@@ -2,7 +2,7 @@ import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ActionApprovalContext } from "../../src/agent/types.js";
+import type { ActionApprovalContext } from "../../src/agent/action-approval.js";
 import {
 	checkPolicy,
 	checkSessionLimits,

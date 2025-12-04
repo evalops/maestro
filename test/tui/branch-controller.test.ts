@@ -56,6 +56,37 @@ function createMockCallbacks(
 	};
 }
 
+function createUserMessage(content: string): AppMessage {
+	return { role: "user", content, timestamp: Date.now() };
+}
+
+function createUserMessageWithArrayContent(text: string): AppMessage {
+	return {
+		role: "user",
+		content: [{ type: "text", text }],
+		timestamp: Date.now(),
+	};
+}
+
+function createAssistantMessage(content: string): AppMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: content }],
+		timestamp: Date.now(),
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "test-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+	};
+}
+
 describe("BranchController", () => {
 	describe("handleBranchCommand", () => {
 		it("shows error when agent is running", () => {
@@ -105,7 +136,7 @@ describe("BranchController", () => {
 
 		it("shows interactive selector when no argument provided", () => {
 			const callbacks = createMockCallbacks();
-			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [createUserMessage("Hello")];
 
 			const controller = new BranchController({
 				agent: createMockAgent(messages),
@@ -126,9 +157,9 @@ describe("BranchController", () => {
 			const chatContainer = createMockChatContainer();
 			const callbacks = createMockCallbacks();
 			const messages: AppMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Response" },
-				{ role: "user", content: "Second message" },
+				createUserMessage("First message"),
+				createAssistantMessage("Response"),
+				createUserMessage("Second message"),
 			];
 
 			const controller = new BranchController({
@@ -149,7 +180,7 @@ describe("BranchController", () => {
 
 		it("shows error for invalid branch number", () => {
 			const showError = vi.fn();
-			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [createUserMessage("Hello")];
 
 			const controller = new BranchController({
 				agent: createMockAgent(messages),
@@ -170,7 +201,7 @@ describe("BranchController", () => {
 
 		it("shows error for zero or negative number", () => {
 			const showError = vi.fn();
-			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [createUserMessage("Hello")];
 
 			const controller = new BranchController({
 				agent: createMockAgent(messages),
@@ -196,7 +227,7 @@ describe("BranchController", () => {
 
 		it("shows error when branch number exceeds available messages", () => {
 			const showError = vi.fn();
-			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [createUserMessage("Hello")];
 
 			const controller = new BranchController({
 				agent: createMockAgent(messages),
@@ -216,10 +247,10 @@ describe("BranchController", () => {
 		it("resets conversation at correct message index", () => {
 			const callbacks = createMockCallbacks();
 			const messages: AppMessage[] = [
-				{ role: "user", content: "First user message" },
-				{ role: "assistant", content: "Response 1" },
-				{ role: "user", content: "Second user message" },
-				{ role: "assistant", content: "Response 2" },
+				createUserMessage("First user message"),
+				createAssistantMessage("Response 1"),
+				createUserMessage("Second user message"),
+				createAssistantMessage("Response 2"),
 			];
 
 			const controller = new BranchController({
@@ -247,7 +278,7 @@ describe("BranchController", () => {
 	describe("branchToIndex", () => {
 		it("shows error when message index not found", () => {
 			const notificationView = createMockNotificationView();
-			const messages: AppMessage[] = [{ role: "user", content: "Hello" }];
+			const messages: AppMessage[] = [createUserMessage("Hello")];
 
 			const controller = new BranchController({
 				agent: createMockAgent(messages),
@@ -269,8 +300,8 @@ describe("BranchController", () => {
 		it("resets conversation for valid index", () => {
 			const callbacks = createMockCallbacks();
 			const messages: AppMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Response" },
+				createUserMessage("First message"),
+				createAssistantMessage("Response"),
 			];
 
 			const controller = new BranchController({
@@ -298,7 +329,7 @@ describe("BranchController", () => {
 		it("extracts text from string content", () => {
 			const callbacks = createMockCallbacks();
 			const messages: AppMessage[] = [
-				{ role: "user", content: "Simple string content" },
+				createUserMessage("Simple string content"),
 			];
 
 			const controller = new BranchController({
@@ -324,10 +355,7 @@ describe("BranchController", () => {
 		it("extracts text from array content", () => {
 			const callbacks = createMockCallbacks();
 			const messages: AppMessage[] = [
-				{
-					role: "user",
-					content: [{ type: "text", text: "Array text content" }],
-				},
+				createUserMessageWithArrayContent("Array text content"),
 			];
 
 			const controller = new BranchController({
@@ -352,7 +380,8 @@ describe("BranchController", () => {
 
 		it("returns empty string for missing content", () => {
 			const callbacks = createMockCallbacks();
-			const messages: AppMessage[] = [{ role: "user" }]; // No content
+			// Using empty string content to test edge case
+			const messages: AppMessage[] = [createUserMessage("")];
 
 			const controller = new BranchController({
 				agent: createMockAgent(messages),

@@ -55,9 +55,11 @@ class MockContainer {
 	}
 }
 
-type ToolOutputViewType = Parameters<typeof StreamingView>[0]["toolOutputView"];
+type ToolOutputViewType = ConstructorParameters<
+	typeof StreamingView
+>[0]["toolOutputView"];
 
-const noopToolOutputView: ToolOutputViewType = {
+const noopToolOutputView = {
 	registerToolComponent: () => {},
 	clearTrackedComponents: () => {},
 	getTrackedComponents: () => new Set(),
@@ -65,7 +67,7 @@ const noopToolOutputView: ToolOutputViewType = {
 	setCompactMode: () => {},
 	toggleCompactMode: () => false,
 	isCompact: () => false,
-};
+} as unknown as ToolOutputViewType;
 
 describe("StreamingView clean mode handling", () => {
 	it("applies clean mode on final render (dedupes streaming duplicates)", () => {

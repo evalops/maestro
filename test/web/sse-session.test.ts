@@ -41,7 +41,7 @@ describe("SseSession", () => {
 			undefined,
 			50,
 		);
-		const event: AgentEvent = { type: "message_delta", delta: "hi" };
+		const event: AgentEvent = { type: "status", status: "delta", details: {} };
 		session.sendEvent(event);
 		session.startHeartbeat();
 		vi.advanceTimersByTime(120);
@@ -54,8 +54,16 @@ describe("SseSession", () => {
 		res.writable = false;
 		const onSkip = vi.fn();
 		const session = new SseSession(res as unknown as ServerResponse, onSkip);
-		const event1: AgentEvent = { type: "message_delta", delta: "hi" };
-		const event2: AgentEvent = { type: "message_delta", delta: "hi again" };
+		const event1: AgentEvent = {
+			type: "status",
+			status: "delta1",
+			details: {},
+		};
+		const event2: AgentEvent = {
+			type: "status",
+			status: "delta2",
+			details: {},
+		};
 		session.sendEvent(event1);
 		session.sendEvent(event2);
 		expect(onSkip).toHaveBeenCalled();

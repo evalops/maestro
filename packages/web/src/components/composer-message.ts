@@ -9,19 +9,30 @@ import { customElement, property } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { marked } from "marked";
 
-// Configure marked with code highlighting
-marked.setOptions({
-	highlight: (code: string, lang: string) => {
-		if (lang && hljs.getLanguage(lang)) {
-			try {
-				return hljs.highlight(code, { language: lang }).value;
-			} catch (e) {
-				console.error("Highlight error:", e);
+// Configure marked with code highlighting using custom renderer
+// Note: highlight option is deprecated in marked v5+, so we use a custom renderer
+marked.use({
+	async: false,
+	gfm: true,
+	renderer: {
+		code(token) {
+			const lang = token.lang || "";
+			const code = token.text;
+			let highlighted: string;
+			if (lang && hljs.getLanguage(lang)) {
+				try {
+					highlighted = hljs.highlight(code, { language: lang }).value;
+				} catch {
+					highlighted = hljs.highlightAuto(code).value;
+				}
+			} else {
+				highlighted = hljs.highlightAuto(code).value;
 			}
-		}
-		return hljs.highlightAuto(code).value;
+			const langClass = lang ? ` class="language-${lang}"` : "";
+			return `<pre><code${langClass}>${highlighted}</code></pre>`;
+		},
 	},
-} as Parameters<typeof marked.use>[0]); // Type assertion needed for marked options compatibility
+});
 
 @customElement("composer-message")
 export class ComposerMessage extends LitElement {

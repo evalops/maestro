@@ -152,13 +152,16 @@ describe("Checkpoint System", () => {
 				let emittedEvent: { type: string; checkpoint?: Checkpoint } | null =
 					null;
 				store.addEventListener((event) => {
-					emittedEvent = event as typeof emittedEvent;
+					emittedEvent = event as { type: string; checkpoint?: Checkpoint };
 				});
 
 				store.createCheckpoint("Write", "call-123", [filePath]);
 
-				expect(emittedEvent?.type).toBe("checkpoint_created");
-				expect(emittedEvent?.checkpoint?.toolName).toBe("Write");
+				expect(emittedEvent).not.toBeNull();
+				// biome-ignore lint/style/noNonNullAssertion: Validated by expect above
+				expect(emittedEvent!.type).toBe("checkpoint_created");
+				// biome-ignore lint/style/noNonNullAssertion: Validated by expect above
+				expect(emittedEvent!.checkpoint?.toolName).toBe("Write");
 			});
 		});
 
@@ -273,7 +276,9 @@ describe("Checkpoint System", () => {
 				writeFileSync(filePath, "v4", "utf-8");
 
 				// Restore directly to cp1
-				const result = store.restoreToCheckpoint(cp1?.id);
+				expect(cp1).toBeDefined();
+				if (!cp1) throw new Error("cp1 should be defined");
+				const result = store.restoreToCheckpoint(cp1.id);
 
 				expect(result.success).toBe(true);
 				expect(readFileSync(filePath, "utf-8")).toBe("v1");

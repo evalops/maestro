@@ -138,20 +138,30 @@ export class LspClientManager extends EventEmitter {
 				return undefined;
 			}
 
-			// Setup event handlers
-			client.on("close", () => {
-				this.clients.delete(key);
-				this.markBroken(key);
-			});
+			// Setup event handlers with cleanup
+			const handlers = {
+				close: () => {
+					this.clients.delete(key);
+					this.markBroken(key);
+					client.off("close", handlers.close);
+					client.off("error", handlers.error);
+					client.off("diagnostics", handlers.diagnostics);
+				},
+				error: () => {
+					this.clients.delete(key);
+					this.markBroken(key);
+					client.off("close", handlers.close);
+					client.off("error", handlers.error);
+					client.off("diagnostics", handlers.diagnostics);
+				},
+				diagnostics: (uri: string) => {
+					this.emit("diagnostics", uri);
+				},
+			};
 
-			client.on("error", () => {
-				this.clients.delete(key);
-				this.markBroken(key);
-			});
-
-			client.on("diagnostics", (uri: string) => {
-				this.emit("diagnostics", uri);
-			});
+			client.on("close", handlers.close);
+			client.on("error", handlers.error);
+			client.on("diagnostics", handlers.diagnostics);
 
 			// Store client
 			this.clients.set(key, client);

@@ -38,6 +38,10 @@ export function registerBackgroundTaskShutdownHooks(): void {
 	if (hooksRegistered) {
 		return;
 	}
+	// Don't register signal handlers in test mode - vitest manages process lifecycle
+	if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") {
+		return;
+	}
 	hooksRegistered = true;
 	const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGQUIT"];
 	const handleSignal = (signal: NodeJS.Signals) => {

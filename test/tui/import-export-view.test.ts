@@ -45,8 +45,10 @@ const buildView = (overrides: Partial<SessionManager> = {}) => {
 			chatEntries.push(child);
 		},
 		clear: vi.fn(),
-	} as unknown as Parameters<typeof ImportExportView>[0]["chatContainer"];
-	const ui = { requestRender: vi.fn() } as unknown as Parameters<
+	} as unknown as ConstructorParameters<
+		typeof ImportExportView
+	>[0]["chatContainer"];
+	const ui = { requestRender: vi.fn() } as unknown as ConstructorParameters<
 		typeof ImportExportView
 	>[0]["ui"];
 	const view = new ImportExportView({
@@ -62,7 +64,8 @@ const buildView = (overrides: Partial<SessionManager> = {}) => {
 };
 
 describe("ImportExportView.handleExportCommand", () => {
-	const spies: Array<ReturnType<typeof vi.spyOn>> = [];
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const spies: Array<{ mockRestore: () => void }> = [];
 
 	beforeEach(() => {
 		vi.restoreAllMocks();
@@ -85,8 +88,8 @@ describe("ImportExportView.handleExportCommand", () => {
 		const { view, sessionManager } = buildView();
 		await view.handleExportCommand(`/export ${targetPath} text`);
 		expect(textSpy).toHaveBeenCalledTimes(1);
-		expect(textSpy.mock.calls[0][0]).toBe(sessionManager);
-		expect(textSpy.mock.calls[0][2]).toBe(targetPath);
+		expect(textSpy.mock.calls[0]?.[0]).toBe(sessionManager);
+		expect(textSpy.mock.calls[0]?.[2]).toBe(targetPath);
 		rmSync(tmp, { recursive: true, force: true });
 	});
 

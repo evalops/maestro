@@ -126,26 +126,33 @@ async function handleShutdown(signal: NodeJS.Signals): Promise<void> {
 			error instanceof Error ? error : undefined,
 		);
 	} finally {
-		process.exit(0);
+		// Don't exit in test mode - let vitest handle process lifecycle
+		if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") {
+			process.exit(0);
+		}
 	}
 }
 
-process.once("SIGINT", () => {
-	handleShutdown("SIGINT").catch((error) => {
-		logger.error(
-			"Error during SIGINT shutdown",
-			error instanceof Error ? error : undefined,
-		);
-		process.exit(1);
+// Only register signal handlers outside of test mode
+// In test mode, vitest manages the process lifecycle
+if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") {
+	process.once("SIGINT", () => {
+		handleShutdown("SIGINT").catch((error) => {
+			logger.error(
+				"Error during SIGINT shutdown",
+				error instanceof Error ? error : undefined,
+			);
+			process.exit(1);
+		});
 	});
-});
 
-process.once("SIGTERM", () => {
-	handleShutdown("SIGTERM").catch((error) => {
-		logger.error(
-			"Error during SIGTERM shutdown",
-			error instanceof Error ? error : undefined,
-		);
-		process.exit(1);
+	process.once("SIGTERM", () => {
+		handleShutdown("SIGTERM").catch((error) => {
+			logger.error(
+				"Error during SIGTERM shutdown",
+				error instanceof Error ? error : undefined,
+			);
+			process.exit(1);
+		});
 	});
-});
+}

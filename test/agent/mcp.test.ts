@@ -201,14 +201,30 @@ describe("MCP config loader", () => {
 });
 
 describe("MCP client manager", () => {
-	it("initializes with empty config", () => {
+	// Track managers for cleanup - McpClientManager has internal reconnect timers
+	const managers: McpClientManager[] = [];
+
+	afterEach(async () => {
+		for (const manager of managers) {
+			await manager.disconnectAll();
+		}
+		managers.length = 0;
+	});
+
+	function createManager(): McpClientManager {
 		const manager = new McpClientManager();
+		managers.push(manager);
+		return manager;
+	}
+
+	it("initializes with empty config", () => {
+		const manager = createManager();
 		const status = manager.getStatus();
 		expect(status.servers).toEqual([]);
 	});
 
 	it("tracks configured servers in status", async () => {
-		const manager = new McpClientManager();
+		const manager = createManager();
 		await manager.configure({
 			servers: [
 				{ name: "test", transport: "stdio", command: "nonexistent-cmd" },
@@ -222,7 +238,7 @@ describe("MCP client manager", () => {
 	});
 
 	it("clears reconnect timers on disconnectAll", async () => {
-		const manager = new McpClientManager();
+		const manager = createManager();
 
 		await manager.configure({
 			servers: [
@@ -245,7 +261,7 @@ describe("MCP client manager", () => {
 	});
 
 	it("removes servers that are no longer in config on reconfigure", async () => {
-		const manager = new McpClientManager();
+		const manager = createManager();
 
 		await manager.configure({
 			servers: [
@@ -268,7 +284,7 @@ describe("MCP client manager", () => {
 	});
 
 	it("emits error event on connection failure", async () => {
-		const manager = new McpClientManager();
+		const manager = createManager();
 		const errorHandler = vi.fn();
 		manager.on("error", errorHandler);
 
@@ -286,24 +302,24 @@ describe("MCP client manager", () => {
 	});
 
 	it("getAllTools returns empty array when no servers connected", () => {
-		const manager = new McpClientManager();
+		const manager = createManager();
 		const tools = manager.getAllTools();
 		expect(tools).toEqual([]);
 	});
 
 	it("isConnected returns false for unknown server", () => {
-		const manager = new McpClientManager();
+		const manager = createManager();
 		expect(manager.isConnected("unknown")).toBe(false);
 	});
 
 	it("getServer returns undefined for unknown server", () => {
-		const manager = new McpClientManager();
+		const manager = createManager();
 		expect(manager.getServer("unknown")).toBeUndefined();
 	});
 
 	describe("event emissions", () => {
 		it("has typed event emitter methods", () => {
-			const manager = new McpClientManager();
+			const manager = createManager();
 
 			// Verify event emitter methods exist and are typed
 			expect(typeof manager.on).toBe("function");

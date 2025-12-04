@@ -339,3 +339,19 @@ export function overrideBackgroundTaskSettingsPath(path: string | null): void {
 export function getDefaultBackgroundTaskSettings(): BackgroundTaskSettings {
 	return { ...DEFAULT_SETTINGS };
 }
+
+/**
+ * Cleanup function to close the watcher and clear listeners.
+ * Useful for testing or when the module needs to be reset.
+ */
+export function cleanupBackgroundTaskSettings(): void {
+	if (watcher) {
+		watcher.close();
+		watcher = null;
+	}
+	listeners.clear();
+	settingsCache = null;
+	settingsMtimeMs = null;
+	settingsSize = null;
+	lastReloadCheckMs = 0;
+}

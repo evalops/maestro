@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	CircuitBreaker,
 	type CircuitBreakerOptions,
@@ -26,8 +27,18 @@ interface MockResponse {
 	setHeader?: (name: string, value: string) => void;
 }
 
+// Track all limiters created during tests to ensure proper cleanup
+const activeLimiters: RateLimiter[] = [];
+
 beforeEach(() => {
 	circuitBreakers.clear();
+});
+
+afterEach(() => {
+	for (const limiter of activeLimiters) {
+		limiter.stop();
+	}
+	activeLimiters.length = 0;
 });
 
 describe("RateLimiter", () => {
@@ -35,6 +46,7 @@ describe("RateLimiter", () => {
 		const windowMs = 60000;
 		const max = 100;
 		const limiter = new RateLimiter({ windowMs, max });
+		activeLimiters.push(limiter);
 		const ip = "127.0.0.1";
 
 		// Use 1 token
@@ -53,6 +65,7 @@ describe("RateLimiter", () => {
 		const windowMs = 1000;
 		const max = 1;
 		const limiter = new RateLimiter({ windowMs, max });
+		activeLimiters.push(limiter);
 		const ip = "127.0.0.2";
 
 		// Consume 1 token
@@ -137,7 +150,11 @@ describe("sendJson", () => {
 
 		const bigPayload = { data: "x".repeat(2000) };
 
-		sendJson(res, 200, bigPayload);
+		sendJson(
+			res as unknown as ServerResponse<IncomingMessage>,
+			200,
+			bigPayload,
+		);
 
 		expect(statusCode).toBe(200);
 		expect(headers["Content-Encoding"]).toBe("identity");
@@ -184,7 +201,11 @@ describe("respondWithApiError", () => {
 		// The fix was `const status = new Status(...)` cloning.
 
 		// Let's verifying it works generally.
-		respondWithApiError(res, genericError, 404);
+		respondWithApiError(
+			res as unknown as ServerResponse<IncomingMessage>,
+			genericError,
+			404,
+		);
 
 		// If we check the error object, it shouldn't be changed (it's an Error).
 		// The status object created internally is what matters.

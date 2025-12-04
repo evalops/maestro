@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/db/client.js", () => ({
@@ -51,8 +52,8 @@ interface MockResponse {
 
 // Helper to create mock request/response
 function createMockReqRes(method = "POST"): {
-	req: MockRequest;
-	res: MockResponse;
+	req: IncomingMessage;
+	res: ServerResponse & { getStatusCode: () => number; getBody: () => unknown };
 } {
 	const req: MockRequest = {
 		method,
@@ -73,7 +74,13 @@ function createMockReqRes(method = "POST"): {
 		getStatusCode: () => statusCode,
 		getBody: () => JSON.parse(body),
 	};
-	return { req, res };
+	return {
+		req: req as unknown as IncomingMessage,
+		res: res as unknown as ServerResponse & {
+			getStatusCode: () => number;
+			getBody: () => unknown;
+		},
+	};
 }
 
 describe("Admin Handlers", () => {
@@ -123,7 +130,7 @@ describe("Admin Handlers", () => {
 			await handleAdminCleanup(req, res, {});
 
 			expect(res.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
-			const result: CleanupResult = res.getBody();
+			const result = res.getBody() as CleanupResult;
 			expect(result.success).toBe(true);
 			expect(result.results.revokedTokens).toBe(5);
 			expect(result.results.totpCodes).toBe(3);
@@ -146,7 +153,7 @@ describe("Admin Handlers", () => {
 			const { req, res } = createMockReqRes();
 			await handleAdminCleanup(req, res, {});
 
-			const result: CleanupResult = res.getBody();
+			const result = res.getBody() as CleanupResult;
 			expect(result.success).toBe(false);
 			expect(result.results.revokedTokens).toBe(5);
 			expect(result.results.totpCodes).toBeNull();
@@ -192,7 +199,7 @@ describe("Admin Handlers", () => {
 			await handleAdminWarmCaches(req, res, {});
 
 			expect(res.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
-			const result: CacheWarmResult = res.getBody();
+			const result = res.getBody() as CacheWarmResult;
 			expect(result.success).toBe(true);
 			expect(result.results.revocationCache).toBe(10);
 			expect(result.results.hashCache).toBe(5);
@@ -210,7 +217,7 @@ describe("Admin Handlers", () => {
 			const { req, res } = createMockReqRes();
 			await handleAdminWarmCaches(req, res, {});
 
-			const result: CacheWarmResult = res.getBody();
+			const result = res.getBody() as CacheWarmResult;
 			expect(result.success).toBe(false);
 			expect(result.results.revocationCache).toBe(10);
 			expect(result.results.hashCache).toBeNull();

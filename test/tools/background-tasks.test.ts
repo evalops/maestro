@@ -516,7 +516,7 @@ describe("backgroundTasksTool", () => {
 			startedAt: Date.now(),
 			status: "running" as const,
 			logPath: zombieLog,
-			process: {} as unknown as NodeJS.Process,
+			process: {} as unknown as import("node:child_process").ChildProcess,
 			completion: Promise.resolve(),
 			shellMode: "exec" as const,
 			limits: {

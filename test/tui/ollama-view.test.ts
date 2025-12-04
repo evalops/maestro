@@ -178,6 +178,9 @@ describe("OllamaView", () => {
 			status: null,
 			stdout: "",
 			stderr: "",
+			pid: 0,
+			output: ["", "", ""],
+			signal: null,
 			error: Object.assign(new Error("not found"), { code: "ENOENT" }),
 		} as SpawnSyncReturns<string>);
 		const { showErrorMessage, view } = createView();

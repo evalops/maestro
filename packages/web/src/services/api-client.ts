@@ -13,10 +13,116 @@ import type {
 export type Message = ComposerMessage;
 export type { ComposerToolCall };
 
-export interface AgentEvent {
-	type: string;
-	[key: string]: unknown;
+/** Simplified AssistantMessage type matching backend structure */
+interface AssistantMessage {
+	role: "assistant";
+	content: Array<{
+		type: "text" | "thinking" | "toolCall";
+		text?: string;
+		thinking?: string;
+		id?: string;
+		name?: string;
+		arguments?: Record<string, unknown>;
+	}>;
 }
+
+/** ToolCall type matching backend structure */
+interface ToolCall {
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+}
+
+/** Assistant message event discriminated union matching backend structure (src/agent/types.ts:159) */
+export type AssistantMessageEvent =
+	| {
+			type: "start";
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "text_start";
+			contentIndex: number;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "text_delta";
+			contentIndex: number;
+			delta: string;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "text_end";
+			contentIndex: number;
+			content: string;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "thinking_start";
+			contentIndex: number;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "thinking_delta";
+			contentIndex: number;
+			delta: string;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "thinking_end";
+			contentIndex: number;
+			content: string;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "toolcall_start";
+			contentIndex: number;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "toolcall_delta";
+			contentIndex: number;
+			delta: string;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "toolcall_end";
+			contentIndex: number;
+			toolCall: ToolCall;
+			partial: AssistantMessage;
+	  }
+	| {
+			type: "done";
+			reason: "stop" | "length" | "toolUse";
+			message: AssistantMessage;
+	  }
+	| {
+			type: "error";
+			reason: "aborted" | "error";
+			error: AssistantMessage;
+	  };
+
+/** AgentEvent is a discriminated union of all possible server-sent events */
+export type AgentEvent =
+	| { type: "agent_start" }
+	| { type: "agent_end"; messages?: Message[] }
+	| { type: "session_update"; sessionId: string }
+	| { type: "message_start"; message: Message }
+	| {
+			type: "message_update";
+			message: Message;
+			assistantMessageEvent: AssistantMessageEvent;
+	  }
+	| { type: "message_end"; message: Message }
+	| { type: "tool_execution_start"; toolCallId: string; toolName: string }
+	| {
+			type: "tool_execution_end";
+			toolCallId: string;
+			toolName: string;
+			result: string;
+			isError: boolean;
+	  }
+	| { type: "error"; message: string }
+	| { type: "status"; status: string; details: Record<string, unknown> };
 
 export interface Model {
 	id: string;

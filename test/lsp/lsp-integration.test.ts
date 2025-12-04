@@ -33,7 +33,8 @@ describe("LSP Integration Tests", () => {
 		await configureServers([]);
 
 		// Allow cleanup time for processes to fully exit
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		// Use longer timeout to ensure child processes have time to terminate
+		await new Promise((resolve) => setTimeout(resolve, 500));
 	});
 
 	it("should spawn LSP server and initialize", async () => {

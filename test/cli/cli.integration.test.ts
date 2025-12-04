@@ -263,7 +263,7 @@ describe("CLI integration", () => {
 	it("prints models list command output", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
-			exitCodes.push(code ?? 0);
+			exitCodes.push(Number(code ?? 0));
 			return undefined as never;
 		});
 		await main(["models", "list"]);
@@ -275,7 +275,7 @@ describe("CLI integration", () => {
 	it("prints providers summary for filter", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
-			exitCodes.push(code ?? 0);
+			exitCodes.push(Number(code ?? 0));
 			return undefined as never;
 		});
 		await main(["models", "providers", "--provider", "openrouter"]);
@@ -335,7 +335,7 @@ describe("CLI integration", () => {
 	it("rejects Codex/ChatGPT auth flags", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
-			exitCodes.push(code ?? 0);
+			exitCodes.push(Number(code ?? 0));
 			throw new Error("exit");
 		});
 		await expect(
@@ -359,7 +359,7 @@ describe("CLI integration", () => {
 	it("rejects Codex subscription tokens", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
-			exitCodes.push(code ?? 0);
+			exitCodes.push(Number(code ?? 0));
 			throw new Error("exit");
 		});
 		await expect(
@@ -391,7 +391,7 @@ describe("CLI integration", () => {
 	it("fails when claude auth mode lacks OAuth tokens", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
-			exitCodes.push(code ?? 0);
+			exitCodes.push(Number(code ?? 0));
 			throw new Error("exit");
 		});
 		await expect(

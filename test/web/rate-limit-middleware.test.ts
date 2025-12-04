@@ -1,8 +1,25 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { compose } from "../../src/web/middleware.js";
 import { RateLimiter, TieredRateLimiter } from "../../src/web/rate-limiter.js";
 import { createRateLimitMiddleware } from "../../src/web/server-middlewares.js";
+
+// Track all limiters created during tests to ensure proper cleanup
+const activeLimiters: Array<RateLimiter | TieredRateLimiter> = [];
+
+function trackLimiter<T extends RateLimiter | TieredRateLimiter>(
+	limiter: T,
+): T {
+	activeLimiters.push(limiter);
+	return limiter;
+}
+
+afterEach(() => {
+	for (const limiter of activeLimiters) {
+		limiter.stop();
+	}
+	activeLimiters.length = 0;
+});
 
 interface MockRequest {
 	url: string;
@@ -58,7 +75,9 @@ const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 describe("createRateLimitMiddleware", () => {
 	describe("IP extraction without trustProxy", () => {
 		it("uses socket.remoteAddress when trustProxy is false", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 100 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 100 }),
+			);
 			const middleware = createRateLimitMiddleware(limiter, corsHeaders, false);
 
 			const req = makeReq({
@@ -76,7 +95,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("ignores X-Forwarded-For when trustProxy is false", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 2 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 2 }),
+			);
 			const middleware = createRateLimitMiddleware(limiter, corsHeaders, false);
 
 			// First request from "attacker" spoofing X-Forwarded-For
@@ -111,7 +132,9 @@ describe("createRateLimitMiddleware", () => {
 
 	describe("IP extraction with trustProxy", () => {
 		it("uses X-Forwarded-For when trustProxy is true", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 100 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 100 }),
+			);
 			const middleware = createRateLimitMiddleware(
 				limiter,
 				corsHeaders,
@@ -134,7 +157,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("extracts client IP with 1 proxy hop", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 2 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 2 }),
+			);
 
 			// With 1 hop (nginx), we skip 1 IP from the right
 			// "client, nginx" -> targetIndex = max(0, 2 - 1 - 1) = 0 -> "client"
@@ -175,7 +200,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("extracts client IP with 2 proxy hops", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 2 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 2 }),
+			);
 
 			// With 2 hops (CDN + nginx), we skip 2 IPs from the right
 			// "client, cdn, nginx" -> targetIndex = max(0, 3 - 2 - 1) = 0 -> "client"
@@ -214,7 +241,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("clamps to first IP when hops exceed header length", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 100 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 100 }),
+			);
 
 			// With 5 hops but only 2 IPs, should use index 0 (first IP)
 			const middleware = createRateLimitMiddleware(
@@ -239,7 +268,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("handles empty X-Forwarded-For gracefully", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 100 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 100 }),
+			);
 			const middleware = createRateLimitMiddleware(
 				limiter,
 				corsHeaders,
@@ -262,7 +293,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("handles whitespace-only X-Forwarded-For gracefully", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 100 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 100 }),
+			);
 			const middleware = createRateLimitMiddleware(
 				limiter,
 				corsHeaders,
@@ -287,7 +320,9 @@ describe("createRateLimitMiddleware", () => {
 
 	describe("IPv6 normalization", () => {
 		it("normalizes IPv4-mapped IPv6 addresses", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 2 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 2 }),
+			);
 			const middleware = createRateLimitMiddleware(limiter, corsHeaders, false);
 
 			// Request from ::ffff:192.168.1.1
@@ -319,7 +354,9 @@ describe("createRateLimitMiddleware", () => {
 
 	describe("non-API paths", () => {
 		it("skips rate limiting for non-API paths", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 1 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 1 }),
+			);
 			const middleware = createRateLimitMiddleware(limiter, corsHeaders, false);
 
 			// Exhaust rate limit on API path
@@ -339,7 +376,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("skips rate limiting for /api/metrics endpoint", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 1 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 1 }),
+			);
 			const middleware = createRateLimitMiddleware(limiter, corsHeaders, false);
 
 			// Exhaust rate limit on regular API path
@@ -359,7 +398,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("skips rate limiting for /healthz endpoint", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 1 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 1 }),
+			);
 			const middleware = createRateLimitMiddleware(limiter, corsHeaders, false);
 
 			// Exhaust rate limit on regular API path
@@ -381,7 +422,9 @@ describe("createRateLimitMiddleware", () => {
 
 	describe("error handling integration", () => {
 		it("middleware chain error can be caught by caller", async () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 100 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 100 }),
+			);
 			const errorMiddleware = async () => {
 				throw new Error("Simulated middleware error");
 			};
@@ -401,7 +444,9 @@ describe("createRateLimitMiddleware", () => {
 		});
 
 		it("error handling wrapper catches middleware errors", async () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 100 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 100 }),
+			);
 			const errorMiddleware = async () => {
 				throw new Error("Simulated middleware error");
 			};
@@ -437,11 +482,13 @@ describe("createRateLimitMiddleware", () => {
 describe("TieredRateLimiter", () => {
 	describe("token leak prevention", () => {
 		it("does not consume global tokens when endpoint limit rejects", () => {
-			const tiered = new TieredRateLimiter(
-				{ windowMs: 60000, max: 100 }, // Global: 100 req/min
-				{
-					"/api/chat": { windowMs: 60000, max: 3 }, // Endpoint: only 3 req/min
-				},
+			const tiered = trackLimiter(
+				new TieredRateLimiter(
+					{ windowMs: 60000, max: 100 }, // Global: 100 req/min
+					{
+						"/api/chat": { windowMs: 60000, max: 3 }, // Endpoint: only 3 req/min
+					},
+				),
 			);
 
 			// Exhaust the endpoint limit
@@ -463,11 +510,13 @@ describe("TieredRateLimiter", () => {
 		});
 
 		it("consumes tokens from both limits when both allow", () => {
-			const tiered = new TieredRateLimiter(
-				{ windowMs: 60000, max: 10 },
-				{
-					"/api/test": { windowMs: 60000, max: 5 },
-				},
+			const tiered = trackLimiter(
+				new TieredRateLimiter(
+					{ windowMs: 60000, max: 10 },
+					{
+						"/api/test": { windowMs: 60000, max: 5 },
+					},
+				),
 			);
 
 			// First request
@@ -480,11 +529,13 @@ describe("TieredRateLimiter", () => {
 		});
 
 		it("respects global limit even when endpoint limit is not exceeded", () => {
-			const tiered = new TieredRateLimiter(
-				{ windowMs: 60000, max: 5 }, // Very strict global
-				{
-					"/api/test": { windowMs: 60000, max: 100 }, // Lenient endpoint
-				},
+			const tiered = trackLimiter(
+				new TieredRateLimiter(
+					{ windowMs: 60000, max: 5 }, // Very strict global
+					{
+						"/api/test": { windowMs: 60000, max: 100 }, // Lenient endpoint
+					},
+				),
 			);
 
 			// Use up global limit
@@ -499,11 +550,13 @@ describe("TieredRateLimiter", () => {
 		});
 
 		it("shares bucket across sub-routes with prefix matching", () => {
-			const tiered = new TieredRateLimiter(
-				{ windowMs: 60000, max: 1000 },
-				{
-					"/api/chat": { windowMs: 60000, max: 3 }, // Only 3 requests allowed
-				},
+			const tiered = trackLimiter(
+				new TieredRateLimiter(
+					{ windowMs: 60000, max: 1000 },
+					{
+						"/api/chat": { windowMs: 60000, max: 3 }, // Only 3 requests allowed
+					},
+				),
 			);
 
 			// Hit different sub-routes - they should all share the /api/chat bucket
@@ -516,12 +569,14 @@ describe("TieredRateLimiter", () => {
 			expect(blocked.allowed).toBe(false);
 
 			// But a different endpoint pattern should still work
-			const tieredWithFiles = new TieredRateLimiter(
-				{ windowMs: 60000, max: 1000 },
-				{
-					"/api/chat": { windowMs: 60000, max: 3 },
-					"/api/files": { windowMs: 60000, max: 100 },
-				},
+			const tieredWithFiles = trackLimiter(
+				new TieredRateLimiter(
+					{ windowMs: 60000, max: 1000 },
+					{
+						"/api/chat": { windowMs: 60000, max: 3 },
+						"/api/files": { windowMs: 60000, max: 100 },
+					},
+				),
 			);
 
 			// Exhaust /api/chat
@@ -540,7 +595,9 @@ describe("TieredRateLimiter", () => {
 
 	describe("peek method", () => {
 		it("does not consume tokens", () => {
-			const limiter = new RateLimiter({ windowMs: 60000, max: 3 });
+			const limiter = trackLimiter(
+				new RateLimiter({ windowMs: 60000, max: 3 }),
+			);
 
 			// Peek multiple times
 			for (let i = 0; i < 10; i++) {

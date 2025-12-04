@@ -224,6 +224,11 @@ export function startStatsCollection() {
 
 		loopMonitor.reset();
 	}, 5000);
+
+	// Don't keep process alive
+	if (statsInterval.unref) {
+		statsInterval.unref();
+	}
 }
 
 export function stopStatsCollection() {

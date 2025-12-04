@@ -995,7 +995,7 @@ export class ComposerChat extends LitElement {
 							const msgEvent = agentEvent.assistantMessageEvent;
 
 							// Text deltas
-							if (msgEvent.type === "text_delta" && msgEvent.delta) {
+							if (msgEvent.type === "text_delta") {
 								assistantMessage.content += msgEvent.delta;
 								this.messages = [...this.messages];
 							}

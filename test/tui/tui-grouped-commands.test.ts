@@ -32,6 +32,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 
@@ -57,6 +58,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 
@@ -82,6 +84,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 
@@ -107,6 +110,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 
@@ -132,6 +136,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 
@@ -719,6 +724,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 
@@ -813,6 +819,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 
@@ -1015,6 +1022,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 
@@ -1403,6 +1411,7 @@ describe("Grouped Command Handlers", () => {
 				handleQueue: vi.fn(),
 				handleExport: vi.fn(),
 				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
 				showInfo: vi.fn(),
 			};
 

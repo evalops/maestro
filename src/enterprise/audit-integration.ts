@@ -11,6 +11,12 @@ import { enterpriseContext } from "./context.js";
 const logger = createLogger("enterprise:audit");
 
 let initialized = false;
+let sessionStartedHandler:
+	| ((session: { sessionId: string; modelId?: string }) => void)
+	| null = null;
+let sessionEndedHandler: ((sessionId: string) => void) | null = null;
+let toolExecutedHandler: ((toolName: string, status: string) => void) | null =
+	null;
 
 /**
  * Initialize audit integration - connects context events to audit logger
@@ -22,7 +28,10 @@ export function initializeAuditIntegration(): void {
 		return;
 	}
 
-	enterpriseContext.on("sessionStarted", async (session) => {
+	sessionStartedHandler = async (session: {
+		sessionId: string;
+		modelId?: string;
+	}) => {
 		const ctx = enterpriseContext.getAuditContext();
 		if (!ctx) return;
 
@@ -44,9 +53,9 @@ export function initializeAuditIntegration(): void {
 				error instanceof Error ? error : undefined,
 			);
 		}
-	});
+	};
 
-	enterpriseContext.on("sessionEnded", async (sessionId) => {
+	sessionEndedHandler = async (sessionId: string) => {
 		const ctx = enterpriseContext.getAuditContext();
 		if (!ctx) return;
 
@@ -65,9 +74,9 @@ export function initializeAuditIntegration(): void {
 				error instanceof Error ? error : undefined,
 			);
 		}
-	});
+	};
 
-	enterpriseContext.on("toolExecuted", async (toolName, status) => {
+	toolExecutedHandler = async (toolName: string, status: string) => {
 		const ctx = enterpriseContext.getAuditContext();
 		if (!ctx) return;
 
@@ -86,10 +95,37 @@ export function initializeAuditIntegration(): void {
 				error instanceof Error ? error : undefined,
 			);
 		}
-	});
+	};
+
+	enterpriseContext.on("sessionStarted", sessionStartedHandler);
+	enterpriseContext.on("sessionEnded", sessionEndedHandler);
+	enterpriseContext.on("toolExecuted", toolExecutedHandler);
 
 	initialized = true;
 	logger.debug("Audit integration initialized");
+}
+
+/**
+ * Cleanup audit integration - removes event listeners
+ */
+export function cleanupAuditIntegration(): void {
+	if (!initialized) return;
+
+	if (sessionStartedHandler) {
+		enterpriseContext.off("sessionStarted", sessionStartedHandler);
+		sessionStartedHandler = null;
+	}
+	if (sessionEndedHandler) {
+		enterpriseContext.off("sessionEnded", sessionEndedHandler);
+		sessionEndedHandler = null;
+	}
+	if (toolExecutedHandler) {
+		enterpriseContext.off("toolExecuted", toolExecutedHandler);
+		toolExecutedHandler = null;
+	}
+
+	initialized = false;
+	logger.debug("Audit integration cleaned up");
 }
 
 /**

@@ -506,4 +506,14 @@ export class TieredRateLimiter {
 		this.endpointLimits[endpoint] = config;
 		this.endpointLimiters.set(endpoint, new RateLimiter(config));
 	}
+
+	/**
+	 * Stop all cleanup intervals (for graceful shutdown and test cleanup).
+	 */
+	stop(): void {
+		this.globalLimiter.stop();
+		for (const limiter of this.endpointLimiters.values()) {
+			limiter.stop();
+		}
+	}
 }

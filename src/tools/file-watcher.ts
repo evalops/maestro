@@ -432,6 +432,11 @@ export class FileWatcher {
 		if (this.gitPollTimer.unref) {
 			this.gitPollTimer.unref();
 		}
+
+		// Don't keep process alive
+		if (this.gitPollTimer.unref) {
+			this.gitPollTimer.unref();
+		}
 	}
 
 	/**

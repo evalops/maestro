@@ -14,10 +14,7 @@ function createMockNotificationView(): QueueControllerOptions["notificationView"
 		showInfo: vi.fn(),
 		showToast: vi.fn(),
 		showError: vi.fn(),
-		showSuccess: vi.fn(),
-		showWarning: vi.fn(),
-		clear: vi.fn(),
-	};
+	} as unknown as QueueControllerOptions["notificationView"];
 }
 
 function createMockEditor(): QueueControllerOptions["editor"] {
@@ -25,7 +22,6 @@ function createMockEditor(): QueueControllerOptions["editor"] {
 		disableSubmit: false,
 		setText: vi.fn(),
 		getText: vi.fn().mockReturnValue(""),
-		clear: vi.fn(),
 		focus: vi.fn(),
 		blur: vi.fn(),
 		setPlaceholder: vi.fn(),
@@ -35,7 +31,7 @@ function createMockEditor(): QueueControllerOptions["editor"] {
 		render: vi.fn().mockReturnValue(""),
 		handleInput: vi.fn().mockReturnValue(false),
 		handleMouse: vi.fn().mockReturnValue(false),
-	};
+	} as unknown as QueueControllerOptions["editor"];
 }
 
 function createMockCallbacks(
@@ -52,7 +48,12 @@ function createMockCallbacks(
 	};
 }
 
-interface MockPromptQueue extends Partial<PromptQueue> {
+interface MockPromptQueue {
+	subscribe: ReturnType<typeof vi.fn>;
+	cancel: ReturnType<typeof vi.fn>;
+	cancelAll: ReturnType<typeof vi.fn>;
+	clearActive: ReturnType<typeof vi.fn>;
+	getSnapshot: ReturnType<typeof vi.fn>;
 	_emit: (event: PromptQueueEvent) => void;
 }
 
@@ -110,7 +111,7 @@ describe("QueueController", () => {
 				callbacks: createMockCallbacks(),
 			});
 
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 
 			expect(controller.hasQueue()).toBe(true);
 			expect(queue.subscribe).toHaveBeenCalled();
@@ -124,7 +125,7 @@ describe("QueueController", () => {
 				callbacks: createMockCallbacks(),
 			});
 
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 			controller.detach();
 
 			expect(controller.hasQueue()).toBe(false);
@@ -208,7 +209,7 @@ describe("QueueController", () => {
 				editor: createMockEditor(),
 				callbacks,
 			});
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 
 			const result = controller.cancel(1);
 
@@ -226,7 +227,7 @@ describe("QueueController", () => {
 				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 
 			controller.cancelAll();
 
@@ -265,7 +266,7 @@ describe("QueueController", () => {
 				editor: editor,
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 
 			controller.restoreQueuedPrompts();
 
@@ -289,7 +290,7 @@ describe("QueueController", () => {
 				editor: editor,
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 
 			controller.restoreQueuedPrompts();
 
@@ -331,12 +332,12 @@ describe("QueueController", () => {
 				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 
 			queue._emit({
 				type: "error",
 				error: new Error("Test error"),
-				entry: { id: 5, text: "test" },
+				entry: { id: 5, text: "test", createdAt: Date.now() },
 			});
 
 			expect(notificationView.showError).toHaveBeenCalledWith(
@@ -352,12 +353,12 @@ describe("QueueController", () => {
 				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 
 			queue._emit({
 				type: "enqueue",
 				willRunImmediately: false,
-				entry: { id: 2, text: "test" },
+				entry: { id: 2, text: "test", createdAt: Date.now() },
 				pendingCount: 2,
 			});
 
@@ -374,11 +375,11 @@ describe("QueueController", () => {
 				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as PromptQueue);
+			controller.attach(queue as unknown as PromptQueue);
 
 			queue._emit({
 				type: "cancel",
-				entry: { id: 3, text: "test" },
+				entry: { id: 3, text: "test", createdAt: Date.now() },
 			});
 
 			expect(notificationView.showInfo).toHaveBeenCalledWith(

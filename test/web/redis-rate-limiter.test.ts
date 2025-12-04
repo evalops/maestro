@@ -6,7 +6,15 @@
  *
  * Run with: COMPOSER_REDIS_URL=redis://localhost:6379 bunx vitest test/web/redis-rate-limiter.test.ts
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+} from "vitest";
 
 import {
 	type RateLimitConfig,
@@ -191,6 +199,16 @@ describe("Rate Limiter (in-memory only)", () => {
 });
 
 describe("TieredRateLimiter (in-memory)", () => {
+	// Track limiters for cleanup
+	const activeLimiters: TieredRateLimiter[] = [];
+
+	afterEach(() => {
+		for (const limiter of activeLimiters) {
+			limiter.stop();
+		}
+		activeLimiters.length = 0;
+	});
+
 	it("applies endpoint-specific limits", () => {
 		const tieredLimiter = new TieredRateLimiter(
 			{ windowMs: 60000, max: 100 },
@@ -198,6 +216,7 @@ describe("TieredRateLimiter (in-memory)", () => {
 				"/api/chat": { windowMs: 60000, max: 5 },
 			},
 		);
+		activeLimiters.push(tieredLimiter);
 
 		// Use up /api/chat quota
 		for (let i = 0; i < 5; i++) {
@@ -217,6 +236,7 @@ describe("TieredRateLimiter (in-memory)", () => {
 				"/api/status": { windowMs: 60000, max: 50 },
 			},
 		);
+		activeLimiters.push(tieredLimiter);
 
 		// Use up /api/chat quota
 		for (let i = 0; i < 5; i++) {
@@ -235,6 +255,7 @@ describe("TieredRateLimiter (in-memory)", () => {
 				"/api/status": { windowMs: 60000, max: 50 }, // Lenient endpoint
 			},
 		);
+		activeLimiters.push(tieredLimiter);
 
 		// Exhaust global limit via any endpoint
 		for (let i = 0; i < 10; i++) {
@@ -253,6 +274,7 @@ describe("TieredRateLimiter (in-memory)", () => {
 				"/api/chat": { windowMs: 60000, max: 5 },
 			},
 		);
+		activeLimiters.push(tieredLimiter);
 
 		const limits = tieredLimiter.getLimits();
 		expect(limits.global).toEqual({ windowMs: 60000, max: 100 });
@@ -267,6 +289,7 @@ describe("TieredRateLimiter (in-memory)", () => {
 			{ windowMs: 60000, max: 100 },
 			{},
 		);
+		activeLimiters.push(tieredLimiter);
 
 		tieredLimiter.setEndpointLimit("/api/new", { windowMs: 60000, max: 3 });
 

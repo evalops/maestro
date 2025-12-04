@@ -135,6 +135,12 @@ function startCleanupScheduler(): void {
 		});
 	}, CLEANUP_INTERVAL_MS);
 
+	// In test mode, unref the interval so it doesn't keep the process alive
+	// This allows tests to run without hanging while still testing scheduler behavior
+	if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") {
+		cleanupInterval.unref();
+	}
+
 	logger.debug("Cleanup scheduler started", {
 		intervalMs: CLEANUP_INTERVAL_MS,
 		webhookRetentionDays: WEBHOOK_RETENTION_DAYS,

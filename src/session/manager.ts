@@ -175,17 +175,24 @@ class SessionFileWriter {
 			}
 		};
 
+		// Don't register signal handlers in test mode - vitest manages process lifecycle
+		const isTestMode =
+			process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+
 		// Register handlers for various exit scenarios
-		process.once("beforeExit", () => flushAll());
-		process.once("SIGINT", () => {
-			flushAll("SIGINT");
-			process.exit(); // Re-emit to allow default shutdown behaviour
-		});
-		process.once("SIGTERM", () => {
-			flushAll("SIGTERM");
-			process.exit();
-		});
+		if (!isTestMode) {
+			process.once("beforeExit", () => flushAll());
+			process.once("SIGINT", () => {
+				flushAll("SIGINT");
+				process.exit(); // Re-emit to allow default shutdown behaviour
+			});
+			process.once("SIGTERM", () => {
+				flushAll("SIGTERM");
+				process.exit();
+			});
+		}
 		// Also catch unhandled errors to preserve as much data as possible
+		// These are safe to register in test mode as they don't call process.exit()
 		process.once("uncaughtException", () => flushAll("uncaughtException"));
 		process.once("unhandledRejection", () => flushAll("unhandledRejection"));
 	}

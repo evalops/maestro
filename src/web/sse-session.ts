@@ -98,6 +98,10 @@ export class SseSession {
 	startHeartbeat(): void {
 		this.stopHeartbeat();
 		this.heartbeat = setInterval(() => this.sendHeartbeat(), this.heartbeatMs);
+		// Don't keep process alive
+		if (this.heartbeat.unref) {
+			this.heartbeat.unref();
+		}
 	}
 
 	stopHeartbeat(): void {

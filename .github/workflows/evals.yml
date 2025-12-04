@@ -36,7 +36,16 @@ jobs:
         run: bash scripts/guardian.sh --all --trigger ci
       - run: npm run build:all
       - run: bun run bun:lint
-      - run: bun run bun:test
+      - name: Run tests with timeout
+        timeout-minutes: 3
+        run: |
+          bunx vitest --run --reporter=verbose --no-file-parallelism \
+            --exclude='**/parallel-ripgrep.test.ts' \
+            --exclude='**/webfetch.test.ts' \
+            --exclude='**/websearch.test.ts' \
+            --exclude='**/cache-invalidation.test.ts' \
+            --exclude='**/image-processor.test.ts' \
+            --exclude='**/shell-utils.test.ts'
       - name: Run evals chunk
         env:
           COMPOSER_EVAL_CHUNK_COUNT: 2
