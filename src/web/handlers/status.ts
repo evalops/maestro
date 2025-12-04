@@ -3,6 +3,10 @@ import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { isDatabaseConfigured, isDbAvailable } from "../../db/client.js";
+import {
+	getAsyncHookCount,
+	getHookConcurrencySnapshot,
+} from "../../hooks/index.js";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
@@ -62,6 +66,10 @@ export function handleStatus(
 				maxEntries: 5,
 				logLines: 2,
 			}),
+			hooks: {
+				asyncInFlight: getAsyncHookCount(),
+				concurrency: getHookConcurrencySnapshot(),
+			},
 			lastUpdated: Date.now(),
 			lastLatencyMs: Date.now() - startedAt,
 		};
