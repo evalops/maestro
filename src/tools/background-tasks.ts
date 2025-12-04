@@ -108,6 +108,11 @@ import { createLogger } from "../utils/logger.js";
 import { safejoin } from "../utils/path-validation.js";
 import { redactSecrets } from "../utils/secret-redactor.js";
 import {
+	ResourceMonitor,
+	type TaskResourceUsage,
+	extractProcStatFields,
+} from "./background/index.js";
+import {
 	getShellConfig,
 	killProcessTree,
 	parseCommandArguments,
@@ -125,11 +130,6 @@ const DEFAULT_CPU_MS = readNonNegativeInt(
 	"COMPOSER_BACKGROUND_TASK_MAX_CPU_MS",
 	10 * 60 * 1000,
 );
-const CLOCK_TICKS_PER_SECOND = (() => {
-	const raw = process.env.COMPOSER_BACKGROUND_TASK_TICKS;
-	const parsed = Number.parseInt(raw ?? "100", 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : 100;
-})();
 const RESOURCE_POLL_INTERVAL_MS = 200;
 const RESTART_NOTIFY_THRESHOLD = readThresholdEnv(
 	"COMPOSER_BACKGROUND_TASK_NOTIFY_RESTARTS",
@@ -229,64 +229,8 @@ type BackgroundTaskStatus =
 	| "failed"
 	| "restarting";
 
-export interface TaskResourceUsage {
-	userMs?: number;
-	systemMs?: number;
-	maxRssKb?: number;
-}
-
-/**
- * Parse Linux /proc/<pid>/stat file format
- *
- * The /proc/[pid]/stat file contains process status information in a single line.
- * The format is tricky because the command name (field 2) can contain spaces and
- * parentheses, which complicates parsing.
- *
- * ## Format
- *
- * ```
- * pid (comm) state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt
- * cmajflt utime stime cutime cstime priority nice num_threads itrealvalue
- * starttime vsize rss ...
- * ```
- *
- * ## Parsing Strategy
- *
- * 1. Find the LAST occurrence of ") " (closing paren of comm field + space)
- * 2. Everything after that splits cleanly on whitespace
- * 3. Fields are 0-indexed from the position after the comm field
- *
- * ## Relevant Fields (0-indexed from our return array)
- *
- * - Index 11 (utime): User mode CPU time in clock ticks
- * - Index 12 (stime): Kernel mode CPU time in clock ticks
- * - Index 21 (rss): Resident set size in pages (not used, we read /proc/status instead)
- *
- * ## Why lastIndexOf?
- *
- * The command name can contain ")" characters. For example:
- * `12345 (node (v18)) S 1234 ...`
- * Using lastIndexOf(") ") ensures we find the real end of the comm field.
- *
- * @param statRaw - Raw content of /proc/<pid>/stat
- * @returns Array of fields starting from field 3 (state), or null if parse fails
- */
-export function extractProcStatFields(statRaw: string): string[] | null {
-	const trimmed = statRaw.trim();
-	// Find the closing parenthesis of the command name field
-	// Use lastIndexOf because command name itself can contain ")"
-	const splitIndex = trimmed.lastIndexOf(") ");
-	if (splitIndex === -1) {
-		return null;
-	}
-	// Everything after ") " is the remaining fields, space-separated
-	const remainder = trimmed.slice(splitIndex + 2).trim();
-	if (!remainder) {
-		return null;
-	}
-	// Split on whitespace to get individual fields
-	return remainder.split(/\s+/);
-}
+// Re-export for backwards compatibility
+export { type TaskResourceUsage, extractProcStatFields };
 
 /**
  * Restart Policy Configuration
@@ -605,6 +549,7 @@ class BackgroundTaskManager extends EventEmitter {
 	private unsubscribeSettings?: () => void;
 	private secretCounter = 0;
 	private readonly logger = createLogger("background-tasks");
+	private readonly resourceMonitor = new ResourceMonitor();
 
 	private ensureSettingsSubscription(): void {
 		if (this.unsubscribeSettings) {
@@ -1080,9 +1025,7 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	private getMonitoringMode(): "proc" | "ps" | "disabled" {
-		if (process.platform === "linux") return "proc";
-		if (process.platform === "darwin") return "ps";
-		return "disabled";
+		return this.resourceMonitor.getMode();
 	}
 
 	private sampleResourceUsage(task: BackgroundTask): void {
@@ -1090,12 +1033,7 @@ class BackgroundTaskManager extends EventEmitter {
 			this.stopUsageMonitor(task);
 			return;
 		}
-		const usage =
-			task.monitoringMode === "proc"
-				? this.readUsageFromProc(task.pid)
-				: task.monitoringMode === "ps"
-					? this.readUsageFromPs(task.pid)
-					: null;
+		const usage = this.resourceMonitor.getUsage(task.pid);
 		if (!usage) {
 			if (task.monitoringMode === "ps") {
 				// If ps cannot be read (pid exited), stop monitoring to avoid noisy logs
@@ -1163,96 +1101,6 @@ class BackgroundTaskManager extends EventEmitter {
 			reason: task.failureReason,
 			message: "exceeded resource limits; terminating",
 		});
-	}
-
-	private readUsageFromProc(pid: number): TaskResourceUsage | null {
-		if (process.platform !== "linux") {
-			return null;
-		}
-		const usage: TaskResourceUsage = {};
-		try {
-			const status = readFileSync(`/proc/${pid}/status`, "utf8");
-			const match = status.match(/VmRSS:\s+(\d+)\s+kB/i);
-			if (match) {
-				const rssValue = Number.parseInt(match[1], 10);
-				if (Number.isFinite(rssValue)) {
-					usage.maxRssKb = Math.max(rssValue, 0);
-				}
-			}
-		} catch {
-			// Ignore inability to read status (process likely exited)
-		}
-		try {
-			const statRaw = readFileSync(`/proc/${pid}/stat`, "utf8").trim();
-			const fields = extractProcStatFields(statRaw);
-			if (fields) {
-				const userTicks = Number.parseInt(fields[11] ?? "", 10);
-				const systemTicks = Number.parseInt(fields[12] ?? "", 10);
-				const msPerTick = 1000 / CLOCK_TICKS_PER_SECOND;
-				if (Number.isFinite(userTicks)) {
-					usage.userMs = Math.max(userTicks * msPerTick, 0);
-				}
-				if (Number.isFinite(systemTicks)) {
-					usage.systemMs = Math.max(systemTicks * msPerTick, 0);
-				}
-			}
-		} catch {
-			// Ignore stat read errors; may not be available
-		}
-		return Object.keys(usage).length > 0 ? usage : null;
-	}
-
-	private readUsageFromPs(pid: number): TaskResourceUsage | null {
-		if (process.platform !== "darwin") {
-			return null;
-		}
-		try {
-			const output = execSync(`ps -o rss= -o time= -p ${pid}`, {
-				encoding: "utf-8",
-			})
-				.trim()
-				.split(/\s+/)
-				.filter(Boolean);
-			if (output.length < 2) {
-				return null;
-			}
-			const rssKb = Number.parseInt(output[0] ?? "", 10);
-			const timeMs = this.parsePsTimeToMs(output[1] ?? "");
-			const usage: TaskResourceUsage = {};
-			if (Number.isFinite(rssKb)) {
-				usage.maxRssKb = Math.max(rssKb, 0);
-			}
-			if (Number.isFinite(timeMs)) {
-				// ps only reports total CPU time; treat as user time for limit enforcement
-				usage.userMs = Math.max(timeMs, 0);
-			}
-			return Object.keys(usage).length > 0 ? usage : null;
-		} catch {
-			return null;
-		}
-	}
-
-	private parsePsTimeToMs(timeText: string): number {
-		// Supports [[dd-]hh:]mm:ss
-		const daySplit = timeText.split("-");
-		let dayPortion = 0;
-		let timePortion = timeText;
-		if (daySplit.length === 2) {
-			dayPortion = Number.parseInt(daySplit[0] ?? "0", 10);
-			timePortion = daySplit[1] ?? "";
-		}
-		const parts = timePortion.split(":").map((p) => Number.parseInt(p, 10));
-		if (parts.length < 2 || parts.some((n) => Number.isNaN(n))) {
-			return Number.NaN;
-		}
-		const [hoursOrMinutes, minutesOrSeconds, seconds] =
-			parts.length === 3 ? parts : [0, parts[0] ?? 0, parts[1] ?? 0];
-		const hours = parts.length === 3 ? hoursOrMinutes : 0;
-		const minutes = parts.length === 3 ? minutesOrSeconds : hoursOrMinutes;
-		const secs = parts.length === 3 ? seconds : minutesOrSeconds;
-		const totalSeconds =
-			(dayPortion || 0) * 24 * 3600 + hours * 3600 + minutes * 60 + secs;
-		return totalSeconds * 1000;
 	}
 
 	private getLogDir(): string {

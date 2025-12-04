@@ -130,6 +130,7 @@ import { SessionDataProvider } from "./session/session-data-provider.js";
 import { SessionSummaryController } from "./session/session-summary-controller.js";
 import { SessionSwitcherView } from "./session/session-switcher-view.js";
 import { SessionView } from "./session/session-view.js";
+import { SlashCommandMatcher, SlashCycleState } from "./slash/index.js";
 import { CostView } from "./status/cost-view.js";
 import { DiagnosticsView } from "./status/diagnostics-view.js";
 import { QuotaView } from "./status/quota-view.js";
@@ -272,8 +273,8 @@ export class TuiRenderer {
 	private recentCommands: string[] = [];
 	private favoriteCommands = new Set<string>();
 	private slashHintBar!: SlashHintBar;
-	private slashCycleQuery: string | null = null;
-	private slashCycleIndex = 0;
+	private slashCommandMatcher!: SlashCommandMatcher;
+	private slashCycleState = new SlashCycleState();
 	private slashHintDebounce?: NodeJS.Timeout;
 	private planView: PlanView;
 	private sessionView: SessionView;
@@ -1058,6 +1059,7 @@ export class TuiRenderer {
 
 		this.commandEntries = registry.entries;
 		this.slashCommands = registry.commands;
+		this.slashCommandMatcher = new SlashCommandMatcher(this.slashCommands);
 
 		const autocompleteProvider = new SmartAutocompleteProvider(
 			this.slashCommands,
@@ -2406,22 +2408,16 @@ export class TuiRenderer {
 	private handleSlashCycle(reverse = false): boolean {
 		const text = this.editor.getText().trim();
 		if (!text.startsWith("/")) return false;
+
 		const [commandToken, ...restTokens] = text.split(/\s+/);
 		const query = (commandToken ?? "/").slice(1).toLowerCase();
 		const matches = this.getSlashMatches(query);
+
 		if (matches.length === 0) return false;
-		if (this.slashCycleQuery !== query) {
-			this.slashCycleQuery = query;
-			this.slashCycleIndex = 0;
-		} else {
-			if (reverse) {
-				this.slashCycleIndex =
-					(this.slashCycleIndex - 1 + matches.length) % matches.length;
-			} else {
-				this.slashCycleIndex = (this.slashCycleIndex + 1) % matches.length;
-			}
-		}
-		const replacement = matches[this.slashCycleIndex]?.name ?? query;
+
+		const replacement = this.slashCycleState.cycle(query, matches, reverse);
+		if (!replacement) return false;
+
 		const rest =
 			restTokens && restTokens.length > 0 ? ` ${restTokens.join(" ")}` : " ";
 		this.editor.setText(`/${replacement}${rest}`);
@@ -2431,44 +2427,10 @@ export class TuiRenderer {
 	}
 
 	private getSlashMatches(query: string): SlashCommand[] {
-		const q = query.trim();
-		const favorites = this.favoriteCommands;
-		const recents = new Set(this.recentCommands);
-		const scored = this.slashCommands
-			.map((cmd) => ({
-				cmd,
-				score: this.scoreCommand(cmd, q, favorites, recents),
-			}))
-			.filter((item) => item.score > 0 || !q)
-			.sort(
-				(a, b) => b.score - a.score || a.cmd.name.localeCompare(b.cmd.name),
-			);
-		return scored.map((s) => s.cmd);
-	}
-
-	private scoreCommand(
-		cmd: SlashCommand,
-		q: string,
-		favorites: Set<string>,
-		recents: Set<string>,
-	): number {
-		let score = 0;
-		const name = cmd.name.toLowerCase();
-		const aliases = (cmd.aliases ?? []).map((a) => a.toLowerCase());
-		const query = q.toLowerCase();
-		if (!query) {
-			score += favorites.has(cmd.name) ? 8 : 0;
-			score += recents.has(cmd.name) ? 5 : 0;
-			return score;
-		}
-		if (name === query || aliases.includes(query)) score += 100;
-		if (name.startsWith(query)) score += 70;
-		if (aliases.some((a) => a.startsWith(query))) score += 55;
-		if (name.includes(query)) score += 25;
-		if (aliases.some((a) => a.includes(query))) score += 15;
-		score += favorites.has(cmd.name) ? 12 : 0;
-		score += recents.has(cmd.name) ? 8 : 0;
-		return score;
+		return this.slashCommandMatcher.getMatches(query, {
+			favorites: this.favoriteCommands,
+			recents: new Set(this.recentCommands),
+		});
 	}
 
 	private persistUiState(extra?: Partial<UiState>): void {
