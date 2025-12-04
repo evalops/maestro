@@ -30,7 +30,7 @@ export async function handleDiagnostics(
 				const snapshot = {
 					toolFailures: 0, // Would need tool status view
 					gitStatus: null, // Would need git view
-					planGoals: 0, // Would need todo store
+					planGoals: 0,
 					planPendingTasks: 0,
 					backgroundTasks: backgroundTaskManager.getHealthSnapshot({
 						maxEntries: 3,

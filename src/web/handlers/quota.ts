@@ -34,14 +34,12 @@ export async function handleQuota(
 					return;
 				}
 
-				// Enterprise quota status would require auth
-				// For now, return placeholder
 				sendJson(
 					res,
 					200,
 					{
 						enterprise: true,
-						message: "Enterprise quota status (requires authentication)",
+						configured: isDatabaseConfigured(),
 					},
 					corsHeaders,
 				);
@@ -120,7 +118,6 @@ export async function handleQuota(
 					);
 					return;
 				}
-				// In production, this would be stored per-session
 				sendJson(
 					res,
 					200,

@@ -5,6 +5,7 @@ import { handleAdminCleanup, handleAdminWarmCaches } from "./handlers/admin.js";
 import { handleApproval } from "./handlers/approval.js";
 import { handleApprovals } from "./handlers/approvals.js";
 import { handleBackground } from "./handlers/background.js";
+import { handleBranch } from "./handlers/branch.js";
 import { handleChat } from "./handlers/chat.js";
 import { handleClientToolResult } from "./handlers/client-tools.js";
 import { handleCommandPrefs } from "./handlers/command-prefs.js";
@@ -31,6 +32,7 @@ import { handleOllama } from "./handlers/ollama.js";
 import { handlePlan } from "./handlers/plan.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
 import { handlePreview } from "./handlers/preview.js";
+import { handleQueue } from "./handlers/queue.js";
 import { handleQuota } from "./handlers/quota.js";
 import { handleReview } from "./handlers/review.js";
 import { handleRun } from "./handlers/run.js";
@@ -45,6 +47,7 @@ import { handleStatus } from "./handlers/status.js";
 import { handleTelemetry } from "./handlers/telemetry.js";
 import { handleTools } from "./handlers/tools.js";
 import { handleTraining } from "./handlers/training.js";
+import { handleUI } from "./handlers/ui.js";
 import { handleChanges } from "./handlers/undo.js";
 import { handleUndo } from "./handlers/undo.js";
 import { handleUsage } from "./handlers/usage.js";
@@ -375,6 +378,36 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/zen",
 			handler: (req, res) => handleZen(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/ui",
+			handler: (req, res) => handleUI(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/ui",
+			handler: (req, res) => handleUI(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/queue",
+			handler: (req, res) => handleQueue(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/queue",
+			handler: (req, res) => handleQueue(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/branch",
+			handler: (req, res) => handleBranch(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/branch",
+			handler: (req, res) => handleBranch(req, res, corsHeaders),
 		},
 		{
 			method: "GET",

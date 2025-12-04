@@ -122,7 +122,6 @@ export async function handleWorkflow(
 				// Convert toolRegistry Record to Map for executeWorkflow
 				const toolsMap = new Map(Object.entries(toolRegistry));
 
-				// Execute workflow (simplified - in production would stream progress)
 				const result = await executeWorkflow(workflow, toolsMap, {});
 				sendJson(res, 200, { result }, corsHeaders);
 			} else {

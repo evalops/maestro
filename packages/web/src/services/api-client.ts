@@ -264,6 +264,30 @@ async function safeJson(response: Response) {
 	return response.json();
 }
 
+export interface UIStatusResponse {
+	zenMode: boolean;
+	cleanMode: "off" | "soft" | "aggressive";
+	footerMode: "ensemble" | "solo";
+	compactTools: boolean;
+	queueMode: "one" | "all";
+}
+
+export interface QueueListResponse {
+	mode: "one" | "all";
+	pending: Array<{ id: number; text?: string; createdAt?: number }>;
+	count: number;
+}
+
+export interface QueueStatusResponse {
+	mode: "one" | "all";
+	pendingCount: number;
+	enabled: boolean;
+}
+
+export interface BranchListResponse {
+	userMessages: Array<{ number: number; index: number; snippet: string }>;
+}
+
 export class ApiClient {
 	public readonly baseUrl: string;
 	private readonly fallbackBases: string[];
@@ -1129,15 +1153,111 @@ export class ApiClient {
 	}
 
 	// Zen
-	async getZenMode(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/zen");
+	async getZenMode(sessionId: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(`/api/zen?sessionId=${sessionId}`);
 	}
 
-	async setZenMode(enabled: boolean): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/zen", {
+	async setZenMode(
+		sessionId: string,
+		enabled: boolean,
+	): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(`/api/zen?sessionId=${sessionId}`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ enabled }),
+		});
+	}
+
+	// UI Settings
+	async getUIStatus(): Promise<UIStatusResponse> {
+		return await this.fetchJsonWithFallback("/api/ui?action=status");
+	}
+
+	async setCleanMode(
+		mode: "off" | "soft" | "aggressive",
+	): Promise<{ success: boolean; cleanMode: UIStatusResponse["cleanMode"] }> {
+		return await this.fetchJsonWithFallback("/api/ui", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "clean", cleanMode: mode }),
+		});
+	}
+
+	async setFooterMode(
+		mode: "ensemble" | "solo",
+	): Promise<{ success: boolean; footerMode: UIStatusResponse["footerMode"] }> {
+		return await this.fetchJsonWithFallback("/api/ui", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "footer", footerMode: mode }),
+		});
+	}
+
+	async setCompactTools(enabled: boolean): Promise<{
+		success: boolean;
+		compactTools: boolean;
+	}> {
+		return await this.fetchJsonWithFallback("/api/ui", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "compact", compactTools: enabled }),
+		});
+	}
+
+	// Queue
+	async getQueueStatus(sessionId: string): Promise<QueueStatusResponse> {
+		return await this.fetchJsonWithFallback(
+			`/api/queue?action=status&sessionId=${sessionId}`,
+		);
+	}
+
+	async listQueue(sessionId: string): Promise<QueueListResponse> {
+		return await this.fetchJsonWithFallback(
+			`/api/queue?action=list&sessionId=${sessionId}`,
+		);
+	}
+
+	async setQueueMode(
+		mode: "one" | "all",
+		sessionId: string,
+	): Promise<{ success: boolean; mode: QueueStatusResponse["mode"] }> {
+		return await this.fetchJsonWithFallback("/api/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "mode", mode, sessionId }),
+		});
+	}
+
+	async cancelQueuedPrompt(
+		id: number,
+		sessionId: string,
+	): Promise<{ success: boolean; removed?: unknown }> {
+		return await this.fetchJsonWithFallback("/api/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action: "cancel", id, sessionId }),
+		});
+	}
+
+	// Branch
+	async listBranchOptions(sessionId?: string): Promise<BranchListResponse> {
+		return await this.fetchJsonWithFallback(
+			`/api/branch?action=list${sessionId ? `&sessionId=${sessionId}` : ""}`,
+		);
+	}
+
+	async createBranch(
+		sessionId: string,
+		messageIndex: number,
+	): Promise<{
+		success: boolean;
+		newSessionId: string;
+		newSessionFile: string;
+	}> {
+		return await this.fetchJsonWithFallback("/api/branch", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ sessionId, messageIndex }),
 		});
 	}
 }

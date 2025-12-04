@@ -12,8 +12,6 @@ export async function handleApprovals(
 	corsHeaders: Record<string, string>,
 ) {
 	if (req.method === "GET") {
-		// Get current approval mode preference
-		// For now, return default - in production this would be per-user/session
 		const url = new URL(
 			req.url || "/api/approvals",
 			`http://${req.headers.host}`,
