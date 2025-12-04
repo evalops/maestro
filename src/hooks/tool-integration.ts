@@ -275,7 +275,11 @@ export function createToolHookService(
 						: [...hookResult.assertions];
 				}
 
-				if (hookResult.evaluation) {
+				// Only merge evaluation if it's actually defined and has content
+				if (
+					hookResult.evaluation &&
+					Object.keys(hookResult.evaluation).length > 0
+				) {
 					evaluation = {
 						...evaluation,
 						...hookResult.evaluation,
@@ -360,7 +364,11 @@ export function createToolHookService(
 						: [...hookResult.assertions];
 				}
 
-				if (hookResult.evaluation) {
+				// Only merge evaluation if it's actually defined and has content
+				if (
+					hookResult.evaluation &&
+					Object.keys(hookResult.evaluation).length > 0
+				) {
 					evaluation = {
 						...evaluation,
 						...hookResult.evaluation,

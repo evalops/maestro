@@ -748,5 +748,235 @@ describe("Hook System", () => {
 			});
 			expect(result.assertions?.[0]?.name).toBe("formatting");
 		});
+
+		it("should not overwrite existing evaluation with empty evaluation object", async () => {
+			// First hook provides evaluation
+			registerHook("PostToolUse", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "PostToolUse",
+						assertions: [
+							{
+								name: "test-1",
+								passed: true,
+								score: 0.9,
+							},
+						],
+					},
+				}),
+			});
+
+			// Second hook provides empty evaluation object (should not overwrite)
+			registerHook("PostToolUse", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "PostToolUse",
+						evaluation: {},
+					},
+				}),
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+			});
+
+			const result = await service.runPostToolUseHooks(
+				{
+					type: "toolCall",
+					id: "test-1",
+					name: "edit",
+					arguments: { file: "test.ts" },
+				},
+				{
+					role: "toolResult",
+					toolCallId: "test-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "File edited" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			);
+
+			// Assertions should still be present, evaluation should be undefined (empty object was ignored)
+			expect(result.assertions).toHaveLength(1);
+			expect(result.assertions?.[0]?.name).toBe("test-1");
+			expect(result.evaluation).toBeUndefined();
+		});
+
+		it("should merge evaluation from multiple hooks correctly", async () => {
+			// First hook provides score
+			registerHook("EvalGate", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "EvalGate",
+						score: 0.8,
+						threshold: 0.75,
+					},
+				}),
+			});
+
+			// Second hook provides passed flag
+			registerHook("EvalGate", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "EvalGate",
+						passed: true,
+						rationale: "All checks passed",
+					},
+				}),
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+			});
+
+			const result = await service.runEvalGateHooks(
+				{
+					type: "toolCall",
+					id: "test-1",
+					name: "edit",
+					arguments: { file: "test.ts" },
+				},
+				{
+					role: "toolResult",
+					toolCallId: "test-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "File edited" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			);
+
+			// Evaluation should merge properties from both hooks
+			expect(result.evaluation).toEqual({
+				score: 0.8,
+				threshold: 0.75,
+				passed: true,
+				rationale: "All checks passed",
+			});
+		});
+
+		it("should not overwrite existing evaluation values with undefined", async () => {
+			// First hook provides full evaluation
+			registerHook("EvalGate", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "EvalGate",
+						score: 0.9,
+						threshold: 0.75,
+						passed: true,
+						rationale: "Original rationale",
+					},
+				}),
+			});
+
+			// Second hook tries to set score to undefined (should be ignored)
+			registerHook("EvalGate", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "EvalGate",
+						// This would create an object with undefined score, but Object.keys().length > 0 check prevents it
+						evaluation: {},
+					},
+				}),
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+			});
+
+			const result = await service.runEvalGateHooks(
+				{
+					type: "toolCall",
+					id: "test-1",
+					name: "edit",
+					arguments: { file: "test.ts" },
+				},
+				{
+					role: "toolResult",
+					toolCallId: "test-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "File edited" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			);
+
+			// Original evaluation should be preserved
+			expect(result.evaluation).toEqual({
+				score: 0.9,
+				threshold: 0.75,
+				passed: true,
+				rationale: "Original rationale",
+			});
+		});
+
+		it("should handle PostToolUse evaluation merge correctly (via direct evaluation property)", async () => {
+			// PostToolUse hooks don't extract evaluation from hookSpecificOutput,
+			// but they can set evaluation directly via the result structure.
+			// This test verifies the merge logic works when evaluation is set directly.
+			// Note: In practice, PostToolUse hooks typically use assertions, not evaluation.
+			// This test is mainly to verify the merge logic doesn't break.
+
+			// First hook provides assertions (typical PostToolUse pattern)
+			registerHook("PostToolUse", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "PostToolUse",
+						assertions: [
+							{
+								name: "test-1",
+								passed: true,
+								score: 0.9,
+							},
+						],
+					},
+				}),
+			});
+
+			// Second hook provides empty evaluation object (should not overwrite anything)
+			registerHook("PostToolUse", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "PostToolUse",
+						evaluation: {},
+					},
+				}),
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+			});
+
+			const result = await service.runPostToolUseHooks(
+				{
+					type: "toolCall",
+					id: "test-1",
+					name: "edit",
+					arguments: { file: "test.ts" },
+				},
+				{
+					role: "toolResult",
+					toolCallId: "test-1",
+					toolName: "edit",
+					content: [{ type: "text", text: "File edited" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			);
+
+			// Assertions should still be present, evaluation should be undefined (empty object was ignored)
+			expect(result.assertions).toHaveLength(1);
+			expect(result.assertions?.[0]?.name).toBe("test-1");
+			expect(result.evaluation).toBeUndefined();
+		});
 	});
 });
