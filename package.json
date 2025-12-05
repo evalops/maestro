@@ -19,7 +19,7 @@
     "clean": "rm -rf dist",
     "prepare": "husky",
     "install:local": "node ./scripts/install-client.js",
-    "prebuild": "bun install --frozen-lockfile",
+    "prebuild": "node ./scripts/ensure-deps.js",
     "build": "tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && chmod +x dist/cli.js && node ./scripts/copy-themes.js",
     "start": "node --enable-source-maps dist/cli.js",
     "dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
