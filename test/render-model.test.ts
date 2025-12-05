@@ -102,4 +102,22 @@ describe("render-model helpers", () => {
 		);
 		expect(renderable.cleaned).toBe(true);
 	});
+
+	it("collapses progressive snapshot blocks into the latest version", () => {
+		const message: AssistantMessage = {
+			...baseAssistant,
+			content: [
+				{ type: "text", text: "Yes" },
+				{ type: "text", text: "Yes—" },
+				{ type: "text", text: "Yes—if you" },
+			],
+		};
+
+		const renderable = toRenderableAssistantMessage(message, {
+			cleanMode: "off",
+		});
+
+		expect(renderable.textBlocks).toEqual(["Yes—if you"]);
+		expect(renderable.cleaned).toBe(true);
+	});
 });

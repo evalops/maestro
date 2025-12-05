@@ -249,6 +249,47 @@ export interface RenderableImageContent {
 	data: string;
 }
 
+function collapseProgressiveBlocks(
+	blocks: string[],
+): { blocks: string[]; collapsed: boolean } {
+	if (blocks.length <= 1) return { blocks, collapsed: false };
+
+	const result: string[] = [];
+	let current = "";
+	let collapsed = false;
+
+	for (const block of blocks) {
+		if (!current) {
+			current = block;
+			continue;
+		}
+
+		// If the new block is an extension of the current one (progressive snapshot),
+		// keep only the longer block.
+		if (block.startsWith(current)) {
+			current = block;
+			collapsed = true;
+			continue;
+		}
+
+		// If the current block is an extension of the new one, drop the shorter snapshot.
+		if (current.startsWith(block)) {
+			collapsed = true;
+			continue;
+		}
+
+		// Otherwise the block is distinct – commit the current block and start a new one.
+		result.push(current);
+		current = block;
+	}
+
+	if (current) {
+		result.push(current);
+	}
+
+	return { blocks: result, collapsed };
+}
+
 export function toRenderableUserMessage(
 	message: UserMessageWithAttachments,
 ): RenderableUserMessage {
@@ -315,14 +356,17 @@ export function toRenderableAssistantMessage(
 		}
 	}
 
+	const collapsedText = collapseProgressiveBlocks(textBlocks);
+	const collapsedThinking = collapseProgressiveBlocks(thinkingBlocks);
+
 	return {
 		kind: "assistant",
-		textBlocks,
-		thinkingBlocks,
+		textBlocks: collapsedText.blocks,
+		thinkingBlocks: collapsedThinking.blocks,
 		toolCalls,
 		stopReason: message.stopReason,
 		errorMessage: message.errorMessage,
-		cleaned,
+		cleaned: cleaned || collapsedText.collapsed || collapsedThinking.collapsed,
 		raw: message,
 	};
 }
