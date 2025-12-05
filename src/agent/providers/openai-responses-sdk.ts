@@ -397,6 +397,11 @@ function buildInput(
 			const isIncomplete =
 				msg.stopReason === "error" || msg.stopReason === "aborted";
 
+			// Reasoning items can ONLY be followed by function_call, not by message
+			// So only include reasoning if there are valid tool calls in this message
+			const hasToolCalls = msg.content.some((b) => b.type === "toolCall");
+			const canIncludeReasoning = hasToolCalls && !isIncomplete;
+
 			for (const block of msg.content) {
 				if (block.type === "text") {
 					input.push({
@@ -412,9 +417,9 @@ function buildInput(
 						status: "completed",
 						id: `msg_${Math.random().toString(36).substring(2, 15)}`,
 					});
-				} else if (block.type === "thinking" && !isIncomplete) {
-					// For reasoning models, we need to include reasoning items
-					// They're required before function_call items
+				} else if (block.type === "thinking" && canIncludeReasoning) {
+					// For reasoning models, include reasoning items ONLY when followed by function_call
+					// The API rejects reasoning items that aren't followed by their function_call
 					if (block.thinkingSignature) {
 						const reasoningItem = JSON.parse(block.thinkingSignature);
 						input.push(reasoningItem);
