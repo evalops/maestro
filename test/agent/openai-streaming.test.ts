@@ -1,6 +1,7 @@
 import { TextEncoder } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	type OpenAIToolChoice,
 	filterResponsesApiTools,
 	streamOpenAI,
 } from "../../src/agent/providers/openai.js";
@@ -276,5 +277,138 @@ describe("filterResponsesApiTools", () => {
 			}>,
 		);
 		expect(result).toHaveLength(2);
+	});
+});
+
+describe("toolChoice parameter", () => {
+	let mockFetch: ReturnType<typeof vi.fn>;
+
+	beforeEach(() => {
+		mockFetch = vi.fn();
+		vi.stubGlobal("fetch", mockFetch);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const contextWithTools: Context = {
+		systemPrompt: "",
+		messages: [],
+		tools: [{ name: "test_tool", description: "A test tool", parameters: {} }],
+	};
+
+	const completionsModel: Model<"openai-completions"> = {
+		id: "gpt-4",
+		name: "GPT-4",
+		api: "openai-completions",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1/chat/completions",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 },
+		contextWindow: 128000,
+		maxTokens: 1024,
+	};
+
+	it('includes tool_choice "required" in request body', async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"Hi"}}]}\n',
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+		const mockResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					for (const line of lines) {
+						controller.enqueue(new TextEncoder().encode(line));
+					}
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		// Consume the generator to trigger the fetch
+		for await (const _ of streamOpenAI(completionsModel, contextWithTools, {
+			apiKey: "k",
+			toolChoice: "required",
+		})) {
+			// consume events
+		}
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const body = JSON.parse(fetchOptions.body);
+		expect(body.tool_choice).toBe("required");
+	});
+
+	it("includes specific tool choice in request body", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"Hi"}}]}\n',
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+		const mockResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					for (const line of lines) {
+						controller.enqueue(new TextEncoder().encode(line));
+					}
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const specificTool: OpenAIToolChoice = {
+			type: "function",
+			function: { name: "test_tool" },
+		};
+
+		for await (const _ of streamOpenAI(completionsModel, contextWithTools, {
+			apiKey: "k",
+			toolChoice: specificTool,
+		})) {
+			// consume events
+		}
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const body = JSON.parse(fetchOptions.body);
+		expect(body.tool_choice).toEqual(specificTool);
+	});
+
+	it("does not include tool_choice when not specified", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"Hi"}}]}\n',
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+		const mockResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					for (const line of lines) {
+						controller.enqueue(new TextEncoder().encode(line));
+					}
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		for await (const _ of streamOpenAI(completionsModel, contextWithTools, {
+			apiKey: "k",
+		})) {
+			// consume events
+		}
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const body = JSON.parse(fetchOptions.body);
+		expect(body.tool_choice).toBeUndefined();
 	});
 });

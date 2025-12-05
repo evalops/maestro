@@ -108,8 +108,29 @@ import { parseStreamingJson } from "./json-parse.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { transformMessages } from "./transform-messages.js";
 
+/**
+ * Tool choice options for OpenAI API.
+ * - "auto": Model decides whether to call tools (default when tools present)
+ * - "none": Model won't call any tools
+ * - "required": Model must call at least one tool
+ * - { name: string }: Force a specific tool to be called
+ */
+export type OpenAIToolChoice =
+	| "auto"
+	| "none"
+	| "required"
+	| { type: "function"; function: { name: string } };
+
 export interface OpenAIOptions extends StreamOptions {
 	reasoningEffort?: "minimal" | "low" | "medium" | "high";
+	/**
+	 * Controls how the model uses tools.
+	 * - "auto": Model decides (default)
+	 * - "none": Disable tool use
+	 * - "required": Must use at least one tool
+	 * - { type: "function", function: { name: "..." } }: Force specific tool
+	 */
+	toolChoice?: OpenAIToolChoice;
 }
 
 // OpenAI API Types
@@ -143,6 +164,7 @@ interface OpenAIResponsesRequestBody {
 		description: string;
 		parameters: unknown;
 	}>;
+	tool_choice?: OpenAIToolChoice;
 	max_output_tokens?: number;
 	reasoning?: { effort: string };
 }
@@ -161,6 +183,7 @@ interface OpenAICompletionsRequestBody {
 			parameters: unknown;
 		};
 	}>;
+	tool_choice?: OpenAIToolChoice;
 	temperature?: number;
 	reasoning_effort?: string;
 }
@@ -510,6 +533,11 @@ async function* streamResponsesApi(
 			description: tool.description,
 			parameters: tool.parameters,
 		}));
+
+		// Set tool_choice if specified
+		if (options.toolChoice) {
+			requestBody.tool_choice = options.toolChoice;
+		}
 	}
 
 	if (options.maxTokens !== undefined) {
@@ -1028,6 +1056,11 @@ export async function* streamOpenAI(
 				parameters: tool.parameters,
 			},
 		}));
+
+		// Set tool_choice if specified
+		if (options.toolChoice) {
+			requestBody.tool_choice = options.toolChoice;
+		}
 	}
 
 	if (options.temperature !== undefined) {
