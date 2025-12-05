@@ -273,6 +273,252 @@ const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 	},
 }));
 
+const isBashStrict = () => process.env.COMPOSER_BASH_STRICT === "1";
+
+function hasRiskyBashSyntax(command: string): boolean {
+	return (
+		/[|;&`]/.test(command) ||
+		/>>|<</.test(command) ||
+		/[<>]/.test(command) ||
+		/[()]/.test(command) ||
+		hasUnquotedBraces(command) ||
+		/\$[A-Za-z_0-9{@*?!$-]/.test(command) ||
+		/\$\(/.test(command) ||
+		/[\n\r\t]/.test(command)
+	);
+}
+
+function hasUnquotedBraces(command: string): boolean {
+	let inSingle = false;
+	let inDouble = false;
+	for (let i = 0; i < command.length; i += 1) {
+		const ch = command[i];
+		if (ch === "'" && !inDouble) {
+			inSingle = !inSingle;
+		} else if (ch === '"' && !inSingle) {
+			inDouble = !inDouble;
+		} else if (!inSingle && !inDouble && (ch === "{" || ch === "}")) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Minimal tokenization that respects simple quoted segments; not a full shell parser.
+function tokenizeSimple(command: string): string[] {
+	return (
+		command
+			.match(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+/g)
+			?.filter(Boolean) ?? []
+	);
+}
+
+function isDestructiveSimpleCommand(tokens: string[]): boolean {
+	const rawProgram = tokens[0] ?? "";
+	const stripped = rawProgram
+		.replace(/^["'\\]+/, "")
+		.replace(/["'\\]+$/, "")
+		.trim();
+	const firstWord = stripped.split(/\s+/)[0]?.replace(/["']/g, "") ?? stripped;
+	const program =
+		firstWord.replace(/\\+/g, "/").split("/").pop() || firstWord || rawProgram;
+	if (!program) return false;
+	if (/\$[A-Za-z_0-9{@*?!$-]/.test(program)) {
+		return true;
+	}
+	if (["exec", "eval"].includes(program)) {
+		return true;
+	}
+	if (
+		[
+			"sudo",
+			"rm",
+			"rmdir",
+			"shred",
+			"fdisk",
+			"parted",
+			"source",
+			".",
+			"xargs",
+			"find",
+			"perl",
+			"python",
+			"python3",
+			"ruby",
+			"lua",
+			"wget",
+			"curl",
+			"tar",
+			"zip",
+			"unzip",
+			"chmod",
+			"chown",
+			"dd",
+			"mkfs",
+			"shutdown",
+			"reboot",
+			"halt",
+			"poweroff",
+			"init",
+			"kill",
+			"killall",
+			"pkill",
+			"systemctl",
+			"service",
+		].includes(program)
+	) {
+		return true;
+	}
+	if (tokens.some((t) => t.includes("${"))) {
+		return true;
+	}
+	if (program === "git") {
+		let sub: string | undefined;
+		for (let i = 1; i < tokens.length; i += 1) {
+			const token = tokens[i];
+			// git flags that take a value; skip the following token as well
+			const flagConsumesNext =
+				token === "-C" ||
+				token === "--work-tree" ||
+				token === "--git-dir" ||
+				token === "-c" ||
+				token === "--namespace";
+			if (flagConsumesNext) {
+				i += 1;
+				// If the consumed value starts a quoted string, skip until the closing quote
+				if (
+					i < tokens.length &&
+					/^["']/.test(tokens[i]) &&
+					!/["']$/.test(tokens[i])
+				) {
+					while (i + 1 < tokens.length && !/["']$/.test(tokens[i])) {
+						i += 1;
+					}
+				}
+				continue;
+			}
+			if (token.startsWith("-")) {
+				if (token.includes("=")) {
+					const parts = token.split("=", 2);
+					const maybeSub = parts[1];
+					if (
+						maybeSub &&
+						!maybeSub.startsWith("-") &&
+						[
+							"push",
+							"reset",
+							"clean",
+							"rebase",
+							"merge",
+							"cherry-pick",
+							"rm",
+						].includes(maybeSub)
+					) {
+						return true;
+					}
+				}
+				continue;
+			}
+			if (!sub) {
+				sub = token;
+			}
+		}
+		if (
+			sub &&
+			[
+				"push",
+				"reset",
+				"clean",
+				"rebase",
+				"merge",
+				"cherry-pick",
+				"rm",
+			].includes(sub)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function isSimpleBenignBash(command: string): boolean {
+	if (hasRiskyBashSyntax(command)) {
+		return false;
+	}
+	const tokens = tokenizeSimple(command);
+	if (tokens.length === 0) return true;
+	// Skip leading env assignments (VAR=value)
+	let idx = 0;
+	while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx])) {
+		idx += 1;
+	}
+	const withoutEnv = tokens.slice(idx);
+	if (withoutEnv.length === 0) return true;
+	const normalizeProgram = (tok: string) =>
+		tok
+			.replace(/\\+/g, "/")
+			.replace(/^["'\\]+/, "")
+			.replace(/["'\\]+$/, "")
+			.split("/")
+			.pop() || tok;
+	const first = normalizeProgram(withoutEnv[0]);
+	const wrapperCommands = [
+		"env",
+		"nice",
+		"nohup",
+		"time",
+		"timeout",
+		"command",
+	];
+	// Wrapper commands that execute another program
+	if (wrapperCommands.includes(first)) {
+		if (withoutEnv.length === 1) return true; // nothing to run
+		let inner = withoutEnv.slice(1);
+		while (
+			inner.length > 0 &&
+			wrapperCommands.includes(normalizeProgram(inner[0]))
+		) {
+			inner = inner.slice(1);
+		}
+		const flagConsumesNext = (flag: string) =>
+			[
+				"-u",
+				"-S",
+				"--split-string",
+				"-C",
+				"--chdir",
+				"--cwd",
+				"-n",
+				"--adjustment",
+				"-s",
+				"--signal",
+				"-k",
+				"--kill-after",
+				"--pid",
+			].includes(flag);
+		while (inner.length > 0) {
+			const head = inner[0];
+			// numeric arguments like `timeout 10 cmd` or `nice 5 cmd`
+			if (/^\d+$/.test(head) && inner.length > 1) {
+				inner = inner.slice(1);
+				continue;
+			}
+			if (head.startsWith("-")) {
+				// Assume flags consume the next argument if present
+				if (flagConsumesNext(head) && inner.length > 1) {
+					inner = inner.slice(2);
+					continue;
+				}
+				inner = inner.slice(1);
+				continue;
+			}
+			break;
+		}
+		return !isDestructiveSimpleCommand(inner);
+	}
+	return !isDestructiveSimpleCommand(withoutEnv);
+}
+
 /**
  * Tree-sitter based command safety rule.
  * Provides more accurate analysis than regex patterns.
@@ -282,11 +528,6 @@ const treeSitterCommandRule: ActionFirewallRule = {
 	description: "Tree-sitter based command safety analysis",
 	action: "require_approval",
 	evaluate: (ctx) => {
-		// Only run if tree-sitter parser is available (has native bindings)
-		if (!isParserAvailable()) {
-			return { allowed: true };
-		}
-
 		if (ctx.toolName !== "bash" && !isBackgroundTaskShellStart(ctx)) {
 			return { allowed: true };
 		}
@@ -297,6 +538,28 @@ const treeSitterCommandRule: ActionFirewallRule = {
 		const unwrapped = unwrapShellCommand(command);
 		if (unwrapped) {
 			command = unwrapped;
+		}
+
+		const simpleTokens = tokenizeSimple(command);
+		if (isDestructiveSimpleCommand(simpleTokens)) {
+			return {
+				allowed: false,
+				reason:
+					"Command requires approval (destructive or mutating operation detected)",
+			};
+		}
+
+		if (!isBashStrict() && isSimpleBenignBash(command)) {
+			return { allowed: true };
+		}
+
+		// Only run tree-sitter if the parser is available; otherwise fall back to approval
+		if (!isParserAvailable()) {
+			return {
+				allowed: false,
+				reason:
+					"Command requires approval (bash parser unavailable; unable to fully analyze)",
+			};
 		}
 
 		const analysis = analyzeCommandSafety(command);
