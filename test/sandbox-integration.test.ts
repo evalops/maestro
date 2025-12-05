@@ -168,7 +168,8 @@ describe("Sandbox", () => {
 				await sandbox?.dispose();
 			} finally {
 				if (originalEnv === undefined) {
-					process.env.COMPOSER_SANDBOX_MODE = undefined;
+					// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+					delete process.env.COMPOSER_SANDBOX_MODE;
 				} else {
 					process.env.COMPOSER_SANDBOX_MODE = originalEnv;
 				}
@@ -183,7 +184,8 @@ describe("Sandbox", () => {
 
 			// Save and clear env var to ensure config is used
 			const originalEnv = process.env.COMPOSER_SANDBOX_MODE;
-			process.env.COMPOSER_SANDBOX_MODE = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+			delete process.env.COMPOSER_SANDBOX_MODE;
 
 			try {
 				const sandbox = await createSandbox({ cwd: testDir });

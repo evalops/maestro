@@ -29,7 +29,8 @@ describe("IDE Auto-Connect", () => {
 				expect(config.enabled).toBe(false);
 			} finally {
 				if (originalEnv === undefined) {
-					process.env.COMPOSER_IDE_AUTOCONNECT = undefined;
+					// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+					delete process.env.COMPOSER_IDE_AUTOCONNECT;
 				} else {
 					process.env.COMPOSER_IDE_AUTOCONNECT = originalEnv;
 				}
@@ -45,7 +46,8 @@ describe("IDE Auto-Connect", () => {
 				expect(config.scanPorts).toEqual([8000, 9000, 10000]);
 			} finally {
 				if (originalEnv === undefined) {
-					process.env.COMPOSER_IDE_SCAN_PORTS = undefined;
+					// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+					delete process.env.COMPOSER_IDE_SCAN_PORTS;
 				} else {
 					process.env.COMPOSER_IDE_SCAN_PORTS = originalEnv;
 				}

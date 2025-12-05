@@ -165,6 +165,28 @@ interface OpenAICompletionsRequestBody {
 	reasoning_effort?: string;
 }
 
+// =============================================================================
+// Responses API Types
+// =============================================================================
+
+/**
+ * Content part for Responses API input messages.
+ * User messages use input_text, assistant messages use output_text.
+ */
+export type ResponsesInputTextPart = { type: "input_text"; text: string };
+export type ResponsesOutputTextPart = { type: "output_text"; text: string };
+export type ResponsesContentPart =
+	| ResponsesInputTextPart
+	| ResponsesOutputTextPart;
+
+/**
+ * Message format for Responses API input array.
+ */
+export interface ResponsesInputMessage {
+	role: "user" | "assistant" | "system" | "developer";
+	content: ResponsesContentPart[];
+}
+
 // OpenAI SSE Event Types (Responses API)
 interface OpenAIResponsesTextDeltaEvent {
 	type: "response.output_text.delta";
@@ -236,6 +258,174 @@ type OpenAIResponsesEvent =
 	| OpenAIResponsesFailedEvent
 	| OpenAIResponsesDoneEvent;
 
+// =============================================================================
+// Responses API Helpers
+// =============================================================================
+
+/**
+ * Converts OpenAI-format messages to Responses API input format.
+ *
+ * Key transformations:
+ * - User messages → input_text content
+ * - Assistant messages → output_text content
+ * - Tool results → user messages with formatted text (Responses API doesn't support 'tool' role)
+ * - System messages → preserved with input_text content
+ *
+ * @param messages - Array of OpenAI-format messages
+ * @returns Array of Responses API input messages
+ */
+export function convertToResponsesInput(
+	messages: OpenAIMessage[],
+): ResponsesInputMessage[] {
+	return messages
+		.map((msg): ResponsesInputMessage | null => {
+			// Handle tool result messages - convert to user message with tool output as text
+			if (msg.role === "tool") {
+				const toolContent = msg.content;
+				const toolCallId =
+					(msg as unknown as { tool_call_id?: string }).tool_call_id || "";
+				const outputText =
+					typeof toolContent === "string"
+						? toolContent
+						: toolContent
+								.filter((c) => c.type === "text")
+								.map((c) => (c as { text: string }).text)
+								.join("\n");
+				// Format as a tool result message that the model can understand
+				const parts: ResponsesInputTextPart[] = [
+					{
+						type: "input_text",
+						text: `[Tool Result for call_id=${toolCallId}]\n${outputText}`,
+					},
+				];
+				return { role: "user", content: parts };
+			}
+
+			const parts: ResponsesContentPart[] = [];
+			const isAssistant = msg.role === "assistant";
+
+			if (typeof msg.content === "string") {
+				if (isAssistant) {
+					parts.push({ type: "output_text", text: msg.content });
+				} else {
+					parts.push({ type: "input_text", text: msg.content });
+				}
+			} else {
+				for (const c of msg.content) {
+					if (c.type === "text") {
+						if (isAssistant) {
+							parts.push({ type: "output_text", text: c.text });
+						} else {
+							parts.push({ type: "input_text", text: c.text });
+						}
+					}
+				}
+			}
+
+			if (parts.length === 0) {
+				return null;
+			}
+
+			return { role: msg.role, content: parts };
+		})
+		.filter((msg): msg is ResponsesInputMessage => msg !== null);
+}
+
+/**
+ * Filters tools for Responses API compatibility.
+ *
+ * The Responses API has stricter requirements than Chat Completions:
+ * - Tool names must be non-empty
+ * - Parameters schema cannot have oneOf/anyOf/allOf/enum/not at top level
+ *
+ * @param tools - Array of agent tools
+ * @returns Filtered array of compatible tools
+ */
+export function filterResponsesApiTools(
+	tools: Array<{ name: string; description: string; parameters: unknown }>,
+): Array<{ name: string; description: string; parameters: unknown }> {
+	const hasIncompatibleSchema = (params: unknown): boolean => {
+		if (!params || typeof params !== "object") return false;
+		const p = params as Record<string, unknown>;
+		return !!(p.oneOf || p.anyOf || p.allOf || p.enum || p.not);
+	};
+
+	return tools.filter(
+		(tool) =>
+			tool.name &&
+			tool.name.trim() !== "" &&
+			!hasIncompatibleSchema(tool.parameters),
+	);
+}
+
+// =============================================================================
+// Shared Streaming Utilities
+// =============================================================================
+
+/**
+ * Appends a delta to existing text, handling potential duplicate prefixes.
+ *
+ * Some providers may send overlapping deltas where the new delta starts
+ * with content that was already received. This function detects and handles
+ * such cases to prevent duplicate text.
+ *
+ * @param existing - The accumulated text so far
+ * @param delta - The new delta to append
+ * @returns Object with the new text and whether the delta was skipped
+ */
+export function appendDelta(
+	existing: string,
+	delta: string,
+): { next: string; skipped: boolean } {
+	if (!delta) return { next: existing, skipped: true };
+	if (existing.endsWith(delta)) {
+		return { next: existing, skipped: true };
+	}
+	const overlap = Math.min(existing.length, delta.length);
+	let shared = 0;
+	for (let i = overlap; i > 0; i--) {
+		if (existing.endsWith(delta.slice(0, i))) {
+			shared = i;
+			break;
+		}
+	}
+	return { next: existing + delta.slice(shared), skipped: false };
+}
+
+/**
+ * Creates a cost calculator function for a specific model.
+ *
+ * @param model - The model configuration with cost rates
+ * @returns A function that updates usage costs on an AssistantMessage
+ */
+export function createCostCalculator(model: {
+	cost: { input: number; output: number; cacheRead: number };
+}): (usage: {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		total: number;
+	};
+}) => void {
+	return (usage) => {
+		usage.cost = {
+			input: (usage.input * model.cost.input) / 1_000_000,
+			output: (usage.output * model.cost.output) / 1_000_000,
+			cacheRead: (usage.cacheRead * model.cost.cacheRead) / 1_000_000,
+			cacheWrite: 0, // OpenAI doesn't charge for cache writes
+			total: 0,
+		};
+		usage.cost.total =
+			usage.cost.input + usage.cost.output + usage.cost.cacheRead;
+	};
+}
+
 // OpenAI SSE Event Types (Completions API)
 interface OpenAICompletionsDelta {
 	content?: string | Array<unknown>;
@@ -282,80 +472,13 @@ async function* streamResponsesApi(
 		...options.headers,
 	};
 
-	// Responses API accepts "input" with content parts.
-	// Supported content types: input_text, input_image, output_text, refusal, input_file, computer_screenshot, summary_text
-	// - User messages use "input_text"
-	// - Assistant messages use "output_text"
-	// - Tool results get converted to user messages with input_text containing the tool output
-	// - System messages use "input_text" with "system" or "developer" role
-	type InputTextPart = { type: "input_text"; text: string };
-	type OutputTextPart = { type: "output_text"; text: string };
-	type ContentPart = InputTextPart | OutputTextPart;
+	// Convert messages to Responses API format
+	const input = convertToResponsesInput(messages);
 
-	const input = messages
-		.map((msg) => {
-			// Handle tool result messages - convert to user message with tool output as text
-			if (msg.role === "tool") {
-				const toolContent = msg.content;
-				const toolCallId =
-					(msg as unknown as { tool_call_id?: string }).tool_call_id || "";
-				const outputText =
-					typeof toolContent === "string"
-						? toolContent
-						: toolContent
-								.filter((c) => c.type === "text")
-								.map((c) => (c as { text: string }).text)
-								.join("\n");
-				// Format as a tool result message that the model can understand
-				const parts: InputTextPart[] = [
-					{
-						type: "input_text",
-						text: `[Tool Result for call_id=${toolCallId}]\n${outputText}`,
-					},
-				];
-				return { role: "user" as const, content: parts };
-			}
-
-			const parts: ContentPart[] = [];
-			const isAssistant = msg.role === "assistant";
-
-			if (typeof msg.content === "string") {
-				if (isAssistant) {
-					parts.push({ type: "output_text", text: msg.content });
-				} else {
-					parts.push({ type: "input_text", text: msg.content });
-				}
-			} else {
-				for (const c of msg.content) {
-					if (c.type === "text") {
-						if (isAssistant) {
-							parts.push({ type: "output_text", text: c.text });
-						} else {
-							parts.push({ type: "input_text", text: c.text });
-						}
-					}
-				}
-			}
-			return { role: msg.role, content: parts };
-		})
-		.filter((msg) => msg.content.length > 0);
-
-	// Filter tools for Responses API compatibility:
-	// 1. Must have valid names
-	// 2. Parameters schema must not have oneOf/anyOf/allOf/enum/not at top level
-	const hasIncompatibleSchema = (params: unknown): boolean => {
-		if (!params || typeof params !== "object") return false;
-		const p = params as Record<string, unknown>;
-		return !!(p.oneOf || p.anyOf || p.allOf || p.enum || p.not);
-	};
-
-	const validTools =
-		context.tools?.filter(
-			(tool) =>
-				tool.name &&
-				tool.name.trim() !== "" &&
-				!hasIncompatibleSchema(tool.parameters),
-		) ?? [];
+	// Filter tools for Responses API compatibility
+	const validTools = context.tools
+		? filterResponsesApiTools(context.tools)
+		: [];
 
 	const requestBody: OpenAIResponsesRequestBody = {
 		model: model.id,
@@ -449,19 +572,7 @@ async function* streamResponsesApi(
 		{ name?: string; args: string; outputIndex: number }
 	>();
 
-	const updateCosts = () => {
-		partial.usage.cost = {
-			input: (partial.usage.input * model.cost.input) / 1_000_000,
-			output: (partial.usage.output * model.cost.output) / 1_000_000,
-			cacheRead: (partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
-			cacheWrite: 0,
-			total: 0,
-		};
-		partial.usage.cost.total =
-			partial.usage.cost.input +
-			partial.usage.cost.output +
-			partial.usage.cost.cacheRead;
-	};
+	const updateCosts = createCostCalculator(model);
 
 	try {
 		while (true) {
@@ -661,7 +772,7 @@ async function* streamResponsesApi(
 							partial.usage.output =
 								(usage.output_tokens || 0) +
 								(usage.output_tokens_details?.reasoning_tokens || 0);
-							updateCosts();
+							updateCosts(partial.usage);
 						}
 						partial.stopReason = "stop";
 						yield {
@@ -704,7 +815,7 @@ async function* streamResponsesApi(
 							partial.usage.output =
 								(usage.output_tokens || 0) +
 								(usage.output_tokens_details?.reasoning_tokens || 0);
-							updateCosts();
+							updateCosts(partial.usage);
 						}
 						const status = event.response?.status;
 						partial.stopReason =
@@ -983,38 +1094,9 @@ export async function* streamOpenAI(
 	const textEnded = new Set<number>();
 	const toolEnded = new Set<number>();
 	const thinkingEnded = new Set<number>();
-	const appendDelta = (
-		existing: string,
-		delta: string,
-	): { next: string; skipped: boolean } => {
-		if (!delta) return { next: existing, skipped: true };
-		if (existing.endsWith(delta)) {
-			return { next: existing, skipped: true };
-		}
-		const overlap = Math.min(existing.length, delta.length);
-		let shared = 0;
-		for (let i = overlap; i > 0; i--) {
-			if (existing.endsWith(delta.slice(0, i))) {
-				shared = i;
-				break;
-			}
-		}
-		return { next: existing + delta.slice(shared), skipped: false };
-	};
 
-	const updateCosts = () => {
-		partial.usage.cost = {
-			input: (partial.usage.input * model.cost.input) / 1_000_000,
-			output: (partial.usage.output * model.cost.output) / 1_000_000,
-			cacheRead: (partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
-			cacheWrite: 0, // OpenAI doesn't charge for cache writes
-			total: 0,
-		};
-		partial.usage.cost.total =
-			partial.usage.cost.input +
-			partial.usage.cost.output +
-			partial.usage.cost.cacheRead;
-	};
+	// Use shared utilities for delta handling and cost calculation
+	const updateCosts = createCostCalculator(model);
 
 	try {
 		while (true) {
@@ -1054,7 +1136,7 @@ export async function* streamOpenAI(
 								cacheAdjusted = true;
 							}
 
-							updateCosts();
+							updateCosts(partial.usage);
 						}
 						continue;
 					}
@@ -1253,7 +1335,7 @@ export async function* streamOpenAI(
 						}
 
 						// Calculate costs one last time (in case no usage block arrived)
-						updateCosts();
+						updateCosts(partial.usage);
 
 						yield {
 							type: "done",

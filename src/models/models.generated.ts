@@ -7379,6 +7379,27 @@ export const MODELS = {
     }
   },
   venice: {
+    "grok-41-fast": {
+      id: "grok-41-fast",
+      name: "Grok 4.1 Fast",
+      api: "openai-completions" as const,
+      provider: "venice",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 0.5,
+        output: 1.25,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 262144,
+      maxTokens: 8192
+    },
     "dolphin-2.9.2-qwen2-72b": {
       id: "dolphin-2.9.2-qwen2-72b",
       name: "Dolphin 72B",
@@ -8794,421 +8815,6 @@ export const MODELS = {
       },
       contextWindow: 163840,
       maxTokens: 163840
-    }
-  },
-  agentrouter: {
-    "claude-3-5-sonnet-20241022": {
-      id: "claude-3-5-sonnet-20241022",
-      name: "Claude Sonnet 3.5 v2",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 8192
-    },
-    "deepseek-r1-0528": {
-      id: "deepseek-r1-0528",
-      name: "DeepSeek R1 (0528)",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.3,
-        output: 0.045,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 128000
-    },
-    "claude-sonnet-4-20250514-thinking": {
-      id: "claude-sonnet-4-20250514-thinking",
-      name: "Claude Sonnet 4 Thinking",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 2,
-        output: 10,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 64000
-    },
-    "glm-4.5": {
-      id: "glm-4.5",
-      name: "GLM-4.5",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.003,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 98304
-    },
-    "claude-3-5-sonnet-20240620": {
-      id: "claude-3-5-sonnet-20240620",
-      name: "Claude Sonnet 3.5",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 8192
-    },
-    "gemini-3-pro-preview": {
-      id: "gemini-3-pro-preview",
-      name: "Gemini 3 Pro Preview",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 2,
-        output: 8,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 1000000,
-      maxTokens: 64000
-    },
-    "claude-3-7-sonnet-20250219-thinking": {
-      id: "claude-3-7-sonnet-20250219-thinking",
-      name: "Claude Sonnet 3.7 Thinking",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 64000
-    },
-    "deepseek-v3.1": {
-      id: "deepseek-v3.1",
-      name: "DeepSeek V3.1",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.3,
-        output: 0.045,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 8192
-    },
-    "claude-sonnet-4-5-20250929": {
-      id: "claude-sonnet-4-5-20250929",
-      name: "Claude Sonnet 4.5 (20250929)",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 6,
-        output: 30,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 1000000,
-      maxTokens: 64000
-    },
-    "kimi-k2-thinking": {
-      id: "kimi-k2-thinking",
-      name: "Kimi K2 Thinking",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.002,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 262144,
-      maxTokens: 262144
-    },
-    "gpt-5.1": {
-      id: "gpt-5.1",
-      name: "GPT-5.1",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 2,
-        output: 2,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 128000
-    },
-    "claude-sonnet-4-20250514": {
-      id: "claude-sonnet-4-20250514",
-      name: "Claude Sonnet 4",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 64000
-    },
-    "glm-4.6": {
-      id: "glm-4.6",
-      name: "GLM-4.6",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.003,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 204800,
-      maxTokens: 131072
-    },
-    "claude-opus-4-20250514": {
-      id: "claude-opus-4-20250514",
-      name: "Claude Opus 4",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 21,
-        output: 105,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 32000
-    },
-    "claude-3-5-haiku-20241022": {
-      id: "claude-3-5-haiku-20241022",
-      name: "Claude 3.5 Haiku (20241022)",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1,
-        output: 5,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 8192
-    },
-    "claude-3-7-sonnet-20250219": {
-      id: "claude-3-7-sonnet-20250219",
-      name: "Claude Sonnet 3.7",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 64000
-    },
-    "gpt-5": {
-      id: "gpt-5",
-      name: "GPT-5",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 1280000,
-      maxTokens: 1280000
-    },
-    "claude-opus-4-20250514-thinking": {
-      id: "claude-opus-4-20250514-thinking",
-      name: "Claude Opus 4 Thinking",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 2,
-        output: 10,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 32000
-    },
-    "deepseek-v3.2": {
-      id: "deepseek-v3.2",
-      name: "DeepSeek V3.2",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.3,
-        output: 0.045,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 8192
-    },
-    "claude-haiku-4-5-20251001": {
-      id: "claude-haiku-4-5-20251001",
-      name: "Claude Haiku 4.5 (20251001)",
-      api: "openai-completions" as const,
-      provider: "agentrouter",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 2,
-        output: 4,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 64000
     }
   },
   "kimi-for-coding": {
@@ -22691,6 +22297,26 @@ export const MODELS = {
       },
       contextWindow: 128000,
       maxTokens: 128000
+    },
+    "hf:deepseek-ai/DeepSeek-V3.2": {
+      id: "hf:deepseek-ai/DeepSeek-V3.2",
+      name: "DeepSeek V3.2",
+      api: "openai-completions" as const,
+      provider: "synthetic",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0.27,
+        output: 0.4,
+        cacheRead: 0.27,
+        cacheWrite: 0
+      },
+      contextWindow: 162816,
+      maxTokens: 8000
     },
     "hf:deepseek-ai/DeepSeek-V3": {
       id: "hf:deepseek-ai/DeepSeek-V3",

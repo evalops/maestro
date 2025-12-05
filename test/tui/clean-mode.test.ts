@@ -42,14 +42,16 @@ describe("clean-mode", () => {
 
 		afterEach(() => {
 			if (originalEnv === undefined) {
-				process.env.COMPOSER_TUI_CLEAN = undefined;
+				// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+				delete process.env.COMPOSER_TUI_CLEAN;
 			} else {
 				process.env.COMPOSER_TUI_CLEAN = originalEnv;
 			}
 		});
 
 		it("returns null when env var is not set", () => {
-			process.env.COMPOSER_TUI_CLEAN = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+			delete process.env.COMPOSER_TUI_CLEAN;
 			expect(readCleanModeFromEnv()).toBeNull();
 		});
 

@@ -16,7 +16,8 @@ describe("Database Field Encryption", () => {
 
 	describe("initEncryption", () => {
 		it("should return false when no key is configured", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+			delete process.env.COMPOSER_DB_ENCRYPTION_KEY;
 			const { initEncryption, isEncryptionEnabled } = await import(
 				"../../src/db/encryption.js"
 			);
@@ -98,7 +99,8 @@ describe("Database Field Encryption", () => {
 		});
 
 		it("should return plaintext unchanged when encryption is disabled", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+			delete process.env.COMPOSER_DB_ENCRYPTION_KEY;
 			const { initEncryption, encryptField } = await import(
 				"../../src/db/encryption.js"
 			);

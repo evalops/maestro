@@ -118,7 +118,8 @@ describe("backgroundTasksTool", () => {
 		await backgroundTaskManager.stopAll();
 		backgroundTaskManager.clear();
 		rmSync(logDir, { recursive: true, force: true });
-		process.env.COMPOSER_BACKGROUND_LOG_DIR = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.COMPOSER_BACKGROUND_LOG_DIR;
 	});
 
 	it("starts tasks and lists them", async () => {

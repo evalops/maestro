@@ -25,8 +25,10 @@ describe("getStoredCredentials", () => {
 		} catch {
 			// ignore
 		}
-		process.env.COMPOSER_KEYS_PATH = undefined;
-		process.env.FACTORY_HOME = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.COMPOSER_KEYS_PATH;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.FACTORY_HOME;
 	});
 
 	it("returns empty when file missing", () => {

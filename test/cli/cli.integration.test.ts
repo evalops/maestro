@@ -237,7 +237,8 @@ describe("CLI integration", () => {
 			process.env.ANTHROPIC_OAUTH_FILE = originalAnthropicOAuthFile;
 		}
 		if (originalAgentDir === undefined) {
-			process.env.COMPOSER_AGENT_DIR = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+			delete process.env.COMPOSER_AGENT_DIR;
 		} else {
 			process.env.COMPOSER_AGENT_DIR = originalAgentDir;
 		}

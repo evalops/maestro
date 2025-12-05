@@ -285,7 +285,8 @@ describe("agent-runner", () => {
 		});
 
 		it("falls back to ANTHROPIC_API_KEY when ANTHROPIC_OAUTH_TOKEN not set", () => {
-			process.env.ANTHROPIC_OAUTH_TOKEN = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+			delete process.env.ANTHROPIC_OAUTH_TOKEN;
 			process.env.ANTHROPIC_API_KEY = "api-key";
 
 			const key =
@@ -294,8 +295,10 @@ describe("agent-runner", () => {
 		});
 
 		it("returns undefined when neither key is set", () => {
-			process.env.ANTHROPIC_OAUTH_TOKEN = undefined;
-			process.env.ANTHROPIC_API_KEY = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+			delete process.env.ANTHROPIC_OAUTH_TOKEN;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+			delete process.env.ANTHROPIC_API_KEY;
 
 			const key =
 				process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;

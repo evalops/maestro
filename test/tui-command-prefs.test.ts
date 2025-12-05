@@ -13,7 +13,8 @@ const withTempPrefs = (fn: (path: string) => void) => {
 		fn(file);
 	} finally {
 		if (prev === undefined) {
-			process.env.COMPOSER_COMMAND_PREFS = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+			delete process.env.COMPOSER_COMMAND_PREFS;
 		} else {
 			process.env.COMPOSER_COMMAND_PREFS = prev;
 		}

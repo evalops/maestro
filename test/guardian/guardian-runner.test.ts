@@ -34,7 +34,8 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-	process.env.COMPOSER_GUARDIAN_STATE = undefined;
+	// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+	delete process.env.COMPOSER_GUARDIAN_STATE;
 	rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -63,7 +64,8 @@ describe("guardian runner", () => {
 
 	afterEach(() => {
 		mockSpawn.mockReset();
-		process.env.COMPOSER_GUARDIAN = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.COMPOSER_GUARDIAN;
 	});
 
 	it("respects inline disable flag for commit/push detection", () => {

@@ -223,7 +223,8 @@ describe("interpolateContext", () => {
 		process.env.TEST_VAR = "test-value";
 		const result = interpolateContext("Value: ${env.TEST_VAR}");
 		expect(result).toBe("Value: test-value");
-		process.env.TEST_VAR = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.TEST_VAR;
 	});
 
 	it("returns empty string for missing env vars", () => {
@@ -245,6 +246,7 @@ describe("interpolateContext", () => {
 		process.env.TEST_USER = "alice";
 		const result = interpolateContext("${home}/users/${env.TEST_USER}");
 		expect(result).toBe(`${os.homedir()}/users/alice`);
-		process.env.TEST_USER = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.TEST_USER;
 	});
 });

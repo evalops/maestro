@@ -10,10 +10,14 @@ describe("Provider Network Config", () => {
 
 	beforeEach(() => {
 		// Reset environment
-		process.env.COMPOSER_PROVIDER_TIMEOUT_MS = undefined;
-		process.env.COMPOSER_PROVIDER_MAX_RETRIES = undefined;
-		process.env.COMPOSER_STREAM_MAX_RETRIES = undefined;
-		process.env.COMPOSER_STREAM_IDLE_TIMEOUT_MS = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.COMPOSER_PROVIDER_TIMEOUT_MS;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.COMPOSER_PROVIDER_MAX_RETRIES;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.COMPOSER_STREAM_MAX_RETRIES;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.COMPOSER_STREAM_IDLE_TIMEOUT_MS;
 
 		// Create test directory and set HOME
 		mkdirSync(join(testDir, ".composer"), { recursive: true });

@@ -19,7 +19,12 @@ describe("Hierarchical Context File Loading", () => {
 
 	afterEach(() => {
 		// Restore original state
-		process.env.COMPOSER_AGENT_DIR = originalEnv;
+		if (originalEnv === undefined) {
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+			delete process.env.COMPOSER_AGENT_DIR;
+		} else {
+			process.env.COMPOSER_AGENT_DIR = originalEnv;
+		}
 
 		// Cleanup test directory
 		if (existsSync(testDir)) {

@@ -13,7 +13,8 @@ describe("enforceEndpoint", () => {
 	});
 
 	afterEach(() => {
-		process.env.MODELS_OUT_PATH = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.MODELS_OUT_PATH;
 		try {
 			unlinkSync(tempOut);
 		} catch {

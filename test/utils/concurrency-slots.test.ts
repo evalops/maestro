@@ -235,7 +235,8 @@ describe("createConcurrencySlotsFromEnv", () => {
 	});
 
 	it("uses fallback when env var not set", () => {
-		process.env.TEST_CONCURRENCY = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.TEST_CONCURRENCY;
 		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY", 3);
 		expect(slots.getSnapshot().max).toBe(3);
 	});
@@ -253,7 +254,8 @@ describe("createConcurrencySlotsFromEnv", () => {
 	});
 
 	it("uses default fallback of 0 (unlimited)", () => {
-		process.env.TEST_CONCURRENCY = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.TEST_CONCURRENCY;
 		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY");
 		expect(slots.getSnapshot().max).toBe(0);
 		expect(slots.isEnabled()).toBe(false);

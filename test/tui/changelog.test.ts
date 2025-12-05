@@ -17,7 +17,8 @@ const tempDir = () => mkdtempSync(join(tmpdir(), "composer-changelog-"));
 
 describe("changelog utilities", () => {
 	afterEach(() => {
-		process.env.COMPOSER_CHANGELOG_STATE = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+		delete process.env.COMPOSER_CHANGELOG_STATE;
 	});
 
 	it("parses entries and filters newer ones", () => {
