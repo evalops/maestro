@@ -272,6 +272,17 @@ interface OpenAIResponsesDoneEvent {
 	};
 }
 
+interface OpenAIResponsesOutputItemAddedEvent {
+	type: "response.output_item.added";
+	output_index?: number;
+	item?: {
+		type?: string;
+		id?: string;
+		call_id?: string;
+		name?: string;
+	};
+}
+
 type OpenAIResponsesEvent =
 	| OpenAIResponsesTextDeltaEvent
 	| OpenAIResponsesTextDoneEvent
@@ -279,7 +290,8 @@ type OpenAIResponsesEvent =
 	| OpenAIResponsesFunctionCallDoneEvent
 	| OpenAIResponsesCompletedEvent
 	| OpenAIResponsesFailedEvent
-	| OpenAIResponsesDoneEvent;
+	| OpenAIResponsesDoneEvent
+	| OpenAIResponsesOutputItemAddedEvent;
 
 // =============================================================================
 // Responses API Helpers
@@ -686,6 +698,20 @@ async function* streamResponsesApi(
 							partial,
 						};
 						textEnded.add(idx);
+						break;
+					}
+					case "response.output_item.added": {
+						// This event provides the function name before arguments stream
+						if (event.item?.type === "function_call" && event.item.call_id) {
+							const callId = event.item.call_id;
+							const state = toolState.get(callId) ?? {
+								name: event.item.name,
+								args: "",
+								outputIndex: event.output_index ?? 0,
+							};
+							state.name = event.item.name || state.name;
+							toolState.set(callId, state);
+						}
 						break;
 					}
 					case "response.function_call_arguments.delta": {
