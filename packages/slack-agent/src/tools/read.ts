@@ -68,9 +68,11 @@ export function createReadTool(
 			const mimeType = isImageFile(path);
 
 			if (mimeType) {
-				const result = await executor.exec(`base64 < ${shellEscape(path)}`, {
-					signal,
-				});
+				// Use absolute path to system base64 to avoid PATH issues with user scripts
+				const result = await executor.exec(
+					`/usr/bin/base64 < ${shellEscape(path)}`,
+					{ signal },
+				);
 				if (result.code !== 0) {
 					throw new Error(result.stderr || `Failed to read file: ${path}`);
 				}
