@@ -18995,6 +18995,26 @@ export const MODELS = {
       contextWindow: 163840,
       maxTokens: 163840
     },
+    "deepseek/deepseek-v3.2-speciale": {
+      id: "deepseek/deepseek-v3.2-speciale",
+      name: "DeepSeek V3.2 Speciale",
+      api: "openai-completions" as const,
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0.27,
+        output: 0.41,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 163840,
+      maxTokens: 65536
+    },
     "deepseek/deepseek-v3-base:free": {
       id: "deepseek/deepseek-v3-base:free",
       name: "DeepSeek V3 Base (free)",

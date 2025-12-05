@@ -1,0 +1,42 @@
+{
+	"name": "@evalops/slack-agent",
+	"version": "0.10.0",
+	"description": "Slack bot agent with Docker sandbox support for Composer",
+	"type": "module",
+	"bin": {
+		"slack-agent": "dist/main.js"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"clean": "rm -rf dist",
+		"build": "tsc -p tsconfig.build.json && chmod +x dist/main.js",
+		"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "tsc -p tsconfig.build.json --noEmit",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"keywords": ["slack", "bot", "agent", "ai", "docker", "sandbox", "composer"],
+	"author": "EvalOps",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/composer.git",
+		"directory": "packages/slack-agent"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	},
+	"dependencies": {
+		"@sinclair/typebox": "^0.34.0",
+		"@slack/socket-mode": "^2.0.0",
+		"@slack/web-api": "^7.0.0",
+		"chalk": "^5.5.0",
+		"diff": "^8.0.2"
+	},
+	"devDependencies": {
+		"@types/diff": "^7.0.2",
+		"@types/node": "^24.3.0",
+		"typescript": "^5.7.3"
+	}
+}

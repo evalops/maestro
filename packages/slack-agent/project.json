@@ -1,0 +1,22 @@
+{
+	"name": "slack-agent",
+	"projectType": "library",
+	"root": "packages/slack-agent",
+	"sourceRoot": "packages/slack-agent/src",
+	"targets": {
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/slack-agent && bun run build",
+				"forwardAllArgs": true
+			}
+		},
+		"check": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/slack-agent && bun run check",
+				"forwardAllArgs": true
+			}
+		}
+	}
+}

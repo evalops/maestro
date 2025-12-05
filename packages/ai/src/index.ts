@@ -1,3 +1,5 @@
+export { Agent, type AgentOptions } from "../../../src/agent/agent.js";
+
 export {
 	ProviderTransport,
 	type ProviderTransportOptions,
@@ -8,6 +10,8 @@ export {
 	getModels,
 	getModel,
 } from "../../../src/models/builtin.js";
+
+export type { AgentState } from "../../../src/agent/types.js";
 
 export type {
 	AgentEvent,

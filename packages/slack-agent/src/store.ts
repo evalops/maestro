@@ -1,0 +1,215 @@
+/**
+ * Channel Store - Message logging and attachment management
+ */
+
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import * as logger from "./logger.js";
+
+export interface Attachment {
+	original: string;
+	local: string;
+}
+
+export interface LoggedMessage {
+	date: string;
+	ts: string;
+	user: string;
+	userName?: string;
+	displayName?: string;
+	text: string;
+	attachments: Attachment[];
+	isBot: boolean;
+}
+
+export interface ChannelStoreConfig {
+	workingDir: string;
+	botToken: string;
+}
+
+interface PendingDownload {
+	channelId: string;
+	localPath: string;
+	url: string;
+}
+
+export class ChannelStore {
+	private workingDir: string;
+	private botToken: string;
+	private pendingDownloads: PendingDownload[] = [];
+	private isDownloading = false;
+	private recentlyLogged = new Map<string, number>();
+
+	constructor(config: ChannelStoreConfig) {
+		this.workingDir = config.workingDir;
+		this.botToken = config.botToken;
+
+		if (!existsSync(this.workingDir)) {
+			mkdirSync(this.workingDir, { recursive: true });
+		}
+	}
+
+	getChannelDir(channelId: string): string {
+		const dir = join(this.workingDir, channelId);
+		if (!existsSync(dir)) {
+			mkdirSync(dir, { recursive: true });
+		}
+		return dir;
+	}
+
+	generateLocalFilename(originalName: string, timestamp: string): string {
+		const ts = Math.floor(Number.parseFloat(timestamp) * 1000);
+		const sanitized = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+		return `${ts}_${sanitized}`;
+	}
+
+	processAttachments(
+		channelId: string,
+		files: Array<{
+			name?: string;
+			url_private_download?: string;
+			url_private?: string;
+		}>,
+		timestamp: string,
+	): Attachment[] {
+		const attachments: Attachment[] = [];
+
+		for (const file of files) {
+			const url = file.url_private_download || file.url_private;
+			if (!url) continue;
+			if (!file.name) {
+				logger.logWarning("Attachment missing name, skipping", url);
+				continue;
+			}
+
+			const filename = this.generateLocalFilename(file.name, timestamp);
+			const localPath = `${channelId}/attachments/${filename}`;
+
+			attachments.push({
+				original: file.name,
+				local: localPath,
+			});
+
+			this.pendingDownloads.push({ channelId, localPath, url });
+		}
+
+		this.processDownloadQueue();
+		return attachments;
+	}
+
+	async logMessage(
+		channelId: string,
+		message: LoggedMessage,
+	): Promise<boolean> {
+		const dedupeKey = `${channelId}:${message.ts}`;
+		if (this.recentlyLogged.has(dedupeKey)) {
+			return false;
+		}
+
+		this.recentlyLogged.set(dedupeKey, Date.now());
+		setTimeout(() => this.recentlyLogged.delete(dedupeKey), 60000);
+
+		const logPath = join(this.getChannelDir(channelId), "log.jsonl");
+
+		if (!message.date) {
+			let date: Date;
+			if (message.ts.includes(".")) {
+				date = new Date(Number.parseFloat(message.ts) * 1000);
+			} else {
+				date = new Date(Number.parseInt(message.ts, 10));
+			}
+			message.date = date.toISOString();
+		}
+
+		const line = `${JSON.stringify(message)}\n`;
+		await appendFile(logPath, line, "utf-8");
+		return true;
+	}
+
+	async logBotResponse(
+		channelId: string,
+		text: string,
+		ts: string,
+	): Promise<void> {
+		await this.logMessage(channelId, {
+			date: new Date().toISOString(),
+			ts,
+			user: "bot",
+			text,
+			attachments: [],
+			isBot: true,
+		});
+	}
+
+	getLastTimestamp(channelId: string): string | null {
+		const logPath = join(this.workingDir, channelId, "log.jsonl");
+		if (!existsSync(logPath)) {
+			return null;
+		}
+
+		try {
+			const content = readFileSync(logPath, "utf-8");
+			const lines = content.trim().split("\n");
+			if (lines.length === 0 || lines[0] === "") {
+				return null;
+			}
+			const lastLine = lines[lines.length - 1];
+			const message = JSON.parse(lastLine) as LoggedMessage;
+			return message.ts;
+		} catch {
+			return null;
+		}
+	}
+
+	private async processDownloadQueue(): Promise<void> {
+		if (this.isDownloading || this.pendingDownloads.length === 0) return;
+
+		this.isDownloading = true;
+
+		while (this.pendingDownloads.length > 0) {
+			const item = this.pendingDownloads.shift();
+			if (!item) break;
+
+			try {
+				await this.downloadAttachment(item.localPath, item.url);
+			} catch (error) {
+				const errorMsg = error instanceof Error ? error.message : String(error);
+				logger.logWarning(
+					"Failed to download attachment",
+					`${item.localPath}: ${errorMsg}`,
+				);
+			}
+		}
+
+		this.isDownloading = false;
+	}
+
+	private async downloadAttachment(
+		localPath: string,
+		url: string,
+	): Promise<void> {
+		const filePath = join(this.workingDir, localPath);
+
+		const dir = join(
+			this.workingDir,
+			localPath.substring(0, localPath.lastIndexOf("/")),
+		);
+		if (!existsSync(dir)) {
+			mkdirSync(dir, { recursive: true });
+		}
+
+		const response = await fetch(url, {
+			headers: {
+				Authorization: `Bearer ${this.botToken}`,
+			},
+		});
+
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		}
+
+		const buffer = await response.arrayBuffer();
+		await writeFile(filePath, Buffer.from(buffer));
+	}
+}

@@ -1,4 +1,9 @@
-import type { Static, TSchema } from "@sinclair/typebox";
+import {
+	type Static,
+	type TSchema,
+	type TUnsafe,
+	Type,
+} from "@sinclair/typebox";
 import AjvModule, { Ajv as AjvClass, type AnySchema } from "ajv";
 
 // ESM/CJS interop: extract constructor from module (may be nested under .default)
@@ -19,3 +24,26 @@ export function compileTypeboxSchema<T extends TSchema>(schema: T) {
 export type CompileResult<T extends TSchema> = ReturnType<
 	typeof compileTypeboxSchema<T>
 >;
+
+/**
+ * Creates a string enum schema compatible with Google's API and other providers
+ * that don't support anyOf/const patterns.
+ *
+ * @example
+ * const OperationSchema = StringEnum(["add", "subtract", "multiply", "divide"], {
+ *   description: "The operation to perform"
+ * });
+ *
+ * type Operation = Static<typeof OperationSchema>; // "add" | "subtract" | "multiply" | "divide"
+ */
+export function StringEnum<T extends readonly string[]>(
+	values: T,
+	options?: { description?: string; default?: T[number] },
+): TUnsafe<T[number]> {
+	return Type.Unsafe<T[number]>({
+		type: "string",
+		enum: values as unknown as string[],
+		...(options?.description && { description: options.description }),
+		...(options?.default && { default: options.default }),
+	});
+}
