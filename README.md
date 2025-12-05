@@ -37,6 +37,7 @@ Composer exposes every capability through slash commands and git-aware helpers s
 Choose your interface:
 - **Terminal (TUI/CLI)**: Rich interactive terminal interface with keyboard shortcuts, file search, and command palette
 - **Web UI**: Modern browser-based interface for those who prefer a graphical environment (core parity; see parity appendix in `docs/WEB_UI.md`)
+- **Slack Bot**: Deploy as a Slack bot with Docker sandbox isolation ([`@evalops/slack-agent`](packages/slack-agent/README.md))
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
 ### Who It's For
@@ -661,17 +662,21 @@ Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
 
 ## Documentation
 
-- [Documentation Index](file://docs/README.md)
-- [Quickstart](file://docs/QUICKSTART.md)
-- [Feature Guide](file://docs/FEATURES.md)
-- [Tools Reference](file://docs/TOOLS_REFERENCE.md)
-- [Safety & Approvals](file://docs/SAFETY.md)
-- [Sessions](file://docs/SESSIONS.md)
-- [Providers & Factory](file://docs/MODELS.md)
-- [Contributing](file://CONTRIBUTING.md)
-- [Changelog](file://CHANGELOG.md)
+- [Documentation Index](docs/README.md)
+- [Quickstart](docs/QUICKSTART.md)
+- [Feature Guide](docs/FEATURES.md)
+- [Tools Reference](docs/TOOLS_REFERENCE.md)
+- [Safety & Approvals](docs/SAFETY.md)
+- [Sessions](docs/SESSIONS.md)
+- [Providers & Factory](docs/MODELS.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
-Doc map (start here): [docs/README.md](file://docs/README.md) → Quickstart → Feature Guide → Tools Reference → Safety. Web/TUI differences: parity appendix in [docs/WEB_UI.md](file://docs/WEB_UI.md).
+### Packages
+
+- [`@evalops/slack-agent`](packages/slack-agent/README.md) – Slack bot with Docker sandbox isolation
+
+Doc map (start here): [docs/README.md](docs/README.md) → Quickstart → Feature Guide → Tools Reference → Safety. Web/TUI differences: parity appendix in [docs/WEB_UI.md](docs/WEB_UI.md).
 
 ## License
 
