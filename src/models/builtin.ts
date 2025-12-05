@@ -145,7 +145,7 @@ const OPENAI_CODEX_OVERLAY = {
 			name: "GPT-5.1 Codex Max",
 			api: "openai-responses",
 			provider: "openai",
-			baseUrl: "https://api.openai.com",
+			baseUrl: "https://api.openai.com/v1",
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
