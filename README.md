@@ -23,6 +23,7 @@ Composer is a deterministic coding agent with multi-model support, featuring bot
 - [Full Commands Reference](#full-commands-reference)
 - [Composers & Background Tasks](#composers-sub-agents)
 - [MCP Integration](#adding-your-own-tools)
+- [Packages](#packages)
 - [Contributing](#contributing)
 - [Troubleshooting](#troubleshooting)
 
@@ -674,7 +675,14 @@ Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
 
 ### Packages
 
-- [`@evalops/slack-agent`](packages/slack-agent/README.md) – Slack bot with Docker sandbox isolation
+| Package | Description |
+|---------|-------------|
+| [`@evalops/ai`](packages/ai/README.md) | Shared AI SDK: model registry, provider transport, agent event streams |
+| [`@evalops/tui`](packages/tui/README.md) | Terminal UI library with differential rendering |
+| [`@evalops/composer-web`](packages/web/README.md) | Web interface for Composer |
+| [`@evalops/contracts`](packages/contracts/README.md) | Shared TypeScript definitions |
+| [`@evalops/slack-agent`](packages/slack-agent/README.md) | Slack bot with Docker sandbox isolation |
+| [Composer for VS Code](packages/vscode-extension/README.md) | VS Code extension |
 
 Doc map (start here): [docs/README.md](docs/README.md) → Quickstart → Feature Guide → Tools Reference → Safety. Web/TUI differences: parity appendix in [docs/WEB_UI.md](docs/WEB_UI.md).
 
