@@ -386,11 +386,10 @@ function buildInput(
 				input.push({ role: "user", content });
 			}
 		} else if (msg.role === "assistant") {
-			// Check if there are any toolCall blocks that will be included
-			// This is needed because reasoning items require their following function_call
-			const hasValidToolCalls =
-				msg.stopReason !== "error" &&
-				msg.content.some((b) => b.type === "toolCall");
+			// Don't include thinking/toolCall if the message was aborted or errored
+			// Reasoning items require their following function_call, so skip both
+			const isIncomplete =
+				msg.stopReason === "error" || msg.stopReason === "aborted";
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
@@ -407,15 +406,14 @@ function buildInput(
 						status: "completed",
 						id: `msg_${Math.random().toString(36).substring(2, 15)}`,
 					});
-				} else if (block.type === "thinking" && hasValidToolCalls) {
+				} else if (block.type === "thinking" && !isIncomplete) {
 					// For reasoning models, we need to include reasoning items
 					// They're required before function_call items
-					// Only include if there are valid toolCalls (reasoning requires its following item)
 					if (block.thinkingSignature) {
 						const reasoningItem = JSON.parse(block.thinkingSignature);
 						input.push(reasoningItem);
 					}
-				} else if (block.type === "toolCall" && msg.stopReason !== "error") {
+				} else if (block.type === "toolCall" && !isIncomplete) {
 					const id = block.id.includes("|") ? block.id.split("|")[1] : block.id;
 					const callId = block.id.includes("|")
 						? block.id.split("|")[0]
