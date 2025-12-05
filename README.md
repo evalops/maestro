@@ -41,6 +41,16 @@ Choose your interface:
 - **Slack Bot**: Deploy as a Slack bot with Docker sandbox isolation ([`@evalops/slack-agent`](packages/slack-agent/README.md))
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
+### Why Multiple Interfaces?
+
+The terminal is home for many developers—fast, scriptable, distraction-free. But not every workflow fits a terminal session. Sometimes you're on a call, away from your dev machine, or collaborating with teammates who aren't terminal-native.
+
+**Web UI** lets you access Composer from any browser. Share a session link with a colleague. Demo a feature without screen-sharing your terminal. Work from a tablet when you're not at your desk.
+
+**Slack** meets teams where they already communicate. Deploy a shared coding agent that your whole team can @mention. Queue up tasks asynchronously—ask the bot to run tests while you're in a meeting, check results when you're back. Scheduled tasks, approval workflows, and persistent memory mean the agent can operate as a background teammate rather than a tool you have to babysit.
+
+Same agent, same tools, same deterministic behavior—just different surfaces optimized for different contexts.
+
 ### Who It's For
 
 Developers who want deterministic, scriptable AI assistance with full transparency. You value explicit commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to reason about every action Composer takes.
