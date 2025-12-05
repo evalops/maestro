@@ -265,8 +265,14 @@ ${memory}
 - write: Create/overwrite files
 - edit: Surgical file edits
 - attach: Share files to Slack
+- status: Check system health, resource usage (CPU, memory), and workspace disk usage
 
 Each tool requires a "label" parameter (shown to user).
+
+Use the status tool when:
+- User asks about your status, health, or resources
+- Before running memory-intensive tasks
+- Debugging performance issues
 `;
 }
 
@@ -346,7 +352,9 @@ export function createAgentRunner(sandboxConfig: SandboxConfig): AgentRunner {
 			});
 
 			// Create tools with executor
-			const tools = createSlackAgentTools(executor);
+			const tools = createSlackAgentTools(executor, {
+				containerName: executor.getContainerName(),
+			});
 
 			// Get the model - default to Claude Sonnet 4
 			const model = getModel(

@@ -123,6 +123,35 @@ describe("sandbox", () => {
 			expect(executor).toBeDefined();
 			expect(executor.getWorkspacePath("/some/path")).toBe("/workspace");
 		});
+
+		it("returns undefined container name for host executor", () => {
+			const config: SandboxConfig = { type: "host" };
+			const executor = createExecutor(config);
+
+			expect(executor.getContainerName()).toBeUndefined();
+		});
+
+		it("returns container name for docker executor", () => {
+			const config: SandboxConfig = {
+				type: "docker",
+				container: "my-test-container",
+			};
+			const executor = createExecutor(config);
+
+			expect(executor.getContainerName()).toBe("my-test-container");
+		});
+
+		it("returns generated container name for auto-create executor", () => {
+			const config: SandboxConfig = {
+				type: "docker",
+				autoCreate: true,
+			};
+			const executor = createExecutor(config);
+
+			const name = executor.getContainerName();
+			expect(name).toBeDefined();
+			expect(name).toMatch(/^slack-agent-[a-f0-9]{8}$/);
+		});
 	});
 
 	describe("HostExecutor", () => {

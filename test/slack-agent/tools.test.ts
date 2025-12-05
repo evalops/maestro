@@ -19,6 +19,7 @@ import {
 import { createBashTool } from "../../packages/slack-agent/src/tools/bash.js";
 import { createEditTool } from "../../packages/slack-agent/src/tools/edit.js";
 import { createReadTool } from "../../packages/slack-agent/src/tools/read.js";
+import { createStatusTool } from "../../packages/slack-agent/src/tools/status.js";
 import { createWriteTool } from "../../packages/slack-agent/src/tools/write.js";
 
 describe("slack-agent tools", () => {
@@ -561,6 +562,89 @@ describe("slack-agent tools", () => {
 			});
 
 			expect(readFileSync(filePath, "utf-8")).toBe("const x = 'world';");
+		});
+	});
+
+	describe("status tool", () => {
+		it("has correct metadata", () => {
+			const tool = createStatusTool(executor);
+			expect(tool.name).toBe("status");
+			expect(tool.description).toContain("health");
+			expect(tool.description).toContain("resource");
+		});
+
+		it("returns environment type for host executor", async () => {
+			const tool = createStatusTool(executor);
+			const result = await tool.execute("test-id", {
+				label: "Check status",
+			});
+
+			expect(result.content).toHaveLength(1);
+			expect(result.content[0].type).toBe("text");
+			const text = (result.content[0] as { text: string }).text;
+			expect(text).toContain("Environment: host");
+		});
+
+		it("returns workspace information", async () => {
+			// Create some files in test dir to have measurable workspace
+			writeFileSync(join(testDir, "file1.txt"), "test content");
+			writeFileSync(join(testDir, "file2.txt"), "more content");
+
+			const tool = createStatusTool(executor);
+			const result = await tool.execute("test-id", {
+				label: "Check workspace",
+			});
+
+			const text = (result.content[0] as { text: string }).text;
+			expect(text).toContain("Workspace:");
+			expect(text).toContain("Path:");
+			expect(text).toContain("Disk Usage:");
+			expect(text).toContain("Files:");
+		});
+
+		it("includes details object with health data", async () => {
+			const tool = createStatusTool(executor);
+			const result = await tool.execute("test-id", {
+				label: "Check details",
+			});
+
+			expect(result.details).toBeDefined();
+			const details = result.details as {
+				environment: string;
+				workspace: { path: string };
+			};
+			expect(details.environment).toBe("host");
+			expect(details.workspace).toBeDefined();
+			expect(details.workspace.path).toBeDefined();
+		});
+
+		it("creates docker status tool with container name", () => {
+			const tool = createStatusTool(executor, "test-container");
+			expect(tool.name).toBe("status");
+			// The tool should be created without errors
+		});
+
+		it("reports docker environment when container name provided", async () => {
+			// Create a tool configured for docker (even though executor is host)
+			const tool = createStatusTool(executor, "test-container");
+			const result = await tool.execute("test-id", {
+				label: "Check docker status",
+			});
+
+			const details = result.details as { environment: string };
+			expect(details.environment).toBe("docker");
+		});
+
+		it("handles abort signal", async () => {
+			const tool = createStatusTool(executor);
+			const controller = new AbortController();
+			controller.abort();
+
+			// Should not hang even with aborted signal
+			// The workspace commands may fail but should not block
+			await expect(
+				tool.execute("test-id", { label: "Aborted status" }, controller.signal),
+			).resolves.toBeDefined();
 		});
 	});
 });

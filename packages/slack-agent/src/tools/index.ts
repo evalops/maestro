@@ -7,6 +7,7 @@ import { attachTool, setUploadFunction } from "./attach.js";
 import { createBashTool } from "./bash.js";
 import { createEditTool } from "./edit.js";
 import { createReadTool } from "./read.js";
+import { createStatusTool } from "./status.js";
 import { createWriteTool } from "./write.js";
 
 export interface AgentTool<T = unknown> {
@@ -29,12 +30,21 @@ export interface AgentTool<T = unknown> {
 	}>;
 }
 
-export function createSlackAgentTools(executor: Executor): AgentTool[] {
+export interface CreateToolsOptions {
+	/** Container name for Docker environments (enables container health monitoring) */
+	containerName?: string;
+}
+
+export function createSlackAgentTools(
+	executor: Executor,
+	options?: CreateToolsOptions,
+): AgentTool[] {
 	return [
 		createReadTool(executor),
 		createBashTool(executor),
 		createEditTool(executor),
 		createWriteTool(executor),
+		createStatusTool(executor, options?.containerName),
 		attachTool,
 	];
 }
@@ -44,6 +54,7 @@ export {
 	createReadTool,
 	createWriteTool,
 	createEditTool,
+	createStatusTool,
 	attachTool,
 	setUploadFunction,
 };

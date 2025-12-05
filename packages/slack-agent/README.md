@@ -183,6 +183,37 @@ The agent has access to these tools:
 - **write**: Create/overwrite files
 - **edit**: Make surgical edits to existing files
 - **attach**: Share files back to Slack
+- **status**: Check system health and resource usage
+
+### Status Tool
+
+The status tool provides visibility into the execution environment:
+
+```
+Environment: docker
+
+Container:
+  Name: slack-agent-abc12345
+  ID: 7f01f7ce97c6
+  Image: node:20-slim
+  Status: running
+  Uptime: 2h 15m
+
+Resources:
+  CPU: 12.5%
+  Memory: 256MiB / 2GiB (12.8%)
+  Processes: 8
+
+Workspace:
+  Path: /workspace
+  Disk Usage: 45.2MB
+  Files: 127
+```
+
+The agent uses this tool to:
+- Report status when asked "how are you doing?"
+- Check resources before memory-intensive tasks
+- Debug performance issues
 
 ## Programmatic Usage
 

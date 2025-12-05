@@ -187,6 +187,12 @@ export interface Executor {
 	getWorkspacePath(hostPath: string): string;
 
 	/**
+	 * Get the container name (for Docker executors)
+	 * Returns undefined for host executors
+	 */
+	getContainerName(): string | undefined;
+
+	/**
 	 * Cleanup resources (stop container if auto-created)
 	 */
 	dispose(): Promise<void>;
@@ -285,6 +291,10 @@ class HostExecutor implements Executor {
 		return hostPath;
 	}
 
+	getContainerName(): string | undefined {
+		return undefined;
+	}
+
 	async dispose(): Promise<void> {
 		// Nothing to clean up for host executor
 	}
@@ -311,6 +321,10 @@ class DockerExecutor implements Executor {
 	getWorkspacePath(_hostPath: string): string {
 		// Docker container sees /workspace
 		return "/workspace";
+	}
+
+	getContainerName(): string | undefined {
+		return this.container;
 	}
 
 	async dispose(): Promise<void> {
@@ -434,6 +448,10 @@ class AutoDockerExecutor implements Executor {
 
 	getWorkspacePath(_hostPath: string): string {
 		return this.config.workspaceMount;
+	}
+
+	getContainerName(): string | undefined {
+		return this.containerName;
 	}
 
 	async dispose(): Promise<void> {
