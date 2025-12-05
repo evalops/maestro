@@ -569,6 +569,28 @@ async function* streamResponsesApi(
 						break;
 					}
 					case "response.completed": {
+						// Finalize any pending content blocks
+						for (let i = 0; i < partial.content.length; i++) {
+							const block = partial.content[i];
+							if (block.type === "toolCall" && !toolEnded.has(i)) {
+								yield {
+									type: "toolcall_end",
+									contentIndex: i,
+									toolCall: block,
+									partial,
+								};
+								toolEnded.add(i);
+							} else if (block.type === "text" && !textEnded.has(i)) {
+								yield {
+									type: "text_end",
+									contentIndex: i,
+									content: block.text,
+									partial,
+								};
+								textEnded.add(i);
+							}
+						}
+
 						const usage = event.response?.usage;
 						if (usage) {
 							partial.usage.input = usage.input_tokens || 0;
@@ -578,6 +600,11 @@ async function* streamResponsesApi(
 							updateCosts();
 						}
 						partial.stopReason = "stop";
+						yield {
+							type: "done",
+							reason: partial.stopReason,
+							message: partial,
+						};
 						break;
 					}
 					case "response.failed": {
