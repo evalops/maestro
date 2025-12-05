@@ -225,6 +225,9 @@ export async function* streamResponsesApiSdk(
 				) {
 					currentBlock.thinking =
 						item.summary?.map((s) => s.text).join("\n\n") || "";
+					// Store the full reasoning item so we can send it back verbatim
+					// This is required for reasoning models like codex
+					currentBlock.thinkingSignature = JSON.stringify(item);
 					yield {
 						type: "thinking_end",
 						contentIndex: blockIndex(),
@@ -398,6 +401,14 @@ function buildInput(
 						status: "completed",
 						id: `msg_${Math.random().toString(36).substring(2, 15)}`,
 					});
+				} else if (block.type === "thinking" && msg.stopReason !== "error") {
+					// For reasoning models, we need to include reasoning items
+					// They're required before function_call items
+					// Use the stored signature if available (contains proper IDs)
+					if (block.thinkingSignature) {
+						const reasoningItem = JSON.parse(block.thinkingSignature);
+						input.push(reasoningItem);
+					}
 				} else if (block.type === "toolCall" && msg.stopReason !== "error") {
 					const id = block.id.includes("|") ? block.id.split("|")[1] : block.id;
 					const callId = block.id.includes("|")
