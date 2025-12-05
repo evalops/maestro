@@ -5,6 +5,8 @@ A Slack bot that runs an AI coding agent in a sandboxed environment. The agent c
 ## Features
 
 - **Slack Integration**: Responds to @mentions in channels and DMs via Socket Mode
+- **Thread Support**: Channel mentions reply in threads to reduce noise; thread replies stay in context
+- **Progress Indicators**: Status updates during long-running tasks
 - **Docker Sandbox**: Isolate command execution in a container (recommended)
 - **Auto-Create Containers**: Automatically create and manage Docker containers
 - **Persistent Workspace**: All conversation history, files, and tools stored in one directory

@@ -16,6 +16,7 @@ export interface SlackMessage {
 	userName?: string;
 	channel: string;
 	ts: string;
+	threadTs?: string; // Parent thread timestamp (if this is a thread reply)
 	attachments: Attachment[];
 }
 
@@ -25,12 +26,16 @@ export interface SlackContext {
 	store: ChannelStore;
 	channels: ChannelInfo[];
 	users: UserInfo[];
+	/** Whether responses should go in a thread (true for channel mentions) */
+	useThread: boolean;
 	respond(text: string, log?: boolean): Promise<void>;
 	replaceMessage(text: string): Promise<void>;
 	respondInThread(text: string): Promise<void>;
 	setTyping(isTyping: boolean): Promise<void>;
 	uploadFile(filePath: string, title?: string): Promise<void>;
 	setWorking(working: boolean): Promise<void>;
+	/** Update status indicator (shows progress without creating new messages) */
+	updateStatus(status: string): Promise<void>;
 }
 
 export interface ReactionContext {
@@ -219,6 +224,7 @@ export class SlackBot {
 				channel: string;
 				user: string;
 				ts: string;
+				thread_ts?: string; // Present if mention is in a thread
 				files?: Array<{
 					name: string;
 					url_private_download?: string;
@@ -231,10 +237,13 @@ export class SlackBot {
 				channel: slackEvent.channel,
 				user: slackEvent.user,
 				ts: slackEvent.ts,
+				threadTs: slackEvent.thread_ts,
 				files: slackEvent.files,
 			});
 
-			const ctx = await this.createContext(slackEvent);
+			// For channel mentions, always use thread mode
+			// Use existing thread if mentioned in a thread, otherwise create new thread
+			const ctx = await this.createContext(slackEvent, { useThread: true });
 			await this.handler.onChannelMention(ctx);
 		});
 
@@ -246,6 +255,7 @@ export class SlackBot {
 				channel: string;
 				user?: string;
 				ts: string;
+				thread_ts?: string; // Present if this is a thread reply
 				channel_type?: string;
 				subtype?: string;
 				bot_id?: string;
@@ -275,17 +285,23 @@ export class SlackBot {
 				channel: slackEvent.channel,
 				user: slackEvent.user,
 				ts: slackEvent.ts,
+				threadTs: slackEvent.thread_ts,
 				files: slackEvent.files,
 			});
 
 			if (slackEvent.channel_type === "im") {
-				const ctx = await this.createContext({
-					text: slackEvent.text || "",
-					channel: slackEvent.channel,
-					user: slackEvent.user,
-					ts: slackEvent.ts,
-					files: slackEvent.files,
-				});
+				// DMs don't use thread mode by default (more conversational)
+				const ctx = await this.createContext(
+					{
+						text: slackEvent.text || "",
+						channel: slackEvent.channel,
+						user: slackEvent.user,
+						ts: slackEvent.ts,
+						thread_ts: slackEvent.thread_ts,
+						files: slackEvent.files,
+					},
+					{ useThread: false },
+				);
 				await this.handler.onDirectMessage(ctx);
 			}
 		});
@@ -340,6 +356,7 @@ export class SlackBot {
 		channel: string;
 		user: string;
 		ts: string;
+		threadTs?: string;
 		files?: Array<{
 			name: string;
 			url_private_download?: string;
@@ -363,17 +380,21 @@ export class SlackBot {
 		});
 	}
 
-	private async createContext(event: {
-		text: string;
-		channel: string;
-		user: string;
-		ts: string;
-		files?: Array<{
-			name: string;
-			url_private_download?: string;
-			url_private?: string;
-		}>;
-	}): Promise<SlackContext> {
+	private async createContext(
+		event: {
+			text: string;
+			channel: string;
+			user: string;
+			ts: string;
+			thread_ts?: string;
+			files?: Array<{
+				name: string;
+				url_private_download?: string;
+				url_private?: string;
+			}>;
+		},
+		options: { useThread: boolean } = { useThread: false },
+	): Promise<SlackContext> {
 		const rawText = event.text;
 		const text = rawText.replace(/<@[A-Z0-9]+>/gi, "").trim();
 
@@ -397,6 +418,14 @@ export class SlackBot {
 			? this.store.processAttachments(event.channel, event.files, event.ts)
 			: [];
 
+		// Determine the thread to use for responses:
+		// - If user message is in a thread, reply in that thread
+		// - If useThread is true (channel mentions), use the user's message as thread parent
+		// - Otherwise (DMs), post directly to channel
+		const useThread = options.useThread;
+		const parentThreadTs = event.thread_ts; // Existing thread the user messaged in
+		const userMessageTs = event.ts; // The user's message timestamp
+
 		let messageTs: string | null = null;
 		let accumulatedText = "";
 		let isThinking = true;
@@ -412,12 +441,14 @@ export class SlackBot {
 				userName,
 				channel: event.channel,
 				ts: event.ts,
+				threadTs: event.thread_ts,
 				attachments,
 			},
 			channelName,
 			store: this.store,
 			channels: this.getChannels(),
 			users: this.getUsers(),
+			useThread,
 			respond: async (responseText: string, log = true) => {
 				updatePromise = updatePromise.then(async () => {
 					if (isThinking) {
@@ -431,6 +462,13 @@ export class SlackBot {
 						? accumulatedText + workingIndicator
 						: accumulatedText;
 
+					// Determine thread_ts for the response:
+					// - If user is in a thread, reply in that thread
+					// - If useThread mode, reply as thread to user's message
+					// - Otherwise post to channel directly
+					const threadTs =
+						parentThreadTs || (useThread ? userMessageTs : undefined);
+
 					if (messageTs) {
 						await this.webClient.chat.update({
 							channel: event.channel,
@@ -441,6 +479,9 @@ export class SlackBot {
 						const result = await this.webClient.chat.postMessage({
 							channel: event.channel,
 							text: displayText,
+							thread_ts: threadTs,
+							// Also post to channel when starting a new thread (not replying to existing)
+							reply_broadcast: useThread && !parentThreadTs,
 						});
 						messageTs = result.ts as string;
 					}
@@ -473,9 +514,13 @@ export class SlackBot {
 			setTyping: async (typing: boolean) => {
 				if (typing && !messageTs) {
 					accumulatedText = "_Thinking_";
+					const threadTs =
+						parentThreadTs || (useThread ? userMessageTs : undefined);
 					const result = await this.webClient.chat.postMessage({
 						channel: event.channel,
 						text: accumulatedText,
+						thread_ts: threadTs,
+						reply_broadcast: useThread && !parentThreadTs,
 					});
 					messageTs = result.ts as string;
 				}
@@ -483,12 +528,15 @@ export class SlackBot {
 			uploadFile: async (filePath: string, title?: string) => {
 				const fileName = title || basename(filePath);
 				const fileContent = readFileSync(filePath);
+				const threadTs =
+					parentThreadTs || (useThread ? userMessageTs : undefined);
 
 				await this.webClient.files.uploadV2({
 					channel_id: event.channel,
 					file: fileContent,
 					filename: fileName,
 					title: fileName,
+					thread_ts: threadTs,
 				});
 			},
 			replaceMessage: async (newText: string) => {
@@ -498,6 +546,9 @@ export class SlackBot {
 					const displayText = isWorking
 						? accumulatedText + workingIndicator
 						: accumulatedText;
+
+					const threadTs =
+						parentThreadTs || (useThread ? userMessageTs : undefined);
 
 					if (messageTs) {
 						await this.webClient.chat.update({
@@ -509,6 +560,8 @@ export class SlackBot {
 						const result = await this.webClient.chat.postMessage({
 							channel: event.channel,
 							text: displayText,
+							thread_ts: threadTs,
+							reply_broadcast: useThread && !parentThreadTs,
 						});
 						messageTs = result.ts as string;
 					}
@@ -523,6 +576,20 @@ export class SlackBot {
 						const displayText = isWorking
 							? accumulatedText + workingIndicator
 							: accumulatedText;
+						await this.webClient.chat.update({
+							channel: event.channel,
+							ts: messageTs,
+							text: displayText,
+						});
+					}
+				});
+				await updatePromise;
+			},
+			updateStatus: async (status: string) => {
+				updatePromise = updatePromise.then(async () => {
+					if (messageTs && isWorking) {
+						// Update the working indicator with the status
+						const displayText = `${accumulatedText}\n_${status}_${workingIndicator}`;
 						await this.webClient.chat.update({
 							channel: event.channel,
 							ts: messageTs,

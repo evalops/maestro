@@ -412,6 +412,34 @@ export function createAgentRunner(
 			let stopReason = "stop";
 			const SLACK_MAX_LENGTH = 40000;
 
+			// Progress indicator - update status every 30 seconds during long operations
+			let lastStatusUpdate = Date.now();
+			let toolsExecuted = 0;
+			const STATUS_UPDATE_INTERVAL = 30000; // 30 seconds
+
+			const maybeUpdateStatus = async () => {
+				const now = Date.now();
+				if (now - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
+					lastStatusUpdate = now;
+					const pendingCount = pendingTools.size;
+					let status = "Still working";
+					if (toolsExecuted > 0) {
+						status += ` (${toolsExecuted} tool${toolsExecuted > 1 ? "s" : ""} run)`;
+					}
+					if (pendingCount > 0) {
+						const pendingNames = Array.from(pendingTools.values())
+							.map((t) => t.toolName)
+							.join(", ");
+						status += ` - running: ${pendingNames}`;
+					}
+					try {
+						await ctx.updateStatus(status);
+					} catch {
+						// Ignore status update errors
+					}
+				}
+			};
+
 			const splitForSlack = (text: string): string[] => {
 				if (text.length <= SLACK_MAX_LENGTH) return [text];
 				const parts: string[] = [];
@@ -508,8 +536,12 @@ export function createAgentRunner(
 						const resultStr = extractToolResultText(event.result);
 						const pending = pendingTools.get(event.toolCallId);
 						pendingTools.delete(event.toolCallId);
+						toolsExecuted++;
 
 						const durationMs = pending ? Date.now() - pending.startTime : 0;
+
+						// Check if we should update progress status
+						await maybeUpdateStatus();
 
 						if (event.isError) {
 							logger.logToolError(
