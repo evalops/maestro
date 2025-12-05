@@ -130,6 +130,11 @@ Users can interact with the bot using emoji reactions:
 | 👀 `:eyes:` | Check if the bot is working |
 | 💰 `:moneybag:` | View usage/cost summary |
 | 📈 `:chart_with_upwards_trend:` | View usage/cost summary |
+| 🔄 `:arrows_counterclockwise:` | Retry the last request |
+| ☕ `:coffee:` / 🧠 `:brain:` | Toggle extended thinking mode |
+| 🧹 `:broom:` / 🗑️ `:wastebasket:` | Clear conversation history |
+
+**Extended Thinking Mode:** When enabled with ☕, the agent will use Claude's extended thinking for more careful reasoning on complex tasks. Status shows in 👀 responses.
 
 **Required Slack Permissions:**
 - `reactions:read` - To receive reaction events

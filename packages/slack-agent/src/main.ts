@@ -143,6 +143,12 @@ const activeRuns = new Map<
 	{ runner: AgentRunner; context: SlackContext; stopContext?: SlackContext }
 >();
 
+// Track last context per channel for retry
+const lastContexts = new Map<string, SlackContext>();
+
+// Track thinking mode preference per channel
+const thinkingEnabled = new Map<string, boolean>();
+
 async function handleMessage(
 	ctx: SlackContext,
 	_source: "channel" | "dm",
@@ -190,7 +196,15 @@ async function handleMessage(
 	logger.logUserMessage(logCtx, ctx.message.text);
 	const channelDir = join(workingDir, channelId);
 
-	const runner = createAgentRunner(sandbox, workingDir);
+	// Save context for retry
+	lastContexts.set(channelId, ctx);
+
+	// Check if thinking mode is enabled for this channel
+	const useThinking = thinkingEnabled.get(channelId) ?? false;
+
+	const runner = createAgentRunner(sandbox, workingDir, {
+		thinking: useThinking,
+	});
 	activeRuns.set(channelId, { runner, context: ctx });
 
 	await ctx.setTyping(true);
@@ -243,6 +257,9 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 // 🛑 octagonal_sign - Stop current run
 // 👀 eyes - Check status
 // 💰 moneybag - Check usage/costs
+// 🔄 arrows_counterclockwise - Retry last request
+// ☕ coffee - Toggle extended thinking
+// 🧹 broom - Clear conversation context
 async function handleReaction(ctx: ReactionContext): Promise<void> {
 	const channelId = ctx.channel;
 	const active = activeRuns.get(channelId);
@@ -262,15 +279,16 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 		case "eyes": {
 			// 👀 Status check
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			const thinking = thinkingEnabled.get(channelId) ?? false;
 			if (active) {
 				await ctx.postMessage(
 					channelId,
-					"_Working on a task. React with 🛑 to stop._",
+					`_Working on a task${thinking ? " (thinking mode)" : ""}. React with 🛑 to stop._`,
 				);
 			} else {
 				await ctx.postMessage(
 					channelId,
-					"_Nothing running. Mention me to start._",
+					`_Nothing running${thinking ? " (thinking mode on)" : ""}. Mention me to start._`,
 				);
 			}
 			break;
@@ -283,6 +301,75 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			const summary = costTracker.getSummary(channelId);
 			const formatted = costTracker.formatSummary(summary);
 			await ctx.postMessage(channelId, formatted);
+			break;
+		}
+
+		case "arrows_counterclockwise":
+		case "repeat": {
+			// 🔄 Retry last request
+			if (active) {
+				await ctx.postMessage(
+					channelId,
+					"_Already working. React with 🛑 to stop first._",
+				);
+				break;
+			}
+
+			const lastCtx = lastContexts.get(channelId);
+			if (!lastCtx) {
+				await ctx.postMessage(channelId, "_No previous request to retry._");
+				break;
+			}
+
+			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			logger.logInfo(`Retry requested via reaction in ${channelId}`);
+			await ctx.postMessage(channelId, "_Retrying last request..._");
+
+			// Re-run with the last context
+			await handleMessage(lastCtx, "channel");
+			break;
+		}
+
+		case "coffee":
+		case "brain": {
+			// ☕ or 🧠 Toggle extended thinking
+			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			const current = thinkingEnabled.get(channelId) ?? false;
+			thinkingEnabled.set(channelId, !current);
+
+			if (!current) {
+				await ctx.postMessage(
+					channelId,
+					"_Extended thinking enabled ☕ I'll think more carefully on complex tasks._",
+				);
+			} else {
+				await ctx.postMessage(
+					channelId,
+					"_Extended thinking disabled. Back to quick responses._",
+				);
+			}
+			break;
+		}
+
+		case "broom":
+		case "wastebasket": {
+			// 🧹 or 🗑️ Clear conversation context
+			if (active) {
+				await ctx.postMessage(
+					channelId,
+					"_Can't clear while working. React with 🛑 to stop first._",
+				);
+				break;
+			}
+
+			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			await bot.store.clearHistory(channelId);
+			lastContexts.delete(channelId);
+			logger.logInfo(`Context cleared via reaction in ${channelId}`);
+			await ctx.postMessage(
+				channelId,
+				"_Conversation history cleared. Starting fresh!_",
+			);
 			break;
 		}
 	}

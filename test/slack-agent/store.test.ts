@@ -2,7 +2,13 @@
  * Tests for store.ts - Channel message logging and attachment management
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -427,6 +433,70 @@ describe("ChannelStore", () => {
 
 			const ts = store.getLastTimestamp("C123456");
 			expect(ts).toBeNull();
+		});
+	});
+
+	describe("clearHistory", () => {
+		it("clears conversation history", async () => {
+			// Create some messages
+			await store.logMessage("C123456", {
+				date: new Date().toISOString(),
+				ts: "1234567890.111111",
+				user: "U111111",
+				text: "First message",
+				attachments: [],
+				isBot: false,
+			});
+			await store.logMessage("C123456", {
+				date: new Date().toISOString(),
+				ts: "1234567890.222222",
+				user: "U111111",
+				text: "Second message",
+				attachments: [],
+				isBot: false,
+			});
+
+			// Verify messages exist
+			const logPath = join(testDir, "C123456", "log.jsonl");
+			expect(readFileSync(logPath, "utf-8").trim().split("\n")).toHaveLength(2);
+
+			// Clear history
+			await store.clearHistory("C123456");
+
+			// Verify log is empty
+			expect(readFileSync(logPath, "utf-8")).toBe("");
+		});
+
+		it("creates backup before clearing", async () => {
+			await store.logMessage("C123456", {
+				date: new Date().toISOString(),
+				ts: "1234567890.111111",
+				user: "U111111",
+				text: "Message to backup",
+				attachments: [],
+				isBot: false,
+			});
+
+			await store.clearHistory("C123456");
+
+			// Check backup file exists
+			const channelDir = join(testDir, "C123456");
+			const files = readdirSync(channelDir);
+			const backupFiles = files.filter((f) => f.endsWith(".jsonl.bak"));
+
+			expect(backupFiles).toHaveLength(1);
+
+			// Verify backup contains the original data
+			const backupContent = readFileSync(
+				join(channelDir, backupFiles[0]),
+				"utf-8",
+			);
+			expect(backupContent).toContain("Message to backup");
+		});
+
+		it("handles non-existent channel gracefully", async () => {
+			// Should not throw
+			await expect(store.clearHistory("C999999")).resolves.not.toThrow();
 		});
 	});
 });

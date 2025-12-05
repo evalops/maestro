@@ -212,4 +212,30 @@ export class ChannelStore {
 		const buffer = await response.arrayBuffer();
 		await writeFile(filePath, Buffer.from(buffer));
 	}
+
+	/**
+	 * Clear conversation history for a channel
+	 * Backs up old log before clearing
+	 */
+	async clearHistory(channelId: string): Promise<void> {
+		const dir = this.getChannelDir(channelId);
+		const logPath = join(dir, "log.jsonl");
+
+		if (existsSync(logPath)) {
+			// Backup old log with timestamp
+			const backupPath = join(dir, `log.${Date.now()}.jsonl.bak`);
+			const content = readFileSync(logPath, "utf-8");
+			await writeFile(backupPath, content);
+
+			// Clear the log
+			await writeFile(logPath, "");
+		}
+
+		// Clear recent log cache for this channel
+		for (const key of this.recentlyLogged.keys()) {
+			if (key.startsWith(`${channelId}:`)) {
+				this.recentlyLogged.delete(key);
+			}
+		}
+	}
 }

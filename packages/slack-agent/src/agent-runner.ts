@@ -310,13 +310,20 @@ function extractToolResultText(result: unknown): string {
 	return JSON.stringify(result);
 }
 
+export interface AgentRunnerOptions {
+	/** Enable extended thinking mode */
+	thinking?: boolean;
+}
+
 export function createAgentRunner(
 	sandboxConfig: SandboxConfig,
 	workingDir?: string,
+	options?: AgentRunnerOptions,
 ): AgentRunner {
 	let agent: Agent | null = null;
 	const executor = createExecutor(sandboxConfig);
 	const costTracker = workingDir ? new CostTracker(workingDir) : null;
+	const thinkingLevel = options?.thinking ? "medium" : "off";
 
 	return {
 		async run(
@@ -386,7 +393,7 @@ export function createAgentRunner(
 				initialState: {
 					systemPrompt,
 					model,
-					thinkingLevel: "off",
+					thinkingLevel,
 					tools: tools as AgentTool[],
 				},
 			});
