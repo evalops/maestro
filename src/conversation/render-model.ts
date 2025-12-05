@@ -249,9 +249,10 @@ export interface RenderableImageContent {
 	data: string;
 }
 
-function collapseProgressiveBlocks(
-	blocks: string[],
-): { blocks: string[]; collapsed: boolean } {
+function collapseProgressiveBlocks(blocks: string[]): {
+	blocks: string[];
+	collapsed: boolean;
+} {
 	if (blocks.length <= 1) return { blocks, collapsed: false };
 
 	const result: string[] = [];
