@@ -130,16 +130,18 @@ interface OpenAIResponsesRequestBody {
 	model: string;
 	input: Array<{
 		role: string;
-		content: Array<{ type: "input_text"; text: string }>;
+		content: Array<
+			| { type: "input_text"; text: string }
+			| { type: "output_text"; text: string }
+		>;
 	}>;
 	stream: boolean;
+	// Responses API uses flat tool format (name at top level, not nested under function)
 	tools?: Array<{
 		type: "function";
-		function: {
-			name: string;
-			description: string;
-			parameters: unknown;
-		};
+		name: string;
+		description: string;
+		parameters: unknown;
 	}>;
 	max_output_tokens?: number;
 	reasoning?: { effort: string };
@@ -280,35 +282,97 @@ async function* streamResponsesApi(
 		...options.headers,
 	};
 
-	// Responses API accepts "input" with content parts; we only send text parts to stay compatible.
-	const input = messages.map((msg) => {
-		const parts: Array<{ type: "input_text"; text: string }> = [];
-		if (typeof msg.content === "string") {
-			parts.push({ type: "input_text", text: msg.content });
-		} else {
-			for (const c of msg.content) {
-				if (c.type === "text") {
-					parts.push({ type: "input_text", text: c.text });
+	// Responses API accepts "input" with content parts.
+	// Supported content types: input_text, input_image, output_text, refusal, input_file, computer_screenshot, summary_text
+	// - User messages use "input_text"
+	// - Assistant messages use "output_text"
+	// - Tool results get converted to user messages with input_text containing the tool output
+	// - System messages use "input_text" with "system" or "developer" role
+	type InputTextPart = { type: "input_text"; text: string };
+	type OutputTextPart = { type: "output_text"; text: string };
+	type ContentPart = InputTextPart | OutputTextPart;
+
+	const input = messages
+		.map((msg) => {
+			// Handle tool result messages - convert to user message with tool output as text
+			if (msg.role === "tool") {
+				const toolContent = msg.content;
+				const toolCallId =
+					(msg as unknown as { tool_call_id?: string }).tool_call_id || "";
+				const outputText =
+					typeof toolContent === "string"
+						? toolContent
+						: toolContent
+								.filter((c) => c.type === "text")
+								.map((c) => (c as { text: string }).text)
+								.join("\n");
+				// Format as a tool result message that the model can understand
+				const parts: InputTextPart[] = [
+					{
+						type: "input_text",
+						text: `[Tool Result for call_id=${toolCallId}]\n${outputText}`,
+					},
+				];
+				return { role: "user" as const, content: parts };
+			}
+
+			const parts: ContentPart[] = [];
+			const isAssistant = msg.role === "assistant";
+
+			if (typeof msg.content === "string") {
+				if (isAssistant) {
+					parts.push({ type: "output_text", text: msg.content });
+				} else {
+					parts.push({ type: "input_text", text: msg.content });
+				}
+			} else {
+				for (const c of msg.content) {
+					if (c.type === "text") {
+						if (isAssistant) {
+							parts.push({ type: "output_text", text: c.text });
+						} else {
+							parts.push({ type: "input_text", text: c.text });
+						}
+					}
 				}
 			}
-		}
-		return { role: msg.role, content: parts };
-	});
+			return { role: msg.role, content: parts };
+		})
+		.filter((msg) => msg.content.length > 0);
+
+	// Filter tools for Responses API compatibility:
+	// 1. Must have valid names
+	// 2. Parameters schema must not have oneOf/anyOf/allOf/enum/not at top level
+	const hasIncompatibleSchema = (params: unknown): boolean => {
+		if (!params || typeof params !== "object") return false;
+		const p = params as Record<string, unknown>;
+		return !!(p.oneOf || p.anyOf || p.allOf || p.enum || p.not);
+	};
+
+	const validTools =
+		context.tools?.filter(
+			(tool) =>
+				tool.name &&
+				tool.name.trim() !== "" &&
+				!hasIncompatibleSchema(tool.parameters),
+		) ?? [];
 
 	const requestBody: OpenAIResponsesRequestBody = {
 		model: model.id,
 		input,
 		stream: true,
-		tools:
-			context.tools?.map((tool) => ({
-				type: "function",
-				function: {
-					name: tool.name,
-					description: tool.description,
-					parameters: tool.parameters,
-				},
-			})) ?? [],
 	};
+
+	// Only include tools if there are valid ones
+	// Responses API uses flat tool format (name at top level, not nested under function)
+	if (validTools.length > 0) {
+		requestBody.tools = validTools.map((tool) => ({
+			type: "function",
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+		}));
+	}
 
 	if (options.maxTokens !== undefined) {
 		requestBody.max_output_tokens = options.maxTokens;

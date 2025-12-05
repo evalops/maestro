@@ -84,7 +84,7 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--provider" && i + 1 < args.length) {
 			result.provider = args[++i];
-		} else if (arg === "--model" && i + 1 < args.length) {
+		} else if ((arg === "--model" || arg === "-m") && i + 1 < args.length) {
 			result.model = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
 			const patterns = args[++i]

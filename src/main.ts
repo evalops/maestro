@@ -138,6 +138,7 @@ import { getAllMcpTools } from "./mcp/tool-bridge.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
+	findModelById,
 	getCustomConfigPath,
 	getCustomProviderMetadata,
 	getFactoryDefaultModelSelection,
@@ -1145,7 +1146,7 @@ export async function main(args: string[]) {
 	// ─────────────────────────────────────────────────────────────────────────────
 
 	// Resolve the provider and model to use for this session
-	// Priority: CLI args > alias resolution > factory defaults > hardcoded defaults
+	// Priority: CLI args > alias resolution > provider-agnostic lookup > factory defaults > hardcoded defaults
 	let provider = parsed.provider;
 	let modelId = parsed.model;
 
@@ -1158,6 +1159,15 @@ export async function main(args: string[]) {
 			console.log(
 				chalk.dim(`Using alias: ${parsed.model} → ${provider}/${modelId}`),
 			);
+		}
+	}
+
+	// If no provider specified and not an alias, search for model across all providers
+	if (modelId && !provider) {
+		const foundModel = findModelById(modelId);
+		if (foundModel) {
+			provider = foundModel.provider;
+			console.log(chalk.dim(`Found model: ${modelId} (provider: ${provider})`));
 		}
 	}
 

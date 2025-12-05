@@ -765,6 +765,25 @@ export function resolveModel(
 	return match;
 }
 
+/**
+ * Find a model by ID across all providers (provider-agnostic lookup).
+ * Returns the first match found, or null if not found.
+ */
+export function findModelById(modelId: string): Model<Api> | null {
+	const match = getRegisteredModels().find((entry) => entry.id === modelId);
+	if (!match) return null;
+
+	// Check enterprise policy
+	const policyResult = checkModelPolicy(modelId);
+	if (!policyResult.allowed) {
+		throw new PolicyError(
+			`Model "${modelId}" is blocked by enterprise policy: ${policyResult.reason}`,
+		);
+	}
+
+	return match;
+}
+
 export function getSupportedProviders(): string[] {
 	const builtins = getProviders();
 	const custom = loadConfig().providers.map((p) => p.id);

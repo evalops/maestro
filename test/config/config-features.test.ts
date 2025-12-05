@@ -48,8 +48,10 @@ describe("Config Features", () => {
 		// Save and clear config env vars to ensure isolation
 		originalComposerConfig = process.env.COMPOSER_CONFIG;
 		originalComposerModelsFile = process.env.COMPOSER_MODELS_FILE;
-		process.env.COMPOSER_CONFIG = undefined;
-		process.env.COMPOSER_MODELS_FILE = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+		delete process.env.COMPOSER_CONFIG;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+		delete process.env.COMPOSER_MODELS_FILE;
 
 		// Clear any cached config from previous tests
 		try {
@@ -64,16 +66,19 @@ describe("Config Features", () => {
 		if (originalComposerConfig !== undefined) {
 			process.env.COMPOSER_CONFIG = originalComposerConfig;
 		} else {
-			process.env.COMPOSER_CONFIG = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+			delete process.env.COMPOSER_CONFIG;
 		}
 		if (originalComposerModelsFile !== undefined) {
 			process.env.COMPOSER_MODELS_FILE = originalComposerModelsFile;
 		} else {
-			process.env.COMPOSER_MODELS_FILE = undefined;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+			delete process.env.COMPOSER_MODELS_FILE;
 		}
 
 		// Clean test-specific env vars
-		process.env.TEST_API_KEY = undefined;
+		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+		delete process.env.TEST_API_KEY;
 
 		// Clear config cache between tests
 		try {

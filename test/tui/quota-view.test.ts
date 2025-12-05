@@ -330,10 +330,7 @@ describe("QuotaView", () => {
 			const { view, container } = createQuotaView();
 			process.env.COMPOSER_ENTERPRISE_TOKEN = undefined;
 
-			view.handleQuotaCommand(createContext("/quota"));
-
-			// Wait for async operations
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			await view.handleQuotaCommand(createContext("/quota"));
 
 			const rendered = getRenderedText(container);
 			expect(rendered).toContain("Not authenticated");
@@ -362,9 +359,7 @@ describe("QuotaView", () => {
 
 			const { view, container } = createQuotaView();
 
-			view.handleQuotaCommand(createContext("/quota"));
-
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			await view.handleQuotaCommand(createContext("/quota"));
 
 			const rendered = getRenderedText(container);
 			expect(rendered).toContain("Token Quota Status");
@@ -397,9 +392,7 @@ describe("QuotaView", () => {
 
 			const { view, container } = createQuotaView();
 
-			view.handleQuotaCommand(createContext("/quota"));
-
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			await view.handleQuotaCommand(createContext("/quota"));
 
 			const rendered = getRenderedText(container);
 			expect(rendered).toContain("Unlimited");
@@ -430,9 +423,7 @@ describe("QuotaView", () => {
 
 			const { view, container } = createQuotaView();
 
-			view.handleQuotaCommand(createContext("/quota"));
-
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			await view.handleQuotaCommand(createContext("/quota"));
 
 			const rendered = getRenderedText(container);
 			expect(rendered).toContain("Unlimited");

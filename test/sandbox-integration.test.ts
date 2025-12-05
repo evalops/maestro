@@ -129,6 +129,25 @@ describe("Sandbox", () => {
 	});
 
 	describe("createSandbox", () => {
+		let originalWebServer: string | undefined;
+
+		beforeEach(() => {
+			// Ensure web-server mode is disabled for these tests
+			originalWebServer = process.env.COMPOSER_WEB_SERVER;
+			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+			delete process.env.COMPOSER_WEB_SERVER;
+		});
+
+		afterEach(() => {
+			// Restore original env
+			if (originalWebServer !== undefined) {
+				process.env.COMPOSER_WEB_SERVER = originalWebServer;
+			} else {
+				// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
+				delete process.env.COMPOSER_WEB_SERVER;
+			}
+		});
+
 		it("should return undefined for mode 'none'", async () => {
 			const sandbox = await createSandbox({ mode: "none" });
 			expect(sandbox).toBeUndefined();
