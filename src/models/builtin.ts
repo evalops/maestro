@@ -136,6 +136,31 @@ const GROQ_RESPONSES_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
+// Manual overlay for OpenAI GPT-5.1 Codex Max (frontier agentic coding model)
+// Only available via Responses API - optimized for long-horizon agentic coding
+const OPENAI_CODEX_OVERLAY = {
+	openai: {
+		"gpt-5.1-codex-max": {
+			id: "gpt-5.1-codex-max",
+			name: "GPT-5.1 Codex Max",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://api.openai.com",
+			reasoning: true,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 1.25,
+				output: 10,
+				cacheRead: 0.125,
+				cacheWrite: 0,
+			},
+			contextWindow: 400000,
+			maxTokens: 128000,
+		} as Model<"openai-responses">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 // Cached converted models (built lazily on first access)
 let BUILTIN_MODELS: Record<string, Model<Api>[]> | null = null;
 const CODEX_MODEL_PATTERN = /codex/i;
@@ -162,6 +187,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		ANTHROPIC_OPUS_45_OVERLAY,
 		OPENROUTER_RESPONSES_OVERLAY,
 		GROQ_RESPONSES_OVERLAY,
+		OPENAI_CODEX_OVERLAY,
 	];
 
 	for (const overlay of overlays) {
