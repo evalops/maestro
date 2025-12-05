@@ -22,7 +22,7 @@ describe("File Upload Integration", () => {
 		mkdirSync(testDir, { recursive: true });
 		store = new ChannelStore({
 			workingDir: testDir,
-			botToken: "xoxb-test-token",
+			botToken: "test-bot-token-placeholder",
 		});
 	});
 

@@ -90,15 +90,12 @@ export async function runExecCommand(
 				return null;
 			}
 			const { schema, label } = resolveSchemaSource(options.outputSchema);
-			const AjvCtor: new (options?: unknown) => unknown =
+			const AjvCtor: new (opts?: unknown) => unknown =
 				(
 					AjvModule as unknown as {
-						default?: new (options?: unknown) => unknown;
+						default?: new (opts?: unknown) => unknown;
 					}
-				).default ??
-				(AjvModule as unknown as new (
-					options?: unknown,
-				) => unknown);
+				).default ?? (AjvModule as unknown as new (opts?: unknown) => unknown);
 			const ajv = new AjvCtor({ allErrors: true, strict: false }) as {
 				compile: (schema: unknown) => ValidateFunction;
 			};
