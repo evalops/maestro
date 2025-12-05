@@ -102,6 +102,12 @@ export async function* streamResponsesApiSdk(
 		};
 	}
 
+	// For reasoning models, include encrypted_content to enable multi-turn conversations
+	// This is required for stateless usage of the Responses API with reasoning items
+	if (model.reasoning) {
+		params.include = ["reasoning.encrypted_content"];
+	}
+
 	// Initialize output
 	const output: AssistantMessage = {
 		role: "assistant",
