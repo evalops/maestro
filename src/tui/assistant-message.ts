@@ -18,6 +18,7 @@ export class AssistantMessageComponent extends Container {
 	private headerText: Text;
 	private contentContainer: Container;
 	private typingIndicator: Text | null = null;
+	private typingSpacer: Spacer | null = null;
 	private typingFrame = 0;
 	private typingTimer: NodeJS.Timeout | null = null;
 	private isStreaming = false;
@@ -62,7 +63,8 @@ export class AssistantMessageComponent extends Container {
 		this.statusText = null;
 		this.topSpacer = null;
 
-		this.contentContainer.addChild(new Spacer(1));
+		this.typingSpacer = new Spacer(1);
+		this.contentContainer.addChild(this.typingSpacer);
 
 		this.typingIndicator = new Text(this.buildTypingLine(), 1, 0);
 		this.contentContainer.addChild(this.typingIndicator);
@@ -80,8 +82,31 @@ export class AssistantMessageComponent extends Container {
 			clearInterval(this.typingTimer);
 			this.typingTimer = null;
 		}
-		this.typingIndicator = null;
+		this.removeTypingIndicator();
 		this.isStreaming = false;
+	}
+
+	private removeTypingIndicator(): void {
+		if (!this.typingIndicator) return;
+
+		const indicatorIndex = this.contentContainer.children.indexOf(
+			this.typingIndicator,
+		);
+		if (indicatorIndex !== -1) {
+			this.contentContainer.children.splice(indicatorIndex, 1);
+		}
+
+		if (this.typingSpacer) {
+			const spacerIndex = this.contentContainer.children.indexOf(
+				this.typingSpacer,
+			);
+			if (spacerIndex !== -1) {
+				this.contentContainer.children.splice(spacerIndex, 1);
+			}
+		}
+
+		this.typingIndicator = null;
+		this.typingSpacer = null;
 	}
 
 	private buildTypingLine(): string {
