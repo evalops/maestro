@@ -23,7 +23,7 @@ describe("ChannelStore", () => {
 		);
 		store = new ChannelStore({
 			workingDir: testDir,
-			botToken: "xoxb-test-token",
+			botToken: "test-bot-token-placeholder",
 		});
 	});
 
