@@ -138,8 +138,13 @@ Users can interact with the bot using emoji reactions:
 | 🔄 `:arrows_counterclockwise:` | Retry the last request |
 | ☕ `:coffee:` / 🧠 `:brain:` | Toggle extended thinking mode |
 | 🧹 `:broom:` / 🗑️ `:wastebasket:` | Clear conversation history |
+| 📅 `:calendar:` / ⏰ `:alarm_clock:` | List scheduled tasks |
+| ✅ `:white_check_mark:` / 👍 `:thumbsup:` | Approve pending operation |
+| ❌ `:x:` / 👎 `:thumbsdown:` | Reject pending operation |
 
 **Extended Thinking Mode:** When enabled with ☕, the agent will use Claude's extended thinking for more careful reasoning on complex tasks. Status shows in 👀 responses.
+
+**Approval Workflows:** When the agent attempts a destructive operation (e.g., `rm -rf`, `git push --force`), it will request approval. React with ✅ to approve or ❌ to reject. Approvals timeout after 5 minutes.
 
 **Required Slack Permissions:**
 - `reactions:read` - To receive reaction events

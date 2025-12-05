@@ -8,6 +8,7 @@
 
 import { join, resolve } from "node:path";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
+import { ApprovalManager } from "./approval.js";
 import { CostTracker } from "./cost-tracker.js";
 import * as logger from "./logger.js";
 import { RateLimiter, formatRateLimitMessage } from "./rate-limiter.js";
@@ -18,6 +19,7 @@ import {
 	parseSandboxArg,
 	validateSandbox,
 } from "./sandbox.js";
+import { type ScheduledTask, Scheduler } from "./scheduler.js";
 import {
 	type ReactionContext,
 	SlackBot,
@@ -137,6 +139,13 @@ const rateLimiter = new RateLimiter({
 // Cost tracker for usage reporting
 const costTracker = new CostTracker(workingDir);
 
+// Approval manager for destructive operations
+const approvalManager = new ApprovalManager();
+approvalManager.start();
+
+// Scheduler placeholder (initialized after bot creation)
+const schedulerHolder: { instance: Scheduler | null } = { instance: null };
+
 // Track active runs per channel
 const activeRuns = new Map<
 	string,
@@ -148,6 +157,58 @@ const lastContexts = new Map<string, SlackContext>();
 
 // Track thinking mode preference per channel
 const thinkingEnabled = new Map<string, boolean>();
+
+// Handle scheduled task execution
+async function handleScheduledTask(task: ScheduledTask): Promise<void> {
+	const channelId = task.channelId;
+
+	// Check if already running in this channel
+	if (activeRuns.has(channelId)) {
+		logger.logWarning(
+			`Skipping scheduled task ${task.id} - channel ${channelId} is busy`,
+			task.description,
+		);
+		return;
+	}
+
+	logger.logInfo(`Executing scheduled task: ${task.description}`);
+
+	// Post notification about scheduled task
+	try {
+		await bot.postMessage(
+			channelId,
+			`_Running scheduled task: ${task.description}_`,
+		);
+
+		// Create a minimal context for the scheduled task
+		const channelDir = join(workingDir, channelId);
+		const useThinking = thinkingEnabled.get(channelId) ?? false;
+
+		const runner = createAgentRunner(sandbox, workingDir, {
+			thinking: useThinking,
+		});
+
+		// Create a simplified context for scheduled tasks
+		const scheduledCtx = await bot.createScheduledContext(
+			channelId,
+			task.prompt,
+		);
+		activeRuns.set(channelId, { runner, context: scheduledCtx });
+
+		await scheduledCtx.setTyping(true);
+		await scheduledCtx.setWorking(true);
+
+		try {
+			await runner.run(scheduledCtx, channelDir, bot.store);
+		} finally {
+			await scheduledCtx.setWorking(false);
+			activeRuns.delete(channelId);
+		}
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		logger.logWarning(`Scheduled task failed: ${task.id}`, errorMsg);
+	}
+}
 
 async function handleMessage(
 	ctx: SlackContext,
@@ -232,26 +293,6 @@ async function handleMessage(
 		activeRuns.delete(channelId);
 	}
 }
-
-// Graceful shutdown handler
-async function shutdown(signal: string): Promise<void> {
-	console.log(`\nReceived ${signal}, shutting down...`);
-
-	// Abort all active runs
-	for (const [channelId, active] of activeRuns) {
-		console.log(`Aborting run in channel ${channelId}...`);
-		active.runner.abort();
-	}
-
-	// Dispose executor (stops auto-created containers)
-	await executor.dispose();
-
-	console.log("Shutdown complete.");
-	process.exit(0);
-}
-
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // Reaction command handlers
 // 🛑 octagonal_sign - Stop current run
@@ -372,6 +413,46 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			);
 			break;
 		}
+
+		case "calendar":
+		case "alarm_clock": {
+			// 📅 or ⏰ List scheduled tasks
+			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			if (!schedulerHolder.instance) {
+				await ctx.postMessage(channelId, "_Scheduler not initialized._");
+				break;
+			}
+			const tasks = schedulerHolder.instance.listTasks(channelId);
+			if (tasks.length === 0) {
+				await ctx.postMessage(
+					channelId,
+					"_No scheduled tasks for this channel._",
+				);
+			} else {
+				const taskList = tasks
+					.map((t) => {
+						const nextRun = new Date(t.nextRun).toLocaleString();
+						const recurring = t.schedule ? " (recurring)" : "";
+						return `• ${t.description}${recurring} - next: ${nextRun}`;
+					})
+					.join("\n");
+				await ctx.postMessage(channelId, `*Scheduled Tasks:*\n${taskList}`);
+			}
+			break;
+		}
+
+		default: {
+			// Check if this is an approval reaction
+			const handled = await approvalManager.handleReaction(
+				channelId,
+				ctx.messageTs,
+				ctx.reaction,
+			);
+			if (handled) {
+				await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			}
+			break;
+		}
 	}
 }
 
@@ -395,5 +476,41 @@ const bot = new SlackBot(
 		workingDir,
 	},
 );
+
+// Initialize scheduler after bot is created
+schedulerHolder.instance = new Scheduler({
+	workingDir,
+	onTaskDue: handleScheduledTask,
+});
+schedulerHolder.instance.start();
+
+// Update shutdown handler to clean up scheduler and approval manager
+async function shutdownWithCleanup(signal: string): Promise<void> {
+	console.log(`\nReceived ${signal}, shutting down...`);
+
+	// Stop scheduler
+	schedulerHolder.instance?.stop();
+
+	// Stop approval manager
+	approvalManager.stop();
+
+	// Abort all active runs
+	for (const [channelId, active] of activeRuns) {
+		console.log(`Aborting run in channel ${channelId}...`);
+		active.runner.abort();
+	}
+
+	// Dispose executor (stops auto-created containers)
+	await executor.dispose();
+
+	console.log("Shutdown complete.");
+	process.exit(0);
+}
+
+// Replace the old shutdown handlers
+process.removeAllListeners("SIGINT");
+process.removeAllListeners("SIGTERM");
+process.on("SIGINT", () => shutdownWithCleanup("SIGINT"));
+process.on("SIGTERM", () => shutdownWithCleanup("SIGTERM"));
 
 bot.start();

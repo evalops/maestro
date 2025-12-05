@@ -735,4 +735,175 @@ export class SlackBot {
 		await this.socketClient.disconnect();
 		logger.logDisconnected();
 	}
+
+	/**
+	 * Post a message to a channel (for scheduled tasks, notifications, etc.)
+	 */
+	async postMessage(channelId: string, text: string): Promise<string | null> {
+		try {
+			const result = await this.webClient.chat.postMessage({
+				channel: channelId,
+				text,
+			});
+			return result.ts as string;
+		} catch (error) {
+			logger.logWarning(
+				`Failed to post message to ${channelId}`,
+				String(error),
+			);
+			return null;
+		}
+	}
+
+	/**
+	 * Create a context for scheduled tasks (no user message to respond to)
+	 */
+	async createScheduledContext(
+		channelId: string,
+		prompt: string,
+	): Promise<SlackContext> {
+		const now = Date.now();
+		const ts = `${Math.floor(now / 1000)}.${(now % 1000) * 1000}`;
+
+		let messageTs: string | null = null;
+		let accumulatedText = "";
+		let isThinking = true;
+		let isWorking = true;
+		const workingIndicator = " ...";
+		let updatePromise: Promise<void> = Promise.resolve();
+
+		return {
+			message: {
+				text: prompt,
+				rawText: prompt,
+				user: "scheduled",
+				userName: "Scheduled Task",
+				channel: channelId,
+				ts,
+				attachments: [],
+			},
+			channelName: this.channelCache.get(channelId),
+			store: this.store,
+			channels: this.getChannels(),
+			users: this.getUsers(),
+			useThread: false,
+			respond: async (responseText: string, log = true) => {
+				updatePromise = updatePromise.then(async () => {
+					if (isThinking) {
+						accumulatedText = responseText;
+						isThinking = false;
+					} else {
+						accumulatedText += `\n${responseText}`;
+					}
+
+					const displayText = isWorking
+						? accumulatedText + workingIndicator
+						: accumulatedText;
+
+					if (messageTs) {
+						await this.webClient.chat.update({
+							channel: channelId,
+							ts: messageTs,
+							text: displayText,
+						});
+					} else {
+						const result = await this.webClient.chat.postMessage({
+							channel: channelId,
+							text: displayText,
+						});
+						messageTs = result.ts as string;
+					}
+
+					if (log && messageTs) {
+						await this.store.logBotResponse(channelId, responseText, messageTs);
+					}
+				});
+				await updatePromise;
+			},
+			respondInThread: async (threadText: string) => {
+				updatePromise = updatePromise.then(async () => {
+					if (!messageTs) return;
+					const obfuscatedText = this.obfuscateUsernames(threadText);
+					await this.webClient.chat.postMessage({
+						channel: channelId,
+						thread_ts: messageTs,
+						text: obfuscatedText,
+					});
+				});
+				await updatePromise;
+			},
+			setTyping: async (typing: boolean) => {
+				if (typing && !messageTs) {
+					accumulatedText = "_Thinking_";
+					const result = await this.webClient.chat.postMessage({
+						channel: channelId,
+						text: accumulatedText,
+					});
+					messageTs = result.ts as string;
+				}
+			},
+			uploadFile: async (filePath: string, title?: string) => {
+				const fileName = title || basename(filePath);
+				const fileContent = readFileSync(filePath);
+				await this.webClient.files.uploadV2({
+					channel_id: channelId,
+					file: fileContent,
+					filename: fileName,
+					title: fileName,
+				});
+			},
+			replaceMessage: async (newText: string) => {
+				updatePromise = updatePromise.then(async () => {
+					accumulatedText = newText;
+					const displayText = isWorking
+						? accumulatedText + workingIndicator
+						: accumulatedText;
+
+					if (messageTs) {
+						await this.webClient.chat.update({
+							channel: channelId,
+							ts: messageTs,
+							text: displayText,
+						});
+					} else {
+						const result = await this.webClient.chat.postMessage({
+							channel: channelId,
+							text: displayText,
+						});
+						messageTs = result.ts as string;
+					}
+				});
+				await updatePromise;
+			},
+			setWorking: async (working: boolean) => {
+				updatePromise = updatePromise.then(async () => {
+					isWorking = working;
+					if (messageTs) {
+						const displayText = isWorking
+							? accumulatedText + workingIndicator
+							: accumulatedText;
+						await this.webClient.chat.update({
+							channel: channelId,
+							ts: messageTs,
+							text: displayText,
+						});
+					}
+				});
+				await updatePromise;
+			},
+			updateStatus: async (status: string) => {
+				updatePromise = updatePromise.then(async () => {
+					if (messageTs && isWorking) {
+						const displayText = `${accumulatedText}\n_${status}_${workingIndicator}`;
+						await this.webClient.chat.update({
+							channel: channelId,
+							ts: messageTs,
+							text: displayText,
+						});
+					}
+				});
+				await updatePromise;
+			},
+		};
+	}
 }
