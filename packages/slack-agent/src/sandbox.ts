@@ -1,24 +1,70 @@
 /**
  * Sandbox Executor - Host or Docker execution environments
  *
- * Provides isolated command execution for the Slack agent. Supports two modes:
+ * Provides isolated command execution for the Slack agent. Supports three modes:
  * - Host: Direct execution on the host machine (not recommended for production)
- * - Docker: Execution inside an isolated container (recommended)
+ * - Docker (existing): Use an existing container by name
+ * - Docker (auto): Automatically create and manage a container
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 export type SandboxConfig =
 	| { type: "host" }
-	| { type: "docker"; container: string };
+	| { type: "docker"; container: string; autoCreate?: false }
+	| {
+			type: "docker";
+			autoCreate: true;
+			image?: string;
+			workspaceMount?: string;
+			cpus?: string;
+			memory?: string;
+	  };
+
+export interface DockerAutoConfig {
+	image: string;
+	workspaceMount: string;
+	cpus: string;
+	memory: string;
+}
+
+const DEFAULT_DOCKER_CONFIG: DockerAutoConfig = {
+	image: "node:20-slim",
+	workspaceMount: "/workspace",
+	cpus: "2",
+	memory: "2g",
+};
 
 /**
  * Parse sandbox argument from CLI
+ *
+ * Formats:
+ * - "host" - Run on host (not recommended)
+ * - "docker:container-name" - Use existing container
+ * - "docker:auto" - Auto-create container with defaults
+ * - "docker:auto:image:tag" - Auto-create with specific image
  */
 export function parseSandboxArg(value: string): SandboxConfig {
 	if (value === "host") {
 		return { type: "host" };
 	}
+
+	if (value === "docker:auto") {
+		return { type: "docker", autoCreate: true };
+	}
+
+	if (value.startsWith("docker:auto:")) {
+		const image = value.slice("docker:auto:".length);
+		if (!image) {
+			console.error(
+				"Error: docker:auto requires an image name (e.g., docker:auto:node:20-slim)",
+			);
+			process.exit(1);
+		}
+		return { type: "docker", autoCreate: true, image };
+	}
+
 	if (value.startsWith("docker:")) {
 		const container = value.slice("docker:".length);
 		if (!container) {
@@ -29,8 +75,9 @@ export function parseSandboxArg(value: string): SandboxConfig {
 		}
 		return { type: "docker", container };
 	}
+
 	console.error(
-		`Error: Invalid sandbox type '${value}'. Use 'host' or 'docker:<container-name>'`,
+		`Error: Invalid sandbox type '${value}'. Use 'host', 'docker:<container-name>', or 'docker:auto'`,
 	);
 	process.exit(1);
 }
@@ -40,6 +87,7 @@ export function parseSandboxArg(value: string): SandboxConfig {
  */
 export async function validateSandbox(config: SandboxConfig): Promise<void> {
 	if (config.type === "host") {
+		console.log("Using host sandbox (no isolation).");
 		return;
 	}
 
@@ -49,6 +97,13 @@ export async function validateSandbox(config: SandboxConfig): Promise<void> {
 	} catch {
 		console.error("Error: Docker is not installed or not in PATH");
 		process.exit(1);
+	}
+
+	// For auto-create mode, we'll create the container lazily
+	if (config.autoCreate) {
+		const image = config.image || DEFAULT_DOCKER_CONFIG.image;
+		console.log(`Docker auto-create mode enabled (image: ${image}).`);
+		return;
 	}
 
 	// Check if container exists and is running
@@ -66,9 +121,12 @@ export async function validateSandbox(config: SandboxConfig): Promise<void> {
 		}
 	} catch {
 		console.error(`Error: Container '${config.container}' does not exist.`);
-		console.error("Create a container first, e.g.:");
+		console.error("Create a container first using docker-compose:");
+		console.error("  cd packages/slack-agent && docker compose up -d");
+		console.error("");
+		console.error("Or create manually:");
 		console.error(
-			`  docker run -d --name ${config.container} -v $(pwd)/data:/workspace alpine:latest tail -f /dev/null`,
+			`  docker run -d --name ${config.container} -v $(pwd)/data:/workspace node:20-slim tail -f /dev/null`,
 		);
 		process.exit(1);
 	}
@@ -101,6 +159,17 @@ export function createExecutor(config: SandboxConfig): Executor {
 	if (config.type === "host") {
 		return new HostExecutor();
 	}
+
+	if (config.autoCreate) {
+		return new AutoDockerExecutor({
+			image: config.image || DEFAULT_DOCKER_CONFIG.image,
+			workspaceMount:
+				config.workspaceMount || DEFAULT_DOCKER_CONFIG.workspaceMount,
+			cpus: config.cpus || DEFAULT_DOCKER_CONFIG.cpus,
+			memory: config.memory || DEFAULT_DOCKER_CONFIG.memory,
+		});
+	}
+
 	return new DockerExecutor(config.container);
 }
 
@@ -116,11 +185,17 @@ export interface Executor {
 	 * Docker: returns /workspace
 	 */
 	getWorkspacePath(hostPath: string): string;
+
+	/**
+	 * Cleanup resources (stop container if auto-created)
+	 */
+	dispose(): Promise<void>;
 }
 
 export interface ExecOptions {
 	timeout?: number;
 	signal?: AbortSignal;
+	cwd?: string;
 }
 
 export interface ExecResult {
@@ -140,6 +215,7 @@ class HostExecutor implements Executor {
 			const child = spawn(shell, [...shellArgs, command], {
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
+				cwd: options?.cwd,
 			});
 
 			let stdout = "";
@@ -208,21 +284,173 @@ class HostExecutor implements Executor {
 	getWorkspacePath(hostPath: string): string {
 		return hostPath;
 	}
+
+	async dispose(): Promise<void> {
+		// Nothing to clean up for host executor
+	}
 }
 
 class DockerExecutor implements Executor {
-	constructor(private container: string) {}
+	constructor(protected container: string) {}
 
 	async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
 		// Wrap command for docker exec
-		const dockerCmd = `docker exec ${this.container} sh -c ${shellEscape(command)}`;
+		let dockerCmd = "docker exec";
+		if (options?.cwd) {
+			dockerCmd += ` -w ${shellEscape(options.cwd)}`;
+		}
+		dockerCmd += ` ${this.container} sh -c ${shellEscape(command)}`;
+
 		const hostExecutor = new HostExecutor();
-		return hostExecutor.exec(dockerCmd, options);
+		return hostExecutor.exec(dockerCmd, {
+			timeout: options?.timeout,
+			signal: options?.signal,
+		});
 	}
 
 	getWorkspacePath(_hostPath: string): string {
 		// Docker container sees /workspace
 		return "/workspace";
+	}
+
+	async dispose(): Promise<void> {
+		// Don't stop containers we didn't create
+	}
+}
+
+/**
+ * Auto-managed Docker executor that creates and cleans up its own container
+ */
+class AutoDockerExecutor implements Executor {
+	private containerId: string | null = null;
+	private containerName: string;
+	private config: DockerAutoConfig;
+	private initPromise: Promise<void> | null = null;
+	private disposed = false;
+
+	constructor(config: DockerAutoConfig) {
+		this.config = config;
+		this.containerName = `slack-agent-${randomUUID().slice(0, 8)}`;
+	}
+
+	private async ensureContainer(): Promise<void> {
+		if (this.disposed) {
+			throw new Error("Executor has been disposed");
+		}
+
+		if (this.containerId) {
+			return;
+		}
+
+		if (this.initPromise) {
+			return this.initPromise;
+		}
+
+		this.initPromise = this.createContainer();
+		return this.initPromise;
+	}
+
+	private async createContainer(): Promise<void> {
+		const cwd = process.cwd();
+
+		const args = [
+			"run",
+			"-d",
+			"--rm",
+			"--name",
+			this.containerName,
+			"--cpus",
+			this.config.cpus,
+			"--memory",
+			this.config.memory,
+			"-v",
+			`${cwd}:${this.config.workspaceMount}:rw`,
+			"-w",
+			this.config.workspaceMount,
+			"--security-opt",
+			"no-new-privileges:true",
+			this.config.image,
+			"tail",
+			"-f",
+			"/dev/null",
+		];
+
+		try {
+			const result = await execSimple("docker", args);
+			this.containerId = result.trim();
+			console.log(
+				`Created Docker container: ${this.containerName} (${this.containerId.slice(0, 12)})`,
+			);
+
+			// Register cleanup handler
+			this.registerCleanupHandler();
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			throw new Error(`Failed to create Docker container: ${msg}`);
+		}
+	}
+
+	private cleanupHandler = () => {
+		// Synchronous cleanup for process exit
+		if (this.containerId) {
+			try {
+				spawn("docker", ["stop", this.containerName], {
+					stdio: "ignore",
+					detached: true,
+				});
+			} catch {
+				// Ignore cleanup errors
+			}
+		}
+	};
+
+	private registerCleanupHandler(): void {
+		process.on("exit", this.cleanupHandler);
+		process.on("SIGINT", () => {
+			this.cleanupHandler();
+			process.exit(130);
+		});
+		process.on("SIGTERM", () => {
+			this.cleanupHandler();
+			process.exit(143);
+		});
+	}
+
+	async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
+		await this.ensureContainer();
+
+		let dockerCmd = "docker exec";
+		if (options?.cwd) {
+			dockerCmd += ` -w ${shellEscape(options.cwd)}`;
+		}
+		dockerCmd += ` ${this.containerName} sh -c ${shellEscape(command)}`;
+
+		const hostExecutor = new HostExecutor();
+		return hostExecutor.exec(dockerCmd, {
+			timeout: options?.timeout,
+			signal: options?.signal,
+		});
+	}
+
+	getWorkspacePath(_hostPath: string): string {
+		return this.config.workspaceMount;
+	}
+
+	async dispose(): Promise<void> {
+		if (this.disposed) return;
+		this.disposed = true;
+
+		process.removeListener("exit", this.cleanupHandler);
+
+		if (this.containerId) {
+			try {
+				await execSimple("docker", ["stop", this.containerName]);
+				console.log(`Stopped Docker container: ${this.containerName}`);
+			} catch {
+				// Container may have already stopped
+			}
+			this.containerId = null;
+		}
 	}
 }
 

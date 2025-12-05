@@ -10,7 +10,9 @@ import { join, resolve } from "node:path";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
 import * as logger from "./logger.js";
 import {
+	type Executor,
 	type SandboxConfig,
+	createExecutor,
 	parseSandboxArg,
 	validateSandbox,
 } from "./sandbox.js";
@@ -21,6 +23,16 @@ const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_OAUTH_TOKEN = process.env.ANTHROPIC_OAUTH_TOKEN;
 
+function getSandboxDescription(sandbox: SandboxConfig): string {
+	if (sandbox.type === "host") {
+		return "host";
+	}
+	if ("autoCreate" in sandbox && sandbox.autoCreate) {
+		return `docker:auto (${sandbox.image || "node:20-slim"})`;
+	}
+	return `docker:${sandbox.container}`;
+}
+
 function parseArgs(): { workingDir: string; sandbox: SandboxConfig } {
 	const args = process.argv.slice(2);
 	let sandbox: SandboxConfig = { type: "host" };
@@ -28,13 +40,16 @@ function parseArgs(): { workingDir: string; sandbox: SandboxConfig } {
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
-		if (arg.startsWith("--sandbox=")) {
+		if (arg === "--help" || arg === "-h") {
+			printUsage();
+			process.exit(0);
+		} else if (arg.startsWith("--sandbox=")) {
 			sandbox = parseSandboxArg(arg.slice("--sandbox=".length));
 		} else if (arg === "--sandbox") {
 			const next = args[++i];
 			if (!next) {
 				console.error(
-					"Error: --sandbox requires a value (host or docker:<container-name>)",
+					"Error: --sandbox requires a value (host, docker:<name>, or docker:auto)",
 				);
 				process.exit(1);
 			}
@@ -48,33 +63,45 @@ function parseArgs(): { workingDir: string; sandbox: SandboxConfig } {
 	}
 
 	if (!workingDir) {
-		console.error(
-			"Usage: slack-agent [--sandbox=host|docker:<container-name>] <working-directory>",
-		);
-		console.error("");
-		console.error("Options:");
-		console.error(
-			"  --sandbox=host                  Run tools directly on host (default)",
-		);
-		console.error(
-			"  --sandbox=docker:<container>    Run tools in Docker container",
-		);
-		console.error("");
-		console.error("Examples:");
-		console.error("  slack-agent ./data");
-		console.error("  slack-agent --sandbox=docker:slack-agent-sandbox ./data");
+		printUsage();
 		process.exit(1);
 	}
 
 	return { workingDir: resolve(workingDir), sandbox };
 }
 
+function printUsage(): void {
+	console.error("Usage: slack-agent [--sandbox=<mode>] <working-directory>");
+	console.error("");
+	console.error("Options:");
+	console.error(
+		"  --sandbox=host                  Run tools directly on host (default, not recommended)",
+	);
+	console.error(
+		"  --sandbox=docker:<container>    Run tools in existing Docker container",
+	);
+	console.error(
+		"  --sandbox=docker:auto           Auto-create Docker container (recommended)",
+	);
+	console.error(
+		"  --sandbox=docker:auto:<image>   Auto-create with specific image",
+	);
+	console.error("");
+	console.error("Examples:");
+	console.error("  slack-agent --sandbox=docker:auto ./data");
+	console.error("  slack-agent --sandbox=docker:slack-agent-sandbox ./data");
+	console.error("  slack-agent --sandbox=docker:auto:python:3.12-slim ./data");
+	console.error("");
+	console.error("Environment variables:");
+	console.error("  SLACK_APP_TOKEN       Slack app token (xapp-...)");
+	console.error("  SLACK_BOT_TOKEN       Slack bot token (xoxb-...)");
+	console.error("  ANTHROPIC_API_KEY     Anthropic API key");
+	console.error("  ANTHROPIC_OAUTH_TOKEN Anthropic OAuth token (alternative)");
+}
+
 const { workingDir, sandbox } = parseArgs();
 
-logger.logStartup(
-	workingDir,
-	sandbox.type === "host" ? "host" : `docker:${sandbox.container}`,
-);
+logger.logStartup(workingDir, getSandboxDescription(sandbox));
 
 if (
 	!SLACK_APP_TOKEN ||
@@ -90,6 +117,9 @@ if (
 }
 
 await validateSandbox(sandbox);
+
+// Create the executor (manages container lifecycle for auto mode)
+const executor: Executor = createExecutor(sandbox);
 
 // Track active runs per channel
 const activeRuns = new Map<
@@ -160,6 +190,26 @@ async function handleMessage(
 		activeRuns.delete(channelId);
 	}
 }
+
+// Graceful shutdown handler
+async function shutdown(signal: string): Promise<void> {
+	console.log(`\nReceived ${signal}, shutting down...`);
+
+	// Abort all active runs
+	for (const [channelId, active] of activeRuns) {
+		console.log(`Aborting run in channel ${channelId}...`);
+		active.runner.abort();
+	}
+
+	// Dispose executor (stops auto-created containers)
+	await executor.dispose();
+
+	console.log("Shutdown complete.");
+	process.exit(0);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 const bot = new SlackBot(
 	{

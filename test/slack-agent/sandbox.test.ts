@@ -56,6 +56,27 @@ describe("sandbox", () => {
 				expect.stringContaining("Invalid sandbox type 'invalid'"),
 			);
 		});
+
+		it("parses 'docker:auto' as auto-create config", () => {
+			const config = parseSandboxArg("docker:auto");
+			expect(config).toEqual({ type: "docker", autoCreate: true });
+		});
+
+		it("parses 'docker:auto:image:tag' as auto-create with custom image", () => {
+			const config = parseSandboxArg("docker:auto:python:3.12-slim");
+			expect(config).toEqual({
+				type: "docker",
+				autoCreate: true,
+				image: "python:3.12-slim",
+			});
+		});
+
+		it("exits with error for docker:auto: without image", () => {
+			expect(() => parseSandboxArg("docker:auto:")).toThrow("process.exit(1)");
+			expect(console.error).toHaveBeenCalledWith(
+				expect.stringContaining("docker:auto requires an image name"),
+			);
+		});
 	});
 
 	describe("createExecutor", () => {
@@ -71,6 +92,31 @@ describe("sandbox", () => {
 			const config: SandboxConfig = {
 				type: "docker",
 				container: "test-container",
+			};
+			const executor = createExecutor(config);
+
+			expect(executor).toBeDefined();
+			expect(executor.getWorkspacePath("/some/path")).toBe("/workspace");
+		});
+
+		it("creates AutoDockerExecutor for docker:auto config", () => {
+			const config: SandboxConfig = {
+				type: "docker",
+				autoCreate: true,
+			};
+			const executor = createExecutor(config);
+
+			expect(executor).toBeDefined();
+			expect(executor.getWorkspacePath("/some/path")).toBe("/workspace");
+		});
+
+		it("creates AutoDockerExecutor with custom image", () => {
+			const config: SandboxConfig = {
+				type: "docker",
+				autoCreate: true,
+				image: "python:3.12-slim",
+				cpus: "4",
+				memory: "4g",
 			};
 			const executor = createExecutor(config);
 
