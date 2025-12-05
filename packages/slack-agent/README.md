@@ -368,20 +368,20 @@ Create reusable CLI tools that the agent can use:
 ```
 
 **SKILL.md** (required):
-```markdown
+```
 # Email Sender
 
 Send emails via SMTP.
 
 ## Usage
-```bash
-./skills/email-sender/index.js send \
-  --to "user@example.com" \
-  --subject "Hello" \
-  --body "Message content"
-```
+
+    ./skills/email-sender/index.js send \
+      --to "user@example.com" \
+      --subject "Hello" \
+      --body "Message content"
 
 ## Environment
+
 Requires SMTP_HOST, SMTP_USER, SMTP_PASS environment variables.
 ```
 
