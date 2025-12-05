@@ -480,6 +480,21 @@ async function* streamResponsesApi(
 		? filterResponsesApiTools(context.tools)
 		: [];
 
+	// Warn if tools were filtered out due to schema incompatibility
+	if (context.tools && validTools.length < context.tools.length) {
+		const filtered = context.tools.filter(
+			(t) => !validTools.some((v) => v.name === t.name),
+		);
+		logger.warn(
+			"Some tools filtered out due to Responses API schema limitations",
+			{
+				filteredTools: filtered.map((t) => t.name),
+				reason:
+					"Responses API does not support oneOf/anyOf/allOf/enum/not in tool schemas",
+			},
+		);
+	}
+
 	const requestBody: OpenAIResponsesRequestBody = {
 		model: model.id,
 		input,
