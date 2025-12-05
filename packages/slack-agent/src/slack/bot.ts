@@ -229,6 +229,9 @@ export class SlackBot {
 					name: string;
 					url_private_download?: string;
 					url_private?: string;
+					mimetype?: string;
+					filetype?: string;
+					size?: number;
 				}>;
 			};
 
@@ -263,6 +266,9 @@ export class SlackBot {
 					name: string;
 					url_private_download?: string;
 					url_private?: string;
+					mimetype?: string;
+					filetype?: string;
+					size?: number;
 				}>;
 			};
 
@@ -361,6 +367,9 @@ export class SlackBot {
 			name: string;
 			url_private_download?: string;
 			url_private?: string;
+			mimetype?: string;
+			filetype?: string;
+			size?: number;
 		}>;
 	}): Promise<void> {
 		const attachments = event.files
@@ -391,6 +400,9 @@ export class SlackBot {
 				name: string;
 				url_private_download?: string;
 				url_private?: string;
+				mimetype?: string;
+				filetype?: string;
+				size?: number;
 			}>;
 		},
 		options: { useThread: boolean } = { useThread: false },

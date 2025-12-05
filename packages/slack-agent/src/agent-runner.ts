@@ -67,7 +67,13 @@ interface LogMessage {
 	user?: string;
 	userName?: string;
 	text?: string;
-	attachments?: Array<{ local: string }>;
+	attachments?: Array<{
+		local: string;
+		original?: string;
+		mimetype?: string;
+		filetype?: string;
+		size?: number;
+	}>;
 	isBot?: boolean;
 }
 
@@ -333,12 +339,36 @@ export function createAgentRunner(
 		): Promise<{ stopReason: string }> {
 			await mkdir(channelDir, { recursive: true });
 
+			// Wait for any file downloads to complete before processing
+			if (ctx.message.attachments.length > 0) {
+				logger.logInfo(
+					`Waiting for ${ctx.message.attachments.length} file download(s)...`,
+				);
+				await store.waitForDownloads();
+			}
+
 			const channelId = ctx.message.channel;
 			const workspacePath = executor.getWorkspacePath(
 				channelDir.replace(`/${channelId}`, ""),
 			);
 			const recentMessages = getRecentMessages(channelDir, 50);
 			const memory = getMemory(channelDir);
+
+			// Build file content section for code/text files attached to current message
+			let fileContentSection = "";
+			for (const attachment of ctx.message.attachments) {
+				const content = store.readAttachmentContent(attachment);
+				if (content) {
+					const truncated =
+						content.length > 50000
+							? `${content.substring(0, 50000)}\n\n... (truncated, ${content.length} chars total)`
+							: content;
+					fileContentSection += `\n### File: ${attachment.original}\nPath: ${attachment.local}\n\`\`\`\n${truncated}\n\`\`\`\n`;
+				}
+			}
+			if (fileContentSection) {
+				fileContentSection = `\n## Attached Files (content)\n${fileContentSection}`;
+			}
 			const systemPrompt = buildSystemPrompt(
 				workspacePath,
 				channelId,
@@ -652,7 +682,12 @@ export function createAgentRunner(
 			});
 
 			// Run the agent with user's message
-			const userPrompt = `Conversation history (last 50 turns). Respond to the last message.\nFormat: date TAB user TAB text TAB attachments\n\n${recentMessages}`;
+			let userPrompt = `Conversation history (last 50 turns). Respond to the last message.\nFormat: date TAB user TAB text TAB attachments\n\n${recentMessages}`;
+
+			// Append file contents if any code/text files were attached
+			if (fileContentSection) {
+				userPrompt += fileContentSection;
+			}
 
 			// Debug: write full context to file
 			const toolDefs = tools.map((t) => ({

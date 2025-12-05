@@ -10,6 +10,9 @@ import * as logger from "./logger.js";
 export interface Attachment {
 	original: string;
 	local: string;
+	mimetype?: string;
+	filetype?: string;
+	size?: number;
 }
 
 export interface LoggedMessage {
@@ -70,6 +73,9 @@ export class ChannelStore {
 			name?: string;
 			url_private_download?: string;
 			url_private?: string;
+			mimetype?: string;
+			filetype?: string;
+			size?: number;
 		}>,
 		timestamp: string,
 	): Attachment[] {
@@ -89,6 +95,9 @@ export class ChannelStore {
 			attachments.push({
 				original: file.name,
 				local: localPath,
+				mimetype: file.mimetype,
+				filetype: file.filetype,
+				size: file.size,
 			});
 
 			this.pendingDownloads.push({ channelId, localPath, url });
@@ -96,6 +105,156 @@ export class ChannelStore {
 
 		this.processDownloadQueue();
 		return attachments;
+	}
+
+	/**
+	 * Wait for all pending downloads to complete
+	 */
+	async waitForDownloads(): Promise<void> {
+		while (this.pendingDownloads.length > 0 || this.isDownloading) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+	}
+
+	/**
+	 * Check if a file type is likely code or text that should be read
+	 */
+	isCodeOrTextFile(attachment: Attachment): boolean {
+		const codeExtensions = [
+			".js",
+			".ts",
+			".jsx",
+			".tsx",
+			".py",
+			".rb",
+			".go",
+			".rs",
+			".java",
+			".c",
+			".cpp",
+			".h",
+			".hpp",
+			".cs",
+			".php",
+			".swift",
+			".kt",
+			".scala",
+			".sh",
+			".bash",
+			".zsh",
+			".fish",
+			".ps1",
+			".sql",
+			".json",
+			".yaml",
+			".yml",
+			".xml",
+			".html",
+			".css",
+			".scss",
+			".sass",
+			".less",
+			".md",
+			".txt",
+			".csv",
+			".toml",
+			".ini",
+			".conf",
+			".cfg",
+			".env",
+			".gitignore",
+			".dockerignore",
+			".editorconfig",
+			".prettierrc",
+			".eslintrc",
+		];
+
+		const name = attachment.original.toLowerCase();
+		if (codeExtensions.some((ext) => name.endsWith(ext))) {
+			return true;
+		}
+
+		// Check mimetype
+		if (attachment.mimetype) {
+			const textMimes = [
+				"text/",
+				"application/json",
+				"application/xml",
+				"application/javascript",
+				"application/typescript",
+				"application/x-yaml",
+			];
+			if (textMimes.some((m) => attachment.mimetype?.startsWith(m))) {
+				return true;
+			}
+		}
+
+		// Check Slack filetype
+		if (attachment.filetype) {
+			const textTypes = [
+				"text",
+				"javascript",
+				"python",
+				"ruby",
+				"go",
+				"rust",
+				"java",
+				"c",
+				"cpp",
+				"csharp",
+				"php",
+				"swift",
+				"kotlin",
+				"scala",
+				"shell",
+				"sql",
+				"json",
+				"yaml",
+				"xml",
+				"html",
+				"css",
+				"markdown",
+				"csv",
+			];
+			if (textTypes.includes(attachment.filetype)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Read file content if it's a code/text file and small enough
+	 */
+	readAttachmentContent(
+		attachment: Attachment,
+		maxSize = 100000,
+	): string | null {
+		if (!this.isCodeOrTextFile(attachment)) {
+			return null;
+		}
+
+		// Skip large files
+		if (attachment.size && attachment.size > maxSize) {
+			return null;
+		}
+
+		const filePath = join(this.workingDir, attachment.local);
+		if (!existsSync(filePath)) {
+			return null;
+		}
+
+		try {
+			const content = readFileSync(filePath, "utf-8");
+			// Double-check size after reading
+			if (content.length > maxSize) {
+				return null;
+			}
+			return content;
+		} catch {
+			return null;
+		}
 	}
 
 	async logMessage(

@@ -499,4 +499,95 @@ describe("ChannelStore", () => {
 			await expect(store.clearHistory("C999999")).resolves.not.toThrow();
 		});
 	});
+
+	describe("isCodeOrTextFile", () => {
+		it("identifies code files by extension", () => {
+			expect(
+				store.isCodeOrTextFile({ original: "main.ts", local: "a/b.ts" }),
+			).toBe(true);
+			expect(
+				store.isCodeOrTextFile({ original: "app.py", local: "a/b.py" }),
+			).toBe(true);
+			expect(
+				store.isCodeOrTextFile({ original: "config.json", local: "a/b.json" }),
+			).toBe(true);
+			expect(
+				store.isCodeOrTextFile({ original: "README.md", local: "a/b.md" }),
+			).toBe(true);
+		});
+
+		it("identifies text files by mimetype", () => {
+			expect(
+				store.isCodeOrTextFile({
+					original: "file",
+					local: "a/b",
+					mimetype: "text/plain",
+				}),
+			).toBe(true);
+			expect(
+				store.isCodeOrTextFile({
+					original: "file",
+					local: "a/b",
+					mimetype: "application/json",
+				}),
+			).toBe(true);
+		});
+
+		it("identifies code files by Slack filetype", () => {
+			expect(
+				store.isCodeOrTextFile({
+					original: "file",
+					local: "a/b",
+					filetype: "javascript",
+				}),
+			).toBe(true);
+			expect(
+				store.isCodeOrTextFile({
+					original: "file",
+					local: "a/b",
+					filetype: "python",
+				}),
+			).toBe(true);
+		});
+
+		it("rejects binary files", () => {
+			expect(
+				store.isCodeOrTextFile({ original: "image.png", local: "a/b.png" }),
+			).toBe(false);
+			expect(
+				store.isCodeOrTextFile({ original: "video.mp4", local: "a/b.mp4" }),
+			).toBe(false);
+			expect(
+				store.isCodeOrTextFile({
+					original: "archive.zip",
+					local: "a/b.zip",
+					mimetype: "application/zip",
+				}),
+			).toBe(false);
+		});
+	});
+
+	describe("processAttachments with metadata", () => {
+		it("captures file metadata", () => {
+			const files = [
+				{
+					name: "script.js",
+					url_private_download: "https://slack.com/files/script.js",
+					mimetype: "application/javascript",
+					filetype: "javascript",
+					size: 1024,
+				},
+			];
+			const attachments = store.processAttachments(
+				"C123456",
+				files,
+				"1234567890.123456",
+			);
+
+			expect(attachments).toHaveLength(1);
+			expect(attachments[0].mimetype).toBe("application/javascript");
+			expect(attachments[0].filetype).toBe("javascript");
+			expect(attachments[0].size).toBe(1024);
+		});
+	});
 });
