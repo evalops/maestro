@@ -11,6 +11,7 @@ export {
 	type SlackAgentHandler,
 	type SlackContext,
 	type SlackMessage,
+	type ReactionContext,
 	type ChannelInfo,
 	type UserInfo,
 } from "./slack/bot.js";
@@ -33,6 +34,37 @@ export {
 	type Attachment,
 	type LoggedMessage,
 } from "./store.js";
+
+// Scheduler
+export {
+	Scheduler,
+	parseTimeExpression,
+	parseRecurringSchedule,
+	getNextRunFromSchedule,
+	type ScheduledTask,
+	type SchedulerConfig,
+} from "./scheduler.js";
+
+// Approval workflows
+export {
+	ApprovalManager,
+	isDestructiveCommand,
+	describeDestructiveOperation,
+	DESTRUCTIVE_PATTERNS,
+	type PendingApproval,
+	type ApprovalManagerConfig,
+} from "./approval.js";
+
+// Cost tracking
+export {
+	CostTracker,
+	type UsageRecord,
+	type ChannelUsage,
+	type UsageSummary,
+} from "./cost-tracker.js";
+
+// Rate limiting
+export { RateLimiter, formatRateLimitMessage } from "./rate-limiter.js";
 
 // Tools
 export {
