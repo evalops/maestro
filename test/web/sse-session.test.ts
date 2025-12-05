@@ -1,5 +1,5 @@
 import type { ServerResponse } from "node:http";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "../../src/agent/types.js";
 import { SseSession } from "../../src/web/sse-session.js";
 
@@ -31,6 +31,10 @@ const createRes = (): MockResponse => {
 describe("SseSession", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	it("writes events and heartbeats", () => {
