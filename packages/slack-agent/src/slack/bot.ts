@@ -33,9 +33,21 @@ export interface SlackContext {
 	setWorking(working: boolean): Promise<void>;
 }
 
+export interface ReactionContext {
+	reaction: string;
+	user: string;
+	channel: string;
+	messageTs: string;
+	/** Add a reaction to a message */
+	addReaction(emoji: string, channel: string, ts: string): Promise<void>;
+	/** Post a message to the channel */
+	postMessage(channel: string, text: string): Promise<void>;
+}
+
 export interface SlackAgentHandler {
 	onChannelMention(ctx: SlackContext): Promise<void>;
 	onDirectMessage(ctx: SlackContext): Promise<void>;
+	onReaction?(ctx: ReactionContext): Promise<void>;
 }
 
 export interface SlackBotConfig {
@@ -276,6 +288,50 @@ export class SlackBot {
 				});
 				await this.handler.onDirectMessage(ctx);
 			}
+		});
+
+		// Handle reaction events
+		this.socketClient.on("reaction_added", async ({ event, ack }) => {
+			await ack();
+
+			if (!this.handler.onReaction) return;
+
+			const reactionEvent = event as {
+				reaction: string;
+				user: string;
+				item: {
+					type: string;
+					channel: string;
+					ts: string;
+				};
+			};
+
+			// Only handle reactions to messages
+			if (reactionEvent.item.type !== "message") return;
+
+			// Ignore bot's own reactions
+			if (reactionEvent.user === this.botUserId) return;
+
+			await this.handler.onReaction({
+				reaction: reactionEvent.reaction,
+				user: reactionEvent.user,
+				channel: reactionEvent.item.channel,
+				messageTs: reactionEvent.item.ts,
+				addReaction: async (emoji: string, channel: string, ts: string) => {
+					try {
+						await this.webClient.reactions.add({
+							name: emoji,
+							channel,
+							timestamp: ts,
+						});
+					} catch {
+						// Ignore errors (e.g., already reacted)
+					}
+				},
+				postMessage: async (channel: string, text: string) => {
+					await this.webClient.chat.postMessage({ channel, text });
+				},
+			});
 		});
 	}
 

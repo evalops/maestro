@@ -8,7 +8,9 @@
 
 import { join, resolve } from "node:path";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
+import { CostTracker } from "./cost-tracker.js";
 import * as logger from "./logger.js";
+import { RateLimiter, formatRateLimitMessage } from "./rate-limiter.js";
 import {
 	type Executor,
 	type SandboxConfig,
@@ -16,7 +18,11 @@ import {
 	parseSandboxArg,
 	validateSandbox,
 } from "./sandbox.js";
-import { SlackBot, type SlackContext } from "./slack/bot.js";
+import {
+	type ReactionContext,
+	SlackBot,
+	type SlackContext,
+} from "./slack/bot.js";
 
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
@@ -121,6 +127,16 @@ await validateSandbox(sandbox);
 // Create the executor (manages container lifecycle for auto mode)
 const executor: Executor = createExecutor(sandbox);
 
+// Rate limiter - configurable via environment
+const rateLimiter = new RateLimiter({
+	maxPerUser: Number(process.env.SLACK_RATE_LIMIT_USER) || 10,
+	maxPerChannel: Number(process.env.SLACK_RATE_LIMIT_CHANNEL) || 30,
+	windowMs: Number(process.env.SLACK_RATE_LIMIT_WINDOW_MS) || 60000,
+});
+
+// Cost tracker for usage reporting
+const costTracker = new CostTracker(workingDir);
+
 // Track active runs per channel
 const activeRuns = new Map<
 	string,
@@ -159,10 +175,22 @@ async function handleMessage(
 		return;
 	}
 
+	// Check rate limit
+	const rateCheck = rateLimiter.check(ctx.message.user, channelId);
+	if (!rateCheck.allowed) {
+		const msg = formatRateLimitMessage(rateCheck);
+		logger.logWarning(
+			`Rate limited: ${ctx.message.userName} in ${channelId}`,
+			rateCheck.limitedBy || "unknown",
+		);
+		await ctx.respond(msg);
+		return;
+	}
+
 	logger.logUserMessage(logCtx, ctx.message.text);
 	const channelDir = join(workingDir, channelId);
 
-	const runner = createAgentRunner(sandbox);
+	const runner = createAgentRunner(sandbox, workingDir);
 	activeRuns.set(channelId, { runner, context: ctx });
 
 	await ctx.setTyping(true);
@@ -211,6 +239,55 @@ async function shutdown(signal: string): Promise<void> {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
+// Reaction command handlers
+// 🛑 octagonal_sign - Stop current run
+// 👀 eyes - Check status
+// 💰 moneybag - Check usage/costs
+async function handleReaction(ctx: ReactionContext): Promise<void> {
+	const channelId = ctx.channel;
+	const active = activeRuns.get(channelId);
+
+	switch (ctx.reaction) {
+		case "octagonal_sign": {
+			// 🛑 Stop command
+			if (active) {
+				logger.logInfo(`Stop requested via reaction in ${channelId}`);
+				await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+				active.runner.abort();
+				await ctx.postMessage(channelId, "_Stopping (via 🛑 reaction)..._");
+			}
+			break;
+		}
+
+		case "eyes": {
+			// 👀 Status check
+			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			if (active) {
+				await ctx.postMessage(
+					channelId,
+					"_Working on a task. React with 🛑 to stop._",
+				);
+			} else {
+				await ctx.postMessage(
+					channelId,
+					"_Nothing running. Mention me to start._",
+				);
+			}
+			break;
+		}
+
+		case "moneybag":
+		case "chart_with_upwards_trend": {
+			// 💰 or 📈 Usage/cost check
+			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			const summary = costTracker.getSummary(channelId);
+			const formatted = costTracker.formatSummary(summary);
+			await ctx.postMessage(channelId, formatted);
+			break;
+		}
+	}
+}
+
 const bot = new SlackBot(
 	{
 		async onChannelMention(ctx) {
@@ -219,6 +296,10 @@ const bot = new SlackBot(
 
 		async onDirectMessage(ctx) {
 			await handleMessage(ctx, "dm");
+		},
+
+		async onReaction(ctx) {
+			await handleReaction(ctx);
 		},
 	},
 	{

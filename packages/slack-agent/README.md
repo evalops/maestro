@@ -116,6 +116,27 @@ Examples:
 | `SLACK_BOT_TOKEN` | Slack bot token (xoxb-...) |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `ANTHROPIC_OAUTH_TOKEN` | Alternative: Anthropic OAuth token |
+| `SLACK_RATE_LIMIT_USER` | Max requests per user per minute (default: 10) |
+| `SLACK_RATE_LIMIT_CHANNEL` | Max requests per channel per minute (default: 30) |
+| `SLACK_RATE_LIMIT_WINDOW_MS` | Rate limit window in ms (default: 60000) |
+
+## Emoji Reactions
+
+Users can interact with the bot using emoji reactions:
+
+| Emoji | Action |
+|-------|--------|
+| 🛑 `:octagonal_sign:` | Stop the current task |
+| 👀 `:eyes:` | Check if the bot is working |
+| 💰 `:moneybag:` | View usage/cost summary |
+| 📈 `:chart_with_upwards_trend:` | View usage/cost summary |
+
+**Required Slack Permissions:**
+- `reactions:read` - To receive reaction events
+- `reactions:write` - To acknowledge reactions with ✅
+
+**Required Bot Event Subscriptions:**
+- `reaction_added` - To handle emoji reactions
 
 ## Docker Configuration
 

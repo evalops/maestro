@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { CostTracker } from "./cost-tracker.js";
 import * as logger from "./logger.js";
 import { type SandboxConfig, createExecutor } from "./sandbox.js";
 import type { ChannelInfo, SlackContext, UserInfo } from "./slack/bot.js";
@@ -309,9 +310,13 @@ function extractToolResultText(result: unknown): string {
 	return JSON.stringify(result);
 }
 
-export function createAgentRunner(sandboxConfig: SandboxConfig): AgentRunner {
+export function createAgentRunner(
+	sandboxConfig: SandboxConfig,
+	workingDir?: string,
+): AgentRunner {
 	let agent: Agent | null = null;
 	const executor = createExecutor(sandboxConfig);
+	const costTracker = workingDir ? new CostTracker(workingDir) : null;
 
 	return {
 		async run(
@@ -559,6 +564,17 @@ export function createAgentRunner(sandboxConfig: SandboxConfig): AgentRunner {
 
 							if (assistantMsg.stopReason) {
 								stopReason = assistantMsg.stopReason;
+							}
+
+							// Track costs
+							if (costTracker && assistantMsg.usage) {
+								costTracker.record(channelId, {
+									model: assistantMsg.model,
+									inputTokens: assistantMsg.usage.input,
+									outputTokens: assistantMsg.usage.output,
+									cacheWriteTokens: assistantMsg.usage.cacheWrite,
+									cacheReadTokens: assistantMsg.usage.cacheRead,
+								});
 							}
 
 							const content = event.message.content;
