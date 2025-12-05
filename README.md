@@ -12,6 +12,7 @@ Composer is a deterministic coding agent with multi-model support, featuring a t
 - [API Keys & Providers](#api-keys)
 - [Slash Commands](#slash-commands)
 - [Tools Overview](#tools)
+- [Hooks](#hooks)
 - [Security](#security)
 - [Telemetry](#telemetry)
 
@@ -266,6 +267,89 @@ See [Safety & Approvals](docs/SAFETY.md) for detailed configuration.
 - **Default:** On. Disable only in trusted environments with `COMPOSER_GUARDIAN=0` or `/guardian disable`.
 - **Manual runs:** `/guardian` in the TUI or `bash scripts/guardian.sh --staged`.
 - **Pre-commit hook:** `npm run guardian:install-hook` installs `.git/hooks/pre-commit` that points to the same script.
+
+## Hooks
+
+Composer supports lifecycle hooks for custom validation, logging, and automation. Hooks let you intercept tool calls, inject context, gate permissions, and integrate with external systems.
+
+### Quick Start
+
+```bash
+# Via environment variable
+export COMPOSER_HOOKS_PRE_TOOL_USE="./scripts/validate-command.sh"
+```
+
+Or via `.composer/hooks.json` (project) or `~/.composer/hooks.json` (user):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "bash",
+        "hooks": [{ "type": "command", "command": "./scripts/validate.sh" }]
+      }
+    ]
+  }
+}
+```
+
+### Hook Events
+
+| Event | When it fires |
+|-------|---------------|
+| `PreToolUse` | Before a tool executes (can block or modify input) |
+| `PostToolUse` | After successful tool execution |
+| `PostToolUseFailure` | After tool execution fails |
+| `EvalGate` | After tool execution for scoring/assertions |
+| `SessionStart` / `SessionEnd` | Session lifecycle |
+| `SubagentStart` / `SubagentStop` | Subagent lifecycle |
+| `UserPromptSubmit` | When user submits a prompt |
+| `PreCompact` | Before context compaction |
+| `PermissionRequest` | When approval is required |
+| `Notification` | On various notifications |
+
+### Hook Input/Output
+
+Hooks receive JSON via stdin:
+
+```json
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "bash",
+  "tool_input": { "command": "rm -rf /tmp/test" },
+  "session_id": "abc123",
+  "cwd": "/path/to/project",
+  "timestamp": "2025-01-15T10:30:00Z"
+}
+```
+
+And return JSON via stdout:
+
+```json
+{
+  "continue": true,
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow"
+  }
+}
+```
+
+### Pattern Matching
+
+Matchers support:
+- `"*"` – matches all
+- `"bash|write|edit"` – matches any listed
+- Regular expressions for complex patterns
+
+### Use Cases
+
+- **CI gates**: Block commits without tests passing
+- **Audit logging**: Record all tool executions
+- **Custom validators**: Enforce project-specific rules
+- **Context injection**: Add relevant docs before tool runs
+- **Eval pipelines**: Score agent behavior with assertions
 
 ## Telemetry
 
