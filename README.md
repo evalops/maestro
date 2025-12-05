@@ -1,6 +1,6 @@
 # Composer by EvalOps
 
-Composer is a deterministic coding agent with multi-model support, featuring both a powerful terminal interface (TUI/CLI) and a modern web UI for AI-assisted development.
+Composer is a deterministic coding agent with multi-model support, featuring a terminal interface (TUI/CLI), web UI, and Slack bot for AI-assisted development.
 
 ---
 
