@@ -3,6 +3,10 @@
  * Replaces scattered console.log/error calls with centralized, level-based logging.
  */
 
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export interface LogContext {
@@ -242,4 +246,52 @@ export function legacyError(message: string, error?: unknown): void {
 	} else {
 		logger.error(message);
 	}
+}
+
+/**
+ * Silence the logger (useful for TUI mode where stdout must not be polluted)
+ */
+export function silenceLogger(): void {
+	logger.configure({ output: () => {} });
+}
+
+/**
+ * Redirect all logs to a file (useful for TUI mode)
+ * @param filePath - Path to the log file (defaults to ~/.composer/logs/composer.log)
+ */
+export function redirectLoggerToFile(filePath?: string): void {
+	const logFile =
+		filePath ?? join(homedir(), ".composer", "logs", "composer.log");
+
+	// Ensure directory exists
+	try {
+		mkdirSync(dirname(logFile), { recursive: true });
+	} catch {
+		// Directory may already exist
+	}
+
+	logger.configure({
+		output: (entry) => {
+			const parts: string[] = [];
+			parts.push(`[${entry.timestamp}]`);
+			parts.push(`[${entry.level.toUpperCase()}]`);
+			parts.push(entry.message);
+
+			if (entry.context && Object.keys(entry.context).length > 0) {
+				parts.push(JSON.stringify(entry.context));
+			}
+
+			let line = `${parts.join(" ")}\n`;
+
+			if (entry.error?.stack) {
+				line += `${entry.error.stack}\n`;
+			}
+
+			try {
+				appendFileSync(logFile, line);
+			} catch {
+				// Silently fail if we can't write to the log file
+			}
+		},
+	});
 }

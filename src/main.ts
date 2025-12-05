@@ -245,6 +245,10 @@ async function runInteractiveMode(
 	explicitApiKey?: string,
 	options: InteractiveOptions = {},
 ): Promise<void> {
+	// Redirect logs to file to avoid polluting the TUI
+	const { redirectLoggerToFile } = await import("./utils/logger.js");
+	redirectLoggerToFile();
+
 	// Initialize the TUI renderer which manages all terminal output
 	const renderer = new TuiRenderer(
 		agent,
