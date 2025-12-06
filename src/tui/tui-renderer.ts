@@ -541,6 +541,18 @@ export class TuiRenderer {
 					return false;
 			}
 		};
+		this.editor.onHistoryNavigate = (direction) => {
+			// Up/Down arrow prompt history navigation
+			const dir = direction === "prev" ? -1 : 1;
+			// Only navigate history when editor is empty OR when browsing and at first/last line
+			if (this.editor.isEditorEmpty()) {
+				return this.editor.navigatePromptHistory(dir);
+			}
+			if (this.editor.isBrowsingHistory()) {
+				return this.editor.navigatePromptHistory(dir);
+			}
+			return false;
+		};
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.slashHintBar = new SlashHintBar();
 		this.editorContainer.addChild(this.slashHintBar);
@@ -1510,6 +1522,24 @@ export class TuiRenderer {
 	renderInitialMessages(state: AgentState): void {
 		this.footer.updateState(state);
 		this.messageView.renderInitialMessages(state);
+
+		// Populate editor history with user messages from the session (oldest first so newest is at index 0)
+		for (const message of state.messages) {
+			if (message.role === "user") {
+				const textBlocks =
+					typeof message.content === "string"
+						? [{ type: "text" as const, text: message.content }]
+						: message.content.filter(
+								(c): c is { type: "text"; text: string } => c.type === "text",
+							);
+				const textContent = textBlocks.map((c) => c.text).join("");
+				// Skip compaction summary messages (they start with special prefix)
+				if (textContent && !textContent.startsWith("[Context compaction:")) {
+					this.editor.addToHistory(textContent);
+				}
+			}
+		}
+
 		this.ui.requestRender();
 	}
 
@@ -1531,6 +1561,10 @@ export class TuiRenderer {
 		}
 		if (await this.bashModeView.tryHandleInput(text)) {
 			return;
+		}
+		// Add to prompt history for Up/Down navigation
+		if (text.trim()) {
+			this.editor.addToHistory(text);
 		}
 		if (this.onInputCallback) {
 			this.onInputCallback(text);

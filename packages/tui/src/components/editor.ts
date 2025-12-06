@@ -95,6 +95,11 @@ export class Editor implements Component {
 	// Simple kill buffer for yank-after-kill flows
 	private killBuffer = "";
 
+	// Prompt history for up/down navigation (separate from undo/redo)
+	private promptHistory: string[] = [];
+	private promptHistoryIndex = -1; // -1 = not browsing, 0 = most recent, etc.
+	private static readonly MAX_PROMPT_HISTORY = 100;
+
 	onSubmit?: (text: string) => void;
 	onChange?: (text: string) => void;
 	onLargePaste?: (event: LargePasteEvent) => void;
@@ -574,6 +579,7 @@ export class Editor implements Component {
 		return this.state.lines.join("\n");
 	}
 	setText(text: string): void {
+		this.promptHistoryIndex = -1; // Exit history browsing mode
 		// Split text into lines, handling different line endings
 		const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
 		// Ensure at least one empty line
@@ -617,6 +623,7 @@ export class Editor implements Component {
 		char: string,
 		opts?: { skipHistory?: boolean },
 	): void {
+		this.promptHistoryIndex = -1; // Exit history browsing mode
 		if (!opts?.skipHistory) {
 			this.saveToHistory();
 		}
@@ -727,6 +734,7 @@ export class Editor implements Component {
 		return true;
 	}
 	private handlePaste(pastedText: string): void {
+		this.promptHistoryIndex = -1; // Exit history browsing mode
 		this.saveToHistory();
 		// Clean the pasted text
 		const cleanText = pastedText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -821,6 +829,7 @@ export class Editor implements Component {
 		}
 	}
 	private handleBackspace(): void {
+		this.promptHistoryIndex = -1; // Exit history browsing mode
 		this.saveToHistory();
 		if (this.state.cursorCol > 0) {
 			// Delete character in current line
@@ -1315,5 +1324,109 @@ export class Editor implements Component {
 	 */
 	canRedo(): boolean {
 		return this.redoStack.length > 0;
+	}
+
+	// ==================== Prompt History ====================
+
+	/**
+	 * Add a prompt to history for up/down arrow navigation.
+	 * Called after successful submission.
+	 */
+	addToHistory(text: string): void {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		// Don't add consecutive duplicates
+		if (this.promptHistory.length > 0 && this.promptHistory[0] === trimmed) {
+			return;
+		}
+		this.promptHistory.unshift(trimmed);
+		// Limit history size
+		if (this.promptHistory.length > Editor.MAX_PROMPT_HISTORY) {
+			this.promptHistory.pop();
+		}
+	}
+
+	/**
+	 * Check if the editor content is empty (ignoring whitespace).
+	 */
+	isEditorEmpty(): boolean {
+		return this.getText().trim() === "";
+	}
+
+	/**
+	 * Check if cursor is on the first visual line of the editor.
+	 */
+	private isOnFirstVisualLine(): boolean {
+		return this.state.cursorLine === 0;
+	}
+
+	/**
+	 * Check if cursor is on the last visual line of the editor.
+	 */
+	private isOnLastVisualLine(): boolean {
+		return this.state.cursorLine === this.state.lines.length - 1;
+	}
+
+	/**
+	 * Navigate through prompt history.
+	 * @param direction -1 for older (up), 1 for newer (down)
+	 * @returns true if navigation happened, false otherwise
+	 */
+	navigatePromptHistory(direction: -1 | 1): boolean {
+		if (this.promptHistory.length === 0) return false;
+
+		const newIndex = this.promptHistoryIndex - direction; // Up(-1) increases index, Down(1) decreases
+
+		if (newIndex < -1 || newIndex >= this.promptHistory.length) {
+			return false;
+		}
+
+		this.promptHistoryIndex = newIndex;
+
+		if (this.promptHistoryIndex === -1) {
+			// Returned to "current" state - clear editor
+			this.setTextInternal("");
+		} else {
+			this.setTextInternal(this.promptHistory[this.promptHistoryIndex] || "");
+		}
+
+		return true;
+	}
+
+	/**
+	 * Internal setText that doesn't reset history state - used by navigatePromptHistory.
+	 */
+	private setTextInternal(text: string): void {
+		const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+		this.state.lines = lines.length === 0 ? [""] : lines;
+		// Reset cursor to end of text
+		this.state.cursorLine = this.state.lines.length - 1;
+		this.state.cursorCol = this.state.lines[this.state.cursorLine]?.length || 0;
+		// Notify of change
+		if (this.onChange) {
+			this.onChange(this.getText());
+		}
+	}
+
+	/**
+	 * Reset prompt history browsing state. Called when user types or edits.
+	 */
+	private resetPromptHistoryIndex(): void {
+		this.promptHistoryIndex = -1;
+	}
+
+	/**
+	 * Check if currently browsing prompt history.
+	 */
+	isBrowsingHistory(): boolean {
+		return this.promptHistoryIndex > -1;
+	}
+
+	/**
+	 * Clear prompt history.
+	 */
+	clearPromptHistory(): void {
+		this.promptHistory = [];
+		this.promptHistoryIndex = -1;
 	}
 }
