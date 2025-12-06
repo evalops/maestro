@@ -940,8 +940,8 @@ Slash Commands:
                 if let Some(agent) = &mut self.native_agent {
                     if let Err(e) = agent.prompt(content, vec![]).await {
                         self.state.error = Some(format!("Agent error: {}", e));
-                        self.state.busy = false;
                     }
+                    // Note: busy is cleared by ResponseEnd event via poll_agent
                 } else {
                     self.state.error = Some("Native agent not initialized".to_string());
                     self.state.busy = false;
@@ -951,14 +951,17 @@ Slash Commands:
                 if let Some(agent) = &mut self.node_agent {
                     if let Err(e) = agent.prompt(content, vec![]).await {
                         self.state.error = Some(format!("Agent error: {}", e));
-                        self.state.busy = false;
                     }
+                    // Note: busy is cleared by ResponseEnd event via poll_agent
                 } else {
                     self.state.error = Some("Agent not connected".to_string());
                     self.state.busy = false;
                 }
             }
         }
+
+        // Process any pending agent events (including ResponseEnd that clears busy)
+        self.poll_agent().await?;
 
         Ok(())
     }
