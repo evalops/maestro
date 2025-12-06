@@ -3563,6 +3563,8 @@ export class TuiRenderer {
 	 * Called on init and resize.
 	 */
 	private updateScrollViewport(): void {
+		// Guard: scrollContainer may not be initialized yet during constructor
+		if (!this.scrollContainer) return;
 		const rows = process.stdout.rows ?? 24;
 		this.scrollContainer.setViewportHeight(rows);
 	}
