@@ -14,6 +14,7 @@ export type KnownProvider =
 	| "anthropic"
 	| "google"
 	| "openai"
+	| "writer"
 	| "xai"
 	| "groq"
 	| "cerebras"

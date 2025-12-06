@@ -161,6 +161,49 @@ const OPENAI_CODEX_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
+// Writer AI Palmyra models - OpenAI-compatible API with 1M context window
+// https://dev.writer.com/home/models
+const WRITER_OVERLAY = {
+	writer: {
+		"palmyra-x5": {
+			id: "palmyra-x5",
+			name: "Palmyra X5",
+			api: "openai-completions",
+			provider: "writer",
+			baseUrl: "https://api.writer.com/v1",
+			reasoning: true,
+			toolUse: true,
+			input: ["text"],
+			cost: {
+				input: 0.6,
+				output: 6.0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 1040000,
+			maxTokens: 8192,
+		} as Model<"openai-completions">,
+		"palmyra-x4": {
+			id: "palmyra-x4",
+			name: "Palmyra X4",
+			api: "openai-completions",
+			provider: "writer",
+			baseUrl: "https://api.writer.com/v1",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: {
+				input: 0.5,
+				output: 5.0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 128000,
+			maxTokens: 8192,
+		} as Model<"openai-completions">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 // Cached converted models (built lazily on first access)
 let BUILTIN_MODELS: Record<string, Model<Api>[]> | null = null;
 const CODEX_MODEL_PATTERN = /codex/i;
@@ -188,6 +231,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		OPENROUTER_RESPONSES_OVERLAY,
 		GROQ_RESPONSES_OVERLAY,
 		OPENAI_CODEX_OVERLAY,
+		WRITER_OVERLAY,
 	];
 
 	for (const overlay of overlays) {

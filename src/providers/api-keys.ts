@@ -4,6 +4,7 @@ export const envApiKeyMap = {
 	google: ["GEMINI_API_KEY"],
 	openai: ["OPENAI_API_KEY"],
 	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+	writer: ["WRITER_API_KEY"],
 	xai: ["XAI_API_KEY"],
 	groq: ["GROQ_API_KEY"],
 	cerebras: ["CEREBRAS_API_KEY"],
