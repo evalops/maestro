@@ -407,10 +407,13 @@ export class ScrollContainer implements Component {
 			this.scrollOffset + this.viewportHeight,
 		);
 
-		// Pad with empty lines if content is shorter than viewport
-		const emptyLine = " ".repeat(width);
-		while (visibleLines.length < this.viewportHeight) {
-			visibleLines.push(emptyLine);
+		// Only pad with empty lines when content exceeds viewport (scrolling active)
+		// This prevents massive empty space when content is small
+		if (totalLines > this.viewportHeight) {
+			const emptyLine = " ".repeat(width);
+			while (visibleLines.length < this.viewportHeight) {
+				visibleLines.push(emptyLine);
+			}
 		}
 
 		// Optionally show scroll indicator
