@@ -276,12 +276,15 @@ const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 	action: "require_approval",
 	evaluate: (ctx) => {
 		const command = getCommandArg(ctx);
-		if (!command || !pattern.test(command)) {
+		if (!command) return { allowed: true };
+		const unwrapped = unwrapShellCommand(command) ?? command;
+		if (isCommandAllowlisted(unwrapped)) return { allowed: true };
+		if (!pattern.test(unwrapped)) {
 			return { allowed: true };
 		}
 		return {
 			allowed: false,
-			reason: `Detected ${dangerousPatternDescriptions[key as keyof typeof dangerousPatternDescriptions]}: ${command.trim()}`,
+			reason: `Detected ${dangerousPatternDescriptions[key as keyof typeof dangerousPatternDescriptions]}: ${unwrapped.trim()}`,
 		};
 	},
 }));

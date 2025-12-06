@@ -205,6 +205,15 @@ describe("ActionFirewall", () => {
 		});
 	});
 
+	it("lets allowlisted commands bypass dangerous pattern rules", async () => {
+		await withTempAllowlist(["python -c \"print('ok')\""], async () => {
+			const verdict = await defaultActionFirewall.evaluate(
+				makeBashContext("python -c \"print('ok')\""),
+			);
+			expect(verdict.action).toBe("allow");
+		});
+	});
+
 	it("ignores non-string commands gracefully", async () => {
 		const firewall = new ActionFirewall();
 		const verdict = await firewall.evaluate(makeBashContext(1234));
