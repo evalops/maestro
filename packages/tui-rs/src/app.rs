@@ -11,7 +11,7 @@ use ratatui::prelude::*;
 use crate::agent::AgentProcess;
 use crate::components::ChatView;
 use crate::state::AppState;
-use crate::terminal;
+use crate::terminal::{self, TerminalCapabilities};
 
 /// Main application
 pub struct App {
@@ -21,6 +21,8 @@ pub struct App {
     should_quit: bool,
     /// Arguments to pass to the Node.js agent
     agent_args: Vec<String>,
+    /// Terminal capabilities including viewport position
+    capabilities: TerminalCapabilities,
 }
 
 impl App {
@@ -31,7 +33,7 @@ impl App {
 
     /// Create a new application with CLI arguments to pass to the agent
     pub fn with_args(agent_args: Vec<String>) -> Result<Self> {
-        let (terminal, _caps) = terminal::init().context("Failed to initialize terminal")?;
+        let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
 
         Ok(Self {
             state: AppState::new(),
@@ -39,7 +41,13 @@ impl App {
             terminal,
             should_quit: false,
             agent_args,
+            capabilities,
         })
+    }
+
+    /// Get the current viewport top position (for history push)
+    pub fn viewport_top(&self) -> u16 {
+        self.capabilities.viewport_top
     }
 
     /// Run the main event loop

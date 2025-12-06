@@ -42,11 +42,9 @@ pub mod tooltips;
 pub mod wrapping;
 
 mod app;
-mod render;
 
 pub use agent::AgentProcess;
 pub use app::App;
-pub use render::Renderer;
 pub use state::AppState;
 
 // Re-export commonly used items

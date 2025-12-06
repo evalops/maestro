@@ -1,10 +1,7 @@
-//! IPC Protocol definitions for Composer TUI
+//! Protocol definitions for Composer TUI
 //!
-//! This module defines the JSON messages exchanged between the TypeScript
-//! backend and the Rust TUI renderer.
+//! This module provides styling types for text rendering.
 
-mod messages;
-mod render_tree;
+mod styles;
 
-pub use messages::*;
-pub use render_tree::*;
+pub use styles::*;

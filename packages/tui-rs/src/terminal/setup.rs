@@ -4,9 +4,19 @@
 //!
 //! We use /dev/tty for terminal I/O so that stdin/stdout can be used
 //! for IPC with the TypeScript backend.
+//!
+//! ## Inline Viewport Mode
+//!
+//! This terminal uses ratatui's inline viewport mode which:
+//! - Reserves a fixed number of rows at the bottom of the terminal
+//! - Allows content above the viewport to scroll into native terminal scrollback
+//! - Works with SSH, tmux, and terminal scrollback
+//!
+//! The viewport height is determined by the terminal size minus a small margin
+//! for the input area.
 
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::panic;
 use std::sync::Mutex;
 
@@ -21,6 +31,7 @@ use crossterm::{
 };
 use once_cell::sync::Lazy;
 use ratatui::backend::CrosstermBackend;
+use ratatui::{TerminalOptions, Viewport};
 
 /// Global TTY file handle for terminal output
 /// We use /dev/tty so that stdout can be used for IPC
@@ -34,6 +45,10 @@ pub type Terminal = ratatui::Terminal<CrosstermBackend<File>>;
 pub struct TerminalCapabilities {
     /// Whether the terminal supports enhanced keyboard (modifier disambiguation)
     pub enhanced_keys: bool,
+    /// The row where the viewport starts (1-indexed for ANSI)
+    pub viewport_top: u16,
+    /// Height of the viewport
+    pub viewport_height: u16,
 }
 
 /// Check if /dev/tty is available (we're running in a terminal)
@@ -58,6 +73,7 @@ pub fn check_tty() -> io::Result<()> {
 ///
 /// This sets up:
 /// - Raw mode (no line buffering, no echo)
+/// - Inline viewport mode (content scrolls into native scrollback)
 /// - Bracketed paste mode
 /// - Keyboard enhancement flags (if supported)
 /// - Focus change events
@@ -77,6 +93,14 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
                 format!("Cannot open /dev/tty: {}", e),
             )
         })?;
+
+    // Get terminal size
+    let (_width, height) = crossterm::terminal::size()?;
+
+    // Reserve some rows for terminal scrollback history
+    // Use most of the screen but leave a few lines at the top for context
+    let viewport_height = height.saturating_sub(2).max(10);
+    let viewport_top = height.saturating_sub(viewport_height) + 1; // 1-indexed for ANSI
 
     // Check capabilities before entering raw mode
     let enhanced_keys = supports_keyboard_enhancement().unwrap_or(false);
@@ -102,6 +126,15 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
     // Enable focus change events
     let _ = execute!(tty, EnableFocusChange);
 
+    // Move cursor to bottom of screen and print enough newlines to create
+    // space for the inline viewport. This ensures the viewport starts at
+    // the correct position for history push.
+    write!(tty, "\x1b[{};1H", height)?; // Move to last row
+    for _ in 0..viewport_height {
+        writeln!(tty)?;
+    }
+    tty.flush()?;
+
     // Set up panic hook to restore terminal
     let original_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
@@ -113,11 +146,20 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
     // Store the TTY handle globally for restore
     *TTY.lock().unwrap() = Some(tty.try_clone()?);
 
-    // Create the terminal with the TTY backend
+    // Create the terminal with inline viewport mode
     let backend = CrosstermBackend::new(tty);
-    let terminal = Terminal::new(backend)?;
+    let terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(viewport_height),
+        },
+    )?;
 
-    let capabilities = TerminalCapabilities { enhanced_keys };
+    let capabilities = TerminalCapabilities {
+        enhanced_keys,
+        viewport_top,
+        viewport_height,
+    };
 
     Ok((terminal, capabilities))
 }
@@ -154,6 +196,13 @@ fn restore_impl() -> io::Result<()> {
 /// Get the current terminal size
 pub fn size() -> io::Result<(u16, u16)> {
     crossterm::terminal::size()
+}
+
+/// Get updated viewport position after a resize
+pub fn calculate_viewport(height: u16) -> (u16, u16) {
+    let viewport_height = height.saturating_sub(2).max(10);
+    let viewport_top = height.saturating_sub(viewport_height) + 1;
+    (viewport_top, viewport_height)
 }
 
 #[cfg(test)]

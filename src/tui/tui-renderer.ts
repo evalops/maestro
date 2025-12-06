@@ -195,7 +195,6 @@ const logger = createLogger("tui:renderer");
 const TODO_STORE_PATH =
 	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
 
-import { NativeTuiBridge } from "./native/index.js";
 /**
  * Main TUI (Terminal User Interface) renderer for the Composer coding agent.
  *
@@ -377,8 +376,6 @@ export class TuiRenderer {
 		getTerminalCapabilities();
 	private terminalFeatures = detectTerminalFeatures();
 	private lowBandwidthConfig: LowBandwidthConfig = getLowBandwidthConfig();
-	private nativeTui: NativeTuiBridge | null = null;
-	private useNativeTui = false;
 	private interruptController!: InterruptController;
 	private pasteHandler!: PasteHandler;
 	private groupedHandlers?: GroupedCommandHandlers;
@@ -471,8 +468,6 @@ export class TuiRenderer {
 		this.configureRenderThrottle();
 		this.refreshTerminalCapabilities();
 
-		// Try to use native Rust TUI if available (better SSH scrollback)
-		this.initNativeTui();
 		this.resizeHandler = () => this.refreshTerminalCapabilities();
 		process.stdout.on("resize", this.resizeHandler);
 		this.startupContainer = new Container();
@@ -1465,14 +1460,7 @@ export class TuiRenderer {
 			modelScope: this.modelScope,
 		});
 
-		// Start the native TUI if available (for SSH scrollback support)
-		await this.startNativeTui();
-
-		// Start the standard UI (always needed for component structure)
-		// When native TUI is running, input comes from there instead
-		if (!this.useNativeTui) {
-			this.ui.start();
-		}
+		this.ui.start();
 		this.isInitialized = true;
 	}
 
@@ -3492,12 +3480,6 @@ export class TuiRenderer {
 			this.ui.stop();
 			this.isInitialized = false;
 		}
-		// Stop native TUI if running
-		if (this.nativeTui) {
-			this.nativeTui.stop();
-			this.nativeTui = null;
-			this.useNativeTui = false;
-		}
 		// End session recovery tracking and create final backup
 		this.sessionRecoveryManager.endSession();
 		// Stop test verification service
@@ -3566,99 +3548,6 @@ export class TuiRenderer {
 			}
 		}
 		this.ui.setMinRenderInterval(Math.max(0, interval));
-	}
-
-	/**
-	 * Initialize native Rust TUI if available.
-	 * This provides better SSH scrollback support by using native terminal scrollback.
-	 */
-	private initNativeTui(): void {
-		// Check if native TUI should be used
-		// Can be disabled with COMPOSER_NATIVE_TUI=0
-		if (process.env.COMPOSER_NATIVE_TUI === "0") {
-			logger.debug("Native TUI disabled via COMPOSER_NATIVE_TUI=0");
-			return;
-		}
-
-		// Only use native TUI over SSH where scrollback is problematic
-		// Can be forced with COMPOSER_NATIVE_TUI=1
-		const forceNative = process.env.COMPOSER_NATIVE_TUI === "1";
-		const isSSH = this.terminalFeatures.overSsh;
-
-		logger.debug("Native TUI check", {
-			forceNative,
-			isSSH,
-			envVar: process.env.COMPOSER_NATIVE_TUI,
-		});
-
-		if (!forceNative && !isSSH) {
-			logger.debug("Native TUI not enabled (not SSH and not forced)");
-			return;
-		}
-
-		try {
-			logger.info("Initializing native TUI bridge...");
-			this.nativeTui = new NativeTuiBridge({
-				onInput: (data) => {
-					// Forward input to the editor/focused component
-					if (this.editor) {
-						this.editor.handleInput(data);
-					}
-				},
-				onPaste: (text) => {
-					if (this.editor) {
-						this.editor.handleInput(text);
-					}
-				},
-				onResize: (width, height) => {
-					this.refreshTerminalCapabilities();
-				},
-				onError: (message) => {
-					logger.error(`Native TUI error: ${message}`);
-				},
-			});
-
-			// Start will be called in initialize() when the TUI actually starts
-			this.useNativeTui = true;
-			logger.info("Native TUI bridge created", { isSSH });
-		} catch (err) {
-			// Native TUI not available, continue with standard TUI
-			logger.debug("Native TUI not available", { error: String(err) });
-		}
-	}
-
-	/**
-	 * Start the native TUI (called during initialization).
-	 */
-	private async startNativeTui(): Promise<void> {
-		if (!this.nativeTui || !this.useNativeTui) {
-			logger.debug("startNativeTui skipped", {
-				hasNativeTui: !!this.nativeTui,
-				useNativeTui: this.useNativeTui,
-			});
-			return;
-		}
-
-		try {
-			logger.info("Starting native TUI...");
-			await this.nativeTui.start();
-
-			// Set up render callback to forward lines to native TUI
-			this.ui.setRenderCallback((lines, width) => {
-				if (this.nativeTui?.isRunning()) {
-					// Forward rendered lines to native TUI
-					this.nativeTui.pushHistory(lines);
-				}
-			});
-
-			logger.info("Native TUI started");
-		} catch (err) {
-			logger.error(
-				`Failed to start native TUI, falling back to standard: ${String(err)}`,
-			);
-			this.useNativeTui = false;
-			this.nativeTui = null;
-		}
 	}
 
 	private refreshTerminalCapabilities(): void {
