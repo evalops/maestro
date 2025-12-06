@@ -1,7 +1,9 @@
 //! OpenAI API client
 //!
-//! Implements streaming communication with the OpenAI Chat Completions API.
-//! Supports GPT-5.1-codex-max, GPT-5.1-chat-latest, and other OpenAI models.
+//! Implements streaming communication with the OpenAI API.
+//! Supports both Chat Completions API (gpt-4o, o1) and Responses API (gpt-5.1-codex-*).
+//!
+//! Note: The Responses API models (gpt-5.1-codex-*) may require ChatGPT Plus authentication.
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
@@ -12,7 +14,19 @@ use tokio::sync::mpsc;
 use super::client::{AiClient, AiProvider};
 use super::types::*;
 
-const OPENAI_API_URL: &str = "https://api.openai.com/v1/chat/completions";
+/// Returns true if the model uses the Responses API (vs Chat Completions)
+fn uses_responses_api(model: &str) -> bool {
+    model.contains("codex") || model.starts_with("gpt-5")
+}
+
+/// Get the appropriate API URL for the model
+fn api_url_for_model(model: &str) -> &'static str {
+    if uses_responses_api(model) {
+        "https://api.openai.com/v1/responses"
+    } else {
+        "https://api.openai.com/v1/chat/completions"
+    }
+}
 
 /// OpenAI API client
 pub struct OpenAiClient {
@@ -176,8 +190,8 @@ impl OpenAiClient {
             .collect()
     }
 
-    /// Build the request body
-    fn build_request_body(
+    /// Build the request body for Chat Completions API
+    fn build_chat_request_body(
         &self,
         messages: &[Message],
         config: &RequestConfig,
@@ -231,6 +245,132 @@ impl OpenAiClient {
 
         body
     }
+
+    /// Build the request body for Responses API (gpt-5.1-codex-* models)
+    fn build_responses_request_body(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> serde_json::Value {
+        // Convert messages to Responses API format
+        let input: Vec<serde_json::Value> = messages
+            .iter()
+            .filter_map(|msg| {
+                let role = match msg.role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::System => return None, // System goes in instructions
+                };
+
+                match &msg.content {
+                    MessageContent::Text(text) => Some(serde_json::json!({
+                        "type": "message",
+                        "role": role,
+                        "content": [{
+                            "type": "input_text",
+                            "text": text
+                        }]
+                    })),
+                    MessageContent::Blocks(blocks) => {
+                        let content: Vec<serde_json::Value> = blocks
+                            .iter()
+                            .filter_map(|block| match block {
+                                ContentBlock::Text { text } => Some(serde_json::json!({
+                                    "type": "input_text",
+                                    "text": text
+                                })),
+                                ContentBlock::ToolUse { id, name, input } => {
+                                    Some(serde_json::json!({
+                                        "type": "function_call",
+                                        "call_id": id,
+                                        "name": name,
+                                        "arguments": input.to_string()
+                                    }))
+                                }
+                                ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    ..
+                                } => Some(serde_json::json!({
+                                    "type": "function_call_output",
+                                    "call_id": tool_use_id,
+                                    "output": content
+                                })),
+                                _ => None,
+                            })
+                            .collect();
+
+                        if content.is_empty() {
+                            None
+                        } else {
+                            Some(serde_json::json!({
+                                "type": "message",
+                                "role": role,
+                                "content": content
+                            }))
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        let mut body = serde_json::json!({
+            "model": config.model,
+            "input": input,
+            "stream": true
+        });
+
+        // Add instructions (system prompt)
+        if let Some(system) = &config.system {
+            body["instructions"] = serde_json::json!(system);
+        }
+
+        // Add tools
+        if !config.tools.is_empty() {
+            let tools: Vec<serde_json::Value> = config
+                .tools
+                .iter()
+                .map(|tool| {
+                    serde_json::json!({
+                        "type": "function",
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema
+                    })
+                })
+                .collect();
+            body["tools"] = serde_json::json!(tools);
+        }
+
+        // Add reasoning effort for thinking models
+        if let Some(thinking) = &config.thinking {
+            let effort = if thinking.budget_tokens > 10000 {
+                "high"
+            } else if thinking.budget_tokens > 3000 {
+                "medium"
+            } else {
+                "low"
+            };
+            body["reasoning"] = serde_json::json!({
+                "effort": effort
+            });
+        }
+
+        body
+    }
+
+    /// Build the appropriate request body based on model
+    fn build_request_body(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> serde_json::Value {
+        if uses_responses_api(&config.model) {
+            self.build_responses_request_body(messages, config)
+        } else {
+            self.build_chat_request_body(messages, config)
+        }
+    }
 }
 
 impl AiClient for OpenAiClient {
@@ -248,10 +388,13 @@ impl AiClient for OpenAiClient {
         // Build request body
         let body = self.build_request_body(messages, config);
 
+        // Get the appropriate API URL for this model
+        let api_url = api_url_for_model(&config.model);
+
         // Make request
         let response = self
             .client
-            .post(OPENAI_API_URL)
+            .post(api_url)
             .headers(self.headers())
             .json(&body)
             .send()
