@@ -1,24 +1,29 @@
 //! Native Composer TUI Application
 //!
 //! This is the main entry point for the native Rust TUI.
-//! It spawns a Node.js agent subprocess for AI interactions
-//! and handles all terminal rendering natively.
+//! Supports two modes:
+//! - Native agent: Pure Rust implementation that talks directly to AI providers
+//! - Node.js agent: Subprocess for legacy compatibility
+//!
+//! The native agent is used by default when ANTHROPIC_API_KEY or OPENAI_API_KEY is set.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers};
 use ratatui::prelude::*;
+use tokio::sync::mpsc;
 
-use crate::agent::AgentProcess;
+use crate::agent::{AgentProcess, FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
 use crate::commands::{build_command_registry, CommandRegistry, SlashCommandMatcher, SlashCycleState};
 use crate::components::{
-    ApprovalController, ApprovalDecision, ApprovalModal, ChatInputWidget, ChatView,
-    CommandPalette, FileSearchModal, SessionSwitcher,
+    ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest, ChatInputWidget,
+    ChatView, CommandPalette, FileSearchModal, SessionSwitcher,
 };
 use crate::files::get_workspace_files;
 use crate::state::AppState;
 use crate::terminal::{self, TerminalCapabilities};
+use crate::tools::{BashTool, ToolExecutor};
 
 /// Active modal in the UI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +35,30 @@ pub enum ActiveModal {
     Approval,
 }
 
+/// Agent backend type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentBackend {
+    /// Native Rust agent (default when API keys are set)
+    Native,
+    /// Node.js subprocess (legacy)
+    NodeJs,
+}
+
 /// Main application
 pub struct App {
     state: AppState,
-    agent: Option<AgentProcess>,
+    /// Node.js agent subprocess (legacy mode)
+    node_agent: Option<AgentProcess>,
+    /// Native Rust agent
+    native_agent: Option<NativeAgent>,
+    /// Event receiver for native agent
+    native_event_rx: Option<mpsc::UnboundedReceiver<FromAgent>>,
+    /// Tool response sender for native agent
+    tool_response_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
+    /// Tool executor for native agent
+    tool_executor: ToolExecutor,
+    /// Which backend we're using
+    backend: AgentBackend,
     terminal: terminal::Terminal,
     should_quit: bool,
     /// Arguments to pass to the Node.js agent
@@ -41,6 +66,7 @@ pub struct App {
     /// Terminal capabilities including viewport position
     capabilities: TerminalCapabilities,
     /// Command registry
+    #[allow(dead_code)]
     command_registry: Arc<CommandRegistry>,
     /// Slash command matcher
     slash_matcher: SlashCommandMatcher,
@@ -73,9 +99,23 @@ impl App {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
+        // Determine which backend to use
+        let has_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok()
+            || std::env::var("OPENAI_API_KEY").is_ok();
+        let backend = if has_api_key {
+            AgentBackend::Native
+        } else {
+            AgentBackend::NodeJs
+        };
+
         Ok(Self {
             state: AppState::new(),
-            agent: None,
+            node_agent: None,
+            native_agent: None,
+            native_event_rx: None,
+            tool_response_tx: None,
+            tool_executor: ToolExecutor::new(&cwd),
+            backend,
             terminal,
             should_quit: false,
             agent_args,
@@ -127,7 +167,7 @@ impl App {
         }
 
         // Cleanup
-        if let Some(mut agent) = self.agent.take() {
+        if let Some(mut agent) = self.node_agent.take() {
             let _ = agent.shutdown().await;
         }
         terminal::restore()?;
@@ -142,8 +182,90 @@ impl App {
         self.file_search.set_files(files);
     }
 
-    /// Spawn the Node.js agent subprocess
+    /// Spawn the agent (native or Node.js)
     async fn spawn_agent(&mut self) -> Result<()> {
+        match self.backend {
+            AgentBackend::Native => self.spawn_native_agent().await,
+            AgentBackend::NodeJs => self.spawn_nodejs_agent().await,
+        }
+    }
+
+    /// Spawn the native Rust agent
+    async fn spawn_native_agent(&mut self) -> Result<()> {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+
+        // Determine model from environment or default
+        let model = std::env::var("COMPOSER_MODEL").unwrap_or_else(|_| {
+            if std::env::var("OPENAI_API_KEY").is_ok() {
+                "gpt-4o".to_string()
+            } else {
+                "claude-sonnet-4-5-20250514".to_string()
+            }
+        });
+
+        let config = NativeAgentConfig {
+            model: model.clone(),
+            max_tokens: 16384,
+            system_prompt: Some(self.build_system_prompt()),
+            thinking_enabled: false,
+            thinking_budget: 10000,
+            cwd: cwd.clone(),
+        };
+
+        self.state.status = Some(format!("Initializing native agent ({})...", model));
+
+        match NativeAgent::new(config) {
+            Ok((agent, event_rx)) => {
+                let tool_tx = agent.tool_response_sender();
+                self.native_agent = Some(agent);
+                self.native_event_rx = Some(event_rx);
+                self.tool_response_tx = Some(tool_tx);
+
+                // Send ready event
+                if let Some(agent) = &self.native_agent {
+                    agent.send_ready();
+                }
+
+                self.state.status = Some(format!("Connected: {} (native)", model));
+            }
+            Err(e) => {
+                self.state.error = Some(format!("Failed to create native agent: {}", e));
+                // Fall back to Node.js agent
+                self.backend = AgentBackend::NodeJs;
+                return self.spawn_nodejs_agent().await;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Build the system prompt for the agent
+    fn build_system_prompt(&self) -> String {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+
+        format!(
+            r#"You are an AI assistant helping with software development tasks.
+
+Current working directory: {}
+
+You have access to the following tools:
+- bash: Execute shell commands
+- read: Read file contents
+- write: Write to files
+- glob: Find files by pattern
+- grep: Search file contents
+
+Always use tools when they would be helpful. Be concise and direct in your responses."#,
+            cwd
+        )
+    }
+
+    /// Spawn the Node.js agent subprocess (legacy)
+    async fn spawn_nodejs_agent(&mut self) -> Result<()> {
         // Find the composer script to run
         let node_path = std::env::var("NODE_PATH").unwrap_or_else(|_| "node".to_string());
 
@@ -157,7 +279,10 @@ impl App {
         // Check if script exists
         if !std::path::Path::new(&script_path).exists() {
             // For now, just set status and continue without agent
-            self.state.error = Some(format!("Agent script not found: {}", script_path));
+            self.state.error = Some(format!(
+                "No API key set and agent script not found: {}. Set ANTHROPIC_API_KEY or OPENAI_API_KEY for native mode.",
+                script_path
+            ));
             return Ok(());
         }
 
@@ -166,7 +291,7 @@ impl App {
         // Pass CLI arguments to the agent
         match AgentProcess::spawn(&node_path, &script_path, &self.agent_args).await {
             Ok(agent) => {
-                self.agent = Some(agent);
+                self.node_agent = Some(agent);
                 self.state.status = Some("Agent spawned, waiting for ready...".to_string());
             }
             Err(e) => {
@@ -179,40 +304,106 @@ impl App {
 
     /// Poll for messages from the agent
     async fn poll_agent(&mut self) -> Result<()> {
-        if let Some(agent) = &mut self.agent {
-            // Non-blocking receive
-            while let Ok(msg) = agent.rx.try_recv() {
-                // Update status to show we received a message
-                match &msg {
-                    crate::agent::FromAgent::Ready { model, provider } => {
-                        self.state.status = Some(format!("Connected: {} via {}", model, provider));
-                    }
-                    crate::agent::FromAgent::SessionInfo { cwd, .. } => {
-                        self.state.status = Some(format!("Session in: {}", cwd));
-                    }
-                    crate::agent::FromAgent::ToolCall {
-                        call_id,
-                        tool,
-                        args,
-                        requires_approval,
-                    } => {
-                        // Queue approval if required
-                        if *requires_approval {
-                            use crate::components::ApprovalRequest;
-                            self.approval_controller.enqueue(ApprovalRequest::new(
-                                call_id.clone(),
-                                tool.clone(),
-                                args.clone(),
-                            ));
-                            // Show approval modal
-                            self.active_modal = ActiveModal::Approval;
-                        }
-                    }
-                    _ => {}
-                }
-                self.state.handle_agent_message(msg);
+        match self.backend {
+            AgentBackend::Native => self.poll_native_agent().await,
+            AgentBackend::NodeJs => self.poll_nodejs_agent().await,
+        }
+    }
+
+    /// Poll for messages from the native agent
+    async fn poll_native_agent(&mut self) -> Result<()> {
+        // Collect messages first to avoid borrow issues
+        let mut messages = Vec::new();
+        if let Some(rx) = &mut self.native_event_rx {
+            while let Ok(msg) = rx.try_recv() {
+                messages.push(msg);
             }
         }
+        // Process messages
+        for msg in messages {
+            self.handle_agent_message(msg).await?;
+        }
+        Ok(())
+    }
+
+    /// Poll for messages from the Node.js agent
+    async fn poll_nodejs_agent(&mut self) -> Result<()> {
+        // Collect messages first to avoid borrow issues
+        let mut messages = Vec::new();
+        if let Some(agent) = &mut self.node_agent {
+            while let Ok(msg) = agent.rx.try_recv() {
+                messages.push(msg);
+            }
+        }
+        // Process messages
+        for msg in messages {
+            self.handle_agent_message(msg).await?;
+        }
+        Ok(())
+    }
+
+    /// Handle an agent message (common for both backends)
+    async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
+        match &msg {
+            FromAgent::Ready { model, provider } => {
+                self.state.status = Some(format!("Connected: {} via {}", model, provider));
+            }
+            FromAgent::SessionInfo { cwd, .. } => {
+                self.state.status = Some(format!("Session in: {}", cwd));
+            }
+            FromAgent::ToolCall {
+                call_id,
+                tool,
+                args,
+                requires_approval,
+            } => {
+                // Check dynamic approval requirement for bash
+                let needs_approval = if tool == "bash" || tool == "Bash" {
+                    if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                        BashTool::requires_approval(cmd)
+                    } else {
+                        true
+                    }
+                } else {
+                    *requires_approval
+                };
+
+                if needs_approval {
+                    // Queue approval
+                    self.approval_controller.enqueue(ApprovalRequest::new(
+                        call_id.clone(),
+                        tool.clone(),
+                        args.clone(),
+                    ));
+                    // Show approval modal
+                    self.active_modal = ActiveModal::Approval;
+                } else {
+                    // Auto-approve and execute
+                    self.execute_tool_and_respond(call_id.clone(), tool.clone(), args.clone())
+                        .await?;
+                }
+            }
+            _ => {}
+        }
+        self.state.handle_agent_message(msg);
+        Ok(())
+    }
+
+    /// Execute a tool and send the response back to the agent
+    async fn execute_tool_and_respond(
+        &mut self,
+        call_id: String,
+        tool: String,
+        args: serde_json::Value,
+    ) -> Result<()> {
+        // Execute the tool
+        let result = self.tool_executor.execute(&tool, &args, None, &call_id).await;
+
+        // Send response back to native agent
+        if let Some(tx) = &self.tool_response_tx {
+            let _ = tx.send((call_id, true, Some(result)));
+        }
+
         Ok(())
     }
 
@@ -239,8 +430,17 @@ impl App {
             KeyCode::Char('c') if ctrl => {
                 if self.state.busy {
                     // Interrupt the agent
-                    if let Some(agent) = &mut self.agent {
-                        let _ = agent.interrupt().await;
+                    match self.backend {
+                        AgentBackend::Native => {
+                            if let Some(agent) = &mut self.native_agent {
+                                agent.cancel();
+                            }
+                        }
+                        AgentBackend::NodeJs => {
+                            if let Some(agent) = &mut self.node_agent {
+                                let _ = agent.interrupt().await;
+                            }
+                        }
                     }
                     self.state.busy = false;
                 } else {
@@ -504,10 +704,9 @@ impl App {
                 if let Some((request, _decision)) =
                     self.approval_controller.decide(ApprovalDecision::Approve)
                 {
-                    // Send approval to agent
-                    if let Some(agent) = &mut self.agent {
-                        agent.tool_response(request.call_id, true, None).await?;
-                    }
+                    // Execute the tool and send response
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, true)
+                        .await?;
                 }
                 // Check if more approvals pending
                 if self.approval_controller.current().is_none() {
@@ -518,10 +717,9 @@ impl App {
                 if let Some((request, _decision)) =
                     self.approval_controller.decide(ApprovalDecision::Deny)
                 {
-                    // Send rejection to agent
-                    if let Some(agent) = &mut self.agent {
-                        agent.tool_response(request.call_id, false, None).await?;
-                    }
+                    // Send denial
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, false)
+                        .await?;
                 }
                 // Check if more approvals pending
                 if self.approval_controller.current().is_none() {
@@ -533,13 +731,45 @@ impl App {
                 while let Some((request, _decision)) =
                     self.approval_controller.decide(ApprovalDecision::Approve)
                 {
-                    if let Some(agent) = &mut self.agent {
-                        agent.tool_response(request.call_id, true, None).await?;
-                    }
+                    self.handle_tool_approval(request.call_id, request.tool, request.args, true)
+                        .await?;
                 }
                 self.active_modal = ActiveModal::None;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle tool approval decision
+    async fn handle_tool_approval(
+        &mut self,
+        call_id: String,
+        tool: String,
+        args: serde_json::Value,
+        approved: bool,
+    ) -> Result<()> {
+        match self.backend {
+            AgentBackend::Native => {
+                if approved {
+                    // Execute the tool
+                    let result = self.tool_executor.execute(&tool, &args, None, &call_id).await;
+                    // Send result back to agent
+                    if let Some(tx) = &self.tool_response_tx {
+                        let _ = tx.send((call_id, true, Some(result)));
+                    }
+                } else {
+                    // Send denial
+                    if let Some(tx) = &self.tool_response_tx {
+                        let _ = tx.send((call_id, false, None));
+                    }
+                }
+            }
+            AgentBackend::NodeJs => {
+                if let Some(agent) = &mut self.node_agent {
+                    agent.tool_response(call_id, approved, None).await?;
+                }
+            }
         }
         Ok(())
     }
@@ -625,11 +855,27 @@ impl App {
             }
             _ => {
                 // Unknown command - try to send to agent
-                if let Some(agent) = &mut self.agent {
-                    // Send as a command prompt
-                    agent.prompt(format!("/{}", cmd_line), vec![]).await?;
-                    self.state.busy = true;
-                } else {
+                let sent = match self.backend {
+                    AgentBackend::Native => {
+                        if let Some(agent) = &mut self.native_agent {
+                            let _ = agent.prompt(format!("/{}", cmd_line), vec![]).await;
+                            self.state.busy = true;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    AgentBackend::NodeJs => {
+                        if let Some(agent) = &mut self.node_agent {
+                            agent.prompt(format!("/{}", cmd_line), vec![]).await?;
+                            self.state.busy = true;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if !sent {
                     self.state.error = Some(format!("Unknown command: /{}", cmd_name));
                 }
             }
@@ -682,14 +928,31 @@ Slash Commands:
     async fn submit_prompt(&mut self, content: String) -> Result<()> {
         // Add user message to state
         self.state.add_user_message(content.clone());
+        self.state.busy = true;
 
-        // Send to agent
-        if let Some(agent) = &mut self.agent {
-            agent.prompt(content, vec![]).await?;
-        } else {
-            // No agent connected - show error
-            self.state.error = Some("Agent not connected".to_string());
-            self.state.busy = false;
+        match self.backend {
+            AgentBackend::Native => {
+                if let Some(agent) = &mut self.native_agent {
+                    if let Err(e) = agent.prompt(content, vec![]).await {
+                        self.state.error = Some(format!("Agent error: {}", e));
+                        self.state.busy = false;
+                    }
+                } else {
+                    self.state.error = Some("Native agent not initialized".to_string());
+                    self.state.busy = false;
+                }
+            }
+            AgentBackend::NodeJs => {
+                if let Some(agent) = &mut self.node_agent {
+                    if let Err(e) = agent.prompt(content, vec![]).await {
+                        self.state.error = Some(format!("Agent error: {}", e));
+                        self.state.busy = false;
+                    }
+                } else {
+                    self.state.error = Some("Agent not connected".to_string());
+                    self.state.busy = false;
+                }
+            }
         }
 
         Ok(())

@@ -26,6 +26,7 @@
 
 // Core modules
 pub mod agent;
+pub mod ai;
 pub mod commands;
 pub mod components;
 pub mod effects;
@@ -35,6 +36,7 @@ pub mod protocol;
 pub mod session;
 pub mod state;
 pub mod terminal;
+pub mod tools;
 
 // Feature modules
 pub mod diff;
@@ -48,7 +50,11 @@ pub mod wrapping;
 
 mod app;
 
-pub use agent::AgentProcess;
+pub use agent::{AgentProcess, NativeAgent, NativeAgentConfig, ToolDefinition};
+pub use ai::{
+    create_client, create_client_for_model, AiClient, AiProvider, AnthropicClient, OpenAiClient,
+    UnifiedClient,
+};
 pub use app::App;
 pub use state::AppState;
 
@@ -61,4 +67,5 @@ pub use markdown::render_markdown;
 pub use pager::Pager;
 pub use palette::{best_color, color_level, has_true_color, theme, ColorLevel};
 pub use tooltips::random_tooltip;
+pub use tools::{BashTool, ToolExecutor, ToolRegistry};
 pub use wrapping::{truncate, visible_width, wrap_line, wrap_spans};
