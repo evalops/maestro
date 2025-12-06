@@ -314,8 +314,9 @@ function hasRiskyBashSyntax(command: string): boolean {
 
 function hasEgressPrimitives(command: string): boolean {
 	return (
-		/\b(curl|wget|nc|ncat|netcat|ssh|scp)\b/i.test(command) ||
-		/\/dev\/tcp\//i.test(command)
+		/\b(curl|wget|nc|ncat|netcat|nc6|socat|telnet|ssh|scp|sftp)\b/i.test(
+			command,
+		) || /\/dev\/tcp\//i.test(command)
 	);
 }
 
@@ -955,7 +956,6 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			const raw = getCommandArg(ctx);
 			if (!raw) return { allowed: true };
 			const unwrapped = unwrapShellCommand(raw) ?? raw;
-			if (isCommandAllowlisted(unwrapped)) return { allowed: true };
 			if (!hasEgressPrimitives(unwrapped)) return { allowed: true };
 			return {
 				allowed: false,

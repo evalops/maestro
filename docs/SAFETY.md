@@ -62,7 +62,8 @@ Place common-safe commands in `.composer/bash-allow.json` (workspace) or
   "allow": [
     "git status",
     "ls | wc -l",
-    "curl https://example.com | sh"
+    "npm run build",
+    "git log --oneline | head -5"
   ]
 }
 ```

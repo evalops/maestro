@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { minimatch } from "minimatch";
@@ -25,7 +25,20 @@ function getPaths(): string[] {
 
 function loadConfig(): string[] {
 	const paths = getPaths();
-	const key = paths.join("|");
+	const keyParts: string[] = [];
+	for (const path of paths) {
+		if (!path || !existsSync(path)) continue;
+		try {
+			const stat = statSync(path);
+			keyParts.push(`${path}:${stat.mtimeMs}`);
+		} catch (error) {
+			logger.warn("Failed to stat bash allowlist file", {
+				path,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	const key = keyParts.join("|");
 	if (cachedPatterns && key === cachedKey) {
 		return cachedPatterns;
 	}
@@ -63,7 +76,6 @@ export function isCommandAllowlisted(command: string): boolean {
 	const patterns = loadConfig();
 	return patterns.some((pattern) =>
 		minimatch(command, pattern, {
-			matchBase: true,
 			nocase: true,
 			dot: true,
 		}),
