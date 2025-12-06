@@ -880,6 +880,7 @@ export class TuiRenderer {
 				this.sessionContext.resetArtifacts();
 				this.toolOutputView.clearTrackedComponents();
 				this.chatContainer.clear();
+				this.scrollContainer.clearHistory();
 				this.startupContainer.clear();
 				this.planView.syncHintWithStore();
 				this.planHint = null;
@@ -2037,8 +2038,9 @@ export class TuiRenderer {
 			this.sessionContext.resetArtifacts();
 			this.toolOutputView.clearTrackedComponents();
 
-			// Clear all UI containers
+			// Clear all UI containers and scroll history
 			this.chatContainer.clear();
+			this.scrollContainer.clearHistory();
 			this.startupContainer.clear();
 
 			// Reset plan state
@@ -2721,6 +2723,7 @@ export class TuiRenderer {
 		this.sessionContext.resetArtifacts();
 		this.toolOutputView.clearTrackedComponents();
 		this.chatContainer.clear();
+		this.scrollContainer.clearHistory();
 		this.startupContainer.clear();
 		this.planView.syncHintWithStore();
 		this.planHint = null;

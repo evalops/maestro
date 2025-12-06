@@ -78,9 +78,13 @@ export interface ScrollContainerOptions {
  * Wraps child content and provides vertical scrolling with keyboard navigation.
  * The scroll offset determines which portion of the content is visible.
  *
+ * IMPORTANT: This component maintains a PERSISTENT HISTORY of all content
+ * ever rendered, so even if the child component's content is cleared or
+ * trimmed, users can still scroll back to see old content.
+ *
  * ```
  * ┌─────────────────────────────────────┐
- * │  Full content (N lines)             │
+ * │  Full content history (N lines)     │
  * │  ┌───────────────────────────────┐  │
  * │  │ Visible viewport (M lines)    │  │ ← scrollOffset
  * │  │ Lines [offset, offset + M)    │  │
@@ -114,8 +118,17 @@ export class ScrollContainer implements Component {
 	/** Reserved lines at bottom */
 	private reservedLines: number;
 
-	/** Cached content lines from last render (for scroll calculations) */
-	private lastContentLines: string[] = [];
+	/**
+	 * PERSISTENT content history - all lines ever rendered.
+	 * This is the key difference: we keep history even when child content is cleared.
+	 */
+	private contentHistory: string[] = [];
+
+	/** Track last child render to detect changes */
+	private lastChildRenderHash = "";
+
+	/** Maximum history lines to prevent unbounded memory growth */
+	private maxHistoryLines: number;
 
 	/** The child component to scroll */
 	private content: Component;
@@ -128,6 +141,8 @@ export class ScrollContainer implements Component {
 		this.pageSize = options.pageSize;
 		this.onScroll = options.onScroll;
 		this.reservedLines = options.reservedLines ?? 0;
+		// Keep up to 10000 lines of history (~5MB at 500 chars/line)
+		this.maxHistoryLines = 10000;
 	}
 
 	/**
@@ -161,7 +176,17 @@ export class ScrollContainer implements Component {
 	 * Gets the maximum valid scroll offset.
 	 */
 	getMaxScrollOffset(): number {
-		return Math.max(0, this.lastContentLines.length - this.viewportHeight);
+		return Math.max(0, this.contentHistory.length - this.viewportHeight);
+	}
+
+	/**
+	 * Clears all history. Use when starting a new session.
+	 */
+	clearHistory(): void {
+		this.contentHistory = [];
+		this.scrollOffset = 0;
+		this.userScrolledUp = false;
+		this.lastChildRenderHash = "";
 	}
 
 	/**
@@ -346,17 +371,26 @@ export class ScrollContainer implements Component {
 	 * Renders the visible portion of the content.
 	 *
 	 * Algorithm:
-	 * 1. Render full content from child component
-	 * 2. Apply sticky scroll if enabled and user hasn't scrolled up
-	 * 3. Extract visible lines based on scroll offset
-	 * 4. Optionally append scroll indicator
+	 * 1. Render current content from child component
+	 * 2. APPEND new content to persistent history (detecting what's new)
+	 * 3. Apply sticky scroll if enabled and user hasn't scrolled up
+	 * 4. Extract visible lines from HISTORY based on scroll offset
+	 * 5. Optionally append scroll indicator
 	 */
 	render(width: number): string[] {
-		// Render full content
-		const allLines = this.content.render(width);
-		this.lastContentLines = allLines;
+		// Render current content from child
+		const currentLines = this.content.render(width);
 
-		const totalLines = allLines.length;
+		// Create a hash to detect if content changed
+		const currentHash = this.hashLines(currentLines);
+
+		// If content changed, update history
+		if (currentHash !== this.lastChildRenderHash) {
+			this.updateHistory(currentLines);
+			this.lastChildRenderHash = currentHash;
+		}
+
+		const totalLines = this.contentHistory.length;
 		const maxOffset = Math.max(0, totalLines - this.viewportHeight);
 
 		// Apply sticky scroll: auto-follow bottom unless user scrolled up
@@ -367,8 +401,8 @@ export class ScrollContainer implements Component {
 		// Clamp offset to valid range
 		this.scrollOffset = Math.max(0, Math.min(maxOffset, this.scrollOffset));
 
-		// Extract visible lines
-		const visibleLines = allLines.slice(
+		// Extract visible lines FROM HISTORY (not current content!)
+		const visibleLines = this.contentHistory.slice(
 			this.scrollOffset,
 			this.scrollOffset + this.viewportHeight,
 		);
@@ -397,10 +431,101 @@ export class ScrollContainer implements Component {
 	}
 
 	/**
+	 * Simple hash of lines for change detection.
+	 */
+	private hashLines(lines: string[]): string {
+		// Use length + first/last line content as a quick hash
+		if (lines.length === 0) return "empty";
+		const first = lines[0]?.slice(0, 50) ?? "";
+		const last = lines[lines.length - 1]?.slice(0, 50) ?? "";
+		return `${lines.length}:${first}:${last}`;
+	}
+
+	/**
+	 * Updates the content history with new lines.
+	 * Appends new content while preserving old history.
+	 */
+	private updateHistory(currentLines: string[]): void {
+		// Strategy: Replace history with current content, but this loses old content
+		// Better strategy: Append only NEW lines at the end
+
+		// For now, simple approach: if current content is longer than what we had
+		// at the end of history, append the new lines
+		// If current content is completely different (e.g., after clear),
+		// we keep the old history and append new content after a separator
+
+		if (this.contentHistory.length === 0) {
+			// First render - just use current content
+			this.contentHistory = [...currentLines];
+		} else {
+			// Check if current content looks like a continuation or a reset
+			// If the child was cleared, currentLines will be short/empty
+			// In that case, we keep history and might add a separator
+
+			if (currentLines.length === 0) {
+				// Child was cleared, keep history as-is
+				return;
+			}
+
+			// Check if current content overlaps with end of history
+			const overlap = this.findOverlap(this.contentHistory, currentLines);
+
+			if (overlap > 0) {
+				// Content overlaps - append only the new part
+				const newLines = currentLines.slice(overlap);
+				this.contentHistory.push(...newLines);
+			} else if (currentLines.length > 0) {
+				// No overlap - this is new content, append it
+				// (This happens after chatContainer.clear())
+				this.contentHistory.push(...currentLines);
+			}
+		}
+
+		// Trim history if too long
+		if (this.contentHistory.length > this.maxHistoryLines) {
+			const removeCount = this.contentHistory.length - this.maxHistoryLines;
+			this.contentHistory.splice(0, removeCount);
+			// Adjust scroll offset if we removed lines above it
+			this.scrollOffset = Math.max(0, this.scrollOffset - removeCount);
+		}
+	}
+
+	/**
+	 * Finds how many lines at the end of history match the start of current.
+	 * Returns the overlap count.
+	 */
+	private findOverlap(history: string[], current: string[]): number {
+		if (history.length === 0 || current.length === 0) return 0;
+
+		// Look for overlap between end of history and start of current
+		// Check up to min(history.length, current.length) lines
+		const maxCheck = Math.min(history.length, current.length, 100);
+
+		for (let overlapSize = maxCheck; overlapSize > 0; overlapSize--) {
+			const historyEnd = history.slice(-overlapSize);
+			const currentStart = current.slice(0, overlapSize);
+
+			let matches = true;
+			for (let i = 0; i < overlapSize; i++) {
+				if (historyEnd[i] !== currentStart[i]) {
+					matches = false;
+					break;
+				}
+			}
+
+			if (matches) {
+				return overlapSize;
+			}
+		}
+
+		return 0;
+	}
+
+	/**
 	 * Renders the scroll position indicator.
 	 */
-	private renderIndicator(width: number): string {
-		const total = this.lastContentLines.length;
+	private renderIndicator(_width: number): string {
+		const total = this.contentHistory.length;
 		const current = this.scrollOffset + 1;
 		const end = Math.min(this.scrollOffset + this.viewportHeight, total);
 
