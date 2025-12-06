@@ -185,16 +185,11 @@ impl CommandPalette {
         // Layout: input at top, results below
         let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(inner);
 
-        // Render input
+        // Render input (cursor is rendered inline)
         self.render_input(frame, chunks[0]);
 
         // Render results
         self.render_results(frame, chunks[1]);
-
-        // Position cursor
-        let cursor_x = chunks[0].x + 2 + self.cursor as u16; // +2 for "/ "
-        let cursor_y = chunks[0].y + 1;
-        frame.set_cursor_position((cursor_x, cursor_y));
     }
 
     fn render_input(&self, frame: &mut Frame, area: Rect) {
@@ -208,6 +203,13 @@ impl CommandPalette {
             .block(input_block);
 
         frame.render_widget(input, area);
+
+        // Position cursor inside input (after the "/" prefix)
+        use unicode_width::UnicodeWidthStr;
+        let inner_x = area.x + 1 + 1; // +1 for border, +1 for "/"
+        let inner_y = area.y + 1;
+        let col = self.query[..self.cursor.min(self.query.len())].width() as u16;
+        frame.set_cursor_position((inner_x + col, inner_y));
     }
 
     fn render_results(&self, frame: &mut Frame, area: Rect) {

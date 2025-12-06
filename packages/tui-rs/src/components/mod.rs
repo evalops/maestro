@@ -11,6 +11,7 @@ mod message;
 mod scroll;
 mod session_switcher;
 mod text;
+mod textarea;
 
 pub use approval::{ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest};
 pub use command_palette::CommandPalette;

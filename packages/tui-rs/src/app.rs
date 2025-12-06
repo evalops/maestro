@@ -13,8 +13,8 @@ use ratatui::prelude::*;
 use crate::agent::AgentProcess;
 use crate::commands::{build_command_registry, CommandRegistry, SlashCommandMatcher, SlashCycleState};
 use crate::components::{
-    ApprovalController, ApprovalDecision, ApprovalModal, ChatView, CommandPalette,
-    FileSearchModal, SessionSwitcher,
+    ApprovalController, ApprovalDecision, ApprovalModal, ChatInputWidget, ChatView,
+    CommandPalette, FileSearchModal, SessionSwitcher,
 };
 use crate::files::get_workspace_files;
 use crate::state::AppState;
@@ -752,14 +752,29 @@ Slash Commands:
                 ActiveModal::None => {}
             }
 
-            // Position cursor in input area (only if no modal active)
+            // Position terminal cursor in the input area
+            // Layout: [Messages(Min), Input(3), Status(1)]
             if active_modal == ActiveModal::None && !state.busy {
-                // Input is at bottom - 3 lines for input box, 1 for status
-                // Cursor inside input box (with 1 char padding for border)
-                let cursor_x =
-                    area.x + 1 + (state.cursor as u16).min(area.width.saturating_sub(3));
-                let cursor_y = area.height.saturating_sub(3);
-                frame.set_cursor_position((cursor_x, cursor_y));
+                // Calculate input area position (same layout as ChatView)
+                let input_area = Rect {
+                    x: area.x,
+                    y: area.y + area.height.saturating_sub(4),
+                    width: area.width,
+                    height: 3,
+                };
+
+                // Create widget just to calculate cursor position
+                let input_widget = ChatInputWidget::new(
+                    &state.input,
+                    state.cursor,
+                    "",
+                    state.busy,
+                    0,
+                );
+
+                if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
+                    frame.set_cursor_position((cursor_x, cursor_y));
+                }
             }
         })?;
 

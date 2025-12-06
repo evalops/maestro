@@ -515,7 +515,7 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// Widget for the chat input area
 pub struct ChatInputWidget<'a> {
     input: &'a str,
-    _cursor: usize,
+    cursor: usize,
     placeholder: &'a str,
     busy: bool,
     elapsed_secs: u64,
@@ -531,11 +531,43 @@ impl<'a> ChatInputWidget<'a> {
     ) -> Self {
         Self {
             input,
-            _cursor: cursor,
+            cursor,
             placeholder,
             busy,
             elapsed_secs,
         }
+    }
+
+    /// Calculate cursor position relative to the input area
+    /// Returns (x, y) position where the terminal cursor should be placed
+    pub fn cursor_pos(&self, input_area: Rect) -> Option<(u16, u16)> {
+        if self.busy || input_area.width < 3 || input_area.height < 3 {
+            return None;
+        }
+
+        // Inner area after borders
+        let inner_x = input_area.x + 1;
+        let inner_y = input_area.y + 1;
+        let inner_width = input_area.width.saturating_sub(2);
+
+        if inner_width == 0 {
+            return None;
+        }
+
+        // Calculate cursor column using unicode display width
+        use unicode_width::UnicodeWidthStr;
+        let text_before_cursor = if self.cursor <= self.input.len() {
+            &self.input[..self.cursor]
+        } else {
+            self.input
+        };
+        let col = text_before_cursor.width() as u16;
+
+        // Handle wrapping - for now just clamp to first line
+        // TODO: proper multi-line cursor positioning with wrap calculation
+        let clamped_col = col.min(inner_width.saturating_sub(1));
+
+        Some((inner_x + clamped_col, inner_y))
     }
 }
 
