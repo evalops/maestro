@@ -1150,9 +1150,24 @@ export async function main(args: string[]) {
 	// ─────────────────────────────────────────────────────────────────────────────
 
 	// Resolve the provider and model to use for this session
-	// Priority: CLI args > alias resolution > provider-agnostic lookup > factory defaults > hardcoded defaults
+	// Priority: CLI args > provider/model format > alias resolution > provider-agnostic lookup > factory defaults > hardcoded defaults
 	let provider = parsed.provider;
 	let modelId = parsed.model;
+
+	// Check if model uses provider/modelId format (e.g., "bedrock/anthropic.claude-v3")
+	if (modelId && !provider && modelId.includes("/")) {
+		const slashIndex = modelId.indexOf("/");
+		const maybeProvider = modelId.slice(0, slashIndex);
+		const maybeModelId = modelId.slice(slashIndex + 1);
+		// Validate it looks like a provider (not a path or URL)
+		if (maybeProvider && maybeModelId && !maybeProvider.includes(".")) {
+			provider = maybeProvider;
+			modelId = maybeModelId;
+			console.log(
+				chalk.dim(`Parsed model: ${parsed.model} → ${provider}/${modelId}`),
+			);
+		}
+	}
 
 	// Check if model is an alias
 	if (modelId && !provider) {
