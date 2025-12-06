@@ -1,78 +1,59 @@
-//! IPC message types
+//! Text styling types
 //!
-//! Messages are JSON-encoded, one per line (newline-delimited JSON).
+//! Types for styled text rendering used throughout the TUI.
 
 use serde::{Deserialize, Serialize};
 
-use super::RenderNode;
-
-/// Messages sent from TypeScript to the TUI
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum InboundMessage {
-    /// Render a new frame
-    Render {
-        /// The render tree root
-        root: RenderNode,
-        /// Cursor position (if visible)
-        cursor: Option<CursorPosition>,
-    },
-
-    /// Push lines into terminal scrollback (above viewport)
-    PushHistory {
-        /// Lines to push into scrollback
-        lines: Vec<HistoryLine>,
-    },
-
-    /// Terminal was resized (informational, TUI detects this too)
-    Resize { width: u16, height: u16 },
-
-    /// Request TUI to exit
-    Exit { code: i32 },
-
-    /// Show a notification (desktop notification if terminal unfocused)
-    Notify { message: String },
+/// Border style for boxes
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BorderStyle {
+    #[default]
+    None,
+    Single,
+    Double,
+    Rounded,
+    Heavy,
 }
 
-/// Messages sent from TUI to TypeScript
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum OutboundMessage {
-    /// TUI is ready to receive render commands
-    Ready {
-        width: u16,
-        height: u16,
-        /// True if terminal supports enhanced keyboard (modifier disambiguation)
-        enhanced_keys: bool,
-    },
-
-    /// Key press event
-    Key {
-        key: String,
-        modifiers: KeyModifiers,
-    },
-
-    /// Paste event (bracketed paste)
-    Paste { text: String },
-
-    /// Terminal resized
-    Resized { width: u16, height: u16 },
-
-    /// Terminal focus changed
-    Focus { focused: bool },
-
-    /// TUI is exiting
-    Exiting { code: i32 },
-
-    /// Error occurred
-    Error { message: String },
+/// Padding for boxes
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct Padding {
+    #[serde(default)]
+    pub top: u16,
+    #[serde(default)]
+    pub right: u16,
+    #[serde(default)]
+    pub bottom: u16,
+    #[serde(default)]
+    pub left: u16,
 }
 
-/// Cursor position for rendering
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct CursorPosition {
-    pub x: u16,
-    pub y: u16,
+impl Padding {
+    pub fn uniform(size: u16) -> Self {
+        Self {
+            top: size,
+            right: size,
+            bottom: size,
+            left: size,
+        }
+    }
+
+    pub fn horizontal(size: u16) -> Self {
+        Self {
+            left: size,
+            right: size,
+            ..Default::default()
+        }
+    }
+
+    pub fn vertical(size: u16) -> Self {
+        Self {
+            top: size,
+            bottom: size,
+            ..Default::default()
+        }
+    }
 }
 
 /// Key modifiers
@@ -256,20 +237,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_inbound_message_parsing() {
-        let json = r#"{"type":"render","root":{"type":"text","content":"Hello"},"cursor":null}"#;
-        let msg: InboundMessage = serde_json::from_str(json).unwrap();
-        assert!(matches!(msg, InboundMessage::Render { .. }));
-    }
-
-    #[test]
-    fn test_outbound_message_serialization() {
-        let msg = OutboundMessage::Ready {
-            width: 80,
-            height: 24,
-            enhanced_keys: true,
+    fn test_text_style_conversion() {
+        let style = TextStyle {
+            fg: Some(Color::Named(NamedColor::Red)),
+            bold: true,
+            ..Default::default()
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("ready"));
+        let ratatui_style: ratatui::style::Style = style.into();
+        assert_eq!(ratatui_style.fg, Some(ratatui::style::Color::Red));
     }
 }

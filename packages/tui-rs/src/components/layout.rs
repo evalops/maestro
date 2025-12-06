@@ -1,7 +1,6 @@
 //! Layout widgets (Column, Row, Box)
 //!
-//! Note: These are simplified versions. The actual rendering of children
-//! is delegated to the Renderer which handles the RenderNode tree directly.
+//! Simple layout helpers for arranging content in columns and rows.
 
 use ratatui::{
     buffer::Buffer,

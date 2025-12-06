@@ -32,9 +32,7 @@ pub mod state;
 pub mod terminal;
 
 mod app;
-mod render;
 
 pub use agent::AgentProcess;
 pub use app::App;
-pub use render::Renderer;
 pub use state::AppState;
