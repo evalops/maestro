@@ -35,6 +35,48 @@ unless you set `--approval-mode auto`.
 - To disable approvals entirely, use `--approval-mode auto` (CLI) or set
   `COMPOSER_APPROVAL_MODE=auto`. Only do this in trusted sandboxes.
 
+### Bash Guard / YOLO toggle
+
+The tree-sitter/bash guard can feel heavy-handed. Control it with
+`COMPOSER_BASH_GUARD`:
+
+| Value | Effect |
+| ----- | ------ |
+| unset | Guard **on** (current default) |
+| `1`/`on`/`true` | Force the guard on (extra scrutiny, approvals for pipes/exec/etc.) |
+| `0`/`off`/`false` | YOLO mode: skip the bash guard and rely only on the hard regex rules (still blocks `rm -rf`, `mkfs`, etc.) |
+
+Use `0` only in trusted environments; it removes the tree-sitter and heuristic
+checks that would normally require approvals for risky shell shapes (pipes,
+command substitution, curl | sh, etc.). Safe mode / prod profile still keep the
+rest of the firewall (system paths, containment, regex rules) in place.
+
+### Bash allowlist (reduce false positives)
+
+Place common-safe commands in `.composer/bash-allow.json` (workspace) or
+`~/.composer/bash-allow.json` (user). Format: either an array or `{ "allow":
+["pattern", ...] }` with glob-style patterns (minimatch). Example:
+
+```json
+{
+  "allow": [
+    "git status",
+    "ls | wc -l",
+    "npm run build",
+    "git log --oneline | head -5"
+  ]
+}
+```
+
+You can also point to custom files via `COMPOSER_BASH_ALLOWLIST_PATHS` (path
+delimiter separated).
+
+### Shell egress kill switch
+
+Set `COMPOSER_NO_EGRESS_SHELL=1` to require approval for shell commands that use
+curl/wget/ssh/nc or `/dev/tcp`. Override per-run with
+`COMPOSER_ALLOW_EGRESS_SHELL=1` or by allowlisting the specific command.
+
 ## Approval Modes
 
 You control approval behavior via CLI flag or env var:

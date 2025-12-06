@@ -652,6 +652,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	// Handle --help early exit (before any logging redirection or heavy init)
+	if (parsed.help) {
+		printHelp(VERSION);
+		return;
+	}
+
 	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
 	// redirect all logging/console output to a file to avoid corrupting the render buffer.
 	// This must run before model loading to catch any early warnings.
@@ -899,11 +905,6 @@ export async function main(args: string[]) {
 	// ─────────────────────────────────────────────────────────────────────────────
 	// Early Exit: Help Command
 	// ─────────────────────────────────────────────────────────────────────────────
-
-	if (parsed.help) {
-		printHelp(VERSION);
-		return;
-	}
 
 	const frameworkWarning = validateFrameworkPreference();
 	if (frameworkWarning) {
