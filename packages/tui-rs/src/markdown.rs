@@ -77,6 +77,8 @@ struct MarkdownRenderer {
     code_block_content: String,
     code_block_lang: Option<String>,
     blockquote_depth: usize,
+    /// Current link URL (for appending after link text)
+    current_link_url: Option<String>,
 }
 
 impl MarkdownRenderer {
@@ -91,6 +93,7 @@ impl MarkdownRenderer {
             code_block_content: String::new(),
             code_block_lang: None,
             blockquote_depth: 0,
+            current_link_url: None,
         }
     }
 
@@ -242,9 +245,8 @@ impl MarkdownRenderer {
             }
             Tag::Link { dest_url, .. } => {
                 self.push_style(self.styles.link);
-                // Store URL for later
-                self.current_spans.push(Span::raw("")); // placeholder
-                let _ = dest_url; // TODO: show URL on hover or after text
+                // Store URL for displaying after link text
+                self.current_link_url = Some(dest_url.to_string());
             }
             _ => {}
         }
@@ -313,6 +315,13 @@ impl MarkdownRenderer {
             }
             TagEnd::Link => {
                 self.pop_style();
+                // Append the URL after the link text
+                if let Some(url) = self.current_link_url.take() {
+                    self.current_spans.push(Span::styled(
+                        format!(" ({})", url),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
             }
             _ => {}
         }

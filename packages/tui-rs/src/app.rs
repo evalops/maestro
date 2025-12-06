@@ -21,7 +21,8 @@ use crate::components::{
     ChatView, CommandPalette, FileSearchModal, SessionSwitcher,
 };
 use crate::files::get_workspace_files;
-use crate::state::AppState;
+use crate::session::{AppMessage, SessionManager};
+use crate::state::{AppState, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
 use crate::tools::{BashTool, ToolExecutor};
 
@@ -82,6 +83,8 @@ pub struct App {
     command_palette: CommandPalette,
     /// Approval controller
     approval_controller: ApprovalController,
+    /// Session manager
+    session_manager: SessionManager,
 }
 
 impl App {
@@ -130,6 +133,7 @@ impl App {
             file_search: FileSearchModal::new(),
             session_switcher: SessionSwitcher::new(&cwd),
             approval_controller: ApprovalController::new(),
+            session_manager: SessionManager::new(&cwd),
         })
     }
 
@@ -648,8 +652,37 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
             KeyCode::Enter => {
                 if let Some(session_id) = self.session_switcher.confirm() {
-                    // TODO: Resume session via agent
-                    self.state.status = Some(format!("Resuming session: {}", session_id));
+                    // Load and restore the session
+                    match self.session_manager.load_session(&session_id) {
+                        Ok(session) => {
+                            // Clear current messages
+                            self.state.messages.clear();
+
+                            // Restore messages from session
+                            for app_msg in &session.messages {
+                                let role = match app_msg {
+                                    AppMessage::User { .. } => MessageRole::User,
+                                    AppMessage::Assistant { .. } => MessageRole::Assistant,
+                                    AppMessage::ToolResult { .. } => continue, // Skip tool results
+                                };
+                                self.state.messages.push(Message {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    role,
+                                    content: app_msg.text_content(),
+                                    thinking: String::new(),
+                                    streaming: false,
+                                    tool_calls: Vec::new(),
+                                    usage: None,
+                                });
+                            }
+
+                            self.state.session_id = Some(session_id.clone());
+                            self.state.status = Some(format!("Resumed session: {}", session_id));
+                        }
+                        Err(e) => {
+                            self.state.error = Some(format!("Failed to load session: {}", e));
+                        }
+                    }
                 }
                 self.active_modal = ActiveModal::None;
             }

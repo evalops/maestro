@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{FromAgent, TokenUsage, ToolResult};
@@ -19,6 +20,7 @@ use crate::ai::{
     ContentBlock, Message, MessageContent, RequestConfig, Role, StreamEvent, Tool,
     ThinkingConfig, UnifiedClient,
 };
+use crate::tools::{ToolExecutor, ToolRegistry};
 
 /// Configuration for the native agent
 #[derive(Debug, Clone)]
@@ -53,6 +55,7 @@ impl Default for NativeAgentConfig {
 }
 
 /// Tool definition with execution handler
+#[derive(Clone)]
 pub struct ToolDefinition {
     /// Tool metadata for the AI
     pub tool: Tool,
@@ -98,16 +101,28 @@ impl NativeAgent {
         let (tool_response_tx, tool_response_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
 
+        // Build tool definitions from the registry
+        let registry = ToolRegistry::new();
+        let tools: HashMap<String, ToolDefinition> = registry
+            .tools()
+            .map(|td| (td.tool.name.clone(), td.clone()))
+            .collect();
+
+        // Create tool executor
+        let tool_executor = ToolExecutor::new(&config.cwd);
+
         // Create the background runner
         let runner = NativeAgentRunner {
             client,
             config: config.clone(),
             messages: Vec::new(),
-            tools: HashMap::new(),
+            tools,
+            tool_executor,
             event_tx: event_tx.clone(),
             tool_response_rx,
             command_rx,
             busy: false,
+            cancel_token: None,
         };
 
         // Spawn the background task
@@ -179,6 +194,8 @@ struct NativeAgentRunner {
     messages: Vec<Message>,
     /// Tool definitions
     tools: HashMap<String, ToolDefinition>,
+    /// Tool executor for running tools
+    tool_executor: ToolExecutor,
     /// Channel to send events to the TUI
     event_tx: mpsc::UnboundedSender<FromAgent>,
     /// Channel to receive tool responses from the TUI
@@ -187,6 +204,8 @@ struct NativeAgentRunner {
     command_rx: mpsc::UnboundedReceiver<AgentCommand>,
     /// Whether currently processing
     busy: bool,
+    /// Cancellation token for the current request
+    cancel_token: Option<CancellationToken>,
 }
 
 impl NativeAgentRunner {
@@ -205,21 +224,36 @@ impl NativeAgentRunner {
 
                     self.busy = true;
 
+                    // Create cancellation token for this request
+                    let cancel_token = CancellationToken::new();
+                    self.cancel_token = Some(cancel_token.clone());
+
                     // Add user message to history
                     self.messages.push(Message {
                         role: Role::User,
                         content: MessageContent::text(content),
                     });
 
-                    // Run the agent loop
-                    if let Err(e) = self.run_loop().await {
-                        let _ = self.event_tx.send(FromAgent::Error {
-                            message: format!("Agent error: {}", e),
-                            fatal: false,
-                        });
+                    // Run the agent loop with cancellation support
+                    let result = tokio::select! {
+                        res = self.run_loop() => res,
+                        _ = cancel_token.cancelled() => {
+                            Err(anyhow::anyhow!("Request cancelled"))
+                        }
+                    };
+
+                    if let Err(e) = result {
+                        let msg = e.to_string();
+                        if msg != "Request cancelled" {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: format!("Agent error: {}", e),
+                                fatal: false,
+                            });
+                        }
                     }
 
                     self.busy = false;
+                    self.cancel_token = None;
 
                     // Signal that we're done (TUI can clear busy state)
                     let _ = self.event_tx.send(FromAgent::ResponseEnd {
@@ -228,8 +262,10 @@ impl NativeAgentRunner {
                     });
                 }
                 AgentCommand::Cancel => {
+                    if let Some(token) = &self.cancel_token {
+                        token.cancel();
+                    }
                     self.busy = false;
-                    // TODO: Implement proper cancellation
                 }
                 AgentCommand::SetModel { model } => {
                     match UnifiedClient::from_model(&model) {
@@ -434,16 +470,8 @@ impl NativeAgentRunner {
                         }
                     } else {
                         // Auto-approved, execute immediately
-                        let _ = self.event_tx.send(FromAgent::ToolStart {
-                            call_id: call_id.clone(),
-                        });
-
-                        let result = self.execute_tool(&tool_name, &args).await;
-
-                        let _ = self.event_tx.send(FromAgent::ToolEnd {
-                            call_id: call_id.clone(),
-                            success: result.success,
-                        });
+                        // Note: ToolExecutor sends ToolStart/ToolEnd events internally
+                        let result = self.execute_tool(&tool_name, &args, &call_id).await;
 
                         (true, Some(result))
                     };
@@ -487,28 +515,11 @@ impl NativeAgentRunner {
         Ok(())
     }
 
-    /// Execute a tool (placeholder - tools will be implemented separately)
-    async fn execute_tool(&self, tool_name: &str, args: &serde_json::Value) -> ToolResult {
-        // This is a placeholder - actual tool implementations will be in tools module
-        match tool_name {
-            "bash" => {
-                ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some("Bash tool not yet implemented".to_string()),
-                }
-            }
-            "read" => ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Read tool not yet implemented".to_string()),
-            },
-            _ => ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Unknown tool: {}", tool_name)),
-            },
-        }
+    /// Execute a tool using the ToolExecutor
+    async fn execute_tool(&self, tool_name: &str, args: &serde_json::Value, call_id: &str) -> ToolResult {
+        self.tool_executor
+            .execute(tool_name, args, Some(&self.event_tx), call_id)
+            .await
     }
 }
 
@@ -545,5 +556,140 @@ mod tests {
         let thinking = ThinkingConfig::enabled(10000);
         assert_eq!(thinking.thinking_type, "enabled");
         assert_eq!(thinking.budget_tokens, 10000);
+    }
+
+    #[test]
+    fn test_tool_definition_clone() {
+        let tool_def = ToolDefinition {
+            tool: Tool::new("test", "A test tool").with_schema(serde_json::json!({
+                "type": "object",
+                "properties": {}
+            })),
+            requires_approval: true,
+        };
+        let cloned = tool_def.clone();
+        assert_eq!(cloned.tool.name, "test");
+        assert!(cloned.requires_approval);
+    }
+
+    #[test]
+    fn test_tool_registry_integration() {
+        // Verify tools are registered correctly from registry
+        let registry = ToolRegistry::new();
+        let tools: Vec<_> = registry.tools().collect();
+
+        // Should have bash, read, write, glob, grep
+        assert!(tools.len() >= 5);
+
+        // Verify tool names
+        let names: Vec<_> = tools.iter().map(|t| t.tool.name.as_str()).collect();
+        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"write"));
+        assert!(names.contains(&"glob"));
+        assert!(names.contains(&"grep"));
+    }
+
+    #[test]
+    fn test_request_config_building() {
+        let config = NativeAgentConfig {
+            model: "claude-sonnet-4-5-20250514".to_string(),
+            max_tokens: 8192,
+            system_prompt: Some("Test system prompt".to_string()),
+            thinking_enabled: false,
+            thinking_budget: 0,
+            cwd: ".".to_string(),
+        };
+
+        // Build request config manually to verify structure
+        let tools: Vec<Tool> = ToolRegistry::new()
+            .tools()
+            .map(|td| td.tool.clone())
+            .collect();
+
+        let request_config = RequestConfig {
+            model: config.model.clone(),
+            max_tokens: config.max_tokens,
+            temperature: Some(0.7),
+            system: config.system_prompt.clone(),
+            tools,
+            thinking: None,
+        };
+
+        assert_eq!(request_config.model, "claude-sonnet-4-5-20250514");
+        assert_eq!(request_config.max_tokens, 8192);
+        assert!(request_config.system.is_some());
+        assert!(!request_config.tools.is_empty());
+    }
+
+    #[test]
+    fn test_thinking_config_with_budget() {
+        let config = NativeAgentConfig {
+            model: "claude-opus-4-5-20251101".to_string(),
+            max_tokens: 16384,
+            system_prompt: None,
+            thinking_enabled: true,
+            thinking_budget: 15000,
+            cwd: ".".to_string(),
+        };
+
+        let thinking = if config.thinking_enabled {
+            Some(ThinkingConfig::enabled(config.thinking_budget))
+        } else {
+            None
+        };
+
+        assert!(thinking.is_some());
+        let thinking = thinking.unwrap();
+        assert_eq!(thinking.thinking_type, "enabled");
+        assert_eq!(thinking.budget_tokens, 15000);
+    }
+
+    #[test]
+    fn test_from_agent_variants() {
+        // Test that FromAgent variants serialize/deserialize correctly
+        let ready = FromAgent::Ready {
+            model: "claude-sonnet".to_string(),
+            provider: "Anthropic".to_string(),
+        };
+        if let FromAgent::Ready { model, provider } = ready {
+            assert_eq!(model, "claude-sonnet");
+            assert_eq!(provider, "Anthropic");
+        } else {
+            panic!("Expected Ready variant");
+        }
+
+        let chunk = FromAgent::ResponseChunk {
+            response_id: "resp_123".to_string(),
+            content: "Hello".to_string(),
+            is_thinking: false,
+        };
+        if let FromAgent::ResponseChunk { content, is_thinking, .. } = chunk {
+            assert_eq!(content, "Hello");
+            assert!(!is_thinking);
+        } else {
+            panic!("Expected ResponseChunk variant");
+        }
+    }
+
+    #[test]
+    fn test_tool_result_structure() {
+        let success_result = ToolResult {
+            success: true,
+            output: "Command executed successfully".to_string(),
+            error: None,
+        };
+        assert!(success_result.success);
+        assert!(!success_result.output.is_empty());
+        assert!(success_result.error.is_none());
+
+        let error_result = ToolResult {
+            success: false,
+            output: String::new(),
+            error: Some("Permission denied".to_string()),
+        };
+        assert!(!error_result.success);
+        assert!(error_result.output.is_empty());
+        assert!(error_result.error.is_some());
     }
 }

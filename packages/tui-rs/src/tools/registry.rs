@@ -169,21 +169,34 @@ impl ToolExecutor {
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.cwd);
 
-                // Use glob crate would be better, but for now use find
-                let result = self
-                    .bash
-                    .execute(BashArgs {
-                        command: format!(
-                            "find {} -name '{}' -type f 2>/dev/null | head -100",
-                            base_path, pattern
-                        ),
-                        timeout: Some(10000),
-                        description: Some("Find files matching pattern".to_string()),
-                        run_in_background: false,
-                    })
-                    .await;
+                // Build full glob pattern
+                let full_pattern = if pattern.starts_with('/') {
+                    pattern.to_string()
+                } else {
+                    format!("{}/{}", base_path, pattern)
+                };
 
-                result
+                // Use native glob crate
+                match glob::glob(&full_pattern) {
+                    Ok(paths) => {
+                        let matches: Vec<String> = paths
+                            .filter_map(|p| p.ok())
+                            .take(100)
+                            .map(|p| p.display().to_string())
+                            .collect();
+
+                        ToolResult {
+                            success: true,
+                            output: matches.join("\n"),
+                            error: None,
+                        }
+                    }
+                    Err(e) => ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Glob error: {}", e)),
+                    },
+                }
             }
             "grep" | "Grep" => {
                 let pattern = args
@@ -284,11 +297,11 @@ impl ToolRegistry {
                             "description": "The absolute path to the file to read"
                         },
                         "offset": {
-                            "type": "integer",
+                            "type": "number",
                             "description": "Line number to start reading from (optional)"
                         },
                         "limit": {
-                            "type": "integer",
+                            "type": "number",
                             "description": "Number of lines to read (optional)"
                         }
                     },

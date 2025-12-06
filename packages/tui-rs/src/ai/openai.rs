@@ -429,18 +429,16 @@ impl OpenAiClient {
                                 if let ContentBlock::ToolResult {
                                     tool_use_id,
                                     content,
-                                    is_error,
+                                    is_error: _,
                                 } = block
                                 {
                                     has_tool_results = true;
-                                    // Wrap output with success field for proper Responses API format
-                                    // The Responses API expects { output: string } or { output: string, success: bool }
-                                    let is_success = !is_error.unwrap_or(false);
+                                    // The Responses API expects output as a plain string for success
+                                    // Format: { type: "function_call_output", call_id: "...", output: "..." }
                                     input.push(serde_json::json!({
                                         "type": "function_call_output",
                                         "call_id": tool_use_id,
-                                        "output": content,
-                                        "success": is_success
+                                        "output": content
                                     }));
                                 }
                             }
@@ -543,6 +541,7 @@ impl OpenAiClient {
                             "type": "function",
                             "name": tool.name,
                             "description": tool.description,
+                            "strict": false,
                             "parameters": tool.input_schema
                         })
                     })
@@ -551,7 +550,8 @@ impl OpenAiClient {
             }
         }
 
-        // Add reasoning effort for thinking models
+        // Add reasoning configuration
+        // Codex models do reasoning by default, we need to include the content to see it
         if let Some(thinking) = &config.thinking {
             let effort = if thinking.budget_tokens > 10000 {
                 "high"
@@ -561,13 +561,16 @@ impl OpenAiClient {
                 "low"
             };
             body["reasoning"] = serde_json::json!({
-                "effort": effort
+                "effort": effort,
+                "summary": "auto"  // Request reasoning summaries
             });
-
-            // Include encrypted reasoning content for multi-turn conversations
-            // This preserves reasoning state across turns
-            body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
         }
+
+        // Always include reasoning content for visibility
+        // This enables streaming of reasoning text (only encrypted_content is valid)
+        body["include"] = serde_json::json!([
+            "reasoning.encrypted_content"
+        ]);
 
         body
     }
@@ -646,7 +649,7 @@ impl AiClient for OpenAiClient {
                             // Parse the SSE data as JSON
                             let event: ResponsesSseEvent = match serde_json::from_str(&sse.data) {
                                 Ok(e) => e,
-                                Err(_) => continue, // Skip unparseable events
+                                Err(_) => continue,
                             };
 
                             match event.kind.as_str() {
@@ -1128,5 +1131,263 @@ mod tests {
         assert_eq!(AiProvider::from_model("gpt-4o"), AiProvider::OpenAI);
         assert_eq!(AiProvider::from_model("claude-opus-4-5-20251101"), AiProvider::Anthropic);
         assert_eq!(AiProvider::from_model("claude-sonnet-4-5"), AiProvider::Anthropic);
+    }
+
+    #[test]
+    fn test_uses_responses_api() {
+        // gpt-5.1-codex-* should use Responses API
+        assert!(uses_responses_api("gpt-5.1-codex-max"));
+        assert!(uses_responses_api("gpt-5.1-codex-lite"));
+        // o3 models use Responses API
+        assert!(uses_responses_api("o3"));
+        assert!(uses_responses_api("o3-mini"));
+        // Other models should not
+        assert!(!uses_responses_api("gpt-4o"));
+        assert!(!uses_responses_api("gpt-4-turbo"));
+        assert!(!uses_responses_api("o1"));
+    }
+
+    #[test]
+    fn test_api_url_selection() {
+        // Responses API models go to /v1/responses
+        assert_eq!(
+            api_url_for_model("gpt-5.1-codex-max"),
+            "https://api.openai.com/v1/responses"
+        );
+        // Chat Completions models go to /v1/chat/completions
+        assert_eq!(
+            api_url_for_model("gpt-4o"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_has_incompatible_schema() {
+        // Simple schema is compatible
+        let simple = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        assert!(!has_incompatible_schema(&simple));
+
+        // oneOf is incompatible
+        let one_of = serde_json::json!({
+            "oneOf": [
+                {"type": "string"},
+                {"type": "number"}
+            ]
+        });
+        assert!(has_incompatible_schema(&one_of));
+
+        // anyOf is incompatible
+        let any_of = serde_json::json!({
+            "anyOf": [
+                {"type": "string"},
+                {"type": "number"}
+            ]
+        });
+        assert!(has_incompatible_schema(&any_of));
+
+        // allOf is incompatible
+        let all_of = serde_json::json!({
+            "allOf": [
+                {"type": "object"},
+                {"properties": {"x": {"type": "number"}}}
+            ]
+        });
+        assert!(has_incompatible_schema(&all_of));
+
+        // Top-level enum is incompatible
+        let top_enum = serde_json::json!({
+            "enum": ["a", "b", "c"]
+        });
+        assert!(has_incompatible_schema(&top_enum));
+    }
+
+    #[test]
+    fn test_filter_responses_api_tools() {
+        let tools = vec![
+            Tool::new("read", "Read a file")
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"}
+                    }
+                })),
+            Tool::new("", "Empty name tool") // Should be filtered out
+                .with_schema(serde_json::json!({})),
+            Tool::new("bad", "Has oneOf")
+                .with_schema(serde_json::json!({
+                    "oneOf": [{"type": "string"}, {"type": "number"}]
+                })),
+        ];
+
+        let filtered = filter_responses_api_tools(&tools);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "read");
+    }
+
+    #[test]
+    fn test_extract_function_call() {
+        // Valid function call
+        let valid = serde_json::json!({
+            "type": "function_call",
+            "call_id": "call_123",
+            "name": "read",
+            "arguments": "{\"path\": \"/tmp/test.txt\"}"
+        });
+        let result = extract_function_call(&valid);
+        assert!(result.is_some());
+        let (call_id, name, args) = result.unwrap();
+        assert_eq!(call_id, "call_123");
+        assert_eq!(name, "read");
+        assert_eq!(args, "{\"path\": \"/tmp/test.txt\"}");
+
+        // Not a function call
+        let message = serde_json::json!({
+            "type": "message",
+            "content": "Hello"
+        });
+        assert!(extract_function_call(&message).is_none());
+
+        // Missing fields
+        let incomplete = serde_json::json!({
+            "type": "function_call",
+            "name": "read"
+        });
+        assert!(extract_function_call(&incomplete).is_none());
+    }
+
+    #[test]
+    fn test_extract_text_from_item() {
+        // Message with output_text content
+        let msg = serde_json::json!({
+            "type": "message",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Hello, world!"
+                }
+            ]
+        });
+        let text = extract_text_from_item(&msg);
+        assert_eq!(text, Some("Hello, world!".to_string()));
+
+        // Message with no content
+        let empty = serde_json::json!({
+            "type": "message",
+            "content": []
+        });
+        assert!(extract_text_from_item(&empty).is_none());
+
+        // Not a message
+        let other = serde_json::json!({
+            "type": "function_call"
+        });
+        assert!(extract_text_from_item(&other).is_none());
+    }
+
+    #[test]
+    fn test_classify_error() {
+        // Context length exceeded
+        let ctx_error = serde_json::json!({
+            "code": "context_length_exceeded",
+            "message": "Maximum context length exceeded"
+        });
+        match classify_error(&ctx_error) {
+            ApiError::ContextWindowExceeded => {}
+            _ => panic!("Expected ContextWindowExceeded"),
+        }
+
+        // Quota exceeded
+        let quota_error = serde_json::json!({
+            "code": "insufficient_quota",
+            "message": "You exceeded your quota"
+        });
+        match classify_error(&quota_error) {
+            ApiError::QuotaExceeded => {}
+            _ => panic!("Expected QuotaExceeded"),
+        }
+
+        // Rate limited
+        let rate_error = serde_json::json!({
+            "code": "rate_limit_exceeded",
+            "message": "Rate limit exceeded"
+        });
+        match classify_error(&rate_error) {
+            ApiError::RateLimited { .. } => {}
+            _ => panic!("Expected RateLimited"),
+        }
+
+        // Generic error
+        let generic = serde_json::json!({
+            "code": "something_else",
+            "message": "Something went wrong"
+        });
+        match classify_error(&generic) {
+            ApiError::Retryable { message } => {
+                assert_eq!(message, "Something went wrong");
+            }
+            _ => panic!("Expected Retryable"),
+        }
+    }
+
+    #[test]
+    fn test_parse_retry_after() {
+        // Seconds
+        let secs = parse_retry_after("Please try again in 30s");
+        assert!(secs.is_some());
+        assert_eq!(secs.unwrap(), std::time::Duration::from_secs(30));
+
+        // Milliseconds
+        let ms = parse_retry_after("Try again in 500ms");
+        assert!(ms.is_some());
+        assert_eq!(ms.unwrap(), std::time::Duration::from_millis(500));
+
+        // Float seconds
+        let float = parse_retry_after("try again in 2.5s");
+        assert!(float.is_some());
+        assert_eq!(float.unwrap(), std::time::Duration::from_secs_f64(2.5));
+
+        // No retry-after info
+        let none = parse_retry_after("Rate limit exceeded");
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn test_responses_sse_event_parsing() {
+        // Test parsing response.created event
+        let created_data = r#"{"type":"response.created","response":{"id":"resp_123"}}"#;
+        let event: ResponsesSseEvent = serde_json::from_str(created_data).unwrap();
+        assert_eq!(event.kind, "response.created");
+        assert!(event.response.is_some());
+        let resp = event.response.unwrap();
+        assert_eq!(resp.get("id").unwrap().as_str().unwrap(), "resp_123");
+
+        // Test parsing output_text.delta event
+        let delta_data = r#"{"type":"response.output_text.delta","delta":"Hello"}"#;
+        let event: ResponsesSseEvent = serde_json::from_str(delta_data).unwrap();
+        assert_eq!(event.kind, "response.output_text.delta");
+        assert_eq!(event.delta, Some("Hello".to_string()));
+
+        // Test parsing output_item.done event
+        let done_data = r#"{"type":"response.output_item.done","item":{"type":"message","content":[]}}"#;
+        let event: ResponsesSseEvent = serde_json::from_str(done_data).unwrap();
+        assert_eq!(event.kind, "response.output_item.done");
+        assert!(event.item.is_some());
+    }
+
+    #[test]
+    fn test_responses_sse_event_defaults() {
+        // Missing optional fields should default to None
+        let minimal = r#"{"type":"response.created"}"#;
+        let event: ResponsesSseEvent = serde_json::from_str(minimal).unwrap();
+        assert_eq!(event.kind, "response.created");
+        assert!(event.response.is_none());
+        assert!(event.item.is_none());
+        assert!(event.delta.is_none());
+        assert!(event.output_index.is_none());
     }
 }
