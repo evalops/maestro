@@ -528,6 +528,11 @@ const BEDROCK_OVERLAY = {
 let BUILTIN_MODELS: Record<string, Model<Api>[]> | null = null;
 const CODEX_MODEL_PATTERN = /codex/i;
 
+// Map provider names from models.dev to our internal names
+const PROVIDER_ALIASES: Record<string, string> = {
+	"amazon-bedrock": "bedrock",
+};
+
 /**
  * Convert generated models to our format (called lazily on first access)
  */
@@ -535,14 +540,23 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 	const converted: Record<string, Model<Api>[]> = {};
 
 	// Start with generated models
-	for (const [provider, models] of Object.entries(GENERATED_MODELS)) {
-		converted[provider] = Object.values(models)
-			.filter((model) => !CODEX_MODEL_PATTERN.test(model.id))
-			.map((model) => ({
-				...model,
-				// Ensure baseUrl format consistency across providers
-				baseUrl: normalizeModelBaseUrl(model),
-			}));
+	for (const [rawProvider, models] of Object.entries(GENERATED_MODELS)) {
+		// Map provider name (e.g., "amazon-bedrock" -> "bedrock")
+		const provider = PROVIDER_ALIASES[rawProvider] ?? rawProvider;
+		if (!converted[provider]) {
+			converted[provider] = [];
+		}
+		converted[provider].push(
+			...Object.values(models)
+				.filter((model) => !CODEX_MODEL_PATTERN.test(model.id))
+				.map((model) => ({
+					...model,
+					// Remap provider name to match our internal naming
+					provider,
+					// Ensure baseUrl format consistency across providers
+					baseUrl: normalizeModelBaseUrl(model),
+				})),
+		);
 	}
 
 	// Apply overlay additions
