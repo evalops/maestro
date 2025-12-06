@@ -1,10 +1,17 @@
 import { getCustomProviderMetadata } from "../models/registry.js";
+import { hasAwsCredentials } from "./aws-auth.js";
 
 export const envApiKeyMap = {
 	google: ["GEMINI_API_KEY"],
 	openai: ["OPENAI_API_KEY"],
 	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
-	bedrock: ["AWS_ACCESS_KEY_ID"], // SigV4 uses AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+	bedrock: [
+		"AWS_ACCESS_KEY_ID",
+		"AWS_PROFILE",
+		"AWS_SSO_SESSION_NAME",
+		"AWS_WEB_IDENTITY_TOKEN_FILE",
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+	],
 	writer: ["WRITER_API_KEY"],
 	xai: ["XAI_API_KEY"],
 	groq: ["GROQ_API_KEY"],
@@ -46,6 +53,24 @@ export function lookupApiKey(
 			provider,
 			key: explicitKey,
 			source: "explicit",
+			checkedEnvVars,
+		};
+	}
+
+	// Special handling for Bedrock - uses AWS credential chain, not API key
+	if (provider === "bedrock") {
+		checkedEnvVars.push(...envApiKeyMap.bedrock);
+		if (hasAwsCredentials()) {
+			return {
+				provider,
+				key: "aws-credentials", // Placeholder - SDK handles actual credentials
+				source: "env",
+				checkedEnvVars,
+			};
+		}
+		return {
+			provider,
+			source: "missing",
 			checkedEnvVars,
 		};
 	}

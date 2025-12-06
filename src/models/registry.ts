@@ -80,6 +80,7 @@ import type { Static } from "@sinclair/typebox";
 import type { ErrorObject } from "ajv";
 import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
+import { hasAwsCredentials } from "../providers/aws-auth.js";
 import { PolicyError, checkModelPolicy } from "../safety/policy.js";
 import {
 	substituteEnvVars,
@@ -361,15 +362,10 @@ const PROVIDER_LOADERS: Record<string, ProviderLoader> = {
 
 	bedrock: (providerId: string) => {
 		const region = process.env.AWS_REGION ?? "us-east-1";
-		const hasCredentials = Boolean(
-			process.env.AWS_PROFILE ||
-				process.env.AWS_ACCESS_KEY_ID ||
-				process.env.AWS_BEARER_TOKEN_BEDROCK,
-		);
 
 		return {
 			baseUrl: `https://bedrock-runtime.${region}.amazonaws.com`,
-			enabled: hasCredentials,
+			enabled: hasAwsCredentials(),
 			options: { region },
 		};
 	},
