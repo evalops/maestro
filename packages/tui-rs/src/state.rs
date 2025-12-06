@@ -335,6 +335,20 @@ impl AppState {
         input
     }
 
+    /// Add a system message (for help, status, etc.)
+    pub fn add_system_message(&mut self, content: String) {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.messages.push(Message {
+            id,
+            role: MessageRole::Assistant,
+            content,
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+        });
+    }
+
     /// Scroll up in message list
     pub fn scroll_up(&mut self, amount: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(amount);

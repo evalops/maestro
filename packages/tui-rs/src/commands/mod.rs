@@ -7,7 +7,7 @@ mod matcher;
 mod registry;
 mod types;
 
-pub use matcher::{CommandMatch, SlashCommandMatcher};
+pub use matcher::{CommandMatch, SlashCommandMatcher, SlashCycleState};
 pub use registry::{build_command_registry, CommandRegistry};
 pub use types::{
     Command, CommandArgument, CommandArgumentType, CommandCategory, CommandContext,

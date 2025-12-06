@@ -4,14 +4,31 @@
 //! It spawns a Node.js agent subprocess for AI interactions
 //! and handles all terminal rendering natively.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers};
 use ratatui::prelude::*;
 
 use crate::agent::AgentProcess;
-use crate::components::ChatView;
+use crate::commands::{build_command_registry, CommandRegistry, SlashCommandMatcher, SlashCycleState};
+use crate::components::{
+    ApprovalController, ApprovalDecision, ApprovalModal, ChatView, CommandPalette,
+    FileSearchModal, SessionSwitcher,
+};
+use crate::files::get_workspace_files;
 use crate::state::AppState;
 use crate::terminal::{self, TerminalCapabilities};
+
+/// Active modal in the UI
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveModal {
+    None,
+    FileSearch,
+    SessionSwitcher,
+    CommandPalette,
+    Approval,
+}
 
 /// Main application
 pub struct App {
@@ -23,6 +40,22 @@ pub struct App {
     agent_args: Vec<String>,
     /// Terminal capabilities including viewport position
     capabilities: TerminalCapabilities,
+    /// Command registry
+    command_registry: Arc<CommandRegistry>,
+    /// Slash command matcher
+    slash_matcher: SlashCommandMatcher,
+    /// Slash command completion state
+    slash_state: SlashCycleState,
+    /// Currently active modal
+    active_modal: ActiveModal,
+    /// File search modal
+    file_search: FileSearchModal,
+    /// Session switcher modal
+    session_switcher: SessionSwitcher,
+    /// Command palette modal
+    command_palette: CommandPalette,
+    /// Approval controller
+    approval_controller: ApprovalController,
 }
 
 impl App {
@@ -34,6 +67,11 @@ impl App {
     /// Create a new application with CLI arguments to pass to the agent
     pub fn with_args(agent_args: Vec<String>) -> Result<Self> {
         let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
+        let command_registry = Arc::new(build_command_registry());
+        let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
 
         Ok(Self {
             state: AppState::new(),
@@ -42,6 +80,14 @@ impl App {
             should_quit: false,
             agent_args,
             capabilities,
+            command_palette: CommandPalette::new(Arc::clone(&command_registry)),
+            command_registry,
+            slash_matcher,
+            slash_state: SlashCycleState::new(),
+            active_modal: ActiveModal::None,
+            file_search: FileSearchModal::new(),
+            session_switcher: SessionSwitcher::new(&cwd),
+            approval_controller: ApprovalController::new(),
         })
     }
 
@@ -52,6 +98,9 @@ impl App {
 
     /// Run the main event loop
     pub async fn run(mut self) -> Result<i32> {
+        // Load workspace files for @ mentions
+        self.load_workspace_files();
+
         // Spawn the agent
         self.spawn_agent().await?;
 
@@ -84,6 +133,13 @@ impl App {
         terminal::restore()?;
 
         Ok(0)
+    }
+
+    /// Load workspace files for file search
+    fn load_workspace_files(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let files = get_workspace_files(&cwd, 10000);
+        self.file_search.set_files(files);
     }
 
     /// Spawn the Node.js agent subprocess
@@ -134,6 +190,24 @@ impl App {
                     crate::agent::FromAgent::SessionInfo { cwd, .. } => {
                         self.state.status = Some(format!("Session in: {}", cwd));
                     }
+                    crate::agent::FromAgent::ToolCall {
+                        call_id,
+                        tool,
+                        args,
+                        requires_approval,
+                    } => {
+                        // Queue approval if required
+                        if *requires_approval {
+                            use crate::components::ApprovalRequest;
+                            self.approval_controller.enqueue(ApprovalRequest::new(
+                                call_id.clone(),
+                                tool.clone(),
+                                args.clone(),
+                            ));
+                            // Show approval modal
+                            self.active_modal = ActiveModal::Approval;
+                        }
+                    }
                     _ => {}
                 }
                 self.state.handle_agent_message(msg);
@@ -145,7 +219,20 @@ impl App {
     /// Handle a key press
     async fn handle_key(&mut self, code: KeyCode, modifiers: CrosstermModifiers) -> Result<()> {
         let ctrl = modifiers.contains(CrosstermModifiers::CONTROL);
-        let _alt = modifiers.contains(CrosstermModifiers::ALT);
+        let alt = modifiers.contains(CrosstermModifiers::ALT);
+
+        // Handle modal-specific input first
+        match self.active_modal {
+            ActiveModal::FileSearch => return self.handle_file_search_key(code, ctrl).await,
+            ActiveModal::SessionSwitcher => {
+                return self.handle_session_switcher_key(code, ctrl).await
+            }
+            ActiveModal::CommandPalette => {
+                return self.handle_command_palette_key(code, ctrl).await
+            }
+            ActiveModal::Approval => return self.handle_approval_key(code).await,
+            ActiveModal::None => {}
+        }
 
         match code {
             // Quit
@@ -164,12 +251,57 @@ impl App {
                 self.should_quit = true;
             }
 
+            // Open modals
+            KeyCode::Char('p') if ctrl => {
+                // Command palette
+                self.command_palette.show();
+                self.active_modal = ActiveModal::CommandPalette;
+            }
+            KeyCode::Char('o') if ctrl => {
+                // File search
+                self.file_search.show();
+                self.active_modal = ActiveModal::FileSearch;
+            }
+            KeyCode::Char('r') if ctrl && alt => {
+                // Session switcher
+                self.session_switcher.show();
+                self.active_modal = ActiveModal::SessionSwitcher;
+            }
+
+            // @ trigger for file search
+            KeyCode::Char('@') if !self.state.busy => {
+                self.state.insert_char('@');
+                self.file_search.show();
+                self.active_modal = ActiveModal::FileSearch;
+            }
+
+            // / trigger for slash commands
+            KeyCode::Char('/') if !self.state.busy && self.state.input.is_empty() => {
+                self.state.insert_char('/');
+                self.slash_state.set_query("", &self.slash_matcher);
+            }
+
+            // Tab for slash command completion
+            KeyCode::Tab if !self.state.busy && self.state.input.starts_with('/') => {
+                self.handle_slash_tab();
+            }
+
             // Navigation
             KeyCode::Up => {
-                self.state.scroll_up(1);
+                if self.state.input.starts_with('/') && self.slash_state.has_completions() {
+                    self.slash_state.cycle_prev();
+                    self.apply_slash_completion();
+                } else {
+                    self.state.scroll_up(1);
+                }
             }
             KeyCode::Down => {
-                self.state.scroll_down(1);
+                if self.state.input.starts_with('/') && self.slash_state.has_completions() {
+                    self.slash_state.cycle_next();
+                    self.apply_slash_completion();
+                } else {
+                    self.state.scroll_down(1);
+                }
             }
             KeyCode::PageUp => {
                 self.state.scroll_up(10);
@@ -182,11 +314,13 @@ impl App {
             KeyCode::Char(c) if !ctrl => {
                 if !self.state.busy {
                     self.state.insert_char(c);
+                    self.update_slash_state();
                 }
             }
             KeyCode::Backspace => {
                 if !self.state.busy {
                     self.state.backspace();
+                    self.update_slash_state();
                 }
             }
             KeyCode::Delete => {
@@ -210,8 +344,13 @@ impl App {
             // Submit
             KeyCode::Enter => {
                 if !self.state.busy && !self.state.input.is_empty() {
-                    let input = self.state.take_input();
-                    self.submit_prompt(input).await?;
+                    // Check for slash command
+                    if self.state.input.starts_with('/') {
+                        self.execute_slash_command().await?;
+                    } else {
+                        let input = self.state.take_input();
+                        self.submit_prompt(input).await?;
+                    }
                 }
             }
 
@@ -220,6 +359,7 @@ impl App {
                 if !self.state.busy {
                     self.state.input.clear();
                     self.state.cursor = 0;
+                    self.slash_state.reset();
                 }
             }
 
@@ -230,10 +370,312 @@ impl App {
                 self.state.scroll_offset = 0;
             }
 
+            // Escape to clear completions
+            KeyCode::Esc => {
+                self.slash_state.reset();
+            }
+
             _ => {}
         }
 
         Ok(())
+    }
+
+    /// Handle keys in file search modal
+    async fn handle_file_search_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.file_search.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Enter => {
+                if let Some(file) = self.file_search.confirm() {
+                    // Insert file path at cursor
+                    for c in file.relative_path.chars() {
+                        self.state.insert_char(c);
+                    }
+                    self.state.insert_char(' ');
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up => {
+                self.file_search.move_up();
+            }
+            KeyCode::Down => {
+                self.file_search.move_down();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.file_search.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                self.file_search.backspace();
+            }
+            KeyCode::Left => {
+                self.file_search.move_left();
+            }
+            KeyCode::Right => {
+                self.file_search.move_right();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle keys in session switcher modal
+    async fn handle_session_switcher_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.session_switcher.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Enter => {
+                if let Some(session_id) = self.session_switcher.confirm() {
+                    // TODO: Resume session via agent
+                    self.state.status = Some(format!("Resuming session: {}", session_id));
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up => {
+                self.session_switcher.move_up();
+            }
+            KeyCode::Down => {
+                self.session_switcher.move_down();
+            }
+            KeyCode::Delete => {
+                if let Err(e) = self.session_switcher.delete_selected() {
+                    self.state.error = Some(e);
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.session_switcher.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                self.session_switcher.backspace();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle keys in command palette modal
+    async fn handle_command_palette_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.command_palette.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Enter => {
+                if let Some(cmd_name) = self.command_palette.confirm() {
+                    // Set input to the command
+                    self.state.input = format!("/{}", cmd_name);
+                    self.state.cursor = self.state.input.len();
+                    // Execute it
+                    self.execute_slash_command().await?;
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up => {
+                self.command_palette.move_up();
+            }
+            KeyCode::Down => {
+                self.command_palette.move_down();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.command_palette.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                self.command_palette.backspace();
+            }
+            KeyCode::Left => {
+                self.command_palette.move_left();
+            }
+            KeyCode::Right => {
+                self.command_palette.move_right();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle keys in approval modal
+    async fn handle_approval_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                if let Some((request, _decision)) =
+                    self.approval_controller.decide(ApprovalDecision::Approve)
+                {
+                    // Send approval to agent
+                    if let Some(agent) = &mut self.agent {
+                        agent.tool_response(request.call_id, true, None).await?;
+                    }
+                }
+                // Check if more approvals pending
+                if self.approval_controller.current().is_none() {
+                    self.active_modal = ActiveModal::None;
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                if let Some((request, _decision)) =
+                    self.approval_controller.decide(ApprovalDecision::Deny)
+                {
+                    // Send rejection to agent
+                    if let Some(agent) = &mut self.agent {
+                        agent.tool_response(request.call_id, false, None).await?;
+                    }
+                }
+                // Check if more approvals pending
+                if self.approval_controller.current().is_none() {
+                    self.active_modal = ActiveModal::None;
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                // Approve all
+                while let Some((request, _decision)) =
+                    self.approval_controller.decide(ApprovalDecision::Approve)
+                {
+                    if let Some(agent) = &mut self.agent {
+                        agent.tool_response(request.call_id, true, None).await?;
+                    }
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Update slash state based on current input
+    fn update_slash_state(&mut self) {
+        if self.state.input.starts_with('/') {
+            let query = &self.state.input[1..];
+            self.slash_state.set_query(query, &self.slash_matcher);
+        } else {
+            self.slash_state.reset();
+        }
+    }
+
+    /// Handle tab for slash command completion
+    fn handle_slash_tab(&mut self) {
+        if !self.slash_state.has_completions() {
+            let query = &self.state.input[1..];
+            self.slash_state.set_query(query, &self.slash_matcher);
+        } else {
+            self.slash_state.cycle_next();
+        }
+        self.apply_slash_completion();
+    }
+
+    /// Apply the current slash completion to input
+    fn apply_slash_completion(&mut self) {
+        if let Some(cmd) = self.slash_state.current() {
+            self.state.input = format!("/{}", cmd);
+            self.state.cursor = self.state.input.len();
+        }
+    }
+
+    /// Execute a slash command
+    async fn execute_slash_command(&mut self) -> Result<()> {
+        let input = self.state.take_input();
+        let cmd_line = input.trim_start_matches('/');
+
+        // Parse command and args
+        let mut parts = cmd_line.split_whitespace();
+        let cmd_name = parts.next().unwrap_or("");
+        let args: Vec<&str> = parts.collect();
+
+        // Handle built-in commands
+        match cmd_name {
+            "help" => {
+                self.show_help();
+            }
+            "clear" => {
+                self.state.messages.clear();
+                self.state.scroll_offset = 0;
+            }
+            "quit" | "exit" => {
+                self.should_quit = true;
+            }
+            "theme" => {
+                if let Some(theme_name) = args.first() {
+                    if let Err(e) = crate::themes::set_theme_by_name(theme_name) {
+                        self.state.error = Some(format!("Failed to set theme: {}", e));
+                    } else {
+                        self.state.status = Some(format!("Theme set to: {}", theme_name));
+                    }
+                } else {
+                    let themes = crate::themes::available_themes().join(", ");
+                    self.state.status = Some(format!("Available themes: {}", themes));
+                }
+            }
+            "sessions" | "resume" => {
+                self.session_switcher.show();
+                self.active_modal = ActiveModal::SessionSwitcher;
+            }
+            "files" => {
+                self.file_search.show();
+                self.active_modal = ActiveModal::FileSearch;
+            }
+            "commands" => {
+                self.command_palette.show();
+                self.active_modal = ActiveModal::CommandPalette;
+            }
+            "refresh" => {
+                self.load_workspace_files();
+                self.state.status = Some("Workspace files refreshed".to_string());
+            }
+            _ => {
+                // Unknown command - try to send to agent
+                if let Some(agent) = &mut self.agent {
+                    // Send as a command prompt
+                    agent.prompt(format!("/{}", cmd_line), vec![]).await?;
+                    self.state.busy = true;
+                } else {
+                    self.state.error = Some(format!("Unknown command: /{}", cmd_name));
+                }
+            }
+        }
+
+        self.slash_state.reset();
+        Ok(())
+    }
+
+    /// Show help message
+    fn show_help(&mut self) {
+        let help_text = r#"
+Composer TUI - Keyboard Shortcuts
+
+Navigation:
+  Up/Down       Scroll messages / Navigate completions
+  PageUp/Down   Scroll faster
+  Ctrl+L        Clear screen
+
+Input:
+  Enter         Send message / Execute command
+  Tab           Cycle slash command completions
+  @             Open file search
+  /             Start slash command
+  Ctrl+U        Clear input
+  Esc           Cancel / Close modal
+
+Modals:
+  Ctrl+P        Open command palette
+  Ctrl+O        Open file search
+  Ctrl+Alt+R    Open session switcher
+
+Session:
+  Ctrl+C        Interrupt / Quit
+  Ctrl+D        Quit
+
+Slash Commands:
+  /help         Show this help
+  /clear        Clear messages
+  /theme        Change theme
+  /sessions     Browse sessions
+  /files        Search files
+  /commands     Open command palette
+  /quit         Exit
+"#;
+        self.state.add_system_message(help_text.trim().to_string());
     }
 
     /// Submit a prompt to the agent
@@ -255,13 +697,22 @@ impl App {
 
     /// Render the UI
     fn render(&mut self) -> Result<()> {
+        // Extract needed data to avoid borrow conflicts
+        let state = &self.state;
+        let active_modal = self.active_modal;
+        let slash_state = &self.slash_state;
+        let file_search = &self.file_search;
+        let session_switcher = &self.session_switcher;
+        let command_palette = &self.command_palette;
+        let approval_controller = &self.approval_controller;
+
         self.terminal.draw(|frame| {
             let area = frame.area();
-            let view = ChatView::new(&self.state);
+            let view = ChatView::new(state);
             frame.render_widget(view, area);
 
             // Show error if any
-            if let Some(error) = &self.state.error {
+            if let Some(error) = &state.error {
                 let error_area = Rect {
                     x: area.x + 1,
                     y: area.height.saturating_sub(5),
@@ -273,18 +724,99 @@ impl App {
                 frame.render_widget(error_widget, error_area);
             }
 
-            // Position cursor in input area
-            if !self.state.busy {
+            // Render slash completions if active
+            if active_modal == ActiveModal::None
+                && slash_state.has_completions()
+                && !state.busy
+            {
+                Self::render_slash_completions_static(slash_state, frame, area);
+            }
+
+            // Render modals
+            match active_modal {
+                ActiveModal::FileSearch => {
+                    file_search.render(frame, area);
+                }
+                ActiveModal::SessionSwitcher => {
+                    session_switcher.render(frame, area);
+                }
+                ActiveModal::CommandPalette => {
+                    command_palette.render(frame, area);
+                }
+                ActiveModal::Approval => {
+                    if let Some(request) = approval_controller.current() {
+                        let modal = ApprovalModal::new(request);
+                        frame.render_widget(modal, area);
+                    }
+                }
+                ActiveModal::None => {}
+            }
+
+            // Position cursor in input area (only if no modal active)
+            if active_modal == ActiveModal::None && !state.busy {
                 // Input is at bottom - 3 lines for input box, 1 for status
                 // Cursor inside input box (with 1 char padding for border)
                 let cursor_x =
-                    area.x + 1 + (self.state.cursor as u16).min(area.width.saturating_sub(3));
+                    area.x + 1 + (state.cursor as u16).min(area.width.saturating_sub(3));
                 let cursor_y = area.height.saturating_sub(3);
                 frame.set_cursor_position((cursor_x, cursor_y));
             }
         })?;
 
         Ok(())
+    }
+
+    /// Render slash command completions popup (static version for closure)
+    fn render_slash_completions_static(
+        slash_state: &SlashCycleState,
+        frame: &mut ratatui::Frame,
+        area: Rect,
+    ) {
+        use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
+
+        let completions = slash_state.completions();
+        if completions.is_empty() {
+            return;
+        }
+
+        let current_idx = slash_state.current_index();
+
+        // Position above the input
+        let popup_height = (completions.len() as u16 + 2).min(10);
+        let popup_width = 40.min(area.width.saturating_sub(4));
+        let popup_y = area.height.saturating_sub(4 + popup_height);
+
+        let popup_area = Rect {
+            x: area.x + 1,
+            y: popup_y,
+            width: popup_width,
+            height: popup_height,
+        };
+
+        frame.render_widget(Clear, popup_area);
+
+        let items: Vec<ListItem> = completions
+            .iter()
+            .enumerate()
+            .map(|(i, cmd)| {
+                let style = if i == current_idx {
+                    Style::default().bg(Color::DarkGray).fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                // Completions already include the slash
+                ListItem::new(cmd.clone()).style(style)
+            })
+            .collect();
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+        frame.render_widget(list, popup_area);
     }
 }
 

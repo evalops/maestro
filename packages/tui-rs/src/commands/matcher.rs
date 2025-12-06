@@ -296,6 +296,16 @@ impl SlashCycleState {
     pub fn has_completions(&self) -> bool {
         !self.completions.is_empty()
     }
+
+    /// Get all completions
+    pub fn completions(&self) -> &[String] {
+        &self.completions
+    }
+
+    /// Get the current index
+    pub fn current_index(&self) -> usize {
+        self.index
+    }
 }
 
 impl Default for SlashCycleState {
