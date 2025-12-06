@@ -126,6 +126,11 @@ fn break_at_width(text: &str, max_width: usize) -> (&str, &str) {
             if let Some(space_idx) = last_space_idx {
                 return (&text[..space_idx], text[space_idx..].trim_start());
             }
+            // If we haven't matched anything yet and the first char is too wide,
+            // force include it to prevent infinite loop
+            if break_idx == 0 {
+                return (&text[..idx + ch.len_utf8()], &text[idx + ch.len_utf8()..]);
+            }
             // Otherwise break here
             return (&text[..break_idx], &text[break_idx..]);
         }
@@ -181,8 +186,19 @@ pub fn truncate_spans(spans: &[Span<'_>], max_width: usize) -> Vec<Span<'static>
         return vec![Span::raw(".".repeat(max_width))];
     }
 
+    // First, check if content fits without truncation
+    let total_width: usize = spans.iter().map(|s| s.content.width()).sum();
+    if total_width <= max_width {
+        // Content fits, return as-is
+        return spans
+            .iter()
+            .map(|s| Span::styled(s.content.to_string(), s.style))
+            .collect();
+    }
+
+    // Content needs truncation - reserve space for ellipsis
     let mut result = Vec::new();
-    let mut remaining_width = max_width - 3; // Leave room for ellipsis
+    let mut remaining_width = max_width - 3;
     let mut truncated = false;
 
     for span in spans {

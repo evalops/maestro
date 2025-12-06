@@ -56,10 +56,10 @@ impl ParsedSession {
     }
 
     /// Get the first user message (for preview)
-    pub fn first_user_message(&self) -> Option<&str> {
+    pub fn first_user_message(&self) -> Option<String> {
         for msg in &self.messages {
             if let AppMessage::User { .. } = msg {
-                return Some(msg.text_content().leak());
+                return Some(msg.text_content());
             }
         }
         None

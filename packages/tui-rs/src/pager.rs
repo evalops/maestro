@@ -180,8 +180,9 @@ impl Widget for Pager<'_> {
             height: footer_height,
         };
 
-        // Render content with scroll
-        let mut paragraph = Paragraph::new(self.content.clone()).scroll((self.scroll as u16, 0));
+        // Render content with scroll (clamp to u16::MAX to avoid truncation)
+        let scroll_row = self.scroll.min(u16::MAX as usize) as u16;
+        let mut paragraph = Paragraph::new(self.content.clone()).scroll((scroll_row, 0));
 
         if self.wrap {
             paragraph = paragraph.wrap(Wrap { trim: false });

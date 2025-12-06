@@ -76,9 +76,6 @@ pub fn generate_diff(old: &str, new: &str, context_lines: usize) -> Diff {
     let mut lines = Vec::new();
     let mut stats = DiffStats::default();
 
-    let mut old_line = 1usize;
-    let mut new_line = 1usize;
-
     for group in text_diff.grouped_ops(context_lines) {
         // Add hunk header
         let first_op = group.first();
@@ -99,39 +96,43 @@ pub fn generate_diff(old: &str, new: &str, context_lines: usize) -> Diff {
                 old_line_num: None,
                 new_line_num: None,
             });
-        }
 
-        for op in group {
-            for change in text_diff.iter_changes(&op) {
-                let (kind, old_num, new_num) = match change.tag() {
-                    ChangeTag::Equal => {
-                        let nums = (Some(old_line), Some(new_line));
-                        old_line += 1;
-                        new_line += 1;
-                        (DiffLineKind::Context, nums.0, nums.1)
-                    }
-                    ChangeTag::Delete => {
-                        stats.removed += 1;
-                        let num = old_line;
-                        old_line += 1;
-                        (DiffLineKind::Removed, Some(num), None)
-                    }
-                    ChangeTag::Insert => {
-                        stats.added += 1;
-                        let num = new_line;
-                        new_line += 1;
-                        (DiffLineKind::Added, None, Some(num))
-                    }
-                };
+            // Reset line counters to match hunk start positions
+            let mut old_line = old_start;
+            let mut new_line = new_start;
 
-                let content: String = change.value().to_string();
+            for op in &group {
+                for change in text_diff.iter_changes(op) {
+                    let (kind, old_num, new_num) = match change.tag() {
+                        ChangeTag::Equal => {
+                            let nums = (Some(old_line), Some(new_line));
+                            old_line += 1;
+                            new_line += 1;
+                            (DiffLineKind::Context, nums.0, nums.1)
+                        }
+                        ChangeTag::Delete => {
+                            stats.removed += 1;
+                            let num = old_line;
+                            old_line += 1;
+                            (DiffLineKind::Removed, Some(num), None)
+                        }
+                        ChangeTag::Insert => {
+                            stats.added += 1;
+                            let num = new_line;
+                            new_line += 1;
+                            (DiffLineKind::Added, None, Some(num))
+                        }
+                    };
 
-                lines.push(DiffLine {
-                    kind,
-                    content: content.trim_end_matches('\n').to_string(),
-                    old_line_num: old_num,
-                    new_line_num: new_num,
-                });
+                    let content: String = change.value().to_string();
+
+                    lines.push(DiffLine {
+                        kind,
+                        content: content.trim_end_matches('\n').to_string(),
+                        old_line_num: old_num,
+                        new_line_num: new_num,
+                    });
+                }
             }
         }
     }

@@ -165,41 +165,42 @@ impl FileSearch {
     }
 }
 
-/// Simple fuzzy matching
+/// Simple fuzzy matching - returns byte indices (not character indices)
 fn fuzzy_match(text: &str, pattern: &str) -> Option<(i32, Vec<usize>)> {
-    let text_chars: Vec<char> = text.chars().collect();
     let pattern_chars: Vec<char> = pattern.chars().collect();
 
     if pattern_chars.is_empty() {
         return Some((0, vec![]));
     }
 
-    let mut text_idx = 0;
     let mut pattern_idx = 0;
-    let mut matched_indices = Vec::new();
+    let mut matched_indices = Vec::new(); // Byte indices
     let mut score: i32 = 0;
     let mut consecutive: i32 = 0;
+    let mut prev_char: Option<char> = None;
+    let mut char_count = 0;
 
-    while text_idx < text_chars.len() && pattern_idx < pattern_chars.len() {
-        if text_chars[text_idx] == pattern_chars[pattern_idx] {
-            matched_indices.push(text_idx);
+    for (byte_idx, ch) in text.char_indices() {
+        if pattern_idx < pattern_chars.len() && ch == pattern_chars[pattern_idx] {
+            matched_indices.push(byte_idx); // Use byte index, not char index
             pattern_idx += 1;
             consecutive += 1;
             // Bonus for consecutive matches
             score += 10 + consecutive * 5;
             // Bonus for matching at word boundaries
-            if text_idx == 0 || !text_chars[text_idx - 1].is_alphanumeric() {
+            if prev_char.is_none() || !prev_char.unwrap().is_alphanumeric() {
                 score += 20;
             }
         } else {
             consecutive = 0;
         }
-        text_idx += 1;
+        prev_char = Some(ch);
+        char_count += 1;
     }
 
     if pattern_idx == pattern_chars.len() {
         // Penalty for gaps
-        let gap_penalty = (text_chars.len() - matched_indices.len()) as i32;
+        let gap_penalty = (char_count - matched_indices.len()) as i32;
         score = score.saturating_sub(gap_penalty);
         Some((score, matched_indices))
     } else {
@@ -207,11 +208,10 @@ fn fuzzy_match(text: &str, pattern: &str) -> Option<(i32, Vec<usize>)> {
     }
 }
 
-/// Highlight matched characters in a string
-pub fn highlight_matches(text: &str, indices: &[usize]) -> Vec<(char, bool)> {
-    text.chars()
-        .enumerate()
-        .map(|(i, c)| (c, indices.contains(&i)))
+/// Highlight matched characters in a string (indices are byte indices)
+pub fn highlight_matches(text: &str, byte_indices: &[usize]) -> Vec<(char, bool)> {
+    text.char_indices()
+        .map(|(byte_idx, c)| (c, byte_indices.contains(&byte_idx)))
         .collect()
 }
 
