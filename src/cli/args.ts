@@ -1,4 +1,4 @@
-export type Mode = "text" | "json" | "rpc";
+export type Mode = "text" | "json" | "rpc" | "headless";
 
 export interface Args {
 	provider?: string;
@@ -11,6 +11,8 @@ export interface Args {
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
+	/** Run in headless mode for native TUI communication */
+	headless?: boolean;
 	noSession?: boolean;
 	session?: string;
 	safeMode?: boolean;
@@ -67,9 +69,17 @@ export function parseArgs(args: string[]): Args {
 			result.version = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
-			if (mode === "text" || mode === "json" || mode === "rpc") {
+			if (
+				mode === "text" ||
+				mode === "json" ||
+				mode === "rpc" ||
+				mode === "headless"
+			) {
 				result.mode = mode;
 			}
+		} else if (arg === "--headless") {
+			result.headless = true;
+			result.mode = "headless";
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {

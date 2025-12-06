@@ -22,6 +22,7 @@
     "prebuild": "node ./scripts/ensure-deps.js",
     "build": "tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && chmod +x dist/cli.js && node ./scripts/copy-themes.js",
     "start": "node --enable-source-maps dist/cli.js",
+    "start:native": "COMPOSER_AGENT_SCRIPT=\"$(pwd)/dist/cli.js\" ./packages/tui-rs/target/release/composer-tui",
     "dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
     "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
     "test:watch": "vitest --watch",
@@ -76,7 +77,11 @@
     "db:check": "bun run src/db/check.ts",
     "vscode:build": "npx nx run vscode-extension:build",
     "vscode:package": "npx nx run vscode-extension:package",
-    "vscode:publish": "npx nx run vscode-extension:publish"
+    "vscode:publish": "npx nx run vscode-extension:publish",
+    "tui-rs:build": "cd packages/tui-rs && cargo build --release",
+    "tui-rs:build:debug": "cd packages/tui-rs && cargo build",
+    "tui-rs:check": "cd packages/tui-rs && cargo check",
+    "tui-rs:test": "cd packages/tui-rs && cargo test"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.946.0",

@@ -134,6 +134,9 @@ export class TUI extends Container {
 	/** Handler called on Ctrl+C or Esc for interrupt behavior. */
 	private interruptHandler?: () => void;
 
+	/** Optional callback invoked after each render with the rendered lines. */
+	private onRender?: (lines: string[], width: number) => void;
+
 	/** Whether an overlay (alt screen) is currently active. */
 	private overlayActive = false;
 
@@ -167,6 +170,14 @@ export class TUI extends Container {
 
 	setInterruptHandler(handler?: () => void): void {
 		this.interruptHandler = handler;
+	}
+
+	/**
+	 * Set a callback to be invoked after each render.
+	 * Useful for forwarding rendered content to native TUI.
+	 */
+	setRenderCallback(callback?: (lines: string[], width: number) => void): void {
+		this.onRender = callback;
 	}
 
 	setMinRenderInterval(ms: number): void {
@@ -346,6 +357,15 @@ export class TUI extends Container {
 		// STEP 1: Render components to lines and wrap to terminal width
 		// ─────────────────────────────────────────────────────────────────────────
 		let newLines = this.wrapWithCache(this.render(width), width);
+
+		// ─────────────────────────────────────────────────────────────────────────
+		// OPTIONAL: Forward to external renderer (native TUI)
+		// ─────────────────────────────────────────────────────────────────────────
+		// If an external render callback is set, invoke it with the rendered lines.
+		// This allows the native Rust TUI to handle the actual terminal output.
+		if (this.onRender) {
+			this.onRender(newLines, width);
+		}
 
 		// ─────────────────────────────────────────────────────────────────────────
 		// STEP 2: Handle viewport overflow (clip to bottom N lines)

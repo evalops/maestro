@@ -110,6 +110,7 @@ import {
 	EXEC_SESSION_SUMMARY_PREFIX,
 	runExecCommand,
 } from "./cli/commands/exec.js";
+import { runHeadlessMode } from "./cli/headless.js";
 import { printHelp } from "./cli/help.js";
 import {
 	JsonlEventWriter,
@@ -659,13 +660,14 @@ export async function main(args: string[]) {
 	}
 
 	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
-	// redirect all logging/console output to a file to avoid corrupting the render buffer.
+	// or headless mode (stdout is JSON-only), redirect all logging/console output to a file.
 	// This must run before model loading to catch any early warnings.
 	const isLikelyInteractiveTui =
 		!parsed.messages.length &&
 		(parsed.mode === "text" || parsed.mode === undefined) &&
 		parsed.command === undefined;
-	if (isLikelyInteractiveTui) {
+	const isHeadlessMode = parsed.headless || parsed.mode === "headless";
+	if (isLikelyInteractiveTui || isHeadlessMode) {
 		const {
 			redirectLoggerToFile,
 			redirectConsoleToLogger,
@@ -1458,7 +1460,11 @@ export async function main(args: string[]) {
 	// Determine mode early to know if we should print messages
 	const isInteractive = parsed.messages.length === 0;
 	const mode = parsed.mode || "text";
-	const shouldPrintMessages = isInteractive || mode === "text";
+	// Don't print messages in headless mode - stdout is for JSON only
+	const shouldPrintMessages =
+		(isInteractive || mode === "text") &&
+		mode !== "headless" &&
+		!parsed.headless;
 
 	const isGitRepository = isInsideGitRepository();
 
@@ -1721,10 +1727,13 @@ export async function main(args: string[]) {
 				? `.${targetPath.slice(cwd.length)}`
 				: targetPath;
 		const runMode: Extract<Mode, "text" | "json"> =
-			mode === "rpc" ? "text" : mode;
+			mode === "rpc" || mode === "headless" ? "text" : mode;
 		console.log(chalk.green(`Drafting AGENTS.md at ${displayPath}...`));
 		await runSingleShotMode(agent, sessionManager, [agentsInitPrompt], runMode);
 		console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
+	} else if (mode === "headless" || parsed.headless) {
+		// Headless mode - for native TUI communication
+		await runHeadlessMode(agent, sessionManager);
 	} else if (mode === "rpc") {
 		// RPC mode - headless operation
 		await runRpcMode(agent, sessionManager);

@@ -2291,6 +2291,27 @@ export const MODELS = {
       contextWindow: 262144,
       maxTokens: 16384
     },
+    "mistralai/mistral-large-3-675b-instruct-2512": {
+      id: "mistralai/mistral-large-3-675b-instruct-2512",
+      name: "Mistral Large 3 675B Instruct 2512",
+      api: "openai-completions" as const,
+      provider: "nvidia",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 262144,
+      maxTokens: 262144
+    },
     "deepseek-ai/deepseek-v3.1-terminus": {
       id: "deepseek-ai/deepseek-v3.1-terminus",
       name: "DeepSeek V3.1 Terminus",
@@ -3320,6 +3341,27 @@ export const MODELS = {
       },
       contextWindow: 128000,
       maxTokens: 64000
+    },
+    "gpt-5.1-codex-max": {
+      id: "gpt-5.1-codex-max",
+      name: "GPT-5.1-Codex-max",
+      api: "openai-completions" as const,
+      provider: "github-copilot",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 128000
     },
     o3: {
       id: "o3",
@@ -11960,6 +12002,27 @@ export const MODELS = {
       contextWindow: 128000,
       maxTokens: 8192
     },
+    "gpt-5-pro": {
+      id: "gpt-5-pro",
+      name: "GPT-5 Pro",
+      api: "openai-completions" as const,
+      provider: "azure",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 15,
+        output: 120,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 400000,
+      maxTokens: 272000
+    },
     "mistral-large-2411": {
       id: "mistral-large-2411",
       name: "Mistral Large 24.11",
@@ -12122,6 +12185,26 @@ export const MODELS = {
       },
       contextWindow: 200000,
       maxTokens: 200000
+    },
+    "deepseek-ai/DeepSeek-V3.2": {
+      id: "deepseek-ai/DeepSeek-V3.2",
+      name: "DeepSeek V3.2",
+      api: "openai-completions" as const,
+      provider: "baseten",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: true,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0.3,
+        output: 0.45,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 163800,
+      maxTokens: 131100
     }
   },
   siliconflow: {
@@ -14235,6 +14318,27 @@ export const MODELS = {
       },
       contextWindow: 256000,
       maxTokens: 256000
+    },
+    "gpt-5.1-codex-max": {
+      id: "gpt-5.1-codex-max",
+      name: "GPT-5.1 Codex Max",
+      api: "openai-completions" as const,
+      provider: "opencode",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 1.25,
+        output: 10,
+        cacheRead: 0.125,
+        cacheWrite: 0
+      },
+      contextWindow: 400000,
+      maxTokens: 128000
     },
     "alpha-doubao-seed-code": {
       id: "alpha-doubao-seed-code",
@@ -25728,6 +25832,27 @@ export const MODELS = {
       },
       contextWindow: 128000,
       maxTokens: 32768
+    },
+    "gpt-5-pro": {
+      id: "gpt-5-pro",
+      name: "GPT-5 Pro",
+      api: "openai-completions" as const,
+      provider: "azure-cognitive-services",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 15,
+        output: 120,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 400000,
+      maxTokens: 272000
     },
     "mai-ds-r1": {
       id: "mai-ds-r1",
