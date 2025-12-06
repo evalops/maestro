@@ -47,6 +47,9 @@ rand = "0.9"
 # Terminal color detection
 supports-color = "3"
 
+# Date/time handling
+chrono = "0.4"
+
 # Clipboard support (optional)
 arboard = { version = "3", optional = true }
 
@@ -56,6 +59,7 @@ clipboard = ["arboard"]
 
 [dev-dependencies]
 pretty_assertions = "1"
+tempfile = "3"
 
 [profile.release]
 lto = true

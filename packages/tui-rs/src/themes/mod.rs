@@ -2,7 +2,7 @@
 //!
 //! Supports built-in themes and loading custom themes from files.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;

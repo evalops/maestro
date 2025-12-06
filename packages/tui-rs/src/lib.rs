@@ -29,8 +29,10 @@ pub mod agent;
 pub mod commands;
 pub mod components;
 pub mod effects;
+pub mod files;
 pub mod headless;
 pub mod protocol;
+pub mod session;
 pub mod state;
 pub mod terminal;
 
