@@ -58,6 +58,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { getFirewallConfig } from "../config/firewall-config.js";
 import { createLogger } from "../utils/logger.js";
+import { isCommandAllowlisted } from "./bash-allowlist.js";
 import {
 	analyzeCommandSafety,
 	dangerousPatternDescriptions,
@@ -81,6 +82,14 @@ const isSafeModeEnabled = () => process.env.COMPOSER_SAFE_MODE === "1";
 const isProdProfile = () =>
 	process.env.COMPOSER_PROFILE === "prod" ||
 	process.env.COMPOSER_WEB_PROFILE === "prod";
+const isNoEgressShellEnabled = () =>
+	["1", "true", "on"].includes(
+		(process.env.COMPOSER_NO_EGRESS_SHELL ?? "").toLowerCase(),
+	);
+const isEgressOverrideAllowed = () =>
+	["1", "true", "on"].includes(
+		(process.env.COMPOSER_ALLOW_EGRESS_SHELL ?? "").toLowerCase(),
+	);
 
 /**
  * Policy Check Result - Cached result of enterprise policy evaluation
@@ -300,6 +309,13 @@ function hasRiskyBashSyntax(command: string): boolean {
 		/\$[A-Za-z_0-9{@*?!$-]/.test(command) ||
 		/\$\(/.test(command) ||
 		/[\n\r\t]/.test(command)
+	);
+}
+
+function hasEgressPrimitives(command: string): boolean {
+	return (
+		/\b(curl|wget|nc|ncat|netcat|ssh|scp)\b/i.test(command) ||
+		/\/dev\/tcp\//i.test(command)
 	);
 }
 
@@ -556,6 +572,10 @@ const treeSitterCommandRule: ActionFirewallRule = {
 		const unwrapped = unwrapShellCommand(command);
 		if (unwrapped) {
 			command = unwrapped;
+		}
+
+		if (isCommandAllowlisted(command)) {
+			return { allowed: true };
 		}
 
 		const simpleTokens = tokenizeSimple(command);
@@ -919,6 +939,30 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		},
 		reason: (ctx) =>
 			`Plan mode requires confirmation before executing ${ctx.toolName}. Toggle with /plan-mode or COMPOSER_PLAN_MODE=0.`,
+	},
+	{
+		id: "no-egress-shell",
+		description:
+			"Require approval when shell egress is disabled via COMPOSER_NO_EGRESS_SHELL",
+		action: "require_approval",
+		evaluate: (ctx) => {
+			if (!isNoEgressShellEnabled() || isEgressOverrideAllowed()) {
+				return { allowed: true };
+			}
+			if (ctx.toolName !== "bash" && !isBackgroundTaskShellStart(ctx)) {
+				return { allowed: true };
+			}
+			const raw = getCommandArg(ctx);
+			if (!raw) return { allowed: true };
+			const unwrapped = unwrapShellCommand(raw) ?? raw;
+			if (isCommandAllowlisted(unwrapped)) return { allowed: true };
+			if (!hasEgressPrimitives(unwrapped)) return { allowed: true };
+			return {
+				allowed: false,
+				reason:
+					"Shell egress (curl/wget/ssh/nc/dev/tcp) requires approval because COMPOSER_NO_EGRESS_SHELL=1. Allow temporarily with COMPOSER_ALLOW_EGRESS_SHELL=1 or add a bash allowlist entry.",
+			};
+		},
 	},
 	...dangerousCommandRules,
 	treeSitterCommandRule,
