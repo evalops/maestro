@@ -533,6 +533,19 @@ const PROVIDER_ALIASES: Record<string, string> = {
 	"amazon-bedrock": "bedrock",
 };
 
+// Provider-specific overrides for models imported from models.dev
+// These fix incorrect api/baseUrl values in the generated data
+interface ProviderOverride {
+	api: Api;
+	baseUrl: string;
+}
+const PROVIDER_OVERRIDES: Record<string, ProviderOverride> = {
+	"amazon-bedrock": {
+		api: "bedrock-converse",
+		baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+	},
+};
+
 /**
  * Convert generated models to our format (called lazily on first access)
  */
@@ -543,19 +556,33 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 	for (const [rawProvider, models] of Object.entries(GENERATED_MODELS)) {
 		// Map provider name (e.g., "amazon-bedrock" -> "bedrock")
 		const provider = PROVIDER_ALIASES[rawProvider] ?? rawProvider;
+		const override = PROVIDER_OVERRIDES[rawProvider];
 		if (!converted[provider]) {
 			converted[provider] = [];
 		}
 		converted[provider].push(
 			...Object.values(models)
 				.filter((model) => !CODEX_MODEL_PATTERN.test(model.id))
-				.map((model) => ({
-					...model,
-					// Remap provider name to match our internal naming
-					provider,
-					// Ensure baseUrl format consistency across providers
-					baseUrl: normalizeModelBaseUrl(model),
-				})),
+				.map((model) => {
+					const base = {
+						...model,
+						// Remap provider name to match our internal naming
+						provider,
+					};
+					// Apply provider-specific overrides (e.g., Bedrock needs different api/baseUrl)
+					if (override) {
+						return {
+							...base,
+							api: override.api,
+							baseUrl: override.baseUrl,
+						} as Model<Api>;
+					}
+					return {
+						...base,
+						// Ensure baseUrl format consistency across providers
+						baseUrl: normalizeModelBaseUrl(model),
+					};
+				}),
 		);
 	}
 
