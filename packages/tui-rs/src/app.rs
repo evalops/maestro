@@ -198,11 +198,14 @@ impl App {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
-        // Determine model from environment or default
+        // Determine model from environment or default (prefer Claude)
         let model = std::env::var("COMPOSER_MODEL").unwrap_or_else(|_| {
-            if std::env::var("OPENAI_API_KEY").is_ok() {
+            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+                "claude-sonnet-4-5-20250514".to_string()
+            } else if std::env::var("OPENAI_API_KEY").is_ok() {
                 "gpt-4o".to_string()
             } else {
+                // Default to Claude even without key (will fail with clear error)
                 "claude-sonnet-4-5-20250514".to_string()
             }
         });
