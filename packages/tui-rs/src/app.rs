@@ -233,7 +233,9 @@ impl App {
                     agent.send_ready();
                 }
 
-                self.state.status = Some(format!("Connected: {} (native)", model));
+                // Ensure busy is false so user can type
+                self.state.busy = false;
+                self.state.status = Some(format!("Ready: {} (native)", model));
             }
             Err(e) => {
                 self.state.error = Some(format!("Failed to create native agent: {}", e));
@@ -356,6 +358,17 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             FromAgent::SessionInfo { cwd, .. } => {
                 self.state.status = Some(format!("Session in: {}", cwd));
             }
+            FromAgent::ResponseEnd { response_id, .. } => {
+                // Clear busy state when response completes
+                // The "done" response_id is a special marker from the native agent
+                if response_id == "done" || self.backend == AgentBackend::Native {
+                    self.state.busy = false;
+                }
+            }
+            FromAgent::Error { .. } => {
+                // Clear busy state on error
+                self.state.busy = false;
+            }
             FromAgent::ToolCall {
                 call_id,
                 tool,
@@ -437,7 +450,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     // Interrupt the agent
                     match self.backend {
                         AgentBackend::Native => {
-                            if let Some(agent) = &mut self.native_agent {
+                            if let Some(agent) = &self.native_agent {
                                 agent.cancel();
                             }
                         }
@@ -862,7 +875,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 // Unknown command - try to send to agent
                 let sent = match self.backend {
                     AgentBackend::Native => {
-                        if let Some(agent) = &mut self.native_agent {
+                        if let Some(agent) = &self.native_agent {
                             let _ = agent.prompt(format!("/{}", cmd_line), vec![]).await;
                             self.state.busy = true;
                             true
@@ -937,11 +950,13 @@ Slash Commands:
 
         match self.backend {
             AgentBackend::Native => {
-                if let Some(agent) = &mut self.native_agent {
+                if let Some(agent) = &self.native_agent {
+                    // Send the prompt - returns immediately, actual work happens in background task
+                    // Events will be received via poll_agent in the main loop
                     if let Err(e) = agent.prompt(content, vec![]).await {
-                        self.state.error = Some(format!("Agent error: {}", e));
+                        self.state.error = Some(format!("Failed to send prompt: {}", e));
+                        self.state.busy = false;
                     }
-                    // Note: busy is cleared by ResponseEnd event via poll_agent
                 } else {
                     self.state.error = Some("Native agent not initialized".to_string());
                     self.state.busy = false;
@@ -951,17 +966,14 @@ Slash Commands:
                 if let Some(agent) = &mut self.node_agent {
                     if let Err(e) = agent.prompt(content, vec![]).await {
                         self.state.error = Some(format!("Agent error: {}", e));
+                        self.state.busy = false;
                     }
-                    // Note: busy is cleared by ResponseEnd event via poll_agent
                 } else {
                     self.state.error = Some("Agent not connected".to_string());
                     self.state.busy = false;
                 }
             }
         }
-
-        // Process any pending agent events (including ResponseEnd that clears busy)
-        self.poll_agent().await?;
 
         Ok(())
     }
@@ -1041,6 +1053,7 @@ Slash Commands:
                     "",
                     state.busy,
                     0,
+                    None,
                 );
 
                 if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {

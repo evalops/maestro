@@ -2,6 +2,11 @@
 //!
 //! A fully native agent implementation that communicates directly with AI providers.
 //! Replaces the Node.js subprocess architecture with pure Rust.
+//!
+//! The agent uses a background task architecture:
+//! - `NativeAgent` is the handle held by the TUI
+//! - `NativeAgentRunner` runs in a background task and owns mutable state
+//! - Communication happens via channels, so `prompt()` returns immediately
 
 use std::collections::HashMap;
 
@@ -55,45 +60,67 @@ pub struct ToolDefinition {
     pub requires_approval: bool,
 }
 
-/// The native agent orchestrator
+/// Command sent to the background agent runner
+enum AgentCommand {
+    Prompt { content: String },
+    Cancel,
+    SetModel { model: String },
+    ClearHistory,
+}
+
+/// The native agent handle (held by TUI)
+///
+/// This is a lightweight handle that communicates with the background runner
+/// via channels. All methods return immediately.
 pub struct NativeAgent {
-    /// AI client
-    client: UnifiedClient,
-    /// Configuration
-    config: NativeAgentConfig,
-    /// Conversation history
-    messages: Vec<Message>,
-    /// Tool definitions
-    tools: HashMap<String, ToolDefinition>,
-    /// Channel to send events to the TUI
-    event_tx: mpsc::UnboundedSender<FromAgent>,
-    /// Channel to receive tool responses from the TUI
-    tool_response_rx: mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
+    /// Channel to send commands to the background runner
+    command_tx: mpsc::UnboundedSender<AgentCommand>,
     /// Sender for tool responses (kept for creating receivers)
     tool_response_tx: mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>,
-    /// Whether the agent is currently processing
-    busy: bool,
-    /// Current session ID
-    session_id: Option<String>,
+    /// Channel to send events to the TUI (for send_ready)
+    event_tx: mpsc::UnboundedSender<FromAgent>,
+    /// Model name
+    model_name: String,
+    /// Provider name
+    provider_name: String,
 }
 
 impl NativeAgent {
     /// Create a new native agent
+    ///
+    /// Returns the agent handle and a receiver for events.
+    /// The agent spawns a background task that processes prompts.
     pub fn new(config: NativeAgentConfig) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
         let client = UnifiedClient::from_model(&config.model)?;
+        let provider = client.provider();
+
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (tool_response_tx, tool_response_rx) = mpsc::unbounded_channel();
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-        let agent = Self {
+        // Create the background runner
+        let runner = NativeAgentRunner {
             client,
-            config,
+            config: config.clone(),
             messages: Vec::new(),
             tools: HashMap::new(),
-            event_tx,
+            event_tx: event_tx.clone(),
             tool_response_rx,
-            tool_response_tx,
+            command_rx,
             busy: false,
-            session_id: None,
+        };
+
+        // Spawn the background task
+        tokio::spawn(async move {
+            runner.run().await;
+        });
+
+        let agent = Self {
+            command_tx,
+            tool_response_tx,
+            event_tx,
+            model_name: config.model,
+            provider_name: format!("{:?}", provider),
         };
 
         Ok((agent, event_rx))
@@ -106,51 +133,123 @@ impl NativeAgent {
         self.tool_response_tx.clone()
     }
 
-    /// Register a tool
-    pub fn register_tool(&mut self, name: impl Into<String>, def: ToolDefinition) {
-        self.tools.insert(name.into(), def);
-    }
-
-    /// Set the session ID
-    pub fn set_session_id(&mut self, id: Option<String>) {
-        self.session_id = id.clone();
-        let _ = self.event_tx.send(FromAgent::SessionInfo {
-            session_id: id,
-            cwd: self.config.cwd.clone(),
-            git_branch: None, // TODO: detect git branch
-        });
-    }
-
     /// Send the ready event
     pub fn send_ready(&self) {
-        let provider = format!("{:?}", self.client.provider());
         let _ = self.event_tx.send(FromAgent::Ready {
-            model: self.config.model.clone(),
-            provider,
+            model: self.model_name.clone(),
+            provider: self.provider_name.clone(),
         });
     }
 
-    /// Check if the agent is busy
-    pub fn is_busy(&self) -> bool {
-        self.busy
+    /// Process a user prompt (non-blocking - sends to background task)
+    pub async fn prompt(&self, content: String, _attachments: Vec<String>) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::Prompt { content })
+            .map_err(|e| anyhow::anyhow!("Failed to send prompt: {}", e))?;
+        Ok(())
+    }
+
+    /// Cancel the current operation
+    pub fn cancel(&self) {
+        let _ = self.command_tx.send(AgentCommand::Cancel);
     }
 
     /// Clear conversation history
-    pub fn clear_history(&mut self) {
-        self.messages.clear();
-    }
-
-    /// Get the current model
-    pub fn model(&self) -> &str {
-        &self.config.model
+    pub fn clear_history(&self) {
+        let _ = self.command_tx.send(AgentCommand::ClearHistory);
     }
 
     /// Set the model
-    pub fn set_model(&mut self, model: impl Into<String>) -> Result<()> {
+    pub fn set_model(&self, model: impl Into<String>) -> Result<()> {
         let model = model.into();
-        self.client = UnifiedClient::from_model(&model)?;
-        self.config.model = model;
+        self.command_tx
+            .send(AgentCommand::SetModel { model })
+            .map_err(|e| anyhow::anyhow!("Failed to set model: {}", e))?;
         Ok(())
+    }
+}
+
+/// The background agent runner that owns mutable state
+struct NativeAgentRunner {
+    /// AI client
+    client: UnifiedClient,
+    /// Configuration
+    config: NativeAgentConfig,
+    /// Conversation history
+    messages: Vec<Message>,
+    /// Tool definitions
+    tools: HashMap<String, ToolDefinition>,
+    /// Channel to send events to the TUI
+    event_tx: mpsc::UnboundedSender<FromAgent>,
+    /// Channel to receive tool responses from the TUI
+    tool_response_rx: mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
+    /// Channel to receive commands
+    command_rx: mpsc::UnboundedReceiver<AgentCommand>,
+    /// Whether currently processing
+    busy: bool,
+}
+
+impl NativeAgentRunner {
+    /// Run the background task loop
+    async fn run(mut self) {
+        while let Some(cmd) = self.command_rx.recv().await {
+            match cmd {
+                AgentCommand::Prompt { content } => {
+                    if self.busy {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: "Agent is busy".to_string(),
+                            fatal: false,
+                        });
+                        continue;
+                    }
+
+                    self.busy = true;
+
+                    // Add user message to history
+                    self.messages.push(Message {
+                        role: Role::User,
+                        content: MessageContent::text(content),
+                    });
+
+                    // Run the agent loop
+                    if let Err(e) = self.run_loop().await {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: format!("Agent error: {}", e),
+                            fatal: false,
+                        });
+                    }
+
+                    self.busy = false;
+
+                    // Signal that we're done (TUI can clear busy state)
+                    let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                        response_id: "done".to_string(),
+                        usage: None,
+                    });
+                }
+                AgentCommand::Cancel => {
+                    self.busy = false;
+                    // TODO: Implement proper cancellation
+                }
+                AgentCommand::SetModel { model } => {
+                    match UnifiedClient::from_model(&model) {
+                        Ok(client) => {
+                            self.client = client;
+                            self.config.model = model;
+                        }
+                        Err(e) => {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: format!("Failed to set model: {}", e),
+                                fatal: false,
+                            });
+                        }
+                    }
+                }
+                AgentCommand::ClearHistory => {
+                    self.messages.clear();
+                }
+            }
+        }
     }
 
     /// Build request configuration
@@ -175,31 +274,6 @@ impl NativeAgent {
             tools,
             thinking,
         }
-    }
-
-    /// Process a user prompt
-    pub async fn prompt(&mut self, content: String, _attachments: Vec<String>) -> Result<()> {
-        if self.busy {
-            let _ = self.event_tx.send(FromAgent::Error {
-                message: "Agent is busy".to_string(),
-                fatal: false,
-            });
-            return Ok(());
-        }
-
-        self.busy = true;
-
-        // Add user message to history
-        self.messages.push(Message {
-            role: Role::User,
-            content: MessageContent::text(content),
-        });
-
-        // Run the agent loop
-        self.run_loop().await?;
-
-        self.busy = false;
-        Ok(())
     }
 
     /// Run the agent loop until complete or interrupted
@@ -418,7 +492,6 @@ impl NativeAgent {
         // This is a placeholder - actual tool implementations will be in tools module
         match tool_name {
             "bash" => {
-                // Will be implemented in tools module
                 ToolResult {
                     success: false,
                     output: String::new(),
@@ -436,13 +509,6 @@ impl NativeAgent {
                 error: Some(format!("Unknown tool: {}", tool_name)),
             },
         }
-    }
-
-    /// Cancel the current operation
-    pub fn cancel(&mut self) {
-        // For now, just reset busy flag
-        // TODO: Implement proper cancellation with tokio cancellation tokens
-        self.busy = false;
     }
 }
 

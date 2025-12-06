@@ -83,6 +83,10 @@ pub struct AppState {
     pub scroll_offset: usize,
     /// Error message to display
     pub error: Option<String>,
+    /// Current thinking header (extracted from bold text like **Header**)
+    pub thinking_header: Option<String>,
+    /// Full thinking buffer for the current response
+    thinking_buffer: String,
 }
 
 impl Default for AppState {
@@ -107,6 +111,8 @@ impl AppState {
             status: None,
             scroll_offset: 0,
             error: None,
+            thinking_header: None,
+            thinking_buffer: String::new(),
         }
     }
 
@@ -149,6 +155,11 @@ impl AppState {
                 if let Some(msg) = self.messages.iter_mut().find(|m| m.id == response_id) {
                     if is_thinking {
                         msg.thinking.push_str(&content);
+                        // Accumulate thinking and extract header
+                        self.thinking_buffer.push_str(&content);
+                        if let Some(header) = extract_thinking_header(&self.thinking_buffer) {
+                            self.thinking_header = Some(header);
+                        }
                     } else {
                         msg.content.push_str(&content);
                     }
@@ -162,6 +173,9 @@ impl AppState {
                 }
                 self.busy = false;
                 self.busy_since = None;
+                // Clear thinking state
+                self.thinking_header = None;
+                self.thinking_buffer.clear();
             }
 
             FromAgent::ToolCall {
@@ -358,4 +372,21 @@ impl AppState {
     pub fn scroll_down(&mut self, amount: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(amount);
     }
+}
+
+/// Extract the first bold header from thinking text (between ** and **)
+fn extract_thinking_header(text: &str) -> Option<String> {
+    // Look for **Header** pattern
+    if let Some(start) = text.rfind("**") {
+        let before_start = &text[..start];
+        if let Some(open) = before_start.rfind("**") {
+            let header = &text[open + 2..start];
+            // Clean up the header - take first line only
+            let header = header.lines().next().unwrap_or(header);
+            if !header.is_empty() && header.len() < 100 {
+                return Some(header.to_string());
+            }
+        }
+    }
+    None
 }

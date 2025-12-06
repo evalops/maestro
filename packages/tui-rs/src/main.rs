@@ -14,6 +14,55 @@ use anyhow::Result;
 use clap::Parser;
 use composer_tui::App;
 
+/// Infer provider from model name
+fn infer_provider_from_model(model: &str) -> &'static str {
+    let model_lower = model.to_lowercase();
+
+    // OpenAI models
+    if model_lower.starts_with("gpt")
+        || model_lower.starts_with("o1")
+        || model_lower.starts_with("o3")
+        || model_lower.contains("codex")
+        || model_lower.starts_with("text-")
+        || model_lower.starts_with("davinci")
+    {
+        return "openai";
+    }
+
+    // Anthropic models
+    if model_lower.starts_with("claude") {
+        return "anthropic";
+    }
+
+    // Google/Gemini models
+    if model_lower.starts_with("gemini") || model_lower.starts_with("palm") {
+        return "google";
+    }
+
+    // xAI/Grok models
+    if model_lower.starts_with("grok") {
+        return "xai";
+    }
+
+    // Groq models (llama, mixtral hosted on Groq)
+    if model_lower.contains("groq") {
+        return "groq";
+    }
+
+    // Cerebras models
+    if model_lower.contains("cerebras") {
+        return "cerebras";
+    }
+
+    // OpenRouter (uses / in model name like "anthropic/claude-3")
+    if model_lower.contains('/') {
+        return "openrouter";
+    }
+
+    // Default to Anthropic
+    "anthropic"
+}
+
 /// Native Composer TUI
 #[derive(Parser, Debug)]
 #[command(name = "composer-tui")]
@@ -83,14 +132,24 @@ async fn main() -> Result<()> {
 
     // Set API key from CLI if provided (for native agent)
     if let Some(api_key) = &args.api_key {
-        if let Some(provider) = &args.provider {
-            match provider.as_str() {
-                "openai" => std::env::set_var("OPENAI_API_KEY", api_key),
-                "anthropic" | _ => std::env::set_var("ANTHROPIC_API_KEY", api_key),
+        // Determine provider from explicit flag or model name
+        let provider = args.provider.as_deref().unwrap_or_else(|| {
+            // Infer provider from model name
+            if let Some(model) = &args.model {
+                infer_provider_from_model(model)
+            } else {
+                "anthropic"
             }
-        } else {
-            // Default to Anthropic
-            std::env::set_var("ANTHROPIC_API_KEY", api_key);
+        });
+
+        match provider {
+            "openai" => std::env::set_var("OPENAI_API_KEY", api_key),
+            "google" => std::env::set_var("GOOGLE_API_KEY", api_key),
+            "xai" => std::env::set_var("XAI_API_KEY", api_key),
+            "groq" => std::env::set_var("GROQ_API_KEY", api_key),
+            "cerebras" => std::env::set_var("CEREBRAS_API_KEY", api_key),
+            "openrouter" => std::env::set_var("OPENROUTER_API_KEY", api_key),
+            _ => std::env::set_var("ANTHROPIC_API_KEY", api_key),
         }
     }
 

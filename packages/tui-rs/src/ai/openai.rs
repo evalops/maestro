@@ -6,6 +6,7 @@
 //! Note: The Responses API models (gpt-5.1-codex-*) may require ChatGPT Plus authentication.
 
 use anyhow::{Context, Result};
+use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -14,9 +15,158 @@ use tokio::sync::mpsc;
 use super::client::{AiClient, AiProvider};
 use super::types::*;
 
+/// SSE event structure for Responses API (matches OpenAI's format)
+#[derive(Debug, Deserialize)]
+struct ResponsesSseEvent {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    response: Option<serde_json::Value>,
+    #[serde(default)]
+    item: Option<serde_json::Value>,
+    #[serde(default)]
+    delta: Option<String>,
+    #[serde(default)]
+    content_index: Option<i64>,
+    #[serde(default)]
+    summary_index: Option<i64>,
+    #[serde(default)]
+    output_index: Option<i64>,
+}
+
+/// Error classification for retry logic
+#[derive(Debug, Clone)]
+pub enum ApiError {
+    /// Context window exceeded - fatal, need to reduce input
+    ContextWindowExceeded,
+    /// Quota exceeded - fatal, billing issue
+    QuotaExceeded,
+    /// Rate limited - retryable with delay
+    RateLimited { retry_after: Option<std::time::Duration> },
+    /// Generic retryable error
+    Retryable { message: String },
+    /// Fatal error
+    Fatal { message: String },
+}
+
+/// Extract function call from a ResponseItem
+fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, String)> {
+    let item_type = item.get("type")?.as_str()?;
+    if item_type != "function_call" {
+        return None;
+    }
+
+    let call_id = item.get("call_id")?.as_str()?.to_string();
+    let name = item.get("name")?.as_str()?.to_string();
+    let arguments = item.get("arguments")?.as_str()?.to_string();
+
+    Some((call_id, name, arguments))
+}
+
+/// Classify API error for retry logic
+fn classify_error(error: &serde_json::Value) -> ApiError {
+    let code = error.get("code").and_then(|c| c.as_str());
+    let message = error
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("Unknown error")
+        .to_string();
+
+    match code {
+        Some("context_length_exceeded") => ApiError::ContextWindowExceeded,
+        Some("insufficient_quota") => ApiError::QuotaExceeded,
+        Some("rate_limit_exceeded") => {
+            // Try to parse retry-after from message
+            let retry_after = parse_retry_after(&message);
+            ApiError::RateLimited { retry_after }
+        }
+        _ => ApiError::Retryable { message },
+    }
+}
+
+/// Parse retry-after duration from error message
+fn parse_retry_after(message: &str) -> Option<std::time::Duration> {
+    // Pattern: "try again in X.XXs" or "try again in X seconds"
+    let lower = message.to_lowercase();
+    if let Some(pos) = lower.find("try again in") {
+        let after = &lower[pos + 13..];
+        // Try to parse number
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        if let Ok(num) = num_str.parse::<f64>() {
+            // Check unit
+            let rest = &after[num_str.len()..].trim_start();
+            if rest.starts_with("ms") {
+                return Some(std::time::Duration::from_millis(num as u64));
+            } else {
+                // Assume seconds
+                return Some(std::time::Duration::from_secs_f64(num));
+            }
+        }
+    }
+    None
+}
+
+/// Check if a tool schema has incompatible constructs for Responses API
+/// Responses API doesn't support oneOf, anyOf, allOf, enum at top level
+fn has_incompatible_schema(schema: &serde_json::Value) -> bool {
+    if let Some(obj) = schema.as_object() {
+        obj.contains_key("oneOf")
+            || obj.contains_key("anyOf")
+            || obj.contains_key("allOf")
+            || obj.contains_key("not")
+            // Top-level enum is also problematic
+            || obj.contains_key("enum")
+    } else {
+        false
+    }
+}
+
+/// Filter tools to only include those compatible with Responses API
+fn filter_responses_api_tools(tools: &[Tool]) -> Vec<Tool> {
+    tools
+        .iter()
+        .filter(|tool| {
+            // Tool must have a name
+            if tool.name.trim().is_empty() {
+                return false;
+            }
+            // Check schema compatibility
+            !has_incompatible_schema(&tool.input_schema)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Extract text from a ResponseItem (Message type with output_text content)
+fn extract_text_from_item(item: &serde_json::Value) -> Option<String> {
+    let item_type = item.get("type")?.as_str()?;
+    if item_type != "message" {
+        return None;
+    }
+
+    let content = item.get("content")?.as_array()?;
+    let mut text = String::new();
+    for part in content {
+        if let Some(part_type) = part.get("type").and_then(|v| v.as_str()) {
+            if part_type == "output_text" {
+                if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                    text.push_str(t);
+                }
+            }
+        }
+    }
+
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 /// Returns true if the model uses the Responses API (vs Chat Completions)
 fn uses_responses_api(model: &str) -> bool {
-    model.contains("codex") || model.starts_with("gpt-5")
+    // Codex models and gpt-5.x models use the Responses API
+    model.contains("codex") || model.starts_with("gpt-5") || model.starts_with("o3")
 }
 
 /// Get the appropriate API URL for the model
@@ -253,66 +403,123 @@ impl OpenAiClient {
         config: &RequestConfig,
     ) -> serde_json::Value {
         // Convert messages to Responses API format
-        let input: Vec<serde_json::Value> = messages
-            .iter()
-            .filter_map(|msg| {
-                let role = match msg.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::System => return None, // System goes in instructions
-                };
+        // The input array contains ResponseItems, which can be messages, function calls, or function outputs
+        let mut input: Vec<serde_json::Value> = Vec::new();
 
-                match &msg.content {
-                    MessageContent::Text(text) => Some(serde_json::json!({
-                        "type": "message",
-                        "role": role,
-                        "content": [{
-                            "type": "input_text",
-                            "text": text
-                        }]
-                    })),
-                    MessageContent::Blocks(blocks) => {
-                        let content: Vec<serde_json::Value> = blocks
-                            .iter()
-                            .filter_map(|block| match block {
-                                ContentBlock::Text { text } => Some(serde_json::json!({
+        for msg in messages {
+            match msg.role {
+                Role::System => continue, // System goes in instructions
+                Role::User => {
+                    // User messages use "input_text" content type
+                    match &msg.content {
+                        MessageContent::Text(text) => {
+                            input.push(serde_json::json!({
+                                "type": "message",
+                                "role": "user",
+                                "content": [{
                                     "type": "input_text",
                                     "text": text
-                                })),
-                                ContentBlock::ToolUse { id, name, input } => {
-                                    Some(serde_json::json!({
-                                        "type": "function_call",
-                                        "call_id": id,
-                                        "name": name,
-                                        "arguments": input.to_string()
-                                    }))
-                                }
-                                ContentBlock::ToolResult {
+                                }]
+                            }));
+                        }
+                        MessageContent::Blocks(blocks) => {
+                            // Check if this is tool results (they go as separate items, not in a message)
+                            let mut has_tool_results = false;
+                            for block in blocks {
+                                if let ContentBlock::ToolResult {
                                     tool_use_id,
                                     content,
-                                    ..
-                                } => Some(serde_json::json!({
-                                    "type": "function_call_output",
-                                    "call_id": tool_use_id,
-                                    "output": content
-                                })),
-                                _ => None,
-                            })
-                            .collect();
+                                    is_error,
+                                } = block
+                                {
+                                    has_tool_results = true;
+                                    // Wrap output with success field for proper Responses API format
+                                    // The Responses API expects { output: string } or { output: string, success: bool }
+                                    let is_success = !is_error.unwrap_or(false);
+                                    input.push(serde_json::json!({
+                                        "type": "function_call_output",
+                                        "call_id": tool_use_id,
+                                        "output": content,
+                                        "success": is_success
+                                    }));
+                                }
+                            }
 
-                        if content.is_empty() {
-                            None
-                        } else {
-                            Some(serde_json::json!({
-                                "type": "message",
-                                "role": role,
-                                "content": content
-                            }))
+                            // If not tool results, treat as regular user message
+                            if !has_tool_results {
+                                let content: Vec<serde_json::Value> = blocks
+                                    .iter()
+                                    .filter_map(|block| match block {
+                                        ContentBlock::Text { text } => Some(serde_json::json!({
+                                            "type": "input_text",
+                                            "text": text
+                                        })),
+                                        _ => None,
+                                    })
+                                    .collect();
+
+                                if !content.is_empty() {
+                                    input.push(serde_json::json!({
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": content
+                                    }));
+                                }
+                            }
                         }
                     }
                 }
-            })
-            .collect();
+                Role::Assistant => {
+                    // Assistant messages use "output_text" content type
+                    // Tool calls go as separate "function_call" items
+                    match &msg.content {
+                        MessageContent::Text(text) => {
+                            input.push(serde_json::json!({
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{
+                                    "type": "output_text",
+                                    "text": text
+                                }]
+                            }));
+                        }
+                        MessageContent::Blocks(blocks) => {
+                            // First, collect any text content into a message
+                            let text_content: Vec<serde_json::Value> = blocks
+                                .iter()
+                                .filter_map(|block| match block {
+                                    ContentBlock::Text { text } => Some(serde_json::json!({
+                                        "type": "output_text",
+                                        "text": text
+                                    })),
+                                    _ => None,
+                                })
+                                .collect();
+
+                            if !text_content.is_empty() {
+                                input.push(serde_json::json!({
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": text_content
+                                }));
+                            }
+
+                            // Then, add tool calls as separate items
+                            for block in blocks {
+                                if let ContentBlock::ToolUse { id, name, input: args } = block {
+                                    input.push(serde_json::json!({
+                                        "type": "function_call",
+                                        "call_id": id,
+                                        "name": name,
+                                        "arguments": serde_json::to_string(args).unwrap_or_default()
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let mut body = serde_json::json!({
             "model": config.model,
@@ -325,21 +532,23 @@ impl OpenAiClient {
             body["instructions"] = serde_json::json!(system);
         }
 
-        // Add tools
+        // Add tools (filtered for Responses API compatibility)
         if !config.tools.is_empty() {
-            let tools: Vec<serde_json::Value> = config
-                .tools
-                .iter()
-                .map(|tool| {
-                    serde_json::json!({
-                        "type": "function",
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema
+            let compatible_tools = filter_responses_api_tools(&config.tools);
+            if !compatible_tools.is_empty() {
+                let tools: Vec<serde_json::Value> = compatible_tools
+                    .iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "type": "function",
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.input_schema
+                        })
                     })
-                })
-                .collect();
-            body["tools"] = serde_json::json!(tools);
+                    .collect();
+                body["tools"] = serde_json::json!(tools);
+            }
         }
 
         // Add reasoning effort for thinking models
@@ -354,6 +563,10 @@ impl OpenAiClient {
             body["reasoning"] = serde_json::json!({
                 "effort": effort
             });
+
+            // Include encrypted reasoning content for multi-turn conversations
+            // This preserves reasoning state across turns
+            body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
         }
 
         body
@@ -412,62 +625,55 @@ impl AiClient for OpenAiClient {
         }
 
         // Spawn task to process SSE stream
-        let mut stream = response.bytes_stream();
         let model = config.model.clone();
+        let is_responses_api = uses_responses_api(&config.model);
 
-        tokio::spawn(async move {
-            let mut buffer = String::new();
-            let mut message_id = String::new();
-            let mut current_tool_calls: Vec<ToolCallAccumulator> = Vec::new();
-            let mut content_started = false;
-            let mut tool_use_index = 0;
+        if is_responses_api {
+            // Use eventsource-stream for proper SSE parsing (Responses API)
+            let stream = response.bytes_stream();
+            tokio::spawn(async move {
+                let mut sse_stream = stream
+                    .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+                    .eventsource();
 
-            while let Some(chunk) = stream.next().await {
-                match chunk {
-                    Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+                let mut content_started = false;
+                let mut received_streaming_text = false; // Track if we got text via streaming deltas
+                let mut tool_call_index = 1; // Start at 1, reserve 0 for text content
 
-                        // Process complete SSE lines
-                        while let Some(pos) = buffer.find('\n') {
-                            let line = buffer[..pos].trim().to_string();
-                            buffer = buffer[pos + 1..].to_string();
+                while let Some(event_result) = sse_stream.next().await {
+                    match event_result {
+                        Ok(sse) => {
+                            // Parse the SSE data as JSON
+                            let event: ResponsesSseEvent = match serde_json::from_str(&sse.data) {
+                                Ok(e) => e,
+                                Err(_) => continue, // Skip unparseable events
+                            };
 
-                            // Skip empty lines
-                            if line.is_empty() {
-                                continue;
-                            }
-
-                            // Check for stream end
-                            if line == "data: [DONE]" {
-                                // Finalize any pending tool calls
-                                for (idx, tool_acc) in current_tool_calls.iter().enumerate() {
-                                    let input: serde_json::Value =
-                                        serde_json::from_str(&tool_acc.arguments)
-                                            .unwrap_or(serde_json::Value::Object(Default::default()));
-                                    let _ = tx.send(StreamEvent::ContentBlockStop {
-                                        index: idx + 1, // +1 because text is index 0
-                                    });
+                            match event.kind.as_str() {
+                                "response.created" => {
+                                    if let Some(resp) = &event.response {
+                                        if let Some(id) = resp.get("id").and_then(|v| v.as_str()) {
+                                            let _ = tx.send(StreamEvent::MessageStart {
+                                                id: id.to_string(),
+                                                model: model.clone(),
+                                            });
+                                        }
+                                    }
                                 }
-                                let _ = tx.send(StreamEvent::MessageStop);
-                                return;
-                            }
-
-                            // Parse SSE data
-                            if let Some(data) = line.strip_prefix("data: ") {
-                                if let Ok(chunk) = serde_json::from_str::<OpenAiChunk>(data) {
-                                    // Handle message start
-                                    if message_id.is_empty() {
-                                        message_id = chunk.id.clone();
-                                        let _ = tx.send(StreamEvent::MessageStart {
-                                            id: chunk.id.clone(),
-                                            model: model.clone(),
+                                // Reasoning/thinking events - stream as thinking deltas
+                                "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                                    if let Some(delta) = &event.delta {
+                                        let _ = tx.send(StreamEvent::ThinkingDelta {
+                                            index: 0,
+                                            thinking: delta.clone(),
                                         });
                                     }
-
-                                    // Process choices
-                                    for choice in &chunk.choices {
-                                        // Handle text content
-                                        if let Some(content) = &choice.delta.content {
+                                }
+                                "response.output_item.added" | "response.content_part.added" => {
+                                    // Check if this is a message item (not reasoning)
+                                    if let Some(item) = &event.item {
+                                        let item_type = item.get("type").and_then(|v| v.as_str());
+                                        if item_type == Some("message") {
                                             if !content_started {
                                                 content_started = true;
                                                 let _ = tx.send(StreamEvent::ContentBlockStart {
@@ -477,105 +683,312 @@ impl AiClient for OpenAiClient {
                                                     },
                                                 });
                                             }
-                                            let _ = tx.send(StreamEvent::TextDelta {
-                                                index: 0,
-                                                text: content.clone(),
+                                        }
+                                    }
+                                }
+                                "response.output_item.done" => {
+                                    if let Some(item) = &event.item {
+                                        // Check if this is a function call
+                                        if let Some((call_id, name, arguments)) = extract_function_call(item) {
+                                            // Parse arguments JSON
+                                            let input: serde_json::Value = serde_json::from_str(&arguments)
+                                                .unwrap_or(serde_json::json!({}));
+
+                                            // Emit tool use block
+                                            let tool_index = tool_call_index;
+                                            tool_call_index += 1;
+
+                                            let _ = tx.send(StreamEvent::ContentBlockStart {
+                                                index: tool_index,
+                                                block: ContentBlock::ToolUse {
+                                                    id: call_id.clone(),
+                                                    name: name.clone(),
+                                                    input: input.clone(),
+                                                },
+                                            });
+
+                                            let _ = tx.send(StreamEvent::ContentBlockStop { index: tool_index });
+                                        }
+                                        // Only extract text as fallback if we didn't receive streaming deltas
+                                        else if !received_streaming_text {
+                                            if let Some(text) = extract_text_from_item(item) {
+                                                if !content_started {
+                                                    content_started = true;
+                                                    let _ = tx.send(StreamEvent::ContentBlockStart {
+                                                        index: 0,
+                                                        block: ContentBlock::Text {
+                                                            text: String::new(),
+                                                        },
+                                                    });
+                                                }
+                                                let _ = tx.send(StreamEvent::TextDelta {
+                                                    index: 0,
+                                                    text,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle streaming function call arguments
+                                "response.function_call_arguments.delta" => {
+                                    if let Some(delta) = &event.delta {
+                                        // Get or create tool call index
+                                        let idx = event.output_index.unwrap_or(0) as usize;
+                                        let tool_idx = idx + 1; // Reserve 0 for text
+
+                                        let _ = tx.send(StreamEvent::InputJsonDelta {
+                                            index: tool_idx,
+                                            partial_json: delta.clone(),
+                                        });
+                                    }
+                                }
+                                "response.output_text.delta" => {
+                                    received_streaming_text = true; // Mark that we're receiving streaming text
+                                    if !content_started {
+                                        content_started = true;
+                                        let _ = tx.send(StreamEvent::ContentBlockStart {
+                                            index: 0,
+                                            block: ContentBlock::Text {
+                                                text: String::new(),
+                                            },
+                                        });
+                                    }
+                                    if let Some(delta) = &event.delta {
+                                        let _ = tx.send(StreamEvent::TextDelta {
+                                            index: 0,
+                                            text: delta.clone(),
+                                        });
+                                    }
+                                }
+                                "response.output_text.done" => {
+                                    // Text content finished - but don't stop yet, more might come
+                                }
+                                "response.completed" => {
+                                    // Now close the content block
+                                    if content_started {
+                                        let _ = tx.send(StreamEvent::ContentBlockStop { index: 0 });
+                                    }
+                                    // Extract usage from response if present
+                                    if let Some(resp) = &event.response {
+                                        if let Some(usage) = resp.get("usage") {
+                                            let input = usage
+                                                .get("input_tokens")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0);
+                                            let output = usage
+                                                .get("output_tokens")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0);
+                                            // Extract cached tokens from input_tokens_details
+                                            let cache_read = usage
+                                                .get("input_tokens_details")
+                                                .and_then(|d| d.get("cached_tokens"))
+                                                .and_then(|v| v.as_u64());
+                                            // Extract reasoning tokens from output_tokens_details
+                                            let _reasoning_tokens = usage
+                                                .get("output_tokens_details")
+                                                .and_then(|d| d.get("reasoning_tokens"))
+                                                .and_then(|v| v.as_u64());
+                                            let _ = tx.send(StreamEvent::Usage {
+                                                input_tokens: input,
+                                                output_tokens: output,
+                                                cache_read_tokens: cache_read,
+                                                cache_creation_tokens: None,
+                                            });
+                                        }
+                                    }
+                                    let _ = tx.send(StreamEvent::MessageStop);
+                                    return;
+                                }
+                                "response.failed" => {
+                                    // Classify the error for proper handling
+                                    let (error_msg, _api_error) = if let Some(resp) = &event.response {
+                                        if let Some(error) = resp.get("error") {
+                                            let classified = classify_error(error);
+                                            let msg = match &classified {
+                                                ApiError::ContextWindowExceeded => {
+                                                    "Context window exceeded - message too long".to_string()
+                                                }
+                                                ApiError::QuotaExceeded => {
+                                                    "API quota exceeded - check your billing".to_string()
+                                                }
+                                                ApiError::RateLimited { retry_after } => {
+                                                    if let Some(delay) = retry_after {
+                                                        format!("Rate limited - retry after {:?}", delay)
+                                                    } else {
+                                                        "Rate limited - please try again".to_string()
+                                                    }
+                                                }
+                                                ApiError::Retryable { message } => message.clone(),
+                                                ApiError::Fatal { message } => message.clone(),
+                                            };
+                                            (msg, Some(classified))
+                                        } else {
+                                            ("Unknown error".to_string(), None)
+                                        }
+                                    } else {
+                                        ("Unknown error".to_string(), None)
+                                    };
+
+                                    let _ = tx.send(StreamEvent::Error {
+                                        message: error_msg,
+                                    });
+                                    return;
+                                }
+                                _ => {
+                                    // Unknown event type, ignore
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(StreamEvent::Error {
+                                message: format!("SSE stream error: {}", e),
+                            });
+                            return;
+                        }
+                    }
+                }
+
+                // Stream ended without response.completed
+                let _ = tx.send(StreamEvent::MessageStop);
+            });
+        } else {
+            // Chat Completions API - uses simpler line-based SSE
+            let mut stream = response.bytes_stream();
+            tokio::spawn(async move {
+                let mut buffer = String::new();
+                let mut message_id = String::new();
+                let mut current_tool_calls: Vec<ToolCallAccumulator> = Vec::new();
+                let mut content_started = false;
+                let mut tool_use_index = 0;
+
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(bytes) => {
+                            buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                            // Process complete SSE lines
+                            while let Some(pos) = buffer.find('\n') {
+                                let line = buffer[..pos].trim().to_string();
+                                buffer = buffer[pos + 1..].to_string();
+
+                                if line.is_empty() {
+                                    continue;
+                                }
+
+                                if line == "data: [DONE]" {
+                                    for (idx, _) in current_tool_calls.iter().enumerate() {
+                                        let _ = tx.send(StreamEvent::ContentBlockStop { index: idx + 1 });
+                                    }
+                                    let _ = tx.send(StreamEvent::MessageStop);
+                                    return;
+                                }
+
+                                if let Some(data) = line.strip_prefix("data: ") {
+                                    if let Ok(chunk) = serde_json::from_str::<OpenAiChunk>(data) {
+                                        if message_id.is_empty() {
+                                            message_id = chunk.id.clone();
+                                            let _ = tx.send(StreamEvent::MessageStart {
+                                                id: chunk.id.clone(),
+                                                model: model.clone(),
                                             });
                                         }
 
-                                        // Handle tool calls
-                                        if let Some(tool_calls) = &choice.delta.tool_calls {
-                                            for tc in tool_calls {
-                                                let idx = tc.index.unwrap_or(0);
-
-                                                // Ensure we have an accumulator for this index
-                                                while current_tool_calls.len() <= idx {
-                                                    current_tool_calls.push(ToolCallAccumulator {
-                                                        id: String::new(),
-                                                        name: String::new(),
-                                                        arguments: String::new(),
+                                        for choice in &chunk.choices {
+                                            if let Some(content) = &choice.delta.content {
+                                                if !content_started {
+                                                    content_started = true;
+                                                    let _ = tx.send(StreamEvent::ContentBlockStart {
+                                                        index: 0,
+                                                        block: ContentBlock::Text {
+                                                            text: String::new(),
+                                                        },
                                                     });
                                                 }
+                                                let _ = tx.send(StreamEvent::TextDelta {
+                                                    index: 0,
+                                                    text: content.clone(),
+                                                });
+                                            }
 
-                                                // Accumulate tool call data
-                                                if let Some(id) = &tc.id {
-                                                    current_tool_calls[idx].id = id.clone();
-                                                }
-                                                if let Some(func) = &tc.function {
-                                                    if let Some(name) = &func.name {
-                                                        current_tool_calls[idx].name = name.clone();
-                                                        // Emit content block start for tool
-                                                        if content_started {
-                                                            let _ = tx.send(
-                                                                StreamEvent::ContentBlockStop {
-                                                                    index: 0,
-                                                                },
-                                                            );
-                                                        }
-                                                        tool_use_index = idx + 1;
-                                                        let _ = tx.send(
-                                                            StreamEvent::ContentBlockStart {
+                                            if let Some(tool_calls) = &choice.delta.tool_calls {
+                                                for tc in tool_calls {
+                                                    let idx = tc.index.unwrap_or(0);
+
+                                                    while current_tool_calls.len() <= idx {
+                                                        current_tool_calls.push(ToolCallAccumulator {
+                                                            id: String::new(),
+                                                            name: String::new(),
+                                                            arguments: String::new(),
+                                                        });
+                                                    }
+
+                                                    if let Some(id) = &tc.id {
+                                                        current_tool_calls[idx].id = id.clone();
+                                                    }
+                                                    if let Some(func) = &tc.function {
+                                                        if let Some(name) = &func.name {
+                                                            current_tool_calls[idx].name = name.clone();
+                                                            if content_started {
+                                                                let _ = tx.send(
+                                                                    StreamEvent::ContentBlockStop { index: 0 },
+                                                                );
+                                                            }
+                                                            tool_use_index = idx + 1;
+                                                            let _ = tx.send(StreamEvent::ContentBlockStart {
                                                                 index: tool_use_index,
                                                                 block: ContentBlock::ToolUse {
-                                                                    id: current_tool_calls[idx]
-                                                                        .id
-                                                                        .clone(),
+                                                                    id: current_tool_calls[idx].id.clone(),
                                                                     name: name.clone(),
                                                                     input: serde_json::Value::Object(
                                                                         Default::default(),
                                                                     ),
                                                                 },
-                                                            },
-                                                        );
-                                                    }
-                                                    if let Some(args) = &func.arguments {
-                                                        current_tool_calls[idx]
-                                                            .arguments
-                                                            .push_str(args);
-                                                        let _ =
-                                                            tx.send(StreamEvent::InputJsonDelta {
+                                                            });
+                                                        }
+                                                        if let Some(args) = &func.arguments {
+                                                            current_tool_calls[idx].arguments.push_str(args);
+                                                            let _ = tx.send(StreamEvent::InputJsonDelta {
                                                                 index: tool_use_index,
                                                                 partial_json: args.clone(),
                                                             });
+                                                        }
                                                     }
+                                                }
+                                            }
+
+                                            if choice.finish_reason.is_some() {
+                                                if content_started && current_tool_calls.is_empty() {
+                                                    let _ = tx.send(StreamEvent::ContentBlockStop { index: 0 });
                                                 }
                                             }
                                         }
 
-                                        // Handle finish reason
-                                        if choice.finish_reason.is_some() {
-                                            if content_started && current_tool_calls.is_empty() {
-                                                let _ = tx.send(StreamEvent::ContentBlockStop {
-                                                    index: 0,
-                                                });
-                                            }
+                                        if let Some(usage) = &chunk.usage {
+                                            let _ = tx.send(StreamEvent::Usage {
+                                                input_tokens: usage.prompt_tokens.unwrap_or(0),
+                                                output_tokens: usage.completion_tokens.unwrap_or(0),
+                                                cache_read_tokens: usage
+                                                    .prompt_tokens_details
+                                                    .as_ref()
+                                                    .and_then(|d| d.cached_tokens),
+                                                cache_creation_tokens: None,
+                                            });
                                         }
-                                    }
-
-                                    // Handle usage stats (sent at end with stream_options)
-                                    if let Some(usage) = &chunk.usage {
-                                        let _ = tx.send(StreamEvent::Usage {
-                                            input_tokens: usage.prompt_tokens.unwrap_or(0),
-                                            output_tokens: usage.completion_tokens.unwrap_or(0),
-                                            cache_read_tokens: usage.prompt_tokens_details
-                                                .as_ref()
-                                                .and_then(|d| d.cached_tokens),
-                                            cache_creation_tokens: None,
-                                        });
                                     }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        let _ = tx.send(StreamEvent::Error {
-                            message: format!("Stream error: {}", e),
-                        });
-                        break;
+                        Err(e) => {
+                            let _ = tx.send(StreamEvent::Error {
+                                message: format!("Stream error: {}", e),
+                            });
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         Ok(rx)
     }

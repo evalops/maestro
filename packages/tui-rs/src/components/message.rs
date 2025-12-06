@@ -519,6 +519,7 @@ pub struct ChatInputWidget<'a> {
     placeholder: &'a str,
     busy: bool,
     elapsed_secs: u64,
+    thinking_header: Option<&'a str>,
 }
 
 impl<'a> ChatInputWidget<'a> {
@@ -528,6 +529,7 @@ impl<'a> ChatInputWidget<'a> {
         placeholder: &'a str,
         busy: bool,
         elapsed_secs: u64,
+        thinking_header: Option<&'a str>,
     ) -> Self {
         Self {
             input,
@@ -535,6 +537,7 @@ impl<'a> ChatInputWidget<'a> {
             placeholder,
             busy,
             elapsed_secs,
+            thinking_header,
         }
     }
 
@@ -588,7 +591,21 @@ impl Widget for ChatInputWidget<'_> {
         let title: Line = if self.busy {
             let elapsed = fmt_elapsed_compact(self.elapsed_secs);
             let mut spans = vec![Span::raw(" ")];
-            spans.extend(shimmer_spans("Working"));
+
+            // Show thinking header if available, otherwise "Working"
+            if let Some(header) = self.thinking_header {
+                // Shimmer the thinking header (truncate if too long)
+                let max_header_len = 30;
+                let display_header = if header.len() > max_header_len {
+                    format!("{}...", &header[..max_header_len.saturating_sub(3)])
+                } else {
+                    header.to_string()
+                };
+                spans.extend(shimmer_spans(&display_header));
+            } else {
+                spans.extend(shimmer_spans("Working"));
+            }
+
             spans.push(Span::styled(
                 format!(" ({} | ESC to interrupt) ", elapsed),
                 Style::default().fg(Color::DarkGray),
@@ -741,6 +758,7 @@ impl Widget for ChatView<'_> {
             "Type a message...",
             self.state.busy,
             self.state.elapsed_busy_secs(),
+            self.state.thinking_header.as_deref(),
         );
         input_widget.render(chunks[1], buf);
 
