@@ -81,6 +81,24 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let agent_args = args.to_agent_args();
 
+    // Set API key from CLI if provided (for native agent)
+    if let Some(api_key) = &args.api_key {
+        if let Some(provider) = &args.provider {
+            match provider.as_str() {
+                "openai" => std::env::set_var("OPENAI_API_KEY", api_key),
+                "anthropic" | _ => std::env::set_var("ANTHROPIC_API_KEY", api_key),
+            }
+        } else {
+            // Default to Anthropic
+            std::env::set_var("ANTHROPIC_API_KEY", api_key);
+        }
+    }
+
+    // Set model from CLI if provided
+    if let Some(model) = &args.model {
+        std::env::set_var("COMPOSER_MODEL", model);
+    }
+
     // Create and run the application
     let app = App::with_args(agent_args)?;
     let exit_code = app.run().await?;
