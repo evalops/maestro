@@ -956,6 +956,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			const raw = getCommandArg(ctx);
 			if (!raw) return { allowed: true };
 			const unwrapped = unwrapShellCommand(raw) ?? raw;
+			if (isCommandAllowlisted(unwrapped)) return { allowed: true };
 			if (!hasEgressPrimitives(unwrapped)) return { allowed: true };
 			return {
 				allowed: false,
