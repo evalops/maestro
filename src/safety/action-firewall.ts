@@ -77,6 +77,10 @@ const isStrictUntaggedEgress = () =>
 	process.env.COMPOSER_FAIL_UNTAGGED_EGRESS === "1";
 const isBackgroundShellBlocked = () =>
 	process.env.COMPOSER_BACKGROUND_SHELL_DISABLE === "1";
+const isSafeModeEnabled = () => process.env.COMPOSER_SAFE_MODE === "1";
+const isProdProfile = () =>
+	process.env.COMPOSER_PROFILE === "prod" ||
+	process.env.COMPOSER_WEB_PROFILE === "prod";
 
 /**
  * Policy Check Result - Cached result of enterprise policy evaluation
@@ -274,6 +278,17 @@ const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 }));
 
 const isBashStrict = () => process.env.COMPOSER_BASH_STRICT === "1";
+const isBashGuardEnabled = () => {
+	const flag = process.env.COMPOSER_BASH_GUARD?.toLowerCase?.();
+	if (flag) {
+		return !["0", "off", "false", "disabled", "no"].includes(flag);
+	}
+	// Default: guard ON (previous behavior). Explicitly set COMPOSER_BASH_GUARD=0 to YOLO.
+	if (isSafeModeEnabled() || isProdProfile()) {
+		return true;
+	}
+	return true;
+};
 
 function hasRiskyBashSyntax(command: string): boolean {
 	return (
@@ -528,6 +543,9 @@ const treeSitterCommandRule: ActionFirewallRule = {
 	description: "Tree-sitter based command safety analysis",
 	action: "require_approval",
 	evaluate: (ctx) => {
+		if (!isBashGuardEnabled()) {
+			return { allowed: true };
+		}
 		if (ctx.toolName !== "bash" && !isBackgroundTaskShellStart(ctx)) {
 			return { allowed: true };
 		}
