@@ -328,3 +328,47 @@ export function redirectConsoleToLogger(): void {
 		logger.debug(args.map(String).join(" "));
 	};
 }
+
+/**
+ * Redirect process.stderr writes to the structured logger.
+ * Useful in TUI mode to prevent third-party libraries from corrupting the terminal.
+ */
+export function redirectStderrToLogger(): void {
+	process.stderr.write = (chunk: unknown) => {
+		const text =
+			typeof chunk === "string"
+				? chunk
+				: chunk instanceof Buffer
+					? chunk.toString()
+					: String(chunk);
+		logger.error(text.trimEnd());
+		return true;
+	};
+}
+
+/**
+ * Wire process warning / rejection hooks into the logger so they don't hit stderr.
+ */
+export function pipeProcessEventsToLogger(): void {
+	process.on("warning", (warning) => {
+		logger.warn(
+			`${warning.name}: ${warning.message}${
+				warning.stack ? `\n${warning.stack}` : ""
+			}`,
+		);
+	});
+
+	process.on("unhandledRejection", (reason, promise) => {
+		logger.error(
+			`UnhandledRejection: ${String(reason)} (promise: ${String(promise)})`,
+		);
+	});
+
+	process.on("uncaughtException", (error) => {
+		if (error instanceof Error) {
+			logger.error(error.message, error);
+		} else {
+			logger.error(`UncaughtException: ${String(error)}`);
+		}
+	});
+}

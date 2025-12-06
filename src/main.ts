@@ -660,11 +660,16 @@ export async function main(args: string[]) {
 		(parsed.mode === "text" || parsed.mode === undefined) &&
 		parsed.command === undefined;
 	if (isLikelyInteractiveTui) {
-		const { redirectLoggerToFile, redirectConsoleToLogger } = await import(
-			"./utils/logger.js"
-		);
+		const {
+			redirectLoggerToFile,
+			redirectConsoleToLogger,
+			redirectStderrToLogger,
+			pipeProcessEventsToLogger,
+		} = await import("./utils/logger.js");
 		redirectLoggerToFile();
 		redirectConsoleToLogger();
+		redirectStderrToLogger();
+		pipeProcessEventsToLogger();
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
