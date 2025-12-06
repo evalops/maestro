@@ -22,6 +22,13 @@ vi.mock("../../../src/providers/aws-auth.js", () => ({
 		(region: string, modelId: string, streaming: boolean) =>
 			`https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(modelId)}/${streaming ? "converse-stream" : "converse"}`,
 	),
+	parseBedrockArn: vi.fn(() => null),
+	isInferenceProfile: vi.fn(() => false),
+	getBedrockStatus: vi.fn(() => ({
+		hasCredentials: true,
+		region: "us-east-1",
+		credentialSources: ["environment"],
+	})),
 }));
 
 // Import after mocking

@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildBedrockUrl,
 	getAwsRegion,
+	getBedrockStatus,
 	hasAwsCredentials,
+	isInferenceProfile,
+	parseBedrockArn,
 } from "../../src/providers/aws-auth.js";
 
 describe("AWS Auth Helpers", () => {
@@ -129,6 +132,102 @@ describe("AWS Auth Helpers", () => {
 		it("defaults to streaming when not specified", () => {
 			const url = buildBedrockUrl("us-east-1", "test-model");
 			expect(url).toContain("/converse-stream");
+		});
+	});
+
+	describe("parseBedrockArn", () => {
+		it("returns null for non-ARN model IDs", () => {
+			expect(parseBedrockArn("anthropic.claude-3-sonnet-v1")).toBeNull();
+			expect(parseBedrockArn("writer.palmyra-x5-v1:0")).toBeNull();
+		});
+
+		it("parses foundation model ARNs", () => {
+			const result = parseBedrockArn(
+				"arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-sonnet-v1",
+			);
+			expect(result).toEqual({
+				region: "us-west-2",
+				accountId: "",
+				resourceType: "foundation-model",
+				resourceId: "anthropic.claude-3-sonnet-v1",
+			});
+		});
+
+		it("parses inference profile ARNs", () => {
+			const result = parseBedrockArn(
+				"arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-3-5-sonnet-v2",
+			);
+			expect(result).toEqual({
+				region: "us-east-1",
+				accountId: "123456789012",
+				resourceType: "inference-profile",
+				resourceId: "us.anthropic.claude-3-5-sonnet-v2",
+			});
+		});
+
+		it("parses provisioned model ARNs", () => {
+			const result = parseBedrockArn(
+				"arn:aws:bedrock:eu-west-1:987654321098:provisioned-model/my-model-xyz",
+			);
+			expect(result).toEqual({
+				region: "eu-west-1",
+				accountId: "987654321098",
+				resourceType: "provisioned-model",
+				resourceId: "my-model-xyz",
+			});
+		});
+	});
+
+	describe("isInferenceProfile", () => {
+		it("returns true for US inference profiles", () => {
+			expect(isInferenceProfile("us.anthropic.claude-3-5-sonnet-v2:0")).toBe(
+				true,
+			);
+		});
+
+		it("returns true for EU inference profiles", () => {
+			expect(isInferenceProfile("eu.amazon.nova-pro-v1:0")).toBe(true);
+		});
+
+		it("returns true for APAC inference profiles", () => {
+			expect(isInferenceProfile("apac.meta.llama-3-70b-v1:0")).toBe(true);
+		});
+
+		it("returns true for global inference profiles", () => {
+			expect(isInferenceProfile("global.anthropic.claude-sonnet-4-v1:0")).toBe(
+				true,
+			);
+		});
+
+		it("returns false for regular model IDs", () => {
+			expect(isInferenceProfile("anthropic.claude-3-sonnet-v1")).toBe(false);
+			expect(isInferenceProfile("writer.palmyra-x5-v1:0")).toBe(false);
+		});
+	});
+
+	describe("getBedrockStatus", () => {
+		it("returns status with environment credentials", () => {
+			process.env.AWS_ACCESS_KEY_ID = "test-key";
+			process.env.AWS_REGION = "us-west-2";
+
+			const status = getBedrockStatus();
+			expect(status.hasCredentials).toBe(true);
+			expect(status.region).toBe("us-west-2");
+			expect(status.credentialSources).toContain("environment");
+		});
+
+		it("returns status with profile credentials", () => {
+			process.env.AWS_PROFILE = "my-profile";
+
+			const status = getBedrockStatus();
+			expect(status.hasCredentials).toBe(true);
+			expect(status.credentialSources).toContain("profile:my-profile");
+		});
+
+		it("returns empty sources when no credentials", () => {
+			const status = getBedrockStatus();
+			expect(status.hasCredentials).toBe(false);
+			expect(status.credentialSources).toHaveLength(0);
 		});
 	});
 });

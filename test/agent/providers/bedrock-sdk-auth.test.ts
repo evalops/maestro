@@ -26,6 +26,13 @@ vi.mock("../../../src/providers/aws-auth.js", () => ({
 	getAwsRegion: vi.fn(() => "us-east-1"),
 	hasAwsCredentials: vi.fn(() => true),
 	buildBedrockUrl: vi.fn(),
+	parseBedrockArn: vi.fn(() => null),
+	isInferenceProfile: vi.fn(() => false),
+	getBedrockStatus: vi.fn(() => ({
+		hasCredentials: true,
+		region: "us-east-1",
+		credentialSources: ["environment"],
+	})),
 }));
 
 import { streamBedrock } from "../../../src/agent/providers/bedrock.js";

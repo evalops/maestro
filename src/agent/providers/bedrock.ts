@@ -31,17 +31,20 @@
 
 import {
 	BedrockRuntimeClient,
+	type CachePointBlock,
 	type ContentBlock,
 	type ConversationRole,
 	ConverseStreamCommand,
 	type ConverseStreamCommandInput,
+	type GuardrailStreamConfiguration,
 	type Message,
 	type SystemContentBlock,
+	type Tool,
 	type ToolResultBlock,
 	type ToolResultContentBlock,
 } from "@aws-sdk/client-bedrock-runtime";
 import type { DocumentType } from "@smithy/types";
-import { getAwsRegion } from "../../providers/aws-auth.js";
+import { getAwsRegion, parseBedrockArn } from "../../providers/aws-auth.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	AssistantMessage,
@@ -57,8 +60,29 @@ import { sanitizeSurrogates } from "./sanitize-unicode.js";
 
 const logger = createLogger("agent:providers:bedrock");
 
+/**
+ * Guardrail configuration for Bedrock requests
+ */
+export interface BedrockGuardrailConfig {
+	/** Guardrail identifier (ID or ARN) */
+	guardrailIdentifier: string;
+	/** Guardrail version */
+	guardrailVersion: string;
+	/** Enable trace for debugging guardrail decisions */
+	trace?: "enabled" | "disabled" | "enabled_full";
+	/** Stream processing mode - sync waits for guardrail before streaming */
+	streamProcessingMode?: "sync" | "async";
+}
+
 export interface BedrockOptions extends StreamOptions {
+	/** AWS region override (auto-detected from ARN if not specified) */
 	region?: string;
+	/** Enable prompt caching for system prompt and tools (Claude/Nova models) */
+	enableCaching?: boolean;
+	/** Guardrail configuration */
+	guardrailConfig?: BedrockGuardrailConfig;
+	/** Use inference profile ID instead of model ID (for cross-region inference) */
+	inferenceProfileId?: string;
 }
 
 // Cache client instances by region
@@ -81,8 +105,20 @@ export async function* streamBedrock(
 	context: Context,
 	options: BedrockOptions,
 ): AsyncGenerator<AssistantMessageEvent, void, unknown> {
-	const region = options.region ?? getAwsRegion();
+	// Determine model ID - use inference profile if specified
+	const modelId = options.inferenceProfileId ?? model.id;
+
+	// Auto-detect region from ARN/inference profile, fallback to option or env
+	const arnInfo = parseBedrockArn(modelId);
+	const region = options.region ?? arnInfo?.region ?? getAwsRegion();
 	const client = getClient(region);
+
+	logger.debug("Bedrock request", {
+		modelId,
+		region,
+		enableCaching: options.enableCaching,
+		hasGuardrail: !!options.guardrailConfig,
+	});
 
 	// Build messages
 	const messages: Message[] = [];
@@ -182,15 +218,20 @@ export async function* streamBedrock(
 
 	// Build request input
 	const input: ConverseStreamCommandInput = {
-		modelId: model.id,
+		modelId,
 		messages,
 	};
 
-	// Add system prompt
+	// Add system prompt with optional cache point
 	if (context.systemPrompt) {
 		const systemContent: SystemContentBlock[] = [
 			{ text: sanitizeSurrogates(context.systemPrompt) },
 		];
+		// Add cache point after system prompt if caching is enabled
+		if (options.enableCaching) {
+			const cachePoint: CachePointBlock = { type: "default" };
+			systemContent.push({ cachePoint });
+		}
 		input.system = systemContent;
 	}
 
@@ -202,19 +243,39 @@ export async function* streamBedrock(
 		input.inferenceConfig.temperature = options.temperature;
 	}
 
-	// Add tools
-	if (context.tools && context.tools.length > 0) {
-		input.toolConfig = {
-			tools: context.tools.map((tool) => ({
-				toolSpec: {
-					name: tool.name,
-					description: tool.description,
-					inputSchema: {
-						json: tool.parameters,
-					},
-				},
-			})),
+	// Add guardrail config if specified
+	if (options.guardrailConfig) {
+		const guardrailConfig: GuardrailStreamConfiguration = {
+			guardrailIdentifier: options.guardrailConfig.guardrailIdentifier,
+			guardrailVersion: options.guardrailConfig.guardrailVersion,
 		};
+		if (options.guardrailConfig.trace) {
+			guardrailConfig.trace = options.guardrailConfig.trace;
+		}
+		if (options.guardrailConfig.streamProcessingMode) {
+			guardrailConfig.streamProcessingMode =
+				options.guardrailConfig.streamProcessingMode;
+		}
+		input.guardrailConfig = guardrailConfig;
+	}
+
+	// Add tools with optional cache point
+	if (context.tools && context.tools.length > 0) {
+		const tools: Tool[] = context.tools.map((tool) => ({
+			toolSpec: {
+				name: tool.name,
+				description: tool.description,
+				inputSchema: {
+					json: tool.parameters,
+				},
+			},
+		}));
+		// Add cache point after tools if caching is enabled
+		if (options.enableCaching) {
+			const cachePoint: CachePointBlock = { type: "default" };
+			tools.push({ cachePoint });
+		}
+		input.toolConfig = { tools };
 	}
 
 	// Initialize partial message

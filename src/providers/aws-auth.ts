@@ -63,3 +63,96 @@ export function buildBedrockUrl(
 	const endpoint = streaming ? "converse-stream" : "converse";
 	return `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(modelId)}/${endpoint}`;
 }
+
+/**
+ * Parsed Bedrock ARN information
+ */
+export interface BedrockArnInfo {
+	/** AWS region from the ARN */
+	region: string;
+	/** AWS account ID (empty for foundation models) */
+	accountId: string;
+	/** Resource type: foundation-model, inference-profile, provisioned-model */
+	resourceType: string;
+	/** Resource ID (model ID or profile ID) */
+	resourceId: string;
+}
+
+/**
+ * Parse a Bedrock ARN or inference profile ID to extract region and resource info.
+ *
+ * Supports:
+ * - Foundation model ARNs: arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-sonnet-v1
+ * - Inference profile ARNs: arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-3-5-sonnet-v2
+ * - Provisioned model ARNs: arn:aws:bedrock:us-east-1:123456789012:provisioned-model/abc123
+ * - Inference profile IDs: us.anthropic.claude-3-5-sonnet-20241022-v2:0 (no region extraction)
+ *
+ * @param arnOrId - ARN string or model/profile ID
+ * @returns Parsed ARN info or null if not an ARN
+ */
+export function parseBedrockArn(arnOrId: string): BedrockArnInfo | null {
+	// ARN format: arn:aws:bedrock:region:account-id:resource-type/resource-id
+	const arnMatch = arnOrId.match(
+		/^arn:aws:bedrock:([a-z0-9-]+):([0-9]*):([a-z-]+)\/(.+)$/,
+	);
+
+	if (arnMatch) {
+		return {
+			region: arnMatch[1],
+			accountId: arnMatch[2],
+			resourceType: arnMatch[3],
+			resourceId: arnMatch[4],
+		};
+	}
+
+	return null;
+}
+
+/**
+ * Check if a model ID is a cross-region inference profile.
+ *
+ * Cross-region inference profiles follow the pattern:
+ * - us.anthropic.claude-3-5-sonnet-v2:0 (US)
+ * - eu.amazon.nova-pro-v1:0 (EU)
+ * - apac.meta.llama-3-70b-v1:0 (APAC)
+ * - global.anthropic.claude-sonnet-4-v1:0 (Global)
+ */
+export function isInferenceProfile(modelId: string): boolean {
+	return /^(us|eu|apac|global)\.[a-z0-9.-]+/.test(modelId);
+}
+
+/**
+ * Get Bedrock status information for diagnostics
+ */
+export function getBedrockStatus(): {
+	hasCredentials: boolean;
+	region: string;
+	credentialSources: string[];
+} {
+	const credentialSources: string[] = [];
+
+	if (process.env.AWS_ACCESS_KEY_ID) {
+		credentialSources.push("environment");
+	}
+	if (process.env.AWS_PROFILE) {
+		credentialSources.push(`profile:${process.env.AWS_PROFILE}`);
+	}
+	if (process.env.AWS_SSO_SESSION_NAME) {
+		credentialSources.push(`sso:${process.env.AWS_SSO_SESSION_NAME}`);
+	}
+	if (process.env.AWS_WEB_IDENTITY_TOKEN_FILE) {
+		credentialSources.push("web-identity");
+	}
+	if (process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI) {
+		credentialSources.push("ecs-container");
+	}
+	if (process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI) {
+		credentialSources.push("container-full-uri");
+	}
+
+	return {
+		hasCredentials: hasAwsCredentials(),
+		region: getAwsRegion(),
+		credentialSources,
+	};
+}

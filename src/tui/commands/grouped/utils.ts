@@ -233,6 +233,7 @@ export const DIAG_SUBCOMMANDS: SubcommandDef[] = [
 	{ name: "pii", description: "PII detection patterns" },
 	{ name: "access", description: "Directory access rules" },
 	{ name: "audit", description: "Audit log (enterprise)" },
+	{ name: "bedrock", description: "AWS Bedrock status", aliases: ["aws"] },
 ];
 
 export const UI_SUBCOMMANDS: SubcommandDef[] = [
