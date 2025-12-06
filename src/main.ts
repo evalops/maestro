@@ -652,6 +652,21 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
+	// redirect all logging/console output to a file to avoid corrupting the render buffer.
+	// This must run before model loading to catch any early warnings.
+	const isLikelyInteractiveTui =
+		!parsed.messages.length &&
+		(parsed.mode === "text" || parsed.mode === undefined) &&
+		parsed.command === undefined;
+	if (isLikelyInteractiveTui) {
+		const { redirectLoggerToFile, redirectConsoleToLogger } = await import(
+			"./utils/logger.js"
+		);
+		redirectLoggerToFile();
+		redirectConsoleToLogger();
+	}
+
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 1: Environment and Telemetry Initialization
 	// ─────────────────────────────────────────────────────────────────────────────

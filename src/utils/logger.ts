@@ -295,3 +295,36 @@ export function redirectLoggerToFile(filePath?: string): void {
 		},
 	});
 }
+
+/**
+ * Redirect global console methods to the structured logger.
+ *
+ * Important: Call this only after redirectLoggerToFile() (or a custom logger
+ * output) has been configured; otherwise console.* would route back to the
+ * console-backed logger output and recurse.
+ */
+export function redirectConsoleToLogger(): void {
+	console.log = (...args: unknown[]) => {
+		logger.info(args.map(String).join(" "));
+	};
+	console.info = (...args: unknown[]) => {
+		logger.info(args.map(String).join(" "));
+	};
+	console.warn = (...args: unknown[]) => {
+		logger.warn(args.map(String).join(" "));
+	};
+	console.error = (...args: unknown[]) => {
+		// Preserve first Error stack if present
+		const maybeError = args.find((a) => a instanceof Error) as
+			| Error
+			| undefined;
+		if (maybeError) {
+			logger.error(maybeError.message, maybeError);
+		} else {
+			logger.error(args.map(String).join(" "));
+		}
+	};
+	console.debug = (...args: unknown[]) => {
+		logger.debug(args.map(String).join(" "));
+	};
+}
