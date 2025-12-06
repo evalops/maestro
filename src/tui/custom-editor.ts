@@ -99,6 +99,38 @@ export class CustomEditor extends Editor {
 			}
 		}
 
+		// Scroll keys - Page Up, Page Down, Ctrl+U, Ctrl+D
+		if (data === "\x1b[5~" && this.onShortcut) {
+			// Page Up
+			const handled = this.onShortcut("pageup");
+			if (handled) return;
+		}
+		if (data === "\x1b[6~" && this.onShortcut) {
+			// Page Down
+			const handled = this.onShortcut("pagedown");
+			if (handled) return;
+		}
+		if (data === "\x15" && this.onShortcut) {
+			// Ctrl+U - half page up (vim-style)
+			const handled = this.onShortcut("ctrl+u");
+			if (handled) return;
+		}
+		if (data === "\x04" && this.onShortcut) {
+			// Ctrl+D - half page down (vim-style)
+			const handled = this.onShortcut("ctrl+d");
+			if (handled) return;
+		}
+		if (data === "\x1b[1;5H" && this.onShortcut) {
+			// Ctrl+Home - jump to top
+			const handled = this.onShortcut("ctrl+home");
+			if (handled) return;
+		}
+		if (data === "\x1b[1;5F" && this.onShortcut) {
+			// Ctrl+End - jump to bottom
+			const handled = this.onShortcut("ctrl+end");
+			if (handled) return;
+		}
+
 		if (this.isPrintableInput(data) && this.onTyping) {
 			this.onTyping();
 		}

@@ -29,6 +29,10 @@ export {
 	type RowOptions,
 	Row,
 } from "./components/layout.js";
+export {
+	ScrollContainer,
+	type ScrollContainerOptions,
+} from "./components/scroll-container.js";
 export { ProcessTerminal, type Terminal } from "./terminal.js";
 export { type Component, Container, TUI } from "./tui.js";
 export { visibleWidth, wrapAnsiLine, wrapAnsiLines } from "./utils.js";

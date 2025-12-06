@@ -5,6 +5,7 @@ import {
 	Container,
 	Markdown,
 	ProcessTerminal,
+	ScrollContainer,
 	Spacer,
 	TUI,
 	Text,
@@ -236,6 +237,7 @@ export class TuiRenderer {
 	private startupContainer: Container;
 	private headerContainer: Container;
 	private chatContainer: Container;
+	private scrollContainer: ScrollContainer;
 	private statusContainer: Container;
 	private editor: CustomEditor;
 	private editorContainer: Container; // Container to swap between editor and selector
@@ -470,6 +472,13 @@ export class TuiRenderer {
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
+		// Wrap chatContainer in ScrollContainer for viewport scrolling
+		this.scrollContainer = new ScrollContainer(this.chatContainer, {
+			stickyScroll: true,
+			showIndicator: true,
+			reservedLines: 6, // Header, status, editor, footer
+			onScroll: () => this.ui.requestRender(),
+		});
 		this.statusContainer = new Container();
 		this.editor = new CustomEditor();
 		this.editor.onLargePaste = (event) => {
@@ -491,6 +500,46 @@ export class TuiRenderer {
 			if (handled) return true;
 			this.cycleThinkingLevel();
 			return true;
+		};
+		// Handle scroll shortcuts (PageUp, PageDown, Ctrl+U, Ctrl+D, etc.)
+		this.editor.onShortcut = (shortcut: string) => {
+			switch (shortcut) {
+				case "pageup":
+					this.scrollContainer.pageUp();
+					this.ui.requestRender();
+					return true;
+				case "pagedown":
+					this.scrollContainer.pageDown();
+					this.ui.requestRender();
+					return true;
+				case "ctrl+u":
+					this.scrollContainer.halfPageUp();
+					this.ui.requestRender();
+					return true;
+				case "ctrl+d":
+					this.scrollContainer.halfPageDown();
+					this.ui.requestRender();
+					return true;
+				case "ctrl+home":
+					this.scrollContainer.scrollToTop();
+					this.ui.requestRender();
+					return true;
+				case "ctrl+end":
+					this.scrollContainer.scrollToBottom();
+					this.ui.requestRender();
+					return true;
+				case "ctrl+k":
+					// Command palette - handled elsewhere
+					return false;
+				case "at":
+					// File search - handled elsewhere
+					return false;
+				case "k":
+					// Keep partial during interrupt - handled elsewhere
+					return false;
+				default:
+					return false;
+			}
 		};
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.slashHintBar = new SlashHintBar();
@@ -1374,8 +1423,14 @@ export class TuiRenderer {
 		}
 
 		this.ui.addChild(this.startupContainer);
-		this.ui.addChild(this.chatContainer);
+		// Use scrollContainer instead of chatContainer directly for scrolling support
+		this.ui.addChild(this.scrollContainer);
 		this.ui.addChild(this.statusContainer);
+
+		// Disable TUI's auto-clipping since ScrollContainer handles viewport
+		this.ui.setAutoClip(false);
+		// Set initial viewport height
+		this.updateScrollViewport();
 
 		this.ui.addChild(new Spacer(1));
 		this.ui.addChild(this.editorContainer); // Use container that can hold editor or selector
@@ -3465,6 +3520,49 @@ export class TuiRenderer {
 			rows: process.stdout.rows ?? 24,
 			colorLevel: chalk.level || 0,
 		};
+		// Update scroll viewport on resize
+		this.updateScrollViewport();
+	}
+
+	/**
+	 * Updates the scroll container's viewport height based on terminal size.
+	 * Called on init and resize.
+	 */
+	private updateScrollViewport(): void {
+		const rows = process.stdout.rows ?? 24;
+		this.scrollContainer.setViewportHeight(rows);
+	}
+
+	/**
+	 * Handles scroll keyboard shortcuts.
+	 * @returns true if the input was handled as a scroll command
+	 */
+	handleScrollInput(data: string): boolean {
+		return this.scrollContainer.handleInput(data);
+	}
+
+	/**
+	 * Scrolls to the bottom of the chat and re-enables sticky scroll.
+	 */
+	scrollToBottom(): void {
+		this.scrollContainer.scrollToBottom();
+		this.ui.requestRender();
+	}
+
+	/**
+	 * Scrolls up by one page.
+	 */
+	scrollPageUp(): void {
+		this.scrollContainer.pageUp();
+		this.ui.requestRender();
+	}
+
+	/**
+	 * Scrolls down by one page.
+	 */
+	scrollPageDown(): void {
+		this.scrollContainer.pageDown();
+		this.ui.requestRender();
 	}
 
 	private async runConnectivityProbe(): Promise<void> {

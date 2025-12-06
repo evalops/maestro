@@ -146,6 +146,12 @@ export class TUI extends Container {
 	/** Maximum entries per width in the wrap cache to prevent unbounded growth. */
 	private static readonly MAX_WRAP_CACHE_ENTRIES = 500;
 
+	/**
+	 * When true, disables automatic overflow clipping.
+	 * Use this when a ScrollContainer handles viewport clipping.
+	 */
+	private disableAutoClip = false;
+
 	constructor(
 		private terminal: Terminal,
 		features?: TerminalFeatures,
@@ -173,6 +179,28 @@ export class TUI extends Container {
 	 */
 	setSyncOutput(enabled: boolean): void {
 		this.syncOutput = enabled && this.features.supportsSyncOutput;
+	}
+
+	/**
+	 * Disables automatic overflow clipping, allowing a ScrollContainer
+	 * to handle viewport management instead.
+	 *
+	 * When enabled, the TUI will render all content lines without clipping,
+	 * expecting the content itself (via ScrollContainer) to manage what's visible.
+	 */
+	setAutoClip(enabled: boolean): void {
+		this.disableAutoClip = !enabled;
+	}
+
+	/**
+	 * Returns the current terminal dimensions.
+	 * Useful for ScrollContainer to know viewport size.
+	 */
+	getTerminalSize(): { columns: number; rows: number } {
+		return {
+			columns: this.terminal.columns,
+			rows: this.terminal.rows,
+		};
 	}
 
 	setFocus(component: Component | null): void {
@@ -325,7 +353,10 @@ export class TUI extends Container {
 		// When content exceeds viewport, we show only the bottom portion.
 		// This keeps the input prompt visible and prevents the terminal from
 		// scrolling our UI off-screen.
-		const isOverflowing = newLines.length > height;
+		//
+		// If disableAutoClip is true, skip this step - a ScrollContainer is
+		// handling viewport management and will only render visible lines.
+		const isOverflowing = !this.disableAutoClip && newLines.length > height;
 		if (isOverflowing) {
 			newLines = newLines.slice(-height);
 		}
