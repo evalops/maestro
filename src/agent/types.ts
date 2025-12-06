@@ -8,10 +8,12 @@ export type Api =
 	| "openai-completions"
 	| "openai-responses"
 	| "anthropic-messages"
-	| "google-generative-ai";
+	| "google-generative-ai"
+	| "bedrock-converse";
 
 export type KnownProvider =
 	| "anthropic"
+	| "bedrock"
 	| "google"
 	| "openai"
 	| "writer"

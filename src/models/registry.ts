@@ -132,6 +132,7 @@ const modelSchema = Type.Object({
 			Type.Literal("openai-responses"),
 			Type.Literal("anthropic-messages"),
 			Type.Literal("google-generative-ai"),
+			Type.Literal("bedrock-converse"),
 		]),
 	),
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),

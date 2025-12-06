@@ -117,6 +117,7 @@ export function calculateContextUsage(
 		| "openai-completions"
 		| "openai-responses"
 		| "google-generative-ai"
+		| "bedrock-converse"
 	>,
 	systemPromptTokens = 0,
 ): CompactionStats {
@@ -154,6 +155,7 @@ export function shouldAutoCompact(
 		| "openai-completions"
 		| "openai-responses"
 		| "google-generative-ai"
+		| "bedrock-converse"
 	>,
 	config: AutoCompactionConfig = getAutoCompactionConfig(),
 	systemPromptTokens = 0,
@@ -237,6 +239,7 @@ export class AutoCompactionMonitor {
 			| "openai-completions"
 			| "openai-responses"
 			| "google-generative-ai"
+			| "bedrock-converse"
 		>,
 		systemPromptTokens = 0,
 	): CompactionStats {

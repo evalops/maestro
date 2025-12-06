@@ -75,6 +75,7 @@ import type {
 } from "./action-approval.js";
 import { getStoredCredentials } from "./keys.js";
 import { streamAnthropic } from "./providers/anthropic.js";
+import { streamBedrock } from "./providers/bedrock.js";
 import { streamGoogle } from "./providers/google.js";
 import { streamOpenAI } from "./providers/openai.js";
 import { validateToolArguments } from "./providers/validation.js";
@@ -593,6 +594,12 @@ export class ProviderTransport implements AgentTransport {
 						...streamOptions,
 						thinking: cfg.reasoning,
 					},
+				);
+			} else if (model.api === "bedrock-converse") {
+				stream = streamBedrock(
+					model as Model<"bedrock-converse">,
+					currentContext,
+					streamOptions,
 				);
 			} else {
 				throw new Error(`Unsupported API: ${model.api}`);

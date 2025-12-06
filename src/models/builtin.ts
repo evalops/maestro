@@ -204,6 +204,124 @@ const WRITER_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
+// AWS Bedrock models - uses SigV4 authentication
+// https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html
+const BEDROCK_OVERLAY = {
+	bedrock: {
+		// Writer Palmyra X5 on Bedrock
+		"writer.palmyra-x5-v1:0": {
+			id: "writer.palmyra-x5-v1:0",
+			name: "Palmyra X5 (Bedrock)",
+			api: "bedrock-converse",
+			provider: "bedrock",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+			reasoning: true,
+			toolUse: true,
+			input: ["text"],
+			cost: {
+				input: 0.6,
+				output: 6.0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 1040000,
+			maxTokens: 8192,
+		} as Model<"bedrock-converse">,
+		// Claude models on Bedrock
+		"anthropic.claude-3-5-sonnet-20241022-v2:0": {
+			id: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+			name: "Claude 3.5 Sonnet v2 (Bedrock)",
+			api: "bedrock-converse",
+			provider: "bedrock",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+			reasoning: false,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 3.0,
+				output: 15.0,
+				cacheRead: 0.3,
+				cacheWrite: 3.75,
+			},
+			contextWindow: 200000,
+			maxTokens: 8192,
+		} as Model<"bedrock-converse">,
+		"anthropic.claude-3-5-haiku-20241022-v1:0": {
+			id: "anthropic.claude-3-5-haiku-20241022-v1:0",
+			name: "Claude 3.5 Haiku (Bedrock)",
+			api: "bedrock-converse",
+			provider: "bedrock",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+			reasoning: false,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 1.0,
+				output: 5.0,
+				cacheRead: 0.1,
+				cacheWrite: 1.25,
+			},
+			contextWindow: 200000,
+			maxTokens: 8192,
+		} as Model<"bedrock-converse">,
+		"anthropic.claude-3-opus-20240229-v1:0": {
+			id: "anthropic.claude-3-opus-20240229-v1:0",
+			name: "Claude 3 Opus (Bedrock)",
+			api: "bedrock-converse",
+			provider: "bedrock",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+			reasoning: false,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 15.0,
+				output: 75.0,
+				cacheRead: 1.5,
+				cacheWrite: 18.75,
+			},
+			contextWindow: 200000,
+			maxTokens: 4096,
+		} as Model<"bedrock-converse">,
+		// Meta Llama models on Bedrock
+		"meta.llama3-1-405b-instruct-v1:0": {
+			id: "meta.llama3-1-405b-instruct-v1:0",
+			name: "Llama 3.1 405B Instruct (Bedrock)",
+			api: "bedrock-converse",
+			provider: "bedrock",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: {
+				input: 5.32,
+				output: 16.0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 128000,
+			maxTokens: 4096,
+		} as Model<"bedrock-converse">,
+		"meta.llama3-1-70b-instruct-v1:0": {
+			id: "meta.llama3-1-70b-instruct-v1:0",
+			name: "Llama 3.1 70B Instruct (Bedrock)",
+			api: "bedrock-converse",
+			provider: "bedrock",
+			baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: {
+				input: 0.99,
+				output: 2.99,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 128000,
+			maxTokens: 4096,
+		} as Model<"bedrock-converse">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 // Cached converted models (built lazily on first access)
 let BUILTIN_MODELS: Record<string, Model<Api>[]> | null = null;
 const CODEX_MODEL_PATTERN = /codex/i;
@@ -232,6 +350,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		GROQ_RESPONSES_OVERLAY,
 		OPENAI_CODEX_OVERLAY,
 		WRITER_OVERLAY,
+		BEDROCK_OVERLAY,
 	];
 
 	for (const overlay of overlays) {
