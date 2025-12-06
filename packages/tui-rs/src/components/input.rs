@@ -11,18 +11,18 @@ use ratatui::{
 /// Single-line input widget
 pub struct InputWidget {
     value: String,
-    cursor: usize,
+    _cursor: usize,
     placeholder: Option<String>,
-    focused: bool,
+    _focused: bool,
 }
 
 impl InputWidget {
     pub fn new(value: impl Into<String>, cursor: usize, focused: bool) -> Self {
         Self {
             value: value.into(),
-            cursor,
+            _cursor: cursor,
             placeholder: None,
-            focused,
+            _focused: focused,
         }
     }
 

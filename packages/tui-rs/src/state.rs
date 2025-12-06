@@ -171,7 +171,12 @@ impl AppState {
                 requires_approval,
             } => {
                 // Add tool call to the last assistant message
-                if let Some(msg) = self.messages.iter_mut().rev().find(|m| m.role == MessageRole::Assistant) {
+                if let Some(msg) = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Assistant)
+                {
                     msg.tool_calls.push(ToolCallState {
                         call_id,
                         tool,

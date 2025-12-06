@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{TextStyle, StyledSpan};
+use super::{StyledSpan, TextStyle};
 
 /// A node in the render tree
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,9 +18,7 @@ pub enum RenderNode {
     },
 
     /// Styled text with multiple spans
-    StyledText {
-        spans: Vec<StyledSpan>,
-    },
+    StyledText { spans: Vec<StyledSpan> },
 
     /// Vertical layout container
     Column {

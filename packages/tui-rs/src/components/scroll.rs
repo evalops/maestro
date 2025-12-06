@@ -72,6 +72,8 @@ mod tests {
         let area = buf.area;
         render_scrollbar(&mut buf, area, 0, 20, 5);
         // Scrollbar should be rendered
-        assert!(buf.cell((0, 0)).unwrap().symbol() == "█" || buf.cell((0, 0)).unwrap().symbol() == "│");
+        assert!(
+            buf.cell((0, 0)).unwrap().symbol() == "█" || buf.cell((0, 0)).unwrap().symbol() == "│"
+        );
     }
 }

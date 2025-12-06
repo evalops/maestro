@@ -2,14 +2,14 @@
 //!
 //! Ratatui widgets that render our component tree.
 
-mod text;
-mod layout;
 mod input;
-mod scroll;
+mod layout;
 mod message;
+mod scroll;
+mod text;
 
-pub use text::{TextWidget, StyledTextWidget};
-pub use layout::{BoxWidget, column_layout, row_layout};
-pub use input::{InputWidget, EditorWidget};
+pub use input::{EditorWidget, InputWidget};
+pub use layout::{column_layout, row_layout, BoxWidget};
+pub use message::{ChatInputWidget, ChatView, MessageWidget, StatusBarWidget, ToolCallWidget};
 pub use scroll::render_scrollbar;
-pub use message::{ChatView, MessageWidget, ToolCallWidget, ChatInputWidget, StatusBarWidget};
+pub use text::{StyledTextWidget, TextWidget};

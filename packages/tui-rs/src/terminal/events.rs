@@ -131,7 +131,10 @@ mod tests {
 
     #[test]
     fn test_key_code_to_string() {
-        assert_eq!(key_code_to_string(KeyCode::Char('a')), Some("a".to_string()));
+        assert_eq!(
+            key_code_to_string(KeyCode::Char('a')),
+            Some("a".to_string())
+        );
         assert_eq!(
             key_code_to_string(KeyCode::Enter),
             Some("Enter".to_string())

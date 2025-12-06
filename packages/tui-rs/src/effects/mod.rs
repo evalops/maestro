@@ -6,4 +6,4 @@ mod shimmer;
 mod spinner;
 
 pub use shimmer::shimmer_spans;
-pub use spinner::spinner;
+pub use spinner::{braille_spinner, dot_spinner, spinner, BRAILLE_FRAMES, DOT_FRAMES};

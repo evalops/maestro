@@ -8,7 +8,9 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::components::{BoxWidget, EditorWidget, InputWidget, TextWidget, column_layout, row_layout, render_scrollbar};
+use crate::components::{
+    column_layout, render_scrollbar, row_layout, BoxWidget, EditorWidget, InputWidget, TextWidget,
+};
 use crate::protocol::{RenderNode, StyledSpan};
 
 /// Renderer that converts RenderNode tree to ratatui widgets
@@ -46,7 +48,12 @@ impl Renderer {
                 }
             }
 
-            RenderNode::Box { child, border, padding, title } => {
+            RenderNode::Box {
+                child,
+                border,
+                padding,
+                title,
+            } => {
                 let mut widget = BoxWidget::new()
                     .border(border.clone())
                     .padding(padding.clone());
@@ -67,17 +74,23 @@ impl Renderer {
                 }
             }
 
-            RenderNode::Scroll { child, offset, content_height, show_scrollbar } => {
+            RenderNode::Scroll {
+                child,
+                offset,
+                content_height,
+                show_scrollbar,
+            } => {
                 // Calculate content area (leave room for scrollbar if shown)
-                let (content_area, scrollbar_area) = if *show_scrollbar && *content_height > area.height {
-                    let content_width = area.width.saturating_sub(1);
-                    (
-                        Rect::new(area.x, area.y, content_width, area.height),
-                        Some(Rect::new(area.right() - 1, area.y, 1, area.height)),
-                    )
-                } else {
-                    (area, None)
-                };
+                let (content_area, scrollbar_area) =
+                    if *show_scrollbar && *content_height > area.height {
+                        let content_width = area.width.saturating_sub(1);
+                        (
+                            Rect::new(area.x, area.y, content_width, area.height),
+                            Some(Rect::new(area.right() - 1, area.y, 1, area.height)),
+                        )
+                    } else {
+                        (area, None)
+                    };
 
                 // Render child content
                 self.render(child, content_area, buf);
@@ -88,7 +101,12 @@ impl Renderer {
                 }
             }
 
-            RenderNode::Input { value, cursor, placeholder, focused } => {
+            RenderNode::Input {
+                value,
+                cursor,
+                placeholder,
+                focused,
+            } => {
                 let mut widget = InputWidget::new(value.clone(), *cursor, *focused);
                 if let Some(p) = placeholder {
                     widget = widget.placeholder(p.clone());
@@ -96,7 +114,12 @@ impl Renderer {
                 widget.render(area, buf);
             }
 
-            RenderNode::Editor { lines, cursor, focused, scroll_offset } => {
+            RenderNode::Editor {
+                lines,
+                cursor,
+                focused,
+                scroll_offset,
+            } => {
                 let widget = EditorWidget::new(lines.clone(), *cursor, *focused)
                     .scroll_offset(*scroll_offset);
                 widget.render(area, buf);
@@ -106,11 +129,19 @@ impl Renderer {
                 self.render_markdown(lines, area, buf);
             }
 
-            RenderNode::SelectList { items, selected, scroll_offset } => {
+            RenderNode::SelectList {
+                items,
+                selected,
+                scroll_offset,
+            } => {
                 self.render_select_list(items, *selected, *scroll_offset, area, buf);
             }
 
-            RenderNode::StatusBar { left, center: _, right } => {
+            RenderNode::StatusBar {
+                left,
+                center: _,
+                right,
+            } => {
                 self.render_status_bar(left, right, area, buf);
             }
 

@@ -2,8 +2,8 @@
 //!
 //! Handles IPC with the Node.js agent subprocess.
 
-mod protocol;
 mod process;
+mod protocol;
 
-pub use protocol::*;
 pub use process::AgentProcess;
+pub use protocol::*;

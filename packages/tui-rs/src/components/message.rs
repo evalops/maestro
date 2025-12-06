@@ -17,7 +17,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
-use crate::effects::{shimmer_spans, spinner};
+use crate::effects::{braille_spinner, shimmer_spans};
 use crate::state::{Message, MessageRole, ToolCallStatus};
 
 /// Get tool-specific icon (matching TypeScript TUI patterns)
@@ -34,16 +34,6 @@ fn get_tool_icon(tool: &str) -> &'static str {
         "webfetch" => "↯",
         "websearch" => "⌕",
         _ => "●",
-    }
-}
-
-/// Get status badge text
-fn get_status_badge(status: ToolCallStatus) -> (&'static str, Color) {
-    match status {
-        ToolCallStatus::Pending => ("[awaiting]", Color::Yellow),
-        ToolCallStatus::Running => ("[...]", Color::Blue),
-        ToolCallStatus::Completed => ("[done]", Color::Green),
-        ToolCallStatus::Failed => ("[err]", Color::Red),
     }
 }
 
@@ -141,7 +131,9 @@ impl Widget for MessageWidget<'_> {
                 MessageRole::User => {
                     header_spans.push(Span::styled(
                         "You",
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
                 MessageRole::Assistant => {
@@ -166,7 +158,14 @@ impl Widget for MessageWidget<'_> {
 
             let header = Line::from(header_spans);
             let header_para = Paragraph::new(header);
-            header_para.render(Rect { y, height: 1, ..area }, buf);
+            header_para.render(
+                Rect {
+                    y,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
             y += 1;
         }
 
@@ -183,7 +182,15 @@ impl Widget for MessageWidget<'_> {
                 ),
             ]);
             let header_para = Paragraph::new(thinking_header);
-            header_para.render(Rect { x: area.x, y, width: area.width, height: 1 }, buf);
+            header_para.render(
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+                buf,
+            );
             y += 1;
 
             // Show first 2 lines of thinking as preview
@@ -201,10 +208,23 @@ impl Widget for MessageWidget<'_> {
                     };
                     let preview = Line::from(vec![
                         Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(truncated, Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                        Span::styled(
+                            truncated,
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
                     ]);
                     let preview_para = Paragraph::new(preview);
-                    preview_para.render(Rect { x: area.x, y, width: area.width, height: 1 }, buf);
+                    preview_para.render(
+                        Rect {
+                            x: area.x,
+                            y,
+                            width: area.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
                     y += 1;
                 }
             }
@@ -261,13 +281,21 @@ impl Widget for MessageWidget<'_> {
             // Bullet/spinner
             match tool_call.status {
                 ToolCallStatus::Running => {
-                    tool_spans.push(spinner(Some(Instant::now()), true));
+                    tool_spans.push(braille_spinner(Some(Instant::now())));
                 }
                 ToolCallStatus::Completed => {
-                    tool_spans.push(Span::styled("*", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+                    tool_spans.push(Span::styled(
+                        "*",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ));
                 }
                 ToolCallStatus::Failed => {
-                    tool_spans.push(Span::styled("*", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+                    tool_spans.push(Span::styled(
+                        "*",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ));
                 }
                 ToolCallStatus::Pending => {
                     tool_spans.push(Span::styled("*", Style::default().fg(Color::Yellow)));
@@ -282,7 +310,10 @@ impl Widget for MessageWidget<'_> {
                 ToolCallStatus::Completed | ToolCallStatus::Failed => "Ran",
                 ToolCallStatus::Pending => "Pending",
             };
-            tool_spans.push(Span::styled(verb, Style::default().add_modifier(Modifier::BOLD)));
+            tool_spans.push(Span::styled(
+                verb,
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
             tool_spans.push(Span::raw(" "));
 
             // Icon and tool name
@@ -351,63 +382,51 @@ impl Widget for MessageWidget<'_> {
 /// Get a preview of tool arguments based on tool type
 fn get_tool_args_preview(tool: &str, args: &serde_json::Value, max_len: usize) -> String {
     let preview = match tool.to_lowercase().as_str() {
-        "bash" => {
-            args.get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "read" => {
-            args.get("file_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "write" => {
-            args.get("file_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "edit" => {
-            args.get("file_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "glob" => {
-            args.get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "grep" => {
-            args.get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "task" => {
-            args.get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "webfetch" | "websearch" => {
-            args.get("url")
-                .or_else(|| args.get("query"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
+        "bash" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "read" => args
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "write" => args
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "edit" => args
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "glob" => args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "grep" => args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "task" => args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "webfetch" | "websearch" => args
+            .get("url")
+            .or_else(|| args.get("query"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         _ => {
             // Generic: show first string value
             args.as_object()
-                .and_then(|obj| {
-                    obj.values()
-                        .find_map(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
+                .and_then(|obj| obj.values().find_map(|v| v.as_str()).map(|s| s.to_string()))
                 .unwrap_or_default()
         }
     };
@@ -496,17 +515,23 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// Widget for the chat input area
 pub struct ChatInputWidget<'a> {
     input: &'a str,
-    cursor: usize,
+    _cursor: usize,
     placeholder: &'a str,
     busy: bool,
     elapsed_secs: u64,
 }
 
 impl<'a> ChatInputWidget<'a> {
-    pub fn new(input: &'a str, cursor: usize, placeholder: &'a str, busy: bool, elapsed_secs: u64) -> Self {
+    pub fn new(
+        input: &'a str,
+        cursor: usize,
+        placeholder: &'a str,
+        busy: bool,
+        elapsed_secs: u64,
+    ) -> Self {
         Self {
             input,
-            cursor,
+            _cursor: cursor,
             placeholder,
             busy,
             elapsed_secs,
@@ -629,9 +654,23 @@ impl Widget for StatusBarWidget<'_> {
             }
         }
 
+        // Terminal size on the right side
+        let size_str = if let Ok((cols, rows)) = crate::terminal::size() {
+            format!(" {}x{}", cols, rows)
+        } else {
+            String::new()
+        };
+
         let line = Line::from(spans);
         let para = Paragraph::new(line).style(Style::default().fg(Color::DarkGray));
         para.render(area, buf);
+
+        // Render size on the right
+        if !size_str.is_empty() {
+            let size_x = area.right().saturating_sub(size_str.len() as u16);
+            let size_span = Span::styled(&size_str, Style::default().fg(Color::DarkGray));
+            buf.set_span(size_x, area.y, &size_span, size_str.len() as u16);
+        }
     }
 }
 
@@ -654,9 +693,9 @@ impl Widget for ChatView<'_> {
 
         // Layout: messages area, input (3 lines), status bar (1 line)
         let chunks = Layout::vertical([
-            Constraint::Min(0),        // Messages
-            Constraint::Length(3),     // Input
-            Constraint::Length(1),     // Status
+            Constraint::Min(0),    // Messages
+            Constraint::Length(3), // Input
+            Constraint::Length(1), // Status
         ])
         .split(area);
 
@@ -687,7 +726,9 @@ impl Widget for ChatView<'_> {
 impl ChatView<'_> {
     fn render_messages(&self, area: Rect, buf: &mut Buffer) {
         // Filter to only renderable messages
-        let renderable_messages: Vec<&Message> = self.state.messages
+        let renderable_messages: Vec<&Message> = self
+            .state
+            .messages
             .iter()
             .filter(|m| should_render_message(m))
             .collect();

@@ -84,14 +84,11 @@ impl App {
         let node_path = std::env::var("NODE_PATH").unwrap_or_else(|_| "node".to_string());
 
         // Try to find the composer entry point
-        let script_path = std::env::var("COMPOSER_AGENT_SCRIPT")
-            .unwrap_or_else(|_| {
-                // Default: look for local development path
-                let cwd = std::env::current_dir().unwrap_or_default();
-                cwd.join("dist/cli.js")
-                    .to_string_lossy()
-                    .to_string()
-            });
+        let script_path = std::env::var("COMPOSER_AGENT_SCRIPT").unwrap_or_else(|_| {
+            // Default: look for local development path
+            let cwd = std::env::current_dir().unwrap_or_default();
+            cwd.join("dist/cli.js").to_string_lossy().to_string()
+        });
 
         // Check if script exists
         if !std::path::Path::new(&script_path).exists() {
@@ -272,7 +269,8 @@ impl App {
             if !self.state.busy {
                 // Input is at bottom - 3 lines for input box, 1 for status
                 // Cursor inside input box (with 1 char padding for border)
-                let cursor_x = area.x + 1 + (self.state.cursor as u16).min(area.width.saturating_sub(3));
+                let cursor_x =
+                    area.x + 1 + (self.state.cursor as u16).min(area.width.saturating_sub(3));
                 let cursor_y = area.height.saturating_sub(3);
                 frame.set_cursor_position((cursor_x, cursor_y));
             }
