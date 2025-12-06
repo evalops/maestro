@@ -21,6 +21,8 @@ export class WelcomeAnimation extends Container {
 		this.onRenderRequest = onRenderRequest;
 		this.textComponent = new Text("", 0, 0);
 		this.addChild(this.textComponent);
+		// Render first frame immediately so there's content before the timer fires
+		this.updateFrame();
 		this.startAnimation();
 	}
 
