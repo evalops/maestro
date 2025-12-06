@@ -2,10 +2,10 @@
 //!
 //! This is the main entry point for the native Rust TUI.
 //! Supports two modes:
-//! - Native agent: Pure Rust implementation that talks directly to AI providers
-//! - Node.js agent: Subprocess for legacy compatibility
+//! - Native agent: Pure Rust implementation that talks directly to AI providers (default)
+//! - Node.js agent: Subprocess for legacy compatibility (use --legacy flag)
 //!
-//! The native agent is used by default when ANTHROPIC_API_KEY or OPENAI_API_KEY is set.
+//! The native agent is always the default. Use COMPOSER_LEGACY=1 to force Node.js mode.
 
 use std::sync::Arc;
 
@@ -100,12 +100,14 @@ impl App {
             .unwrap_or_else(|_| ".".to_string());
 
         // Determine which backend to use
-        let has_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok()
-            || std::env::var("OPENAI_API_KEY").is_ok();
-        let backend = if has_api_key {
-            AgentBackend::Native
-        } else {
+        // Native is always the default; use COMPOSER_LEGACY=1 to force Node.js
+        let use_legacy = std::env::var("COMPOSER_LEGACY")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let backend = if use_legacy {
             AgentBackend::NodeJs
+        } else {
+            AgentBackend::Native
         };
 
         Ok(Self {
