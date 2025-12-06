@@ -1,65 +1,45 @@
 /**
- * AWS Authentication - SigV4 Request Signing for Bedrock
+ * AWS Authentication Helpers for Bedrock
  *
- * This module provides AWS Signature Version 4 signing for HTTP requests
- * to AWS Bedrock. It supports multiple credential sources:
- *
- * 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
- * 2. AWS profiles (~/.aws/credentials)
- * 3. Bearer token authentication (AWS_BEARER_TOKEN_BEDROCK)
+ * This module provides helper functions for AWS credential detection and
+ * region configuration. The actual authentication is handled by the
+ * AWS SDK's default credential provider chain.
  *
  * @module providers/aws-auth
  */
 
-import { Sha256 } from "@aws-crypto/sha256-js";
-import { HttpRequest } from "@smithy/protocol-http";
-import { SignatureV4 } from "@smithy/signature-v4";
-import { createLogger } from "../utils/logger.js";
-
-const logger = createLogger("providers:aws-auth");
-
-export interface AwsCredentials {
-	accessKeyId: string;
-	secretAccessKey: string;
-	sessionToken?: string;
-}
-
-export interface AwsAuthConfig {
-	region: string;
-	service: string;
-	credentials?: AwsCredentials;
-	bearerToken?: string;
-}
-
 /**
- * Resolve AWS credentials from environment or profile
- */
-export function resolveAwsCredentials(): AwsCredentials | null {
-	const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
-	const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
-	const sessionToken = process.env.AWS_SESSION_TOKEN;
-
-	if (accessKeyId && secretAccessKey) {
-		return {
-			accessKeyId,
-			secretAccessKey,
-			sessionToken,
-		};
-	}
-
-	// Could extend to read from ~/.aws/credentials using AWS_PROFILE
-	// For now, we rely on environment variables
-	return null;
-}
-
-/**
- * Check if AWS credentials are available
+ * Check if AWS credentials are likely available via the SDK's default provider chain.
+ *
+ * The SDK automatically resolves credentials in this order:
+ * 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+ * 2. SSO credentials (AWS_SSO_* / sso-session in config)
+ * 3. INI files (~/.aws/credentials, ~/.aws/config) via AWS_PROFILE
+ * 4. Credential process (credential_process in config)
+ * 5. Web identity token (AWS_WEB_IDENTITY_TOKEN_FILE for EKS)
+ * 6. Instance/container metadata (EC2 IMDS, ECS task role)
+ *
+ * This check is a heuristic - actual credential resolution happens at runtime.
+ * We check for env vars that indicate credentials are likely available.
+ *
+ * Note: We cannot detect EC2/ECS metadata credentials without making network calls,
+ * so those will only be discovered at runtime when the SDK tries to use them.
  */
 export function hasAwsCredentials(): boolean {
 	return !!(
-		process.env.AWS_ACCESS_KEY_ID ||
-		process.env.AWS_PROFILE ||
-		process.env.AWS_BEARER_TOKEN_BEDROCK
+		// Environment credentials
+		(
+			process.env.AWS_ACCESS_KEY_ID ||
+			// Profile-based credentials (INI files or SSO)
+			process.env.AWS_PROFILE ||
+			// SSO session
+			process.env.AWS_SSO_SESSION_NAME ||
+			// Web identity token (EKS IRSA)
+			process.env.AWS_WEB_IDENTITY_TOKEN_FILE ||
+			// Container credentials (ECS task role)
+			process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ||
+			process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI
+		)
 	);
 }
 
@@ -73,79 +53,7 @@ export function getAwsRegion(): string {
 }
 
 /**
- * Sign an HTTP request using AWS Signature Version 4
- */
-export async function signAwsRequest(
-	request: {
-		method: string;
-		url: string;
-		headers: Record<string, string>;
-		body?: string;
-	},
-	config: AwsAuthConfig,
-): Promise<Record<string, string>> {
-	// If bearer token is provided, use that instead of SigV4
-	if (config.bearerToken) {
-		return {
-			...request.headers,
-			Authorization: `Bearer ${config.bearerToken}`,
-		};
-	}
-
-	const credentials = config.credentials ?? resolveAwsCredentials();
-	if (!credentials) {
-		throw new Error(
-			"AWS credentials not found. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, " +
-				"or use AWS_BEARER_TOKEN_BEDROCK for bearer token authentication.",
-		);
-	}
-
-	const url = new URL(request.url);
-
-	// Create the HTTP request object for signing
-	const httpRequest = new HttpRequest({
-		method: request.method,
-		protocol: url.protocol,
-		hostname: url.hostname,
-		port: url.port ? Number.parseInt(url.port, 10) : undefined,
-		path: url.pathname + url.search,
-		headers: {
-			...request.headers,
-			host: url.host,
-		},
-		body: request.body,
-	});
-
-	// Create the signer
-	const signer = new SignatureV4({
-		credentials,
-		region: config.region,
-		service: config.service,
-		sha256: Sha256,
-	});
-
-	// Sign the request
-	const signedRequest = await signer.sign(httpRequest);
-
-	// Extract signed headers
-	const signedHeaders: Record<string, string> = {};
-	const headers = signedRequest.headers as Record<
-		string,
-		string | string[] | undefined
-	>;
-	for (const [key, value] of Object.entries(headers)) {
-		if (typeof value === "string") {
-			signedHeaders[key] = value;
-		} else if (Array.isArray(value)) {
-			signedHeaders[key] = value.join(", ");
-		}
-	}
-
-	return signedHeaders;
-}
-
-/**
- * Build Bedrock runtime URL for a model
+ * Build Bedrock runtime URL for a model (used for display/logging only)
  */
 export function buildBedrockUrl(
 	region: string,

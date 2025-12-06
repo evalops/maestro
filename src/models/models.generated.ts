@@ -17761,6 +17761,27 @@ export const MODELS = {
       contextWindow: 128000,
       maxTokens: 16384
     },
+    "gpt-5.1-codex-max": {
+      id: "gpt-5.1-codex-max",
+      name: "GPT-5.1 Codex Max",
+      api: "openai-completions" as const,
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 1.25,
+        output: 10,
+        cacheRead: 0.125,
+        cacheWrite: 0
+      },
+      contextWindow: 400000,
+      maxTokens: 128000
+    },
     o3: {
       id: "o3",
       name: "o3",
@@ -23618,30 +23639,9 @@ export const MODELS = {
     }
   },
   "sap-ai-core": {
-    "gpt-4o": {
-      id: "gpt-4o",
-      name: "GPT-4o",
-      api: "openai-completions" as const,
-      provider: "sap-ai-core",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 2.5,
-        output: 10,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 4096
-    },
-    "claude-3-5-sonnet": {
-      id: "claude-3-5-sonnet",
-      name: "Claude Sonnet 3.5",
+    "anthropic--claude-3.5-sonnet": {
+      id: "anthropic--claude-3.5-sonnet",
+      name: "anthropic--claude-3.5-sonnet",
       api: "openai-completions" as const,
       provider: "sap-ai-core",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -23660,9 +23660,51 @@ export const MODELS = {
       contextWindow: 200000,
       maxTokens: 8192
     },
-    "gemini-1.5-pro": {
-      id: "gemini-1.5-pro",
-      name: "Gemini 1.5 Pro",
+    "anthropic--claude-4-opus": {
+      id: "anthropic--claude-4-opus",
+      name: "anthropic--claude-4-opus",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 15,
+        output: 75,
+        cacheRead: 1.5,
+        cacheWrite: 18.75
+      },
+      contextWindow: 200000,
+      maxTokens: 32000
+    },
+    "gemini-2.5-flash": {
+      id: "gemini-2.5-flash",
+      name: "gemini-2.5-flash",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 0.3,
+        output: 2.5,
+        cacheRead: 0.075,
+        cacheWrite: 0
+      },
+      contextWindow: 1048576,
+      maxTokens: 65536
+    },
+    "anthropic--claude-3-haiku": {
+      id: "anthropic--claude-3-haiku",
+      name: "anthropic--claude-3-haiku",
       api: "openai-completions" as const,
       provider: "sap-ai-core",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -23673,13 +23715,202 @@ export const MODELS = {
         "image"
       ],
       cost: {
-        input: 1.25,
-        output: 5,
+        input: 0.25,
+        output: 1.25,
+        cacheRead: 0.03,
+        cacheWrite: 0.3
+      },
+      contextWindow: 200000,
+      maxTokens: 4096
+    },
+    "anthropic--claude-3-sonnet": {
+      id: "anthropic--claude-3-sonnet",
+      name: "anthropic--claude-3-sonnet",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 3,
+        output: 15,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 2000000,
-      maxTokens: 8192
+      contextWindow: 200000,
+      maxTokens: 4096
+    },
+    "gpt-5-nano": {
+      id: "gpt-5-nano",
+      name: "gpt-5-nano",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 0.05,
+        output: 0.4,
+        cacheRead: 0.01,
+        cacheWrite: 0
+      },
+      contextWindow: 400000,
+      maxTokens: 128000
+    },
+    "anthropic--claude-3.7-sonnet": {
+      id: "anthropic--claude-3.7-sonnet",
+      name: "anthropic--claude-3.7-sonnet",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 3,
+        output: 15,
+        cacheRead: 0.3,
+        cacheWrite: 3.75
+      },
+      contextWindow: 200000,
+      maxTokens: 64000
+    },
+    "gpt-5-mini": {
+      id: "gpt-5-mini",
+      name: "gpt-5-mini",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 0.25,
+        output: 2,
+        cacheRead: 0.03,
+        cacheWrite: 0
+      },
+      contextWindow: 400000,
+      maxTokens: 128000
+    },
+    "anthropic--claude-4.5-sonnet": {
+      id: "anthropic--claude-4.5-sonnet",
+      name: "anthropic--claude-4.5-sonnet",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 3,
+        output: 15,
+        cacheRead: 0.3,
+        cacheWrite: 3.75
+      },
+      contextWindow: 200000,
+      maxTokens: 64000
+    },
+    "gemini-2.5-pro": {
+      id: "gemini-2.5-pro",
+      name: "gemini-2.5-pro",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 1.25,
+        output: 10,
+        cacheRead: 0.31,
+        cacheWrite: 0
+      },
+      contextWindow: 1048576,
+      maxTokens: 65536
+    },
+    "anthropic--claude-3-opus": {
+      id: "anthropic--claude-3-opus",
+      name: "anthropic--claude-3-opus",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 15,
+        output: 75,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 200000,
+      maxTokens: 4096
+    },
+    "anthropic--claude-4-sonnet": {
+      id: "anthropic--claude-4-sonnet",
+      name: "anthropic--claude-4-sonnet",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 3,
+        output: 15,
+        cacheRead: 0.3,
+        cacheWrite: 3.75
+      },
+      contextWindow: 200000,
+      maxTokens: 64000
+    },
+    "gpt-5": {
+      id: "gpt-5",
+      name: "gpt-5",
+      api: "openai-completions" as const,
+      provider: "sap-ai-core",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text",
+        "image"
+      ],
+      cost: {
+        input: 1.25,
+        output: 10,
+        cacheRead: 0.13,
+        cacheWrite: 0
+      },
+      contextWindow: 400000,
+      maxTokens: 128000
     }
   },
   anthropic: {

@@ -1,61 +1,47 @@
 /**
  * AWS Bedrock Provider - Converse API Integration
  *
- * This module implements streaming communication with AWS Bedrock's Converse API.
+ * This module implements streaming communication with AWS Bedrock's Converse API
+ * using the official AWS SDK (@aws-sdk/client-bedrock-runtime).
+ *
  * It supports all models available through Bedrock including Claude, Llama, Mistral,
  * and third-party models like Writer Palmyra.
  *
- * ## API Endpoint
- *
- * Bedrock uses region-specific endpoints:
- * `https://bedrock-runtime.{region}.amazonaws.com/model/{modelId}/converse-stream`
- *
  * ## Authentication
  *
- * Requests are signed using AWS Signature Version 4 (SigV4). Credentials can be
- * provided via:
+ * The SDK automatically handles credential resolution via the standard AWS
+ * credential provider chain:
  * - Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
- * - AWS profiles
- * - Bearer tokens (AWS_BEARER_TOKEN_BEDROCK)
+ * - Shared credentials file (~/.aws/credentials)
+ * - IAM roles for EC2/ECS/Lambda
+ * - Web identity tokens (EKS)
  *
  * ## Streaming Architecture
  *
- * Bedrock uses a binary event stream format with typed events:
- *
- * ```
- * messageStart -> contentBlockStart -> contentBlockDelta* -> contentBlockStop -> messageStop -> metadata
- * ```
- *
- * Events are encoded as length-prefixed binary frames with JSON payloads.
- *
- * ## Tool Calling
- *
- * Tools are specified in the `toolConfig` field:
- *
- * ```json
- * {
- *   "toolConfig": {
- *     "tools": [{
- *       "toolSpec": {
- *         "name": "read_file",
- *         "description": "Reads a file",
- *         "inputSchema": { "json": {...} }
- *       }
- *     }]
- *   }
- * }
- * ```
+ * Uses ConverseStreamCommand which returns an async iterator of events:
+ * - messageStart: Start of assistant message
+ * - contentBlockStart: Start of text or tool use block
+ * - contentBlockDelta: Incremental content updates
+ * - contentBlockStop: End of content block
+ * - messageStop: End of message with stop reason
+ * - metadata: Token usage and metrics
  *
  * @module agent/providers/bedrock
  */
 
 import {
-	type AwsCredentials,
-	buildBedrockUrl,
-	getAwsRegion,
-	resolveAwsCredentials,
-	signAwsRequest,
-} from "../../providers/aws-auth.js";
+	BedrockRuntimeClient,
+	type ContentBlock,
+	type ConversationRole,
+	ConverseStreamCommand,
+	type ConverseStreamCommandInput,
+	type Message,
+	type SystemContentBlock,
+	type ToolResultBlock,
+	type ToolResultContentBlock,
+} from "@aws-sdk/client-bedrock-runtime";
+import type { DocumentType } from "@smithy/types";
+import { getAwsRegion } from "../../providers/aws-auth.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	AssistantMessage,
@@ -63,10 +49,8 @@ import type {
 	Context,
 	Model,
 	StreamOptions,
-	TextContent,
 	ThinkingContent,
 	ToolCall,
-	ToolResultMessage,
 } from "../types.js";
 import { parseStreamingJson } from "./json-parse.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
@@ -75,216 +59,18 @@ const logger = createLogger("agent:providers:bedrock");
 
 export interface BedrockOptions extends StreamOptions {
 	region?: string;
-	credentials?: AwsCredentials;
 }
 
-// Bedrock Converse API Types
+// Cache client instances by region
+const clientCache = new Map<string, BedrockRuntimeClient>();
 
-interface BedrockTextContent {
-	text: string;
-}
-
-interface BedrockImageContent {
-	image: {
-		format: "png" | "jpeg" | "gif" | "webp";
-		source: {
-			bytes: string; // base64
-		};
-	};
-}
-
-interface BedrockToolUseContent {
-	toolUse: {
-		toolUseId: string;
-		name: string;
-		input: Record<string, unknown>;
-	};
-}
-
-interface BedrockToolResultContent {
-	toolResult: {
-		toolUseId: string;
-		content: Array<{ text?: string; json?: unknown }>;
-		status?: "success" | "error";
-	};
-}
-
-type BedrockContentBlock =
-	| BedrockTextContent
-	| BedrockImageContent
-	| BedrockToolUseContent
-	| BedrockToolResultContent;
-
-interface BedrockMessage {
-	role: "user" | "assistant";
-	content: BedrockContentBlock[];
-}
-
-interface BedrockToolSpec {
-	toolSpec: {
-		name: string;
-		description: string;
-		inputSchema: {
-			json: unknown;
-		};
-	};
-}
-
-interface BedrockRequestBody {
-	messages: BedrockMessage[];
-	system?: Array<{ text: string }>;
-	inferenceConfig?: {
-		maxTokens?: number;
-		temperature?: number;
-		topP?: number;
-		stopSequences?: string[];
-	};
-	toolConfig?: {
-		tools: BedrockToolSpec[];
-		toolChoice?:
-			| { auto: object }
-			| { any: object }
-			| { tool: { name: string } };
-	};
-}
-
-// Bedrock Streaming Event Types
-
-interface BedrockMessageStartEvent {
-	messageStart: {
-		role: string;
-	};
-}
-
-interface BedrockContentBlockStartEvent {
-	contentBlockStart: {
-		contentBlockIndex: number;
-		start?: {
-			toolUse?: {
-				toolUseId: string;
-				name: string;
-			};
-		};
-	};
-}
-
-interface BedrockContentBlockDeltaEvent {
-	contentBlockDelta: {
-		contentBlockIndex: number;
-		delta: {
-			text?: string;
-			toolUse?: {
-				input: string; // JSON string chunk
-			};
-			reasoningContent?: {
-				text: string;
-			};
-		};
-	};
-}
-
-interface BedrockContentBlockStopEvent {
-	contentBlockStop: {
-		contentBlockIndex: number;
-	};
-}
-
-interface BedrockMessageStopEvent {
-	messageStop: {
-		stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
-		additionalModelResponseFields?: unknown;
-	};
-}
-
-interface BedrockMetadataEvent {
-	metadata: {
-		usage: {
-			inputTokens: number;
-			outputTokens: number;
-			totalTokens: number;
-			cacheReadInputTokens?: number;
-			cacheWriteInputTokens?: number;
-		};
-		metrics?: {
-			latencyMs: number;
-		};
-	};
-}
-
-type BedrockStreamEvent =
-	| BedrockMessageStartEvent
-	| BedrockContentBlockStartEvent
-	| BedrockContentBlockDeltaEvent
-	| BedrockContentBlockStopEvent
-	| BedrockMessageStopEvent
-	| BedrockMetadataEvent;
-
-/**
- * Parse Bedrock's binary event stream format
- *
- * Bedrock uses AWS's event stream encoding:
- * - 4 bytes: total message length
- * - 4 bytes: headers length
- * - headers (variable)
- * - payload (JSON)
- * - 4 bytes: message CRC
- */
-async function* parseBedrockEventStream(
-	reader: ReadableStreamDefaultReader<Uint8Array>,
-): AsyncGenerator<BedrockStreamEvent, void, unknown> {
-	let buffer = new Uint8Array(0);
-
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-
-		// Append new data to buffer
-		const newBuffer = new Uint8Array(buffer.length + value.length);
-		newBuffer.set(buffer);
-		newBuffer.set(value, buffer.length);
-		buffer = newBuffer;
-
-		// Try to parse complete messages
-		while (buffer.length >= 16) {
-			// Minimum message size
-			const view = new DataView(
-				buffer.buffer,
-				buffer.byteOffset,
-				buffer.length,
-			);
-
-			// Read prelude (8 bytes)
-			const totalLength = view.getUint32(0, false); // big-endian
-			const headersLength = view.getUint32(4, false);
-
-			if (buffer.length < totalLength) {
-				// Need more data
-				break;
-			}
-
-			// Extract headers and payload
-			const headersEnd = 12 + headersLength; // 8 prelude + 4 prelude CRC
-			const payloadEnd = totalLength - 4; // Exclude message CRC
-
-			if (payloadEnd > headersEnd) {
-				const payloadBytes = buffer.slice(headersEnd, payloadEnd);
-				const payloadText = new TextDecoder().decode(payloadBytes);
-
-				try {
-					const event = JSON.parse(payloadText) as BedrockStreamEvent;
-					yield event;
-				} catch (e) {
-					logger.warn("Failed to parse Bedrock event", {
-						error: e instanceof Error ? e.message : String(e),
-						payload: payloadText.slice(0, 200),
-					});
-				}
-			}
-
-			// Remove processed message from buffer
-			buffer = buffer.slice(totalLength);
-		}
+function getClient(region: string): BedrockRuntimeClient {
+	let client = clientCache.get(region);
+	if (!client) {
+		client = new BedrockRuntimeClient({ region });
+		clientCache.set(region, client);
 	}
+	return client;
 }
 
 /**
@@ -296,22 +82,14 @@ export async function* streamBedrock(
 	options: BedrockOptions,
 ): AsyncGenerator<AssistantMessageEvent, void, unknown> {
 	const region = options.region ?? getAwsRegion();
-	const credentials = options.credentials ?? resolveAwsCredentials();
-	const bearerToken = process.env.AWS_BEARER_TOKEN_BEDROCK;
-
-	if (!credentials && !bearerToken) {
-		throw new Error(
-			"AWS credentials not found for Bedrock. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, " +
-				"or use AWS_BEARER_TOKEN_BEDROCK for bearer token authentication.",
-		);
-	}
+	const client = getClient(region);
 
 	// Build messages
-	const messages: BedrockMessage[] = [];
+	const messages: Message[] = [];
 
 	for (const msg of context.messages) {
 		if (msg.role === "user") {
-			const content: BedrockContentBlock[] = [];
+			const content: ContentBlock[] = [];
 			if (typeof msg.content === "string") {
 				content.push({ text: sanitizeSurrogates(msg.content) });
 			} else {
@@ -329,17 +107,17 @@ export async function* streamBedrock(
 						content.push({
 							image: {
 								format,
-								source: { bytes: c.data },
+								source: { bytes: Buffer.from(c.data, "base64") },
 							},
 						});
 					}
 				}
 			}
 			if (content.length > 0) {
-				messages.push({ role: "user", content });
+				messages.push({ role: "user" as ConversationRole, content });
 			}
 		} else if (msg.role === "assistant") {
-			const content: BedrockContentBlock[] = [];
+			const content: ContentBlock[] = [];
 			for (const c of msg.content) {
 				if (c.type === "text") {
 					content.push({ text: sanitizeSurrogates(c.text) });
@@ -348,75 +126,85 @@ export async function* streamBedrock(
 						toolUse: {
 							toolUseId: c.id,
 							name: c.name,
-							input: c.arguments,
+							input: c.arguments as DocumentType,
 						},
 					});
 				}
 			}
 			if (content.length > 0) {
-				messages.push({ role: "assistant", content });
+				messages.push({ role: "assistant" as ConversationRole, content });
 			}
 		} else if (msg.role === "toolResult") {
 			// Tool results are sent as user messages in Bedrock
-			const resultContent: Array<{ text?: string; json?: unknown }> = [];
+			const resultContent: ToolResultContentBlock[] = [];
 			if (typeof msg.content === "string") {
 				resultContent.push({ text: msg.content });
 			} else {
 				for (const c of msg.content) {
 					if (c.type === "text") {
 						resultContent.push({ text: c.text });
+					} else if (c.type === "image") {
+						// Extract format from mimeType (e.g., "image/png" -> "png")
+						const formatMatch = c.mimeType.match(/image\/(png|jpeg|gif|webp)/);
+						const format = (formatMatch?.[1] ?? "png") as
+							| "png"
+							| "jpeg"
+							| "gif"
+							| "webp";
+						resultContent.push({
+							image: {
+								format,
+								source: { bytes: Buffer.from(c.data, "base64") },
+							},
+						});
 					}
 				}
 			}
 
+			const toolResult: ToolResultBlock = {
+				toolUseId: msg.toolCallId,
+				content: resultContent,
+				status: msg.isError ? "error" : "success",
+			};
+
 			// Check if the last message is already a user message with tool results
 			const lastMsg = messages[messages.length - 1];
-			if (lastMsg?.role === "user") {
-				lastMsg.content.push({
-					toolResult: {
-						toolUseId: msg.toolCallId,
-						content: resultContent,
-						status: msg.isError ? "error" : "success",
-					},
-				});
+			if (lastMsg?.role === "user" && lastMsg.content) {
+				lastMsg.content.push({ toolResult });
 			} else {
 				messages.push({
-					role: "user",
-					content: [
-						{
-							toolResult: {
-								toolUseId: msg.toolCallId,
-								content: resultContent,
-								status: msg.isError ? "error" : "success",
-							},
-						},
-					],
+					role: "user" as ConversationRole,
+					content: [{ toolResult }],
 				});
 			}
 		}
 	}
 
-	// Build request body
-	const requestBody: BedrockRequestBody = {
+	// Build request input
+	const input: ConverseStreamCommandInput = {
+		modelId: model.id,
 		messages,
 	};
 
 	// Add system prompt
 	if (context.systemPrompt) {
-		requestBody.system = [{ text: sanitizeSurrogates(context.systemPrompt) }];
+		const systemContent: SystemContentBlock[] = [
+			{ text: sanitizeSurrogates(context.systemPrompt) },
+		];
+		input.system = systemContent;
 	}
 
 	// Add inference config
-	requestBody.inferenceConfig = {
+	input.inferenceConfig = {
 		maxTokens: options.maxTokens ?? model.maxTokens,
 	};
 	if (options.temperature !== undefined) {
-		requestBody.inferenceConfig.temperature = options.temperature;
+		input.inferenceConfig.temperature = options.temperature;
 	}
 
 	// Add tools
 	if (context.tools && context.tools.length > 0) {
-		requestBody.toolConfig = {
+		input.toolConfig = {
 			tools: context.tools.map((tool) => ({
 				toolSpec: {
 					name: tool.name,
@@ -427,47 +215,6 @@ export async function* streamBedrock(
 				},
 			})),
 		};
-	}
-
-	const url = buildBedrockUrl(region, model.id, true);
-
-	// Sign the request
-	const baseHeaders: Record<string, string> = {
-		"Content-Type": "application/json",
-		Accept: "application/vnd.amazon.eventstream",
-	};
-
-	const body = JSON.stringify(requestBody);
-
-	const signedHeaders = await signAwsRequest(
-		{
-			method: "POST",
-			url,
-			headers: baseHeaders,
-			body,
-		},
-		{
-			region,
-			service: "bedrock",
-			credentials: credentials ?? undefined,
-			bearerToken,
-		},
-	);
-
-	const response = await fetch(url, {
-		method: "POST",
-		headers: signedHeaders,
-		body,
-		signal: options.signal,
-	});
-
-	if (!response.ok) {
-		const errorText = await response.text();
-		throw new Error(`Bedrock API error (${response.status}): ${errorText}`);
-	}
-
-	if (!response.body) {
-		throw new Error("Response body is null");
 	}
 
 	// Initialize partial message
@@ -496,90 +243,108 @@ export async function* streamBedrock(
 
 	yield { type: "start", partial };
 
-	const reader = response.body.getReader();
 	const toolArgBuffers = new Map<number, string>();
 	const contentBlockTypes = new Map<number, "text" | "toolCall" | "thinking">();
 
 	try {
-		for await (const event of parseBedrockEventStream(reader)) {
-			if ("messageStart" in event) {
-				// Message started
+		const command = new ConverseStreamCommand(input);
+		const response = await client.send(command, {
+			abortSignal: options.signal,
+		});
+
+		if (!response.stream) {
+			throw new Error("Response stream is undefined");
+		}
+
+		for await (const event of response.stream) {
+			if (event.messageStart) {
+				// Message started - role is always assistant for responses
 				continue;
 			}
 
-			if ("contentBlockStart" in event) {
+			if (event.contentBlockStart) {
 				const { contentBlockIndex, start } = event.contentBlockStart;
+				const idx = contentBlockIndex ?? 0;
 
 				if (start?.toolUse) {
 					// Tool use block
 					const toolCall: ToolCall = {
 						type: "toolCall",
-						id: start.toolUse.toolUseId,
-						name: start.toolUse.name,
+						id: start.toolUse.toolUseId ?? `tool-${idx}`,
+						name: start.toolUse.name ?? "unknown",
 						arguments: {},
 					};
-					partial.content[contentBlockIndex] = toolCall;
-					contentBlockTypes.set(contentBlockIndex, "toolCall");
+					partial.content[idx] = toolCall;
+					contentBlockTypes.set(idx, "toolCall");
 					yield {
 						type: "toolcall_start",
-						contentIndex: contentBlockIndex,
+						contentIndex: idx,
 						partial,
 					};
 				} else {
 					// Text block (default)
-					partial.content[contentBlockIndex] = { type: "text", text: "" };
-					contentBlockTypes.set(contentBlockIndex, "text");
+					partial.content[idx] = { type: "text", text: "" };
+					contentBlockTypes.set(idx, "text");
 					yield {
 						type: "text_start",
-						contentIndex: contentBlockIndex,
+						contentIndex: idx,
 						partial,
 					};
 				}
 				continue;
 			}
 
-			if ("contentBlockDelta" in event) {
+			if (event.contentBlockDelta) {
 				const { contentBlockIndex, delta } = event.contentBlockDelta;
-				const blockType = contentBlockTypes.get(contentBlockIndex);
-				const block = partial.content[contentBlockIndex];
+				const idx = contentBlockIndex ?? 0;
+				const blockType = contentBlockTypes.get(idx);
+				const block = partial.content[idx];
 
-				if (delta.text && blockType === "text" && block?.type === "text") {
+				if (delta?.text && blockType === "text" && block?.type === "text") {
 					const chunk = sanitizeSurrogates(delta.text);
 					block.text += chunk;
 					yield {
 						type: "text_delta",
-						contentIndex: contentBlockIndex,
+						contentIndex: idx,
 						delta: chunk,
 						partial,
 					};
-				} else if (delta.toolUse?.input && block?.type === "toolCall") {
-					const existing = toolArgBuffers.get(contentBlockIndex) ?? "";
-					const combined = existing + delta.toolUse.input;
-					toolArgBuffers.set(contentBlockIndex, combined);
+				} else if (delta?.toolUse?.input && block?.type === "toolCall") {
+					const inputChunk =
+						typeof delta.toolUse.input === "string"
+							? delta.toolUse.input
+							: JSON.stringify(delta.toolUse.input);
+					const existing = toolArgBuffers.get(idx) ?? "";
+					const combined = existing + inputChunk;
+					toolArgBuffers.set(idx, combined);
 					block.arguments = parseStreamingJson(combined);
 					yield {
 						type: "toolcall_delta",
-						contentIndex: contentBlockIndex,
-						delta: delta.toolUse.input,
+						contentIndex: idx,
+						delta: inputChunk,
 						partial,
 					};
-				} else if (delta.reasoningContent?.text) {
-					// Reasoning/thinking content
-					let thinkingBlock = partial.content.find(
-						(c): c is ThinkingContent => c.type === "thinking",
-					);
-					if (!thinkingBlock) {
+				} else if (delta?.reasoningContent?.text) {
+					// Reasoning/thinking content (for models that support it)
+					// Use Bedrock's contentBlockIndex to maintain consistency with contentBlockStop
+					let thinkingBlock = partial.content[idx] as
+						| ThinkingContent
+						| undefined;
+					if (!thinkingBlock || thinkingBlock.type !== "thinking") {
 						thinkingBlock = { type: "thinking", thinking: "" };
-						partial.content.push(thinkingBlock);
-						const idx = partial.content.indexOf(thinkingBlock);
+						partial.content[idx] = thinkingBlock;
 						contentBlockTypes.set(idx, "thinking");
-						yield { type: "thinking_start", contentIndex: idx, partial };
+						yield {
+							type: "thinking_start",
+							contentIndex: idx,
+							partial,
+						};
 					}
 					const chunk = sanitizeSurrogates(delta.reasoningContent.text);
 					thinkingBlock.thinking += chunk;
 					yield {
 						type: "thinking_delta",
-						contentIndex: partial.content.indexOf(thinkingBlock),
+						contentIndex: idx,
 						delta: chunk,
 						partial,
 					};
@@ -587,37 +352,38 @@ export async function* streamBedrock(
 				continue;
 			}
 
-			if ("contentBlockStop" in event) {
+			if (event.contentBlockStop) {
 				const { contentBlockIndex } = event.contentBlockStop;
-				const blockType = contentBlockTypes.get(contentBlockIndex);
-				const block = partial.content[contentBlockIndex];
+				const idx = contentBlockIndex ?? 0;
+				const blockType = contentBlockTypes.get(idx);
+				const block = partial.content[idx];
 
 				if (blockType === "text" && block?.type === "text") {
 					yield {
 						type: "text_end",
-						contentIndex: contentBlockIndex,
+						contentIndex: idx,
 						content: block.text,
 						partial,
 					};
 				} else if (blockType === "toolCall" && block?.type === "toolCall") {
 					// Final parse of tool arguments
-					const buf = toolArgBuffers.get(contentBlockIndex) ?? "{}";
+					const buf = toolArgBuffers.get(idx) ?? "{}";
 					try {
 						block.arguments = JSON.parse(buf);
 					} catch {
 						block.arguments = parseStreamingJson(buf);
 					}
-					toolArgBuffers.delete(contentBlockIndex);
+					toolArgBuffers.delete(idx);
 					yield {
 						type: "toolcall_end",
-						contentIndex: contentBlockIndex,
+						contentIndex: idx,
 						toolCall: block,
 						partial,
 					};
 				} else if (blockType === "thinking" && block?.type === "thinking") {
 					yield {
 						type: "thinking_end",
-						contentIndex: contentBlockIndex,
+						contentIndex: idx,
 						content: block.thinking,
 						partial,
 					};
@@ -625,7 +391,7 @@ export async function* streamBedrock(
 				continue;
 			}
 
-			if ("messageStop" in event) {
+			if (event.messageStop) {
 				const { stopReason } = event.messageStop;
 				partial.stopReason =
 					stopReason === "end_turn"
@@ -638,12 +404,14 @@ export async function* streamBedrock(
 				continue;
 			}
 
-			if ("metadata" in event) {
+			if (event.metadata) {
 				const { usage } = event.metadata;
-				partial.usage.input = usage.inputTokens;
-				partial.usage.output = usage.outputTokens;
-				partial.usage.cacheRead = usage.cacheReadInputTokens ?? 0;
-				partial.usage.cacheWrite = usage.cacheWriteInputTokens ?? 0;
+				if (usage) {
+					partial.usage.input = usage.inputTokens ?? 0;
+					partial.usage.output = usage.outputTokens ?? 0;
+					partial.usage.cacheRead = usage.cacheReadInputTokens ?? 0;
+					partial.usage.cacheWrite = usage.cacheWriteInputTokens ?? 0;
+				}
 
 				// Calculate costs
 				partial.usage.cost = {
