@@ -1,6 +1,73 @@
-//! Command registry
+//! Command registry and execution engine
 //!
-//! Stores all available commands and provides lookup functionality.
+//! This module implements the central command storage and dispatch system. The `CommandRegistry`
+//! maintains a collection of all available slash commands and provides efficient lookup by name
+//! or alias, argument parsing, and command execution.
+//!
+//! # Key Concepts
+//!
+//! ## Arc-based Shared Ownership
+//!
+//! Commands are stored as `Arc<Command>` to enable safe sharing across threads without copying:
+//! - Multiple components can hold references to the same command
+//! - Commands are immutable after registration (internal mutability via handler closures)
+//! - Cheap cloning via reference counting instead of deep copies
+//!
+//! ## HashMap-based Lookup
+//!
+//! Two HashMaps provide O(1) lookup performance:
+//! - `commands`: Primary name to Command mapping
+//! - `aliases`: Alias to primary name mapping (double indirection)
+//!
+//! ## Command Execution Pipeline
+//!
+//! When `execute()` is called with input like `/help theme`:
+//!
+//! 1. **Parse**: Strip `/`, split command name from arguments
+//! 2. **Lookup**: Find command by name or alias in registry
+//! 3. **Parse Arguments**: Convert raw string into typed arguments based on command definition
+//! 4. **Build Context**: Package inputs (cwd, session, model, args) into CommandContext
+//! 5. **Execute Handler**: Call the command's handler function with the context
+//! 6. **Return Output**: Handler returns CommandOutput enum (Message, Action, Modal, etc.)
+//!
+//! # Example
+//!
+//! ```rust
+//! use crate::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
+//!
+//! let mut registry = CommandRegistry::new();
+//!
+//! // Register a simple command
+//! registry.register(
+//!     Command::new(
+//!         "greet",
+//!         "Greet the user",
+//!         CommandCategory::Ui,
+//!         Box::new(|ctx| {
+//!             let name = ctx.get_string("name").unwrap_or("stranger");
+//!             Ok(CommandOutput::Message(format!("Hello, {}!", name)))
+//!         }),
+//!     )
+//!     .alias("hi")
+//!     .arg(CommandArgument::string("name", "Your name")),
+//! );
+//!
+//! // Execute by primary name
+//! let result = registry.execute("/greet Alice", "/home", None, None);
+//!
+//! // Execute by alias
+//! let result = registry.execute("/hi Bob", "/home", None, None);
+//! ```
+//!
+//! # Argument Parsing
+//!
+//! The `parse_arguments()` function converts raw input strings into typed values:
+//! - Positional parsing: Arguments are matched to definitions in order
+//! - Type validation: Strings, integers, booleans, and choices are validated
+//! - Required vs. optional: Missing required arguments return an error
+//! - Default values: Applied before positional parsing
+//!
+//! See `CommandArgument` in `types.rs` for argument definition details.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,11 +77,42 @@ use super::types::{
     CommandError, CommandOutput, CommandResult, ModalType,
 };
 
-/// Registry of all available commands
+/// Registry of all available commands with efficient lookup and execution
+///
+/// The `CommandRegistry` is the central storage for slash commands in the TUI. It provides:
+/// - Fast name-based and alias-based lookup using HashMaps
+/// - Thread-safe command sharing via Arc (atomic reference counting)
+/// - Argument parsing and validation
+/// - Command execution with runtime context
+///
+/// # Thread Safety
+///
+/// While the registry itself requires `&mut self` for registration (expected to happen
+/// at initialization), command lookup and execution only require `&self`. Commands are
+/// stored as `Arc<Command>`, allowing cheap cloning for concurrent access.
+///
+/// # Examples
+///
+/// ```rust
+/// use crate::commands::{CommandRegistry, build_command_registry};
+/// use std::sync::Arc;
+///
+/// // Build the default registry
+/// let registry = build_command_registry();
+///
+/// // Get a command by name
+/// let help_cmd = registry.get("help");
+///
+/// // Get a command by alias
+/// let help_by_alias = registry.get("h");  // Same as "help"
+///
+/// // Execute a command
+/// let result = registry.execute("/help theme", "/home/user", None, None);
+/// ```
 pub struct CommandRegistry {
-    /// Commands indexed by name
+    /// Commands indexed by primary name for O(1) lookup
     commands: HashMap<String, Arc<Command>>,
-    /// Alias to command name mapping
+    /// Alias to primary command name mapping (double indirection for lookup)
     aliases: HashMap<String, String>,
 }
 
@@ -27,12 +125,50 @@ impl CommandRegistry {
         }
     }
 
-    /// Register a command
+    /// Register a command in the registry
+    ///
+    /// Adds a command to the registry, making it available for lookup and execution.
+    /// Also registers all aliases defined in the command.
+    ///
+    /// # Arc Wrapping
+    ///
+    /// The command is wrapped in an `Arc` (atomic reference counted pointer) to enable:
+    /// - Cheap cloning for concurrent access (only increments a counter)
+    /// - Shared ownership across multiple matcher and UI components
+    /// - Thread-safe distribution without locks
+    ///
+    /// # Alias Registration
+    ///
+    /// All aliases in `command.aliases` are registered in the `aliases` HashMap,
+    /// pointing to the primary command name. This allows lookup by either name or alias.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use crate::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
+    ///
+    /// let mut registry = CommandRegistry::new();
+    ///
+    /// registry.register(
+    ///     Command::new(
+    ///         "help",
+    ///         "Show help",
+    ///         CommandCategory::Navigation,
+    ///         Box::new(|_| Ok(CommandOutput::Silent)),
+    ///     )
+    ///     .alias("h")
+    ///     .alias("?"),
+    /// );
+    ///
+    /// assert!(registry.get("help").is_some());
+    /// assert!(registry.get("h").is_some());
+    /// assert!(registry.get("?").is_some());
+    /// ```
     pub fn register(&mut self, command: Command) {
         let name = command.name.clone();
         let cmd = Arc::new(command);
 
-        // Register aliases
+        // Register aliases pointing to primary name
         for alias in &cmd.aliases {
             self.aliases.insert(alias.clone(), name.clone());
         }
@@ -41,13 +177,44 @@ impl CommandRegistry {
     }
 
     /// Get a command by name or alias
+    ///
+    /// Performs a two-stage lookup:
+    /// 1. Direct lookup in the `commands` HashMap
+    /// 2. If not found, lookup in the `aliases` HashMap to get the primary name,
+    ///    then lookup the primary name in `commands`
+    ///
+    /// Returns `Arc<Command>` for cheap cloning. The Arc is cloned (incrementing
+    /// the reference count) rather than the entire Command structure.
+    ///
+    /// # Time Complexity
+    ///
+    /// O(1) average case for both direct and alias lookup (two HashMap lookups max).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use crate::commands::build_command_registry;
+    ///
+    /// let registry = build_command_registry();
+    ///
+    /// // Get by primary name
+    /// let help = registry.get("help");
+    /// assert!(help.is_some());
+    ///
+    /// // Get by alias
+    /// let help_alias = registry.get("h");
+    /// assert!(help_alias.is_some());
+    ///
+    /// // Both return the same command
+    /// assert_eq!(help.unwrap().name, help_alias.unwrap().name);
+    /// ```
     pub fn get(&self, name: &str) -> Option<Arc<Command>> {
-        // Try direct lookup first
+        // Try direct lookup first (primary name)
         if let Some(cmd) = self.commands.get(name) {
             return Some(Arc::clone(cmd));
         }
 
-        // Try alias lookup
+        // Try alias lookup (double indirection: alias -> name -> command)
         if let Some(real_name) = self.aliases.get(name) {
             return self.commands.get(real_name).map(Arc::clone);
         }
@@ -78,6 +245,50 @@ impl CommandRegistry {
     }
 
     /// Execute a command from input text
+    ///
+    /// Parses the input string, looks up the command, validates arguments,
+    /// builds a context, and executes the command handler.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The full command string (must start with `/`)
+    /// * `cwd` - Current working directory (passed to handler context)
+    /// * `session_id` - Optional current session ID (passed to handler context)
+    /// * `model` - Optional current AI model (passed to handler context)
+    ///
+    /// # Execution Pipeline
+    ///
+    /// 1. **Validation**: Ensure input starts with `/`
+    /// 2. **Parsing**: Split input into command name and raw arguments
+    /// 3. **Lookup**: Find the command by name or alias
+    /// 4. **Argument Parsing**: Convert raw args to typed values using `parse_arguments()`
+    /// 5. **Context Building**: Create `CommandContext` with all inputs
+    /// 6. **Execution**: Call the command's handler function
+    ///
+    /// # Returns
+    ///
+    /// Returns `CommandResult` which is `Result<CommandOutput, CommandError>`:
+    /// - `Ok(CommandOutput)`: Handler executed successfully (Message, Action, Modal, etc.)
+    /// - `Err(CommandError)`: Parsing failed, unknown command, or handler returned error
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use crate::commands::build_command_registry;
+    ///
+    /// let registry = build_command_registry();
+    ///
+    /// // Execute a simple command
+    /// let result = registry.execute("/help", "/home/user", None, None);
+    /// assert!(result.is_ok());
+    ///
+    /// // Execute with arguments
+    /// let result = registry.execute("/theme dark", "/home/user", None, None);
+    ///
+    /// // Invalid command returns error
+    /// let result = registry.execute("/notacommand", "/home/user", None, None);
+    /// assert!(result.is_err());
+    /// ```
     pub fn execute(
         &self,
         input: &str,
@@ -140,7 +351,40 @@ impl Default for CommandRegistry {
     }
 }
 
-/// Parse argument string into values
+/// Parse argument string into typed values
+///
+/// Converts a raw argument string (everything after the command name) into a HashMap
+/// of typed argument values based on the command's argument definitions.
+///
+/// # Parsing Strategy
+///
+/// 1. **Apply Defaults**: Start with default values for all arguments that have them
+/// 2. **Positional Parsing**: Match space-separated tokens to argument definitions in order
+/// 3. **Type Conversion**: Convert string tokens to the appropriate type (String, Bool, Int, Choice)
+/// 4. **Validation**: Ensure required arguments are present and choices are valid
+///
+/// # Type Conversion Rules
+///
+/// - **String**: No conversion, stored as-is
+/// - **Bool**: "true", "yes", "on", "1" (case-insensitive) -> true; everything else -> false
+/// - **Int**: Parsed as i64; returns error if parsing fails
+/// - **Choice**: Must match one of the allowed values; returns error if not
+/// - **FilePath/SessionId**: Stored as strings (type hints for UI completion)
+///
+/// # Example
+///
+/// ```rust
+/// // Command definition
+/// let args = vec![
+///     CommandArgument::string("name", "Name").required(),
+///     CommandArgument::choice("mode", "Mode", vec!["fast", "slow"]),
+/// ];
+///
+/// // Parse "/cmd Alice fast"
+/// let parsed = parse_arguments("Alice fast", &args)?;
+/// assert_eq!(parsed.get("name"), Some(&ArgumentValue::String("Alice".into())));
+/// assert_eq!(parsed.get("mode"), Some(&ArgumentValue::String("fast".into())));
+/// ```
 fn parse_arguments(
     raw: &str,
     definitions: &[CommandArgument],
@@ -201,6 +445,52 @@ fn parse_arguments(
 }
 
 /// Build the default command registry with all built-in commands
+///
+/// Constructs and returns a fully populated `CommandRegistry` containing all
+/// standard slash commands for the TUI application.
+///
+/// # Command Categories
+///
+/// The registry includes commands across multiple categories:
+///
+/// - **Navigation**: help, quit, refresh
+/// - **UI**: clear, theme, zen, copy, footer
+/// - **Session**: session, sessions, continue, resume
+/// - **Config**: model, thinking, approvals
+/// - **Context**: compact, memory, plan
+/// - **Tools**: tools, mcp
+/// - **Diagnostics**: status, diag, version
+/// - **Safety**: approvals
+///
+/// # Function Pointers and Closures
+///
+/// Each command handler is a boxed closure with the signature:
+/// ```rust
+/// Box<dyn Fn(&CommandContext) -> CommandResult + Send + Sync>
+/// ```
+///
+/// This allows:
+/// - **Fn trait**: Handler can be called multiple times without consuming itself
+/// - **Send + Sync**: Handler can be safely shared across threads
+/// - **Box**: Dynamic dispatch - handlers can have different implementations
+/// - **Closure**: Handlers can capture environment if needed (though most don't)
+///
+/// # Example
+///
+/// ```rust
+/// use crate::commands::build_command_registry;
+///
+/// let registry = build_command_registry();
+///
+/// // Registry includes all standard commands
+/// assert!(registry.get("help").is_some());
+/// assert!(registry.get("quit").is_some());
+/// assert!(registry.get("theme").is_some());
+///
+/// // Aliases are also registered
+/// assert!(registry.get("h").is_some());  // alias for help
+/// assert!(registry.get("q").is_some());  // alias for quit
+/// ```
 pub fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
 

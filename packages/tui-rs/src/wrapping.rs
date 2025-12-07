@@ -1,6 +1,47 @@
 //! Word wrapping utilities ported from OpenAI Codex (MIT licensed)
 //!
-//! Provides styled line wrapping that preserves span styles across line breaks.
+//! This module provides intelligent word wrapping for styled text, preserving ratatui
+//! span styles across line breaks. It's ported from OpenAI Codex under the MIT license.
+//!
+//! # Key Features
+//!
+//! - **Style Preservation**: Text attributes (color, bold, italic) are maintained when
+//!   lines wrap, splitting spans at wrap points and continuing them on the next line.
+//!
+//! - **Optimal Fit Algorithm**: Uses the textwrap crate's optimal fit algorithm which
+//!   minimizes raggedness across all lines using dynamic programming, producing visually
+//!   balanced output similar to TeX's line breaking.
+//!
+//! - **Styled Indentation**: Supports different indents for the first line vs subsequent
+//!   lines, with each indent being a styled `Line` (not just a string), allowing for
+//!   colored or formatted indentation markers.
+//!
+//! # External Crates
+//!
+//! - **textwrap**: Provides the underlying word wrapping algorithms (optimal fit, first fit)
+//!   and handles edge cases like long words, hyphenation, and CJK text.
+//! - **ratatui**: Provides the `Line` and `Span` types for styled text.
+//!
+//! # Common Patterns
+//!
+//! This module is used throughout the codebase for:
+//! - Wrapping chat messages in the conversation view
+//! - Wrapping code block content when displaying diffs
+//! - Wrapping markdown content in the pager
+//! - Pushing styled history lines into terminal scrollback
+//!
+//! # Example
+//!
+//! ```
+//! use ratatui::text::Line;
+//! use tui_rs::wrapping::{word_wrap_line, RtOptions};
+//!
+//! let line = Line::from("This is a very long line that needs to be wrapped");
+//! let options = RtOptions::new(40)
+//!     .initial_indent(Line::from("  "))
+//!     .subsequent_indent(Line::from("    "));
+//! let wrapped = word_wrap_line(&line, options);
+//! ```
 
 use ratatui::text::{Line, Span};
 use std::ops::Range;

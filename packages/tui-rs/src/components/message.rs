@@ -1,7 +1,113 @@
-//! Message display widget
+//! Message display widgets
 //!
-//! Renders chat messages with role indicators, tool calls, etc.
-//! Inspired by the TypeScript TUI and OpenAI Codex TUI with:
+//! This module implements the chat message display system, including the main scrollable
+//! message list (ChatView), individual message rendering (MessageWidget), and supporting
+//! components like the status bar and input box.
+//!
+//! # Widget Hierarchy
+//!
+//! ```text
+//! ChatView (main container)
+//! ├── MessageWidget (per message)
+//! │   ├── Role header with timestamp
+//! │   ├── Thinking block (collapsible)
+//! │   ├── Markdown content
+//! │   └── ToolCallWidget (per tool call)
+//! ├── ChatInputWidget (bottom input box)
+//! └── StatusBarWidget (bottom status line)
+//! ```
+//!
+//! # Rendering Features
+//!
+//! ## Markdown Parsing
+//!
+//! The message content supports inline markdown:
+//! - **bold**: `**text**`
+//! - `code`: backtick-wrapped inline code
+//! - Code blocks: triple-backtick fenced blocks with syntax highlighting hints
+//! - Links: `[text](url)` rendered with underline styling
+//!
+//! Markdown parsing is implemented in `parse_markdown_lines()` and `parse_markdown_line()`.
+//!
+//! ## Scrolling and Viewport Management
+//!
+//! `ChatView` implements a virtual scrolling system:
+//! - Messages are filtered to only renderable ones (via `should_render_message`)
+//! - Heights are pre-calculated for all messages (via `calculate_message_height`)
+//! - The viewport is anchored from the bottom by `scroll_offset`
+//! - Only messages within the viewport are rendered
+//! - A scrollbar is drawn when total content height exceeds viewport height
+//!
+//! ## Tool Call Display
+//!
+//! Tool calls are rendered as collapsible sections with:
+//! - Status pill: `[RUN]`, `[OK]`, `[ERR]`, `[PEND]` with color coding
+//! - Tool-specific icons (see `get_tool_icon()`)
+//! - Expandable arguments (JSON pretty-printed)
+//! - Output display (truncated to first 10 lines when collapsed)
+//! - Click indicator: `[+]` collapsed, `[-]` expanded
+//!
+//! ## Thinking Blocks
+//!
+//! Assistant messages may include "thinking" content (Claude's internal reasoning):
+//! - Rendered in a collapsible section with gutter (│)
+//! - Shows character count badge
+//! - Collapsed: shows first 2 lines as preview
+//! - Expanded: shows full thinking content with italic dim styling
+//! - Toggle indicator: `[+]` / `[-]`
+//!
+//! # Widget Trait Implementation
+//!
+//! Each widget implements `ratatui::widgets::Widget`:
+//!
+//! ```rust,ignore
+//! impl Widget for MessageWidget<'_> {
+//!     fn render(self, area: Rect, buf: &mut Buffer) {
+//!         // Write styled text to buffer cells
+//!         buf.set_string(x, y, "text", style);
+//!         // Or use higher-level Paragraph widget
+//!         Paragraph::new(content).render(area, buf);
+//!     }
+//! }
+//! ```
+//!
+//! ## Stateless Widget Pattern
+//!
+//! `MessageWidget`, `ToolCallWidget`, `StatusBarWidget` are stateless widgets:
+//! - Take references to data (`&'a Message`, `&'a str`)
+//! - Consume `self` in `render()` (builder pattern allows chaining)
+//! - Do not maintain state across renders
+//!
+//! ## Stateful Widget Pattern
+//!
+//! `ChatView` references stateful data (`&'a AppState`) which contains:
+//! - Message list
+//! - Scroll position
+//! - Expanded tool call set
+//! - Input state and cursor position
+//!
+//! # Cursor Positioning
+//!
+//! `ChatInputWidget` calculates terminal cursor position using:
+//! - Unicode width calculation (not byte length)
+//! - Text wrapping logic to determine row/column
+//! - Clamping to visible area boundaries
+//!
+//! The cursor position is calculated in `cursor_pos()` and set by the app's render loop.
+//!
+//! # Keyboard Event Handling
+//!
+//! This module does NOT handle keyboard events directly. Event handling is performed in
+//! the main app loop (src/app.rs), which updates AppState. The widgets re-render based
+//! on the updated state.
+//!
+//! # Design Inspiration
+//!
+//! Visual design inspired by:
+//! - TypeScript Composer TUI
+//! - OpenAI Codex TUI
+//!
+//! Features:
 //! - Bordered panels and status badges
 //! - Tool-specific icons
 //! - Shimmer animations for "Working" text
@@ -297,7 +403,29 @@ pub fn calculate_message_height(
     height
 }
 
-/// Widget for rendering a single message
+/// A stateless widget for rendering a single chat message.
+///
+/// Renders a complete message including:
+/// - Role header with timestamp (User/Assistant)
+/// - Optional thinking block (collapsible)
+/// - Message content with markdown parsing
+/// - Tool calls (collapsible) with status indicators
+///
+/// # Widget Trait
+///
+/// Implements `ratatui::widgets::Widget` to render directly to a buffer. The widget
+/// consumes itself (builder pattern) to allow method chaining.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let widget = MessageWidget::new(&message)
+///     .with_expanded_tools(&expanded_set);
+/// frame.render_widget(widget, area);
+/// ```
+///
+/// The widget will skip rendering entirely if `should_render_message()` returns false
+/// (e.g., empty assistant messages with no tool calls).
 pub struct MessageWidget<'a> {
     message: &'a Message,
     expanded_tools: Option<&'a HashSet<String>>,
@@ -713,7 +841,24 @@ fn get_tool_args_preview(tool: &str, args: &serde_json::Value, max_len: usize) -
     }
 }
 
-/// Widget for rendering a tool call
+/// A stateless widget for rendering a single tool call.
+///
+/// Displays tool execution details with status indicator, tool name, and optional
+/// output. Supports expand/collapse for detailed view.
+///
+/// # Status Indicators
+///
+/// - `?` yellow: Pending
+/// - `*` blue: Running
+/// - `+` green: Completed
+/// - `!` red: Failed
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let widget = ToolCallWidget::new("bash", ToolCallStatus::Completed, output, true);
+/// frame.render_widget(widget, area);
+/// ```
 pub struct ToolCallWidget<'a> {
     tool: &'a str,
     status: ToolCallStatus,
@@ -787,7 +932,40 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
     format!("{}h {:02}m {:02}s", hours, minutes, seconds)
 }
 
-/// Widget for the chat input area
+/// A stateless widget for rendering the chat input box.
+///
+/// Displays a bordered input area with:
+/// - Placeholder text when empty
+/// - Text wrapping for multi-line input
+/// - Busy indicator with shimmer animation
+/// - Elapsed time display during agent processing
+/// - Optional thinking header from agent
+///
+/// # Cursor Position
+///
+/// The widget provides `cursor_pos()` to calculate where the terminal cursor should
+/// be positioned. This accounts for:
+/// - Text wrapping within the input area
+/// - Unicode display width (not byte length)
+/// - Border offset
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let widget = ChatInputWidget::new(
+///     input_text,
+///     cursor_pos,
+///     "Type a message...",
+///     busy,
+///     elapsed_secs,
+///     thinking_header,
+/// );
+/// frame.render_widget(widget, area);
+///
+/// if let Some((x, y)) = widget.cursor_pos(area) {
+///     frame.set_cursor_position((x, y));
+/// }
+/// ```
 pub struct ChatInputWidget<'a> {
     input: &'a str,
     cursor: usize,
@@ -816,8 +994,18 @@ impl<'a> ChatInputWidget<'a> {
         }
     }
 
-    /// Calculate cursor position relative to the input area
-    /// Returns (x, y) position where the terminal cursor should be placed
+    /// Calculate the on-screen cursor position within the input area.
+    ///
+    /// Returns `(x, y)` coordinates where the terminal cursor should be placed,
+    /// accounting for:
+    /// - Border offset (1 cell on each side)
+    /// - Text wrapping
+    /// - Unicode display width
+    ///
+    /// Returns `None` if:
+    /// - Widget is in busy state (cursor shouldn't be shown)
+    /// - Area is too small to render
+    /// - Cursor is outside visible area (scrolled out of view)
     pub fn cursor_pos(&self, input_area: Rect) -> Option<(u16, u16)> {
         if self.busy || input_area.width < 3 || input_area.height < 3 {
             return None;
@@ -941,7 +1129,25 @@ impl UsageSummary {
     }
 }
 
-/// Status bar widget
+/// A stateless widget for rendering the bottom status bar.
+///
+/// Displays:
+/// - Left side: Model name, provider, working directory, git branch
+/// - Right side: Token usage (input/output), terminal size
+///
+/// Hidden in zen mode.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let widget = StatusBarWidget::new(
+///     Some("claude-opus-4"),
+///     Some("anthropic"),
+///     Some("/path/to/project"),
+///     Some("main"),
+/// ).with_usage(usage_summary);
+/// frame.render_widget(widget, area);
+/// ```
 pub struct StatusBarWidget<'a> {
     model: Option<&'a str>,
     provider: Option<&'a str>,
@@ -1046,7 +1252,46 @@ impl Widget for StatusBarWidget<'_> {
     }
 }
 
-/// The main chat view widget
+/// The main chat view widget containing messages, input, and status bar.
+///
+/// This is the top-level widget for the chat interface. It implements a virtual
+/// scrolling system to efficiently render large message histories.
+///
+/// # Layout
+///
+/// ```text
+/// ┌─────────────────────────┐
+/// │  Messages (scrollable)  │
+/// │                         │
+/// │  • Composer             │
+/// │  I can help with that   │
+/// │                         │
+/// │  › You                  │
+/// │  Please do              │
+/// │                         │
+/// ├─────────────────────────┤
+/// │ > Type message_         │ <- Input box (3 rows)
+/// ├─────────────────────────┤
+/// │ opus-4 | project (main) │ <- Status bar (1 row, hidden in zen mode)
+/// └─────────────────────────┘
+/// ```
+///
+/// # Virtual Scrolling
+///
+/// The message list uses virtual scrolling:
+/// 1. Pre-calculate heights for all messages
+/// 2. Determine which messages are visible based on scroll offset
+/// 3. Render only visible messages
+/// 4. Draw scrollbar if content exceeds viewport
+///
+/// This allows smooth scrolling through thousands of messages.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let view = ChatView::new(&app_state);
+/// frame.render_widget(view, frame.area());
+/// ```
 pub struct ChatView<'a> {
     state: &'a crate::state::AppState,
 }

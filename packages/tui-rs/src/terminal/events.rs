@@ -1,33 +1,103 @@
 //! Terminal event stream
 //!
-//! Provides async event streaming from the terminal using crossterm.
+//! This module provides async event streaming from the terminal using crossterm's
+//! `EventStream`. It converts low-level crossterm events into application-specific
+//! events, filtering out irrelevant events and normalizing key representations.
+//!
+//! # Event Filtering
+//!
+//! The event stream automatically filters:
+//!
+//! - Mouse events (not currently used by the application)
+//! - Key release and repeat events (only key press events are processed)
+//! - Lock key events (CapsLock, NumLock, ScrollLock)
+//! - Media and modifier-only key events
+//!
+//! # Async Design
+//!
+//! This module uses Tokio streams (`tokio_stream::StreamExt`) to provide async event
+//! polling. The event stream can be efficiently integrated with Tokio's async runtime,
+//! allowing the application to handle events concurrently with other async tasks.
+//!
+//! # Key Event Normalization
+//!
+//! Crossterm's `KeyEvent` includes raw key codes and modifiers. This module converts
+//! them to string representations (e.g., "Enter", "Backspace", "F1") that are easier
+//! to work with in the application layer and can be serialized for IPC communication.
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
 use tokio_stream::StreamExt;
 
 use crate::protocol::KeyModifiers;
 
-/// Events from the terminal
+/// Events emitted by the terminal.
+///
+/// This enum represents the subset of crossterm events that the application
+/// cares about. Events are normalized to be easier to handle and serialize.
+///
+/// # Variants
+///
+/// - `Key`: A key press event with normalized key string and modifiers
+/// - `Paste`: Bracketed paste content (multi-line clipboard paste)
+/// - `Resize`: Terminal window size changed
+/// - `FocusGained`/`FocusLost`: Focus change events (if terminal supports them)
 #[derive(Debug, Clone)]
 pub enum TerminalEvent {
-    /// Key press
+    /// Key press event.
+    ///
+    /// The `key` field contains a string representation of the key (e.g., "a", "Enter",
+    /// "F1", "Up"). The `modifiers` field contains active modifier keys (Ctrl, Alt, Shift).
     Key {
         /// Key code as string representation
         key: String,
         /// Modifiers
         modifiers: KeyModifiers,
     },
-    /// Paste event
+    /// Paste event from bracketed paste mode.
+    ///
+    /// When the user pastes content (e.g., Ctrl+Shift+V in most terminals), the
+    /// terminal sends the content as a paste event rather than individual key presses.
+    /// This allows the application to distinguish typed text from pasted text.
     Paste(String),
-    /// Terminal resized
+    /// Terminal resized to new dimensions.
+    ///
+    /// Sent when the terminal window size changes (e.g., user resizes the window,
+    /// or the terminal emulator's font size changes).
     Resize { width: u16, height: u16 },
-    /// Terminal gained focus
+    /// Terminal gained focus.
+    ///
+    /// Only sent if the terminal supports focus change events (enabled via crossterm's
+    /// `EnableFocusChange` command).
     FocusGained,
-    /// Terminal lost focus
+    /// Terminal lost focus.
+    ///
+    /// Only sent if the terminal supports focus change events.
     FocusLost,
 }
 
-/// Async stream of terminal events
+/// Async stream of terminal events.
+///
+/// This wraps crossterm's `EventStream` and provides a simplified async interface
+/// for polling terminal events. Events are automatically filtered and converted
+/// to `TerminalEvent` instances.
+///
+/// # Example
+///
+/// ```no_run
+/// use tui_rs::terminal::TerminalEventStream;
+///
+/// # async fn example() {
+/// let mut events = TerminalEventStream::new();
+/// while let Some(event) = events.next().await {
+///     match event {
+///         tui_rs::terminal::TerminalEvent::Key { key, .. } => {
+///             println!("Key pressed: {}", key);
+///         }
+///         _ => {}
+///     }
+/// }
+/// # }
+/// ```
 pub struct TerminalEventStream {
     inner: EventStream,
 }
@@ -63,7 +133,13 @@ impl Default for TerminalEventStream {
     }
 }
 
-/// Convert crossterm event to our event type
+/// Convert crossterm event to our normalized event type.
+///
+/// This function maps crossterm's raw events to our simplified `TerminalEvent` enum,
+/// filtering out events we don't care about (e.g., mouse events, key releases).
+///
+/// Returns `None` for filtered events, which causes the stream to skip them and
+/// continue polling for the next event.
 fn convert_event(event: Event) -> Option<TerminalEvent> {
     match event {
         Event::Key(key_event) => convert_key_event(key_event),
@@ -75,7 +151,13 @@ fn convert_event(event: Event) -> Option<TerminalEvent> {
     }
 }
 
-/// Convert key event to our format
+/// Convert crossterm key event to our format.
+///
+/// Filters out key release and repeat events, keeping only key press events.
+/// This is the most common behavior for TUI applications - we only care about
+/// when a key is first pressed, not when it's released or auto-repeated.
+///
+/// Returns `None` for filtered events or keys we don't recognize.
 fn convert_key_event(key: KeyEvent) -> Option<TerminalEvent> {
     // Only handle key press events, not release or repeat
     if key.kind != KeyEventKind::Press {
@@ -91,7 +173,14 @@ fn convert_key_event(key: KeyEvent) -> Option<TerminalEvent> {
     })
 }
 
-/// Convert key code to string representation
+/// Convert crossterm key code to string representation.
+///
+/// This normalizes key codes to predictable string values that can be used for
+/// key binding matching and IPC serialization. Character keys are converted to
+/// their string form (e.g., 'a' -> "a"), while special keys use consistent names
+/// (e.g., `KeyCode::Enter` -> "Enter", `KeyCode::F(1)` -> "F1").
+///
+/// Returns `None` for keys we don't want to handle (null, lock keys, media keys, etc.).
 fn key_code_to_string(code: KeyCode) -> Option<String> {
     let s = match code {
         KeyCode::Char(c) => c.to_string(),

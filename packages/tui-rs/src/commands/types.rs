@@ -1,70 +1,325 @@
-//! Command types and definitions
+//! Core types and enums for the command system
+//!
+//! This module defines the fundamental data structures used throughout the command
+//! system, including command definitions, execution context, outputs, and errors.
+//!
+//! # Key Types
+//!
+//! ## Command Definition
+//!
+//! - **Command**: Complete command specification with name, handler, arguments, category
+//! - **CommandHandler**: Type alias for handler function pointer/closure
+//! - **CommandArgument**: Argument definition with name, type, defaults, validation
+//!
+//! ## Execution
+//!
+//! - **CommandContext**: Runtime context passed to handlers (cwd, session, args, etc.)
+//! - **CommandResult**: Result type for handler execution (Ok/Err)
+//!
+//! ## Output Types
+//!
+//! - **CommandOutput**: Enum of possible handler return values (Message, Action, Modal, etc.)
+//! - **CommandAction**: Enum of state-modifying actions (Quit, ClearMessages, etc.)
+//! - **ModalType**: Types of modals that can be opened
+//!
+//! ## Errors
+//!
+//! - **CommandError**: Rich error type with message and optional hint
+//!
+//! # Enum-based Dispatch
+//!
+//! The command system uses enum-based dispatch for outputs and actions rather than
+//! trait objects or callbacks. This provides:
+//!
+//! - **Type Safety**: All possible outputs are known at compile time
+//! - **Pattern Matching**: Exhaustive matching ensures all cases are handled
+//! - **No Virtual Dispatch**: Compiler can inline and optimize enum matching
+//! - **Easy Serialization**: Enums can be easily serialized for IPC/logging
+//!
+//! # Example Command Flow
+//!
+//! ```rust
+//! use crate::commands::{Command, CommandCategory, CommandContext, CommandOutput, CommandAction};
+//!
+//! // 1. Define a command with handler
+//! let cmd = Command::new(
+//!     "quit",
+//!     "Exit the application",
+//!     CommandCategory::Navigation,
+//!     Box::new(|_ctx: &CommandContext| {
+//!         // 2. Handler returns an enum variant
+//!         Ok(CommandOutput::Action(CommandAction::Quit))
+//!     }),
+//! );
+//!
+//! // 3. Execute command (in real code)
+//! // let context = CommandContext { ... };
+//! // match cmd.execute(&context)? {
+//! //     CommandOutput::Action(CommandAction::Quit) => app.quit(),
+//! //     CommandOutput::Message(msg) => display_message(msg),
+//! //     _ => {}
+//! // }
+//! ```
 
 use std::collections::HashMap;
 
 /// Result of executing a command
+///
+/// Type alias for the result returned by command handlers. Either:
+/// - `Ok(CommandOutput)`: Command succeeded with some output (Message, Action, etc.)
+/// - `Err(CommandError)`: Command failed with an error (shown to user)
 pub type CommandResult = Result<CommandOutput, CommandError>;
 
 /// Handler function for a command
+///
+/// Type alias for the command handler function pointer. This is a boxed closure with:
+///
+/// # Traits
+///
+/// - **Fn(&CommandContext)**: Immutable function (can be called multiple times)
+/// - **Send**: Can be safely sent between threads
+/// - **Sync**: Can be safely shared between threads via references
+///
+/// # Box vs Arc
+///
+/// Handlers are `Box`ed rather than `Arc`ed because:
+/// - Commands themselves are wrapped in Arc (in the registry)
+/// - Handlers don't need to be shared independently of their command
+/// - Box provides simple heap allocation without reference counting overhead
+///
+/// # Example
+///
+/// ```rust
+/// let handler: CommandHandler = Box::new(|ctx| {
+///     let name = ctx.get_string("name").unwrap_or("World");
+///     Ok(CommandOutput::Message(format!("Hello, {}!", name)))
+/// });
+/// ```
 pub type CommandHandler = Box<dyn Fn(&CommandContext) -> CommandResult + Send + Sync>;
 
 /// Output from a command execution
+///
+/// Enum representing all possible outcomes of executing a command handler.
+/// This uses enum-based dispatch rather than callbacks for type safety and
+/// exhaustive pattern matching.
+///
+/// # Variants
+///
+/// - **Message**: Display informational text to the user (e.g., status, results)
+/// - **Help**: Display help documentation (may be rendered specially)
+/// - **Warning**: Display a warning (not an error, execution succeeded)
+/// - **OpenModal**: Open a UI modal/selector (theme picker, file browser, etc.)
+/// - **Action**: Execute a state-modifying action (quit, clear, refresh, etc.)
+/// - **Silent**: Command succeeded but has no visible output
+/// - **Multi**: Multiple outputs to be processed in sequence
+///
+/// # Design Rationale
+///
+/// Using an enum instead of callbacks or trait objects provides:
+/// - Compile-time exhaustiveness checking (all variants must be handled)
+/// - Clear contract between command handlers and UI layer
+/// - Easy serialization for IPC or logging
+/// - No need for dynamic dispatch (faster)
+///
+/// # Example
+///
+/// ```rust
+/// use crate::commands::{CommandOutput, CommandAction, ModalType};
+///
+/// // Handler can return different output types
+/// fn handle_command(cmd: &str) -> CommandOutput {
+///     match cmd {
+///         "quit" => CommandOutput::Action(CommandAction::Quit),
+///         "help" => CommandOutput::OpenModal(ModalType::Help),
+///         "status" => CommandOutput::Message("System OK".into()),
+///         _ => CommandOutput::Silent,
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub enum CommandOutput {
-    /// Display a message to the user
+    /// Display a message to the user (informational)
     Message(String),
-    /// Display help text
+    /// Display help text (may be specially formatted)
     Help(String),
-    /// Display an error (but not a failure)
+    /// Display a warning (not an error, but noteworthy)
     Warning(String),
-    /// Open a modal/selector
+    /// Open a modal/selector (theme picker, file browser, etc.)
     OpenModal(ModalType),
-    /// Execute an action that modifies state
+    /// Execute an action that modifies application state
     Action(CommandAction),
-    /// No visible output
+    /// No visible output (command succeeded silently)
     Silent,
-    /// Multiple outputs
+    /// Multiple outputs to be processed in sequence
     Multi(Vec<CommandOutput>),
 }
 
 /// Actions that commands can trigger to modify application state
+///
+/// Enum representing all possible state-modifying actions that command handlers
+/// can request. The application layer pattern-matches on these to perform the
+/// actual state modifications.
+///
+/// # Design Pattern: Command Pattern
+///
+/// This enum implements a variation of the Command pattern where:
+/// - Handlers return action requests rather than directly modifying state
+/// - The application layer owns mutable state and performs actions
+/// - Clear separation between command parsing and state modification
+///
+/// # Why Enum Instead of Direct Mutation?
+///
+/// Using an enum for actions provides:
+/// - **Testability**: Handlers can be tested by checking returned actions
+/// - **Decoupling**: Handlers don't need references to application state
+/// - **Serialization**: Actions can be logged, replayed, or sent over IPC
+/// - **Type Safety**: All possible actions are known at compile time
+///
+/// # Variants
+///
+/// - **ClearMessages**: Remove all chat messages from the display
+/// - **ToggleZenMode**: Switch between normal and minimal UI
+/// - **SetApprovalMode**: Change safety/approval settings (yolo/selective/safe)
+/// - **SetThinkingLevel**: Configure extended thinking level
+/// - **Quit**: Exit the application
+/// - **RefreshWorkspace**: Reload workspace file listing
+/// - **CopyLastMessage**: Copy the last message to clipboard
+/// - **CompactConversation**: Compress conversation history, optionally with custom instructions
+/// - **ShowMcpStatus**: Display Model Context Protocol server status
+///
+/// # Example
+///
+/// ```rust
+/// use crate::commands::{CommandAction, CommandOutput};
+///
+/// // Handler returns action request
+/// let output = CommandOutput::Action(CommandAction::Quit);
+///
+/// // Application layer handles action
+/// match output {
+///     CommandOutput::Action(CommandAction::Quit) => {
+///         // Application performs cleanup and exits
+///         app.cleanup();
+///         std::process::exit(0);
+///     }
+///     _ => {}
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub enum CommandAction {
-    /// Clear all messages
+    /// Clear all messages from the chat display
     ClearMessages,
-    /// Toggle zen mode
+    /// Toggle zen mode (minimal UI)
     ToggleZenMode,
-    /// Set approval mode
+    /// Set approval mode (yolo, selective, safe)
     SetApprovalMode(String),
-    /// Set thinking level
+    /// Set extended thinking level (off, low, medium, high, max)
     SetThinkingLevel(String),
     /// Quit the application
     Quit,
-    /// Refresh workspace files
+    /// Refresh workspace file listing
     RefreshWorkspace,
-    /// Copy last message to clipboard
+    /// Copy the last message to system clipboard
     CopyLastMessage,
-    /// Compact conversation history with optional instructions
+    /// Compact conversation history (with optional custom instructions)
     CompactConversation(Option<String>),
-    /// Show MCP server status
+    /// Show MCP (Model Context Protocol) server status
     ShowMcpStatus,
 }
 
 /// Types of modals that can be opened by commands
+///
+/// Enum representing all UI modals (overlays, selectors, dialogs) that commands
+/// can trigger. Each variant corresponds to a specific modal component in the UI.
+///
+/// # Variants
+///
+/// - **ThemeSelector**: Color theme picker (dark, light, custom themes)
+/// - **ModelSelector**: AI model chooser (Claude 3.5 Sonnet, etc.)
+/// - **SessionList**: Session browser for loading/managing conversations
+/// - **FileSearch**: File browser/search for attaching context
+/// - **CommandPalette**: Command search and execution
+/// - **Help**: Help documentation viewer
+///
+/// # Example
+///
+/// ```rust
+/// use crate::commands::{CommandOutput, ModalType};
+///
+/// // Command handler opens theme selector
+/// let output = CommandOutput::OpenModal(ModalType::ThemeSelector);
+///
+/// // UI layer shows the modal
+/// match output {
+///     CommandOutput::OpenModal(ModalType::ThemeSelector) => {
+///         ui.show_theme_selector();
+///     }
+///     _ => {}
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub enum ModalType {
+    /// Color theme selection modal
     ThemeSelector,
+    /// AI model selection modal
     ModelSelector,
+    /// Session list and management modal
     SessionList,
+    /// File search and browser modal
     FileSearch,
+    /// Command palette (searchable command list)
     CommandPalette,
+    /// Help documentation viewer
     Help,
 }
 
 /// Error from command execution
+///
+/// Rich error type for command failures, including a message and optional hint
+/// for helping the user fix the issue.
+///
+/// # Fields
+///
+/// - `message`: Primary error description (required)
+/// - `hint`: Optional suggestion for resolving the error
+///
+/// # Builder Pattern
+///
+/// The `with_hint()` method enables fluent error construction:
+///
+/// ```rust
+/// use crate::commands::CommandError;
+///
+/// let error = CommandError::new("Unknown command: /foo")
+///     .with_hint("Type /help to see available commands");
+/// ```
+///
+/// # Display Format
+///
+/// When displayed via `Display` trait:
+/// - Without hint: "Unknown command"
+/// - With hint: "Unknown command (Type /help to see available commands)"
+///
+/// # Example
+///
+/// ```rust
+/// use crate::commands::{CommandError, CommandResult, CommandOutput};
+///
+/// fn validate_arg(value: &str) -> CommandResult {
+///     if value.is_empty() {
+///         return Err(
+///             CommandError::new("Argument cannot be empty")
+///                 .with_hint("Provide a non-empty value")
+///         );
+///     }
+///     Ok(CommandOutput::Silent)
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct CommandError {
+    /// Primary error message
     pub message: String,
+    /// Optional hint for resolving the error
     pub hint: Option<String>,
 }
 
@@ -95,21 +350,68 @@ impl std::fmt::Display for CommandError {
 impl std::error::Error for CommandError {}
 
 /// Context passed to command handlers
+///
+/// Contains all runtime information needed by a command handler to execute,
+/// including parsed arguments, current environment state, and metadata.
+///
+/// # Fields
+///
+/// ## Input Parsing
+///
+/// - `input`: Full command string as typed by user (e.g., "/help theme")
+/// - `command_name`: The matched command name (could be primary name or alias)
+/// - `args`: Parsed and typed arguments as a HashMap
+/// - `raw_args`: Unparsed argument string (everything after command name)
+///
+/// ## Environment State
+///
+/// - `cwd`: Current working directory (for file-related commands)
+/// - `session_id`: Optional current session ID (for session management)
+/// - `model`: Optional current AI model name
+///
+/// # Argument Access Helpers
+///
+/// The context provides typed accessor methods:
+/// - `get_string()`: Get a string argument by name
+/// - `get_bool()`: Get a boolean argument by name
+/// - `get_int()`: Get an integer argument by name
+/// - `has_flag()`: Check if a boolean flag is true
+///
+/// # Example
+///
+/// ```rust
+/// use crate::commands::{CommandContext, CommandResult, CommandOutput};
+/// use std::collections::HashMap;
+///
+/// fn my_handler(ctx: &CommandContext) -> CommandResult {
+///     // Access parsed arguments
+///     let name = ctx.get_string("name").unwrap_or("default");
+///     let verbose = ctx.has_flag("verbose");
+///
+///     // Access environment state
+///     println!("Running in: {}", ctx.cwd);
+///     if let Some(ref session) = ctx.session_id {
+///         println!("Session: {}", session);
+///     }
+///
+///     Ok(CommandOutput::Message(format!("Hello, {}!", name)))
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct CommandContext {
-    /// The full input text (including slash)
+    /// The full input text (including slash) as typed by user
     pub input: String,
-    /// The command name that was matched
+    /// The command name that was matched (could be alias)
     pub command_name: String,
-    /// Parsed arguments
+    /// Parsed and typed arguments
     pub args: HashMap<String, ArgumentValue>,
-    /// Raw argument string (everything after command name)
+    /// Raw argument string (everything after command name, unparsed)
     pub raw_args: String,
     /// Current working directory
     pub cwd: String,
-    /// Current session ID
+    /// Current session ID (if in a session)
     pub session_id: Option<String>,
-    /// Current model
+    /// Current AI model name (if set)
     pub model: Option<String>,
 }
 
@@ -281,24 +583,82 @@ impl CommandArgument {
 }
 
 /// A command definition
+///
+/// Complete specification of a slash command including metadata, arguments,
+/// and the handler function that executes the command logic.
+///
+/// # Fields
+///
+/// ## Metadata
+///
+/// - `name`: Primary command name without slash (e.g., "help", "quit")
+/// - `description`: Short description shown in help/autocomplete
+/// - `usage`: Usage example shown in help (e.g., "/help [command]")
+/// - `category`: Organizational category (UI, Session, Tools, etc.)
+///
+/// ## Aliases and Arguments
+///
+/// - `aliases`: Alternative names for the command (e.g., "h" for "help")
+/// - `arguments`: Argument definitions with types, defaults, validation
+///
+/// ## Handler
+///
+/// - `handler`: Boxed closure that implements the command logic
+///
+/// ## Subcommands (Optional)
+///
+/// - `is_group`: True if this command has subcommands
+/// - `subcommands`: List of subcommand names (e.g., ["info", "new", "list"])
+///
+/// # Builder Pattern
+///
+/// The Command struct uses a builder pattern for fluent construction:
+///
+/// ```rust
+/// use crate::commands::{Command, CommandCategory, CommandArgument, CommandOutput};
+///
+/// let cmd = Command::new(
+///     "greet",
+///     "Greet the user",
+///     CommandCategory::Ui,
+///     Box::new(|ctx| Ok(CommandOutput::Silent)),
+/// )
+/// .alias("hi")
+/// .alias("hello")
+/// .arg(CommandArgument::string("name", "User's name"))
+/// .usage("/greet <name>");
+/// ```
+///
+/// # Handler Function Signature
+///
+/// Handlers must match this signature:
+/// ```rust
+/// Box<dyn Fn(&CommandContext) -> CommandResult + Send + Sync>
+/// ```
+///
+/// Where:
+/// - `Fn`: Can be called multiple times without consuming
+/// - `Send + Sync`: Thread-safe for concurrent access
+/// - `&CommandContext`: Immutable reference to execution context
+/// - `CommandResult`: Returns Ok(CommandOutput) or Err(CommandError)
 pub struct Command {
     /// Primary command name (without slash)
     pub name: String,
-    /// Short description for help
+    /// Short description for help and autocomplete
     pub description: String,
-    /// Usage example
+    /// Usage example (e.g., "/command [args]")
     pub usage: String,
-    /// Command category
+    /// Command category for organization
     pub category: CommandCategory,
-    /// Alternative names (aliases)
+    /// Alternative names (aliases like "h" for "help")
     pub aliases: Vec<String>,
-    /// Command arguments
+    /// Argument definitions
     pub arguments: Vec<CommandArgument>,
-    /// The command handler
+    /// The command handler function
     pub handler: CommandHandler,
-    /// Whether this is a grouped command (has subcommands)
+    /// Whether this command has subcommands
     pub is_group: bool,
-    /// Subcommands (if is_group)
+    /// Subcommand names (if is_group is true)
     pub subcommands: Vec<String>,
 }
 

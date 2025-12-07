@@ -1,14 +1,89 @@
-//! Text area widget with proper cursor positioning
+//! Multi-line text area widget with cursor tracking
 //!
-//! Adapted from OpenAI Codex (MIT License)
+//! This module provides a stateful text area component for multi-line text input
+//! with proper cursor positioning and efficient text wrapping.
+//!
+//! # Architecture
+//!
+//! The text area is split into two parts:
+//! - `TextArea`: Stateful data structure holding text content, cursor position, and wrap cache
+//! - `TextAreaWidget`: Stateless widget that renders a `TextArea` reference
+//!
+//! This separation follows the stateful widget pattern common in Ratatui applications.
+//!
+//! # Features
+//!
+//! ## Unicode-Aware Cursor Positioning
+//!
+//! The cursor position is tracked in **byte offsets** (matching Rust's string indexing),
+//! but displayed using **display width** (accounting for wide characters like emoji and
+//! CJK characters). This is critical for proper cursor rendering in terminals.
+//!
+//! ```rust,ignore
+//! let text = "Hello 世界"; // "世界" are 2-column wide characters
+//! // Byte offset: 11 (5 ASCII + 6 UTF-8 bytes)
+//! // Display width: 9 (5 + 4 columns)
+//! ```
+//!
+//! ## Cached Line Wrapping
+//!
+//! Text wrapping is expensive to compute on every render, so results are cached:
+//! - `WrapCache` stores wrapped line byte ranges for a given width
+//! - Cache is invalidated when text changes or render width changes
+//! - Uses `RefCell` for interior mutability (cache updates during const `&self` methods)
+//!
+//! ## Text Wrapping Algorithm
+//!
+//! Wrapping is performed by the `textwrap` crate using the `FirstFit` algorithm:
+//! - Breaks at word boundaries when possible
+//! - Preserves trailing spaces + sentinel byte for cursor positioning
+//! - Returns byte ranges (`Range<usize>`) for each wrapped line
+//!
+//! The sentinel byte hack allows the cursor to be positioned "at the end" of a line,
+//! which is technically one byte past the last visible character.
+//!
+//! # Usage Pattern
+//!
+//! ```rust,ignore
+//! // Create stateful text area
+//! let mut textarea = TextArea::new();
+//! textarea.set_text("Multi-line\ntext content");
+//! textarea.set_cursor(10);
+//!
+//! // Render with widget
+//! let widget = TextAreaWidget::new(&textarea)
+//!     .style(Style::default().fg(Color::White))
+//!     .placeholder("Type here...", Style::default().fg(Color::DarkGray));
+//! frame.render_widget(widget, area);
+//!
+//! // Calculate cursor position for terminal
+//! if let Some((x, y)) = textarea.cursor_pos(area) {
+//!     frame.set_cursor_position((x, y));
+//! }
+//! ```
+//!
+//! # Widget Trait Implementation
+//!
+//! `TextAreaWidget` implements `Widget` by:
+//! 1. Rendering placeholder if text is empty
+//! 2. Computing wrapped lines for the given area width
+//! 3. Rendering each wrapped line with `buf.set_string()`
+//! 4. Handling sentinel byte truncation (subtracting 1 from range end)
+//!
+//! # Cursor Position Calculation
+//!
+//! The `cursor_pos()` method computes the on-screen (x, y) position:
+//! 1. Get wrapped line ranges for the area width
+//! 2. Find which wrapped line contains the cursor byte offset (`wrapped_line_index`)
+//! 3. Calculate display width from line start to cursor
+//! 4. Clamp to visible area and return (x, y) coordinates
+//!
+//! # Credit
+//!
+//! Adapted from OpenAI Codex (MIT License):
 //! https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/textarea.rs
 //!
-//! This module provides a stateful text area component with:
-//! - Proper multi-line cursor positioning
-//! - Cached line wrapping for performance
-//! - Unicode-aware column calculation
-//!
-//! Integrated with AppState for multi-line input support.
+//! Integrated with AppState for multi-line input support in Composer.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -19,14 +94,36 @@ use std::ops::Range;
 use textwrap::Options;
 use unicode_width::UnicodeWidthStr;
 
-/// A text area with cursor tracking and proper positioning
+/// A stateful text area widget with cursor tracking and efficient text wrapping.
+///
+/// This struct maintains the text content, cursor position, and cached line wrapping
+/// information. It is designed to be used with `TextAreaWidget` for rendering.
+///
+/// # Cursor Position
+///
+/// The cursor position is stored as a **byte offset** into the text string, not a
+/// character index or display column. This matches Rust's string indexing semantics
+/// but requires special handling for:
+/// - Unicode characters (multi-byte sequences)
+/// - Wide characters (CJK, emoji) that take 2 terminal columns
+///
+/// Use `cursor_pos()` to convert the byte offset to terminal (x, y) coordinates.
+///
+/// # Wrap Caching
+///
+/// Line wrapping is computed lazily and cached using `RefCell` for interior mutability.
+/// The cache is invalidated when:
+/// - Text content changes (via `set_text()`)
+/// - Rendering width changes
+///
+/// This optimization is critical for responsive rendering when typing.
 #[derive(Debug)]
 pub struct TextArea {
     /// The text content
     text: String,
-    /// Cursor position in bytes
+    /// Cursor position in bytes (not characters or display columns)
     cursor_pos: usize,
-    /// Cached wrapped lines
+    /// Cached wrapped lines for performance
     wrap_cache: RefCell<Option<WrapCache>>,
 }
 
@@ -81,7 +178,25 @@ impl TextArea {
         self.wrapped_lines(width).len().max(1) as u16
     }
 
-    /// Compute the on-screen cursor position
+    /// Compute the on-screen (x, y) cursor position for the given rendering area.
+    ///
+    /// This method converts the byte-offset cursor position to terminal coordinates
+    /// by accounting for:
+    /// - Text wrapping within the area width
+    /// - Unicode display width (not byte length)
+    /// - Area offset (x, y position of the area)
+    ///
+    /// Returns `None` if the cursor is outside the visible area or if the area is
+    /// too small to render.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let area = Rect::new(5, 10, 40, 3);
+    /// if let Some((x, y)) = textarea.cursor_pos(area) {
+    ///     frame.set_cursor_position((x, y));
+    /// }
+    /// ```
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         if area.width == 0 || area.height == 0 {
             return None;
@@ -139,7 +254,21 @@ impl Default for TextArea {
     }
 }
 
-/// Wrap text and return byte ranges for each line
+/// Wrap text and return byte ranges for each wrapped line.
+///
+/// This function uses the `textwrap` crate to wrap text at the given width, then
+/// converts the wrapped string slices to byte ranges into the original text.
+///
+/// # Sentinel Byte Hack
+///
+/// Each range includes a sentinel byte at the end (range.end + 1) to allow the
+/// cursor to be positioned "at the end" of a line. Without this, the cursor
+/// couldn't be placed after the last character on a wrapped line.
+///
+/// # Returns
+///
+/// A vector of byte ranges, one per wrapped line. For empty text, returns a
+/// single 0..0 range.
 #[allow(clippy::single_range_in_vec_init)] // Single-element vec is intentional for empty text case
 fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     if text.is_empty() {
@@ -175,7 +304,25 @@ fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     lines
 }
 
-/// Widget that renders a TextArea
+/// A stateless widget for rendering a `TextArea`.
+///
+/// This widget takes a reference to a `TextArea` and renders it to the terminal
+/// buffer. It supports:
+/// - Custom text styling
+/// - Placeholder text when empty
+/// - Automatic text wrapping
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// let widget = TextAreaWidget::new(&textarea)
+///     .style(Style::default().fg(Color::White))
+///     .placeholder("Type here...", Style::default().fg(Color::DarkGray));
+/// frame.render_widget(widget, area);
+/// ```
+///
+/// The cursor position is NOT rendered by this widget. Use `textarea.cursor_pos()`
+/// to get coordinates and set the cursor separately.
 pub struct TextAreaWidget<'a> {
     textarea: &'a TextArea,
     style: Style,

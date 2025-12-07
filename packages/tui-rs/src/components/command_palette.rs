@@ -1,6 +1,146 @@
-//! Command palette modal
+//! Command palette modal with fuzzy search
 //!
-//! Provides fuzzy search over slash commands.
+//! This module implements a command palette (similar to VS Code's Cmd+P or Sublime's
+//! Cmd+Shift+P) for discovering and executing slash commands via fuzzy search.
+//!
+//! # Architecture
+//!
+//! ## CommandPalette (Stateful Component)
+//!
+//! The `CommandPalette` struct maintains:
+//! - `matcher`: Fuzzy search engine (`SlashCommandMatcher`) over command registry
+//! - `query`: Current search text
+//! - `cursor`: Cursor position in the search query
+//! - `matches`: Filtered command results (limited to 15)
+//! - `selected`: Index of the currently highlighted command
+//! - `visible`: Whether the modal is shown
+//!
+//! This is a **stateful widget** that maintains its own state across renders.
+//!
+//! ## Fuzzy Search
+//!
+//! The palette uses `SlashCommandMatcher` (from `crate::commands`) to perform fuzzy
+//! matching on command names and descriptions. Results are ranked by match quality
+//! and limited to 15 to keep the UI responsive.
+//!
+//! When the search query is empty, all commands are shown (also limited to 15).
+//!
+//! # Widget Trait Implementation
+//!
+//! `CommandPalette` implements rendering via a `render()` method (not the Widget trait
+//! directly) that takes a `&mut Frame`:
+//!
+//! 1. Calculates centered modal position (45-70 cols wide, 10-20 rows tall)
+//! 2. Clears background with `Clear` widget
+//! 3. Draws bordered block with green accent (command mode color)
+//! 4. Uses vertical layout to split into:
+//!    - Input box (3 rows) with inline cursor rendering
+//!    - Results list (remaining space)
+//!
+//! ## Input Rendering
+//!
+//! The search input is rendered with:
+//! - Prefix `/` to indicate slash command
+//! - User query text
+//! - Cursor positioned using `frame.set_cursor_position()`
+//! - Unicode-aware cursor positioning via `UnicodeWidthStr`
+//!
+//! ## Results Rendering
+//!
+//! Results are rendered as a `List` widget with:
+//! - Command name in cyan (`/command`)
+//! - Description in dark gray
+//! - Selected item highlighted with dark gray background
+//! - Empty state messages ("Type to search..." or "No matching commands")
+//!
+//! # Keyboard Event Handling
+//!
+//! The palette provides methods for handling keyboard input:
+//!
+//! ## Text Input
+//! - `insert_char(c)`: Insert character at cursor, update search
+//! - `backspace()`: Delete character before cursor, update search
+//! - `move_left()` / `move_right()`: Navigate cursor within query
+//!
+//! ## Navigation
+//! - `move_up()` / `move_down()`: Navigate through search results
+//! - Selection wraps at bounds (stays at 0 or max)
+//!
+//! ## Selection
+//! - `selected_command()`: Get the currently highlighted command
+//! - `confirm()`: Return selected command name and hide modal
+//!
+//! All text input methods trigger `search()` which updates the `matches` list.
+//!
+//! # Usage Pattern
+//!
+//! ```rust,ignore
+//! // Create palette with command registry
+//! let mut palette = CommandPalette::new(Arc::new(registry));
+//!
+//! // Show modal (typically bound to Ctrl+K)
+//! palette.show();
+//!
+//! // Handle keyboard events
+//! match key_code {
+//!     KeyCode::Char(c) => palette.insert_char(c),
+//!     KeyCode::Backspace => palette.backspace(),
+//!     KeyCode::Up => palette.move_up(),
+//!     KeyCode::Down => palette.move_down(),
+//!     KeyCode::Enter => {
+//!         if let Some(cmd) = palette.confirm() {
+//!             // Execute command
+//!         }
+//!     }
+//!     KeyCode::Esc => palette.hide(),
+//!     _ => {}
+//! }
+//!
+//! // Render if visible
+//! if palette.is_visible() {
+//!     palette.render(&mut frame, frame.area());
+//! }
+//! ```
+//!
+//! # Search Implementation
+//!
+//! The `search()` method:
+//! 1. Calls `matcher.get_matches(&query)` to perform fuzzy search
+//! 2. Truncates results to 15 items (performance + UX)
+//! 3. Resets selection to 0 if out of bounds
+//!
+//! The fuzzy matcher (from `crate::commands`) scores matches based on:
+//! - Command name matching
+//! - Description matching
+//! - Match quality (consecutive characters, word boundaries, etc.)
+//!
+//! # Layout Details
+//!
+//! Modal layout:
+//! ```text
+//! ┌─ Commands ──────────┐
+//! │ ┌──────────────────┐│
+//! │ │ /query_          ││  <- Input (3 rows, bordered)
+//! │ └──────────────────┘│
+//! │                     │
+//! │ /help  Show help   │  <- Results (List widget)
+//! │ /quit  Exit app    │
+//! │ ...                 │
+//! └─────────────────────┘
+//! ```
+//!
+//! # Registry Updates
+//!
+//! The palette holds an `Arc<CommandRegistry>` for efficiency. If the registry needs
+//! to be updated at runtime, use `update_registry()` which replaces the matcher and
+//! refreshes search results.
+//!
+//! # Performance Considerations
+//!
+//! - Search is performed on every keystroke
+//! - Results are limited to 15 to keep rendering fast
+//! - Fuzzy matching is optimized for command lists (typically < 50 commands)
+//! - Cursor calculation uses unicode width (not byte length) for correct display
 
 use std::sync::Arc;
 
@@ -14,7 +154,50 @@ use ratatui::{
 
 use crate::commands::{CommandMatch, CommandRegistry, SlashCommandMatcher};
 
-/// Command palette modal state
+/// Stateful command palette modal with fuzzy search.
+///
+/// Maintains search query state, cursor position, and filtered command matches.
+/// Designed to help users discover and execute slash commands via keyboard-driven
+/// fuzzy search.
+///
+/// # State Management
+///
+/// The palette is a stateful widget that tracks:
+/// - Current search query and cursor position
+/// - Filtered/matched commands (limited to 15 results)
+/// - Selected command index
+/// - Modal visibility
+///
+/// # Rendering
+///
+/// Unlike most widgets, `CommandPalette` provides a `render(&mut Frame)` method
+/// instead of implementing the `Widget` trait directly. This allows it to manage
+/// cursor positioning via `frame.set_cursor_position()`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let mut palette = CommandPalette::new(registry);
+/// palette.show();
+///
+/// // In event loop
+/// match key {
+///     KeyCode::Char(c) => palette.insert_char(c),
+///     KeyCode::Backspace => palette.backspace(),
+///     KeyCode::Up => palette.move_up(),
+///     KeyCode::Down => palette.move_down(),
+///     KeyCode::Enter => {
+///         if let Some(cmd) = palette.confirm() {
+///             execute_command(cmd);
+///         }
+///     }
+/// }
+///
+/// // In render loop
+/// if palette.is_visible() {
+///     palette.render(frame, frame.area());
+/// }
+/// ```
 pub struct CommandPalette {
     /// Command matcher for fuzzy search
     matcher: SlashCommandMatcher,
@@ -49,7 +232,10 @@ impl CommandPalette {
         self.search();
     }
 
-    /// Show the modal
+    /// Show the modal and reset search state.
+    ///
+    /// Clears the query, resets cursor and selection, and performs an initial
+    /// search to populate results with all commands.
     pub fn show(&mut self) {
         self.visible = true;
         self.query.clear();
@@ -68,7 +254,9 @@ impl CommandPalette {
         self.visible
     }
 
-    /// Insert a character
+    /// Insert a character at the cursor position and update search results.
+    ///
+    /// Handles unicode characters correctly by using character byte length.
     pub fn insert_char(&mut self, c: char) {
         self.query.insert(self.cursor, c);
         self.cursor += c.len_utf8();
@@ -132,14 +320,22 @@ impl CommandPalette {
         self.matches.get(self.selected)
     }
 
-    /// Confirm selection and return the command name
+    /// Confirm the selected command, hide the modal, and return the command name.
+    ///
+    /// Returns `None` if no command is selected or if the results list is empty.
     pub fn confirm(&mut self) -> Option<String> {
         let name = self.selected_command().map(|m| m.command.name.clone());
         self.hide();
         name
     }
 
-    /// Perform the search
+    /// Perform fuzzy search and update match results.
+    ///
+    /// Uses `SlashCommandMatcher` to find commands matching the query, then:
+    /// 1. Truncates to 15 results (performance + UX)
+    /// 2. Resets selection to 0 if out of bounds
+    ///
+    /// Called automatically by text input methods.
     fn search(&mut self) {
         self.matches = self.matcher.get_matches(&self.query);
         // Limit to 15 results
@@ -150,7 +346,16 @@ impl CommandPalette {
         }
     }
 
-    /// Render the modal
+    /// Render the command palette modal to the frame.
+    ///
+    /// This method:
+    /// 1. Calculates centered modal position
+    /// 2. Clears background
+    /// 3. Renders bordered block with green accent
+    /// 4. Lays out input and results sections
+    /// 5. Sets cursor position for the input field
+    ///
+    /// Does nothing if the modal is not visible.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         if !self.visible {
             return;

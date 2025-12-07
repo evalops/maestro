@@ -1,9 +1,105 @@
-//! OpenAI API client
+//! OpenAI API Client
 //!
-//! Implements streaming communication with the OpenAI API.
-//! Supports both Chat Completions API (gpt-4o, o1) and Responses API (gpt-5.1-codex-*).
+//! Implements streaming communication with OpenAI's APIs, supporting two different endpoints:
 //!
-//! Note: The Responses API models (gpt-5.1-codex-*) may require ChatGPT Plus authentication.
+//! # API Endpoints
+//!
+//! ## Chat Completions API (`/v1/chat/completions`)
+//!
+//! Used by standard models like GPT-4o, GPT-4 Turbo, o1-preview, o1-mini:
+//!
+//! - Request format: Array of messages with role/content
+//! - Streaming: Line-based SSE with `data:` prefix
+//! - Tool calls: Accumulated in delta events, sent in completion
+//! - Special marker: `data: [DONE]` signals end of stream
+//!
+//! ## Responses API (`/v1/responses`)
+//!
+//! Used by advanced models like gpt-5.1-codex-max, gpt-5.1-codex-lite, o3:
+//!
+//! - Request format: Array of ResponseItems (messages, function calls, outputs)
+//! - Streaming: Structured SSE with distinct event types
+//! - Tool calls: Sent as separate function_call items
+//! - Reasoning: Native reasoning/thinking support with encrypted content
+//! - Schema restrictions: No oneOf/anyOf/allOf at top level
+//!
+//! Note: Responses API models may require ChatGPT Plus authentication.
+//!
+//! # Rust Concepts
+//!
+//! ## Two SSE Parsing Strategies
+//!
+//! This module demonstrates two approaches to parsing Server-Sent Events:
+//!
+//! ### 1. Manual Line-Based Parsing (Chat Completions)
+//!
+//! ```rust,ignore
+//! let mut buffer = String::new();
+//! while let Some(chunk) = stream.next().await {
+//!     buffer.push_str(&String::from_utf8_lossy(&chunk?));
+//!     while let Some(pos) = buffer.find('\n') {
+//!         let line = buffer[..pos].trim();
+//!         // Process line...
+//!     }
+//! }
+//! ```
+//!
+//! Advantages: Simple, full control, minimal dependencies.
+//!
+//! ### 2. eventsource-stream Crate (Responses API)
+//!
+//! ```rust,ignore
+//! let mut sse_stream = stream
+//!     .map(|result| result.map_err(std::io::Error::other))
+//!     .eventsource();
+//! while let Some(event_result) = sse_stream.next().await {
+//!     // event_result contains parsed SSE event
+//! }
+//! ```
+//!
+//! Advantages: Handles reconnection, proper SSE spec compliance.
+//!
+//! ## Pattern Matching for API Selection
+//!
+//! Uses `str::starts_with` and `str::contains` for model detection:
+//!
+//! ```rust,ignore
+//! fn uses_responses_api(model: &str) -> bool {
+//!     model.contains("codex") || model.starts_with("gpt-5") || model.starts_with("o3")
+//! }
+//! ```
+//!
+//! ## Function Composition
+//!
+//! The module uses helper functions to organize complex logic:
+//!
+//! - `classify_error()`: Maps API errors to retry strategies
+//! - `extract_function_call()`: Parses function call items
+//! - `filter_responses_api_tools()`: Removes incompatible tool schemas
+//! - `parse_retry_after()`: Extracts retry duration from error messages
+//!
+//! ## Error Classification for Retries
+//!
+//! The `ApiError` enum classifies errors into categories:
+//!
+//! - `ContextWindowExceeded`: Fatal, need to reduce input
+//! - `QuotaExceeded`: Fatal, billing issue
+//! - `RateLimited`: Retryable with delay
+//! - `Retryable`: Temporary failures (server overload)
+//! - `Fatal`: Authentication, invalid requests
+//!
+//! # Example: Model-Specific Behavior
+//!
+//! ```rust,ignore
+//! let body = if uses_responses_api(&config.model) {
+//!     self.build_responses_request_body(messages, config)
+//! } else {
+//!     self.build_chat_request_body(messages, config)
+//! };
+//! ```
+//!
+//! This demonstrates runtime polymorphism without trait objects - the decision
+//! is made at runtime but with zero-cost static dispatch.
 
 use anyhow::{Context, Result};
 use eventsource_stream::Eventsource;
@@ -16,14 +112,37 @@ use super::client::{AiClient, AiProvider};
 use super::types::*;
 
 /// SSE event structure for Responses API (matches OpenAI's format)
+///
+/// # Serde Field Attributes
+///
+/// - `#[serde(rename = "type")]`: Map Rust field `kind` to JSON field `type`
+///   (avoiding Rust keyword)
+/// - `#[serde(default)]`: Use default value (None) if field is missing
+/// - `#[allow(dead_code)]`: Suppress warnings for fields reserved for future use
+///
+/// # Event Types
+///
+/// The Responses API emits many event types:
+///
+/// - `response.created`: Initial response metadata
+/// - `response.output_item.added`: New output item started
+/// - `response.output_text.delta`: Incremental text content
+/// - `response.function_call_arguments.delta`: Incremental tool arguments
+/// - `response.reasoning_text.delta`: Thinking/reasoning content
+/// - `response.completed`: Response finished successfully
+/// - `response.failed`: Error occurred
 #[derive(Debug, Deserialize)]
 struct ResponsesSseEvent {
+    /// Event type (e.g., "response.created", "response.output_text.delta")
     #[serde(rename = "type")]
     kind: String,
+    /// Response metadata (present in some events)
     #[serde(default)]
     response: Option<serde_json::Value>,
+    /// Output item data (present in item-related events)
     #[serde(default)]
     item: Option<serde_json::Value>,
+    /// Delta content (text, reasoning, or arguments)
     #[serde(default)]
     delta: Option<String>,
     /// Index of the content part within the output item (for multi-part content)
@@ -40,23 +159,66 @@ struct ResponsesSseEvent {
 }
 
 /// Error classification for retry logic
+///
+/// This enum categorizes API errors to determine the appropriate retry strategy.
+/// It's used internally by error handling logic to decide whether to retry,
+/// wait, or fail immediately.
+///
+/// # Design Pattern
+///
+/// This is the "parse, don't validate" pattern - instead of checking error
+/// strings repeatedly, we parse once into a structured type that encodes
+/// the retry decision.
 #[derive(Debug, Clone)]
 pub enum ApiError {
     /// Context window exceeded - fatal, need to reduce input
+    ///
+    /// This error means the conversation history is too long. The client
+    /// should truncate messages or use a model with a larger context window.
     ContextWindowExceeded,
+
     /// Quota exceeded - fatal, billing issue
+    ///
+    /// The API key has exceeded its usage quota. This requires manual
+    /// intervention (upgrading plan, adding billing info).
     QuotaExceeded,
+
     /// Rate limited - retryable with delay
+    ///
+    /// Too many requests in a short time. Should retry after the specified
+    /// duration (or a default backoff if not specified).
     RateLimited {
         retry_after: Option<std::time::Duration>,
     },
+
     /// Generic retryable error
+    ///
+    /// Temporary server issues (overloaded, maintenance). Should retry
+    /// with exponential backoff.
     Retryable { message: String },
+
     /// Fatal error
+    ///
+    /// Permanent failures (invalid API key, bad request, model not found).
+    /// Retrying won't help - the request needs to be fixed.
     Fatal { message: String },
 }
 
 /// Extract function call from a ResponseItem
+///
+/// # Pattern: Option Chaining
+///
+/// This function uses the `?` operator with `Option` to short-circuit if any
+/// field is missing. This is more concise than nested `if let` or `match`:
+///
+/// ```rust,ignore
+/// let item_type = item.get("type")?.as_str()?;  // Returns None if missing
+/// ```
+///
+/// # Returns
+///
+/// `Some((call_id, name, arguments))` if this is a function_call item,
+/// `None` otherwise.
 fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, String)> {
     let item_type = item.get("type")?.as_str()?;
     if item_type != "function_call" {
@@ -71,6 +233,26 @@ fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, St
 }
 
 /// Classify API error for retry logic
+///
+/// # Strategy
+///
+/// 1. Check error code (most reliable)
+/// 2. Fall back to error type
+/// 3. Check message for keywords ("overloaded", "temporarily")
+///
+/// # Pattern: Early Returns
+///
+/// Uses pattern matching with early returns for clarity:
+///
+/// ```rust,ignore
+/// match code {
+///     Some("rate_limit_exceeded") => return ApiError::RateLimited { ... },
+///     Some("invalid_api_key") => return ApiError::Fatal { ... },
+///     _ => { /* continue checking */ }
+/// }
+/// ```
+///
+/// This is more readable than deeply nested if/else chains.
 fn classify_error(error: &serde_json::Value) -> ApiError {
     let code = error.get("code").and_then(|c| c.as_str());
     let error_type = error.get("type").and_then(|t| t.as_str());
@@ -140,7 +322,30 @@ fn parse_retry_after(message: &str) -> Option<std::time::Duration> {
 }
 
 /// Check if a tool schema has incompatible constructs for Responses API
-/// Responses API doesn't support oneOf, anyOf, allOf, enum at top level
+///
+/// The Responses API has stricter schema requirements than Chat Completions.
+/// It doesn't support JSON Schema combinators at the top level:
+///
+/// - `oneOf`: Union types (A OR B)
+/// - `anyOf`: Any of multiple schemas
+/// - `allOf`: Intersection types (A AND B)
+/// - `not`: Negation
+/// - `enum`: Top-level enums
+///
+/// These are often used in complex tool schemas but must be avoided for
+/// Responses API compatibility. Consider simplifying schemas or using
+/// Chat Completions API instead.
+///
+/// # Pattern: Object Introspection
+///
+/// Uses `as_object()` to check if JSON value is an object, then checks
+/// for specific keys:
+///
+/// ```rust,ignore
+/// if let Some(obj) = schema.as_object() {
+///     obj.contains_key("oneOf") || obj.contains_key("anyOf")
+/// }
+/// ```
 fn has_incompatible_schema(schema: &serde_json::Value) -> bool {
     if let Some(obj) = schema.as_object() {
         obj.contains_key("oneOf")
@@ -212,8 +417,19 @@ fn api_url_for_model(model: &str) -> &'static str {
 }
 
 /// OpenAI API client
+///
+/// Handles communication with OpenAI's APIs (Chat Completions and Responses).
+/// Automatically selects the appropriate API endpoint based on model name.
+///
+/// # Thread Safety
+///
+/// Like `AnthropicClient`, this implements `Send + Sync` for safe concurrent use.
+/// The `reqwest::Client` is internally synchronized and benefits from connection
+/// pooling when reused across requests.
 pub struct OpenAiClient {
+    /// Reusable HTTP client with connection pooling
     client: reqwest::Client,
+    /// API key for authentication (via Authorization: Bearer header)
     api_key: String,
 }
 
@@ -1103,7 +1319,29 @@ impl AiClient for OpenAiClient {
 // ============================================================================
 // OpenAI API Types
 // ============================================================================
+//
+// These types represent the OpenAI Chat Completions API request/response format.
+// They use serde for serialization (requests) and deserialization (responses).
+//
+// # Serde Serialization Attributes
+//
+// - `#[serde(skip_serializing_if = "Option::is_none")]`: Omit null fields from JSON
+// - `#[serde(untagged)]`: Serialize enum as the inner type (no type field)
+// - `#[serde(tag = "type")]`: Add a type discriminator field for enums
 
+/// Message in OpenAI format (role + content)
+///
+/// # Serde Conditional Serialization
+///
+/// Fields marked with `skip_serializing_if` are omitted from JSON if None:
+///
+/// ```rust,ignore
+/// #[serde(skip_serializing_if = "Option::is_none")]
+/// tool_calls: Option<Vec<OpenAiToolCall>>,
+/// ```
+///
+/// This generates cleaner JSON - `{"role": "user", "content": "Hi"}` instead
+/// of `{"role": "user", "content": "Hi", "tool_calls": null}`.
 #[derive(Debug, Serialize)]
 struct OpenAiMessage {
     role: String,
@@ -1115,6 +1353,19 @@ struct OpenAiMessage {
     tool_call_id: Option<String>,
 }
 
+/// Content can be either simple text or structured parts
+///
+/// # Serde Untagged Enum
+///
+/// The `#[serde(untagged)]` attribute means this enum serializes without
+/// a type discriminator. Instead, serde tries each variant in order:
+///
+/// ```json
+/// "Hello"                              -> Text("Hello")
+/// [{"type": "text", "text": "Hi"}]     -> Parts([...])
+/// ```
+///
+/// This matches OpenAI's API which accepts both formats.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum OpenAiContent {
@@ -1122,6 +1373,17 @@ enum OpenAiContent {
     Parts(Vec<OpenAiContentPart>),
 }
 
+/// Content part (text or image) in a multi-part message
+///
+/// # Serde Tagged Enum
+///
+/// Unlike `OpenAiContent` (untagged), this uses `tag = "type"` to add
+/// a discriminator field:
+///
+/// ```json
+/// {"type": "text", "text": "Hello"}
+/// {"type": "image_url", "image_url": {"url": "..."}}
+/// ```
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum OpenAiContentPart {
@@ -1220,6 +1482,27 @@ struct PromptTokensDetails {
 }
 
 /// Accumulator for building tool calls from streaming deltas
+///
+/// # Problem
+///
+/// In Chat Completions API, tool calls arrive as incremental deltas:
+///
+/// ```json
+/// {"index": 0, "id": "call_123"}
+/// {"index": 0, "function": {"name": "read"}}
+/// {"index": 0, "function": {"arguments": "{\"pa"}}
+/// {"index": 0, "function": {"arguments": "th\":"}}
+/// {"index": 0, "function": {"arguments": "\"/tmp\""}}
+/// {"index": 0, "function": {"arguments": "}"}}
+/// ```
+///
+/// # Solution
+///
+/// This struct accumulates the fragments into complete tool calls.
+/// We maintain a `Vec<ToolCallAccumulator>` indexed by the `index` field,
+/// appending to the appropriate accumulator as deltas arrive.
+///
+/// Once the stream completes, we serialize the complete tool calls.
 struct ToolCallAccumulator {
     id: String,
     name: String,

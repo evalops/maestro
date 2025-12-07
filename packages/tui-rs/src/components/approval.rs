@@ -1,6 +1,120 @@
-//! Approval modal for tool call confirmation
+//! Tool approval modal for safe mode
 //!
-//! Displays a modal dialog for approving or denying tool executions.
+//! This module provides a modal dialog system for approving or denying tool executions
+//! when running in safe mode. It implements a queue-based approval workflow with visual
+//! feedback and keyboard-driven interaction.
+//!
+//! # Architecture
+//!
+//! The approval system has three main components:
+//!
+//! ## ApprovalRequest
+//!
+//! Represents a pending approval request with:
+//! - `call_id`: Unique identifier for the tool call
+//! - `tool`: Tool name (e.g., "bash", "write", "edit")
+//! - `reason`: Human-readable explanation of what the tool will do
+//! - `command`: The actual command/action being performed
+//! - `args`: Full JSON arguments for the tool
+//! - `is_shell`: Flag indicating if this is a shell command (higher risk)
+//!
+//! Builder pattern for construction:
+//! ```rust,ignore
+//! let request = ApprovalRequest::new("call_123", "bash", args)
+//!     .with_reason("Install dependencies")
+//!     .with_command("npm install")
+//!     .shell();
+//! ```
+//!
+//! ## ApprovalModal
+//!
+//! A stateless widget that renders the approval UI:
+//! - Centered modal with amber border (warning color)
+//! - Displays reason, tool name, and command
+//! - Shows queue status if multiple approvals are pending
+//! - Keyboard hints: `[y]` approve, `[n]` deny, `[esc]` cancel
+//!
+//! The modal uses `Clear` widget to render over the main UI and draw a bordered
+//! panel in the center of the screen.
+//!
+//! ## ApprovalController
+//!
+//! Stateful controller managing the approval queue:
+//! - Maintains a FIFO queue of pending approvals
+//! - Tracks modal visibility
+//! - Provides `enqueue()`, `decide()`, and `current()` methods
+//! - Automatically shows/hides modal based on queue state
+//!
+//! # Widget Trait Implementation
+//!
+//! `ApprovalModal` implements `Widget` by:
+//! 1. Calculating centered modal position (40-70 cols wide, 10-20 rows tall)
+//! 2. Clearing the background with `Clear` widget
+//! 3. Drawing a bordered block with amber title
+//! 4. Using vertical layout to split content into sections:
+//!    - Reason (if provided)
+//!    - Tool name with shell indicator
+//!    - Command display (bordered, scrollable)
+//!    - Queue status
+//!    - Keyboard hints
+//!
+//! # Keyboard Event Handling
+//!
+//! The modal provides a static `handle_key()` method that maps key codes to decisions:
+//! - `y` or `Y` -> Approve
+//! - `n` or `N` -> Deny
+//! - `Esc` -> Cancel
+//! - Other keys -> None
+//!
+//! This follows the pattern of separating event handling from rendering. The app's
+//! event loop calls `handle_key()` and processes the decision via `ApprovalController`.
+//!
+//! # Usage Pattern
+//!
+//! ```rust,ignore
+//! // Create controller (typically in app state)
+//! let mut controller = ApprovalController::new();
+//!
+//! // Enqueue approval request
+//! controller.enqueue(ApprovalRequest::new("call_1", "bash", args));
+//!
+//! // Render modal if visible
+//! if controller.is_visible() {
+//!     if let Some(request) = controller.current() {
+//!         let modal = ApprovalModal::new(request)
+//!             .queue_size(controller.pending_count())
+//!             .focused(true);
+//!         frame.render_widget(modal, frame.area());
+//!     }
+//! }
+//!
+//! // Handle keyboard event
+//! if let Some(decision) = ApprovalModal::handle_key(key_code) {
+//!     if let Some((request, decision)) = controller.decide(decision) {
+//!         // Process the decision (approve/deny/cancel)
+//!     }
+//! }
+//! ```
+//!
+//! # Layout Details
+//!
+//! The modal uses `ratatui::layout::Layout` with vertical constraints:
+//! - Reason section: 2 rows (optional)
+//! - Tool section: 2 rows
+//! - Command block: Min 4 rows (scrollable)
+//! - Queue status: 1 row
+//! - Key hints: 2 rows
+//!
+//! The command is displayed in a bordered sub-block to visually separate it from
+//! metadata, emphasizing the action being approved.
+//!
+//! # Design Principles
+//!
+//! - **Safety-first**: Amber warning colors and prominent approval UI
+//! - **Transparency**: Shows full command and arguments before execution
+//! - **Queue visibility**: Users know how many approvals are pending
+//! - **Keyboard-driven**: Fast approval workflow with single-key actions
+//! - **Stateless rendering**: Modal can be re-rendered without state loss
 
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
@@ -11,7 +125,22 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 
 use crate::palette::theme;
 
-/// A pending approval request
+/// A pending tool approval request for safe mode.
+///
+/// Represents a tool call that requires user approval before execution. Contains
+/// all information needed to display in the approval modal and make an informed
+/// decision.
+///
+/// # Builder Pattern
+///
+/// Use the builder pattern to construct requests:
+///
+/// ```rust,ignore
+/// let request = ApprovalRequest::new("call_123", "bash", args)
+///     .with_reason("Install project dependencies")
+///     .with_command("npm install")
+///     .shell();
+/// ```
 #[derive(Debug, Clone)]
 pub struct ApprovalRequest {
     /// Unique ID for this request
@@ -75,7 +204,11 @@ impl ApprovalRequest {
     }
 }
 
-/// User's decision on an approval
+/// User's decision on a tool approval request.
+///
+/// - `Approve`: Allow the tool to execute
+/// - `Deny`: Reject the tool execution
+/// - `Cancel`: Cancel the approval flow (returns to agent without executing)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalDecision {
     Approve,
@@ -83,7 +216,21 @@ pub enum ApprovalDecision {
     Cancel,
 }
 
-/// Approval modal widget
+/// A stateless modal widget for displaying tool approval requests.
+///
+/// Renders a centered modal dialog with amber warning colors showing the tool
+/// details and awaiting user decision (y/n/esc).
+///
+/// # Widget Trait
+///
+/// Implements `ratatui::widgets::Widget` to render directly to a buffer:
+///
+/// ```rust,ignore
+/// let modal = ApprovalModal::new(&request)
+///     .queue_size(2)  // Show "2 more actions awaiting approval"
+///     .focused(true);
+/// frame.render_widget(modal, frame.area());
+/// ```
 pub struct ApprovalModal<'a> {
     /// The request being displayed
     request: &'a ApprovalRequest,
@@ -112,7 +259,17 @@ impl<'a> ApprovalModal<'a> {
         self
     }
 
-    /// Handle a key event, returning a decision if one was made
+    /// Handle a keyboard event and return a decision if the key is bound.
+    ///
+    /// # Key Bindings
+    ///
+    /// - `y` or `Y` -> Approve
+    /// - `n` or `N` -> Deny
+    /// - `Esc` -> Cancel
+    /// - Any other key -> None
+    ///
+    /// This is a static method since the modal itself is stateless. The app's
+    /// event loop should call this and process the result through `ApprovalController`.
     pub fn handle_key(code: KeyCode) -> Option<ApprovalDecision> {
         match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => Some(ApprovalDecision::Approve),
@@ -258,7 +415,29 @@ impl Widget for ApprovalModal<'_> {
     }
 }
 
-/// Controller for managing approval queue
+/// Stateful controller for managing the approval queue.
+///
+/// Maintains a FIFO queue of pending approval requests and tracks modal visibility.
+/// Provides methods to enqueue requests, get the current request, and process decisions.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let mut controller = ApprovalController::new();
+///
+/// // Add requests to queue
+/// controller.enqueue(request);
+///
+/// // Get current request for display
+/// if let Some(request) = controller.current() {
+///     // Render modal
+/// }
+///
+/// // Process decision
+/// if let Some((request, decision)) = controller.decide(ApprovalDecision::Approve) {
+///     // Execute or deny based on decision
+/// }
+/// ```
 pub struct ApprovalController {
     /// Pending approvals
     queue: Vec<ApprovalRequest>,

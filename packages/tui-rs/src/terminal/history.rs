@@ -45,8 +45,46 @@ use crate::protocol::HistoryLine;
 
 /// Push lines into terminal scrollback above the viewport.
 ///
-/// This uses ANSI scroll regions to insert content that persists in
-/// the terminal's native scrollback buffer.
+/// This is the core function for inserting content into the terminal's native
+/// scrollback buffer using ANSI scroll region manipulation. Content is inserted
+/// above the TUI viewport and becomes accessible via native terminal scrollback
+/// (Shift+PageUp/PageDown).
+///
+/// # How It Works
+///
+/// 1. Set a scroll region from row 1 to `viewport_top - 1` using DECSTBM
+/// 2. Move cursor to the bottom of this scroll region
+/// 3. Print each line with `\r\n`, causing content to scroll up into scrollback
+/// 4. Reset the scroll region to full screen
+///
+/// This technique allows the TUI to maintain a clean separation between:
+/// - History content (in terminal scrollback, managed by terminal emulator)
+/// - Active viewport (managed by ratatui, below the scroll region)
+///
+/// # Arguments
+///
+/// - `writer`: Output writer (typically the TTY file handle)
+/// - `lines`: History lines to insert, with styled spans
+/// - `viewport_top`: 1-indexed row where the viewport starts
+/// - `width`: Terminal width for word wrapping
+///
+/// # Errors
+///
+/// Returns an error if writing to the terminal fails.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::fs::File;
+/// use tui_rs::terminal::push_history_lines;
+/// use tui_rs::protocol::HistoryLine;
+///
+/// # fn example(mut tty: File) -> std::io::Result<()> {
+/// let lines = vec![/* history lines */];
+/// push_history_lines(&mut tty, &lines, 10, 80)?;
+/// # Ok(())
+/// # }
+/// ```
 pub fn push_history_lines<W: Write>(
     writer: &mut W,
     lines: &[HistoryLine],
@@ -86,7 +124,11 @@ pub fn push_history_lines<W: Write>(
     Ok(())
 }
 
-/// Convert our HistoryLine to ratatui Line
+/// Convert protocol HistoryLine to ratatui Line.
+///
+/// This function bridges the gap between our protocol types (used for IPC) and
+/// ratatui's rendering types. It converts styled spans from the protocol format
+/// to ratatui's `Span` and `Style` types.
 fn history_line_to_ratatui(line: &HistoryLine) -> Line<'static> {
     let spans: Vec<Span<'static>> = line
         .spans
@@ -99,13 +141,21 @@ fn history_line_to_ratatui(line: &HistoryLine) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Word-wrap lines to fit within width, preserving span styles
+/// Word-wrap lines to fit within width, preserving span styles.
+///
+/// Uses the wrapping module's word wrapping algorithm to break long lines while
+/// preserving the original span styles across line breaks. This ensures that
+/// color, bold, italic, and other text attributes are maintained when lines wrap.
 fn wrap_lines(lines: &[Line<'_>], width: usize) -> Vec<Line<'static>> {
     use crate::wrapping::word_wrap_lines;
     word_wrap_lines(lines, width)
 }
 
-/// Write a styled line to the writer
+/// Write a styled line to the writer using ANSI escape codes.
+///
+/// This function converts ratatui's style attributes to ANSI SGR (Select Graphic
+/// Rendition) codes and writes them inline with the text. This is necessary because
+/// we're writing directly to the terminal outside of ratatui's rendering system.
 fn write_styled_line<W: Write>(writer: &mut W, line: &Line) -> io::Result<()> {
     for span in &line.spans {
         // Apply style
@@ -118,7 +168,11 @@ fn write_styled_line<W: Write>(writer: &mut W, line: &Line) -> io::Result<()> {
     Ok(())
 }
 
-/// Apply ratatui style as ANSI codes
+/// Apply ratatui style as ANSI escape codes.
+///
+/// Converts ratatui's `Style` struct to ANSI SGR sequences for terminal output.
+/// Handles foreground/background colors (including RGB and indexed colors) and
+/// text modifiers (bold, italic, underline, dim, strikethrough).
 fn apply_style<W: Write>(writer: &mut W, style: &Style) -> io::Result<()> {
     // Reset first
     write!(writer, "\x1b[0m")?;
@@ -154,7 +208,10 @@ fn apply_style<W: Write>(writer: &mut W, style: &Style) -> io::Result<()> {
     Ok(())
 }
 
-/// Convert ratatui color to ANSI foreground code
+/// Convert ratatui color to ANSI foreground escape code.
+///
+/// Maps ratatui's `Color` enum to ANSI SGR foreground color codes (30-37, 90-97
+/// for basic colors, 38;5;n for indexed, 38;2;r;g;b for RGB).
 fn color_to_ansi_fg(color: ratatui::style::Color) -> String {
     use ratatui::style::Color;
     match color {
@@ -179,7 +236,10 @@ fn color_to_ansi_fg(color: ratatui::style::Color) -> String {
     }
 }
 
-/// Convert ratatui color to ANSI background code
+/// Convert ratatui color to ANSI background escape code.
+///
+/// Maps ratatui's `Color` enum to ANSI SGR background color codes (40-47, 100-107
+/// for basic colors, 48;5;n for indexed, 48;2;r;g;b for RGB).
 fn color_to_ansi_bg(color: ratatui::style::Color) -> String {
     use ratatui::style::Color;
     match color {

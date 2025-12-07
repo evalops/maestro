@@ -1,6 +1,94 @@
-//! Message types for headless protocol
+//! Message types for the headless protocol.
 //!
-//! Defines all messages exchanged between the Rust TUI and Node.js agent.
+//! This module defines all messages exchanged between the Rust TUI and Node.js agent.
+//! It uses [serde](https://serde.rs/) for type-safe JSON serialization and deserialization,
+//! enabling reliable inter-process communication (IPC).
+//!
+//! # Protocol Message Types
+//!
+//! The protocol consists of two main message categories:
+//!
+//! - **ToAgentMessage** - Messages sent from the TUI to the agent (commands)
+//! - **FromAgentMessage** - Messages received from the agent (events)
+//!
+//! All messages are tagged enums, meaning each variant includes a `type` field in the
+//! JSON representation. This allows the receiver to determine the message type before
+//! deserializing the full payload.
+//!
+//! # Serde JSON Serialization
+//!
+//! ## Tagged Enum Pattern
+//!
+//! The protocol uses serde's `tag` attribute to create discriminated unions:
+//!
+//! ```rust
+//! #[derive(Serialize, Deserialize)]
+//! #[serde(tag = "type", rename_all = "snake_case")]
+//! enum ToAgentMessage {
+//!     Prompt { content: String },
+//!     Interrupt,
+//! }
+//! ```
+//!
+//! This generates JSON like:
+//!
+//! ```json
+//! {"type": "prompt", "content": "Hello"}
+//! {"type": "interrupt"}
+//! ```
+//!
+//! Benefits:
+//! - **Type safety** - Invalid message types are rejected at deserialization
+//! - **Self-describing** - Each message carries its type information
+//! - **Extensible** - New message types can be added without breaking old clients
+//!
+//! ## Field Attributes
+//!
+//! Optional fields use the `skip_serializing_if` attribute to omit null values:
+//!
+//! ```rust
+//! #[serde(skip_serializing_if = "Option::is_none")]
+//! attachments: Option<Vec<String>>
+//! ```
+//!
+//! This produces cleaner JSON and reduces message size when optional fields are unused.
+//!
+//! # State Management
+//!
+//! The `AgentState` struct tracks the agent's current state by processing incoming messages.
+//! This allows the TUI to maintain a synchronized view of the agent's status without
+//! polling or complex state synchronization protocols.
+//!
+//! # Message Flow
+//!
+//! ## Typical Request-Response Flow
+//!
+//! ```text
+//! TUI                           Agent
+//!  |                              |
+//!  |-- Prompt -----------------> |
+//!  |                              |
+//!  | <---------- Ready ----------|
+//!  | <-- SessionInfo ------------|
+//!  | <-- ResponseStart ----------|
+//!  | <-- ResponseChunk ----------| (multiple)
+//!  | <-- ResponseChunk ----------|
+//!  | <-- ResponseEnd ------------|
+//! ```
+//!
+//! ## Tool Approval Flow
+//!
+//! ```text
+//! TUI                           Agent
+//!  |                              |
+//!  | <-------- ToolCall ---------|
+//!  |                              |
+//!  |-- ToolResponse (approved)-> |
+//!  |                              |
+//!  | <------- ToolStart ---------|
+//!  | <------- ToolOutput --------| (streaming)
+//!  | <------- ToolEnd -----------|
+//! ```
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -9,7 +97,44 @@ use std::collections::HashMap;
 // Messages from TUI to Agent
 // =============================================================================
 
-/// Messages sent from the TUI to the agent
+/// Messages sent from the TUI to the agent.
+///
+/// These messages represent commands or control signals sent from the Rust TUI
+/// to the Node.js agent. Each variant maps to a specific agent operation.
+///
+/// # Serialization Format
+///
+/// Uses serde's `tag` attribute to add a `type` discriminator field:
+///
+/// ```json
+/// {"type": "prompt", "content": "Hello", "attachments": ["file.txt"]}
+/// {"type": "interrupt"}
+/// {"type": "shutdown"}
+/// ```
+///
+/// The `rename_all = "snake_case"` attribute converts Rust's `PascalCase` variant names
+/// to JSON's `snake_case` convention (e.g., `ToolResponse` becomes `"tool_response"`).
+///
+/// # Examples
+///
+/// ```rust
+/// use tui_rs::headless::ToAgentMessage;
+///
+/// // Send a simple prompt
+/// let msg = ToAgentMessage::Prompt {
+///     content: "Hello!".to_string(),
+///     attachments: None,
+/// };
+///
+/// // Send a prompt with file attachments
+/// let msg = ToAgentMessage::Prompt {
+///     content: "Review these files".to_string(),
+///     attachments: Some(vec!["main.rs".to_string()]),
+/// };
+///
+/// // Interrupt current operation
+/// let msg = ToAgentMessage::Interrupt;
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToAgentMessage {
@@ -47,7 +172,49 @@ pub struct ToolResult {
 // Messages from Agent to TUI
 // =============================================================================
 
-/// Messages received from the agent
+/// Messages received from the agent.
+///
+/// These messages represent events, responses, and status updates sent from the Node.js
+/// agent to the Rust TUI. The TUI processes these messages to update its UI and state.
+///
+/// # Message Categories
+///
+/// - **Lifecycle** - `Ready`, `SessionInfo`
+/// - **Responses** - `ResponseStart`, `ResponseChunk`, `ResponseEnd`
+/// - **Tool Execution** - `ToolCall`, `ToolStart`, `ToolOutput`, `ToolEnd`
+/// - **Status** - `Error`, `Status`
+///
+/// # Streaming Pattern
+///
+/// Many operations (responses, tool output) use a streaming pattern:
+///
+/// 1. **Start** message - Signals the beginning of an operation
+/// 2. **Chunk/Output** messages - Stream data incrementally (0 or more)
+/// 3. **End** message - Signals completion with metadata
+///
+/// This pattern enables:
+/// - **Progressive rendering** - Display partial results before completion
+/// - **Low latency** - Show the first token immediately
+/// - **Cancellation** - Interrupt long-running operations
+///
+/// # Deserialization
+///
+/// The `#[serde(tag = "type")]` attribute enables type-directed deserialization:
+///
+/// ```rust
+/// use tui_rs::headless::FromAgentMessage;
+///
+/// let json = r#"{"type":"ready","model":"claude-3-opus","provider":"anthropic"}"#;
+/// let msg: FromAgentMessage = serde_json::from_str(json)?;
+///
+/// match msg {
+///     FromAgentMessage::Ready { model, .. } => {
+///         println!("Agent ready with model: {}", model);
+///     }
+///     _ => {}
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgentMessage {
@@ -113,7 +280,50 @@ impl TokenUsage {
 // State tracking
 // =============================================================================
 
-/// Current state of the agent connection
+/// Current state of the agent connection.
+///
+/// Maintains a synchronized view of the agent's state by processing incoming messages.
+/// This struct tracks active operations, pending approvals, and metadata about the
+/// current session.
+///
+/// # State Synchronization
+///
+/// The `AgentState` uses an event-sourcing pattern where state is derived from
+/// incoming messages rather than queried. The `handle_message()` method processes
+/// each `FromAgentMessage` and updates internal state accordingly.
+///
+/// Benefits of this approach:
+/// - **No polling** - State updates are event-driven
+/// - **Consistency** - State always reflects the latest message
+/// - **Simplicity** - No need for separate state query protocol
+///
+/// # Usage Pattern
+///
+/// ```rust
+/// use tui_rs::headless::{AgentState, FromAgentMessage};
+///
+/// let mut state = AgentState::default();
+///
+/// // Process a message
+/// let msg = FromAgentMessage::Ready {
+///     model: "claude-3-opus".to_string(),
+///     provider: "anthropic".to_string(),
+/// };
+///
+/// if let Some(event) = state.handle_message(msg) {
+///     // React to the event
+///     println!("Agent is ready!");
+/// }
+///
+/// assert!(state.is_ready);
+/// assert_eq!(state.model.as_deref(), Some("claude-3-opus"));
+/// ```
+///
+/// # Thread Safety
+///
+/// `AgentState` is `Clone` but not thread-safe (`!Sync`). Each transport should
+/// maintain its own state instance. For shared state across threads, wrap in
+/// `Arc<Mutex<AgentState>>`.
 #[derive(Debug, Clone, Default)]
 pub struct AgentState {
     /// Model information

@@ -1,14 +1,66 @@
-//! Native Composer TUI Application
+//! # Native Composer TUI Application
 //!
-//! This is the main entry point for the native Rust TUI.
-//! Uses a pure Rust agent implementation that talks directly to AI providers.
+//! This is the main entry point for the native Rust TUI. It coordinates all
+//! the major subsystems: terminal rendering, input handling, agent communication,
+//! and tool execution.
+//!
+//! ## Architecture Overview
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │                           App                                   │
+//! │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐ │
+//! │  │ AppState │  │ Terminal │  │  Agent   │  │ Tool Executor    │ │
+//! │  │ (state)  │  │(ratatui) │  │ (async)  │  │ (bash, read, ..) │ │
+//! │  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘ │
+//! │  ┌──────────────────────────────────────────────────────────────┐│
+//! │  │                    Modals / Components                       ││
+//! │  │  FileSearch, SessionSwitcher, CommandPalette, Approval, etc. ││
+//! │  └──────────────────────────────────────────────────────────────┘│
+//! └─────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Rust Concepts Demonstrated
+//!
+//! - **Async Event Loop**: The `run()` method shows how to combine sync (terminal)
+//!   and async (agent) operations using tokio.
+//!
+//! - **Message Passing**: Uses `mpsc` channels for agent communication, avoiding
+//!   shared mutable state between async tasks.
+//!
+//! - **Ownership with Option**: Uses `Option<T>` for resources that may or may
+//!   not be initialized (agent, channels).
+//!
+//! - **Pattern Matching for Input**: Handles keyboard input with exhaustive matching.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPORTS
+// ─────────────────────────────────────────────────────────────────────────────
 
 use std::sync::Arc;
+// `Arc` (Atomic Reference Counted) is a thread-safe reference-counted pointer.
+// Multiple owners can share the same data. The data is freed when the last
+// Arc is dropped. Unlike `Rc`, `Arc` is safe to use across threads.
 
 use anyhow::{Context, Result};
+// `anyhow` provides ergonomic error handling:
+// - `Result` is shorthand for `Result<T, anyhow::Error>`
+// - `.context("msg")` adds context to errors for better debugging
+
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers};
+// `crossterm` is a cross-platform terminal manipulation library.
+// It handles raw mode, events, and cursor control across Windows/Mac/Linux.
+
 use ratatui::prelude::*;
+// `ratatui` is the terminal UI framework (fork of `tui-rs`).
+// It provides widgets (Paragraph, Block, List) and layout primitives.
+
 use tokio::sync::mpsc;
+// `mpsc` = Multi-Producer, Single-Consumer channel.
+// Used for async message passing between tasks.
+// - `mpsc::unbounded_channel()` creates a channel with no size limit
+// - Sender can be cloned (multiple producers)
+// - Receiver cannot be cloned (single consumer)
 
 use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
 use crate::clipboard::ClipboardManager;
@@ -27,75 +79,171 @@ use crate::state::{AppState, ApprovalMode, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
 use crate::tools::ToolExecutor;
 
-/// Active modal in the UI
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Active modal in the UI.
+///
+/// Only one modal can be active at a time. This enum tracks which one.
+/// Modals are overlays that capture input (like dialogs in web apps).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveModal {
+    /// No modal active - normal chat input
     None,
+    /// File search modal (Ctrl+P style)
     FileSearch,
+    /// Session history browser
     SessionSwitcher,
+    /// Command palette (Ctrl+Shift+P style)
     CommandPalette,
+    /// Tool execution approval dialog
     Approval,
+    /// AI model selector
     ModelSelector,
+    /// Color theme selector
     ThemeSelector,
 }
 
-/// Main application
+/// Main application struct - the central coordinator.
+///
+/// # Rust Concept: Struct with Many Fields
+///
+/// This struct owns many resources. In Rust, this is fine - there's no
+/// overhead for having many fields. The struct size is the sum of its
+/// field sizes, laid out contiguously in memory.
+///
+/// # Rust Concept: Option for Optional Resources
+///
+/// Fields like `native_agent: Option<NativeAgent>` use `Option` because
+/// the agent may not be spawned yet. This is more explicit than null -
+/// you must handle the None case.
+///
+/// # Rust Concept: Arc for Shared Ownership
+///
+/// `command_registry: Arc<CommandRegistry>` is wrapped in `Arc` because
+/// multiple components need read access to the registry. Arc provides
+/// thread-safe shared ownership through reference counting.
 pub struct App {
+    /// Central application state (messages, input, status).
+    /// See `state.rs` for details.
     state: AppState,
-    /// Native Rust agent
+
+    /// The AI agent that processes prompts and generates responses.
+    /// `Option` because it's spawned asynchronously after app creation.
     native_agent: Option<NativeAgent>,
-    /// Event receiver for native agent
+
+    /// Channel receiver for messages from the agent.
+    /// The agent sends streaming responses, tool calls, etc. through this.
+    /// `mpsc::UnboundedReceiver` = async channel with unlimited buffer.
     native_event_rx: Option<mpsc::UnboundedReceiver<FromAgent>>,
-    /// Tool response sender for native agent
+
+    /// Channel sender for tool execution results back to the agent.
+    /// When a tool completes, we send the result through this channel.
+    /// Tuple: (call_id, success, optional_result)
     tool_response_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
-    /// Tool executor for native agent
+
+    /// Executes tools (bash commands, file reads, etc.) requested by the agent.
     tool_executor: ToolExecutor,
+
+    /// The ratatui terminal handle for rendering.
     terminal: terminal::Terminal,
+
+    /// Flag to exit the main loop.
     should_quit: bool,
-    /// Terminal capabilities including viewport position
+
+    /// Terminal capabilities (color support, viewport position, etc.).
     capabilities: TerminalCapabilities,
-    /// Command registry
+
+    /// Registry of all available slash commands.
+    /// Wrapped in Arc for shared access from command palette.
     #[allow(dead_code)]
     command_registry: Arc<CommandRegistry>,
-    /// Slash command matcher
+
+    /// Fuzzy matcher for slash command completion.
     slash_matcher: SlashCommandMatcher,
-    /// Slash command completion state
+
+    /// State for Tab-cycling through slash command completions.
     slash_state: SlashCycleState,
-    /// Currently active modal
+
+    /// Which modal (if any) is currently shown.
     active_modal: ActiveModal,
-    /// File search modal
+
+    /// File search modal component (like VS Code's Ctrl+P).
     file_search: FileSearchModal,
-    /// Session switcher modal
+
+    /// Session history browser modal.
     session_switcher: SessionSwitcher,
-    /// Command palette modal
+
+    /// Command palette modal (like VS Code's Ctrl+Shift+P).
     command_palette: CommandPalette,
-    /// Approval controller
+
+    /// Handles tool execution approval flow.
     approval_controller: ApprovalController,
-    /// Session manager
+
+    /// Manages session persistence (save/load conversations).
     session_manager: SessionManager,
-    /// Clipboard manager
+
+    /// System clipboard integration.
     clipboard: ClipboardManager,
-    /// Model selector modal
+
+    /// AI model selection modal.
     model_selector: ModelSelector,
-    /// Theme selector modal
+
+    /// Color theme selection modal.
     theme_selector: ThemeSelector,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPLEMENTATION
+// ─────────────────────────────────────────────────────────────────────────────
+
 impl App {
-    /// Create a new application
+    /// Create a new application instance.
+    ///
+    /// # Rust Concept: Constructor Pattern
+    ///
+    /// Rust doesn't have constructors like OOP languages. Instead, we use
+    /// associated functions (functions in `impl` blocks without `self`).
+    /// By convention, `new()` creates a new instance.
+    ///
+    /// # Rust Concept: Error Propagation with `?`
+    ///
+    /// The `?` operator is syntactic sugar for error handling:
+    /// - If the expression is `Ok(value)`, extract `value`
+    /// - If the expression is `Err(e)`, return `Err(e)` from the function
+    ///
+    /// `.context("msg")` from anyhow wraps the error with additional context.
+    ///
+    /// # Returns
+    ///
+    /// `Result<Self>` - either a new App instance or an initialization error.
     pub fn new() -> Result<Self> {
+        // Initialize the terminal (enters raw mode, sets up alternate screen).
+        // This is a tuple destructuring - we get both values at once.
         let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
+
+        // Build the command registry and wrap it in Arc for shared ownership.
+        // Arc::new() moves the registry into the Arc.
         let command_registry = Arc::new(build_command_registry());
+
+        // Create the slash command matcher with a clone of the Arc.
+        // Arc::clone() is cheap - it just increments the reference count.
         let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
+
+        // Get current working directory, defaulting to "." if it fails.
+        // `unwrap_or_else` takes a closure that's only called on Err.
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
+        // Construct the App with all fields initialized.
+        // `Self` is an alias for the type we're implementing (App).
         Ok(Self {
             state: AppState::new(),
-            native_agent: None,
-            native_event_rx: None,
-            tool_response_tx: None,
+            native_agent: None,       // Agent spawned later in run()
+            native_event_rx: None,    // Channel created when agent spawns
+            tool_response_tx: None,   // Channel created when agent spawns
             tool_executor: ToolExecutor::new(&cwd),
             terminal,
             should_quit: false,
@@ -115,36 +263,63 @@ impl App {
         })
     }
 
-    /// Get the current viewport top position (for history push)
+    /// Get the current viewport top position (for history push).
     pub fn viewport_top(&self) -> u16 {
         self.capabilities.viewport_top
     }
 
-    /// Run the main event loop
+    /// Run the main event loop.
+    ///
+    /// # Rust Concept: Async Main Loop
+    ///
+    /// This function is `async` because the agent communication is async.
+    /// The pattern here combines sync operations (terminal rendering, input)
+    /// with async operations (agent polling) using a polling approach.
+    ///
+    /// # Rust Concept: `mut self`
+    ///
+    /// Taking `mut self` (not `&mut self`) means this function takes ownership
+    /// of the App and can modify it. The App is consumed when run() completes.
+    /// This is appropriate because the terminal needs cleanup on exit.
+    ///
+    /// # Returns
+    ///
+    /// Exit code for the process (0 = success, non-zero = error).
     pub async fn run(mut self) -> Result<i32> {
-        // Load workspace files for @ mentions
+        // Load workspace files for @ mentions in the input.
         self.load_workspace_files();
 
-        // Spawn the agent
+        // Spawn the agent (async operation).
+        // This creates the channels and starts the agent task.
         self.spawn_agent().await?;
 
-        // Main loop
+        // Main event loop - runs until should_quit is set to true.
         loop {
-            // Render
+            // Render the UI to the terminal.
+            // This is a sync operation that writes to stdout.
             self.render()?;
 
-            // Handle events with a timeout so we can check for agent messages
+            // Poll for terminal events with a 50ms timeout.
+            // The timeout ensures we regularly check for agent messages.
+            //
+            // Rust Concept: Non-blocking polling
+            // `event::poll()` returns true if an event is available.
+            // The timeout prevents blocking forever on input.
             if event::poll(std::time::Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
+                    // Only handle key press events (not release).
+                    // Some terminals send both press and release events.
                     if key.kind == KeyEventKind::Press {
                         self.handle_key(key.code, key.modifiers).await?;
                     }
                 }
             }
 
-            // Check for agent messages
+            // Poll for messages from the agent (async operation).
+            // This handles streaming responses, tool calls, etc.
             self.poll_agent().await?;
 
+            // Check exit condition.
             if self.should_quit {
                 break;
             }

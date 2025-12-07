@@ -1,6 +1,82 @@
-//! Transport layer for agent communication
+//! Transport layer for agent communication.
 //!
-//! Spawns the Node.js agent process and handles stdin/stdout communication.
+//! Provides subprocess management and stdio-based IPC for communicating with the
+//! Node.js agent process. This module handles process lifecycle, message routing,
+//! and concurrent I/O using OS threads.
+//!
+//! # Architecture
+//!
+//! The transport layer spawns the Node.js agent as a child process and establishes
+//! bidirectional communication:
+//!
+//! ```text
+//! ┌─────────────────┐
+//! │   Rust TUI      │
+//! │                 │
+//! │  AgentTransport │
+//! └────────┬────────┘
+//!          │
+//!    ┌─────┴──────┐
+//!    │            │
+//! ┌──▼───┐    ┌──▼───┐
+//! │Writer│    │Reader│
+//! │Thread│    │Thread│
+//! └──┬───┘    └──┬───┘
+//!    │           │
+//!    │   stdin   │ stdout
+//!    │           │
+//! ┌──▼───────────▼──┐
+//! │  Node.js Agent  │
+//! │   (Child Proc)  │
+//! └─────────────────┘
+//! ```
+//!
+//! # Thread-Based Concurrency
+//!
+//! The transport uses two OS threads for concurrent I/O:
+//!
+//! ## Writer Thread
+//!
+//! - Receives `ToAgentMessage` via an `mpsc` channel
+//! - Serializes messages to JSON
+//! - Writes to the agent's stdin
+//! - Terminates when the channel is closed or write fails
+//!
+//! ## Reader Thread
+//!
+//! - Reads from the agent's stdout
+//! - Parses newline-delimited JSON
+//! - Converts raw messages to `AgentEvent` using state machine
+//! - Sends events to the main thread via `mpsc` channel
+//! - Monitors process exit and reports termination
+//!
+//! # Message Passing with mpsc
+//!
+//! Rust's `std::sync::mpsc` (multi-producer, single-consumer) channels provide
+//! thread-safe communication:
+//!
+//! - **to_agent_tx/rx** - Main thread sends messages; writer thread receives
+//! - **from_agent_tx/rx** - Reader thread sends events; main thread receives
+//!
+//! Benefits:
+//! - **Type-safe** - Compiler enforces correct message types
+//! - **Ownership-based** - No shared mutable state
+//! - **Blocking operations** - `recv()` blocks until message available
+//!
+//! # Error Handling
+//!
+//! Errors from both threads are forwarded to the main thread via the event channel.
+//! This allows centralized error handling in the main application loop.
+//!
+//! # Process Lifecycle
+//!
+//! The agent process is spawned with:
+//! - **stdin** - Piped (controlled by writer thread)
+//! - **stdout** - Piped (controlled by reader thread)
+//! - **stderr** - Inherited (agent errors appear in parent's stderr)
+//!
+//! The process is automatically cleaned up when `AgentTransport` is dropped,
+//! though child processes may continue running if not explicitly shut down.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
@@ -40,7 +116,22 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
-/// Configuration for the agent transport
+/// Configuration for the agent transport.
+///
+/// Specifies how to spawn and configure the Node.js agent process.
+///
+/// # Examples
+///
+/// ```rust
+/// use tui_rs::headless::transport::TransportConfig;
+///
+/// let config = TransportConfig {
+///     cli_path: "composer".to_string(),
+///     cwd: Some("/path/to/project".to_string()),
+///     extra_args: vec!["--model".to_string(), "claude-3-opus".to_string()],
+///     env: vec![("DEBUG".to_string(), "1".to_string())],
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
     /// Path to the composer CLI (default: "composer")
@@ -64,7 +155,50 @@ impl Default for TransportConfig {
     }
 }
 
-/// Handle for communicating with the agent process
+/// Handle for communicating with the agent process.
+///
+/// Provides a synchronous interface for sending messages to and receiving events from
+/// the Node.js agent. Internally manages two worker threads for concurrent I/O.
+///
+/// # Thread Safety
+///
+/// `AgentTransport` is `Send` but not `Sync`. It can be moved between threads but
+/// cannot be shared across threads without synchronization (e.g., `Arc<Mutex<_>>`).
+/// The underlying `mpsc::Sender` is `Send` but not `Sync`.
+///
+/// # Blocking Behavior
+///
+/// - `recv()` blocks until an event is available or the channel is closed
+/// - `try_recv()` returns immediately with `None` if no events are available
+/// - `send()` returns immediately (messages are queued internally)
+///
+/// # State Tracking
+///
+/// The transport maintains a local copy of `AgentState` that is updated as events
+/// are received. This allows synchronous queries like `is_ready()` and `model()`
+/// without additional IPC overhead.
+///
+/// # Examples
+///
+/// ```rust
+/// use tui_rs::headless::transport::AgentTransportBuilder;
+///
+/// let mut transport = AgentTransportBuilder::new()
+///     .cli_path("composer")
+///     .spawn()?;
+///
+/// // Wait for agent to be ready
+/// while let Ok(event) = transport.recv() {
+///     match event {
+///         AgentEvent::Ready { .. } => break,
+///         _ => {}
+///     }
+/// }
+///
+/// // Send a prompt
+/// transport.prompt("Hello!")?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct AgentTransport {
     /// Sender for messages to the agent
     tx: Sender<ToAgentMessage>,

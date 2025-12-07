@@ -1,6 +1,95 @@
-//! Tool registry and executor
+//! Tool registry and execution dispatcher
 //!
-//! Manages tool definitions and execution.
+//! This module implements the central registry and executor for agent tools. It provides
+//! a type-safe, validated execution environment that bridges AI tool calls to native Rust
+//! implementations.
+//!
+//! # Architecture
+//!
+//! The registry system consists of two main components:
+//!
+//! - **ToolRegistry**: A HashMap-based registry of tool definitions with JSON schemas.
+//!   It validates arguments, checks required fields, and determines approval requirements.
+//! - **ToolExecutor**: The execution dispatcher that routes tool calls to implementations.
+//!   It manages event streams, handles errors, and ensures consistent result reporting.
+//!
+//! # Tool Definition System
+//!
+//! Each tool is registered with:
+//! - **Name**: Case-insensitive identifier (e.g., "bash", "read")
+//! - **Description**: Human-readable explanation of what the tool does
+//! - **JSON Schema**: Defines required/optional parameters with types and descriptions
+//! - **Approval requirement**: Static boolean or dynamic function based on arguments
+//!
+//! ## Schema Validation
+//!
+//! Tool schemas follow JSON Schema specification. The registry validates:
+//! - Required fields are present and non-empty
+//! - Field types match expectations (string, number, boolean, etc.)
+//! - Nested objects conform to their schemas
+//!
+//! # Execution Model
+//!
+//! Tool execution follows a request-response pattern with event streaming:
+//!
+//! ```text
+//! ┌─────────────┐
+//! │   AI Agent  │
+//! └──────┬──────┘
+//!        │ Tool call with JSON args
+//!        ▼
+//! ┌─────────────────┐
+//! │  ToolExecutor   │ 1. Validate arguments
+//! │                 │ 2. Check approval
+//! │                 │ 3. Dispatch to implementation
+//! └────────┬────────┘
+//!          │
+//!          ├──────────────────┬──────────────────┬──────────────────┐
+//!          ▼                  ▼                  ▼                  ▼
+//!      BashTool           ReadTool          WriteTool         EditTool
+//!          │                  │                  │                  │
+//!          └──────────────────┴──────────────────┴──────────────────┘
+//!                                     │
+//!                   ┌─────────────────┼─────────────────┐
+//!                   ▼                 ▼                 ▼
+//!              ToolStart          ToolOutput         ToolEnd
+//!           (via event_tx)     (via event_tx)    (via event_tx)
+//! ```
+//!
+//! # Event Streaming
+//!
+//! Tools emit events via an unbounded mpsc channel (`mpsc::UnboundedSender<FromAgent>`):
+//!
+//! 1. **ToolStart**: Emitted when execution begins (contains call_id)
+//! 2. **ToolOutput**: Emitted for progress/partial output (optional, repeatable)
+//! 3. **ToolEnd**: Emitted when execution completes (contains success flag)
+//!
+//! These events enable real-time UI updates and streaming output display.
+//!
+//! # Error Handling
+//!
+//! Errors are returned in the ToolResult structure, never panicked:
+//! - **Validation errors**: Missing required fields, invalid JSON
+//! - **Execution errors**: File not found, permission denied, timeout
+//! - **Unknown tools**: Tool name not found in registry
+//!
+//! All errors set `success: false` and populate the `error` field with a message.
+//!
+//! # Tool Implementations
+//!
+//! The executor currently supports these built-in tools:
+//!
+//! - **bash**: Execute shell commands (see `BashTool` for details)
+//! - **read**: Read file contents with line numbers
+//! - **write**: Write content to files, creating directories as needed
+//! - **edit**: Exact string replacement in files with uniqueness checks
+//! - **glob**: Find files matching glob patterns
+//! - **grep**: Search file contents using ripgrep/grep
+//!
+//! New tools can be added by:
+//! 1. Implementing the tool logic in a new module
+//! 2. Registering the tool definition in `ToolRegistry::new()`
+//! 3. Adding a match arm in `ToolExecutor::execute()`
 
 use std::collections::HashMap;
 
@@ -10,18 +99,76 @@ use super::bash::{BashArgs, BashTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
 
-/// Tool executor that can run tools
+/// Tool executor that dispatches and runs agent tools
+///
+/// The executor is the primary interface for tool execution. It maintains instances
+/// of all tool implementations and routes calls based on the tool name. Each executor
+/// is bound to a working directory that becomes the current directory for all tools.
+///
+/// # Design
+///
+/// The executor uses a match-based dispatch system rather than dynamic dispatch or
+/// trait objects. This provides:
+/// - Zero-cost abstraction (no vtable lookups)
+/// - Compile-time verification of tool implementations
+/// - Easy addition of new tools via match arms
+///
+/// # Working Directory
+///
+/// The `cwd` field is passed to all tool instances and used for:
+/// - Resolving relative paths in file operations
+/// - Setting the working directory for bash commands
+/// - Glob pattern base directory
+///
+/// # Thread Safety
+///
+/// ToolExecutor is `Send` but not `Sync` because it contains `BashTool` which uses
+/// non-Sync primitives. However, it can be moved across async tasks and used within
+/// a single-threaded context safely.
 pub struct ToolExecutor {
-    /// Bash tool instance
+    /// Bash command execution tool
+    ///
+    /// Handles shell command execution with approval logic and timeout enforcement.
     bash: BashTool,
-    /// Current working directory
+
+    /// Current working directory for all tool operations
+    ///
+    /// This directory is used as the base for relative paths and as the cwd for
+    /// spawned processes. Typically set to the workspace root.
     cwd: String,
-    /// Tool registry for validation/metadata
+
+    /// Tool registry for validation and metadata
+    ///
+    /// Contains tool definitions with JSON schemas, used for argument validation
+    /// and approval checking before execution.
     registry: ToolRegistry,
 }
 
 impl ToolExecutor {
-    /// Create a new tool executor
+    /// Create a new tool executor with the given working directory
+    ///
+    /// # Arguments
+    ///
+    /// - `cwd`: Working directory for all tool operations. Accepts any type that
+    ///   converts to String (String, &str, PathBuf via display, etc.)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tui_rs::tools::ToolExecutor;
+    ///
+    /// // From &str
+    /// let executor = ToolExecutor::new("/workspace");
+    ///
+    /// // From String
+    /// let cwd = String::from("/home/user/project");
+    /// let executor = ToolExecutor::new(cwd);
+    ///
+    /// // From PathBuf
+    /// use std::path::PathBuf;
+    /// let path = PathBuf::from("/tmp");
+    /// let executor = ToolExecutor::new(path.display().to_string());
+    /// ```
     pub fn new(cwd: impl Into<String>) -> Self {
         let cwd = cwd.into();
         Self {
@@ -31,22 +178,185 @@ impl ToolExecutor {
         }
     }
 
-    /// Check if tool exists
+    /// Check if a tool exists in the registry
+    ///
+    /// Performs case-insensitive lookup. Returns true if the tool is registered,
+    /// false otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tui_rs::tools::ToolExecutor;
+    ///
+    /// let executor = ToolExecutor::new(".");
+    /// assert!(executor.has_tool("bash"));
+    /// assert!(executor.has_tool("Bash"));  // Case-insensitive
+    /// assert!(!executor.has_tool("nonexistent"));
+    /// ```
     pub fn has_tool(&self, name: &str) -> bool {
         self.registry.get(name).is_some()
     }
 
-    /// Return missing required fields for the tool
+    /// Return missing required fields for a tool given its arguments
+    ///
+    /// Validates the provided arguments against the tool's JSON schema and returns
+    /// a list of required field names that are missing or empty.
+    ///
+    /// # Arguments
+    ///
+    /// - `name`: Tool name (case-insensitive)
+    /// - `args`: JSON object containing the tool arguments
+    ///
+    /// # Returns
+    ///
+    /// Vector of missing field names. Empty vector if all required fields are present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tui_rs::tools::ToolExecutor;
+    /// use serde_json::json;
+    ///
+    /// let executor = ToolExecutor::new(".");
+    ///
+    /// // Missing required field
+    /// let args = json!({});
+    /// let missing = executor.missing_required("bash", &args);
+    /// assert_eq!(missing, vec!["command"]);
+    ///
+    /// // All required fields present
+    /// let args = json!({"command": "ls"});
+    /// let missing = executor.missing_required("bash", &args);
+    /// assert!(missing.is_empty());
+    /// ```
     pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
         self.registry.missing_required(name, args)
     }
 
-    /// Whether this tool requires approval given args
+    /// Check whether a tool requires user approval given its arguments
+    ///
+    /// This method consults both static and dynamic approval logic:
+    /// - Static approval: Set per-tool in the registry (e.g., write always needs approval)
+    /// - Dynamic approval: Computed based on arguments (e.g., bash inspects the command)
+    ///
+    /// # Arguments
+    ///
+    /// - `name`: Tool name (case-insensitive)
+    /// - `args`: JSON object containing the tool arguments
+    ///
+    /// # Returns
+    ///
+    /// True if the tool requires user approval, false if it can execute automatically.
+    /// Unknown tools default to requiring approval.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tui_rs::tools::ToolExecutor;
+    /// use serde_json::json;
+    ///
+    /// let executor = ToolExecutor::new(".");
+    ///
+    /// // Read is safe - no approval needed
+    /// let args = json!({"file_path": "/tmp/test.txt"});
+    /// assert!(!executor.requires_approval("read", &args));
+    ///
+    /// // Write always needs approval
+    /// let args = json!({"file_path": "/tmp/test.txt", "content": "hello"});
+    /// assert!(executor.requires_approval("write", &args));
+    ///
+    /// // Bash approval is dynamic based on command
+    /// let safe_cmd = json!({"command": "ls -la"});
+    /// assert!(!executor.requires_approval("bash", &safe_cmd));
+    ///
+    /// let unsafe_cmd = json!({"command": "cargo build"});
+    /// assert!(executor.requires_approval("bash", &unsafe_cmd));
+    /// ```
     pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
         self.registry.requires_approval(name, args)
     }
 
-    /// Execute a tool by name
+    /// Execute a tool by name with the given arguments
+    ///
+    /// This is the main entry point for tool execution. It dispatches to the appropriate
+    /// tool implementation, manages event streams, and returns a result.
+    ///
+    /// # Process Flow
+    ///
+    /// 1. Match on tool name (case-insensitive)
+    /// 2. Deserialize JSON args to tool-specific argument struct
+    /// 3. Send ToolStart event (if event_tx provided)
+    /// 4. Execute tool implementation
+    /// 5. Send ToolOutput event for any output (if event_tx provided)
+    /// 6. Send ToolEnd event with success status (if event_tx provided)
+    /// 7. Return ToolResult
+    ///
+    /// # Arguments
+    ///
+    /// - `tool_name`: Name of the tool to execute (e.g., "bash", "read")
+    /// - `args`: JSON object containing tool arguments
+    /// - `event_tx`: Optional channel for streaming progress events to the UI
+    /// - `call_id`: Unique identifier for this tool call (used in events)
+    ///
+    /// # Returns
+    ///
+    /// A ToolResult containing:
+    /// - `success`: Whether the tool executed successfully
+    /// - `output`: Tool output (stdout, file contents, etc.)
+    /// - `error`: Optional error message if success is false
+    ///
+    /// # Event Streaming
+    ///
+    /// If `event_tx` is provided, the executor sends events for real-time updates:
+    /// - **ToolStart**: Sent before execution begins
+    /// - **ToolOutput**: Sent when output is available (may be sent multiple times)
+    /// - **ToolEnd**: Sent after execution completes
+    ///
+    /// # Error Handling
+    ///
+    /// Errors are never panicked. Instead, they are returned in the ToolResult:
+    /// - Invalid arguments: Deserialization errors
+    /// - Tool errors: File not found, permission denied, etc.
+    /// - Unknown tool: Tool name not found in registry
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use tui_rs::tools::ToolExecutor;
+    /// use serde_json::json;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let executor = ToolExecutor::new("/workspace");
+    ///
+    /// // Execute without event streaming
+    /// let args = json!({"command": "git status"});
+    /// let result = executor.execute("bash", &args, None, "call-1").await;
+    ///
+    /// if result.success {
+    ///     println!("Output: {}", result.output);
+    /// } else {
+    ///     eprintln!("Error: {:?}", result.error);
+    /// }
+    ///
+    /// // Execute with event streaming
+    /// use tokio::sync::mpsc;
+    /// use tui_rs::agent::FromAgent;
+    ///
+    /// let (tx, mut rx) = mpsc::unbounded_channel();
+    /// let result = executor.execute("read", &json!({"file_path": "Cargo.toml"}), Some(&tx), "call-2").await;
+    ///
+    /// // Process events from rx
+    /// while let Some(event) = rx.recv().await {
+    ///     match event {
+    ///         FromAgent::ToolStart { call_id } => println!("Tool started: {}", call_id),
+    ///         FromAgent::ToolOutput { content, .. } => println!("Output: {}", content),
+    ///         FromAgent::ToolEnd { success, .. } => println!("Done: {}", success),
+    ///         _ => {}
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn execute(
         &self,
         tool_name: &str,
@@ -348,9 +658,63 @@ impl ToolExecutor {
     }
 }
 
-/// Tool registry that holds tool definitions
+/// Tool registry that holds tool definitions with schemas and validation logic
+///
+/// The registry is a HashMap-based collection of tool definitions. Each tool is
+/// identified by a lowercase name and contains metadata including:
+/// - Tool description and usage information
+/// - JSON schema for argument validation
+/// - Approval requirement (static or dynamic)
+///
+/// # Schema-Based Validation
+///
+/// Tool definitions include JSON schemas that specify:
+/// - Required vs optional parameters
+/// - Parameter types (string, number, boolean, object, array)
+/// - Parameter descriptions for the AI
+/// - Default values (via serde defaults)
+///
+/// The registry validates arguments by:
+/// 1. Checking for presence of required fields
+/// 2. Ensuring non-empty string values for required fields
+/// 3. Returning missing field names for client-side error handling
+///
+/// # Case Insensitivity
+///
+/// Tool lookups are case-insensitive. "bash", "Bash", and "BASH" all resolve to
+/// the same tool definition. Internally, all tool names are stored lowercase.
+///
+/// # Default Tools
+///
+/// The registry is pre-populated with built-in tools via `new()`:
+/// - bash, read, write, edit, glob, grep
+///
+/// # Examples
+///
+/// ```
+/// use tui_rs::tools::ToolRegistry;
+/// use serde_json::json;
+///
+/// let registry = ToolRegistry::new();
+///
+/// // Check if a tool exists
+/// assert!(registry.get("bash").is_some());
+/// assert!(registry.get("Bash").is_some());  // Case-insensitive
+///
+/// // Validate arguments
+/// let args = json!({});
+/// let missing = registry.missing_required("bash", &args);
+/// assert_eq!(missing, vec!["command"]);
+///
+/// // Check approval requirements
+/// let safe_args = json!({"command": "ls"});
+/// assert!(!registry.requires_approval("bash", &safe_args));
+/// ```
 pub struct ToolRegistry {
-    /// Tool definitions
+    /// HashMap of tool definitions keyed by lowercase tool name
+    ///
+    /// Keys are normalized to lowercase for case-insensitive lookups.
+    /// Values contain the full tool definition with schema and approval logic.
     tools: HashMap<String, ToolDefinition>,
 }
 
@@ -510,7 +874,61 @@ impl ToolRegistry {
         Self { tools }
     }
 
-    /// Return missing required fields for the given tool based on its JSON schema
+    /// Return missing required fields for a tool based on its JSON schema
+    ///
+    /// This method validates the provided arguments against the tool's schema and
+    /// returns a list of required field names that are either:
+    /// - Not present in the args object
+    /// - Present but empty (for string fields)
+    ///
+    /// # Arguments
+    ///
+    /// - `name`: Tool name (case-insensitive)
+    /// - `args`: JSON object containing the proposed arguments
+    ///
+    /// # Returns
+    ///
+    /// Vector of field names that are missing or invalid. Empty vector if all
+    /// required fields are present and valid.
+    ///
+    /// # Schema Processing
+    ///
+    /// 1. Look up tool definition by name (lowercase)
+    /// 2. Extract "required" array from tool's input_schema
+    /// 3. For each required field, check if:
+    ///    - Field exists in args
+    ///    - Field value is not an empty string (for string types)
+    /// 4. Collect missing field names
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tui_rs::tools::ToolRegistry;
+    /// use serde_json::json;
+    ///
+    /// let registry = ToolRegistry::new();
+    ///
+    /// // Missing command field
+    /// let args = json!({});
+    /// let missing = registry.missing_required("bash", &args);
+    /// assert_eq!(missing, vec!["command"]);
+    ///
+    /// // Empty command field (treated as missing)
+    /// let args = json!({"command": ""});
+    /// let missing = registry.missing_required("bash", &args);
+    /// assert_eq!(missing, vec!["command"]);
+    ///
+    /// // All required fields present
+    /// let args = json!({"command": "ls -la"});
+    /// let missing = registry.missing_required("bash", &args);
+    /// assert!(missing.is_empty());
+    ///
+    /// // Edit tool requires multiple fields
+    /// let args = json!({"file_path": "/tmp/file.txt"});
+    /// let missing = registry.missing_required("edit", &args);
+    /// assert!(missing.contains(&"old_string".to_string()));
+    /// assert!(missing.contains(&"new_string".to_string()));
+    /// ```
     pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
         let mut missing = Vec::new();
         let key = name.to_lowercase();
@@ -537,17 +955,108 @@ impl ToolRegistry {
         missing
     }
 
-    /// Get all tool definitions
+    /// Get an iterator over all registered tool definitions
+    ///
+    /// Returns an iterator that yields immutable references to all ToolDefinitions
+    /// in the registry. The order is undefined (HashMap iteration order).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tui_rs::tools::ToolRegistry;
+    ///
+    /// let registry = ToolRegistry::new();
+    ///
+    /// // Count tools
+    /// let count = registry.tools().count();
+    /// assert_eq!(count, 6);  // bash, read, write, edit, glob, grep
+    ///
+    /// // List tool names
+    /// for tool_def in registry.tools() {
+    ///     println!("Tool: {}", tool_def.tool.name);
+    /// }
+    /// ```
     pub fn tools(&self) -> impl Iterator<Item = &ToolDefinition> {
         self.tools.values()
     }
 
-    /// Get a tool definition by name
+    /// Get a tool definition by name (case-insensitive lookup)
+    ///
+    /// # Arguments
+    ///
+    /// - `name`: Tool name to look up (e.g., "bash", "Bash", "BASH")
+    ///
+    /// # Returns
+    ///
+    /// Some(&ToolDefinition) if the tool exists, None otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tui_rs::tools::ToolRegistry;
+    ///
+    /// let registry = ToolRegistry::new();
+    ///
+    /// // Case-insensitive lookup
+    /// assert!(registry.get("bash").is_some());
+    /// assert!(registry.get("Bash").is_some());
+    /// assert!(registry.get("BASH").is_some());
+    ///
+    /// // Unknown tool
+    /// assert!(registry.get("unknown").is_none());
+    /// ```
     pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
         self.tools.get(&name.to_lowercase())
     }
 
-    /// Check if a tool requires approval (considering dynamic logic)
+    /// Check if a tool requires user approval, considering dynamic logic
+    ///
+    /// This method implements a two-tier approval system:
+    ///
+    /// 1. **Dynamic approval (bash only)**: Inspects command content to determine
+    ///    if approval is needed. Safe commands like "ls" are auto-approved.
+    /// 2. **Static approval**: Uses the `requires_approval` flag from the tool
+    ///    definition. Tools like "write" always require approval.
+    ///
+    /// # Arguments
+    ///
+    /// - `name`: Tool name (case-insensitive)
+    /// - `args`: JSON object containing tool arguments
+    ///
+    /// # Returns
+    ///
+    /// - `true`: Tool requires user approval before execution
+    /// - `false`: Tool can execute automatically without prompting
+    ///
+    /// Unknown tools default to requiring approval for safety.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tui_rs::tools::ToolRegistry;
+    /// use serde_json::json;
+    ///
+    /// let registry = ToolRegistry::new();
+    ///
+    /// // Read tool - static approval (false)
+    /// let args = json!({"file_path": "/etc/passwd"});
+    /// assert!(!registry.requires_approval("read", &args));
+    ///
+    /// // Write tool - static approval (true)
+    /// let args = json!({"file_path": "/tmp/test.txt", "content": "hello"});
+    /// assert!(registry.requires_approval("write", &args));
+    ///
+    /// // Bash tool - dynamic approval based on command
+    /// let safe_cmd = json!({"command": "git status"});
+    /// assert!(!registry.requires_approval("bash", &safe_cmd));
+    ///
+    /// let unsafe_cmd = json!({"command": "rm -rf /"});
+    /// assert!(registry.requires_approval("bash", &unsafe_cmd));
+    ///
+    /// // Unknown tool - defaults to requiring approval
+    /// let args = json!({});
+    /// assert!(registry.requires_approval("unknown_tool", &args));
+    /// ```
     pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
         match name {
             "bash" | "Bash" => {

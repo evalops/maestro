@@ -1,6 +1,44 @@
 //! Syntax highlighting for code blocks
 //!
-//! Uses syntect to provide syntax highlighting with theme support.
+//! This module provides syntax highlighting for code blocks using the `syntect` library,
+//! which is based on Sublime Text's syntax definitions. It converts highlighted code into
+//! ratatui-compatible styled lines for terminal rendering.
+//!
+//! # External Crates
+//!
+//! - **syntect**: Provides syntax highlighting using Sublime Text's .sublime-syntax files.
+//!   Includes built-in support for 100+ languages and themes.
+//! - **once_cell**: Used for lazy static initialization of syntax and theme sets, avoiding
+//!   repeated loading overhead.
+//!
+//! # Language Support
+//!
+//! Supports all languages included in syntect's default syntax set, including:
+//! - Programming languages: Rust, Python, JavaScript, TypeScript, Java, C/C++, Go, Ruby, etc.
+//! - Markup: HTML, XML, Markdown, YAML, JSON
+//! - Shell scripts: Bash, Zsh, PowerShell
+//! - Configuration: TOML, YAML, INI
+//!
+//! Language detection works via:
+//! 1. Exact token match (e.g., "rust", "python")
+//! 2. File extension match (e.g., "rs", "py")
+//! 3. Common aliases (e.g., "js" -> "javascript", "ts" -> "typescript")
+//!
+//! # Theme
+//!
+//! Uses the "base16-eighties.dark" theme which provides good contrast and readability
+//! in terminal environments. The theme uses base16 color palette which maps well to
+//! terminal RGB colors.
+//!
+//! # Example
+//!
+//! ```
+//! use tui_rs::syntax::highlight_code;
+//!
+//! let code = "fn main() {\n    println!(\"Hello\");\n}";
+//! let lines = highlight_code(code, Some("rust"));
+//! // `lines` contains styled ratatui Line instances ready for rendering
+//! ```
 
 use once_cell::sync::Lazy;
 use ratatui::style::{Color, Modifier, Style};
@@ -9,13 +47,25 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
-/// Global syntax set (loaded lazily)
+/// Global syntax set loaded lazily on first use.
+///
+/// Uses syntect's `load_defaults_newlines()` which includes syntax definitions for
+/// 100+ languages. Loaded only once and shared across all highlighting operations.
+///
+/// Lazy initialization avoids the ~10-20ms startup cost if syntax highlighting is
+/// never used (e.g., when rendering plain text conversations).
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
 
-/// Global theme set (loaded lazily)
+/// Global theme set loaded lazily on first use.
+///
+/// Contains syntect's default themes including the "base16-eighties.dark" theme
+/// used by this module. Lazy initialization keeps it out of the hot path.
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
-/// Convert syntect FontStyle to ratatui Modifier
+/// Convert syntect FontStyle bitflags to ratatui Modifier.
+///
+/// Syntect uses bitflags for text styling (bold, italic, underline), while ratatui
+/// uses its own `Modifier` type. This function bridges between the two representations.
 fn font_style_to_modifier(font_style: FontStyle) -> Modifier {
     let mut modifier = Modifier::empty();
     if font_style.contains(FontStyle::BOLD) {
@@ -105,13 +155,32 @@ pub fn highlight_code(code: &str, language: Option<&str>) -> Vec<Line<'static>> 
     result
 }
 
-/// Check if syntax highlighting is available for a language
+/// Check if syntax highlighting is available for a language.
+///
+/// Returns `true` if syntect has a syntax definition for the given language identifier.
+/// The identifier can be a language name (e.g., "rust") or file extension (e.g., "rs").
+///
+/// # Example
+///
+/// ```
+/// use tui_rs::syntax::has_syntax;
+///
+/// assert!(has_syntax("rust"));
+/// assert!(has_syntax("python"));
+/// assert!(!has_syntax("nonexistent_language"));
+/// ```
 pub fn has_syntax(language: &str) -> bool {
     SYNTAX_SET.find_syntax_by_token(language).is_some()
         || SYNTAX_SET.find_syntax_by_extension(language).is_some()
 }
 
-/// Get a list of supported language names
+/// Get a list of all supported language names.
+///
+/// Returns the canonical names of all languages with syntax definitions in the
+/// default syntect syntax set. Useful for autocomplete or language selection UIs.
+///
+/// Note: The returned references have static lifetime because they point into
+/// the lazy-loaded SYNTAX_SET.
 pub fn supported_languages() -> Vec<&'static str> {
     SYNTAX_SET
         .syntaxes()

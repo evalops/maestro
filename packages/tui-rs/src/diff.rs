@@ -1,6 +1,34 @@
 //! Diff rendering for file changes
 //!
-//! Uses the `similar` crate for generating and displaying diffs.
+//! This module generates and renders unified diffs for text comparison, using the
+//! `similar` crate's Myers diff algorithm. It produces styled ratatui output similar
+//! to `git diff` with color-coded additions, deletions, and context lines.
+//!
+//! # External Crates
+//!
+//! - **similar**: Fast diff library implementing the Myers diff algorithm with support
+//!   for unified diff format, word-level diffs, and patience diff algorithm.
+//! - **ratatui**: Used for styled terminal output.
+//!
+//! # Diff Format
+//!
+//! The output follows the unified diff format with:
+//! - Hunk headers showing line ranges: `@@ -1,5 +1,7 @@`
+//! - Line numbers in left (old) and right (new) columns
+//! - Context lines (unchanged, no prefix)
+//! - Added lines (green, `+` prefix)
+//! - Removed lines (red, `-` prefix)
+//!
+//! # Example
+//!
+//! ```
+//! use tui_rs::diff::{generate_diff, render_diff};
+//!
+//! let old = "line 1\nline 2\nline 3";
+//! let new = "line 1\nline 2 modified\nline 3";
+//! let diff = generate_diff(old, new, 3);
+//! let text = render_diff(&diff);
+//! ```
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};

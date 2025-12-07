@@ -1,23 +1,118 @@
-//! Message framing protocol
+//! Message framing protocol for reliable IPC.
 //!
-//! Provides reliable message framing for the headless protocol.
-//! Supports multiple framing modes:
-//! - Newline-delimited JSON (default, compatible with existing agents)
-//! - Length-prefixed binary (for future high-performance transports)
+//! This module provides reliable message framing for the headless protocol, solving
+//! the fundamental problem of message boundaries in stream-oriented communication.
+//! When sending messages over pipes or sockets, the receiver needs a way to determine
+//! where one message ends and the next begins.
+//!
+//! # The Framing Problem
+//!
+//! Consider sending two JSON messages over a pipe:
+//!
+//! ```text
+//! {"type":"prompt","content":"Hello"}{"type":"interrupt"}
+//! ```
+//!
+//! Without framing, the receiver sees a continuous byte stream and cannot determine
+//! the message boundaries. Framing solves this by adding delimiters or length information.
+//!
+//! # Framing Modes
+//!
+//! ## Newline-Delimited JSON (Default)
+//!
+//! Each message is terminated by a newline (`\n`):
+//!
+//! ```text
+//! {"type":"prompt","content":"Hello"}\n
+//! {"type":"interrupt"}\n
+//! ```
+//!
+//! **Advantages:**
+//! - Simple to implement and debug
+//! - Human-readable in logs
+//! - Self-synchronizing (lost frames don't corrupt stream)
+//! - Compatible with line-buffered I/O
+//!
+//! **Limitations:**
+//! - Requires scanning for newlines
+//! - JSON content cannot contain literal newlines (must escape as `\n`)
+//!
+//! ## Length-Prefixed Binary
+//!
+//! Each message is prefixed with its length as a 4-byte big-endian integer:
+//!
+//! ```text
+//! [0x00, 0x00, 0x00, 0x2A][...42 bytes of JSON...]
+//! [0x00, 0x00, 0x00, 0x15][...21 bytes of JSON...]
+//! ```
+//!
+//! **Advantages:**
+//! - No scanning required - O(1) framing overhead
+//! - Supports binary data (base64-encoded in JSON)
+//! - Predictable performance for large messages
+//!
+//! **Limitations:**
+//! - Not human-readable
+//! - Lost synchronization corrupts the stream
+//!
+//! # Buffered I/O
+//!
+//! Both sync and async implementations use buffered readers/writers to minimize
+//! system calls. A `BufReader` with 64KB capacity reduces read syscalls by batching
+//! multiple messages into a single buffer.
+//!
+//! ## Buffer Size Selection
+//!
+//! The default 64KB buffer is chosen because:
+//! - Most messages are < 10KB, so multiple messages fit in one buffer
+//! - Larger buffers increase latency for small messages
+//! - 64KB is typical for TCP buffers and works well for stdio
+//!
+//! # Async vs Sync
+//!
+//! This module provides both synchronous and asynchronous implementations:
+//!
+//! - **Sync** - `FrameReader`/`FrameWriter` for use with `std::io` types
+//! - **Async** - `AsyncFrameReader`/`AsyncFrameWriter` for use with `tokio::io` types
+//!
+//! The async versions use the same framing logic but integrate with Tokio's
+//! async runtime, allowing concurrent I/O without blocking threads.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-/// Framing mode for message transport
+/// Framing mode for message transport.
+///
+/// Determines how messages are delimited in the byte stream. The choice of framing
+/// mode affects performance, debuggability, and robustness.
+///
+/// # Mode Selection
+///
+/// - Use `NewlineDelimited` (default) for:
+///   - Interactive debugging (messages are human-readable)
+///   - Cross-platform compatibility
+///   - Self-synchronizing streams
+///
+/// - Use `LengthPrefixed` for:
+///   - High-throughput scenarios with large messages
+///   - Binary data transport
+///   - Predictable performance characteristics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FramingMode {
-    /// Newline-delimited JSON (default)
-    /// Each message is a single line of JSON followed by \n
+    /// Newline-delimited JSON (default).
+    ///
+    /// Each message is a single line of JSON followed by `\n`.
+    /// Empty lines are skipped automatically.
     #[default]
     NewlineDelimited,
-    /// Length-prefixed binary
-    /// Format: [4-byte big-endian length][JSON bytes]
+
+    /// Length-prefixed binary.
+    ///
+    /// Format: `[4-byte big-endian length][JSON bytes]`
+    ///
+    /// The length field specifies the number of bytes in the JSON payload,
+    /// not including the length prefix itself.
     LengthPrefixed,
 }
 
@@ -64,10 +159,46 @@ impl From<serde_json::Error> for FramingError {
     }
 }
 
-/// Maximum message size (10MB)
+/// Maximum message size (10MB).
+///
+/// Messages larger than this limit are rejected to prevent memory exhaustion
+/// and ensure bounded processing time.
 pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
-/// Synchronous message writer
+/// Synchronous message writer.
+///
+/// Serializes messages to JSON and writes them with appropriate framing to an
+/// underlying `Write` implementation. Automatically flushes after each message
+/// to ensure immediate delivery.
+///
+/// # Type Parameters
+///
+/// - `W: Write` - Any type implementing `std::io::Write`, such as:
+///   - `std::process::ChildStdin` - Write to subprocess stdin
+///   - `std::net::TcpStream` - Write to network socket
+///   - `std::io::Cursor<Vec<u8>>` - Write to in-memory buffer
+///
+/// # Examples
+///
+/// ```rust
+/// use tui_rs::headless::framing::FrameWriter;
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Serialize)]
+/// struct Message {
+///     content: String,
+/// }
+///
+/// let mut buffer = Vec::new();
+/// let mut writer = FrameWriter::new(&mut buffer);
+///
+/// writer.write_message(&Message {
+///     content: "Hello".to_string()
+/// })?;
+///
+/// // Buffer now contains: {"content":"Hello"}\n
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct FrameWriter<W> {
     writer: W,
     mode: FramingMode,
@@ -135,7 +266,50 @@ impl<W: Write> FrameWriter<W> {
     }
 }
 
-/// Synchronous message reader
+/// Synchronous message reader.
+///
+/// Reads framed messages from an underlying `Read` implementation, deserializing
+/// them from JSON. Uses buffered I/O to minimize system calls.
+///
+/// # Type Parameters
+///
+/// - `R: Read` - Any type implementing `std::io::Read`, such as:
+///   - `std::process::ChildStdout` - Read from subprocess stdout
+///   - `std::net::TcpStream` - Read from network socket
+///   - `std::io::Cursor<Vec<u8>>` - Read from in-memory buffer
+///
+/// # Buffering Strategy
+///
+/// Internally uses a `BufReader` with 64KB capacity. This batches multiple
+/// small messages into fewer system calls, significantly improving throughput
+/// for high-frequency message streams.
+///
+/// # Empty Line Handling
+///
+/// In `NewlineDelimited` mode, empty lines are automatically skipped. This
+/// provides robustness against debugging output or protocol extensions that
+/// insert blank lines.
+///
+/// # Examples
+///
+/// ```rust
+/// use tui_rs::headless::framing::FrameReader;
+/// use serde::Deserialize;
+/// use std::io::Cursor;
+///
+/// #[derive(Deserialize)]
+/// struct Message {
+///     content: String,
+/// }
+///
+/// let data = b"{\"content\":\"Hello\"}\n";
+/// let cursor = Cursor::new(data);
+/// let mut reader = FrameReader::new(cursor);
+///
+/// let msg: Message = reader.read_message()?;
+/// assert_eq!(msg.content, "Hello");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct FrameReader<R> {
     reader: BufReader<R>,
     mode: FramingMode,

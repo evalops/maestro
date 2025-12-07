@@ -1,6 +1,47 @@
 //! Git utilities
 //!
-//! Provides git repository detection and information.
+//! This module provides lightweight git repository introspection by spawning the `git`
+//! command-line tool. It's designed for status bar integration and repository context,
+//! not for complex git operations.
+//!
+//! # Implementation Strategy
+//!
+//! Rather than using a git library like `git2` (libgit2 bindings), this module shells
+//! out to the `git` command. This approach:
+//!
+//! - Reduces binary size (no libgit2 dependency)
+//! - Works with any git version installed on the system
+//! - Avoids version compatibility issues with git repositories
+//! - Simplifies the build process (no CMake, no vendored C code)
+//!
+//! The trade-off is slightly higher latency (~5-10ms per git command) which is acceptable
+//! for infrequent status bar updates.
+//!
+//! # Functions
+//!
+//! - `current_branch`: Get branch name or detached HEAD commit hash
+//! - `is_git_repo`: Check if a directory is in a git repository
+//! - `repo_root`: Get the repository root directory path
+//! - `get_status`: Get counts of staged/modified/untracked files
+//!
+//! # Example
+//!
+//! ```no_run
+//! use std::env;
+//! use tui_rs::git::{is_git_repo, current_branch, get_status};
+//!
+//! let cwd = env::current_dir().unwrap();
+//! if is_git_repo(&cwd) {
+//!     if let Some(branch) = current_branch(&cwd) {
+//!         println!("On branch: {}", branch);
+//!     }
+//!     if let Some(status) = get_status(&cwd) {
+//!         if let Some(summary) = status.short_status() {
+//!             println!("Status: {}", summary);
+//!         }
+//!     }
+//! }
+//! ```
 
 use std::path::Path;
 use std::process::Command;

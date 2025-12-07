@@ -1,23 +1,127 @@
-//! Command matching and completion
+//! Command matching and tab completion
 //!
-//! Provides fuzzy matching and scoring for slash commands,
-//! along with tab completion cycling.
+//! This module implements fuzzy matching for slash commands with an intelligent
+//! scoring algorithm. It enables features like command autocomplete, ranked suggestions,
+//! and tab-cycling through matches.
+//!
+//! # Fuzzy Matching Algorithm
+//!
+//! The matcher uses a tiered scoring system that prioritizes different match types:
+//!
+//! ## Score Hierarchy (highest to lowest)
+//!
+//! 1. **Exact Match (100)**: Input matches the command name exactly
+//!    - Example: "help" matches "/help" perfectly
+//!
+//! 2. **Prefix Match - Name (70)**: Input is a prefix of the command name
+//!    - Example: "the" matches "/theme"
+//!
+//! 3. **Prefix Match - Alias (55)**: Input is a prefix of an alias
+//!    - Example: "h" matches "/help" via alias "h"
+//!
+//! 4. **Contains Match - Name (25)**: Command name contains the input as substring
+//!    - Example: "ver" matches "/version"
+//!
+//! 5. **Contains Match - Alias (15)**: Alias contains the input as substring
+//!    - Example: "s" matches "/session" via alias "ss"
+//!
+//! ## Bonus Points
+//!
+//! Commands receive additional points based on usage patterns:
+//!
+//! - **Favorite with query (+12)**: User has marked this as a favorite
+//! - **Favorite without query (+8)**: Favorite when showing all commands
+//! - **Recent with query (+8)**: Command was recently used
+//! - **Recent without query (+5)**: Recently used when showing all commands
+//!
+//! # Tab Completion
+//!
+//! The `SlashCycleState` struct manages state for cycling through command completions:
+//!
+//! - Maintains a cached list of matches for the current query
+//! - Tracks the current index in the completion list
+//! - Resets when the query changes
+//! - Supports forward (Tab) and backward (Shift+Tab) cycling
+//!
+//! # Example Usage
+//!
+//! ```rust
+//! use crate::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
+//! use std::sync::Arc;
+//!
+//! let registry = Arc::new(build_command_registry());
+//! let mut matcher = SlashCommandMatcher::new(Arc::clone(&registry));
+//!
+//! // Add favorites for better scoring
+//! matcher.add_favorite("help");
+//! matcher.add_favorite("theme");
+//!
+//! // Get matches for a partial query
+//! let matches = matcher.get_matches("/the");
+//! // Returns: [theme (score: 70), thinking (score: 25), ...]
+//!
+//! // Record usage for recent commands bonus
+//! matcher.record_usage("theme");
+//!
+//! // Tab completion cycling
+//! let mut cycle = SlashCycleState::new();
+//! cycle.set_query("/h", &matcher);
+//! let first = cycle.current();       // Some("/help")
+//! cycle.cycle_next();
+//! let second = cycle.current();      // Some("/help") or next match
+//! ```
+//!
+//! # Performance
+//!
+//! - **Matching**: O(n) where n = number of commands (typically 20-30)
+//! - **Sorting**: O(n log n) for score-based ranking
+//! - **Favorites/Recent**: O(1) lookup using Vec::contains (small lists)
+//! - **Query caching**: Tab cycling avoids re-matching on every keypress
 
 use std::sync::Arc;
 
 use super::registry::CommandRegistry;
 use super::types::Command;
 
-/// A matched command with its score
+/// A matched command with its computed score
+///
+/// Represents a single command that matched a user's query, along with metadata
+/// about how it matched and its relevance score.
+///
+/// # Fields
+///
+/// - `command`: Arc reference to the matched command (cheap to clone)
+/// - `score`: Numeric score indicating match quality (higher = better match)
+/// - `matched_alias`: If matched via alias, stores which alias matched
+/// - `matched_name`: The actual name or alias string that was matched
+///
+/// # Usage in UI
+///
+/// The UI can use these fields to:
+/// - Display the matched name (could be primary name or alias)
+/// - Show which alias was used (e.g., "help (h)")
+/// - Rank matches by score for autocomplete suggestions
+///
+/// # Example
+///
+/// ```rust
+/// // User types "/h"
+/// // Matcher returns CommandMatch {
+/// //   command: Arc<Command> for "help",
+/// //   score: 100 (exact alias match),
+/// //   matched_alias: Some("h"),
+/// //   matched_name: "h"
+/// // }
+/// ```
 #[derive(Debug, Clone)]
 pub struct CommandMatch {
-    /// The matched command
+    /// The matched command (Arc for cheap cloning)
     pub command: Arc<Command>,
     /// Match score (higher is better)
     pub score: i32,
-    /// Whether matched by alias
+    /// If matched via alias, stores the alias name
     pub matched_alias: Option<String>,
-    /// The matched portion of the name
+    /// The name or alias that was matched (for display)
     pub matched_name: String,
 }
 
@@ -40,28 +144,95 @@ impl CommandMatch {
     }
 }
 
-/// Scoring constants
+/// Scoring constants for fuzzy matching
+///
+/// These constants define the point values for different types of matches
+/// in the fuzzy matching algorithm. Higher scores indicate better matches.
+///
+/// The values are carefully tuned to prioritize:
+/// 1. Exact matches over partial matches
+/// 2. Primary names over aliases
+/// 3. Prefix matches over substring matches
+/// 4. User preferences (favorites/recent) as tiebreakers
 mod scores {
+    /// Perfect match: query equals command name exactly
     pub const EXACT_MATCH: i32 = 100;
+
+    /// Query is a prefix of the primary command name (e.g., "the" -> "theme")
     pub const PREFIX_MATCH_NAME: i32 = 70;
+
+    /// Query is a prefix of an alias (e.g., "h" -> "help" via "h" alias)
     pub const PREFIX_MATCH_ALIAS: i32 = 55;
+
+    /// Primary name contains query as substring (e.g., "ver" -> "version")
     pub const CONTAINS_MATCH_NAME: i32 = 25;
+
+    /// Alias contains query as substring (less common)
     pub const CONTAINS_MATCH_ALIAS: i32 = 15;
+
+    /// Bonus for favorite commands when user typed a query
     pub const FAVORITE_BONUS_WITH_QUERY: i32 = 12;
+
+    /// Bonus for favorite commands when showing all (no query)
     pub const FAVORITE_BONUS_NO_QUERY: i32 = 8;
+
+    /// Bonus for recently used commands when user typed a query
     pub const RECENT_BONUS_WITH_QUERY: i32 = 8;
+
+    /// Bonus for recently used commands when showing all (no query)
     pub const RECENT_BONUS_NO_QUERY: i32 = 5;
 }
 
 /// Slash command matcher with fuzzy matching and tab completion
+///
+/// The `SlashCommandMatcher` provides intelligent command matching with scoring,
+/// favorites tracking, and usage history. It wraps a `CommandRegistry` and adds
+/// fuzzy search capabilities.
+///
+/// # Arc-based Registry Access
+///
+/// The matcher holds an `Arc<CommandRegistry>` for:
+/// - Cheap cloning when creating multiple matchers
+/// - Thread-safe shared access to the command registry
+/// - No need to duplicate the entire registry for each matcher
+///
+/// # State Management
+///
+/// The matcher maintains mutable state for:
+/// - **Favorites**: User-marked commands that get bonus points
+/// - **Recent**: LRU (Least Recently Used) list of commands, capped at `max_recent`
+///
+/// This state influences scoring but doesn't affect the underlying registry.
+///
+/// # Example
+///
+/// ```rust
+/// use crate::commands::{build_command_registry, SlashCommandMatcher};
+/// use std::sync::Arc;
+///
+/// let registry = Arc::new(build_command_registry());
+/// let mut matcher = SlashCommandMatcher::new(registry);
+///
+/// // Track favorites
+/// matcher.add_favorite("help");
+/// matcher.add_favorite("quit");
+///
+/// // Record usage (maintains LRU list)
+/// matcher.record_usage("theme");
+/// matcher.record_usage("model");
+///
+/// // Get matches with bonuses applied
+/// let matches = matcher.get_matches("h");
+/// // "help" gets higher score due to favorite bonus
+/// ```
 pub struct SlashCommandMatcher {
-    /// Reference to command registry
+    /// Arc reference to the command registry (shared ownership)
     registry: Arc<CommandRegistry>,
-    /// Favorite commands (get bonus in scoring)
+    /// Favorite commands (receive bonus points in scoring)
     favorites: Vec<String>,
-    /// Recently used commands
+    /// Recently used commands (LRU list, newest first)
     recent: Vec<String>,
-    /// Maximum recent commands to track
+    /// Maximum recent commands to track (default: 10)
     max_recent: usize,
 }
 
@@ -99,7 +270,42 @@ impl SlashCommandMatcher {
         }
     }
 
-    /// Get matches for a query
+    /// Get all commands matching the query, sorted by relevance score
+    ///
+    /// Performs fuzzy matching against all commands in the registry and returns
+    /// a sorted list of matches with their scores.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Normalize query (strip `/`, convert to lowercase)
+    /// 2. If query is empty, return all commands sorted by favorites/recent
+    /// 3. For each command:
+    ///    - Try matching against primary name
+    ///    - If no match, try matching against each alias
+    ///    - Calculate base score (exact, prefix, or contains)
+    ///    - Apply favorite and recent bonuses
+    /// 4. Sort by score (descending)
+    ///
+    /// # Matching Priority
+    ///
+    /// The algorithm matches against primary names before aliases. If the primary
+    /// name matches, aliases are not checked. This prevents duplicate matches.
+    ///
+    /// # Return Value
+    ///
+    /// Returns a Vec of `CommandMatch` sorted by score (highest first). Each match
+    /// includes the command, score, and information about which name/alias matched.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let matches = matcher.get_matches("/the");
+    /// // Returns:
+    /// // [
+    /// //   CommandMatch { command: "theme", score: 70, ... },     // prefix match
+    /// //   CommandMatch { command: "thinking", score: 25, ... },  // contains match
+    /// // ]
+    /// ```
     #[allow(clippy::needless_borrow)] // Borrows enable &String -> &str coercion
     pub fn get_matches(&self, query: &str) -> Vec<CommandMatch> {
         let query = query.to_lowercase();
@@ -227,12 +433,58 @@ impl SlashCommandMatcher {
 }
 
 /// State for tab-cycling through command completions
+///
+/// Manages the state needed for cycling through command suggestions when the user
+/// presses Tab or Shift+Tab. This struct caches matches to avoid recomputing them
+/// on every keypress.
+///
+/// # State Lifecycle
+///
+/// 1. **Uninitialized**: `query` is None, no completions cached
+/// 2. **Set Query**: User types, completions are fetched and cached
+/// 3. **Cycling**: User presses Tab, index increments (wraps at end)
+/// 4. **Query Change**: Detected by comparing to cached query, triggers refresh
+/// 5. **Reset**: Explicitly called or query changes, clears all state
+///
+/// # Caching Strategy
+///
+/// The completions Vec is cached to avoid calling `matcher.get_completions()` on
+/// every Tab press. The cache is invalidated when:
+/// - The query string changes (detected in `set_query()`)
+/// - `reset()` is called explicitly
+///
+/// # Example Usage
+///
+/// ```rust
+/// use crate::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
+/// use std::sync::Arc;
+///
+/// let registry = Arc::new(build_command_registry());
+/// let matcher = SlashCommandMatcher::new(registry);
+/// let mut cycle = SlashCycleState::new();
+///
+/// // User types "/h"
+/// cycle.set_query("/h", &matcher);
+/// assert_eq!(cycle.current(), Some("/help"));  // First match
+///
+/// // User presses Tab
+/// cycle.cycle_next();
+/// // Now on second match (if any)
+///
+/// // User presses Shift+Tab
+/// cycle.cycle_prev();
+/// // Back to first match
+///
+/// // User changes query to "/he"
+/// cycle.set_query("/he", &matcher);
+/// assert_eq!(cycle.current_index(), 0);  // Reset to start
+/// ```
 pub struct SlashCycleState {
-    /// Current query (None means uninitialized)
+    /// Current query string (None means uninitialized/reset)
     query: Option<String>,
-    /// Current cycle index
+    /// Current index in the completions list
     index: usize,
-    /// Cached completions
+    /// Cached completions from matcher (invalidated when query changes)
     completions: Vec<String>,
 }
 

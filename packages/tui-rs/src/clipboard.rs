@@ -1,15 +1,46 @@
 //! Clipboard integration
 //!
-//! Provides copy/paste functionality for the TUI.
-//! Enabled via the "clipboard" feature flag.
+//! This module provides cross-platform clipboard access for copy/paste operations in the TUI.
+//! It uses the `arboard` crate which supports X11, Wayland, macOS, and Windows.
+//!
+//! # Feature Flag
+//!
+//! Clipboard support is gated behind the `clipboard` feature flag. When the feature is
+//! disabled, all clipboard operations return `ClipboardError::FeatureDisabled`.
+//!
+//! This allows the crate to compile on platforms without clipboard support or in
+//! environments where clipboard access is not needed.
+//!
+//! # Platform Support
+//!
+//! - **Linux/Unix**: Supports both X11 and Wayland via `arboard`
+//! - **macOS**: Uses NSPasteboard APIs
+//! - **Windows**: Uses Win32 clipboard APIs
+//! - **Headless/SSH**: Gracefully handles clipboard unavailability
+//!
+//! # External Crates
+//!
+//! - **arboard**: Cross-platform clipboard library with support for text, images, and HTML
+//! - **thiserror**: Used for deriving the `Error` trait on `ClipboardError`
+//!
+//! # Conditional Compilation
+//!
+//! This module uses `#[cfg(feature = "clipboard")]` extensively to provide stub
+//! implementations when the feature is disabled, allowing the code to compile without
+//! pulling in platform-specific clipboard dependencies.
 
 #[cfg(feature = "clipboard")]
 use arboard::Clipboard;
 
-/// Result type for clipboard operations
+/// Result type alias for clipboard operations.
+///
+/// Convenience alias for `Result<T, ClipboardError>` used throughout this module.
 pub type ClipboardResult<T> = Result<T, ClipboardError>;
 
-/// Clipboard error types
+/// Errors that can occur during clipboard operations.
+///
+/// These errors cover both feature-level issues (clipboard feature not enabled) and
+/// runtime issues (clipboard access denied, clipboard server not running, etc.).
 #[derive(Debug, thiserror::Error)]
 pub enum ClipboardError {
     #[error("Clipboard not available: {0}")]
@@ -22,7 +53,25 @@ pub enum ClipboardError {
     FeatureDisabled,
 }
 
-/// Clipboard manager for copy/paste operations
+/// Clipboard manager for copy/paste operations.
+///
+/// This struct wraps the `arboard::Clipboard` instance and provides a simplified API
+/// for text clipboard operations. It handles the feature flag conditionally, providing
+/// stub implementations when clipboard support is disabled.
+///
+/// # Example
+///
+/// ```no_run
+/// use tui_rs::clipboard::ClipboardManager;
+///
+/// let mut clipboard = ClipboardManager::new();
+/// if clipboard.is_available() {
+///     clipboard.copy("Hello, clipboard!").ok();
+///     if let Ok(text) = clipboard.paste() {
+///         println!("Pasted: {}", text);
+///     }
+/// }
+/// ```
 pub struct ClipboardManager {
     #[cfg(feature = "clipboard")]
     clipboard: Option<Clipboard>,
@@ -115,7 +164,12 @@ impl ClipboardManager {
     }
 }
 
-/// Check if clipboard feature is compiled in
+/// Check if clipboard feature is compiled in.
+///
+/// Returns `true` if the crate was built with the `clipboard` feature enabled.
+/// This can be used to conditionally enable clipboard-related UI elements.
+///
+/// This is a const function and can be used in const contexts.
 pub const fn is_feature_enabled() -> bool {
     cfg!(feature = "clipboard")
 }

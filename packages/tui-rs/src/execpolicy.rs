@@ -1,9 +1,12 @@
 //! Execution Policy System - Pattern-based command approval policies.
 //!
-//! Ported from OpenAI Codex (MIT License):
+//! This module implements a security system for controlling which shell commands an AI
+//! agent can execute without user approval. It's ported from OpenAI Codex (MIT License):
 //! https://github.com/openai/codex/tree/main/codex-rs/execpolicy
 //!
-//! Policies are defined in `.execpolicy` files using a Starlark-like syntax:
+//! # Policy Files
+//!
+//! Policies are defined in `.composer/execpolicy` files using a Starlark-like syntax:
 //!
 //! ```starlark
 //! prefix_rule(
@@ -16,6 +19,30 @@
 //!     decision="prompt",
 //! )
 //! ```
+//!
+//! # Policy Locations
+//!
+//! Policies are loaded from two locations in order:
+//! 1. Global: `~/.composer/execpolicy`
+//! 2. Project: `<workspace>/.composer/execpolicy` (overrides global)
+//!
+//! # Decision Types
+//!
+//! - `allow`: Command executes without prompting (e.g., read-only operations)
+//! - `prompt`: User must approve before execution (e.g., destructive operations)
+//! - `forbidden`: Command is never allowed (e.g., `rm -rf /`)
+//!
+//! # Pattern Matching
+//!
+//! Patterns are prefix-based, matching the start of the command:
+//! - `["git", "status"]` matches `git status` and `git status --short`
+//! - `["git", ["push", "pull"]]` matches `git push` or `git pull` (alternatives)
+//!
+//! # External Crates
+//!
+//! - **regex**: For parsing policy files (not for command matching)
+//! - **serde**: For serializing evaluation results for IPC
+//! - **once_cell**: For lazy policy loading and caching
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};

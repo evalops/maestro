@@ -1,6 +1,45 @@
 //! Markdown rendering for terminal display
 //!
-//! Converts markdown to styled ratatui text using pulldown-cmark.
+//! This module converts markdown text to styled ratatui `Text` using the pulldown-cmark
+//! parser. It handles all standard markdown features including headings, code blocks,
+//! lists, emphasis, links, and blockquotes, applying appropriate terminal styling.
+//!
+//! # Rendering Pipeline
+//!
+//! The rendering process follows these steps:
+//!
+//! 1. Parse markdown using `pulldown-cmark::Parser` with extended features
+//! 2. Process events through `MarkdownRenderer` which maintains style state
+//! 3. Syntax highlight code blocks using the `syntax` module
+//! 4. Convert to ratatui `Text` with styled `Line` and `Span` elements
+//!
+//! # Supported Features
+//!
+//! - **Headings** (H1-H6): Different styles with # prefix preserved
+//! - **Code blocks**: Fenced code with language-specific syntax highlighting
+//! - **Inline code**: Backtick-delimited code with distinct styling
+//! - **Lists**: Both ordered and unordered, with proper indentation
+//! - **Emphasis**: Italic (*text*), bold (**text**), strikethrough (~~text~~)
+//! - **Links**: Displayed as styled text with URL appended in parentheses
+//! - **Blockquotes**: Rendered with vertical bar prefix
+//! - **Tables**: Parsed but basic rendering support
+//! - **Horizontal rules**: Rendered as separator lines
+//!
+//! # External Crates
+//!
+//! - `pulldown-cmark`: CommonMark-compliant markdown parser that provides an
+//!   event-based streaming API for efficient parsing
+//! - `ratatui`: Terminal UI framework for styled text rendering
+//!
+//! # Example
+//!
+//! ```
+//! use tui_rs::markdown::render_markdown;
+//!
+//! let markdown = "# Hello\n\nThis is **bold** and *italic*.";
+//! let text = render_markdown(markdown);
+//! // `text` is now a ratatui::text::Text ready for rendering
+//! ```
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
@@ -9,7 +48,13 @@ use ratatui::text::{Line, Span, Text};
 use crate::palette::theme;
 use crate::syntax;
 
-/// Styles for markdown elements
+/// Style configuration for markdown elements.
+///
+/// This struct defines the visual appearance of different markdown elements when
+/// rendered in the terminal. Each field corresponds to a specific markdown construct
+/// and contains a ratatui `Style` with foreground/background colors and modifiers.
+///
+/// The default styles are designed for readability in dark terminal themes.
 #[derive(Clone)]
 pub struct MarkdownStyles {
     pub h1: Style,
@@ -51,12 +96,38 @@ impl Default for MarkdownStyles {
     }
 }
 
-/// Render markdown text to ratatui Text
+/// Render markdown text to ratatui Text.
+///
+/// This is the main entry point for converting markdown strings to styled terminal
+/// output. It parses the markdown and returns a `Text` instance ready for rendering
+/// with ratatui.
+///
+/// # Arguments
+///
+/// - `input`: The markdown source text
+///
+/// # Returns
+///
+/// A ratatui `Text<'static>` with styled lines and spans
+///
+/// # Example
+///
+/// ```
+/// use tui_rs::markdown::render_markdown;
+///
+/// let text = render_markdown("**Bold** and *italic*");
+/// ```
 pub fn render_markdown(input: &str) -> Text<'static> {
     render_markdown_with_width(input, None)
 }
 
-/// Render markdown with optional width limit for wrapping
+/// Render markdown with optional width limit for wrapping.
+///
+/// This function provides the same functionality as `render_markdown` but with
+/// an optional width parameter for future word-wrapping support.
+///
+/// Note: The width parameter is currently unused but reserved for future implementation
+/// of automatic line wrapping at the markdown rendering level.
 pub fn render_markdown_with_width(input: &str, _width: Option<usize>) -> Text<'static> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -68,6 +139,25 @@ pub fn render_markdown_with_width(input: &str, _width: Option<usize>) -> Text<'s
     renderer.into_text()
 }
 
+/// Internal renderer state for processing markdown events.
+///
+/// This struct maintains rendering state as it processes the stream of events from
+/// pulldown-cmark. It uses a stack-based approach for nested styles and list tracking
+/// to properly handle nested markdown constructs.
+///
+/// # Style Stack
+///
+/// Styles are composed using a stack, where each nested construct (emphasis, strong,
+/// link) pushes a new combined style onto the stack. This allows proper handling of
+/// nested emphasis like ***bold italic***.
+///
+/// # List State
+///
+/// Lists are tracked with a stack of `Option<u64>` where:
+/// - `None` indicates an unordered list (bullet points)
+/// - `Some(n)` indicates an ordered list starting at number `n`
+///
+/// This allows proper rendering of nested lists with correct indentation and markers.
 struct MarkdownRenderer {
     styles: MarkdownStyles,
     lines: Vec<Line<'static>>,

@@ -1,12 +1,92 @@
-//! Native Rust agent
+//! Native Rust agent implementation
 //!
-//! A fully native agent implementation that communicates directly with AI providers.
-//! Replaces the Node.js subprocess architecture with pure Rust.
+//! A fully native agent implementation that communicates directly with AI providers,
+//! replacing the previous Node.js subprocess architecture with pure Rust for better
+//! performance, type safety, and integration.
 //!
-//! The agent uses a background task architecture:
-//! - `NativeAgent` is the handle held by the TUI
-//! - `NativeAgentRunner` runs in a background task and owns mutable state
-//! - Communication happens via channels, so `prompt()` returns immediately
+//! # Architecture
+//!
+//! The agent uses a background task architecture to enable non-blocking operations:
+//!
+//! - **[`NativeAgent`]**: Lightweight handle held by the TUI application. All methods
+//!   return immediately, sending commands via channels.
+//! - **`NativeAgentRunner`**: Private background task that owns mutable state, processes
+//!   commands, and manages the AI conversation loop.
+//! - **Channel communication**: All interaction happens through Tokio MPSC channels,
+//!   enabling true async/non-blocking behavior.
+//!
+//! # Lifecycle
+//!
+//! ```text
+//! 1. TUI creates NativeAgent::new(config)
+//!    ├─> Spawns background tokio::spawn(runner.run())
+//!    └─> Returns (agent_handle, event_receiver)
+//!
+//! 2. TUI calls agent.prompt(message)
+//!    └─> Sends AgentCommand::Prompt via channel (returns immediately)
+//!
+//! 3. Background runner receives command
+//!    ├─> Adds message to conversation history
+//!    ├─> Calls AI provider API (streaming)
+//!    ├─> Sends FromAgent::ResponseChunk events
+//!    └─> Handles tool calls if requested
+//!
+//! 4. TUI receives events from event_receiver
+//!    └─> Updates UI in real-time
+//! ```
+//!
+//! # Async Task Spawning
+//!
+//! The agent uses `tokio::spawn` to run the background task. This allows the TUI
+//! thread to remain responsive while the agent processes long-running AI requests:
+//!
+//! ```rust,ignore
+//! tokio::spawn(async move {
+//!     runner.run().await;
+//! });
+//! ```
+//!
+//! The spawned task runs independently and communicates exclusively via channels.
+//!
+//! # Channel Communication (MPSC)
+//!
+//! Three unbounded MPSC (multi-producer, single-consumer) channels coordinate
+//! communication between the TUI and agent:
+//!
+//! 1. **Command channel** (`mpsc::UnboundedSender<AgentCommand>`):
+//!    - TUI sends commands (prompt, cancel, set_model, etc.)
+//!    - Agent receives and processes in order
+//!
+//! 2. **Event channel** (`mpsc::UnboundedSender<FromAgent>`):
+//!    - Agent sends events (response chunks, tool calls, errors)
+//!    - TUI receives and updates UI
+//!
+//! 3. **Tool response channel** (`mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>`):
+//!    - TUI sends user approval for tool execution
+//!    - Agent waits for approval before executing restricted tools
+//!
+//! Unbounded channels are used because:
+//! - Commands are user-initiated and low-volume
+//! - Events are streamed but backpressure is handled by the TUI renderer
+//! - Tool responses are synchronous (one response per tool call)
+//!
+//! # Cancellation
+//!
+//! The agent supports mid-request cancellation using `CancellationToken`:
+//!
+//! ```rust,ignore
+//! // In runner
+//! let cancel_token = CancellationToken::new();
+//! tokio::select! {
+//!     res = self.run_loop() => res,
+//!     _ = cancel_token.cancelled() => {
+//!         Err(anyhow::anyhow!("Request cancelled"))
+//!     }
+//! }
+//! ```
+//!
+//! When the user presses Escape or sends `AgentCommand::Cancel`, the token is
+//! triggered and the current request stops gracefully.
 
 use std::collections::HashMap;
 
@@ -23,19 +103,65 @@ use crate::ai::{
 use crate::tools::{ToolExecutor, ToolRegistry};
 
 /// Configuration for the native agent
+///
+/// Defines the AI model settings, system prompt, thinking capabilities, and execution
+/// environment for the agent. All fields can be updated at runtime via agent methods.
+///
+/// # Examples
+///
+/// ```
+/// use tui_rs::agent::NativeAgentConfig;
+///
+/// // Default configuration (Claude Sonnet)
+/// let config = NativeAgentConfig::default();
+/// assert_eq!(config.model, "claude-sonnet-4-5-20250514");
+///
+/// // Custom configuration with thinking enabled
+/// let config = NativeAgentConfig {
+///     model: "claude-opus-4-5-20251101".to_string(),
+///     max_tokens: 32768,
+///     system_prompt: Some("You are a helpful coding assistant.".to_string()),
+///     thinking_enabled: true,
+///     thinking_budget: 20000,
+///     cwd: "/path/to/project".to_string(),
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct NativeAgentConfig {
     /// Model to use (e.g., "claude-opus-4-5-20251101", "gpt-5.1-codex-max")
+    ///
+    /// The model string is parsed by `UnifiedClient` to determine the provider
+    /// (Anthropic, OpenAI, etc.) and model variant.
     pub model: String,
+
     /// Maximum tokens for responses
+    ///
+    /// Limits the length of generated responses. Different models support different
+    /// max token values (check provider documentation).
     pub max_tokens: u32,
+
     /// System prompt
+    ///
+    /// Optional instructions prepended to every conversation. Used to set the agent's
+    /// role, coding standards, and behavioral guidelines.
     pub system_prompt: Option<String>,
+
     /// Whether extended thinking is enabled
+    ///
+    /// When true, the model uses a separate reasoning phase before generating the
+    /// final response. Currently only supported by Claude Opus 4.5 and newer.
     pub thinking_enabled: bool,
+
     /// Token budget for thinking (if enabled)
+    ///
+    /// Maximum tokens allocated to the thinking/reasoning phase. Only used when
+    /// `thinking_enabled` is true. Typical values: 5000-20000.
     pub thinking_budget: u32,
+
     /// Current working directory
+    ///
+    /// The directory where file operations and commands are executed. Tools like
+    /// `bash`, `read`, and `write` use this as their base path.
     pub cwd: String,
 }
 
@@ -55,45 +181,179 @@ impl Default for NativeAgentConfig {
 }
 
 /// Tool definition with execution handler
+///
+/// Wraps a tool schema with metadata about whether it requires user approval
+/// before execution. Tools that modify the filesystem or execute arbitrary code
+/// typically require approval in safe mode.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let tool_def = ToolDefinition {
+///     tool: Tool::new("bash", "Execute shell commands")
+///         .with_schema(bash_schema),
+///     requires_approval: true,  // Bash requires approval
+/// };
+/// ```
 #[derive(Clone)]
 pub struct ToolDefinition {
     /// Tool metadata for the AI
+    ///
+    /// Contains the tool name, description, and JSON schema that defines the
+    /// expected parameters. This is sent to the AI model to enable tool calling.
     pub tool: Tool,
+
     /// Whether this tool requires user approval
+    ///
+    /// If true, the agent will emit a `FromAgent::ToolCall` event and wait for
+    /// a `ToAgent::ToolResponse` before executing. If false, the tool executes
+    /// immediately without user intervention.
     pub requires_approval: bool,
 }
 
 /// Command sent to the background agent runner
+///
+/// Internal enum used for communication between `NativeAgent` (handle) and
+/// `NativeAgentRunner` (background task). These commands are sent via the
+/// command channel and processed sequentially by the runner.
+///
+/// This enum is private to the module - external code interacts through
+/// `NativeAgent` methods which create and send these commands.
 enum AgentCommand {
+    /// User submitted a prompt
+    ///
+    /// Adds the user message to conversation history and triggers a new
+    /// AI completion request. The runner will stream the response via
+    /// `FromAgent::ResponseChunk` events.
     Prompt { content: String },
+
+    /// Cancel the current operation
+    ///
+    /// Triggers the cancellation token to stop the active AI request.
+    /// The runner will clean up and send a `FromAgent::ResponseEnd` event.
     Cancel,
+
+    /// Change the active model
+    ///
+    /// Switches to a different AI model (e.g., from Claude to GPT-5).
+    /// The conversation history is preserved.
     SetModel { model: String },
+
+    /// Update thinking configuration
+    ///
+    /// Enables or disables the extended thinking mode and sets the token budget.
     SetThinking { enabled: bool, budget: u32 },
+
+    /// Clear conversation history
+    ///
+    /// Removes all messages from the conversation, starting fresh. Does not
+    /// affect configuration (model, thinking, etc.).
     ClearHistory,
 }
 
 /// The native agent handle (held by TUI)
 ///
-/// This is a lightweight handle that communicates with the background runner
-/// via channels. All methods return immediately.
+/// This is a lightweight, cloneable handle that the TUI uses to interact with the
+/// agent's background task. All methods return immediately by sending messages via
+/// channels - no blocking on AI requests.
+///
+/// # Arc and Shared Ownership
+///
+/// The `NativeAgent` uses `Arc` (Atomic Reference Counting) internally through the
+/// channel senders. Multiple clones of the same handle can send commands to the same
+/// background agent. This is useful for UI components that need to trigger agent
+/// operations from different parts of the codebase.
+///
+/// # Thread Safety
+///
+/// All channel senders are `Send + Sync`, making `NativeAgent` safe to share across
+/// threads. However, the typical usage is to keep it on the main TUI thread and
+/// interact with it via async methods.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Create the agent
+/// let (agent, mut events) = NativeAgent::new(config)?;
+///
+/// // Send a prompt (returns immediately)
+/// agent.prompt("Write a Rust function".to_string(), vec![]).await?;
+///
+/// // Process events asynchronously
+/// tokio::spawn(async move {
+///     while let Some(event) = events.recv().await {
+///         println!("Event: {:?}", event);
+///     }
+/// });
+///
+/// // Cancel if needed
+/// agent.cancel();
+/// ```
 pub struct NativeAgent {
     /// Channel to send commands to the background runner
+    ///
+    /// Commands are processed sequentially by the runner. Sending is non-blocking.
     command_tx: mpsc::UnboundedSender<AgentCommand>,
+
     /// Sender for tool responses (kept for creating receivers)
+    ///
+    /// When the TUI approves or denies a tool execution, it sends the response
+    /// via this channel. The agent waits for these responses before proceeding.
     tool_response_tx: mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>,
+
     /// Channel to send events to the TUI (for send_ready)
+    ///
+    /// Used by helper methods like `send_ready()` and `send_session_info()` to
+    /// emit events without going through the background task.
     event_tx: mpsc::UnboundedSender<FromAgent>,
+
     /// Model name
+    ///
+    /// Cached for emitting `FromAgent::Ready` events. Updated when the model
+    /// is changed via `set_model()`.
     model_name: String,
+
     /// Provider name
+    ///
+    /// Cached provider identifier (e.g., "Anthropic", "OpenAI"). Used for
+    /// status displays and debugging.
     provider_name: String,
 }
 
 impl NativeAgent {
     /// Create a new native agent
     ///
-    /// Returns the agent handle and a receiver for events.
-    /// The agent spawns a background task that processes prompts.
+    /// Initializes the agent with the given configuration and spawns a background
+    /// task to handle AI requests. Returns immediately with an agent handle and
+    /// an event receiver.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of:
+    /// - `NativeAgent`: The handle used to send commands
+    /// - `mpsc::UnboundedReceiver<FromAgent>`: Stream of events from the agent
+    ///
+    /// # Lifecycle
+    ///
+    /// The background task is spawned with `tokio::spawn` and runs until:
+    /// - The command channel is closed (agent handle dropped)
+    /// - An unrecoverable error occurs
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let config = NativeAgentConfig {
+    ///     model: "claude-opus-4-5-20251101".to_string(),
+    ///     max_tokens: 16384,
+    ///     system_prompt: Some("You are a Rust expert.".to_string()),
+    ///     thinking_enabled: true,
+    ///     thinking_budget: 10000,
+    ///     cwd: env::current_dir()?.to_string_lossy().to_string(),
+    /// };
+    ///
+    /// let (agent, mut events) = NativeAgent::new(config)?;
+    /// agent.send_ready();
+    /// ```
     pub fn new(config: NativeAgentConfig) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
         let client = UnifiedClient::from_model(&config.model)?;
         let provider = client.provider();
@@ -172,6 +432,26 @@ impl NativeAgent {
     }
 
     /// Process a user prompt (non-blocking - sends to background task)
+    ///
+    /// Sends a prompt to the background agent runner and returns immediately.
+    /// The actual AI request happens asynchronously, with results arriving via
+    /// the event channel as `FromAgent::ResponseChunk` messages.
+    ///
+    /// # Parameters
+    ///
+    /// - `content`: The user's message/prompt
+    /// - `_attachments`: File paths to attach (currently unused, reserved for future)
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the command was sent successfully, `Err` if the channel is closed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// agent.prompt("Explain async/await in Rust".to_string(), vec![]).await?;
+    /// // Returns immediately, response arrives via events
+    /// ```
     pub async fn prompt(&self, content: String, _attachments: Vec<String>) -> Result<()> {
         self.command_tx
             .send(AgentCommand::Prompt { content })
@@ -208,26 +488,94 @@ impl NativeAgent {
 }
 
 /// The background agent runner that owns mutable state
+///
+/// This struct is private to the module and runs in a background tokio task.
+/// It owns all mutable state (conversation history, configuration) and is the
+/// only component that makes AI API calls.
+///
+/// # Ownership and Mutability
+///
+/// The runner is moved into `tokio::spawn` and owns:
+/// - Conversation history (Vec<Message>)
+/// - Configuration (NativeAgentConfig)
+/// - AI client (UnifiedClient)
+/// - All channel receivers
+///
+/// This ensures exclusive ownership and prevents data races - only the background
+/// task can modify the agent state.
+///
+/// # Event Loop
+///
+/// The `run()` method processes commands in an event loop:
+///
+/// ```text
+/// loop {
+///     match command_rx.recv().await {
+///         Prompt => run_loop() to handle AI request,
+///         Cancel => trigger cancellation token,
+///         SetModel => update client,
+///         ClearHistory => clear messages,
+///     }
+/// }
+/// ```
 struct NativeAgentRunner {
     /// AI client
+    ///
+    /// Handles communication with AI providers (Anthropic, OpenAI, etc.).
+    /// Can be swapped at runtime via `SetModel` commands.
     client: UnifiedClient,
+
     /// Configuration
+    ///
+    /// Current agent settings. Updated via commands like `SetModel` and
+    /// `SetThinking`.
     config: NativeAgentConfig,
+
     /// Conversation history
+    ///
+    /// Stores all messages (user prompts, assistant responses, tool results)
+    /// in the current conversation. Cleared via `ClearHistory` command.
     messages: Vec<Message>,
+
     /// Tool definitions
+    ///
+    /// Map of tool name to tool definition. Loaded from the tool registry
+    /// at startup and remains constant.
     tools: HashMap<String, ToolDefinition>,
+
     /// Tool executor for running tools
+    ///
+    /// Handles actual tool execution (bash, read, write, etc.) and determines
+    /// which tools require approval based on command content.
     tool_executor: ToolExecutor,
+
     /// Channel to send events to the TUI
+    ///
+    /// Used to stream response chunks, tool calls, errors, etc. back to the UI.
     event_tx: mpsc::UnboundedSender<FromAgent>,
+
     /// Channel to receive tool responses from the TUI
+    ///
+    /// When a tool requires approval, the runner waits on this channel for
+    /// the user's decision (approve/deny).
     tool_response_rx: mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
+
     /// Channel to receive commands
+    ///
+    /// Main input for the runner. Receives prompts, cancellation requests,
+    /// configuration changes, etc.
     command_rx: mpsc::UnboundedReceiver<AgentCommand>,
+
     /// Whether currently processing
+    ///
+    /// Guards against concurrent prompts. Only one AI request can be active
+    /// at a time.
     busy: bool,
+
     /// Cancellation token for the current request
+    ///
+    /// Created when a prompt starts, triggered when `Cancel` command arrives.
+    /// Used with `tokio::select!` to support graceful cancellation.
     cancel_token: Option<CancellationToken>,
 }
 

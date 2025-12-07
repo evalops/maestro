@@ -1,7 +1,85 @@
-//! Session persistence for headless protocol
+//! Session persistence for the headless protocol.
 //!
-//! Provides save/load/resume functionality for agent sessions.
-//! Sessions are stored as JSONL files for streaming writes.
+//! Provides save/load/resume functionality for agent sessions using JSONL
+//! (JSON Lines) format. This enables session replay, debugging, and conversation
+//! history without requiring a database.
+//!
+//! # JSONL Format
+//!
+//! JSONL (JSON Lines) stores one JSON object per line:
+//!
+//! ```text
+//! {"direction":"sent","timestamp":1234567890,"message":{"type":"prompt","content":"Hello"}}
+//! {"direction":"received","timestamp":1234567891,"message":{"type":"ready","model":"claude-3-opus","provider":"anthropic"}}
+//! {"direction":"received","timestamp":1234567892,"message":{"type":"response_chunk","response_id":"abc","content":"Hi","is_thinking":false}}
+//! ```
+//!
+//! ## Why JSONL?
+//!
+//! - **Streaming writes** - Append new entries without rewriting entire file
+//! - **Partial reads** - Process entries incrementally without loading full file
+//! - **Crash recovery** - Previous entries remain valid even if write is interrupted
+//! - **Line-based tools** - Compatible with `grep`, `sed`, `wc -l`, etc.
+//! - **Human-readable** - Debug sessions with standard text tools
+//!
+//! ## File Structure
+//!
+//! Each session creates two files:
+//!
+//! - `{session_id}.jsonl` - JSONL file with all messages
+//! - `{session_id}.meta.json` - JSON file with session metadata
+//!
+//! The metadata file is updated periodically and contains aggregated statistics
+//! like token usage, message count, and session title.
+//!
+//! # Session Recording
+//!
+//! The `SessionRecorder` appends entries as they occur:
+//!
+//! ```rust
+//! use tui_rs::headless::session::SessionRecorder;
+//! use tui_rs::headless::ToAgentMessage;
+//!
+//! let mut recorder = SessionRecorder::new("/tmp/sessions")?;
+//!
+//! recorder.record_sent(&ToAgentMessage::Prompt {
+//!     content: "Hello!".to_string(),
+//!     attachments: None,
+//! })?;
+//!
+//! recorder.flush()?; // Ensure writes are persisted
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # Session Replay
+//!
+//! The `SessionReader` loads all entries from a session file:
+//!
+//! ```rust
+//! use tui_rs::headless::session::SessionReader;
+//!
+//! let reader = SessionReader::load("/tmp/sessions", "session-id")?;
+//!
+//! println!("Session: {}", reader.metadata().title.as_deref().unwrap_or("Untitled"));
+//! println!("Messages: {}", reader.entries().len());
+//!
+//! for prompt in reader.prompts() {
+//!     println!("User: {}", prompt);
+//! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # Buffered Writes
+//!
+//! `SessionRecorder` uses a `BufWriter` to batch writes, reducing filesystem
+//! overhead. The buffer is automatically flushed:
+//!
+//! - When `flush()` is called explicitly
+//! - When the recorder is dropped (via `Drop` implementation)
+//! - When the internal buffer fills (typically 8KB)
+//!
+//! For reliability, call `flush()` after important events to ensure data is
+//! persisted to disk.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -12,7 +90,25 @@ use serde::{Deserialize, Serialize};
 
 use super::messages::{FromAgentMessage, ToAgentMessage, TokenUsage};
 
-/// A recorded session entry (either a sent or received message)
+/// A recorded session entry (either a sent or received message).
+///
+/// Represents a single message in the session history, tagged with direction
+/// (sent to agent or received from agent) and timestamp.
+///
+/// # Serialization Format
+///
+/// Uses serde's `tag` attribute to add a `direction` discriminator:
+///
+/// ```json
+/// {"direction":"sent","timestamp":1234567890,"message":{"type":"prompt","content":"Hello"}}
+/// {"direction":"received","timestamp":1234567891,"message":{"type":"ready","model":"claude-3-opus","provider":"anthropic"}}
+/// ```
+///
+/// # Timestamp Format
+///
+/// Timestamps are Unix milliseconds (milliseconds since 1970-01-01 00:00:00 UTC).
+/// This provides millisecond precision for accurate timing analysis while remaining
+/// compact and sortable as a numeric value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "direction", rename_all = "snake_case")]
 pub enum SessionEntry {
@@ -54,7 +150,28 @@ impl SessionEntry {
     }
 }
 
-/// Session metadata stored in a separate file
+/// Session metadata stored in a separate file.
+///
+/// Contains aggregated statistics and metadata about a session, stored as a
+/// separate JSON file alongside the JSONL message log.
+///
+/// # Purpose
+///
+/// The metadata file enables:
+/// - **Fast session listing** - Read metadata without parsing JSONL
+/// - **Session search** - Find sessions by title, model, or date
+/// - **Usage tracking** - Aggregate token counts and costs
+/// - **Session preview** - Display title and stats without full load
+///
+/// # Update Strategy
+///
+/// Metadata is updated incrementally as messages are recorded and flushed
+/// to disk when:
+/// - `SessionRecorder::flush()` is called
+/// - The recorder is dropped
+///
+/// This ensures metadata stays synchronized with the message log even if
+/// the process crashes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
     /// Session ID
@@ -120,7 +237,50 @@ impl SessionMetadata {
     }
 }
 
-/// Session recorder - appends entries to a JSONL file
+/// Session recorder - appends entries to a JSONL file.
+///
+/// Provides append-only recording of session messages to a JSONL file, with
+/// automatic metadata tracking and buffered writes for performance.
+///
+/// # Lifecycle
+///
+/// 1. Create with `new()` or `resume()` an existing session
+/// 2. Record messages with `record_sent()` and `record_received()`
+/// 3. Flush periodically with `flush()` to persist to disk
+/// 4. Automatic cleanup on drop (flushes remaining data)
+///
+/// # Buffering
+///
+/// Uses a `BufWriter` internally to batch writes. This significantly improves
+/// performance for high-frequency message streams by reducing syscall overhead.
+///
+/// Call `flush()` explicitly after important events to ensure data is persisted,
+/// especially before operations that might crash or terminate the process.
+///
+/// # File Safety
+///
+/// - Opens files in append mode (`OpenOptions::append(true)`)
+/// - Creates parent directories automatically
+/// - Flushes on drop to prevent data loss
+/// - Metadata is written atomically (overwrites entire file)
+///
+/// # Examples
+///
+/// ```rust
+/// use tui_rs::headless::session::SessionRecorder;
+/// use tui_rs::headless::ToAgentMessage;
+///
+/// let mut recorder = SessionRecorder::new("/tmp/sessions")?;
+/// println!("Session ID: {}", recorder.id());
+///
+/// recorder.record_sent(&ToAgentMessage::Prompt {
+///     content: "Hello".to_string(),
+///     attachments: None,
+/// })?;
+///
+/// recorder.flush()?; // Ensure persistence
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct SessionRecorder {
     /// Session ID
     id: String,
@@ -281,7 +441,40 @@ impl Drop for SessionRecorder {
     }
 }
 
-/// Session reader - loads entries from a JSONL file
+/// Session reader - loads entries from a JSONL file.
+///
+/// Loads a complete session from disk, including all messages and metadata.
+/// Provides convenient methods for filtering and analyzing session history.
+///
+/// # Memory Considerations
+///
+/// `SessionReader` loads the entire session into memory. For very long sessions
+/// (thousands of messages), this may consume significant memory. Consider
+/// implementing streaming/pagination for production use with large sessions.
+///
+/// # Error Handling
+///
+/// Parse errors for individual entries are logged to stderr but don't prevent
+/// loading the rest of the session. This provides resilience against corrupted
+/// or incompatible entries in old session files.
+///
+/// # Examples
+///
+/// ```rust
+/// use tui_rs::headless::session::SessionReader;
+///
+/// let reader = SessionReader::load("/tmp/sessions", "session-id")?;
+///
+/// println!("Session: {}", reader.metadata().title.as_deref().unwrap_or("Untitled"));
+/// println!("Total messages: {}", reader.entries().len());
+/// println!("User prompts: {}", reader.prompts().len());
+///
+/// // Analyze conversation
+/// for (i, prompt) in reader.prompts().iter().enumerate() {
+///     println!("{}. {}", i + 1, prompt);
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct SessionReader {
     /// Session ID
     id: String,
