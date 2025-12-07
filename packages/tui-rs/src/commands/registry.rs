@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::types::{
-    ArgumentValue, Command, CommandArgument, CommandCategory, CommandContext, CommandError,
-    CommandOutput, CommandResult, ModalType,
+    ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
+    CommandError, CommandOutput, CommandResult, ModalType,
 };
 
 /// Registry of all available commands
@@ -236,10 +236,46 @@ pub fn build_command_registry() -> CommandRegistry {
             "clear",
             "Clear the screen",
             CommandCategory::Ui,
-            Box::new(|_| Ok(CommandOutput::Message("Screen cleared".to_string()))),
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ClearMessages))),
         )
         .alias("cls"),
     );
+
+    // Quit command
+    registry.register(
+        Command::new(
+            "quit",
+            "Quit the application",
+            CommandCategory::Navigation,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::Quit))),
+        )
+        .alias("exit")
+        .alias("q"),
+    );
+
+    // Zen mode command
+    registry.register(Command::new(
+        "zen",
+        "Toggle zen mode (minimal UI)",
+        CommandCategory::Ui,
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ToggleZenMode))),
+    ));
+
+    // Refresh command
+    registry.register(Command::new(
+        "refresh",
+        "Refresh workspace files",
+        CommandCategory::Navigation,
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::RefreshWorkspace))),
+    ));
+
+    // Copy command
+    registry.register(Command::new(
+        "copy",
+        "Copy last message to clipboard",
+        CommandCategory::Ui,
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::CopyLastMessage))),
+    ));
 
     // Theme command
     registry.register(
@@ -307,19 +343,17 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "compact",
-            "Compact conversation history",
+            "Compact conversation history to reduce context size",
             CommandCategory::Context,
             Box::new(|ctx| {
-                if ctx.raw_args.is_empty() {
-                    Ok(CommandOutput::Message(
-                        "Compacting conversation...".to_string(),
-                    ))
+                let instructions = if ctx.raw_args.is_empty() {
+                    None
                 } else {
-                    Ok(CommandOutput::Message(format!(
-                        "Compacting with instructions: {}",
-                        ctx.raw_args
-                    )))
-                }
+                    Some(ctx.raw_args.clone())
+                };
+                Ok(CommandOutput::Action(CommandAction::CompactConversation(
+                    instructions,
+                )))
             }),
         )
         .arg(CommandArgument::string(
@@ -336,19 +370,49 @@ pub fn build_command_registry() -> CommandRegistry {
             "Set approval mode",
             CommandCategory::Safety,
             Box::new(|ctx| {
-                let mode = ctx.get_string("mode").unwrap_or("prompt");
-                Ok(CommandOutput::Message(format!(
-                    "Approval mode set to: {}",
-                    mode
-                )))
+                let mode = ctx.raw_args.trim().to_string();
+                if mode.is_empty() {
+                    // Toggle to next mode
+                    Ok(CommandOutput::Action(CommandAction::SetApprovalMode(
+                        "next".to_string(),
+                    )))
+                } else {
+                    Ok(CommandOutput::Action(CommandAction::SetApprovalMode(mode)))
+                }
             }),
         )
         .arg(CommandArgument::choice(
             "mode",
             "Approval mode",
-            vec!["auto", "prompt", "fail"],
+            vec!["yolo", "selective", "safe"],
         ))
-        .usage("/approvals [auto|prompt|fail]"),
+        .usage("/approvals [yolo|selective|safe]"),
+    );
+
+    // Thinking level command
+    registry.register(
+        Command::new(
+            "thinking",
+            "Set extended thinking level",
+            CommandCategory::Config,
+            Box::new(|ctx| {
+                let level = ctx.raw_args.trim().to_string();
+                if level.is_empty() {
+                    Ok(CommandOutput::Message(
+                        "Usage: /thinking <level>\nLevels: off, minimal, low, medium, high, max"
+                            .to_string(),
+                    ))
+                } else {
+                    Ok(CommandOutput::Action(CommandAction::SetThinkingLevel(level)))
+                }
+            }),
+        )
+        .arg(CommandArgument::choice(
+            "level",
+            "Thinking level",
+            vec!["off", "minimal", "low", "medium", "high", "max"],
+        ))
+        .usage("/thinking <level>"),
     );
 
     // Status command
@@ -394,22 +458,10 @@ pub fn build_command_registry() -> CommandRegistry {
     // MCP command
     registry.register(Command::new(
         "mcp",
-        "MCP server management",
+        "Show MCP server status and configuration",
         CommandCategory::Tools,
-        Box::new(|_| Ok(CommandOutput::Message("MCP servers...".to_string()))),
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowMcpStatus))),
     ));
-
-    // Quit command
-    registry.register(
-        Command::new(
-            "quit",
-            "Exit the application",
-            CommandCategory::Navigation,
-            Box::new(|_| Ok(CommandOutput::Message("Goodbye!".to_string()))),
-        )
-        .alias("q")
-        .alias("exit"),
-    );
 
     // Version command
     registry.register(

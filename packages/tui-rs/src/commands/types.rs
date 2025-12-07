@@ -19,10 +19,35 @@ pub enum CommandOutput {
     Warning(String),
     /// Open a modal/selector
     OpenModal(ModalType),
+    /// Execute an action that modifies state
+    Action(CommandAction),
     /// No visible output
     Silent,
     /// Multiple outputs
     Multi(Vec<CommandOutput>),
+}
+
+/// Actions that commands can trigger to modify application state
+#[derive(Debug, Clone)]
+pub enum CommandAction {
+    /// Clear all messages
+    ClearMessages,
+    /// Toggle zen mode
+    ToggleZenMode,
+    /// Set approval mode
+    SetApprovalMode(String),
+    /// Set thinking level
+    SetThinkingLevel(String),
+    /// Quit the application
+    Quit,
+    /// Refresh workspace files
+    RefreshWorkspace,
+    /// Copy last message to clipboard
+    CopyLastMessage,
+    /// Compact conversation history with optional instructions
+    CompactConversation(Option<String>),
+    /// Show MCP server status
+    ShowMcpStatus,
 }
 
 /// Types of modals that can be opened by commands

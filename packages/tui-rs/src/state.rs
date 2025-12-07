@@ -5,6 +5,7 @@
 use std::time::{Instant, SystemTime};
 
 use crate::agent::{FromAgent, TokenUsage};
+use crate::components::textarea::TextArea;
 
 /// A chat message in the conversation
 #[derive(Debug, Clone)]
@@ -59,14 +60,54 @@ pub enum ToolCallStatus {
     Failed,
 }
 
+/// Approval mode for tool execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApprovalMode {
+    /// Auto-approve all tool calls (YOLO mode)
+    Yolo,
+    /// Approve based on tool/command risk (default)
+    #[default]
+    Selective,
+    /// Always require approval for all tool calls
+    Safe,
+}
+
+impl ApprovalMode {
+    /// Get the label for display
+    pub fn label(&self) -> &'static str {
+        match self {
+            ApprovalMode::Yolo => "YOLO (auto-approve all)",
+            ApprovalMode::Selective => "Selective (approve risky)",
+            ApprovalMode::Safe => "Safe (approve all)",
+        }
+    }
+
+    /// Parse from string
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "yolo" | "auto" | "trust" => Some(ApprovalMode::Yolo),
+            "selective" | "default" | "normal" => Some(ApprovalMode::Selective),
+            "safe" | "always" | "paranoid" => Some(ApprovalMode::Safe),
+            _ => None,
+        }
+    }
+
+    /// Cycle to next mode
+    pub fn next(&self) -> Self {
+        match self {
+            ApprovalMode::Yolo => ApprovalMode::Selective,
+            ApprovalMode::Selective => ApprovalMode::Safe,
+            ApprovalMode::Safe => ApprovalMode::Yolo,
+        }
+    }
+}
+
 /// Main application state
 pub struct AppState {
     /// All messages in the conversation
     pub messages: Vec<Message>,
-    /// Current input text
-    pub input: String,
-    /// Cursor position in input
-    pub cursor: usize,
+    /// Input text area (multi-line support)
+    pub textarea: TextArea,
     /// Agent model name
     pub model: Option<String>,
     /// Agent provider name
@@ -93,6 +134,10 @@ pub struct AppState {
     pub thinking_header: Option<String>,
     /// Full thinking buffer for the current response
     thinking_buffer: String,
+    /// Zen mode - minimal UI (hide status bar, hints)
+    pub zen_mode: bool,
+    /// Approval mode for tool execution
+    pub approval_mode: ApprovalMode,
 }
 
 impl Default for AppState {
@@ -105,8 +150,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
-            input: String::new(),
-            cursor: 0,
+            textarea: TextArea::new(),
             model: None,
             provider: None,
             cwd: None,
@@ -120,6 +164,8 @@ impl AppState {
             error: None,
             thinking_header: None,
             thinking_buffer: String::new(),
+            zen_mode: false,
+            approval_mode: ApprovalMode::default(),
         }
     }
 
@@ -311,71 +357,113 @@ impl AppState {
         id
     }
 
+    /// Get current input text (read-only view)
+    pub fn input(&self) -> &str {
+        self.textarea.text()
+    }
+
+    /// Get cursor position
+    pub fn cursor(&self) -> usize {
+        self.textarea.cursor()
+    }
+
     /// Insert character at cursor
     pub fn insert_char(&mut self, c: char) {
-        self.input.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
+        let cursor = self.textarea.cursor();
+        let mut text = self.textarea.text().to_string();
+        text.insert(cursor, c);
+        self.textarea.set_text(&text);
+        self.textarea.set_cursor(cursor + c.len_utf8());
+    }
+
+    /// Insert a string at cursor
+    pub fn insert_str(&mut self, s: &str) {
+        let cursor = self.textarea.cursor();
+        let mut text = self.textarea.text().to_string();
+        text.insert_str(cursor, s);
+        self.textarea.set_text(&text);
+        self.textarea.set_cursor(cursor + s.len());
     }
 
     /// Delete character before cursor
     pub fn backspace(&mut self) {
-        if self.cursor > 0 {
-            let prev = self.input[..self.cursor]
+        let cursor = self.textarea.cursor();
+        if cursor > 0 {
+            let text = self.textarea.text();
+            let prev = text[..cursor]
                 .chars()
                 .last()
                 .map(|c| c.len_utf8())
                 .unwrap_or(0);
-            self.input.remove(self.cursor - prev);
-            self.cursor -= prev;
+            let mut new_text = text.to_string();
+            new_text.remove(cursor - prev);
+            self.textarea.set_text(&new_text);
+            self.textarea.set_cursor(cursor - prev);
         }
     }
 
     /// Delete character after cursor
     pub fn delete(&mut self) {
-        if self.cursor < self.input.len() {
-            self.input.remove(self.cursor);
+        let cursor = self.textarea.cursor();
+        let text = self.textarea.text();
+        if cursor < text.len() {
+            let mut new_text = text.to_string();
+            new_text.remove(cursor);
+            self.textarea.set_text(&new_text);
         }
     }
 
     /// Move cursor left
     pub fn move_left(&mut self) {
-        if self.cursor > 0 {
-            let prev = self.input[..self.cursor]
+        let cursor = self.textarea.cursor();
+        if cursor > 0 {
+            let text = self.textarea.text();
+            let prev = text[..cursor]
                 .chars()
                 .last()
                 .map(|c| c.len_utf8())
                 .unwrap_or(0);
-            self.cursor -= prev;
+            self.textarea.set_cursor(cursor - prev);
         }
     }
 
     /// Move cursor right
     pub fn move_right(&mut self) {
-        if self.cursor < self.input.len() {
-            let next = self.input[self.cursor..]
+        let cursor = self.textarea.cursor();
+        let text = self.textarea.text();
+        if cursor < text.len() {
+            let next = text[cursor..]
                 .chars()
                 .next()
                 .map(|c| c.len_utf8())
                 .unwrap_or(0);
-            self.cursor += next;
+            self.textarea.set_cursor(cursor + next);
         }
     }
 
     /// Move cursor to start
     pub fn move_home(&mut self) {
-        self.cursor = 0;
+        self.textarea.set_cursor(0);
     }
 
     /// Move cursor to end
     pub fn move_end(&mut self) {
-        self.cursor = self.input.len();
+        let len = self.textarea.text().len();
+        self.textarea.set_cursor(len);
     }
 
     /// Take the input and reset
     pub fn take_input(&mut self) -> String {
-        let input = std::mem::take(&mut self.input);
-        self.cursor = 0;
+        let input = self.textarea.text().to_string();
+        self.textarea.set_text("");
+        self.textarea.set_cursor(0);
         input
+    }
+
+    /// Set the input text directly
+    pub fn set_input(&mut self, text: &str) {
+        self.textarea.set_text(text);
+        self.textarea.set_cursor(text.len());
     }
 
     /// Add a system message (for help, status, etc.)

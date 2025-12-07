@@ -8,10 +8,7 @@
 //! - Cached line wrapping for performance
 //! - Unicode-aware column calculation
 //!
-//! Currently not integrated - use AppState.input/cursor for now.
-//! Integration planned for multi-line input support.
-
-#![allow(dead_code)] // Module ported but not yet integrated
+//! Integrated with AppState for multi-line input support.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

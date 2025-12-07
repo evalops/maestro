@@ -12,7 +12,7 @@ mod model_selector;
 mod scroll;
 mod session_switcher;
 mod text;
-mod textarea;
+pub mod textarea;
 mod theme_selector;
 
 pub use approval::{ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest};

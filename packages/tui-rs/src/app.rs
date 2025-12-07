@@ -17,7 +17,8 @@ use tokio::sync::mpsc;
 use crate::agent::{AgentProcess, FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
-    build_command_registry, CommandRegistry, SlashCommandMatcher, SlashCycleState,
+    build_command_registry, CommandAction, CommandOutput, CommandRegistry, ModalType,
+    SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
     ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest, ChatInputWidget,
@@ -25,8 +26,8 @@ use crate::components::{
 };
 use crate::files::get_workspace_files;
 use crate::git;
-use crate::session::{AppMessage, SessionManager};
-use crate::state::{AppState, Message, MessageRole};
+use crate::session::{AppMessage, SessionManager, ThinkingLevel};
+use crate::state::{AppState, ApprovalMode, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
 use crate::tools::ToolExecutor;
 
@@ -469,8 +470,12 @@ Add the required fields and retry.",
                     return Ok(());
                 }
 
-                // Check approval requirement via registry (includes dynamic bash rules)
-                let needs_approval = self.tool_executor.requires_approval(tool, args);
+                // Check approval requirement based on mode and registry
+                let needs_approval = match self.state.approval_mode {
+                    ApprovalMode::Yolo => false,
+                    ApprovalMode::Safe => true,
+                    ApprovalMode::Selective => self.tool_executor.requires_approval(tool, args),
+                };
 
                 if needs_approval {
                     // Queue approval
@@ -518,6 +523,7 @@ Add the required fields and retry.",
     async fn handle_key(&mut self, code: KeyCode, modifiers: CrosstermModifiers) -> Result<()> {
         let ctrl = modifiers.contains(CrosstermModifiers::CONTROL);
         let alt = modifiers.contains(CrosstermModifiers::ALT);
+        let shift = modifiers.contains(CrosstermModifiers::SHIFT);
 
         // Handle modal-specific input first
         match self.active_modal {
@@ -585,19 +591,19 @@ Add the required fields and retry.",
             }
 
             // / trigger for slash commands
-            KeyCode::Char('/') if !self.state.busy && self.state.input.is_empty() => {
+            KeyCode::Char('/') if !self.state.busy && self.state.input().is_empty() => {
                 self.state.insert_char('/');
                 self.slash_state.set_query("", &self.slash_matcher);
             }
 
             // Tab for slash command completion
-            KeyCode::Tab if !self.state.busy && self.state.input.starts_with('/') => {
+            KeyCode::Tab if !self.state.busy && self.state.input().starts_with('/') => {
                 self.handle_slash_tab();
             }
 
             // Navigation
             KeyCode::Up => {
-                if self.state.input.starts_with('/') && self.slash_state.has_completions() {
+                if self.state.input().starts_with('/') && self.slash_state.has_completions() {
                     self.slash_state.cycle_prev();
                     self.apply_slash_completion();
                 } else {
@@ -605,7 +611,7 @@ Add the required fields and retry.",
                 }
             }
             KeyCode::Down => {
-                if self.state.input.starts_with('/') && self.slash_state.has_completions() {
+                if self.state.input().starts_with('/') && self.slash_state.has_completions() {
                     self.slash_state.cycle_next();
                     self.apply_slash_completion();
                 } else {
@@ -628,11 +634,11 @@ Add the required fields and retry.",
                 self.state.scroll_down(step.max(1));
             }
             // Jump shortcuts: only when input is empty (not typing)
-            KeyCode::Char('g') if self.state.input.is_empty() && !ctrl => {
+            KeyCode::Char('g') if self.state.input().is_empty() && !ctrl => {
                 // Jump to top (oldest messages)
                 self.state.scroll_offset = usize::MAX / 2;
             }
-            KeyCode::Char('G') if self.state.input.is_empty() => {
+            KeyCode::Char('G') if self.state.input().is_empty() => {
                 // Jump to bottom (newest messages)
                 self.state.scroll_offset = 0;
             }
@@ -676,15 +682,20 @@ Add the required fields and retry.",
                 self.state.move_end();
             }
 
-            // Submit
+            // Submit or newline (Shift+Enter for newline)
             KeyCode::Enter => {
-                if !self.state.busy && !self.state.input.is_empty() {
-                    // Check for slash command
-                    if self.state.input.starts_with('/') {
-                        self.execute_slash_command().await?;
-                    } else {
-                        let input = self.state.take_input();
-                        self.submit_prompt(input).await?;
+                if !self.state.busy {
+                    if shift {
+                        // Shift+Enter: insert newline for multi-line input
+                        self.state.insert_char('\n');
+                    } else if !self.state.input().is_empty() {
+                        // Enter: submit
+                        if self.state.input().starts_with('/') {
+                            self.execute_slash_command().await?;
+                        } else {
+                            let input = self.state.take_input();
+                            self.submit_prompt(input).await?;
+                        }
                     }
                 }
             }
@@ -692,8 +703,7 @@ Add the required fields and retry.",
             // Clear input
             KeyCode::Char('u') if ctrl => {
                 if !self.state.busy {
-                    self.state.input.clear();
-                    self.state.cursor = 0;
+                    self.state.set_input("");
                     self.slash_state.reset();
                 }
             }
@@ -701,9 +711,10 @@ Add the required fields and retry.",
             // Paste from clipboard
             KeyCode::Char('y') if ctrl && !self.state.busy => {
                 if let Ok(text) = self.clipboard.paste() {
+                    // Insert text including newlines for multi-line support
+                    // Skip carriage returns to normalize line endings
                     for c in text.chars() {
-                        // Insert character by character, handling newlines
-                        if c != '\n' && c != '\r' {
+                        if c != '\r' {
                             self.state.insert_char(c);
                         }
                     }
@@ -845,8 +856,7 @@ Add the required fields and retry.",
             KeyCode::Enter => {
                 if let Some(cmd_name) = self.command_palette.confirm() {
                     // Set input to the command
-                    self.state.input = format!("/{}", cmd_name);
-                    self.state.cursor = self.state.input.len();
+                    self.state.set_input(&format!("/{}", cmd_name));
                     // Execute it
                     self.execute_slash_command().await?;
                 }
@@ -1048,8 +1058,8 @@ Add the required fields and retry.",
 
     /// Update slash state based on current input
     fn update_slash_state(&mut self) {
-        if self.state.input.starts_with('/') {
-            let query = &self.state.input[1..];
+        if self.state.input().starts_with('/') {
+            let query = &self.state.input()[1..];
             self.slash_state.set_query(query, &self.slash_matcher);
         } else {
             self.slash_state.reset();
@@ -1059,7 +1069,7 @@ Add the required fields and retry.",
     /// Handle tab for slash command completion
     fn handle_slash_tab(&mut self) {
         if !self.slash_state.has_completions() {
-            let query = &self.state.input[1..];
+            let query = &self.state.input()[1..];
             self.slash_state.set_query(query, &self.slash_matcher);
         } else {
             self.slash_state.cycle_next();
@@ -1070,14 +1080,240 @@ Add the required fields and retry.",
     /// Apply the current slash completion to input
     fn apply_slash_completion(&mut self) {
         if let Some(cmd) = self.slash_state.current() {
-            self.state.input = format!("/{}", cmd);
-            self.state.cursor = self.state.input.len();
+            self.state.set_input(&format!("/{}", cmd));
+        }
+    }
+
+    /// Handle a command output from the registry
+    fn handle_command_output(&mut self, output: CommandOutput) {
+        match output {
+            CommandOutput::Message(msg) => {
+                self.state.add_system_message(msg);
+            }
+            CommandOutput::Help(msg) => {
+                self.state.add_system_message(msg);
+            }
+            CommandOutput::Warning(msg) => {
+                self.state.error = Some(msg);
+            }
+            CommandOutput::OpenModal(modal_type) => match modal_type {
+                ModalType::ThemeSelector => {
+                    self.theme_selector.show();
+                    self.active_modal = ActiveModal::ThemeSelector;
+                }
+                ModalType::ModelSelector => {
+                    self.model_selector.show();
+                    self.active_modal = ActiveModal::ModelSelector;
+                }
+                ModalType::SessionList => {
+                    self.session_switcher.show();
+                    self.active_modal = ActiveModal::SessionSwitcher;
+                }
+                ModalType::FileSearch => {
+                    self.file_search.show();
+                    self.active_modal = ActiveModal::FileSearch;
+                }
+                ModalType::CommandPalette => {
+                    self.command_palette.show();
+                    self.active_modal = ActiveModal::CommandPalette;
+                }
+                ModalType::Help => {
+                    self.show_help();
+                }
+            },
+            CommandOutput::Action(action) => {
+                self.handle_command_action(action);
+            }
+            CommandOutput::Silent => {}
+            CommandOutput::Multi(outputs) => {
+                for out in outputs {
+                    self.handle_command_output(out);
+                }
+            }
+        }
+    }
+
+    /// Handle a command action that modifies state
+    fn handle_command_action(&mut self, action: CommandAction) {
+        match action {
+            CommandAction::ClearMessages => {
+                self.state.messages.clear();
+                self.state.scroll_offset = 0;
+            }
+            CommandAction::ToggleZenMode => {
+                self.state.zen_mode = !self.state.zen_mode;
+                if self.state.zen_mode {
+                    self.state.status = Some("Zen mode enabled".to_string());
+                } else {
+                    self.state.status = Some("Zen mode disabled".to_string());
+                }
+            }
+            CommandAction::SetApprovalMode(mode) => {
+                if mode == "next" {
+                    self.state.approval_mode = self.state.approval_mode.next();
+                } else if let Some(m) = ApprovalMode::from_str(&mode) {
+                    self.state.approval_mode = m;
+                } else {
+                    self.state.error = Some(format!(
+                        "Unknown approval mode: {}. Use: yolo, selective, safe",
+                        mode
+                    ));
+                    return;
+                }
+                self.state.status =
+                    Some(format!("Approval mode: {}", self.state.approval_mode.label()));
+            }
+            CommandAction::SetThinkingLevel(level_str) => {
+                if let Some(level) = ThinkingLevel::from_str(&level_str) {
+                    let (enabled, budget) = level.to_config();
+                    if let AgentBackend::Native = self.backend {
+                        if let Some(agent) = &self.native_agent {
+                            if let Err(e) = agent.set_thinking(enabled, budget) {
+                                self.state.error =
+                                    Some(format!("Failed to set thinking: {}", e));
+                                return;
+                            }
+                        }
+                    }
+                    self.state.status =
+                        Some(format!("Thinking: {} (budget: {})", level.label(), budget));
+                } else {
+                    self.state.error = Some(format!(
+                        "Unknown thinking level: {}. Use: off, minimal, low, medium, high, max",
+                        level_str
+                    ));
+                }
+            }
+            CommandAction::Quit => {
+                self.should_quit = true;
+            }
+            CommandAction::RefreshWorkspace => {
+                self.load_workspace_files();
+                self.state.status = Some("Workspace files refreshed".to_string());
+            }
+            CommandAction::CopyLastMessage => {
+                if let Some(msg) = self
+                    .state
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Assistant && !m.content.is_empty())
+                {
+                    match self.clipboard.copy(&msg.content) {
+                        Ok(_) => {
+                            let preview = if msg.content.len() > 50 {
+                                format!("{}...", &msg.content[..47])
+                            } else {
+                                msg.content.clone()
+                            };
+                            self.state.status = Some(format!("Copied: {}", preview));
+                        }
+                        Err(e) => {
+                            self.state.error = Some(format!("Failed to copy: {}", e));
+                        }
+                    }
+                } else {
+                    self.state.status = Some("No message to copy".to_string());
+                }
+            }
+            CommandAction::CompactConversation(instructions) => {
+                // Compact conversation by summarizing older messages
+                let msg_count = self.state.messages.len();
+                if msg_count <= 4 {
+                    self.state.status =
+                        Some("Conversation too short to compact".to_string());
+                    return;
+                }
+
+                // Keep last 2 messages, summarize the rest
+                let keep_count = 2;
+                let to_summarize = msg_count - keep_count;
+
+                // Build summary of compacted messages
+                let mut summary = String::new();
+                summary.push_str("## Conversation Summary\n\n");
+
+                for (i, msg) in self.state.messages.iter().take(to_summarize).enumerate() {
+                    let role = match msg.role {
+                        MessageRole::User => "User",
+                        MessageRole::Assistant => "Assistant",
+                    };
+                    let preview = if msg.content.len() > 100 {
+                        format!("{}...", &msg.content[..97])
+                    } else {
+                        msg.content.clone()
+                    };
+                    summary.push_str(&format!("{}. **{}**: {}\n", i + 1, role, preview));
+                }
+
+                if let Some(ref instr) = instructions {
+                    summary.push_str(&format!("\n*Focus: {}*\n", instr));
+                }
+
+                // Remove old messages and add summary
+                let kept: Vec<_> = self.state.messages.drain(to_summarize..).collect();
+                self.state.messages.clear();
+                self.state.add_system_message(summary);
+                self.state.messages.extend(kept);
+
+                self.state.status = Some(format!(
+                    "Compacted {} messages into summary",
+                    to_summarize
+                ));
+            }
+            CommandAction::ShowMcpStatus => {
+                // Show MCP server status
+                let mut status = String::new();
+                status.push_str("## MCP Servers\n\n");
+                status.push_str("*No MCP servers configured*\n\n");
+                status.push_str("To add MCP servers, create `~/.composer/mcp.json` or `.composer/mcp.json`:\n");
+                status.push_str("```json\n");
+                status.push_str("{\n");
+                status.push_str("  \"servers\": [\n");
+                status.push_str("    {\n");
+                status.push_str("      \"name\": \"example\",\n");
+                status.push_str("      \"transport\": \"stdio\",\n");
+                status.push_str("      \"command\": \"npx\",\n");
+                status.push_str("      \"args\": [\"-y\", \"@example/mcp-server\"]\n");
+                status.push_str("    }\n");
+                status.push_str("  ]\n");
+                status.push_str("}\n");
+                status.push_str("```\n");
+                self.state.add_system_message(status);
+            }
         }
     }
 
     /// Execute a slash command
     async fn execute_slash_command(&mut self) -> Result<()> {
         let input = self.state.take_input();
+
+        // Try executing through the registry first
+        let cwd = self.state.cwd.clone().unwrap_or_else(|| ".".to_string());
+        let session_id = self.state.session_id.clone();
+        let model = self.state.model.clone();
+
+        match self
+            .command_registry
+            .execute(&input, &cwd, session_id.as_deref(), model.as_deref())
+        {
+            Ok(output) => {
+                self.handle_command_output(output);
+                return Ok(());
+            }
+            Err(e) => {
+                // Check if it's an unknown command - if so, try legacy handling or agent passthrough
+                if e.message.contains("Unknown command") {
+                    // Fall through to legacy handling below
+                } else {
+                    // Other errors (like missing args) should be shown to user
+                    self.state.error = Some(e.to_string());
+                    return Ok(());
+                }
+            }
+        }
+
+        // Legacy handling for commands not yet in registry
         let cmd_line = input.trim_start_matches('/');
 
         // Parse command and args
@@ -1132,6 +1368,114 @@ Add the required fields and retry.",
                     self.model_selector.show();
                     self.active_modal = ActiveModal::ModelSelector;
                 }
+            }
+            "thinking" => {
+                if let Some(&level_str) = args.first() {
+                    if let Some(level) = ThinkingLevel::from_str(level_str) {
+                        let (enabled, budget) = level.to_config();
+                        match self.backend {
+                            AgentBackend::Native => {
+                                if let Some(agent) = &self.native_agent {
+                                    if let Err(e) = agent.set_thinking(enabled, budget) {
+                                        self.state.error = Some(format!("Failed to set thinking: {}", e));
+                                    } else {
+                                        self.state.status = Some(format!("Thinking: {} (budget: {})", level.label(), budget));
+                                    }
+                                }
+                            }
+                            AgentBackend::NodeJs => {
+                                self.state.status = Some(format!("Thinking: {} (restart required)", level.label()));
+                            }
+                        }
+                    } else {
+                        self.state.error = Some(format!(
+                            "Unknown thinking level: {}. Use: off, minimal, low, medium, high, max",
+                            level_str
+                        ));
+                    }
+                } else {
+                    self.state.status = Some(
+                        "Usage: /thinking <level>\nLevels: off, minimal, low, medium, high, max".to_string()
+                    );
+                }
+            }
+            "zen" => {
+                self.state.zen_mode = !self.state.zen_mode;
+                if self.state.zen_mode {
+                    self.state.status = Some("Zen mode enabled".to_string());
+                } else {
+                    self.state.status = Some("Zen mode disabled".to_string());
+                }
+            }
+            "approvals" => {
+                if let Some(&mode_str) = args.first() {
+                    if let Some(mode) = ApprovalMode::from_str(mode_str) {
+                        self.state.approval_mode = mode;
+                        self.state.status = Some(format!("Approval mode: {}", mode.label()));
+                    } else {
+                        self.state.error = Some(format!(
+                            "Unknown approval mode: {}. Use: yolo, selective, safe",
+                            mode_str
+                        ));
+                    }
+                } else {
+                    // Toggle to next mode
+                    self.state.approval_mode = self.state.approval_mode.next();
+                    self.state.status = Some(format!("Approval mode: {}", self.state.approval_mode.label()));
+                }
+            }
+            "diag" | "status" => {
+                let mut diag = String::new();
+                diag.push_str("## Diagnostics\n\n");
+
+                // Model & Provider
+                diag.push_str(&format!(
+                    "**Model:** {}\n",
+                    self.state.model.as_deref().unwrap_or("(none)")
+                ));
+                diag.push_str(&format!(
+                    "**Provider:** {}\n",
+                    self.state.provider.as_deref().unwrap_or("(none)")
+                ));
+
+                // Working directory & Git
+                diag.push_str(&format!(
+                    "**CWD:** {}\n",
+                    self.state.cwd.as_deref().unwrap_or("(unknown)")
+                ));
+                diag.push_str(&format!(
+                    "**Git Branch:** {}\n",
+                    self.state.git_branch.as_deref().unwrap_or("(not a repo)")
+                ));
+
+                // Session
+                diag.push_str(&format!(
+                    "**Session:** {}\n",
+                    self.state.session_id.as_deref().unwrap_or("(ephemeral)")
+                ));
+
+                // Modes
+                diag.push_str(&format!("**Approval Mode:** {}\n", self.state.approval_mode.label()));
+                diag.push_str(&format!("**Zen Mode:** {}\n", if self.state.zen_mode { "on" } else { "off" }));
+
+                // Backend
+                diag.push_str(&format!(
+                    "**Backend:** {}\n",
+                    match self.backend {
+                        AgentBackend::Native => "Native Rust",
+                        AgentBackend::NodeJs => "Node.js (IPC)",
+                    }
+                ));
+
+                // Terminal info
+                if let Ok((cols, rows)) = crossterm::terminal::size() {
+                    diag.push_str(&format!("**Terminal:** {}x{}\n", cols, rows));
+                }
+
+                // Message count
+                diag.push_str(&format!("**Messages:** {}\n", self.state.messages.len()));
+
+                self.state.add_system_message(diag);
             }
             "sessions" | "resume" => {
                 self.session_switcher.show();
@@ -1367,7 +1711,7 @@ Slash Commands:
 
                 // Create widget just to calculate cursor position
                 let input_widget =
-                    ChatInputWidget::new(&state.input, state.cursor, "", state.busy, 0, None);
+                    ChatInputWidget::new(state.input(), state.cursor(), "", state.busy, 0, None);
 
                 if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
                     frame.set_cursor_position((cursor_x, cursor_y));

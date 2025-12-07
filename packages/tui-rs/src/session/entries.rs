@@ -105,6 +105,31 @@ impl ThinkingLevel {
             ThinkingLevel::Max => "Max",
         }
     }
+
+    /// Convert to (enabled, budget) configuration
+    pub fn to_config(&self) -> (bool, u32) {
+        match self {
+            ThinkingLevel::Off => (false, 0),
+            ThinkingLevel::Minimal => (true, 1024),
+            ThinkingLevel::Low => (true, 4096),
+            ThinkingLevel::Medium => (true, 10000),
+            ThinkingLevel::High => (true, 20000),
+            ThinkingLevel::Max => (true, 50000),
+        }
+    }
+
+    /// Parse from string
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "off" | "none" | "disabled" => Some(ThinkingLevel::Off),
+            "minimal" | "min" => Some(ThinkingLevel::Minimal),
+            "low" => Some(ThinkingLevel::Low),
+            "medium" | "med" | "default" => Some(ThinkingLevel::Medium),
+            "high" => Some(ThinkingLevel::High),
+            "max" | "maximum" => Some(ThinkingLevel::Max),
+            _ => None,
+        }
+    }
 }
 
 /// A message entry

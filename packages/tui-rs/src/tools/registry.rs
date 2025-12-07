@@ -239,6 +239,99 @@ impl ToolExecutor {
 
                 result
             }
+            "edit" | "Edit" => {
+                let path = args
+                    .get("file_path")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let old_string = args.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+                let new_string = args.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+                let replace_all = args
+                    .get("replace_all")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if path.is_empty() {
+                    return ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("Missing file_path argument".to_string()),
+                    };
+                }
+
+                if old_string.is_empty() {
+                    return ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("Missing old_string argument".to_string()),
+                    };
+                }
+
+                // Read file content
+                let content = match tokio::fs::read_to_string(path).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!("Failed to read file: {}", e)),
+                        };
+                    }
+                };
+
+                // Check if old_string exists in file
+                let occurrences = content.matches(old_string).count();
+                if occurrences == 0 {
+                    return ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!(
+                            "old_string not found in file. Make sure the string matches exactly."
+                        )),
+                    };
+                }
+
+                // Check for uniqueness if not replace_all
+                if !replace_all && occurrences > 1 {
+                    return ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!(
+                            "old_string found {} times. Use replace_all: true or provide more context to make it unique.",
+                            occurrences
+                        )),
+                    };
+                }
+
+                // Perform replacement
+                let new_content = if replace_all {
+                    content.replace(old_string, new_string)
+                } else {
+                    content.replacen(old_string, new_string, 1)
+                };
+
+                // Write back
+                match tokio::fs::write(path, &new_content).await {
+                    Ok(_) => {
+                        let replaced = if replace_all { occurrences } else { 1 };
+                        ToolResult {
+                            success: true,
+                            output: format!(
+                                "Successfully replaced {} occurrence(s) in {}",
+                                replaced, path
+                            ),
+                            error: None,
+                        }
+                    }
+                    Err(e) => ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Failed to write file: {}", e)),
+                    },
+                }
+            }
             _ => ToolResult {
                 success: false,
                 output: String::new(),
@@ -373,6 +466,40 @@ impl ToolRegistry {
             },
         );
 
+        // Edit tool
+        tools.insert(
+            "edit".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "edit",
+                    "Perform exact string replacement in a file. The old_string must be unique unless replace_all is true.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The absolute path to the file to edit"
+                        },
+                        "old_string": {
+                            "type": "string",
+                            "description": "The exact text to find and replace"
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "The text to replace old_string with"
+                        },
+                        "replace_all": {
+                            "type": "boolean",
+                            "description": "Replace all occurrences instead of requiring uniqueness (default: false)"
+                        }
+                    },
+                    "required": ["file_path", "old_string", "new_string"]
+                })),
+                requires_approval: true,
+            },
+        );
+
         Self { tools }
     }
 
@@ -451,13 +578,14 @@ mod tests {
         assert!(registry.get("write").is_some());
         assert!(registry.get("glob").is_some());
         assert!(registry.get("grep").is_some());
+        assert!(registry.get("edit").is_some());
     }
 
     #[test]
     fn test_registry_tool_count() {
         let registry = ToolRegistry::new();
         let count = registry.tools().count();
-        assert_eq!(count, 5); // bash, read, write, glob, grep
+        assert_eq!(count, 6); // bash, read, write, glob, grep, edit
     }
 
     #[test]
@@ -563,5 +691,91 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.error.unwrap().contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_edit_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("edit_test.txt");
+        std::fs::write(&file_path, "hello world").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "old_string": "world",
+            "new_string": "rust"
+        });
+        let result = executor.execute("edit", &args, None, "test-call").await;
+
+        assert!(result.success);
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "hello rust");
+    }
+
+    #[tokio::test]
+    async fn test_executor_edit_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("edit_test.txt");
+        std::fs::write(&file_path, "hello world").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "old_string": "nonexistent",
+            "new_string": "rust"
+        });
+        let result = executor.execute("edit", &args, None, "test-call").await;
+
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_edit_non_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("edit_test.txt");
+        std::fs::write(&file_path, "foo bar foo").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "old_string": "foo",
+            "new_string": "baz"
+        });
+        let result = executor.execute("edit", &args, None, "test-call").await;
+
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("2 times"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_edit_replace_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("edit_test.txt");
+        std::fs::write(&file_path, "foo bar foo").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "old_string": "foo",
+            "new_string": "baz",
+            "replace_all": true
+        });
+        let result = executor.execute("edit", &args, None, "test-call").await;
+
+        assert!(result.success);
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "baz bar baz");
+    }
+
+    #[test]
+    fn test_registry_requires_approval_edit() {
+        let registry = ToolRegistry::new();
+        let args = serde_json::json!({
+            "file_path": "/tmp/test.txt",
+            "old_string": "foo",
+            "new_string": "bar"
+        });
+        assert!(registry.requires_approval("edit", &args));
     }
 }

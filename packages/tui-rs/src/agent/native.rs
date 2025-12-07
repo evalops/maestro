@@ -68,6 +68,7 @@ enum AgentCommand {
     Prompt { content: String },
     Cancel,
     SetModel { model: String },
+    SetThinking { enabled: bool, budget: u32 },
     ClearHistory,
 }
 
@@ -191,6 +192,14 @@ impl NativeAgent {
             .map_err(|e| anyhow::anyhow!("Failed to set model: {}", e))?;
         Ok(())
     }
+
+    /// Set thinking level
+    pub fn set_thinking(&self, enabled: bool, budget: u32) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetThinking { enabled, budget })
+            .map_err(|e| anyhow::anyhow!("Failed to set thinking: {}", e))?;
+        Ok(())
+    }
 }
 
 /// The background agent runner that owns mutable state
@@ -288,6 +297,10 @@ impl NativeAgentRunner {
                         });
                     }
                 },
+                AgentCommand::SetThinking { enabled, budget } => {
+                    self.config.thinking_enabled = enabled;
+                    self.config.thinking_budget = budget;
+                }
                 AgentCommand::ClearHistory => {
                     self.messages.clear();
                 }

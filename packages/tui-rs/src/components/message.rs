@@ -1063,11 +1063,12 @@ impl Widget for ChatView<'_> {
             return;
         }
 
-        // Layout: messages area, input (3 lines), status bar (1 line)
+        // Layout: messages area, input (3 lines), status bar (1 line unless zen mode)
+        let status_height = if self.state.zen_mode { 0 } else { 1 };
         let chunks = Layout::vertical([
-            Constraint::Min(0),    // Messages
-            Constraint::Length(3), // Input
-            Constraint::Length(1), // Status
+            Constraint::Min(0),                  // Messages
+            Constraint::Length(3),               // Input
+            Constraint::Length(status_height),   // Status (hidden in zen mode)
         ])
         .split(area);
 
@@ -1076,8 +1077,8 @@ impl Widget for ChatView<'_> {
 
         // Render input
         let input_widget = ChatInputWidget::new(
-            &self.state.input,
-            self.state.cursor,
+            self.state.input(),
+            self.state.cursor(),
             "Type a message...",
             self.state.busy,
             self.state.elapsed_busy_secs(),
@@ -1085,27 +1086,29 @@ impl Widget for ChatView<'_> {
         );
         input_widget.render(chunks[1], buf);
 
-        // Calculate total usage from all messages
-        let usage = self
-            .state
-            .messages
-            .iter()
-            .filter_map(|m| m.usage.as_ref())
-            .fold(UsageSummary::default(), |mut acc, u| {
-                acc.input_tokens += u.input_tokens;
-                acc.output_tokens += u.output_tokens;
-                acc
-            });
+        // Render status bar (unless zen mode)
+        if !self.state.zen_mode {
+            // Calculate total usage from all messages
+            let usage = self
+                .state
+                .messages
+                .iter()
+                .filter_map(|m| m.usage.as_ref())
+                .fold(UsageSummary::default(), |mut acc, u| {
+                    acc.input_tokens += u.input_tokens;
+                    acc.output_tokens += u.output_tokens;
+                    acc
+                });
 
-        // Render status bar
-        let status_widget = StatusBarWidget::new(
-            self.state.model.as_deref(),
-            self.state.provider.as_deref(),
-            self.state.cwd.as_deref(),
-            self.state.git_branch.as_deref(),
-        )
-        .with_usage(usage);
-        status_widget.render(chunks[2], buf);
+            let status_widget = StatusBarWidget::new(
+                self.state.model.as_deref(),
+                self.state.provider.as_deref(),
+                self.state.cwd.as_deref(),
+                self.state.git_branch.as_deref(),
+            )
+            .with_usage(usage);
+            status_widget.render(chunks[2], buf);
+        }
     }
 }
 
