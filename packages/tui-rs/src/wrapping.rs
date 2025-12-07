@@ -1,281 +1,300 @@
-//! Unicode-aware text wrapping
+//! Word wrapping utilities ported from OpenAI Codex (MIT licensed)
 //!
-//! Handles proper wrapping of text with wide characters, emojis, and styled content.
+//! Provides styled line wrapping that preserves span styles across line breaks.
 
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
-use unicode_width::UnicodeWidthStr;
+use std::ops::Range;
+use textwrap::wrap_algorithms::Penalties;
+use textwrap::Options;
 
-/// Wrap a single line of text to fit within a given width
-pub fn wrap_line(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![];
+/// Like `wrap_ranges` but returns ranges without trailing whitespace.
+/// Suitable for general wrapping where trailing spaces should not be preserved.
+fn wrap_ranges_trim<'a, O>(text: &str, width_or_options: O) -> Vec<Range<usize>>
+where
+    O: Into<Options<'a>>,
+{
+    let opts = width_or_options.into();
+    let mut lines: Vec<Range<usize>> = Vec::new();
+    for line in textwrap::wrap(text, opts).iter() {
+        match line {
+            std::borrow::Cow::Borrowed(slice) => {
+                let start = unsafe { slice.as_ptr().offset_from(text.as_ptr()) as usize };
+                let end = start + slice.len();
+                lines.push(start..end);
+            }
+            std::borrow::Cow::Owned(_) => {
+                // For owned strings, we can't compute byte offsets, skip
+                continue;
+            }
+        }
+    }
+    lines
+}
+
+/// Options for rich text wrapping with styled indents
+#[derive(Debug, Clone)]
+pub struct RtOptions<'a> {
+    /// The width in columns at which the text will be wrapped.
+    pub width: usize,
+    /// Indentation used for the first line of output.
+    pub initial_indent: Line<'a>,
+    /// Indentation used for subsequent lines of output.
+    pub subsequent_indent: Line<'a>,
+    /// Allow long words to be broken if they cannot fit on a line.
+    pub break_words: bool,
+}
+
+impl From<usize> for RtOptions<'_> {
+    fn from(width: usize) -> Self {
+        RtOptions::new(width)
+    }
+}
+
+impl<'a> RtOptions<'a> {
+    pub fn new(width: usize) -> Self {
+        RtOptions {
+            width,
+            initial_indent: Line::default(),
+            subsequent_indent: Line::default(),
+            break_words: true,
+        }
     }
 
-    let mut result = Vec::new();
-    let mut current_line = String::new();
-    let mut current_width = 0usize;
+    pub fn initial_indent(self, initial_indent: Line<'a>) -> Self {
+        RtOptions {
+            initial_indent,
+            ..self
+        }
+    }
 
-    for word in text.split_inclusive(char::is_whitespace) {
-        let word_width = word.width();
+    pub fn subsequent_indent(self, subsequent_indent: Line<'a>) -> Self {
+        RtOptions {
+            subsequent_indent,
+            ..self
+        }
+    }
+}
 
-        if current_width + word_width > width && !current_line.is_empty() {
-            // Start new line
-            result.push(current_line.trim_end().to_string());
-            current_line = String::new();
+/// Wrap a single styled line, preserving span styles across line breaks
+#[must_use]
+pub fn word_wrap_line<'a, O>(line: &'a Line<'a>, width_or_options: O) -> Vec<Line<'a>>
+where
+    O: Into<RtOptions<'a>>,
+{
+    // Flatten the line and record span byte ranges
+    let mut flat = String::new();
+    let mut span_bounds = Vec::new();
+    let mut acc = 0usize;
+    for s in &line.spans {
+        let text = s.content.as_ref();
+        let start = acc;
+        flat.push_str(text);
+        acc += text.len();
+        span_bounds.push((start..acc, s.style));
+    }
 
-            // Skip leading whitespace on new line
-            let trimmed = word.trim_start();
-            current_line.push_str(trimmed);
-            current_width = trimmed.width();
+    let rt_opts: RtOptions<'a> = width_or_options.into();
+    let opts = Options::new(rt_opts.width)
+        .break_words(rt_opts.break_words)
+        .wrap_algorithm(textwrap::WrapAlgorithm::OptimalFit(Penalties {
+            overflow_penalty: usize::MAX / 4,
+            ..Default::default()
+        }));
+
+    let mut out: Vec<Line<'a>> = Vec::new();
+
+    // Compute first line range with reduced width due to initial indent
+    let initial_width_available = opts
+        .width
+        .saturating_sub(rt_opts.initial_indent.width())
+        .max(1);
+    let initial_wrapped = wrap_ranges_trim(&flat, opts.clone().width(initial_width_available));
+    let Some(first_line_range) = initial_wrapped.first() else {
+        return vec![rt_opts.initial_indent.clone()];
+    };
+
+    // Build first wrapped line with initial indent
+    let mut first_line = rt_opts.initial_indent.clone().style(line.style);
+    {
+        let sliced = slice_line_spans(line, &span_bounds, first_line_range);
+        let mut spans = first_line.spans;
+        spans.extend(sliced.spans.into_iter().map(|s| s.patch_style(line.style)));
+        first_line.spans = spans;
+        out.push(first_line);
+    }
+
+    // Wrap the remainder using subsequent indent width
+    let base = first_line_range.end;
+    let skip_leading_spaces = flat[base..].chars().take_while(|c| *c == ' ').count();
+    let base = base + skip_leading_spaces;
+    let subsequent_width_available = opts
+        .width
+        .saturating_sub(rt_opts.subsequent_indent.width())
+        .max(1);
+    let remaining_wrapped = wrap_ranges_trim(&flat[base..], opts.width(subsequent_width_available));
+    for r in &remaining_wrapped {
+        if r.is_empty() {
+            continue;
+        }
+        let mut subsequent_line = rt_opts.subsequent_indent.clone().style(line.style);
+        let offset_range = (r.start + base)..(r.end + base);
+        let sliced = slice_line_spans(line, &span_bounds, &offset_range);
+        let mut spans = subsequent_line.spans;
+        spans.extend(sliced.spans.into_iter().map(|s| s.patch_style(line.style)));
+        subsequent_line.spans = spans;
+        out.push(subsequent_line);
+    }
+
+    out
+}
+
+/// Wrap a sequence of lines, applying the initial indent only to the very first
+/// output line, and using the subsequent indent for all later wrapped pieces.
+pub fn word_wrap_lines<'a, O>(lines: &[Line<'a>], width_or_options: O) -> Vec<Line<'static>>
+where
+    O: Into<RtOptions<'a>>,
+{
+    let base_opts: RtOptions<'a> = width_or_options.into();
+    let mut out: Vec<Line<'static>> = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let opts = if idx == 0 {
+            base_opts.clone()
         } else {
-            current_line.push_str(word);
-            current_width += word_width;
+            let mut o = base_opts.clone();
+            let sub = o.subsequent_indent.clone();
+            o = o.initial_indent(sub);
+            o
+        };
+        let wrapped = word_wrap_line(line, opts);
+        for l in wrapped {
+            out.push(line_to_owned(&l));
         }
     }
 
-    if !current_line.is_empty() {
-        result.push(current_line.trim_end().to_string());
-    }
-
-    if result.is_empty() {
-        result.push(String::new());
-    }
-
-    result
+    out
 }
 
-/// Wrap styled spans to fit within a given width
-pub fn wrap_spans(spans: &[Span<'_>], width: usize) -> Vec<Line<'static>> {
-    if width == 0 {
-        return vec![];
-    }
-
-    let mut result: Vec<Line<'static>> = Vec::new();
-    let mut current_spans: Vec<Span<'static>> = Vec::new();
-    let mut current_width = 0usize;
-
-    for span in spans {
-        let text = span.content.as_ref();
-        let style = span.style;
-
-        // Try to add the span
-        let span_width = text.width();
-
-        if current_width + span_width <= width {
-            // Fits on current line
-            current_spans.push(Span::styled(text.to_string(), style));
-            current_width += span_width;
-        } else {
-            // Need to wrap
-            let mut remaining = text;
-
-            while !remaining.is_empty() {
-                let available = width.saturating_sub(current_width);
-
-                if available == 0 {
-                    // Start new line
-                    if !current_spans.is_empty() {
-                        result.push(Line::from(std::mem::take(&mut current_spans)));
-                    }
-                    current_width = 0;
-                    continue;
-                }
-
-                // Find break point
-                let (fit, rest) = break_at_width(remaining, available);
-
-                if !fit.is_empty() {
-                    current_spans.push(Span::styled(fit.to_string(), style));
-                    current_width += fit.width();
-                }
-
-                remaining = rest;
-
-                if !remaining.is_empty() {
-                    // Start new line
-                    result.push(Line::from(std::mem::take(&mut current_spans)));
-                    current_width = 0;
-                }
-            }
-        }
-    }
-
-    if !current_spans.is_empty() {
-        result.push(Line::from(current_spans));
-    }
-
-    if result.is_empty() {
-        result.push(Line::from(""));
-    }
-
-    result
-}
-
-/// Break text at a given width, respecting grapheme boundaries
-fn break_at_width(text: &str, max_width: usize) -> (&str, &str) {
-    let mut width = 0usize;
-    let mut break_idx = 0usize;
-    let mut last_space_idx = None;
-
-    for (idx, ch) in text.char_indices() {
-        let ch_width = ch.width().unwrap_or(0);
-
-        if width + ch_width > max_width {
-            // Prefer breaking at last space
-            if let Some(space_idx) = last_space_idx {
-                return (&text[..space_idx], text[space_idx..].trim_start());
-            }
-            // If we haven't matched anything yet and the first char is too wide,
-            // force include it to prevent infinite loop
-            if break_idx == 0 {
-                return (&text[..idx + ch.len_utf8()], &text[idx + ch.len_utf8()..]);
-            }
-            // Otherwise break here
-            return (&text[..break_idx], &text[break_idx..]);
-        }
-
-        if ch.is_whitespace() {
-            last_space_idx = Some(idx + ch.len_utf8());
-        }
-
-        width += ch_width;
-        break_idx = idx + ch.len_utf8();
-    }
-
-    // Entire text fits
-    (text, "")
-}
-
-/// Calculate the visible width of text (handling wide chars and emojis)
-pub fn visible_width(text: &str) -> usize {
-    text.width()
-}
-
-/// Truncate text to a maximum width, adding ellipsis if truncated
-pub fn truncate(text: &str, max_width: usize) -> String {
-    if max_width < 3 {
-        return ".".repeat(max_width);
-    }
-
-    let text_width = text.width();
-    if text_width <= max_width {
-        return text.to_string();
-    }
-
-    let mut result = String::new();
-    let mut width = 0usize;
-    let target = max_width - 3; // Leave room for "..."
-
-    for ch in text.chars() {
-        let ch_width = ch.width().unwrap_or(0);
-        if width + ch_width > target {
-            break;
-        }
-        result.push(ch);
-        width += ch_width;
-    }
-
-    result.push_str("...");
-    result
-}
-
-/// Truncate styled spans to a maximum width
-pub fn truncate_spans(spans: &[Span<'_>], max_width: usize) -> Vec<Span<'static>> {
-    if max_width < 3 {
-        return vec![Span::raw(".".repeat(max_width))];
-    }
-
-    // First, check if content fits without truncation
-    let total_width: usize = spans.iter().map(|s| s.content.width()).sum();
-    if total_width <= max_width {
-        // Content fits, return as-is
-        return spans
+/// Convert a borrowed line to an owned line
+fn line_to_owned(line: &Line<'_>) -> Line<'static> {
+    Line {
+        spans: line
+            .spans
             .iter()
-            .map(|s| Span::styled(s.content.to_string(), s.style))
-            .collect();
+            .map(|s| Span {
+                content: s.content.to_string().into(),
+                style: s.style,
+            })
+            .collect(),
+        style: line.style,
+        alignment: line.alignment,
     }
+}
 
-    // Content needs truncation - reserve space for ellipsis
-    let mut result = Vec::new();
-    let mut remaining_width = max_width - 3;
-    let mut truncated = false;
-
-    for span in spans {
-        let text = span.content.as_ref();
-        let text_width = text.width();
-
-        if remaining_width == 0 {
-            truncated = true;
+fn slice_line_spans<'a>(
+    original: &'a Line<'a>,
+    span_bounds: &[(Range<usize>, ratatui::style::Style)],
+    range: &Range<usize>,
+) -> Line<'a> {
+    let start_byte = range.start;
+    let end_byte = range.end;
+    let mut acc: Vec<Span<'a>> = Vec::new();
+    for (i, (r, style)) in span_bounds.iter().enumerate() {
+        let s = r.start;
+        let e = r.end;
+        if e <= start_byte {
+            continue;
+        }
+        if s >= end_byte {
             break;
         }
-
-        if text_width <= remaining_width {
-            result.push(Span::styled(text.to_string(), span.style));
-            remaining_width -= text_width;
-        } else {
-            // Truncate this span
-            let mut partial = String::new();
-            for ch in text.chars() {
-                let ch_width = ch.width().unwrap_or(0);
-                if ch_width > remaining_width {
-                    break;
-                }
-                partial.push(ch);
-                remaining_width -= ch_width;
-            }
-            if !partial.is_empty() {
-                result.push(Span::styled(partial, span.style));
-            }
-            truncated = true;
+        let seg_start = start_byte.max(s);
+        let seg_end = end_byte.min(e);
+        if seg_end > seg_start {
+            let local_start = seg_start - s;
+            let local_end = seg_end - s;
+            let content = original.spans[i].content.as_ref();
+            let slice = &content[local_start..local_end];
+            acc.push(Span {
+                style: *style,
+                content: std::borrow::Cow::Borrowed(slice),
+            });
+        }
+        if e >= end_byte {
             break;
         }
     }
-
-    if truncated {
-        result.push(Span::raw("..."));
+    Line {
+        style: original.style,
+        alignment: original.alignment,
+        spans: acc,
     }
-
-    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
+    use ratatui::style::Color;
+    use ratatui::style::Stylize;
 
-    #[test]
-    fn wrap_simple() {
-        let result = wrap_line("hello world", 5);
-        assert_eq!(result.len(), 2);
+    fn concat_line(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
     }
 
     #[test]
-    fn wrap_fits() {
-        let result = wrap_line("hello", 10);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], "hello");
+    fn trivial_unstyled_no_indents_wide_width() {
+        let line = Line::from("hello");
+        let out = word_wrap_line(&line, 10);
+        assert_eq!(out.len(), 1);
+        assert_eq!(concat_line(&out[0]), "hello");
     }
 
     #[test]
-    fn truncate_short() {
-        assert_eq!(truncate("hi", 10), "hi");
+    fn simple_unstyled_wrap_narrow_width() {
+        let line = Line::from("hello world");
+        let out = word_wrap_line(&line, 5);
+        assert_eq!(out.len(), 2);
+        assert_eq!(concat_line(&out[0]), "hello");
+        assert_eq!(concat_line(&out[1]), "world");
     }
 
     #[test]
-    fn truncate_long() {
-        let result = truncate("hello world", 8);
-        assert!(result.ends_with("..."));
-        assert!(result.width() <= 8);
+    fn simple_styled_wrap_preserves_styles() {
+        let line = Line::from(vec!["hello ".red(), "world".into()]);
+        let out = word_wrap_line(&line, 6);
+        assert_eq!(out.len(), 2);
+        // First line should carry the red style
+        assert_eq!(concat_line(&out[0]), "hello");
+        assert_eq!(out[0].spans.len(), 1);
+        assert_eq!(out[0].spans[0].style.fg, Some(Color::Red));
+        // Second line is unstyled
+        assert_eq!(concat_line(&out[1]), "world");
+        assert_eq!(out[1].spans.len(), 1);
+        assert_eq!(out[1].spans[0].style.fg, None);
     }
 
     #[test]
-    fn visible_width_ascii() {
-        assert_eq!(visible_width("hello"), 5);
+    fn with_initial_and_subsequent_indents() {
+        let opts = RtOptions::new(8)
+            .initial_indent(Line::from("- "))
+            .subsequent_indent(Line::from("  "));
+        let line = Line::from("hello world foo");
+        let out = word_wrap_line(&line, opts);
+        // Expect three lines with proper prefixes
+        assert!(concat_line(&out[0]).starts_with("- "));
+        assert!(concat_line(&out[1]).starts_with("  "));
+        assert!(concat_line(&out[2]).starts_with("  "));
     }
 
     #[test]
-    fn visible_width_wide_chars() {
-        // CJK characters are typically 2 cells wide
-        assert_eq!(visible_width("日本"), 4);
+    fn empty_input_yields_single_empty_line() {
+        let line = Line::from("");
+        let out = word_wrap_line(&line, 10);
+        assert_eq!(out.len(), 1);
+        assert_eq!(concat_line(&out[0]), "");
     }
 }

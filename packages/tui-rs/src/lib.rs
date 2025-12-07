@@ -66,6 +66,6 @@ pub use key_hints::{KeyBinding, KeyHint};
 pub use markdown::render_markdown;
 pub use pager::Pager;
 pub use palette::{best_color, color_level, has_true_color, theme, ColorLevel};
-pub use tooltips::random_tooltip;
 pub use tools::{BashTool, ToolExecutor, ToolRegistry};
-pub use wrapping::{truncate, visible_width, wrap_line, wrap_spans};
+pub use tooltips::random_tooltip;
+pub use wrapping::{word_wrap_line, word_wrap_lines, RtOptions};

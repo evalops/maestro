@@ -19,6 +19,7 @@ use ratatui::{
 
 use crate::effects::shimmer_spans;
 use crate::state::{Message, MessageRole, ToolCallStatus};
+use crate::wrapping::{word_wrap_lines, RtOptions};
 use std::collections::HashSet;
 use std::time::SystemTime;
 
@@ -251,15 +252,14 @@ pub fn calculate_message_height(
         }
     }
 
-    // Content lines
+    // Content lines (with word wrapping)
     if !message.content.is_empty() {
-        let content_lines = message
-            .content
-            .lines()
-            .map(|line| (line.len() / content_width + 1) as u16)
-            .sum::<u16>()
-            .max(1);
-        height += content_lines;
+        let md_lines = parse_markdown_lines(&message.content);
+        let wrap_opts = RtOptions::new(content_width)
+            .initial_indent(Line::from("  "))
+            .subsequent_indent(Line::from("  "));
+        let wrapped_lines = word_wrap_lines(&md_lines, wrap_opts);
+        height += wrapped_lines.len() as u16;
     }
 
     // Tool calls
@@ -504,20 +504,26 @@ impl Widget for MessageWidget<'_> {
             }
         }
 
-        // Render content with markdown styling
+        // Render content with markdown styling and proper word wrapping
         if y < max_y && !self.message.content.is_empty() {
-            // Parse markdown and render styled lines
+            let content_width = area.width.saturating_sub(2) as usize;
+
+            // Parse markdown into styled lines
             let md_lines = parse_markdown_lines(&self.message.content);
 
-            for line in md_lines {
+            // Word wrap all lines with indent
+            let wrap_opts = RtOptions::new(content_width)
+                .initial_indent(Line::from("  "))
+                .subsequent_indent(Line::from("  "));
+
+            let wrapped_lines = word_wrap_lines(&md_lines, wrap_opts);
+
+            // Render each wrapped line
+            for line in wrapped_lines {
                 if y >= max_y {
                     break;
                 }
-                // Render with indent
-                let mut prefixed_spans = vec![Span::raw("  ")];
-                prefixed_spans.extend(line.spans);
-                let prefixed_line = Line::from(prefixed_spans);
-                Paragraph::new(prefixed_line).render(
+                Paragraph::new(line).render(
                     Rect {
                         x: area.x,
                         y,
