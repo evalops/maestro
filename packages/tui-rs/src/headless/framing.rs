@@ -324,7 +324,9 @@ impl<R: AsyncRead + Unpin> AsyncFrameReader<R> {
     }
 
     /// Read a message
-    pub async fn read_message<T: serde::de::DeserializeOwned>(&mut self) -> Result<T, FramingError> {
+    pub async fn read_message<T: serde::de::DeserializeOwned>(
+        &mut self,
+    ) -> Result<T, FramingError> {
         match self.mode {
             FramingMode::NewlineDelimited => {
                 loop {

@@ -149,10 +149,7 @@ impl SessionRecorder {
         let path = sessions_dir.join(format!("{}.jsonl", id));
         let metadata_path = sessions_dir.join(format!("{}.meta.json", id));
 
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
 
         let metadata = SessionMetadata::new(id);

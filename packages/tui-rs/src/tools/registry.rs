@@ -246,8 +246,14 @@ impl ToolExecutor {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let old_string = args.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
-                let new_string = args.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+                let old_string = args
+                    .get("old_string")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let new_string = args
+                    .get("new_string")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let replace_all = args
                     .get("replace_all")
                     .and_then(|v| v.as_bool())

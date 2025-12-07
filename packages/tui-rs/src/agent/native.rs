@@ -158,7 +158,12 @@ impl NativeAgent {
     }
 
     /// Send session info (cwd, git branch, etc.)
-    pub fn send_session_info(&self, cwd: &str, session_id: Option<String>, git_branch: Option<String>) {
+    pub fn send_session_info(
+        &self,
+        cwd: &str,
+        session_id: Option<String>,
+        git_branch: Option<String>,
+    ) {
         let _ = self.event_tx.send(FromAgent::SessionInfo {
             session_id,
             cwd: cwd.to_string(),

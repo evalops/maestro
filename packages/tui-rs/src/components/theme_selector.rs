@@ -252,7 +252,10 @@ impl ThemeSelector {
                 )];
 
                 if is_current {
-                    spans.push(Span::styled(" (current)", Style::default().fg(Color::Green)));
+                    spans.push(Span::styled(
+                        " (current)",
+                        Style::default().fg(Color::Green),
+                    ));
                 }
 
                 ListItem::new(Line::from(spans))

@@ -1066,9 +1066,9 @@ impl Widget for ChatView<'_> {
         // Layout: messages area, input (3 lines), status bar (1 line unless zen mode)
         let status_height = if self.state.zen_mode { 0 } else { 1 };
         let chunks = Layout::vertical([
-            Constraint::Min(0),                  // Messages
-            Constraint::Length(3),               // Input
-            Constraint::Length(status_height),   // Status (hidden in zen mode)
+            Constraint::Min(0),                // Messages
+            Constraint::Length(3),             // Input
+            Constraint::Length(status_height), // Status (hidden in zen mode)
         ])
         .split(area);
 

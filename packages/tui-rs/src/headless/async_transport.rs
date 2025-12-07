@@ -68,7 +68,9 @@ impl std::fmt::Display for AsyncTransportError {
         match self {
             AsyncTransportError::SpawnFailed(e) => write!(f, "Failed to spawn agent: {}", e),
             AsyncTransportError::SendFailed(e) => write!(f, "Failed to send to agent: {}", e),
-            AsyncTransportError::ParseFailed(e) => write!(f, "Failed to parse agent message: {}", e),
+            AsyncTransportError::ParseFailed(e) => {
+                write!(f, "Failed to parse agent message: {}", e)
+            }
             AsyncTransportError::ProcessExited(code) => {
                 write!(f, "Agent process exited with code: {:?}", code)
             }
@@ -126,7 +128,8 @@ impl AsyncAgentTransport {
 
         // Channels
         let (message_tx, message_rx) = mpsc::unbounded_channel::<ToAgentMessage>();
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<Result<AgentEvent, AsyncTransportError>>();
+        let (event_tx, event_rx) =
+            mpsc::unbounded_channel::<Result<AgentEvent, AsyncTransportError>>();
 
         let cancel_token = CancellationToken::new();
 

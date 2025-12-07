@@ -71,17 +71,36 @@ pub use commands::{build_command_registry, CommandRegistry, SlashCommandMatcher}
 pub use diff::{generate_diff, render_diff, Diff, DiffStats};
 pub use headless::{
     // Core types
-    AgentEvent, AgentState, FromAgentMessage, ToAgentMessage, TokenUsage,
-    // Sync transport
-    AgentTransport, AgentTransportBuilder, TransportConfig, TransportError,
-    // Async transport
-    AsyncAgentTransport, AsyncAgentTransportBuilder, AsyncTransportConfig, AsyncTransportError,
-    // Session management
-    SessionEntry, SessionMetadata, SessionReader, SessionRecorder,
+    AgentEvent,
+    AgentState,
     // Supervisor
-    AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig, SupervisorEvent,
+    AgentSupervisor,
+    // Sync transport
+    AgentTransport,
+    AgentTransportBuilder,
+    // Async transport
+    AsyncAgentTransport,
+    AsyncAgentTransportBuilder,
+    AsyncTransportConfig,
+    AsyncTransportError,
     // Framing
-    FrameReader, FrameWriter, FramingMode,
+    FrameReader,
+    FrameWriter,
+    FramingMode,
+    FromAgentMessage,
+    HealthStatus,
+    // Session management
+    SessionEntry,
+    SessionMetadata,
+    SessionReader,
+    SessionRecorder,
+    SupervisorBuilder,
+    SupervisorConfig,
+    SupervisorEvent,
+    ToAgentMessage,
+    TokenUsage,
+    TransportConfig,
+    TransportError,
 };
 pub use key_hints::{KeyBinding, KeyHint};
 pub use markdown::render_markdown;
@@ -100,26 +119,25 @@ pub use notifications::{
 
 // Prompts exports
 pub use prompts::{
-    find_prompt, format_prompt_list_item, get_usage_hint, load_prompts, parse_args,
-    render_prompt, validate_args, ParsedArgs, PromptDefinition, PromptSource,
+    find_prompt, format_prompt_list_item, get_usage_hint, load_prompts, parse_args, render_prompt,
+    validate_args, ParsedArgs, PromptDefinition, PromptSource,
 };
 
 // Execpolicy exports
 pub use execpolicy::{
-    append_allow_prefix_rule, is_command_allowed, is_command_forbidden, load_policy,
-    parse_command, parse_policy, whitelist_command, Decision, Evaluation, PatternToken,
-    Policy, PrefixPattern, PrefixRule, RuleMatch,
+    append_allow_prefix_rule, is_command_allowed, is_command_forbidden, load_policy, parse_command,
+    parse_policy, whitelist_command, Decision, Evaluation, PatternToken, Policy, PrefixPattern,
+    PrefixRule, RuleMatch,
 };
 
 // Config exports
 pub use config::{
     clear_config_cache, get_available_profiles, get_config_summary, load_config,
-    load_config_with_overrides, parse_cli_override, ApprovalPolicy, ComposerConfig,
-    FeaturesConfig, FileOpener, HistoryConfig, HistoryPersistence, McpServerConfig,
-    ModelProviderConfig, ModelVerbosity, NotificationsSetting, OtelConfig, ProfileConfig,
-    ReasoningEffort, ReasoningSummary, SandboxMode, SandboxWorkspaceWriteConfig,
-    ShellEnvironmentPolicy, ShellInherit, ToolsConfig, TrustLevel, TuiConfig, WireApi,
-    DEFAULT_CONFIG,
+    load_config_with_overrides, parse_cli_override, ApprovalPolicy, ComposerConfig, FeaturesConfig,
+    FileOpener, HistoryConfig, HistoryPersistence, McpServerConfig, ModelProviderConfig,
+    ModelVerbosity, NotificationsSetting, OtelConfig, ProfileConfig, ReasoningEffort,
+    ReasoningSummary, SandboxMode, SandboxWorkspaceWriteConfig, ShellEnvironmentPolicy,
+    ShellInherit, ToolsConfig, TrustLevel, TuiConfig, WireApi, DEFAULT_CONFIG,
 };
 
 // Sandbox exports

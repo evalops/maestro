@@ -1018,8 +1018,10 @@ Add the required fields and retry.",
                     ));
                     return;
                 }
-                self.state.status =
-                    Some(format!("Approval mode: {}", self.state.approval_mode.label()));
+                self.state.status = Some(format!(
+                    "Approval mode: {}",
+                    self.state.approval_mode.label()
+                ));
             }
             CommandAction::SetThinkingLevel(level_str) => {
                 if let Some(level) = ThinkingLevel::from_str(&level_str) {
@@ -1075,8 +1077,7 @@ Add the required fields and retry.",
                 // Compact conversation by summarizing older messages
                 let msg_count = self.state.messages.len();
                 if msg_count <= 4 {
-                    self.state.status =
-                        Some("Conversation too short to compact".to_string());
+                    self.state.status = Some("Conversation too short to compact".to_string());
                     return;
                 }
 
@@ -1111,17 +1112,17 @@ Add the required fields and retry.",
                 self.state.add_system_message(summary);
                 self.state.messages.extend(kept);
 
-                self.state.status = Some(format!(
-                    "Compacted {} messages into summary",
-                    to_summarize
-                ));
+                self.state.status =
+                    Some(format!("Compacted {} messages into summary", to_summarize));
             }
             CommandAction::ShowMcpStatus => {
                 // Show MCP server status
                 let mut status = String::new();
                 status.push_str("## MCP Servers\n\n");
                 status.push_str("*No MCP servers configured*\n\n");
-                status.push_str("To add MCP servers, create `~/.composer/mcp.json` or `.composer/mcp.json`:\n");
+                status.push_str(
+                    "To add MCP servers, create `~/.composer/mcp.json` or `.composer/mcp.json`:\n",
+                );
                 status.push_str("```json\n");
                 status.push_str("{\n");
                 status.push_str("  \"servers\": [\n");
@@ -1223,8 +1224,7 @@ Add the required fields and retry.",
                         let (enabled, budget) = level.to_config();
                         if let Some(agent) = &self.native_agent {
                             if let Err(e) = agent.set_thinking(enabled, budget) {
-                                self.state.error =
-                                    Some(format!("Failed to set thinking: {}", e));
+                                self.state.error = Some(format!("Failed to set thinking: {}", e));
                             } else {
                                 self.state.status = Some(format!(
                                     "Thinking: {} (budget: {})",
@@ -1268,7 +1268,10 @@ Add the required fields and retry.",
                 } else {
                     // Toggle to next mode
                     self.state.approval_mode = self.state.approval_mode.next();
-                    self.state.status = Some(format!("Approval mode: {}", self.state.approval_mode.label()));
+                    self.state.status = Some(format!(
+                        "Approval mode: {}",
+                        self.state.approval_mode.label()
+                    ));
                 }
             }
             "diag" | "status" => {

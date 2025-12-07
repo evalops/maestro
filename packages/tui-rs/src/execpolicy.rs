@@ -117,7 +117,10 @@ pub enum RuleMatch {
         decision: Decision,
     },
     #[serde(rename_all = "camelCase")]
-    Heuristics { command: Vec<String>, decision: Decision },
+    Heuristics {
+        command: Vec<String>,
+        decision: Decision,
+    },
 }
 
 impl RuleMatch {
@@ -171,10 +174,7 @@ impl Policy {
 
     pub fn add_rule(&mut self, rule: PrefixRule) {
         let program = rule.pattern.first.clone();
-        self.rules_by_program
-            .entry(program)
-            .or_default()
-            .push(rule);
+        self.rules_by_program.entry(program).or_default().push(rule);
     }
 
     pub fn add_prefix_rule(&mut self, prefix: &[String], decision: Decision) -> Result<(), String> {
@@ -185,7 +185,10 @@ impl Policy {
         let (first, rest) = prefix.split_first().unwrap();
         let pattern = PrefixPattern {
             first: first.clone(),
-            rest: rest.iter().map(|s| PatternToken::Single(s.clone())).collect(),
+            rest: rest
+                .iter()
+                .map(|s| PatternToken::Single(s.clone()))
+                .collect(),
         };
         let rule = PrefixRule { pattern, decision };
         self.add_rule(rule);
@@ -200,7 +203,11 @@ impl Policy {
         Evaluation::from_matches(matched_rules)
     }
 
-    fn matches_for_command<F>(&self, cmd: &[String], heuristics_fallback: Option<&F>) -> Vec<RuleMatch>
+    fn matches_for_command<F>(
+        &self,
+        cmd: &[String],
+        heuristics_fallback: Option<&F>,
+    ) -> Vec<RuleMatch>
     where
         F: Fn(&[String]) -> Decision,
     {
@@ -592,9 +599,14 @@ mod tests {
     #[test]
     fn test_policy_check() {
         let mut policy = Policy::new();
-        policy.add_prefix_rule(&["git".to_string(), "status".to_string()], Decision::Allow).unwrap();
+        policy
+            .add_prefix_rule(&["git".to_string(), "status".to_string()], Decision::Allow)
+            .unwrap();
 
-        let result = policy.check(&["git".to_string(), "status".to_string()], None::<fn(&[String]) -> Decision>);
+        let result = policy.check(
+            &["git".to_string(), "status".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
         assert_eq!(result.decision, Decision::Allow);
         assert_eq!(result.matched_rules.len(), 1);
     }
@@ -608,7 +620,10 @@ prefix_rule(
 )
 "#;
         let policy = parse_policy(content, "test");
-        let result = policy.check(&["git".to_string(), "status".to_string()], None::<fn(&[String]) -> Decision>);
+        let result = policy.check(
+            &["git".to_string(), "status".to_string()],
+            None::<fn(&[String]) -> Decision>,
+        );
         assert_eq!(result.decision, Decision::Allow);
     }
 
@@ -622,11 +637,21 @@ prefix_rule(
 "#;
         let policy = parse_policy(content, "test");
         assert_eq!(
-            policy.check(&["git".to_string(), "push".to_string()], None::<fn(&[String]) -> Decision>).decision,
+            policy
+                .check(
+                    &["git".to_string(), "push".to_string()],
+                    None::<fn(&[String]) -> Decision>
+                )
+                .decision,
             Decision::Prompt
         );
         assert_eq!(
-            policy.check(&["git".to_string(), "fetch".to_string()], None::<fn(&[String]) -> Decision>).decision,
+            policy
+                .check(
+                    &["git".to_string(), "fetch".to_string()],
+                    None::<fn(&[String]) -> Decision>
+                )
+                .decision,
             Decision::Prompt
         );
     }

@@ -140,9 +140,9 @@ impl AgentSupervisor {
         self.health_status = HealthStatus::Healthy;
         self.reconnect_attempts = 0;
         let _ = self.event_tx.send(SupervisorEvent::Connected);
-        let _ = self
-            .event_tx
-            .send(SupervisorEvent::HealthChanged { status: HealthStatus::Healthy });
+        let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
+            status: HealthStatus::Healthy,
+        });
         Ok(())
     }
 
@@ -371,9 +371,7 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
             is_thinking: *is_thinking,
         }),
         AgentEvent::ResponseEnd {
-            response_id,
-            usage,
-            ..
+            response_id, usage, ..
         } => Some(FromAgentMessage::ResponseEnd {
             response_id: response_id.clone(),
             usage: usage.clone(),
@@ -398,14 +396,16 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
             args: args.clone(),
             requires_approval: true,
         }),
-        AgentEvent::ToolStart { call_id, .. } => {
-            Some(FromAgentMessage::ToolStart { call_id: call_id.clone() })
-        }
+        AgentEvent::ToolStart { call_id, .. } => Some(FromAgentMessage::ToolStart {
+            call_id: call_id.clone(),
+        }),
         AgentEvent::ToolOutput { call_id, content } => Some(FromAgentMessage::ToolOutput {
             call_id: call_id.clone(),
             content: content.clone(),
         }),
-        AgentEvent::ToolEnd { call_id, success, .. } => Some(FromAgentMessage::ToolEnd {
+        AgentEvent::ToolEnd {
+            call_id, success, ..
+        } => Some(FromAgentMessage::ToolEnd {
             call_id: call_id.clone(),
             success: *success,
         }),
@@ -413,9 +413,9 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
             message: message.clone(),
             fatal: *fatal,
         }),
-        AgentEvent::Status { message } => {
-            Some(FromAgentMessage::Status { message: message.clone() })
-        }
+        AgentEvent::Status { message } => Some(FromAgentMessage::Status {
+            message: message.clone(),
+        }),
     }
 }
 

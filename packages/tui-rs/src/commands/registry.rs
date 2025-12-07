@@ -403,7 +403,9 @@ pub fn build_command_registry() -> CommandRegistry {
                             .to_string(),
                     ))
                 } else {
-                    Ok(CommandOutput::Action(CommandAction::SetThinkingLevel(level)))
+                    Ok(CommandOutput::Action(CommandAction::SetThinkingLevel(
+                        level,
+                    )))
                 }
             }),
         )

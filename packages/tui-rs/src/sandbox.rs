@@ -351,7 +351,8 @@ mod macos {
     fn get_darwin_user_cache_dir() -> Option<PathBuf> {
         let mut buf = vec![0_i8; (libc::PATH_MAX as usize) + 1];
         // SAFETY: buf is properly sized and mutable. confstr returns 0 on error.
-        let len = unsafe { libc::confstr(libc::_CS_DARWIN_USER_CACHE_DIR, buf.as_mut_ptr(), buf.len()) };
+        let len =
+            unsafe { libc::confstr(libc::_CS_DARWIN_USER_CACHE_DIR, buf.as_mut_ptr(), buf.len()) };
         if len == 0 {
             return None;
         }
@@ -372,7 +373,10 @@ mod macos {
     ) -> Vec<String> {
         let (file_write_policy, mut params) = if policy.has_full_disk_write_access() {
             // Full write access
-            (r#"(allow file-write* (regex #"^/"))"#.to_string(), Vec::new())
+            (
+                r#"(allow file-write* (regex #"^/"))"#.to_string(),
+                Vec::new(),
+            )
         } else {
             let writable_roots = policy.get_writable_roots_with_cwd(cwd);
             let mut policies = Vec::new();
@@ -391,7 +395,8 @@ mod macos {
                     for (subpath_index, ro) in wr.read_only_subpaths.iter().enumerate() {
                         let canonical_ro = ro.canonicalize().unwrap_or_else(|_| ro.clone());
                         let ro_param = format!("WRITABLE_ROOT_{index}_RO_{subpath_index}");
-                        require_parts.push(format!(r#"(require-not (subpath (param "{ro_param}")))"#));
+                        require_parts
+                            .push(format!(r#"(require-not (subpath (param "{ro_param}")))"#));
                         params.push((ro_param, canonical_ro));
                     }
                     policies.push(format!("(require-all {} )", require_parts.join(" ")));
@@ -401,10 +406,7 @@ mod macos {
             if policies.is_empty() {
                 (String::new(), params)
             } else {
-                let file_write_policy = format!(
-                    "(allow file-write*\n{}\n)",
-                    policies.join(" ")
-                );
+                let file_write_policy = format!("(allow file-write*\n{}\n)", policies.join(" "));
                 (file_write_policy, params)
             }
         };
@@ -474,11 +476,11 @@ mod macos {
 mod linux {
     use super::*;
     use landlock::{
-        ABI, Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetCreatedAttr,
+        Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
     };
     use seccompiler::{
-        apply_filter, BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp,
-        SeccompCondition, SeccompFilter, SeccompRule, TargetArch,
+        apply_filter, BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition,
+        SeccompFilter, SeccompRule, TargetArch,
     };
     use std::collections::BTreeMap;
     use tokio::process::{Child, Command};
@@ -835,7 +837,8 @@ mod tests {
         };
 
         let cwd = std::env::temp_dir();
-        let args = create_seatbelt_args(vec!["echo".to_string(), "hello".to_string()], &policy, &cwd);
+        let args =
+            create_seatbelt_args(vec!["echo".to_string(), "hello".to_string()], &policy, &cwd);
 
         // Should start with -p (policy)
         assert_eq!(args[0], "-p");

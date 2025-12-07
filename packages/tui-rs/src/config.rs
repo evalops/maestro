@@ -541,7 +541,9 @@ fn deep_merge(target: &mut ComposerConfig, source: &ComposerConfig) {
     }
 
     if let Some(source_shell) = &source.shell_environment_policy {
-        let target_shell = target.shell_environment_policy.get_or_insert_with(Default::default);
+        let target_shell = target
+            .shell_environment_policy
+            .get_or_insert_with(Default::default);
         if source_shell.inherit.is_some() {
             target_shell.inherit = source_shell.inherit;
         }
@@ -560,7 +562,9 @@ fn deep_merge(target: &mut ComposerConfig, source: &ComposerConfig) {
     }
 
     if let Some(source_sandbox) = &source.sandbox_workspace_write {
-        let target_sandbox = target.sandbox_workspace_write.get_or_insert_with(Default::default);
+        let target_sandbox = target
+            .sandbox_workspace_write
+            .get_or_insert_with(Default::default);
         if source_sandbox.writable_roots.is_some() {
             target_sandbox.writable_roots = source_sandbox.writable_roots.clone();
         }
@@ -912,19 +916,13 @@ model_reasoning_effort = "high"
         clear_config_cache();
         let config = load_config(temp_dir.path(), None);
         assert_eq!(config.model.as_deref(), Some("fast-model"));
-        assert_eq!(
-            config.model_reasoning_effort,
-            Some(ReasoningEffort::Low)
-        );
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
 
         // Test profile override
         clear_config_cache();
         let config = load_config(temp_dir.path(), Some("powerful"));
         assert_eq!(config.model.as_deref(), Some("powerful-model"));
-        assert_eq!(
-            config.model_reasoning_effort,
-            Some(ReasoningEffort::High)
-        );
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
     }
 
     #[test]
@@ -1006,9 +1004,15 @@ startup_timeout_sec = 30
 
         clear_config_cache();
         let config = load_config(temp_dir.path(), None);
-        let server = config.mcp_servers.as_ref().unwrap().get("context7").unwrap();
+        let server = config
+            .mcp_servers
+            .as_ref()
+            .unwrap()
+            .get("context7")
+            .unwrap();
         assert_eq!(server.command.as_deref(), Some("npx"));
-        let expected_args: Vec<String> = vec!["-y".to_string(), "@upstash/context7-mcp".to_string()];
+        let expected_args: Vec<String> =
+            vec!["-y".to_string(), "@upstash/context7-mcp".to_string()];
         assert_eq!(server.args, Some(expected_args));
         assert_eq!(server.enabled, Some(true));
         assert_eq!(server.startup_timeout_sec, Some(30));

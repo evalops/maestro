@@ -122,10 +122,7 @@ fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
     }
 
     // Body is everything after the closing ---
-    let body_start = lines[..=end_idx]
-        .iter()
-        .map(|l| l.len() + 1)
-        .sum::<usize>();
+    let body_start = lines[..=end_idx].iter().map(|l| l.len() + 1).sum::<usize>();
     let body = if body_start < content.len() {
         &content[body_start..]
     } else {
@@ -233,7 +230,10 @@ pub fn load_prompts(workspace_dir: &Path) -> Vec<PromptDefinition> {
 }
 
 /// Find a prompt by name (case-insensitive).
-pub fn find_prompt<'a>(prompts: &'a [PromptDefinition], name: &str) -> Option<&'a PromptDefinition> {
+pub fn find_prompt<'a>(
+    prompts: &'a [PromptDefinition],
+    name: &str,
+) -> Option<&'a PromptDefinition> {
     let name_lower = name.to_lowercase();
     prompts.iter().find(|p| p.name.to_lowercase() == name_lower)
 }

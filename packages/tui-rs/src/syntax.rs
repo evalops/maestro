@@ -43,7 +43,8 @@ pub fn highlight_code(code: &str, language: Option<&str>) -> Vec<Line<'static>> 
     let syntax = language
         .and_then(|lang| {
             // Try exact match first
-            SYNTAX_SET.find_syntax_by_token(lang)
+            SYNTAX_SET
+                .find_syntax_by_token(lang)
                 .or_else(|| SYNTAX_SET.find_syntax_by_extension(lang))
                 .or_else(|| {
                     // Try common aliases
@@ -62,7 +63,8 @@ pub fn highlight_code(code: &str, language: Option<&str>) -> Vec<Line<'static>> 
                         "dockerfile" => "dockerfile",
                         _ => lang,
                     };
-                    SYNTAX_SET.find_syntax_by_token(alias)
+                    SYNTAX_SET
+                        .find_syntax_by_token(alias)
                         .or_else(|| SYNTAX_SET.find_syntax_by_extension(alias))
                 })
         })
@@ -82,11 +84,8 @@ pub fn highlight_code(code: &str, language: Option<&str>) -> Vec<Line<'static>> 
                 let spans: Vec<Span<'static>> = ranges
                     .iter()
                     .map(|(style, text)| {
-                        let fg = Color::Rgb(
-                            style.foreground.r,
-                            style.foreground.g,
-                            style.foreground.b,
-                        );
+                        let fg =
+                            Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
                         let modifier = font_style_to_modifier(style.font_style);
                         Span::styled(
                             text.to_string(),

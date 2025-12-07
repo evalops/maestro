@@ -305,10 +305,7 @@ impl ModelSelector {
 
                 let mut spans = vec![
                     Span::styled(&model.name, style.add_modifier(Modifier::BOLD)),
-                    Span::styled(
-                        format!(" ({}) ", model.provider),
-                        style.fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!(" ({}) ", model.provider), style.fg(Color::DarkGray)),
                 ];
 
                 if is_current {
@@ -360,10 +357,7 @@ mod tests {
         // Should only have Claude models
         assert!(selector.filtered.len() >= 1);
         for &idx in &selector.filtered {
-            assert!(selector.models[idx]
-                .name
-                .to_lowercase()
-                .contains("claude"));
+            assert!(selector.models[idx].name.to_lowercase().contains("claude"));
         }
     }
 
