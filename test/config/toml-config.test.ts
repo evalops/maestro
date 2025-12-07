@@ -30,12 +30,18 @@ describe("toml-config", () => {
 	afterEach(() => {
 		clearConfigCache();
 		rmSync(testDir, { recursive: true, force: true });
-		// Clean up env vars
-		process.env.COMPOSER_MODEL = undefined;
-		process.env.COMPOSER_MODEL_PROVIDER = undefined;
-		process.env.COMPOSER_APPROVAL_POLICY = undefined;
-		process.env.COMPOSER_SANDBOX_MODE = undefined;
-		process.env.COMPOSER_PROFILE = undefined;
+		// Clean up env vars - must use delete because assignment to undefined
+		// sets the value to the string "undefined" instead of removing it
+		// biome-ignore lint/performance/noDelete: required for process.env cleanup
+		delete process.env.COMPOSER_MODEL;
+		// biome-ignore lint/performance/noDelete: required for process.env cleanup
+		delete process.env.COMPOSER_MODEL_PROVIDER;
+		// biome-ignore lint/performance/noDelete: required for process.env cleanup
+		delete process.env.COMPOSER_APPROVAL_POLICY;
+		// biome-ignore lint/performance/noDelete: required for process.env cleanup
+		delete process.env.COMPOSER_SANDBOX_MODE;
+		// biome-ignore lint/performance/noDelete: required for process.env cleanup
+		delete process.env.COMPOSER_PROFILE;
 	});
 
 	describe("DEFAULT_CONFIG", () => {
@@ -648,3 +654,6 @@ experimental_instructions_file = ".composer/instructions.md"
 		});
 	});
 });
+
+// Global config loading tests are in a separate file that uses vi.mock
+// to mock the homedir function at module level, which is required for ESM.
