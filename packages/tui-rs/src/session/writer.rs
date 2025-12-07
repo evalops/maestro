@@ -66,7 +66,10 @@ impl SessionWriter {
     }
 
     /// Create a new session with a header
-    pub fn create(path: impl AsRef<Path>, header: SessionHeader) -> Result<Self, SessionWriteError> {
+    pub fn create(
+        path: impl AsRef<Path>,
+        header: SessionHeader,
+    ) -> Result<Self, SessionWriteError> {
         let mut writer = Self::new(path)?;
         writer.write_entry(SessionEntry::Session(header))?;
         writer.header_written = true;

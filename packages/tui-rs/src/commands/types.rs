@@ -348,7 +348,10 @@ mod tests {
     #[test]
     fn command_context_get_string() {
         let mut args = HashMap::new();
-        args.insert("name".to_string(), ArgumentValue::String("test".to_string()));
+        args.insert(
+            "name".to_string(),
+            ArgumentValue::String("test".to_string()),
+        );
 
         let ctx = CommandContext {
             input: "/test name".to_string(),
@@ -366,10 +369,15 @@ mod tests {
 
     #[test]
     fn command_builder() {
-        let cmd = Command::new("test", "A test command", CommandCategory::Diagnostics, Box::new(|_| Ok(CommandOutput::Silent)))
-            .alias("t")
-            .arg(CommandArgument::string("name", "The name"))
-            .usage("/test [name]");
+        let cmd = Command::new(
+            "test",
+            "A test command",
+            CommandCategory::Diagnostics,
+            Box::new(|_| Ok(CommandOutput::Silent)),
+        )
+        .alias("t")
+        .arg(CommandArgument::string("name", "The name"))
+        .usage("/test [name]");
 
         assert_eq!(cmd.name, "test");
         assert_eq!(cmd.aliases, vec!["t"]);

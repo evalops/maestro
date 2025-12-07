@@ -78,7 +78,13 @@ impl CommandRegistry {
     }
 
     /// Execute a command from input text
-    pub fn execute(&self, input: &str, cwd: &str, session_id: Option<&str>, model: Option<&str>) -> CommandResult {
+    pub fn execute(
+        &self,
+        input: &str,
+        cwd: &str,
+        session_id: Option<&str>,
+        model: Option<&str>,
+    ) -> CommandResult {
         let input = input.trim();
 
         // Must start with /
@@ -200,58 +206,79 @@ pub fn build_command_registry() -> CommandRegistry {
 
     // Help command
     registry.register(
-        Command::new("help", "Show available commands", CommandCategory::Navigation, Box::new(|ctx| {
-            if ctx.raw_args.is_empty() {
-                Ok(CommandOutput::OpenModal(ModalType::Help))
-            } else {
-                Ok(CommandOutput::Message(format!(
-                    "Help for command: {}",
-                    ctx.raw_args
-                )))
-            }
-        }))
+        Command::new(
+            "help",
+            "Show available commands",
+            CommandCategory::Navigation,
+            Box::new(|ctx| {
+                if ctx.raw_args.is_empty() {
+                    Ok(CommandOutput::OpenModal(ModalType::Help))
+                } else {
+                    Ok(CommandOutput::Message(format!(
+                        "Help for command: {}",
+                        ctx.raw_args
+                    )))
+                }
+            }),
+        )
         .alias("h")
         .alias("?")
-        .arg(CommandArgument::string("command", "Command to get help for"))
+        .arg(CommandArgument::string(
+            "command",
+            "Command to get help for",
+        ))
         .usage("/help [command]"),
     );
 
     // Clear command
     registry.register(
-        Command::new("clear", "Clear the screen", CommandCategory::Ui, Box::new(|_| {
-            Ok(CommandOutput::Message("Screen cleared".to_string()))
-        }))
+        Command::new(
+            "clear",
+            "Clear the screen",
+            CommandCategory::Ui,
+            Box::new(|_| Ok(CommandOutput::Message("Screen cleared".to_string()))),
+        )
         .alias("cls"),
     );
 
     // Theme command
     registry.register(
-        Command::new("theme", "Change color theme", CommandCategory::Ui, Box::new(|ctx| {
-            if ctx.raw_args.is_empty() {
-                Ok(CommandOutput::OpenModal(ModalType::ThemeSelector))
-            } else {
-                Ok(CommandOutput::Message(format!(
-                    "Setting theme to: {}",
-                    ctx.raw_args
-                )))
-            }
-        }))
+        Command::new(
+            "theme",
+            "Change color theme",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                if ctx.raw_args.is_empty() {
+                    Ok(CommandOutput::OpenModal(ModalType::ThemeSelector))
+                } else {
+                    Ok(CommandOutput::Message(format!(
+                        "Setting theme to: {}",
+                        ctx.raw_args
+                    )))
+                }
+            }),
+        )
         .arg(CommandArgument::string("name", "Theme name"))
         .usage("/theme [name]"),
     );
 
     // Model command
     registry.register(
-        Command::new("model", "Change AI model", CommandCategory::Config, Box::new(|ctx| {
-            if ctx.raw_args.is_empty() {
-                Ok(CommandOutput::OpenModal(ModalType::ModelSelector))
-            } else {
-                Ok(CommandOutput::Message(format!(
-                    "Setting model to: {}",
-                    ctx.raw_args
-                )))
-            }
-        }))
+        Command::new(
+            "model",
+            "Change AI model",
+            CommandCategory::Config,
+            Box::new(|ctx| {
+                if ctx.raw_args.is_empty() {
+                    Ok(CommandOutput::OpenModal(ModalType::ModelSelector))
+                } else {
+                    Ok(CommandOutput::Message(format!(
+                        "Setting model to: {}",
+                        ctx.raw_args
+                    )))
+                }
+            }),
+        )
         .alias("m")
         .arg(CommandArgument::string("name", "Model name"))
         .usage("/model [name]"),
@@ -259,44 +286,63 @@ pub fn build_command_registry() -> CommandRegistry {
 
     // Session commands
     registry.register(
-        Command::new("session", "Session information", CommandCategory::Session, Box::new(|_| {
-            Ok(CommandOutput::Message("Current session info".to_string()))
-        }))
+        Command::new(
+            "session",
+            "Session information",
+            CommandCategory::Session,
+            Box::new(|_| Ok(CommandOutput::Message("Current session info".to_string()))),
+        )
         .alias("ss")
         .group(vec!["info", "new", "clear", "list", "load", "export"]),
     );
 
-    registry.register(
-        Command::new("sessions", "List and manage sessions", CommandCategory::Session, Box::new(|_| {
-            Ok(CommandOutput::OpenModal(ModalType::SessionList))
-        })),
-    );
+    registry.register(Command::new(
+        "sessions",
+        "List and manage sessions",
+        CommandCategory::Session,
+        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
+    ));
 
     // Compact command
     registry.register(
-        Command::new("compact", "Compact conversation history", CommandCategory::Context, Box::new(|ctx| {
-            if ctx.raw_args.is_empty() {
-                Ok(CommandOutput::Message("Compacting conversation...".to_string()))
-            } else {
-                Ok(CommandOutput::Message(format!(
-                    "Compacting with instructions: {}",
-                    ctx.raw_args
-                )))
-            }
-        }))
-        .arg(CommandArgument::string("instructions", "Custom compaction instructions"))
+        Command::new(
+            "compact",
+            "Compact conversation history",
+            CommandCategory::Context,
+            Box::new(|ctx| {
+                if ctx.raw_args.is_empty() {
+                    Ok(CommandOutput::Message(
+                        "Compacting conversation...".to_string(),
+                    ))
+                } else {
+                    Ok(CommandOutput::Message(format!(
+                        "Compacting with instructions: {}",
+                        ctx.raw_args
+                    )))
+                }
+            }),
+        )
+        .arg(CommandArgument::string(
+            "instructions",
+            "Custom compaction instructions",
+        ))
         .usage("/compact [instructions]"),
     );
 
     // Approval mode command
     registry.register(
-        Command::new("approvals", "Set approval mode", CommandCategory::Safety, Box::new(|ctx| {
-            let mode = ctx.get_string("mode").unwrap_or("prompt");
-            Ok(CommandOutput::Message(format!(
-                "Approval mode set to: {}",
-                mode
-            )))
-        }))
+        Command::new(
+            "approvals",
+            "Set approval mode",
+            CommandCategory::Safety,
+            Box::new(|ctx| {
+                let mode = ctx.get_string("mode").unwrap_or("prompt");
+                Ok(CommandOutput::Message(format!(
+                    "Approval mode set to: {}",
+                    mode
+                )))
+            }),
+        )
         .arg(CommandArgument::choice(
             "mode",
             "Approval mode",
@@ -306,8 +352,11 @@ pub fn build_command_registry() -> CommandRegistry {
     );
 
     // Status command
-    registry.register(
-        Command::new("status", "Show current status", CommandCategory::Diagnostics, Box::new(|ctx| {
+    registry.register(Command::new(
+        "status",
+        "Show current status",
+        CommandCategory::Diagnostics,
+        Box::new(|ctx| {
             let mut info = String::new();
             info.push_str(&format!("Working directory: {}\n", ctx.cwd));
             if let Some(ref session) = ctx.session_id {
@@ -317,65 +366,86 @@ pub fn build_command_registry() -> CommandRegistry {
                 info.push_str(&format!("Model: {}\n", model));
             }
             Ok(CommandOutput::Message(info))
-        })),
-    );
+        }),
+    ));
 
     // Diagnostics command
     registry.register(
-        Command::new("diag", "System diagnostics", CommandCategory::Diagnostics, Box::new(|_| {
-            Ok(CommandOutput::Message("Running diagnostics...".to_string()))
-        }))
+        Command::new(
+            "diag",
+            "System diagnostics",
+            CommandCategory::Diagnostics,
+            Box::new(|_| Ok(CommandOutput::Message("Running diagnostics...".to_string()))),
+        )
         .group(vec!["status", "about", "context", "stats", "lsp", "mcp"]),
     );
 
     // Tools command
     registry.register(
-        Command::new("tools", "Tool management", CommandCategory::Tools, Box::new(|_| {
-            Ok(CommandOutput::Message("Available tools...".to_string()))
-        }))
+        Command::new(
+            "tools",
+            "Tool management",
+            CommandCategory::Tools,
+            Box::new(|_| Ok(CommandOutput::Message("Available tools...".to_string()))),
+        )
         .group(vec!["list", "mcp", "lsp"]),
     );
 
     // MCP command
-    registry.register(
-        Command::new("mcp", "MCP server management", CommandCategory::Tools, Box::new(|_| {
-            Ok(CommandOutput::Message("MCP servers...".to_string()))
-        })),
-    );
+    registry.register(Command::new(
+        "mcp",
+        "MCP server management",
+        CommandCategory::Tools,
+        Box::new(|_| Ok(CommandOutput::Message("MCP servers...".to_string()))),
+    ));
 
     // Quit command
     registry.register(
-        Command::new("quit", "Exit the application", CommandCategory::Navigation, Box::new(|_| {
-            Ok(CommandOutput::Message("Goodbye!".to_string()))
-        }))
+        Command::new(
+            "quit",
+            "Exit the application",
+            CommandCategory::Navigation,
+            Box::new(|_| Ok(CommandOutput::Message("Goodbye!".to_string()))),
+        )
         .alias("q")
         .alias("exit"),
     );
 
     // Version command
     registry.register(
-        Command::new("version", "Show version information", CommandCategory::Diagnostics, Box::new(|_| {
-            Ok(CommandOutput::Message(format!(
-                "Composer TUI v{}",
-                env!("CARGO_PKG_VERSION")
-            )))
-        }))
+        Command::new(
+            "version",
+            "Show version information",
+            CommandCategory::Diagnostics,
+            Box::new(|_| {
+                Ok(CommandOutput::Message(format!(
+                    "Composer TUI v{}",
+                    env!("CARGO_PKG_VERSION")
+                )))
+            }),
+        )
         .alias("v"),
     );
 
     // Zen mode
-    registry.register(
-        Command::new("zen", "Toggle zen mode (minimal UI)", CommandCategory::Ui, Box::new(|_| {
-            Ok(CommandOutput::Message("Toggling zen mode".to_string()))
-        })),
-    );
+    registry.register(Command::new(
+        "zen",
+        "Toggle zen mode (minimal UI)",
+        CommandCategory::Ui,
+        Box::new(|_| Ok(CommandOutput::Message("Toggling zen mode".to_string()))),
+    ));
 
     // Footer command
     registry.register(
-        Command::new("footer", "Change footer style", CommandCategory::Ui, Box::new(|ctx| {
-            let style = ctx.get_string("style").unwrap_or("ensemble");
-            Ok(CommandOutput::Message(format!("Footer style: {}", style)))
-        }))
+        Command::new(
+            "footer",
+            "Change footer style",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let style = ctx.get_string("style").unwrap_or("ensemble");
+                Ok(CommandOutput::Message(format!("Footer style: {}", style)))
+            }),
+        )
         .arg(CommandArgument::choice(
             "style",
             "Footer style",
@@ -386,25 +456,34 @@ pub fn build_command_registry() -> CommandRegistry {
 
     // Memory commands
     registry.register(
-        Command::new("memory", "Cross-session memory", CommandCategory::Context, Box::new(|_| {
-            Ok(CommandOutput::Message("Memory management...".to_string()))
-        }))
+        Command::new(
+            "memory",
+            "Cross-session memory",
+            CommandCategory::Context,
+            Box::new(|_| Ok(CommandOutput::Message("Memory management...".to_string()))),
+        )
         .group(vec!["save", "search", "list", "delete", "stats"]),
     );
 
     // Plan command
-    registry.register(
-        Command::new("plan", "View saved plans", CommandCategory::Context, Box::new(|_| {
-            Ok(CommandOutput::Message("Saved plans...".to_string()))
-        })),
-    );
+    registry.register(Command::new(
+        "plan",
+        "View saved plans",
+        CommandCategory::Context,
+        Box::new(|_| Ok(CommandOutput::Message("Saved plans...".to_string()))),
+    ));
 
     // Thinking command
     registry.register(
-        Command::new("thinking", "Set thinking level", CommandCategory::Config, Box::new(|ctx| {
-            let level = ctx.get_string("level").unwrap_or("medium");
-            Ok(CommandOutput::Message(format!("Thinking level: {}", level)))
-        }))
+        Command::new(
+            "thinking",
+            "Set thinking level",
+            CommandCategory::Config,
+            Box::new(|ctx| {
+                let level = ctx.get_string("level").unwrap_or("medium");
+                Ok(CommandOutput::Message(format!("Thinking level: {}", level)))
+            }),
+        )
         .arg(CommandArgument::choice(
             "level",
             "Thinking level",
@@ -415,17 +494,27 @@ pub fn build_command_registry() -> CommandRegistry {
 
     // Continue command
     registry.register(
-        Command::new("continue", "Continue previous session", CommandCategory::Session, Box::new(|_| {
-            Ok(CommandOutput::Message("Continuing previous session...".to_string()))
-        }))
+        Command::new(
+            "continue",
+            "Continue previous session",
+            CommandCategory::Session,
+            Box::new(|_| {
+                Ok(CommandOutput::Message(
+                    "Continuing previous session...".to_string(),
+                ))
+            }),
+        )
         .alias("c"),
     );
 
     // Resume command
     registry.register(
-        Command::new("resume", "Resume a specific session", CommandCategory::Session, Box::new(|_| {
-            Ok(CommandOutput::OpenModal(ModalType::SessionList))
-        }))
+        Command::new(
+            "resume",
+            "Resume a specific session",
+            CommandCategory::Session,
+            Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
+        )
         .alias("r"),
     );
 

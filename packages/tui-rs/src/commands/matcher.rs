@@ -123,7 +123,8 @@ impl SlashCommandMatcher {
             // Check aliases
             for alias in &cmd.aliases {
                 if let Some(score) = self.score_match(&query, alias, true) {
-                    let mut m = CommandMatch::new(Arc::clone(&cmd), score).with_alias(alias.clone());
+                    let mut m =
+                        CommandMatch::new(Arc::clone(&cmd), score).with_alias(alias.clone());
                     m = self.apply_bonuses(m, &query);
                     matches.push(m);
                     break;

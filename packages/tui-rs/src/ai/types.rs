@@ -75,13 +75,8 @@ pub enum ContentBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ImageSource {
-    Base64 {
-        media_type: String,
-        data: String,
-    },
-    Url {
-        url: String,
-    },
+    Base64 { media_type: String, data: String },
+    Url { url: String },
 }
 
 /// Tool definition
@@ -115,34 +110,17 @@ impl Tool {
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     /// Message started
-    MessageStart {
-        id: String,
-        model: String,
-    },
+    MessageStart { id: String, model: String },
     /// Content block started
-    ContentBlockStart {
-        index: usize,
-        block: ContentBlock,
-    },
+    ContentBlockStart { index: usize, block: ContentBlock },
     /// Text delta
-    TextDelta {
-        index: usize,
-        text: String,
-    },
+    TextDelta { index: usize, text: String },
     /// Thinking delta
-    ThinkingDelta {
-        index: usize,
-        thinking: String,
-    },
+    ThinkingDelta { index: usize, thinking: String },
     /// Tool use input delta (JSON string chunk)
-    InputJsonDelta {
-        index: usize,
-        partial_json: String,
-    },
+    InputJsonDelta { index: usize, partial_json: String },
     /// Content block completed
-    ContentBlockStop {
-        index: usize,
-    },
+    ContentBlockStop { index: usize },
     /// Message completed
     MessageStop,
     /// Usage stats
@@ -153,9 +131,7 @@ pub enum StreamEvent {
         cache_creation_tokens: Option<u64>,
     },
     /// Error occurred
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// Request configuration

@@ -127,10 +127,7 @@ impl FileSearchModal {
 
     /// Get the selected file
     pub fn selected_file(&self) -> Option<&WorkspaceFile> {
-        self.results
-            .matches
-            .get(self.selected)
-            .map(|m| &m.file)
+        self.results.matches.get(self.selected).map(|m| &m.file)
     }
 
     /// Confirm selection and return the file
@@ -218,8 +215,7 @@ impl FileSearchModal {
             } else {
                 "No matches found".to_string()
             };
-            let paragraph = Paragraph::new(empty_msg)
-                .style(Style::default().fg(Color::DarkGray));
+            let paragraph = Paragraph::new(empty_msg).style(Style::default().fg(Color::DarkGray));
             frame.render_widget(paragraph, area);
             return;
         }
@@ -257,7 +253,9 @@ impl FileSearchModal {
                         .unwrap_or(idx + 1);
                     spans.push(Span::styled(
                         file.name[idx..next_idx].to_string(),
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     ));
                     last_idx = next_idx;
                 }

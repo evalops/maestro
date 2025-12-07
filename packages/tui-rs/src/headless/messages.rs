@@ -52,14 +52,9 @@ pub struct ToolResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgentMessage {
     /// Agent is ready
-    Ready {
-        model: String,
-        provider: String,
-    },
+    Ready { model: String, provider: String },
     /// Response streaming started
-    ResponseStart {
-        response_id: String,
-    },
+    ResponseStart { response_id: String },
     /// Response chunk (text or thinking)
     ResponseChunk {
         response_id: String,
@@ -80,28 +75,15 @@ pub enum FromAgentMessage {
         requires_approval: bool,
     },
     /// Tool execution started
-    ToolStart {
-        call_id: String,
-    },
+    ToolStart { call_id: String },
     /// Tool output chunk
-    ToolOutput {
-        call_id: String,
-        content: String,
-    },
+    ToolOutput { call_id: String, content: String },
     /// Tool execution ended
-    ToolEnd {
-        call_id: String,
-        success: bool,
-    },
+    ToolEnd { call_id: String, success: bool },
     /// Error occurred
-    Error {
-        message: String,
-        fatal: bool,
-    },
+    Error { message: String, fatal: bool },
     /// Status update
-    Status {
-        message: String,
-    },
+    Status { message: String },
     /// Session information
     SessionInfo {
         session_id: Option<String>,
@@ -429,8 +411,7 @@ mod tests {
 
     #[test]
     fn parse_response_chunk() {
-        let json =
-            r#"{"type":"response_chunk","response_id":"abc","content":"Hello","is_thinking":false}"#;
+        let json = r#"{"type":"response_chunk","response_id":"abc","content":"Hello","is_thinking":false}"#;
         let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
         match msg {
             FromAgentMessage::ResponseChunk {
@@ -480,10 +461,7 @@ mod tests {
             is_thinking: false,
         });
 
-        assert_eq!(
-            state.current_response.as_ref().unwrap().text,
-            "Hello world"
-        );
+        assert_eq!(state.current_response.as_ref().unwrap().text, "Hello world");
 
         // End response
         state.handle_message(FromAgentMessage::ResponseEnd {

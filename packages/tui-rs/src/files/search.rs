@@ -272,11 +272,7 @@ mod tests {
 
     #[test]
     fn empty_query_returns_all() {
-        let files = vec![
-            make_file("a.rs"),
-            make_file("b.rs"),
-            make_file("c.rs"),
-        ];
+        let files = vec![make_file("a.rs"), make_file("b.rs"), make_file("c.rs")];
         let search = FileSearch::new(files);
 
         let result = search.search("");
@@ -286,11 +282,11 @@ mod tests {
     #[test]
     fn highlight_matches_works() {
         let result = highlight_matches("hello", &[0, 2, 4]);
-        assert!(result[0].1);  // 'h' matched
+        assert!(result[0].1); // 'h' matched
         assert!(!result[1].1); // 'e' not matched
-        assert!(result[2].1);  // 'l' matched
+        assert!(result[2].1); // 'l' matched
         assert!(!result[3].1); // 'l' not matched
-        assert!(result[4].1);  // 'o' matched
+        assert!(result[4].1); // 'o' matched
     }
 
     #[test]

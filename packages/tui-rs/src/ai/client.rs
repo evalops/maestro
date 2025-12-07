@@ -111,15 +111,30 @@ mod tests {
 
     #[test]
     fn test_provider_from_model_anthropic() {
-        assert_eq!(AiProvider::from_model("claude-opus-4-5-20251101"), AiProvider::Anthropic);
-        assert_eq!(AiProvider::from_model("claude-sonnet-4-5"), AiProvider::Anthropic);
-        assert_eq!(AiProvider::from_model("claude-3-haiku"), AiProvider::Anthropic);
-        assert_eq!(AiProvider::from_model("anthropic/claude"), AiProvider::Anthropic);
+        assert_eq!(
+            AiProvider::from_model("claude-opus-4-5-20251101"),
+            AiProvider::Anthropic
+        );
+        assert_eq!(
+            AiProvider::from_model("claude-sonnet-4-5"),
+            AiProvider::Anthropic
+        );
+        assert_eq!(
+            AiProvider::from_model("claude-3-haiku"),
+            AiProvider::Anthropic
+        );
+        assert_eq!(
+            AiProvider::from_model("anthropic/claude"),
+            AiProvider::Anthropic
+        );
     }
 
     #[test]
     fn test_provider_from_model_openai() {
-        assert_eq!(AiProvider::from_model("gpt-5.1-codex-max"), AiProvider::OpenAI);
+        assert_eq!(
+            AiProvider::from_model("gpt-5.1-codex-max"),
+            AiProvider::OpenAI
+        );
         assert_eq!(AiProvider::from_model("gpt-4o"), AiProvider::OpenAI);
         assert_eq!(AiProvider::from_model("gpt-4-turbo"), AiProvider::OpenAI);
         assert_eq!(AiProvider::from_model("o1-preview"), AiProvider::OpenAI);
@@ -129,7 +144,10 @@ mod tests {
     #[test]
     fn test_provider_from_model_default() {
         // Unknown models default to Anthropic
-        assert_eq!(AiProvider::from_model("unknown-model"), AiProvider::Anthropic);
+        assert_eq!(
+            AiProvider::from_model("unknown-model"),
+            AiProvider::Anthropic
+        );
         assert_eq!(AiProvider::from_model(""), AiProvider::Anthropic);
     }
 

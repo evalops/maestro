@@ -334,7 +334,11 @@ pub fn high_contrast_theme() -> Theme {
 
 /// Get all available theme names
 pub fn available_themes() -> Vec<String> {
-    let mut themes = vec!["dark".to_string(), "light".to_string(), "high-contrast".to_string()];
+    let mut themes = vec![
+        "dark".to_string(),
+        "light".to_string(),
+        "high-contrast".to_string(),
+    ];
 
     // Look for user themes
     if let Some(home) = dirs::home_dir() {
@@ -381,7 +385,10 @@ pub fn load_theme(name: &str) -> Result<Theme, ThemeError> {
 
     // Try user themes directory
     if let Some(home) = dirs::home_dir() {
-        let path = home.join(".composer").join("themes").join(format!("{}.json", name));
+        let path = home
+            .join(".composer")
+            .join("themes")
+            .join(format!("{}.json", name));
         if path.exists() {
             return Theme::load_from_file(&path);
         }

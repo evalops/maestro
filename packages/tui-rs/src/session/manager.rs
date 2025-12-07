@@ -137,13 +137,11 @@ impl SessionManager {
         }
 
         // Sort by modification time (newest first)
-        sessions.sort_by(|a, b| {
-            match (&b.modified, &a.modified) {
-                (Some(b_time), Some(a_time)) => b_time.cmp(a_time),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
+        sessions.sort_by(|a, b| match (&b.modified, &a.modified) {
+            (Some(b_time), Some(a_time)) => b_time.cmp(a_time),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         });
 
         Ok(sessions)
@@ -171,13 +169,11 @@ impl SessionManager {
         }
 
         // Sort by modification time (newest first)
-        all_sessions.sort_by(|a, b| {
-            match (&b.modified, &a.modified) {
-                (Some(b_time), Some(a_time)) => b_time.cmp(a_time),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
+        all_sessions.sort_by(|a, b| match (&b.modified, &a.modified) {
+            (Some(b_time), Some(a_time)) => b_time.cmp(a_time),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         });
 
         Ok(all_sessions)
@@ -218,10 +214,7 @@ impl SessionManager {
     pub fn load_session_by_index(&self, index: usize) -> Result<ParsedSession, SessionReadError> {
         let sessions = self.list_sessions()?;
         let session = sessions.get(index.saturating_sub(1)).ok_or_else(|| {
-            SessionReadError::InvalidFormat(format!(
-                "No session at index {}",
-                index
-            ))
+            SessionReadError::InvalidFormat(format!("No session at index {}", index))
         })?;
         SessionReader::read_file(&session.path)
     }
@@ -237,7 +230,10 @@ impl SessionManager {
     }
 
     /// Start a new session
-    pub fn start_session(&mut self, header: SessionHeader) -> Result<(), super::writer::SessionWriteError> {
+    pub fn start_session(
+        &mut self,
+        header: SessionHeader,
+    ) -> Result<(), super::writer::SessionWriteError> {
         self.current_session_id = Some(header.id.clone());
 
         let filename = super::writer::generate_session_filename(&header.id);
@@ -264,8 +260,8 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::io::Write;
+    use tempfile::TempDir;
 
     fn create_test_session_file(dir: &Path, id: &str) {
         let filename = format!("2024-01-15T10-30-00-000Z_{}.jsonl", id);

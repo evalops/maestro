@@ -29,7 +29,11 @@ pub struct ApprovalRequest {
 }
 
 impl ApprovalRequest {
-    pub fn new(call_id: impl Into<String>, tool: impl Into<String>, args: serde_json::Value) -> Self {
+    pub fn new(
+        call_id: impl Into<String>,
+        tool: impl Into<String>,
+        args: serde_json::Value,
+    ) -> Self {
         Self {
             call_id: call_id.into(),
             tool: tool.into(),
@@ -142,7 +146,11 @@ impl Widget for ApprovalModal<'_> {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color))
             .title(" Action Approval Required ")
-            .title_style(Style::default().fg(border_color).add_modifier(Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::BOLD),
+            )
             .style(Style::default().bg(bg_color));
 
         let inner = block.inner(modal_area);
@@ -162,12 +170,10 @@ impl Widget for ApprovalModal<'_> {
 
         // Reason section
         if let Some(ref reason) = self.request.reason {
-            let reason_text = Text::from(vec![
-                Line::from(vec![
-                    Span::styled("Reason: ", Style::default().fg(Color::DarkGray)),
-                    Span::raw(reason.as_str()),
-                ]),
-            ]);
+            let reason_text = Text::from(vec![Line::from(vec![
+                Span::styled("Reason: ", Style::default().fg(Color::DarkGray)),
+                Span::raw(reason.as_str()),
+            ])]);
             Paragraph::new(reason_text)
                 .wrap(Wrap { trim: true })
                 .render(chunks[0], buf);
@@ -178,7 +184,9 @@ impl Widget for ApprovalModal<'_> {
             Span::styled("Tool: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 &self.request.tool,
-                Style::default().fg(theme::syntax_function()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::syntax_function())
+                    .add_modifier(Modifier::BOLD),
             ),
             if self.request.is_shell {
                 Span::styled(" (shell)", Style::default().fg(Color::DarkGray))
@@ -214,15 +222,14 @@ impl Widget for ApprovalModal<'_> {
 
         // Queue status
         if self.queue_size > 0 {
-            let queue_line = Line::from(vec![
-                Span::styled(
-                    format!("{} more action{} awaiting approval",
-                        self.queue_size,
-                        if self.queue_size == 1 { "" } else { "s" }
-                    ),
-                    Style::default().fg(Color::DarkGray),
+            let queue_line = Line::from(vec![Span::styled(
+                format!(
+                    "{} more action{} awaiting approval",
+                    self.queue_size,
+                    if self.queue_size == 1 { "" } else { "s" }
                 ),
-            ]);
+                Style::default().fg(Color::DarkGray),
+            )]);
             Paragraph::new(queue_line)
                 .alignment(Alignment::Center)
                 .render(chunks[3], buf);
@@ -230,9 +237,17 @@ impl Widget for ApprovalModal<'_> {
 
         // Key hints
         let hints = Line::from(vec![
-            Span::styled("[y]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[y]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" approve  "),
-            Span::styled("[n]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[n]",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" deny  "),
             Span::styled("[esc]", Style::default().fg(Color::DarkGray)),
             Span::raw(" cancel"),
@@ -278,7 +293,10 @@ impl ApprovalController {
     }
 
     /// Handle a decision for the current request
-    pub fn decide(&mut self, decision: ApprovalDecision) -> Option<(ApprovalRequest, ApprovalDecision)> {
+    pub fn decide(
+        &mut self,
+        decision: ApprovalDecision,
+    ) -> Option<(ApprovalRequest, ApprovalDecision)> {
         if self.queue.is_empty() {
             return None;
         }
@@ -321,16 +339,20 @@ mod tests {
 
     #[test]
     fn approval_request_display_command() {
-        let request = ApprovalRequest::new("1", "bash", serde_json::json!({
-            "command": "ls -la"
-        }));
+        let request = ApprovalRequest::new(
+            "1",
+            "bash",
+            serde_json::json!({
+                "command": "ls -la"
+            }),
+        );
         assert_eq!(request.display_command(), "ls -la");
     }
 
     #[test]
     fn approval_request_with_explicit_command() {
-        let request = ApprovalRequest::new("1", "bash", serde_json::json!({}))
-            .with_command("echo hello");
+        let request =
+            ApprovalRequest::new("1", "bash", serde_json::json!({})).with_command("echo hello");
         assert_eq!(request.display_command(), "echo hello");
     }
 
@@ -362,9 +384,18 @@ mod tests {
 
     #[test]
     fn approval_modal_handle_key() {
-        assert_eq!(ApprovalModal::handle_key(KeyCode::Char('y')), Some(ApprovalDecision::Approve));
-        assert_eq!(ApprovalModal::handle_key(KeyCode::Char('n')), Some(ApprovalDecision::Deny));
-        assert_eq!(ApprovalModal::handle_key(KeyCode::Esc), Some(ApprovalDecision::Cancel));
+        assert_eq!(
+            ApprovalModal::handle_key(KeyCode::Char('y')),
+            Some(ApprovalDecision::Approve)
+        );
+        assert_eq!(
+            ApprovalModal::handle_key(KeyCode::Char('n')),
+            Some(ApprovalDecision::Deny)
+        );
+        assert_eq!(
+            ApprovalModal::handle_key(KeyCode::Esc),
+            Some(ApprovalDecision::Cancel)
+        );
         assert_eq!(ApprovalModal::handle_key(KeyCode::Enter), None);
     }
 }

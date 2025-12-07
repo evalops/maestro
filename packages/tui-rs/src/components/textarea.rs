@@ -138,8 +138,7 @@ fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
         return vec![0..0];
     }
 
-    let opts = Options::new(width.max(1))
-        .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit);
+    let opts = Options::new(width.max(1)).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit);
 
     let mut lines: Vec<Range<usize>> = Vec::new();
 

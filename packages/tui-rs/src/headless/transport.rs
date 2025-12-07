@@ -265,9 +265,9 @@ impl AgentTransport {
                 Some(result)
             }
             Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Some(Err(TransportError::ChannelError("Channel disconnected".to_string())))
-            }
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(TransportError::ChannelError(
+                "Channel disconnected".to_string(),
+            ))),
         }
     }
 

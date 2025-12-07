@@ -203,17 +203,20 @@ impl SessionSwitcher {
         frame.render_widget(block, modal_area);
 
         // Layout: filter input at top, sessions below, help at bottom
-        let chunks =
-            Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
-                .split(inner);
+        let chunks = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
 
         // Render filter input
         self.render_filter(frame, chunks[0]);
 
         // Render sessions or loading/error state
         if self.loading {
-            let loading = Paragraph::new("Loading sessions...")
-                .style(Style::default().fg(Color::Yellow));
+            let loading =
+                Paragraph::new("Loading sessions...").style(Style::default().fg(Color::Yellow));
             frame.render_widget(loading, chunks[1]);
         } else if let Some(error) = &self.error {
             let error_widget =
@@ -256,8 +259,7 @@ impl SessionSwitcher {
             } else {
                 "No matching sessions"
             };
-            let paragraph =
-                Paragraph::new(empty_msg).style(Style::default().fg(Color::DarkGray));
+            let paragraph = Paragraph::new(empty_msg).style(Style::default().fg(Color::DarkGray));
             frame.render_widget(paragraph, area);
             return;
         }
@@ -289,13 +291,11 @@ impl SessionSwitcher {
         let title: String = session.title().chars().take(30).collect();
         spans.push(Span::styled(
             title,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(if selected {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
+            Style::default().fg(Color::White).add_modifier(if selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
         ));
 
         // Timestamp

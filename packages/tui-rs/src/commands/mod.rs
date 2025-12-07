@@ -10,6 +10,6 @@ mod types;
 pub use matcher::{CommandMatch, SlashCommandMatcher, SlashCycleState};
 pub use registry::{build_command_registry, CommandRegistry};
 pub use types::{
-    Command, CommandArgument, CommandArgumentType, CommandCategory, CommandContext,
-    CommandHandler, CommandResult,
+    Command, CommandArgument, CommandArgumentType, CommandCategory, CommandContext, CommandHandler,
+    CommandResult,
 };

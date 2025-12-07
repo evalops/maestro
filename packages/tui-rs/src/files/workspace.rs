@@ -34,9 +34,7 @@ impl WorkspaceFile {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let extension = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_string());
+        let extension = path.extension().map(|e| e.to_string_lossy().to_string());
 
         let is_dir = path.is_dir();
 
@@ -186,28 +184,26 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
 /// Common file type patterns
 pub mod patterns {
     pub const SOURCE_CODE: &[&str] = &[
-        "rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "cpp", "c", "h", "cs",
-        "swift", "kt", "scala", "clj", "ex", "exs", "hs", "ml", "lua", "sh", "bash", "zsh",
+        "rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "cpp", "c", "h", "cs", "swift",
+        "kt", "scala", "clj", "ex", "exs", "hs", "ml", "lua", "sh", "bash", "zsh",
     ];
 
-    pub const CONFIG: &[&str] = &[
-        "json", "yaml", "yml", "toml", "ini", "cfg", "conf", "xml",
-    ];
+    pub const CONFIG: &[&str] = &["json", "yaml", "yml", "toml", "ini", "cfg", "conf", "xml"];
 
     pub const DOCS: &[&str] = &["md", "txt", "rst", "adoc", "org"];
 
     pub const ALL_CODE: &[&str] = &[
-        "rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "cpp", "c", "h", "cs",
-        "swift", "kt", "scala", "clj", "ex", "exs", "hs", "ml", "lua", "sh", "bash", "zsh",
-        "json", "yaml", "yml", "toml", "md",
+        "rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "cpp", "c", "h", "cs", "swift",
+        "kt", "scala", "clj", "ex", "exs", "hs", "ml", "lua", "sh", "bash", "zsh", "json", "yaml",
+        "yml", "toml", "md",
     ];
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs::File;
+    use tempfile::TempDir;
 
     #[test]
     fn workspace_file_from_path() {

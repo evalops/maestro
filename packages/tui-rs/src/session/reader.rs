@@ -159,9 +159,8 @@ impl SessionReader {
             }
         }
 
-        let header = header.ok_or_else(|| {
-            SessionReadError::InvalidFormat("Missing session header".to_string())
-        })?;
+        let header = header
+            .ok_or_else(|| SessionReadError::InvalidFormat("Missing session header".to_string()))?;
 
         Ok(ParsedSession {
             header,
@@ -173,7 +172,9 @@ impl SessionReader {
     }
 
     /// Read just the header and stats from a session file (faster than full read)
-    pub fn read_header(path: impl AsRef<Path>) -> Result<(SessionHeader, SessionStats, Option<SessionMeta>), SessionReadError> {
+    pub fn read_header(
+        path: impl AsRef<Path>,
+    ) -> Result<(SessionHeader, SessionStats, Option<SessionMeta>), SessionReadError> {
         let path = path.as_ref();
         let file = File::open(path)?;
         let reader = BufReader::new(file);
@@ -213,9 +214,8 @@ impl SessionReader {
             }
         }
 
-        let header = header.ok_or_else(|| {
-            SessionReadError::InvalidFormat("Missing session header".to_string())
-        })?;
+        let header = header
+            .ok_or_else(|| SessionReadError::InvalidFormat("Missing session header".to_string()))?;
 
         Ok((header, stats, meta))
     }

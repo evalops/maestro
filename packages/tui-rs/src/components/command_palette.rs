@@ -219,8 +219,7 @@ impl CommandPalette {
             } else {
                 "No matching commands"
             };
-            let paragraph =
-                Paragraph::new(empty_msg).style(Style::default().fg(Color::DarkGray));
+            let paragraph = Paragraph::new(empty_msg).style(Style::default().fg(Color::DarkGray));
             frame.render_widget(paragraph, area);
             return;
         }
@@ -242,13 +241,11 @@ impl CommandPalette {
         // Command name
         spans.push(Span::styled(
             format!("/{}", m.command.name),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(if selected {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
+            Style::default().fg(Color::Cyan).add_modifier(if selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
         ));
 
         // Description
@@ -291,10 +288,7 @@ mod tests {
         palette.insert_char('p');
 
         // Should match /help
-        assert!(palette
-            .matches
-            .iter()
-            .any(|m| m.command.name == "help"));
+        assert!(palette.matches.iter().any(|m| m.command.name == "help"));
 
         palette.hide();
         assert!(!palette.is_visible());
