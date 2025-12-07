@@ -772,7 +772,8 @@ Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
 | Package | Description |
 |---------|-------------|
 | [`@evalops/ai`](packages/ai/README.md) | Shared AI SDK: model registry, provider transport, agent event streams |
-| [`@evalops/tui`](packages/tui/README.md) | Terminal UI library with differential rendering |
+| [`@evalops/tui`](packages/tui/README.md) | Terminal UI library (TypeScript) with differential rendering |
+| [`tui-rs`](packages/tui-rs/README.md) | Native Rust TUI - standalone binary with native AI provider integrations |
 | [`@evalops/composer-web`](packages/web/README.md) | Web interface for Composer |
 | [`@evalops/contracts`](packages/contracts/README.md) | Shared TypeScript definitions |
 | [`@evalops/slack-agent`](packages/slack-agent/README.md) | Slack bot with Docker sandbox isolation |

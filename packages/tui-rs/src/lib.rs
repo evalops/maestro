@@ -53,7 +53,7 @@ pub mod wrapping;
 
 mod app;
 
-pub use agent::{AgentProcess, NativeAgent, NativeAgentConfig, ToolDefinition};
+pub use agent::{NativeAgent, NativeAgentConfig, ToolDefinition};
 pub use ai::{
     create_client, create_client_for_model, AiClient, AiProvider, AnthropicClient, OpenAiClient,
     UnifiedClient,

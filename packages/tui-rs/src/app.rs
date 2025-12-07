@@ -1,11 +1,7 @@
 //! Native Composer TUI Application
 //!
 //! This is the main entry point for the native Rust TUI.
-//! Supports two modes:
-//! - Native agent: Pure Rust implementation that talks directly to AI providers (default)
-//! - Node.js agent: Subprocess for legacy compatibility (use --legacy flag)
-//!
-//! The native agent is always the default. Use COMPOSER_LEGACY=1 to force Node.js mode.
+//! Uses a pure Rust agent implementation that talks directly to AI providers.
 
 use std::sync::Arc;
 
@@ -14,7 +10,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers as Cross
 use ratatui::prelude::*;
 use tokio::sync::mpsc;
 
-use crate::agent::{AgentProcess, FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
+use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
     build_command_registry, CommandAction, CommandOutput, CommandRegistry, ModalType,
@@ -43,20 +39,9 @@ pub enum ActiveModal {
     ThemeSelector,
 }
 
-/// Agent backend type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentBackend {
-    /// Native Rust agent (default when API keys are set)
-    Native,
-    /// Node.js subprocess (legacy)
-    NodeJs,
-}
-
 /// Main application
 pub struct App {
     state: AppState,
-    /// Node.js agent subprocess (legacy mode)
-    node_agent: Option<AgentProcess>,
     /// Native Rust agent
     native_agent: Option<NativeAgent>,
     /// Event receiver for native agent
@@ -65,12 +50,8 @@ pub struct App {
     tool_response_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
     /// Tool executor for native agent
     tool_executor: ToolExecutor,
-    /// Which backend we're using
-    backend: AgentBackend,
     terminal: terminal::Terminal,
     should_quit: bool,
-    /// Arguments to pass to the Node.js agent
-    agent_args: Vec<String>,
     /// Terminal capabilities including viewport position
     capabilities: TerminalCapabilities,
     /// Command registry
@@ -103,11 +84,6 @@ pub struct App {
 impl App {
     /// Create a new application
     pub fn new() -> Result<Self> {
-        Self::with_args(Vec::new())
-    }
-
-    /// Create a new application with CLI arguments to pass to the agent
-    pub fn with_args(agent_args: Vec<String>) -> Result<Self> {
         let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
         let command_registry = Arc::new(build_command_registry());
         let slash_matcher = SlashCommandMatcher::new(Arc::clone(&command_registry));
@@ -115,28 +91,14 @@ impl App {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
-        // Determine which backend to use
-        // Native is always the default; use COMPOSER_LEGACY=1 to force Node.js
-        let use_legacy = std::env::var("COMPOSER_LEGACY")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let backend = if use_legacy {
-            AgentBackend::NodeJs
-        } else {
-            AgentBackend::Native
-        };
-
         Ok(Self {
             state: AppState::new(),
-            node_agent: None,
             native_agent: None,
             native_event_rx: None,
             tool_response_tx: None,
             tool_executor: ToolExecutor::new(&cwd),
-            backend,
             terminal,
             should_quit: false,
-            agent_args,
             capabilities,
             command_palette: CommandPalette::new(Arc::clone(&command_registry)),
             command_registry,
@@ -189,9 +151,6 @@ impl App {
         }
 
         // Cleanup
-        if let Some(mut agent) = self.node_agent.take() {
-            let _ = agent.shutdown().await;
-        }
         terminal::restore()?;
 
         Ok(0)
@@ -204,16 +163,8 @@ impl App {
         self.file_search.set_files(files);
     }
 
-    /// Spawn the agent (native or Node.js)
-    async fn spawn_agent(&mut self) -> Result<()> {
-        match self.backend {
-            AgentBackend::Native => self.spawn_native_agent().await,
-            AgentBackend::NodeJs => self.spawn_nodejs_agent().await,
-        }
-    }
-
     /// Spawn the native Rust agent
-    async fn spawn_native_agent(&mut self) -> Result<()> {
+    async fn spawn_agent(&mut self) -> Result<()> {
         let cwd_path = std::env::current_dir().unwrap_or_default();
         let cwd = cwd_path.to_string_lossy().to_string();
 
@@ -241,7 +192,7 @@ impl App {
             cwd: cwd.clone(),
         };
 
-        self.state.status = Some(format!("Initializing native agent ({})...", model));
+        self.state.status = Some(format!("Initializing agent ({})...", model));
 
         match NativeAgent::new(config) {
             Ok((agent, event_rx)) => {
@@ -259,13 +210,10 @@ impl App {
 
                 // Ensure busy is false so user can type
                 self.state.busy = false;
-                self.state.status = Some(format!("Ready: {} (native)", model));
+                self.state.status = Some(format!("Ready: {}", model));
             }
             Err(e) => {
-                self.state.error = Some(format!("Failed to create native agent: {}", e));
-                // Fall back to Node.js agent
-                self.backend = AgentBackend::NodeJs;
-                return self.spawn_nodejs_agent().await;
+                self.state.error = Some(format!("Failed to create agent: {}", e));
             }
         }
 
@@ -300,74 +248,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         )
     }
 
-    /// Spawn the Node.js agent subprocess (legacy)
-    async fn spawn_nodejs_agent(&mut self) -> Result<()> {
-        // Find the composer script to run
-        let node_path = std::env::var("NODE_PATH").unwrap_or_else(|_| "node".to_string());
-
-        // Try to find the composer entry point
-        let script_path = std::env::var("COMPOSER_AGENT_SCRIPT").unwrap_or_else(|_| {
-            // Default: look for local development path
-            let cwd = std::env::current_dir().unwrap_or_default();
-            cwd.join("dist/cli.js").to_string_lossy().to_string()
-        });
-
-        // Check if script exists
-        if !std::path::Path::new(&script_path).exists() {
-            // For now, just set status and continue without agent
-            self.state.error = Some(format!(
-                "No API key set and agent script not found: {}. Set ANTHROPIC_API_KEY or OPENAI_API_KEY for native mode.",
-                script_path
-            ));
-            return Ok(());
-        }
-
-        self.state.status = Some(format!("Spawning: {} {}", node_path, script_path));
-
-        // Pass CLI arguments to the agent
-        match AgentProcess::spawn(&node_path, &script_path, &self.agent_args).await {
-            Ok(agent) => {
-                self.node_agent = Some(agent);
-                self.state.status = Some("Agent spawned, waiting for ready...".to_string());
-            }
-            Err(e) => {
-                self.state.error = Some(format!("Failed to spawn agent: {}", e));
-            }
-        }
-
-        Ok(())
-    }
-
     /// Poll for messages from the agent
     async fn poll_agent(&mut self) -> Result<()> {
-        match self.backend {
-            AgentBackend::Native => self.poll_native_agent().await,
-            AgentBackend::NodeJs => self.poll_nodejs_agent().await,
-        }
-    }
-
-    /// Poll for messages from the native agent
-    async fn poll_native_agent(&mut self) -> Result<()> {
         // Collect messages first to avoid borrow issues
         let mut messages = Vec::new();
         if let Some(rx) = &mut self.native_event_rx {
             while let Ok(msg) = rx.try_recv() {
-                messages.push(msg);
-            }
-        }
-        // Process messages
-        for msg in messages {
-            self.handle_agent_message(msg).await?;
-        }
-        Ok(())
-    }
-
-    /// Poll for messages from the Node.js agent
-    async fn poll_nodejs_agent(&mut self) -> Result<()> {
-        // Collect messages first to avoid borrow issues
-        let mut messages = Vec::new();
-        if let Some(agent) = &mut self.node_agent {
-            while let Ok(msg) = agent.rx.try_recv() {
                 messages.push(msg);
             }
         }
@@ -387,12 +273,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             FromAgent::SessionInfo { cwd, .. } => {
                 self.state.status = Some(format!("Session in: {}", cwd));
             }
-            FromAgent::ResponseEnd { response_id, .. } => {
+            FromAgent::ResponseEnd { .. } => {
                 // Clear busy state when response completes
-                // The "done" response_id is a special marker from the native agent
-                if response_id == "done" || self.backend == AgentBackend::Native {
-                    self.state.busy = false;
-                }
+                self.state.busy = false;
             }
             FromAgent::Error { .. } => {
                 // Clear busy state on error
@@ -545,17 +428,8 @@ Add the required fields and retry.",
             KeyCode::Char('c') if ctrl => {
                 if self.state.busy {
                     // Interrupt the agent
-                    match self.backend {
-                        AgentBackend::Native => {
-                            if let Some(agent) = &self.native_agent {
-                                agent.cancel();
-                            }
-                        }
-                        AgentBackend::NodeJs => {
-                            if let Some(agent) = &mut self.node_agent {
-                                let _ = agent.interrupt().await;
-                            }
-                        }
+                    if let Some(agent) = &self.native_agent {
+                        agent.cancel();
                     }
                     self.state.busy = false;
                 } else {
@@ -939,18 +813,11 @@ Add the required fields and retry.",
             KeyCode::Enter => {
                 if let Some(model_id) = self.model_selector.confirm() {
                     // Set the new model
-                    match self.backend {
-                        AgentBackend::Native => {
-                            if let Some(agent) = &self.native_agent {
-                                if let Err(e) = agent.set_model(&model_id) {
-                                    self.state.error = Some(format!("Failed to set model: {}", e));
-                                } else {
-                                    self.state.status = Some(format!("Model: {}", model_id));
-                                }
-                            }
-                        }
-                        AgentBackend::NodeJs => {
-                            self.state.status = Some(format!("Model: {} (restart required)", model_id));
+                    if let Some(agent) = &self.native_agent {
+                        if let Err(e) = agent.set_model(&model_id) {
+                            self.state.error = Some(format!("Failed to set model: {}", e));
+                        } else {
+                            self.state.status = Some(format!("Model: {}", model_id));
                         }
                     }
                 }
@@ -1028,29 +895,20 @@ Add the required fields and retry.",
         args: serde_json::Value,
         approved: bool,
     ) -> Result<()> {
-        match self.backend {
-            AgentBackend::Native => {
-                if approved {
-                    // Execute the tool
-                    let result = self
-                        .tool_executor
-                        .execute(&tool, &args, None, &call_id)
-                        .await;
-                    // Send result back to agent
-                    if let Some(tx) = &self.tool_response_tx {
-                        let _ = tx.send((call_id, true, Some(result)));
-                    }
-                } else {
-                    // Send denial
-                    if let Some(tx) = &self.tool_response_tx {
-                        let _ = tx.send((call_id, false, None));
-                    }
-                }
+        if approved {
+            // Execute the tool
+            let result = self
+                .tool_executor
+                .execute(&tool, &args, None, &call_id)
+                .await;
+            // Send result back to agent
+            if let Some(tx) = &self.tool_response_tx {
+                let _ = tx.send((call_id, true, Some(result)));
             }
-            AgentBackend::NodeJs => {
-                if let Some(agent) = &mut self.node_agent {
-                    agent.tool_response(call_id, approved, None).await?;
-                }
+        } else {
+            // Send denial
+            if let Some(tx) = &self.tool_response_tx {
+                let _ = tx.send((call_id, false, None));
             }
         }
         Ok(())
@@ -1166,13 +1024,10 @@ Add the required fields and retry.",
             CommandAction::SetThinkingLevel(level_str) => {
                 if let Some(level) = ThinkingLevel::from_str(&level_str) {
                     let (enabled, budget) = level.to_config();
-                    if let AgentBackend::Native = self.backend {
-                        if let Some(agent) = &self.native_agent {
-                            if let Err(e) = agent.set_thinking(enabled, budget) {
-                                self.state.error =
-                                    Some(format!("Failed to set thinking: {}", e));
-                                return;
-                            }
+                    if let Some(agent) = &self.native_agent {
+                        if let Err(e) = agent.set_thinking(enabled, budget) {
+                            self.state.error = Some(format!("Failed to set thinking: {}", e));
+                            return;
                         }
                     }
                     self.state.status =
@@ -1349,18 +1204,11 @@ Add the required fields and retry.",
             "model" => {
                 if let Some(&model_id) = args.first() {
                     // Set model directly
-                    match self.backend {
-                        AgentBackend::Native => {
-                            if let Some(agent) = &self.native_agent {
-                                if let Err(e) = agent.set_model(model_id) {
-                                    self.state.error = Some(format!("Failed to set model: {}", e));
-                                } else {
-                                    self.state.status = Some(format!("Model: {}", model_id));
-                                }
-                            }
-                        }
-                        AgentBackend::NodeJs => {
-                            self.state.status = Some(format!("Model: {} (restart required)", model_id));
+                    if let Some(agent) = &self.native_agent {
+                        if let Err(e) = agent.set_model(model_id) {
+                            self.state.error = Some(format!("Failed to set model: {}", e));
+                        } else {
+                            self.state.status = Some(format!("Model: {}", model_id));
                         }
                     }
                 } else {
@@ -1373,18 +1221,16 @@ Add the required fields and retry.",
                 if let Some(&level_str) = args.first() {
                     if let Some(level) = ThinkingLevel::from_str(level_str) {
                         let (enabled, budget) = level.to_config();
-                        match self.backend {
-                            AgentBackend::Native => {
-                                if let Some(agent) = &self.native_agent {
-                                    if let Err(e) = agent.set_thinking(enabled, budget) {
-                                        self.state.error = Some(format!("Failed to set thinking: {}", e));
-                                    } else {
-                                        self.state.status = Some(format!("Thinking: {} (budget: {})", level.label(), budget));
-                                    }
-                                }
-                            }
-                            AgentBackend::NodeJs => {
-                                self.state.status = Some(format!("Thinking: {} (restart required)", level.label()));
+                        if let Some(agent) = &self.native_agent {
+                            if let Err(e) = agent.set_thinking(enabled, budget) {
+                                self.state.error =
+                                    Some(format!("Failed to set thinking: {}", e));
+                            } else {
+                                self.state.status = Some(format!(
+                                    "Thinking: {} (budget: {})",
+                                    level.label(),
+                                    budget
+                                ));
                             }
                         }
                     } else {
@@ -1395,7 +1241,8 @@ Add the required fields and retry.",
                     }
                 } else {
                     self.state.status = Some(
-                        "Usage: /thinking <level>\nLevels: off, minimal, low, medium, high, max".to_string()
+                        "Usage: /thinking <level>\nLevels: off, minimal, low, medium, high, max"
+                            .to_string(),
                     );
                 }
             }
@@ -1455,16 +1302,13 @@ Add the required fields and retry.",
                 ));
 
                 // Modes
-                diag.push_str(&format!("**Approval Mode:** {}\n", self.state.approval_mode.label()));
-                diag.push_str(&format!("**Zen Mode:** {}\n", if self.state.zen_mode { "on" } else { "off" }));
-
-                // Backend
                 diag.push_str(&format!(
-                    "**Backend:** {}\n",
-                    match self.backend {
-                        AgentBackend::Native => "Native Rust",
-                        AgentBackend::NodeJs => "Node.js (IPC)",
-                    }
+                    "**Approval Mode:** {}\n",
+                    self.state.approval_mode.label()
+                ));
+                diag.push_str(&format!(
+                    "**Zen Mode:** {}\n",
+                    if self.state.zen_mode { "on" } else { "off" }
                 ));
 
                 // Terminal info
@@ -1521,27 +1365,10 @@ Add the required fields and retry.",
             }
             _ => {
                 // Unknown command - try to send to agent
-                let sent = match self.backend {
-                    AgentBackend::Native => {
-                        if let Some(agent) = &self.native_agent {
-                            let _ = agent.prompt(format!("/{}", cmd_line), vec![]).await;
-                            self.state.busy = true;
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    AgentBackend::NodeJs => {
-                        if let Some(agent) = &mut self.node_agent {
-                            agent.prompt(format!("/{}", cmd_line), vec![]).await?;
-                            self.state.busy = true;
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                };
-                if !sent {
+                if let Some(agent) = &self.native_agent {
+                    let _ = agent.prompt(format!("/{}", cmd_line), vec![]).await;
+                    self.state.busy = true;
+                } else {
                     self.state.error = Some(format!("Unknown command: /{}", cmd_name));
                 }
             }
@@ -1606,31 +1433,16 @@ Slash Commands:
         self.state.add_user_message(content.clone());
         self.state.busy = true;
 
-        match self.backend {
-            AgentBackend::Native => {
-                if let Some(agent) = &self.native_agent {
-                    // Send the prompt - returns immediately, actual work happens in background task
-                    // Events will be received via poll_agent in the main loop
-                    if let Err(e) = agent.prompt(content, vec![]).await {
-                        self.state.error = Some(format!("Failed to send prompt: {}", e));
-                        self.state.busy = false;
-                    }
-                } else {
-                    self.state.error = Some("Native agent not initialized".to_string());
-                    self.state.busy = false;
-                }
+        if let Some(agent) = &self.native_agent {
+            // Send the prompt - returns immediately, actual work happens in background task
+            // Events will be received via poll_agent in the main loop
+            if let Err(e) = agent.prompt(content, vec![]).await {
+                self.state.error = Some(format!("Failed to send prompt: {}", e));
+                self.state.busy = false;
             }
-            AgentBackend::NodeJs => {
-                if let Some(agent) = &mut self.node_agent {
-                    if let Err(e) = agent.prompt(content, vec![]).await {
-                        self.state.error = Some(format!("Agent error: {}", e));
-                        self.state.busy = false;
-                    }
-                } else {
-                    self.state.error = Some("Agent not connected".to_string());
-                    self.state.busy = false;
-                }
-            }
+        } else {
+            self.state.error = Some("Agent not initialized".to_string());
+            self.state.busy = false;
         }
 
         Ok(())
@@ -1805,6 +1617,6 @@ Slash Commands:
 
 impl Default for App {
     fn default() -> Self {
-        Self::with_args(Vec::new()).expect("Failed to create App")
+        Self::new().expect("Failed to create App")
     }
 }
