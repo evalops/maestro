@@ -455,6 +455,21 @@ impl NativeAgentRunner {
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
 
                 for (call_id, tool_name, args) in pending_tool_calls {
+                    // Validate required fields before surfacing to UI/agent
+                    let missing = self.tool_executor.missing_required(&tool_name, &args);
+                    if !missing.is_empty() {
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: call_id.clone(),
+                            content: format!(
+                                "Missing required fields for tool '{}': {}",
+                                tool_name,
+                                missing.join(", ")
+                            ),
+                            is_error: Some(true),
+                        });
+                        continue;
+                    }
+
                     // Check if this tool requires approval (dynamic bash logic)
                     let requires_approval = self.tool_executor.requires_approval(&tool_name, &args);
 
