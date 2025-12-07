@@ -195,6 +195,7 @@ pub type SandboxResult<T> = Result<T, SandboxError>;
 // ─────────────────────────────────────────────────────────────
 
 /// Base Seatbelt policy - starts with deny-all and allows basic operations
+#[allow(dead_code)] // Only used on macOS
 const SEATBELT_BASE_POLICY: &str = r#"(version 1)
 
 ; start with closed-by-default
@@ -296,6 +297,7 @@ const SEATBELT_BASE_POLICY: &str = r#"(version 1)
 "#;
 
 /// Network policy for Seatbelt
+#[allow(dead_code)] // Only used on macOS
 const SEATBELT_NETWORK_POLICY: &str = r#"
 ; Network access policies
 (allow network-outbound)
