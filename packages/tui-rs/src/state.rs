@@ -402,22 +402,22 @@ impl AppState {
     /// This is the primary constructor. All fields start empty/default.
     pub fn new() -> Self {
         Self {
-            messages: Vec::new(),          // Empty message list
-            textarea: TextArea::new(),     // Empty input area
-            model: None,                   // No model selected yet
-            provider: None,                // No provider yet
-            cwd: None,                     // No working directory
-            git_branch: None,              // Not in a git repo (yet)
-            session_id: None,              // No session yet
-            busy: false,                   // Not processing
-            busy_since: None,              // No timer running
-            status: None,                  // No status message
-            scroll_offset: 0,              // At bottom of messages
+            messages: Vec::new(),      // Empty message list
+            textarea: TextArea::new(), // Empty input area
+            model: None,               // No model selected yet
+            provider: None,            // No provider yet
+            cwd: None,                 // No working directory
+            git_branch: None,          // Not in a git repo (yet)
+            session_id: None,          // No session yet
+            busy: false,               // Not processing
+            busy_since: None,          // No timer running
+            status: None,              // No status message
+            scroll_offset: 0,          // At bottom of messages
             expanded_tool_calls: std::collections::HashSet::new(),
-            error: None,                   // No error
-            thinking_header: None,         // No thinking in progress
+            error: None,           // No error
+            thinking_header: None, // No thinking in progress
             thinking_buffer: String::new(),
-            zen_mode: false,               // Full UI by default
+            zen_mode: false,                        // Full UI by default
             approval_mode: ApprovalMode::default(), // Selective mode
         }
     }

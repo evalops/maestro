@@ -241,9 +241,9 @@ impl App {
         // `Self` is an alias for the type we're implementing (App).
         Ok(Self {
             state: AppState::new(),
-            native_agent: None,       // Agent spawned later in run()
-            native_event_rx: None,    // Channel created when agent spawns
-            tool_response_tx: None,   // Channel created when agent spawns
+            native_agent: None,     // Agent spawned later in run()
+            native_event_rx: None,  // Channel created when agent spawns
+            tool_response_tx: None, // Channel created when agent spawns
             tool_executor: ToolExecutor::new(&cwd),
             terminal,
             should_quit: false,

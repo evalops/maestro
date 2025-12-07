@@ -214,7 +214,7 @@ pub use ai::{
 };
 
 // Core application types
-pub use app::App;       // Main application struct
+pub use app::App; // Main application struct
 pub use state::AppState; // Application state
 
 // Command system
@@ -235,39 +235,38 @@ pub use diff::{
 // Headless protocol types - extensive as it's the IPC contract
 pub use headless::{
     // Core message types for bidirectional communication
-    AgentEvent,              // Events emitted by the agent
-    AgentState,              // Current state of the agent (idle, thinking, etc.)
-    ToAgentMessage,          // Messages we send to the agent
-    FromAgentMessage,        // Messages we receive from the agent
-    TokenUsage,              // Token consumption statistics
-    HealthStatus,            // Agent health/readiness status
-
+    AgentEvent, // Events emitted by the agent
+    AgentState, // Current state of the agent (idle, thinking, etc.)
+    // Supervisor (manages agent lifecycle)
+    AgentSupervisor, // High-level agent manager
     // Transport layers (how we communicate)
-    AgentTransport,          // Synchronous transport (blocking I/O)
-    AgentTransportBuilder,   // Builder pattern for sync transport
-    AsyncAgentTransport,     // Asynchronous transport (non-blocking)
+    AgentTransport,        // Synchronous transport (blocking I/O)
+    AgentTransportBuilder, // Builder pattern for sync transport
+    AsyncAgentTransport,   // Asynchronous transport (non-blocking)
     AsyncAgentTransportBuilder,
     AsyncTransportConfig,
     AsyncTransportError,
-    TransportConfig,
-    TransportError,
-
-    // Supervisor (manages agent lifecycle)
-    AgentSupervisor,         // High-level agent manager
-    SupervisorBuilder,       // Builder for supervisor configuration
-    SupervisorConfig,        // Supervisor settings
-    SupervisorEvent,         // Events from supervisor
-
     // Message framing (low-level protocol)
-    FrameReader,             // Reads framed messages from stream
-    FrameWriter,             // Writes framed messages to stream
-    FramingMode,             // Line-delimited or length-prefixed
+    FrameReader, // Reads framed messages from stream
+    FrameWriter, // Writes framed messages to stream
+    FramingMode, // Line-delimited or length-prefixed
+
+    FromAgentMessage, // Messages we receive from the agent
+    HealthStatus,     // Agent health/readiness status
 
     // Session management
-    SessionEntry,            // Single entry in a session file
-    SessionMetadata,         // Session metadata (id, timestamp, etc.)
-    SessionReader,           // Reads session files
-    SessionRecorder,         // Records sessions to disk
+    SessionEntry,      // Single entry in a session file
+    SessionMetadata,   // Session metadata (id, timestamp, etc.)
+    SessionReader,     // Reads session files
+    SessionRecorder,   // Records sessions to disk
+    SupervisorBuilder, // Builder for supervisor configuration
+    SupervisorConfig,  // Supervisor settings
+    SupervisorEvent,   // Events from supervisor
+
+    ToAgentMessage, // Messages we send to the agent
+    TokenUsage,     // Token consumption statistics
+    TransportConfig,
+    TransportError,
 };
 
 // Keyboard hints
@@ -284,11 +283,11 @@ pub use pager::Pager;
 
 // Color palette utilities
 pub use palette::{
-    best_color,   // Picks best color for terminal capabilities
-    color_level,  // Detects terminal color support
+    best_color,  // Picks best color for terminal capabilities
+    color_level, // Detects terminal color support
     has_true_color,
-    theme,        // Gets current theme
-    ColorLevel,   // Enum: Basic16, Ansi256, TrueColor
+    theme,      // Gets current theme
+    ColorLevel, // Enum: Basic16, Ansi256, TrueColor
 };
 
 // Tool system
@@ -339,16 +338,16 @@ pub use notifications::{
 
 /// Custom prompt system for user-defined prompt templates.
 pub use prompts::{
-    find_prompt,           // Finds a prompt by name
+    find_prompt, // Finds a prompt by name
     format_prompt_list_item,
-    get_usage_hint,        // Gets usage help for a prompt
-    load_prompts,          // Loads all prompts from disk
-    parse_args,            // Parses prompt arguments
-    render_prompt,         // Renders prompt with substituted args
-    validate_args,         // Validates arguments match schema
-    ParsedArgs,            // Parsed argument values
-    PromptDefinition,      // Schema for a prompt
-    PromptSource,          // Where prompt was loaded from
+    get_usage_hint,   // Gets usage help for a prompt
+    load_prompts,     // Loads all prompts from disk
+    parse_args,       // Parses prompt arguments
+    render_prompt,    // Renders prompt with substituted args
+    validate_args,    // Validates arguments match schema
+    ParsedArgs,       // Parsed argument values
+    PromptDefinition, // Schema for a prompt
+    PromptSource,     // Where prompt was loaded from
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -392,42 +391,42 @@ pub use execpolicy::{
 /// 5. CLI arguments
 pub use config::{
     // Loading functions
-    clear_config_cache,       // Clears cached config (for testing)
-    get_available_profiles,   // Lists available config profiles
-    get_config_summary,       // Human-readable config summary
-    load_config,              // Main config loading function
+    clear_config_cache,     // Clears cached config (for testing)
+    get_available_profiles, // Lists available config profiles
+    get_config_summary,     // Human-readable config summary
+    load_config,            // Main config loading function
     load_config_with_overrides,
-    parse_cli_override,       // Parses --config overrides
+    parse_cli_override, // Parses --config overrides
 
     // Policy enums
-    ApprovalPolicy,           // How tool execution is approved
-    SandboxMode,              // Sandbox security level
-
+    ApprovalPolicy, // How tool execution is approved
     // Main config struct
-    ComposerConfig,           // The complete configuration
+    ComposerConfig, // The complete configuration
 
     // Nested config structs
-    FeaturesConfig,           // Feature flags
-    FileOpener,               // How to open files externally
-    HistoryConfig,            // History settings
-    HistoryPersistence,       // How history is saved
-    McpServerConfig,          // MCP server connection settings
-    ModelProviderConfig,      // Custom model provider settings
-    ModelVerbosity,           // How verbose model output is
-    NotificationsSetting,     // Notification preferences
-    OtelConfig,               // OpenTelemetry tracing settings
-    ProfileConfig,            // Named configuration profiles
-    ReasoningEffort,          // How much thinking the model does
-    ReasoningSummary,         // How reasoning is summarized
-    SandboxWorkspaceWriteConfig,
-    ShellEnvironmentPolicy,   // Which env vars to pass to shells
-    ShellInherit,             // Shell environment inheritance
-    ToolsConfig,              // Tool execution settings
-    TrustLevel,               // Trust level for the project
-    TuiConfig,                // TUI appearance settings
-    WireApi,                  // API wire format settings
+    FeaturesConfig,       // Feature flags
+    FileOpener,           // How to open files externally
+    HistoryConfig,        // History settings
+    HistoryPersistence,   // How history is saved
+    McpServerConfig,      // MCP server connection settings
+    ModelProviderConfig,  // Custom model provider settings
+    ModelVerbosity,       // How verbose model output is
+    NotificationsSetting, // Notification preferences
+    OtelConfig,           // OpenTelemetry tracing settings
+    ProfileConfig,        // Named configuration profiles
+    ReasoningEffort,      // How much thinking the model does
+    ReasoningSummary,     // How reasoning is summarized
+    SandboxMode,          // Sandbox security level
 
-    DEFAULT_CONFIG,           // Default configuration values
+    SandboxWorkspaceWriteConfig,
+    ShellEnvironmentPolicy, // Which env vars to pass to shells
+    ShellInherit,           // Shell environment inheritance
+    ToolsConfig,            // Tool execution settings
+    TrustLevel,             // Trust level for the project
+    TuiConfig,              // TUI appearance settings
+    WireApi,                // API wire format settings
+
+    DEFAULT_CONFIG, // Default configuration values
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -443,13 +442,13 @@ pub use config::{
 /// Sandboxing limits what files/directories commands can access,
 /// providing defense-in-depth against malicious commands.
 pub use sandbox::{
-    is_sandbox_available,     // Checks if sandboxing is supported
-    sandbox_type,             // Returns "seatbelt", "landlock", or "none"
-    spawn_sandboxed_command,  // Runs command in sandbox
+    is_sandbox_available,      // Checks if sandboxing is supported
+    sandbox_type,              // Returns "seatbelt", "landlock", or "none"
+    spawn_sandboxed_command,   // Runs command in sandbox
     spawn_unsandboxed_command, // Runs command without sandbox
-    SandboxError,             // Error type for sandbox operations
-    SandboxPolicy,            // Configuration for sandbox restrictions
-    SandboxResult,            // Result type alias
-    WritableRoot,             // A directory the sandbox can write to
-    SANDBOX_ENV_VAR,          // Environment variable indicating sandbox mode
+    SandboxError,              // Error type for sandbox operations
+    SandboxPolicy,             // Configuration for sandbox restrictions
+    SandboxResult,             // Result type alias
+    WritableRoot,              // A directory the sandbox can write to
+    SANDBOX_ENV_VAR,           // Environment variable indicating sandbox mode
 };
