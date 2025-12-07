@@ -579,7 +579,7 @@ mod linux {
 
         let prog: BpfProgram = filter
             .try_into()
-            .map_err(|e: seccompiler::Error| SandboxError::SeccompFailed(e.to_string()))?;
+            .map_err(|e: seccompiler::BackendError| SandboxError::SeccompFailed(e.to_string()))?;
 
         apply_filter(&prog).map_err(|e| SandboxError::SeccompFailed(e.to_string()))?;
 
