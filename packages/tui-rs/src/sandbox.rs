@@ -339,13 +339,24 @@ mod macos {
     use std::ffi::CStr;
     use tokio::process::{Child, Command};
 
-    /// Get Darwin user cache directory via confstr
+    /// Get Darwin user cache directory via confstr.
+    ///
+    /// # Safety
+    /// This function uses FFI to call the C library `confstr` function.
+    /// The unsafe blocks are safe because:
+    /// 1. The buffer is sized to PATH_MAX+1, which is sufficient for any path
+    /// 2. confstr writes a null-terminated string to the buffer
+    /// 3. We check the return value before using the buffer
+    /// 4. CStr::from_ptr is given a valid null-terminated buffer
     fn get_darwin_user_cache_dir() -> Option<PathBuf> {
         let mut buf = vec![0_i8; (libc::PATH_MAX as usize) + 1];
+        // SAFETY: buf is properly sized and mutable. confstr returns 0 on error.
         let len = unsafe { libc::confstr(libc::_CS_DARWIN_USER_CACHE_DIR, buf.as_mut_ptr(), buf.len()) };
         if len == 0 {
             return None;
         }
+        // SAFETY: confstr writes a null-terminated C string to buf.
+        // buf lives for the duration of this call.
         let cstr = unsafe { CStr::from_ptr(buf.as_ptr()) };
         cstr.to_str()
             .ok()
@@ -610,11 +621,10 @@ mod linux {
 
         env.insert(SANDBOX_ENV_VAR.to_string(), "landlock".to_string());
 
-        // Clone values needed in pre_exec
+        // Clone values needed in pre_exec (moved into the closure)
         let policy_clone = policy.clone();
         let cwd_clone = cwd.clone();
 
-        // On Linux, we use unsafe pre_exec to apply sandbox before exec
         let mut cmd = Command::new(&command[0]);
         cmd.args(&command[1..])
             .current_dir(&cwd)
@@ -623,7 +633,15 @@ mod linux {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        // Apply sandbox in pre_exec hook (unsafe but necessary for sandboxing)
+        // SAFETY: The pre_exec hook runs after fork() but before exec() in the child
+        // process. This is the only way to apply Landlock sandboxing because:
+        // 1. Landlock must be applied in the same process that will exec
+        // 2. The closure captures cloned data by value (no shared state)
+        // 3. apply_sandbox_policy only uses async-signal-safe syscalls
+        //    (landlock_create_ruleset, landlock_add_rule, landlock_restrict_self)
+        // 4. The closure does not access any shared mutable state
+        //
+        // The closure is Send because policy_clone and cwd_clone are owned.
         unsafe {
             cmd.pre_exec(move || {
                 apply_sandbox_policy(&policy_clone, &cwd_clone)

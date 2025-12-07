@@ -36,6 +36,7 @@ import {
 	runGuardian,
 	shouldGuardCommand,
 } from "../guardian/index.js";
+import { checkCommand } from "../safety/execpolicy.js";
 import { requirePlanCheck } from "../safety/safe-mode.js";
 import { backgroundTaskManager } from "./background-tasks.js";
 import {
@@ -172,12 +173,28 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 		// Replaces ${cwd}, ${home}, ${env.VAR} with actual values
 		const interpolatedCommand = interpolateContext(command);
 
-		// Step 2: Safe mode check - mutating commands require a plan
+		// Step 2: Check execpolicy for command approval
+		// Policies in ~/.composer/execpolicy and .composer/execpolicy
+		const policyResult = checkCommand(interpolatedCommand, process.cwd());
+		if (policyResult.decision === "forbidden") {
+			const matchInfo = policyResult.matchedRules
+				.map((r) =>
+					r.type === "prefix"
+						? `prefix: ${r.matchedPrefix.join(" ")}`
+						: `heuristic: ${r.command.join(" ")}`,
+				)
+				.join(", ");
+			return respond.text(
+				`Command blocked by execpolicy: ${interpolatedCommand}\n\nDecision: forbidden\nMatched rules: ${matchInfo || "none"}\n\nTo allow this command, add a prefix_rule to .composer/execpolicy`,
+			);
+		}
+
+		// Step 3: Safe mode check - mutating commands require a plan
 		if (isMutatingCommand(interpolatedCommand)) {
 			requirePlanCheck("bash");
 		}
 
-		// Step 3: Guardian check - sensitive commands (git push, npm publish) may be blocked
+		// Step 4: Guardian check - sensitive commands (git push, npm publish) may be blocked
 		const guardCheck = shouldGuardCommand(interpolatedCommand);
 		if (guardCheck.shouldGuard) {
 			const guardian = await runGuardian({
@@ -198,7 +215,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			}
 		}
 
-		// Step 4: Calculate effective timeout (user timeout clamped to max)
+		// Step 5: Calculate effective timeout (user timeout clamped to max)
 		const effectiveTimeout = Math.min(
 			timeout ?? DEFAULT_TIMEOUT_SECONDS,
 			MAX_TIMEOUT_SECONDS,

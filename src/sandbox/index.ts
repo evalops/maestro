@@ -2,17 +2,43 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DockerSandbox, type DockerSandboxConfig } from "./docker-sandbox.js";
 import { LocalSandbox } from "./local-sandbox.js";
+import {
+	NativeSandbox,
+	type NativeSandboxMode,
+	type NativeSandboxPolicy,
+	createNativeSandbox,
+	getNativeSandboxType,
+	isNativeSandboxAvailable,
+} from "./native-sandbox.js";
 import type { Sandbox } from "./types.js";
 
 export type { Sandbox, ExecResult } from "./types.js";
 export { DockerSandbox, type DockerSandboxConfig } from "./docker-sandbox.js";
 export { LocalSandbox } from "./local-sandbox.js";
+export {
+	NativeSandbox,
+	isNativeSandboxAvailable,
+	getNativeSandboxType,
+	createNativeSandbox,
+	type NativeSandboxPolicy,
+	type NativeSandboxMode,
+} from "./native-sandbox.js";
 
-export type SandboxMode = "docker" | "local" | "none";
+export type SandboxMode = "docker" | "local" | "native" | "none";
+
+export interface NativeSandboxConfig {
+	/** Sandbox policy mode */
+	policy?: NativeSandboxMode;
+	/** Additional writable directories */
+	writableRoots?: string[];
+	/** Allow network access */
+	networkAccess?: boolean;
+}
 
 export interface SandboxConfig {
 	mode: SandboxMode;
 	docker?: DockerSandboxConfig;
+	native?: NativeSandboxConfig;
 }
 
 /**
@@ -60,6 +86,8 @@ export interface CreateSandboxOptions {
 	cwd?: string;
 	/** Docker-specific configuration */
 	docker?: DockerSandboxConfig;
+	/** Native sandbox configuration */
+	native?: NativeSandboxConfig;
 }
 
 /**
@@ -89,6 +117,7 @@ export async function createSandbox(
 	// Priority: explicit mode > env var > config file > auto-detect
 	let mode: SandboxMode = options.mode ?? "none";
 	let dockerConfig = options.docker;
+	let nativeConfig = options.native;
 
 	// Check environment variable (handle "undefined" string from process.env assignment)
 	const envModeRaw = process.env.COMPOSER_SANDBOX_MODE;
@@ -106,6 +135,7 @@ export async function createSandbox(
 		if (config) {
 			mode = config.mode;
 			dockerConfig = config.docker ?? dockerConfig;
+			nativeConfig = config.native ?? nativeConfig;
 		}
 	}
 
@@ -121,6 +151,40 @@ export async function createSandbox(
 				);
 			}
 			return new LocalSandbox();
+
+		case "native": {
+			// Check native sandbox availability
+			if (!isNativeSandboxAvailable()) {
+				const sandboxType = getNativeSandboxType();
+				console.warn(
+					`[sandbox] Native sandbox (${sandboxType}) not available on this platform.`,
+				);
+				const fallback = isWebServer ? "none" : "local";
+				console.warn(`[sandbox] Falling back to ${fallback} sandbox.`);
+				return isWebServer ? undefined : new LocalSandbox();
+			}
+
+			const policy: NativeSandboxPolicy = {
+				mode: nativeConfig?.policy ?? "workspace-write",
+				writableRoots: nativeConfig?.writableRoots,
+				networkAccess: nativeConfig?.networkAccess ?? true,
+			};
+
+			const sandbox = createNativeSandbox(policy, cwd);
+
+			try {
+				await sandbox.initialize();
+				return sandbox;
+			} catch (error) {
+				console.warn(
+					"[sandbox] Failed to initialize native sandbox:",
+					error instanceof Error ? error.message : String(error),
+				);
+				const fallback = isWebServer ? "none" : "local";
+				console.warn(`[sandbox] Falling back to ${fallback} sandbox.`);
+				return isWebServer ? undefined : new LocalSandbox();
+			}
+		}
 
 		case "docker": {
 			// Check Docker availability

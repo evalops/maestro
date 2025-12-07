@@ -24,7 +24,7 @@ export interface Args {
 	execJson?: boolean;
 	execFullAuto?: boolean;
 	execReadOnly?: boolean;
-	/** Sandbox mode: "docker", "local", or "none" (applies to both exec and interactive modes) */
+	/** Sandbox mode: "docker", "local", "native", or "none" */
 	sandbox?: string;
 	execOutputSchema?: string;
 	execOutputLast?: string;
@@ -33,6 +33,10 @@ export interface Args {
 	models?: string[];
 	tools?: string[];
 	messages: string[];
+	/** TOML config profile to activate */
+	profile?: string;
+	/** CLI config overrides in key=value format */
+	configOverrides?: string[];
 }
 
 const COMMANDS = new Set([
@@ -150,6 +154,15 @@ export function parseArgs(args: string[]): Args {
 			if (toolNames.length > 0) {
 				result.tools = toolNames;
 			}
+		} else if (arg === "--profile" && i + 1 < args.length) {
+			result.profile = args[++i];
+		} else if (arg === "--config" && i + 1 < args.length) {
+			// Config overrides in key=value format
+			const override = args[++i];
+			if (!result.configOverrides) {
+				result.configOverrides = [];
+			}
+			result.configOverrides.push(override);
 		} else if (!arg.startsWith("-")) {
 			if (!result.command && COMMANDS.has(arg)) {
 				result.command = arg;
