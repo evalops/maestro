@@ -265,6 +265,24 @@ impl AppState {
         }
     }
 
+    /// Mark a tool call as failed with an inline note
+    pub fn fail_tool_call(&mut self, call_id: &str, note: &str) {
+        for msg in self.messages.iter_mut().rev() {
+            for tc in msg.tool_calls.iter_mut() {
+                if tc.call_id == call_id {
+                    tc.status = ToolCallStatus::Failed;
+                    if !note.is_empty() {
+                        if !tc.output.is_empty() {
+                            tc.output.push_str("\n");
+                        }
+                        tc.output.push_str(note);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     /// Add a user message
     pub fn add_user_message(&mut self, content: String) -> String {
         let id = uuid::Uuid::new_v4().to_string();

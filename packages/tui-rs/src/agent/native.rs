@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use super::{FromAgent, TokenUsage, ToolResult};
 use crate::ai::{
-    ContentBlock, Message, MessageContent, RequestConfig, Role, StreamEvent, Tool,
-    ThinkingConfig, UnifiedClient,
+    ContentBlock, Message, MessageContent, RequestConfig, Role, StreamEvent, ThinkingConfig, Tool,
+    UnifiedClient,
 };
 use crate::tools::{ToolExecutor, ToolRegistry};
 
@@ -267,20 +267,18 @@ impl NativeAgentRunner {
                     }
                     self.busy = false;
                 }
-                AgentCommand::SetModel { model } => {
-                    match UnifiedClient::from_model(&model) {
-                        Ok(client) => {
-                            self.client = client;
-                            self.config.model = model;
-                        }
-                        Err(e) => {
-                            let _ = self.event_tx.send(FromAgent::Error {
-                                message: format!("Failed to set model: {}", e),
-                                fatal: false,
-                            });
-                        }
+                AgentCommand::SetModel { model } => match UnifiedClient::from_model(&model) {
+                    Ok(client) => {
+                        self.client = client;
+                        self.config.model = model;
                     }
-                }
+                    Err(e) => {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: format!("Failed to set model: {}", e),
+                            fatal: false,
+                        });
+                    }
+                },
                 AgentCommand::ClearHistory => {
                     self.messages.clear();
                 }
@@ -330,7 +328,10 @@ impl NativeAgentRunner {
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
             let mut current_text = String::new();
             let mut current_thinking = String::new();
-            let mut current_tool: Option<(String, String, String)> = None; // (id, name, json)
+            // Track active tool plus any pre-start deltas (index, id, name, json)
+            let mut current_tool: Option<(usize, String, String, String)> = None;
+            let mut pending_tool_inputs: std::collections::HashMap<usize, String> =
+                std::collections::HashMap::new();
             let mut usage = TokenUsage::default();
             let mut pending_tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
 
@@ -338,20 +339,19 @@ impl NativeAgentRunner {
             while let Some(event) = rx.recv().await {
                 match event {
                     StreamEvent::MessageStart { .. } => {}
-                    StreamEvent::ContentBlockStart { index: _, block } => {
-                        match &block {
-                            ContentBlock::Text { text } => {
-                                current_text = text.clone();
-                            }
-                            ContentBlock::Thinking { thinking } => {
-                                current_thinking = thinking.clone();
-                            }
-                            ContentBlock::ToolUse { id, name, .. } => {
-                                current_tool = Some((id.clone(), name.clone(), String::new()));
-                            }
-                            _ => {}
+                    StreamEvent::ContentBlockStart { index, block } => match &block {
+                        ContentBlock::Text { text } => {
+                            current_text = text.clone();
                         }
-                    }
+                        ContentBlock::Thinking { thinking } => {
+                            current_thinking = thinking.clone();
+                        }
+                        ContentBlock::ToolUse { id, name, .. } => {
+                            let buffered = pending_tool_inputs.remove(&index).unwrap_or_default();
+                            current_tool = Some((index, id.clone(), name.clone(), buffered));
+                        }
+                        _ => {}
+                    },
                     StreamEvent::TextDelta { text, .. } => {
                         current_text.push_str(&text);
                         let _ = self.event_tx.send(FromAgent::ResponseChunk {
@@ -368,9 +368,21 @@ impl NativeAgentRunner {
                             is_thinking: true,
                         });
                     }
-                    StreamEvent::InputJsonDelta { partial_json, .. } => {
-                        if let Some((_, _, ref mut json)) = current_tool {
-                            json.push_str(&partial_json);
+                    StreamEvent::InputJsonDelta {
+                        index,
+                        partial_json,
+                    } => {
+                        // Buffer by index so deltas that arrive before the tool block starts aren't lost
+                        pending_tool_inputs
+                            .entry(index)
+                            .and_modify(|s| s.push_str(&partial_json))
+                            .or_insert_with(|| partial_json.clone());
+
+                        // If this is the active tool, append immediately too
+                        if let Some((active_index, _, _, ref mut json)) = current_tool {
+                            if active_index == index {
+                                json.push_str(&partial_json);
+                            }
                         }
                     }
                     StreamEvent::ContentBlockStop { index: _ } => {
@@ -385,7 +397,11 @@ impl NativeAgentRunner {
                                 thinking: std::mem::take(&mut current_thinking),
                             });
                         }
-                        if let Some((id, name, json)) = current_tool.take() {
+                        if let Some((active_index, id, name, mut json)) = current_tool.take() {
+                            // Merge any buffered deltas that arrived before the block start
+                            if let Some(extra) = pending_tool_inputs.remove(&active_index) {
+                                json.push_str(&extra);
+                            }
                             let input: serde_json::Value =
                                 serde_json::from_str(&json).unwrap_or(serde_json::json!({}));
                             assistant_content.push(ContentBlock::ToolUse {
@@ -439,12 +455,8 @@ impl NativeAgentRunner {
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
 
                 for (call_id, tool_name, args) in pending_tool_calls {
-                    // Check if this tool requires approval
-                    let requires_approval = self
-                        .tools
-                        .get(&tool_name)
-                        .map(|d| d.requires_approval)
-                        .unwrap_or(true); // Default to requiring approval
+                    // Check if this tool requires approval (dynamic bash logic)
+                    let requires_approval = self.tool_executor.requires_approval(&tool_name, &args);
 
                     // Send tool call event
                     let _ = self.event_tx.send(FromAgent::ToolCall {
@@ -516,7 +528,12 @@ impl NativeAgentRunner {
     }
 
     /// Execute a tool using the ToolExecutor
-    async fn execute_tool(&self, tool_name: &str, args: &serde_json::Value, call_id: &str) -> ToolResult {
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        call_id: &str,
+    ) -> ToolResult {
         self.tool_executor
             .execute(tool_name, args, Some(&self.event_tx), call_id)
             .await
@@ -664,7 +681,12 @@ mod tests {
             content: "Hello".to_string(),
             is_thinking: false,
         };
-        if let FromAgent::ResponseChunk { content, is_thinking, .. } = chunk {
+        if let FromAgent::ResponseChunk {
+            content,
+            is_thinking,
+            ..
+        } = chunk
+        {
             assert_eq!(content, "Hello");
             assert!(!is_thinking);
         } else {

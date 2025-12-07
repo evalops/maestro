@@ -164,6 +164,15 @@ impl BashTool {
 
     /// Execute a bash command
     pub async fn execute(&self, args: BashArgs) -> ToolResult {
+        // Reject empty commands early to avoid no-op approvals
+        if args.command.trim().is_empty() {
+            return ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("Empty bash command".to_string()),
+            };
+        }
+
         // Check for dangerous commands
         if let Some(warning) = Self::is_dangerous(&args.command) {
             return ToolResult {
@@ -277,10 +286,7 @@ impl BashTool {
                 ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some(format!(
-                        "Command timed out after {}ms",
-                        timeout_ms
-                    )),
+                    error: Some(format!("Command timed out after {}ms", timeout_ms)),
                 }
             }
         }
@@ -346,5 +352,25 @@ mod tests {
 
         assert!(result.success);
         assert!(!result.output.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_execute_empty_command_rejected() {
+        let tool = BashTool::new(".");
+        let result = tool
+            .execute(BashArgs {
+                command: "   ".to_string(),
+                timeout: None,
+                description: None,
+                run_in_background: false,
+            })
+            .await;
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("empty"));
     }
 }

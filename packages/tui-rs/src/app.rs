@@ -15,7 +15,9 @@ use ratatui::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::agent::{AgentProcess, FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
-use crate::commands::{build_command_registry, CommandRegistry, SlashCommandMatcher, SlashCycleState};
+use crate::commands::{
+    build_command_registry, CommandRegistry, SlashCommandMatcher, SlashCycleState,
+};
 use crate::components::{
     ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest, ChatInputWidget,
     ChatView, CommandPalette, FileSearchModal, SessionSwitcher,
@@ -24,7 +26,7 @@ use crate::files::get_workspace_files;
 use crate::session::{AppMessage, SessionManager};
 use crate::state::{AppState, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
-use crate::tools::{BashTool, ToolExecutor};
+use crate::tools::ToolExecutor;
 
 /// Active modal in the UI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,18 +379,62 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 call_id,
                 tool,
                 args,
-                requires_approval,
+                requires_approval: _,
             } => {
-                // Check dynamic approval requirement for bash
-                let needs_approval = if tool == "bash" || tool == "Bash" {
-                    if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
-                        BashTool::requires_approval(cmd)
+                // Unknown tool name -> deny immediately
+                if !self.tool_executor.has_tool(tool) {
+                    let note =
+                        format!("Skipped unknown tool '{tool}' (not in registry); denied call.");
+                    self.state.add_system_message(note);
+                    self.state.handle_agent_message(msg.clone());
+                    self.state.fail_tool_call(call_id, "Unknown tool (denied)");
+                    self.handle_tool_approval(call_id.clone(), tool.clone(), args.clone(), false)
+                        .await?;
+                    return Ok(());
+                }
+
+                // Drop obviously invalid bash requests so we don't spam the user with empty approvals
+                let command = args.get("command").and_then(|v| v.as_str());
+                let command_trimmed = command.and_then(|c| {
+                    let trimmed = c.trim();
+                    if trimmed.is_empty() {
+                        None
                     } else {
-                        true
+                        Some(trimmed)
                     }
-                } else {
-                    *requires_approval
-                };
+                });
+
+                if tool.eq_ignore_ascii_case("bash") && command_trimmed.is_none() {
+                    // Immediately deny and inform the user; this keeps the UI usable when a model emits {} tool args
+                    self.state.add_system_message(
+                        "Skipped empty bash tool call (model sent no command)".to_string(),
+                    );
+                    self.state.handle_agent_message(msg.clone());
+                    self.state
+                        .fail_tool_call(call_id, "Empty bash command (denied)");
+                    self.handle_tool_approval(call_id.clone(), tool.clone(), args.clone(), false)
+                        .await?;
+                    return Ok(());
+                }
+
+                // Validate required fields per tool schema
+                let missing = self.tool_executor.missing_required(tool, args);
+                if !missing.is_empty() {
+                    let note = format!(
+                        "Skipped tool '{tool}' due to missing fields: {}",
+                        missing.join(", ")
+                    );
+                    self.state.add_system_message(note);
+                    self.state.handle_agent_message(msg.clone());
+                    self.state
+                        .fail_tool_call(call_id, "Missing required tool args (denied)");
+                    self.handle_tool_approval(call_id.clone(), tool.clone(), args.clone(), false)
+                        .await?;
+                    return Ok(());
+                }
+
+                // Check approval requirement via registry (includes dynamic bash rules)
+                let needs_approval = self.tool_executor.requires_approval(tool, args);
 
                 if needs_approval {
                     // Queue approval
@@ -419,7 +465,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         args: serde_json::Value,
     ) -> Result<()> {
         // Execute the tool
-        let result = self.tool_executor.execute(&tool, &args, None, &call_id).await;
+        let result = self
+            .tool_executor
+            .execute(&tool, &args, None, &call_id)
+            .await;
 
         // Send response back to native agent
         if let Some(tx) = &self.tool_response_tx {
@@ -804,7 +853,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             AgentBackend::Native => {
                 if approved {
                     // Execute the tool
-                    let result = self.tool_executor.execute(&tool, &args, None, &call_id).await;
+                    let result = self
+                        .tool_executor
+                        .execute(&tool, &args, None, &call_id)
+                        .await;
                     // Send result back to agent
                     if let Some(tx) = &self.tool_response_tx {
                         let _ = tx.send((call_id, true, Some(result)));
@@ -1041,10 +1093,7 @@ Slash Commands:
             }
 
             // Render slash completions if active
-            if active_modal == ActiveModal::None
-                && slash_state.has_completions()
-                && !state.busy
-            {
+            if active_modal == ActiveModal::None && slash_state.has_completions() && !state.busy {
                 Self::render_slash_completions_static(slash_state, frame, area);
             }
 
@@ -1080,14 +1129,8 @@ Slash Commands:
                 };
 
                 // Create widget just to calculate cursor position
-                let input_widget = ChatInputWidget::new(
-                    &state.input,
-                    state.cursor,
-                    "",
-                    state.busy,
-                    0,
-                    None,
-                );
+                let input_widget =
+                    ChatInputWidget::new(&state.input, state.cursor, "", state.busy, 0, None);
 
                 if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
                     frame.set_cursor_position((cursor_x, cursor_y));

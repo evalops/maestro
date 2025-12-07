@@ -16,6 +16,8 @@ pub struct ToolExecutor {
     bash: BashTool,
     /// Current working directory
     cwd: String,
+    /// Tool registry for validation/metadata
+    registry: ToolRegistry,
 }
 
 impl ToolExecutor {
@@ -25,7 +27,23 @@ impl ToolExecutor {
         Self {
             bash: BashTool::new(&cwd),
             cwd,
+            registry: ToolRegistry::new(),
         }
+    }
+
+    /// Check if tool exists
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.registry.get(name).is_some()
+    }
+
+    /// Return missing required fields for the tool
+    pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
+        self.registry.missing_required(name, args)
+    }
+
+    /// Whether this tool requires approval given args
+    pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
+        self.registry.requires_approval(name, args)
     }
 
     /// Execute a tool by name
@@ -121,10 +139,7 @@ impl ToolExecutor {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let content = args
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
                 if path.is_empty() {
                     return ToolResult {
@@ -159,10 +174,7 @@ impl ToolExecutor {
                 }
             }
             "glob" | "Glob" => {
-                let pattern = args
-                    .get("pattern")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("*");
+                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
 
                 let base_path = args
                     .get("path")
@@ -199,15 +211,9 @@ impl ToolExecutor {
                 }
             }
             "grep" | "Grep" => {
-                let pattern = args
-                    .get("pattern")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
 
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(".");
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
                 if pattern.is_empty() {
                     return ToolResult {
@@ -238,25 +244,6 @@ impl ToolExecutor {
                 output: String::new(),
                 error: Some(format!("Unknown tool: {}", tool_name)),
             },
-        }
-    }
-
-    /// Check if a tool requires approval
-    pub fn requires_approval(&self, tool_name: &str, args: &serde_json::Value) -> bool {
-        match tool_name {
-            "bash" | "Bash" => {
-                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
-                    BashTool::requires_approval(cmd)
-                } else {
-                    true
-                }
-            }
-            // Read operations don't need approval
-            "read" | "Read" | "glob" | "Glob" | "grep" | "Grep" => false,
-            // Write operations need approval
-            "write" | "Write" | "edit" | "Edit" => true,
-            // Default to requiring approval
-            _ => true,
         }
     }
 }
@@ -389,6 +376,33 @@ impl ToolRegistry {
         Self { tools }
     }
 
+    /// Return missing required fields for the given tool based on its JSON schema
+    pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
+        let mut missing = Vec::new();
+        let key = name.to_lowercase();
+        if let Some(def) = self.tools.get(&key) {
+            if let Some(required) = def
+                .tool
+                .input_schema
+                .get("required")
+                .and_then(|v| v.as_array())
+            {
+                for field in required.iter().filter_map(|f| f.as_str()) {
+                    let present = args.get(field).is_some()
+                        && !args
+                            .get(field)
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.trim().is_empty())
+                            .unwrap_or(false);
+                    if !present {
+                        missing.push(field.to_string());
+                    }
+                }
+            }
+        }
+        missing
+    }
+
     /// Get all tool definitions
     pub fn tools(&self) -> impl Iterator<Item = &ToolDefinition> {
         self.tools.values()
@@ -396,7 +410,7 @@ impl ToolRegistry {
 
     /// Get a tool definition by name
     pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
-        self.tools.get(name)
+        self.tools.get(&name.to_lowercase())
     }
 
     /// Check if a tool requires approval (considering dynamic logic)
@@ -409,7 +423,11 @@ impl ToolRegistry {
                     true
                 }
             }
-            _ => self.tools.get(name).map(|d| d.requires_approval).unwrap_or(true),
+            _ => self
+                .tools
+                .get(&name.to_lowercase())
+                .map(|d| d.requires_approval)
+                .unwrap_or(true),
         }
     }
 }
@@ -447,6 +465,29 @@ mod tests {
         let registry = ToolRegistry::new();
         let args = serde_json::json!({"file_path": "/etc/passwd"});
         assert!(!registry.requires_approval("read", &args));
+    }
+
+    #[test]
+    fn test_registry_requires_approval_bash_dynamic() {
+        let registry = ToolRegistry::new();
+        let safe = serde_json::json!({"command": "ls -la"});
+        let unsafe_cmd = serde_json::json!({"command": "cargo build"});
+
+        assert!(!registry.requires_approval("bash", &safe));
+        assert!(registry.requires_approval("bash", &unsafe_cmd));
+    }
+
+    #[test]
+    fn test_registry_missing_required_fields() {
+        let registry = ToolRegistry::new();
+        // read requires file_path
+        let missing = registry.missing_required("read", &serde_json::json!({}));
+        assert_eq!(missing, vec!["file_path".to_string()]);
+
+        // present field -> no missing
+        let ok =
+            registry.missing_required("read", &serde_json::json!({"file_path": "/tmp/file.txt"}));
+        assert!(ok.is_empty());
     }
 
     #[test]
@@ -516,7 +557,9 @@ mod tests {
     async fn test_executor_unknown_tool() {
         let executor = ToolExecutor::new(".");
         let args = serde_json::json!({});
-        let result = executor.execute("nonexistent", &args, None, "test-call").await;
+        let result = executor
+            .execute("nonexistent", &args, None, "test-call")
+            .await;
 
         assert!(!result.success);
         assert!(result.error.unwrap().contains("Unknown tool"));
