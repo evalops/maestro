@@ -1,24 +1,25 @@
 //! Agent communication module
 //!
-//! This module implements a native Rust agent for AI model interaction, replacing
-//! the previous Node.js subprocess architecture with a pure Rust implementation.
+//! This module implements the native Rust agent used by the Composer TUI.
+//! It exposes a lightweight handle for the UI layer and runs the actual
+//! model/tool loop in a background task.
 //!
-//! # Architecture Overview
+//! # Architecture
 //!
-//! The agent uses an actor-style pattern with background task execution:
+//! The agent follows an actor-style pattern:
 //!
 //! ```text
 //! ┌─────────────┐        Commands         ┌──────────────────┐
 //! │   TuiApp    │ ────────────────────────>│  NativeAgent     │
-//! │             │                          │  (Handle)        │
+//! │             │                          │  (handle)        │
 //! │             │<──────────────────────── │                  │
 //! └─────────────┘        Events            └──────────────────┘
 //!                                                   │
-//!                                                   │ Spawns
+//!                                                   │ spawns
 //!                                                   v
 //!                                          ┌──────────────────┐
-//!                                          │ Background Task  │
-//!                                          │ (Runner)         │
+//!                                          │ NativeAgentRunner│
+//!                                          │  (background)    │
 //!                                          │                  │
 //!                                          │ • Owns state     │
 //!                                          │ • Runs AI loop   │
@@ -26,45 +27,44 @@
 //!                                          └──────────────────┘
 //! ```
 //!
-//! # Key Components
+//! The [`NativeAgent`] type is a cheap, clonable handle held by the TUI.
+//! The runner lives on a Tokio task and owns all mutable agent state.
 //!
-//! - [`NativeAgent`]: Lightweight handle held by the TUI application
-//! - `NativeAgentRunner`: Background task that owns mutable state
-//! - `FromAgent`: Events sent from agent to TUI (responses, tool calls, etc.)
-//! - `ToAgent`: Commands sent from TUI to agent (prompts, cancellations, etc.)
+//! # Message types
 //!
-//! # Message Passing
+//! Communication is message-based and uses Tokio's unbounded MPSC channels:
 //!
-//! Communication uses Tokio's unbounded MPSC channels:
+//! - [`ToAgent`]   - commands from TUI to agent (prompts, config changes, cancel).
+//! - [`FromAgent`] - events from agent to TUI (streamed output, tool requests, status).
 //!
-//! - **Command channel**: TUI -> Agent (prompts, configuration changes)
-//! - **Event channel**: Agent -> TUI (streaming responses, tool calls)
-//! - **Tool response channel**: TUI -> Agent (user approval for tools)
+//! Tool execution confirmation can optionally use a separate response channel
+//! to avoid blocking the main UI event loop.
 //!
-//! All operations are non-blocking on the TUI side - calling `prompt()` returns
-//! immediately and results arrive asynchronously via the event channel.
+//! All calls on [`NativeAgent`] are non-blocking from the TUI's perspective:
+//! methods enqueue messages and return immediately; results arrive asynchronously
+//! via the event channel as [`FromAgent`] values.
 //!
-//! # Example Usage
+//! # Example
 //!
 //! ```no_run
-//! use tui_rs::agent::{NativeAgent, NativeAgentConfig, FromAgent};
+//! use composer_tui::agent::{NativeAgent, NativeAgentConfig, FromAgent};
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! // Create agent with default config
+//! // Create an agent and its event stream.
 //! let config = NativeAgentConfig::default();
 //! let (agent, mut events) = NativeAgent::new(config)?;
 //!
-//! // Send initial ready event
-//! agent.send_ready();
+//! // Optionally let the TUI know we're ready.
+//! agent.send_ready()?;
 //!
-//! // Send a prompt (non-blocking)
-//! agent.prompt("What is Rust?".to_string(), vec![]).await?;
+//! // Send a prompt (returns immediately).
+//! agent.prompt("What is Rust?".to_string(), vec![])?;
 //!
-//! // Process events from the agent
+//! // Drive the event stream.
 //! while let Some(event) = events.recv().await {
 //!     match event {
 //!         FromAgent::ResponseChunk { content, .. } => {
-//!             print!("{}", content);
+//!             print!("{content}");
 //!         }
 //!         FromAgent::ResponseEnd { .. } => {
 //!             break;
@@ -80,4 +80,4 @@ mod native;
 mod protocol;
 
 pub use native::{NativeAgent, NativeAgentConfig, ToolDefinition};
-pub use protocol::*;
+pub use protocol::{FromAgent, ToAgent, TokenUsage, ToolResult};
