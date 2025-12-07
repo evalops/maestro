@@ -1,41 +1,124 @@
-//! TOML-based Configuration System with Profiles
+//! # TOML-based Configuration System with Profiles
 //!
 //! Ported from OpenAI Codex (MIT License) config pattern.
-//! Supports:
-//! - ~/.composer/config.toml (global config)
-//! - .composer/config.toml (project config - overrides global)
-//! - Named profiles for different configurations
-//! - Environment variable overrides
-//! - CLI flag overrides
 //!
-//! Configuration precedence (highest first):
+//! ## Rust Concept: Configuration Loading
+//!
+//! This module demonstrates several important Rust patterns:
+//!
+//! 1. **Serde Serialization**: Using `#[derive(Serialize, Deserialize)]` to
+//!    automatically convert between TOML files and Rust structs.
+//!
+//! 2. **Global Mutable State**: Using `Lazy<RwLock<T>>` for a thread-safe
+//!    configuration cache that can be read from anywhere.
+//!
+//! 3. **Option-heavy Structs**: Using `Option<T>` for every field allows
+//!    partial configuration - only specified fields override defaults.
+//!
+//! 4. **Deep Merging**: Implementing layered configuration where multiple
+//!    sources combine into a final configuration.
+//!
+//! ## Configuration Sources (in order of precedence)
+//!
 //! 1. CLI flags (--model, --config key=value)
 //! 2. Environment variables (COMPOSER_*)
 //! 3. Active profile settings
-//! 4. Project config.toml
-//! 5. Global config.toml
-//! 6. Built-in defaults
+//! 4. Project config.toml (.composer/config.toml)
+//! 5. Global config.toml (~/.composer/config.toml)
+//! 6. Built-in defaults (DEFAULT_CONFIG)
+//!
+//! ## Example config.toml
+//!
+//! ```toml
+//! model = "claude-3-opus"
+//! model_provider = "anthropic"
+//! approval_policy = "on-failure"
+//!
+//! [profiles.fast]
+//! model = "claude-3-haiku"
+//!
+//! [mcp_servers.context7]
+//! command = "npx"
+//! args = ["-y", "@upstash/context7-mcp"]
+//! ```
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPORTS
+// ─────────────────────────────────────────────────────────────────────────────
 
 use once_cell::sync::Lazy;
+// `once_cell::Lazy` provides lazy initialization for static values.
+// The value is computed on first access and cached for subsequent accesses.
+// This is Rust's solution to the "static initialization order" problem.
+
 use serde::{Deserialize, Serialize};
+// Serde is Rust's standard serialization framework.
+// `Serialize` allows converting structs to formats like JSON, TOML
+// `Deserialize` allows parsing formats into structs
+// Derive macros auto-generate the implementation based on struct fields.
+
 use std::collections::HashMap;
+// HashMap is Rust's hash table implementation, similar to:
+// - JavaScript: Object or Map
+// - Python: dict
+// - Java: HashMap
+
 use std::env;
+// Environment variable access
+
 use std::fs;
+// Filesystem operations (read, write files)
+
 use std::path::{Path, PathBuf};
+// `Path` is a borrowed path (like &str for strings)
+// `PathBuf` is an owned path (like String for strings)
+
 use std::sync::RwLock;
+// RwLock allows multiple readers OR one writer at a time.
+// This is thread-safe: multiple threads can read config simultaneously,
+// but only one can update it. `Mutex` would only allow one accessor at a time.
 
 // ─────────────────────────────────────────────────────────────
 // Configuration Types
 // ─────────────────────────────────────────────────────────────
+//
+// Rust Concept: Serde Attributes
+//
+// Serde provides attributes to customize serialization:
+//
+// - `#[serde(rename_all = "kebab-case")]`: Converts PascalCase to kebab-case
+//   So `OnFailure` becomes "on-failure" in TOML/JSON
+//
+// - `#[serde(rename = "foo")]`: Renames a specific field/variant
+//
+// - `#[serde(flatten)]`: Merges fields from a nested struct into the parent
+//
+// - `#[serde(untagged)]`: For enums, tries each variant in order without
+//   looking for a type tag (useful for flexible input formats)
 
-/// Approval policy for tool execution
+/// Approval policy for tool execution.
+///
+/// Controls when the user is asked to approve tool execution.
+/// Lower values are more permissive; higher values are safer.
+///
+/// # Rust Concept: Enum with Serde
+///
+/// `#[serde(rename_all = "kebab-case")]` transforms variant names:
+/// - `Untrusted` -> "untrusted"
+/// - `OnFailure` -> "on-failure"
+/// - `OnRequest` -> "on-request"
+/// - `Never` -> "never"
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ApprovalPolicy {
+    /// Ask for approval on all tool calls (safest)
     #[default]
     Untrusted,
+    /// Only ask when a tool fails
     OnFailure,
+    /// Ask when the model requests it
     OnRequest,
+    /// Never ask - auto-approve everything (dangerous!)
     Never,
 }
 
@@ -395,13 +478,44 @@ pub static DEFAULT_CONFIG: Lazy<ComposerConfig> = Lazy::new(|| ComposerConfig {
 // ─────────────────────────────────────────────────────────────
 // Configuration Cache
 // ─────────────────────────────────────────────────────────────
+//
+// Rust Concept: Global Mutable State
+//
+// Rust normally doesn't allow global mutable state because it's unsafe
+// in concurrent programs. However, sometimes we need it (like caching).
+//
+// The pattern used here:
+// 1. `static` - a global variable that exists for the program lifetime
+// 2. `Lazy<T>` - delays initialization until first access
+// 3. `RwLock<T>` - provides thread-safe access (multiple readers OR one writer)
+//
+// Accessing the cache:
+// - `CONFIG_CACHE.read().unwrap()` - get a read lock (shared)
+// - `CONFIG_CACHE.write().unwrap()` - get a write lock (exclusive)
+//
+// The `.unwrap()` panics if the lock is poisoned (a thread panicked while
+// holding it). In practice, this is rare and indicates a serious bug.
 
+/// Internal cache structure to avoid re-parsing config files.
 struct ConfigCache {
+    /// Cached configuration (None if not yet loaded)
     config: Option<ComposerConfig>,
+    /// The workspace directory this config was loaded for
     workspace_dir: Option<PathBuf>,
+    /// The profile name that was active when cached
     profile_name: Option<String>,
 }
 
+/// Global configuration cache.
+///
+/// # Rust Concept: Static with Lazy Initialization
+///
+/// `static` variables in Rust must be `Sync` (safe to share between threads).
+/// `Lazy<RwLock<T>>` satisfies this:
+/// - `Lazy` ensures thread-safe initialization
+/// - `RwLock` provides thread-safe access
+///
+/// The `|| { ... }` is a closure that creates the initial value.
 static CONFIG_CACHE: Lazy<RwLock<ConfigCache>> = Lazy::new(|| {
     RwLock::new(ConfigCache {
         config: None,
@@ -410,8 +524,12 @@ static CONFIG_CACHE: Lazy<RwLock<ConfigCache>> = Lazy::new(|| {
     })
 });
 
-/// Clear the configuration cache
+/// Clear the configuration cache.
+///
+/// Used primarily in tests to ensure a fresh config load.
 pub fn clear_config_cache() {
+    // `.write()` acquires an exclusive write lock
+    // `.unwrap()` panics if the lock is poisoned
     let mut cache = CONFIG_CACHE.write().unwrap();
     cache.config = None;
     cache.workspace_dir = None;
@@ -704,22 +822,42 @@ fn apply_profile(config: &mut ComposerConfig, profile_name: &str) {
     }
 }
 
-/// Load configuration from files and environment
+/// Load configuration from files and environment.
+///
+/// This is the main entry point for loading configuration. It implements
+/// the layered configuration model, merging sources in order of precedence.
 ///
 /// # Arguments
-/// * `workspace_dir` - The current workspace directory
-/// * `profile_name` - Optional profile name to activate
+///
+/// * `workspace_dir` - The current workspace directory (used for .composer/config.toml)
+/// * `profile_name` - Optional profile name to activate (overrides config file's profile)
+///
+/// # Returns
+///
+/// A fully merged `ComposerConfig` with all overrides applied.
+///
+/// # Rust Concept: Caching with RwLock
+///
+/// Configuration loading is expensive (file I/O, parsing). We cache the result
+/// and only reload if the workspace or profile changes.
+///
+/// The `{ ... }` block creates a temporary scope. The read lock is released
+/// when `cache` goes out of scope at the end of the block. This allows us
+/// to acquire a write lock later without deadlock.
 pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> ComposerConfig {
-    // Check cache
+    // Check cache - use a block to limit the scope of the read lock
     {
         let cache = CONFIG_CACHE.read().unwrap();
+        // Return cached config if it matches the requested parameters
         if cache.config.is_some()
             && cache.workspace_dir.as_deref() == Some(workspace_dir)
             && cache.profile_name.as_deref() == profile_name
         {
+            // Clone the config because we can't return a reference to cached data
+            // (the lock would be released when we return)
             return cache.config.clone().unwrap();
         }
-    }
+    } // Read lock is released here
 
     // Start with defaults
     let mut config = DEFAULT_CONFIG.clone();
@@ -850,11 +988,30 @@ pub fn parse_cli_override(override_str: &str) -> Option<(String, toml::Value)> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────
+// TESTS
+// ─────────────────────────────────────────────────────────────
+//
+// Rust Concept: Unit Testing
+//
+// Tests in Rust are typically in a `mod tests` block at the end of the file.
+//
+// Key testing patterns:
+// - `#[cfg(test)]`: Only compile this module when running tests
+// - `use super::*`: Import everything from the parent module
+// - `#[test]`: Mark a function as a test
+// - `assert_eq!(a, b)`: Panic if a != b (test fails)
+// - `assert!(condition)`: Panic if condition is false
+//
+// Run tests with: `cargo test`
+// Run specific test: `cargo test test_name`
+// Run with output: `cargo test -- --nocapture`
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::*; // Import everything from parent (config) module
     use std::env;
-    use tempfile::TempDir;
+    use tempfile::TempDir; // Creates temporary directories that auto-cleanup
 
     #[test]
     fn test_default_config() {
