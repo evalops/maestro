@@ -1,8 +1,19 @@
-//! Composer TUI - Native terminal interface
+//! # Composer TUI - Native Terminal Interface Library
 //!
 //! This crate provides the primary terminal UI for Composer. The Rust binary
 //! is the main entry point that users run directly. It spawns a Node.js
 //! subprocess for agent logic and handles all terminal rendering natively.
+//!
+//! ## Rust Concept: Crate Structure
+//!
+//! In Rust, a "crate" is a compilation unit (like a package). A crate can be:
+//! - A **binary crate** (`main.rs`) - produces an executable
+//! - A **library crate** (`lib.rs`) - produces a library for others to use
+//!
+//! This file (`lib.rs`) is the root of the library crate. It defines:
+//! 1. What modules exist (`mod` declarations)
+//! 2. What's publicly accessible (`pub` visibility)
+//! 3. Re-exports for convenient access (`pub use`)
 //!
 //! ## Architecture
 //!
@@ -23,125 +34,422 @@
 //! │  - Context management                       │
 //! └─────────────────────────────────────────────┘
 //! ```
+//!
+//! ## Module Organization
+//!
+//! The crate is organized into core modules (essential functionality) and
+//! feature modules (optional/specific features).
 
-// Core modules
+// ─────────────────────────────────────────────────────────────────────────────
+// CORE MODULES
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Rust Concept: Module Declarations
+//
+// `pub mod foo;` does two things:
+// 1. Tells Rust to look for `foo.rs` or `foo/mod.rs`
+// 2. Makes the module publicly accessible (without `pub`, it's private)
+//
+// These are the essential modules that make up the core functionality.
+
+/// Agent communication and lifecycle management.
+/// Handles spawning, messaging, and coordinating with the AI agent subprocess.
 pub mod agent;
+
+/// AI provider clients (Anthropic, OpenAI, etc.).
+/// Provides unified interfaces for different AI APIs with streaming support.
 pub mod ai;
+
+/// Slash command system.
+/// Parses and executes commands like /help, /clear, /model, etc.
 pub mod commands;
+
+/// UI components (modals, selectors, text areas).
+/// Reusable ratatui widgets for building the terminal interface.
 pub mod components;
+
+/// Configuration loading and management.
+/// Reads from config files, environment variables, and CLI overrides.
 pub mod config;
+
+/// Visual effects (spinners, shimmers, animations).
+/// Terminal-based animations for loading states and visual feedback.
 pub mod effects;
+
+/// File system operations (search, workspace management).
+/// Handles file listing, fuzzy search, and workspace-relative paths.
 pub mod files;
+
+/// Headless mode communication protocol.
+/// JSON-based IPC protocol for communicating with the Node.js agent.
 pub mod headless;
+
+/// Message protocol definitions.
+/// Type definitions for messages exchanged between Rust and Node.js.
 pub mod protocol;
+
+/// Session persistence (save/load conversations).
+/// JSONL-based session storage for resuming previous conversations.
 pub mod session;
+
+/// Application state management.
+/// Central state struct that holds all mutable application data.
 pub mod state;
+
+/// Terminal setup and event handling.
+/// Raw terminal mode, event polling, and cleanup on exit.
 pub mod terminal;
+
+/// Tool execution (bash, file operations).
+/// Executes tools requested by the AI agent and returns results.
 pub mod tools;
 
-// Feature modules
+// ─────────────────────────────────────────────────────────────────────────────
+// FEATURE MODULES
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These modules provide specific features that aren't part of the core
+// request/response loop.
+
+/// Clipboard integration (copy/paste).
+/// Platform-specific clipboard access for copying code blocks.
 pub mod clipboard;
+
+/// Diff generation and rendering.
+/// Shows file changes with colored additions/deletions.
 pub mod diff;
+
+/// Execution policy (command approval/blocking).
+/// Security rules for which bash commands are auto-approved or blocked.
 pub mod execpolicy;
+
+/// Git integration.
+/// Detects git repos, branches, and provides context to the agent.
 pub mod git;
+
+/// Keyboard shortcut hints.
+/// Shows available key bindings in the UI footer.
 pub mod key_hints;
+
+/// Markdown rendering for terminal.
+/// Converts markdown to styled terminal output with syntax highlighting.
 pub mod markdown;
+
+/// Desktop notifications.
+/// Sends system notifications when tasks complete (optional).
 pub mod notifications;
+
+/// Scrollable text pager.
+/// Like `less` - allows scrolling through long content.
 pub mod pager;
+
+/// Terminal color palette management.
+/// Handles different color capability levels (16, 256, true color).
 pub mod palette;
+
+/// Custom prompt templates.
+/// User-defined prompts with argument substitution.
 pub mod prompts;
+
+/// Command sandboxing (macOS Seatbelt, Linux Landlock).
+/// Restricts file system access for executed commands.
 pub mod sandbox;
+
+/// Syntax highlighting for code blocks.
+/// Uses syntect for highlighting in various languages.
 pub mod syntax;
+
+/// Color themes.
+/// UI color schemes (dark, light, custom).
 pub mod themes;
+
+/// Loading tooltips.
+/// Random tips shown while waiting for AI responses.
 pub mod tooltips;
+
+/// Text wrapping utilities.
+/// Word-wraps text for terminal display, respecting ANSI codes.
 pub mod wrapping;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PRIVATE MODULES
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Rust Concept: Private Modules
+//
+// Without `pub`, a module is private to this crate. It can be used internally
+// but isn't exposed to external users of the library.
+
+/// Main application struct and event loop.
+/// This is the top-level coordinator that ties everything together.
 mod app;
 
-pub use agent::{NativeAgent, NativeAgentConfig, ToolDefinition};
-pub use ai::{
-    create_client, create_client_for_model, AiClient, AiProvider, AnthropicClient, OpenAiClient,
-    UnifiedClient,
-};
-pub use app::App;
-pub use state::AppState;
+// ─────────────────────────────────────────────────────────────────────────────
+// RE-EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Rust Concept: Re-exports with `pub use`
+//
+// `pub use` makes items from submodules available at the crate root.
+// This provides a flatter, more convenient API. Instead of:
+//   `composer_tui::agent::NativeAgent`
+// Users can write:
+//   `composer_tui::NativeAgent`
+//
+// This is a common pattern called "facade" - hiding internal structure
+// while exposing a clean public API.
 
-// Re-export commonly used items
-pub use commands::{build_command_registry, CommandRegistry, SlashCommandMatcher};
-pub use diff::{generate_diff, render_diff, Diff, DiffStats};
+// Agent types - for spawning and communicating with AI agents
+pub use agent::{NativeAgent, NativeAgentConfig, ToolDefinition};
+
+// AI client types - for making API calls to different providers
+pub use ai::{
+    create_client,           // Factory function to create a client by provider name
+    create_client_for_model, // Factory function that infers provider from model
+    AiClient,                // Trait that all clients implement
+    AiProvider,              // Enum of supported providers
+    AnthropicClient,         // Anthropic-specific client
+    OpenAiClient,            // OpenAI-specific client
+    UnifiedClient,           // Client that can switch between providers
+};
+
+// Core application types
+pub use app::App;       // Main application struct
+pub use state::AppState; // Application state
+
+// Command system
+pub use commands::{
+    build_command_registry, // Creates the registry with all commands
+    CommandRegistry,        // Holds all registered slash commands
+    SlashCommandMatcher,    // Fuzzy matches user input to commands
+};
+
+// Diff utilities
+pub use diff::{
+    generate_diff, // Creates a diff between two strings
+    render_diff,   // Renders diff as colored terminal output
+    Diff,          // Represents a single diff change
+    DiffStats,     // Summary statistics (lines added/removed)
+};
+
+// Headless protocol types - extensive as it's the IPC contract
 pub use headless::{
-    // Core types
-    AgentEvent,
-    AgentState,
-    // Supervisor
-    AgentSupervisor,
-    // Sync transport
-    AgentTransport,
-    AgentTransportBuilder,
-    // Async transport
-    AsyncAgentTransport,
+    // Core message types for bidirectional communication
+    AgentEvent,              // Events emitted by the agent
+    AgentState,              // Current state of the agent (idle, thinking, etc.)
+    ToAgentMessage,          // Messages we send to the agent
+    FromAgentMessage,        // Messages we receive from the agent
+    TokenUsage,              // Token consumption statistics
+    HealthStatus,            // Agent health/readiness status
+
+    // Transport layers (how we communicate)
+    AgentTransport,          // Synchronous transport (blocking I/O)
+    AgentTransportBuilder,   // Builder pattern for sync transport
+    AsyncAgentTransport,     // Asynchronous transport (non-blocking)
     AsyncAgentTransportBuilder,
     AsyncTransportConfig,
     AsyncTransportError,
-    // Framing
-    FrameReader,
-    FrameWriter,
-    FramingMode,
-    FromAgentMessage,
-    HealthStatus,
-    // Session management
-    SessionEntry,
-    SessionMetadata,
-    SessionReader,
-    SessionRecorder,
-    SupervisorBuilder,
-    SupervisorConfig,
-    SupervisorEvent,
-    ToAgentMessage,
-    TokenUsage,
     TransportConfig,
     TransportError,
+
+    // Supervisor (manages agent lifecycle)
+    AgentSupervisor,         // High-level agent manager
+    SupervisorBuilder,       // Builder for supervisor configuration
+    SupervisorConfig,        // Supervisor settings
+    SupervisorEvent,         // Events from supervisor
+
+    // Message framing (low-level protocol)
+    FrameReader,             // Reads framed messages from stream
+    FrameWriter,             // Writes framed messages to stream
+    FramingMode,             // Line-delimited or length-prefixed
+
+    // Session management
+    SessionEntry,            // Single entry in a session file
+    SessionMetadata,         // Session metadata (id, timestamp, etc.)
+    SessionReader,           // Reads session files
+    SessionRecorder,         // Records sessions to disk
 };
-pub use key_hints::{KeyBinding, KeyHint};
+
+// Keyboard hints
+pub use key_hints::{
+    KeyBinding, // A key and its action
+    KeyHint,    // Display-ready hint
+};
+
+// Markdown rendering
 pub use markdown::render_markdown;
+
+// Pager
 pub use pager::Pager;
-pub use palette::{best_color, color_level, has_true_color, theme, ColorLevel};
-pub use tools::{BashTool, ToolExecutor, ToolRegistry};
+
+// Color palette utilities
+pub use palette::{
+    best_color,   // Picks best color for terminal capabilities
+    color_level,  // Detects terminal color support
+    has_true_color,
+    theme,        // Gets current theme
+    ColorLevel,   // Enum: Basic16, Ansi256, TrueColor
+};
+
+// Tool system
+pub use tools::{
+    BashTool,     // Executes shell commands
+    ToolExecutor, // Trait for tool execution
+    ToolRegistry, // Registry of available tools
+};
+
+// Tooltips
 pub use tooltips::random_tooltip;
-pub use wrapping::{word_wrap_line, word_wrap_lines, RtOptions};
 
-// Notification exports
+// Text wrapping
+pub use wrapping::{
+    word_wrap_line,  // Wraps a single line
+    word_wrap_lines, // Wraps multiple lines
+    RtOptions,       // Wrapping options
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTIFICATION EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Notification system for alerting users when tasks complete.
+///
+/// Rust Concept: Renaming on Re-export
+///
+/// `pub use foo as bar` re-exports `foo` with the name `bar`.
+/// This is useful when the original name would conflict or be unclear
+/// at the crate root level.
 pub use notifications::{
-    is_enabled as is_notification_enabled, is_terminal_enabled, load_config as load_notify_config,
-    notify_error, notify_session_start, notify_turn_complete, send_notification,
-    send_terminal_notification, NotificationConfig, NotificationEvent, NotificationPayload,
+    is_enabled as is_notification_enabled, // Renamed to be clearer at crate root
+    is_terminal_enabled,
+    load_config as load_notify_config, // Renamed to avoid conflict with config::load_config
+    notify_error,
+    notify_session_start,
+    notify_turn_complete,
+    send_notification,
+    send_terminal_notification,
+    NotificationConfig,
+    NotificationEvent,
+    NotificationPayload,
 };
 
-// Prompts exports
+// ─────────────────────────────────────────────────────────────────────────────
+// PROMPTS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Custom prompt system for user-defined prompt templates.
 pub use prompts::{
-    find_prompt, format_prompt_list_item, get_usage_hint, load_prompts, parse_args, render_prompt,
-    validate_args, ParsedArgs, PromptDefinition, PromptSource,
+    find_prompt,           // Finds a prompt by name
+    format_prompt_list_item,
+    get_usage_hint,        // Gets usage help for a prompt
+    load_prompts,          // Loads all prompts from disk
+    parse_args,            // Parses prompt arguments
+    render_prompt,         // Renders prompt with substituted args
+    validate_args,         // Validates arguments match schema
+    ParsedArgs,            // Parsed argument values
+    PromptDefinition,      // Schema for a prompt
+    PromptSource,          // Where prompt was loaded from
 };
 
-// Execpolicy exports
+// ─────────────────────────────────────────────────────────────────────────────
+// EXECPOLICY EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Execution policy for command approval/blocking.
+///
+/// This system determines which bash commands are:
+/// - Auto-approved (trusted commands like `ls`, `git status`)
+/// - Blocked (dangerous commands like `rm -rf /`)
+/// - Require user approval (everything else)
 pub use execpolicy::{
-    append_allow_prefix_rule, is_command_allowed, is_command_forbidden, load_policy, parse_command,
-    parse_policy, whitelist_command, Decision, Evaluation, PatternToken, Policy, PrefixPattern,
-    PrefixRule, RuleMatch,
+    append_allow_prefix_rule, // Adds a new allow rule to policy
+    is_command_allowed,       // Checks if command is auto-approved
+    is_command_forbidden,     // Checks if command is blocked
+    load_policy,              // Loads policy from config files
+    parse_command,            // Tokenizes a command string
+    parse_policy,             // Parses policy file content
+    whitelist_command,        // Adds command to allow list
+    Decision,                 // Allow, Deny, or NeedsApproval
+    Evaluation,               // Result of evaluating a command
+    PatternToken,             // Part of a command pattern
+    Policy,                   // Collection of rules
+    PrefixPattern,            // Matches command prefixes
+    PrefixRule,               // A single prefix-based rule
+    RuleMatch,                // Which rule matched
 };
 
-// Config exports
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Configuration system with layered sources.
+///
+/// Configuration is loaded from (in order of increasing priority):
+/// 1. Default values
+/// 2. Global config (~/.composer/config.toml)
+/// 3. Project config (.composer/config.toml)
+/// 4. Environment variables (COMPOSER_*)
+/// 5. CLI arguments
 pub use config::{
-    clear_config_cache, get_available_profiles, get_config_summary, load_config,
-    load_config_with_overrides, parse_cli_override, ApprovalPolicy, ComposerConfig, FeaturesConfig,
-    FileOpener, HistoryConfig, HistoryPersistence, McpServerConfig, ModelProviderConfig,
-    ModelVerbosity, NotificationsSetting, OtelConfig, ProfileConfig, ReasoningEffort,
-    ReasoningSummary, SandboxMode, SandboxWorkspaceWriteConfig, ShellEnvironmentPolicy,
-    ShellInherit, ToolsConfig, TrustLevel, TuiConfig, WireApi, DEFAULT_CONFIG,
+    // Loading functions
+    clear_config_cache,       // Clears cached config (for testing)
+    get_available_profiles,   // Lists available config profiles
+    get_config_summary,       // Human-readable config summary
+    load_config,              // Main config loading function
+    load_config_with_overrides,
+    parse_cli_override,       // Parses --config overrides
+
+    // Policy enums
+    ApprovalPolicy,           // How tool execution is approved
+    SandboxMode,              // Sandbox security level
+
+    // Main config struct
+    ComposerConfig,           // The complete configuration
+
+    // Nested config structs
+    FeaturesConfig,           // Feature flags
+    FileOpener,               // How to open files externally
+    HistoryConfig,            // History settings
+    HistoryPersistence,       // How history is saved
+    McpServerConfig,          // MCP server connection settings
+    ModelProviderConfig,      // Custom model provider settings
+    ModelVerbosity,           // How verbose model output is
+    NotificationsSetting,     // Notification preferences
+    OtelConfig,               // OpenTelemetry tracing settings
+    ProfileConfig,            // Named configuration profiles
+    ReasoningEffort,          // How much thinking the model does
+    ReasoningSummary,         // How reasoning is summarized
+    SandboxWorkspaceWriteConfig,
+    ShellEnvironmentPolicy,   // Which env vars to pass to shells
+    ShellInherit,             // Shell environment inheritance
+    ToolsConfig,              // Tool execution settings
+    TrustLevel,               // Trust level for the project
+    TuiConfig,                // TUI appearance settings
+    WireApi,                  // API wire format settings
+
+    DEFAULT_CONFIG,           // Default configuration values
 };
 
-// Sandbox exports
+// ─────────────────────────────────────────────────────────────────────────────
+// SANDBOX EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Sandboxing system for restricting command execution.
+///
+/// Uses platform-specific sandboxing:
+/// - macOS: Seatbelt (sandbox-exec)
+/// - Linux: Landlock LSM
+///
+/// Sandboxing limits what files/directories commands can access,
+/// providing defense-in-depth against malicious commands.
 pub use sandbox::{
-    is_sandbox_available, sandbox_type, spawn_sandboxed_command, spawn_unsandboxed_command,
-    SandboxError, SandboxPolicy, SandboxResult, WritableRoot, SANDBOX_ENV_VAR,
+    is_sandbox_available,     // Checks if sandboxing is supported
+    sandbox_type,             // Returns "seatbelt", "landlock", or "none"
+    spawn_sandboxed_command,  // Runs command in sandbox
+    spawn_unsandboxed_command, // Runs command without sandbox
+    SandboxError,             // Error type for sandbox operations
+    SandboxPolicy,            // Configuration for sandbox restrictions
+    SandboxResult,            // Result type alias
+    WritableRoot,             // A directory the sandbox can write to
+    SANDBOX_ENV_VAR,          // Environment variable indicating sandbox mode
 };
