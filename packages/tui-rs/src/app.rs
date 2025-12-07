@@ -593,10 +593,11 @@ Add the required fields and retry.",
                     self.state.scroll_down(1);
                 }
             }
-            KeyCode::Char('k') if !self.state.input.starts_with('/') => {
+            // Vim-style scrolling: only when input is empty (not typing)
+            KeyCode::Char('k') if ctrl => {
                 self.state.scroll_up(1);
             }
-            KeyCode::Char('j') if !self.state.input.starts_with('/') => {
+            KeyCode::Char('j') if ctrl => {
                 self.state.scroll_down(1);
             }
             KeyCode::PageUp => {
@@ -607,12 +608,13 @@ Add the required fields and retry.",
                 let step = (self.capabilities.viewport_height as usize).max(5) / 2;
                 self.state.scroll_down(step.max(1));
             }
-            KeyCode::Char('g') if !ctrl => {
-                // Jump to top
+            // Jump shortcuts: only when input is empty (not typing)
+            KeyCode::Char('g') if self.state.input.is_empty() && !ctrl => {
+                // Jump to top (oldest messages)
                 self.state.scroll_offset = usize::MAX / 2;
             }
-            KeyCode::Char('G') if !ctrl => {
-                // Jump to latest
+            KeyCode::Char('G') if self.state.input.is_empty() => {
+                // Jump to bottom (newest messages)
                 self.state.scroll_offset = 0;
             }
             KeyCode::Char('t') if !self.state.busy && ctrl => {
@@ -1041,8 +1043,8 @@ Composer TUI - Keyboard Shortcuts
 Navigation:
   Up/Down       Scroll messages / Navigate completions
   PageUp/Down   Scroll faster
-  g/G           Jump to top/bottom
-  j/k           Scroll up/down (vim style)
+  g/G           Jump to top/bottom (when input empty)
+  Ctrl+J/K      Scroll down/up
   Ctrl+L        Clear screen
 
 Input:

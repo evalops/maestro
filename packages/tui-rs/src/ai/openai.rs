@@ -26,10 +26,15 @@ struct ResponsesSseEvent {
     item: Option<serde_json::Value>,
     #[serde(default)]
     delta: Option<String>,
+    /// Index of the content part within the output item (for multi-part content)
     #[serde(default)]
+    #[allow(dead_code)] // Reserved for future multi-part content support
     content_index: Option<i64>,
+    /// Index for reasoning summaries (reserved for future use)
     #[serde(default)]
+    #[allow(dead_code)] // Reserved for future reasoning summary support
     summary_index: Option<i64>,
+    /// Index of the output item in the response
     #[serde(default)]
     output_index: Option<i64>,
 }
@@ -68,6 +73,7 @@ fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, St
 /// Classify API error for retry logic
 fn classify_error(error: &serde_json::Value) -> ApiError {
     let code = error.get("code").and_then(|c| c.as_str());
+    let error_type = error.get("type").and_then(|t| t.as_str());
     let message = error
         .get("message")
         .and_then(|m| m.as_str())
@@ -82,7 +88,29 @@ fn classify_error(error: &serde_json::Value) -> ApiError {
             let retry_after = parse_retry_after(&message);
             ApiError::RateLimited { retry_after }
         }
-        _ => ApiError::Retryable { message },
+        // Fatal errors that should not be retried
+        Some("invalid_api_key") | Some("model_not_found") | Some("invalid_request_error") => {
+            ApiError::Fatal { message }
+        }
+        _ => {
+            // Check error type for additional classification
+            match error_type {
+                Some("authentication_error") | Some("permission_error") => {
+                    ApiError::Fatal { message }
+                }
+                Some("server_error") | Some("service_unavailable") => {
+                    ApiError::Retryable { message }
+                }
+                _ => {
+                    // Default: check if message suggests retryable
+                    if message.contains("overloaded") || message.contains("temporarily") {
+                        ApiError::Retryable { message }
+                    } else {
+                        ApiError::Fatal { message }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1172,7 +1200,9 @@ struct OpenAiChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiDelta {
+    /// Role of the message (typically "assistant" for streaming responses)
     #[serde(default)]
+    #[allow(dead_code)] // Part of API structure, role is implicit in streaming context
     role: Option<String>,
     #[serde(default)]
     content: Option<String>,
@@ -1407,16 +1437,66 @@ mod tests {
             _ => panic!("Expected RateLimited"),
         }
 
-        // Generic error
+        // Unknown error without retryable keywords is Fatal
         let generic = serde_json::json!({
             "code": "something_else",
             "message": "Something went wrong"
         });
         match classify_error(&generic) {
-            ApiError::Retryable { message } => {
+            ApiError::Fatal { message } => {
                 assert_eq!(message, "Something went wrong");
             }
-            _ => panic!("Expected Retryable"),
+            _ => panic!("Expected Fatal for unknown errors"),
+        }
+
+        // Error with "temporarily" keyword is Retryable
+        let temp_error = serde_json::json!({
+            "code": "some_error",
+            "message": "The service is temporarily unavailable"
+        });
+        match classify_error(&temp_error) {
+            ApiError::Retryable { .. } => {}
+            _ => panic!("Expected Retryable for temporary errors"),
+        }
+
+        // Error with "overloaded" keyword is Retryable
+        let overload_error = serde_json::json!({
+            "code": "some_error",
+            "message": "Server is overloaded, please retry"
+        });
+        match classify_error(&overload_error) {
+            ApiError::Retryable { .. } => {}
+            _ => panic!("Expected Retryable for overload errors"),
+        }
+
+        // Server error type is Retryable
+        let server_error = serde_json::json!({
+            "type": "server_error",
+            "message": "Internal server error"
+        });
+        match classify_error(&server_error) {
+            ApiError::Retryable { .. } => {}
+            _ => panic!("Expected Retryable for server errors"),
+        }
+
+        // Authentication error is Fatal
+        let auth_error = serde_json::json!({
+            "type": "authentication_error",
+            "message": "Invalid API key"
+        });
+        match classify_error(&auth_error) {
+            ApiError::Fatal { .. } => {}
+            _ => panic!("Expected Fatal for auth errors"),
+        }
+
+        // Invalid API key is Fatal
+        let invalid_key = serde_json::json!({
+            "code": "invalid_api_key",
+            "message": "Provided API key is invalid"
+        });
+        match classify_error(&invalid_key) {
+            ApiError::Fatal { .. } => {}
+            _ => panic!("Expected Fatal for invalid API key"),
         }
     }
 

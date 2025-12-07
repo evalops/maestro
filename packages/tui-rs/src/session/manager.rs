@@ -85,6 +85,11 @@ impl SessionManager {
         }
     }
 
+    /// Get the current working directory
+    pub fn cwd(&self) -> &str {
+        &self.cwd
+    }
+
     /// Get the sessions directory
     pub fn sessions_dir(&self) -> &Path {
         &self.sessions_dir

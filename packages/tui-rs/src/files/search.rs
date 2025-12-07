@@ -59,6 +59,24 @@ impl FileSearch {
         self
     }
 
+    /// Filter to only source code files
+    pub fn source_code_only(mut self) -> Self {
+        self.files.retain(|f| f.is_source_code());
+        self
+    }
+
+    /// Filter to only config files
+    pub fn config_only(mut self) -> Self {
+        self.files.retain(|f| f.is_config());
+        self
+    }
+
+    /// Filter by file extensions
+    pub fn with_extensions(mut self, extensions: &[&str]) -> Self {
+        self.files.retain(|f| f.has_extension(extensions));
+        self
+    }
+
     /// Search for files matching the query
     pub fn search(&self, query: &str) -> FileSearchResult {
         let query = query.to_lowercase();

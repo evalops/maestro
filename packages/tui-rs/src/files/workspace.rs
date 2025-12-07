@@ -57,6 +57,29 @@ impl WorkspaceFile {
         }
         self.path.display().to_string()
     }
+
+    /// Check if this file has one of the given extensions
+    pub fn has_extension(&self, extensions: &[&str]) -> bool {
+        self.extension
+            .as_ref()
+            .map(|ext| extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+            .unwrap_or(false)
+    }
+
+    /// Check if this file is source code
+    pub fn is_source_code(&self) -> bool {
+        self.has_extension(patterns::SOURCE_CODE)
+    }
+
+    /// Check if this file is a config file
+    pub fn is_config(&self) -> bool {
+        self.has_extension(patterns::CONFIG)
+    }
+
+    /// Check if this file is documentation
+    pub fn is_docs(&self) -> bool {
+        self.has_extension(patterns::DOCS)
+    }
 }
 
 /// Get all files in the workspace

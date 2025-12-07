@@ -10,7 +10,7 @@ use std::collections::HashMap;
 // =============================================================================
 
 /// Messages sent from the TUI to the agent
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToAgentMessage {
     /// Send a user prompt
@@ -48,7 +48,7 @@ pub struct ToolResult {
 // =============================================================================
 
 /// Messages received from the agent
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgentMessage {
     /// Agent is ready
@@ -93,7 +93,7 @@ pub enum FromAgentMessage {
 }
 
 /// Token usage statistics
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,

@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::files::{FileMatch, FileSearch, FileSearchResult, WorkspaceFile};
+use crate::files::{highlight_matches, FileMatch, FileSearch, FileSearchResult, WorkspaceFile};
 
 /// File search modal state
 pub struct FileSearchModal {
@@ -235,34 +235,50 @@ impl FileSearchModal {
     fn render_match(&self, file_match: &FileMatch, selected: bool) -> ListItem<'static> {
         let file = &file_match.file;
 
-        // Build highlighted name (use owned Strings for 'static lifetime)
+        // Build highlighted name using highlight_matches utility
         let name_spans: Vec<Span<'static>> = if file_match.matched_indices.is_empty() {
             vec![Span::raw(file.name.clone())]
         } else {
+            // Use highlight_matches to get (char, is_match) pairs
+            let highlights = highlight_matches(&file.name, &file_match.matched_indices);
+
+            // Group consecutive chars with same highlight status into spans
             let mut spans = Vec::new();
-            let mut last_idx = 0;
-            for &idx in &file_match.matched_indices {
-                if idx > last_idx {
-                    spans.push(Span::raw(file.name[last_idx..idx].to_string()));
+            let mut current_text = String::new();
+            let mut current_highlighted = false;
+
+            for (c, is_match) in highlights {
+                if is_match != current_highlighted && !current_text.is_empty() {
+                    // Emit the current span
+                    if current_highlighted {
+                        spans.push(Span::styled(
+                            std::mem::take(&mut current_text),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    } else {
+                        spans.push(Span::raw(std::mem::take(&mut current_text)));
+                    }
                 }
-                if idx < file.name.len() {
-                    let next_idx = file.name[idx..]
-                        .chars()
-                        .next()
-                        .map(|c| idx + c.len_utf8())
-                        .unwrap_or(idx + 1);
+                current_highlighted = is_match;
+                current_text.push(c);
+            }
+
+            // Emit final span
+            if !current_text.is_empty() {
+                if current_highlighted {
                     spans.push(Span::styled(
-                        file.name[idx..next_idx].to_string(),
+                        current_text,
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     ));
-                    last_idx = next_idx;
+                } else {
+                    spans.push(Span::raw(current_text));
                 }
             }
-            if last_idx < file.name.len() {
-                spans.push(Span::raw(file.name[last_idx..].to_string()));
-            }
+
             spans
         };
 

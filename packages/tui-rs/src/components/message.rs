@@ -826,26 +826,31 @@ impl<'a> ChatInputWidget<'a> {
         // Inner area after borders
         let inner_x = input_area.x + 1;
         let inner_y = input_area.y + 1;
-        let inner_width = input_area.width.saturating_sub(2);
+        let inner_width = input_area.width.saturating_sub(2) as usize;
+        let inner_height = input_area.height.saturating_sub(2) as usize;
 
         if inner_width == 0 {
             return None;
         }
 
-        // Calculate cursor column using unicode display width
+        // Calculate cursor position using unicode display width
         use unicode_width::UnicodeWidthStr;
         let text_before_cursor = if self.cursor <= self.input.len() {
             &self.input[..self.cursor]
         } else {
             self.input
         };
-        let col = text_before_cursor.width() as u16;
+        let total_col = text_before_cursor.width();
 
-        // Handle wrapping - for now just clamp to first line
-        // TODO: proper multi-line cursor positioning with wrap calculation
-        let clamped_col = col.min(inner_width.saturating_sub(1));
+        // Calculate which wrapped line and column the cursor is on
+        let wrap_row = total_col / inner_width;
+        let wrap_col = total_col % inner_width;
 
-        Some((inner_x + clamped_col, inner_y))
+        // Clamp to visible area
+        let visible_row = wrap_row.min(inner_height.saturating_sub(1));
+        let visible_col = wrap_col.min(inner_width.saturating_sub(1));
+
+        Some((inner_x + visible_col as u16, inner_y + visible_row as u16))
     }
 }
 

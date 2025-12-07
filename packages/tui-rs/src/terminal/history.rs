@@ -99,36 +99,10 @@ fn history_line_to_ratatui(line: &HistoryLine) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Word-wrap lines to fit within width
+/// Word-wrap lines to fit within width, preserving span styles
 fn wrap_lines(lines: &[Line<'_>], width: usize) -> Vec<Line<'static>> {
-    let mut result = Vec::new();
-
-    for line in lines {
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-
-        if text.len() <= width {
-            // Line fits, convert spans to owned
-            let owned_spans: Vec<Span<'static>> = line
-                .spans
-                .iter()
-                .map(|s| Span::styled(s.content.to_string(), s.style))
-                .collect();
-            result.push(Line::from(owned_spans));
-        } else {
-            // Need to wrap - for now simple character-based wrapping
-            // TODO: Use textwrap for proper word-aware wrapping
-            let wrapped = textwrap::wrap(&text, width);
-            for (i, wrapped_text) in wrapped.iter().enumerate() {
-                if i == 0 {
-                    result.push(Line::from(wrapped_text.to_string()));
-                } else {
-                    result.push(Line::from(format!("  {}", wrapped_text)));
-                }
-            }
-        }
-    }
-
-    result
+    use crate::wrapping::word_wrap_lines;
+    word_wrap_lines(lines, width)
 }
 
 /// Write a styled line to the writer

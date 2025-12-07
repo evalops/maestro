@@ -61,7 +61,20 @@ pub use state::AppState;
 // Re-export commonly used items
 pub use commands::{build_command_registry, CommandRegistry, SlashCommandMatcher};
 pub use diff::{generate_diff, render_diff, Diff, DiffStats};
-pub use headless::{AgentEvent, AgentTransport, AgentTransportBuilder, TransportConfig};
+pub use headless::{
+    // Core types
+    AgentEvent, AgentState, FromAgentMessage, ToAgentMessage, TokenUsage,
+    // Sync transport
+    AgentTransport, AgentTransportBuilder, TransportConfig, TransportError,
+    // Async transport
+    AsyncAgentTransport, AsyncAgentTransportBuilder, AsyncTransportConfig, AsyncTransportError,
+    // Session management
+    SessionEntry, SessionMetadata, SessionReader, SessionRecorder,
+    // Supervisor
+    AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig, SupervisorEvent,
+    // Framing
+    FrameReader, FrameWriter, FramingMode,
+};
 pub use key_hints::{KeyBinding, KeyHint};
 pub use markdown::render_markdown;
 pub use pager::Pager;

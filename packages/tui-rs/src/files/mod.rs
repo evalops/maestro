@@ -5,5 +5,5 @@
 mod search;
 mod workspace;
 
-pub use search::{FileMatch, FileSearch, FileSearchResult};
-pub use workspace::{get_workspace_files, WorkspaceFile};
+pub use search::{highlight_matches, FileMatch, FileSearch, FileSearchResult};
+pub use workspace::{get_workspace_files, patterns, WorkspaceFile};
