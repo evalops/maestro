@@ -157,8 +157,8 @@ impl CommandPalette {
         }
 
         // Center the modal
-        let modal_width = area.width.min(70).max(45);
-        let modal_height = area.height.min(20).max(10);
+        let modal_width = area.width.clamp(45, 70);
+        let modal_height = area.height.clamp(10, 20);
         let modal_x = (area.width.saturating_sub(modal_width)) / 2;
         let modal_y = (area.height.saturating_sub(modal_height)) / 2;
 

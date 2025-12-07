@@ -676,9 +676,7 @@ impl AiClient for OpenAiClient {
             let stream = response.bytes_stream();
             tokio::spawn(async move {
                 let mut sse_stream = stream
-                    .map(|result| {
-                        result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                    })
+                    .map(|result| result.map_err(std::io::Error::other))
                     .eventsource();
 
                 let mut content_started = false;
@@ -719,16 +717,14 @@ impl AiClient for OpenAiClient {
                                     // Check if this is a message item (not reasoning)
                                     if let Some(item) = &event.item {
                                         let item_type = item.get("type").and_then(|v| v.as_str());
-                                        if item_type == Some("message") {
-                                            if !content_started {
-                                                content_started = true;
-                                                let _ = tx.send(StreamEvent::ContentBlockStart {
-                                                    index: 0,
-                                                    block: ContentBlock::Text {
-                                                        text: String::new(),
-                                                    },
-                                                });
-                                            }
+                                        if item_type == Some("message") && !content_started {
+                                            content_started = true;
+                                            let _ = tx.send(StreamEvent::ContentBlockStart {
+                                                index: 0,
+                                                block: ContentBlock::Text {
+                                                    text: String::new(),
+                                                },
+                                            });
                                         }
                                     }
                                 }

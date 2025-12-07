@@ -293,9 +293,10 @@ impl ToolExecutor {
                     return ToolResult {
                         success: false,
                         output: String::new(),
-                        error: Some(format!(
+                        error: Some(
                             "old_string not found in file. Make sure the string matches exactly."
-                        )),
+                                .to_string(),
+                        ),
                     };
                 }
 

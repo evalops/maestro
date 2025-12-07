@@ -83,7 +83,7 @@ impl ApprovalMode {
     }
 
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "yolo" | "auto" | "trust" => Some(ApprovalMode::Yolo),
             "selective" | "default" | "normal" => Some(ApprovalMode::Selective),
@@ -328,7 +328,7 @@ impl AppState {
                     tc.status = ToolCallStatus::Failed;
                     if !note.is_empty() {
                         if !tc.output.is_empty() {
-                            tc.output.push_str("\n");
+                            tc.output.push('\n');
                         }
                         tc.output.push_str(note);
                     }

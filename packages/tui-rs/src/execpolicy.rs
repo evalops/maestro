@@ -248,8 +248,9 @@ impl Policy {
 // ─────────────────────────────────────────────────────────────
 
 static PREFIX_RULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"prefix_rule\s*\(\s*([\s\S]*?)\s*\)\s*(?:,?\s*(?=prefix_rule|$))")
-        .expect("valid regex")
+    // Match prefix_rule(...) blocks, capturing the content inside parentheses
+    // Uses non-greedy match for content, followed by optional trailing comma
+    Regex::new(r"prefix_rule\s*\(\s*([\s\S]*?)\s*\)\s*,?").expect("valid regex")
 });
 
 static PATTERN_REGEX: LazyLock<Regex> =
@@ -436,7 +437,7 @@ pub fn load_policy(workspace_dir: &Path) -> &'static Policy {
         // Load global policy
         if let Ok(content) = fs::read_to_string(&global_path) {
             let parsed = parse_policy(&content, global_path.to_string_lossy().as_ref());
-            for (_program, rules) in parsed.rules() {
+            for rules in parsed.rules().values() {
                 for rule in rules {
                     policy.add_rule(rule.clone());
                 }
@@ -446,7 +447,7 @@ pub fn load_policy(workspace_dir: &Path) -> &'static Policy {
         // Load project policy
         if let Ok(content) = fs::read_to_string(&project_path) {
             let parsed = parse_policy(&content, project_path.to_string_lossy().as_ref());
-            for (_program, rules) in parsed.rules() {
+            for rules in parsed.rules().values() {
                 for rule in rules {
                     policy.add_rule(rule.clone());
                 }

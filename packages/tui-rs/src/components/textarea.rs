@@ -140,6 +140,7 @@ impl Default for TextArea {
 }
 
 /// Wrap text and return byte ranges for each line
+#[allow(clippy::single_range_in_vec_init)] // Single-element vec is intentional for empty text case
 fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     if text.is_empty() {
         return vec![0..0];

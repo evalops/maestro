@@ -126,8 +126,8 @@ impl<'a> ApprovalModal<'a> {
 impl Widget for ApprovalModal<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate modal size
-        let modal_width = area.width.min(70).max(40);
-        let modal_height = area.height.min(20).max(10);
+        let modal_width = area.width.clamp(40, 70);
+        let modal_height = area.height.clamp(10, 20);
 
         let x = (area.width.saturating_sub(modal_width)) / 2 + area.x;
         let y = (area.height.saturating_sub(modal_height)) / 2 + area.y;

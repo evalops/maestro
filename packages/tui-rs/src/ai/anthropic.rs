@@ -240,16 +240,12 @@ fn parse_sse_event(data: &str) -> Option<StreamEvent> {
         }
         "message_delta" => {
             let parsed: MessageDeltaEvent = serde_json::from_str(event_data).ok()?;
-            if let Some(usage) = parsed.usage {
-                Some(StreamEvent::Usage {
-                    input_tokens: usage.input_tokens.unwrap_or(0),
-                    output_tokens: usage.output_tokens.unwrap_or(0),
-                    cache_read_tokens: usage.cache_read_input_tokens,
-                    cache_creation_tokens: usage.cache_creation_input_tokens,
-                })
-            } else {
-                None
-            }
+            parsed.usage.map(|usage| StreamEvent::Usage {
+                input_tokens: usage.input_tokens.unwrap_or(0),
+                output_tokens: usage.output_tokens.unwrap_or(0),
+                cache_read_tokens: usage.cache_read_input_tokens,
+                cache_creation_tokens: usage.cache_creation_input_tokens,
+            })
         }
         "message_stop" => Some(StreamEvent::MessageStop),
         "error" => {
@@ -311,6 +307,7 @@ struct ContentBlockDeltaEvent {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)] // API-defined names
 enum DeltaType {
     TextDelta { text: String },
     ThinkingDelta { thinking: String },

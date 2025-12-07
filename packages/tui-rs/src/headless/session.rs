@@ -237,10 +237,10 @@ impl SessionRecorder {
                 self.metadata.cwd = Some(cwd.clone());
                 self.metadata.git_branch = git_branch.clone();
             }
-            FromAgentMessage::ResponseEnd { usage, .. } => {
-                if let Some(usage) = usage {
-                    self.metadata.add_usage(usage);
-                }
+            FromAgentMessage::ResponseEnd {
+                usage: Some(usage), ..
+            } => {
+                self.metadata.add_usage(usage);
             }
             _ => {}
         }

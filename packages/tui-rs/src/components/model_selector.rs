@@ -355,7 +355,7 @@ mod tests {
         selector.insert_char('e');
 
         // Should only have Claude models
-        assert!(selector.filtered.len() >= 1);
+        assert!(!selector.filtered.is_empty());
         for &idx in &selector.filtered {
             assert!(selector.models[idx].name.to_lowercase().contains("claude"));
         }

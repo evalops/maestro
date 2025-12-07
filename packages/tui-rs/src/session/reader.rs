@@ -191,10 +191,8 @@ impl SessionReader {
 
             // Quick check for entry type without full parse
             if line.contains("\"type\":\"session\"") && header.is_none() {
-                if let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) {
-                    if let SessionEntry::Session(h) = entry {
-                        header = Some(h);
-                    }
+                if let Ok(SessionEntry::Session(h)) = serde_json::from_str::<SessionEntry>(&line) {
+                    header = Some(h);
                 }
             } else if line.contains("\"type\":\"message\"") {
                 // Count messages without full parse
@@ -206,10 +204,10 @@ impl SessionReader {
                     stats.tool_results += 1;
                 }
             } else if line.contains("\"type\":\"session_meta\"") {
-                if let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) {
-                    if let SessionEntry::SessionMeta(m) = entry {
-                        meta = Some(m);
-                    }
+                if let Ok(SessionEntry::SessionMeta(m)) =
+                    serde_json::from_str::<SessionEntry>(&line)
+                {
+                    meta = Some(m);
                 }
             }
         }

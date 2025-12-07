@@ -38,7 +38,7 @@ impl NotificationEvent {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "turn-complete" => Some(Self::TurnComplete),
             "session-start" => Some(Self::SessionStart),
@@ -116,7 +116,7 @@ pub fn load_config() -> &'static NotificationConfig {
             } else {
                 config.events = events
                     .split(',')
-                    .filter_map(|s| NotificationEvent::from_str(s.trim()))
+                    .filter_map(|s| NotificationEvent::parse(s.trim()))
                     .collect();
             }
         }
@@ -152,7 +152,7 @@ pub fn is_terminal_enabled() -> bool {
 pub fn send_notification(payload: &NotificationPayload) {
     let config = load_config();
 
-    let event = NotificationEvent::from_str(&payload.event_type);
+    let event = NotificationEvent::parse(&payload.event_type);
     if let Some(event) = event {
         if !config.events.contains(&event) {
             return;
@@ -245,12 +245,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_event_from_str() {
+    fn test_event_parse() {
         assert_eq!(
-            NotificationEvent::from_str("turn-complete"),
+            NotificationEvent::parse("turn-complete"),
             Some(NotificationEvent::TurnComplete)
         );
-        assert_eq!(NotificationEvent::from_str("invalid"), None);
+        assert_eq!(NotificationEvent::parse("invalid"), None);
     }
 
     #[test]

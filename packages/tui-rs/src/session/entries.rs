@@ -119,7 +119,7 @@ impl ThinkingLevel {
     }
 
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "off" | "none" | "disabled" => Some(ThinkingLevel::Off),
             "minimal" | "min" => Some(ThinkingLevel::Minimal),

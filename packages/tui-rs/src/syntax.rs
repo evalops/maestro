@@ -130,7 +130,7 @@ mod tests {
         let lines = highlight_code(code, Some("rust"));
         assert_eq!(lines.len(), 3);
         // Should have multiple spans per line (syntax highlighting)
-        assert!(lines[0].spans.len() >= 1);
+        assert!(!lines[0].spans.is_empty());
     }
 
     #[test]

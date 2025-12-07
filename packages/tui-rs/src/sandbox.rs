@@ -138,7 +138,7 @@ impl SandboxPolicy {
                 if !exclude_tmpdir_env_var {
                     if let Ok(tmpdir) = std::env::var("TMPDIR") {
                         let tmpdir_path = PathBuf::from(tmpdir);
-                        if tmpdir_path != PathBuf::from("/tmp") {
+                        if tmpdir_path.as_path() != Path::new("/tmp") {
                             roots.push(WritableRoot {
                                 root: tmpdir_path,
                                 read_only_subpaths: Vec::new(),
@@ -647,7 +647,7 @@ mod linux {
         unsafe {
             cmd.pre_exec(move || {
                 apply_sandbox_policy(&policy_clone, &cwd_clone)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                    .map_err(|e| std::io::Error::other(e.to_string()))
             });
         }
 
@@ -809,8 +809,12 @@ mod tests {
         let roots = policy.get_writable_roots_with_cwd(&cwd);
 
         // Should include /custom and cwd
-        assert!(roots.iter().any(|r| r.root == PathBuf::from("/custom")));
-        assert!(roots.iter().any(|r| r.root == PathBuf::from("/workspace")));
+        assert!(roots
+            .iter()
+            .any(|r| r.root.as_path() == Path::new("/custom")));
+        assert!(roots
+            .iter()
+            .any(|r| r.root.as_path() == Path::new("/workspace")));
     }
 
     #[test]

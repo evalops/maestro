@@ -100,6 +100,7 @@ impl SlashCommandMatcher {
     }
 
     /// Get matches for a query
+    #[allow(clippy::needless_borrow)] // Borrows enable &String -> &str coercion
     pub fn get_matches(&self, query: &str) -> Vec<CommandMatch> {
         let query = query.to_lowercase();
         let query = query.trim_start_matches('/');

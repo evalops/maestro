@@ -154,8 +154,8 @@ impl FileSearchModal {
         }
 
         // Center the modal
-        let modal_width = area.width.min(60).max(40);
-        let modal_height = area.height.min(20).max(10);
+        let modal_width = area.width.clamp(40, 60);
+        let modal_height = area.height.clamp(10, 20);
         let modal_x = (area.width.saturating_sub(modal_width)) / 2;
         let modal_y = (area.height.saturating_sub(modal_height)) / 2;
 
@@ -317,7 +317,7 @@ mod tests {
             path: PathBuf::from(path),
             relative_path: path.to_string(),
             name: name.to_string(),
-            extension: name.split('.').last().map(String::from),
+            extension: name.split('.').next_back().map(String::from),
             is_dir: false,
         }
     }

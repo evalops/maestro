@@ -169,8 +169,8 @@ impl SessionSwitcher {
         }
 
         // Center the modal
-        let modal_width = area.width.min(80).max(50);
-        let modal_height = area.height.min(25).max(12);
+        let modal_width = area.width.clamp(50, 80);
+        let modal_height = area.height.clamp(12, 25);
         let modal_x = (area.width.saturating_sub(modal_width)) / 2;
         let modal_y = (area.height.saturating_sub(modal_height)) / 2;
 

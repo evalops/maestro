@@ -1009,7 +1009,7 @@ Add the required fields and retry.",
             CommandAction::SetApprovalMode(mode) => {
                 if mode == "next" {
                     self.state.approval_mode = self.state.approval_mode.next();
-                } else if let Some(m) = ApprovalMode::from_str(&mode) {
+                } else if let Some(m) = ApprovalMode::parse(&mode) {
                     self.state.approval_mode = m;
                 } else {
                     self.state.error = Some(format!(
@@ -1024,7 +1024,7 @@ Add the required fields and retry.",
                 ));
             }
             CommandAction::SetThinkingLevel(level_str) => {
-                if let Some(level) = ThinkingLevel::from_str(&level_str) {
+                if let Some(level) = ThinkingLevel::parse(&level_str) {
                     let (enabled, budget) = level.to_config();
                     if let Some(agent) = &self.native_agent {
                         if let Err(e) = agent.set_thinking(enabled, budget) {
@@ -1220,7 +1220,7 @@ Add the required fields and retry.",
             }
             "thinking" => {
                 if let Some(&level_str) = args.first() {
-                    if let Some(level) = ThinkingLevel::from_str(level_str) {
+                    if let Some(level) = ThinkingLevel::parse(level_str) {
                         let (enabled, budget) = level.to_config();
                         if let Some(agent) = &self.native_agent {
                             if let Err(e) = agent.set_thinking(enabled, budget) {
@@ -1256,7 +1256,7 @@ Add the required fields and retry.",
             }
             "approvals" => {
                 if let Some(&mode_str) = args.first() {
-                    if let Some(mode) = ApprovalMode::from_str(mode_str) {
+                    if let Some(mode) = ApprovalMode::parse(mode_str) {
                         self.state.approval_mode = mode;
                         self.state.status = Some(format!("Approval mode: {}", mode.label()));
                     } else {

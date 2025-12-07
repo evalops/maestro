@@ -243,7 +243,7 @@ mod tests {
             path: PathBuf::from(format!("/test/{}", name)),
             relative_path: name.to_string(),
             name: name.to_string(),
-            extension: name.split('.').last().map(String::from),
+            extension: name.split('.').next_back().map(String::from),
             is_dir: false,
         }
     }

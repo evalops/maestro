@@ -40,7 +40,7 @@ pub enum ApprovalPolicy {
 }
 
 impl ApprovalPolicy {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "untrusted" => Some(Self::Untrusted),
             "on-failure" => Some(Self::OnFailure),
@@ -62,7 +62,7 @@ pub enum SandboxMode {
 }
 
 impl SandboxMode {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "read-only" => Some(Self::ReadOnly),
             "workspace-write" => Some(Self::WorkspaceWrite),
@@ -646,14 +646,14 @@ fn apply_env_overrides(config: &mut ComposerConfig) {
 
     // COMPOSER_APPROVAL_POLICY
     if let Ok(policy) = env::var("COMPOSER_APPROVAL_POLICY") {
-        if let Some(p) = ApprovalPolicy::from_str(&policy) {
+        if let Some(p) = ApprovalPolicy::parse(&policy) {
             config.approval_policy = Some(p);
         }
     }
 
     // COMPOSER_SANDBOX_MODE
     if let Ok(mode) = env::var("COMPOSER_SANDBOX_MODE") {
-        if let Some(m) = SandboxMode::from_str(&mode) {
+        if let Some(m) = SandboxMode::parse(&mode) {
             config.sandbox_mode = Some(m);
         }
     }
