@@ -42,7 +42,9 @@ pub enum ApiError {
     /// Quota exceeded - fatal, billing issue
     QuotaExceeded,
     /// Rate limited - retryable with delay
-    RateLimited { retry_after: Option<std::time::Duration> },
+    RateLimited {
+        retry_after: Option<std::time::Duration>,
+    },
     /// Generic retryable error
     Retryable { message: String },
     /// Fatal error
@@ -91,7 +93,10 @@ fn parse_retry_after(message: &str) -> Option<std::time::Duration> {
     if let Some(pos) = lower.find("try again in") {
         let after = &lower[pos + 13..];
         // Try to parse number
-        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let num_str: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
         if let Ok(num) = num_str.parse::<f64>() {
             // Check unit
             let rest = &after[num_str.len()..].trim_start();
@@ -256,9 +261,9 @@ impl OpenAiClient {
                         let parts: Vec<OpenAiContentPart> = blocks
                             .iter()
                             .filter_map(|block| match block {
-                                ContentBlock::Text { text } => Some(OpenAiContentPart::Text {
-                                    text: text.clone(),
-                                }),
+                                ContentBlock::Text { text } => {
+                                    Some(OpenAiContentPart::Text { text: text.clone() })
+                                }
                                 ContentBlock::Image { source } => match source {
                                     ImageSource::Url { url } => Some(OpenAiContentPart::ImageUrl {
                                         image_url: ImageUrlData {
@@ -269,10 +274,7 @@ impl OpenAiClient {
                                     ImageSource::Base64 { media_type, data } => {
                                         Some(OpenAiContentPart::ImageUrl {
                                             image_url: ImageUrlData {
-                                                url: format!(
-                                                    "data:{};base64,{}",
-                                                    media_type, data
-                                                ),
+                                                url: format!("data:{};base64,{}", media_type, data),
                                                 detail: None,
                                             },
                                         })
@@ -355,7 +357,11 @@ impl OpenAiClient {
             "stream": true,
             "stream_options": {
                 "include_usage": true
-            }
+            },
+            // Nudge model to actually choose a tool when tools are present
+            "tool_choice": if config.tools.is_empty() { serde_json::json!("none") } else { serde_json::json!("auto") },
+            // Allow parallel tool calls when the model supports it (Codex default)
+            "parallel_tool_calls": true
         });
 
         // Add system message if provided
@@ -504,7 +510,12 @@ impl OpenAiClient {
 
                             // Then, add tool calls as separate items
                             for block in blocks {
-                                if let ContentBlock::ToolUse { id, name, input: args } = block {
+                                if let ContentBlock::ToolUse {
+                                    id,
+                                    name,
+                                    input: args,
+                                } = block
+                                {
                                     input.push(serde_json::json!({
                                         "type": "function_call",
                                         "call_id": id,
@@ -522,7 +533,10 @@ impl OpenAiClient {
         let mut body = serde_json::json!({
             "model": config.model,
             "input": input,
-            "stream": true
+            "stream": true,
+            "parallel_tool_calls": true,
+            // Tell the model tools are available and should be used when appropriate
+            "tool_choice": if config.tools.is_empty() { serde_json::json!("none") } else { serde_json::json!("auto") },
         });
 
         // Add instructions (system prompt)
@@ -568,9 +582,7 @@ impl OpenAiClient {
 
         // Always include reasoning content for visibility
         // This enables streaming of reasoning text (only encrypted_content is valid)
-        body["include"] = serde_json::json!([
-            "reasoning.encrypted_content"
-        ]);
+        body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
 
         body
     }
@@ -636,7 +648,9 @@ impl AiClient for OpenAiClient {
             let stream = response.bytes_stream();
             tokio::spawn(async move {
                 let mut sse_stream = stream
-                    .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+                    .map(|result| {
+                        result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                    })
                     .eventsource();
 
                 let mut content_started = false;
@@ -664,7 +678,8 @@ impl AiClient for OpenAiClient {
                                     }
                                 }
                                 // Reasoning/thinking events - stream as thinking deltas
-                                "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                                "response.reasoning_summary_text.delta"
+                                | "response.reasoning_text.delta" => {
                                     if let Some(delta) = &event.delta {
                                         let _ = tx.send(StreamEvent::ThinkingDelta {
                                             index: 0,
@@ -692,10 +707,13 @@ impl AiClient for OpenAiClient {
                                 "response.output_item.done" => {
                                     if let Some(item) = &event.item {
                                         // Check if this is a function call
-                                        if let Some((call_id, name, arguments)) = extract_function_call(item) {
+                                        if let Some((call_id, name, arguments)) =
+                                            extract_function_call(item)
+                                        {
                                             // Parse arguments JSON
-                                            let input: serde_json::Value = serde_json::from_str(&arguments)
-                                                .unwrap_or(serde_json::json!({}));
+                                            let input: serde_json::Value =
+                                                serde_json::from_str(&arguments)
+                                                    .unwrap_or(serde_json::json!({}));
 
                                             // Emit tool use block
                                             let tool_index = tool_call_index;
@@ -710,19 +728,22 @@ impl AiClient for OpenAiClient {
                                                 },
                                             });
 
-                                            let _ = tx.send(StreamEvent::ContentBlockStop { index: tool_index });
+                                            let _ = tx.send(StreamEvent::ContentBlockStop {
+                                                index: tool_index,
+                                            });
                                         }
                                         // Only extract text as fallback if we didn't receive streaming deltas
                                         else if !received_streaming_text {
                                             if let Some(text) = extract_text_from_item(item) {
                                                 if !content_started {
                                                     content_started = true;
-                                                    let _ = tx.send(StreamEvent::ContentBlockStart {
-                                                        index: 0,
-                                                        block: ContentBlock::Text {
-                                                            text: String::new(),
-                                                        },
-                                                    });
+                                                    let _ =
+                                                        tx.send(StreamEvent::ContentBlockStart {
+                                                            index: 0,
+                                                            block: ContentBlock::Text {
+                                                                text: String::new(),
+                                                            },
+                                                        });
                                                 }
                                                 let _ = tx.send(StreamEvent::TextDelta {
                                                     index: 0,
@@ -805,21 +826,29 @@ impl AiClient for OpenAiClient {
                                 }
                                 "response.failed" => {
                                     // Classify the error for proper handling
-                                    let (error_msg, _api_error) = if let Some(resp) = &event.response {
+                                    let (error_msg, _api_error) = if let Some(resp) =
+                                        &event.response
+                                    {
                                         if let Some(error) = resp.get("error") {
                                             let classified = classify_error(error);
                                             let msg = match &classified {
                                                 ApiError::ContextWindowExceeded => {
-                                                    "Context window exceeded - message too long".to_string()
+                                                    "Context window exceeded - message too long"
+                                                        .to_string()
                                                 }
                                                 ApiError::QuotaExceeded => {
-                                                    "API quota exceeded - check your billing".to_string()
+                                                    "API quota exceeded - check your billing"
+                                                        .to_string()
                                                 }
                                                 ApiError::RateLimited { retry_after } => {
                                                     if let Some(delay) = retry_after {
-                                                        format!("Rate limited - retry after {:?}", delay)
+                                                        format!(
+                                                            "Rate limited - retry after {:?}",
+                                                            delay
+                                                        )
                                                     } else {
-                                                        "Rate limited - please try again".to_string()
+                                                        "Rate limited - please try again"
+                                                            .to_string()
                                                     }
                                                 }
                                                 ApiError::Retryable { message } => message.clone(),
@@ -833,9 +862,7 @@ impl AiClient for OpenAiClient {
                                         ("Unknown error".to_string(), None)
                                     };
 
-                                    let _ = tx.send(StreamEvent::Error {
-                                        message: error_msg,
-                                    });
+                                    let _ = tx.send(StreamEvent::Error { message: error_msg });
                                     return;
                                 }
                                 _ => {
@@ -863,7 +890,6 @@ impl AiClient for OpenAiClient {
                 let mut message_id = String::new();
                 let mut current_tool_calls: Vec<ToolCallAccumulator> = Vec::new();
                 let mut content_started = false;
-                let mut tool_use_index = 0;
 
                 while let Some(chunk) = stream.next().await {
                     match chunk {
@@ -880,8 +906,29 @@ impl AiClient for OpenAiClient {
                                 }
 
                                 if line == "data: [DONE]" {
-                                    for (idx, _) in current_tool_calls.iter().enumerate() {
-                                        let _ = tx.send(StreamEvent::ContentBlockStop { index: idx + 1 });
+                                    // Flush any completed tool calls
+                                    for (idx, call) in current_tool_calls.iter().enumerate() {
+                                        if !call.name.is_empty()
+                                            && !call.arguments.trim().is_empty()
+                                        {
+                                            let block_idx = idx + 1; // reserve 0 for text
+                                            let _ = tx.send(StreamEvent::ContentBlockStart {
+                                                index: block_idx,
+                                                block: ContentBlock::ToolUse {
+                                                    id: call.id.clone(),
+                                                    name: call.name.clone(),
+                                                    input: serde_json::from_str(&call.arguments)
+                                                        .unwrap_or(serde_json::json!({})),
+                                                },
+                                            });
+                                            let _ = tx.send(StreamEvent::InputJsonDelta {
+                                                index: block_idx,
+                                                partial_json: call.arguments.clone(),
+                                            });
+                                            let _ = tx.send(StreamEvent::ContentBlockStop {
+                                                index: block_idx,
+                                            });
+                                        }
                                     }
                                     let _ = tx.send(StreamEvent::MessageStop);
                                     return;
@@ -901,12 +948,13 @@ impl AiClient for OpenAiClient {
                                             if let Some(content) = &choice.delta.content {
                                                 if !content_started {
                                                     content_started = true;
-                                                    let _ = tx.send(StreamEvent::ContentBlockStart {
-                                                        index: 0,
-                                                        block: ContentBlock::Text {
-                                                            text: String::new(),
-                                                        },
-                                                    });
+                                                    let _ =
+                                                        tx.send(StreamEvent::ContentBlockStart {
+                                                            index: 0,
+                                                            block: ContentBlock::Text {
+                                                                text: String::new(),
+                                                            },
+                                                        });
                                                 }
                                                 let _ = tx.send(StreamEvent::TextDelta {
                                                     index: 0,
@@ -919,11 +967,13 @@ impl AiClient for OpenAiClient {
                                                     let idx = tc.index.unwrap_or(0);
 
                                                     while current_tool_calls.len() <= idx {
-                                                        current_tool_calls.push(ToolCallAccumulator {
-                                                            id: String::new(),
-                                                            name: String::new(),
-                                                            arguments: String::new(),
-                                                        });
+                                                        current_tool_calls.push(
+                                                            ToolCallAccumulator {
+                                                                id: String::new(),
+                                                                name: String::new(),
+                                                                arguments: String::new(),
+                                                            },
+                                                        );
                                                     }
 
                                                     if let Some(id) = &tc.id {
@@ -931,38 +981,67 @@ impl AiClient for OpenAiClient {
                                                     }
                                                     if let Some(func) = &tc.function {
                                                         if let Some(name) = &func.name {
-                                                            current_tool_calls[idx].name = name.clone();
-                                                            if content_started {
-                                                                let _ = tx.send(
-                                                                    StreamEvent::ContentBlockStop { index: 0 },
-                                                                );
-                                                            }
-                                                            tool_use_index = idx + 1;
-                                                            let _ = tx.send(StreamEvent::ContentBlockStart {
-                                                                index: tool_use_index,
-                                                                block: ContentBlock::ToolUse {
-                                                                    id: current_tool_calls[idx].id.clone(),
-                                                                    name: name.clone(),
-                                                                    input: serde_json::Value::Object(
-                                                                        Default::default(),
-                                                                    ),
-                                                                },
-                                                            });
+                                                            current_tool_calls[idx].name =
+                                                                name.clone();
                                                         }
                                                         if let Some(args) = &func.arguments {
-                                                            current_tool_calls[idx].arguments.push_str(args);
-                                                            let _ = tx.send(StreamEvent::InputJsonDelta {
-                                                                index: tool_use_index,
-                                                                partial_json: args.clone(),
-                                                            });
+                                                            current_tool_calls[idx]
+                                                                .arguments
+                                                                .push_str(args);
                                                         }
                                                     }
                                                 }
                                             }
 
                                             if choice.finish_reason.is_some() {
-                                                if content_started && current_tool_calls.is_empty() {
-                                                    let _ = tx.send(StreamEvent::ContentBlockStop { index: 0 });
+                                                if content_started && current_tool_calls.is_empty()
+                                                {
+                                                    let _ =
+                                                        tx.send(StreamEvent::ContentBlockStop {
+                                                            index: 0,
+                                                        });
+                                                }
+                                                // On tool_calls finish, flush completed tool calls
+                                                if choice.finish_reason.as_deref()
+                                                    == Some("tool_calls")
+                                                {
+                                                    for (idx, call) in
+                                                        current_tool_calls.iter().enumerate()
+                                                    {
+                                                        if call.name.is_empty()
+                                                            || call.arguments.trim().is_empty()
+                                                        {
+                                                            continue;
+                                                        }
+                                                        let block_idx = idx + 1; // reserve 0 for text
+                                                        let _ = tx.send(
+                                                            StreamEvent::ContentBlockStart {
+                                                                index: block_idx,
+                                                                block: ContentBlock::ToolUse {
+                                                                    id: call.id.clone(),
+                                                                    name: call.name.clone(),
+                                                                    input: serde_json::from_str(
+                                                                        &call.arguments,
+                                                                    )
+                                                                    .unwrap_or(
+                                                                        serde_json::json!({}),
+                                                                    ),
+                                                                },
+                                                            },
+                                                        );
+                                                        let _ =
+                                                            tx.send(StreamEvent::InputJsonDelta {
+                                                                index: block_idx,
+                                                                partial_json: call
+                                                                    .arguments
+                                                                    .clone(),
+                                                            });
+                                                        let _ = tx.send(
+                                                            StreamEvent::ContentBlockStop {
+                                                                index: block_idx,
+                                                            },
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
@@ -1127,10 +1206,19 @@ mod tests {
 
     #[test]
     fn test_provider_detection() {
-        assert_eq!(AiProvider::from_model("gpt-5.1-codex-max"), AiProvider::OpenAI);
+        assert_eq!(
+            AiProvider::from_model("gpt-5.1-codex-max"),
+            AiProvider::OpenAI
+        );
         assert_eq!(AiProvider::from_model("gpt-4o"), AiProvider::OpenAI);
-        assert_eq!(AiProvider::from_model("claude-opus-4-5-20251101"), AiProvider::Anthropic);
-        assert_eq!(AiProvider::from_model("claude-sonnet-4-5"), AiProvider::Anthropic);
+        assert_eq!(
+            AiProvider::from_model("claude-opus-4-5-20251101"),
+            AiProvider::Anthropic
+        );
+        assert_eq!(
+            AiProvider::from_model("claude-sonnet-4-5"),
+            AiProvider::Anthropic
+        );
     }
 
     #[test]
@@ -1209,19 +1297,17 @@ mod tests {
     #[test]
     fn test_filter_responses_api_tools() {
         let tools = vec![
-            Tool::new("read", "Read a file")
-                .with_schema(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"}
-                    }
-                })),
+            Tool::new("read", "Read a file").with_schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                }
+            })),
             Tool::new("", "Empty name tool") // Should be filtered out
                 .with_schema(serde_json::json!({})),
-            Tool::new("bad", "Has oneOf")
-                .with_schema(serde_json::json!({
-                    "oneOf": [{"type": "string"}, {"type": "number"}]
-                })),
+            Tool::new("bad", "Has oneOf").with_schema(serde_json::json!({
+                "oneOf": [{"type": "string"}, {"type": "number"}]
+            })),
         ];
 
         let filtered = filter_responses_api_tools(&tools);
@@ -1373,7 +1459,8 @@ mod tests {
         assert_eq!(event.delta, Some("Hello".to_string()));
 
         // Test parsing output_item.done event
-        let done_data = r#"{"type":"response.output_item.done","item":{"type":"message","content":[]}}"#;
+        let done_data =
+            r#"{"type":"response.output_item.done","item":{"type":"message","content":[]}}"#;
         let event: ResponsesSseEvent = serde_json::from_str(done_data).unwrap();
         assert_eq!(event.kind, "response.output_item.done");
         assert!(event.item.is_some());
