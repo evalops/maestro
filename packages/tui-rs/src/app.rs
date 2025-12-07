@@ -266,11 +266,16 @@ impl App {
 Current working directory: {}
 
 You have access to the following tools:
-- bash: Execute shell commands
-- read: Read file contents
-- write: Write to files
-- glob: Find files by pattern
-- grep: Search file contents
+- bash: Execute shell commands. REQUIRED arg: {{\"command\":\"<cmd>\"}}. Do not send empty commands.
+- read: Read file contents. REQUIRED: {{\"file_path\":\"/abs/path\"}}.
+- write: Write to files. REQUIRED: {{\"file_path\":\"/abs/path\",\"content\":\"...\"}}.
+- glob: Find files by pattern. REQUIRED: {{\"pattern\":\"*.rs\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
+- grep: Search file contents. REQUIRED: {{\"pattern\":\"regex or text\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
+
+Tool-calling rules:
+- Always prefer read/write/glob/grep for filesystem; use bash only for commands that are not pure file ops.
+- Never emit a tool call without all required fields.
+- If a tool call is denied, immediately retry with corrected arguments instead of responding without action.
 
 Always use tools when they would be helpful. Be concise and direct in your responses."#,
             cwd
@@ -383,8 +388,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             } => {
                 // Unknown tool name -> deny immediately
                 if !self.tool_executor.has_tool(tool) {
-                    let note =
-                        format!("Skipped unknown tool '{tool}' (not in registry); denied call.");
+                    let note = format!(
+                        "Skipped unknown tool '{tool}' (not in registry); denied call. \
+Retry with a supported tool (bash/read/write/glob/grep) and valid args."
+                    );
                     self.state.add_system_message(note);
                     self.state.handle_agent_message(msg.clone());
                     self.state.fail_tool_call(call_id, "Unknown tool (denied)");
@@ -407,7 +414,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 if tool.eq_ignore_ascii_case("bash") && command_trimmed.is_none() {
                     // Immediately deny and inform the user; this keeps the UI usable when a model emits {} tool args
                     self.state.add_system_message(
-                        "Skipped empty bash tool call (model sent no command)".to_string(),
+                        "Skipped empty bash tool call (model sent no command). \
+Retry with e.g. bash {\"command\":\"ls\"} or read {\"file_path\":\"/path\"}."
+                            .to_string(),
                     );
                     self.state.handle_agent_message(msg.clone());
                     self.state
@@ -421,7 +430,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 let missing = self.tool_executor.missing_required(tool, args);
                 if !missing.is_empty() {
                     let note = format!(
-                        "Skipped tool '{tool}' due to missing fields: {}",
+                        "Skipped tool '{tool}' due to missing fields: {}. \
+Add the required fields and retry.",
                         missing.join(", ")
                     );
                     self.state.add_system_message(note);
