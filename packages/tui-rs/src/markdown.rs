@@ -7,6 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
 use crate::palette::theme;
+use crate::syntax;
 
 /// Styles for markdown elements
 #[derive(Clone)]
@@ -269,22 +270,27 @@ impl MarkdownRenderer {
             }
             TagEnd::CodeBlock => {
                 self.in_code_block = false;
-                // Render code block with border
-                let lang_label = self.code_block_lang.as_deref().unwrap_or("code");
+                // Render code block with border and syntax highlighting
+                let lang = self.code_block_lang.as_deref();
+                let lang_label = lang.unwrap_or("code");
 
+                // Header
                 self.lines.push(Line::from(vec![
                     Span::styled("┌─ ", Style::default().fg(Color::DarkGray)),
                     Span::styled(lang_label.to_string(), Style::default().fg(Color::DarkGray)),
                     Span::styled(" ─", Style::default().fg(Color::DarkGray)),
                 ]));
 
-                for line in self.code_block_content.lines() {
-                    self.lines.push(Line::from(vec![
-                        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(line.to_string(), self.styles.code_block),
-                    ]));
+                // Syntax-highlighted content
+                let highlighted_lines = syntax::highlight_code(&self.code_block_content, lang);
+                for mut line in highlighted_lines {
+                    // Prepend the border
+                    let mut spans = vec![Span::styled("│ ", Style::default().fg(Color::DarkGray))];
+                    spans.append(&mut line.spans);
+                    self.lines.push(Line::from(spans));
                 }
 
+                // Footer
                 self.lines.push(Line::from(Span::styled(
                     "└──────",
                     Style::default().fg(Color::DarkGray),
@@ -363,10 +369,14 @@ mod tests {
     #[test]
     fn renders_code_block() {
         let text = render_markdown("```rust\nfn main() {}\n```");
-        assert!(text
+        // With syntax highlighting, tokens may be split across spans
+        // Check that the code content is present by concatenating all spans
+        let all_content: String = text
             .lines
             .iter()
-            .any(|l| { l.spans.iter().any(|s| s.content.contains("fn main")) }));
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(all_content.contains("fn") && all_content.contains("main"));
     }
 
     #[test]

@@ -156,6 +156,15 @@ impl NativeAgent {
         });
     }
 
+    /// Send session info (cwd, git branch, etc.)
+    pub fn send_session_info(&self, cwd: &str, session_id: Option<String>, git_branch: Option<String>) {
+        let _ = self.event_tx.send(FromAgent::SessionInfo {
+            session_id,
+            cwd: cwd.to_string(),
+            git_branch,
+        });
+    }
+
     /// Process a user prompt (non-blocking - sends to background task)
     pub async fn prompt(&self, content: String, _attachments: Vec<String>) -> Result<()> {
         self.command_tx

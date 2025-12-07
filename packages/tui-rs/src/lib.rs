@@ -39,11 +39,14 @@ pub mod terminal;
 pub mod tools;
 
 // Feature modules
+pub mod clipboard;
 pub mod diff;
+pub mod git;
 pub mod key_hints;
 pub mod markdown;
 pub mod pager;
 pub mod palette;
+pub mod syntax;
 pub mod themes;
 pub mod tooltips;
 pub mod wrapping;

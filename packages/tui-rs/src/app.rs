@@ -15,14 +15,16 @@ use ratatui::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::agent::{AgentProcess, FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
+use crate::clipboard::ClipboardManager;
 use crate::commands::{
     build_command_registry, CommandRegistry, SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
     ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest, ChatInputWidget,
-    ChatView, CommandPalette, FileSearchModal, SessionSwitcher,
+    ChatView, CommandPalette, FileSearchModal, ModelSelector, SessionSwitcher, ThemeSelector,
 };
 use crate::files::get_workspace_files;
+use crate::git;
 use crate::session::{AppMessage, SessionManager};
 use crate::state::{AppState, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
@@ -36,6 +38,8 @@ pub enum ActiveModal {
     SessionSwitcher,
     CommandPalette,
     Approval,
+    ModelSelector,
+    ThemeSelector,
 }
 
 /// Agent backend type
@@ -87,6 +91,12 @@ pub struct App {
     approval_controller: ApprovalController,
     /// Session manager
     session_manager: SessionManager,
+    /// Clipboard manager
+    clipboard: ClipboardManager,
+    /// Model selector modal
+    model_selector: ModelSelector,
+    /// Theme selector modal
+    theme_selector: ThemeSelector,
 }
 
 impl App {
@@ -136,6 +146,9 @@ impl App {
             session_switcher: SessionSwitcher::new(&cwd),
             approval_controller: ApprovalController::new(),
             session_manager: SessionManager::new(&cwd),
+            clipboard: ClipboardManager::new(),
+            model_selector: ModelSelector::new(),
+            theme_selector: ThemeSelector::new(),
         })
     }
 
@@ -200,9 +213,11 @@ impl App {
 
     /// Spawn the native Rust agent
     async fn spawn_native_agent(&mut self) -> Result<()> {
-        let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+        let cwd_path = std::env::current_dir().unwrap_or_default();
+        let cwd = cwd_path.to_string_lossy().to_string();
+
+        // Detect git branch
+        let git_branch = git::current_branch(&cwd_path);
 
         // Determine model from environment or default (prefer Claude)
         let model = std::env::var("COMPOSER_MODEL").unwrap_or_else(|_| {
@@ -237,6 +252,8 @@ impl App {
                 // Send ready event
                 if let Some(agent) = &self.native_agent {
                     agent.send_ready();
+                    // Send session info with git branch
+                    agent.send_session_info(&cwd, None, git_branch);
                 }
 
                 // Ensure busy is false so user can type
@@ -512,6 +529,8 @@ Add the required fields and retry.",
                 return self.handle_command_palette_key(code, ctrl).await
             }
             ActiveModal::Approval => return self.handle_approval_key(code).await,
+            ActiveModal::ModelSelector => return self.handle_model_selector_key(code, ctrl).await,
+            ActiveModal::ThemeSelector => return self.handle_theme_selector_key(code, ctrl).await,
             ActiveModal::None => {}
         }
 
@@ -676,6 +695,18 @@ Add the required fields and retry.",
                     self.state.input.clear();
                     self.state.cursor = 0;
                     self.slash_state.reset();
+                }
+            }
+
+            // Paste from clipboard
+            KeyCode::Char('y') if ctrl && !self.state.busy => {
+                if let Ok(text) = self.clipboard.paste() {
+                    for c in text.chars() {
+                        // Insert character by character, handling newlines
+                        if c != '\n' && c != '\r' {
+                            self.state.insert_char(c);
+                        }
+                    }
                 }
             }
 
@@ -888,6 +919,97 @@ Add the required fields and retry.",
         Ok(())
     }
 
+    /// Handle keys in model selector modal
+    async fn handle_model_selector_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.model_selector.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Enter => {
+                if let Some(model_id) = self.model_selector.confirm() {
+                    // Set the new model
+                    match self.backend {
+                        AgentBackend::Native => {
+                            if let Some(agent) = &self.native_agent {
+                                if let Err(e) = agent.set_model(&model_id) {
+                                    self.state.error = Some(format!("Failed to set model: {}", e));
+                                } else {
+                                    self.state.status = Some(format!("Model: {}", model_id));
+                                }
+                            }
+                        }
+                        AgentBackend::NodeJs => {
+                            self.state.status = Some(format!("Model: {} (restart required)", model_id));
+                        }
+                    }
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up => {
+                self.model_selector.move_up();
+            }
+            KeyCode::Down => {
+                self.model_selector.move_down();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.model_selector.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                self.model_selector.backspace();
+            }
+            KeyCode::Left => {
+                self.model_selector.move_left();
+            }
+            KeyCode::Right => {
+                self.model_selector.move_right();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle keys in theme selector modal
+    async fn handle_theme_selector_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.theme_selector.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Enter => {
+                if let Some(theme_name) = self.theme_selector.confirm() {
+                    // Set the new theme
+                    if crate::themes::set_theme_by_name(&theme_name).is_ok() {
+                        self.state.status = Some(format!("Theme: {}", theme_name));
+                    } else {
+                        self.state.error = Some(format!("Unknown theme: {}", theme_name));
+                    }
+                }
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up => {
+                self.theme_selector.move_up();
+            }
+            KeyCode::Down => {
+                self.theme_selector.move_down();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.theme_selector.insert_char(c);
+            }
+            KeyCode::Backspace => {
+                self.theme_selector.backspace();
+            }
+            KeyCode::Left => {
+                self.theme_selector.move_left();
+            }
+            KeyCode::Right => {
+                self.theme_selector.move_right();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Handle tool approval decision
     async fn handle_tool_approval(
         &mut self,
@@ -983,8 +1105,32 @@ Add the required fields and retry.",
                         self.state.status = Some(format!("Theme set to: {}", theme_name));
                     }
                 } else {
-                    let themes = crate::themes::available_themes().join(", ");
-                    self.state.status = Some(format!("Available themes: {}", themes));
+                    // Open theme selector
+                    self.theme_selector.show();
+                    self.active_modal = ActiveModal::ThemeSelector;
+                }
+            }
+            "model" => {
+                if let Some(&model_id) = args.first() {
+                    // Set model directly
+                    match self.backend {
+                        AgentBackend::Native => {
+                            if let Some(agent) = &self.native_agent {
+                                if let Err(e) = agent.set_model(model_id) {
+                                    self.state.error = Some(format!("Failed to set model: {}", e));
+                                } else {
+                                    self.state.status = Some(format!("Model: {}", model_id));
+                                }
+                            }
+                        }
+                        AgentBackend::NodeJs => {
+                            self.state.status = Some(format!("Model: {} (restart required)", model_id));
+                        }
+                    }
+                } else {
+                    // Open model selector
+                    self.model_selector.show();
+                    self.active_modal = ActiveModal::ModelSelector;
                 }
             }
             "sessions" | "resume" => {
@@ -1002,6 +1148,32 @@ Add the required fields and retry.",
             "refresh" => {
                 self.load_workspace_files();
                 self.state.status = Some("Workspace files refreshed".to_string());
+            }
+            "copy" => {
+                // Copy last assistant message to clipboard
+                if let Some(msg) = self
+                    .state
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Assistant && !m.content.is_empty())
+                {
+                    match self.clipboard.copy(&msg.content) {
+                        Ok(_) => {
+                            let preview = if msg.content.len() > 50 {
+                                format!("{}...", &msg.content[..47])
+                            } else {
+                                msg.content.clone()
+                            };
+                            self.state.status = Some(format!("Copied: {}", preview));
+                        }
+                        Err(e) => {
+                            self.state.error = Some(format!("Failed to copy: {}", e));
+                        }
+                    }
+                } else {
+                    self.state.status = Some("No message to copy".to_string());
+                }
             }
             _ => {
                 // Unknown command - try to send to agent
@@ -1067,9 +1239,14 @@ Session:
   Ctrl+C        Interrupt / Quit
   Ctrl+D        Quit
 
+Clipboard:
+  Ctrl+Y        Paste text
+  /copy         Copy last response
+
 Slash Commands:
   /help         Show this help
   /clear        Clear messages
+  /copy         Copy last response
   /theme        Change theme
   /sessions     Browse sessions
   /files        Search files
@@ -1125,6 +1302,8 @@ Slash Commands:
         let session_switcher = &self.session_switcher;
         let command_palette = &self.command_palette;
         let approval_controller = &self.approval_controller;
+        let model_selector = &self.model_selector;
+        let theme_selector = &self.theme_selector;
 
         self.terminal.draw(|frame| {
             let area = frame.area();
@@ -1165,6 +1344,12 @@ Slash Commands:
                         let modal = ApprovalModal::new(request);
                         frame.render_widget(modal, area);
                     }
+                }
+                ActiveModal::ModelSelector => {
+                    model_selector.render(frame, area);
+                }
+                ActiveModal::ThemeSelector => {
+                    theme_selector.render(frame, area);
                 }
                 ActiveModal::None => {}
             }
