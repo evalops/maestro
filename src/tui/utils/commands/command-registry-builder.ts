@@ -81,6 +81,7 @@ interface CommandRegistryOptions {
 	handleCheckpoint: (context: CommandExecutionContext) => void;
 	handleMemory: (context: CommandExecutionContext) => void;
 	handleMode: (context: CommandExecutionContext) => void;
+	handlePrompts: (context: CommandExecutionContext) => void;
 	// Grouped command handlers
 	handleSessionCommand: (
 		context: CommandExecutionContext,
@@ -170,6 +171,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			checkpoint: opts.handleCheckpoint,
 			memory: opts.handleMemory,
 			mode: opts.handleMode,
+			prompts: opts.handlePrompts,
 			// Grouped command handlers
 			sessionCommand: opts.handleSessionCommand,
 			diagCommand: opts.handleDiagCommand,

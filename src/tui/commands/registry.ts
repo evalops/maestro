@@ -791,6 +791,24 @@ export function createCommandRegistry({
 
 		buildEntry(
 			{
+				name: "prompts",
+				description:
+					"Run user-defined prompts from markdown files (~/.composer/prompts/)",
+				usage: "/prompts [list|<name> [args]]",
+				tags: ["automation", "session"],
+				examples: [
+					"/prompts",
+					"/prompts list",
+					"/prompts review FILE=src/main.ts",
+					'/prompts ticket TICKET_ID=123 TITLE="Fix bug"',
+				],
+			},
+			withArgs("prompts"),
+			handlers.prompts,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "compact",
 				description: "Summarize older messages to reclaim context",
 				usage: "/compact [custom instructions]",

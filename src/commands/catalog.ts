@@ -2,6 +2,19 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+// Re-export prompts module
+export {
+	type ParsedPromptArgs,
+	type PromptDefinition,
+	findPrompt,
+	formatPromptListItem,
+	getPromptUsageHint,
+	loadPrompts,
+	parsePromptArgs,
+	renderPrompt,
+	validatePromptArgs,
+} from "./prompts.js";
+
 export interface CommandDefinition {
 	name: string;
 	description?: string;

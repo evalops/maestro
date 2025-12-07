@@ -1109,6 +1109,7 @@ export class TuiRenderer {
 			handleCheckpoint: (context) => this.handleCheckpointCommand(context),
 			handleMemory: (context) => this.handleMemoryCommand(context),
 			handleMode: (context) => this.handleModeCommand(context),
+			handlePrompts: (context) => this.handlePromptsCommand(context),
 			// Grouped command handlers
 			handleSessionCommand: (context) =>
 				this.handleGroupedSessionCommand(context),
@@ -1868,6 +1869,72 @@ export class TuiRenderer {
 			},
 		});
 		handler(context);
+	}
+
+	private handlePromptsCommand(context: CommandExecutionContext): void {
+		const {
+			loadPrompts,
+			findPrompt,
+			parsePromptArgs,
+			validatePromptArgs,
+			renderPrompt,
+			formatPromptListItem,
+			getPromptUsageHint,
+		} = require("../commands/catalog.js");
+
+		const arg = context.argumentText.trim();
+		const [action, ...rest] = arg.split(/\s+/).filter(Boolean);
+		const prompts = loadPrompts(process.cwd());
+
+		// No args or "list" - show available prompts
+		if (!action || action === "list") {
+			if (prompts.length === 0) {
+				context.showInfo(
+					"No prompts found. Add .md files to ~/.composer/prompts/ or .composer/prompts/",
+				);
+				return;
+			}
+			const lines = prompts.map(
+				(p: { name: string; description?: string; sourceType: string }) =>
+					`• ${formatPromptListItem(p)}`,
+			);
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(
+				new Text(`Prompts (${prompts.length}):\n${lines.join("\n")}`, 1, 0),
+			);
+			this.ui.requestRender();
+			return;
+		}
+
+		// Find the prompt by name
+		const promptName = action;
+		const prompt = findPrompt(prompts, promptName);
+		if (!prompt) {
+			const suggestions =
+				prompts.length > 0
+					? `Available: ${prompts.map((p: { name: string }) => p.name).join(", ")}`
+					: "No prompts available.";
+			context.showError(`Prompt "${promptName}" not found. ${suggestions}`);
+			return;
+		}
+
+		// Parse and validate arguments
+		const argsString = rest.join(" ");
+		const args = parsePromptArgs(argsString);
+		const validation = validatePromptArgs(prompt, args);
+		if (validation) {
+			context.showError(`${validation}\nUsage: ${getPromptUsageHint(prompt)}`);
+			return;
+		}
+
+		// Render the prompt and insert into editor
+		const rendered = renderPrompt(prompt, args);
+		this.editor.setText(rendered);
+		this.notificationView.showToast(
+			`Inserted prompt "${prompt.name}". Edit and submit.`,
+			"info",
+		);
+		this.ui.requestRender();
 	}
 
 	private handleCleanCommand(context: CommandExecutionContext): void {

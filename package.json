@@ -117,6 +117,7 @@
     "partial-json": "^0.1.7",
     "pdf-parse": "^2.4.5",
     "postgres": "^3.4.7",
+    "smol-toml": "^1.5.2",
     "string-width": "^8.1.0",
     "tree-sitter": "^0.25.0",
     "tree-sitter-bash": "^0.25.0",

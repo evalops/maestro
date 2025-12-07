@@ -1,0 +1,528 @@
+/**
+ * TOML-based Configuration System with Profiles
+ *
+ * Ported from OpenAI Codex (MIT License) config pattern.
+ * Supports:
+ * - ~/.composer/config.toml (global config)
+ * - .composer/config.toml (project config - overrides global)
+ * - Named profiles for different configurations
+ * - Environment variable overrides
+ * - CLI flag overrides
+ *
+ * Configuration precedence (highest first):
+ * 1. CLI flags (--model, --config key=value)
+ * 2. Environment variables (COMPOSER_*)
+ * 3. Active profile settings
+ * 4. Project config.toml
+ * 5. Global config.toml
+ * 6. Built-in defaults
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { parse as parseTOML } from "smol-toml";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("config:toml");
+
+// ─────────────────────────────────────────────────────────────
+// Configuration Types
+// ─────────────────────────────────────────────────────────────
+
+export type ApprovalPolicy =
+	| "untrusted"
+	| "on-failure"
+	| "on-request"
+	| "never";
+export type SandboxMode =
+	| "read-only"
+	| "workspace-write"
+	| "danger-full-access";
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
+export interface ModelProviderConfig {
+	name: string;
+	base_url: string;
+	env_key?: string;
+	wire_api?: "chat" | "responses";
+	query_params?: Record<string, string>;
+	http_headers?: Record<string, string>;
+	env_http_headers?: Record<string, string>;
+	request_max_retries?: number;
+	stream_max_retries?: number;
+	stream_idle_timeout_ms?: number;
+}
+
+export interface McpServerConfig {
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+	url?: string;
+	bearer_token_env_var?: string;
+	http_headers?: Record<string, string>;
+	env_http_headers?: Record<string, string>;
+	enabled?: boolean;
+	startup_timeout_sec?: number;
+	tool_timeout_sec?: number;
+	enabled_tools?: string[];
+	disabled_tools?: string[];
+}
+
+export interface FeaturesConfig {
+	web_search_request?: boolean;
+	view_image_tool?: boolean;
+	ghost_commit?: boolean;
+	[key: string]: boolean | undefined;
+}
+
+export interface ToolsConfig {
+	web_search?: boolean;
+	view_image?: boolean;
+}
+
+export interface OtelConfig {
+	environment?: string;
+	exporter?:
+		| "none"
+		| { "otlp-http": OtlpHttpConfig }
+		| { "otlp-grpc": OtlpGrpcConfig };
+	log_user_prompt?: boolean;
+}
+
+export interface OtlpHttpConfig {
+	endpoint: string;
+	protocol?: "binary" | "json";
+	headers?: Record<string, string>;
+}
+
+export interface OtlpGrpcConfig {
+	endpoint: string;
+	headers?: Record<string, string>;
+}
+
+export interface HistoryConfig {
+	persistence?: "save-all" | "none";
+	max_bytes?: number;
+}
+
+export interface TuiConfig {
+	notifications?: boolean | string[];
+	animations?: boolean;
+}
+
+export interface ShellEnvironmentPolicy {
+	inherit?: "all" | "core" | "none";
+	ignore_default_excludes?: boolean;
+	exclude?: string[];
+	set?: Record<string, string>;
+	include_only?: string[];
+}
+
+export interface SandboxWorkspaceWriteConfig {
+	writable_roots?: string[];
+	network_access?: boolean;
+	exclude_tmpdir_env_var?: boolean;
+	exclude_slash_tmp?: boolean;
+}
+
+export interface ProfileConfig {
+	model?: string;
+	model_provider?: string;
+	approval_policy?: ApprovalPolicy;
+	sandbox_mode?: SandboxMode;
+	model_reasoning_effort?: ReasoningEffort;
+	model_reasoning_summary?: "auto" | "concise" | "detailed" | "none";
+	model_verbosity?: "low" | "medium" | "high";
+	// Allow any other config keys
+	[key: string]: unknown;
+}
+
+export interface ComposerConfig {
+	// Model settings
+	model?: string;
+	model_provider?: string;
+	model_context_window?: number;
+	model_reasoning_effort?: ReasoningEffort;
+	model_reasoning_summary?: "auto" | "concise" | "detailed" | "none";
+	model_verbosity?: "low" | "medium" | "high";
+	model_supports_reasoning_summaries?: boolean;
+
+	// Execution environment
+	approval_policy?: ApprovalPolicy;
+	sandbox_mode?: SandboxMode;
+	sandbox_workspace_write?: SandboxWorkspaceWriteConfig;
+	shell_environment_policy?: ShellEnvironmentPolicy;
+
+	// Providers
+	model_providers?: Record<string, ModelProviderConfig>;
+
+	// MCP
+	mcp_servers?: Record<string, McpServerConfig>;
+
+	// Features
+	features?: FeaturesConfig;
+	tools?: ToolsConfig;
+
+	// Observability
+	otel?: OtelConfig;
+	notify?: string[];
+	hide_agent_reasoning?: boolean;
+	show_raw_agent_reasoning?: boolean;
+
+	// History
+	history?: HistoryConfig;
+
+	// TUI
+	tui?: TuiConfig;
+
+	// Project docs
+	project_doc_max_bytes?: number;
+	project_doc_fallback_filenames?: string[];
+
+	// Profiles
+	profile?: string;
+	profiles?: Record<string, ProfileConfig>;
+
+	// File opener
+	file_opener?: "vscode" | "vscode-insiders" | "windsurf" | "cursor" | "none";
+
+	// Instructions
+	instructions?: string;
+	experimental_instructions_file?: string;
+
+	// Trust
+	projects?: Record<string, { trust_level?: "trusted" | "untrusted" }>;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Default Configuration
+// ─────────────────────────────────────────────────────────────
+
+export const DEFAULT_CONFIG: ComposerConfig = {
+	model: "claude-sonnet-4-20250514",
+	model_provider: "anthropic",
+	approval_policy: "untrusted",
+	sandbox_mode: "workspace-write",
+	model_reasoning_effort: "medium",
+	features: {
+		view_image_tool: true,
+	},
+	history: {
+		persistence: "save-all",
+	},
+	tui: {
+		notifications: true,
+		animations: true,
+	},
+	file_opener: "vscode",
+	project_doc_max_bytes: 32 * 1024,
+	project_doc_fallback_filenames: ["CLAUDE.md"],
+};
+
+// ─────────────────────────────────────────────────────────────
+// Configuration Loading
+// ─────────────────────────────────────────────────────────────
+
+let cachedConfig: ComposerConfig | null = null;
+let cachedWorkspaceDir: string | null = null;
+let cachedProfileName: string | null = null;
+
+/**
+ * Deep merge two objects, with source values overwriting target values.
+ */
+function deepMerge<T extends object>(target: T, source: Partial<T>): T {
+	const result = { ...target } as Record<string, unknown>;
+
+	for (const key of Object.keys(source)) {
+		const sourceValue = (source as Record<string, unknown>)[key];
+		const targetValue = result[key];
+
+		if (
+			sourceValue !== undefined &&
+			typeof sourceValue === "object" &&
+			sourceValue !== null &&
+			!Array.isArray(sourceValue) &&
+			typeof targetValue === "object" &&
+			targetValue !== null &&
+			!Array.isArray(targetValue)
+		) {
+			result[key] = deepMerge(
+				targetValue as Record<string, unknown>,
+				sourceValue as Partial<Record<string, unknown>>,
+			);
+		} else if (sourceValue !== undefined) {
+			result[key] = sourceValue;
+		}
+	}
+
+	return result as T;
+}
+
+/**
+ * Parse a TOML configuration file.
+ */
+function parseConfigFile(path: string): ComposerConfig | null {
+	if (!existsSync(path)) {
+		return null;
+	}
+
+	try {
+		const content = readFileSync(path, "utf-8");
+		const parsed = parseTOML(content) as unknown as ComposerConfig;
+		logger.debug("Parsed config file", { path });
+		return parsed;
+	} catch (error) {
+		logger.warn("Failed to parse config file", {
+			path,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+}
+
+/**
+ * Apply environment variable overrides.
+ */
+function applyEnvOverrides(config: ComposerConfig): ComposerConfig {
+	const result = { ...config };
+
+	// COMPOSER_MODEL
+	if (process.env.COMPOSER_MODEL) {
+		result.model = process.env.COMPOSER_MODEL;
+	}
+
+	// COMPOSER_MODEL_PROVIDER
+	if (process.env.COMPOSER_MODEL_PROVIDER) {
+		result.model_provider = process.env.COMPOSER_MODEL_PROVIDER;
+	}
+
+	// COMPOSER_APPROVAL_POLICY
+	if (process.env.COMPOSER_APPROVAL_POLICY) {
+		const policy = process.env.COMPOSER_APPROVAL_POLICY as ApprovalPolicy;
+		if (["untrusted", "on-failure", "on-request", "never"].includes(policy)) {
+			result.approval_policy = policy;
+		}
+	}
+
+	// COMPOSER_SANDBOX_MODE
+	if (process.env.COMPOSER_SANDBOX_MODE) {
+		const mode = process.env.COMPOSER_SANDBOX_MODE as SandboxMode;
+		if (["read-only", "workspace-write", "danger-full-access"].includes(mode)) {
+			result.sandbox_mode = mode;
+		}
+	}
+
+	// COMPOSER_PROFILE
+	if (process.env.COMPOSER_PROFILE) {
+		result.profile = process.env.COMPOSER_PROFILE;
+	}
+
+	return result;
+}
+
+/**
+ * Apply profile settings to configuration.
+ */
+function applyProfile(
+	config: ComposerConfig,
+	profileName: string,
+): ComposerConfig {
+	if (!config.profiles || !config.profiles[profileName]) {
+		logger.warn("Profile not found", { profile: profileName });
+		return config;
+	}
+
+	const profile = config.profiles[profileName];
+	const result = deepMerge(config, profile as Partial<ComposerConfig>);
+
+	logger.debug("Applied profile", { profile: profileName });
+	return result;
+}
+
+/**
+ * Load configuration from files and environment.
+ *
+ * @param workspaceDir - The current workspace directory
+ * @param profileName - Optional profile name to activate
+ * @param cliOverrides - Optional CLI flag overrides
+ */
+export function loadConfig(
+	workspaceDir: string,
+	profileName?: string,
+	cliOverrides?: Partial<ComposerConfig>,
+): ComposerConfig {
+	// Check cache
+	if (
+		cachedConfig &&
+		cachedWorkspaceDir === workspaceDir &&
+		cachedProfileName === (profileName ?? null)
+	) {
+		if (!cliOverrides || Object.keys(cliOverrides).length === 0) {
+			return cachedConfig;
+		}
+		return deepMerge(cachedConfig, cliOverrides);
+	}
+
+	// Start with defaults
+	let config = { ...DEFAULT_CONFIG };
+
+	// Load global config
+	const globalPath = join(homedir(), ".composer", "config.toml");
+	const globalConfig = parseConfigFile(globalPath);
+	if (globalConfig) {
+		config = deepMerge(config, globalConfig);
+	}
+
+	// Load project config
+	const projectPath = join(workspaceDir, ".composer", "config.toml");
+	const projectConfig = parseConfigFile(projectPath);
+	if (projectConfig) {
+		config = deepMerge(config, projectConfig);
+	}
+
+	// Apply environment overrides
+	config = applyEnvOverrides(config);
+
+	// Determine active profile
+	const activeProfile = profileName ?? config.profile;
+	if (activeProfile) {
+		config = applyProfile(config, activeProfile);
+	}
+
+	// Apply CLI overrides (highest precedence)
+	if (cliOverrides && Object.keys(cliOverrides).length > 0) {
+		config = deepMerge(config, cliOverrides);
+	}
+
+	// Cache the result (without CLI overrides)
+	cachedConfig = config;
+	cachedWorkspaceDir = workspaceDir;
+	cachedProfileName = profileName ?? null;
+
+	logger.info("Loaded configuration", {
+		global: globalConfig !== null,
+		project: projectConfig !== null,
+		profile: activeProfile,
+	});
+
+	return config;
+}
+
+/**
+ * Clear the configuration cache.
+ */
+export function clearConfigCache(): void {
+	cachedConfig = null;
+	cachedWorkspaceDir = null;
+	cachedProfileName = null;
+}
+
+/**
+ * Get a specific configuration value with type safety.
+ */
+export function getConfigValue<K extends keyof ComposerConfig>(
+	config: ComposerConfig,
+	key: K,
+): ComposerConfig[K] {
+	return config[key];
+}
+
+/**
+ * Get the list of available profiles.
+ */
+export function getAvailableProfiles(workspaceDir: string): string[] {
+	const config = loadConfig(workspaceDir);
+	if (!config.profiles) {
+		return [];
+	}
+	return Object.keys(config.profiles);
+}
+
+/**
+ * Get a summary of the current configuration for display.
+ */
+export function getConfigSummary(workspaceDir: string): string {
+	const config = loadConfig(workspaceDir);
+	const lines: string[] = [];
+
+	lines.push("Current Configuration");
+	lines.push("─".repeat(40));
+	lines.push(`Model: ${config.model ?? "default"}`);
+	lines.push(`Provider: ${config.model_provider ?? "anthropic"}`);
+	lines.push(`Approval Policy: ${config.approval_policy ?? "untrusted"}`);
+	lines.push(`Sandbox Mode: ${config.sandbox_mode ?? "workspace-write"}`);
+
+	if (config.profile) {
+		lines.push(`Active Profile: ${config.profile}`);
+	}
+
+	const profiles = getAvailableProfiles(workspaceDir);
+	if (profiles.length > 0) {
+		lines.push(`Available Profiles: ${profiles.join(", ")}`);
+	}
+
+	return lines.join("\n");
+}
+
+/**
+ * Parse a CLI config override in the format "key=value".
+ * Supports nested keys with dots (e.g., "model_providers.openai.base_url").
+ */
+export function parseCliOverride(
+	override: string,
+): { key: string; value: unknown } | null {
+	const eqIndex = override.indexOf("=");
+	if (eqIndex <= 0) {
+		return null;
+	}
+
+	const key = override.slice(0, eqIndex).trim();
+	let valueStr = override.slice(eqIndex + 1).trim();
+
+	// Try to parse as TOML value
+	try {
+		// Wrap in a table to parse
+		const tomlStr = `value = ${valueStr}`;
+		const parsed = parseTOML(tomlStr) as { value: unknown };
+		return { key, value: parsed.value };
+	} catch {
+		// If parsing fails, treat as string
+		// Remove surrounding quotes if present
+		if (
+			(valueStr.startsWith('"') && valueStr.endsWith('"')) ||
+			(valueStr.startsWith("'") && valueStr.endsWith("'"))
+		) {
+			valueStr = valueStr.slice(1, -1);
+		}
+		return { key, value: valueStr };
+	}
+}
+
+/**
+ * Apply a parsed CLI override to a configuration object.
+ */
+export function applyCliOverride(
+	config: ComposerConfig,
+	key: string,
+	value: unknown,
+): ComposerConfig {
+	const keys = key.split(".");
+	const result = { ...config };
+
+	// Navigate to the nested key
+	let current: Record<string, unknown> = result as Record<string, unknown>;
+	for (let i = 0; i < keys.length - 1; i++) {
+		const k = keys[i];
+		if (current[k] === undefined || typeof current[k] !== "object") {
+			current[k] = {};
+		}
+		current = current[k] as Record<string, unknown>;
+	}
+
+	// Set the value
+	current[keys[keys.length - 1]] = value;
+
+	return result;
+}

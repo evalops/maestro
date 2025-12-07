@@ -7,8 +7,15 @@
  * Configuration via environment variable or config file:
  *   COMPOSER_NOTIFY_PROGRAM=/path/to/script
  *   COMPOSER_NOTIFY_EVENTS=turn-complete,session-end (comma-separated, or "all")
+ *   COMPOSER_NOTIFY_TERMINAL=true (enables OSC 9 terminal notifications)
  *
  * The program receives a JSON payload as its first argument with event details.
+ *
+ * Terminal notifications use OSC 9 escape sequences supported by:
+ * - iTerm2
+ * - Ghostty
+ * - WezTerm
+ * - Windows Terminal
  */
 
 import { spawn } from "node:child_process";
@@ -44,6 +51,8 @@ export interface NotificationHooksConfig {
 	program?: string;
 	events?: NotificationEventType[];
 	timeout?: number;
+	/** Enable OSC 9 terminal notifications (iTerm2, Ghostty, WezTerm, Windows Terminal) */
+	terminalNotify?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -101,6 +110,12 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 		}
 	}
 
+	// Terminal notifications via OSC 9
+	const envTerminal = process.env.COMPOSER_NOTIFY_TERMINAL;
+	if (envTerminal === "true" || envTerminal === "1") {
+		config.terminalNotify = true;
+	}
+
 	// Check config file if no environment override
 	if (!config.program) {
 		const configPath = join(homedir(), ".composer", "hooks.json");
@@ -115,6 +130,12 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 				}
 				if (fileConfig.notify?.timeout) {
 					config.timeout = fileConfig.notify.timeout;
+				}
+				if (
+					fileConfig.notify?.terminalNotify !== undefined &&
+					config.terminalNotify === undefined
+				) {
+					config.terminalNotify = Boolean(fileConfig.notify.terminalNotify);
 				}
 			} catch (error) {
 				logger.warn("Failed to parse hooks.json", { error });
@@ -173,6 +194,42 @@ export async function sendNotification(
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
+}
+
+/**
+ * Send a terminal notification using OSC 9 escape sequence.
+ * Supported by iTerm2, Ghostty, WezTerm, Windows Terminal, and others.
+ *
+ * @param title - Notification title
+ * @param body - Notification body (optional)
+ */
+export function sendTerminalNotification(title: string, body?: string): void {
+	const config = loadNotificationConfig();
+	if (!config.terminalNotify) {
+		return;
+	}
+
+	const message = body ? `${title}: ${body}` : title;
+	// OSC 9 is the escape sequence for desktop notifications
+	// Format: ESC ] 9 ; message BEL
+	const osc9 = `\x1b]9;${message}\x07`;
+	process.stdout.write(osc9);
+	logger.debug("Terminal notification sent", { title });
+}
+
+/**
+ * Send notification on turn complete.
+ * Combines external program and terminal notifications.
+ */
+export function notifyTurnComplete(summary: string): void {
+	const config = loadNotificationConfig();
+
+	// Send terminal notification
+	if (config.terminalNotify) {
+		sendTerminalNotification("Composer", summary);
+	}
+
+	// External program is handled by sendNotification with full payload
 }
 
 /**
