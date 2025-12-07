@@ -5,7 +5,12 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { SocketModeClient } from "@slack/socket-mode";
-import { type ConversationsHistoryResponse, WebClient } from "@slack/web-api";
+import {
+	type ChatPostMessageArguments,
+	type ConversationsHistoryResponse,
+	type FilesUploadV2Arguments,
+	WebClient,
+} from "@slack/web-api";
 import * as logger from "../logger.js";
 import { type Attachment, ChannelStore } from "../store.js";
 
@@ -488,13 +493,16 @@ export class SlackBot {
 							text: displayText,
 						});
 					} else {
-						const result = await this.webClient.chat.postMessage({
+						const postArgs: ChatPostMessageArguments = {
 							channel: event.channel,
 							text: displayText,
 							thread_ts: threadTs,
 							// Also post to channel when starting a new thread (not replying to existing)
-							reply_broadcast: useThread && !parentThreadTs,
-						});
+							reply_broadcast: threadTs
+								? useThread && !parentThreadTs
+								: undefined,
+						};
+						const result = await this.webClient.chat.postMessage(postArgs);
 						messageTs = result.ts as string;
 					}
 
@@ -528,12 +536,15 @@ export class SlackBot {
 					accumulatedText = "_Thinking_";
 					const threadTs =
 						parentThreadTs || (useThread ? userMessageTs : undefined);
-					const result = await this.webClient.chat.postMessage({
+					const postArgs: ChatPostMessageArguments = {
 						channel: event.channel,
 						text: accumulatedText,
 						thread_ts: threadTs,
-						reply_broadcast: useThread && !parentThreadTs,
-					});
+						reply_broadcast: threadTs
+							? useThread && !parentThreadTs
+							: undefined,
+					};
+					const result = await this.webClient.chat.postMessage(postArgs);
 					messageTs = result.ts as string;
 				}
 			},
@@ -543,13 +554,14 @@ export class SlackBot {
 				const threadTs =
 					parentThreadTs || (useThread ? userMessageTs : undefined);
 
-				await this.webClient.files.uploadV2({
+				const uploadArgs: FilesUploadV2Arguments = {
 					channel_id: event.channel,
 					file: fileContent,
 					filename: fileName,
 					title: fileName,
 					thread_ts: threadTs,
-				});
+				};
+				await this.webClient.files.uploadV2(uploadArgs);
 			},
 			replaceMessage: async (newText: string) => {
 				updatePromise = updatePromise.then(async () => {
@@ -569,12 +581,15 @@ export class SlackBot {
 							text: displayText,
 						});
 					} else {
-						const result = await this.webClient.chat.postMessage({
+						const postArgs: ChatPostMessageArguments = {
 							channel: event.channel,
 							text: displayText,
 							thread_ts: threadTs,
-							reply_broadcast: useThread && !parentThreadTs,
-						});
+							reply_broadcast: threadTs
+								? useThread && !parentThreadTs
+								: undefined,
+						};
+						const result = await this.webClient.chat.postMessage(postArgs);
 						messageTs = result.ts as string;
 					}
 				});

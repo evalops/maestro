@@ -47,7 +47,7 @@ describe("RotatingLogWriter", () => {
 		return new Promise((resolve, reject) => {
 			writer.write(data, (err) => {
 				if (err) return reject(err);
-				writer.end((endErr) => {
+				writer.end((endErr: Error | null | undefined) => {
 					if (endErr) return reject(endErr);
 					resolve();
 				});
@@ -74,7 +74,7 @@ describe("RotatingLogWriter", () => {
 						if (err2) return reject(err2);
 						writer.write("Third", (err3) => {
 							if (err3) return reject(err3);
-							writer.end((endErr) => {
+							writer.end((endErr: Error | null | undefined) => {
 								if (endErr) return reject(endErr);
 								resolve();
 							});
@@ -93,7 +93,7 @@ describe("RotatingLogWriter", () => {
 			await new Promise<void>((resolve, reject) => {
 				writer.write(buffer, (err) => {
 					if (err) return reject(err);
-					writer.end((endErr) => {
+					writer.end((endErr: Error | null | undefined) => {
 						if (endErr) return reject(endErr);
 						resolve();
 					});
@@ -235,7 +235,7 @@ describe("RotatingLogWriter", () => {
 				writer.write("data", () => {
 					writeCompleted = true;
 				});
-				writer.end((err) => {
+				writer.end((err: Error | null | undefined) => {
 					if (err) return reject(err);
 					expect(writeCompleted).toBe(true);
 					resolve();

@@ -1,3 +1,4 @@
+import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context, Model } from "../../../src/agent/types.js";
 
@@ -466,14 +467,9 @@ describe("Bedrock Provider", () => {
 					{
 						name: "read_file",
 						description: "Reads a file from disk",
-						parameters: {
-							type: "object",
-							properties: {
-								path: { type: "string", description: "The file path" },
-							},
-							required: ["path"],
-						},
-						execute: async () => ({ content: [], isError: false }),
+						parameters: Type.Object({
+							path: Type.String({ description: "The file path" }),
+						}),
 					},
 				],
 			});
@@ -494,13 +490,16 @@ describe("Bedrock Provider", () => {
 									name: "read_file",
 									description: "Reads a file from disk",
 									inputSchema: {
-										json: {
+										json: expect.objectContaining({
 											type: "object",
-											properties: {
-												path: { type: "string", description: "The file path" },
-											},
+											properties: expect.objectContaining({
+												path: expect.objectContaining({
+													type: "string",
+													description: "The file path",
+												}),
+											}),
 											required: ["path"],
-										},
+										}),
 									},
 								},
 							},

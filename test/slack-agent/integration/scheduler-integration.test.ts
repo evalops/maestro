@@ -230,8 +230,10 @@ describe("Scheduler Integration", () => {
 		);
 
 		expect(scheduler.listTasks("C123456")).toHaveLength(1);
+		expect(task).toBeDefined();
+		if (!task) throw new Error("Task should be defined");
 
-		const cancelled = await scheduler.cancel(task?.id);
+		const cancelled = await scheduler.cancel(task.id);
 		expect(cancelled).toBe(true);
 
 		expect(scheduler.listTasks("C123456")).toHaveLength(0);

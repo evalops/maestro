@@ -1,4 +1,5 @@
 import { TextEncoder } from "node:util";
+import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type OpenAIToolChoice,
@@ -213,7 +214,13 @@ describe("toolChoice parameter", () => {
 	const contextWithTools: Context = {
 		systemPrompt: "",
 		messages: [],
-		tools: [{ name: "test_tool", description: "A test tool", parameters: {} }],
+		tools: [
+			{
+				name: "test_tool",
+				description: "A test tool",
+				parameters: Type.Object({}),
+			},
+		],
 	};
 
 	const completionsModel: Model<"openai-completions"> = {
