@@ -6,6 +6,8 @@
 //! - Tool-specific icons
 //! - Shimmer animations for "Working" text
 //! - Elapsed time display
+//! - Timestamps
+//! - Collapsible thinking blocks
 
 use ratatui::{
     buffer::Buffer,
@@ -18,6 +20,168 @@ use ratatui::{
 use crate::effects::shimmer_spans;
 use crate::state::{Message, MessageRole, ToolCallStatus};
 use std::collections::HashSet;
+use std::time::SystemTime;
+
+/// Parse markdown text into styled lines
+/// Supports: **bold**, `code`, ```code blocks```, [links](url)
+fn parse_markdown_lines(text: &str) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut in_code_block = false;
+
+    for line_text in text.lines() {
+        if line_text.starts_with("```") {
+            in_code_block = !in_code_block;
+            if in_code_block {
+                // Code block start with language hint
+                let lang = line_text.trim_start_matches("```").trim();
+                lines.push(Line::from(vec![
+                    Span::styled("```", Style::default().fg(Color::DarkGray)),
+                    Span::styled(lang.to_string(), Style::default().fg(Color::Yellow)),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "```",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            continue;
+        }
+
+        if in_code_block {
+            // Inside code block - render with dim style
+            lines.push(Line::from(Span::styled(
+                format!("  {}", line_text),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::DIM),
+            )));
+        } else {
+            // Parse inline markdown
+            lines.push(parse_markdown_line(line_text));
+        }
+    }
+
+    lines
+}
+
+/// Parse a single line of markdown into styled spans
+fn parse_markdown_line(text: &str) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // Check for bold (**text**)
+        if i + 1 < chars.len() && chars[i] == '*' && chars[i + 1] == '*' {
+            // Flush current
+            if !current.is_empty() {
+                spans.push(Span::raw(std::mem::take(&mut current)));
+            }
+            i += 2;
+            let start = i;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '*') {
+                i += 1;
+            }
+            let bold_text: String = chars[start..i].iter().collect();
+            spans.push(Span::styled(
+                bold_text,
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            if i + 1 < chars.len() {
+                i += 2; // skip closing **
+            }
+            continue;
+        }
+
+        // Check for inline code (`code`)
+        if chars[i] == '`' {
+            // Flush current
+            if !current.is_empty() {
+                spans.push(Span::raw(std::mem::take(&mut current)));
+            }
+            i += 1;
+            let start = i;
+            while i < chars.len() && chars[i] != '`' {
+                i += 1;
+            }
+            let code_text: String = chars[start..i].iter().collect();
+            spans.push(Span::styled(
+                code_text,
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+            ));
+            if i < chars.len() {
+                i += 1; // skip closing `
+            }
+            continue;
+        }
+
+        // Check for link [text](url)
+        if chars[i] == '[' {
+            // Flush current
+            if !current.is_empty() {
+                spans.push(Span::raw(std::mem::take(&mut current)));
+            }
+            i += 1;
+            let text_start = i;
+            while i < chars.len() && chars[i] != ']' {
+                i += 1;
+            }
+            let link_text: String = chars[text_start..i].iter().collect();
+            i += 1; // skip ]
+
+            if i < chars.len() && chars[i] == '(' {
+                i += 1;
+                let url_start = i;
+                while i < chars.len() && chars[i] != ')' {
+                    i += 1;
+                }
+                let _url: String = chars[url_start..i].iter().collect();
+                spans.push(Span::styled(
+                    link_text,
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+                if i < chars.len() {
+                    i += 1; // skip )
+                }
+            } else {
+                // Not a valid link, render as plain text
+                current.push('[');
+                current.push_str(&link_text);
+                current.push(']');
+            }
+            continue;
+        }
+
+        current.push(chars[i]);
+        i += 1;
+    }
+
+    // Flush remaining
+    if !current.is_empty() {
+        spans.push(Span::raw(current));
+    }
+
+    if spans.is_empty() {
+        Line::default()
+    } else {
+        Line::from(spans)
+    }
+}
+
+/// Format a timestamp for display (HH:MM)
+fn format_timestamp(time: SystemTime) -> String {
+    use std::time::UNIX_EPOCH;
+    let duration = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs();
+    // Convert to local time (simplified - just use UTC offset approximation)
+    // For proper timezone support, would need chrono crate
+    let hours = (secs / 3600) % 24;
+    let minutes = (secs / 60) % 60;
+    format!("{:02}:{:02}", hours, minutes)
+}
 
 /// Get tool-specific icon (matching TypeScript TUI patterns)
 fn get_tool_icon(tool: &str) -> &'static str {
@@ -62,23 +226,32 @@ pub fn calculate_message_height(
     }
 
     let mut height: u16 = 0;
-    let content_width = width.saturating_sub(2).max(1) as usize;
+    let content_width = width.saturating_sub(4).max(1) as usize;
 
-    // Header line (only for user messages or assistant messages with content/thinking)
-    if message.role == MessageRole::User
-        || !message.content.is_empty()
-        || !message.thinking.is_empty()
-    {
-        height += 1;
-    }
+    // Empty line before message (separator)
+    height += 1;
 
-    // Thinking content (collapsed to 1-3 lines with summary)
+    // Header line with role and timestamp
+    height += 1;
+
+    // Thinking content
     if !message.thinking.is_empty() {
-        // Show thinking header + 2 preview lines max
-        height += 3;
+        if message.thinking_expanded {
+            // Expanded: show full thinking with wrapping
+            let thinking_lines = message
+                .thinking
+                .lines()
+                .map(|line| (line.len() / content_width + 1) as u16)
+                .sum::<u16>()
+                .max(1);
+            height += thinking_lines + 1; // +1 for header
+        } else {
+            // Collapsed: just header + 2 preview lines
+            height += 3;
+        }
     }
 
-    // Content lines (rough estimate based on character count)
+    // Content lines
     if !message.content.is_empty() {
         let content_lines = message
             .content
@@ -104,26 +277,22 @@ pub fn calculate_message_height(
                 .max(1);
             height += args_lines;
 
-            // output lines
+            // output lines (limit to 10 lines max for display)
             if !tc.output.is_empty() {
                 let out_lines = tc
                     .output
                     .lines()
+                    .take(10)
                     .map(|l| (l.len() / content_width + 1) as u16)
                     .sum::<u16>()
                     .max(1);
-                height += out_lines;
+                height += out_lines + 1; // +1 for "Output:" header
             }
         } else {
             // collapsed preview
             height += 1;
         }
-        // spacing
-        height += 1;
     }
-
-    // Spacing after message
-    height += 1;
 
     height
 }
@@ -161,16 +330,24 @@ impl Widget for MessageWidget<'_> {
         let mut y = area.y;
         let max_y = area.y + area.height;
 
-        // Role header - only render for user messages or assistant messages with content/thinking
-        let should_show_header = self.message.role == MessageRole::User
-            || !self.message.content.is_empty()
-            || !self.message.thinking.is_empty();
+        // Blank line separator before message
+        if y < max_y {
+            y += 1;
+        }
 
-        if should_show_header && y < max_y {
+        // Role header with prefix and timestamp (Codex style)
+        if y < max_y {
             let mut header_spans: Vec<Span<'static>> = Vec::new();
 
             match self.message.role {
                 MessageRole::User => {
+                    // User messages: "› You" prefix
+                    header_spans.push(Span::styled(
+                        "› ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD | Modifier::DIM),
+                    ));
                     header_spans.push(Span::styled(
                         "You",
                         Style::default()
@@ -179,6 +356,13 @@ impl Widget for MessageWidget<'_> {
                     ));
                 }
                 MessageRole::Assistant => {
+                    // Assistant messages: "• Composer" prefix
+                    header_spans.push(Span::styled(
+                        "• ",
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::DIM),
+                    ));
                     header_spans.push(Span::styled(
                         "Composer",
                         Style::default()
@@ -198,6 +382,15 @@ impl Widget for MessageWidget<'_> {
                 }
             };
 
+            // Add timestamp (right-aligned feel)
+            let timestamp = format_timestamp(self.message.timestamp);
+            header_spans.push(Span::styled(
+                format!("  {}", timestamp),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            ));
+
             let header = Line::from(header_spans);
             let header_para = Paragraph::new(header);
             header_para.render(
@@ -211,20 +404,28 @@ impl Widget for MessageWidget<'_> {
             y += 1;
         }
 
-        // Render thinking content (collapsed with preview)
+        // Render thinking content (collapsible)
         if y < max_y && !self.message.thinking.is_empty() {
-            // Thinking header - use glyph instead of emoji
+            let expanded = self.message.thinking_expanded;
+            let toggle_hint = if expanded { "[-]" } else { "[+]" };
+
+            // Thinking header with collapse/expand indicator
             let thinking_header = Line::from(vec![
-                Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-                Span::styled("~ ", Style::default().fg(Color::Yellow)),
+                Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                Span::styled("◆ ", Style::default().fg(Color::Yellow)),
                 Span::styled("Thinking", Style::default().fg(Color::Yellow)),
                 Span::styled(
-                    format!(" ({} chars)", self.message.thinking.len()),
+                    format!(" ({} chars) ", self.message.thinking.len()),
                     Style::default().fg(Color::DarkGray),
                 ),
+                Span::styled(
+                    toggle_hint,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ),
             ]);
-            let header_para = Paragraph::new(thinking_header);
-            header_para.render(
+            Paragraph::new(thinking_header).render(
                 Rect {
                     x: area.x,
                     y,
@@ -235,21 +436,20 @@ impl Widget for MessageWidget<'_> {
             );
             y += 1;
 
-            // Show first 2 lines of thinking as preview
-            if y < max_y {
-                let preview_lines: Vec<&str> = self.message.thinking.lines().take(2).collect();
-                for line in preview_lines {
+            if expanded {
+                // Show all thinking content with gutter
+                for line in self.message.thinking.lines() {
                     if y >= max_y {
                         break;
                     }
-                    let max_len = area.width.saturating_sub(4) as usize;
+                    let max_len = area.width.saturating_sub(6) as usize;
                     let truncated = if line.len() > max_len {
                         format!("{}...", &line[..max_len.saturating_sub(3)])
                     } else {
                         line.to_string()
                     };
-                    let preview = Line::from(vec![
-                        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+                    let content = Line::from(vec![
+                        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
                         Span::styled(
                             truncated,
                             Style::default()
@@ -257,8 +457,40 @@ impl Widget for MessageWidget<'_> {
                                 .add_modifier(Modifier::ITALIC),
                         ),
                     ]);
-                    let preview_para = Paragraph::new(preview);
-                    preview_para.render(
+                    Paragraph::new(content).render(
+                        Rect {
+                            x: area.x,
+                            y,
+                            width: area.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
+                    y += 1;
+                }
+            } else {
+                // Show first 2 lines of thinking as preview
+                let preview_lines: Vec<&str> = self.message.thinking.lines().take(2).collect();
+                for line in preview_lines {
+                    if y >= max_y {
+                        break;
+                    }
+                    let max_len = area.width.saturating_sub(6) as usize;
+                    let truncated = if line.len() > max_len {
+                        format!("{}...", &line[..max_len.saturating_sub(3)])
+                    } else {
+                        line.to_string()
+                    };
+                    let preview = Line::from(vec![
+                        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            truncated,
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]);
+                    Paragraph::new(preview).render(
                         Rect {
                             x: area.x,
                             y,
@@ -272,33 +504,30 @@ impl Widget for MessageWidget<'_> {
             }
         }
 
-        // Render content (if any)
+        // Render content with markdown styling
         if y < max_y && !self.message.content.is_empty() {
-            let content_height = {
-                let content_width = area.width.saturating_sub(2).max(1) as usize;
-                self.message
-                    .content
-                    .lines()
-                    .map(|line| (line.len() / content_width + 1) as u16)
-                    .sum::<u16>()
-                    .max(1)
-            };
+            // Parse markdown and render styled lines
+            let md_lines = parse_markdown_lines(&self.message.content);
 
-            let available_height = max_y.saturating_sub(y);
-            let render_height = content_height.min(available_height);
-
-            let content_area = Rect {
-                x: area.x + 2, // Indent content
-                y,
-                width: area.width.saturating_sub(2),
-                height: render_height,
-            };
-
-            let content = Paragraph::new(self.message.content.as_str())
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::White));
-            content.render(content_area, buf);
-            y += render_height;
+            for line in md_lines {
+                if y >= max_y {
+                    break;
+                }
+                // Render with indent
+                let mut prefixed_spans = vec![Span::raw("  ")];
+                prefixed_spans.extend(line.spans);
+                let prefixed_line = Line::from(prefixed_spans);
+                Paragraph::new(prefixed_line).render(
+                    Rect {
+                        x: area.x,
+                        y,
+                        width: area.width,
+                        height: 1,
+                    },
+                    buf,
+                );
+                y += 1;
+            }
         }
 
         // Render tool calls with bordered panels and expand/collapse
@@ -693,12 +922,31 @@ impl Widget for ChatInputWidget<'_> {
     }
 }
 
+/// Token usage summary for display
+#[derive(Default, Clone, Copy)]
+pub struct UsageSummary {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl UsageSummary {
+    /// Format tokens for display (e.g., "1.2k" for 1200)
+    fn format_tokens(count: u64) -> String {
+        if count >= 1000 {
+            format!("{:.1}k", count as f64 / 1000.0)
+        } else {
+            count.to_string()
+        }
+    }
+}
+
 /// Status bar widget
 pub struct StatusBarWidget<'a> {
     model: Option<&'a str>,
     provider: Option<&'a str>,
     cwd: Option<&'a str>,
     git_branch: Option<&'a str>,
+    usage: UsageSummary,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -713,7 +961,13 @@ impl<'a> StatusBarWidget<'a> {
             provider,
             cwd,
             git_branch,
+            usage: UsageSummary::default(),
         }
+    }
+
+    pub fn with_usage(mut self, usage: UsageSummary) -> Self {
+        self.usage = usage;
+        self
     }
 }
 
@@ -753,22 +1007,40 @@ impl Widget for StatusBarWidget<'_> {
             }
         }
 
-        // Terminal size on the right side
-        let size_str = if let Ok((cols, rows)) = crate::terminal::size() {
-            format!(" {}x{}", cols, rows)
-        } else {
-            String::new()
-        };
-
         let line = Line::from(spans);
         let para = Paragraph::new(line).style(Style::default().fg(Color::DarkGray));
         para.render(area, buf);
 
-        // Render size on the right
-        if !size_str.is_empty() {
-            let size_x = area.right().saturating_sub(size_str.len() as u16);
-            let size_span = Span::styled(&size_str, Style::default().fg(Color::DarkGray));
-            buf.set_span(size_x, area.y, &size_span, size_str.len() as u16);
+        // Build right-side info (usage + terminal size)
+        let mut right_spans = Vec::new();
+
+        // Token usage
+        let total_tokens = self.usage.input_tokens + self.usage.output_tokens;
+        if total_tokens > 0 {
+            right_spans.push(Span::styled(
+                format!(
+                    "↑{} ↓{} ",
+                    UsageSummary::format_tokens(self.usage.input_tokens),
+                    UsageSummary::format_tokens(self.usage.output_tokens)
+                ),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        // Terminal size
+        if let Ok((cols, rows)) = crate::terminal::size() {
+            right_spans.push(Span::styled(
+                format!("{}x{}", cols, rows),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        // Render right-side info
+        if !right_spans.is_empty() {
+            let right_line = Line::from(right_spans);
+            let right_width = right_line.width() as u16;
+            let right_x = area.right().saturating_sub(right_width);
+            buf.set_line(right_x, area.y, &right_line, right_width);
         }
     }
 }
@@ -812,13 +1084,26 @@ impl Widget for ChatView<'_> {
         );
         input_widget.render(chunks[1], buf);
 
+        // Calculate total usage from all messages
+        let usage = self
+            .state
+            .messages
+            .iter()
+            .filter_map(|m| m.usage.as_ref())
+            .fold(UsageSummary::default(), |mut acc, u| {
+                acc.input_tokens += u.input_tokens;
+                acc.output_tokens += u.output_tokens;
+                acc
+            });
+
         // Render status bar
         let status_widget = StatusBarWidget::new(
             self.state.model.as_deref(),
             self.state.provider.as_deref(),
             self.state.cwd.as_deref(),
             self.state.git_branch.as_deref(),
-        );
+        )
+        .with_usage(usage);
         status_widget.render(chunks[2], buf);
     }
 }

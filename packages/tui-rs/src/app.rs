@@ -615,8 +615,13 @@ Add the required fields and retry.",
                 // Jump to latest
                 self.state.scroll_offset = 0;
             }
-            KeyCode::Char('t') if !self.state.busy => {
+            KeyCode::Char('t') if !self.state.busy && ctrl => {
+                // Ctrl+T: toggle last tool call expansion
                 self.toggle_last_tool_call();
+            }
+            KeyCode::Tab if !self.state.busy => {
+                // Tab: toggle thinking on last assistant message with thinking
+                self.toggle_last_thinking();
             }
 
             // Input editing
@@ -760,6 +765,8 @@ Add the required fields and retry.",
                                     streaming: false,
                                     tool_calls: Vec::new(),
                                     usage: None,
+                                    timestamp: std::time::SystemTime::now(),
+                                    thinking_expanded: false,
                                 });
                             }
 
@@ -1034,15 +1041,20 @@ Composer TUI - Keyboard Shortcuts
 Navigation:
   Up/Down       Scroll messages / Navigate completions
   PageUp/Down   Scroll faster
+  g/G           Jump to top/bottom
+  j/k           Scroll up/down (vim style)
   Ctrl+L        Clear screen
 
 Input:
   Enter         Send message / Execute command
-  Tab           Cycle slash command completions
   @             Open file search
   /             Start slash command
   Ctrl+U        Clear input
   Esc           Cancel / Close modal
+
+Toggle:
+  Tab           Toggle thinking expansion
+  Ctrl+T        Toggle tool call expansion
 
 Modals:
   Ctrl+P        Open command palette
@@ -1189,6 +1201,20 @@ Slash Commands:
             .find_map(|m| m.tool_calls.last().map(|tc| tc.call_id.clone()))
         {
             self.state.toggle_tool_call(&call_id);
+        }
+    }
+
+    /// Toggle thinking expansion for the most recent message with thinking
+    fn toggle_last_thinking(&mut self) {
+        if let Some(msg_id) = self
+            .state
+            .messages
+            .iter()
+            .rev()
+            .find(|m| !m.thinking.is_empty())
+            .map(|m| m.id.clone())
+        {
+            self.state.toggle_thinking(&msg_id);
         }
     }
 

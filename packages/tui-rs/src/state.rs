@@ -2,7 +2,7 @@
 //!
 //! Manages the chat state, messages, and UI state.
 
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use crate::agent::{FromAgent, TokenUsage};
 
@@ -23,6 +23,10 @@ pub struct Message {
     pub tool_calls: Vec<ToolCallState>,
     /// Token usage (for assistant messages)
     pub usage: Option<TokenUsage>,
+    /// When this message was created
+    pub timestamp: SystemTime,
+    /// Whether thinking is expanded (for toggle)
+    pub thinking_expanded: bool,
 }
 
 /// Who sent the message
@@ -147,6 +151,8 @@ impl AppState {
                     streaming: true,
                     tool_calls: Vec::new(),
                     usage: None,
+                    timestamp: SystemTime::now(),
+                    thinking_expanded: false,
                 });
             }
 
@@ -297,6 +303,8 @@ impl AppState {
             streaming: false,
             tool_calls: Vec::new(),
             usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
         });
         self.busy = true;
         self.busy_since = Some(Instant::now());
@@ -381,7 +389,16 @@ impl AppState {
             streaming: false,
             tool_calls: Vec::new(),
             usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
         });
+    }
+
+    /// Toggle thinking expansion for a message
+    pub fn toggle_thinking(&mut self, message_id: &str) {
+        if let Some(msg) = self.messages.iter_mut().find(|m| m.id == message_id) {
+            msg.thinking_expanded = !msg.thinking_expanded;
+        }
     }
 
     /// Scroll up in message list
