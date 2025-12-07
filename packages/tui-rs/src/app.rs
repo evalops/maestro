@@ -412,17 +412,26 @@ Retry with a supported tool (bash/read/write/glob/grep) and valid args."
                 });
 
                 if tool.eq_ignore_ascii_case("bash") && command_trimmed.is_none() {
-                    // Immediately deny and inform the user; this keeps the UI usable when a model emits {} tool args
+                    // Auto-fill a safe default command so the model makes progress instead of looping
+                    let mut filled_args = args.clone();
+                    filled_args
+                        .as_object_mut()
+                        .map(|obj| obj.insert("command".to_string(), serde_json::json!("pwd")));
+
                     self.state.add_system_message(
-                        "Skipped empty bash tool call (model sent no command). \
-Retry with e.g. bash {\"command\":\"ls\"} or read {\"file_path\":\"/path\"}."
+                        "Received empty bash tool call; auto-filled command as \"pwd\" to proceed."
                             .to_string(),
                     );
+
+                    // Record tool call
                     self.state.handle_agent_message(msg.clone());
-                    self.state
-                        .fail_tool_call(call_id, "Empty bash command (denied)");
-                    self.handle_tool_approval(call_id.clone(), tool.clone(), args.clone(), false)
-                        .await?;
+                    // Run the tool with the filled command (auto-approved)
+                    self.execute_tool_and_respond(
+                        call_id.clone(),
+                        tool.clone(),
+                        filled_args.clone(),
+                    )
+                    .await?;
                     return Ok(());
                 }
 
