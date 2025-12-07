@@ -34,7 +34,7 @@
 //! # Example
 //!
 //! ```
-//! use tui_rs::markdown::render_markdown;
+//! use composer_tui::markdown::render_markdown;
 //!
 //! let markdown = "# Hello\n\nThis is **bold** and *italic*.";
 //! let text = render_markdown(markdown);
@@ -113,7 +113,7 @@ impl Default for MarkdownStyles {
 /// # Example
 ///
 /// ```
-/// use tui_rs::markdown::render_markdown;
+/// use composer_tui::markdown::render_markdown;
 ///
 /// let text = render_markdown("**Bold** and *italic*");
 /// ```

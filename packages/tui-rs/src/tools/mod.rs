@@ -45,7 +45,7 @@
 //! # Example Usage
 //!
 //! ```rust,no_run
-//! use tui_rs::tools::{ToolExecutor, BashTool};
+//! use composer_tui::tools::{ToolExecutor, BashTool};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create an executor with a working directory

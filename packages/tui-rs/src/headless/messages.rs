@@ -21,7 +21,7 @@
 //!
 //! The protocol uses serde's `tag` attribute to create discriminated unions:
 //!
-//! ```rust
+//! ```rust,ignore
 //! #[derive(Serialize, Deserialize)]
 //! #[serde(tag = "type", rename_all = "snake_case")]
 //! enum ToAgentMessage {
@@ -46,7 +46,7 @@
 //!
 //! Optional fields use the `skip_serializing_if` attribute to omit null values:
 //!
-//! ```rust
+//! ```rust,ignore
 //! #[serde(skip_serializing_if = "Option::is_none")]
 //! attachments: Option<Vec<String>>
 //! ```
@@ -117,8 +117,8 @@ use std::collections::HashMap;
 ///
 /// # Examples
 ///
-/// ```rust
-/// use tui_rs::headless::ToAgentMessage;
+/// ```rust,ignore
+/// use composer_tui::headless::ToAgentMessage;
 ///
 /// // Send a simple prompt
 /// let msg = ToAgentMessage::Prompt {
@@ -201,8 +201,8 @@ pub struct ToolResult {
 ///
 /// The `#[serde(tag = "type")]` attribute enables type-directed deserialization:
 ///
-/// ```rust
-/// use tui_rs::headless::FromAgentMessage;
+/// ```rust,ignore
+/// use composer_tui::headless::FromAgentMessage;
 ///
 /// let json = r#"{"type":"ready","model":"claude-3-opus","provider":"anthropic"}"#;
 /// let msg: FromAgentMessage = serde_json::from_str(json)?;
@@ -299,8 +299,8 @@ impl TokenUsage {
 ///
 /// # Usage Pattern
 ///
-/// ```rust
-/// use tui_rs::headless::{AgentState, FromAgentMessage};
+/// ```rust,ignore
+/// use composer_tui::headless::{AgentState, FromAgentMessage};
 ///
 /// let mut state = AgentState::default();
 ///

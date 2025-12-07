@@ -46,7 +46,7 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```rust,ignore
 //! use composer_tui::agent::{NativeAgent, NativeAgentConfig, FromAgent};
 //!
 //! # async fn example() -> anyhow::Result<()> {

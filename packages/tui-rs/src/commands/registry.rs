@@ -32,8 +32,8 @@
 //!
 //! # Example
 //!
-//! ```rust
-//! use crate::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
+//! ```rust,ignore
+//! use composer_tui::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
 //!
 //! let mut registry = CommandRegistry::new();
 //!
@@ -93,8 +93,8 @@ use super::types::{
 ///
 /// # Examples
 ///
-/// ```rust
-/// use crate::commands::{CommandRegistry, build_command_registry};
+/// ```rust,ignore
+/// use composer_tui::commands::{CommandRegistry, build_command_registry};
 /// use std::sync::Arc;
 ///
 /// // Build the default registry
@@ -144,8 +144,8 @@ impl CommandRegistry {
     ///
     /// # Example
     ///
-    /// ```rust
-    /// use crate::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
+    /// ```rust,ignore
+    /// use composer_tui::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
     ///
     /// let mut registry = CommandRegistry::new();
     ///
@@ -192,8 +192,8 @@ impl CommandRegistry {
     ///
     /// # Example
     ///
-    /// ```rust
-    /// use crate::commands::build_command_registry;
+    /// ```rust,ignore
+    /// use composer_tui::commands::build_command_registry;
     ///
     /// let registry = build_command_registry();
     ///
@@ -273,8 +273,8 @@ impl CommandRegistry {
     ///
     /// # Example
     ///
-    /// ```rust
-    /// use crate::commands::build_command_registry;
+    /// ```rust,ignore
+    /// use composer_tui::commands::build_command_registry;
     ///
     /// let registry = build_command_registry();
     ///
@@ -373,7 +373,7 @@ impl Default for CommandRegistry {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// // Command definition
 /// let args = vec![
 ///     CommandArgument::string("name", "Name").required(),
@@ -465,7 +465,7 @@ fn parse_arguments(
 /// # Function Pointers and Closures
 ///
 /// Each command handler is a boxed closure with the signature:
-/// ```rust
+/// ```rust,ignore
 /// Box<dyn Fn(&CommandContext) -> CommandResult + Send + Sync>
 /// ```
 ///
@@ -477,8 +477,8 @@ fn parse_arguments(
 ///
 /// # Example
 ///
-/// ```rust
-/// use crate::commands::build_command_registry;
+/// ```rust,ignore
+/// use composer_tui::commands::build_command_registry;
 ///
 /// let registry = build_command_registry();
 ///

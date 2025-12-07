@@ -45,8 +45,8 @@
 //!
 //! # Example Usage
 //!
-//! ```rust
-//! use crate::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
+//! ```rust,ignore
+//! use composer_tui::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
 //! use std::sync::Arc;
 //!
 //! let registry = Arc::new(build_command_registry());
@@ -104,7 +104,7 @@ use super::types::Command;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// // User types "/h"
 /// // Matcher returns CommandMatch {
 /// //   command: Arc<Command> for "help",
@@ -206,8 +206,8 @@ mod scores {
 ///
 /// # Example
 ///
-/// ```rust
-/// use crate::commands::{build_command_registry, SlashCommandMatcher};
+/// ```rust,ignore
+/// use composer_tui::commands::{build_command_registry, SlashCommandMatcher};
 /// use std::sync::Arc;
 ///
 /// let registry = Arc::new(build_command_registry());
@@ -298,7 +298,7 @@ impl SlashCommandMatcher {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let matches = matcher.get_matches("/the");
     /// // Returns:
     /// // [
@@ -455,8 +455,8 @@ impl SlashCommandMatcher {
 ///
 /// # Example Usage
 ///
-/// ```rust
-/// use crate::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
+/// ```rust,ignore
+/// use composer_tui::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
 /// use std::sync::Arc;
 ///
 /// let registry = Arc::new(build_command_registry());

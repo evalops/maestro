@@ -181,7 +181,7 @@ pub enum ToAgent {
 /// # Examples
 ///
 /// ```
-/// use tui_rs::agent::ToolResult;
+/// use composer_tui::agent::ToolResult;
 ///
 /// // Successful execution
 /// let result = ToolResult {
@@ -491,7 +491,7 @@ pub enum FromAgent {
 /// # Examples
 ///
 /// ```
-/// use tui_rs::agent::TokenUsage;
+/// use composer_tui::agent::TokenUsage;
 ///
 /// let usage = TokenUsage {
 ///     input_tokens: 1000,

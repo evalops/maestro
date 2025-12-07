@@ -155,7 +155,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```
-    /// use tui_rs::tools::ToolExecutor;
+    /// use composer_tui::tools::ToolExecutor;
     ///
     /// // From &str
     /// let executor = ToolExecutor::new("/workspace");
@@ -186,7 +186,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```
-    /// use tui_rs::tools::ToolExecutor;
+    /// use composer_tui::tools::ToolExecutor;
     ///
     /// let executor = ToolExecutor::new(".");
     /// assert!(executor.has_tool("bash"));
@@ -214,7 +214,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```
-    /// use tui_rs::tools::ToolExecutor;
+    /// use composer_tui::tools::ToolExecutor;
     /// use serde_json::json;
     ///
     /// let executor = ToolExecutor::new(".");
@@ -252,7 +252,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```
-    /// use tui_rs::tools::ToolExecutor;
+    /// use composer_tui::tools::ToolExecutor;
     /// use serde_json::json;
     ///
     /// let executor = ToolExecutor::new(".");
@@ -322,7 +322,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use tui_rs::tools::ToolExecutor;
+    /// use composer_tui::tools::ToolExecutor;
     /// use serde_json::json;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -340,7 +340,7 @@ impl ToolExecutor {
     ///
     /// // Execute with event streaming
     /// use tokio::sync::mpsc;
-    /// use tui_rs::agent::FromAgent;
+    /// use composer_tui::agent::FromAgent;
     ///
     /// let (tx, mut rx) = mpsc::unbounded_channel();
     /// let result = executor.execute("read", &json!({"file_path": "Cargo.toml"}), Some(&tx), "call-2").await;
@@ -692,7 +692,7 @@ impl ToolExecutor {
 /// # Examples
 ///
 /// ```
-/// use tui_rs::tools::ToolRegistry;
+/// use composer_tui::tools::ToolRegistry;
 /// use serde_json::json;
 ///
 /// let registry = ToolRegistry::new();
@@ -903,7 +903,7 @@ impl ToolRegistry {
     /// # Examples
     ///
     /// ```
-    /// use tui_rs::tools::ToolRegistry;
+    /// use composer_tui::tools::ToolRegistry;
     /// use serde_json::json;
     ///
     /// let registry = ToolRegistry::new();
@@ -963,7 +963,7 @@ impl ToolRegistry {
     /// # Examples
     ///
     /// ```
-    /// use tui_rs::tools::ToolRegistry;
+    /// use composer_tui::tools::ToolRegistry;
     ///
     /// let registry = ToolRegistry::new();
     ///
@@ -993,7 +993,7 @@ impl ToolRegistry {
     /// # Examples
     ///
     /// ```
-    /// use tui_rs::tools::ToolRegistry;
+    /// use composer_tui::tools::ToolRegistry;
     ///
     /// let registry = ToolRegistry::new();
     ///
@@ -1033,7 +1033,7 @@ impl ToolRegistry {
     /// # Examples
     ///
     /// ```
-    /// use tui_rs::tools::ToolRegistry;
+    /// use composer_tui::tools::ToolRegistry;
     /// use serde_json::json;
     ///
     /// let registry = ToolRegistry::new();

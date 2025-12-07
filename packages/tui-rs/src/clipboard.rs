@@ -62,7 +62,7 @@ pub enum ClipboardError {
 /// # Example
 ///
 /// ```no_run
-/// use tui_rs::clipboard::ClipboardManager;
+/// use composer_tui::clipboard::ClipboardManager;
 ///
 /// let mut clipboard = ClipboardManager::new();
 /// if clipboard.is_available() {

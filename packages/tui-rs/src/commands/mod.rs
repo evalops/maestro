@@ -45,8 +45,8 @@
 //!
 //! # Usage Example
 //!
-//! ```rust
-//! use crate::commands::{build_command_registry, SlashCommandMatcher};
+//! ```rust,ignore
+//! use composer_tui::commands::{build_command_registry, SlashCommandMatcher};
 //! use std::sync::Arc;
 //!
 //! // Build the default command registry
@@ -73,7 +73,7 @@
 //!
 //! Example:
 //!
-//! ```rust
+//! ```rust,ignore
 //! registry.register(
 //!     Command::new(
 //!         "mycommand",

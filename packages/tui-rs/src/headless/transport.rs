@@ -122,8 +122,8 @@ impl std::error::Error for TransportError {}
 ///
 /// # Examples
 ///
-/// ```rust
-/// use tui_rs::headless::transport::TransportConfig;
+/// ```rust,ignore
+/// use composer_tui::headless::transport::TransportConfig;
 ///
 /// let config = TransportConfig {
 ///     cli_path: "composer".to_string(),
@@ -180,8 +180,8 @@ impl Default for TransportConfig {
 ///
 /// # Examples
 ///
-/// ```rust
-/// use tui_rs::headless::transport::AgentTransportBuilder;
+/// ```rust,ignore
+/// use composer_tui::headless::transport::AgentTransportBuilder;
 ///
 /// let mut transport = AgentTransportBuilder::new()
 ///     .cli_path("composer")

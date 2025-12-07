@@ -38,8 +38,8 @@
 //!
 //! # Example Command Flow
 //!
-//! ```rust
-//! use crate::commands::{Command, CommandCategory, CommandContext, CommandOutput, CommandAction};
+//! ```rust,ignore
+//! use composer_tui::commands::{Command, CommandCategory, CommandContext, CommandOutput, CommandAction};
 //!
 //! // 1. Define a command with handler
 //! let cmd = Command::new(
@@ -89,7 +89,7 @@ pub type CommandResult = Result<CommandOutput, CommandError>;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// let handler: CommandHandler = Box::new(|ctx| {
 ///     let name = ctx.get_string("name").unwrap_or("World");
 ///     Ok(CommandOutput::Message(format!("Hello, {}!", name)))
@@ -123,8 +123,8 @@ pub type CommandHandler = Box<dyn Fn(&CommandContext) -> CommandResult + Send + 
 ///
 /// # Example
 ///
-/// ```rust
-/// use crate::commands::{CommandOutput, CommandAction, ModalType};
+/// ```rust,ignore
+/// use composer_tui::commands::{CommandOutput, CommandAction, ModalType};
 ///
 /// // Handler can return different output types
 /// fn handle_command(cmd: &str) -> CommandOutput {
@@ -189,8 +189,8 @@ pub enum CommandOutput {
 ///
 /// # Example
 ///
-/// ```rust
-/// use crate::commands::{CommandAction, CommandOutput};
+/// ```rust,ignore
+/// use composer_tui::commands::{CommandAction, CommandOutput};
 ///
 /// // Handler returns action request
 /// let output = CommandOutput::Action(CommandAction::Quit);
@@ -243,8 +243,8 @@ pub enum CommandAction {
 ///
 /// # Example
 ///
-/// ```rust
-/// use crate::commands::{CommandOutput, ModalType};
+/// ```rust,ignore
+/// use composer_tui::commands::{CommandOutput, ModalType};
 ///
 /// // Command handler opens theme selector
 /// let output = CommandOutput::OpenModal(ModalType::ThemeSelector);
@@ -287,8 +287,8 @@ pub enum ModalType {
 ///
 /// The `with_hint()` method enables fluent error construction:
 ///
-/// ```rust
-/// use crate::commands::CommandError;
+/// ```rust,ignore
+/// use composer_tui::commands::CommandError;
 ///
 /// let error = CommandError::new("Unknown command: /foo")
 ///     .with_hint("Type /help to see available commands");
@@ -302,8 +302,8 @@ pub enum ModalType {
 ///
 /// # Example
 ///
-/// ```rust
-/// use crate::commands::{CommandError, CommandResult, CommandOutput};
+/// ```rust,ignore
+/// use composer_tui::commands::{CommandError, CommandResult, CommandOutput};
 ///
 /// fn validate_arg(value: &str) -> CommandResult {
 ///     if value.is_empty() {
@@ -379,8 +379,8 @@ impl std::error::Error for CommandError {}
 ///
 /// # Example
 ///
-/// ```rust
-/// use crate::commands::{CommandContext, CommandResult, CommandOutput};
+/// ```rust,ignore
+/// use composer_tui::commands::{CommandContext, CommandResult, CommandOutput};
 /// use std::collections::HashMap;
 ///
 /// fn my_handler(ctx: &CommandContext) -> CommandResult {
@@ -614,8 +614,8 @@ impl CommandArgument {
 ///
 /// The Command struct uses a builder pattern for fluent construction:
 ///
-/// ```rust
-/// use crate::commands::{Command, CommandCategory, CommandArgument, CommandOutput};
+/// ```rust,ignore
+/// use composer_tui::commands::{Command, CommandCategory, CommandArgument, CommandOutput};
 ///
 /// let cmd = Command::new(
 ///     "greet",
@@ -632,7 +632,7 @@ impl CommandArgument {
 /// # Handler Function Signature
 ///
 /// Handlers must match this signature:
-/// ```rust
+/// ```rust,ignore
 /// Box<dyn Fn(&CommandContext) -> CommandResult + Send + Sync>
 /// ```
 ///

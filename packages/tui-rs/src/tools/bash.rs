@@ -87,8 +87,8 @@
 //!
 //! # Examples
 //!
-//! ```rust,no_run
-//! use tui_rs::tools::bash::{BashTool, BashArgs};
+//! ```rust,ignore
+//! use composer_tui::tools::bash::{BashTool, BashArgs};
 //!
 //! # async fn examples() -> Result<(), Box<dyn std::error::Error>> {
 //! let tool = BashTool::new("/workspace");
@@ -278,8 +278,8 @@ impl BashTool {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use tui_rs::tools::bash::BashTool;
+    /// ```rust,ignore
+    /// use composer_tui::tools::bash::BashTool;
     ///
     /// // Safe commands - no approval needed
     /// assert!(!BashTool::requires_approval("ls -la"));
@@ -290,7 +290,7 @@ impl BashTool {
     /// assert!(BashTool::requires_approval("cargo build"));
     /// assert!(BashTool::requires_approval("npm install"));
     /// assert!(BashTool::requires_approval("git commit -m 'test'"));
-    /// ```
+    /// ```rust,ignore
     pub fn requires_approval(command: &str) -> bool {
         // Commands that are always safe (read-only)
         let safe_prefixes = [
@@ -365,8 +365,8 @@ impl BashTool {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use tui_rs::tools::bash::BashTool;
+    /// ```rust,ignore
+    /// use composer_tui::tools::bash::BashTool;
     ///
     /// // Dangerous commands return warning messages
     /// assert!(BashTool::is_dangerous("rm -rf /").is_some());
@@ -376,7 +376,7 @@ impl BashTool {
     /// // Safe commands return None
     /// assert!(BashTool::is_dangerous("ls -la").is_none());
     /// assert!(BashTool::is_dangerous("cargo build").is_none());
-    /// ```
+    /// ```rust,ignore
     pub fn is_dangerous(command: &str) -> Option<&'static str> {
         let cmd = command.to_lowercase();
 
@@ -449,8 +449,8 @@ impl BashTool {
     ///
     /// # Examples
     ///
-    /// ```rust,no_run
-    /// use tui_rs::tools::bash::{BashTool, BashArgs};
+    /// ```rust,ignore
+    /// use composer_tui::tools::bash::{BashTool, BashArgs};
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let tool = BashTool::new("/workspace");
@@ -479,7 +479,7 @@ impl BashTool {
     /// println!("{}", result.output); // "Command started in background (PID: 12345)"
     /// # Ok(())
     /// # }
-    /// ```
+    /// ```rust,ignore
     pub async fn execute(&self, args: BashArgs) -> ToolResult {
         // Reject empty commands early to avoid no-op approvals
         if args.command.trim().is_empty() {

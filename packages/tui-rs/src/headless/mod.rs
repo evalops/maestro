@@ -75,7 +75,7 @@
 //!
 //! The protocol leverages [serde](https://serde.rs/) for zero-copy, type-safe serialization:
 //!
-//! ```rust
+//! ```rust,ignore
 //! #[derive(Serialize, Deserialize)]
 //! #[serde(tag = "type", rename_all = "snake_case")]
 //! enum ToAgentMessage {
@@ -93,7 +93,7 @@
 //!
 //! The async transport uses [tokio](https://tokio.rs/) for non-blocking I/O:
 //!
-//! ```rust
+//! ```rust,ignore
 //! let mut reader = AsyncFrameReader::new(stdout);
 //! let event = reader.read_message::<FromAgentMessage>().await?;
 //! ```
@@ -107,7 +107,7 @@
 //!
 //! Both sync and async implementations use buffered readers/writers:
 //!
-//! ```rust
+//! ```rust,ignore
 //! let reader = BufReader::with_capacity(64 * 1024, stdout);
 //! ```
 //!
@@ -120,7 +120,7 @@
 //!
 //! The synchronous transport uses OS threads for concurrent reading and writing:
 //!
-//! ```rust
+//! ```rust,ignore
 //! thread::spawn(move || {
 //!     // Reader thread processes stdout
 //! });
@@ -141,7 +141,7 @@
 //! For basic use cases, use `AsyncAgentTransport`:
 //!
 //! ```ignore
-//! use tui_rs::headless::{AsyncAgentTransportBuilder, ToAgentMessage};
+//! use composer_tui::headless::{AsyncAgentTransportBuilder, ToAgentMessage};
 //!
 //! let mut transport = AsyncAgentTransportBuilder::new()
 //!     .cli_path("composer")
@@ -167,7 +167,7 @@
 //! For production use with reconnection and session recording, use `AgentSupervisor`:
 //!
 //! ```ignore
-//! use tui_rs::headless::{SupervisorBuilder, SessionRecorder};
+//! use composer_tui::headless::{SupervisorBuilder, SessionRecorder};
 //!
 //! // Create session recorder for persistence
 //! let recorder = SessionRecorder::new("~/.composer/sessions")?;

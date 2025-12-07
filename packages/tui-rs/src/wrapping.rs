@@ -34,7 +34,7 @@
 //!
 //! ```
 //! use ratatui::text::Line;
-//! use tui_rs::wrapping::{word_wrap_line, RtOptions};
+//! use composer_tui::wrapping::{word_wrap_line, RtOptions};
 //!
 //! let line = Line::from("This is a very long line that needs to be wrapped");
 //! let options = RtOptions::new(40)

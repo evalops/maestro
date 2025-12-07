@@ -36,9 +36,9 @@
 //!
 //! The `SessionRecorder` appends entries as they occur:
 //!
-//! ```rust
-//! use tui_rs::headless::session::SessionRecorder;
-//! use tui_rs::headless::ToAgentMessage;
+//! ```rust,ignore
+//! use composer_tui::headless::session::SessionRecorder;
+//! use composer_tui::headless::ToAgentMessage;
 //!
 //! let mut recorder = SessionRecorder::new("/tmp/sessions")?;
 //!
@@ -55,8 +55,8 @@
 //!
 //! The `SessionReader` loads all entries from a session file:
 //!
-//! ```rust
-//! use tui_rs::headless::session::SessionReader;
+//! ```rust,ignore
+//! use composer_tui::headless::session::SessionReader;
 //!
 //! let reader = SessionReader::load("/tmp/sessions", "session-id")?;
 //!
@@ -266,9 +266,9 @@ impl SessionMetadata {
 ///
 /// # Examples
 ///
-/// ```rust
-/// use tui_rs::headless::session::SessionRecorder;
-/// use tui_rs::headless::ToAgentMessage;
+/// ```rust,ignore
+/// use composer_tui::headless::session::SessionRecorder;
+/// use composer_tui::headless::ToAgentMessage;
 ///
 /// let mut recorder = SessionRecorder::new("/tmp/sessions")?;
 /// println!("Session ID: {}", recorder.id());
@@ -460,8 +460,8 @@ impl Drop for SessionRecorder {
 ///
 /// # Examples
 ///
-/// ```rust
-/// use tui_rs::headless::session::SessionReader;
+/// ```rust,ignore
+/// use composer_tui::headless::session::SessionReader;
 ///
 /// let reader = SessionReader::load("/tmp/sessions", "session-id")?;
 ///

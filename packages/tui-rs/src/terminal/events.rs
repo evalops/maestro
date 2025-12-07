@@ -84,13 +84,13 @@ pub enum TerminalEvent {
 /// # Example
 ///
 /// ```no_run
-/// use tui_rs::terminal::TerminalEventStream;
+/// use composer_tui::terminal::TerminalEventStream;
 ///
 /// # async fn example() {
 /// let mut events = TerminalEventStream::new();
 /// while let Some(event) = events.next().await {
 ///     match event {
-///         tui_rs::terminal::TerminalEvent::Key { key, .. } => {
+///         composer_tui::terminal::TerminalEvent::Key { key, .. } => {
 ///             println!("Key pressed: {}", key);
 ///         }
 ///         _ => {}

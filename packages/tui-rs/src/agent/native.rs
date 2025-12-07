@@ -110,7 +110,7 @@ use crate::tools::{ToolExecutor, ToolRegistry};
 /// # Examples
 ///
 /// ```
-/// use tui_rs::agent::NativeAgentConfig;
+/// use composer_tui::agent::NativeAgentConfig;
 ///
 /// // Default configuration (Claude Sonnet)
 /// let config = NativeAgentConfig::default();
