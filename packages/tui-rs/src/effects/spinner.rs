@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
 use super::shimmer::shimmer_spans;
@@ -29,10 +29,13 @@ pub fn spinner(start_time: Option<Instant>, animations_enabled: bool) -> Span<'s
 
     if has_true_color() {
         // Use shimmer effect
-        shimmer_spans("*").into_iter().next().unwrap_or_else(|| Span::raw("*"))
+        shimmer_spans("*")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Span::raw("*"))
     } else {
         // Fallback: blink between filled and hollow
-        let blink_on = (elapsed.as_millis() / 600) % 2 == 0;
+        let blink_on = (elapsed.as_millis() / 600) & 1 == 0;
         if blink_on {
             Span::raw("*")
         } else {
@@ -48,7 +51,12 @@ pub const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", 
 pub fn braille_spinner(start_time: Option<Instant>) -> Span<'static> {
     let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
     let frame_idx = (elapsed.as_millis() / 80) as usize % BRAILLE_FRAMES.len();
-    Span::raw(BRAILLE_FRAMES[frame_idx])
+    Span::styled(
+        BRAILLE_FRAMES[frame_idx],
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 /// Simple dot spinner frames

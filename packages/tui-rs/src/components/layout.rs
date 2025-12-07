@@ -51,8 +51,10 @@ impl BoxWidget {
         Rect::new(
             area.x + border_offset + self.padding.left,
             area.y + border_offset + self.padding.top,
-            area.width.saturating_sub(2 * border_offset + self.padding.left + self.padding.right),
-            area.height.saturating_sub(2 * border_offset + self.padding.top + self.padding.bottom),
+            area.width
+                .saturating_sub(2 * border_offset + self.padding.left + self.padding.right),
+            area.height
+                .saturating_sub(2 * border_offset + self.padding.top + self.padding.bottom),
         )
     }
 }

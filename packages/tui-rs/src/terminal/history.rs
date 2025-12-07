@@ -108,7 +108,9 @@ fn wrap_lines(lines: &[Line<'_>], width: usize) -> Vec<Line<'static>> {
 
         if text.len() <= width {
             // Line fits, convert spans to owned
-            let owned_spans: Vec<Span<'static>> = line.spans.iter()
+            let owned_spans: Vec<Span<'static>> = line
+                .spans
+                .iter()
                 .map(|s| Span::styled(s.content.to_string(), s.style))
                 .collect();
             result.push(Line::from(owned_spans));

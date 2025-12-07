@@ -24,15 +24,48 @@
 //! └─────────────────────────────────────────────┘
 //! ```
 
+// Core modules
 pub mod agent;
+pub mod ai;
+pub mod commands;
 pub mod components;
 pub mod effects;
+pub mod files;
+pub mod headless;
 pub mod protocol;
+pub mod session;
 pub mod state;
 pub mod terminal;
+pub mod tools;
+
+// Feature modules
+pub mod diff;
+pub mod key_hints;
+pub mod markdown;
+pub mod pager;
+pub mod palette;
+pub mod themes;
+pub mod tooltips;
+pub mod wrapping;
 
 mod app;
 
-pub use agent::AgentProcess;
+pub use agent::{AgentProcess, NativeAgent, NativeAgentConfig, ToolDefinition};
+pub use ai::{
+    create_client, create_client_for_model, AiClient, AiProvider, AnthropicClient, OpenAiClient,
+    UnifiedClient,
+};
 pub use app::App;
 pub use state::AppState;
+
+// Re-export commonly used items
+pub use commands::{build_command_registry, CommandRegistry, SlashCommandMatcher};
+pub use diff::{generate_diff, render_diff, Diff, DiffStats};
+pub use headless::{AgentEvent, AgentTransport, AgentTransportBuilder, TransportConfig};
+pub use key_hints::{KeyBinding, KeyHint};
+pub use markdown::render_markdown;
+pub use pager::Pager;
+pub use palette::{best_color, color_level, has_true_color, theme, ColorLevel};
+pub use tools::{BashTool, ToolExecutor, ToolRegistry};
+pub use tooltips::random_tooltip;
+pub use wrapping::{word_wrap_line, word_wrap_lines, RtOptions};

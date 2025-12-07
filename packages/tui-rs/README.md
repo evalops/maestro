@@ -1,30 +1,46 @@
 # Composer TUI (Rust)
 
-Native terminal UI renderer for Composer, built with Rust using ratatui and crossterm.
+Native terminal UI for Composer, built with Rust using ratatui and crossterm. Inspired by [OpenAI Codex TUI](https://github.com/openai/codex/tree/main/codex-rs).
 
 ## Why Rust?
 
 The TypeScript TUI has limitations with SSH sessions where content that scrolls above the viewport becomes inaccessible. This Rust implementation:
 
-1. **Uses native terminal scrollback**: Pushes content into the terminal's scrollback buffer using ANSI scroll regions (DECSTBM), so it persists even over SSH
+1. **Native terminal scrollback**: Pushes content into the terminal's scrollback buffer using ANSI scroll regions (DECSTBM), persisting even over SSH
 2. **Differential rendering**: Only sends changed cells, minimizing bytes over slow connections
 3. **Native performance**: Rust + crossterm provides reliable terminal handling
+4. **Standalone binary**: Single executable, no Node.js runtime required for the UI layer
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│  TypeScript (business logic, agent, tools)  │
-└──────────────────┬──────────────────────────┘
-                   │ JSON-RPC (stdin/stdout)
+┌─────────────────────────────────────────────────┐
+│  Node.js Agent (business logic, AI, tools)      │
+│  - Spawned as subprocess                        │
+│  - Communicates via JSON-RPC stdin/stdout       │
+└──────────────────┬──────────────────────────────┘
+                   │ Headless Protocol (NDJSON)
                    ▼
-┌─────────────────────────────────────────────┐
-│  Rust TUI Binary (ratatui + crossterm)      │
-│  - Receives render tree                     │
-│  - Sends input events                       │
-│  - Handles scrollback natively              │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  Rust TUI Binary (ratatui + crossterm)          │
+│  - Native terminal rendering                    │
+│  - Input handling & key events                  │
+│  - Modal system (file search, commands, etc)    │
+│  - Session management                           │
+│  - Theme support                                │
+└─────────────────────────────────────────────────┘
 ```
+
+## Features
+
+- **Chat Interface**: Message rendering with markdown support, syntax highlighting
+- **Slash Commands**: `/help`, `/clear`, `/theme`, `/model`, `/session`, etc.
+- **Command Palette**: Ctrl+P for fuzzy command search
+- **File Search Modal**: `@` for fuzzy file search with workspace indexing
+- **Session Management**: Ctrl+O to browse/switch sessions, auto-save
+- **Tool Approval**: Interactive approve/deny for tool calls
+- **Themes**: Built-in themes with custom theme support
+- **Native Cursor**: Proper terminal cursor positioning (adapted from Codex)
 
 ## Building
 
@@ -35,40 +51,104 @@ cargo build --release
 
 The binary will be at `target/release/composer-tui`.
 
-## Protocol
+## Running
 
-Communication uses newline-delimited JSON (NDJSON) over stdin/stdout.
+```bash
+# Run with default settings
+./target/release/composer-tui
 
-### Inbound Messages (TypeScript → Rust)
+# Specify working directory
+./target/release/composer-tui --cwd /path/to/project
 
-- `render`: Render a component tree
-- `push_history`: Push lines into terminal scrollback
-- `resize`: Terminal size changed
-- `exit`: Shutdown TUI
-- `notify`: Desktop notification
+# Resume last session
+./target/release/composer-tui --resume
+```
 
-### Outbound Messages (Rust → TypeScript)
+## Module Structure
 
-- `ready`: TUI initialized with size and capabilities
-- `key`: Key press event
-- `paste`: Bracketed paste event
-- `resized`: Terminal resized
-- `focus`: Focus gained/lost
-- `exiting`: TUI shutting down
-- `error`: Error occurred
+```
+src/
+├── agent/           # Node.js subprocess management
+│   ├── process.rs   # Spawns and communicates with agent
+│   └── protocol.rs  # Message serialization
+├── app.rs           # Main application & event loop
+├── commands/        # Slash command system
+│   ├── registry.rs  # Command registration
+│   ├── matcher.rs   # Fuzzy matching & tab completion
+│   └── types.rs     # Command definitions
+├── components/      # UI widgets (ratatui)
+│   ├── message.rs   # Chat view, input, status bar
+│   ├── approval.rs  # Tool approval modal
+│   ├── command_palette.rs
+│   ├── file_search.rs
+│   ├── session_switcher.rs
+│   └── textarea.rs  # Text input with cursor (from Codex)
+├── files/           # Workspace file indexing
+│   ├── workspace.rs # File discovery
+│   └── search.rs    # Fuzzy file search
+├── headless/        # Headless protocol (future)
+├── session/         # Session persistence
+│   ├── manager.rs   # List/load/save sessions
+│   ├── reader.rs    # JSONL parsing
+│   └── writer.rs    # JSONL writing
+├── terminal/        # Terminal setup & history
+│   ├── setup.rs     # Raw mode, alternate screen
+│   └── history.rs   # Scrollback buffer management
+├── themes/          # Theme system
+├── state.rs         # Application state
+├── markdown.rs      # Markdown rendering
+├── diff.rs          # Diff display
+└── wrapping.rs      # Text wrapping utilities
+```
 
-## Key Components
+## Headless Protocol
 
-- `terminal/history.rs`: ANSI scroll region magic for SSH compatibility
-- `protocol/`: IPC message types
-- `components/`: Ratatui widgets
-- `render.rs`: Converts render tree to widgets
-- `app.rs`: Main event loop
+Communication with the Node.js agent uses newline-delimited JSON (NDJSON).
+
+### Agent → TUI Messages
+
+- `ready` - Agent initialized
+- `response_chunk` - Streaming text response
+- `tool_call` - Tool execution request (requires approval)
+- `tool_result` - Tool execution result
+- `error` - Error occurred
+- `done` - Response complete
+
+### TUI → Agent Messages
+
+- `prompt` - User message
+- `tool_response` - Approval decision for tool call
+- `cancel` - Cancel current operation
+
+## Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message |
+| `Esc` | Cancel/close modal |
+| `Ctrl+C` | Quit |
+| `Ctrl+P` | Command palette |
+| `Ctrl+O` | Session switcher |
+| `@` | File search (in input) |
+| `/` | Slash command (in input) |
+| `Tab` | Cycle completions |
+| `↑/↓` | Navigate history/lists |
 
 ## Status
 
-This is a scaffold implementation. To integrate with Composer:
+**Production-ready features:**
+- Full chat interface with streaming responses
+- Slash command system with fuzzy matching
+- Modal system (file search, commands, sessions, approval)
+- Session persistence and management
+- Theme support
+- Native cursor positioning
 
-1. Add TypeScript launcher that spawns this binary
-2. Wire up render tree generation from existing TUI components
-3. Handle input events from the Rust side
+**In progress:**
+- Full headless protocol integration
+- MCP server support
+- Multi-line input with proper wrapping
+
+## Credits
+
+Cursor positioning and text area implementation adapted from [OpenAI Codex](https://github.com/openai/codex) (MIT License).

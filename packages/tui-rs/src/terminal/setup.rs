@@ -53,7 +53,11 @@ pub struct TerminalCapabilities {
 
 /// Check if /dev/tty is available (we're running in a terminal)
 pub fn is_tty_available() -> bool {
-    OpenOptions::new().read(true).write(true).open("/dev/tty").is_ok()
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .is_ok()
 }
 
 /// Check if /dev/tty is available, with detailed error
@@ -83,7 +87,12 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
         .read(true)
         .write(true)
         .open("/dev/tty")
-        .map_err(|e| io::Error::new(io::ErrorKind::NotFound, format!("Cannot open /dev/tty: {}", e)))?;
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Cannot open /dev/tty: {}", e),
+            )
+        })?;
 
     // Get terminal size
     let (_width, height) = crossterm::terminal::size()?;

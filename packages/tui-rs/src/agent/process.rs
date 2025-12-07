@@ -26,11 +26,7 @@ impl AgentProcess {
     /// * `node_path` - Path to node executable (or "node" to use PATH)
     /// * `script_path` - Path to the agent script
     /// * `args` - Additional arguments to pass
-    pub async fn spawn(
-        node_path: &str,
-        script_path: &str,
-        args: &[String],
-    ) -> Result<Self> {
+    pub async fn spawn(node_path: &str, script_path: &str, args: &[String]) -> Result<Self> {
         let mut cmd = Command::new(node_path);
         cmd.arg(script_path)
             .arg("--headless") // Run in headless mode for IPC

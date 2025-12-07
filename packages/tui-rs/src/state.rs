@@ -2,7 +2,7 @@
 //!
 //! Manages the chat state, messages, and UI state.
 
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use crate::agent::{FromAgent, TokenUsage};
 
@@ -23,6 +23,10 @@ pub struct Message {
     pub tool_calls: Vec<ToolCallState>,
     /// Token usage (for assistant messages)
     pub usage: Option<TokenUsage>,
+    /// When this message was created
+    pub timestamp: SystemTime,
+    /// Whether thinking is expanded (for toggle)
+    pub thinking_expanded: bool,
 }
 
 /// Who sent the message
@@ -81,8 +85,14 @@ pub struct AppState {
     pub status: Option<String>,
     /// Scroll offset for message list
     pub scroll_offset: usize,
+    /// Expanded tool call IDs (for toggling details)
+    pub expanded_tool_calls: std::collections::HashSet<String>,
     /// Error message to display
     pub error: Option<String>,
+    /// Current thinking header (extracted from bold text like **Header**)
+    pub thinking_header: Option<String>,
+    /// Full thinking buffer for the current response
+    thinking_buffer: String,
 }
 
 impl Default for AppState {
@@ -106,7 +116,10 @@ impl AppState {
             busy_since: None,
             status: None,
             scroll_offset: 0,
+            expanded_tool_calls: std::collections::HashSet::new(),
             error: None,
+            thinking_header: None,
+            thinking_buffer: String::new(),
         }
     }
 
@@ -138,6 +151,8 @@ impl AppState {
                     streaming: true,
                     tool_calls: Vec::new(),
                     usage: None,
+                    timestamp: SystemTime::now(),
+                    thinking_expanded: false,
                 });
             }
 
@@ -149,6 +164,11 @@ impl AppState {
                 if let Some(msg) = self.messages.iter_mut().find(|m| m.id == response_id) {
                     if is_thinking {
                         msg.thinking.push_str(&content);
+                        // Accumulate thinking and extract header
+                        self.thinking_buffer.push_str(&content);
+                        if let Some(header) = extract_thinking_header(&self.thinking_buffer) {
+                            self.thinking_header = Some(header);
+                        }
                     } else {
                         msg.content.push_str(&content);
                     }
@@ -162,6 +182,9 @@ impl AppState {
                 }
                 self.busy = false;
                 self.busy_since = None;
+                // Clear thinking state
+                self.thinking_header = None;
+                self.thinking_buffer.clear();
             }
 
             FromAgent::ToolCall {
@@ -171,7 +194,12 @@ impl AppState {
                 requires_approval,
             } => {
                 // Add tool call to the last assistant message
-                if let Some(msg) = self.messages.iter_mut().rev().find(|m| m.role == MessageRole::Assistant) {
+                if let Some(msg) = self
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.role == MessageRole::Assistant)
+                {
                     msg.tool_calls.push(ToolCallState {
                         call_id,
                         tool,
@@ -246,6 +274,24 @@ impl AppState {
         }
     }
 
+    /// Mark a tool call as failed with an inline note
+    pub fn fail_tool_call(&mut self, call_id: &str, note: &str) {
+        for msg in self.messages.iter_mut().rev() {
+            for tc in msg.tool_calls.iter_mut() {
+                if tc.call_id == call_id {
+                    tc.status = ToolCallStatus::Failed;
+                    if !note.is_empty() {
+                        if !tc.output.is_empty() {
+                            tc.output.push_str("\n");
+                        }
+                        tc.output.push_str(note);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     /// Add a user message
     pub fn add_user_message(&mut self, content: String) -> String {
         let id = uuid::Uuid::new_v4().to_string();
@@ -257,6 +303,8 @@ impl AppState {
             streaming: false,
             tool_calls: Vec::new(),
             usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
         });
         self.busy = true;
         self.busy_since = Some(Instant::now());
@@ -330,6 +378,29 @@ impl AppState {
         input
     }
 
+    /// Add a system message (for help, status, etc.)
+    pub fn add_system_message(&mut self, content: String) {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.messages.push(Message {
+            id,
+            role: MessageRole::Assistant,
+            content,
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
+    }
+
+    /// Toggle thinking expansion for a message
+    pub fn toggle_thinking(&mut self, message_id: &str) {
+        if let Some(msg) = self.messages.iter_mut().find(|m| m.id == message_id) {
+            msg.thinking_expanded = !msg.thinking_expanded;
+        }
+    }
+
     /// Scroll up in message list
     pub fn scroll_up(&mut self, amount: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(amount);
@@ -339,4 +410,35 @@ impl AppState {
     pub fn scroll_down(&mut self, amount: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(amount);
     }
+
+    /// Toggle tool call expansion
+    pub fn toggle_tool_call(&mut self, call_id: &str) {
+        if self.expanded_tool_calls.contains(call_id) {
+            self.expanded_tool_calls.remove(call_id);
+        } else {
+            self.expanded_tool_calls.insert(call_id.to_string());
+        }
+    }
+
+    /// Check if tool call is expanded
+    pub fn is_tool_call_expanded(&self, call_id: &str) -> bool {
+        self.expanded_tool_calls.contains(call_id)
+    }
+}
+
+/// Extract the first bold header from thinking text (between ** and **)
+fn extract_thinking_header(text: &str) -> Option<String> {
+    // Look for **Header** pattern
+    if let Some(start) = text.rfind("**") {
+        let before_start = &text[..start];
+        if let Some(open) = before_start.rfind("**") {
+            let header = &text[open + 2..start];
+            // Clean up the header - take first line only
+            let header = header.lines().next().unwrap_or(header);
+            if !header.is_empty() && header.len() < 100 {
+                return Some(header.to_string());
+            }
+        }
+    }
+    None
 }
