@@ -81,6 +81,8 @@ pub struct AppState {
     pub status: Option<String>,
     /// Scroll offset for message list
     pub scroll_offset: usize,
+    /// Expanded tool call IDs (for toggling details)
+    pub expanded_tool_calls: std::collections::HashSet<String>,
     /// Error message to display
     pub error: Option<String>,
     /// Current thinking header (extracted from bold text like **Header**)
@@ -110,6 +112,7 @@ impl AppState {
             busy_since: None,
             status: None,
             scroll_offset: 0,
+            expanded_tool_calls: std::collections::HashSet::new(),
             error: None,
             thinking_header: None,
             thinking_buffer: String::new(),
@@ -389,6 +392,20 @@ impl AppState {
     /// Scroll down in message list
     pub fn scroll_down(&mut self, amount: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(amount);
+    }
+
+    /// Toggle tool call expansion
+    pub fn toggle_tool_call(&mut self, call_id: &str) {
+        if self.expanded_tool_calls.contains(call_id) {
+            self.expanded_tool_calls.remove(call_id);
+        } else {
+            self.expanded_tool_calls.insert(call_id.to_string());
+        }
+    }
+
+    /// Check if tool call is expanded
+    pub fn is_tool_call_expanded(&self, call_id: &str) -> bool {
+        self.expanded_tool_calls.contains(call_id)
     }
 }
 

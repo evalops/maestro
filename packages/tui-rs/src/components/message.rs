@@ -7,8 +7,6 @@
 //! - Shimmer animations for "Working" text
 //! - Elapsed time display
 
-use std::time::Instant;
-
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -17,8 +15,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
-use crate::effects::{braille_spinner, shimmer_spans};
+use crate::effects::shimmer_spans;
 use crate::state::{Message, MessageRole, ToolCallStatus};
+use std::collections::HashSet;
 
 /// Get tool-specific icon (matching TypeScript TUI patterns)
 fn get_tool_icon(tool: &str) -> &'static str {
@@ -53,7 +52,11 @@ pub fn should_render_message(message: &Message) -> bool {
 }
 
 /// Calculate the height needed to render a message
-pub fn calculate_message_height(message: &Message, width: u16) -> u16 {
+pub fn calculate_message_height(
+    message: &Message,
+    width: u16,
+    expanded_tools: &HashSet<String>,
+) -> u16 {
     if !should_render_message(message) {
         return 0;
     }
@@ -86,8 +89,38 @@ pub fn calculate_message_height(message: &Message, width: u16) -> u16 {
         height += content_lines;
     }
 
-    // Tool calls: 2 lines each (header + gutter line)
-    height += (message.tool_calls.len() as u16) * 2;
+    // Tool calls
+    for tc in &message.tool_calls {
+        let expanded = expanded_tools.contains(&tc.call_id);
+        // header line
+        height += 1;
+        if expanded {
+            // args lines (pretty printed)
+            let args_str = serde_json::to_string_pretty(&tc.args).unwrap_or_default();
+            let args_lines = args_str
+                .lines()
+                .map(|l| (l.len() / content_width + 1) as u16)
+                .sum::<u16>()
+                .max(1);
+            height += args_lines;
+
+            // output lines
+            if !tc.output.is_empty() {
+                let out_lines = tc
+                    .output
+                    .lines()
+                    .map(|l| (l.len() / content_width + 1) as u16)
+                    .sum::<u16>()
+                    .max(1);
+                height += out_lines;
+            }
+        } else {
+            // collapsed preview
+            height += 1;
+        }
+        // spacing
+        height += 1;
+    }
 
     // Spacing after message
     height += 1;
@@ -98,11 +131,20 @@ pub fn calculate_message_height(message: &Message, width: u16) -> u16 {
 /// Widget for rendering a single message
 pub struct MessageWidget<'a> {
     message: &'a Message,
+    expanded_tools: Option<&'a HashSet<String>>,
 }
 
 impl<'a> MessageWidget<'a> {
     pub fn new(message: &'a Message) -> Self {
-        Self { message }
+        Self {
+            message,
+            expanded_tools: None,
+        }
+    }
+
+    pub fn with_expanded_tools(mut self, expanded: &'a HashSet<String>) -> Self {
+        self.expanded_tools = Some(expanded);
+        self
     }
 }
 
@@ -259,74 +301,52 @@ impl Widget for MessageWidget<'_> {
             y += render_height;
         }
 
-        // Render tool calls with beautiful bordered panels
+        // Render tool calls with bordered panels and expand/collapse
         for tool_call in &self.message.tool_calls {
             if y >= max_y {
                 break;
             }
 
             let icon = get_tool_icon(&tool_call.tool);
+            let expanded = self
+                .expanded_tools
+                .map(|s| s.contains(&tool_call.call_id))
+                .unwrap_or(false);
 
-            // Gutter style based on status
-            let gutter_style = match tool_call.status {
-                ToolCallStatus::Running => Style::default().fg(Color::Blue),
-                ToolCallStatus::Completed => Style::default().fg(Color::DarkGray),
-                ToolCallStatus::Failed => Style::default().fg(Color::Red),
-                ToolCallStatus::Pending => Style::default().fg(Color::Yellow),
+            // Status pill color
+            let (pill_text, pill_style) = match tool_call.status {
+                ToolCallStatus::Running => ("RUN", Style::default().fg(Color::Blue)),
+                ToolCallStatus::Completed => ("OK", Style::default().fg(Color::Green)),
+                ToolCallStatus::Failed => ("ERR", Style::default().fg(Color::Red)),
+                ToolCallStatus::Pending => ("PEND", Style::default().fg(Color::Yellow)),
             };
 
-            // Build tool line with spinner for running, bullet for others
-            let mut tool_spans: Vec<Span<'static>> = Vec::new();
-
-            // Bullet/spinner
-            match tool_call.status {
-                ToolCallStatus::Running => {
-                    tool_spans.push(braille_spinner(Some(Instant::now())));
-                }
-                ToolCallStatus::Completed => {
-                    tool_spans.push(Span::styled(
-                        "*",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                }
-                ToolCallStatus::Failed => {
-                    tool_spans.push(Span::styled(
-                        "*",
-                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                    ));
-                }
-                ToolCallStatus::Pending => {
-                    tool_spans.push(Span::styled("*", Style::default().fg(Color::Yellow)));
-                }
-            }
-
-            tool_spans.push(Span::raw(" "));
-
-            // Verb: "Running" or "Ran"
-            let verb = match tool_call.status {
-                ToolCallStatus::Running => "Running",
-                ToolCallStatus::Completed | ToolCallStatus::Failed => "Ran",
-                ToolCallStatus::Pending => "Pending",
-            };
-            tool_spans.push(Span::styled(
-                verb,
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
-            tool_spans.push(Span::raw(" "));
-
-            // Icon and tool name
-            tool_spans.push(Span::styled(icon, Style::default().fg(Color::Cyan)));
-            tool_spans.push(Span::raw(" "));
-            tool_spans.push(Span::styled(
-                tool_call.tool.clone(),
-                Style::default().fg(Color::White),
-            ));
-
-            let tool_line = Line::from(tool_spans);
-            let tool_para = Paragraph::new(tool_line);
-            tool_para.render(
+            // Header line
+            let header_line = Line::from(vec![
+                Span::styled(
+                    format!("[{}]", pill_text),
+                    pill_style.add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(icon, Style::default().fg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(
+                    tool_call.tool.clone(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!(
+                        "#{}",
+                        &tool_call.call_id.chars().take(6).collect::<String>()
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw(if expanded { "  [-]" } else { "  [+]" }),
+            ]);
+            Paragraph::new(header_line).render(
                 Rect {
                     x: area.x,
                     y,
@@ -337,34 +357,59 @@ impl Widget for MessageWidget<'_> {
             );
             y += 1;
 
-            // Second line: show args preview or output preview with gutter
-            if y < max_y {
+            if expanded && y < max_y {
+                // Args block
+                let args_str = serde_json::to_string_pretty(&tool_call.args).unwrap_or_default();
+                let args_para = Paragraph::new(args_str)
+                    .wrap(Wrap { trim: false })
+                    .style(Style::default().fg(Color::DarkGray));
+                let args_height =
+                    (tool_call.args.to_string().len().max(1) as u16).min(max_y.saturating_sub(y));
+                args_para.render(
+                    Rect {
+                        x: area.x + 2,
+                        y,
+                        width: area.width.saturating_sub(2),
+                        height: args_height,
+                    },
+                    buf,
+                );
+                y += args_height;
+
+                // Output block
+                if y < max_y && !tool_call.output.is_empty() {
+                    let out_para = Paragraph::new(tool_call.output.as_str())
+                        .wrap(Wrap { trim: false })
+                        .style(Style::default().fg(Color::White));
+                    let out_height = (tool_call.output.lines().count().max(1) as u16)
+                        .min(max_y.saturating_sub(y));
+                    out_para.render(
+                        Rect {
+                            x: area.x + 2,
+                            y,
+                            width: area.width.saturating_sub(2),
+                            height: out_height,
+                        },
+                        buf,
+                    );
+                    y += out_height;
+                }
+            } else if y < max_y {
+                // Collapsed preview (args or first output line)
                 let preview = if !tool_call.output.is_empty() {
-                    // Show first line of output
-                    let first_line = tool_call.output.lines().next().unwrap_or("");
-                    let max_len = area.width.saturating_sub(6) as usize;
-                    if first_line.len() > max_len {
-                        format!("{}...", &first_line[..max_len.saturating_sub(3)])
-                    } else {
-                        first_line.to_string()
-                    }
+                    tool_call.output.lines().next().unwrap_or("").to_string()
                 } else {
-                    // Show args preview
                     get_tool_args_preview(
                         &tool_call.tool,
                         &tool_call.args,
                         area.width.saturating_sub(6) as usize,
                     )
                 };
-
-                // Use corner gutter for last line of tool call
                 let preview_line = Line::from(vec![
-                    Span::styled("  └ ", gutter_style),
+                    Span::styled("  ", Style::default()),
                     Span::styled(preview, Style::default().fg(Color::DarkGray)),
                 ]);
-
-                let preview_para = Paragraph::new(preview_line);
-                preview_para.render(
+                Paragraph::new(preview_line).render(
                     Rect {
                         x: area.x,
                         y,
@@ -373,6 +418,11 @@ impl Widget for MessageWidget<'_> {
                     },
                     buf,
                 );
+                y += 1;
+            }
+
+            // Spacer
+            if y < max_y {
                 y += 1;
             }
         }
@@ -795,28 +845,30 @@ impl ChatView<'_> {
         // Calculate heights for all renderable messages
         let msg_heights: Vec<u16> = renderable_messages
             .iter()
-            .map(|m| calculate_message_height(m, area.width))
+            .map(|m| calculate_message_height(m, area.width, &self.state.expanded_tool_calls))
             .collect();
 
         // Calculate total height
         let total_height: u16 = msg_heights.iter().sum();
 
-        // Find first message that fits (auto-scroll to bottom)
-        let start_idx = if total_height <= area.height {
-            0
-        } else {
-            // Find first message that fits from the end
-            let mut height_sum: u16 = 0;
-            let mut idx = renderable_messages.len();
-            for (i, h) in msg_heights.iter().enumerate().rev() {
-                if height_sum + h > area.height {
-                    break;
-                }
-                height_sum += h;
-                idx = i;
+        // Clamp scroll_offset to available content
+        let max_offset = total_height.saturating_sub(area.height);
+        let clamped_offset = self.state.scroll_offset.min(max_offset as usize) as u16;
+
+        // Window anchored from bottom by scroll_offset
+        let window_bottom = total_height.saturating_sub(clamped_offset);
+        let window_top = window_bottom.saturating_sub(area.height);
+
+        // Find the first message whose bottom exceeds window_top
+        let mut start_idx = 0;
+        let mut accumulated: u16 = 0;
+        for (i, h) in msg_heights.iter().enumerate() {
+            if accumulated + *h > window_top {
+                start_idx = i;
+                break;
             }
-            idx
-        };
+            accumulated += *h;
+        }
 
         // Render messages from start_idx forward
         let mut y = area.y;
@@ -836,10 +888,59 @@ impl ChatView<'_> {
                 height: msg_height,
             };
 
-            let widget = MessageWidget::new(message);
+            let widget =
+                MessageWidget::new(message).with_expanded_tools(&self.state.expanded_tool_calls);
             widget.render(msg_area, buf);
 
             y += msg_height;
+        }
+
+        // Draw a simple scrollbar on the right
+        if total_height > area.height {
+            let bar_x = area.x + area.width.saturating_sub(1);
+            let view_ratio = area.height as f32 / total_height as f32;
+            let thumb_height = ((area.height as f32) * view_ratio).clamp(1.0, area.height as f32);
+            let scroll_ratio = window_top as f32 / total_height as f32;
+            let thumb_start = (scroll_ratio * (area.height as f32 - thumb_height)).round() as u16;
+            for i in 0..area.height {
+                let ch = if i >= thumb_start && i < thumb_start + thumb_height as u16 {
+                    '█'
+                } else {
+                    '░'
+                };
+                if let Some(cell) = buf.cell_mut((bar_x, area.y + i)) {
+                    cell.set_symbol(ch.to_string().as_str());
+                    cell.set_style(Style::default().fg(Color::DarkGray));
+                }
+            }
+
+            // Scroll percentage indicator
+            let percent = if total_height == 0 {
+                0
+            } else {
+                ((window_bottom as f32 / total_height as f32) * 100.0).round() as i32
+            };
+            let pct_str = format!("{:>3}%", percent.clamp(0, 100));
+            let pct_x = bar_x.saturating_sub(pct_str.len() as u16);
+            if pct_x >= area.x {
+                buf.set_string(pct_x, area.y, pct_str, Style::default().fg(Color::DarkGray));
+            }
+        }
+
+        // Jump-to-latest indicator
+        if self.state.scroll_offset > 0 {
+            let hint = "Jump to latest (G)";
+            let hx = area
+                .x
+                .saturating_add(area.width.saturating_sub(hint.len() as u16 + 2));
+            buf.set_string(
+                hx,
+                area.y,
+                hint,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::ITALIC),
+            );
         }
     }
 }

@@ -593,11 +593,30 @@ Add the required fields and retry.",
                     self.state.scroll_down(1);
                 }
             }
+            KeyCode::Char('k') if !self.state.input.starts_with('/') => {
+                self.state.scroll_up(1);
+            }
+            KeyCode::Char('j') if !self.state.input.starts_with('/') => {
+                self.state.scroll_down(1);
+            }
             KeyCode::PageUp => {
-                self.state.scroll_up(10);
+                let step = (self.capabilities.viewport_height as usize).max(5) / 2;
+                self.state.scroll_up(step.max(1));
             }
             KeyCode::PageDown => {
-                self.state.scroll_down(10);
+                let step = (self.capabilities.viewport_height as usize).max(5) / 2;
+                self.state.scroll_down(step.max(1));
+            }
+            KeyCode::Char('g') if !ctrl => {
+                // Jump to top
+                self.state.scroll_offset = usize::MAX / 2;
+            }
+            KeyCode::Char('G') if !ctrl => {
+                // Jump to latest
+                self.state.scroll_offset = 0;
+            }
+            KeyCode::Char('t') if !self.state.busy => {
+                self.toggle_last_tool_call();
             }
 
             // Input editing
@@ -1158,6 +1177,19 @@ Slash Commands:
         })?;
 
         Ok(())
+    }
+
+    /// Toggle expansion for the most recent tool call
+    fn toggle_last_tool_call(&mut self) {
+        if let Some(call_id) = self
+            .state
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| m.tool_calls.last().map(|tc| tc.call_id.clone()))
+        {
+            self.state.toggle_tool_call(&call_id);
+        }
     }
 
     /// Render slash command completions popup (static version for closure)
