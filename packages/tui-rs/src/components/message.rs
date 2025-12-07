@@ -369,16 +369,6 @@ impl Widget for MessageWidget<'_> {
                             .fg(Color::Magenta)
                             .add_modifier(Modifier::BOLD),
                     ));
-
-                    // Show shimmer "Working" indicator when streaming
-                    if self.message.streaming
-                        && self.message.content.is_empty()
-                        && self.message.thinking.is_empty()
-                        && self.message.tool_calls.is_empty()
-                    {
-                        header_spans.push(Span::raw(" "));
-                        header_spans.extend(shimmer_spans("Working"));
-                    }
                 }
             };
 
