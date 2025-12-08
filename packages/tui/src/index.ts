@@ -1,3 +1,70 @@
+/**
+ * @fileoverview @evalops/tui - Terminal UI Library
+ *
+ * A high-performance terminal UI library featuring differential rendering
+ * for building flicker-free, interactive CLI applications.
+ *
+ * ## Key Features
+ *
+ * - **Differential Rendering**: Only redraws changed lines for optimal performance
+ * - **Component-Based**: Simple `Component` interface with `render()` method
+ * - **Built-in Components**: Text, Input, Editor, Loader, SelectList, Markdown, and more
+ * - **ANSI Support**: Full color and formatting via terminal escape sequences
+ * - **Keyboard Handling**: Arrow keys, home/end, Ctrl shortcuts, focus management
+ * - **Smart Text Wrapping**: Proper handling of ANSI escape sequences and Unicode
+ * - **SSH/tmux Optimizations**: Auto-detects remote sessions and adjusts behavior
+ *
+ * ## Architecture
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────────┐
+ * │                         TUI (Container)                         │
+ * ├─────────────────────────────────────────────────────────────────┤
+ * │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+ * │  │    Text     │  │   Editor    │  │  SelectList │  ...        │
+ * │  │ (Component) │  │ (Component) │  │ (Component) │             │
+ * │  └─────────────┘  └─────────────┘  └─────────────┘             │
+ * ├─────────────────────────────────────────────────────────────────┤
+ * │                    Differential Renderer                        │
+ * │        (compares previous/current, updates only changes)        │
+ * ├─────────────────────────────────────────────────────────────────┤
+ * │                    Terminal Abstraction                         │
+ * │              (ProcessTerminal or custom impl)                   │
+ * └─────────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## Quick Start
+ *
+ * ```typescript
+ * import { TUI, ProcessTerminal, Text, Input } from "@evalops/tui";
+ *
+ * const tui = new TUI(new ProcessTerminal());
+ *
+ * // Add components
+ * tui.addChild(new Text("Welcome to my app!"));
+ *
+ * const input = new Input();
+ * input.onSubmit = (text) => console.log("You entered:", text);
+ * tui.addChild(input);
+ *
+ * // Set focus and start
+ * tui.setFocus(input);
+ * tui.start();
+ * ```
+ *
+ * ## Component Interface
+ *
+ * All components implement the `Component` interface:
+ *
+ * ```typescript
+ * interface Component {
+ *   render(width: number): string[];     // Return lines to display
+ *   handleInput?(data: string): void;    // Optional keyboard handling
+ * }
+ * ```
+ *
+ * @module @evalops/tui
+ */
 export {
 	type AutocompleteItem,
 	type AutocompleteProvider,

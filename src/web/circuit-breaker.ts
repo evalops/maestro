@@ -1,3 +1,73 @@
+/**
+ * @fileoverview Circuit Breaker Pattern Implementation
+ *
+ * This module implements the circuit breaker pattern to prevent cascading
+ * failures when external services (like LLM providers) experience issues.
+ *
+ * ## Circuit States
+ *
+ * ```
+ *                 ┌─────────────────────────────────────────────────────┐
+ *                 │                  State Machine                       │
+ *                 └─────────────────────────────────────────────────────┘
+ *
+ *     Success ◄──────────────────┐
+ *        │                       │
+ *        ▼                       │ Failures < threshold
+ *   ┌─────────┐                  │
+ *   │ CLOSED  │ ────────────────►│
+ *   │ (Normal)│  Failures >= threshold
+ *   └─────────┘                  │
+ *                                ▼
+ *                           ┌─────────┐
+ *     Success ◄───────────  │  OPEN   │ ◄─────── Failure
+ *        │                  │ (Reject)│           │
+ *        │ halfOpenMaxAttempts└─────────┘         │
+ *        │     successes         │                │
+ *        │                       │ resetTimeoutMs │
+ *        │                       ▼                │
+ *        │                  ┌──────────┐          │
+ *        └───────────────── │HALF_OPEN │ ─────────┘
+ *                          │ (Testing)│
+ *                          └──────────┘
+ * ```
+ *
+ * ## Behavior
+ *
+ * - **CLOSED**: Normal operation. Requests pass through. Failures are counted.
+ * - **OPEN**: Fast failure. Requests are immediately rejected without calling the service.
+ * - **HALF_OPEN**: Testing recovery. A limited number of requests are allowed through.
+ *
+ * ## Configuration
+ *
+ * | Option | Description | Default |
+ * |--------|-------------|---------|
+ * | `failureThreshold` | Failures before opening | 5 |
+ * | `resetTimeoutMs` | Time before trying again | 30000 |
+ * | `halfOpenMaxAttempts` | Successes needed to close | 2 |
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * import { getAgentCircuitBreaker } from "./circuit-breaker.js";
+ *
+ * const breaker = getAgentCircuitBreaker("anthropic");
+ *
+ * try {
+ *   const result = await breaker.execute(async () => {
+ *     return await callLlmApi();
+ *   });
+ * } catch (error) {
+ *   if (error.message.includes("CircuitBreaker")) {
+ *     // Service is temporarily unavailable
+ *     return fallbackResponse();
+ *   }
+ *   throw error;
+ * }
+ * ```
+ *
+ * @module web/circuit-breaker
+ */
 import { EventEmitter } from "node:events";
 import { createLogger } from "../utils/logger.js";
 

@@ -1,3 +1,53 @@
+/**
+ * @fileoverview Headless Execution Command (composer exec)
+ *
+ * This module implements the `composer exec` command for headless/scripted
+ * agent execution. It's designed for CI/CD pipelines, automation scripts,
+ * and evaluation workflows where interactive terminal UI is not needed.
+ *
+ * ## Key Features
+ *
+ * - **JSONL Event Streaming**: Structured output for machine parsing (`--json`)
+ * - **Schema Validation**: Validate assistant output against JSON Schema (`--output-schema`)
+ * - **Output Capture**: Save final response to file (`--output-last-message`)
+ * - **Session Persistence**: All executions are saved as resumable sessions
+ * - **Multi-prompt Support**: Chain multiple prompts in a single execution
+ *
+ * ## Usage
+ *
+ * ```bash
+ * # Basic execution
+ * composer exec "Summarize the README.md file"
+ *
+ * # With JSON output
+ * composer exec --json "List all TypeScript files"
+ *
+ * # With schema validation
+ * composer exec --output-schema schema.json "Generate config"
+ *
+ * # Save output to file
+ * composer exec --output-last-message result.txt "Generate report"
+ * ```
+ *
+ * ## JSONL Event Types
+ *
+ * When `--json` is specified, the following events are streamed to stdout:
+ *
+ * | Event Type | Description |
+ * |------------|-------------|
+ * | `thread_start` | Execution begins with metadata |
+ * | `user_turn` | User prompt submitted |
+ * | `assistant_turn_start` | Assistant begins responding |
+ * | `text_delta` | Streaming text chunk |
+ * | `tool_use` | Tool invocation |
+ * | `tool_result` | Tool execution result |
+ * | `assistant_turn_end` | Assistant turn complete |
+ * | `thread_end` | Execution complete |
+ * | `error` | Error occurred |
+ * | `done` | Final status event |
+ *
+ * @module cli/commands/exec
+ */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import AjvModule, { type ValidateFunction } from "ajv";
@@ -13,6 +63,7 @@ import {
 	emitUserTurn as emitUserTurnEvent,
 } from "../jsonl-writer.js";
 
+/** Prefix added to exec session summaries for identification */
 export const EXEC_SESSION_SUMMARY_PREFIX = "[exec]";
 
 interface ExecCommandOptions {

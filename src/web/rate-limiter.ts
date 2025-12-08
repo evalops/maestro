@@ -1,3 +1,55 @@
+/**
+ * @fileoverview Rate Limiting for Composer Web Server
+ *
+ * This module provides a token bucket rate limiter with Redis support for
+ * distributed deployments. It supports both per-IP global limits and
+ * per-endpoint limits with tiered configuration.
+ *
+ * ## Features
+ *
+ * - **Token Bucket Algorithm**: Smooth rate limiting with burst capacity
+ * - **Redis Support**: Distributed rate limiting across server instances
+ * - **In-Memory Fallback**: Works without Redis for single-instance deployments
+ * - **Tiered Limits**: Different limits per endpoint based on resource cost
+ * - **Automatic Cleanup**: Old entries are purged to prevent memory leaks
+ *
+ * ## Configuration
+ *
+ * | Environment Variable | Description | Default |
+ * |---------------------|-------------|---------|
+ * | `COMPOSER_REDIS_URL` | Redis connection URL | (in-memory fallback) |
+ *
+ * ## Default Endpoint Limits
+ *
+ * | Endpoint | Limit | Rationale |
+ * |----------|-------|-----------|
+ * | `/api/chat` | 30/min | LLM inference is expensive |
+ * | `/api/model` | 60/min | Model switching is moderate |
+ * | `/api/files` | 200/min | File operations |
+ * | `/api/commands` | 100/min | Command execution |
+ * | `/api/status` | 500/min | Status checks are cheap |
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * import { RateLimiter, TieredRateLimiter } from "./rate-limiter.js";
+ *
+ * // Simple rate limiter
+ * const limiter = new RateLimiter({ windowMs: 60000, max: 100 });
+ * const result = await limiter.checkAsync(clientIp);
+ * if (!result.allowed) {
+ *   res.setHeader("Retry-After", Math.ceil((result.reset - Date.now()) / 1000));
+ *   res.writeHead(429);
+ *   return;
+ * }
+ *
+ * // Tiered rate limiter with endpoint-specific limits
+ * const tiered = new TieredRateLimiter();
+ * const result = tiered.check(clientIp, "/api/chat");
+ * ```
+ *
+ * @module web/rate-limiter
+ */
 import { Redis } from "ioredis";
 import { createLogger } from "../utils/logger.js";
 

@@ -1,8 +1,55 @@
 /**
- * Database client configuration
- * Uses PostgreSQL for enterprise multi-tenant features
+ * @fileoverview PostgreSQL Database Client
+ *
+ * This module provides the database connection layer for Composer's enterprise
+ * features. It uses PostgreSQL via the `postgres.js` driver with Drizzle ORM
+ * for type-safe queries.
+ *
+ * ## Features
+ *
+ * - **Connection Pooling**: Configurable pool size via `COMPOSER_DB_MAX_CONNECTIONS`
+ * - **Graceful Shutdown**: Signal handlers ensure clean connection closure
+ * - **Lazy Initialization**: Database connects on first use
+ * - **Health Checks**: `testConnection()` for readiness probes
+ *
+ * ## Configuration
+ *
+ * | Environment Variable | Description | Default |
+ * |---------------------|-------------|---------|
+ * | `COMPOSER_DATABASE_URL` | PostgreSQL connection string | (required) |
+ * | `DATABASE_URL` | Fallback connection string | - |
+ * | `COMPOSER_DB_MAX_CONNECTIONS` | Connection pool size | 10 |
+ * | `COMPOSER_DB_IDLE_TIMEOUT` | Idle connection timeout (seconds) | 20 |
+ * | `COMPOSER_DB_CONNECT_TIMEOUT` | Connection timeout (seconds) | 10 |
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * import { getDb, isDbAvailable, testConnection } from "./db/client.js";
+ *
+ * // Check if database is configured
+ * if (isDatabaseConfigured()) {
+ *   // Get the database client (connects lazily)
+ *   const db = getDb();
+ *
+ *   // Execute type-safe queries
+ *   const sessions = await db.select().from(schema.sessions);
+ * }
+ * ```
+ *
+ * ## Enterprise Use Cases
+ *
+ * The database stores:
+ * - Shared session tokens and access tracking
+ * - Webhook configurations
+ * - Enterprise audit logs
+ * - API token management
+ *
+ * For single-user deployments without enterprise features, the database
+ * is optional and Composer falls back to file-based storage.
+ *
+ * @module db/client
  */
-
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createLogger } from "../utils/logger.js";

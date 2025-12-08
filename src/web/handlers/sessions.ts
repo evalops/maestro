@@ -1,3 +1,38 @@
+/**
+ * @fileoverview Session Management HTTP Handlers
+ *
+ * This module provides REST API endpoints for managing Composer sessions,
+ * including CRUD operations, session sharing, and export functionality.
+ *
+ * ## Endpoints
+ *
+ * | Method | Path | Description |
+ * |--------|------|-------------|
+ * | GET | `/api/sessions` | List all sessions with pagination |
+ * | GET | `/api/sessions/:id` | Get a specific session with messages |
+ * | POST | `/api/sessions` | Create a new session |
+ * | PATCH | `/api/sessions/:id` | Update session metadata (title, tags, favorite) |
+ * | DELETE | `/api/sessions/:id` | Delete a session |
+ * | POST | `/api/sessions/:id/share` | Generate a shareable link |
+ * | GET | `/api/sessions/shared/:token` | Access a shared session |
+ * | POST | `/api/sessions/:id/export` | Export session in various formats |
+ *
+ * ## Session Sharing
+ *
+ * Sessions can be shared via time-limited, access-limited tokens:
+ * - Configurable expiration (default 24h, max 1 week)
+ * - Optional access count limits
+ * - Rate limiting to prevent brute-force attacks
+ * - Atomic access counting to prevent race conditions
+ *
+ * ## Storage
+ *
+ * - Session data: JSONL files in `~/.composer/agent/sessions/`
+ * - Share tokens: PostgreSQL (with in-memory fallback)
+ * - Rate limits: Redis (with in-memory fallback)
+ *
+ * @module web/handlers/sessions
+ */
 import crypto from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {

@@ -1,5 +1,48 @@
+/**
+ * @fileoverview CLI Help Output Module
+ *
+ * This module generates and displays the `--help` output for the Composer CLI.
+ * It provides a comprehensive overview of:
+ *
+ * - **Usage syntax** and common invocation patterns
+ * - **Command-line options** for provider, model, session management, etc.
+ * - **Environment variables** for API keys and configuration
+ * - **Available tools** and their capabilities
+ * - **Subcommands** like `composer exec` for headless execution
+ * - **Session management** commands and workflows
+ *
+ * ## Styling
+ *
+ * The output uses the application's theme system for consistent terminal styling:
+ * - `heading()` - Main title styling
+ * - `sectionHeading()` - Section headers
+ * - `muted()` - De-emphasized text for descriptions
+ * - `badge()` - Highlighted tips and hints
+ *
+ * @module cli/help
+ */
 import { badge, heading, muted, sectionHeading } from "../style/theme.js";
 
+/**
+ * Prints the complete CLI help message to stdout.
+ *
+ * This function is invoked when the user runs `composer --help` or `composer -h`.
+ * It formats and displays all available options, commands, and usage examples
+ * using the terminal theme for consistent styling.
+ *
+ * @param version - The current Composer version string (e.g., "1.2.3")
+ *
+ * @example
+ * ```typescript
+ * import { printHelp } from "./help.js";
+ * import { version } from "../../package.json";
+ *
+ * if (args.includes("--help")) {
+ *   printHelp(version);
+ *   process.exit(0);
+ * }
+ * ```
+ */
 export function printHelp(version: string) {
 	const header = `${heading("Composer")} ${muted(
 		`v${version} by EvalOps — AI coding assistant with read, list, search, diff, bash, edit, write, todo tools`,
