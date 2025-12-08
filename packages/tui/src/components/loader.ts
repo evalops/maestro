@@ -1,8 +1,43 @@
+/**
+ * @fileoverview Animated Loading Indicator Component
+ *
+ * This module provides an animated loader with spinner and progress bar
+ * for displaying background operation status. It supports multiple visual
+ * styles and both determinate and indeterminate progress modes.
+ *
+ * ## Features
+ *
+ * - **Multiple Spinner Styles**: braille, dots, pulse, line
+ * - **Progress Modes**: Determinate (percentage) or indeterminate
+ * - **Stage Tracking**: Show step X of Y
+ * - **Hints**: Additional context below the main message
+ * - **Accessibility**: Low color and low unicode fallback modes
+ *
+ * ## Visual Representation
+ *
+ * Default mode:
+ * ```
+ * TITLE ⠋ Loading files · step 2/5 (hint text)
+ * [━━━━━━────────] 42%
+ * ```
+ *
+ * Compact mode:
+ * ```
+ * LOADING step 2/5
+ * progress ━━━━━━──────── 42%
+ * ```
+ *
+ * @module components/loader
+ */
+
 import chalk from "chalk";
 import type { TUI } from "../tui.js";
 import { Text } from "./text.js";
 
+/** Display mode for the loader */
 type LoaderMode = "default" | "compact";
+
+/** Available spinner animation styles */
 type SpinnerStyle = "braille" | "dots" | "pulse" | "line";
 
 /** Spinner frame definitions */
@@ -52,33 +87,118 @@ const LOW_UNICODE_SPINNERS: Record<SpinnerStyle, string[]> = {
 	line: ["|", "/", "-", "\\"],
 };
 
+/**
+ * Configuration options for the Loader component.
+ */
 interface LoaderOptions {
+	/** Display mode - "default" shows full details, "compact" is minimal */
 	mode?: LoaderMode;
+	/** Use plain colors (no hex colors) for reduced color mode */
 	lowColor?: boolean;
+	/** Use ASCII-only characters for terminals without Unicode support */
 	lowUnicode?: boolean;
+	/** Spinner animation style */
 	spinner?: SpinnerStyle;
 }
 
 /**
- * Loader component that shows a two-line animation with spinner and progress pulse
+ * Animated loading indicator with spinner and progress bar.
+ *
+ * The Loader extends the Text component to provide animated feedback
+ * during long-running operations. It automatically starts animation
+ * on construction and should be stopped when no longer needed.
+ *
+ * ## Modes
+ *
+ * - **default**: Two-line display with spinner, message, stages, and progress bar
+ * - **compact**: Single-line display with minimal information
+ *
+ * ## Progress
+ *
+ * The loader supports two progress modes:
+ * - **Indeterminate**: Animated dots when no progress percentage is set
+ * - **Determinate**: Progress bar when percentage is provided (0.0 to 1.0)
+ *
+ * @example
+ * ```typescript
+ * const loader = new Loader(tui, "Loading files...", {
+ *   mode: "default",
+ *   spinner: "braille"
+ * });
+ *
+ * // Update message
+ * loader.setMessage("Processing...");
+ *
+ * // Show stage progress
+ * loader.setStage("Indexing", 2, 5); // Step 2 of 5
+ *
+ * // Show percentage progress
+ * loader.setProgress(0.42); // 42%
+ *
+ * // Add hint text
+ * loader.setHint("This may take a while");
+ *
+ * // Clean up when done
+ * loader.stop();
+ * ```
+ *
+ * @extends Text
  */
 export class Loader extends Text {
+	/** Current status message */
 	private message: string;
+
+	/** Current spinner style */
 	private spinnerStyle: SpinnerStyle;
+
+	/** Dot positions for indeterminate progress animation */
 	private progressDots = [0, 1, 2];
+
+	/** Current animation frame offset */
 	private progressOffset = 0;
+
+	/** Timer for animation loop */
 	private intervalId: NodeJS.Timeout | null = null;
+
+	/** TUI instance for triggering re-renders */
 	private ui: TUI;
+
+	/** Number of segments in the progress bar */
 	private segments = 12;
+
+	/** Current stage information (step X of Y) */
 	private stageInfo: { step: number; total: number } | null = null;
+
+	/** Optional hint text shown below the message */
 	private hint: string | null = null;
+
+	/** Progress percentage (0.0-1.0) or null for indeterminate */
 	private progressPercent: number | null = null;
+
+	/** Optional title shown before the spinner */
 	private title: string | null = null;
+
+	/** Display mode */
 	private readonly mode: LoaderMode;
+
+	/** Number of segments in compact mode progress bar */
 	private readonly compactSegments = 10;
+
+	/** Whether to use reduced colors */
 	private readonly lowColor: boolean;
+
+	/** Whether to use ASCII-only characters */
 	private readonly lowUnicode: boolean;
 
+	/**
+	 * Creates a new Loader instance.
+	 *
+	 * The loader starts animating immediately upon construction.
+	 *
+	 * @param ui - TUI instance for triggering re-renders
+	 * @param message - Initial status message (default: "Loading...")
+	 * @param options - Configuration options
+	 */
 	constructor(ui: TUI, message = "Loading...", options: LoaderOptions = {}) {
 		super("", 1, 0);
 		this.message = message;
@@ -90,10 +210,21 @@ export class Loader extends Text {
 		this.start();
 	}
 
+	/**
+	 * Renders the loader to terminal lines.
+	 * Prepends an empty line for visual spacing.
+	 *
+	 * @param width - Available width for rendering
+	 * @returns Array of rendered lines
+	 */
 	render(width: number): string[] {
 		return ["", ...super.render(width)];
 	}
 
+	/**
+	 * Starts the animation loop.
+	 * Called automatically by the constructor.
+	 */
 	start(): void {
 		this.updateDisplay();
 		const frames = SPINNERS[this.spinnerStyle];
@@ -103,6 +234,10 @@ export class Loader extends Text {
 		}, 80); // Faster for smoother braille animation
 	}
 
+	/**
+	 * Stops the animation loop and cleans up the timer.
+	 * Should be called when the loader is no longer needed.
+	 */
 	stop(): void {
 		if (this.intervalId) {
 			clearInterval(this.intervalId);
@@ -110,27 +245,51 @@ export class Loader extends Text {
 		}
 	}
 
+	/**
+	 * Updates the status message.
+	 * @param message - New message to display
+	 */
 	setMessage(message: string): void {
 		this.message = message;
 		this.updateDisplay();
 	}
 
+	/**
+	 * Sets stage information for multi-step operations.
+	 *
+	 * @param label - Stage label (replaces message)
+	 * @param step - Current step number (1-indexed)
+	 * @param total - Total number of steps
+	 */
 	setStage(label: string, step: number, total: number): void {
 		this.message = label;
 		this.stageInfo = { step, total };
 		this.updateDisplay();
 	}
 
+	/**
+	 * Sets optional hint text shown in default mode.
+	 * @param hint - Hint text, or null to clear
+	 */
 	setHint(hint: string | null): void {
 		this.hint = hint;
 		this.updateDisplay();
 	}
 
+	/**
+	 * Sets the title shown before the spinner.
+	 * @param title - Title text, or null to clear
+	 */
 	setTitle(title: string | null): void {
 		this.title = title;
 		this.updateDisplay();
 	}
 
+	/**
+	 * Sets the progress percentage for determinate progress.
+	 *
+	 * @param percent - Progress value from 0.0 to 1.0, or null for indeterminate
+	 */
 	setProgress(percent: number | null): void {
 		if (percent === null || Number.isNaN(percent)) {
 			this.progressPercent = null;

@@ -1,5 +1,51 @@
 /**
- * API Client for Composer Backend
+ * @fileoverview API Client for Composer Backend
+ *
+ * This module provides a type-safe HTTP client for communicating with
+ * the Composer backend API. It handles:
+ *
+ * - Session management (create, list, delete)
+ * - Streaming chat with Server-Sent Events (SSE)
+ * - Model selection and configuration
+ * - Workspace status and file operations
+ * - Background tasks and diagnostics
+ *
+ * ## Features
+ *
+ * - **Automatic Fallback**: Tries multiple base URLs if primary fails
+ * - **SSE Streaming**: Real-time streaming for chat responses
+ * - **Type Safety**: Full TypeScript types for all API responses
+ * - **Error Handling**: Graceful degradation with detailed errors
+ *
+ * ## Quick Start
+ *
+ * ```typescript
+ * import { ApiClient } from "@evalops/composer-web";
+ *
+ * const client = new ApiClient("http://localhost:8080");
+ *
+ * // Get workspace status
+ * const status = await client.getStatus();
+ *
+ * // Stream a chat response
+ * for await (const event of client.chatWithEvents({ messages: [...] })) {
+ *   if (event.type === 'message_update') {
+ *     console.log(event.assistantMessageEvent);
+ *   }
+ * }
+ * ```
+ *
+ * ## API Endpoints
+ *
+ * | Category | Endpoint | Description |
+ * |----------|----------|-------------|
+ * | Chat | POST /api/chat | Send message, get streaming response |
+ * | Sessions | GET/POST /api/sessions | Manage conversation sessions |
+ * | Models | GET/POST /api/model | Get/set current model |
+ * | Status | GET /api/status | Get workspace status |
+ * | Usage | GET /api/usage | Get token usage and costs |
+ *
+ * @module services/api-client
  */
 
 import type {
@@ -288,10 +334,54 @@ export interface BranchListResponse {
 	userMessages: Array<{ number: number; index: number; snippet: string }>;
 }
 
+/**
+ * HTTP API client for the Composer backend.
+ *
+ * Provides methods for all Composer API endpoints including chat streaming,
+ * session management, model selection, and workspace operations.
+ *
+ * The client automatically handles:
+ * - URL fallback across multiple hosts
+ * - SSE parsing for streaming responses
+ * - Content-type validation
+ * - Error propagation
+ *
+ * @example
+ * ```typescript
+ * const client = new ApiClient();
+ *
+ * // Get available models
+ * const models = await client.getModels();
+ *
+ * // Stream chat messages
+ * for await (const event of client.chatWithEvents({
+ *   sessionId: "abc123",
+ *   messages: [{ role: "user", content: "Hello!" }]
+ * })) {
+ *   console.log(event);
+ * }
+ * ```
+ */
 export class ApiClient {
+	/** Resolved base URL for API requests */
 	public readonly baseUrl: string;
+
+	/** Fallback URLs to try if primary fails */
 	private readonly fallbackBases: string[];
 
+	/**
+	 * Creates a new API client.
+	 *
+	 * The base URL is resolved in order of priority:
+	 * 1. Explicit baseUrl parameter
+	 * 2. window.__COMPOSER_API__ global
+	 * 3. ?api= URL parameter
+	 * 4. Same origin as current page
+	 * 5. VITE_API_ENDPOINT env variable
+	 * 6. http://localhost:8080 (fallback)
+	 *
+	 * @param baseUrl - Optional explicit base URL
+	 */
 	constructor(baseUrl?: string) {
 		let resolved = baseUrl;
 		// Window override via global (allows runtime swap without rebuild)
