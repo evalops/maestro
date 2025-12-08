@@ -11,6 +11,10 @@ import type {
 	ResponseReasoningItem,
 } from "openai/resources/responses/responses.js";
 import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
+import {
+	isStreamIdleTimeoutError,
+	withAbortableIdleTimeout,
+} from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	AssistantMessage,
@@ -146,7 +150,13 @@ export async function* streamResponsesApiSdk(
 			signal: options.signal,
 		});
 
-		for await (const event of stream) {
+		// Wrap stream with idle timeout detection
+		const timedStream = withAbortableIdleTimeout(stream, {
+			provider: model.provider,
+			signal: options.signal,
+		});
+
+		for await (const event of timedStream) {
 			// Handle output item start
 			if (event.type === "response.output_item.added") {
 				const item = event.item;
@@ -334,15 +344,19 @@ export async function* streamResponsesApiSdk(
 			reason: output.stopReason as "stop" | "length" | "toolUse",
 			message: output,
 		};
-	} catch (error) {
-		output.stopReason = options.signal?.aborted ? "aborted" : "error";
-		output.errorMessage =
-			error instanceof Error ? error.message : String(error);
-		yield {
-			type: "error",
-			reason: output.stopReason as "aborted" | "error",
-			error: output,
-		};
+	} catch (error: unknown) {
+		if (error instanceof Error && error.name === "AbortError") {
+			output.stopReason = "aborted";
+			yield { type: "error", reason: "aborted", error: output };
+		} else if (isStreamIdleTimeoutError(error)) {
+			// Re-throw idle timeout errors so caller can retry
+			throw error;
+		} else {
+			output.stopReason = "error";
+			output.errorMessage =
+				error instanceof Error ? error.message : String(error);
+			yield { type: "error", reason: "error", error: output };
+		}
 	}
 }
 

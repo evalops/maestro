@@ -45,6 +45,10 @@ import {
 } from "@aws-sdk/client-bedrock-runtime";
 import type { DocumentType } from "@smithy/types";
 import { getAwsRegion, parseBedrockArn } from "../../providers/aws-auth.js";
+import {
+	isStreamIdleTimeoutError,
+	withAbortableIdleTimeout,
+} from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	AssistantMessage,
@@ -317,7 +321,13 @@ export async function* streamBedrock(
 			throw new Error("Response stream is undefined");
 		}
 
-		for await (const event of response.stream) {
+		// Wrap stream with idle timeout detection
+		const timedStream = withAbortableIdleTimeout(response.stream, {
+			provider: model.provider,
+			signal: options.signal,
+		});
+
+		for await (const event of timedStream) {
 			if (event.messageStart) {
 				// Message started - role is always assistant for responses
 				continue;
@@ -508,6 +518,9 @@ export async function* streamBedrock(
 		if (error instanceof Error && error.name === "AbortError") {
 			partial.stopReason = "aborted";
 			yield { type: "error", reason: "aborted", error: partial };
+		} else if (isStreamIdleTimeoutError(error)) {
+			// Re-throw idle timeout errors so caller can retry
+			throw error;
 		} else {
 			throw error;
 		}

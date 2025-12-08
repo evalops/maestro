@@ -94,6 +94,10 @@
 
 import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
 import { fetchWithRetry } from "../../providers/network-config.js";
+import {
+	createTimeoutReader,
+	isStreamIdleTimeoutError,
+} from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	AssistantMessage,
@@ -568,7 +572,12 @@ export async function* streamOpenAI(
 
 	yield { type: "start", partial };
 
-	const reader = response.body.getReader();
+	// Wrap reader with idle timeout detection
+	const rawReader = response.body.getReader();
+	const reader = createTimeoutReader(rawReader, {
+		provider: model.provider,
+		signal: options.signal,
+	});
 	const decoder = new TextDecoder();
 	let buffer = "";
 	const toolArgBuffers = new Map<number, string>();
@@ -837,6 +846,9 @@ export async function* streamOpenAI(
 		if (error instanceof Error && error.name === "AbortError") {
 			partial.stopReason = "aborted";
 			yield { type: "error", reason: "aborted", error: partial };
+		} else if (isStreamIdleTimeoutError(error)) {
+			// Re-throw idle timeout errors so caller can retry
+			throw error;
 		} else {
 			throw error;
 		}

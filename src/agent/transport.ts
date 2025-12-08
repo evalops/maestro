@@ -49,6 +49,8 @@ import { TokenTracker } from "../billing/token-tracker.js";
 import { isDatabaseConfigured } from "../db/client.js";
 import { type ToolHookService, createToolHookService } from "../hooks/index.js";
 import { envApiKeyMap } from "../providers/api-keys.js";
+import { getProviderNetworkConfig } from "../providers/network-config.js";
+import { isStreamIdleTimeoutError } from "../providers/stream-idle-timeout.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("transport");
@@ -564,128 +566,183 @@ export class ProviderTransport implements AgentTransport {
 				messages: allMessages,
 			};
 
-			let stream: AsyncGenerator<AssistantMessageEvent, void, unknown>;
-			if (model.api === "anthropic-messages") {
-				stream = streamAnthropic(
-					model as Model<"anthropic-messages">,
-					currentContext,
-					{
-						...streamOptions,
-						thinking: cfg.reasoning,
-					},
-				);
-			} else if (
-				model.api === "openai-completions" ||
-				model.api === "openai-responses"
-			) {
-				stream = streamOpenAI(
-					model as Model<"openai-completions" | "openai-responses">,
-					currentContext,
-					{
-						...streamOptions,
-						reasoningEffort: cfg.reasoning,
-					},
-				);
-			} else if (model.api === "google-generative-ai") {
-				stream = streamGoogle(
-					model as Model<"google-generative-ai">,
-					currentContext,
-					{
-						...streamOptions,
-						thinking: cfg.reasoning,
-					},
-				);
-			} else if (model.api === "bedrock-converse") {
-				stream = streamBedrock(
-					model as Model<"bedrock-converse">,
-					currentContext,
-					streamOptions,
-				);
-			} else {
-				throw new Error(`Unsupported API: ${model.api}`);
-			}
+			// Stream retry logic for idle timeouts
+			const networkConfig = getProviderNetworkConfig(model.provider);
+			const maxStreamRetries = networkConfig.streamMaxRetries;
+			let streamAttempt = 0;
+			let streamSuccess = false;
 
-			for await (const event of stream) {
-				if (event.type === "start") {
-					currentAssistantMessage = event.partial;
-					if (currentAssistantMessage) {
-						yield { type: "message_start", message: currentAssistantMessage };
-					}
-					continue;
-				}
+			while (!streamSuccess && streamAttempt <= maxStreamRetries) {
+				if (streamAttempt > 0) {
+					// Reset state for retry
+					currentAssistantMessage = null;
+					toolCallsToExecute.length = 0;
+					pendingNextTurn = false;
 
-				if (
-					event.type === "text_delta" ||
-					event.type === "thinking_delta" ||
-					event.type === "toolcall_delta"
-				) {
-					if (currentAssistantMessage) {
-						yield {
-							type: "message_update",
-							message: currentAssistantMessage,
-							assistantMessageEvent: event,
-						};
-					}
-					continue;
-				}
-
-				if (event.type === "toolcall_end") {
-					const rawArgs = event.toolCall.arguments;
-					const normalizedArgs =
-						rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
-							? (rawArgs as Record<string, unknown>)
-							: {};
-					toolCallsToExecute.push({
-						type: "toolCall",
-						id: event.toolCall.id,
-						name: event.toolCall.name,
-						arguments: normalizedArgs,
+					const backoffMs = Math.min(
+						networkConfig.backoffInitial * 2 ** (streamAttempt - 1),
+						networkConfig.backoffMax,
+					);
+					logger.info("Retrying stream after idle timeout", {
+						attempt: streamAttempt,
+						maxRetries: maxStreamRetries,
+						backoffMs,
+						provider: model.provider,
 					});
-					continue;
+					await new Promise((resolve) => setTimeout(resolve, backoffMs));
+				}
+				streamAttempt++;
+
+				let stream: AsyncGenerator<AssistantMessageEvent, void, unknown>;
+				if (model.api === "anthropic-messages") {
+					stream = streamAnthropic(
+						model as Model<"anthropic-messages">,
+						currentContext,
+						{
+							...streamOptions,
+							thinking: cfg.reasoning,
+						},
+					);
+				} else if (
+					model.api === "openai-completions" ||
+					model.api === "openai-responses"
+				) {
+					stream = streamOpenAI(
+						model as Model<"openai-completions" | "openai-responses">,
+						currentContext,
+						{
+							...streamOptions,
+							reasoningEffort: cfg.reasoning,
+						},
+					);
+				} else if (model.api === "google-generative-ai") {
+					stream = streamGoogle(
+						model as Model<"google-generative-ai">,
+						currentContext,
+						{
+							...streamOptions,
+							thinking: cfg.reasoning,
+						},
+					);
+				} else if (model.api === "bedrock-converse") {
+					stream = streamBedrock(
+						model as Model<"bedrock-converse">,
+						currentContext,
+						streamOptions,
+					);
+				} else {
+					throw new Error(`Unsupported API: ${model.api}`);
 				}
 
-				if (event.type === "done") {
-					if (currentAssistantMessage) {
-						completedAssistantMessage = currentAssistantMessage;
-						yield { type: "message_end", message: currentAssistantMessage };
-						if (currentAssistantMessage.usage) {
-							const usage = currentAssistantMessage.usage;
-							const cost = model.cost ? calculateCost(usage, model.cost) : 0;
-							if (credential?.type !== "anthropic-oauth") {
-								try {
-									trackUsage({
-										provider: model.provider,
-										model: model.id,
-										tokensInput: usage.input || 0,
-										tokensOutput: usage.output || 0,
-										tokensCacheRead: usage.cacheRead,
-										tokensCacheWrite: usage.cacheWrite,
-										cost,
-									});
-								} catch (error) {
-									logger.warn("Failed to track usage", {
-										error:
-											error instanceof Error ? error.message : String(error),
-										stack: error instanceof Error ? error.stack : undefined,
-									});
+				try {
+					for await (const event of stream) {
+						if (event.type === "start") {
+							currentAssistantMessage = event.partial;
+							if (currentAssistantMessage) {
+								yield {
+									type: "message_start",
+									message: currentAssistantMessage,
+								};
+							}
+							continue;
+						}
+
+						if (
+							event.type === "text_delta" ||
+							event.type === "thinking_delta" ||
+							event.type === "toolcall_delta"
+						) {
+							if (currentAssistantMessage) {
+								yield {
+									type: "message_update",
+									message: currentAssistantMessage,
+									assistantMessageEvent: event,
+								};
+							}
+							continue;
+						}
+
+						if (event.type === "toolcall_end") {
+							const rawArgs = event.toolCall.arguments;
+							const normalizedArgs =
+								rawArgs &&
+								typeof rawArgs === "object" &&
+								!Array.isArray(rawArgs)
+									? (rawArgs as Record<string, unknown>)
+									: {};
+							toolCallsToExecute.push({
+								type: "toolCall",
+								id: event.toolCall.id,
+								name: event.toolCall.name,
+								arguments: normalizedArgs,
+							});
+							continue;
+						}
+
+						if (event.type === "done") {
+							if (currentAssistantMessage) {
+								completedAssistantMessage = currentAssistantMessage;
+								yield { type: "message_end", message: currentAssistantMessage };
+								if (currentAssistantMessage.usage) {
+									const usage = currentAssistantMessage.usage;
+									const cost = model.cost
+										? calculateCost(usage, model.cost)
+										: 0;
+									if (credential?.type !== "anthropic-oauth") {
+										try {
+											trackUsage({
+												provider: model.provider,
+												model: model.id,
+												tokensInput: usage.input || 0,
+												tokensOutput: usage.output || 0,
+												tokensCacheRead: usage.cacheRead,
+												tokensCacheWrite: usage.cacheWrite,
+												cost,
+											});
+										} catch (error) {
+											logger.warn("Failed to track usage", {
+												error:
+													error instanceof Error
+														? error.message
+														: String(error),
+												stack: error instanceof Error ? error.stack : undefined,
+											});
+										}
+									}
 								}
 							}
+							pendingNextTurn = toolCallsToExecute.length > 0;
+							continue;
+						}
+
+						if (event.type === "error") {
+							completedAssistantMessage = event.error;
+							if (currentAssistantMessage) {
+								yield { type: "message_end", message: currentAssistantMessage };
+							}
+							pendingNextTurn = false;
+							encounteredError = true;
+							break;
 						}
 					}
-					pendingNextTurn = toolCallsToExecute.length > 0;
-					continue;
-				}
-
-				if (event.type === "error") {
-					completedAssistantMessage = event.error;
-					if (currentAssistantMessage) {
-						yield { type: "message_end", message: currentAssistantMessage };
+					streamSuccess = true;
+				} catch (error) {
+					if (
+						isStreamIdleTimeoutError(error) &&
+						streamAttempt <= maxStreamRetries
+					) {
+						logger.warn("Stream idle timeout, will retry", {
+							attempt: streamAttempt,
+							maxRetries: maxStreamRetries,
+							provider: model.provider,
+							idleMs: error.idleMs,
+						});
+						continue; // Retry the stream
 					}
-					pendingNextTurn = false;
-					encounteredError = true;
-					break;
+					// Not retryable or exhausted retries - re-throw
+					throw error;
 				}
-			}
+			} // end while retry loop
 
 			if (toolCallsToExecute.length > 0) {
 				toolResults = [];

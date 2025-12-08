@@ -5991,6 +5991,26 @@ export const MODELS = {
       },
       contextWindow: 128000,
       maxTokens: 128000
+    },
+    "deepseek-v3.2": {
+      id: "deepseek-v3.2",
+      name: "DeepSeek V3.2",
+      api: "openai-completions" as const,
+      provider: "deepseek",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: true,
+      toolUse: true,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0.28,
+        output: 0.42,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 8000
     }
   },
   "alibaba-cn": {
@@ -17307,774 +17327,9 @@ export const MODELS = {
     }
   },
   "cloudflare-ai-gateway": {
-    "x-ai/grok-4": {
-      id: "x-ai/grok-4",
-      name: "Grok 4",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0.75,
-        cacheWrite: 15
-      },
-      contextWindow: 256000,
-      maxTokens: 64000
-    },
-    "x-ai/grok-code-fast-1": {
-      id: "x-ai/grok-code-fast-1",
-      name: "Grok Code Fast 1",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.2,
-        output: 1.5,
-        cacheRead: 0.02,
-        cacheWrite: 0
-      },
-      contextWindow: 256000,
-      maxTokens: 10000
-    },
-    "x-ai/grok-3": {
-      id: "x-ai/grok-3",
-      name: "Grok 3",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0.75,
-        cacheWrite: 15
-      },
-      contextWindow: 131072,
-      maxTokens: 8192
-    },
-    "x-ai/grok-4-fast": {
-      id: "x-ai/grok-4-fast",
-      name: "Grok 4 Fast",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.2,
-        output: 0.5,
-        cacheRead: 0.05,
-        cacheWrite: 0.05
-      },
-      contextWindow: 2000000,
-      maxTokens: 30000
-    },
-    "x-ai/grok-3-beta": {
-      id: "x-ai/grok-3-beta",
-      name: "Grok 3 Beta",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0.75,
-        cacheWrite: 15
-      },
-      contextWindow: 131072,
-      maxTokens: 8192
-    },
-    "x-ai/grok-3-mini-beta": {
-      id: "x-ai/grok-3-mini-beta",
-      name: "Grok 3 Mini Beta",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.3,
-        output: 0.5,
-        cacheRead: 0.075,
-        cacheWrite: 0.5
-      },
-      contextWindow: 131072,
-      maxTokens: 8192
-    },
-    "x-ai/grok-3-mini": {
-      id: "x-ai/grok-3-mini",
-      name: "Grok 3 Mini",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.3,
-        output: 0.5,
-        cacheRead: 0.075,
-        cacheWrite: 0.5
-      },
-      contextWindow: 131072,
-      maxTokens: 8192
-    },
-    "x-ai/grok-4.1-fast": {
-      id: "x-ai/grok-4.1-fast",
-      name: "Grok 4.1 Fast",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.2,
-        output: 0.5,
-        cacheRead: 0.05,
-        cacheWrite: 0.05
-      },
-      contextWindow: 2000000,
-      maxTokens: 30000
-    },
-    "groq/llama-3.1-8b-instant": {
-      id: "groq/llama-3.1-8b-instant",
-      name: "Llama 3.1 8B Instant",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 8192
-    },
-    "groq/mistral-saba-24b": {
-      id: "groq/mistral-saba-24b",
-      name: "Mistral Saba 24B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 32768,
-      maxTokens: 32768
-    },
-    "groq/llama3-8b-8192": {
-      id: "groq/llama3-8b-8192",
-      name: "Llama 3 8B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "groq/qwen-qwq-32b": {
-      id: "groq/qwen-qwq-32b",
-      name: "Qwen QwQ 32B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 16384
-    },
-    "groq/llama3-70b-8192": {
-      id: "groq/llama3-70b-8192",
-      name: "Llama 3 70B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "groq/deepseek-r1-distill-llama-70b": {
-      id: "groq/deepseek-r1-distill-llama-70b",
-      name: "DeepSeek R1 Distill Llama 70B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 8192
-    },
-    "groq/llama-guard-3-8b": {
-      id: "groq/llama-guard-3-8b",
-      name: "Llama Guard 3 8B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "groq/gemma2-9b-it": {
-      id: "groq/gemma2-9b-it",
-      name: "Gemma 2 9B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "groq/llama-3.3-70b-versatile": {
-      id: "groq/llama-3.3-70b-versatile",
-      name: "Llama 3.3 70B Versatile",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 32768
-    },
-    "groq/moonshotai/kimi-k2-instruct-0905": {
-      id: "groq/moonshotai/kimi-k2-instruct-0905",
-      name: "Kimi K2 Instruct 0905",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 262144,
-      maxTokens: 16384
-    },
-    "groq/moonshotai/kimi-k2-instruct": {
-      id: "groq/moonshotai/kimi-k2-instruct",
-      name: "Kimi K2 Instruct",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 16384
-    },
-    "groq/openai/gpt-oss-20b": {
-      id: "groq/openai/gpt-oss-20b",
-      name: "GPT OSS 20B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 32768
-    },
-    "groq/openai/gpt-oss-120b": {
-      id: "groq/openai/gpt-oss-120b",
-      name: "GPT OSS 120B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 32768
-    },
-    "groq/qwen/qwen3-32b": {
-      id: "groq/qwen/qwen3-32b",
-      name: "Qwen3 32B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 16384
-    },
-    "groq/meta-llama/llama-4-scout-17b-16e-instruct": {
-      id: "groq/meta-llama/llama-4-scout-17b-16e-instruct",
-      name: "Llama 4 Scout 17B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 8192
-    },
-    "groq/meta-llama/llama-4-maverick-17b-128e-instruct": {
-      id: "groq/meta-llama/llama-4-maverick-17b-128e-instruct",
-      name: "Llama 4 Maverick 17B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 8192
-    },
-    "groq/meta-llama/llama-guard-4-12b": {
-      id: "groq/meta-llama/llama-guard-4-12b",
-      name: "Llama Guard 4 12B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 128
-    },
-    "deepseek/deepseek-chat-v3.1": {
-      id: "deepseek/deepseek-chat-v3.1",
-      name: "DeepSeek-V3.1",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.2,
-        output: 0.8,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 163840,
-      maxTokens: 163840
-    },
-    "deepseek/deepseek-r1:free": {
-      id: "deepseek/deepseek-r1:free",
-      name: "R1 (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 163840,
-      maxTokens: 163840
-    },
-    "deepseek/deepseek-v3.2-speciale": {
-      id: "deepseek/deepseek-v3.2-speciale",
-      name: "DeepSeek V3.2 Speciale",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.27,
-        output: 0.41,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 163840,
-      maxTokens: 65536
-    },
-    "deepseek/deepseek-v3-base:free": {
-      id: "deepseek/deepseek-v3-base:free",
-      name: "DeepSeek V3 Base (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 163840,
-      maxTokens: 163840
-    },
-    "deepseek/deepseek-v3.1-terminus": {
-      id: "deepseek/deepseek-v3.1-terminus",
-      name: "DeepSeek V3.1 Terminus",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.27,
-        output: 1,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 65536
-    },
-    "deepseek/deepseek-r1-0528-qwen3-8b:free": {
-      id: "deepseek/deepseek-r1-0528-qwen3-8b:free",
-      name: "Deepseek R1 0528 Qwen3 8B (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 131072
-    },
-    "deepseek/deepseek-chat-v3-0324": {
-      id: "deepseek/deepseek-chat-v3-0324",
-      name: "DeepSeek V3 0324",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 16384,
-      maxTokens: 8192
-    },
-    "deepseek/deepseek-r1-0528:free": {
-      id: "deepseek/deepseek-r1-0528:free",
-      name: "R1 0528 (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 163840,
-      maxTokens: 163840
-    },
-    "deepseek/deepseek-r1-distill-llama-70b": {
-      id: "deepseek/deepseek-r1-distill-llama-70b",
-      name: "DeepSeek R1 Distill Llama 70B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "deepseek/deepseek-r1-distill-qwen-14b": {
-      id: "deepseek/deepseek-r1-distill-qwen-14b",
-      name: "DeepSeek R1 Distill Qwen 14B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 64000,
-      maxTokens: 8192
-    },
-    "deepseek/deepseek-v3.1-terminus:exacto": {
-      id: "deepseek/deepseek-v3.1-terminus:exacto",
-      name: "DeepSeek V3.1 Terminus (exacto)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.27,
-        output: 1,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 65536
-    },
-    "deepseek/deepseek-v3.2": {
-      id: "deepseek/deepseek-v3.2",
-      name: "DeepSeek V3.2",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.28,
-        output: 0.4,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 163840,
-      maxTokens: 65536
-    },
-    "workers-ai/mistral-7b-instruct-v0.1-awq": {
-      id: "workers-ai/mistral-7b-instruct-v0.1-awq",
-      name: "@hf/thebloke/mistral-7b-instruct-v0.1-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 4096,
-      maxTokens: 4096
-    },
     "workers-ai/aura-1": {
       id: "workers-ai/aura-1",
-      name: "@cf/deepgram/aura-1",
+      name: "aura 1",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18084,102 +17339,22 @@ export const MODELS = {
         "text"
       ],
       cost: {
-        input: 0.015,
-        output: 0.015,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/mistral-7b-instruct-v0.2": {
-      id: "workers-ai/mistral-7b-instruct-v0.2",
-      name: "@hf/mistral/mistral-7b-instruct-v0.2",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
         input: 0,
         output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 3072,
-      maxTokens: 4096
-    },
-    "workers-ai/tinyllama-1.1b-chat-v1.0": {
-      id: "workers-ai/tinyllama-1.1b-chat-v1.0",
-      name: "@cf/tinyllama/tinyllama-1.1b-chat-v1.0",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 2048,
-      maxTokens: 2048
-    },
-    "workers-ai/qwen1.5-0.5b-chat": {
-      id: "workers-ai/qwen1.5-0.5b-chat",
-      name: "@cf/qwen/qwen1.5-0.5b-chat",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 32000,
-      maxTokens: 32000
-    },
-    "workers-ai/llama-3.2-11b-vision-instruct": {
-      id: "workers-ai/llama-3.2-11b-vision-instruct",
-      name: "@cf/meta/llama-3.2-11b-vision-instruct",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.049,
-        output: 0.68,
         cacheRead: 0,
         cacheWrite: 0
       },
       contextWindow: 128000,
-      maxTokens: 128000
+      maxTokens: 16384
     },
-    "workers-ai/llama-2-13b-chat-awq": {
-      id: "workers-ai/llama-2-13b-chat-awq",
-      name: "@hf/thebloke/llama-2-13b-chat-awq",
+    "workers-ai/llama-3.2-11b-vision-instruct": {
+      id: "workers-ai/llama-3.2-11b-vision-instruct",
+      name: "llama 3.2 11u vision instruct",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -18189,52 +17364,32 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 4096,
-      maxTokens: 4096
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/bge-m3": {
+      id: "workers-ai/bge-m3",
+      name: "uge m3",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-3.1-8b-instruct-fp8": {
       id: "workers-ai/llama-3.1-8b-instruct-fp8",
-      name: "@cf/meta/llama-3.1-8b-instruct-fp8",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.15,
-        output: 0.29,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 32000,
-      maxTokens: 32000
-    },
-    "workers-ai/whisper": {
-      id: "workers-ai/whisper",
-      name: "@cf/openai/whisper",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.00045,
-        output: 0.00045,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/stable-diffusion-xl-base-1.0": {
-      id: "workers-ai/stable-diffusion-xl-base-1.0",
-      name: "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+      name: "llama 3.1 8u instruct fp8",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18249,52 +17404,72 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "workers-ai/llama-2-7b-chat-fp16": {
-      id: "workers-ai/llama-2-7b-chat-fp16",
-      name: "@cf/meta/llama-2-7b-chat-fp16",
+    "workers-ai/whisper": {
+      id: "workers-ai/whisper",
+      name: "whisper",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
       cost: {
-        input: 0.56,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/smart-turn-v2": {
+      id: "workers-ai/smart-turn-v2",
+      name: "smart turn v2",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/llama-2-7b-chat-fp16": {
+      id: "workers-ai/llama-2-7b-chat-fp16",
+      name: "llama 2 7u chat fp16",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
         output: 6.67,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 4096,
-      maxTokens: 4096
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "workers-ai/resnet-50": {
-      id: "workers-ai/resnet-50",
-      name: "@cf/microsoft/resnet-50",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "image"
-      ],
-      cost: {
-        input: 0.0000025,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/stable-diffusion-v1-5-inpainting": {
-      id: "workers-ai/stable-diffusion-v1-5-inpainting",
-      name: "@cf/runwayml/stable-diffusion-v1-5-inpainting",
+    "workers-ai/indictrans2-en-indic-1B": {
+      id: "workers-ai/indictrans2-en-indic-1B",
+      name: "indictrans2 en indic 1B",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18309,57 +17484,17 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/sqlcoder-7b-2": {
-      id: "workers-ai/sqlcoder-7b-2",
-      name: "@cf/defog/sqlcoder-7b-2",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 10000,
-      maxTokens: 10000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-3-8b-instruct": {
       id: "workers-ai/llama-3-8b-instruct",
-      name: "@cf/meta/llama-3-8b-instruct",
+      name: "llama 3 8u instruct",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.28,
-        output: 0.83,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 7968,
-      maxTokens: 7968
-    },
-    "workers-ai/llama-2-7b-chat-hf-lora": {
-      id: "workers-ai/llama-2-7b-chat-hf-lora",
-      name: "@cf/meta-llama/llama-2-7b-chat-hf-lora",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -18369,72 +17504,12 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 8192,
-      maxTokens: 8192
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-3.1-8b-instruct": {
       id: "workers-ai/llama-3.1-8b-instruct",
-      name: "@cf/meta/llama-3.1-8b-instruct",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.28,
-        output: 0.83,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 7968,
-      maxTokens: 7968
-    },
-    "workers-ai/openchat-3.5-0106": {
-      id: "workers-ai/openchat-3.5-0106",
-      name: "@cf/openchat/openchat-3.5-0106",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "workers-ai/openhermes-2.5-mistral-7b-awq": {
-      id: "workers-ai/openhermes-2.5-mistral-7b-awq",
-      name: "@hf/thebloke/openhermes-2.5-mistral-7b-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 4096,
-      maxTokens: 4096
-    },
-    "workers-ai/lucid-origin": {
-      id: "workers-ai/lucid-origin",
-      name: "@cf/leonardo/lucid-origin",
+      name: "llama 3.1 8u instruct",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18444,17 +17519,37 @@ export const MODELS = {
         "text"
       ],
       cost: {
-        input: 0.007,
-        output: 0.007,
+        input: 0,
+        output: 0,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/bge-base-en-v1.5": {
+      id: "workers-ai/bge-base-en-v1.5",
+      name: "uge uase en v1.5",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/bart-large-cnn": {
       id: "workers-ai/bart-large-cnn",
-      name: "@cf/facebook/bart-large-cnn",
+      name: "uart large cnn",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18469,12 +17564,12 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "workers-ai/flux-1-schnell": {
-      id: "workers-ai/flux-1-schnell",
-      name: "@cf/black-forest-labs/flux-1-schnell",
+    "workers-ai/deepseek-r1-distill-qwen-32b": {
+      id: "workers-ai/deepseek-r1-distill-qwen-32b",
+      name: "deepseek r1 distill qwen 32b",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18484,97 +17579,17 @@ export const MODELS = {
         "text"
       ],
       cost: {
-        input: 0.000053,
-        output: 0.00011,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 2048,
-      maxTokens: 0
-    },
-    "workers-ai/deepseek-r1-distill-qwen-32b": {
-      id: "workers-ai/deepseek-r1-distill-qwen-32b",
-      name: "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.5,
+        input: 0,
         output: 4.88,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 80000,
-      maxTokens: 80000
-    },
-    "workers-ai/gemma-2b-it-lora": {
-      id: "workers-ai/gemma-2b-it-lora",
-      name: "@cf/google/gemma-2b-it-lora",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "workers-ai/una-cybertron-7b-v2-bf16": {
-      id: "workers-ai/una-cybertron-7b-v2-bf16",
-      name: "@cf/fblgit/una-cybertron-7b-v2-bf16",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 15000,
-      maxTokens: 15000
-    },
-    "workers-ai/gemma-sea-lion-v4-27b-it": {
-      id: "workers-ai/gemma-sea-lion-v4-27b-it",
-      name: "@cf/aisingapore/gemma-sea-lion-v4-27b-it",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.35,
-        output: 0.56,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
       contextWindow: 128000,
-      maxTokens: 0
+      maxTokens: 16384
     },
-    "workers-ai/m2m100-1.2b": {
-      id: "workers-ai/m2m100-1.2b",
-      name: "@cf/meta/m2m100-1.2b",
+    "workers-ai/plamo-embedding-1b": {
+      id: "workers-ai/plamo-embedding-1b",
+      name: "plamo emuedding 1b",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18584,57 +17599,117 @@ export const MODELS = {
         "text"
       ],
       cost: {
-        input: 0.34,
-        output: 0.34,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/llama-3.2-3b-instruct": {
-      id: "workers-ai/llama-3.2-3b-instruct",
-      name: "@cf/meta/llama-3.2-3b-instruct",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.051,
-        output: 0.34,
+        input: 0,
+        output: 0,
         cacheRead: 0,
         cacheWrite: 0
       },
       contextWindow: 128000,
-      maxTokens: 128000
+      maxTokens: 16384
     },
-    "workers-ai/qwen2.5-coder-32b-instruct": {
-      id: "workers-ai/qwen2.5-coder-32b-instruct",
-      name: "@cf/qwen/qwen2.5-coder-32b-instruct",
+    "workers-ai/bge-large-en-v1.5": {
+      id: "workers-ai/bge-large-en-v1.5",
+      name: "uge large en v1.5",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
       cost: {
-        input: 0.66,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/gemma-sea-lion-v4-27b-it": {
+      id: "workers-ai/gemma-sea-lion-v4-27b-it",
+      name: "gemma sea lion v4 27u it",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/m2m100-1.2b": {
+      id: "workers-ai/m2m100-1.2b",
+      name: "m2m100 1.2b",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/llama-3.2-3b-instruct": {
+      id: "workers-ai/llama-3.2-3b-instruct",
+      name: "llama 3.2 3u instruct",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/qwen2.5-coder-32b-instruct": {
+      id: "workers-ai/qwen2.5-coder-32b-instruct",
+      name: "qwen2.5 coder 32u instruct",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
         output: 1,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 32768,
-      maxTokens: 32768
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "workers-ai/stable-diffusion-v1-5-img2img": {
-      id: "workers-ai/stable-diffusion-v1-5-img2img",
-      name: "@cf/runwayml/stable-diffusion-v1-5-img2img",
+    "workers-ai/bge-reranker-base": {
+      id: "workers-ai/bge-reranker-base",
+      name: "uge reranker uase",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18649,97 +17724,37 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/gemma-7b-it-lora": {
-      id: "workers-ai/gemma-7b-it-lora",
-      name: "@cf/google/gemma-7b-it-lora",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 3500,
-      maxTokens: 3500
-    },
-    "workers-ai/qwen1.5-14b-chat-awq": {
-      id: "workers-ai/qwen1.5-14b-chat-awq",
-      name: "@cf/qwen/qwen1.5-14b-chat-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 7500,
-      maxTokens: 7500
-    },
-    "workers-ai/qwen1.5-1.8b-chat": {
-      id: "workers-ai/qwen1.5-1.8b-chat",
-      name: "@cf/qwen/qwen1.5-1.8b-chat",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 32000,
-      maxTokens: 32000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/mistral-small-3.1-24b-instruct": {
       id: "workers-ai/mistral-small-3.1-24b-instruct",
-      name: "@cf/mistralai/mistral-small-3.1-24b-instruct",
+      name: "mistral small 3.1 24u instruct",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
       cost: {
-        input: 0.35,
-        output: 0.56,
+        input: 0,
+        output: 0,
         cacheRead: 0,
         cacheWrite: 0
       },
       contextWindow: 128000,
-      maxTokens: 128000
+      maxTokens: 16384
     },
-    "workers-ai/gemma-7b-it": {
-      id: "workers-ai/gemma-7b-it",
-      name: "@hf/google/gemma-7b-it",
+    "workers-ai/aura-2-es": {
+      id: "workers-ai/aura-2-es",
+      name: "aura 2 es",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -18749,37 +17764,17 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 8192,
-      maxTokens: 8192
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/qwen3-30b-a3b-fp8": {
       id: "workers-ai/qwen3-30b-a3b-fp8",
-      name: "@cf/qwen/qwen3-30b-a3b-fp8",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.051,
-        output: 0.34,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 32768,
-      maxTokens: 0
-    },
-    "workers-ai/llamaguard-7b-awq": {
-      id: "workers-ai/llamaguard-7b-awq",
-      name: "@hf/thebloke/llamaguard-7b-awq",
+      name: "qwen3 30u a3u fp8",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -18789,17 +17784,17 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 4096,
-      maxTokens: 4096
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "workers-ai/hermes-2-pro-mistral-7b": {
-      id: "workers-ai/hermes-2-pro-mistral-7b",
-      name: "@hf/nousresearch/hermes-2-pro-mistral-7b",
+    "workers-ai/aura-2-en": {
+      id: "workers-ai/aura-2-en",
+      name: "aura 2 en",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -18809,37 +17804,17 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 24000,
-      maxTokens: 24000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/granite-4.0-h-micro": {
       id: "workers-ai/granite-4.0-h-micro",
-      name: "@cf/ibm-granite/granite-4.0-h-micro",
+      name: "granite 4.0 h micro",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.017,
-        output: 0.11,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131000,
-      maxTokens: 0
-    },
-    "workers-ai/falcon-7b-instruct": {
-      id: "workers-ai/falcon-7b-instruct",
-      name: "@cf/tiiuae/falcon-7b-instruct",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -18849,92 +17824,32 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 4096,
-      maxTokens: 4096
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-3.3-70b-instruct-fp8-fast": {
       id: "workers-ai/llama-3.3-70b-instruct-fp8-fast",
-      name: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      name: "llama 3.3 70u instruct fp8 fast",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
       cost: {
-        input: 0.29,
+        input: 0,
         output: 2.25,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 24000,
-      maxTokens: 24000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-3-8b-instruct-awq": {
       id: "workers-ai/llama-3-8b-instruct-awq",
-      name: "@cf/meta/llama-3-8b-instruct-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.12,
-        output: 0.27,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "workers-ai/phoenix-1.0": {
-      id: "workers-ai/phoenix-1.0",
-      name: "@cf/leonardo/phoenix-1.0",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.0058,
-        output: 0.0058,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/phi-2": {
-      id: "workers-ai/phi-2",
-      name: "@cf/microsoft/phi-2",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 2048,
-      maxTokens: 2048
-    },
-    "workers-ai/dreamshaper-8-lcm": {
-      id: "workers-ai/dreamshaper-8-lcm",
-      name: "@cf/lykon/dreamshaper-8-lcm",
+      name: "llama 3 8u instruct awq",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -18949,17 +17864,17 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "workers-ai/discolm-german-7b-v1-awq": {
-      id: "workers-ai/discolm-german-7b-v1-awq",
-      name: "@cf/thebloke/discolm-german-7b-v1-awq",
+    "workers-ai/qwen3-embedding-0.6b": {
+      id: "workers-ai/qwen3-embedding-0.6b",
+      name: "qwen3 emuedding 0.6b",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -18969,52 +17884,32 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 4096,
-      maxTokens: 4096
-    },
-    "workers-ai/llama-2-7b-chat-int8": {
-      id: "workers-ai/llama-2-7b-chat-int8",
-      name: "@cf/meta/llama-2-7b-chat-int8",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.556,
-        output: 6.667,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-3.2-1b-instruct": {
       id: "workers-ai/llama-3.2-1b-instruct",
-      name: "@cf/meta/llama-3.2-1b-instruct",
+      name: "llama 3.2 1u instruct",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
       cost: {
-        input: 0.027,
-        output: 0.2,
+        input: 0,
+        output: 0,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 60000,
-      maxTokens: 60000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/whisper-large-v3-turbo": {
       id: "workers-ai/whisper-large-v3-turbo",
-      name: "@cf/openai/whisper-large-v3-turbo",
+      name: "whisper large v3 turuo",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -19024,42 +17919,22 @@ export const MODELS = {
         "text"
       ],
       cost: {
-        input: 0.00051,
-        output: 0.00051,
+        input: 0,
+        output: 0,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-4-scout-17b-16e-instruct": {
       id: "workers-ai/llama-4-scout-17b-16e-instruct",
-      name: "@cf/meta/llama-4-scout-17b-16e-instruct",
+      name: "llama 4 scout 17u 16e instruct",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.27,
-        output: 0.85,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131000,
-      maxTokens: 131000
-    },
-    "workers-ai/starling-lm-7b-beta": {
-      id: "workers-ai/starling-lm-7b-beta",
-      name: "@hf/nexusflow/starling-lm-7b-beta",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -19069,92 +17944,32 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 4096,
-      maxTokens: 4096
-    },
-    "workers-ai/deepseek-coder-6.7b-base-awq": {
-      id: "workers-ai/deepseek-coder-6.7b-base-awq",
-      name: "@hf/thebloke/deepseek-coder-6.7b-base-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 4096,
-      maxTokens: 4096
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/gemma-3-12b-it": {
       id: "workers-ai/gemma-3-12b-it",
-      name: "@cf/google/gemma-3-12b-it",
+      name: "gemma 3 12u it",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
       cost: {
-        input: 0.35,
-        output: 0.56,
+        input: 0,
+        output: 0,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 80000,
-      maxTokens: 80000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-guard-3-8b": {
       id: "workers-ai/llama-guard-3-8b",
-      name: "@cf/meta/llama-guard-3-8b",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.48,
-        output: 0.03,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 0
-    },
-    "workers-ai/neural-chat-7b-v3-1-awq": {
-      id: "workers-ai/neural-chat-7b-v3-1-awq",
-      name: "@hf/thebloke/neural-chat-7b-v3-1-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 4096,
-      maxTokens: 4096
-    },
-    "workers-ai/whisper-tiny-en": {
-      id: "workers-ai/whisper-tiny-en",
-      name: "@cf/openai/whisper-tiny-en",
+      name: "llama guard 3 8b",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -19169,59 +17984,18 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/stable-diffusion-xl-lightning": {
-      id: "workers-ai/stable-diffusion-xl-lightning",
-      name: "@cf/bytedance/stable-diffusion-xl-lightning",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/mistral-7b-instruct-v0.1": {
       id: "workers-ai/mistral-7b-instruct-v0.1",
-      name: "@cf/mistral/mistral-7b-instruct-v0.1",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.11,
-        output: 0.19,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 2824,
-      maxTokens: 2824
-    },
-    "workers-ai/llava-1.5-7b-hf": {
-      id: "workers-ai/llava-1.5-7b-hf",
-      name: "@cf/llava-hf/llava-1.5-7b-hf",
+      name: "mistral 7u instruct v0.1",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
       toolUse: false,
       input: [
-        "image",
         "text"
       ],
       cost: {
@@ -19230,37 +18004,17 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/gpt-oss-20b": {
       id: "workers-ai/gpt-oss-20b",
-      name: "@cf/openai/gpt-oss-20b",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.2,
-        output: 0.3,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 128000
-    },
-    "workers-ai/deepseek-math-7b-instruct": {
-      id: "workers-ai/deepseek-math-7b-instruct",
-      name: "@cf/deepseek-ai/deepseek-math-7b-instruct",
+      name: "gpt oss 20b",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -19270,57 +18024,17 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 4096,
-      maxTokens: 4096
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/gpt-oss-120b": {
       id: "workers-ai/gpt-oss-120b",
-      name: "@cf/openai/gpt-oss-120b",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.35,
-        output: 0.75,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 128000
-    },
-    "workers-ai/melotts": {
-      id: "workers-ai/melotts",
-      name: "@cf/myshell-ai/melotts",
+      name: "gpt oss 120b",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
       toolUse: false,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.0002,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 0,
-      maxTokens: 0
-    },
-    "workers-ai/qwen1.5-7b-chat-awq": {
-      id: "workers-ai/qwen1.5-7b-chat-awq",
-      name: "@cf/qwen/qwen1.5-7b-chat-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
       input: [
         "text"
       ],
@@ -19330,32 +18044,12 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 20000,
-      maxTokens: 20000
-    },
-    "workers-ai/llama-3.1-8b-instruct-fast": {
-      id: "workers-ai/llama-3.1-8b-instruct-fast",
-      name: "@cf/meta/llama-3.1-8b-instruct-fast",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.045,
-        output: 0.384,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
       contextWindow: 128000,
-      maxTokens: 128000
+      maxTokens: 16384
     },
-    "workers-ai/nova-3": {
-      id: "workers-ai/nova-3",
-      name: "@cf/deepgram/nova-3",
+    "workers-ai/bge-small-en-v1.5": {
+      id: "workers-ai/bge-small-en-v1.5",
+      name: "uge small en v1.5",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -19365,62 +18059,82 @@ export const MODELS = {
         "text"
       ],
       cost: {
-        input: 0.0052,
-        output: 0.0052,
+        input: 0,
+        output: 0,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "workers-ai/llama-3.1-70b-instruct": {
-      id: "workers-ai/llama-3.1-70b-instruct",
-      name: "@cf/meta/llama-3.1-70b-instruct",
+    "workers-ai/melotts": {
+      id: "workers-ai/melotts",
+      name: "melotts",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
       cost: {
-        input: 0.293,
-        output: 2.253,
+        input: 0,
+        output: 0,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 24000,
-      maxTokens: 24000
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "workers-ai/nova-3": {
+      id: "workers-ai/nova-3",
+      name: "nova 3",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/qwq-32b": {
       id: "workers-ai/qwq-32b",
-      name: "@cf/qwen/qwq-32b",
+      name: "qwq 32b",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
       cost: {
-        input: 0.66,
+        input: 0,
         output: 1,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 24000,
-      maxTokens: 24000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "workers-ai/zephyr-7b-beta-awq": {
-      id: "workers-ai/zephyr-7b-beta-awq",
-      name: "@hf/thebloke/zephyr-7b-beta-awq",
+    "workers-ai/distilbert-sst-2-int8": {
+      id: "workers-ai/distilbert-sst-2-int8",
+      name: "distiluert sst 2 int8",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text"
       ],
@@ -19430,79 +18144,18 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 4096,
-      maxTokens: 4096
-    },
-    "workers-ai/deepseek-coder-6.7b-instruct-awq": {
-      id: "workers-ai/deepseek-coder-6.7b-instruct-awq",
-      name: "@hf/thebloke/deepseek-coder-6.7b-instruct-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 4096,
-      maxTokens: 4096
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "workers-ai/llama-3.1-8b-instruct-awq": {
       id: "workers-ai/llama-3.1-8b-instruct-awq",
-      name: "@cf/meta/llama-3.1-8b-instruct-awq",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.12,
-        output: 0.27,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "workers-ai/mistral-7b-instruct-v0.2-lora": {
-      id: "workers-ai/mistral-7b-instruct-v0.2-lora",
-      name: "@cf/mistral/mistral-7b-instruct-v0.2-lora",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 15000,
-      maxTokens: 15000
-    },
-    "workers-ai/uform-gen2-qwen-500m": {
-      id: "workers-ai/uform-gen2-qwen-500m",
-      name: "@cf/unum/uform-gen2-qwen-500m",
+      name: "llama 3.1 8u instruct awq",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
       toolUse: false,
       input: [
-        "image",
         "text"
       ],
       cost: {
@@ -19511,687 +18164,139 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 0,
-      maxTokens: 0
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "google-ai-studio/gemini-2.0-flash-001": {
-      id: "google-ai-studio/gemini-2.0-flash-001",
-      name: "Gemini 2.0 Flash",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.1,
-        output: 0.4,
-        cacheRead: 0.025,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 8192
-    },
-    "google-ai-studio/gemma-2-9b-it:free": {
-      id: "google-ai-studio/gemma-2-9b-it:free",
-      name: "Gemma 2 9B (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "google-ai-studio/gemini-3-pro-preview": {
-      id: "google-ai-studio/gemini-3-pro-preview",
-      name: "Gemini 3 Pro Preview",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 2,
-        output: 12,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 1050000,
-      maxTokens: 66000
-    },
-    "google-ai-studio/gemini-2.5-flash": {
-      id: "google-ai-studio/gemini-2.5-flash",
-      name: "Gemini 2.5 Flash",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.3,
-        output: 2.5,
-        cacheRead: 0.0375,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 65536
-    },
-    "google-ai-studio/gemini-2.5-pro-preview-05-06": {
-      id: "google-ai-studio/gemini-2.5-pro-preview-05-06",
-      name: "Gemini 2.5 Pro Preview 05-06",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1.25,
-        output: 10,
-        cacheRead: 0.31,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 65536
-    },
-    "google-ai-studio/gemma-3n-e4b-it": {
-      id: "google-ai-studio/gemma-3n-e4b-it",
-      name: "Gemma 3n E4B IT",
+    "openai/gpt-4": {
+      id: "openai/gpt-4",
+      name: "gpt 4",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
       toolUse: false,
       input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "google-ai-studio/gemini-2.5-flash-lite": {
-      id: "google-ai-studio/gemini-2.5-flash-lite",
-      name: "Gemini 2.5 Flash Lite",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.1,
-        output: 0.4,
-        cacheRead: 0.025,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 65536
-    },
-    "google-ai-studio/gemini-2.5-pro-preview-06-05": {
-      id: "google-ai-studio/gemini-2.5-pro-preview-06-05",
-      name: "Gemini 2.5 Pro Preview 06-05",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1.25,
-        output: 10,
-        cacheRead: 0.31,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 65536
-    },
-    "google-ai-studio/gemini-2.5-flash-preview-09-2025": {
-      id: "google-ai-studio/gemini-2.5-flash-preview-09-2025",
-      name: "Gemini 2.5 Flash Preview 09-25",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.3,
-        output: 2.5,
-        cacheRead: 0.031,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 65536
-    },
-    "google-ai-studio/gemini-2.5-pro": {
-      id: "google-ai-studio/gemini-2.5-pro",
-      name: "Gemini 2.5 Pro",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1.25,
-        output: 10,
-        cacheRead: 0.31,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 65536
-    },
-    "google-ai-studio/gemma-3-12b-it": {
-      id: "google-ai-studio/gemma-3-12b-it",
-      name: "Gemma 3 12B IT",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 96000,
-      maxTokens: 8192
-    },
-    "google-ai-studio/gemma-3n-e4b-it:free": {
-      id: "google-ai-studio/gemma-3n-e4b-it:free",
-      name: "Gemma 3n 4B (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 8192,
-      maxTokens: 8192
-    },
-    "google-ai-studio/gemini-2.5-flash-lite-preview-09-2025": {
-      id: "google-ai-studio/gemini-2.5-flash-lite-preview-09-2025",
-      name: "Gemini 2.5 Flash Lite Preview 09-25",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.1,
-        output: 0.4,
-        cacheRead: 0.025,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 65536
-    },
-    "google-ai-studio/gemini-2.0-flash-exp:free": {
-      id: "google-ai-studio/gemini-2.0-flash-exp:free",
-      name: "Gemini 2.0 Flash Experimental (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 1048576,
-      maxTokens: 1048576
-    },
-    "google-ai-studio/gemma-3-27b-it": {
-      id: "google-ai-studio/gemma-3-27b-it",
-      name: "Gemma 3 27B IT",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 96000,
-      maxTokens: 8192
-    },
-    "openai/gpt-oss-safeguard-20b": {
-      id: "openai/gpt-oss-safeguard-20b",
-      name: "GPT OSS Safeguard 20B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
         "text"
       ],
       cost: {
-        input: 0.075,
-        output: 0.3,
+        input: 30,
+        output: 60,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 131072,
-      maxTokens: 65536
+      contextWindow: 128000,
+      maxTokens: 16384
     },
     "openai/gpt-5.1-codex": {
       id: "openai/gpt-5.1-codex",
-      name: "GPT-5.1-Codex",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1.25,
-        output: 10,
-        cacheRead: 0.125,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 128000
-    },
-    "openai/gpt-4.1-mini": {
-      id: "openai/gpt-4.1-mini",
-      name: "GPT-4.1 Mini",
+      name: "gpt 5.1 codex",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.4,
-        output: 1.6,
-        cacheRead: 0.1,
-        cacheWrite: 0
-      },
-      contextWindow: 1047576,
-      maxTokens: 32768
-    },
-    "openai/gpt-5-chat": {
-      id: "openai/gpt-5-chat",
-      name: "GPT-5 Chat (latest)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
       toolUse: false,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1.25,
-        output: 10,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 128000
-    },
-    "openai/gpt-5.1-codex-mini": {
-      id: "openai/gpt-5.1-codex-mini",
-      name: "GPT-5.1-Codex-Mini",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.25,
-        output: 2,
-        cacheRead: 0.025,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 100000
-    },
-    "openai/gpt-5.1": {
-      id: "openai/gpt-5.1",
-      name: "GPT-5.1",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1.25,
-        output: 10,
-        cacheRead: 0.125,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 128000
-    },
-    "openai/gpt-5-nano": {
-      id: "openai/gpt-5-nano",
-      name: "GPT-5 Nano",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.05,
-        output: 0.4,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 128000
-    },
-    "openai/gpt-5-codex": {
-      id: "openai/gpt-5-codex",
-      name: "GPT-5 Codex",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1.25,
-        output: 10,
-        cacheRead: 0.125,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 128000
-    },
-    "openai/gpt-4.1": {
-      id: "openai/gpt-4.1",
-      name: "GPT-4.1",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 2,
-        output: 8,
-        cacheRead: 0.5,
-        cacheWrite: 0
-      },
-      contextWindow: 1047576,
-      maxTokens: 32768
-    },
-    "openai/gpt-oss-120b:exacto": {
-      id: "openai/gpt-oss-120b:exacto",
-      name: "GPT OSS 120B (exacto)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
       input: [
         "text"
       ],
       cost: {
-        input: 0.05,
-        output: 0.24,
+        input: 1.25,
+        output: 10,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 131072,
-      maxTokens: 32768
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "openai/o4-mini": {
-      id: "openai/o4-mini",
-      name: "o4 Mini",
+    "openai/gpt-3.5-turbo": {
+      id: "openai/gpt-3.5-turbo",
+      name: "gpt 3.5 turuo",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
+      reasoning: false,
+      toolUse: false,
       input: [
-        "text",
-        "image"
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 1.5,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "openai/gpt-4-turbo": {
+      id: "openai/gpt-4-turbo",
+      name: "gpt 4 turuo",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 10,
+        output: 30,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "openai/o1-preview": {
+      id: "openai/o1-preview",
+      name: "o1 preview",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 15,
+        output: 60,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "openai/o3-mini": {
+      id: "openai/o3-mini",
+      name: "o3 mini",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
       ],
       cost: {
         input: 1.1,
         output: 4.4,
-        cacheRead: 0.28,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 100000
-    },
-    "openai/gpt-5.1-chat": {
-      id: "openai/gpt-5.1-chat",
-      name: "GPT-5.1 Chat",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 1.25,
-        output: 10,
-        cacheRead: 0.125,
+        cacheRead: 0,
         cacheWrite: 0
       },
       contextWindow: 128000,
       maxTokens: 16384
     },
-    "openai/gpt-5-mini": {
-      id: "openai/gpt-5-mini",
-      name: "GPT-5 Mini",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.25,
-        output: 2,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 128000
-    },
-    "openai/gpt-5-image": {
-      id: "openai/gpt-5-image",
-      name: "GPT-5 Image",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 5,
-        output: 10,
-        cacheRead: 1.25,
-        cacheWrite: 0
-      },
-      contextWindow: 400000,
-      maxTokens: 128000
-    },
-    "openai/gpt-oss-20b": {
-      id: "openai/gpt-oss-20b",
-      name: "GPT OSS 20B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.05,
-        output: 0.2,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 32768
-    },
-    "openai/gpt-oss-120b": {
-      id: "openai/gpt-oss-120b",
-      name: "GPT OSS 120B",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.072,
-        output: 0.28,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 32768
-    },
-    "openai/gpt-4o-mini": {
-      id: "openai/gpt-4o-mini",
-      name: "GPT-4o-mini",
+    "openai/gpt-5.1": {
+      id: "openai/gpt-5.1",
+      name: "gpt 5.1",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.15,
-        output: 0.6,
-        cacheRead: 0.08,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 16384
-    },
-    "openai/gpt-5": {
-      id: "openai/gpt-5",
-      name: "GPT-5",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
+        "text"
       ],
       cost: {
         input: 1.25,
@@ -20199,37 +18304,136 @@ export const MODELS = {
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 400000,
-      maxTokens: 128000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "openai/gpt-5-pro": {
-      id: "openai/gpt-5-pro",
-      name: "GPT-5 Pro",
+    "openai/gpt-4o": {
+      id: "openai/gpt-4o",
+      name: "gpt 4o",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
+      reasoning: false,
+      toolUse: false,
       input: [
-        "text",
-        "image"
+        "text"
+      ],
+      cost: {
+        input: 2.5,
+        output: 10,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "openai/o4-mini": {
+      id: "openai/o4-mini",
+      name: "o4 mini",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 1.1,
+        output: 4.4,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "openai/o1": {
+      id: "openai/o1",
+      name: "o1",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
       ],
       cost: {
         input: 15,
-        output: 120,
+        output: 60,
         cacheRead: 0,
         cacheWrite: 0
       },
-      contextWindow: 400000,
-      maxTokens: 272000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "perplexity/sonar-reasoning": {
-      id: "perplexity/sonar-reasoning",
-      name: "Sonar Reasoning",
+    "openai/o1-mini": {
+      id: "openai/o1-mini",
+      name: "o1 mini",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 1.1,
+        output: 4.4,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "openai/o3-pro": {
+      id: "openai/o3-pro",
+      name: "o3 pro",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 20,
+        output: 80,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "openai/o3": {
+      id: "openai/o3",
+      name: "o3",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 2,
+        output: 8,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "openai/gpt-4o-mini": {
+      id: "openai/gpt-4o-mini",
+      name: "gpt 4o mini",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
       toolUse: false,
       input: [
         "text"
@@ -20241,11 +18445,71 @@ export const MODELS = {
         cacheWrite: 0
       },
       contextWindow: 128000,
-      maxTokens: 4096
+      maxTokens: 16384
     },
-    "perplexity/sonar": {
-      id: "perplexity/sonar",
-      name: "Sonar",
+    "replicate/replicate-internal/llama-405b-instruct-vllm": {
+      id: "replicate/replicate-internal/llama-405b-instruct-vllm",
+      name: "llama 405u instruct vllm",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 9.5,
+        output: 9.5,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "replicate/meta/meta-llama-3.1-405b-instruct": {
+      id: "replicate/meta/meta-llama-3.1-405b-instruct",
+      name: "meta llama 3.1 405u instruct",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 9.5,
+        output: 9.5,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "replicate/meta/meta-llama-3-70b-instruct": {
+      id: "replicate/meta/meta-llama-3-70b-instruct",
+      name: "meta llama 3 70u instruct",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 2.75,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "replicate/meta/meta-llama-3-8b-instruct": {
+      id: "replicate/meta/meta-llama-3-8b-instruct",
+      name: "meta llama 3 8u instruct",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
@@ -20261,324 +18525,76 @@ export const MODELS = {
         cacheWrite: 0
       },
       contextWindow: 128000,
-      maxTokens: 4096
+      maxTokens: 16384
     },
-    "perplexity/sonar-pro": {
-      id: "perplexity/sonar-pro",
-      name: "Sonar Pro",
+    "replicate/deepseek-ai/deepseek-r1": {
+      id: "replicate/deepseek-ai/deepseek-r1",
+      name: "deepseek r1",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
       toolUse: false,
       input: [
-        "text",
-        "image"
+        "text"
       ],
       cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 200000,
-      maxTokens: 8192
-    },
-    "perplexity/sonar-reasoning-pro": {
-      id: "perplexity/sonar-reasoning-pro",
-      name: "Sonar Reasoning Pro",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: false,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
+        input: 10,
+        output: 10,
         cacheRead: 0,
         cacheWrite: 0
       },
       contextWindow: 128000,
-      maxTokens: 4096
-    },
-    "mistralai/devstral-medium-2507": {
-      id: "mistralai/devstral-medium-2507",
-      name: "Devstral Medium",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.4,
-        output: 2,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 131072
-    },
-    "mistralai/codestral-2508": {
-      id: "mistralai/codestral-2508",
-      name: "Codestral 2508",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.3,
-        output: 0.9,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 256000,
-      maxTokens: 256000
-    },
-    "mistralai/mistral-7b-instruct:free": {
-      id: "mistralai/mistral-7b-instruct:free",
-      name: "Mistral 7B Instruct (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 32768,
-      maxTokens: 32768
-    },
-    "mistralai/devstral-small-2505": {
-      id: "mistralai/devstral-small-2505",
-      name: "Devstral Small",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.06,
-        output: 0.12,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 128000
-    },
-    "mistralai/mistral-small-3.2-24b-instruct": {
-      id: "mistralai/mistral-small-3.2-24b-instruct",
-      name: "Mistral Small 3.2 24B Instruct",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 96000,
-      maxTokens: 8192
-    },
-    "mistralai/devstral-small-2505:free": {
-      id: "mistralai/devstral-small-2505:free",
-      name: "Devstral Small 2505 (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 32768,
-      maxTokens: 32768
-    },
-    "mistralai/mistral-small-3.2-24b-instruct:free": {
-      id: "mistralai/mistral-small-3.2-24b-instruct:free",
-      name: "Mistral Small 3.2 24B (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 96000,
-      maxTokens: 96000
-    },
-    "mistralai/mistral-medium-3": {
-      id: "mistralai/mistral-medium-3",
-      name: "Mistral Medium 3",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.4,
-        output: 2,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 131072
-    },
-    "mistralai/mistral-small-3.1-24b-instruct": {
-      id: "mistralai/mistral-small-3.1-24b-instruct",
-      name: "Mistral Small 3.1 24B Instruct",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 128000,
-      maxTokens: 8192
-    },
-    "mistralai/devstral-small-2507": {
-      id: "mistralai/devstral-small-2507",
-      name: "Devstral Small 1.1",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0.1,
-        output: 0.3,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 131072
-    },
-    "mistralai/mistral-medium-3.1": {
-      id: "mistralai/mistral-medium-3.1",
-      name: "Mistral Medium 3.1",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 0.4,
-        output: 2,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 262144,
-      maxTokens: 262144
-    },
-    "mistralai/mistral-nemo:free": {
-      id: "mistralai/mistral-nemo:free",
-      name: "Mistral Nemo (free)",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: false,
-      toolUse: true,
-      input: [
-        "text"
-      ],
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0
-      },
-      contextWindow: 131072,
-      maxTokens: 131072
+      maxTokens: 16384
     },
     "anthropic/claude-opus-4": {
       id: "anthropic/claude-opus-4",
-      name: "Claude Opus 4",
+      name: "claude opus 4",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
+      reasoning: false,
+      toolUse: false,
       input: [
-        "text",
-        "image"
+        "text"
       ],
       cost: {
         input: 15,
         output: 75,
-        cacheRead: 1.5,
-        cacheWrite: 18.75
+        cacheRead: 0,
+        cacheWrite: 0
       },
-      contextWindow: 200000,
-      maxTokens: 32000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "anthropic/claude-haiku-4.5": {
-      id: "anthropic/claude-haiku-4.5",
-      name: "Claude Haiku 4.5",
+    "anthropic/claude-opus-4-1": {
+      id: "anthropic/claude-opus-4-1",
+      name: "claude opus 4 1",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 15,
+        output: 75,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-haiku-4-5": {
+      id: "anthropic/claude-haiku-4-5",
+      name: "claude haiku 4 5",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
       input: [
         "text",
         "image"
@@ -20586,137 +18602,272 @@ export const MODELS = {
       cost: {
         input: 1,
         output: 5,
-        cacheRead: 0.1,
-        cacheWrite: 1.25
+        cacheRead: 0,
+        cacheWrite: 0
       },
-      contextWindow: 200000,
-      maxTokens: 64000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "anthropic/claude-opus-4.1": {
-      id: "anthropic/claude-opus-4.1",
-      name: "Claude Opus 4.1",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 15,
-        output: 75,
-        cacheRead: 1.5,
-        cacheWrite: 18.75
-      },
-      contextWindow: 200000,
-      maxTokens: 32000
-    },
-    "anthropic/claude-3.7-sonnet": {
-      id: "anthropic/claude-3.7-sonnet",
-      name: "Claude Sonnet 3.7",
-      api: "openai-completions" as const,
-      provider: "cloudflare-ai-gateway",
-      baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
-      input: [
-        "text",
-        "image"
-      ],
-      cost: {
-        input: 15,
-        output: 75,
-        cacheRead: 1.5,
-        cacheWrite: 18.75
-      },
-      contextWindow: 200000,
-      maxTokens: 128000
-    },
-    "anthropic/claude-3.5-haiku": {
-      id: "anthropic/claude-3.5-haiku",
-      name: "Claude Haiku 3.5",
+    "anthropic/claude-haiku-4.5": {
+      id: "anthropic/claude-haiku-4.5",
+      name: "claude haiku 4.5",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
       reasoning: false,
-      toolUse: true,
+      toolUse: false,
       input: [
         "text",
         "image"
       ],
       cost: {
-        input: 0.8,
-        output: 4,
-        cacheRead: 0.08,
-        cacheWrite: 1
+        input: 1,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0
       },
-      contextWindow: 200000,
-      maxTokens: 8192
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "anthropic/claude-sonnet-4": {
-      id: "anthropic/claude-sonnet-4",
-      name: "Claude Sonnet 4",
+    "anthropic/claude-3-haiku": {
+      id: "anthropic/claude-3-haiku",
+      name: "claude 3 haiku",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
+      reasoning: false,
+      toolUse: false,
       input: [
-        "text",
-        "image"
+        "text"
       ],
       cost: {
-        input: 3,
-        output: 15,
-        cacheRead: 0.3,
-        cacheWrite: 3.75
+        input: 0,
+        output: 1.25,
+        cacheRead: 0,
+        cacheWrite: 0
       },
-      contextWindow: 200000,
-      maxTokens: 64000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "anthropic/claude-opus-4.5": {
-      id: "anthropic/claude-opus-4.5",
-      name: "Claude Opus 4.5",
+    "anthropic/claude-opus-4-5": {
+      id: "anthropic/claude-opus-4-5",
+      name: "claude opus 4 5",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
+      reasoning: false,
+      toolUse: false,
       input: [
-        "text",
-        "image"
+        "text"
       ],
       cost: {
         input: 5,
         output: 25,
-        cacheRead: 0.5,
-        cacheWrite: 6.25
+        cacheRead: 0,
+        cacheWrite: 0
       },
-      contextWindow: 200000,
-      maxTokens: 32000
+      contextWindow: 128000,
+      maxTokens: 16384
     },
-    "anthropic/claude-sonnet-4.5": {
-      id: "anthropic/claude-sonnet-4.5",
-      name: "Claude Sonnet 4.5",
+    "anthropic/claude-3-opus": {
+      id: "anthropic/claude-3-opus",
+      name: "claude 3 opus",
       api: "openai-completions" as const,
       provider: "cloudflare-ai-gateway",
       baseUrl: "https://api.openai.com/v1/chat/completions",
-      reasoning: true,
-      toolUse: true,
+      reasoning: false,
+      toolUse: false,
       input: [
-        "text",
-        "image"
+        "text"
+      ],
+      cost: {
+        input: 15,
+        output: 75,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-sonnet-4-5": {
+      id: "anthropic/claude-sonnet-4-5",
+      name: "claude sonnet 4 5",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
       ],
       cost: {
         input: 3,
         output: 15,
-        cacheRead: 0.3,
-        cacheWrite: 3.75
+        cacheRead: 0,
+        cacheWrite: 0
       },
-      contextWindow: 1000000,
-      maxTokens: 64000
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-3.5-sonnet": {
+      id: "anthropic/claude-3.5-sonnet",
+      name: "claude 3.5 sonnet",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 3,
+        output: 15,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-3-sonnet": {
+      id: "anthropic/claude-3-sonnet",
+      name: "claude 3 sonnet",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 3,
+        output: 15,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-3-5-haiku": {
+      id: "anthropic/claude-3-5-haiku",
+      name: "claude 3 5 haiku",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 4,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-opus-4.1": {
+      id: "anthropic/claude-opus-4.1",
+      name: "claude opus 4.1",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 15,
+        output: 75,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-3.5-haiku": {
+      id: "anthropic/claude-3.5-haiku",
+      name: "claude 3.5 haiku",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 0,
+        output: 4,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-sonnet-4": {
+      id: "anthropic/claude-sonnet-4",
+      name: "claude sonnet 4",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 3,
+        output: 15,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-opus-4.5": {
+      id: "anthropic/claude-opus-4.5",
+      name: "claude opus 4.5",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 5,
+        output: 25,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
+    },
+    "anthropic/claude-sonnet-4.5": {
+      id: "anthropic/claude-sonnet-4.5",
+      name: "claude sonnet 4.5",
+      api: "openai-completions" as const,
+      provider: "cloudflare-ai-gateway",
+      baseUrl: "https://api.openai.com/v1/chat/completions",
+      reasoning: false,
+      toolUse: false,
+      input: [
+        "text"
+      ],
+      cost: {
+        input: 3,
+        output: 15,
+        cacheRead: 0,
+        cacheWrite: 0
+      },
+      contextWindow: 128000,
+      maxTokens: 16384
     }
   },
   openai: {
@@ -32220,7 +30371,8 @@ export const MODELS = {
       reasoning: false,
       toolUse: true,
       input: [
-        "text"
+        "text",
+        "image"
       ],
       cost: {
         input: 0.8,

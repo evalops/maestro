@@ -8,6 +8,10 @@ import {
 	GoogleGenAI,
 	type Part,
 } from "@google/genai";
+import {
+	isStreamIdleTimeoutError,
+	withAbortableIdleTimeout,
+} from "../../providers/stream-idle-timeout.js";
 import type {
 	AgentTool,
 	AssistantMessage,
@@ -83,10 +87,16 @@ export async function* streamGoogle(
 	try {
 		const googleStream = await client.models.generateContentStream(params);
 
+		// Wrap stream with idle timeout detection
+		const timedStream = withAbortableIdleTimeout(googleStream, {
+			provider: model.provider,
+			signal: options.signal,
+		});
+
 		let currentBlock: TextContent | ThinkingContent | null = null;
 		const blockIndex = () => partial.content.length - 1;
 
-		for await (const chunk of googleStream) {
+		for await (const chunk of timedStream) {
 			const candidate = chunk.candidates?.[0];
 
 			if (candidate?.content?.parts) {
@@ -304,6 +314,9 @@ export async function* streamGoogle(
 		if (error instanceof Error && error.name === "AbortError") {
 			partial.stopReason = "aborted";
 			yield { type: "error", reason: "aborted", error: partial };
+		} else if (isStreamIdleTimeoutError(error)) {
+			// Re-throw idle timeout errors so caller can retry
+			throw error;
 		} else {
 			partial.stopReason = "error";
 			partial.errorMessage =
