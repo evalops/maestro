@@ -6,7 +6,7 @@ how the queue works and how the loader visualizes each stage.
 
 ## Queue Mechanics
 
-`src/tui/prompt-queue.ts` implements a simple FIFO queue:
+`src/cli-tui/prompt-queue.ts` implements a simple FIFO queue:
 
 - Each queued prompt has an `id`, `text`, and `createdAt`.
 - Events (`enqueue`, `start`, `finish`, `cancel`, `error`) are broadcast to
@@ -23,13 +23,13 @@ how the queue works and how the loader visualizes each stage.
 
 ## Loader Stages
 
-`src/tui/loader-stage-manager.ts` tracks the current phase:
+`src/cli-tui/loader-stage-manager.ts` tracks the current phase:
 
 1. **Planning** – initial tool planning (always the first stage)
 2. **Tool · <name>** – each tool invocation inserts its own stage
 3. **Responding** – final LLM response (only once tools are done)
 
-Stage metadata feeds into `Loader` (`src/tui-lib/components/loader.ts`), which
+Stage metadata feeds into `Loader` (`src/cli-tui-lib/components/loader.ts`), which
 now uses a subtle dot animation instead of the prior intense wave. The loader
 shows:
 
@@ -43,7 +43,7 @@ to Responding once all tool stages finish or if there were no tools.
 
 ## Notifications
 
-Prompt queue events trigger notifications via `src/tui/run-controller.ts` and
+Prompt queue events trigger notifications via `src/cli-tui/run-controller.ts` and
 `NotificationView`:
 
 - Enqueue (when not immediate) → “Queued prompt #<id>”

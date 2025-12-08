@@ -3,7 +3,7 @@ import ts from "typescript";
 import {
 	ChatRequestSchema,
 	ModelSetSchema,
-} from "../src/web/validation.js";
+} from "../src/server/validation.js";
 let version = "0.0.0";
 try {
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));

@@ -1,7 +1,7 @@
 import { Text } from "@evalops/tui";
 import { Container, type TUI } from "@evalops/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TrainingView } from "../../src/tui/status/training-view.js";
+import { TrainingView } from "../../src/cli-tui/status/training-view.js";
 
 type TrainingCommandContext = Parameters<
 	TrainingView["handleTrainingCommand"]

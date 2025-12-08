@@ -42,13 +42,13 @@ import {
 	seedPermissions,
 } from "../rbac/permissions.js";
 import { seedDefaultDirectoryRules } from "../security/directory-access.js";
-import { createLogger } from "../utils/logger.js";
-import type { Route } from "../web/router.js";
+import type { Route } from "../server/router.js";
 import {
 	readJsonBody,
 	respondWithApiError,
 	sendJson,
-} from "../web/server-utils.js";
+} from "../server/server-utils.js";
+import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("enterprise-api");
 

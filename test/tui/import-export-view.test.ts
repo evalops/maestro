@@ -3,9 +3,9 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../src/agent/agent.js";
+import { ImportExportView } from "../../src/cli-tui/import-view.js";
 import * as exporter from "../../src/export-html.js";
 import type { SessionManager } from "../../src/session/manager.js";
-import { ImportExportView } from "../../src/tui/import-view.js";
 
 const buildAgent = (): Agent =>
 	({

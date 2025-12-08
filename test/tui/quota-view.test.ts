@@ -1,8 +1,8 @@
 import { Text } from "@evalops/tui";
 import { Container, type TUI } from "@evalops/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommandExecutionContext } from "../../src/tui/commands/types.js";
-import { QuotaView } from "../../src/tui/status/quota-view.js";
+import type { CommandExecutionContext } from "../../src/cli-tui/commands/types.js";
+import { QuotaView } from "../../src/cli-tui/status/quota-view.js";
 
 vi.mock("../../src/db/client.js", () => ({
 	isDatabaseConfigured: vi.fn(() => false),

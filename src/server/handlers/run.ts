@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
-import { runShellCommand } from "../../tui/run/run-shell-command.js";
+import { runShellCommand } from "../../cli-tui/run/run-shell-command.js";
 import {
 	readJsonBody,
 	respondWithApiError,

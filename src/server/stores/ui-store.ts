@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { UiState } from "../../tui/ui-state.js";
+import type { UiState } from "../../cli-tui/ui-state.js";
 import { tryParseJson } from "../../utils/json.js";
 
 const UI_STATE_PATH =

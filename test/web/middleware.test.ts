@@ -4,7 +4,7 @@ import {
 	type Middleware,
 	type NextFunction,
 	compose,
-} from "../../src/web/middleware.js";
+} from "../../src/server/middleware.js";
 
 function makeReq(): IncomingMessage {
 	return {} as IncomingMessage;

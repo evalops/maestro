@@ -4,7 +4,7 @@ import type {
 	AutocompleteProvider,
 } from "../packages/tui/src/autocomplete.js";
 import { Editor } from "../packages/tui/src/components/editor.js";
-import { CustomEditor } from "../src/tui/custom-editor.js";
+import { CustomEditor } from "../src/cli-tui/custom-editor.js";
 
 class StubAutocomplete implements AutocompleteProvider {
 	getSuggestions(): { items: AutocompleteItem[]; prefix: string } | null {

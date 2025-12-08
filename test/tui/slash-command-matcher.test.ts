@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	SlashCommandMatcher,
 	SlashCycleState,
-} from "../../src/tui/slash/index.js";
+} from "../../src/cli-tui/slash/index.js";
 
 function makeCommand(
 	name: string,

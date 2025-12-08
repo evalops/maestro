@@ -1,6 +1,6 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it } from "vitest";
-import { SlashHintBar } from "../src/tui/utils/commands/slash-hint-bar.js";
+import { SlashHintBar } from "../src/cli-tui/utils/commands/slash-hint-bar.js";
 
 const makeCmd = (
 	name: string,

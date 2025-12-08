@@ -1,7 +1,7 @@
 import type { ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "../../src/agent/types.js";
-import { SseSession } from "../../src/web/sse-session.js";
+import { SseSession } from "../../src/server/sse-session.js";
 
 interface MockResponse {
 	chunks: string[];

@@ -1,8 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { compose } from "../../src/web/middleware.js";
-import { RateLimiter, TieredRateLimiter } from "../../src/web/rate-limiter.js";
-import { createRateLimitMiddleware } from "../../src/web/server-middlewares.js";
+import { compose } from "../../src/server/middleware.js";
+import {
+	RateLimiter,
+	TieredRateLimiter,
+} from "../../src/server/rate-limiter.js";
+import { createRateLimitMiddleware } from "../../src/server/server-middlewares.js";
 
 // Track all limiters created during tests to ensure proper cleanup
 const activeLimiters: Array<RateLimiter | TieredRateLimiter> = [];

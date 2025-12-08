@@ -48,7 +48,7 @@ Key capabilities:
 
 ## Core Components
 
-### TUI Renderer (`src/tui/tui-renderer.ts`)
+### TUI Renderer (`src/cli-tui/tui-renderer.ts`)
 
 The main orchestrator for all TUI operations:
 
@@ -89,7 +89,7 @@ class TuiRenderer {
 }
 ```
 
-### UI State (`src/tui/ui-state.ts`)
+### UI State (`src/cli-tui/ui-state.ts`)
 
 Centralized state management for the TUI:
 
@@ -207,7 +207,7 @@ class DifferentialRenderer {
 ### Tool Renderer Registry
 
 ```typescript
-// src/tui/tool-renderers/
+// src/cli-tui/tool-renderers/
 const toolRenderers: Record<string, ToolRenderer> = {
   read: FileReadRenderer,
   write: FileWriteRenderer,
@@ -277,7 +277,7 @@ class BashOutputRenderer implements ToolRenderer {
 ### Modal Manager
 
 ```typescript
-// src/tui/modal-manager.ts
+// src/cli-tui/modal-manager.ts
 class ModalManager {
   private modalStack: Modal[] = [];
 
@@ -311,7 +311,7 @@ class ModalManager {
 ### Approval Modal
 
 ```typescript
-// src/tui/approval/approval-modal.ts
+// src/cli-tui/approval/approval-modal.ts
 class ApprovalModal implements Modal {
   private verdict: ActionFirewallVerdict;
   private resolve: (approved: boolean) => void;
@@ -356,7 +356,7 @@ class ApprovalModal implements Modal {
 ### Command Registry
 
 ```typescript
-// src/tui/utils/commands/command-registry-builder.ts
+// src/cli-tui/utils/commands/command-registry-builder.ts
 interface Command {
   name: string;
   description: string;
@@ -376,7 +376,7 @@ const commands: Command[] = [
 ### Autocomplete Provider
 
 ```typescript
-// src/tui/smart-autocomplete-provider.ts
+// src/cli-tui/smart-autocomplete-provider.ts
 class SmartAutocompleteProvider {
   getSuggestions(input: string): Suggestion[] {
     if (!input.startsWith("/")) {
@@ -400,7 +400,7 @@ class SmartAutocompleteProvider {
 ### Slash Hint Bar
 
 ```typescript
-// src/tui/utils/commands/slash-hint-bar.ts
+// src/cli-tui/utils/commands/slash-hint-bar.ts
 class SlashHintBar {
   render(input: string, suggestions: Suggestion[]): string {
     if (suggestions.length === 0) return "";
@@ -421,7 +421,7 @@ class SlashHintBar {
 ### Session List
 
 ```typescript
-// src/tui/session/session-list.ts
+// src/cli-tui/session/session-list.ts
 class SessionList {
   private sessions: SessionMetadata[] = [];
   private selectedIndex = 0;
@@ -463,7 +463,7 @@ class SessionList {
 ### Session Switcher
 
 ```typescript
-// src/tui/session/session-switcher.ts
+// src/cli-tui/session/session-switcher.ts
 class SessionSwitcher {
   private searchQuery = "";
   private filteredSessions: SessionMetadata[] = [];
@@ -483,7 +483,7 @@ class SessionSwitcher {
 ### Footer Component
 
 ```typescript
-// src/tui/footer.ts
+// src/cli-tui/footer.ts
 class Footer {
   render(state: UIState): string {
     const parts = [
@@ -520,7 +520,7 @@ class Footer {
 ### File Search
 
 ```typescript
-// src/tui/search/file-search.ts
+// src/cli-tui/search/file-search.ts
 class FileSearch {
   private query = "";
   private results: SearchResult[] = [];
@@ -548,7 +548,7 @@ class FileSearch {
 ### Interrupt Controller
 
 ```typescript
-// src/tui/interrupt-controller.ts
+// src/cli-tui/interrupt-controller.ts
 class InterruptController {
   private interruptCount = 0;
   private lastInterruptTime = 0;
@@ -580,7 +580,7 @@ class InterruptController {
 ### Paste Handler
 
 ```typescript
-// src/tui/paste/
+// src/cli-tui/paste/
 class PasteHandler {
   detectMultilinePaste(input: string): boolean {
     return input.includes("\n") || input.length > 100;

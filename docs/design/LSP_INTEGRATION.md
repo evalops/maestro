@@ -476,7 +476,7 @@ class LspContextSource implements AgentContextSource {
 ### Diagnostics View
 
 ```typescript
-// src/tui/lsp-view.ts
+// src/cli-tui/lsp-view.ts
 class LspView {
   private collector: DiagnosticCollector;
 
@@ -521,7 +521,7 @@ class LspView {
 ### /lsp Command
 
 ```typescript
-// src/tui/commands/lsp-handlers.ts
+// src/cli-tui/commands/lsp-handlers.ts
 async function handleLspCommand(args: string[]): Promise<void> {
   const subcommand = args[0];
 

@@ -67,7 +67,7 @@ To solve this, we use a **Remote Tool Execution** pattern:
     ```
 
 3.  **Implementation Details:**
-    *   **Backend:** `ClientToolService` (`src/web/client-tools-service.ts`) pauses the tool execution and waits for a resolution.
+    *   **Backend:** `ClientToolService` (`src/server/client-tools-service.ts`) pauses the tool execution and waits for a resolution.
     *   **Frontend:** `composerSidebar.ts` listens for `client_tool_request`, executes the logic, and calls `submitClientToolResult`.
 
 ## 3. Context Isolation
@@ -88,5 +88,5 @@ To prevent the Agent from "hallucinating" VS Code capabilities when running in o
 
 *   **`src/web-server.ts`:** Entry point for the backend server used by VS Code.
 *   **`src/tools/vscode.ts`:** Definitions for VS Code-specific tools (marked `executionLocation: "client"`).
-*   **`src/web/client-tools-service.ts`:** Backend service to manage pending client tool requests.
+*   **`src/server/client-tools-service.ts`:** Backend service to manage pending client tool requests.
 *   **`packages/vscode-extension/src/sidebar/composerSidebar.ts`:** Frontend logic handling events and tool execution.

@@ -4,7 +4,7 @@ import {
 	type PasteEditorInterface,
 	PasteHandler,
 	type PasteHandlerOptions,
-} from "../../src/tui/paste/paste-handler.js";
+} from "../../src/cli-tui/paste/paste-handler.js";
 
 interface MockAgent {
 	generateSummary: Mock;

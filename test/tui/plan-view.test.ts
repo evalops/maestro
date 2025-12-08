@@ -11,7 +11,7 @@ import {
 	calculatePlanHint,
 	loadTodoStore,
 	saveTodoStore,
-} from "../../src/tui/plan-view.js";
+} from "../../src/cli-tui/plan-view.js";
 
 interface MockPlanViewOptions {
 	filePath: string;

@@ -3,7 +3,7 @@ import {
 	formatCommandHelp,
 	parseCommandArguments,
 	shouldShowHelp,
-} from "../../src/tui/commands/argument-parser.js";
+} from "../../src/cli-tui/commands/argument-parser.js";
 
 describe("command argument parser", () => {
 	it("parses enum arguments and validates choices", () => {

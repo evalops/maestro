@@ -65,10 +65,10 @@ import {
 	applyWorkflowStateHooks,
 	isWorkflowTrackedTool,
 } from "../safety/workflow-state.js";
+import type { ClientToolService } from "../server/client-tools-service.js";
 import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
-import type { ClientToolService } from "../web/client-tools-service.js";
 import type {
 	ActionApprovalService,
 	WorkflowStateSnapshot,

@@ -5,7 +5,7 @@ import {
 	getRenderInterval,
 	getTerminalCapabilities,
 	isMinimalMode,
-} from "../../src/tui/terminal/terminal-utils.js";
+} from "../../src/cli-tui/terminal/terminal-utils.js";
 
 // Helper to clear env var (lint rule forbids direct delete)
 function clearEnv(key: string): void {

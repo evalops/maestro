@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PromptQueue } from "../../src/tui/prompt-queue.js";
+import { PromptQueue } from "../../src/cli-tui/prompt-queue.js";
 
 const waitForSettled = (queue: PromptQueue, expected: number) =>
 	new Promise<void>((resolve) => {

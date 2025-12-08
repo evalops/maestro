@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { loadUiState, saveUiState } from "../../tui/ui-state.js";
+import { loadUiState, saveUiState } from "../../cli-tui/ui-state.js";
 import { requireApiAuth, requireCsrf } from "../authz.js";
 import {
 	readJsonBody,

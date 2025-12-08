@@ -169,7 +169,7 @@ composer --approval-mode fail
 **Mitigations:**
 | Control | Location | Description |
 |---------|----------|-------------|
-| Rate Limiting | `src/web/rate-limiter.ts` | TieredRateLimiter prevents request floods |
+| Rate Limiting | `src/server/rate-limiter.ts` | TieredRateLimiter prevents request floods |
 | URL Validation | `src/tools/webfetch.ts` | Blocks private IP ranges, localhost |
 | TLS Enforcement | Provider transports | All LLM API calls use HTTPS |
 | Network Config | `src/providers/network-config.ts` | Proxy and timeout configuration |
@@ -192,8 +192,8 @@ composer --approval-mode fail
 |---------|----------|-------------|
 | Background Task Limits | `src/tools/background-tasks.ts` | Max concurrent tasks, CPU/memory limits |
 | Execution Timeouts | Tool implementations | Configurable timeouts for all tools |
-| Context Compaction | `src/tui/session/conversation-compactor.ts` | Auto-compacts at 85% context usage |
-| Rate Limiting | `src/web/rate-limiter.ts` | Per-route and global request limits |
+| Context Compaction | `src/cli-tui/session/conversation-compactor.ts` | Auto-compacts at 85% context usage |
+| Rate Limiting | `src/server/rate-limiter.ts` | Per-route and global request limits |
 
 **Residual Risk:** Low. Resource limits are configurable and enforced.
 

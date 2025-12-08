@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	parseCleanMode,
 	readCleanModeFromEnv,
-} from "../../src/tui/clean-mode.js";
+} from "../../src/cli-tui/clean-mode.js";
 
 describe("clean-mode", () => {
 	describe("parseCleanMode", () => {

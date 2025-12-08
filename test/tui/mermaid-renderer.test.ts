@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { renderMermaidDiagram } from "../../src/tui/mermaid-renderer.js";
+import { renderMermaidDiagram } from "../../src/cli-tui/mermaid-renderer.js";
 
 describe("renderMermaidDiagram", () => {
 	it("renders a simple top-down graph with boxes", () => {

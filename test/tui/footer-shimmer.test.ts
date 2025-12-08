@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { renderStaticStageBadge } from "../../src/tui/utils/footer-utils.js";
-import { stripAnsiSequences } from "../../src/tui/utils/text-formatting.js";
+import { renderStaticStageBadge } from "../../src/cli-tui/utils/footer-utils.js";
+import { stripAnsiSequences } from "../../src/cli-tui/utils/text-formatting.js";
 
 const ORIGINAL = {
 	shimmer: process.env.COMPOSER_TUI_SHIMMER,

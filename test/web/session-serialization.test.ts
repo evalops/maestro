@@ -13,7 +13,7 @@ import {
 	convertAppMessagesToComposer,
 	convertComposerMessageToApp,
 	convertComposerMessagesToApp,
-} from "../../src/web/session-serialization.js";
+} from "../../src/server/session-serialization.js";
 
 const mockUsage = () => ({
 	input: 0,

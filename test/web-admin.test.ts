@@ -35,7 +35,7 @@ import { cleanupWebhookQueue } from "../src/webhooks/delivery.js";
 import type {
 	CacheWarmResult,
 	CleanupResult,
-} from "../src/web/handlers/admin.js";
+} from "../src/server/handlers/admin.js";
 
 interface MockRequest {
 	method: string;
@@ -95,7 +95,7 @@ describe("Admin Handlers", () => {
 	describe("handleAdminCleanup", () => {
 		it("should return 405 for non-POST requests", async () => {
 			const { handleAdminCleanup } = await import(
-				"../src/web/handlers/admin.js"
+				"../src/server/handlers/admin.js"
 			);
 			const { req, res } = createMockReqRes("GET");
 
@@ -106,7 +106,7 @@ describe("Admin Handlers", () => {
 
 		it("should return 503 when database is not available", async () => {
 			const { handleAdminCleanup } = await import(
-				"../src/web/handlers/admin.js"
+				"../src/server/handlers/admin.js"
 			);
 			vi.mocked(isDbAvailable).mockReturnValue(false);
 			const { req, res } = createMockReqRes();
@@ -118,7 +118,7 @@ describe("Admin Handlers", () => {
 
 		it("should run all cleanup tasks when database is available", async () => {
 			const { handleAdminCleanup } = await import(
-				"../src/web/handlers/admin.js"
+				"../src/server/handlers/admin.js"
 			);
 			vi.mocked(isDbAvailable).mockReturnValue(true);
 			vi.mocked(cleanupExpiredRevocations).mockResolvedValue(5);
@@ -142,7 +142,7 @@ describe("Admin Handlers", () => {
 
 		it("should report partial success when some tasks fail", async () => {
 			const { handleAdminCleanup } = await import(
-				"../src/web/handlers/admin.js"
+				"../src/server/handlers/admin.js"
 			);
 			vi.mocked(isDbAvailable).mockReturnValue(true);
 			vi.mocked(cleanupExpiredRevocations).mockResolvedValue(5);
@@ -166,7 +166,7 @@ describe("Admin Handlers", () => {
 	describe("handleAdminWarmCaches", () => {
 		it("should return 405 for non-POST requests", async () => {
 			const { handleAdminWarmCaches } = await import(
-				"../src/web/handlers/admin.js"
+				"../src/server/handlers/admin.js"
 			);
 			const { req, res } = createMockReqRes("GET");
 
@@ -177,7 +177,7 @@ describe("Admin Handlers", () => {
 
 		it("should return 503 when database is not available", async () => {
 			const { handleAdminWarmCaches } = await import(
-				"../src/web/handlers/admin.js"
+				"../src/server/handlers/admin.js"
 			);
 			vi.mocked(isDbAvailable).mockReturnValue(false);
 			const { req, res } = createMockReqRes();
@@ -189,7 +189,7 @@ describe("Admin Handlers", () => {
 
 		it("should warm all caches when database is available", async () => {
 			const { handleAdminWarmCaches } = await import(
-				"../src/web/handlers/admin.js"
+				"../src/server/handlers/admin.js"
 			);
 			vi.mocked(isDbAvailable).mockReturnValue(true);
 			vi.mocked(warmUserRevocationCache).mockResolvedValue(10);
@@ -208,7 +208,7 @@ describe("Admin Handlers", () => {
 
 		it("should report partial success when some tasks fail", async () => {
 			const { handleAdminWarmCaches } = await import(
-				"../src/web/handlers/admin.js"
+				"../src/server/handlers/admin.js"
 			);
 			vi.mocked(isDbAvailable).mockReturnValue(true);
 			vi.mocked(warmUserRevocationCache).mockResolvedValue(10);

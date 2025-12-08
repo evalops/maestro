@@ -28,7 +28,7 @@ import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
 	parseModelInput,
-} from "../../src/web/model-selection.js";
+} from "../../src/server/model-selection.js";
 
 describe("model-selection", () => {
 	it("parses provider/model with colon or slash", () => {

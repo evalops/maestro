@@ -10,21 +10,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { backgroundTaskManager } from "../../src/tools/background-tasks.js";
 import {
 	parseBackgroundPrefixCommand,
 	startBackgroundTask,
 	stripBackgroundSuffix,
-} from "../../src/tui/bash/background-launcher.js";
-import { BashAutocompleteProvider } from "../../src/tui/bash/bash-autocomplete.js";
+} from "../../src/cli-tui/bash/background-launcher.js";
+import { BashAutocompleteProvider } from "../../src/cli-tui/bash/bash-autocomplete.js";
 import {
 	appendToHistory,
 	getHistoryFilePath,
 	loadBashHistory,
 	saveBashHistory,
-} from "../../src/tui/bash/bash-history.js";
-import { highlightBashCommand } from "../../src/tui/bash/bash-syntax.js";
-import { runStreamingShellCommand } from "../../src/tui/run/streaming-shell-command.js";
+} from "../../src/cli-tui/bash/bash-history.js";
+import { highlightBashCommand } from "../../src/cli-tui/bash/bash-syntax.js";
+import { runStreamingShellCommand } from "../../src/cli-tui/run/streaming-shell-command.js";
+import { backgroundTaskManager } from "../../src/tools/background-tasks.js";
 
 // =============================================================================
 // BASH HISTORY TESTS
@@ -742,7 +742,7 @@ describe("runStreamingShellCommand", () => {
 describe("BashShellBlock", () => {
 	it("creates block with title and initial body", async () => {
 		const { BashShellBlock } = await import(
-			"../../src/tui/bash-shell-block.js"
+			"../../src/cli-tui/bash-shell-block.js"
 		);
 
 		const block = new BashShellBlock("test-path", "initial body");
@@ -751,7 +751,7 @@ describe("BashShellBlock", () => {
 
 	it("supports status changes", async () => {
 		const { BashShellBlock } = await import(
-			"../../src/tui/bash-shell-block.js"
+			"../../src/cli-tui/bash-shell-block.js"
 		);
 
 		const block = new BashShellBlock("path", "body");
@@ -763,7 +763,7 @@ describe("BashShellBlock", () => {
 
 	it("supports body updates", async () => {
 		const { BashShellBlock } = await import(
-			"../../src/tui/bash-shell-block.js"
+			"../../src/cli-tui/bash-shell-block.js"
 		);
 
 		const block = new BashShellBlock("path", "initial");
@@ -772,7 +772,7 @@ describe("BashShellBlock", () => {
 
 	it("supports prompt line", async () => {
 		const { BashShellBlock } = await import(
-			"../../src/tui/bash-shell-block.js"
+			"../../src/cli-tui/bash-shell-block.js"
 		);
 
 		const block = new BashShellBlock("path", "body");
@@ -781,7 +781,7 @@ describe("BashShellBlock", () => {
 
 	it("supports streaming output", async () => {
 		const { BashShellBlock } = await import(
-			"../../src/tui/bash-shell-block.js"
+			"../../src/cli-tui/bash-shell-block.js"
 		);
 
 		const block = new BashShellBlock("path", "body");
@@ -793,7 +793,7 @@ describe("BashShellBlock", () => {
 
 	it("tracks elapsed time", async () => {
 		const { BashShellBlock } = await import(
-			"../../src/tui/bash-shell-block.js"
+			"../../src/cli-tui/bash-shell-block.js"
 		);
 
 		const block = new BashShellBlock("path", "body");

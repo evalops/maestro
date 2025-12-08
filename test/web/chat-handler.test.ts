@@ -3,8 +3,8 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { Agent } from "../../src/agent/agent.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
-import type { WebServerContext } from "../../src/web/app-context.js";
-import { handleChat } from "../../src/web/handlers/chat.js";
+import type { WebServerContext } from "../../src/server/app-context.js";
+import { handleChat } from "../../src/server/handlers/chat.js";
 
 const mockModel: RegisteredModel = {
 	id: "claude-sonnet-4-5",

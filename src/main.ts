@@ -105,6 +105,7 @@ import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
+import { TuiRenderer } from "./cli-tui/tui-renderer.js";
 import { type Args, type Mode, parseArgs } from "./cli/args.js";
 import {
 	EXEC_SESSION_SUMMARY_PREFIX,
@@ -176,7 +177,6 @@ import {
 	readOnlyToolNames,
 	toolRegistry,
 } from "./tools/index.js";
-import { TuiRenderer } from "./tui/tui-renderer.js";
 import {
 	formatChangelogVersion,
 	getChangelogPath,

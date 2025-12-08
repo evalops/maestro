@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LoaderStageManager } from "../../src/tui/loader/loader-stage-manager.js";
-import { STAGE_DISPLAY_LABELS } from "../../src/tui/utils/stage-labels.js";
+import { LoaderStageManager } from "../../src/cli-tui/loader/loader-stage-manager.js";
+import { STAGE_DISPLAY_LABELS } from "../../src/cli-tui/utils/stage-labels.js";
 
 vi.mock("../../src/telemetry.js", () => ({
 	recordLoaderStage: vi.fn(),

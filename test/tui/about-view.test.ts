@@ -8,7 +8,7 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
-import { AboutView } from "../../src/tui/about-view.js";
+import { AboutView } from "../../src/cli-tui/about-view.js";
 
 type AboutViewOptions = ConstructorParameters<typeof AboutView>[0];
 

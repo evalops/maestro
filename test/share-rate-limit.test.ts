@@ -11,7 +11,7 @@ import {
 	checkShareRateLimit,
 	resetShareRateLimit,
 	stopShareRateLimiter,
-} from "../src/web/handlers/sessions.js";
+} from "../src/server/handlers/sessions.js";
 
 describe("Share Rate Limiting", () => {
 	beforeEach(async () => {

@@ -2,12 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	PromptQueue,
 	PromptQueueEvent,
-} from "../../src/tui/prompt-queue.js";
+} from "../../src/cli-tui/prompt-queue.js";
 import {
 	QueueController,
 	type QueueControllerCallbacks,
 	type QueueControllerOptions,
-} from "../../src/tui/queue/queue-controller.js";
+} from "../../src/cli-tui/queue/queue-controller.js";
 
 function createMockNotificationView(): QueueControllerOptions["notificationView"] {
 	return {

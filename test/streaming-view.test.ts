@@ -1,13 +1,13 @@
 import type { Component } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "../src/agent/types.js";
-import { StreamingView } from "../src/tui/streaming-view.js";
+import { StreamingView } from "../src/cli-tui/streaming-view.js";
 
 // Mock the assistant message component so we can inspect the renderable content
 // that StreamingView passes into the UI.
 const updateContentMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../src/tui/assistant-message.js", () => {
+vi.mock("../src/cli-tui/assistant-message.js", () => {
 	class AssistantMessageComponent {
 		public lastContent: unknown;
 		updateContent(content: unknown): void {

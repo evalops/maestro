@@ -1,8 +1,8 @@
 import type { Agent } from "../agent/agent.js";
 import type { AppMessage } from "../agent/types.js";
+import { PromptQueue } from "../cli-tui/prompt-queue.js";
+import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
 import { composerManager } from "../composers/index.js";
-import { PromptQueue } from "../tui/prompt-queue.js";
-import type { TuiRenderer } from "../tui/tui-renderer.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("agent-runtime");

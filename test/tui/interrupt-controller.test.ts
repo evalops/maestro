@@ -3,7 +3,7 @@ import {
 	type InterruptCallbacks,
 	InterruptController,
 	type InterruptControllerOptions,
-} from "../../src/tui/interrupt-controller.js";
+} from "../../src/cli-tui/interrupt-controller.js";
 
 interface MockFooter {
 	setHint: ReturnType<typeof vi.fn>;

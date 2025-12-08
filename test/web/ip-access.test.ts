@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type IpAccessConfig,
 	checkIpAccess,
-} from "../../src/web/server-middlewares.js";
+} from "../../src/server/server-middlewares.js";
 
 describe("IP Access Control", () => {
 	describe("checkIpAccess", () => {

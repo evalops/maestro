@@ -1,11 +1,11 @@
 import { Text } from "@evalops/tui";
 import { Container, type TUI } from "@evalops/tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ConfigView } from "../../src/cli-tui/config-view.js";
 import type {
 	ConfigInspection,
 	ConfigValidationResult,
 } from "../../src/models/registry.js";
-import { ConfigView } from "../../src/tui/config-view.js";
 
 type ConfigCommandContext = Parameters<ConfigView["handleConfigCommand"]>[0];
 

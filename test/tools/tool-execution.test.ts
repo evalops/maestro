@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ToolExecutionComponent } from "../../src/tui/tool-execution.js";
+import { ToolExecutionComponent } from "../../src/cli-tui/tool-execution.js";
 
 /**
  * Helper to get rendered text from component

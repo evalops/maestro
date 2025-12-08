@@ -58,7 +58,7 @@ const buildView = async (features: {
 	vi.doMock("../src/lsp/autostart.js", () => ({ autostartLspServers }));
 	vi.doMock("../src/lsp/autodetect.js", () => ({ detectLspServers }));
 
-	const { LspView } = await import("../src/tui/lsp-view.js");
+	const { LspView } = await import("../src/cli-tui/lsp-view.js");
 
 	const chatContainer = new Container();
 	const ui = new StubTui();

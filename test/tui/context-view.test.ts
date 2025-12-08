@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentState } from "../../src/agent/types.js";
-import { ContextView } from "../../src/tui/context-view.js";
+import { ContextView } from "../../src/cli-tui/context-view.js";
 
 describe("ContextView", () => {
 	it("renders correctly with mixed messages", () => {

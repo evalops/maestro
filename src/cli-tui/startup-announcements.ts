@@ -22,7 +22,7 @@ export function renderStartupAnnouncements({
 	startupChangelog,
 	startupChangelogSummary,
 	modelScope,
-	renderSuggestion = "/review src/tui/tui-renderer.ts — summarize rendering flow",
+	renderSuggestion = "/review src/cli-tui/tui-renderer.ts — summarize rendering flow",
 }: StartupAnnouncementsOptions): void {
 	container.clear();
 	let announced = false;

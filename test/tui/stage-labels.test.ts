@@ -4,7 +4,7 @@ import {
 	detectStageKind,
 	formatWorkingStageLabel,
 	normalizeStageLabel,
-} from "../../src/tui/utils/stage-labels.js";
+} from "../../src/cli-tui/utils/stage-labels.js";
 
 describe("stage label utilities", () => {
 	it("normalizes labels by trimming whitespace without changing case", () => {

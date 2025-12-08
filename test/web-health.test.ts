@@ -11,7 +11,7 @@ import {
 	isDbAvailable,
 	testConnection,
 } from "../src/db/client.js";
-import { runHealthChecks } from "../src/web/handlers/health.js";
+import { runHealthChecks } from "../src/server/handlers/health.js";
 
 describe("Health Checks", () => {
 	beforeEach(() => {

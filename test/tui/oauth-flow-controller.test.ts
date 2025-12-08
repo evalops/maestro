@@ -5,7 +5,7 @@ import {
 	OAuthFlowController,
 	type OAuthFlowControllerOptions,
 	type OAuthRenderContext,
-} from "../../src/tui/oauth/oauth-flow-controller.js";
+} from "../../src/cli-tui/oauth/oauth-flow-controller.js";
 
 // Mock the oauth module
 vi.mock("../../src/oauth/index.js", () => ({

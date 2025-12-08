@@ -13,8 +13,8 @@ import { cleanupRateLimits, cleanupUsedCodes } from "./auth/totp.js";
 import { isDbAvailable } from "./db/client.js";
 import { initEncryption, isEncryptionEnabled } from "./db/encryption.js";
 import { migrate } from "./db/migrate.js";
+import { registerGauge } from "./server/logger.js";
 import { createLogger } from "./utils/logger.js";
-import { registerGauge } from "./web/logger.js";
 import {
 	cleanupWebhookQueue,
 	getWebhookQueueMetrics,
@@ -259,7 +259,7 @@ export async function shutdownLifecycle(): Promise<void> {
 	await stopWebhookProcessor();
 
 	// Shutdown rate limiter and Redis connection
-	const { shutdownRedis } = await import("./web/rate-limiter.js");
+	const { shutdownRedis } = await import("./server/rate-limiter.js");
 	await shutdownRedis();
 
 	initialized = false;

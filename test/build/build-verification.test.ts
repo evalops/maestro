@@ -101,9 +101,9 @@ describe("Build Verification", () => {
 			expect(stats.size).toBeGreaterThan(0);
 		});
 
-		it("should have web module directory", async () => {
-			const webPath = join(distPath, "web");
-			await expect(access(webPath)).resolves.not.toThrow();
+		it("should have server module directory", async () => {
+			const serverPath = join(distPath, "server");
+			await expect(access(serverPath)).resolves.not.toThrow();
 		});
 	});
 

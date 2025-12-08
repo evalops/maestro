@@ -2,8 +2,8 @@ import type { SpawnSyncReturns } from "node:child_process";
 import { Text } from "@evalops/tui";
 import { Container, type TUI } from "@evalops/tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { OllamaView } from "../../src/cli-tui/ollama-view.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
-import { OllamaView } from "../../src/tui/ollama-view.js";
 
 vi.mock("node:child_process", () => {
 	const { EventEmitter } = require("node:events");

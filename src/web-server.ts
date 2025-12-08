@@ -49,14 +49,14 @@ import {
 } from "./providers/auth.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
+import type { WebServerContext } from "./server/app-context.js";
 import { recordApiRequest } from "./telemetry.js";
 import { codingTools, vscodeTools } from "./tools/index.js";
 import { createLogger } from "./utils/logger.js";
-import type { WebServerContext } from "./web/app-context.js";
 
 const logger = createLogger("web-server");
-import { WebActionApprovalService } from "./web/approval-service.js";
-import { clientToolService } from "./web/client-tools-service.js";
+import { WebActionApprovalService } from "./server/approval-service.js";
+import { clientToolService } from "./server/client-tools-service.js";
 import {
 	isOverloaded,
 	logError,
@@ -64,21 +64,21 @@ import {
 	logStartup,
 	startStatsCollection,
 	stopStatsCollection,
-} from "./web/logger.js";
-import { compose } from "./web/middleware.js";
+} from "./server/logger.js";
+import { compose } from "./server/middleware.js";
 import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
-} from "./web/model-selection.js";
-import { TieredRateLimiter } from "./web/rate-limiter.js";
+} from "./server/model-selection.js";
+import { TieredRateLimiter } from "./server/rate-limiter.js";
 import {
 	type RequestContext,
 	parseTraceParent,
 	requestContextStorage,
-} from "./web/request-context.js";
-import { requestTracker } from "./web/request-tracker.js";
-import { createRequestHandler } from "./web/router.js";
-import { createRoutes } from "./web/routes.js";
+} from "./server/request-context.js";
+import { requestTracker } from "./server/request-tracker.js";
+import { createRequestHandler } from "./server/router.js";
+import { createRoutes } from "./server/routes.js";
 import {
 	createAuthMiddleware,
 	createCorsMiddleware,
@@ -86,17 +86,17 @@ import {
 	createLoadSheddingMiddleware,
 	createRouterMiddleware,
 	createTieredRateLimitMiddleware,
-} from "./web/server-middlewares.js";
+} from "./server/server-middlewares.js";
 import {
 	ApiError,
 	authenticateRequest,
 	createCorsHeaders,
 	sendJson,
-} from "./web/server-utils.js";
-import { serveStatic } from "./web/static-server.js";
+} from "./server/server-utils.js";
+import { serveStatic } from "./server/static-server.js";
 
 // Re-export for existing test imports
-export { SseSession } from "./web/sse-session.js";
+export { SseSession } from "./server/sse-session.js";
 
 loadEnv();
 void initOpenTelemetry("composer-web-server");

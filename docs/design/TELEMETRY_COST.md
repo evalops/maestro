@@ -412,7 +412,7 @@ function computeSessionAnalytics(tracker: UsageTracker): SessionAnalytics {
 ### TUI Footer Cost Display
 
 ```typescript
-// src/tui/status/cost-view.ts
+// src/cli-tui/status/cost-view.ts
 class CostView {
   render(analytics: SessionAnalytics): string {
     const costStr = formatCurrency(analytics.totalCost);
@@ -446,7 +446,7 @@ function formatNumber(n: number): string {
 ### /cost Command
 
 ```typescript
-// src/tui/commands/cost-handlers.ts
+// src/cli-tui/commands/cost-handlers.ts
 async function handleCostCommand(): Promise<void> {
   const analytics = computeSessionAnalytics(usageTracker);
 

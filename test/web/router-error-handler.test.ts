@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createRequestHandler } from "../../src/web/router.js";
-import * as serverUtils from "../../src/web/server-utils.js";
-import { ApiError } from "../../src/web/server-utils.js";
+import { createRequestHandler } from "../../src/server/router.js";
+import * as serverUtils from "../../src/server/server-utils.js";
+import { ApiError } from "../../src/server/server-utils.js";
 
 interface MockRequest {
 	method: string;

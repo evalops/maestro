@@ -6,14 +6,14 @@ import {
 	CircuitState,
 	circuitBreakers,
 	getCircuitBreaker,
-} from "../../src/web/circuit-breaker.js";
-import { RateLimiter } from "../../src/web/rate-limiter.js";
+} from "../../src/server/circuit-breaker.js";
+import { RateLimiter } from "../../src/server/rate-limiter.js";
 import {
 	ApiError,
 	respondWithApiError,
 	sendJson,
-} from "../../src/web/server-utils.js";
-import { Code, Status } from "../../src/web/status.js";
+} from "../../src/server/server-utils.js";
+import { Code, Status } from "../../src/server/status.js";
 
 /** Mock HTTP response for testing */
 interface MockResponse {

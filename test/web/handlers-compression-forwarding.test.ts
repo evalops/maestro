@@ -1,9 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleConfig } from "../../src/web/handlers/config.js";
-import { handleStatus } from "../../src/web/handlers/status.js";
-import { handleUsage } from "../../src/web/handlers/usage.js";
-import * as serverUtils from "../../src/web/server-utils.js";
+import { handleConfig } from "../../src/server/handlers/config.js";
+import { handleStatus } from "../../src/server/handlers/status.js";
+import { handleUsage } from "../../src/server/handlers/usage.js";
+import * as serverUtils from "../../src/server/server-utils.js";
 
 const cors = {};
 

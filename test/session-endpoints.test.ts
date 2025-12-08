@@ -5,7 +5,7 @@ import {
 	handleSessionShare,
 	handleSessions,
 	handleSharedSession,
-} from "../src/web/handlers/sessions.js";
+} from "../src/server/handlers/sessions.js";
 
 // Mock the SessionManager
 vi.mock("../src/session/manager.js", () => ({
@@ -79,7 +79,7 @@ vi.mock("../src/session/manager.js", () => ({
 }));
 
 // Mock session-serialization
-vi.mock("../src/web/session-serialization.js", () => ({
+vi.mock("../src/server/session-serialization.js", () => ({
 	convertAppMessagesToComposer: vi.fn((msgs) => msgs),
 }));
 

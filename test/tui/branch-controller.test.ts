@@ -4,7 +4,7 @@ import {
 	BranchController,
 	type BranchControllerCallbacks,
 	type BranchControllerOptions,
-} from "../../src/tui/session/branch-controller.js";
+} from "../../src/cli-tui/session/branch-controller.js";
 
 function createMockAgent(
 	messages: AppMessage[] = [],

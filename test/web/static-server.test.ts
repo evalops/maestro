@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { serveStatic } from "../../src/web/static-server.js";
+import { serveStatic } from "../../src/server/static-server.js";
 
 // Track temp directories for cleanup
 const tempDirs: string[] = [];

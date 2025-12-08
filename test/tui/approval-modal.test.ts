@@ -1,8 +1,8 @@
 import { Text, visibleWidth } from "@evalops/tui";
 import { describe, expect, it } from "vitest";
 
-import { ApprovalModal } from "../../src/tui/approval/approval-modal.js";
-import { sanitizeAnsi } from "../../src/tui/utils/text-formatting.js";
+import { ApprovalModal } from "../../src/cli-tui/approval/approval-modal.js";
+import { sanitizeAnsi } from "../../src/cli-tui/utils/text-formatting.js";
 
 const noop = () => {};
 

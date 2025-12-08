@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { describe, expect, it } from "vitest";
 
 import { visibleWidth } from "../../packages/tui/src/utils.js";
-import { clampAnsiLines } from "../../src/tui/utils/tool-text-utils.js";
+import { clampAnsiLines } from "../../src/cli-tui/utils/tool-text-utils.js";
 
 describe("clampAnsiLines", () => {
 	it("respects max width with wide characters and ellipsis", () => {

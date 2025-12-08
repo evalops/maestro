@@ -2,12 +2,12 @@ import type { Container, TUI } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../src/agent/agent.js";
 import type { AssistantMessage } from "../../src/agent/types.js";
-import type { SessionManager } from "../../src/session/manager.js";
 import type {
 	SessionDataProvider,
 	SessionItem,
-} from "../../src/tui/session/session-data-provider.js";
-import { SessionView } from "../../src/tui/session/session-view.js";
+} from "../../src/cli-tui/session/session-data-provider.js";
+import { SessionView } from "../../src/cli-tui/session/session-view.js";
+import type { SessionManager } from "../../src/session/manager.js";
 
 const baseModel = {
 	id: "gpt-4o-mini",

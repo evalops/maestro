@@ -24,7 +24,7 @@ import {
 	initRedis,
 	isRedisAvailable,
 	shutdownRedis,
-} from "../../src/web/rate-limiter.js";
+} from "../../src/server/rate-limiter.js";
 
 const REDIS_URL = process.env.COMPOSER_REDIS_URL;
 

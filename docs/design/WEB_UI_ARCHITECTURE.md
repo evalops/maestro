@@ -165,7 +165,7 @@ class EventBroadcaster {
 ### WebSocket Client
 
 ```typescript
-// src/web/websocket-client.ts
+// src/server/websocket-client.ts
 class ComposerWebSocketClient {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
@@ -231,7 +231,7 @@ class ComposerWebSocketClient {
 ### Chat View
 
 ```typescript
-// src/web/components/ChatView.tsx
+// src/server/components/ChatView.tsx
 function ChatView() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -305,7 +305,7 @@ function ChatView() {
 ### Message Rendering
 
 ```typescript
-// src/web/components/MessageList.tsx
+// src/server/components/MessageList.tsx
 function MessageList({ messages }: { messages: Message[] }) {
   return (
     <div className="message-list">
@@ -334,7 +334,7 @@ function MessageItem({ message }: { message: Message }) {
 ### Tool Call Cards
 
 ```typescript
-// src/web/components/ToolCallCard.tsx
+// src/server/components/ToolCallCard.tsx
 function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -381,7 +381,7 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
 ### Application State
 
 ```typescript
-// src/web/state/store.ts
+// src/server/state/store.ts
 interface AppState {
   // Connection
   connectionStatus: "connecting" | "connected" | "disconnected";
@@ -432,7 +432,7 @@ const useStore = create<AppState>((set, get) => ({
 ### State Synchronization
 
 ```typescript
-// src/web/state/sync.ts
+// src/server/state/sync.ts
 function useStateSync() {
   const wsClient = useWebSocketClient();
   const store = useStore();
@@ -455,7 +455,7 @@ function useStateSync() {
 ### Session List
 
 ```typescript
-// src/web/components/SessionList.tsx
+// src/server/components/SessionList.tsx
 function SessionList() {
   const { sessions, currentSession, loadSession } = useStore();
   const [searchQuery, setSearchQuery] = useState("");
@@ -508,7 +508,7 @@ async function loadSession(sessionId: string): Promise<void> {
 ## Model Selection
 
 ```typescript
-// src/web/components/ModelSelector.tsx
+// src/server/components/ModelSelector.tsx
 function ModelSelector() {
   const { currentModel, setModel } = useStore();
   const [models, setModels] = useState<Model[]>([]);
@@ -556,7 +556,7 @@ function ModelSelector() {
 ### Theme System
 
 ```typescript
-// src/web/theme/index.ts
+// src/server/theme/index.ts
 const themes = {
   light: {
     background: "#ffffff",
@@ -592,7 +592,7 @@ function useTheme() {
 ## Mobile Support
 
 ```typescript
-// src/web/hooks/useMobile.ts
+// src/server/hooks/useMobile.ts
 function useMobile() {
   const [isMobile, setIsMobile] = useState(
     window.innerWidth < 768

@@ -21,8 +21,8 @@
  * @module cli/session
  */
 import { ProcessTerminal, TUI } from "@evalops/tui";
+import { SessionSelectorComponent } from "../cli-tui/session/session-selector.js";
 import type { SessionManager } from "../session/manager.js";
-import { SessionSelectorComponent } from "../tui/session/session-selector.js";
 
 /**
  * Opens an interactive session selector in the terminal.

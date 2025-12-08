@@ -5,7 +5,7 @@ on:
     branches: [main]
   pull_request:
     paths:
-      - "src/web/**"
+      - "src/server/**"
       - "src/db/**"
       - "test/web/**"
       - "docker-compose.yml"

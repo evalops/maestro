@@ -101,7 +101,7 @@ class EventEmittingClass {
 
 ## Real Example: PromptQueue
 
-See `src/tui/prompt-queue.ts`:
+See `src/cli-tui/prompt-queue.ts`:
 
 ```typescript
 /**
@@ -125,7 +125,7 @@ cancelAll(options?: { silent?: boolean }): QueuedPrompt[] {
 }
 ```
 
-**Usage in interrupt restore** (`src/tui/tui-renderer.ts`):
+**Usage in interrupt restore** (`src/cli-tui/tui-renderer.ts`):
 ```typescript
 // Restore queued prompts without triggering cancel notifications
 const snapshot = this.promptQueue.getSnapshot();

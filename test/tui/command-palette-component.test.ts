@@ -1,7 +1,7 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it } from "vitest";
-import { CommandPaletteComponent } from "../../src/tui/utils/commands/command-palette.js";
-import { stripAnsiSequences } from "../../src/tui/utils/text-formatting.js";
+import { CommandPaletteComponent } from "../../src/cli-tui/utils/commands/command-palette.js";
+import { stripAnsiSequences } from "../../src/cli-tui/utils/text-formatting.js";
 
 const cmd = (name: string, tags: string[] = []): SlashCommand => ({
 	name,

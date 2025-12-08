@@ -334,7 +334,7 @@ _Note: Currently used only in PromptQueue. Document additional patterns here as 
 
 Slash commands require updates across 4 files. Follow this pattern:
 
-**1. Define handler type** in `src/tui/commands/types.ts`:
+**1. Define handler type** in `src/cli-tui/commands/types.ts`:
 ```typescript
 export interface CommandHandlers {
   // ... existing handlers
@@ -342,7 +342,7 @@ export interface CommandHandlers {
 }
 ```
 
-**2. Register command** in `src/tui/commands/registry.ts`:
+**2. Register command** in `src/cli-tui/commands/registry.ts`:
 ```typescript
 buildEntry(
   {
@@ -357,7 +357,7 @@ buildEntry(
 ),
 ```
 
-**3. Add to builder options** in `src/tui/utils/commands/command-registry-builder.ts`:
+**3. Add to builder options** in `src/cli-tui/utils/commands/command-registry-builder.ts`:
 ```typescript
 interface CommandRegistryOptions {
   // ... existing options
@@ -371,14 +371,14 @@ handlers: {
 }
 ```
 
-**4. Wire handler** in `src/tui/tui-renderer.ts`:
+**4. Wire handler** in `src/cli-tui/tui-renderer.ts`:
 ```typescript
 // In buildCommandRegistry call:
 handleMyCommand: (context) => this.doSomething(),
 ```
 
 **For selector-based commands** (like `/theme`, `/model`, `/thinking`):
-- Create a `*SelectorComponent` in `src/tui/selectors/` (the UI component)
+- Create a `*SelectorComponent` in `src/cli-tui/selectors/` (the UI component)
 - Create a `*SelectorView` wrapper that manages modal lifecycle
 - Initialize the view in `TuiRenderer` constructor
 - Use `this.modalManager.push(component)` to show it

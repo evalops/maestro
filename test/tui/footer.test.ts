@@ -4,7 +4,7 @@ import type {
 	AppMessage,
 	AssistantMessage,
 } from "../../src/agent/types.js";
-import { FooterComponent } from "../../src/tui/footer.js";
+import { FooterComponent } from "../../src/cli-tui/footer.js";
 
 // Helper to create a mock assistant message
 function createAssistantMessage(
