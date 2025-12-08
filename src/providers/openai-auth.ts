@@ -1,3 +1,54 @@
+/**
+ * OpenAI OAuth Authentication
+ *
+ * This module implements OAuth 2.0 with PKCE for authenticating with
+ * OpenAI's API. It uses a local callback server to receive the
+ * authorization code after user authentication.
+ *
+ * ## Authentication Flow
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │                     OpenAI OAuth Flow                       │
+ * ├─────────────────────────────────────────────────────────────┤
+ * │  1. Generate PKCE challenge and state token                 │
+ * │  2. Generate login URL → User opens in browser              │
+ * │  3. Start local callback server on port 1455                │
+ * │  4. User authenticates at auth.openai.com                   │
+ * │  5. Receive authorization code via callback                 │
+ * │  6. Exchange code for access/refresh/ID tokens              │
+ * │  7. Exchange ID token for API key                           │
+ * │  8. Store credentials in ~/.composer/openai-oauth.json      │
+ * └─────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## Token Types
+ *
+ * | Token        | Purpose                                    |
+ * |--------------|---------------------------------------------|
+ * | accessToken  | OAuth access token                          |
+ * | refreshToken | For refreshing expired tokens               |
+ * | idToken      | OpenID Connect token for API key exchange   |
+ * | apiKey       | Actual API key for OpenAI requests          |
+ *
+ * ## Token Storage
+ *
+ * Credentials are stored at:
+ * - Default: `~/.composer/openai-oauth.json`
+ * - Custom: `$OPENAI_OAUTH_FILE`
+ *
+ * File is created with mode 0o600 (owner read/write only).
+ *
+ * ## Key Functions
+ *
+ * - `generateOpenAILoginUrl()`: Create OAuth URL for browser
+ * - `exchangeOpenAIAuthorizationCode()`: Exchange code for tokens
+ * - `getFreshOpenAIOAuthCredential()`: Get valid token (auto-refresh)
+ * - `exchangeIdTokenForApiKey()`: Convert ID token to API key
+ *
+ * @module providers/openai-auth
+ */
+
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";

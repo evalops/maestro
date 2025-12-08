@@ -1,3 +1,51 @@
+/**
+ * Anthropic OAuth Authentication
+ *
+ * This module implements OAuth 2.0 with PKCE for authenticating with
+ * Anthropic's Claude API. It supports both claude.ai (Pro) and
+ * console.anthropic.com (Console) login modes.
+ *
+ * ## Authentication Flow
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │                    Anthropic OAuth Flow                     │
+ * ├─────────────────────────────────────────────────────────────┤
+ * │  1. Generate PKCE challenge (verifier + challenge)          │
+ * │  2. Generate login URL → User opens in browser              │
+ * │  3. User authenticates at claude.ai or console.anthropic.com│
+ * │  4. Receive authorization code from redirect                │
+ * │  5. Exchange code + verifier for access/refresh tokens      │
+ * │  6. Store credentials in ~/.composer/anthropic-oauth.json   │
+ * │  7. Auto-refresh tokens when they expire                    │
+ * └─────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## Login Modes
+ *
+ * | Mode    | Host                    | Description              |
+ * |---------|-------------------------|--------------------------|
+ * | pro     | claude.ai               | Claude Pro subscriptions |
+ * | console | console.anthropic.com   | API Console access       |
+ *
+ * ## Token Storage
+ *
+ * Credentials are stored at:
+ * - Default: `~/.composer/anthropic-oauth.json`
+ * - Custom: `$ANTHROPIC_OAUTH_FILE`
+ *
+ * File is created with mode 0o600 (owner read/write only).
+ *
+ * ## Key Functions
+ *
+ * - `generateAnthropicLoginUrl()`: Create OAuth URL for browser
+ * - `exchangeAnthropicAuthorizationCode()`: Exchange code for tokens
+ * - `getFreshAnthropicOAuthCredential()`: Get valid token (auto-refresh)
+ * - `fetchClaudeApiKey()`: Convert OAuth token to API key
+ *
+ * @module providers/anthropic-auth
+ */
+
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";

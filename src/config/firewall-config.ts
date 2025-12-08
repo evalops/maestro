@@ -1,3 +1,45 @@
+/**
+ * Firewall Configuration - File System Containment Settings
+ *
+ * This module manages the firewall configuration that controls which
+ * paths are allowed for file modifications. It provides an additional
+ * layer of security beyond the workspace containment rules.
+ *
+ * ## Configuration File
+ *
+ * Location: `~/.composer/firewall.json`
+ *
+ * ```json
+ * {
+ *   "containment": {
+ *     "trustedPaths": [
+ *       "/home/user/trusted-project",
+ *       "/tmp/scratch"
+ *     ]
+ *   }
+ * }
+ * ```
+ *
+ * ## Trusted Paths
+ *
+ * - Paths listed in `trustedPaths` allow file modifications
+ * - All subdirectories of trusted paths are also trusted
+ * - Paths must be absolute
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * import { getFirewallConfig } from './firewall-config';
+ *
+ * const config = getFirewallConfig();
+ * if (config.containment?.trustedPaths?.includes(myPath)) {
+ *   // Path is trusted for modifications
+ * }
+ * ```
+ *
+ * @module config/firewall-config
+ */
+
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";

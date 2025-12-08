@@ -1,3 +1,55 @@
+/**
+ * Search Tool - Ripgrep-Powered Code Search
+ *
+ * This module provides a powerful search tool that wraps ripgrep (rg) for
+ * fast, regex-capable searching across codebases. It supports multiple
+ * output modes, context controls, and filtering options.
+ *
+ * ## Output Modes
+ *
+ * | Mode      | Description                        | Use Case                    |
+ * |-----------|------------------------------------|-----------------------------|
+ * | content   | Show matching lines with context   | Reading code matches        |
+ * | files     | List only file paths               | Finding which files match   |
+ * | count     | Show match counts per file         | Gauging search scope        |
+ *
+ * ## Features
+ *
+ * - **Regex support**: Full regex patterns or literal string matching
+ * - **Case handling**: Case-sensitive or insensitive searches
+ * - **Context lines**: Show surrounding lines for context (-B, -A, -C)
+ * - **Glob filtering**: Target specific file patterns
+ * - **Git-aware**: Respects .gitignore by default
+ * - **Multiline**: Optional multiline pattern matching
+ * - **JSON output**: Structured results for programmatic use
+ *
+ * ## Example
+ *
+ * ```typescript
+ * // Find all TODO comments in TypeScript files
+ * searchTool.execute('call-id', {
+ *   pattern: 'TODO',
+ *   glob: '*.ts',
+ *   outputMode: 'files',
+ * });
+ *
+ * // Search with context
+ * searchTool.execute('call-id', {
+ *   pattern: 'function\\s+\\w+',
+ *   context: 3,
+ *   ignoreCase: true,
+ * });
+ * ```
+ *
+ * ## Performance
+ *
+ * - Default max results: 500 (configurable up to 1000)
+ * - Head limit for sampling large result sets
+ * - Truncation indicators when limits are hit
+ *
+ * @module tools/search
+ */
+
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {

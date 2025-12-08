@@ -1,3 +1,58 @@
+/**
+ * Docker Sandbox - Isolated Container Execution Environment
+ *
+ * This module provides a Docker-based sandbox for running commands and
+ * file operations in an isolated container. It mounts the current workspace
+ * and executes operations within the container.
+ *
+ * ## Features
+ *
+ * - **Isolation**: Commands run in a Docker container
+ * - **Workspace mount**: Current directory mounted at /workspace
+ * - **Persistent container**: Reuses container across operations
+ * - **Cleanup**: Container automatically removed on dispose
+ *
+ * ## Default Configuration
+ *
+ * | Setting        | Default        | Description                  |
+ * |----------------|----------------|------------------------------|
+ * | image          | node:20-slim   | Docker image to use          |
+ * | workspaceMount | /workspace     | Mount point in container     |
+ *
+ * ## Container Lifecycle
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │                    Container Lifecycle                      │
+ * ├─────────────────────────────────────────────────────────────┤
+ * │  initialize()                                               │
+ * │       │                                                     │
+ * │       ▼                                                     │
+ * │  docker run -d --rm ...  (starts detached container)        │
+ * │       │                                                     │
+ * │       ▼                                                     │
+ * │  exec() / readFile() / writeFile() (reuse container)        │
+ * │       │                                                     │
+ * │       ▼                                                     │
+ * │  dispose() → docker stop (container auto-removed)           │
+ * └─────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## Example
+ *
+ * ```typescript
+ * const sandbox = new DockerSandbox({ image: 'python:3.12-slim' });
+ * await sandbox.initialize();
+ *
+ * const result = await sandbox.exec('python --version');
+ * console.log(result.stdout); // Python 3.12.x
+ *
+ * await sandbox.dispose();
+ * ```
+ *
+ * @module sandbox/docker-sandbox
+ */
+
 import { exec } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";

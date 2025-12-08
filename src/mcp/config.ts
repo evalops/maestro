@@ -1,3 +1,58 @@
+/**
+ * MCP Configuration - Model Context Protocol Server Management
+ *
+ * This module handles loading and merging MCP (Model Context Protocol)
+ * server configurations from multiple sources. MCP servers extend the
+ * agent's capabilities with additional tools and integrations.
+ *
+ * ## Configuration Sources (precedence order)
+ *
+ * 1. **Enterprise**: `~/.composer/enterprise/mcp.json` (highest)
+ * 2. **Plugin**: Programmatically provided servers
+ * 3. **Project**: `.composer/mcp.json` in project root
+ * 4. **Local**: `.composer/mcp.local.json` (git-ignored)
+ * 5. **User**: `~/.composer/mcp.json` (lowest)
+ *
+ * ## Configuration Format
+ *
+ * ```json
+ * {
+ *   "servers": [
+ *     {
+ *       "name": "my-server",
+ *       "transport": "stdio",
+ *       "command": "node",
+ *       "args": ["path/to/server.js"],
+ *       "env": { "API_KEY": "${MY_API_KEY}" }
+ *     }
+ *   ],
+ *   "mcpServers": {
+ *     "another-server": {
+ *       "command": "python",
+ *       "args": ["-m", "my_mcp_server"]
+ *     }
+ *   }
+ * }
+ * ```
+ *
+ * ## Transport Types
+ *
+ * | Transport | Description                              |
+ * |-----------|------------------------------------------|
+ * | stdio     | Communicate via stdin/stdout (default)   |
+ * | http      | HTTP-based transport                     |
+ * | sse       | Server-Sent Events transport             |
+ *
+ * ## Environment Variable Expansion
+ *
+ * Supports `${VAR}` and `${VAR:-default}` syntax in:
+ * - command, args, url, cwd
+ * - env values
+ * - headers
+ *
+ * @module mcp/config
+ */
+
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";

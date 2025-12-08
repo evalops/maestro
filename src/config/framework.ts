@@ -1,3 +1,49 @@
+/**
+ * Framework Preferences - Development Framework Configuration
+ *
+ * This module manages framework preferences for code generation and
+ * development assistance. It supports global defaults, workspace-specific
+ * settings, policy overrides, and environment variable configuration.
+ *
+ * ## Supported Frameworks
+ *
+ * | Framework | Description                                    |
+ * |-----------|------------------------------------------------|
+ * | fastapi   | Python 3.12 with pydantic v2, uvicorn, pytest  |
+ * | express   | Node 20 with TypeScript, zod, vitest           |
+ * | node      | Generic Node.js/TypeScript with zod, vitest    |
+ *
+ * ## Configuration Sources (precedence order)
+ *
+ * 1. **Policy (locked)**: `~/.composer/policy.json` with `locked: true`
+ * 2. **Policy**: `~/.composer/policy.json`
+ * 3. **Env override**: `COMPOSER_FRAMEWORK_OVERRIDE`
+ * 4. **Env default**: `COMPOSER_DEFAULT_FRAMEWORK`
+ * 5. **Workspace**: `.composer/workspace.json`
+ * 6. **Global default**: `~/.composer/default-framework.json`
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * import {
+ *   resolveFrameworkPreference,
+ *   setDefaultFramework,
+ *   listFrameworks,
+ * } from './framework';
+ *
+ * // Get active framework preference
+ * const { id, source, locked } = resolveFrameworkPreference();
+ *
+ * // Set default framework
+ * setDefaultFramework('fastapi');
+ *
+ * // List available frameworks
+ * const frameworks = listFrameworks();
+ * ```
+ *
+ * @module config/framework
+ */
+
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";

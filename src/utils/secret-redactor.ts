@@ -1,3 +1,44 @@
+/**
+ * Secret Redactor - Sensitive Data Masking
+ *
+ * This module provides utilities for detecting and redacting sensitive
+ * information from text. It uses pattern matching to identify common
+ * secret formats and replaces them with masked values.
+ *
+ * ## Detected Secret Types
+ *
+ * | Pattern              | Example                              |
+ * |----------------------|--------------------------------------|
+ * | OpenAI/Anthropic keys| sk-abc123...                         |
+ * | AWS Access Keys      | AKIA..., ASIA...                     |
+ * | GitHub Tokens        | ghp_..., gho_..., ghs_..., ghr_...   |
+ * | JWT Tokens           | eyJ...header.payload.signature       |
+ * | Bearer Tokens        | Bearer abc123...                     |
+ * | Basic Auth           | Basic base64encoded...               |
+ * | Keyword secrets      | password=..., token:...              |
+ * | Long hex strings     | 64+ character hex strings            |
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * import { redactSecrets, createMasker } from './secret-redactor';
+ *
+ * const masker = createMasker('[REDACTED]');
+ * const safe = redactSecrets(
+ *   'API key: sk-abc123456789',
+ *   masker
+ * );
+ * // Result: 'API key: [REDACTED]'
+ * ```
+ *
+ * ## Masking Strategies
+ *
+ * - `createMasker(placeholder)`: Replace with fixed placeholder
+ * - Custom function: Receive original secret, return masked value
+ *
+ * @module utils/secret-redactor
+ */
+
 const SECRET_TOKEN_REGEX = /sk-[A-Za-z0-9-_]{16,}/gi;
 const KEYWORD_SECRET_REGEX =
 	/\b(?:token|secret|password|key)[^\S\r\n]*[:=][^\S\r\n]*([^\s"']{8,})/gi;

@@ -1,3 +1,53 @@
+/**
+ * Authentication Resolver - Unified Credential Resolution
+ *
+ * This module provides a unified authentication resolver that handles
+ * multiple credential sources and authentication modes for all supported
+ * AI providers. It abstracts the complexity of OAuth, API keys, and
+ * environment variables into a single interface.
+ *
+ * ## Authentication Modes
+ *
+ * | Mode     | Description                                    |
+ * |----------|------------------------------------------------|
+ * | auto     | Try OAuth first, fallback to API keys (default)|
+ * | api-key  | Only use API keys, skip OAuth                  |
+ * | claude   | Only use Anthropic OAuth, fail if unavailable  |
+ *
+ * ## Credential Resolution Order
+ *
+ * 1. **Explicit API key**: Passed directly via options
+ * 2. **OAuth tokens**: Provider-specific OAuth flows (if mode allows)
+ * 3. **Environment variables**: Standard env var lookup
+ * 4. **Custom providers**: From models registry configuration
+ *
+ * ## Credential Sources
+ *
+ * | Source              | Description                              |
+ * |---------------------|------------------------------------------|
+ * | explicit            | Passed directly to resolver              |
+ * | env                 | From environment variable                |
+ * | custom_literal      | Hardcoded in custom provider config      |
+ * | custom_env          | Env var from custom provider config      |
+ * | anthropic_oauth_env | Anthropic OAuth token from env           |
+ * | anthropic_oauth_file| Anthropic OAuth from stored credentials  |
+ * | openai_oauth_file   | OpenAI OAuth from stored credentials     |
+ *
+ * ## Example
+ *
+ * ```typescript
+ * const resolver = createAuthResolver({ mode: 'auto' });
+ * const credential = await resolver('anthropic');
+ *
+ * if (credential) {
+ *   console.log(`Using ${credential.type} from ${credential.source}`);
+ *   // Use credential.token for API requests
+ * }
+ * ```
+ *
+ * @module providers/auth
+ */
+
 import {
 	type AnthropicOAuthCredential,
 	getFreshAnthropicOAuthCredential,

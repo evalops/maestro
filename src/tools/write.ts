@@ -1,3 +1,56 @@
+/**
+ * Write Tool - Safe File Writing with Validation
+ *
+ * This module provides a file writing tool with built-in safety features
+ * including backup creation, LSP diagnostics, validator integration, and
+ * sandbox support. It creates parent directories automatically.
+ *
+ * ## Safety Features
+ *
+ * - **Backup creation**: Automatically creates .bak files before overwriting
+ * - **Plan checking**: Requires plan approval in safe mode
+ * - **LSP integration**: Collects diagnostics after writing
+ * - **Validator support**: Runs configured validators on written files
+ * - **Rollback**: Restores original content if validators fail
+ *
+ * ## Write Flow
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │                     Write Operation Flow                    │
+ * ├─────────────────────────────────────────────────────────────┤
+ * │  1. Check plan approval (safe mode)                         │
+ * │  2. Create parent directories                               │
+ * │  3. Read existing content (if any)                          │
+ * │  4. Create backup (.bak file)                               │
+ * │  5. Write new content                                       │
+ * │  6. Collect LSP diagnostics                                 │
+ * │  7. Run validators                                          │
+ * │  8. If validators fail → restore backup                     │
+ * │  9. Return success with diff preview                        │
+ * └─────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## Sandbox Mode
+ *
+ * When running in a sandbox environment, the tool uses the sandbox's
+ * virtual filesystem instead of the real filesystem.
+ *
+ * ## Example
+ *
+ * ```typescript
+ * // Write a new file
+ * writeTool.execute('call-id', {
+ *   path: 'src/utils/helper.ts',
+ *   content: 'export function helper() { return 42; }',
+ *   backup: true,
+ *   previewDiff: true,
+ * });
+ * ```
+ *
+ * @module tools/write
+ */
+
 import { constants } from "node:fs";
 import {
 	access,

@@ -1,3 +1,69 @@
+/**
+ * Tool DSL - Domain-Specific Language for Creating Agent Tools
+ *
+ * This module provides a fluent, type-safe API for defining tools that can be
+ * executed by the Composer agent. It handles schema validation, response building,
+ * retry logic, and sandbox integration.
+ *
+ * ## Architecture
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────────┐
+ * │                     Tool Creation Flow                          │
+ * ├─────────────────────────────────────────────────────────────────┤
+ * │  createTool(options)                                            │
+ * │       │                                                         │
+ * │       ▼                                                         │
+ * │  ┌─────────────┐    ┌──────────────┐    ┌─────────────────┐    │
+ * │  │   Schema    │───▶│  Validator   │───▶│   execute()     │    │
+ * │  │  (TypeBox)  │    │   (AJV)      │    │   function      │    │
+ * │  └─────────────┘    └──────────────┘    └─────────────────┘    │
+ * │                                               │                 │
+ * │                                               ▼                 │
+ * │                     ┌─────────────────────────────────────┐     │
+ * │                     │  ToolResponseBuilder                │     │
+ * │                     │  - text(), image(), error()         │     │
+ * │                     │  - detail() for structured data     │     │
+ * │                     └─────────────────────────────────────┘     │
+ * └─────────────────────────────────────────────────────────────────┘
+ * ```
+ *
+ * ## Tool Types
+ *
+ * | Factory       | Return Type      | Use Case                          |
+ * |---------------|------------------|-----------------------------------|
+ * | createTool    | AgentToolResult  | Full control over response        |
+ * | createTextTool| string → text    | Simple text responses             |
+ * | createJsonTool| object → JSON    | Structured data responses         |
+ *
+ * ## Example
+ *
+ * ```typescript
+ * import { createTool, Type } from './tool-dsl';
+ *
+ * const greetTool = createTool({
+ *   name: 'greet',
+ *   description: 'Greet a user by name',
+ *   schema: Type.Object({
+ *     name: Type.String({ description: 'Name to greet' }),
+ *   }),
+ *   run: async ({ name }, { respond }) => {
+ *     return respond.text(`Hello, ${name}!`);
+ *   },
+ * });
+ * ```
+ *
+ * ## Features
+ *
+ * - **Type-safe schemas**: Uses TypeBox for compile-time type inference
+ * - **AJV validation**: Runtime validation with format support
+ * - **Retry logic**: Built-in exponential backoff for transient failures
+ * - **Sandbox support**: Tools can run in isolated environments
+ * - **Context interpolation**: Environment variables and paths
+ *
+ * @module tools/tool-dsl
+ */
+
 import type { Static, TSchema } from "@sinclair/typebox";
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 import addFormatsModule, { type FormatsPlugin } from "ajv-formats";

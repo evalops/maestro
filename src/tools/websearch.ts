@@ -1,3 +1,58 @@
+/**
+ * Web Search Tool - Exa-Powered Internet Search
+ *
+ * This module provides a web search tool that uses the Exa AI search API
+ * to find current information on the internet. It supports multiple search
+ * types, content extraction, and domain filtering.
+ *
+ * ## Search Types
+ *
+ * | Type    | Description                                | Use Case             |
+ * |---------|--------------------------------------------|-----------------------|
+ * | neural  | Semantic search using embeddings           | Conceptual queries    |
+ * | keyword | Traditional keyword-based SERP search      | Exact phrase matching |
+ * | auto    | Intelligent mix of neural and keyword      | General queries       |
+ * | fast    | Streamlined search for quick results       | Speed-critical tasks  |
+ *
+ * ## Features
+ *
+ * - **Domain filtering**: Include/exclude specific domains
+ * - **Date filtering**: Filter by publication date
+ * - **Content extraction**: Get full text, summaries, or highlights
+ * - **Live crawling**: Fresh content when cache is stale
+ * - **Subpage crawling**: Crawl linked pages from results
+ * - **Category focus**: Target specific content types (news, GitHub, PDF, etc.)
+ *
+ * ## Requirements
+ *
+ * - `EXA_API_KEY` environment variable must be set
+ *
+ * ## Example
+ *
+ * ```typescript
+ * // Basic search
+ * websearchTool.execute('call-id', {
+ *   query: 'TypeScript 5.0 new features',
+ *   numResults: 5,
+ * });
+ *
+ * // Focused search on specific domains
+ * websearchTool.execute('call-id', {
+ *   query: 'React hooks best practices',
+ *   includeDomains: ['react.dev', 'github.com'],
+ *   category: 'github',
+ * });
+ * ```
+ *
+ * ## Output Limits
+ *
+ * - Max text per result: 800 characters
+ * - Max total output: 6000 characters
+ * - Results truncated with indicator when limits exceeded
+ *
+ * @module tools/websearch
+ */
+
 import { Type } from "@sinclair/typebox";
 import { callExa, normalizeCostDollars } from "./exa-client.js";
 import {

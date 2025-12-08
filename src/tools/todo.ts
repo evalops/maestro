@@ -1,3 +1,66 @@
+/**
+ * Todo Tool - Task Tracking for Coding Sessions
+ *
+ * This module provides a todo/checklist tool for tracking multi-step tasks
+ * during agent coding sessions. It persists tasks to disk and provides
+ * formatted progress reports.
+ *
+ * ## Task States
+ *
+ * | State       | Symbol | Description                    |
+ * |-------------|--------|--------------------------------|
+ * | pending     | [ ]    | Not yet started                |
+ * | in_progress | [~]    | Currently being worked on      |
+ * | completed   | [x]    | Finished successfully          |
+ *
+ * ## Task Properties
+ *
+ * - **id**: Unique identifier (auto-generated UUID if not provided)
+ * - **content**: Human-readable task description
+ * - **status**: Current progress state
+ * - **priority**: high, medium, or low
+ * - **notes**: Additional context or reminders
+ * - **due**: Due date or target milestone
+ * - **blockedBy**: List of blocking dependencies
+ *
+ * ## Storage
+ *
+ * Tasks are persisted to `~/.composer/todos.json` (configurable via
+ * COMPOSER_TODO_FILE environment variable). Each goal has its own
+ * checklist that can be updated incrementally.
+ *
+ * ## Usage Guidelines
+ *
+ * - Use for complex, multi-step work (3+ steps)
+ * - Mark tasks in_progress BEFORE starting work
+ * - Mark completed IMMEDIATELY when done
+ * - Only ONE in_progress task at a time
+ *
+ * ## Example
+ *
+ * ```typescript
+ * // Create a new checklist
+ * todoTool.execute('call-id', {
+ *   goal: 'Implement user authentication',
+ *   items: [
+ *     { content: 'Create login form', priority: 'high' },
+ *     { content: 'Add JWT validation', priority: 'high' },
+ *     { content: 'Write tests', priority: 'medium' },
+ *   ],
+ * });
+ *
+ * // Update task status
+ * todoTool.execute('call-id', {
+ *   goal: 'Implement user authentication',
+ *   updates: [
+ *     { id: 'task-uuid', status: 'completed' },
+ *   ],
+ * });
+ * ```
+ *
+ * @module tools/todo
+ */
+
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";

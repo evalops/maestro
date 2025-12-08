@@ -1,3 +1,53 @@
+/**
+ * Find Tool - Fast File Discovery with fd
+ *
+ * This module provides a file search tool that uses `fd` (a fast alternative
+ * to `find`) for discovering files by glob pattern. It respects .gitignore
+ * files and falls back to glob when fd returns no results.
+ *
+ * ## Features
+ *
+ * - **Fast search**: Uses fd for performance on large codebases
+ * - **Glob patterns**: Standard glob syntax (*.ts, **\/*.json, etc.)
+ * - **Git-aware**: Automatically respects .gitignore files
+ * - **Hidden files**: Optional inclusion of dotfiles
+ * - **Path handling**: Supports nested patterns with path separators
+ * - **Auto-download**: Automatically downloads fd if not available
+ *
+ * ## Pattern Examples
+ *
+ * | Pattern           | Matches                          |
+ * |-------------------|----------------------------------|
+ * | `*.ts`            | TypeScript files in current dir  |
+ * | `**\/*.spec.ts`   | Test files anywhere              |
+ * | `src/**\/*.json`  | JSON files under src/            |
+ *
+ * ## Fallback Behavior
+ *
+ * If fd returns no results (which can happen with certain patterns on
+ * some platforms), the tool falls back to Node.js glob matching to
+ * ensure results are returned.
+ *
+ * ## Limits
+ *
+ * - Default limit: 1000 results
+ * - Maximum buffer: 10MB
+ * - Truncation indicator when limit is reached
+ *
+ * ## Example
+ *
+ * ```typescript
+ * // Find all TypeScript test files
+ * findTool.execute('call-id', {
+ *   pattern: '**\/*.spec.ts',
+ *   path: 'src',
+ *   limit: 100,
+ * });
+ * ```
+ *
+ * @module tools/find
+ */
+
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";

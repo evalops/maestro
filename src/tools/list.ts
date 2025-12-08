@@ -1,3 +1,54 @@
+/**
+ * List Tool - Directory Listing with Glob Patterns
+ *
+ * This module provides a directory listing tool that supports glob patterns,
+ * sorting, filtering, and optional metadata retrieval. It uses the glob
+ * library for pattern matching and supports sandbox environments.
+ *
+ * ## Features
+ *
+ * - **Glob patterns**: Match files using standard glob syntax
+ * - **Sorting**: Sort by name, type, size, or modification time
+ * - **Metadata**: Optionally include file sizes and timestamps
+ * - **Filtering**: Exclude patterns and hidden file handling
+ * - **Depth control**: Limit directory traversal depth
+ * - **Sandbox support**: Works with isolated environments
+ *
+ * ## Output Formats
+ *
+ * | Format | Description                                 |
+ * |--------|---------------------------------------------|
+ * | text   | Human-readable bullet list (default)        |
+ * | json   | Structured JSON array with metadata         |
+ *
+ * ## Limits
+ *
+ * - Default limit: 200 entries
+ * - Maximum limit: 500 entries
+ * - Truncation indicators when limits are hit
+ *
+ * ## Example
+ *
+ * ```typescript
+ * // List TypeScript files in src/
+ * listTool.execute('call-id', {
+ *   path: 'src',
+ *   pattern: '**\/*.ts',
+ *   sortBy: 'mtime',
+ *   sortDirection: 'desc',
+ * });
+ *
+ * // Exclude node_modules and dist
+ * listTool.execute('call-id', {
+ *   pattern: '**\/*',
+ *   excludePatterns: ['node_modules/**', 'dist/**'],
+ *   includeMetadata: true,
+ * });
+ * ```
+ *
+ * @module tools/list
+ */
+
 import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";

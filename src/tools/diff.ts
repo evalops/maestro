@@ -1,3 +1,54 @@
+/**
+ * Diff Tool - Git Diff Inspection
+ *
+ * This module provides a tool for inspecting git diffs with various options
+ * for staging, revisions, and path filtering. It also includes utilities
+ * for parsing git status output.
+ *
+ * ## Diff Modes
+ *
+ * | Option      | Description                              |
+ * |-------------|------------------------------------------|
+ * | staged      | Show staged (index) changes              |
+ * | range       | Compare specific revisions (e.g., HEAD~1)|
+ * | (default)   | Show working tree modifications          |
+ *
+ * ## Display Options
+ *
+ * - **context**: Number of context lines (-U)
+ * - **stat**: Include summary statistics (--stat)
+ * - **wordDiff**: Highlight word-level changes
+ * - **nameOnly**: List only changed filenames
+ * - **ignoreWhitespace**: Ignore whitespace changes
+ * - **ignoreBlankLines**: Ignore blank line changes
+ *
+ * ## Status Parsing
+ *
+ * The module also exports `parseStatusOutput()` for parsing git porcelain v2
+ * status output into structured data including:
+ * - Branch info (head, upstream, ahead/behind)
+ * - File changes (modified, added, deleted, renamed)
+ * - Untracked and ignored files
+ *
+ * ## Example
+ *
+ * ```typescript
+ * // Show staged changes
+ * diffTool.execute('call-id', { staged: true });
+ *
+ * // Show changes in specific files
+ * diffTool.execute('call-id', {
+ *   paths: ['src/main.ts', 'src/utils.ts'],
+ *   context: 5,
+ * });
+ *
+ * // Compare commits
+ * diffTool.execute('call-id', { range: 'HEAD~3..HEAD' });
+ * ```
+ *
+ * @module tools/diff
+ */
+
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import { createTool } from "./tool-dsl.js";

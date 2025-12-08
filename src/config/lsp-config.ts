@@ -1,3 +1,53 @@
+/**
+ * LSP Configuration - Language Server Protocol Settings
+ *
+ * This module manages configuration for LSP (Language Server Protocol)
+ * integrations. It allows users to customize or disable LSP servers,
+ * control diagnostic behavior, and configure server-specific settings.
+ *
+ * ## Configuration File
+ *
+ * Location: `~/.composer/config.json`
+ *
+ * ```json
+ * {
+ *   "lsp": {
+ *     "enabled": true,
+ *     "blockingSeverity": 1,
+ *     "maxDiagnosticsPerFile": 10,
+ *     "maxFilesInContext": 5,
+ *     "servers": {
+ *       "typescript": {
+ *         "enabled": true,
+ *         "command": "typescript-language-server",
+ *         "args": ["--stdio"]
+ *       }
+ *     }
+ *   }
+ * }
+ * ```
+ *
+ * ## Server Overrides
+ *
+ * Each server can be customized with:
+ * - `enabled`: Enable/disable the server
+ * - `command`: Override the server command
+ * - `args`: Override command arguments
+ * - `env`: Additional environment variables
+ * - `extensions`: File extensions to associate
+ * - `initializationOptions`: LSP initialization options
+ *
+ * ## Diagnostic Settings
+ *
+ * | Setting              | Default | Description                       |
+ * |----------------------|---------|-----------------------------------|
+ * | blockingSeverity     | 1       | Minimum severity to block on      |
+ * | maxDiagnosticsPerFile| 10      | Max diagnostics shown per file    |
+ * | maxFilesInContext    | 5       | Max files with errors in context  |
+ *
+ * @module config/lsp-config
+ */
+
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";

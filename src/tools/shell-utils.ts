@@ -1,3 +1,46 @@
+/**
+ * Shell Utilities - Cross-Platform Shell Execution Helpers
+ *
+ * This module provides utilities for safely executing shell commands across
+ * different operating systems. It handles shell detection, process tree
+ * management, parameter validation, and command argument parsing.
+ *
+ * ## Platform Support
+ *
+ * | Platform | Shell          | Notes                              |
+ * |----------|----------------|-------------------------------------|
+ * | Windows  | Git Bash       | Requires Git for Windows installed |
+ * | Linux    | sh             | POSIX-compliant shell              |
+ * | macOS    | sh             | POSIX-compliant shell              |
+ *
+ * ## Key Functions
+ *
+ * - `getShellConfig()`: Returns the appropriate shell and args for the platform
+ * - `killProcessTree()`: Safely terminates a process and all its children
+ * - `validateShellParams()`: Validates and sanitizes shell command parameters
+ * - `parseCommandArguments()`: Parses a command string into an array of arguments
+ *
+ * ## Security Features
+ *
+ * - Control character detection and rejection
+ * - Path traversal prevention
+ * - Maximum length limits on commands and paths
+ * - Quote parsing with escape sequence handling
+ *
+ * ## Example
+ *
+ * ```typescript
+ * import { getShellConfig, validateShellParams } from './shell-utils';
+ *
+ * const { shell, args } = getShellConfig();
+ * const { resolvedCwd } = validateShellParams('echo hello', '/tmp');
+ *
+ * spawn(shell, [...args, 'echo hello'], { cwd: resolvedCwd });
+ * ```
+ *
+ * @module tools/shell-utils
+ */
+
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";

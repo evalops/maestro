@@ -1,3 +1,49 @@
+/**
+ * Git Utilities - Repository State and Information Helpers
+ *
+ * This module provides utilities for querying Git repository state,
+ * including branch information, commit history, and working tree status.
+ * It uses synchronous spawns for reliability in various contexts.
+ *
+ * ## Key Functions
+ *
+ * | Function                 | Description                          |
+ * |--------------------------|--------------------------------------|
+ * | isInsideGitRepository()  | Check if cwd is in a git repo        |
+ * | getGitState()            | Get comprehensive repository state   |
+ * | getCurrentCommitSha()    | Get current commit SHA               |
+ * | getCurrentBranch()       | Get current branch name              |
+ * | hasUncommittedChanges()  | Check for uncommitted changes        |
+ * | getUpstreamStatus()      | Get ahead/behind counts              |
+ *
+ * ## GitState Interface
+ *
+ * The `getGitState()` function returns:
+ * - `isRepo`: Whether in a git repository
+ * - `branch`: Current branch name
+ * - `commitSha`: Full 40-character SHA
+ * - `shortSha`: Abbreviated 7-character SHA
+ * - `isDirty`: Whether there are uncommitted changes
+ * - `ahead`/`behind`: Commit counts relative to upstream
+ * - `upstream`: Remote tracking branch name
+ *
+ * ## Example
+ *
+ * ```typescript
+ * import { getGitState } from './git';
+ *
+ * const state = getGitState();
+ * if (state.isRepo) {
+ *   console.log(`On branch ${state.branch} at ${state.shortSha}`);
+ *   if (state.isDirty) {
+ *     console.log('Working tree has uncommitted changes');
+ *   }
+ * }
+ * ```
+ *
+ * @module utils/git
+ */
+
 import { spawnSync } from "node:child_process";
 
 export function isInsideGitRepository(cwd: string = process.cwd()): boolean {
