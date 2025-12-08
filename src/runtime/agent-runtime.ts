@@ -92,11 +92,6 @@ export class AgentRuntimeController {
 		return {};
 	}
 
-	/** @deprecated Use interrupt() instead */
-	abort(): void {
-		this.interrupt();
-	}
-
 	stop(): void {
 		this.running = false;
 	}

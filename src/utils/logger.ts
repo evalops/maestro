@@ -223,32 +223,6 @@ export function createLogger(moduleName: string): Logger {
 }
 
 /**
- * Compatibility wrapper for gradual migration from console.log
- * @deprecated Use logger.info() instead
- */
-export function legacyLog(message: string, ...args: unknown[]): void {
-	if (args.length > 0) {
-		logger.info(`${message} ${args.map((a) => JSON.stringify(a)).join(" ")}`);
-	} else {
-		logger.info(message);
-	}
-}
-
-/**
- * Compatibility wrapper for gradual migration from console.error
- * @deprecated Use logger.error() instead
- */
-export function legacyError(message: string, error?: unknown): void {
-	if (error instanceof Error) {
-		logger.error(message, error);
-	} else if (error) {
-		logger.error(`${message} ${JSON.stringify(error)}`);
-	} else {
-		logger.error(message);
-	}
-}
-
-/**
  * Silence the logger (useful for TUI mode where stdout must not be polluted)
  */
 export function silenceLogger(): void {
