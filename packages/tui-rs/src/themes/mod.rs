@@ -1,6 +1,95 @@
-//! Theme system for the TUI
+//! Theme System for the TUI
 //!
-//! Supports built-in themes and loading custom themes from files.
+//! This module provides a comprehensive theming system that supports built-in themes
+//! and user-defined custom themes loaded from JSON files. Themes control all colors
+//! used in the UI, from message backgrounds to syntax highlighting.
+//!
+//! # Built-in Themes
+//!
+//! Three themes are included out of the box:
+//!
+//! - **dark** (default): Dark background with soft, eye-friendly colors
+//! - **light**: Light background suitable for bright environments
+//! - **high-contrast**: Maximum contrast for accessibility
+//!
+//! # Custom Themes
+//!
+//! Users can create custom themes by placing JSON files in:
+//!
+//! - Global: `~/.composer/themes/<name>.json`
+//! - Project: `.composer/themes/<name>.json`
+//!
+//! ## Theme JSON Format
+//!
+//! ```json
+//! {
+//!   "name": "my-theme",
+//!   "colors": {
+//!     "accent": "#7dd3fc",
+//!     "border": "#334155",
+//!     "text": "#e2e8f0",
+//!     "error": "#fca5a5",
+//!     "success": "#86efac",
+//!     "md_heading": "#60a5fa",
+//!     "syntax_keyword": "#c084fc"
+//!   }
+//! }
+//! ```
+//!
+//! # Color Format
+//!
+//! Colors are specified as hex strings:
+//!
+//! - `#RRGGBB` - Standard hex color (e.g., `#ff0000` for red)
+//! - `#RRGGBBAA` - Hex with alpha (alpha is ignored, for compatibility)
+//! - `transparent` - No color (uses terminal default)
+//!
+//! # Color Categories
+//!
+//! Themes define colors for several categories:
+//!
+//! - **Core**: `accent`, `border`, `success`, `error`, `warning`, `text`, `muted`, `dim`
+//! - **Messages**: `user_message_bg`, `assistant_message_bg`, etc.
+//! - **Tools**: `tool_pending_bg`, `tool_success_bg`, `tool_error_bg`
+//! - **Markdown**: `md_heading`, `md_link`, `md_code`, `md_quote`
+//! - **Syntax**: `syntax_keyword`, `syntax_function`, `syntax_string`, etc.
+//! - **Thinking**: `thinking_off`, `thinking_low`, `thinking_medium`, `thinking_high`
+//!
+//! # Usage Example
+//!
+//! ```rust,ignore
+//! use composer_tui::themes::{set_theme_by_name, current_theme, available_themes};
+//!
+//! // List available themes
+//! for name in available_themes() {
+//!     println!("Theme: {}", name);
+//! }
+//!
+//! // Switch theme
+//! set_theme_by_name("light").expect("theme should exist");
+//!
+//! // Use current theme for styling
+//! let theme = current_theme();
+//! let heading_style = theme.fg("md_heading");
+//! ```
+//!
+//! # Thread Safety
+//!
+//! The current theme is stored in a `RwLock` for thread-safe access:
+//!
+//! - Multiple threads can read the theme simultaneously
+//! - Theme changes acquire an exclusive write lock
+//! - Theme changes are atomic (no partial updates visible)
+//!
+//! # Terminal Color Adaptation
+//!
+//! Colors are automatically adapted to the terminal's color capabilities:
+//!
+//! - **True Color** (16M colors): Full RGB colors used as-is
+//! - **256 Color**: Mapped to nearest ANSI 256 color
+//! - **16 Color**: Mapped to nearest basic ANSI color
+//!
+//! This ensures themes look reasonable even on limited terminals.
 
 use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
