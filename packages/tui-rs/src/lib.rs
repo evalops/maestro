@@ -123,6 +123,10 @@ pub mod diff;
 /// Security rules for which bash commands are auto-approved or blocked.
 pub mod execpolicy;
 
+/// Hook system for intercepting and modifying agent behavior.
+/// Provides trait-based hooks for tool calls, session events, and overflow handling.
+pub mod hooks;
+
 /// Git integration.
 /// Detects git repos, branches, and provides context to the agent.
 pub mod git;
