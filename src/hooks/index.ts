@@ -18,6 +18,10 @@
  * - **Notification**: On various notifications
  * - **PreCompact**: Before context compaction
  * - **PermissionRequest**: When permission is required
+ * - **Overflow**: When context overflow is detected
+ * - **PreMessage**: Before user message is sent to model
+ * - **PostMessage**: After assistant response is generated
+ * - **OnError**: When an error occurs
  *
  * ## Configuration
  *
@@ -64,6 +68,10 @@ export type {
 	NotificationHookInput,
 	PreCompactHookInput,
 	PermissionRequestHookInput,
+	OverflowHookInput,
+	PreMessageHookInput,
+	PostMessageHookInput,
+	OnErrorHookInput,
 	// Output types
 	HookJsonOutput,
 	HookSpecificOutput,

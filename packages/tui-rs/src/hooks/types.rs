@@ -45,6 +45,14 @@ pub enum HookEventType {
     PostMessage,
     /// When an error occurs
     OnError,
+    /// Evaluation gate for structured assertions/scores
+    EvalGate,
+    /// Before spawning a subagent
+    SubagentStart,
+    /// When a subagent completes
+    SubagentStop,
+    /// When permission is required for a tool
+    PermissionRequest,
 }
 
 /// Input data for PreToolUse hooks
@@ -163,6 +171,82 @@ pub struct OnErrorInput {
     pub recoverable: bool,
 }
 
+/// Input data for EvalGate hooks
+///
+/// Called after tool execution to emit structured assertions/scores.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalGateInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    /// Tool name that was executed
+    pub tool_name: String,
+    /// Tool call ID
+    pub tool_call_id: String,
+    /// Tool input arguments
+    pub tool_input: serde_json::Value,
+    /// Tool output
+    pub tool_output: String,
+}
+
+/// Input data for SubagentStart hooks
+///
+/// Called before spawning a subagent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentStartInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    /// Subagent type being spawned
+    pub subagent_type: String,
+    /// Task description for the subagent
+    pub task: String,
+    /// Parent agent ID
+    pub parent_agent_id: Option<String>,
+}
+
+/// Input data for SubagentStop hooks
+///
+/// Called when a subagent completes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentStopInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    /// Subagent type that completed
+    pub subagent_type: String,
+    /// Subagent ID
+    pub subagent_id: String,
+    /// Result summary from the subagent
+    pub result: Option<String>,
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+    /// Whether the subagent succeeded
+    pub success: bool,
+}
+
+/// Input data for PermissionRequest hooks
+///
+/// Called when permission is required for a tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRequestInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    /// Tool requesting permission
+    pub tool_name: String,
+    /// Tool call ID
+    pub tool_call_id: String,
+    /// Tool input arguments
+    pub tool_input: serde_json::Value,
+    /// Reason permission is required
+    pub reason: String,
+}
+
 /// Trait for PreToolUse hooks
 ///
 /// Implement this trait to intercept tool calls before execution.
@@ -269,6 +353,52 @@ pub trait OnErrorHook: Send + Sync {
     /// - `Continue`: Proceed with default error handling
     /// - `Block`: Suppress the error (use with caution)
     fn on_error(&self, input: &OnErrorInput) -> HookResult;
+}
+
+/// Trait for EvalGate hooks
+///
+/// Called after tool execution to emit structured assertions/scores.
+/// Used for evaluation and testing scenarios.
+pub trait EvalGateHook: Send + Sync {
+    /// Called after tool execution for evaluation
+    fn on_eval_gate(&self, input: &EvalGateInput) -> HookResult;
+}
+
+/// Trait for SubagentStart hooks
+///
+/// Called before spawning a subagent.
+/// Can be used to modify subagent parameters or block spawning.
+pub trait SubagentStartHook: Send + Sync {
+    /// Called before spawning a subagent
+    ///
+    /// # Returns
+    /// - `Continue`: Proceed with spawning
+    /// - `Block`: Prevent subagent spawn
+    /// - `ModifyInput`: Modify subagent parameters
+    fn on_subagent_start(&self, input: &SubagentStartInput) -> HookResult;
+}
+
+/// Trait for SubagentStop hooks
+///
+/// Called when a subagent completes execution.
+/// Can be used for logging or post-processing subagent results.
+pub trait SubagentStopHook: Send + Sync {
+    /// Called when a subagent completes
+    fn on_subagent_stop(&self, input: &SubagentStopInput) -> HookResult;
+}
+
+/// Trait for PermissionRequest hooks
+///
+/// Called when a tool requires permission to execute.
+/// Can be used to auto-approve, auto-deny, or modify approval behavior.
+pub trait PermissionRequestHook: Send + Sync {
+    /// Called when permission is required
+    ///
+    /// # Returns
+    /// - `Continue`: Show normal permission prompt
+    /// - `Block`: Deny permission with reason
+    /// - `InjectContext`: Add context to permission prompt
+    fn on_permission_request(&self, input: &PermissionRequestInput) -> HookResult;
 }
 
 /// Output format for hooks (JSON-compatible with TypeScript)

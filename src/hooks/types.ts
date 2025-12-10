@@ -22,7 +22,11 @@ export type HookEventType =
 	| "UserPromptSubmit"
 	| "Notification"
 	| "PreCompact"
-	| "PermissionRequest";
+	| "PermissionRequest"
+	| "Overflow"
+	| "PreMessage"
+	| "PostMessage"
+	| "OnError";
 
 /**
  * Base hook input shared across all hook types.
@@ -213,6 +217,64 @@ export interface PermissionRequestHookInput extends HookInputBase {
 }
 
 /**
+ * Input for Overflow hooks - called when context overflow is detected.
+ */
+export interface OverflowHookInput extends HookInputBase {
+	hook_event_name: "Overflow";
+	/** Current token count */
+	token_count: number;
+	/** Maximum allowed tokens */
+	max_tokens: number;
+	/** Model being used */
+	model?: string;
+}
+
+/**
+ * Input for PreMessage hooks - called before user message is sent to model.
+ */
+export interface PreMessageHookInput extends HookInputBase {
+	hook_event_name: "PreMessage";
+	/** The user's message content */
+	message: string;
+	/** Attached files (paths) */
+	attachments: string[];
+	/** Current model being used */
+	model?: string;
+}
+
+/**
+ * Input for PostMessage hooks - called after assistant response is generated.
+ */
+export interface PostMessageHookInput extends HookInputBase {
+	hook_event_name: "PostMessage";
+	/** The assistant's response (text content only) */
+	response: string;
+	/** Number of tokens used in input */
+	input_tokens: number;
+	/** Number of tokens in output */
+	output_tokens: number;
+	/** Total turn duration in milliseconds */
+	duration_ms: number;
+	/** Stop reason (if available) */
+	stop_reason?: string;
+}
+
+/**
+ * Input for OnError hooks - called when an error occurs.
+ */
+export interface OnErrorHookInput extends HookInputBase {
+	hook_event_name: "OnError";
+	/** Error message */
+	error: string;
+	/** Error kind/type */
+	error_kind: string;
+	/** Context where error occurred (tool name, api call, etc.) */
+	context?: string;
+	/** Whether the error is recoverable */
+	recoverable: boolean;
+}
+
+/**
  * Union of all hook input types.
  */
 export type HookInput =
@@ -227,7 +289,11 @@ export type HookInput =
 	| UserPromptSubmitHookInput
 	| NotificationHookInput
 	| PreCompactHookInput
-	| PermissionRequestHookInput;
+	| PermissionRequestHookInput
+	| OverflowHookInput
+	| PreMessageHookInput
+	| PostMessageHookInput
+	| OnErrorHookInput;
 
 /**
  * Permission decision that hooks can return.
