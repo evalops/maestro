@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
 	getOverflowPatterns,
+	getRetryablePatterns,
 	isContextOverflow,
+	isRetryableError,
 	parseOverflowDetails,
 } from "../../src/agent/context-overflow.js";
 import type { AssistantMessage } from "../../src/agent/types.js";
@@ -234,6 +236,123 @@ describe("parseOverflowDetails", () => {
 describe("getOverflowPatterns", () => {
 	it("returns array of patterns", () => {
 		const patterns = getOverflowPatterns();
+		expect(Array.isArray(patterns)).toBe(true);
+		expect(patterns.length).toBeGreaterThan(5);
+		expect(patterns.every((p) => p instanceof RegExp)).toBe(true);
+	});
+});
+
+describe("isRetryableError", () => {
+	describe("Rate limit errors", () => {
+		it("detects rate limit error", () => {
+			const msg = createErrorMessage("Rate limit exceeded. Please try again.");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("detects 429 error", () => {
+			const msg = createErrorMessage("Error 429: Too many requests");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("detects 'too many requests' error", () => {
+			const msg = createErrorMessage("too many requests");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+	});
+
+	describe("Overload errors", () => {
+		it("detects overloaded_error", () => {
+			const msg = createErrorMessage("overloaded_error: API is overloaded");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("detects 'server is overloaded' error", () => {
+			const msg = createErrorMessage("The server is overloaded");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+	});
+
+	describe("Server errors", () => {
+		it("detects 500 error", () => {
+			const msg = createErrorMessage("Internal server error (500)");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("detects 502 error", () => {
+			const msg = createErrorMessage("502 Bad Gateway");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("detects 503 error", () => {
+			const msg = createErrorMessage("503 Service Unavailable");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("detects 504 error", () => {
+			const msg = createErrorMessage("504 Gateway Timeout");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("detects 'service unavailable' error", () => {
+			const msg = createErrorMessage("Service unavailable");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+	});
+
+	describe("Temporary failures", () => {
+		it("detects 'try again' error", () => {
+			const msg = createErrorMessage("Please try again later");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("detects 'temporarily unavailable' error", () => {
+			const msg = createErrorMessage("Service temporarily unavailable");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+	});
+
+	describe("Context overflow is NOT retryable", () => {
+		it("does not flag context overflow as retryable", () => {
+			const msg = createErrorMessage(
+				"prompt is too long: 213462 tokens > 200000 maximum",
+			);
+			expect(isRetryableError(msg)).toBe(false);
+		});
+
+		it("does not flag 'exceeds context window' as retryable", () => {
+			const msg = createErrorMessage(
+				"Your input exceeds the context window of this model",
+			);
+			expect(isRetryableError(msg)).toBe(false);
+		});
+	});
+
+	describe("Non-retryable errors", () => {
+		it("does not flag invalid API key", () => {
+			const msg = createErrorMessage("Invalid API key");
+			expect(isRetryableError(msg)).toBe(false);
+		});
+
+		it("does not flag authentication error", () => {
+			const msg = createErrorMessage("Authentication failed");
+			expect(isRetryableError(msg)).toBe(false);
+		});
+
+		it("does not flag permission error", () => {
+			const msg = createErrorMessage("Permission denied");
+			expect(isRetryableError(msg)).toBe(false);
+		});
+
+		it("does not flag success messages", () => {
+			const msg = createSuccessMessage();
+			expect(isRetryableError(msg)).toBe(false);
+		});
+	});
+});
+
+describe("getRetryablePatterns", () => {
+	it("returns array of patterns", () => {
+		const patterns = getRetryablePatterns();
 		expect(Array.isArray(patterns)).toBe(true);
 		expect(patterns.length).toBeGreaterThan(5);
 		expect(patterns.every((p) => p instanceof RegExp)).toBe(true);

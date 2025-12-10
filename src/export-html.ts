@@ -154,7 +154,18 @@ function formatToolExecution(
 		}
 	} else if (toolName === "read") {
 		const path = shortenPath(getArg("file_path") || getArg("path"));
-		html = `<div class="tool-header"><span class="tool-name">read</span> <span class="tool-path">${escapeHtml(path || "...")}</span></div>`;
+		const offset = getArg("offset");
+		const limit = getArg("limit");
+
+		// Build path display with line number suffix if offset/limit provided
+		let pathDisplay = escapeHtml(path || "...");
+		if (offset !== undefined || limit !== undefined) {
+			const startLine = offset !== undefined ? Number(offset) : 1;
+			const endLine = limit !== undefined ? startLine + Number(limit) - 1 : "";
+			pathDisplay += `<span style="color: #b5bd68">:${startLine}${endLine ? `-${endLine}` : ""}</span>`;
+		}
+
+		html = `<div class="tool-header"><span class="tool-name">read</span> <span class="tool-path">${pathDisplay}</span></div>`;
 
 		if (result) {
 			const output = getTextOutput();
