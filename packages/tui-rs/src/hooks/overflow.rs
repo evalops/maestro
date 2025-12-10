@@ -123,6 +123,7 @@ pub enum StopReason {
 
 impl StopReason {
     /// Parse from string (handles different API formats)
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "end_turn" | "stop" => StopReason::EndTurn,
@@ -140,6 +141,9 @@ impl StopReason {
     }
 }
 
+/// Type alias for overflow handler function
+type OverflowHandler = Box<dyn Fn(&OverflowInput) -> HookResult + Send + Sync>;
+
 /// Overflow detector
 pub struct OverflowDetector {
     /// Model limits
@@ -149,7 +153,7 @@ pub struct OverflowDetector {
     /// Last check time
     last_check: Option<Instant>,
     /// Overflow hook handler
-    overflow_handler: Option<Box<dyn Fn(&OverflowInput) -> HookResult + Send + Sync>>,
+    overflow_handler: Option<OverflowHandler>,
 }
 
 impl OverflowDetector {

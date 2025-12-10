@@ -271,9 +271,9 @@ fn determine_hook_source(def: &HookDefinition, cwd: &Path) -> Option<HookSource>
 
 /// Resolve a path, expanding ~ to home directory
 fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(&path[2..]);
+            return home.join(stripped);
         }
     }
 

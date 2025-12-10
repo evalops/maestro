@@ -72,7 +72,8 @@ arboard = { version = "3", optional = true }
 
 # Lua scripting for hooks (optional)
 # Uses vendored Lua to avoid system dependency
-mlua = { version = "0.10", features = ["lua54", "serialize", "vendored"], optional = true }
+# "send" feature makes Lua thread-safe (uses Arc instead of Rc)
+mlua = { version = "0.10", features = ["lua54", "serialize", "vendored", "send"], optional = true }
 
 # WASM runtime for hook plugins (optional)
 wasmtime = { version = "27", optional = true }

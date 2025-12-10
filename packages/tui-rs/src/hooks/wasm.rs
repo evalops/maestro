@@ -62,6 +62,7 @@ impl From<i32> for WasmResultCode {
 }
 
 /// Cached WASM plugin with metadata
+#[allow(dead_code)]
 struct WasmPlugin {
     path: PathBuf,
     event: HookEventType,
@@ -391,7 +392,7 @@ impl WasmHookExecutor {
         let get_len = get_result_len_fn?;
         let get_result = get_result_fn?;
 
-        let len = get_len.call(store, ()).ok()? as usize;
+        let len = get_len.call(&mut *store, ()).ok()? as usize;
         if len == 0 {
             return None;
         }
@@ -399,13 +400,13 @@ impl WasmHookExecutor {
         // Allocate buffer and read result
         let mut buffer = vec![0u8; len];
         let written = get_result
-            .call(store, (buffer.as_ptr() as i32, len as i32))
+            .call(&mut *store, (buffer.as_ptr() as i32, len as i32))
             .ok()? as usize;
 
         if written > 0 {
             // Read from WASM memory at the output location
             memory
-                .read(store, buffer.as_ptr() as usize, &mut buffer)
+                .read(&mut *store, buffer.as_ptr() as usize, &mut buffer)
                 .ok()?;
             String::from_utf8(buffer).ok()
         } else {

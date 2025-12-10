@@ -183,7 +183,7 @@ impl Default for LuaHookExecutor {
 // ============================================================================
 
 #[cfg(feature = "lua")]
-use mlua::{Lua, Table, Value};
+use mlua::{Lua, LuaSerdeExt, Table, Value};
 
 #[cfg(feature = "lua")]
 pub struct LuaHookExecutor {
@@ -198,14 +198,13 @@ impl LuaHookExecutor {
         let lua = Lua::new();
 
         // Sandbox: remove dangerous functions
-        if let Ok(globals) = lua.globals().clone().into_table() {
-            let _ = globals.set("os", Value::Nil);
-            let _ = globals.set("io", Value::Nil);
-            let _ = globals.set("loadfile", Value::Nil);
-            let _ = globals.set("dofile", Value::Nil);
-            let _ = globals.set("load", Value::Nil);
-            let _ = globals.set("require", Value::Nil);
-        }
+        let globals = lua.globals();
+        let _ = globals.set("os", Value::Nil);
+        let _ = globals.set("io", Value::Nil);
+        let _ = globals.set("loadfile", Value::Nil);
+        let _ = globals.set("dofile", Value::Nil);
+        let _ = globals.set("load", Value::Nil);
+        let _ = globals.set("require", Value::Nil);
 
         Self {
             lua,
@@ -229,7 +228,7 @@ impl LuaHookExecutor {
         self.lua
             .load(source)
             .into_function()
-            .with_context(|| "Failed to compile Lua script")?;
+            .map_err(|e| anyhow::anyhow!("Failed to compile Lua script: {}", e))?;
 
         self.scripts.push(CachedScript {
             source: source.to_string(),
@@ -250,10 +249,9 @@ impl LuaHookExecutor {
             .with_context(|| format!("Failed to read Lua script: {}", path.display()))?;
 
         // Validate script compiles
-        self.lua
-            .load(&source)
-            .into_function()
-            .with_context(|| format!("Failed to compile Lua script: {}", path.display()))?;
+        self.lua.load(&source).into_function().map_err(|e| {
+            anyhow::anyhow!("Failed to compile Lua script {}: {}", path.display(), e)
+        })?;
 
         self.scripts.push(CachedScript {
             source,
@@ -298,19 +296,38 @@ impl LuaHookExecutor {
     fn execute_script(&self, source: &str, input: &PreToolUseInput) -> Result<HookResult> {
         let globals = self.lua.globals();
 
-        // Set input globals
-        globals.set("event_type", input.hook_event_name.clone())?;
-        globals.set("tool_name", input.tool_name.clone())?;
-        globals.set("tool_call_id", input.tool_call_id.clone())?;
-        globals.set("cwd", input.cwd.clone())?;
-        globals.set("session_id", input.session_id.clone().unwrap_or_default())?;
+        // Set input globals (map mlua errors to anyhow)
+        globals
+            .set("event_type", input.hook_event_name.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("tool_name", input.tool_name.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("tool_call_id", input.tool_call_id.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("cwd", input.cwd.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("session_id", input.session_id.clone().unwrap_or_default())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
 
         // Convert tool_input to Lua table
-        let tool_input = self.lua.to_value(&input.tool_input)?;
-        globals.set("tool_input", tool_input)?;
+        let tool_input = self
+            .lua
+            .to_value(&input.tool_input)
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("tool_input", tool_input)
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
 
         // Execute script
-        let result: Table = self.lua.load(source).eval()?;
+        let result: Table = self
+            .lua
+            .load(source)
+            .eval()
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
 
         // Parse result table
         self.parse_result(&result)
@@ -335,7 +352,10 @@ impl LuaHookExecutor {
         // Check for modified input
         if let Ok(modified) = result.get::<Value>("modified_input") {
             if !matches!(modified, Value::Nil) {
-                let json: serde_json::Value = self.lua.from_value(modified)?;
+                let json: serde_json::Value = self
+                    .lua
+                    .from_value(modified)
+                    .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
                 return Ok(HookResult::ModifyInput { new_input: json });
             }
         }
@@ -362,18 +382,41 @@ impl LuaHookExecutor {
     fn execute_post_script(&self, source: &str, input: &PostToolUseInput) -> Result<()> {
         let globals = self.lua.globals();
 
-        globals.set("event_type", input.hook_event_name.clone())?;
-        globals.set("tool_name", input.tool_name.clone())?;
-        globals.set("tool_call_id", input.tool_call_id.clone())?;
-        globals.set("tool_output", input.tool_output.clone())?;
-        globals.set("is_error", input.is_error)?;
-        globals.set("cwd", input.cwd.clone())?;
-        globals.set("session_id", input.session_id.clone().unwrap_or_default())?;
+        globals
+            .set("event_type", input.hook_event_name.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("tool_name", input.tool_name.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("tool_call_id", input.tool_call_id.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("tool_output", input.tool_output.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("is_error", input.is_error)
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("cwd", input.cwd.clone())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("session_id", input.session_id.clone().unwrap_or_default())
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
 
-        let tool_input = self.lua.to_value(&input.tool_input)?;
-        globals.set("tool_input", tool_input)?;
+        let tool_input = self
+            .lua
+            .to_value(&input.tool_input)
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
+        globals
+            .set("tool_input", tool_input)
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
 
-        let _: Value = self.lua.load(source).eval()?;
+        let _: Value = self
+            .lua
+            .load(source)
+            .eval()
+            .map_err(|e| anyhow::anyhow!("Lua error: {}", e))?;
         Ok(())
     }
 

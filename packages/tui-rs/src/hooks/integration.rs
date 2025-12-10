@@ -54,6 +54,7 @@ pub struct IntegratedHookSystem {
 
 /// TypeScript hook configuration
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct TypeScriptHookConfig {
     path: PathBuf,
     event: HookEventType,
@@ -89,7 +90,7 @@ impl IntegratedHookSystem {
         match load_hook_config(Path::new(cwd)) {
             Ok(config) => {
                 system.enabled = config.settings.enabled;
-                system.timeout = Duration::from_millis(config.settings.timeout_ms as u64);
+                system.timeout = Duration::from_millis(config.settings.timeout_ms);
                 system.log_file = config.settings.log_file.clone();
                 system.load_hooks_from_config(&config);
 
@@ -198,7 +199,7 @@ impl IntegratedHookSystem {
         // Reload config
         if let Ok(config) = load_hook_config(Path::new(&self.cwd)) {
             self.enabled = config.settings.enabled;
-            self.timeout = Duration::from_millis(config.settings.timeout_ms as u64);
+            self.timeout = Duration::from_millis(config.settings.timeout_ms);
             self.log_file = config.settings.log_file.clone();
         }
 

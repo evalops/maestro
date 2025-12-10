@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 /// Result of a hook execution
 ///
 /// Hooks return this to indicate how processing should continue.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum HookResult {
     /// Continue with normal execution
+    #[default]
     Continue,
 
     /// Block the operation with a reason
@@ -23,12 +24,6 @@ pub enum HookResult {
 
     /// Continue but inject additional context
     InjectContext { context: String },
-}
-
-impl Default for HookResult {
-    fn default() -> Self {
-        HookResult::Continue
-    }
 }
 
 /// Hook event types matching the TypeScript implementation
