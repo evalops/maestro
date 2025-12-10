@@ -1683,8 +1683,185 @@ export async function main(args: string[]) {
 		}
 	}
 
-	// Subscribe to agent events to save messages
-	agent.subscribe((event) => {
+	// Subscribe to agent events to save messages and handle overflow
+	agent.subscribe(async (event) => {
+		// Handle context overflow with auto-compaction and retry
+		if (
+			event.type === "agent_end" &&
+			event.stopReason === "length" &&
+			!event.aborted
+		) {
+			console.error(
+				chalk.yellow("[auto-compact] Context overflow detected, compacting..."),
+			);
+
+			// Import compaction utilities
+			const {
+				buildSummarizationPrompt,
+				decorateSummaryText,
+				buildLocalSummary,
+				calculateContextTokens,
+				getLastAssistantUsage,
+				adjustBoundaryForToolResults,
+				findCutPoint,
+				findPreviousSummary,
+				DEFAULT_COMPACTION_SETTINGS,
+			} = await import("./agent/compaction.js");
+			const { createRenderableMessage, renderMessageToPlainText } =
+				await import("./conversation/render-model.js");
+
+			try {
+				const messages = [...agent.state.messages];
+				const keepCount = 6;
+
+				if (messages.length <= keepCount + 1) {
+					console.error(
+						chalk.yellow("[auto-compact] Not enough history to compact"),
+					);
+					return;
+				}
+
+				// Calculate boundary
+				let boundary = Math.max(0, messages.length - keepCount);
+				const lastUsage = getLastAssistantUsage(messages);
+				if (lastUsage) {
+					const tokenBasedCut = findCutPoint(
+						messages,
+						0,
+						messages.length,
+						DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
+					);
+					boundary = Math.max(boundary, tokenBasedCut);
+				}
+				boundary = adjustBoundaryForToolResults(messages, boundary);
+
+				const older = messages.slice(0, boundary);
+				if (!older.length) {
+					console.error(
+						chalk.yellow("[auto-compact] No earlier messages to compact"),
+					);
+					return;
+				}
+
+				// Look for previous summary (cascading)
+				const previousSummary = findPreviousSummary(messages);
+				const summaryInput: import("./agent/types.js").Message[] = [];
+				if (previousSummary) {
+					summaryInput.push({
+						role: "user",
+						content: `Previous session summary:\n${previousSummary}`,
+						timestamp: Date.now(),
+					});
+				}
+				const sliceSize = Math.min(40, older.length);
+				summaryInput.push(
+					...(older.slice(-sliceSize) as import("./agent/types.js").Message[]),
+				);
+
+				let summaryText = "";
+				let usedModel = false;
+
+				try {
+					const prompt = buildSummarizationPrompt();
+					const summary = await agent.generateSummary(
+						summaryInput,
+						prompt,
+						"You are a careful note-taker that distills coding conversations into actionable summaries.",
+					);
+					const summaryRenderable = createRenderableMessage(
+						summary as import("./agent/types.js").AppMessage,
+					);
+					const llmText = summaryRenderable
+						? renderMessageToPlainText(summaryRenderable).trim()
+						: "";
+					summaryText =
+						llmText ||
+						buildLocalSummary(
+							older as import("./agent/types.js").AppMessage[],
+							32,
+						);
+					usedModel = true;
+				} catch {
+					summaryText = buildLocalSummary(
+						older as import("./agent/types.js").AppMessage[],
+						32,
+					);
+				}
+
+				const decorated = decorateSummaryText(
+					summaryText,
+					older.length,
+					usedModel,
+				);
+				const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
+
+				// Create summary message
+				const summaryMessage: import("./agent/types.js").AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: decorated }],
+					api: agent.state.model.api,
+					provider: agent.state.model.provider,
+					model: agent.state.model.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+
+				const resumeMessage: import("./agent/types.js").AppMessage = {
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: "Use the above summary to resume the plan from where we left off.",
+						},
+					],
+					timestamp: Date.now(),
+				};
+
+				// Save compaction
+				sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
+					auto: true,
+				});
+
+				// Update agent messages
+				const keep = messages.slice(boundary);
+				const newMessages = [
+					summaryMessage as import("./agent/types.js").AppMessage,
+					resumeMessage,
+					...keep,
+				];
+				agent.replaceMessages(newMessages);
+				sessionManager.saveMessage(summaryMessage);
+				sessionManager.saveMessage(resumeMessage);
+
+				console.error(
+					chalk.green("[auto-compact] Compaction complete, continuing..."),
+				);
+
+				// Continue the conversation
+				void agent.continue();
+			} catch (error) {
+				console.error(
+					chalk.red(
+						`[auto-compact] Failed: ${error instanceof Error ? error.message : String(error)}`,
+					),
+				);
+			}
+			return;
+		}
+
 		// Save messages on completion
 		if (event.type === "message_end") {
 			sessionManager.saveMessage(event.message);
