@@ -70,6 +70,15 @@ chrono = "0.4"
 # Clipboard support (optional)
 arboard = { version = "3", optional = true }
 
+# Lua scripting for hooks (optional)
+mlua = { version = "0.10", features = ["lua54", "serialize"], optional = true }
+
+# WASM runtime for hook plugins (optional)
+wasmtime = { version = "27", optional = true }
+
+# File watching for hot reload
+notify = { version = "7", optional = true }
+
 # Linux sandboxing (Landlock + seccomp)
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
@@ -78,9 +87,12 @@ seccompiler = "0.4"
 [features]
 default = []
 clipboard = ["arboard"]
-# Optional hook backends (add deps when enabling)
-lua = []   # Enable with: mlua = { version = "0.9", features = ["lua54", "serialize"] }
-wasm = []  # Enable with: wasmtime = "18"
+# Hook backends
+lua = ["mlua"]
+wasm = ["wasmtime"]
+hot-reload = ["notify"]
+# Enable all hook features
+hooks-full = ["lua", "wasm", "hot-reload"]
 
 [dev-dependencies]
 pretty_assertions = "1"

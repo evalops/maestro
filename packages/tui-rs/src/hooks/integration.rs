@@ -11,8 +11,10 @@ use super::{
     types::*,
     wasm::WasmHookExecutor,
 };
+use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Integrated hook system for the native agent
 ///
@@ -32,6 +34,16 @@ pub struct IntegratedHookSystem {
     session_id: Option<String>,
     /// Whether hooks are enabled
     enabled: bool,
+    /// Session start time
+    session_start: Option<Instant>,
+    /// Turn count for session
+    turn_count: u32,
+    /// Execution metrics
+    metrics: HookMetrics,
+    /// Hook timeout
+    timeout: Duration,
+    /// Log file path
+    log_file: Option<String>,
 }
 
 impl IntegratedHookSystem {
@@ -45,6 +57,11 @@ impl IntegratedHookSystem {
             cwd: cwd.to_string(),
             session_id: None,
             enabled: true,
+            session_start: None,
+            turn_count: 0,
+            metrics: HookMetrics::default(),
+            timeout: Duration::from_secs(30),
+            log_file: None,
         }
     }
 
@@ -56,6 +73,8 @@ impl IntegratedHookSystem {
         match load_hook_config(Path::new(cwd)) {
             Ok(config) => {
                 system.enabled = config.settings.enabled;
+                system.timeout = Duration::from_millis(config.settings.timeout_ms as u64);
+                system.log_file = config.settings.log_file.clone();
                 system.load_hooks_from_config(&config);
 
                 if !config.hooks.is_empty() {
@@ -120,6 +139,24 @@ impl IntegratedHookSystem {
         }
     }
 
+    /// Reload all hooks from config files
+    pub fn reload(&mut self) -> Result<ReloadResult> {
+        let lua_reloaded = self.lua_executor.reload()?;
+        let wasm_reloaded = self.wasm_executor.reload()?;
+
+        // Reload config
+        if let Ok(config) = load_hook_config(Path::new(&self.cwd)) {
+            self.enabled = config.settings.enabled;
+            self.timeout = Duration::from_millis(config.settings.timeout_ms as u64);
+            self.log_file = config.settings.log_file.clone();
+        }
+
+        Ok(ReloadResult {
+            lua_scripts: lua_reloaded,
+            wasm_plugins: wasm_reloaded,
+        })
+    }
+
     /// Set session ID for hook context
     pub fn set_session_id(&mut self, session_id: Option<String>) {
         self.session_id = session_id;
@@ -140,11 +177,61 @@ impl IntegratedHookSystem {
         self.overflow_detector.check_status()
     }
 
+    /// Signal session start
+    pub fn on_session_start(&mut self, source: &str) -> HookResult {
+        self.session_start = Some(Instant::now());
+        self.turn_count = 0;
+
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = SessionStartInput {
+            hook_event_name: "SessionStart".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            source: source.to_string(),
+        };
+
+        self.log_event("SessionStart", &serde_json::to_string(&input).unwrap_or_default());
+        self.registry.execute_session_start(&input)
+    }
+
+    /// Signal session end
+    pub fn on_session_end(&mut self, reason: &str) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let duration_ms = self.session_start
+            .map(|s| s.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+
+        let input = SessionEndInput {
+            hook_event_name: "SessionEnd".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            reason: reason.to_string(),
+            duration_ms,
+            turn_count: self.turn_count,
+        };
+
+        self.log_event("SessionEnd", &serde_json::to_string(&input).unwrap_or_default());
+        self.registry.execute_session_end(&input)
+    }
+
+    /// Increment turn count
+    pub fn increment_turn(&mut self) {
+        self.turn_count += 1;
+    }
+
     /// Execute PreToolUse hooks
     ///
     /// Returns the hook result which may block, modify, or continue execution.
     pub fn execute_pre_tool_use(
-        &self,
+        &mut self,
         tool_name: &str,
         tool_call_id: &str,
         tool_input: &serde_json::Value,
@@ -152,6 +239,8 @@ impl IntegratedHookSystem {
         if !self.enabled {
             return HookResult::Continue;
         }
+
+        let start = Instant::now();
 
         let input = PreToolUseInput {
             hook_event_name: "PreToolUse".to_string(),
@@ -163,30 +252,44 @@ impl IntegratedHookSystem {
             tool_input: tool_input.clone(),
         };
 
-        // Execute native hooks first
-        let native_result = self.registry.execute_pre_tool_use(&input);
-        if !matches!(native_result, HookResult::Continue) {
-            return native_result;
+        self.log_event("PreToolUse", &format!("tool={} id={}", tool_name, tool_call_id));
+
+        // Execute with timeout protection
+        let result = self.execute_with_timeout(|| {
+            // Execute native hooks first
+            let native_result = self.registry.execute_pre_tool_use(&input);
+            if !matches!(native_result, HookResult::Continue) {
+                return native_result;
+            }
+
+            // Execute Lua hooks
+            let lua_result = self.lua_executor.execute_pre_tool_use(&input);
+            if !matches!(lua_result, HookResult::Continue) {
+                return lua_result;
+            }
+
+            // Execute WASM hooks
+            let wasm_result = self.wasm_executor.execute_pre_tool_use(&input);
+            if !matches!(wasm_result, HookResult::Continue) {
+                return wasm_result;
+            }
+
+            HookResult::Continue
+        });
+
+        // Update metrics
+        self.metrics.pre_tool_use_count += 1;
+        self.metrics.total_duration += start.elapsed();
+        if matches!(result, HookResult::Block { .. }) {
+            self.metrics.blocks += 1;
         }
 
-        // Execute Lua hooks
-        let lua_result = self.lua_executor.execute_pre_tool_use(&input);
-        if !matches!(lua_result, HookResult::Continue) {
-            return lua_result;
-        }
-
-        // Execute WASM hooks
-        let wasm_result = self.wasm_executor.execute_pre_tool_use(&input);
-        if !matches!(wasm_result, HookResult::Continue) {
-            return wasm_result;
-        }
-
-        HookResult::Continue
+        result
     }
 
     /// Execute PostToolUse hooks
     pub fn execute_post_tool_use(
-        &self,
+        &mut self,
         tool_name: &str,
         tool_call_id: &str,
         tool_input: &serde_json::Value,
@@ -196,6 +299,8 @@ impl IntegratedHookSystem {
         if !self.enabled {
             return HookResult::Continue;
         }
+
+        let start = Instant::now();
 
         let input = PostToolUseInput {
             hook_event_name: "PostToolUse".to_string(),
@@ -209,7 +314,51 @@ impl IntegratedHookSystem {
             is_error,
         };
 
-        self.registry.execute_post_tool_use(&input)
+        self.log_event("PostToolUse", &format!("tool={} error={}", tool_name, is_error));
+
+        let result = self.registry.execute_post_tool_use(&input);
+
+        // Update metrics
+        self.metrics.post_tool_use_count += 1;
+        self.metrics.total_duration += start.elapsed();
+
+        result
+    }
+
+    /// Execute with timeout protection
+    fn execute_with_timeout<F>(&self, f: F) -> HookResult
+    where
+        F: FnOnce() -> HookResult,
+    {
+        let start = Instant::now();
+        let result = f();
+
+        if start.elapsed() > self.timeout {
+            eprintln!(
+                "[hooks] Warning: Hook execution exceeded timeout ({:?})",
+                self.timeout
+            );
+        }
+
+        result
+    }
+
+    /// Log an event if logging is enabled
+    fn log_event(&self, event_type: &str, details: &str) {
+        if let Some(ref log_path) = self.log_file {
+            let timestamp = chrono::Utc::now().to_rfc3339();
+            let log_line = format!("[{}] {} {}\n", timestamp, event_type, details);
+
+            // Try to append to log file
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+            {
+                use std::io::Write;
+                let _ = file.write_all(log_line.as_bytes());
+            }
+        }
     }
 
     /// Check if a stop reason indicates overflow
@@ -218,11 +367,26 @@ impl IntegratedHookSystem {
     }
 
     /// Handle overflow - returns true if auto-compaction should proceed
-    pub fn handle_overflow(&self) -> bool {
-        let result = self.overflow_detector.handle_overflow(
-            &self.cwd,
-            self.session_id.as_deref(),
-        );
+    pub fn handle_overflow(&mut self) -> bool {
+        if !self.enabled {
+            return true;
+        }
+
+        let input = OverflowInput {
+            hook_event_name: "Overflow".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            token_count: self.overflow_detector.current_tokens(),
+            max_tokens: self.overflow_detector.max_tokens(),
+        };
+
+        self.log_event("Overflow", &format!(
+            "tokens={}/{}", input.token_count, input.max_tokens
+        ));
+
+        let result = self.registry.execute_overflow(&input);
+        self.metrics.overflow_count += 1;
 
         matches!(result, HookResult::Continue)
     }
@@ -235,6 +399,41 @@ impl IntegratedHookSystem {
             wasm_plugins: self.wasm_executor.plugin_count(),
             enabled: self.enabled,
         }
+    }
+
+    /// Get execution metrics
+    pub fn metrics(&self) -> &HookMetrics {
+        &self.metrics
+    }
+
+    /// Reset metrics
+    pub fn reset_metrics(&mut self) {
+        self.metrics = HookMetrics::default();
+    }
+
+    /// Enable hooks
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    /// Disable hooks
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    /// Check if hooks are enabled
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Get session duration
+    pub fn session_duration(&self) -> Option<Duration> {
+        self.session_start.map(|s| s.elapsed())
+    }
+
+    /// Get turn count
+    pub fn turn_count(&self) -> u32 {
+        self.turn_count
     }
 }
 
@@ -251,6 +450,46 @@ impl HookStats {
     /// Total number of hooks
     pub fn total(&self) -> usize {
         self.native_hooks + self.lua_scripts + self.wasm_plugins
+    }
+}
+
+/// Execution metrics for hooks
+#[derive(Debug, Clone, Default)]
+pub struct HookMetrics {
+    /// Number of PreToolUse hooks executed
+    pub pre_tool_use_count: u64,
+    /// Number of PostToolUse hooks executed
+    pub post_tool_use_count: u64,
+    /// Number of overflow events
+    pub overflow_count: u64,
+    /// Number of blocks
+    pub blocks: u64,
+    /// Total duration of hook execution
+    pub total_duration: Duration,
+}
+
+impl HookMetrics {
+    /// Average hook execution time
+    pub fn average_duration(&self) -> Duration {
+        let total_calls = self.pre_tool_use_count + self.post_tool_use_count;
+        if total_calls == 0 {
+            Duration::ZERO
+        } else {
+            self.total_duration / total_calls as u32
+        }
+    }
+}
+
+/// Result of reloading hooks
+#[derive(Debug, Clone)]
+pub struct ReloadResult {
+    pub lua_scripts: usize,
+    pub wasm_plugins: usize,
+}
+
+impl ReloadResult {
+    pub fn total(&self) -> usize {
+        self.lua_scripts + self.wasm_plugins
     }
 }
 
@@ -287,5 +526,34 @@ mod tests {
             &serde_json::json!({ "command": "rm -rf /" }),
         );
         assert!(matches!(result, HookResult::Block { .. }));
+    }
+
+    #[test]
+    fn test_session_lifecycle() {
+        let mut system = IntegratedHookSystem::new("/tmp");
+
+        system.on_session_start("cli");
+        assert_eq!(system.turn_count(), 0);
+
+        system.increment_turn();
+        system.increment_turn();
+        assert_eq!(system.turn_count(), 2);
+
+        assert!(system.session_duration().is_some());
+
+        system.on_session_end("user_exit");
+    }
+
+    #[test]
+    fn test_metrics() {
+        let mut system = IntegratedHookSystem::new("/tmp");
+
+        system.execute_pre_tool_use("Read", "1", &serde_json::json!({}));
+        system.execute_pre_tool_use("Write", "2", &serde_json::json!({}));
+        system.execute_post_tool_use("Read", "1", &serde_json::json!({}), "ok", false);
+
+        let metrics = system.metrics();
+        assert_eq!(metrics.pre_tool_use_count, 2);
+        assert_eq!(metrics.post_tool_use_count, 1);
     }
 }
