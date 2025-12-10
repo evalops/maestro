@@ -508,13 +508,26 @@ export interface HookCallbackConfig {
 }
 
 /**
+ * Configuration for a TypeScript hook file.
+ * TypeScript hooks are loaded via jiti and export a default function.
+ */
+export interface HookTypeScriptConfig {
+	type: "typescript";
+	/** Path to the TypeScript file */
+	path: string;
+	/** Resolved absolute path */
+	resolvedPath?: string;
+}
+
+/**
  * Union of all hook configuration types.
  */
 export type HookConfig =
 	| HookCommandConfig
 	| HookPromptConfig
 	| HookAgentConfig
-	| HookCallbackConfig;
+	| HookCallbackConfig
+	| HookTypeScriptConfig;
 
 /**
  * A matcher with associated hooks.
@@ -562,4 +575,138 @@ export function isAsyncHookResponse(
 		"async" in response &&
 		response.async === true
 	);
+}
+
+// ============================================================================
+// Hook API Types (for TypeScript hooks - pi-mono style)
+// ============================================================================
+
+/**
+ * Attachment that can be sent with a message.
+ */
+export interface HookAttachment {
+	/** Unique identifier */
+	id: string;
+	/** Type of attachment */
+	type: "image" | "document";
+	/** Original file name */
+	fileName: string;
+	/** MIME type */
+	mimeType: string;
+	/** File size in bytes */
+	size: number;
+	/** Base64 encoded content */
+	content: string;
+}
+
+/**
+ * Handler for sending messages from hooks.
+ */
+export type HookSendHandler = (
+	text: string,
+	attachments?: HookAttachment[],
+) => void;
+
+/**
+ * UI context available to hooks for interactive prompts.
+ */
+export interface HookUIContext {
+	/**
+	 * Show a selection list and return the selected option.
+	 * Returns null if the user cancels.
+	 */
+	select(title: string, options: string[]): Promise<string | null>;
+
+	/**
+	 * Show a confirmation dialog.
+	 * Returns true if confirmed, false otherwise.
+	 */
+	confirm(title: string, message: string): Promise<boolean>;
+
+	/**
+	 * Show an input prompt for text entry.
+	 * Returns null if the user cancels.
+	 */
+	input(title: string, placeholder?: string): Promise<string | null>;
+
+	/**
+	 * Show a notification message.
+	 */
+	notify(message: string, type?: "info" | "warning" | "error"): void;
+}
+
+/**
+ * Context passed to hook event handlers.
+ */
+export interface HookEventContext {
+	/** Execute a command in the working directory */
+	exec(command: string, args: string[]): Promise<ExecResult>;
+	/** UI methods for interactive hooks */
+	ui: HookUIContext;
+	/** Whether interactive UI is available */
+	hasUI: boolean;
+	/** Current working directory */
+	cwd: string;
+	/** Session file path or null */
+	sessionFile: string | null;
+}
+
+/**
+ * Result of executing a command.
+ */
+export interface ExecResult {
+	stdout: string;
+	stderr: string;
+	code: number;
+}
+
+/**
+ * Handler type for hook events.
+ */
+export type HookHandler<E, R = void> = (
+	event: E,
+	ctx: HookEventContext,
+) => Promise<R>;
+
+/**
+ * API provided to TypeScript hooks.
+ * This is the "pi" object in pi-mono style hooks.
+ */
+export interface HookAPI {
+	/**
+	 * Register a handler for an event.
+	 */
+	on<E extends HookEventType>(
+		event: E,
+		handler: HookHandler<HookInput, HookJsonOutput | undefined>,
+	): void;
+
+	/**
+	 * Send a message to the agent.
+	 * If the agent is streaming, the message is queued.
+	 * If the agent is idle, a new prompt cycle is started.
+	 */
+	send(text: string, attachments?: HookAttachment[]): void;
+}
+
+/**
+ * Factory function exported by TypeScript hooks.
+ */
+export type HookFactory = (api: HookAPI) => void;
+
+/**
+ * A loaded TypeScript hook with its registered handlers.
+ */
+export interface LoadedTypeScriptHook {
+	/** Original path from config */
+	path: string;
+	/** Resolved absolute path */
+	resolvedPath: string;
+	/** Registered event handlers */
+	handlers: Map<
+		HookEventType,
+		Array<HookHandler<HookInput, HookJsonOutput | undefined>>
+	>;
+	/** Send handler setter */
+	setSendHandler: (handler: HookSendHandler) => void;
 }

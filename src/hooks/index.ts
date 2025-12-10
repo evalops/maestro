@@ -88,10 +88,21 @@ export type {
 	HookPromptConfig,
 	HookAgentConfig,
 	HookCallbackConfig,
+	HookTypeScriptConfig,
 	HookMatcher,
 	HookConfiguration,
 	HookCommandResult,
 	AsyncHookResponse,
+	// TypeScript hook API types
+	HookAttachment,
+	HookSendHandler,
+	HookUIContext,
+	HookEventContext,
+	ExecResult,
+	HookHandler,
+	HookAPI,
+	HookFactory,
+	LoadedTypeScriptHook,
 } from "./types.js";
 
 export { isAsyncHookResponse } from "./types.js";
@@ -153,3 +164,30 @@ export {
 	type SessionHookService,
 	type SessionHookContext,
 } from "./session-integration.js";
+
+// TypeScript hook loader exports
+export {
+	discoverAndLoadTypeScriptHooks,
+	getLoadedTypeScriptHooks,
+	hasTypeScriptHookHandlers,
+	executeTypeScriptHooks,
+	setGlobalSendHandler,
+	getGlobalSendHandler,
+	setGlobalUIContext,
+	setGlobalCwd,
+	setGlobalSessionFile,
+	clearLoadedTypeScriptHooks,
+} from "./typescript-loader.js";
+
+// UI context exports
+export {
+	createRpcUIContext,
+	createNoOpUIContext,
+	createConsoleUIContext,
+	registerUIContext,
+	getUIContext,
+	clearUIContextRegistry,
+	type HookUIRequest,
+	type HookUIResponse,
+	type HookUIRequestHandler,
+} from "./ui-context.js";

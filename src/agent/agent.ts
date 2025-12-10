@@ -524,6 +524,13 @@ export class Agent {
 	}
 
 	/**
+	 * Get the number of queued messages.
+	 */
+	getQueuedMessageCount(): number {
+		return this.messageQueue.length;
+	}
+
+	/**
 	 * Aborts the current streaming request if one is in progress.
 	 */
 	abort(): void {
@@ -713,6 +720,155 @@ export class Agent {
 			for await (const event of this.transport.run(
 				messagesToSend, // Include userMessage in messages array
 				userMessage,
+				runConfig,
+				abortController.signal,
+			)) {
+				if (event.type === "message_start") {
+					this._state.streamMessage = event.message;
+					this.emit(event);
+				} else if (event.type === "message_update") {
+					this._state.streamMessage = event.message;
+					this.emit(event);
+				} else if (event.type === "message_end") {
+					this._state.streamMessage = null;
+					this._state.messages = [...this._state.messages, event.message];
+					this.emit(event);
+				} else if (event.type === "tool_execution_start") {
+					this._state.pendingToolCalls.set(event.toolCallId, {
+						toolName: event.toolName,
+					});
+					this.emit(event);
+				} else if (event.type === "tool_execution_end") {
+					this._state.pendingToolCalls.delete(event.toolCallId);
+					this.emit(event);
+				} else {
+					this.emit(event);
+				}
+			}
+		} catch (error: unknown) {
+			if (error instanceof Error && error.name === "AbortError") {
+				aborted = true;
+			} else {
+				this._state.error =
+					error instanceof Error ? error.message : String(error);
+				throw error;
+			}
+		} finally {
+			this._state.isStreaming = false;
+			if (this.abortController === abortController) {
+				this.abortController = undefined;
+			}
+			// Clean up running prompt tracking
+			this.resolveRunningPrompt?.();
+			this.runningPrompt = undefined;
+			this.resolveRunningPrompt = undefined;
+			if (this._state.pendingToolCalls.size > 0) {
+				const reason = aborted
+					? "Error: Operation aborted"
+					: "Error: Tool execution did not complete";
+				this.resolvePendingToolCalls(reason);
+			}
+
+			const partialAccepted = this._partialAccepted;
+			this._partialAccepted = null;
+
+			this.emit({
+				type: "agent_end",
+				messages: this._state.messages,
+				aborted,
+				partialAccepted: partialAccepted ?? undefined,
+			});
+		}
+	}
+
+	/**
+	 * Continue the agent conversation from existing messages without adding a new user message.
+	 * Useful for overflow recovery after compaction, or resuming a partial response.
+	 *
+	 * @param options - Optional configuration for continuation
+	 */
+	async continue(options?: {
+		/** Override the system prompt for this continuation */
+		systemPromptOverride?: string;
+	}): Promise<void> {
+		// Prevent concurrent prompts
+		if (this.runningPrompt) {
+			throw new Error(
+				"A prompt is already in progress. Wait for it to complete before starting another.",
+			);
+		}
+
+		// Check we have messages to continue from
+		if (this._state.messages.length === 0) {
+			throw new Error("No messages to continue from");
+		}
+
+		// Set up running prompt tracking
+		this.runningPrompt = new Promise<void>((resolve) => {
+			this.resolveRunningPrompt = resolve;
+		});
+
+		this._state.isStreaming = true;
+
+		const abortController = new AbortController();
+		this.abortController = abortController;
+
+		this.emit({ type: "agent_start" });
+
+		let aborted = false;
+
+		try {
+			const transformedMessages = await this.messageTransformer(
+				this._state.messages,
+			);
+			const messagesToSend = normalizeMessagesForProvider(
+				transformedMessages,
+				this._state.model,
+			);
+
+			// Determine reasoning level
+			const level = this._state.thinkingLevel;
+			const reasoning = this._state.model.reasoning
+				? mapThinkingLevel(level)
+				: undefined;
+
+			// Inject Context from Environment
+			let systemPrompt =
+				options?.systemPromptOverride ?? this._state.systemPrompt;
+			try {
+				const contextAdditions =
+					await this.contextManager.getCombinedSystemPrompt();
+				if (contextAdditions) {
+					systemPrompt += `\n\n${contextAdditions}`;
+				}
+			} catch (error) {
+				logger.warn("Failed to inject environmental context", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Create a synthetic continuation trigger message
+			// This signals to the transport that we want the model to continue responding
+			const continuationMessage: UserMessage = {
+				role: "user",
+				content: [],
+				timestamp: Date.now(),
+			};
+
+			const runConfig = {
+				systemPrompt,
+				tools: this._state.tools,
+				model: this._state.model,
+				reasoning,
+				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
+				user: this._state.user,
+				session: this._state.session,
+				sandbox: this._state.sandbox,
+			};
+
+			for await (const event of this.transport.run(
+				messagesToSend,
+				continuationMessage,
 				runConfig,
 				abortController.signal,
 			)) {

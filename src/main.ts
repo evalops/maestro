@@ -441,11 +441,38 @@ async function runRpcMode(
 			const input = JSON.parse(line);
 
 			// Dispatch based on command type
-			// Supports: prompt, abort, compact
+			// Supports: prompt, abort, compact, get_messages, get_state, continue
 			if (input.type === "prompt" && input.message) {
 				await agent.prompt(input.message);
 			} else if (input.type === "abort") {
 				agent.abort();
+			} else if (input.type === "get_messages") {
+				// Return current conversation messages
+				console.log(
+					JSON.stringify({
+						type: "messages",
+						messages: agent.state.messages,
+					}),
+				);
+			} else if (input.type === "get_state") {
+				// Return full agent state (without sensitive fields)
+				console.log(
+					JSON.stringify({
+						type: "state",
+						state: {
+							model: agent.state.model,
+							messages: agent.state.messages,
+							isStreaming: agent.state.isStreaming,
+							error: agent.state.error,
+							thinkingLevel: agent.state.thinkingLevel,
+							session: agent.state.session,
+							queuedMessageCount: agent.getQueuedMessageCount(),
+						},
+					}),
+				);
+			} else if (input.type === "continue") {
+				// Continue conversation without new user message (for overflow recovery)
+				await agent.continue(input.options);
 			} else if (input.type === "compact") {
 				// Handle context compaction in RPC mode
 				const customInstructions = input.customInstructions as
