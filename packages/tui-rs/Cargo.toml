@@ -71,7 +71,8 @@ chrono = "0.4"
 arboard = { version = "3", optional = true }
 
 # Lua scripting for hooks (optional)
-mlua = { version = "0.10", features = ["lua54", "serialize"], optional = true }
+# Uses vendored Lua to avoid system dependency
+mlua = { version = "0.10", features = ["lua54", "serialize", "vendored"], optional = true }
 
 # WASM runtime for hook plugins (optional)
 wasmtime = { version = "27", optional = true }
