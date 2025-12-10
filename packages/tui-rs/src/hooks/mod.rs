@@ -71,20 +71,20 @@
 //! registry.register_pre_tool_use(Arc::new(LoggingHook));
 //! ```
 
-mod types;
-mod registry;
-mod config;
-mod lua;
-mod wasm;
 mod bridge;
-mod overflow;
+mod config;
 mod integration;
+mod lua;
+mod overflow;
+mod registry;
+mod types;
+mod wasm;
 
-pub use types::*;
-pub use registry::*;
-pub use config::*;
-pub use lua::*;
-pub use wasm::*;
 pub use bridge::*;
-pub use overflow::*;
+pub use config::*;
 pub use integration::*;
+pub use lua::*;
+pub use overflow::*;
+pub use registry::*;
+pub use types::*;
+pub use wasm::*;

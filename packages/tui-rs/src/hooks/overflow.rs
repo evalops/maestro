@@ -214,11 +214,7 @@ impl OverflowDetector {
     }
 
     /// Handle overflow condition
-    pub fn handle_overflow(
-        &self,
-        cwd: &str,
-        session_id: Option<&str>,
-    ) -> HookResult {
+    pub fn handle_overflow(&self, cwd: &str, session_id: Option<&str>) -> HookResult {
         let input = OverflowInput {
             hook_event_name: "Overflow".to_string(),
             cwd: cwd.to_string(),

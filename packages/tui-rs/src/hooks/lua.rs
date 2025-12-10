@@ -70,7 +70,9 @@ pub struct LuaHookExecutor {
 #[cfg(not(feature = "lua"))]
 impl LuaHookExecutor {
     pub fn new() -> Self {
-        Self { scripts: Vec::new() }
+        Self {
+            scripts: Vec::new(),
+        }
     }
 
     pub fn load_script(
@@ -301,10 +303,7 @@ impl LuaHookExecutor {
         globals.set("tool_name", input.tool_name.clone())?;
         globals.set("tool_call_id", input.tool_call_id.clone())?;
         globals.set("cwd", input.cwd.clone())?;
-        globals.set(
-            "session_id",
-            input.session_id.clone().unwrap_or_default(),
-        )?;
+        globals.set("session_id", input.session_id.clone().unwrap_or_default())?;
 
         // Convert tool_input to Lua table
         let tool_input = self.lua.to_value(&input.tool_input)?;
@@ -369,10 +368,7 @@ impl LuaHookExecutor {
         globals.set("tool_output", input.tool_output.clone())?;
         globals.set("is_error", input.is_error)?;
         globals.set("cwd", input.cwd.clone())?;
-        globals.set(
-            "session_id",
-            input.session_id.clone().unwrap_or_default(),
-        )?;
+        globals.set("session_id", input.session_id.clone().unwrap_or_default())?;
 
         let tool_input = self.lua.to_value(&input.tool_input)?;
         globals.set("tool_input", tool_input)?;

@@ -140,7 +140,11 @@ impl IntegratedHookSystem {
                         hook.definition.event,
                         hook.definition.tools.clone(),
                     ) {
-                        eprintln!("[hooks] Failed to load WASM plugin {}: {}", path.display(), e);
+                        eprintln!(
+                            "[hooks] Failed to load WASM plugin {}: {}",
+                            path.display(),
+                            e
+                        );
                     }
                 }
                 HookSource::Command(_cmd) => {
@@ -241,7 +245,10 @@ impl IntegratedHookSystem {
             source: source.to_string(),
         };
 
-        self.log_event("SessionStart", &serde_json::to_string(&input).unwrap_or_default());
+        self.log_event(
+            "SessionStart",
+            &serde_json::to_string(&input).unwrap_or_default(),
+        );
         self.registry.execute_session_start(&input)
     }
 
@@ -251,7 +258,8 @@ impl IntegratedHookSystem {
             return HookResult::Continue;
         }
 
-        let duration_ms = self.session_start
+        let duration_ms = self
+            .session_start
             .map(|s| s.elapsed().as_millis() as u64)
             .unwrap_or(0);
 
@@ -265,7 +273,10 @@ impl IntegratedHookSystem {
             turn_count: self.turn_count,
         };
 
-        self.log_event("SessionEnd", &serde_json::to_string(&input).unwrap_or_default());
+        self.log_event(
+            "SessionEnd",
+            &serde_json::to_string(&input).unwrap_or_default(),
+        );
         self.registry.execute_session_end(&input)
     }
 
@@ -301,7 +312,10 @@ impl IntegratedHookSystem {
             tool_input: tool_input.clone(),
         };
 
-        self.log_event("PreToolUse", &format!("tool={} id={}", tool_name, tool_call_id));
+        self.log_event(
+            "PreToolUse",
+            &format!("tool={} id={}", tool_name, tool_call_id),
+        );
 
         // Execute with timeout protection
         let result = self.execute_with_timeout(|| {
@@ -364,7 +378,8 @@ impl IntegratedHookSystem {
             };
 
             // Check if any TypeScript hooks match this tool
-            let matching_hooks: Vec<_> = self.typescript_hooks
+            let matching_hooks: Vec<_> = self
+                .typescript_hooks
                 .iter()
                 .filter(|h| {
                     h.event == HookEventType::PreToolUse
@@ -417,7 +432,10 @@ impl IntegratedHookSystem {
             is_error,
         };
 
-        self.log_event("PostToolUse", &format!("tool={} error={}", tool_name, is_error));
+        self.log_event(
+            "PostToolUse",
+            &format!("tool={} error={}", tool_name, is_error),
+        );
 
         let result = self.registry.execute_post_tool_use(&input);
 
@@ -484,9 +502,10 @@ impl IntegratedHookSystem {
             max_tokens: self.overflow_detector.max_tokens(),
         };
 
-        self.log_event("Overflow", &format!(
-            "tokens={}/{}", input.token_count, input.max_tokens
-        ));
+        self.log_event(
+            "Overflow",
+            &format!("tokens={}/{}", input.token_count, input.max_tokens),
+        );
 
         let result = self.registry.execute_overflow(&input);
         self.metrics.overflow_count += 1;
@@ -622,11 +641,8 @@ mod tests {
         system.registry.register_pre_tool_use(Arc::new(SafetyHook));
 
         // Safe command
-        let result = system.execute_pre_tool_use(
-            "Bash",
-            "123",
-            &serde_json::json!({ "command": "ls -la" }),
-        );
+        let result =
+            system.execute_pre_tool_use("Bash", "123", &serde_json::json!({ "command": "ls -la" }));
         assert!(matches!(result, HookResult::Continue));
 
         // Dangerous command

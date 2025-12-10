@@ -81,7 +81,9 @@ pub struct WasmHookExecutor {
 #[cfg(not(feature = "wasm"))]
 impl WasmHookExecutor {
     pub fn new() -> Self {
-        Self { plugins: Vec::new() }
+        Self {
+            plugins: Vec::new(),
+        }
     }
 
     pub fn load_plugin(
@@ -261,18 +263,18 @@ impl WasmHookExecutor {
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[wasm-hook] Error running {}: {}",
-                        plugin.path.display(),
-                        e
-                    );
+                    eprintln!("[wasm-hook] Error running {}: {}", plugin.path.display(), e);
                 }
             }
         }
         HookResult::Continue
     }
 
-    fn execute_plugin(&self, plugin: &CompiledPlugin, input: &PreToolUseInput) -> Result<HookResult> {
+    fn execute_plugin(
+        &self,
+        plugin: &CompiledPlugin,
+        input: &PreToolUseInput,
+    ) -> Result<HookResult> {
         let mut store = Store::new(&self.engine, ());
 
         // Set epoch deadline for timeout
@@ -323,7 +325,13 @@ impl WasmHookExecutor {
 
             WasmResultCode::Block => {
                 // Try to read the block reason from WASM memory
-                let reason = self.read_result_string(&mut store, memory, get_result_len_fn.as_ref(), get_result_fn.as_ref())
+                let reason = self
+                    .read_result_string(
+                        &mut store,
+                        memory,
+                        get_result_len_fn.as_ref(),
+                        get_result_fn.as_ref(),
+                    )
                     .unwrap_or_else(|| "Blocked by WASM plugin".to_string());
 
                 Ok(HookResult::Block { reason })
@@ -331,7 +339,12 @@ impl WasmHookExecutor {
 
             WasmResultCode::Modify => {
                 // Try to read modified input from WASM memory
-                if let Some(json_str) = self.read_result_string(&mut store, memory, get_result_len_fn.as_ref(), get_result_fn.as_ref()) {
+                if let Some(json_str) = self.read_result_string(
+                    &mut store,
+                    memory,
+                    get_result_len_fn.as_ref(),
+                    get_result_fn.as_ref(),
+                ) {
                     if let Ok(new_input) = serde_json::from_str(&json_str) {
                         return Ok(HookResult::ModifyInput { new_input });
                     }
@@ -340,14 +353,26 @@ impl WasmHookExecutor {
             }
 
             WasmResultCode::InjectContext => {
-                let context = self.read_result_string(&mut store, memory, get_result_len_fn.as_ref(), get_result_fn.as_ref())
+                let context = self
+                    .read_result_string(
+                        &mut store,
+                        memory,
+                        get_result_len_fn.as_ref(),
+                        get_result_fn.as_ref(),
+                    )
                     .unwrap_or_else(|| "Context from WASM plugin".to_string());
 
                 Ok(HookResult::InjectContext { context })
             }
 
             WasmResultCode::Error => {
-                let error = self.read_result_string(&mut store, memory, get_result_len_fn.as_ref(), get_result_fn.as_ref())
+                let error = self
+                    .read_result_string(
+                        &mut store,
+                        memory,
+                        get_result_len_fn.as_ref(),
+                        get_result_fn.as_ref(),
+                    )
                     .unwrap_or_else(|| "Unknown error".to_string());
 
                 eprintln!("[wasm-hook] Plugin error: {}", error);
@@ -373,11 +398,15 @@ impl WasmHookExecutor {
 
         // Allocate buffer and read result
         let mut buffer = vec![0u8; len];
-        let written = get_result.call(store, (buffer.as_ptr() as i32, len as i32)).ok()? as usize;
+        let written = get_result
+            .call(store, (buffer.as_ptr() as i32, len as i32))
+            .ok()? as usize;
 
         if written > 0 {
             // Read from WASM memory at the output location
-            memory.read(store, buffer.as_ptr() as usize, &mut buffer).ok()?;
+            memory
+                .read(store, buffer.as_ptr() as usize, &mut buffer)
+                .ok()?;
             String::from_utf8(buffer).ok()
         } else {
             None

@@ -51,7 +51,8 @@ impl PreToolUseHook for TestModifyHook {
         if input.tool_name == "Bash" {
             let mut new_input = input.tool_input.clone();
             if let Some(cmd) = new_input.get_mut("command") {
-                *cmd = serde_json::json!(format!("echo 'modified'; {}", cmd.as_str().unwrap_or("")));
+                *cmd =
+                    serde_json::json!(format!("echo 'modified'; {}", cmd.as_str().unwrap_or("")));
             }
             HookResult::ModifyInput { new_input }
         } else {
@@ -94,7 +95,11 @@ fn test_safety_hook_blocks_dangerous_commands() {
     assert!(matches!(result, HookResult::Block { .. }));
 
     // Safe command should pass
-    let result = system.execute_pre_tool_use("Bash", "test-2", &serde_json::json!({ "command": "ls -la" }));
+    let result = system.execute_pre_tool_use(
+        "Bash",
+        "test-2",
+        &serde_json::json!({ "command": "ls -la" }),
+    );
     assert!(matches!(result, HookResult::Continue));
 }
 
@@ -230,11 +235,7 @@ fn test_metrics_tracks_blocks() {
     let mut system = IntegratedHookSystem::load_from_config("/tmp");
 
     // This should be blocked by SafetyHook
-    system.execute_pre_tool_use(
-        "Bash",
-        "1",
-        &serde_json::json!({ "command": "rm -rf /" }),
-    );
+    system.execute_pre_tool_use("Bash", "1", &serde_json::json!({ "command": "rm -rf /" }));
 
     let metrics = system.metrics();
     assert!(metrics.blocks >= 1);
@@ -262,11 +263,8 @@ fn test_enable_disable_hooks() {
     assert!(!system.is_enabled());
 
     // Dangerous command should NOT be blocked when hooks are disabled
-    let result = system.execute_pre_tool_use(
-        "Bash",
-        "1",
-        &serde_json::json!({ "command": "rm -rf /" }),
-    );
+    let result =
+        system.execute_pre_tool_use("Bash", "1", &serde_json::json!({ "command": "rm -rf /" }));
     assert!(matches!(result, HookResult::Continue));
 
     // Re-enable hooks
@@ -274,11 +272,8 @@ fn test_enable_disable_hooks() {
     assert!(system.is_enabled());
 
     // Now it should be blocked
-    let result = system.execute_pre_tool_use(
-        "Bash",
-        "2",
-        &serde_json::json!({ "command": "rm -rf /" }),
-    );
+    let result =
+        system.execute_pre_tool_use("Bash", "2", &serde_json::json!({ "command": "rm -rf /" }));
     assert!(matches!(result, HookResult::Block { .. }));
 }
 

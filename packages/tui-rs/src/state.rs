@@ -613,7 +613,10 @@ impl AppState {
                 self.update_tool_status(&call_id, ToolCallStatus::Blocked);
 
                 // Log the blocking for debugging
-                eprintln!("[hooks] Tool '{}' blocked: {} (call_id: {})", tool, reason, call_id);
+                eprintln!(
+                    "[hooks] Tool '{}' blocked: {} (call_id: {})",
+                    tool, reason, call_id
+                );
             }
         }
     }

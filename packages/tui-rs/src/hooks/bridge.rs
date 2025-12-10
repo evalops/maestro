@@ -90,9 +90,7 @@ impl NodeHookBridge {
     pub fn bundled() -> Self {
         // Look for the hook executor script in standard locations
         let script_path = if let Some(home) = dirs::home_dir() {
-            home.join(".composer")
-                .join("lib")
-                .join("hook-executor.js")
+            home.join(".composer").join("lib").join("hook-executor.js")
         } else {
             PathBuf::from("hook-executor.js")
         };
@@ -161,10 +159,7 @@ impl NodeHookBridge {
 
     /// Execute a PreToolUse hook via Node.js
     pub async fn execute_pre_tool_use(&self, input: &PreToolUseInput) -> Result<HookResult> {
-        let request_tx = self
-            .request_tx
-            .as_ref()
-            .context("Bridge not started")?;
+        let request_tx = self.request_tx.as_ref().context("Bridge not started")?;
 
         let id = format!("req-{}", self.request_id.fetch_add(1, Ordering::SeqCst));
 
@@ -362,7 +357,10 @@ mod tests {
             should_continue: true,
             ..Default::default()
         };
-        assert!(matches!(hook_output_to_result(&output), HookResult::Continue));
+        assert!(matches!(
+            hook_output_to_result(&output),
+            HookResult::Continue
+        ));
 
         // Block
         let output = HookOutput {
