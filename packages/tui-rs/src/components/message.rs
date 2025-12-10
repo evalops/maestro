@@ -1154,6 +1154,8 @@ pub struct StatusBarWidget<'a> {
     cwd: Option<&'a str>,
     git_branch: Option<&'a str>,
     usage: UsageSummary,
+    /// Number of active hooks (None = hooks disabled)
+    hook_count: Option<usize>,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -1169,11 +1171,18 @@ impl<'a> StatusBarWidget<'a> {
             cwd,
             git_branch,
             usage: UsageSummary::default(),
+            hook_count: None,
         }
     }
 
     pub fn with_usage(mut self, usage: UsageSummary) -> Self {
         self.usage = usage;
+        self
+    }
+
+    /// Set hook count (None = hooks disabled, Some(0) = enabled but none loaded)
+    pub fn with_hooks(mut self, count: Option<usize>) -> Self {
+        self.hook_count = count;
         self
     }
 }
@@ -1211,6 +1220,24 @@ impl Widget for StatusBarWidget<'_> {
                 spans.push(Span::raw(" ("));
                 spans.push(Span::styled(branch, Style::default().fg(Color::Green)));
                 spans.push(Span::raw(")"));
+            }
+        }
+
+        // Hook status
+        if let Some(count) = self.hook_count {
+            if !spans.is_empty() {
+                spans.push(Span::raw(" | "));
+            }
+            if count > 0 {
+                spans.push(Span::styled(
+                    format!("hooks:{}", count),
+                    Style::default().fg(Color::Magenta),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    "hooks:0",
+                    Style::default().fg(Color::DarkGray),
+                ));
             }
         }
 
