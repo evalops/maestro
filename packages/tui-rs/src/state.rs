@@ -177,6 +177,10 @@ pub enum ToolCallStatus {
     /// Tool execution failed.
     /// Output contains error information.
     Failed,
+
+    /// Tool was blocked by a hook.
+    /// A PreToolUse hook prevented execution (e.g., safety check).
+    Blocked,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -597,6 +601,19 @@ impl AppState {
                 self.session_id = session_id;
                 self.cwd = Some(cwd);
                 self.git_branch = git_branch;
+            }
+
+            // Tool blocked by hook
+            FromAgent::HookBlocked {
+                call_id,
+                tool,
+                reason,
+            } => {
+                // Update tool status to blocked
+                self.update_tool_status(&call_id, ToolCallStatus::Blocked);
+
+                // Log the blocking for debugging
+                eprintln!("[hooks] Tool '{}' blocked: {} (call_id: {})", tool, reason, call_id);
             }
         }
     }

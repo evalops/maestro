@@ -100,6 +100,7 @@ use crate::ai::{
     ContentBlock, Message, MessageContent, RequestConfig, Role, StreamEvent, ThinkingConfig, Tool,
     UnifiedClient,
 };
+use crate::hooks::{HookResult, IntegratedHookSystem};
 use crate::tools::{ToolExecutor, ToolRegistry};
 
 /// Configuration for the native agent
@@ -372,6 +373,10 @@ impl NativeAgent {
         // Create tool executor
         let tool_executor = ToolExecutor::new(&config.cwd);
 
+        // Load hook system from config files
+        let mut hooks = IntegratedHookSystem::load_from_config(&config.cwd);
+        hooks.set_model(&config.model);
+
         // Create the background runner
         let runner = NativeAgentRunner {
             client,
@@ -384,6 +389,7 @@ impl NativeAgent {
             command_rx,
             busy: false,
             cancel_token: None,
+            hooks,
         };
 
         // Spawn the background task
@@ -577,6 +583,12 @@ struct NativeAgentRunner {
     /// Created when a prompt starts, triggered when `Cancel` command arrives.
     /// Used with `tokio::select!` to support graceful cancellation.
     cancel_token: Option<CancellationToken>,
+
+    /// Hook system for tool interception
+    ///
+    /// Executes pre/post tool hooks for safety checks, logging, and context injection.
+    /// Loaded from ~/.composer/hooks.toml and .composer/hooks.toml.
+    hooks: IntegratedHookSystem,
 }
 
 impl NativeAgentRunner {
@@ -845,6 +857,39 @@ impl NativeAgentRunner {
                         continue;
                     }
 
+                    // Execute PreToolUse hooks
+                    let hook_result = self.hooks.execute_pre_tool_use(&tool_name, &call_id, &args);
+
+                    // Handle hook results
+                    let (args, extra_context) = match hook_result {
+                        HookResult::Block { reason } => {
+                            // Hook blocked the tool - return error to model
+                            let _ = self.event_tx.send(FromAgent::HookBlocked {
+                                call_id: call_id.clone(),
+                                tool: tool_name.clone(),
+                                reason: reason.clone(),
+                            });
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: call_id,
+                                content: format!("Tool blocked by hook: {}", reason),
+                                is_error: Some(true),
+                            });
+                            continue;
+                        }
+                        HookResult::ModifyInput { new_input } => {
+                            // Use modified input
+                            (new_input, None)
+                        }
+                        HookResult::InjectContext { context } => {
+                            // Keep original args, but track context to append
+                            (args.clone(), Some(context))
+                        }
+                        HookResult::Continue => {
+                            // No modification
+                            (args.clone(), None)
+                        }
+                    };
+
                     // Check if this tool requires approval (dynamic bash logic)
                     let requires_approval = self.tool_executor.requires_approval(&tool_name, &args);
 
@@ -879,24 +924,42 @@ impl NativeAgentRunner {
                     };
 
                     // Build tool result for conversation
-                    let result_content = if approved {
-                        if let Some(res) = result {
-                            if res.success {
-                                res.output
+                    let (result_content, is_error) = if approved {
+                        if let Some(ref res) = result {
+                            let content = if res.success {
+                                res.output.clone()
                             } else {
-                                format!("Error: {}", res.error.unwrap_or_default())
-                            }
+                                format!("Error: {}", res.error.clone().unwrap_or_default())
+                            };
+
+                            // Execute PostToolUse hooks
+                            let _post_result = self.hooks.execute_post_tool_use(
+                                &tool_name,
+                                &call_id,
+                                &args,
+                                &content,
+                                !res.success,
+                            );
+
+                            // Append injected context if any
+                            let final_content = if let Some(ref ctx) = extra_context {
+                                format!("{}\n\n{}", content, ctx)
+                            } else {
+                                content
+                            };
+
+                            (final_content, !res.success)
                         } else {
-                            "Tool executed successfully".to_string()
+                            ("Tool executed successfully".to_string(), false)
                         }
                     } else {
-                        "Tool call was denied by user".to_string()
+                        ("Tool call was denied by user".to_string(), true)
                     };
 
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: call_id,
                         content: result_content,
-                        is_error: Some(!approved),
+                        is_error: Some(is_error),
                     });
                 }
 

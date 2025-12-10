@@ -464,6 +464,25 @@ pub enum FromAgent {
         #[serde(default)]
         git_branch: Option<String>,
     },
+
+    /// Tool was blocked by a hook
+    ///
+    /// Emitted when a PreToolUse hook blocks tool execution. The tool result
+    /// will contain an error message, and the model will be informed.
+    HookBlocked {
+        /// Tool call ID
+        ///
+        /// Matches the `call_id` from the attempted ToolCall.
+        call_id: String,
+
+        /// Name of the blocked tool
+        tool: String,
+
+        /// Reason the hook blocked this call
+        ///
+        /// Human-readable explanation of why the hook rejected this tool call.
+        reason: String,
+    },
 }
 
 /// Token usage statistics

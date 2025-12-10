@@ -672,6 +672,7 @@ impl Widget for MessageWidget<'_> {
                 ToolCallStatus::Completed => ("OK", Style::default().fg(Color::Green)),
                 ToolCallStatus::Failed => ("ERR", Style::default().fg(Color::Red)),
                 ToolCallStatus::Pending => ("PEND", Style::default().fg(Color::Yellow)),
+                ToolCallStatus::Blocked => ("BLOCK", Style::default().fg(Color::Magenta)),
             };
 
             // Header line
@@ -888,6 +889,7 @@ impl Widget for ToolCallWidget<'_> {
             ToolCallStatus::Running => ("*", Color::Blue),
             ToolCallStatus::Completed => ("+", Color::Green),
             ToolCallStatus::Failed => ("!", Color::Red),
+            ToolCallStatus::Blocked => ("X", Color::Magenta),
         };
 
         let header = Line::from(vec![
