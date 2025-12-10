@@ -26,6 +26,13 @@ export interface Component {
 	 * Optional handler for keyboard input when component has focus
 	 */
 	handleInput?(data: string): void;
+
+	/**
+	 * Optional method to invalidate any cached rendering state.
+	 * Called when theme changes or when component needs to re-render from scratch.
+	 * Components that cache rendered output should clear their caches here.
+	 */
+	invalidate?(): void;
 }
 
 export { visibleWidth };
@@ -49,6 +56,16 @@ export class Container implements Component {
 
 	clear(): void {
 		this.children = [];
+	}
+
+	/**
+	 * Invalidate all children's cached rendering state.
+	 * Call this when theme changes or when all components need to re-render from scratch.
+	 */
+	invalidate(): void {
+		for (const child of this.children) {
+			child.invalidate?.();
+		}
 	}
 
 	render(width: number): string[] {
@@ -216,6 +233,29 @@ export class TUI extends Container {
 
 	setFocus(component: Component | null): void {
 		this.focusedComponent = component;
+	}
+
+	/**
+	 * Invalidate all cached rendering state and force a full re-render.
+	 *
+	 * Call this when:
+	 * - Theme changes (colors, styles need to be re-applied)
+	 * - Global state changes that affect all components
+	 * - After hot-reloading component code
+	 *
+	 * This clears the TUI's wrap cache and calls invalidate() on all child
+	 * components, then triggers a render.
+	 */
+	invalidateAll(): void {
+		// Clear the wrap cache
+		this.wrapCache.clear();
+		// Reset previous state to force full re-render
+		this.previousLines = [];
+		this.previousWidth = 0;
+		// Invalidate all child components
+		super.invalidate();
+		// Trigger a render
+		this.requestRender();
 	}
 
 	start(): void {
