@@ -39,6 +39,12 @@ pub enum HookEventType {
     PreCompact,
     Notification,
     Overflow,
+    /// Before sending user message to model
+    PreMessage,
+    /// After receiving assistant response
+    PostMessage,
+    /// When an error occurs
+    OnError,
 }
 
 /// Input data for PreToolUse hooks
@@ -98,6 +104,63 @@ pub struct OverflowInput {
     pub timestamp: String,
     pub token_count: u64,
     pub max_tokens: u64,
+}
+
+/// Input data for PreMessage hooks
+///
+/// Called before a user message is sent to the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreMessageInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    /// The user's message content
+    pub message: String,
+    /// Attached files (paths)
+    pub attachments: Vec<String>,
+    /// Current model being used
+    pub model: Option<String>,
+}
+
+/// Input data for PostMessage hooks
+///
+/// Called after an assistant response is generated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostMessageInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    /// The assistant's response (text content only)
+    pub response: String,
+    /// Number of tokens used in input
+    pub input_tokens: u64,
+    /// Number of tokens in output
+    pub output_tokens: u64,
+    /// Total turn duration in milliseconds
+    pub duration_ms: u64,
+    /// Stop reason (if available)
+    pub stop_reason: Option<String>,
+}
+
+/// Input data for OnError hooks
+///
+/// Called when an error occurs during agent execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnErrorInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    /// Error message
+    pub error: String,
+    /// Error kind/type
+    pub error_kind: String,
+    /// Context where error occurred (tool name, api call, etc.)
+    pub context: Option<String>,
+    /// Whether the error is recoverable
+    pub recoverable: bool,
 }
 
 /// Trait for PreToolUse hooks
@@ -164,6 +227,48 @@ pub trait OverflowHook: Send + Sync {
     /// # Returns
     /// A `HookResult` - typically Continue to allow auto-compaction
     fn on_overflow(&self, input: &OverflowInput) -> HookResult;
+}
+
+/// Trait for PreMessage hooks
+///
+/// Called before a user message is sent to the model.
+/// Can be used to modify, validate, or block messages.
+pub trait PreMessageHook: Send + Sync {
+    /// Called before sending user message to model
+    ///
+    /// # Returns
+    /// - `Continue`: Send message as-is
+    /// - `ModifyInput`: Send modified message
+    /// - `Block`: Don't send message, show reason to user
+    fn on_pre_message(&self, input: &PreMessageInput) -> HookResult;
+}
+
+/// Trait for PostMessage hooks
+///
+/// Called after an assistant response is generated.
+/// Can be used for logging, analytics, or post-processing.
+pub trait PostMessageHook: Send + Sync {
+    /// Called after assistant response is generated
+    ///
+    /// # Note
+    /// Return value is typically ignored for post-hooks.
+    fn on_post_message(&self, input: &PostMessageInput) -> HookResult;
+}
+
+/// Trait for OnError hooks
+///
+/// Called when an error occurs during agent execution.
+/// Can be used for error logging, alerting, or recovery.
+pub trait OnErrorHook: Send + Sync {
+    /// Called when an error occurs
+    ///
+    /// # Arguments
+    /// * `input` - Information about the error
+    ///
+    /// # Returns
+    /// - `Continue`: Proceed with default error handling
+    /// - `Block`: Suppress the error (use with caution)
+    fn on_error(&self, input: &OnErrorInput) -> HookResult;
 }
 
 /// Output format for hooks (JSON-compatible with TypeScript)

@@ -130,7 +130,22 @@ impl WasmHookExecutor {
         HookResult::Continue
     }
 
-    pub fn execute_post_tool_use(&self, _input: &PostToolUseInput) -> HookResult {
+    pub fn execute_post_tool_use(&self, input: &PostToolUseInput) -> HookResult {
+        for plugin in &self.plugins {
+            if plugin.event != HookEventType::PostToolUse {
+                continue;
+            }
+            if !plugin.tools.is_empty() && !plugin.tools.contains(&input.tool_name) {
+                continue;
+            }
+
+            // Stub: log that we would run the plugin
+            eprintln!(
+                "[wasm-hook] Would execute post-hook: {} for tool: {} (enable 'wasm' feature for full support)",
+                plugin.path.display(),
+                input.tool_name
+            );
+        }
         HookResult::Continue
     }
 
@@ -414,9 +429,72 @@ impl WasmHookExecutor {
         }
     }
 
-    pub fn execute_post_tool_use(&self, _input: &PostToolUseInput) -> HookResult {
-        // TODO: Implement post-tool-use hooks for WASM
+    pub fn execute_post_tool_use(&self, input: &PostToolUseInput) -> HookResult {
+        let start = Instant::now();
+
+        for plugin in &self.plugins {
+            if plugin.event != HookEventType::PostToolUse {
+                continue;
+            }
+            if !plugin.tools.is_empty() && !plugin.tools.contains(&input.tool_name) {
+                continue;
+            }
+
+            // Check timeout
+            if start.elapsed() > self.timeout {
+                eprintln!("[wasm-hook] PostToolUse timeout exceeded");
+                return HookResult::Continue;
+            }
+
+            if let Err(e) = self.execute_post_plugin(plugin, input) {
+                eprintln!(
+                    "[wasm-hook] PostToolUse error in {}: {}",
+                    plugin.path.display(),
+                    e
+                );
+            }
+        }
         HookResult::Continue
+    }
+
+    fn execute_post_plugin(&self, plugin: &CompiledPlugin, input: &PostToolUseInput) -> Result<()> {
+        let mut store = Store::new(&self.engine, ());
+        store.set_epoch_deadline(1);
+
+        let instance = Instance::new(&mut store, &plugin.module, &[])
+            .with_context(|| "Failed to instantiate WASM module")?;
+
+        let memory = instance
+            .get_memory(&mut store, "memory")
+            .ok_or_else(|| anyhow::anyhow!("No memory export in WASM module"))?;
+
+        // Get alloc function
+        let alloc_fn = instance
+            .get_typed_func::<i32, i32>(&mut store, "alloc")
+            .with_context(|| "Missing 'alloc' export")?;
+
+        // Try to get on_post_tool_use - if not present, skip silently
+        let on_post_tool_use_fn =
+            match instance.get_typed_func::<(i32, i32), i32>(&mut store, "on_post_tool_use") {
+                Ok(f) => f,
+                Err(_) => return Ok(()), // No post hook in this plugin
+            };
+
+        // Serialize input to JSON
+        let input_json = serde_json::to_string(input)?;
+        let input_bytes = input_json.as_bytes();
+        let input_len = input_bytes.len() as i32;
+
+        // Allocate memory in WASM
+        let input_ptr = alloc_fn.call(&mut store, input_len)?;
+
+        // Write input to WASM memory
+        memory.write(&mut store, input_ptr as usize, input_bytes)?;
+
+        // Call the hook (return value ignored for post hooks)
+        let _ = on_post_tool_use_fn.call(&mut store, (input_ptr, input_len))?;
+
+        Ok(())
     }
 
     pub fn has_plugins(&self) -> bool {
