@@ -78,9 +78,11 @@
 mod anthropic;
 mod client;
 mod openai;
+mod transform;
 mod types;
 
 pub use anthropic::AnthropicClient;
 pub use client::{create_client, create_client_for_model, AiClient, AiProvider, UnifiedClient};
 pub use openai::OpenAiClient;
+pub use transform::{transform_messages, transform_messages_full};
 pub use types::*;
