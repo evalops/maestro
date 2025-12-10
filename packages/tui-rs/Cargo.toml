@@ -78,6 +78,9 @@ seccompiler = "0.4"
 [features]
 default = []
 clipboard = ["arboard"]
+# Optional hook backends (add deps when enabling)
+lua = []   # Enable with: mlua = { version = "0.9", features = ["lua54", "serialize"] }
+wasm = []  # Enable with: wasmtime = "18"
 
 [dev-dependencies]
 pretty_assertions = "1"
