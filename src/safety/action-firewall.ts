@@ -275,6 +275,9 @@ const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 		],
 	action: "require_approval",
 	evaluate: (ctx) => {
+		if (!isBashGuardEnabled()) {
+			return { allowed: true };
+		}
 		const command = getCommandArg(ctx);
 		if (!command) return { allowed: true };
 		const unwrapped = unwrapShellCommand(command) ?? command;
