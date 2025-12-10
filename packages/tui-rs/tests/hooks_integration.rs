@@ -604,11 +604,7 @@ fn test_hooks_disabled_returns_continue() {
 // Registry Tests for New Events
 // ============================================================================
 
-use composer_tui::hooks::{
-    EvalGateHook, EvalGateInput, OnErrorHook, OnErrorInput, PermissionRequestHook,
-    PermissionRequestInput, PostMessageHook, PostMessageInput, PreMessageHook, PreMessageInput,
-    SubagentStartHook, SubagentStartInput, SubagentStopHook, SubagentStopInput,
-};
+use composer_tui::hooks::{OnErrorHook, OnErrorInput, PreMessageHook, PreMessageInput};
 
 struct TestPreMessageHook {
     block_long_messages: bool,
