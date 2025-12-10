@@ -1338,7 +1338,13 @@ fn test_integrated_system_stats() {
     let system = IntegratedHookSystem::new("/tmp");
 
     let stats = system.stats();
-    assert!(!stats.enabled || stats.total() >= 0);
+    // Verify stats struct is accessible and fields are present
+    let _ = stats.enabled;
+    let _ = stats.total();
+    let _ = stats.native_hooks;
+    let _ = stats.lua_scripts;
+    let _ = stats.wasm_plugins;
+    let _ = stats.typescript_hooks;
 }
 
 #[test]
