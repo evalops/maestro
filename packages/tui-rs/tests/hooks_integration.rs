@@ -482,3 +482,293 @@ async fn test_async_with_bridge_start() {
     // Stop bridge
     let _ = system.stop_bridge().await;
 }
+
+// ============================================================================
+// New Event Tests: PreMessage, PostMessage, OnError, etc.
+// ============================================================================
+
+#[test]
+fn test_pre_message_hook_execution() {
+    let mut system = IntegratedHookSystem::new("/tmp");
+
+    let result = system.execute_pre_message("Hello, world!", &[], Some("claude-3-opus"));
+
+    assert!(matches!(result, HookResult::Continue));
+}
+
+#[test]
+fn test_post_message_hook_execution() {
+    let mut system = IntegratedHookSystem::new("/tmp");
+
+    let result =
+        system.execute_post_message("Here's my response...", 1000, 500, 2500, Some("end_turn"));
+
+    assert!(matches!(result, HookResult::Continue));
+}
+
+#[test]
+fn test_on_error_hook_execution() {
+    let mut system = IntegratedHookSystem::new("/tmp");
+
+    let result =
+        system.execute_on_error("Connection timeout", "NetworkError", Some("api_call"), true);
+
+    assert!(matches!(result, HookResult::Continue));
+}
+
+#[test]
+fn test_eval_gate_hook_execution() {
+    let mut system = IntegratedHookSystem::new("/tmp");
+
+    let result = system.execute_eval_gate(
+        "Bash",
+        "call_123",
+        &serde_json::json!({ "command": "ls" }),
+        "file1.txt\nfile2.txt",
+    );
+
+    assert!(matches!(result, HookResult::Continue));
+}
+
+#[test]
+fn test_subagent_start_hook_execution() {
+    let mut system = IntegratedHookSystem::new("/tmp");
+
+    let result =
+        system.execute_subagent_start("explore", "Find all TypeScript files", Some("parent_123"));
+
+    assert!(matches!(result, HookResult::Continue));
+}
+
+#[test]
+fn test_subagent_stop_hook_execution() {
+    let mut system = IntegratedHookSystem::new("/tmp");
+
+    let result =
+        system.execute_subagent_stop("explore", "agent_456", Some("Found 15 files"), 5000, true);
+
+    assert!(matches!(result, HookResult::Continue));
+}
+
+#[test]
+fn test_permission_request_hook_execution() {
+    let mut system = IntegratedHookSystem::new("/tmp");
+
+    let result = system.execute_permission_request(
+        "Bash",
+        "call_789",
+        &serde_json::json!({ "command": "rm -rf ./temp" }),
+        "Destructive operation",
+    );
+
+    assert!(matches!(result, HookResult::Continue));
+}
+
+#[test]
+fn test_hooks_disabled_returns_continue() {
+    let mut system = IntegratedHookSystem::new("/tmp");
+    system.disable();
+
+    // All hooks should return Continue when disabled
+    assert!(matches!(
+        system.execute_pre_message("test", &[], None),
+        HookResult::Continue
+    ));
+    assert!(matches!(
+        system.execute_post_message("test", 0, 0, 0, None),
+        HookResult::Continue
+    ));
+    assert!(matches!(
+        system.execute_on_error("test", "test", None, true),
+        HookResult::Continue
+    ));
+    assert!(matches!(
+        system.execute_eval_gate("Bash", "1", &serde_json::json!({}), ""),
+        HookResult::Continue
+    ));
+    assert!(matches!(
+        system.execute_subagent_start("test", "test", None),
+        HookResult::Continue
+    ));
+    assert!(matches!(
+        system.execute_subagent_stop("test", "1", None, 0, true),
+        HookResult::Continue
+    ));
+    assert!(matches!(
+        system.execute_permission_request("Bash", "1", &serde_json::json!({}), "test"),
+        HookResult::Continue
+    ));
+}
+
+// ============================================================================
+// Registry Tests for New Events
+// ============================================================================
+
+use composer_tui::hooks::{
+    EvalGateHook, EvalGateInput, OnErrorHook, OnErrorInput, PermissionRequestHook,
+    PermissionRequestInput, PostMessageHook, PostMessageInput, PreMessageHook, PreMessageInput,
+    SubagentStartHook, SubagentStartInput, SubagentStopHook, SubagentStopInput,
+};
+
+struct TestPreMessageHook {
+    block_long_messages: bool,
+}
+
+impl PreMessageHook for TestPreMessageHook {
+    fn on_pre_message(&self, input: &PreMessageInput) -> HookResult {
+        if self.block_long_messages && input.message.len() > 1000 {
+            HookResult::Block {
+                reason: "Message too long".to_string(),
+            }
+        } else {
+            HookResult::Continue
+        }
+    }
+}
+
+#[test]
+fn test_registry_pre_message_hook() {
+    use composer_tui::hooks::HookRegistry;
+
+    let mut registry = HookRegistry::new();
+    registry.register_pre_message(Arc::new(TestPreMessageHook {
+        block_long_messages: true,
+    }));
+
+    // Short message should pass
+    let short_input = PreMessageInput {
+        hook_event_name: "PreMessage".to_string(),
+        cwd: "/tmp".to_string(),
+        session_id: None,
+        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        message: "Hello".to_string(),
+        attachments: vec![],
+        model: None,
+    };
+    assert!(matches!(
+        registry.execute_pre_message(&short_input),
+        HookResult::Continue
+    ));
+
+    // Long message should be blocked
+    let long_input = PreMessageInput {
+        hook_event_name: "PreMessage".to_string(),
+        cwd: "/tmp".to_string(),
+        session_id: None,
+        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        message: "x".repeat(1001),
+        attachments: vec![],
+        model: None,
+    };
+    assert!(matches!(
+        registry.execute_pre_message(&long_input),
+        HookResult::Block { .. }
+    ));
+}
+
+struct TestOnErrorHook {
+    suppress_network_errors: bool,
+}
+
+impl OnErrorHook for TestOnErrorHook {
+    fn on_error(&self, input: &OnErrorInput) -> HookResult {
+        if self.suppress_network_errors && input.error_kind == "NetworkError" {
+            HookResult::Block {
+                reason: "Suppressed network error".to_string(),
+            }
+        } else {
+            HookResult::Continue
+        }
+    }
+}
+
+#[test]
+fn test_registry_on_error_hook() {
+    use composer_tui::hooks::HookRegistry;
+
+    let mut registry = HookRegistry::new();
+    registry.register_on_error(Arc::new(TestOnErrorHook {
+        suppress_network_errors: true,
+    }));
+
+    // Non-network error should pass
+    let other_error = OnErrorInput {
+        hook_event_name: "OnError".to_string(),
+        cwd: "/tmp".to_string(),
+        session_id: None,
+        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        error: "Some error".to_string(),
+        error_kind: "ValidationError".to_string(),
+        context: None,
+        recoverable: true,
+    };
+    assert!(matches!(
+        registry.execute_on_error(&other_error),
+        HookResult::Continue
+    ));
+
+    // Network error should be suppressed
+    let network_error = OnErrorInput {
+        hook_event_name: "OnError".to_string(),
+        cwd: "/tmp".to_string(),
+        session_id: None,
+        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        error: "Connection timeout".to_string(),
+        error_kind: "NetworkError".to_string(),
+        context: None,
+        recoverable: true,
+    };
+    assert!(matches!(
+        registry.execute_on_error(&network_error),
+        HookResult::Block { .. }
+    ));
+}
+
+#[test]
+fn test_registry_has_hooks_for_new_events() {
+    use composer_tui::hooks::HookRegistry;
+
+    let mut registry = HookRegistry::new();
+
+    // Initially no hooks
+    assert!(!registry.has_hooks(HookEventType::PreMessage));
+    assert!(!registry.has_hooks(HookEventType::PostMessage));
+    assert!(!registry.has_hooks(HookEventType::OnError));
+    assert!(!registry.has_hooks(HookEventType::EvalGate));
+    assert!(!registry.has_hooks(HookEventType::SubagentStart));
+    assert!(!registry.has_hooks(HookEventType::SubagentStop));
+    assert!(!registry.has_hooks(HookEventType::PermissionRequest));
+
+    // Add hooks
+    registry.register_pre_message(Arc::new(TestPreMessageHook {
+        block_long_messages: false,
+    }));
+    registry.register_on_error(Arc::new(TestOnErrorHook {
+        suppress_network_errors: false,
+    }));
+
+    // Now we should have hooks
+    assert!(registry.has_hooks(HookEventType::PreMessage));
+    assert!(registry.has_hooks(HookEventType::OnError));
+}
+
+#[test]
+fn test_registry_total_hook_count() {
+    use composer_tui::hooks::{HookRegistry, SafetyHook};
+
+    let mut registry = HookRegistry::new();
+    assert_eq!(registry.total_hook_count(), 0);
+
+    registry.register_pre_tool_use(Arc::new(SafetyHook));
+    assert_eq!(registry.total_hook_count(), 1);
+
+    registry.register_pre_message(Arc::new(TestPreMessageHook {
+        block_long_messages: false,
+    }));
+    assert_eq!(registry.total_hook_count(), 2);
+
+    registry.register_on_error(Arc::new(TestOnErrorHook {
+        suppress_network_errors: false,
+    }));
+    assert_eq!(registry.total_hook_count(), 3);
+}

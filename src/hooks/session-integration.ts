@@ -5,9 +5,14 @@
  * - SessionStart
  * - SessionEnd
  * - SubagentStart
+ * - SubagentStop
  * - UserPromptSubmit
  * - PreCompact
  * - Notification
+ * - Overflow
+ * - PreMessage
+ * - PostMessage
+ * - OnError
  */
 
 import { createLogger } from "../utils/logger.js";
@@ -15,7 +20,11 @@ import { executeHooks, hasHooksForEvent } from "./executor.js";
 import type {
 	HookExecutionResult,
 	NotificationHookInput,
+	OnErrorHookInput,
+	OverflowHookInput,
+	PostMessageHookInput,
 	PreCompactHookInput,
+	PreMessageHookInput,
 	SessionEndHookInput,
 	SessionStartHookInput,
 	SubagentStartHookInput,
@@ -145,6 +154,49 @@ export interface SessionHookService {
 	): Promise<SessionHookResult>;
 
 	/**
+	 * Run Overflow hooks when context overflow is detected.
+	 */
+	runOverflowHooks(
+		tokenCount: number,
+		maxTokens: number,
+		model?: string,
+		signal?: AbortSignal,
+	): Promise<SessionHookResult>;
+
+	/**
+	 * Run PreMessage hooks before sending user message to model.
+	 */
+	runPreMessageHooks(
+		message: string,
+		attachments: string[],
+		model?: string,
+		signal?: AbortSignal,
+	): Promise<SessionHookResult>;
+
+	/**
+	 * Run PostMessage hooks after assistant response is generated.
+	 */
+	runPostMessageHooks(
+		response: string,
+		inputTokens: number,
+		outputTokens: number,
+		durationMs: number,
+		stopReason?: string,
+		signal?: AbortSignal,
+	): Promise<SessionHookResult>;
+
+	/**
+	 * Run OnError hooks when an error occurs.
+	 */
+	runOnErrorHooks(
+		error: string,
+		errorKind: string,
+		context?: string,
+		recoverable?: boolean,
+		signal?: AbortSignal,
+	): Promise<SessionHookResult>;
+
+	/**
 	 * Check if hooks exist for a given event type.
 	 */
 	hasHooks(
@@ -155,7 +207,11 @@ export interface SessionHookService {
 			| "SubagentStop"
 			| "UserPromptSubmit"
 			| "PreCompact"
-			| "Notification",
+			| "Notification"
+			| "Overflow"
+			| "PreMessage"
+			| "PostMessage"
+			| "OnError",
 	): boolean;
 }
 
@@ -425,6 +481,129 @@ export function createSessionHookService(
 			return processed;
 		},
 
+		async runOverflowHooks(
+			tokenCount: number,
+			maxTokens: number,
+			model?: string,
+			signal?: AbortSignal,
+		): Promise<SessionHookResult> {
+			const input: OverflowHookInput = {
+				hook_event_name: "Overflow",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				token_count: tokenCount,
+				max_tokens: maxTokens,
+				model,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+			const processed = processResults(results);
+
+			logger.debug("Overflow hooks completed", {
+				tokenCount,
+				maxTokens,
+				model,
+				resultCount: results.length,
+			});
+
+			return processed;
+		},
+
+		async runPreMessageHooks(
+			message: string,
+			attachments: string[],
+			model?: string,
+			signal?: AbortSignal,
+		): Promise<SessionHookResult> {
+			const input: PreMessageHookInput = {
+				hook_event_name: "PreMessage",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				message,
+				attachments,
+				model,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+			const processed = processResults(results);
+
+			logger.debug("PreMessage hooks completed", {
+				messageLength: message.length,
+				attachmentCount: attachments.length,
+				model,
+				resultCount: results.length,
+			});
+
+			return processed;
+		},
+
+		async runPostMessageHooks(
+			response: string,
+			inputTokens: number,
+			outputTokens: number,
+			durationMs: number,
+			stopReason?: string,
+			signal?: AbortSignal,
+		): Promise<SessionHookResult> {
+			const input: PostMessageHookInput = {
+				hook_event_name: "PostMessage",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				response,
+				input_tokens: inputTokens,
+				output_tokens: outputTokens,
+				duration_ms: durationMs,
+				stop_reason: stopReason,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+			const processed = processResults(results);
+
+			logger.debug("PostMessage hooks completed", {
+				responseLength: response.length,
+				inputTokens,
+				outputTokens,
+				durationMs,
+				stopReason,
+				resultCount: results.length,
+			});
+
+			return processed;
+		},
+
+		async runOnErrorHooks(
+			error: string,
+			errorKind: string,
+			errorContext?: string,
+			recoverable?: boolean,
+			signal?: AbortSignal,
+		): Promise<SessionHookResult> {
+			const input: OnErrorHookInput = {
+				hook_event_name: "OnError",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				error,
+				error_kind: errorKind,
+				context: errorContext,
+				recoverable: recoverable ?? true,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+			const processed = processResults(results);
+
+			logger.debug("OnError hooks completed", {
+				errorKind,
+				recoverable,
+				resultCount: results.length,
+			});
+
+			return processed;
+		},
+
 		hasHooks(
 			eventType:
 				| "SessionStart"
@@ -433,7 +612,11 @@ export function createSessionHookService(
 				| "SubagentStop"
 				| "UserPromptSubmit"
 				| "PreCompact"
-				| "Notification",
+				| "Notification"
+				| "Overflow"
+				| "PreMessage"
+				| "PostMessage"
+				| "OnError",
 		): boolean {
 			return hasHooksForEvent(eventType, context.cwd);
 		},

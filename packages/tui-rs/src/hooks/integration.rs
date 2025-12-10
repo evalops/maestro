@@ -564,6 +564,220 @@ impl IntegratedHookSystem {
         matches!(result, HookResult::Continue)
     }
 
+    /// Execute PreMessage hooks - called before sending user message to model
+    pub fn execute_pre_message(
+        &mut self,
+        message: &str,
+        attachments: &[String],
+        model: Option<&str>,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = PreMessageInput {
+            hook_event_name: "PreMessage".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            message: message.to_string(),
+            attachments: attachments.to_vec(),
+            model: model.map(String::from),
+        };
+
+        self.log_event("PreMessage", &format!("len={}", message.len()));
+
+        self.execute_with_timeout(|| self.registry.execute_pre_message(&input))
+    }
+
+    /// Execute PostMessage hooks - called after assistant response
+    pub fn execute_post_message(
+        &mut self,
+        response: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        duration_ms: u64,
+        stop_reason: Option<&str>,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = PostMessageInput {
+            hook_event_name: "PostMessage".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            response: response.to_string(),
+            input_tokens,
+            output_tokens,
+            duration_ms,
+            stop_reason: stop_reason.map(String::from),
+        };
+
+        self.log_event(
+            "PostMessage",
+            &format!(
+                "tokens={}+{} duration={}ms",
+                input_tokens, output_tokens, duration_ms
+            ),
+        );
+
+        self.registry.execute_post_message(&input)
+    }
+
+    /// Execute OnError hooks - called when an error occurs
+    pub fn execute_on_error(
+        &mut self,
+        error: &str,
+        error_kind: &str,
+        context: Option<&str>,
+        recoverable: bool,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = OnErrorInput {
+            hook_event_name: "OnError".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            error: error.to_string(),
+            error_kind: error_kind.to_string(),
+            context: context.map(String::from),
+            recoverable,
+        };
+
+        self.log_event(
+            "OnError",
+            &format!("kind={} recoverable={}", error_kind, recoverable),
+        );
+
+        self.registry.execute_on_error(&input)
+    }
+
+    /// Execute EvalGate hooks - called after tool execution for evaluation
+    pub fn execute_eval_gate(
+        &mut self,
+        tool_name: &str,
+        tool_call_id: &str,
+        tool_input: &serde_json::Value,
+        tool_output: &str,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = EvalGateInput {
+            hook_event_name: "EvalGate".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            tool_name: tool_name.to_string(),
+            tool_call_id: tool_call_id.to_string(),
+            tool_input: tool_input.clone(),
+            tool_output: tool_output.to_string(),
+        };
+
+        self.log_event("EvalGate", &format!("tool={}", tool_name));
+
+        self.registry.execute_eval_gate(&input)
+    }
+
+    /// Execute SubagentStart hooks - called before spawning a subagent
+    pub fn execute_subagent_start(
+        &mut self,
+        subagent_type: &str,
+        task: &str,
+        parent_agent_id: Option<&str>,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = SubagentStartInput {
+            hook_event_name: "SubagentStart".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            subagent_type: subagent_type.to_string(),
+            task: task.to_string(),
+            parent_agent_id: parent_agent_id.map(String::from),
+        };
+
+        self.log_event("SubagentStart", &format!("type={}", subagent_type));
+
+        self.registry.execute_subagent_start(&input)
+    }
+
+    /// Execute SubagentStop hooks - called when a subagent completes
+    pub fn execute_subagent_stop(
+        &mut self,
+        subagent_type: &str,
+        subagent_id: &str,
+        result: Option<&str>,
+        duration_ms: u64,
+        success: bool,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = SubagentStopInput {
+            hook_event_name: "SubagentStop".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            subagent_type: subagent_type.to_string(),
+            subagent_id: subagent_id.to_string(),
+            result: result.map(String::from),
+            duration_ms,
+            success,
+        };
+
+        self.log_event(
+            "SubagentStop",
+            &format!(
+                "type={} success={} duration={}ms",
+                subagent_type, success, duration_ms
+            ),
+        );
+
+        self.registry.execute_subagent_stop(&input)
+    }
+
+    /// Execute PermissionRequest hooks - called when permission is required
+    pub fn execute_permission_request(
+        &mut self,
+        tool_name: &str,
+        tool_call_id: &str,
+        tool_input: &serde_json::Value,
+        reason: &str,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = PermissionRequestInput {
+            hook_event_name: "PermissionRequest".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            tool_name: tool_name.to_string(),
+            tool_call_id: tool_call_id.to_string(),
+            tool_input: tool_input.clone(),
+            reason: reason.to_string(),
+        };
+
+        self.log_event(
+            "PermissionRequest",
+            &format!("tool={} reason={}", tool_name, reason),
+        );
+
+        self.registry.execute_permission_request(&input)
+    }
+
     /// Get hook statistics
     pub fn stats(&self) -> HookStats {
         HookStats {

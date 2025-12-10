@@ -15,6 +15,13 @@ pub struct HookRegistry {
     session_start_hooks: Vec<Arc<dyn SessionStartHook>>,
     session_end_hooks: Vec<Arc<dyn SessionEndHook>>,
     overflow_hooks: Vec<Arc<dyn OverflowHook>>,
+    pre_message_hooks: Vec<Arc<dyn PreMessageHook>>,
+    post_message_hooks: Vec<Arc<dyn PostMessageHook>>,
+    on_error_hooks: Vec<Arc<dyn OnErrorHook>>,
+    eval_gate_hooks: Vec<Arc<dyn EvalGateHook>>,
+    subagent_start_hooks: Vec<Arc<dyn SubagentStartHook>>,
+    subagent_stop_hooks: Vec<Arc<dyn SubagentStopHook>>,
+    permission_request_hooks: Vec<Arc<dyn PermissionRequestHook>>,
 }
 
 impl Default for HookRegistry {
@@ -32,6 +39,13 @@ impl HookRegistry {
             session_start_hooks: Vec::new(),
             session_end_hooks: Vec::new(),
             overflow_hooks: Vec::new(),
+            pre_message_hooks: Vec::new(),
+            post_message_hooks: Vec::new(),
+            on_error_hooks: Vec::new(),
+            eval_gate_hooks: Vec::new(),
+            subagent_start_hooks: Vec::new(),
+            subagent_stop_hooks: Vec::new(),
+            permission_request_hooks: Vec::new(),
         }
     }
 
@@ -58,6 +72,41 @@ impl HookRegistry {
     /// Register an Overflow hook
     pub fn register_overflow(&mut self, hook: Arc<dyn OverflowHook>) {
         self.overflow_hooks.push(hook);
+    }
+
+    /// Register a PreMessage hook
+    pub fn register_pre_message(&mut self, hook: Arc<dyn PreMessageHook>) {
+        self.pre_message_hooks.push(hook);
+    }
+
+    /// Register a PostMessage hook
+    pub fn register_post_message(&mut self, hook: Arc<dyn PostMessageHook>) {
+        self.post_message_hooks.push(hook);
+    }
+
+    /// Register an OnError hook
+    pub fn register_on_error(&mut self, hook: Arc<dyn OnErrorHook>) {
+        self.on_error_hooks.push(hook);
+    }
+
+    /// Register an EvalGate hook
+    pub fn register_eval_gate(&mut self, hook: Arc<dyn EvalGateHook>) {
+        self.eval_gate_hooks.push(hook);
+    }
+
+    /// Register a SubagentStart hook
+    pub fn register_subagent_start(&mut self, hook: Arc<dyn SubagentStartHook>) {
+        self.subagent_start_hooks.push(hook);
+    }
+
+    /// Register a SubagentStop hook
+    pub fn register_subagent_stop(&mut self, hook: Arc<dyn SubagentStopHook>) {
+        self.subagent_stop_hooks.push(hook);
+    }
+
+    /// Register a PermissionRequest hook
+    pub fn register_permission_request(&mut self, hook: Arc<dyn PermissionRequestHook>) {
+        self.permission_request_hooks.push(hook);
     }
 
     /// Execute PreToolUse hooks
@@ -128,6 +177,90 @@ impl HookRegistry {
         HookResult::Continue
     }
 
+    /// Execute PreMessage hooks
+    pub fn execute_pre_message(&self, input: &PreMessageInput) -> HookResult {
+        for hook in &self.pre_message_hooks {
+            let result = hook.on_pre_message(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
+    /// Execute PostMessage hooks
+    pub fn execute_post_message(&self, input: &PostMessageInput) -> HookResult {
+        for hook in &self.post_message_hooks {
+            let result = hook.on_post_message(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
+    /// Execute OnError hooks
+    pub fn execute_on_error(&self, input: &OnErrorInput) -> HookResult {
+        for hook in &self.on_error_hooks {
+            let result = hook.on_error(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
+    /// Execute EvalGate hooks
+    pub fn execute_eval_gate(&self, input: &EvalGateInput) -> HookResult {
+        for hook in &self.eval_gate_hooks {
+            let result = hook.on_eval_gate(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
+    /// Execute SubagentStart hooks
+    pub fn execute_subagent_start(&self, input: &SubagentStartInput) -> HookResult {
+        for hook in &self.subagent_start_hooks {
+            let result = hook.on_subagent_start(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
+    /// Execute SubagentStop hooks
+    pub fn execute_subagent_stop(&self, input: &SubagentStopInput) -> HookResult {
+        for hook in &self.subagent_stop_hooks {
+            let result = hook.on_subagent_stop(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
+    /// Execute PermissionRequest hooks
+    pub fn execute_permission_request(&self, input: &PermissionRequestInput) -> HookResult {
+        for hook in &self.permission_request_hooks {
+            let result = hook.on_permission_request(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
     /// Check if any hooks are registered for an event type
     pub fn has_hooks(&self, event_type: HookEventType) -> bool {
         match event_type {
@@ -136,8 +269,35 @@ impl HookRegistry {
             HookEventType::SessionStart => !self.session_start_hooks.is_empty(),
             HookEventType::SessionEnd => !self.session_end_hooks.is_empty(),
             HookEventType::Overflow => !self.overflow_hooks.is_empty(),
-            _ => false,
+            HookEventType::PreMessage => !self.pre_message_hooks.is_empty(),
+            HookEventType::PostMessage => !self.post_message_hooks.is_empty(),
+            HookEventType::OnError => !self.on_error_hooks.is_empty(),
+            HookEventType::EvalGate => !self.eval_gate_hooks.is_empty(),
+            HookEventType::SubagentStart => !self.subagent_start_hooks.is_empty(),
+            HookEventType::SubagentStop => !self.subagent_stop_hooks.is_empty(),
+            HookEventType::PermissionRequest => !self.permission_request_hooks.is_empty(),
+            // These don't have dedicated hook vectors yet
+            HookEventType::PostToolUseFailure
+            | HookEventType::UserPromptSubmit
+            | HookEventType::PreCompact
+            | HookEventType::Notification => false,
         }
+    }
+
+    /// Get count of all registered hooks
+    pub fn total_hook_count(&self) -> usize {
+        self.pre_tool_use_hooks.len()
+            + self.post_tool_use_hooks.len()
+            + self.session_start_hooks.len()
+            + self.session_end_hooks.len()
+            + self.overflow_hooks.len()
+            + self.pre_message_hooks.len()
+            + self.post_message_hooks.len()
+            + self.on_error_hooks.len()
+            + self.eval_gate_hooks.len()
+            + self.subagent_start_hooks.len()
+            + self.subagent_stop_hooks.len()
+            + self.permission_request_hooks.len()
     }
 }
 
