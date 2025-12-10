@@ -78,6 +78,7 @@ mod lua;
 mod wasm;
 mod bridge;
 mod overflow;
+mod integration;
 
 pub use types::*;
 pub use registry::*;
@@ -86,3 +87,4 @@ pub use lua::*;
 pub use wasm::*;
 pub use bridge::*;
 pub use overflow::*;
+pub use integration::*;

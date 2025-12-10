@@ -1,0 +1,126 @@
+# Composer Hooks Configuration
+#
+# Place this file at:
+#   ~/.composer/hooks.toml     (global)
+#   .composer/hooks.toml       (project-local)
+#
+# Hook events:
+#   - PreToolUse       - Before tool execution
+#   - PostToolUse      - After tool execution
+#   - SessionStart     - When session begins
+#   - SessionEnd       - When session ends
+#   - Overflow         - When context overflow detected
+#
+# Hook types:
+#   - command          - Shell command to execute
+#   - lua              - Inline Lua script
+#   - lua_file         - Path to Lua script
+#   - wasm             - Path to WASM plugin
+#   - typescript       - Path to TypeScript hook (IPC)
+
+[settings]
+# Master switch to enable/disable all hooks
+enabled = true
+
+# Default timeout for hook execution (ms)
+timeout_ms = 30000
+
+# Log hook executions to file
+log_executions = true
+log_file = "~/.composer/hooks.log"
+
+# ============================================================================
+# Safety Hooks - Block dangerous operations
+# ============================================================================
+
+[[hooks]]
+event = "PreToolUse"
+tools = ["Bash"]
+description = "Block dangerous shell commands"
+lua = """
+-- Block rm -rf on root or home
+if tool_name == "Bash" then
+    local cmd = tool_input.command or ""
+    if cmd:match("rm %-rf /") or cmd:match("rm %-rf ~") then
+        return { block = true, reason = "Dangerous rm command blocked" }
+    end
+    if cmd:match("mkfs") or cmd:match("> /dev/sd") then
+        return { block = true, reason = "Disk operation blocked" }
+    end
+end
+return { continue = true }
+"""
+
+# ============================================================================
+# Logging Hooks - Audit trail
+# ============================================================================
+
+[[hooks]]
+event = "PreToolUse"
+description = "Log all tool calls"
+command = "echo \"[$(date)] Tool: $TOOL_NAME\" >> ~/.composer/activity.log"
+
+[[hooks]]
+event = "PostToolUse"
+description = "Log tool results"
+command = "echo \"[$(date)] Result: $TOOL_NAME ($IS_ERROR)\" >> ~/.composer/activity.log"
+
+# ============================================================================
+# Context Injection Hooks
+# ============================================================================
+
+[[hooks]]
+event = "PreToolUse"
+tools = ["Read"]
+description = "Add context for file reads"
+lua = """
+-- Inject reminder about sensitive files
+local path = tool_input.file_path or ""
+if path:match("%.env") or path:match("credentials") or path:match("secret") then
+    return {
+        continue = true,
+        context = "[Security note: This file may contain sensitive data - handle carefully]"
+    }
+end
+return { continue = true }
+"""
+
+# ============================================================================
+# Workflow Hooks
+# ============================================================================
+
+[[hooks]]
+event = "SessionStart"
+description = "Session initialization"
+lua = """
+-- Could set up session-specific state here
+print("[hook] Session started in: " .. cwd)
+return { continue = true }
+"""
+
+[[hooks]]
+event = "SessionEnd"
+description = "Session cleanup"
+lua = """
+-- Could clean up resources here
+print("[hook] Session ended after " .. (duration_ms or 0) .. "ms")
+return { continue = true }
+"""
+
+# ============================================================================
+# WASM Plugin Example (requires .wasm file)
+# ============================================================================
+
+# [[hooks]]
+# event = "PreToolUse"
+# description = "WASM safety plugin"
+# wasm = "~/.composer/plugins/safety.wasm"
+
+# ============================================================================
+# TypeScript Hook Example (IPC bridge)
+# ============================================================================
+
+# [[hooks]]
+# event = "PreToolUse"
+# description = "TypeScript integration"
+# typescript = "~/.composer/hooks/custom.ts"
