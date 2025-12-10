@@ -102,6 +102,12 @@ export interface OtlpGrpcConfig {
 	headers?: Record<string, string>;
 }
 
+export interface RetryConfig {
+	enabled?: boolean; // default: true
+	max_retries?: number; // default: 3
+	base_delay_ms?: number; // default: 2000 (exponential backoff: 2s, 4s, 8s)
+}
+
 export interface HistoryConfig {
 	persistence?: "save-all" | "none";
 	max_bytes?: number;
@@ -174,6 +180,9 @@ export interface ComposerConfig {
 	// History
 	history?: HistoryConfig;
 
+	// Retry on transient errors
+	retry?: RetryConfig;
+
 	// TUI
 	tui?: TuiConfig;
 
@@ -211,6 +220,11 @@ export const DEFAULT_CONFIG: ComposerConfig = {
 	},
 	history: {
 		persistence: "save-all",
+	},
+	retry: {
+		enabled: true,
+		max_retries: 3,
+		base_delay_ms: 2000,
 	},
 	tui: {
 		notifications: true,

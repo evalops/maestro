@@ -183,3 +183,73 @@ export function parseOverflowDetails(
 export function getOverflowPatterns(): RegExp[] {
 	return [...OVERFLOW_PATTERNS];
 }
+
+/**
+ * Regex patterns to detect transient/retryable errors from providers.
+ * These are temporary failures that should be retried with backoff.
+ */
+const RETRYABLE_PATTERNS = [
+	// Anthropic: "overloaded_error"
+	/overloaded/i,
+
+	// Rate limiting (various providers)
+	/rate.?limit/i,
+	/too many requests/i,
+	/429/i,
+
+	// Server errors (5xx)
+	/500/i,
+	/502/i,
+	/503/i,
+	/504/i,
+	/service.?unavailable/i,
+	/server error/i,
+	/internal error/i,
+
+	// Temporary failures
+	/temporarily/i,
+	/try again/i,
+];
+
+/**
+ * Check if an assistant message represents a retryable transient error.
+ *
+ * Retryable errors include:
+ * - Rate limits (429, "too many requests")
+ * - Server overload ("overloaded_error")
+ * - Server errors (500, 502, 503, 504)
+ * - Temporary failures ("service unavailable", "try again later")
+ *
+ * NOTE: Context overflow errors are NOT retryable - they should be
+ * handled by compaction instead.
+ *
+ * @param message - The assistant message to check
+ * @param contextWindow - Context window size for overflow detection
+ * @returns true if the error is transient and should be retried
+ */
+export function isRetryableError(
+	message: AssistantMessage,
+	contextWindow?: number,
+): boolean {
+	// Must have an error
+	if (message.stopReason !== "error" || !message.errorMessage) {
+		return false;
+	}
+
+	// Context overflow is NOT retryable (handled by compaction)
+	if (isContextOverflow(message, contextWindow)) {
+		return false;
+	}
+
+	// Check for retryable patterns
+	const err = message.errorMessage;
+	return RETRYABLE_PATTERNS.some((pattern) => pattern.test(err));
+}
+
+/**
+ * Get all retryable error patterns (for testing).
+ * @internal
+ */
+export function getRetryablePatterns(): RegExp[] {
+	return [...RETRYABLE_PATTERNS];
+}

@@ -976,6 +976,28 @@ export type AgentEvent =
 			customInstructions?: string;
 			/** Timestamp of compaction */
 			timestamp: string;
+	  }
+	| {
+			/** Auto-retry started for transient error (rate limit, overload, 5xx) */
+			type: "auto_retry_start";
+			/** Current retry attempt (1-based) */
+			attempt: number;
+			/** Maximum number of retry attempts */
+			maxAttempts: number;
+			/** Delay in milliseconds before retry */
+			delayMs: number;
+			/** The error message that triggered the retry */
+			errorMessage: string;
+	  }
+	| {
+			/** Auto-retry completed (success or final failure) */
+			type: "auto_retry_end";
+			/** Whether the retry eventually succeeded */
+			success: boolean;
+			/** Final attempt number */
+			attempt: number;
+			/** If failed, the final error message */
+			finalError?: string;
 	  };
 
 /**
