@@ -1061,7 +1061,7 @@ impl AiClient for OpenAiClient {
                                             });
                                         }
                                     }
-                                    let _ = tx.send(StreamEvent::MessageStop);
+                                    let _ = tx.send(StreamEvent::MessageStop { stop_reason: None });
                                     return;
                                 }
                                 "response.failed" => {
@@ -1120,7 +1120,7 @@ impl AiClient for OpenAiClient {
                 }
 
                 // Stream ended without response.completed
-                let _ = tx.send(StreamEvent::MessageStop);
+                let _ = tx.send(StreamEvent::MessageStop { stop_reason: None });
             });
         } else {
             // Chat Completions API - uses simpler line-based SSE
@@ -1170,7 +1170,7 @@ impl AiClient for OpenAiClient {
                                             });
                                         }
                                     }
-                                    let _ = tx.send(StreamEvent::MessageStop);
+                                    let _ = tx.send(StreamEvent::MessageStop { stop_reason: None });
                                     return;
                                 }
 

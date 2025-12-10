@@ -810,7 +810,16 @@ impl NativeAgentRunner {
                         usage.cache_read_tokens = cache_read_tokens.unwrap_or(0);
                         usage.cache_write_tokens = cache_creation_tokens.unwrap_or(0);
                     }
-                    StreamEvent::MessageStop => {
+                    StreamEvent::MessageStop { stop_reason } => {
+                        // Check for context overflow
+                        if matches!(stop_reason, Some(crate::ai::StopReason::MaxTokens)) {
+                            eprintln!("[agent] Context overflow detected (MaxTokens)");
+                            // Hooks can handle overflow
+                            if self.hooks.handle_overflow() {
+                                // TODO: Trigger compaction and continue
+                                eprintln!("[agent] Auto-compaction would trigger here");
+                            }
+                        }
                         break;
                     }
                     StreamEvent::Error { message } => {

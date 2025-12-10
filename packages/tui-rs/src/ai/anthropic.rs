@@ -80,10 +80,16 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::Deserialize;
+use std::cell::RefCell;
 use tokio::sync::mpsc;
 
 use super::client::{AiClient, AiProvider};
 use super::types::*;
+
+// Thread-local storage for stop_reason from message_delta to message_stop
+thread_local! {
+    static LAST_STOP_REASON: RefCell<Option<StopReason>> = const { RefCell::new(None) };
+}
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -405,6 +411,12 @@ fn parse_sse_event(data: &str) -> Option<StreamEvent> {
         }
         "message_delta" => {
             let parsed: MessageDeltaEvent = serde_json::from_str(event_data).ok()?;
+            // Store stop_reason in thread-local for message_stop to pick up
+            if let Some(delta) = &parsed.delta {
+                if delta.stop_reason.is_some() {
+                    LAST_STOP_REASON.with(|r| *r.borrow_mut() = delta.stop_reason);
+                }
+            }
             parsed.usage.map(|usage| StreamEvent::Usage {
                 input_tokens: usage.input_tokens.unwrap_or(0),
                 output_tokens: usage.output_tokens.unwrap_or(0),
@@ -412,7 +424,10 @@ fn parse_sse_event(data: &str) -> Option<StreamEvent> {
                 cache_creation_tokens: usage.cache_creation_input_tokens,
             })
         }
-        "message_stop" => Some(StreamEvent::MessageStop),
+        "message_stop" => {
+            let stop_reason = LAST_STOP_REASON.with(|r| r.borrow_mut().take());
+            Some(StreamEvent::MessageStop { stop_reason })
+        }
         "error" => {
             let parsed: ErrorEvent = serde_json::from_str(event_data).ok()?;
             Some(StreamEvent::Error {
@@ -544,6 +559,14 @@ struct ContentBlockStopEvent {
 struct MessageDeltaEvent {
     #[serde(default)]
     usage: Option<UsageInfo>,
+    #[serde(default)]
+    delta: Option<MessageDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageDelta {
+    #[serde(default)]
+    stop_reason: Option<super::types::StopReason>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -122,7 +122,10 @@ pub enum StreamEvent {
     /// Content block completed
     ContentBlockStop { index: usize },
     /// Message completed
-    MessageStop,
+    MessageStop {
+        /// Stop reason from the API (MaxTokens indicates overflow)
+        stop_reason: Option<StopReason>,
+    },
     /// Usage stats
     Usage {
         input_tokens: u64,
