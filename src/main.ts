@@ -132,6 +132,11 @@ import {
 	isNotificationEnabled,
 	sendNotification,
 } from "./hooks/notification-hooks.js";
+import {
+	discoverAndLoadTypeScriptHooks,
+	setGlobalCwd,
+	setGlobalSendHandler,
+} from "./hooks/typescript-loader.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig } from "./mcp/config.js";
@@ -1433,6 +1438,42 @@ export async function main(args: string[]) {
 	// Initialize composer manager for multi-agent orchestration
 	// The composer manager handles spawning sub-agents and coordinating workflows
 	composerManager.initialize(agent, systemPrompt, allTools, process.cwd());
+
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 11.5: TypeScript Hooks Initialization
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Load TypeScript hooks from ~/.composer/hooks/ and .composer/hooks/
+	// These hooks can intercept events and inject messages via pi.send()
+	setGlobalCwd(process.cwd());
+	const { hooks: tsHooks, errors: tsHookErrors } =
+		await discoverAndLoadTypeScriptHooks([], process.cwd());
+
+	if (tsHooks.length > 0) {
+		console.error(`[hooks] Loaded ${tsHooks.length} TypeScript hooks`);
+	}
+	if (tsHookErrors.length > 0) {
+		console.error(
+			`[hooks] Warning: ${tsHookErrors.length} hook loading errors`,
+		);
+	}
+
+	// Wire up the send handler to allow hooks to inject messages
+	setGlobalSendHandler((text, attachments) => {
+		const message = {
+			role: "user" as const,
+			content: text,
+			attachments,
+			timestamp: Date.now(),
+		};
+		if (agent.state.isStreaming) {
+			// Queue message for processing after current turn
+			void agent.queueMessage(message);
+		} else {
+			// Start new turn immediately
+			void agent.prompt(text, attachments);
+		}
+	});
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 12: MCP (Model Context Protocol) Integration
