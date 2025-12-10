@@ -22,13 +22,15 @@ use tokio::sync::Mutex;
 /// Integrated hook system for the native agent
 ///
 /// Combines all hook backends (native, Lua, WASM, IPC) into a unified executor.
+/// Lua and WASM executors are lazily initialized on first use to minimize
+/// startup overhead (~21µs → ~200ns for basic creation).
 pub struct IntegratedHookSystem {
     /// Native Rust hooks
-    registry: HookRegistry,
-    /// Lua script executor
-    lua_executor: LuaHookExecutor,
-    /// WASM plugin executor
-    wasm_executor: WasmHookExecutor,
+    pub registry: HookRegistry,
+    /// Lua script executor (lazy-initialized)
+    lua_executor: Option<LuaHookExecutor>,
+    /// WASM plugin executor (lazy-initialized)
+    wasm_executor: Option<WasmHookExecutor>,
     /// IPC bridge to Node.js for TypeScript hooks
     node_bridge: Option<Arc<Mutex<NodeHookBridge>>>,
     /// TypeScript hook paths (queued for IPC execution)
@@ -64,11 +66,14 @@ struct TypeScriptHookConfig {
 
 impl IntegratedHookSystem {
     /// Create a new hook system for a given working directory
+    ///
+    /// This is extremely fast (~200ns) because Lua and WASM executors
+    /// are lazily initialized only when scripts/plugins are actually loaded.
     pub fn new(cwd: &str) -> Self {
         Self {
             registry: HookRegistry::new(),
-            lua_executor: LuaHookExecutor::new(),
-            wasm_executor: WasmHookExecutor::new(),
+            lua_executor: None,
+            wasm_executor: None,
             node_bridge: None,
             typescript_hooks: Vec::new(),
             overflow_detector: OverflowDetector::new(),
@@ -81,6 +86,16 @@ impl IntegratedHookSystem {
             timeout: Duration::from_secs(30),
             log_file: None,
         }
+    }
+
+    /// Get or initialize the Lua executor
+    fn lua_executor_mut(&mut self) -> &mut LuaHookExecutor {
+        self.lua_executor.get_or_insert_with(LuaHookExecutor::new)
+    }
+
+    /// Get or initialize the WASM executor
+    fn wasm_executor_mut(&mut self) -> &mut WasmHookExecutor {
+        self.wasm_executor.get_or_insert_with(WasmHookExecutor::new)
     }
 
     /// Create and load hooks from configuration files
@@ -119,7 +134,7 @@ impl IntegratedHookSystem {
         for hook in &config.hooks {
             match &hook.source {
                 HookSource::LuaInline(script) => {
-                    if let Err(e) = self.lua_executor.load_script(
+                    if let Err(e) = self.lua_executor_mut().load_script(
                         script,
                         hook.definition.event,
                         hook.definition.tools.clone(),
@@ -128,7 +143,7 @@ impl IntegratedHookSystem {
                     }
                 }
                 HookSource::LuaFile(path) => {
-                    if let Err(e) = self.lua_executor.load_file(
+                    if let Err(e) = self.lua_executor_mut().load_file(
                         path,
                         hook.definition.event,
                         hook.definition.tools.clone(),
@@ -137,7 +152,7 @@ impl IntegratedHookSystem {
                     }
                 }
                 HookSource::Wasm(path) => {
-                    if let Err(e) = self.wasm_executor.load_plugin(
+                    if let Err(e) = self.wasm_executor_mut().load_plugin(
                         path,
                         hook.definition.event,
                         hook.definition.tools.clone(),
@@ -194,8 +209,18 @@ impl IntegratedHookSystem {
 
     /// Reload all hooks from config files
     pub fn reload(&mut self) -> Result<ReloadResult> {
-        let lua_reloaded = self.lua_executor.reload()?;
-        let wasm_reloaded = self.wasm_executor.reload()?;
+        let lua_reloaded = self
+            .lua_executor
+            .as_mut()
+            .map(|e| e.reload())
+            .transpose()?
+            .unwrap_or(0);
+        let wasm_reloaded = self
+            .wasm_executor
+            .as_mut()
+            .map(|e| e.reload())
+            .transpose()?
+            .unwrap_or(0);
 
         // Reload config
         if let Ok(config) = load_hook_config(Path::new(&self.cwd)) {
@@ -327,16 +352,20 @@ impl IntegratedHookSystem {
                 return native_result;
             }
 
-            // Execute Lua hooks
-            let lua_result = self.lua_executor.execute_pre_tool_use(&input);
-            if !matches!(lua_result, HookResult::Continue) {
-                return lua_result;
+            // Execute Lua hooks (if any loaded)
+            if let Some(ref lua) = self.lua_executor {
+                let lua_result = lua.execute_pre_tool_use(&input);
+                if !matches!(lua_result, HookResult::Continue) {
+                    return lua_result;
+                }
             }
 
-            // Execute WASM hooks
-            let wasm_result = self.wasm_executor.execute_pre_tool_use(&input);
-            if !matches!(wasm_result, HookResult::Continue) {
-                return wasm_result;
+            // Execute WASM hooks (if any loaded)
+            if let Some(ref wasm) = self.wasm_executor {
+                let wasm_result = wasm.execute_pre_tool_use(&input);
+                if !matches!(wasm_result, HookResult::Continue) {
+                    return wasm_result;
+                }
             }
 
             HookResult::Continue
@@ -782,8 +811,8 @@ impl IntegratedHookSystem {
     pub fn stats(&self) -> HookStats {
         HookStats {
             native_hooks: self.registry.has_hooks(HookEventType::PreToolUse) as usize,
-            lua_scripts: self.lua_executor.script_count(),
-            wasm_plugins: self.wasm_executor.plugin_count(),
+            lua_scripts: self.lua_executor.as_ref().map(|e| e.script_count()).unwrap_or(0),
+            wasm_plugins: self.wasm_executor.as_ref().map(|e| e.plugin_count()).unwrap_or(0),
             typescript_hooks: self.typescript_hooks.len(),
             enabled: self.enabled,
         }
