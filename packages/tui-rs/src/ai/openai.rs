@@ -730,7 +730,9 @@ impl OpenAiClient {
 
     /// Build a mapping from tool call IDs to tool names from the message history.
     /// This is needed for Mistral which requires the tool name in tool results.
-    fn build_tool_id_to_name_map(messages: &[Message]) -> std::collections::HashMap<String, String> {
+    fn build_tool_id_to_name_map(
+        messages: &[Message],
+    ) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
         for msg in messages {
             if let MessageContent::Blocks(blocks) = &msg.content {
@@ -2095,7 +2097,10 @@ mod tests {
         assert!(is_mistral_model("MIXTRAL-8x22b", None));
 
         // By base URL
-        assert!(is_mistral_model("some-model", Some("https://api.mistral.ai/v1")));
+        assert!(is_mistral_model(
+            "some-model",
+            Some("https://api.mistral.ai/v1")
+        ));
 
         // Non-Mistral models
         assert!(!is_mistral_model("gpt-4o", None));

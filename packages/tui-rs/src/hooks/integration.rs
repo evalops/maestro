@@ -811,8 +811,16 @@ impl IntegratedHookSystem {
     pub fn stats(&self) -> HookStats {
         HookStats {
             native_hooks: self.registry.has_hooks(HookEventType::PreToolUse) as usize,
-            lua_scripts: self.lua_executor.as_ref().map(|e| e.script_count()).unwrap_or(0),
-            wasm_plugins: self.wasm_executor.as_ref().map(|e| e.plugin_count()).unwrap_or(0),
+            lua_scripts: self
+                .lua_executor
+                .as_ref()
+                .map(|e| e.script_count())
+                .unwrap_or(0),
+            wasm_plugins: self
+                .wasm_executor
+                .as_ref()
+                .map(|e| e.plugin_count())
+                .unwrap_or(0),
             typescript_hooks: self.typescript_hooks.len(),
             enabled: self.enabled,
         }
