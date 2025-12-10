@@ -14,15 +14,27 @@ use super::types::*;
 pub enum AiProvider {
     Anthropic,
     OpenAI,
+    /// Mistral AI - uses OpenAI-compatible API with special tool handling
+    Mistral,
 }
 
 impl AiProvider {
     /// Parse provider from model name
     pub fn from_model(model: &str) -> Self {
-        if model.starts_with("claude") || model.starts_with("anthropic") {
+        let model_lower = model.to_lowercase();
+        if model_lower.starts_with("claude") || model_lower.starts_with("anthropic") {
             AiProvider::Anthropic
-        } else if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
+        } else if model_lower.starts_with("gpt")
+            || model_lower.starts_with("o1")
+            || model_lower.starts_with("o3")
+        {
             AiProvider::OpenAI
+        } else if model_lower.contains("mistral")
+            || model_lower.contains("mixtral")
+            || model_lower.contains("codestral")
+            || model_lower.contains("pixtral")
+        {
+            AiProvider::Mistral
         } else {
             // Default to Anthropic for unknown models
             AiProvider::Anthropic
@@ -48,6 +60,8 @@ pub trait AiClient: Send + Sync {
 pub enum UnifiedClient {
     Anthropic(AnthropicClient),
     OpenAI(OpenAiClient),
+    /// Mistral uses OpenAI client with custom base URL
+    Mistral(OpenAiClient),
 }
 
 impl UnifiedClient {
@@ -61,11 +75,17 @@ impl UnifiedClient {
         Ok(Self::OpenAI(OpenAiClient::from_env()?))
     }
 
+    /// Create client for Mistral
+    pub fn mistral() -> Result<Self> {
+        Ok(Self::Mistral(OpenAiClient::mistral_from_env()?))
+    }
+
     /// Create client based on provider
     pub fn from_provider(provider: AiProvider) -> Result<Self> {
         match provider {
             AiProvider::Anthropic => Self::anthropic(),
             AiProvider::OpenAI => Self::openai(),
+            AiProvider::Mistral => Self::mistral(),
         }
     }
 
@@ -79,6 +99,7 @@ impl UnifiedClient {
         match self {
             Self::Anthropic(_) => AiProvider::Anthropic,
             Self::OpenAI(_) => AiProvider::OpenAI,
+            Self::Mistral(_) => AiProvider::Mistral,
         }
     }
 
@@ -91,6 +112,7 @@ impl UnifiedClient {
         match self {
             Self::Anthropic(client) => client.stream(messages, config).await,
             Self::OpenAI(client) => client.stream(messages, config).await,
+            Self::Mistral(client) => client.stream(messages, config).await,
         }
     }
 }
@@ -142,6 +164,18 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_from_model_mistral() {
+        assert_eq!(AiProvider::from_model("mistral-large"), AiProvider::Mistral);
+        assert_eq!(AiProvider::from_model("mistral-small"), AiProvider::Mistral);
+        assert_eq!(AiProvider::from_model("mixtral-8x7b"), AiProvider::Mistral);
+        assert_eq!(AiProvider::from_model("codestral"), AiProvider::Mistral);
+        assert_eq!(AiProvider::from_model("pixtral-12b"), AiProvider::Mistral);
+        // Case insensitive
+        assert_eq!(AiProvider::from_model("Mistral-Large"), AiProvider::Mistral);
+        assert_eq!(AiProvider::from_model("MIXTRAL-8x22b"), AiProvider::Mistral);
+    }
+
+    #[test]
     fn test_provider_from_model_default() {
         // Unknown models default to Anthropic
         assert_eq!(
@@ -155,6 +189,8 @@ mod tests {
     fn test_provider_equality() {
         assert_eq!(AiProvider::Anthropic, AiProvider::Anthropic);
         assert_eq!(AiProvider::OpenAI, AiProvider::OpenAI);
+        assert_eq!(AiProvider::Mistral, AiProvider::Mistral);
         assert_ne!(AiProvider::Anthropic, AiProvider::OpenAI);
+        assert_ne!(AiProvider::OpenAI, AiProvider::Mistral);
     }
 }

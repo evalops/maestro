@@ -232,13 +232,69 @@ fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, St
     Some((call_id, name, arguments))
 }
 
+/// Check if an error message indicates context window overflow.
+///
+/// This function detects context overflow errors from multiple LLM providers
+/// by checking for known error message patterns.
+///
+/// # Supported Providers
+///
+/// - **Anthropic**: "prompt is too long: X tokens > Y maximum"
+/// - **OpenAI**: "exceeds the context window"
+/// - **Google Gemini**: "input token count exceeds the maximum"
+/// - **xAI (Grok)**: "maximum prompt length is X but request contains Y"
+/// - **Groq**: "reduce the length of the messages"
+/// - **Cerebras/Mistral**: 400/413 status code (no body)
+/// - **OpenRouter**: "maximum context length is X tokens"
+/// - **llama.cpp**: "exceeds the available context size"
+/// - **LM Studio**: "greater than the context length"
+///
+/// # Returns
+///
+/// `true` if the message indicates a context overflow error.
+pub fn is_context_overflow_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+
+    // Provider-specific patterns
+    if lower.contains("prompt is too long")
+        || lower.contains("exceeds the context window")
+        || (lower.contains("input token count") && lower.contains("exceeds the maximum"))
+        || (lower.contains("maximum prompt length is") && lower.contains("contains"))
+        || lower.contains("reduce the length of the messages")
+        || lower.contains("maximum context length is")
+        || lower.contains("exceeds the available context size")
+        || lower.contains("greater than the context length")
+    {
+        return true;
+    }
+
+    // Generic fallback patterns
+    if lower.contains("context length exceeded")
+        || lower.contains("too many tokens")
+        || lower.contains("token limit exceeded")
+        || (lower.contains("context window") && lower.contains("exceeded"))
+        || (lower.contains("maximum") && lower.contains("tokens") && lower.contains("exceeded"))
+    {
+        return true;
+    }
+
+    // Cerebras and Mistral return 400/413 with no body
+    // Match patterns like "400 status code (no body)" or "413 (no body)"
+    if (lower.contains("400") || lower.contains("413")) && lower.contains("(no body)") {
+        return true;
+    }
+
+    false
+}
+
 /// Classify API error for retry logic
 ///
 /// # Strategy
 ///
-/// 1. Check error code (most reliable)
-/// 2. Fall back to error type
-/// 3. Check message for keywords ("overloaded", "temporarily")
+/// 1. Check for context overflow first (most important for agent loop)
+/// 2. Check error code (most reliable)
+/// 3. Fall back to error type
+/// 4. Check message for keywords ("overloaded", "temporarily")
 ///
 /// # Pattern: Early Returns
 ///
@@ -261,6 +317,11 @@ fn classify_error(error: &serde_json::Value) -> ApiError {
         .and_then(|m| m.as_str())
         .unwrap_or("Unknown error")
         .to_string();
+
+    // Check for context overflow first (may not have a specific error code)
+    if is_context_overflow_error(&message) {
+        return ApiError::ContextWindowExceeded;
+    }
 
     match code {
         Some("context_length_exceeded") => ApiError::ContextWindowExceeded,
@@ -407,6 +468,49 @@ fn uses_responses_api(model: &str) -> bool {
     model.contains("codex") || model.starts_with("gpt-5") || model.starts_with("o3")
 }
 
+/// Check if this is a Mistral model (requires special tool ID handling)
+///
+/// Mistral API has specific requirements:
+/// - Tool call IDs must be exactly 9 alphanumeric characters
+/// - Tool results must include the `name` field
+fn is_mistral_model(model: &str, base_url: Option<&str>) -> bool {
+    let model_lower = model.to_lowercase();
+    if model_lower.contains("mistral")
+        || model_lower.contains("mixtral")
+        || model_lower.contains("codestral")
+        || model_lower.contains("pixtral")
+    {
+        return true;
+    }
+    if let Some(url) = base_url {
+        if url.contains("mistral.ai") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Normalize a tool call ID for Mistral compatibility.
+///
+/// Mistral requires tool IDs to be exactly 9 alphanumeric characters.
+/// This function:
+/// - Removes non-alphanumeric characters
+/// - Pads with zeros if too short
+/// - Truncates if too long
+fn normalize_mistral_tool_id(id: &str) -> String {
+    // Remove non-alphanumeric characters
+    let normalized: String = id.chars().filter(|c| c.is_alphanumeric()).collect();
+
+    // Ensure exactly 9 characters
+    if normalized.len() < 9 {
+        format!("{:0<9}", normalized)
+    } else if normalized.len() > 9 {
+        normalized[..9].to_string()
+    } else {
+        normalized
+    }
+}
+
 /// Get the appropriate API URL for the model
 fn api_url_for_model(model: &str) -> &'static str {
     if uses_responses_api(model) {
@@ -420,6 +524,8 @@ fn api_url_for_model(model: &str) -> &'static str {
 ///
 /// Handles communication with OpenAI's APIs (Chat Completions and Responses).
 /// Automatically selects the appropriate API endpoint based on model name.
+/// Also supports Mistral API through OpenAI-compatible endpoint with special
+/// tool ID handling.
 ///
 /// # Thread Safety
 ///
@@ -431,6 +537,8 @@ pub struct OpenAiClient {
     client: reqwest::Client,
     /// API key for authentication (via Authorization: Bearer header)
     api_key: String,
+    /// Optional base URL override (for Mistral or other OpenAI-compatible APIs)
+    base_url: Option<String>,
 }
 
 impl OpenAiClient {
@@ -444,6 +552,21 @@ impl OpenAiClient {
         Ok(Self {
             client,
             api_key: api_key.into(),
+            base_url: None,
+        })
+    }
+
+    /// Create a new client with a custom base URL (for Mistral or other providers)
+    pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        Ok(Self {
+            client,
+            api_key: api_key.into(),
+            base_url: Some(base_url.into()),
         })
     }
 
@@ -452,6 +575,13 @@ impl OpenAiClient {
         let api_key = std::env::var("OPENAI_API_KEY")
             .context("OPENAI_API_KEY environment variable not set")?;
         Self::new(api_key)
+    }
+
+    /// Create a new Mistral client from environment variable
+    pub fn mistral_from_env() -> Result<Self> {
+        let api_key = std::env::var("MISTRAL_API_KEY")
+            .context("MISTRAL_API_KEY environment variable not set")?;
+        Self::with_base_url(api_key, "https://api.mistral.ai/v1")
     }
 
     /// Build request headers
@@ -467,7 +597,16 @@ impl OpenAiClient {
     }
 
     /// Convert internal messages to OpenAI format
-    fn convert_messages(&self, messages: &[Message]) -> Vec<OpenAiMessage> {
+    ///
+    /// When `is_mistral` is true, applies Mistral-specific transformations:
+    /// - Tool call IDs are normalized to 9 alphanumeric characters
+    /// - Tool results include the `name` field (required by Mistral)
+    fn convert_messages(
+        &self,
+        messages: &[Message],
+        is_mistral: bool,
+        tool_id_to_name: &std::collections::HashMap<String, String>,
+    ) -> Vec<OpenAiMessage> {
         messages
             .iter()
             .filter_map(|msg| {
@@ -484,6 +623,7 @@ impl OpenAiClient {
                         content: Some(OpenAiContent::Text(text.clone())),
                         tool_calls: None,
                         tool_call_id: None,
+                        name: None,
                     }),
                     MessageContent::Blocks(blocks) => {
                         // Handle tool results specially
@@ -493,11 +633,25 @@ impl OpenAiClient {
                             ..
                         }) = blocks.first()
                         {
+                            let normalized_id = if is_mistral {
+                                normalize_mistral_tool_id(tool_use_id)
+                            } else {
+                                tool_use_id.clone()
+                            };
+
+                            // Mistral requires the tool name in tool results
+                            let name = if is_mistral {
+                                tool_id_to_name.get(tool_use_id).cloned()
+                            } else {
+                                None
+                            };
+
                             return Some(OpenAiMessage {
                                 role: "tool".to_string(),
                                 content: Some(OpenAiContent::Text(content.clone())),
                                 tool_calls: None,
-                                tool_call_id: Some(tool_use_id.clone()),
+                                tool_call_id: Some(normalized_id),
+                                name,
                             });
                         }
 
@@ -548,6 +702,7 @@ impl OpenAiClient {
                                     content: Some(OpenAiContent::Text(text.clone())),
                                     tool_calls: None,
                                     tool_call_id: None,
+                                    name: None,
                                 })
                             } else {
                                 Some(OpenAiMessage {
@@ -555,6 +710,7 @@ impl OpenAiClient {
                                     content: Some(OpenAiContent::Parts(parts)),
                                     tool_calls: None,
                                     tool_call_id: None,
+                                    name: None,
                                 })
                             }
                         } else {
@@ -563,12 +719,29 @@ impl OpenAiClient {
                                 content: Some(OpenAiContent::Parts(parts)),
                                 tool_calls: None,
                                 tool_call_id: None,
+                                name: None,
                             })
                         }
                     }
                 }
             })
             .collect()
+    }
+
+    /// Build a mapping from tool call IDs to tool names from the message history.
+    /// This is needed for Mistral which requires the tool name in tool results.
+    fn build_tool_id_to_name_map(messages: &[Message]) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        for msg in messages {
+            if let MessageContent::Blocks(blocks) = &msg.content {
+                for block in blocks {
+                    if let ContentBlock::ToolUse { id, name, .. } = block {
+                        map.insert(id.clone(), name.clone());
+                    }
+                }
+            }
+        }
+        map
     }
 
     /// Convert internal tools to OpenAI format
@@ -592,7 +765,17 @@ impl OpenAiClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> serde_json::Value {
-        let openai_messages = self.convert_messages(messages);
+        // Check if this is a Mistral model (needs special tool handling)
+        let is_mistral = is_mistral_model(&config.model, self.base_url.as_deref());
+
+        // Build tool ID to name mapping for Mistral
+        let tool_id_to_name = if is_mistral {
+            Self::build_tool_id_to_name_map(messages)
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        let openai_messages = self.convert_messages(messages, is_mistral, &tool_id_to_name);
 
         let mut body = serde_json::json!({
             "model": config.model,
@@ -605,6 +788,7 @@ impl OpenAiClient {
             // Nudge model to actually choose a tool when tools are present
             "tool_choice": if config.tools.is_empty() { serde_json::json!("none") } else { serde_json::json!("auto") },
             // Allow parallel tool calls when the model supports it (Codex default)
+            // Note: Mistral doesn't support this parameter, but ignores it
             "parallel_tool_calls": true
         });
 
@@ -1351,6 +1535,9 @@ struct OpenAiMessage {
     tool_calls: Option<Vec<OpenAiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// Tool name - required by Mistral for tool results
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 }
 
 /// Content can be either simple text or structured parts
@@ -1835,5 +2022,140 @@ mod tests {
         assert!(event.item.is_none());
         assert!(event.delta.is_none());
         assert!(event.output_index.is_none());
+    }
+
+    #[test]
+    fn test_is_context_overflow_error() {
+        // Anthropic pattern
+        assert!(is_context_overflow_error(
+            "prompt is too long: 213462 tokens > 200000 maximum"
+        ));
+
+        // OpenAI pattern
+        assert!(is_context_overflow_error(
+            "Your input exceeds the context window of this model"
+        ));
+
+        // Google Gemini pattern
+        assert!(is_context_overflow_error(
+            "The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)"
+        ));
+
+        // xAI (Grok) pattern
+        assert!(is_context_overflow_error(
+            "This model's maximum prompt length is 131072 but the request contains 537812 tokens"
+        ));
+
+        // Groq pattern
+        assert!(is_context_overflow_error(
+            "Please reduce the length of the messages or completion"
+        ));
+
+        // OpenRouter pattern
+        assert!(is_context_overflow_error(
+            "This endpoint's maximum context length is 128000 tokens"
+        ));
+
+        // llama.cpp pattern
+        assert!(is_context_overflow_error(
+            "the request exceeds the available context size"
+        ));
+
+        // LM Studio pattern
+        assert!(is_context_overflow_error(
+            "tokens to keep from the initial prompt is greater than the context length"
+        ));
+
+        // Cerebras/Mistral 400 status code
+        assert!(is_context_overflow_error("400 status code (no body)"));
+        assert!(is_context_overflow_error("413 (no body)"));
+
+        // Generic patterns
+        assert!(is_context_overflow_error("context length exceeded"));
+        assert!(is_context_overflow_error("too many tokens in request"));
+        assert!(is_context_overflow_error("token limit exceeded"));
+
+        // Non-overflow errors should return false
+        assert!(!is_context_overflow_error("Rate limit exceeded"));
+        assert!(!is_context_overflow_error("Invalid API key"));
+        assert!(!is_context_overflow_error("Server error"));
+    }
+
+    #[test]
+    fn test_is_mistral_model() {
+        // Mistral models by name
+        assert!(is_mistral_model("mistral-large", None));
+        assert!(is_mistral_model("mistral-small", None));
+        assert!(is_mistral_model("mixtral-8x7b", None));
+        assert!(is_mistral_model("codestral", None));
+        assert!(is_mistral_model("pixtral-12b", None));
+
+        // Case insensitive
+        assert!(is_mistral_model("Mistral-Large", None));
+        assert!(is_mistral_model("MIXTRAL-8x22b", None));
+
+        // By base URL
+        assert!(is_mistral_model("some-model", Some("https://api.mistral.ai/v1")));
+
+        // Non-Mistral models
+        assert!(!is_mistral_model("gpt-4o", None));
+        assert!(!is_mistral_model("claude-opus-4-5", None));
+        assert!(!is_mistral_model("llama-3.1", None));
+    }
+
+    #[test]
+    fn test_normalize_mistral_tool_id() {
+        // Already valid 9-char alphanumeric
+        assert_eq!(normalize_mistral_tool_id("abcdefghi"), "abcdefghi");
+
+        // Too short - should pad with zeros
+        assert_eq!(normalize_mistral_tool_id("abc"), "abc000000");
+        assert_eq!(normalize_mistral_tool_id("a"), "a00000000");
+
+        // Too long - should truncate
+        assert_eq!(normalize_mistral_tool_id("abcdefghijklm"), "abcdefghi");
+
+        // Contains non-alphanumeric - should remove them
+        assert_eq!(normalize_mistral_tool_id("call_abc123"), "callabc12");
+        assert_eq!(normalize_mistral_tool_id("a-b-c-d-e"), "abcde0000");
+
+        // UUID-like IDs
+        assert_eq!(
+            normalize_mistral_tool_id("550e8400-e29b-41d4-a716-446655440000"),
+            "550e8400e"
+        );
+    }
+
+    #[test]
+    fn test_classify_error_with_overflow_patterns() {
+        // Test that classify_error detects overflow from message patterns
+        // even without the specific error code
+
+        // Anthropic-style message without code
+        let anthropic_overflow = serde_json::json!({
+            "message": "prompt is too long: 213462 tokens > 200000 maximum"
+        });
+        match classify_error(&anthropic_overflow) {
+            ApiError::ContextWindowExceeded => {}
+            _ => panic!("Expected ContextWindowExceeded"),
+        }
+
+        // OpenRouter-style message
+        let openrouter_overflow = serde_json::json!({
+            "message": "This endpoint's maximum context length is 128000 tokens"
+        });
+        match classify_error(&openrouter_overflow) {
+            ApiError::ContextWindowExceeded => {}
+            _ => panic!("Expected ContextWindowExceeded"),
+        }
+
+        // Cerebras/Mistral 400 with no body
+        let status_overflow = serde_json::json!({
+            "message": "400 status code (no body)"
+        });
+        match classify_error(&status_overflow) {
+            ApiError::ContextWindowExceeded => {}
+            _ => panic!("Expected ContextWindowExceeded"),
+        }
     }
 }
