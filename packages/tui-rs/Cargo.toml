@@ -99,6 +99,11 @@ hooks-full = ["lua", "wasm", "hot-reload"]
 [dev-dependencies]
 pretty_assertions = "1"
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "hooks_bench"
+harness = false
 
 [profile.release]
 lto = true
