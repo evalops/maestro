@@ -19,6 +19,7 @@
  * | cerebras   | CEREBRAS_API_KEY                          |
  * | openrouter | OPENROUTER_API_KEY                        |
  * | zai        | ZAI_API_KEY                               |
+ * | mistral    | MISTRAL_API_KEY                           |
  *
  * ## Key Sources
  *
@@ -74,6 +75,7 @@ export const envApiKeyMap = {
 	cerebras: ["CEREBRAS_API_KEY"],
 	openrouter: ["OPENROUTER_API_KEY"],
 	zai: ["ZAI_API_KEY"],
+	mistral: ["MISTRAL_API_KEY"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type KnownProvider = keyof typeof envApiKeyMap;

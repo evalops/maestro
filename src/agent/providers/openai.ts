@@ -114,6 +114,36 @@ import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { transformMessages } from "./transform-messages.js";
 
 /**
+ * Normalize tool call ID for Mistral.
+ * Mistral requires tool IDs to be exactly 9 alphanumeric characters (a-z, A-Z, 0-9).
+ */
+function normalizeMistralToolId(id: string, isMistral: boolean): string {
+	if (!isMistral) return id;
+	// Remove non-alphanumeric characters
+	let normalized = id.replace(/[^a-zA-Z0-9]/g, "");
+	// Mistral requires exactly 9 characters
+	if (normalized.length < 9) {
+		// Pad with deterministic characters based on original ID to ensure matching
+		const padding = "000000000";
+		normalized = normalized + padding.slice(0, 9 - normalized.length);
+	} else if (normalized.length > 9) {
+		normalized = normalized.slice(0, 9);
+	}
+	return normalized;
+}
+
+/**
+ * Check if the model is a Mistral model based on baseUrl or provider.
+ */
+function isMistralModel(model: {
+	baseUrl?: string;
+	provider?: string;
+}): boolean {
+	const baseUrl = model.baseUrl || "";
+	return baseUrl.includes("mistral.ai") || model.provider === "mistral";
+}
+
+/**
  * Tool choice options for OpenAI API.
  * - "auto": Model decides whether to call tools (default when tools present)
  * - "none": Model won't call any tools
@@ -386,6 +416,7 @@ export async function* streamOpenAI(
 		throw new Error("API key is required for OpenAI");
 	}
 
+	const isMistral = isMistralModel(model);
 	const messages: OpenAIMessage[] = [];
 
 	// System prompt
@@ -433,7 +464,7 @@ export async function* streamOpenAI(
 					textContent.push({ type: "text", text: sanitizeSurrogates(c.text) });
 				} else if (c.type === "toolCall") {
 					toolCalls.push({
-						id: c.id,
+						id: normalizeMistralToolId(c.id, isMistral),
 						type: "function",
 						function: {
 							name: c.name,
@@ -461,11 +492,18 @@ export async function* streamOpenAI(
 							.map((c) => (c.type === "text" ? c.text : "[Image]"))
 							.join("\n");
 
-			messages.push({
+			const toolMessage: OpenAIMessage & { name?: string } = {
 				role: "tool",
-				tool_call_id: msg.toolCallId,
-				content,
-			});
+				tool_call_id: normalizeMistralToolId(msg.toolCallId, isMistral),
+				content: content || "(empty result)", // Mistral doesn't accept empty content
+			};
+
+			// Mistral requires the 'name' field in tool results
+			if (isMistral && msg.toolName) {
+				toolMessage.name = msg.toolName;
+			}
+
+			messages.push(toolMessage);
 		}
 	}
 
