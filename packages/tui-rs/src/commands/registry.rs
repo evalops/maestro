@@ -74,7 +74,7 @@ use std::sync::Arc;
 
 use super::types::{
     ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
-    CommandError, CommandOutput, CommandResult, ModalType,
+    CommandError, CommandOutput, CommandResult, HooksAction, ModalType,
 };
 
 /// Registry of all available commands with efficient lookup and execution
@@ -754,6 +754,44 @@ pub fn build_command_registry() -> CommandRegistry {
         CommandCategory::Tools,
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowMcpStatus))),
     ));
+
+    // Hooks command
+    registry.register(
+        Command::new(
+            "hooks",
+            "Manage the hook system (list, toggle, reload, metrics)",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let subcommand = ctx.raw_args.trim().to_lowercase();
+                let action = match subcommand.as_str() {
+                    "" | "list" => HooksAction::List,
+                    "toggle" => HooksAction::Toggle,
+                    "reload" => HooksAction::Reload,
+                    "metrics" | "stats" => HooksAction::Metrics,
+                    "enable" | "on" => HooksAction::Enable,
+                    "disable" | "off" => HooksAction::Disable,
+                    other => {
+                        return Err(CommandError::new(format!(
+                            "Unknown hooks subcommand: {}",
+                            other
+                        ))
+                        .with_hint("Available: list, toggle, reload, metrics, enable, disable"));
+                    }
+                };
+                Ok(CommandOutput::Action(CommandAction::HooksManage(action)))
+            }),
+        )
+        .alias("hook")
+        .arg(CommandArgument::choice(
+            "action",
+            "Hook management action",
+            vec!["list", "toggle", "reload", "metrics", "enable", "disable"],
+        ))
+        .usage("/hooks [list|toggle|reload|metrics|enable|disable]")
+        .group(vec![
+            "list", "toggle", "reload", "metrics", "enable", "disable",
+        ]),
+    );
 
     // Version command
     registry.register(

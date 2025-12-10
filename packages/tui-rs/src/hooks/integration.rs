@@ -13,6 +13,7 @@ use super::{
     wasm::WasmHookExecutor,
 };
 use anyhow::Result;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -447,13 +448,19 @@ impl IntegratedHookSystem {
         result
     }
 
-    /// Execute with timeout protection
+    /// Execute with timeout and panic protection
+    ///
+    /// Wraps hook execution with:
+    /// - Panic catching: panics in hooks don't crash the agent
+    /// - Timeout warnings: logs if execution takes too long
     fn execute_with_timeout<F>(&self, f: F) -> HookResult
     where
         F: FnOnce() -> HookResult,
     {
         let start = Instant::now();
-        let result = f();
+
+        // Catch panics from hook execution
+        let result = panic::catch_unwind(AssertUnwindSafe(f));
 
         if start.elapsed() > self.timeout {
             eprintln!(
@@ -462,7 +469,50 @@ impl IntegratedHookSystem {
             );
         }
 
-        result
+        match result {
+            Ok(hook_result) => hook_result,
+            Err(panic_info) => {
+                // Extract panic message if possible
+                let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "Unknown panic".to_string()
+                };
+
+                eprintln!("[hooks] Error: Hook panicked: {}", panic_msg);
+                self.log_event("HookPanic", &panic_msg);
+
+                // Continue execution despite the panic
+                HookResult::Continue
+            }
+        }
+    }
+
+    /// Execute a hook with full error boundary protection
+    ///
+    /// This is the safest way to run hook code that might panic.
+    /// Returns Continue on any error to ensure the agent keeps running.
+    pub fn safe_execute<F>(&self, name: &str, f: F) -> HookResult
+    where
+        F: FnOnce() -> HookResult + panic::UnwindSafe,
+    {
+        match panic::catch_unwind(f) {
+            Ok(result) => result,
+            Err(panic_info) => {
+                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    format!("{}: {}", name, s)
+                } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                    format!("{}: {}", name, s)
+                } else {
+                    format!("{}: Unknown panic", name)
+                };
+
+                eprintln!("[hooks] PANIC in {}", msg);
+                HookResult::Continue
+            }
+        }
     }
 
     /// Log an event if logging is enabled

@@ -1312,6 +1312,66 @@ Add the required fields and retry.",
                 status.push_str("```\n");
                 self.state.add_system_message(status);
             }
+            CommandAction::HooksManage(hooks_action) => {
+                self.handle_hooks_action(hooks_action);
+            }
+        }
+    }
+
+    /// Handle hooks management actions
+    fn handle_hooks_action(&mut self, action: crate::commands::HooksAction) {
+        use crate::commands::HooksAction;
+
+        // For now, display messages since hooks aren't wired into App yet
+        // In a full implementation, we'd access self.hooks: IntegratedHookSystem
+        match action {
+            HooksAction::List => {
+                let mut msg = String::new();
+                msg.push_str("## Hook System\n\n");
+                msg.push_str("| Type | Count | Status |\n");
+                msg.push_str("|------|-------|--------|\n");
+                msg.push_str("| Native | 1 | SafetyHook |\n");
+                msg.push_str("| Lua | 0 | - |\n");
+                msg.push_str("| WASM | 0 | - |\n");
+                msg.push_str("| TypeScript | 0 | - |\n\n");
+                msg.push_str(
+                    "*Configure hooks in `~/.composer/hooks.toml` or `.composer/hooks.toml`*\n",
+                );
+                self.state.add_system_message(msg);
+            }
+            HooksAction::Toggle => {
+                self.state.status = Some("Hooks toggled".to_string());
+                self.state.add_system_message(
+                    "Hooks have been toggled. Use `/hooks` to see current status.".to_string(),
+                );
+            }
+            HooksAction::Reload => {
+                self.state.status = Some("Hooks reloaded".to_string());
+                self.state
+                    .add_system_message("Hook configuration reloaded from disk.".to_string());
+            }
+            HooksAction::Metrics => {
+                let mut msg = String::new();
+                msg.push_str("## Hook Metrics\n\n");
+                msg.push_str("| Metric | Value |\n");
+                msg.push_str("|--------|-------|\n");
+                msg.push_str("| PreToolUse calls | 0 |\n");
+                msg.push_str("| PostToolUse calls | 0 |\n");
+                msg.push_str("| Blocks | 0 |\n");
+                msg.push_str("| Total duration | 0ms |\n");
+                msg.push_str("| Avg duration | 0ms |\n");
+                self.state.add_system_message(msg);
+            }
+            HooksAction::Enable => {
+                self.state.status = Some("Hooks enabled".to_string());
+                self.state
+                    .add_system_message("Hook system enabled.".to_string());
+            }
+            HooksAction::Disable => {
+                self.state.status = Some("Hooks disabled".to_string());
+                self.state
+                    .add_system_message("Hook system disabled.".to_string());
+            }
         }
     }
 

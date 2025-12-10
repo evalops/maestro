@@ -73,6 +73,7 @@
 
 mod bridge;
 mod config;
+mod hot_reload;
 mod integration;
 mod lua;
 mod overflow;
@@ -82,6 +83,7 @@ mod wasm;
 
 pub use bridge::*;
 pub use config::*;
+pub use hot_reload::*;
 pub use integration::*;
 pub use lua::*;
 pub use overflow::*;

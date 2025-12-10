@@ -128,14 +128,15 @@ impl LuaHookExecutor {
 
     fn stub_execute(&self, source: &str, input: &PreToolUseInput) -> Option<HookResult> {
         // Pattern match for common safety hooks
-        if source.contains("block = true") && source.contains("rm") {
-            if input.tool_name == "Bash" {
-                if let Some(cmd) = input.tool_input.get("command").and_then(|v| v.as_str()) {
-                    if cmd.contains("rm -rf /") || cmd.contains("rm -rf ~") {
-                        return Some(HookResult::Block {
-                            reason: "Blocked by Lua hook (stub mode)".to_string(),
-                        });
-                    }
+        if source.contains("block = true")
+            && source.contains("rm")
+            && input.tool_name == "Bash"
+        {
+            if let Some(cmd) = input.tool_input.get("command").and_then(|v| v.as_str()) {
+                if cmd.contains("rm -rf /") || cmd.contains("rm -rf ~") {
+                    return Some(HookResult::Block {
+                        reason: "Blocked by Lua hook (stub mode)".to_string(),
+                    });
                 }
             }
         }

@@ -186,6 +186,7 @@ pub enum CommandOutput {
 /// - **CopyLastMessage**: Copy the last message to clipboard
 /// - **CompactConversation**: Compress conversation history, optionally with custom instructions
 /// - **ShowMcpStatus**: Display Model Context Protocol server status
+/// - **HooksManage**: Hook system management action (list, toggle, reload, metrics)
 ///
 /// # Example
 ///
@@ -225,6 +226,25 @@ pub enum CommandAction {
     CompactConversation(Option<String>),
     /// Show MCP (Model Context Protocol) server status
     ShowMcpStatus,
+    /// Hook system management action
+    HooksManage(HooksAction),
+}
+
+/// Actions for managing the hook system
+#[derive(Debug, Clone)]
+pub enum HooksAction {
+    /// List all registered hooks with their status
+    List,
+    /// Toggle hooks on/off globally
+    Toggle,
+    /// Reload hooks from configuration files
+    Reload,
+    /// Show execution metrics
+    Metrics,
+    /// Enable hooks
+    Enable,
+    /// Disable hooks
+    Disable,
 }
 
 /// Types of modals that can be opened by commands
