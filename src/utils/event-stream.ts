@@ -30,13 +30,15 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	private done = false;
 	private finalResultPromise: Promise<R>;
 	private resolveFinalResult!: (result: R) => void;
+	private rejectFinalResult!: (error: Error) => void;
 
 	constructor(
 		private isComplete: (event: T) => boolean,
 		private extractResult: (event: T) => R,
 	) {
-		this.finalResultPromise = new Promise((resolve) => {
+		this.finalResultPromise = new Promise((resolve, reject) => {
 			this.resolveFinalResult = resolve;
+			this.rejectFinalResult = reject;
 		});
 	}
 
@@ -95,9 +97,42 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	}
 
 	/**
+	 * End the stream with an error.
+	 * The result() promise will reject with this error.
+	 */
+	error(err: Error): void {
+		this.done = true;
+		this.rejectFinalResult(err);
+		// Notify all waiting consumers that we're done
+		while (this.waiting.length > 0) {
+			const waiter = this.waiting.shift();
+			if (waiter) {
+				waiter({ value: undefined as T, done: true });
+			}
+		}
+	}
+
+	/**
 	 * Get a promise that resolves to the final result when streaming completes.
 	 */
 	result(): Promise<R> {
 		return this.finalResultPromise;
 	}
+
+	/**
+	 * Check if the stream is done (completed or errored).
+	 */
+	get isDone(): boolean {
+		return this.done;
+	}
+}
+
+/**
+ * Create a simple event stream that completes when a predicate is met.
+ * The final result is the completion event itself.
+ */
+export function createEventStream<T>(
+	isComplete: (event: T) => boolean,
+): EventStream<T, T> {
+	return new EventStream<T, T>(isComplete, (event) => event);
 }
