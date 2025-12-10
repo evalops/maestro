@@ -866,6 +866,8 @@ export type AgentEvent =
 			aborted?: boolean;
 			/** If aborted with partial acceptance, contains the saved partial message */
 			partialAccepted?: AppMessage;
+			/** Final stop reason from the LLM - "length" indicates context overflow */
+			stopReason?: StopReason;
 	  }
 	| {
 			/** Status update during execution */

@@ -675,6 +675,7 @@ export class Agent {
 		this.emit({ type: "agent_start" });
 
 		let aborted = false;
+		let lastStopReason: import("./types.js").StopReason | undefined;
 
 		try {
 			const transformedMessages = await this.messageTransformer(
@@ -732,6 +733,13 @@ export class Agent {
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
 					this._state.messages = [...this._state.messages, event.message];
+					// Track last stop reason for overflow detection
+					if (
+						"stopReason" in event.message &&
+						event.message.stopReason !== undefined
+					) {
+						lastStopReason = event.message.stopReason;
+					}
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
 					this._state.pendingToolCalls.set(event.toolCallId, {
@@ -777,6 +785,7 @@ export class Agent {
 				messages: this._state.messages,
 				aborted,
 				partialAccepted: partialAccepted ?? undefined,
+				stopReason: lastStopReason,
 			});
 		}
 	}
@@ -816,6 +825,7 @@ export class Agent {
 		this.emit({ type: "agent_start" });
 
 		let aborted = false;
+		let lastStopReason: import("./types.js").StopReason | undefined;
 
 		try {
 			const transformedMessages = await this.messageTransformer(
@@ -881,6 +891,13 @@ export class Agent {
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
 					this._state.messages = [...this._state.messages, event.message];
+					// Track last stop reason for overflow detection
+					if (
+						"stopReason" in event.message &&
+						event.message.stopReason !== undefined
+					) {
+						lastStopReason = event.message.stopReason;
+					}
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
 					this._state.pendingToolCalls.set(event.toolCallId, {
@@ -926,6 +943,7 @@ export class Agent {
 				messages: this._state.messages,
 				aborted,
 				partialAccepted: partialAccepted ?? undefined,
+				stopReason: lastStopReason,
 			});
 		}
 	}
