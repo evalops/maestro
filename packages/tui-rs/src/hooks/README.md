@@ -379,3 +379,210 @@ See `examples/hooks/` for:
 - `lua/safety.lua` - Lua safety hook
 - `lua/logging.lua` - Lua logging hook
 - `wasm-plugin/` - Complete WASM plugin example
+
+## Use Cases
+
+### Safety & Compliance
+
+Block access to production systems:
+
+```lua
+-- Block production database access
+if tool_name == "Bash" then
+    local cmd = tool_input.command or ""
+    if cmd:match("psql.*prod") or cmd:match("mysql.*production") then
+        return { block = true, reason = "Production database access blocked" }
+    end
+end
+return { continue = true }
+```
+
+### Audit Logging
+
+Log all file modifications for compliance:
+
+```lua
+-- Log every file write
+if tool_name == "Write" or tool_name == "Edit" then
+    local log = io.open(os.getenv("HOME") .. "/.composer/audit.log", "a")
+    if log then
+        log:write(os.date("%Y-%m-%d %H:%M:%S") .. " " .. tool_input.file_path .. "\n")
+        log:close()
+    end
+end
+return { continue = true }
+```
+
+### Context Injection
+
+Automatically remind the model of project conventions:
+
+```lua
+-- Inject project-specific context
+if tool_name == "Bash" then
+    return {
+        continue = true,
+        context = "Project uses pnpm (not npm). Use 'pnpm run' for scripts."
+    }
+end
+return { continue = true }
+```
+
+### Cost Control
+
+Enforce token budgets per session:
+
+```toml
+[[hooks]]
+event = "PostMessage"
+lua = """
+-- Track cumulative tokens (use external state file for persistence)
+local total = (input_tokens or 0) + (output_tokens or 0)
+if total > 500000 then
+    return { block = true, reason = "Session token budget (500k) exceeded" }
+end
+return { continue = true }
+"""
+```
+
+### Desktop Notifications
+
+Get notified when long-running tasks complete:
+
+```toml
+[[hooks]]
+event = "SessionEnd"
+lua = """
+os.execute('osascript -e \\'display notification \"Session complete\" with title \"Composer\"\\'')
+return { continue = true }
+"""
+```
+
+Or use the built-in notification system:
+
+```bash
+export COMPOSER_NOTIFY_TERMINAL=true
+export COMPOSER_NOTIFY_EVENTS=turn-complete,session-end,error
+```
+
+### Auto-Approval Patterns
+
+Auto-approve safe operations without prompts:
+
+```toml
+[[hooks]]
+event = "PermissionRequest"
+lua = """
+-- Auto-approve reads in safe directories
+if tool_name == "Read" then
+    local path = tool_input.file_path or tool_input.path or ""
+    if path:match("^/usr/share/") or path:match("^/etc/") then
+        return { continue = true }  -- auto-approve
+    end
+end
+-- Let other requests go through normal approval
+return { continue = true }
+"""
+```
+
+### Subagent Control
+
+Restrict which agent types can be spawned:
+
+```toml
+[[hooks]]
+event = "SubagentStart"
+lua = """
+local allowed = { explore = true, plan = true }
+if not allowed[subagent_type] then
+    return { block = true, reason = "Agent type '" .. subagent_type .. "' not allowed" }
+end
+return { continue = true }
+"""
+```
+
+### Input Rewriting / Sandboxing
+
+Redirect operations to sandboxed locations:
+
+```toml
+[[hooks]]
+event = "PreToolUse"
+tools = ["Write"]
+lua = """
+local path = tool_input.file_path or ""
+-- Redirect /tmp writes to sandbox
+if path:match("^/tmp/") then
+    local new_path = path:gsub("^/tmp/", "/sandbox/tmp/")
+    return {
+        modified_input = {
+            file_path = new_path,
+            content = tool_input.content
+        }
+    }
+end
+return { continue = true }
+"""
+```
+
+### Rate Limiting
+
+Prevent runaway tool execution:
+
+```lua
+-- Simple rate limiter (resets on hook reload)
+local call_count = 0
+local max_calls = 100
+
+call_count = call_count + 1
+if call_count > max_calls then
+    return { block = true, reason = "Rate limit exceeded (" .. max_calls .. " calls)" }
+end
+return { continue = true }
+```
+
+### Error Recovery
+
+Custom handling for specific error types:
+
+```toml
+[[hooks]]
+event = "OnError"
+lua = """
+-- Suppress transient network errors
+if error_kind == "NetworkError" and recoverable then
+    print("[hooks] Suppressing recoverable network error: " .. error)
+    return { block = true }  -- block = suppress error propagation
+end
+return { continue = true }
+"""
+```
+
+### Eval Gating
+
+Control what outputs are acceptable for evaluation:
+
+```toml
+[[hooks]]
+event = "EvalGate"
+lua = """
+-- Require non-empty output for Bash commands
+if tool_name == "Bash" and (tool_output == nil or tool_output == "") then
+    return { block = true, reason = "Bash command produced no output" }
+end
+return { continue = true }
+"""
+```
+
+## Performance
+
+Hook execution is extremely fast:
+
+| Operation | Time |
+|-----------|------|
+| System creation | ~85 ns |
+| Empty hook check | ~11 ns |
+| Safety hook execution | ~32 ns |
+| Full pre_tool_use pipeline | ~300 ns |
+
+For comparison, a typical API call takes 500-2000ms. Hook overhead is effectively invisible.
