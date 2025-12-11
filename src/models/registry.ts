@@ -134,6 +134,7 @@ const modelSchema = Type.Object({
 			Type.Literal("anthropic-messages"),
 			Type.Literal("google-generative-ai"),
 			Type.Literal("bedrock-converse"),
+			Type.Literal("vertex-ai"),
 		]),
 	),
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),

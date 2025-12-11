@@ -4,7 +4,8 @@
  * Ported from OpenAI Codex (MIT License) config pattern.
  * Supports:
  * - ~/.composer/config.toml (global config)
- * - .composer/config.toml (project config - overrides global)
+ * - .composer/config.toml (project config - shared, committed to git)
+ * - .composer/config.local.toml (local overrides - gitignored)
  * - Named profiles for different configurations
  * - Environment variable overrides
  * - CLI flag overrides
@@ -13,9 +14,13 @@
  * 1. CLI flags (--model, --config key=value)
  * 2. Environment variables (COMPOSER_*)
  * 3. Active profile settings
- * 4. Project config.toml
- * 5. Global config.toml
- * 6. Built-in defaults
+ * 4. Local config.local.toml (personal overrides)
+ * 5. Project config.toml (shared)
+ * 6. Global config.toml
+ * 7. Built-in defaults
+ *
+ * The config.local.toml file follows Claude Code's settings.local.json pattern,
+ * allowing users to have personal settings that don't get committed to git.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -389,11 +394,20 @@ export function loadConfig(
 		config = deepMerge(config, globalConfig);
 	}
 
-	// Load project config
+	// Load project config (shared, committed to git)
 	const projectPath = join(workspaceDir, ".composer", "config.toml");
 	const projectConfig = parseConfigFile(projectPath);
 	if (projectConfig) {
 		config = deepMerge(config, projectConfig);
+	}
+
+	// Load local config (personal overrides, gitignored)
+	// This follows Claude Code's pattern of settings.local.json
+	const localPath = join(workspaceDir, ".composer", "config.local.toml");
+	const localConfig = parseConfigFile(localPath);
+	if (localConfig) {
+		config = deepMerge(config, localConfig);
+		logger.debug("Applied local config overrides", { path: localPath });
 	}
 
 	// Apply environment overrides

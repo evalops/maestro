@@ -21,23 +21,28 @@ export class ThinkingSelectorComponent extends BaseSelectorComponent<ThinkingLev
 			{
 				value: "low",
 				label: "low",
-				description: "Light reasoning (~2k tokens)",
+				description: 'Light reasoning (~4k tokens) — "think"',
 			},
 			{
 				value: "medium",
 				label: "medium",
-				description: "Moderate reasoning (~8k tokens)",
+				description: 'Moderate reasoning (~8k tokens) — "think hard"',
 			},
 			{
 				value: "high",
 				label: "high",
-				description: "Deep reasoning (~16k tokens)",
+				description: 'Deep reasoning (~16k tokens) — "think harder"',
+			},
+			{
+				value: "ultra",
+				label: "ultra",
+				description: 'Maximum reasoning (~32k+ tokens) — "ultrathink"',
 			},
 		];
 
 		super({
 			items: thinkingLevels,
-			visibleRows: 5,
+			visibleRows: 6,
 			onSelect,
 			onCancel,
 		});

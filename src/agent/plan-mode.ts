@@ -528,3 +528,135 @@ export function listPlanFiles(
 		return [];
 	}
 }
+
+/**
+ * Options for exiting plan mode with swarm execution.
+ */
+export interface ExitPlanModeWithSwarmOptions {
+	/** Number of teammates to spawn (1-10) */
+	teammateCount: number;
+	/** Model to use for teammates (defaults to parent's model) */
+	model?: string;
+	/** Maximum time per task in milliseconds */
+	taskTimeout?: number;
+	/** Whether to continue on individual task failures */
+	continueOnFailure?: boolean;
+	/** Git branch to work on (creates if doesn't exist) */
+	gitBranch?: string;
+	/** Plan mode configuration override */
+	config?: PlanModeConfig;
+}
+
+/**
+ * Result of swarm execution from plan mode.
+ */
+export interface SwarmExecutionResult {
+	/** Whether the swarm was launched */
+	launched: boolean;
+	/** Swarm ID if launched */
+	swarmId?: string;
+	/** Plan state after exiting */
+	planState: PlanModeState | null;
+	/** Number of tasks extracted from plan */
+	taskCount?: number;
+	/** Error message if launch failed */
+	error?: string;
+}
+
+/**
+ * Exit plan mode and optionally launch a swarm to implement the plan.
+ *
+ * This function combines exiting plan mode with launching parallel agents
+ * to work on the tasks defined in the plan. Tasks are extracted from the
+ * plan file's markdown content (checkbox items, numbered lists, etc.).
+ *
+ * @param options - Swarm configuration options
+ * @returns Result including swarm ID and plan state
+ *
+ * @example
+ * // Exit plan mode and launch 3 teammates to implement
+ * const result = await exitPlanModeWithSwarm({
+ *   teammateCount: 3,
+ *   continueOnFailure: true,
+ * });
+ * console.log(`Launched swarm ${result.swarmId} with ${result.taskCount} tasks`);
+ */
+export async function exitPlanModeWithSwarm(
+	options: ExitPlanModeWithSwarmOptions,
+): Promise<SwarmExecutionResult> {
+	const config = options.config || getPlanModeConfig();
+
+	// Get current plan state
+	const state = loadPlanModeState(config);
+	if (!state?.active) {
+		return {
+			launched: false,
+			planState: null,
+			error: "No active plan to implement",
+		};
+	}
+
+	// Read plan content
+	const planContent = readPlanFile(config);
+	if (!planContent) {
+		return {
+			launched: false,
+			planState: state,
+			error: "Could not read plan file",
+		};
+	}
+
+	// Dynamically import swarm modules to avoid circular dependencies
+	const { parsePlanContent, executeSwarm } = await import("./swarm/index.js");
+
+	// Parse tasks from plan
+	const parsed = parsePlanContent(planContent);
+	if (parsed.tasks.length === 0) {
+		return {
+			launched: false,
+			planState: state,
+			error: "No tasks found in plan file",
+		};
+	}
+
+	// Exit plan mode (mark as inactive)
+	const finalState = exitPlanMode(config);
+
+	// Launch swarm
+	try {
+		const swarmState = await executeSwarm({
+			teammateCount: Math.min(options.teammateCount, parsed.tasks.length),
+			planFile: state.filePath,
+			tasks: parsed.tasks,
+			cwd: process.cwd(),
+			parentSessionId: state.sessionId,
+			model: options.model,
+			taskTimeout: options.taskTimeout,
+			continueOnFailure: options.continueOnFailure ?? true,
+			gitBranch: options.gitBranch,
+		});
+
+		logger.info("Swarm launched from plan mode", {
+			swarmId: swarmState.id,
+			taskCount: parsed.tasks.length,
+			teammateCount: options.teammateCount,
+		});
+
+		return {
+			launched: true,
+			swarmId: swarmState.id,
+			planState: finalState,
+			taskCount: parsed.tasks.length,
+		};
+	} catch (error) {
+		logger.error(
+			"Failed to launch swarm",
+			error instanceof Error ? error : new Error(String(error)),
+		);
+		return {
+			launched: false,
+			planState: finalState,
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+}

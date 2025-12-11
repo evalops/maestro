@@ -132,7 +132,7 @@ export function createTimeoutReader<T>(
 	}
 
 	return {
-		async read(): Promise<ReadableStreamReadResult<T>> {
+		read: async () => {
 			clearIdleTimeout();
 
 			try {

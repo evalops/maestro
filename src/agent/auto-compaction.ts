@@ -118,6 +118,7 @@ export function calculateContextUsage(
 		| "openai-responses"
 		| "google-generative-ai"
 		| "bedrock-converse"
+		| "vertex-ai"
 	>,
 	systemPromptTokens = 0,
 ): CompactionStats {
@@ -156,6 +157,7 @@ export function shouldAutoCompact(
 		| "openai-responses"
 		| "google-generative-ai"
 		| "bedrock-converse"
+		| "vertex-ai"
 	>,
 	config: AutoCompactionConfig = getAutoCompactionConfig(),
 	systemPromptTokens = 0,
@@ -240,6 +242,7 @@ export class AutoCompactionMonitor {
 			| "openai-responses"
 			| "google-generative-ai"
 			| "bedrock-converse"
+			| "vertex-ai"
 		>,
 		systemPromptTokens = 0,
 	): CompactionStats {

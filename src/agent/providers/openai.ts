@@ -104,6 +104,7 @@ import type {
 	AssistantMessageEvent,
 	Context,
 	Model,
+	ReasoningEffort,
 	StreamOptions,
 } from "../types.js";
 
@@ -157,7 +158,7 @@ export type OpenAIToolChoice =
 	| { type: "function"; function: { name: string } };
 
 export interface OpenAIOptions extends StreamOptions {
-	reasoningEffort?: "minimal" | "low" | "medium" | "high";
+	reasoningEffort?: ReasoningEffort;
 	/**
 	 * Controls how the model uses tools.
 	 * - "auto": Model decides (default)
@@ -545,12 +546,15 @@ export async function* streamOpenAI(
 
 	// Add reasoning effort for reasoning-capable models
 	// Note: Grok models don't support reasoning_effort parameter
+	// Note: OpenAI API only supports up to "high", so map "ultra" to "high"
 	if (
 		options.reasoningEffort &&
 		model.reasoning &&
 		!model.id.toLowerCase().includes("grok")
 	) {
-		requestBody.reasoning_effort = options.reasoningEffort;
+		const effort =
+			options.reasoningEffort === "ultra" ? "high" : options.reasoningEffort;
+		requestBody.reasoning_effort = effort;
 	}
 
 	const headers: Record<string, string> = {

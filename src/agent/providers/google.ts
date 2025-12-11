@@ -367,6 +367,7 @@ function buildParams(
 			low: 2048,
 			medium: model.id.includes("2.5-pro") ? 8192 : 8192,
 			high: model.id.includes("2.5-pro") ? 32768 : 24576,
+			ultra: model.id.includes("2.5-pro") ? 65536 : 49152, // Maximum thinking for complex problems
 		};
 
 		config.thinkingConfig = {

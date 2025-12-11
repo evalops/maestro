@@ -16,8 +16,12 @@ function createModel(
 		name: "Test Model",
 		provider,
 		api: api as "anthropic-messages",
-		cost: { input: 0, output: 0 },
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 100000,
+		baseUrl: "https://api.anthropic.com",
+		reasoning: false,
+		input: ["text"],
+		maxTokens: 4096,
 	};
 }
 
@@ -127,7 +131,10 @@ describe("transformMessages", () => {
 				{
 					role: "toolResult",
 					toolCallId: "call_123",
-					content: "file contents here",
+					toolName: "read",
+					content: [{ type: "text", text: "file contents here" }],
+					isError: false,
+					timestamp: Date.now(),
 				},
 			];
 
@@ -204,8 +211,22 @@ describe("transformMessages", () => {
 						arguments: { path: "c.txt" },
 					},
 				]),
-				{ role: "toolResult", toolCallId: "call_1", content: "content a" },
-				{ role: "toolResult", toolCallId: "call_3", content: "content c" },
+				{
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "read",
+					content: [{ type: "text", text: "content a" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+				{
+					role: "toolResult",
+					toolCallId: "call_3",
+					toolName: "read",
+					content: [{ type: "text", text: "content c" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
 				// call_2 has no result - should be filtered
 				createAssistantMessage([{ type: "text", text: "Done" }]),
 			];
@@ -232,6 +253,7 @@ describe("transformMessages", () => {
 				{
 					role: "user",
 					content: [{ type: "text", text: "Hello" }],
+					timestamp: Date.now(),
 				},
 			];
 
@@ -246,7 +268,10 @@ describe("transformMessages", () => {
 				{
 					role: "toolResult",
 					toolCallId: "call_123",
-					content: "result data",
+					toolName: "test_tool",
+					content: [{ type: "text", text: "result data" }],
+					isError: false,
+					timestamp: Date.now(),
 				},
 			];
 

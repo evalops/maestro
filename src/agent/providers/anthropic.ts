@@ -520,9 +520,17 @@ export async function* streamAnthropic(
 	}
 
 	if (options.thinking && model.reasoning) {
+		// Budget tokens based on reasoning effort level
+		const thinkingBudgets: Record<ReasoningEffort, number> = {
+			minimal: 1024,
+			low: 4096,
+			medium: 8192,
+			high: 16000,
+			ultra: 32000, // Maximum thinking budget for complex problems
+		};
 		requestBody.thinking = {
 			type: "enabled",
-			budget_tokens: 10000,
+			budget_tokens: thinkingBudgets[options.thinking] ?? 10000,
 		};
 	}
 

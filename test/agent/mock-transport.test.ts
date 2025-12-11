@@ -302,6 +302,7 @@ describe("Agent mock transport", () => {
 				_messages: Message[],
 				userMessage: Message,
 				_config: AgentRunConfig,
+				_signal?: AbortSignal,
 			): AsyncGenerator<AgentEvent, void, unknown> {
 				receivedUserMessage = userMessage;
 				yield { type: "turn_start" };
@@ -350,10 +351,11 @@ describe("Agent mock transport", () => {
 
 		// Verify continue() called run() with a synthetic message
 		expect(receivedUserMessage).not.toBeNull();
-		expect(receivedUserMessage?.role).toBe("user");
+		const msg = receivedUserMessage as unknown as Message;
+		expect(msg.role).toBe("user");
 
 		// Check that the synthetic message has continuation text
-		const content = receivedUserMessage?.content;
+		const content = msg.content;
 		expect(Array.isArray(content)).toBe(true);
 		if (Array.isArray(content)) {
 			const textContent = content.find(
