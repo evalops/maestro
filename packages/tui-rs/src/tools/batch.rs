@@ -89,28 +89,34 @@ impl BatchConfig {
 
 /// Batch executor for running multiple tools in parallel
 ///
-/// Note: The BatchExecutor takes ownership of or references to an executor.
-/// For parallel execution, it clones necessary data to spawn independent tasks.
+/// Note: The BatchExecutor caches a ToolExecutor for validation operations.
+/// For parallel execution, it spawns independent executors per task.
 pub struct BatchExecutor {
     /// Working directory for tool execution
     cwd: String,
     /// Configuration
     config: BatchConfig,
+    /// Cached executor for validation (avoids repeated registry building)
+    executor: ToolExecutor,
 }
 
 impl BatchExecutor {
     /// Create a new batch executor with the given working directory
     pub fn new(cwd: impl Into<String>) -> Self {
+        let cwd = cwd.into();
         Self {
-            cwd: cwd.into(),
+            executor: ToolExecutor::new(&cwd),
+            cwd,
             config: BatchConfig::default(),
         }
     }
 
     /// Create with custom configuration
     pub fn with_config(cwd: impl Into<String>, config: BatchConfig) -> Self {
+        let cwd = cwd.into();
         Self {
-            cwd: cwd.into(),
+            executor: ToolExecutor::new(&cwd),
+            cwd,
             config,
         }
     }
@@ -200,11 +206,10 @@ impl BatchExecutor {
         calls: Vec<BatchToolCall>,
         event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
     ) -> Vec<BatchToolResult> {
-        let executor = ToolExecutor::new(&self.cwd);
         let mut results = Vec::with_capacity(calls.len());
 
         for call in calls {
-            let result = executor.execute(
+            let result = self.executor.execute(
                 &call.tool_name,
                 &call.args,
                 event_tx.as_ref(),
@@ -229,11 +234,10 @@ impl BatchExecutor {
 
     /// Check which tools require approval
     pub fn check_approvals(&self, calls: &[BatchToolCall]) -> Vec<(String, bool)> {
-        let executor = ToolExecutor::new(&self.cwd);
         calls
             .iter()
             .map(|call| {
-                let needs_approval = executor.requires_approval(&call.tool_name, &call.args);
+                let needs_approval = self.executor.requires_approval(&call.tool_name, &call.args);
                 (call.call_id.clone(), needs_approval)
             })
             .collect()
@@ -241,20 +245,18 @@ impl BatchExecutor {
 
     /// Filter calls that require approval
     pub fn filter_needs_approval<'a>(&self, calls: &'a [BatchToolCall]) -> Vec<&'a BatchToolCall> {
-        let executor = ToolExecutor::new(&self.cwd);
         calls
             .iter()
-            .filter(|call| executor.requires_approval(&call.tool_name, &call.args))
+            .filter(|call| self.executor.requires_approval(&call.tool_name, &call.args))
             .collect()
     }
 
     /// Validate all calls and return any with missing required fields
     pub fn validate_calls(&self, calls: &[BatchToolCall]) -> HashMap<String, Vec<String>> {
-        let executor = ToolExecutor::new(&self.cwd);
         let mut errors = HashMap::new();
 
         for call in calls {
-            let missing = executor.missing_required(&call.tool_name, &call.args);
+            let missing = self.executor.missing_required(&call.tool_name, &call.args);
             if !missing.is_empty() {
                 errors.insert(call.call_id.clone(), missing);
             }
