@@ -654,7 +654,7 @@ export class Scheduler {
 	) => Promise<void>;
 	private defaultTimezone: string;
 	private checkInterval: ReturnType<typeof setInterval> | null = null;
-	private checking: boolean = false;
+	private checking = false;
 	private tasksFile: string;
 	private historyFile: string;
 
