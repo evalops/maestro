@@ -17,6 +17,13 @@
 				"command": "cd packages/slack-agent && bun run check",
 				"forwardAllArgs": true
 			}
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/slack-agent && bun run test",
+				"forwardAllArgs": true
+			}
 		}
 	}
 }
