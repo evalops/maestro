@@ -159,6 +159,10 @@ pub mod prompts;
 /// Restricts file system access for executed commands.
 pub mod sandbox;
 
+/// Safety and security controls for agent operations.
+/// Includes action firewall, dangerous pattern detection, and path containment.
+pub mod safety;
+
 /// Syntax highlighting for code blocks.
 /// Uses syntect for highlighting in various languages.
 pub mod syntax;
@@ -455,4 +459,35 @@ pub use sandbox::{
     SandboxResult,             // Result type alias
     WritableRoot,              // A directory the sandbox can write to
     SANDBOX_ENV_VAR,           // Environment variable indicating sandbox mode
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SAFETY EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Safety and security system for agent operations.
+///
+/// The safety module provides multiple layers of protection:
+/// - **Action Firewall**: Central gateway that checks all tool operations
+/// - **Dangerous Patterns**: Regex-based detection of malicious commands
+/// - **Bash Analyzer**: Parse and classify shell command risk
+/// - **Path Containment**: Ensure operations stay within safe directories
+pub use safety::{
+    // Firewall - main entry point
+    ActionFirewall,  // Central security gateway
+    FirewallVerdict, // Allow, Block, or RequireApproval
+
+    // Bash analysis
+    analyze_bash_command, // Analyze a command for risk
+    BashAnalysis,         // Analysis result with risk level
+    CommandRisk,          // Safe, RequiresApproval, or Dangerous
+
+    // Dangerous pattern detection
+    check_dangerous_patterns, // Check input against all patterns
+    DangerousPattern,         // A pattern with regex and severity
+    PatternMatch,             // Result of a pattern match
+
+    // Path containment
+    is_path_contained, // Check if path is in safe zones
+    PathContainment,   // Contained, Escaped, or SystemProtected
 };
