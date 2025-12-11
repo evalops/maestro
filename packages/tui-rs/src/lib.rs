@@ -305,6 +305,10 @@ pub mod keymap;
 /// Priority-based notifications with batching and auto-dismiss.
 pub mod notification_queue;
 
+/// Layout constraints and responsive sizing.
+/// Flex distribution, breakpoints, and priority-based degradation.
+pub mod layout_constraints;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1031,3 +1035,32 @@ pub use shimmer::{
     shimmer_spans_with_config, // With custom config
     ShimmerConfig,             // Shimmer configuration
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYOUT CONSTRAINTS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Layout constraints system for responsive terminal UIs.
+///
+/// Provides:
+/// - Min/max width/height constraints
+/// - Flex-like proportional distribution
+/// - Responsive breakpoints
+/// - Priority-based degradation
+pub use layout_constraints::{
+    allocate_priority_zones, // Allocate space by priority
+    content_width,           // Calculate inner content width
+    distribute_flex,         // Distribute width among flex items
+    responsive_width,        // Calculate responsive width
+    Breakpoint,              // Terminal width breakpoints
+    FlexItem,                // Flex item configuration
+    LayoutConstraints,       // Core constraint struct
+    Priority,                // Priority levels
+    PriorityZone,            // Zone with priority
+    Spacing,                 // Padding/margin spacing
+    ZoneConfig,              // Zone configuration
+    ZoneLayout,              // Multi-zone layout builder
+};
+
+/// Layout presets for common UI elements.
+pub use layout_constraints::presets;
