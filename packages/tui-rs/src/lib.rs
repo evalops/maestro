@@ -309,6 +309,10 @@ pub mod notification_queue;
 /// Flex distribution, breakpoints, and priority-based degradation.
 pub mod layout_constraints;
 
+/// Kill ring and word movement for text editing.
+/// Emacs-style kill/yank buffer with word boundary detection.
+pub mod kill_ring;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1064,3 +1068,38 @@ pub use layout_constraints::{
 
 /// Layout presets for common UI elements.
 pub use layout_constraints::presets;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KILL RING EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Kill ring and text editing utilities.
+///
+/// Provides Emacs-style kill ring for storing deleted text:
+/// - Ctrl+K: kill to end of line
+/// - Ctrl+U: kill to start of line
+/// - Ctrl+W / Alt+Backspace: kill word backward
+/// - Ctrl+Y: yank (paste) last killed text
+/// - Alt+Y: rotate through kill ring
+pub use kill_ring::{
+    // Kill ring
+    KillRing,      // Main kill ring struct
+    KillResult,    // Result of a kill operation
+    YankInfo,      // Info about last yank for replacement
+    // Word boundaries
+    current_word_end,    // Find end of current word
+    current_word_start,  // Find start of current word
+    is_word_separator,   // Check if char is word separator
+    next_word_end,       // Find end of next word
+    previous_word_start, // Find start of previous word
+    // Kill operations
+    kill_to_end,         // Kill to end of line (Ctrl+K)
+    kill_to_start,       // Kill to start of line (Ctrl+U)
+    kill_word_backward,  // Kill word backward (Alt+Backspace)
+    kill_word_forward,   // Kill word forward (Alt+Delete)
+    transpose_chars,     // Transpose characters (Ctrl+T)
+    transpose_words,     // Transpose words (Alt+T)
+    // Constants
+    DEFAULT_KILL_RING_SIZE,
+    WORD_SEPARATORS,
+};
