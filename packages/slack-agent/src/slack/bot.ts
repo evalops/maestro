@@ -133,6 +133,8 @@ export class SlackBot {
 	private channelCache: Map<string, string> = new Map();
 	private recentEvents: Map<string, number> = new Map();
 	private readonly eventDedupeMs = 5 * 60 * 1000;
+	private lastEventCleanupMs = 0;
+	private readonly eventCleanupIntervalMs = 60 * 1000;
 
 	constructor(handler: SlackAgentHandler, config: SlackBotConfig) {
 		this.handler = handler;
@@ -309,9 +311,12 @@ export class SlackBot {
 
 	private shouldProcessEvent(key: string): boolean {
 		const now = Date.now();
-		const cutoff = now - this.eventDedupeMs;
-		for (const [k, t] of this.recentEvents.entries()) {
-			if (t < cutoff) this.recentEvents.delete(k);
+		if (now - this.lastEventCleanupMs > this.eventCleanupIntervalMs) {
+			const cutoff = now - this.eventDedupeMs;
+			for (const [k, t] of this.recentEvents.entries()) {
+				if (t < cutoff) this.recentEvents.delete(k);
+			}
+			this.lastEventCleanupMs = now;
 		}
 		if (this.recentEvents.has(key)) {
 			return false;
