@@ -144,7 +144,7 @@ impl ConfigWatcher {
                 },
                 Config::default(),
             )
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
             self._watcher = Some(watcher);
         }
@@ -154,7 +154,7 @@ impl ConfigWatcher {
             if let Some(ref mut watcher) = self._watcher {
                 watcher
                     .watch(parent, RecursiveMode::NonRecursive)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    .map_err(std::io::Error::other)?;
             }
         }
 
