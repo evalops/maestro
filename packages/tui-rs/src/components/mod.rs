@@ -116,6 +116,7 @@
 mod approval;
 mod command_palette;
 mod config_selector;
+mod context_indicator;
 mod file_search;
 mod input;
 mod layout;
@@ -126,10 +127,13 @@ mod session_switcher;
 mod text;
 pub mod textarea;
 mod theme_selector;
+mod thinking_indicator;
+mod shortcuts_help;
 
 pub use approval::{ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest};
 pub use command_palette::CommandPalette;
 pub use config_selector::{ConfigCategory, ConfigChangeEvent, ConfigOption, ConfigSelector};
+pub use context_indicator::{ContextIndicator, ContextIndicatorBuilder, UsageLevel};
 pub use file_search::FileSearchModal;
 pub use input::{EditorWidget, InputWidget};
 pub use layout::{column_layout, row_layout, BoxWidget};
@@ -139,3 +143,7 @@ pub use scroll::render_scrollbar;
 pub use session_switcher::SessionSwitcher;
 pub use text::{StyledTextWidget, TextWidget};
 pub use theme_selector::ThemeSelector;
+pub use thinking_indicator::{
+    ThinkingDisplayMode, ThinkingIndicator, ThinkingIndicatorBuilder, ThinkingPhase, ThinkingState,
+};
+pub use shortcuts_help::{Shortcut, ShortcutCategory, ShortcutsHelp, ShortcutsHelpBuilder};
