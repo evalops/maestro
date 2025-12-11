@@ -213,6 +213,10 @@ pub mod color_utils;
 /// Buffers text and commits only complete lines.
 pub mod markdown_stream;
 
+/// Terminal information and detection utilities.
+/// SSH, WSL, and terminal emulator detection.
+pub mod terminal_info;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -696,3 +700,26 @@ pub use color_utils::{
 /// Buffers text deltas and commits only complete lines, preventing
 /// partial markdown from causing visual glitches.
 pub use markdown_stream::MarkdownStreamCollector;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TERMINAL INFO EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Terminal information and detection utilities.
+///
+/// Works across local, SSH, and WSL sessions:
+/// - Terminal emulator detection (kitty, iTerm2, Alacritty, etc.)
+/// - SSH session detection
+/// - WSL detection and path conversion
+pub use terminal_info::{
+    convert_windows_path_to_wsl, // Convert Windows paths in WSL
+    is_interactive,             // Check if fully interactive terminal
+    is_ssh_session,             // Check if SSH session
+    is_stderr_tty,              // Check if stderr is TTY
+    is_stdin_tty,               // Check if stdin is TTY
+    is_stdout_tty,              // Check if stdout is TTY
+    is_wsl,                     // Check if WSL
+    normalize_pasted_path,      // Normalize pasted file paths
+    ssh_connection_info,        // Get SSH connection details
+    TerminalInfo,               // Full terminal info struct
+};
