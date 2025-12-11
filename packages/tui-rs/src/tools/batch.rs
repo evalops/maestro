@@ -26,7 +26,11 @@ pub struct BatchToolCall {
 
 impl BatchToolCall {
     /// Create a new batch tool call
-    pub fn new(call_id: impl Into<String>, tool_name: impl Into<String>, args: serde_json::Value) -> Self {
+    pub fn new(
+        call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        args: serde_json::Value,
+    ) -> Self {
         Self {
             call_id: call_id.into(),
             tool_name: tool_name.into(),
@@ -137,9 +141,7 @@ impl BatchExecutor {
         // Send batch start event
         if let Some(ref tx) = event_tx {
             if self.config.emit_events {
-                let _ = tx.send(FromAgent::BatchStart {
-                    total: calls.len(),
-                });
+                let _ = tx.send(FromAgent::BatchStart { total: calls.len() });
             }
         }
 
@@ -159,12 +161,18 @@ impl BatchExecutor {
             handles.push(tokio::spawn(async move {
                 // Each task creates its own executor
                 let executor = ToolExecutor::new(&cwd);
-                let result = executor.execute(
-                    &tool_name,
-                    &args,
-                    if emit_events { event_tx_clone.as_ref() } else { None },
-                    &call_id,
-                ).await;
+                let result = executor
+                    .execute(
+                        &tool_name,
+                        &args,
+                        if emit_events {
+                            event_tx_clone.as_ref()
+                        } else {
+                            None
+                        },
+                        &call_id,
+                    )
+                    .await;
 
                 // Release permit when done
                 drop(permit);
@@ -209,12 +217,15 @@ impl BatchExecutor {
         let mut results = Vec::with_capacity(calls.len());
 
         for call in calls {
-            let result = self.executor.execute(
-                &call.tool_name,
-                &call.args,
-                event_tx.as_ref(),
-                &call.call_id,
-            ).await;
+            let result = self
+                .executor
+                .execute(
+                    &call.tool_name,
+                    &call.args,
+                    event_tx.as_ref(),
+                    &call.call_id,
+                )
+                .await;
 
             let success = result.success;
             results.push(BatchToolResult {
@@ -318,7 +329,11 @@ mod tests {
 
         let calls = vec![
             BatchToolCall::new("1", "read", json!({"file_path": "/test.txt"})),
-            BatchToolCall::new("2", "write", json!({"file_path": "/test.txt", "content": "x"})),
+            BatchToolCall::new(
+                "2",
+                "write",
+                json!({"file_path": "/test.txt", "content": "x"}),
+            ),
         ];
 
         let approvals = batch.check_approvals(&calls);
@@ -350,7 +365,11 @@ mod tests {
 
         let calls = vec![
             BatchToolCall::new("1", "read", json!({"file_path": "/test.txt"})),
-            BatchToolCall::new("2", "write", json!({"file_path": "/test.txt", "content": "x"})),
+            BatchToolCall::new(
+                "2",
+                "write",
+                json!({"file_path": "/test.txt", "content": "x"}),
+            ),
             BatchToolCall::new("3", "glob", json!({"pattern": "*.rs"})),
         ];
 

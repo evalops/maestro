@@ -81,7 +81,8 @@ impl RateLimitWindow {
 
     /// Format reset time for display
     pub fn format_reset(&self) -> Option<String> {
-        self.resets_in_secs.map(|secs| format_duration_compact(secs))
+        self.resets_in_secs
+            .map(|secs| format_duration_compact(secs))
     }
 }
 
@@ -263,7 +264,10 @@ impl RateLimitDisplay {
                 spans.push(Span::raw(" │ "));
             }
             if credits.unlimited {
-                spans.push(Span::styled("Credits: ∞", Style::default().fg(Color::Green)));
+                spans.push(Span::styled(
+                    "Credits: ∞",
+                    Style::default().fg(Color::Green),
+                ));
             } else if let Some(ref balance) = credits.balance {
                 spans.push(Span::styled(
                     format!("Credits: {}", balance),
@@ -316,7 +320,10 @@ impl RateLimitDisplay {
                 let text = if credits.unlimited {
                     Span::styled("Credits: Unlimited", Style::default().fg(Color::Green))
                 } else if let Some(ref balance) = credits.balance {
-                    Span::styled(format!("Credits: {}", balance), Style::default().fg(Color::Cyan))
+                    Span::styled(
+                        format!("Credits: {}", balance),
+                        Style::default().fg(Color::Cyan),
+                    )
                 } else {
                     Span::styled("Credits: Unknown", Style::default().fg(Color::DarkGray))
                 };
@@ -385,14 +392,10 @@ impl RateLimitTracker {
     pub fn display(&self) -> RateLimitDisplay {
         match &self.state {
             RateLimitState::Available {
-                primary,
-                secondary,
-                ..
+                primary, secondary, ..
             }
             | RateLimitState::Stale {
-                primary,
-                secondary,
-                ..
+                primary, secondary, ..
             } => {
                 let mut display = RateLimitDisplay::new();
                 if let Some(p) = primary {

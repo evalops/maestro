@@ -59,11 +59,11 @@
 //! let result = client.call_tool("my-server", "tool_name", args).await?;
 //! ```
 
-mod config;
-pub mod protocol;
-mod http;
 mod client;
+mod config;
+mod http;
+pub mod protocol;
 
-pub use config::{McpConfig, McpServerConfig, McpTransport, load_mcp_config};
 pub use client::{McpClient, McpConnection, McpError};
+pub use config::{load_mcp_config, McpConfig, McpServerConfig, McpTransport};
 pub use protocol::{McpContent, McpRequest, McpResponse, McpTool, McpToolResult};

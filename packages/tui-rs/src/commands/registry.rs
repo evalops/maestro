@@ -952,11 +952,10 @@ pub fn build_command_registry() -> CommandRegistry {
                     Some("json") => ExportAction::Json(path),
                     Some("txt") | Some("text") => ExportAction::PlainText(path),
                     Some(other) => {
-                        return Err(CommandError::new(format!(
-                            "Unknown export format: {}",
-                            other
-                        ))
-                        .with_hint("Available: markdown, html, json, text"));
+                        return Err(
+                            CommandError::new(format!("Unknown export format: {}", other))
+                                .with_hint("Available: markdown, html, json, text"),
+                        );
                     }
                 };
                 Ok(CommandOutput::Action(CommandAction::ExportSession(action)))
@@ -1033,14 +1032,13 @@ pub fn build_command_registry() -> CommandRegistry {
                     }
                 };
 
-                Ok(CommandOutput::Action(CommandAction::ShowToolHistory(action)))
+                Ok(CommandOutput::Action(CommandAction::ShowToolHistory(
+                    action,
+                )))
             }),
         )
         .alias("th")
-        .arg(CommandArgument::string(
-            "action",
-            "Action or tool name",
-        ))
+        .arg(CommandArgument::string("action", "Action or tool name"))
         .usage("/toolhistory [count|stats|clear|tool <name>]"),
     );
 

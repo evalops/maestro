@@ -462,8 +462,12 @@ mod tests {
         let msg = Message {
             role: Role::Assistant,
             content: MessageContent::Blocks(vec![
-                ContentBlock::Text { text: "Hello".to_string() },
-                ContentBlock::Thinking { thinking: "Let me think...".to_string() },
+                ContentBlock::Text {
+                    text: "Hello".to_string(),
+                },
+                ContentBlock::Thinking {
+                    thinking: "Let me think...".to_string(),
+                },
             ]),
         };
 
@@ -752,7 +756,9 @@ mod tests {
         let config = RequestConfig {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 1024,
-            tools: vec![Tool::new("complex_tool", "A complex tool").with_schema(complex_schema.clone())],
+            tools: vec![
+                Tool::new("complex_tool", "A complex tool").with_schema(complex_schema.clone())
+            ],
             ..Default::default()
         };
 

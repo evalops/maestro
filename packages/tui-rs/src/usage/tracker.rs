@@ -137,9 +137,8 @@ impl SessionUsage {
 
     /// Duration since session start
     pub fn duration(&self) -> Option<Duration> {
-        self.started_at.and_then(|start| {
-            SystemTime::now().duration_since(start).ok()
-        })
+        self.started_at
+            .and_then(|start| SystemTime::now().duration_since(start).ok())
     }
 }
 
@@ -415,8 +414,14 @@ impl UsageTracker {
             format!("Tokens:"),
             format!("  Input:       {:>12}", format_tokens(stats.input_tokens)),
             format!("  Output:      {:>12}", format_tokens(stats.output_tokens)),
-            format!("  Cache Read:  {:>12}", format_tokens(stats.cache_read_tokens)),
-            format!("  Cache Write: {:>12}", format_tokens(stats.cache_write_tokens)),
+            format!(
+                "  Cache Read:  {:>12}",
+                format_tokens(stats.cache_read_tokens)
+            ),
+            format!(
+                "  Cache Write: {:>12}",
+                format_tokens(stats.cache_write_tokens)
+            ),
             format!("  Total:       {:>12}", format_tokens(stats.total_tokens())),
             format!(""),
             format!("Cost: ${:.4}", stats.cost),
@@ -424,7 +429,10 @@ impl UsageTracker {
         ];
 
         if stats.cache_read_tokens > 0 {
-            lines.push(format!("  Cache hit: {:.1}%", stats.cache_hit_ratio() * 100.0));
+            lines.push(format!(
+                "  Cache hit: {:.1}%",
+                stats.cache_hit_ratio() * 100.0
+            ));
         }
 
         if let Some(tps) = stats.tokens_per_second() {

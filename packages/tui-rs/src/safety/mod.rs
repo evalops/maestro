@@ -59,10 +59,14 @@ mod path_containment;
 #[cfg(test)]
 mod integration_tests;
 
-pub use bash_analyzer::{analyze_bash_command, is_dangerous, is_likely_safe, BashAnalysis, CommandRisk};
+pub use bash_analyzer::{
+    analyze_bash_command, is_dangerous, is_likely_safe, BashAnalysis, CommandRisk,
+};
 pub use dangerous_patterns::{
     check_dangerous_patterns, has_high_severity_pattern, most_severe_match, DangerousPattern,
     PatternMatch, Severity,
 };
 pub use firewall::{ActionFirewall, FirewallVerdict};
-pub use path_containment::{has_path_traversal, is_path_contained, is_system_path, PathContainment};
+pub use path_containment::{
+    has_path_traversal, is_path_contained, is_system_path, PathContainment,
+};

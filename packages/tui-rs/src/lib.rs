@@ -418,13 +418,13 @@ pub use palette::{
 
 // Tool system
 pub use tools::{
-    BashTool,       // Executes shell commands
-    HistoryFilter,  // Filter for tool history search
-    ToolExecutor,   // Trait for tool execution
-    ToolExecution,  // Single tool execution record
-    ToolHistory,    // Tool execution history tracker
-    ToolRegistry,   // Registry of available tools
-    ToolStats,      // Statistics about tool executions
+    BashTool,      // Executes shell commands
+    HistoryFilter, // Filter for tool history search
+    ToolExecution, // Single tool execution record
+    ToolExecutor,  // Trait for tool execution
+    ToolHistory,   // Tool execution history tracker
+    ToolRegistry,  // Registry of available tools
+    ToolStats,     // Statistics about tool executions
 };
 
 // Tooltips
@@ -595,23 +595,22 @@ pub use sandbox::{
 /// - **Bash Analyzer**: Parse and classify shell command risk
 /// - **Path Containment**: Ensure operations stay within safe directories
 pub use safety::{
-    // Firewall - main entry point
-    ActionFirewall,  // Central security gateway
-    FirewallVerdict, // Allow, Block, or RequireApproval
-
     // Bash analysis
     analyze_bash_command, // Analyze a command for risk
-    BashAnalysis,         // Analysis result with risk level
-    CommandRisk,          // Safe, RequiresApproval, or Dangerous
-
     // Dangerous pattern detection
     check_dangerous_patterns, // Check input against all patterns
-    DangerousPattern,         // A pattern with regex and severity
-    PatternMatch,             // Result of a pattern match
-
     // Path containment
     is_path_contained, // Check if path is in safe zones
-    PathContainment,   // Contained, Escaped, or SystemProtected
+    // Firewall - main entry point
+    ActionFirewall, // Central security gateway
+    BashAnalysis,   // Analysis result with risk level
+    CommandRisk,    // Safe, RequiresApproval, or Dangerous
+
+    DangerousPattern, // A pattern with regex and severity
+    FirewallVerdict,  // Allow, Block, or RequireApproval
+
+    PathContainment, // Contained, Escaped, or SystemProtected
+    PatternMatch,    // Result of a pattern match
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -624,22 +623,21 @@ pub use safety::{
 /// additional tools. Servers are configured via JSON files and can use
 /// different transports (stdio, HTTP, SSE).
 pub use mcp::{
+    // Configuration
+    load_mcp_config, // Load config from standard locations
     // Client types
     McpClient,     // Manages multiple server connections
+    McpConfig,     // Merged configuration from all sources
     McpConnection, // Single server connection
     McpError,      // Error type for MCP operations
 
-    // Configuration
-    load_mcp_config,                        // Load config from standard locations
-    McpConfig,                              // Merged configuration from all sources
-    McpServerConfig as McpServerJsonConfig, // JSON-based server config (renamed to avoid conflict with config::McpServerConfig)
-    McpTransport,                           // Transport type (Stdio, Http, Sse)
-
     // Protocol types
-    McpRequest,    // JSON-RPC request message
-    McpResponse,   // JSON-RPC response message
-    McpTool,       // Tool definition from server
-    McpToolResult, // Result of tool execution
+    McpRequest,                             // JSON-RPC request message
+    McpResponse,                            // JSON-RPC response message
+    McpServerConfig as McpServerJsonConfig, // JSON-based server config (renamed to avoid conflict with config::McpServerConfig)
+    McpTool,                                // Tool definition from server
+    McpToolResult,                          // Result of tool execution
+    McpTransport,                           // Transport type (Stdio, Http, Sse)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -653,14 +651,14 @@ pub use mcp::{
 /// - Cost alerts and thresholds
 /// - Exportable statistics
 pub use usage::{
-    CostAlert,     // Configurable cost threshold alert
-    ModelPricing,  // Per-model pricing database
-    PricingTier,   // Cost per token tier
-    SessionUsage,  // Aggregated session usage
-    TurnUsage,     // Single turn usage record
-    UsageExport,   // Exportable usage data
-    UsageStats,    // Aggregated statistics
-    UsageTracker,  // Main usage tracker
+    CostAlert,       // Configurable cost threshold alert
+    ModelPricing,    // Per-model pricing database
+    PricingTier,     // Cost per token tier
+    SessionUsage,    // Aggregated session usage
+    TurnUsage,       // Single turn usage record
+    UsageExport,     // Exportable usage data
+    UsageStats,      // Aggregated statistics
+    UsageTracker,    // Main usage tracker
     DEFAULT_PRICING, // Global default pricing
 };
 
@@ -677,10 +675,10 @@ pub use usage::{
 /// - Per-session filtering
 pub use history::{
     HistoryConfig as PromptHistoryConfig, // History configuration (renamed to avoid conflict with config::HistoryConfig)
-    HistoryEntry,   // Single history entry
-    PromptHistory,  // Main history store
-    SearchMatch,    // Search result match
-    SearchResult,   // Search results
+    HistoryEntry,                         // Single history entry
+    PromptHistory,                        // Main history store
+    SearchMatch,                          // Search result match
+    SearchResult,                         // Search results
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

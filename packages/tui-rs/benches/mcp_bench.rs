@@ -84,7 +84,8 @@ fn bench_mcp_request_serialize(c: &mut Criterion) {
 /// Benchmark McpResponse deserialization
 fn bench_mcp_response_deserialize(c: &mut Criterion) {
     let json_success = r#"{"jsonrpc":"2.0","id":1,"result":{"key":"value"}}"#;
-    let json_error = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#;
+    let json_error =
+        r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#;
 
     c.bench_function("mcp_response_deserialize_success", |b| {
         b.iter(|| {

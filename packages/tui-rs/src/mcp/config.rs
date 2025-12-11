@@ -79,7 +79,11 @@ impl McpServerConfig {
         if self.name.is_empty() {
             return Err("Server name is required".to_string());
         }
-        if !self.name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        if !self
+            .name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
             return Err("Server name must be alphanumeric with _ or -".to_string());
         }
 

