@@ -191,6 +191,10 @@ pub mod usage;
 /// Stores and retrieves previous prompts for easy recall.
 pub mod history;
 
+/// Configuration file watcher for hot-reload.
+/// Watches config files and emits events on changes.
+pub mod config_watcher;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -575,4 +579,20 @@ pub use history::{
     PromptHistory,  // Main history store
     SearchMatch,    // Search result match
     SearchResult,   // Search results
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG WATCHER EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Configuration file watcher for hot-reload functionality.
+///
+/// Watches config files and emits events when they change:
+/// - Debounced to avoid excessive notifications
+/// - Non-blocking polling interface
+/// - Supports multiple files simultaneously
+pub use config_watcher::{
+    ConfigEvent,          // Change, Created, Deleted, or Error events
+    ConfigWatcher,        // Main watcher struct
+    ConfigWatcherBuilder, // Builder for easy setup
 };
