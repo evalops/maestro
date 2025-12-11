@@ -131,7 +131,7 @@ fn extract_task_metadata(markdown: &str, title: &str, mut task: SwarmTask) -> Sw
             if trimmed.starts_with('#')
                 || trimmed.starts_with("- [")
                 || trimmed.starts_with("* [")
-                || (trimmed.len() > 2 && trimmed.chars().next().map_or(false, |c| c.is_numeric()))
+                || (trimmed.len() > 2 && trimmed.chars().next().is_some_and(|c| c.is_numeric()))
             {
                 break;
             }
@@ -194,7 +194,7 @@ fn parse_priority(s: &str) -> TaskPriority {
 /// Parse a simple task list format
 ///
 /// Format:
-/// ```
+/// ```text
 /// Task 1 title
 /// Task 2 title -> Task 1
 /// Task 3 title -> Task 1, Task 2

@@ -59,7 +59,7 @@ impl BranchPoint {
 }
 
 /// Branch metadata stored in session
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BranchMetadata {
     /// Branch points in this session
     pub branches: Vec<BranchPoint>,
@@ -69,17 +69,6 @@ pub struct BranchMetadata {
     pub parent_session: Option<String>,
     /// Parent branch ID if branched from another branch
     pub parent_branch: Option<BranchId>,
-}
-
-impl Default for BranchMetadata {
-    fn default() -> Self {
-        Self {
-            branches: Vec::new(),
-            active_branch: None,
-            parent_session: None,
-            parent_branch: None,
-        }
-    }
 }
 
 impl BranchMetadata {
