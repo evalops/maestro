@@ -197,6 +197,14 @@ pub mod config_watcher;
 /// Ported from OpenAI Codex CLI (MIT licensed).
 pub mod text_format;
 
+/// Live/incremental text wrapping for streaming content.
+/// Allows text to be pushed in fragments and wrapped correctly.
+pub mod live_wrap;
+
+/// Rendering utilities for terminal output.
+/// Line manipulation, prefixing, and truncation helpers.
+pub mod render_utils;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -597,4 +605,59 @@ pub use config_watcher::{
     ConfigEvent,          // Change, Created, Deleted, or Error events
     ConfigWatcher,        // Main watcher struct
     ConfigWatcherBuilder, // Builder for easy setup
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LIVE WRAP EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Live/incremental text wrapping for streaming content.
+///
+/// Useful for rendering streaming AI responses in real-time, maintaining
+/// correct wrapping regardless of how text fragments arrive.
+pub use live_wrap::{
+    take_prefix_by_width, // Take a prefix of text fitting within a width
+    Row,                  // A single visual row with text and line break info
+    RowBuilder,           // Incremental text wrapper
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDER UTILS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Rendering utilities for styled terminal text.
+///
+/// Provides helpers for manipulating ratatui Lines/Spans:
+/// - Prefixing lines with tree-style indentation
+/// - Converting borrowed lines to static
+/// - Truncating output with middle ellipsis
+pub use render_utils::{
+    ellipsis_line,           // Creates "… +N lines" ellipsis
+    is_blank_line,           // Checks if line is empty/whitespace
+    limit_lines_from_start,  // Limits lines with trailing ellipsis
+    line_to_static,          // Converts borrowed line to owned
+    prefix_lines,            // Adds tree-style prefixes
+    prefix_lines_borrowed,   // Prefix with borrowed prefixes
+    push_owned_lines,        // Appends owned copies of lines
+    truncate_lines_middle,   // Head/tail truncation with ellipsis
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEXT FORMAT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Text formatting utilities for terminal display.
+///
+/// Ported from OpenAI Codex CLI (MIT licensed):
+/// - Truncate text to fit within a given character count
+/// - Format JSON in compact single-line format
+/// - Center-truncate paths with ellipsis in middle
+pub use text_format::{
+    center_truncate_path,            // Path truncation preserving endpoints
+    format_and_truncate_tool_result, // Format and truncate tool output
+    format_json_compact,             // Single-line JSON with spaces
+    relativize_to_home,              // Replace home dir with ~
+    truncate_lines,                  // Line count truncation
+    truncate_text,                   // Character count truncation
+    TOOL_OUTPUT_MAX_LINES,           // Default max lines for tool output
 };
