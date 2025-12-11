@@ -187,6 +187,7 @@ Invite the bot to channels where you want it to operate:
 | `SLACK_BOT_TOKEN` | Yes | - | Bot token (xoxb-...) |
 | `ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key |
 | `ANTHROPIC_OAUTH_TOKEN` | Yes* | - | Alternative: Anthropic OAuth token |
+| `SLACK_AGENT_DEFAULT_TIMEZONE` | No | UTC | Default timezone for scheduled tasks (IANA name) |
 | `SLACK_RATE_LIMIT_USER` | No | 10 | Max requests per user per minute |
 | `SLACK_RATE_LIMIT_CHANNEL` | No | 30 | Max requests per channel per minute |
 | `SLACK_RATE_LIMIT_WINDOW_MS` | No | 60000 | Rate limit window in milliseconds |
@@ -463,7 +464,7 @@ The agent can use the `attach` tool to share files back to Slack.
 
 ## Scheduled Tasks
 
-Schedule tasks with natural language time expressions:
+Schedule tasks with natural language time expressions. **All times are interpreted in UTC** (the scheduler’s default timezone). If you embed the Scheduler programmatically, you can pass an IANA timezone (e.g. `"America/Los_Angeles"`) to interpret expressions in that zone.
 
 ### One-Time Tasks
 
@@ -471,12 +472,16 @@ Schedule tasks with natural language time expressions:
 @bot remind me in 2 hours to check the deployment
 @bot at 3pm run the test suite
 @bot tomorrow at 9am generate the weekly report
+@bot next friday at 3pm review open PRs
+@bot this monday at 10am kick off the sprint
 ```
 
 Supported expressions:
 - `in X minutes/hours/days/weeks`
 - `at HH:MM` or `at Ham/pm`
 - `tomorrow` or `tomorrow at HH:MM`
+- `next monday/tuesday/...` or `next monday at HH:MM`
+- `this monday/tuesday/...` or `this monday at HH:MM`
 
 ### Recurring Tasks
 
@@ -485,6 +490,10 @@ Supported expressions:
 @bot every monday at 10am generate the sprint report
 @bot every hour check the error logs
 @bot every weekday at 6pm run the backup script
+@bot every 2 weeks on monday at 9am generate the sprint report
+@bot first monday of month at 9am send the monthly summary
+@bot last friday of month at 5pm remind us to close the books
+@bot cron 0 9 * * 1 run the weekly report
 ```
 
 Supported expressions:
@@ -492,6 +501,9 @@ Supported expressions:
 - `every day at HH:MM`
 - `every weekday at HH:MM`
 - `every monday/tuesday/.../sunday at HH:MM`
+- `every N weeks on <weekday> at HH:MM`
+- `<first|second|third|fourth|last> <weekday> of month at HH:MM`
+- `cron <min> <hour> <dom> <month> <dow>` (raw cron)
 
 ### Managing Tasks
 
@@ -1132,14 +1144,15 @@ bun run dev
 ### Test
 
 ```bash
-# Run all tests
-cd ../.. && bunx vitest run test/slack-agent/
+# Run package tests
+cd packages/slack-agent
+bun run test
 
-# Run specific test file
-bunx vitest run test/slack-agent/scheduler.test.ts
+# Run via Nx from repo root
+npx nx run slack-agent:test --skip-nx-cache
 
-# Watch mode
-bunx vitest test/slack-agent/
+# Run a specific test
+bunx vitest --run -t "scheduler"
 ```
 
 ### Project Structure

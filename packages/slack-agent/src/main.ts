@@ -31,6 +31,8 @@ const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_OAUTH_TOKEN = process.env.ANTHROPIC_OAUTH_TOKEN;
+const SLACK_AGENT_DEFAULT_TIMEZONE =
+	process.env.SLACK_AGENT_DEFAULT_TIMEZONE || "UTC";
 
 function getSandboxDescription(sandbox: SandboxConfig): string {
 	if (sandbox.type === "host") {
@@ -106,6 +108,9 @@ function printUsage(): void {
 	console.error("  SLACK_BOT_TOKEN       Slack bot token (xoxb-...)");
 	console.error("  ANTHROPIC_API_KEY     Anthropic API key");
 	console.error("  ANTHROPIC_OAUTH_TOKEN Anthropic OAuth token (alternative)");
+	console.error(
+		"  SLACK_AGENT_DEFAULT_TIMEZONE Default timezone for schedules (IANA name, default: UTC)",
+	);
 }
 
 const { workingDir, sandbox } = parseArgs();
@@ -664,6 +669,7 @@ schedulerHolder.instance = new Scheduler({
 	workingDir,
 	onTaskDue: handleScheduledTask,
 	onNotify: handleTaskNotification,
+	defaultTimezone: SLACK_AGENT_DEFAULT_TIMEZONE,
 });
 schedulerHolder.instance.start();
 
