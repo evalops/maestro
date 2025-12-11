@@ -19,6 +19,7 @@ interface StreamingViewOptions {
 		scrollbackLimit: number;
 	};
 	getCleanMode: () => CleanMode;
+	getHideThinkingBlocks?: () => boolean;
 }
 
 export class StreamingView {
@@ -66,9 +67,12 @@ export class StreamingView {
 		// collapsed consistently between streaming and final views.
 		const cleanMode = this.options.getCleanMode();
 		const mode: CleanMode = cleanMode ?? "off";
-		this.streamingComponent.updateContent(
-			toRenderableAssistantMessage(message, { cleanMode: mode }),
-		);
+		let renderable = toRenderableAssistantMessage(message, { cleanMode: mode });
+		// Filter out thinking blocks if hidden
+		if (this.options.getHideThinkingBlocks?.()) {
+			renderable = { ...renderable, thinkingBlocks: [] };
+		}
+		this.streamingComponent.updateContent(renderable);
 		if (message.stopReason === "aborted" || message.stopReason === "error") {
 			const errorMessage =
 				message.stopReason === "aborted"
@@ -161,9 +165,13 @@ export class StreamingView {
 	private renderStreaming(message: AssistantMessage) {
 		const cleanMode = this.options.getCleanMode();
 		const mode: CleanMode = cleanMode ?? "off";
-		if (mode === "off") {
-			return toRenderableAssistantMessage(message, { cleanMode: "off" });
+		const renderable = toRenderableAssistantMessage(message, {
+			cleanMode: mode,
+		});
+		// Filter out thinking blocks if hidden
+		if (this.options.getHideThinkingBlocks?.()) {
+			return { ...renderable, thinkingBlocks: [] };
 		}
-		return toRenderableAssistantMessage(message, { cleanMode: mode });
+		return renderable;
 	}
 }

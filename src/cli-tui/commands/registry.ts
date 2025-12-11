@@ -945,6 +945,17 @@ export function createCommandRegistry({
 			handlers.quit,
 			createContext,
 		),
+		buildEntry(
+			{
+				name: "copy",
+				description: "Copy last assistant message to clipboard",
+				usage: "/copy",
+				tags: ["session"],
+			},
+			equals("copy"),
+			handlers.copy,
+			createContext,
+		),
 
 		// ═══════════════════════════════════════════════════════════════════
 		// GROUPED COMMANDS - Organize related commands under parent commands

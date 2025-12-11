@@ -82,6 +82,7 @@ interface CommandRegistryOptions {
 	handleMemory: (context: CommandExecutionContext) => void;
 	handleMode: (context: CommandExecutionContext) => void;
 	handlePrompts: (context: CommandExecutionContext) => void;
+	handleCopy: (context: CommandExecutionContext) => void;
 	// Grouped command handlers
 	handleSessionCommand: (
 		context: CommandExecutionContext,
@@ -172,6 +173,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			memory: opts.handleMemory,
 			mode: opts.handleMode,
 			prompts: opts.handlePrompts,
+			copy: opts.handleCopy,
 			// Grouped command handlers
 			sessionCommand: opts.handleSessionCommand,
 			diagCommand: opts.handleDiagCommand,

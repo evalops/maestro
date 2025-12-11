@@ -13,6 +13,7 @@ export interface UiState {
 	zenMode?: boolean;
 	cleanMode?: CleanMode;
 	reducedMotion?: boolean;
+	hideThinkingBlocks?: boolean;
 	recentCommands?: string[];
 	favoriteCommands?: string[];
 }
@@ -55,6 +56,10 @@ export function loadUiState(): UiState {
 			reducedMotion:
 				typeof parsed.reducedMotion === "boolean"
 					? parsed.reducedMotion
+					: undefined,
+			hideThinkingBlocks:
+				typeof parsed.hideThinkingBlocks === "boolean"
+					? parsed.hideThinkingBlocks
 					: undefined,
 			recentCommands: Array.isArray(parsed.recentCommands)
 				? (parsed.recentCommands as string[]).filter(
