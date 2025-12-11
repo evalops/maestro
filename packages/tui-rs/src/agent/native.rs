@@ -98,8 +98,8 @@ use uuid::Uuid;
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{FromAgent, TokenUsage, ToolResult};
 use crate::ai::{
-    ContentBlock, Message, MessageContent, RequestConfig, Role, StreamEvent, ThinkingConfig, Tool,
-    UnifiedClient,
+    AiProvider, ContentBlock, Message, MessageContent, RequestConfig, Role, StreamEvent,
+    ThinkingConfig, Tool, UnifiedClient,
 };
 use crate::hooks::{HookResult, IntegratedHookSystem};
 use crate::tools::{ToolExecutor, ToolRegistry};
@@ -779,6 +779,8 @@ impl NativeAgentRunner {
             system: self.config.system_prompt.clone(),
             tools,
             thinking,
+            // Enable prompt caching for Anthropic models
+            cache_system_prompt: self.client.provider() == AiProvider::Anthropic,
         }
     }
 
@@ -1212,12 +1214,14 @@ mod tests {
             system: config.system_prompt.clone(),
             tools,
             thinking: None,
+            cache_system_prompt: true, // Test caching enabled
         };
 
         assert_eq!(request_config.model, "claude-sonnet-4-5-20250514");
         assert_eq!(request_config.max_tokens, 8192);
         assert!(request_config.system.is_some());
         assert!(!request_config.tools.is_empty());
+        assert!(request_config.cache_system_prompt);
     }
 
     #[test]
