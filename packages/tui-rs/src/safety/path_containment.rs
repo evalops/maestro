@@ -104,7 +104,50 @@ pub fn is_path_contained(
         }
     };
 
-    // Check against system-protected paths first
+    // Check if in temp directory FIRST (before system paths, since temp may be
+    // under /var on macOS which would otherwise be blocked as a system path).
+    // We need to check multiple temp path variants because:
+    // - std::env::temp_dir() returns /var/folders/... on macOS
+    // - But /var is a symlink to /private/var
+    // - So resolved paths become /private/var/folders/...
+    // - We must match both the raw and canonicalized forms
+    let temp_dir = std::env::temp_dir();
+
+    // Check raw temp_dir (e.g., /var/folders/...)
+    if path_starts_with(&resolved, &temp_dir) || path_starts_with(target, &temp_dir) {
+        return PathContainment::Contained {
+            zone: "temp".to_string(),
+        };
+    }
+
+    // Check canonicalized temp_dir (e.g., /private/var/folders/...)
+    if let Ok(temp_canonical) = temp_dir.canonicalize() {
+        if path_starts_with(&resolved, &temp_canonical) {
+            return PathContainment::Contained {
+                zone: "temp".to_string(),
+            };
+        }
+    }
+
+    // Also check /tmp explicitly (may differ from temp_dir() on some systems)
+    #[cfg(unix)]
+    {
+        let tmp = std::path::Path::new("/tmp");
+        if path_starts_with(&resolved, tmp) || path_starts_with(target, tmp) {
+            return PathContainment::Contained {
+                zone: "temp".to_string(),
+            };
+        }
+        // On macOS, /tmp is a symlink to /private/tmp
+        let private_tmp = std::path::Path::new("/private/tmp");
+        if path_starts_with(&resolved, private_tmp) {
+            return PathContainment::Contained {
+                zone: "temp".to_string(),
+            };
+        }
+    }
+
+    // Check against system-protected paths
     for sys_path in SYSTEM_PATHS {
         let sys_path = Path::new(sys_path);
         if path_starts_with(&resolved, sys_path) {
@@ -124,15 +167,6 @@ pub fn is_path_contained(
         return PathContainment::Contained {
             zone: "workspace".to_string(),
         };
-    }
-
-    // Check if in temp directory
-    if let Ok(temp) = std::env::temp_dir().canonicalize() {
-        if path_starts_with(&resolved, &temp) {
-            return PathContainment::Contained {
-                zone: "temp".to_string(),
-            };
-        }
     }
 
     // Check additional safe zones
@@ -220,6 +254,36 @@ fn path_starts_with(path: &Path, base: &Path) -> bool {
 
 /// Check if a path is in a system-protected directory
 pub fn is_system_path(path: &Path) -> bool {
+    // First check if path is in temp directory (which may be under /var on macOS)
+    // Temp should NOT be considered a system path
+    let temp_dir = std::env::temp_dir();
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+    // Check raw temp path (e.g., /var/folders/...)
+    if path_starts_with(&resolved, &temp_dir) || path_starts_with(path, &temp_dir) {
+        return false;
+    }
+
+    // Check canonicalized temp path (e.g., /private/var/folders/...)
+    if let Ok(temp_canonical) = temp_dir.canonicalize() {
+        if path_starts_with(&resolved, &temp_canonical) || path_starts_with(path, &temp_canonical) {
+            return false;
+        }
+    }
+
+    // Also check /tmp explicitly
+    #[cfg(unix)]
+    {
+        let tmp = Path::new("/tmp");
+        if path_starts_with(&resolved, tmp) || path_starts_with(path, tmp) {
+            return false;
+        }
+        let private_tmp = Path::new("/private/tmp");
+        if path_starts_with(&resolved, private_tmp) || path_starts_with(path, private_tmp) {
+            return false;
+        }
+    }
+
     SYSTEM_PATHS.iter().any(|sys| {
         let sys_path = Path::new(sys);
         path_starts_with(path, sys_path)
@@ -284,28 +348,15 @@ mod tests {
     fn test_all_system_paths_protected() {
         let workspace = PathBuf::from("/home/user/project");
 
-        // All Linux system paths should be protected
-        let system_paths = [
-            "/etc/shadow",
-            "/usr/bin/ls",
-            "/var/log/syslog",
-            "/boot/grub/grub.cfg",
-            "/sys/class/net",
-            "/proc/1/status",
-            "/dev/sda",
-            "/bin/sh",
-            "/sbin/init",
-            "/lib/modules",
-            "/lib64/ld-linux.so",
-            "/opt/software",
-        ];
-
-        for path in system_paths {
-            let result = is_path_contained(Path::new(path), &workspace, &[]);
+        // Test paths under each SYSTEM_PATH - this is cross-platform
+        // (uses the platform-specific SYSTEM_PATHS constant)
+        for sys_path in SYSTEM_PATHS {
+            let test_path = format!("{}/test_file", sys_path);
+            let result = is_path_contained(Path::new(&test_path), &workspace, &[]);
             assert!(
                 matches!(result, PathContainment::SystemProtected { .. }),
                 "Expected {} to be system protected, got {:?}",
-                path,
+                test_path,
                 result
             );
         }
