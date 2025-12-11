@@ -192,6 +192,15 @@ pub struct App {
 
     /// Color theme selection modal.
     theme_selector: ThemeSelector,
+
+    /// Token usage and cost tracker.
+    usage_tracker: crate::usage::UsageTracker,
+
+    /// Prompt history for recall and search.
+    prompt_history: crate::history::PromptHistory,
+
+    /// Tool execution history.
+    tool_history: crate::tools::ToolHistory,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -260,6 +269,10 @@ impl App {
             clipboard: ClipboardManager::new(),
             model_selector: ModelSelector::new(),
             theme_selector: ThemeSelector::new(),
+            usage_tracker: crate::usage::UsageTracker::new(),
+            prompt_history: crate::history::PromptHistory::load_or_create()
+                .unwrap_or_else(|_| crate::history::PromptHistory::default()),
+            tool_history: crate::tools::ToolHistory::default(),
         })
     }
 
@@ -1314,6 +1327,185 @@ Add the required fields and retry.",
             }
             CommandAction::HooksManage(hooks_action) => {
                 self.handle_hooks_action(hooks_action);
+            }
+            CommandAction::ShowUsage(usage_action) => {
+                self.handle_usage_action(usage_action);
+            }
+            CommandAction::ExportSession(export_action) => {
+                self.handle_export_action(export_action);
+            }
+            CommandAction::ShowHistory(history_action) => {
+                self.handle_history_action(history_action);
+            }
+            CommandAction::ShowToolHistory(tool_history_action) => {
+                self.handle_tool_history_action(tool_history_action);
+            }
+        }
+    }
+
+    /// Handle usage/cost display actions
+    fn handle_usage_action(&mut self, action: crate::commands::UsageAction) {
+        use crate::commands::UsageAction;
+
+        match action {
+            UsageAction::Summary => {
+                let summary = self.usage_tracker.summary();
+                self.state.add_system_message(format!("## Usage Summary\n\n{}", summary));
+            }
+            UsageAction::Detailed => {
+                let detailed = self.usage_tracker.detailed_summary();
+                self.state.add_system_message(format!("## Usage Details\n\n```\n{}\n```", detailed));
+            }
+            UsageAction::Reset => {
+                self.usage_tracker.reset();
+                self.state.status = Some("Usage tracking reset".to_string());
+            }
+        }
+    }
+
+    /// Handle session export actions
+    fn handle_export_action(&mut self, action: crate::commands::ExportAction) {
+        use crate::commands::ExportAction;
+        use crate::session::{ExportFormat, ExportOptions};
+
+        let (format, path) = match action {
+            ExportAction::Markdown(p) => (ExportFormat::Markdown, p),
+            ExportAction::Html(p) => (ExportFormat::Html, p),
+            ExportAction::Json(p) => (ExportFormat::Json, p),
+            ExportAction::PlainText(p) => (ExportFormat::PlainText, p),
+            ExportAction::ShowOptions => {
+                self.state.add_system_message(
+                    "## Session Export\n\n\
+                    Usage: `/export <format> [path]`\n\n\
+                    **Formats:**\n\
+                    - `markdown` or `md` - Human-readable markdown\n\
+                    - `html` - Styled HTML page\n\
+                    - `json` - Structured JSON data\n\
+                    - `text` or `txt` - Plain text\n\n\
+                    **Examples:**\n\
+                    - `/export markdown` - Output to terminal\n\
+                    - `/export html session.html` - Save to file\n"
+                        .to_string(),
+                );
+                return;
+            }
+        };
+
+        // For now, just show a message since we don't have actual session data
+        let _options = ExportOptions {
+            format,
+            ..Default::default()
+        };
+
+        if let Some(ref file_path) = path {
+            self.state.status = Some(format!(
+                "Export to {} not yet implemented (would write to {})",
+                format.extension(),
+                file_path
+            ));
+        } else {
+            self.state.status = Some(format!(
+                "Export as {} not yet implemented",
+                format.extension()
+            ));
+        }
+    }
+
+    /// Handle prompt history actions
+    fn handle_history_action(&mut self, action: crate::commands::HistoryAction) {
+        use crate::commands::HistoryAction;
+
+        match action {
+            HistoryAction::Recent(count) => {
+                let recent = self.prompt_history.recent(count);
+                if recent.is_empty() {
+                    self.state.status = Some("No prompt history".to_string());
+                    return;
+                }
+
+                let mut msg = String::from("## Recent Prompts\n\n");
+                for (i, entry) in recent.iter().enumerate() {
+                    let preview = if entry.prompt.len() > 60 {
+                        format!("{}...", &entry.prompt[..57])
+                    } else {
+                        entry.prompt.clone()
+                    };
+                    msg.push_str(&format!("{}. {}\n", i + 1, preview));
+                }
+                self.state.add_system_message(msg);
+            }
+            HistoryAction::Search(query) => {
+                let results = self.prompt_history.search(&query);
+                if results.matches.is_empty() {
+                    self.state.status = Some(format!("No matches for '{}'", query));
+                    return;
+                }
+
+                let mut msg = format!("## Search Results for '{}'\n\n", query);
+                for (i, m) in results.matches.iter().take(10).enumerate() {
+                    let preview = if m.entry.prompt.len() > 60 {
+                        format!("{}...", &m.entry.prompt[..57])
+                    } else {
+                        m.entry.prompt.clone()
+                    };
+                    msg.push_str(&format!("{}. {} (score: {:.2})\n", i + 1, preview, m.score));
+                }
+                self.state.add_system_message(msg);
+            }
+            HistoryAction::Clear => {
+                self.prompt_history.clear();
+                let _ = self.prompt_history.delete_file();
+                self.state.status = Some("Prompt history cleared".to_string());
+            }
+        }
+    }
+
+    /// Handle tool history actions
+    fn handle_tool_history_action(&mut self, action: crate::commands::ToolHistoryAction) {
+        use crate::commands::ToolHistoryAction;
+
+        match action {
+            ToolHistoryAction::Recent(count) => {
+                let recent = self.tool_history.recent(count);
+                if recent.is_empty() {
+                    self.state.status = Some("No tool history".to_string());
+                    return;
+                }
+
+                let mut msg = String::from("## Recent Tool Executions\n\n");
+                for exec in recent {
+                    let status = if exec.success { "✓" } else { "✗" };
+                    let duration = exec.duration
+                        .map(|d| format!("{:.0}ms", d.as_millis()))
+                        .unwrap_or_else(|| "?".to_string());
+                    msg.push_str(&format!("{} **{}** ({})\n", status, exec.tool_name, duration));
+                }
+                self.state.add_system_message(msg);
+            }
+            ToolHistoryAction::Stats => {
+                let summary = self.tool_history.summary();
+                self.state.add_system_message(format!("## Tool Statistics\n\n```\n{}\n```", summary));
+            }
+            ToolHistoryAction::ForTool(name) => {
+                let execs = self.tool_history.for_tool(&name);
+                if execs.is_empty() {
+                    self.state.status = Some(format!("No history for tool '{}'", name));
+                    return;
+                }
+
+                let mut msg = format!("## History for '{}'\n\n", name);
+                for exec in execs.iter().take(10) {
+                    let status = if exec.success { "✓" } else { "✗" };
+                    let duration = exec.duration
+                        .map(|d| format!("{:.0}ms", d.as_millis()))
+                        .unwrap_or_else(|| "?".to_string());
+                    msg.push_str(&format!("{} {} - {}\n", status, duration, exec.output_preview(50).unwrap_or_default()));
+                }
+                self.state.add_system_message(msg);
+            }
+            ToolHistoryAction::Clear => {
+                self.tool_history.clear();
+                self.state.status = Some("Tool history cleared".to_string());
             }
         }
     }

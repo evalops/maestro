@@ -74,7 +74,8 @@ use std::sync::Arc;
 
 use super::types::{
     ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
-    CommandError, CommandOutput, CommandResult, HooksAction, ModalType,
+    CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
+    ModalType, ToolHistoryAction, UsageAction,
 };
 
 /// Registry of all available commands with efficient lookup and execution
@@ -900,6 +901,149 @@ pub fn build_command_registry() -> CommandRegistry {
         .alias("r"),
     );
 
+    // Cost/usage command
+    registry.register(
+        Command::new(
+            "cost",
+            "Show token usage and cost statistics",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let subcommand = ctx.raw_args.trim().to_lowercase();
+                let action = match subcommand.as_str() {
+                    "" | "summary" => UsageAction::Summary,
+                    "detailed" | "detail" | "full" => UsageAction::Detailed,
+                    "reset" | "clear" => UsageAction::Reset,
+                    other => {
+                        return Err(CommandError::new(format!(
+                            "Unknown cost subcommand: {}",
+                            other
+                        ))
+                        .with_hint("Available: summary, detailed, reset"));
+                    }
+                };
+                Ok(CommandOutput::Action(CommandAction::ShowUsage(action)))
+            }),
+        )
+        .alias("usage")
+        .alias("tokens")
+        .arg(CommandArgument::choice(
+            "action",
+            "What to show",
+            vec!["summary", "detailed", "reset"],
+        ))
+        .usage("/cost [summary|detailed|reset]"),
+    );
+
+    // Export command
+    registry.register(
+        Command::new(
+            "export",
+            "Export current session to file",
+            CommandCategory::Session,
+            Box::new(|ctx| {
+                let parts: Vec<&str> = ctx.raw_args.trim().split_whitespace().collect();
+                let format = parts.first().map(|s| s.to_lowercase());
+                let path = parts.get(1).map(|s| s.to_string());
+
+                let action = match format.as_deref() {
+                    None | Some("") => ExportAction::ShowOptions,
+                    Some("md") | Some("markdown") => ExportAction::Markdown(path),
+                    Some("html") => ExportAction::Html(path),
+                    Some("json") => ExportAction::Json(path),
+                    Some("txt") | Some("text") => ExportAction::PlainText(path),
+                    Some(other) => {
+                        return Err(CommandError::new(format!(
+                            "Unknown export format: {}",
+                            other
+                        ))
+                        .with_hint("Available: markdown, html, json, text"));
+                    }
+                };
+                Ok(CommandOutput::Action(CommandAction::ExportSession(action)))
+            }),
+        )
+        .arg(CommandArgument::choice(
+            "format",
+            "Export format",
+            vec!["markdown", "html", "json", "text"],
+        ))
+        .arg(CommandArgument::string("path", "Output file path"))
+        .usage("/export [format] [path]"),
+    );
+
+    // History command
+    registry.register(
+        Command::new(
+            "history",
+            "Show or search prompt history",
+            CommandCategory::Session,
+            Box::new(|ctx| {
+                let args = ctx.raw_args.trim();
+
+                let action = if args.is_empty() {
+                    HistoryAction::Recent(20)
+                } else if args == "clear" {
+                    HistoryAction::Clear
+                } else if let Ok(n) = args.parse::<usize>() {
+                    HistoryAction::Recent(n)
+                } else {
+                    HistoryAction::Search(args.to_string())
+                };
+
+                Ok(CommandOutput::Action(CommandAction::ShowHistory(action)))
+            }),
+        )
+        .alias("hist")
+        .arg(CommandArgument::string(
+            "query",
+            "Number of entries or search query",
+        ))
+        .usage("/history [count|search query|clear]"),
+    );
+
+    // Tool history command
+    registry.register(
+        Command::new(
+            "toolhistory",
+            "Show tool execution history and statistics",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let args = ctx.raw_args.trim().to_lowercase();
+                let parts: Vec<&str> = args.split_whitespace().collect();
+
+                let action = match parts.first().map(|s| *s) {
+                    None | Some("") => ToolHistoryAction::Recent(10),
+                    Some("stats") | Some("statistics") => ToolHistoryAction::Stats,
+                    Some("clear") => ToolHistoryAction::Clear,
+                    Some("tool") => {
+                        let tool_name = parts.get(1).unwrap_or(&"").to_string();
+                        if tool_name.is_empty() {
+                            return Err(CommandError::new("Tool name required")
+                                .with_hint("Usage: /toolhistory tool <name>"));
+                        }
+                        ToolHistoryAction::ForTool(tool_name)
+                    }
+                    Some(other) => {
+                        if let Ok(n) = other.parse::<usize>() {
+                            ToolHistoryAction::Recent(n)
+                        } else {
+                            // Assume it's a tool name
+                            ToolHistoryAction::ForTool(other.to_string())
+                        }
+                    }
+                };
+
+                Ok(CommandOutput::Action(CommandAction::ShowToolHistory(action)))
+            }),
+        )
+        .alias("th")
+        .arg(CommandArgument::string(
+            "action",
+            "Action or tool name",
+        ))
+        .usage("/toolhistory [count|stats|clear|tool <name>]"),
+    );
+
     registry
 }
 
@@ -963,5 +1107,117 @@ mod tests {
         assert!(registry.get("theme").is_some());
         assert!(registry.get("model").is_some());
         assert!(registry.get("quit").is_some());
+    }
+
+    #[test]
+    fn cost_command_exists() {
+        let registry = build_command_registry();
+        assert!(registry.get("cost").is_some());
+        assert!(registry.get("usage").is_some()); // alias
+        assert!(registry.get("tokens").is_some()); // alias
+    }
+
+    #[test]
+    fn cost_command_actions() {
+        let registry = build_command_registry();
+
+        // Summary (default)
+        let result = registry.execute("/cost", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Detailed
+        let result = registry.execute("/cost detailed", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Reset
+        let result = registry.execute("/cost reset", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Invalid
+        let result = registry.execute("/cost invalid", "/tmp", None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn export_command_exists() {
+        let registry = build_command_registry();
+        assert!(registry.get("export").is_some());
+    }
+
+    #[test]
+    fn export_command_formats() {
+        let registry = build_command_registry();
+
+        // No args (show options)
+        let result = registry.execute("/export", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Markdown
+        let result = registry.execute("/export markdown", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // HTML with path
+        let result = registry.execute("/export html output.html", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Invalid format
+        let result = registry.execute("/export invalid", "/tmp", None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn history_command_exists() {
+        let registry = build_command_registry();
+        assert!(registry.get("history").is_some());
+        assert!(registry.get("hist").is_some()); // alias
+    }
+
+    #[test]
+    fn history_command_actions() {
+        let registry = build_command_registry();
+
+        // Default (recent 20)
+        let result = registry.execute("/history", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // With count
+        let result = registry.execute("/history 10", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Search
+        let result = registry.execute("/history git status", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Clear
+        let result = registry.execute("/history clear", "/tmp", None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn toolhistory_command_exists() {
+        let registry = build_command_registry();
+        assert!(registry.get("toolhistory").is_some());
+        assert!(registry.get("th").is_some()); // alias
+    }
+
+    #[test]
+    fn toolhistory_command_actions() {
+        let registry = build_command_registry();
+
+        // Default
+        let result = registry.execute("/toolhistory", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Stats
+        let result = registry.execute("/toolhistory stats", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // For specific tool
+        let result = registry.execute("/toolhistory read", "/tmp", None, None);
+        assert!(result.is_ok());
+
+        // Clear
+        let result = registry.execute("/toolhistory clear", "/tmp", None, None);
+        assert!(result.is_ok());
     }
 }

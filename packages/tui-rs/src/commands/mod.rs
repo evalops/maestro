@@ -93,9 +93,13 @@ mod matcher;
 mod registry;
 mod types;
 
-pub use matcher::{CommandMatch, SlashCommandMatcher, SlashCycleState};
+pub use matcher::{
+    ArgCompletion, CommandMatch, InlineCompletion, RichCompletion, SlashCommandMatcher,
+    SlashCycleState,
+};
 pub use registry::{build_command_registry, CommandRegistry};
 pub use types::{
     Command, CommandAction, CommandArgument, CommandArgumentType, CommandCategory, CommandContext,
-    CommandError, CommandHandler, CommandOutput, CommandResult, HooksAction, ModalType,
+    CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction, HistoryAction,
+    HooksAction, ModalType, ToolHistoryAction, UsageAction,
 };

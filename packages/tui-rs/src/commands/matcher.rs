@@ -568,6 +568,160 @@ impl Default for SlashCycleState {
     }
 }
 
+/// Inline completion suggestion for ghost text display
+///
+/// Represents a completion suggestion that can be shown as "ghost text"
+/// after the user's cursor, showing what they would get if they pressed Tab.
+#[derive(Debug, Clone)]
+pub struct InlineCompletion {
+    /// The full completed text (including what user already typed)
+    pub full_text: String,
+    /// Just the suffix to append (ghost text portion)
+    pub suffix: String,
+    /// Description or hint about the command
+    pub hint: Option<String>,
+    /// Score of this completion (for display purposes)
+    pub score: i32,
+}
+
+impl InlineCompletion {
+    /// Create an inline completion
+    pub fn new(full_text: String, suffix: String, hint: Option<String>, score: i32) -> Self {
+        Self {
+            full_text,
+            suffix,
+            hint,
+            score,
+        }
+    }
+}
+
+/// Extended completion with argument hints
+///
+/// Provides richer completion information including argument suggestions.
+#[derive(Debug, Clone)]
+pub struct RichCompletion {
+    /// The command name (with /)
+    pub command: String,
+    /// Command description
+    pub description: String,
+    /// Usage string (e.g., "/export [format] [path]")
+    pub usage: String,
+    /// Available arguments with their descriptions
+    pub args: Vec<ArgCompletion>,
+    /// Score for ranking
+    pub score: i32,
+}
+
+/// Argument completion hint
+#[derive(Debug, Clone)]
+pub struct ArgCompletion {
+    /// Argument name
+    pub name: String,
+    /// Argument description
+    pub description: String,
+    /// Whether this argument is required
+    pub required: bool,
+    /// Possible values (for choice arguments)
+    pub choices: Vec<String>,
+}
+
+impl SlashCommandMatcher {
+    /// Get inline completion (ghost text) for the current input
+    ///
+    /// Returns the best match's suffix that would complete the input,
+    /// suitable for displaying as ghost text after the cursor.
+    pub fn get_inline_completion(&self, input: &str) -> Option<InlineCompletion> {
+        if !input.starts_with('/') || input.len() < 2 {
+            return None;
+        }
+
+        let best = self.best_match(input)?;
+
+        // Calculate the suffix (what to add)
+        let input_cmd = input.trim_start_matches('/').to_lowercase();
+        let matched_name = best.matched_name.to_lowercase();
+
+        // If the input is a prefix of the matched name, show the rest
+        if matched_name.starts_with(&input_cmd) && matched_name.len() > input_cmd.len() {
+            let suffix = matched_name[input_cmd.len()..].to_string();
+            return Some(InlineCompletion::new(
+                format!("/{}", matched_name),
+                suffix,
+                Some(best.command.description.clone()),
+                best.score,
+            ));
+        }
+
+        None
+    }
+
+    /// Get rich completions with argument information
+    ///
+    /// Returns detailed completion information including command arguments,
+    /// suitable for displaying a completion popup or dropdown.
+    pub fn get_rich_completions(&self, query: &str, limit: usize) -> Vec<RichCompletion> {
+        self.get_matches(query)
+            .into_iter()
+            .take(limit)
+            .map(|m| {
+                let args: Vec<ArgCompletion> = m
+                    .command
+                    .arguments
+                    .iter()
+                    .map(|arg| ArgCompletion {
+                        name: arg.name.clone(),
+                        description: arg.description.clone(),
+                        required: arg.required,
+                        choices: match &arg.arg_type {
+                            super::types::CommandArgumentType::Choice(c) => c.clone(),
+                            _ => Vec::new(),
+                        },
+                    })
+                    .collect();
+
+                RichCompletion {
+                    command: format!("/{}", m.matched_name),
+                    description: m.command.description.clone(),
+                    usage: m.command.usage.clone(),
+                    args,
+                    score: m.score,
+                }
+            })
+            .collect()
+    }
+
+    /// Get argument completions for a command
+    ///
+    /// When the user has typed a command and is typing arguments,
+    /// this returns possible completions for the current argument.
+    pub fn get_arg_completions(&self, input: &str) -> Vec<String> {
+        let parts: Vec<&str> = input.splitn(2, ' ').collect();
+        if parts.len() < 2 {
+            return Vec::new();
+        }
+
+        let cmd_name = parts[0].trim_start_matches('/');
+        let _arg_part = parts[1];
+
+        // Find the command
+        let cmd = match self.registry.get(cmd_name) {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        // If command has choice arguments, return those choices
+        let mut completions = Vec::new();
+        for arg in &cmd.arguments {
+            if let super::types::CommandArgumentType::Choice(choices) = &arg.arg_type {
+                completions.extend(choices.clone());
+            }
+        }
+
+        completions
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,5 +795,59 @@ mod tests {
 
         assert!(!completions.is_empty());
         assert!(completions[0].starts_with('/'));
+    }
+
+    #[test]
+    fn inline_completion_works() {
+        let matcher = create_matcher();
+
+        // "/he" should complete to "lp" (for "help")
+        let completion = matcher.get_inline_completion("/he");
+        assert!(completion.is_some());
+        let c = completion.unwrap();
+        assert_eq!(c.full_text, "/help");
+        assert_eq!(c.suffix, "lp");
+    }
+
+    #[test]
+    fn inline_completion_no_match() {
+        let matcher = create_matcher();
+
+        // "/xyz" should not complete to anything
+        let completion = matcher.get_inline_completion("/xyz");
+        assert!(completion.is_none());
+    }
+
+    #[test]
+    fn inline_completion_too_short() {
+        let matcher = create_matcher();
+
+        // "/" alone shouldn't trigger completion
+        let completion = matcher.get_inline_completion("/");
+        assert!(completion.is_none());
+    }
+
+    #[test]
+    fn rich_completions_include_args() {
+        let matcher = create_matcher();
+
+        let completions = matcher.get_rich_completions("/cost", 5);
+        assert!(!completions.is_empty());
+
+        let cost_completion = completions.iter().find(|c| c.command == "/cost");
+        assert!(cost_completion.is_some());
+        let cost = cost_completion.unwrap();
+        assert!(!cost.args.is_empty());
+        assert!(!cost.usage.is_empty());
+    }
+
+    #[test]
+    fn arg_completions_for_choice() {
+        let matcher = create_matcher();
+
+        // "/export " should show format choices
+        let completions = matcher.get_arg_completions("/export ");
+        assert!(!completions.is_empty());
+        assert!(completions.contains(&"markdown".to_string()));
     }
 }

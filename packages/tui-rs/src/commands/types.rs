@@ -228,6 +228,64 @@ pub enum CommandAction {
     ShowMcpStatus,
     /// Hook system management action
     HooksManage(HooksAction),
+    /// Show usage and cost statistics
+    ShowUsage(UsageAction),
+    /// Export current session
+    ExportSession(ExportAction),
+    /// Show or search prompt history
+    ShowHistory(HistoryAction),
+    /// Show tool execution history
+    ShowToolHistory(ToolHistoryAction),
+}
+
+/// Actions for usage/cost display
+#[derive(Debug, Clone)]
+pub enum UsageAction {
+    /// Show summary
+    Summary,
+    /// Show detailed breakdown
+    Detailed,
+    /// Reset tracking
+    Reset,
+}
+
+/// Actions for session export
+#[derive(Debug, Clone)]
+pub enum ExportAction {
+    /// Export to markdown
+    Markdown(Option<String>),
+    /// Export to HTML
+    Html(Option<String>),
+    /// Export to JSON
+    Json(Option<String>),
+    /// Export to plain text
+    PlainText(Option<String>),
+    /// Show export options modal
+    ShowOptions,
+}
+
+/// Actions for prompt history
+#[derive(Debug, Clone)]
+pub enum HistoryAction {
+    /// Show recent history
+    Recent(usize),
+    /// Search history
+    Search(String),
+    /// Clear history
+    Clear,
+}
+
+/// Actions for tool history
+#[derive(Debug, Clone)]
+pub enum ToolHistoryAction {
+    /// Show recent executions
+    Recent(usize),
+    /// Show stats
+    Stats,
+    /// Show for specific tool
+    ForTool(String),
+    /// Clear history
+    Clear,
 }
 
 /// Actions for managing the hook system
