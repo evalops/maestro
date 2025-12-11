@@ -1,6 +1,6 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
+#!/bin/sh
+# Note: husky runs hooks with sh, so we exec bash for full functionality
+exec bash -euo pipefail -c '
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
@@ -13,3 +13,4 @@ fi
 bash "$ROOT/scripts/guardian.sh" --trigger pre-commit
 
 bun run bun:lint && bun run build && bun run bun:compile
+'
