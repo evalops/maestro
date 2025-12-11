@@ -945,7 +945,7 @@ impl ToolRegistry {
             ToolDefinition {
                 tool: Tool::new(
                     "read",
-                    "Read a file from the filesystem. Returns file contents with line numbers.",
+                    "Read a TEXT file from the filesystem. Use this for source code (.rs, .ts, .py, etc), config files (.json, .toml, .yaml), documentation (.md, .txt), and any other text-based files. Returns file contents with line numbers. Do NOT use read_image for text files.",
                 )
                 .with_schema(serde_json::json!({
                     "type": "object",
