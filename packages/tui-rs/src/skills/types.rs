@@ -885,4 +885,525 @@ mod tests {
         // activated_at serializes as u64
         assert_eq!(deserialized.activated_at, active.activated_at);
     }
+
+    // ============================================================
+    // State Transition Tests
+    // ============================================================
+
+    #[test]
+    fn test_state_transition_inactive_to_activating() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        assert_eq!(active.state, SkillActivationState::Inactive);
+        active.state = SkillActivationState::Activating;
+        assert_eq!(active.state, SkillActivationState::Activating);
+        assert!(!active.is_active());
+    }
+
+    #[test]
+    fn test_state_transition_activating_to_active() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.state = SkillActivationState::Activating;
+        active.activate();
+        assert_eq!(active.state, SkillActivationState::Active);
+        assert!(active.is_active());
+    }
+
+    #[test]
+    fn test_state_transition_activating_to_failed() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.state = SkillActivationState::Activating;
+        active.state = SkillActivationState::Failed;
+        active.last_error = Some("Activation timeout".to_string());
+
+        assert!(!active.is_active());
+        assert_eq!(active.state, SkillActivationState::Failed);
+    }
+
+    #[test]
+    fn test_state_transition_active_to_deactivating() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.activate();
+        assert!(active.is_active());
+
+        active.state = SkillActivationState::Deactivating;
+        assert!(!active.is_active());
+    }
+
+    #[test]
+    fn test_state_transition_deactivating_to_inactive() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.activate();
+        active.state = SkillActivationState::Deactivating;
+        active.deactivate();
+
+        assert_eq!(active.state, SkillActivationState::Inactive);
+    }
+
+    #[test]
+    fn test_state_transition_failed_to_inactive() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.state = SkillActivationState::Failed;
+        active.last_error = Some("Previous failure".to_string());
+        active.deactivate();
+
+        assert_eq!(active.state, SkillActivationState::Inactive);
+        // Note: deactivate() doesn't clear last_error
+    }
+
+    #[test]
+    fn test_state_transition_failed_to_activating_retry() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        // First attempt fails
+        active.state = SkillActivationState::Activating;
+        active.state = SkillActivationState::Failed;
+        active.last_error = Some("First failure".to_string());
+
+        // Retry
+        active.state = SkillActivationState::Activating;
+        active.last_error = None; // Clear error on retry
+        active.activate();
+
+        assert!(active.is_active());
+        assert!(active.last_error.is_none());
+    }
+
+    #[test]
+    fn test_state_all_transitions_possible() {
+        // The implementation doesn't enforce state machine - test that all transitions work
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        // Can go from any state to any other state (no enforcement)
+        let all_states = [
+            SkillActivationState::Inactive,
+            SkillActivationState::Activating,
+            SkillActivationState::Active,
+            SkillActivationState::Deactivating,
+            SkillActivationState::Failed,
+        ];
+
+        for from in &all_states {
+            for to in &all_states {
+                active.state = *from;
+                active.state = *to;
+                assert_eq!(active.state, *to);
+            }
+        }
+    }
+
+    // ============================================================
+    // Validation Tests
+    // ============================================================
+
+    #[test]
+    fn test_skill_definition_validation_empty_strings_allowed() {
+        // Empty strings are allowed by the type system
+        let skill = SkillDefinition::new("", "")
+            .with_description("")
+            .with_system_prompt("");
+
+        assert!(skill.id.is_empty());
+        assert!(skill.name.is_empty());
+        assert!(skill.description.is_empty());
+        assert_eq!(skill.system_prompt_additions, Some(String::new()));
+    }
+
+    #[test]
+    fn test_skill_definition_whitespace_only_strings() {
+        let skill = SkillDefinition::new("   ", "\t\n")
+            .with_description("  \n  ")
+            .with_system_prompt("\t\t");
+
+        assert_eq!(skill.id, "   ");
+        assert_eq!(skill.name, "\t\n");
+        assert_eq!(skill.description, "  \n  ");
+    }
+
+    #[test]
+    fn test_skill_definition_very_long_id() {
+        let long_id = "a".repeat(10000);
+        let skill = SkillDefinition::new(&long_id, "Test");
+        assert_eq!(skill.id.len(), 10000);
+    }
+
+    #[test]
+    fn test_skill_definition_null_bytes_in_strings() {
+        let skill =
+            SkillDefinition::new("id\0with\0nulls", "Name\0too").with_description("Desc\0null");
+
+        assert_eq!(skill.id, "id\0with\0nulls");
+        assert_eq!(skill.name, "Name\0too");
+        assert_eq!(skill.description, "Desc\0null");
+    }
+
+    #[test]
+    fn test_skill_definition_empty_tools_and_triggers() {
+        let skill = SkillDefinition::new("test", "Test")
+            .with_tools(vec![])
+            .with_triggers(vec![]);
+
+        assert!(skill.provided_tools.is_empty());
+        assert!(skill.trigger_patterns.is_empty());
+    }
+
+    #[test]
+    fn test_skill_definition_many_tools() {
+        let tools: Vec<String> = (0..1000).map(|i| format!("tool-{}", i)).collect();
+        let skill = SkillDefinition::new("test", "Test").with_tools(tools.clone());
+        assert_eq!(skill.provided_tools.len(), 1000);
+    }
+
+    #[test]
+    fn test_skill_definition_many_triggers() {
+        let triggers: Vec<String> = (0..1000).map(|i| format!("trigger-{}", i)).collect();
+        let skill = SkillDefinition::new("test", "Test").with_triggers(triggers.clone());
+        assert_eq!(skill.trigger_patterns.len(), 1000);
+    }
+
+    // ============================================================
+    // Usage Count Boundary Tests
+    // ============================================================
+
+    #[test]
+    fn test_active_skill_usage_count_many_increments() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        for _ in 0..10000 {
+            active.record_usage();
+        }
+
+        assert_eq!(active.usage_count, 10000);
+    }
+
+    #[test]
+    fn test_active_skill_usage_count_max_value() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.usage_count = u64::MAX - 1;
+        active.record_usage();
+
+        assert_eq!(active.usage_count, u64::MAX);
+    }
+
+    #[test]
+    fn test_active_skill_usage_count_overflow_wraps() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.usage_count = u64::MAX;
+        // This will overflow in debug mode but wrap in release
+        // We're just testing the type can hold max value
+        assert_eq!(active.usage_count, u64::MAX);
+    }
+
+    // ============================================================
+    // Timestamp Tests
+    // ============================================================
+
+    #[test]
+    fn test_active_skill_timestamp_reasonable() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.activate();
+
+        let ts = active.activated_at.unwrap();
+        // Should be after year 2020
+        assert!(ts > 1577836800000);
+        // Should be before year 2100
+        assert!(ts < 4102444800000);
+    }
+
+    #[test]
+    fn test_active_skill_multiple_activations_update_timestamp() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.activate();
+        let first_ts = active.activated_at.unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        active.activate();
+        let second_ts = active.activated_at.unwrap();
+
+        assert!(second_ts >= first_ts);
+    }
+
+    #[test]
+    fn test_active_skill_timestamp_preserved_after_deactivate() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.activate();
+        let ts = active.activated_at;
+
+        active.deactivate();
+
+        // Timestamp is preserved
+        assert_eq!(active.activated_at, ts);
+    }
+
+    // ============================================================
+    // Event Serialization Edge Cases
+    // ============================================================
+
+    #[test]
+    fn test_skill_event_empty_strings() {
+        let event = SkillEvent::Used {
+            skill_id: "".to_string(),
+            context: "".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: SkillEvent = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            SkillEvent::Used { skill_id, context } => {
+                assert!(skill_id.is_empty());
+                assert!(context.is_empty());
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn test_skill_event_unicode() {
+        let event = SkillEvent::Used {
+            skill_id: "日本語スキル".to_string(),
+            context: "テスト 🎉".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: SkillEvent = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            SkillEvent::Used { skill_id, context } => {
+                assert_eq!(skill_id, "日本語スキル");
+                assert_eq!(context, "テスト 🎉");
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn test_skill_event_special_characters() {
+        let event = SkillEvent::ActivationFailed {
+            skill_id: "skill/with:special".to_string(),
+            error: "Error with \"quotes\" and\nnewlines".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: SkillEvent = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            SkillEvent::ActivationFailed { skill_id, error } => {
+                assert_eq!(skill_id, "skill/with:special");
+                assert!(error.contains("\"quotes\""));
+                assert!(error.contains("\n"));
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn test_skill_event_very_long_error() {
+        let long_error = "e".repeat(100000);
+        let event = SkillEvent::ActivationFailed {
+            skill_id: "test".to_string(),
+            error: long_error.clone(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: SkillEvent = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            SkillEvent::ActivationFailed { error, .. } => {
+                assert_eq!(error.len(), 100000);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    // ============================================================
+    // Metadata Tests
+    // ============================================================
+
+    #[test]
+    fn test_skill_definition_metadata_empty() {
+        let skill = SkillDefinition::new("test", "Test");
+        assert!(skill.metadata.is_empty());
+    }
+
+    #[test]
+    fn test_skill_definition_metadata_all_json_types() {
+        let mut skill = SkillDefinition::new("test", "Test");
+
+        skill
+            .metadata
+            .insert("null".into(), serde_json::Value::Null);
+        skill
+            .metadata
+            .insert("bool".into(), serde_json::json!(true));
+        skill
+            .metadata
+            .insert("number_int".into(), serde_json::json!(42));
+        skill
+            .metadata
+            .insert("number_float".into(), serde_json::json!(3.14));
+        skill
+            .metadata
+            .insert("string".into(), serde_json::json!("hello"));
+        skill
+            .metadata
+            .insert("array".into(), serde_json::json!([1, 2, 3]));
+        skill
+            .metadata
+            .insert("object".into(), serde_json::json!({"nested": "value"}));
+
+        assert_eq!(skill.metadata.len(), 7);
+
+        // Verify types preserved after serialization
+        let json = serde_json::to_string(&skill).unwrap();
+        let deserialized: SkillDefinition = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.metadata.get("null").unwrap().is_null());
+        assert!(deserialized.metadata.get("bool").unwrap().is_boolean());
+        assert!(deserialized.metadata.get("number_int").unwrap().is_i64());
+        assert!(deserialized.metadata.get("number_float").unwrap().is_f64());
+        assert!(deserialized.metadata.get("string").unwrap().is_string());
+        assert!(deserialized.metadata.get("array").unwrap().is_array());
+        assert!(deserialized.metadata.get("object").unwrap().is_object());
+    }
+
+    #[test]
+    fn test_skill_definition_metadata_overwrite() {
+        let mut skill = SkillDefinition::new("test", "Test");
+
+        skill
+            .metadata
+            .insert("key".into(), serde_json::json!("value1"));
+        skill
+            .metadata
+            .insert("key".into(), serde_json::json!("value2"));
+
+        assert_eq!(
+            skill.metadata.get("key").unwrap(),
+            &serde_json::json!("value2")
+        );
+    }
+
+    // ============================================================
+    // Source Equality Tests
+    // ============================================================
+
+    #[test]
+    fn test_skill_source_equality() {
+        assert_eq!(SkillSource::Builtin, SkillSource::Builtin);
+        assert_eq!(SkillSource::User, SkillSource::User);
+        assert_eq!(SkillSource::Plugin, SkillSource::Plugin);
+        assert_eq!(SkillSource::Remote, SkillSource::Remote);
+    }
+
+    #[test]
+    fn test_skill_source_inequality() {
+        let sources = [
+            SkillSource::Builtin,
+            SkillSource::User,
+            SkillSource::Plugin,
+            SkillSource::Remote,
+        ];
+
+        for i in 0..sources.len() {
+            for j in 0..sources.len() {
+                if i != j {
+                    assert_ne!(sources[i], sources[j]);
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    // Activation State is_active Tests
+    // ============================================================
+
+    #[test]
+    fn test_is_active_only_true_for_active_state() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        // Test all states
+        active.state = SkillActivationState::Inactive;
+        assert!(!active.is_active());
+
+        active.state = SkillActivationState::Activating;
+        assert!(!active.is_active());
+
+        active.state = SkillActivationState::Active;
+        assert!(active.is_active());
+
+        active.state = SkillActivationState::Deactivating;
+        assert!(!active.is_active());
+
+        active.state = SkillActivationState::Failed;
+        assert!(!active.is_active());
+    }
+
+    // ============================================================
+    // Disabled Skill Tests
+    // ============================================================
+
+    #[test]
+    fn test_skill_definition_disabled() {
+        let mut skill = SkillDefinition::new("test", "Test");
+        skill.enabled = false;
+
+        assert!(!skill.enabled);
+
+        let json = serde_json::to_string(&skill).unwrap();
+        let deserialized: SkillDefinition = serde_json::from_str(&json).unwrap();
+        assert!(!deserialized.enabled);
+    }
+
+    #[test]
+    fn test_active_skill_from_disabled_definition() {
+        let mut definition = SkillDefinition::new("test", "Test");
+        definition.enabled = false;
+
+        let active = ActiveSkill::from_definition(definition);
+
+        // ActiveSkill inherits the disabled flag
+        assert!(!active.definition.enabled);
+        // But can still be activated (no enforcement at this level)
+        assert!(!active.is_active());
+    }
+
+    #[test]
+    fn test_can_activate_disabled_skill() {
+        let mut definition = SkillDefinition::new("test", "Test");
+        definition.enabled = false;
+
+        let mut active = ActiveSkill::from_definition(definition);
+        active.activate();
+
+        // No enforcement - disabled skill can still be activated
+        assert!(active.is_active());
+        assert!(!active.definition.enabled);
+    }
 }

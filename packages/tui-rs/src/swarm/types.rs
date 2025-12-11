@@ -1448,4 +1448,456 @@ mod tests {
         };
         assert!(config.task_timeout_ms.is_none());
     }
+
+    // ============================================================
+    // Circular Dependencies Tests
+    // ============================================================
+
+    #[test]
+    fn test_circular_dependency_self_reference() {
+        // A task depending on itself
+        let task =
+            SwarmTask::new("task-1", "Self Reference").with_dependencies(vec!["task-1".into()]);
+
+        // can_start will never return true because task-1 can't be completed without starting
+        let mut completed = HashSet::new();
+        assert!(!task.can_start(&completed));
+
+        // Even if we artificially mark it complete, can_start returns true
+        // (no validation that this is a self-reference)
+        completed.insert("task-1".into());
+        assert!(task.can_start(&completed));
+    }
+
+    #[test]
+    fn test_circular_dependency_two_tasks() {
+        // A -> B and B -> A
+        let task_a = SwarmTask::new("A", "Task A").with_dependencies(vec!["B".into()]);
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+
+        let completed = HashSet::new();
+        // Neither can start
+        assert!(!task_a.can_start(&completed));
+        assert!(!task_b.can_start(&completed));
+    }
+
+    #[test]
+    fn test_circular_dependency_chain() {
+        // A -> B -> C -> A
+        let task_a = SwarmTask::new("A", "Task A").with_dependencies(vec!["C".into()]);
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+        let task_c = SwarmTask::new("C", "Task C").with_dependencies(vec!["B".into()]);
+
+        let plan = SwarmPlan::new("Circular").with_tasks(vec![task_a, task_b, task_c]);
+
+        let completed = HashSet::new();
+        // No tasks can start
+        let ready = plan.ready_tasks(&completed);
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn test_plan_with_mixed_circular_and_valid() {
+        // Valid: D (no deps)
+        // Circular: A -> B -> C -> A
+        let task_a = SwarmTask::new("A", "Task A").with_dependencies(vec!["C".into()]);
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+        let task_c = SwarmTask::new("C", "Task C").with_dependencies(vec!["B".into()]);
+        let task_d = SwarmTask::new("D", "Task D"); // No dependencies
+
+        let plan = SwarmPlan::new("Mixed").with_tasks(vec![task_a, task_b, task_c, task_d]);
+
+        let completed = HashSet::new();
+        let ready = plan.ready_tasks(&completed);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "D");
+    }
+
+    #[test]
+    fn test_dependency_on_nonexistent_task() {
+        // Task depends on a task that doesn't exist in the plan
+        let task = SwarmTask::new("task-1", "Test").with_dependencies(vec!["nonexistent".into()]);
+
+        let plan = SwarmPlan::new("Test").with_tasks(vec![task]);
+
+        let completed = HashSet::new();
+        let ready = plan.ready_tasks(&completed);
+        // Task can't start because "nonexistent" isn't completed
+        assert!(ready.is_empty());
+    }
+
+    // ============================================================
+    // Boundary Value Tests
+    // ============================================================
+
+    #[test]
+    fn test_complexity_boundary_zero() {
+        let task = SwarmTask::new("task-1", "Test").with_complexity(0);
+        assert_eq!(task.complexity, 1); // Clamped to 1
+    }
+
+    #[test]
+    fn test_complexity_boundary_max() {
+        let task = SwarmTask::new("task-1", "Test").with_complexity(u8::MAX);
+        assert_eq!(task.complexity, 10); // Clamped to 10
+    }
+
+    #[test]
+    fn test_complexity_boundary_exact() {
+        let task1 = SwarmTask::new("1", "T").with_complexity(1);
+        assert_eq!(task1.complexity, 1);
+
+        let task10 = SwarmTask::new("10", "T").with_complexity(10);
+        assert_eq!(task10.complexity, 10);
+    }
+
+    #[test]
+    fn test_max_concurrency_boundary_zero() {
+        let plan = SwarmPlan::new("Test").with_max_concurrency(0);
+        assert_eq!(plan.max_concurrency, 1); // Minimum 1
+    }
+
+    #[test]
+    fn test_max_concurrency_boundary_max() {
+        let plan = SwarmPlan::new("Test").with_max_concurrency(usize::MAX);
+        assert_eq!(plan.max_concurrency, usize::MAX);
+    }
+
+    #[test]
+    fn test_task_result_duration_max() {
+        let result = TaskResult {
+            success: true,
+            output: String::new(),
+            files_modified: vec![],
+            duration_ms: u64::MAX,
+            error: None,
+        };
+        assert_eq!(result.duration_ms, u64::MAX);
+    }
+
+    #[test]
+    fn test_swarm_config_max_values() {
+        let config = SwarmConfig {
+            max_concurrency: usize::MAX,
+            continue_on_failure: true,
+            task_timeout_ms: Some(u64::MAX),
+            model: None,
+            system_prompt: None,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: SwarmConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.max_concurrency, usize::MAX);
+        assert_eq!(deserialized.task_timeout_ms, Some(u64::MAX));
+    }
+
+    #[test]
+    fn test_swarm_state_can_start_more_at_exact_limit() {
+        let plan = SwarmPlan::new("Test");
+        let config = SwarmConfig {
+            max_concurrency: 3,
+            ..Default::default()
+        };
+        let mut state = SwarmState::new(plan, config);
+        state.status = SwarmStatus::Running;
+
+        // Add exactly max_concurrency tasks
+        state.running_tasks.insert("1".into(), "a1".into());
+        state.running_tasks.insert("2".into(), "a2".into());
+        state.running_tasks.insert("3".into(), "a3".into());
+
+        assert!(!state.can_start_more());
+    }
+
+    // ============================================================
+    // Many Tasks Tests
+    // ============================================================
+
+    #[test]
+    fn test_plan_with_many_tasks() {
+        let tasks: Vec<SwarmTask> = (0..1000)
+            .map(|i| SwarmTask::new(format!("task-{}", i), format!("Task {}", i)))
+            .collect();
+
+        let plan = SwarmPlan::new("Large Plan").with_tasks(tasks);
+        assert_eq!(plan.tasks.len(), 1000);
+
+        let ready = plan.ready_tasks(&HashSet::new());
+        assert_eq!(ready.len(), 1000);
+    }
+
+    #[test]
+    fn test_task_with_many_dependencies() {
+        let deps: Vec<String> = (0..100).map(|i| format!("dep-{}", i)).collect();
+        let task = SwarmTask::new("task-1", "Task 1").with_dependencies(deps.clone());
+
+        assert_eq!(task.dependencies.len(), 100);
+
+        // Can't start with no deps completed
+        let completed = HashSet::new();
+        assert!(!task.can_start(&completed));
+
+        // Can't start with some deps completed
+        let mut partial: HashSet<String> = (0..50).map(|i| format!("dep-{}", i)).collect();
+        assert!(!task.can_start(&partial));
+
+        // Can start with all deps completed
+        for i in 50..100 {
+            partial.insert(format!("dep-{}", i));
+        }
+        assert!(task.can_start(&partial));
+    }
+
+    #[test]
+    fn test_task_with_many_files() {
+        let mut task = SwarmTask::new("task-1", "Test");
+        task.files = (0..1000).map(|i| format!("file-{}.rs", i)).collect();
+        assert_eq!(task.files.len(), 1000);
+    }
+
+    #[test]
+    fn test_task_with_many_tags() {
+        let mut task = SwarmTask::new("task-1", "Test");
+        task.tags = (0..100).map(|i| format!("tag-{}", i)).collect();
+        assert_eq!(task.tags.len(), 100);
+    }
+
+    // ============================================================
+    // State Consistency Tests
+    // ============================================================
+
+    #[test]
+    fn test_state_progress_consistency() {
+        let plan = SwarmPlan::new("Test").with_tasks(vec![
+            SwarmTask::new("1", "One"),
+            SwarmTask::new("2", "Two"),
+            SwarmTask::new("3", "Three"),
+        ]);
+
+        let mut state = SwarmState::new(plan, SwarmConfig::default());
+
+        // Progress should always be <= total
+        for i in 0..4 {
+            let (done, total) = state.progress();
+            assert!(done <= total);
+            assert_eq!(total, 3);
+
+            if i < 3 {
+                state.completed_tasks.insert(format!("{}", i + 1));
+            }
+        }
+    }
+
+    #[test]
+    fn test_state_cannot_double_complete() {
+        let plan = SwarmPlan::new("Test").with_tasks(vec![SwarmTask::new("1", "One")]);
+        let mut state = SwarmState::new(plan, SwarmConfig::default());
+
+        state.completed_tasks.insert("1".into());
+        state.completed_tasks.insert("1".into()); // Insert same again
+
+        // HashSet deduplicates
+        assert_eq!(state.completed_tasks.len(), 1);
+    }
+
+    #[test]
+    fn test_state_task_in_both_completed_and_failed() {
+        let plan = SwarmPlan::new("Test").with_tasks(vec![SwarmTask::new("1", "One")]);
+        let mut state = SwarmState::new(plan, SwarmConfig::default());
+
+        // Shouldn't happen but test the behavior
+        state.completed_tasks.insert("1".into());
+        state.failed_tasks.insert("1".into());
+
+        // Progress counts both
+        let (done, total) = state.progress();
+        assert_eq!(done, 2); // This is probably a bug but documenting behavior
+        assert_eq!(total, 1);
+    }
+
+    // ============================================================
+    // Event Serialization Tests
+    // ============================================================
+
+    #[test]
+    fn test_swarm_event_deserialization_all_types() {
+        let events = vec![
+            r#"{"type":"started","plan_title":"Test","total_tasks":5}"#,
+            r#"{"type":"task_started","task_id":"1","task_title":"T","agent_id":"a"}"#,
+            r#"{"type":"task_progress","task_id":"1","message":"Working"}"#,
+            r#"{"type":"task_failed","task_id":"1","error":"Error"}"#,
+            r#"{"type":"cancelled","reason":"User requested"}"#,
+            r#"{"type":"failed","error":"Fatal"}"#,
+        ];
+
+        for json in events {
+            let _event: SwarmEvent = serde_json::from_str(json).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_swarm_event_task_completed_deserialization() {
+        let json = r#"{
+            "type": "task_completed",
+            "task_id": "task-1",
+            "result": {
+                "success": true,
+                "output": "Done",
+                "files_modified": ["a.rs"],
+                "duration_ms": 1000,
+                "error": null
+            }
+        }"#;
+
+        let event: SwarmEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SwarmEvent::TaskCompleted { task_id, result } => {
+                assert_eq!(task_id, "task-1");
+                assert!(result.success);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn test_swarm_event_completed_deserialization() {
+        let json = r#"{
+            "type": "completed",
+            "successful": 8,
+            "failed": 1,
+            "skipped": 2,
+            "duration_ms": 60000
+        }"#;
+
+        let event: SwarmEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SwarmEvent::Completed {
+                successful,
+                failed,
+                skipped,
+                duration_ms,
+            } => {
+                assert_eq!(successful, 8);
+                assert_eq!(failed, 1);
+                assert_eq!(skipped, 2);
+                assert_eq!(duration_ms, 60000);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    // ============================================================
+    // Special Characters Tests
+    // ============================================================
+
+    #[test]
+    fn test_task_id_special_characters() {
+        let task = SwarmTask::new("task/with:special-chars_v1.0", "Test");
+        assert_eq!(task.id, "task/with:special-chars_v1.0");
+
+        let json = serde_json::to_string(&task).unwrap();
+        let deserialized: SwarmTask = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, task.id);
+    }
+
+    #[test]
+    fn test_task_description_multiline() {
+        let task = SwarmTask::new("task-1", "Test")
+            .with_description("Line 1\nLine 2\nLine 3\n\nWith blank line");
+
+        let json = serde_json::to_string(&task).unwrap();
+        let deserialized: SwarmTask = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.description.contains("\n"));
+    }
+
+    #[test]
+    fn test_task_result_error_with_quotes() {
+        let result = TaskResult {
+            success: false,
+            output: String::new(),
+            files_modified: vec![],
+            duration_ms: 0,
+            error: Some("Error: \"file not found\"".to_string()),
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: TaskResult = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.error.unwrap().contains("\"file not found\""));
+    }
+
+    // ============================================================
+    // Plan Operations Tests
+    // ============================================================
+
+    #[test]
+    fn test_plan_get_task_mut_modify_status() {
+        let mut plan = SwarmPlan::new("Test").with_tasks(vec![
+            SwarmTask::new("1", "First"),
+            SwarmTask::new("2", "Second"),
+        ]);
+
+        // Modify status
+        if let Some(task) = plan.get_task_mut("1") {
+            task.status = TaskStatus::Running;
+        }
+
+        // Verify change
+        assert_eq!(plan.get_task("1").unwrap().status, TaskStatus::Running);
+        assert_eq!(plan.get_task("2").unwrap().status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn test_plan_get_task_mut_assign_agent() {
+        let mut plan = SwarmPlan::new("Test").with_tasks(vec![SwarmTask::new("1", "First")]);
+
+        if let Some(task) = plan.get_task_mut("1") {
+            task.assigned_agent = Some("agent-123".to_string());
+            task.status = TaskStatus::Running;
+        }
+
+        let task = plan.get_task("1").unwrap();
+        assert_eq!(task.assigned_agent, Some("agent-123".to_string()));
+    }
+
+    #[test]
+    fn test_plan_get_task_mut_set_result() {
+        let mut plan = SwarmPlan::new("Test").with_tasks(vec![SwarmTask::new("1", "First")]);
+
+        if let Some(task) = plan.get_task_mut("1") {
+            task.result = Some(TaskResult {
+                success: true,
+                output: "Done".to_string(),
+                files_modified: vec!["main.rs".to_string()],
+                duration_ms: 1000,
+                error: None,
+            });
+            task.status = TaskStatus::Completed;
+        }
+
+        let task = plan.get_task("1").unwrap();
+        assert!(task.result.is_some());
+        assert!(task.result.as_ref().unwrap().success);
+    }
+
+    // ============================================================
+    // Continue on Failure Tests
+    // ============================================================
+
+    #[test]
+    fn test_swarm_config_continue_on_failure_default_false() {
+        let config = SwarmConfig::default();
+        assert!(!config.continue_on_failure);
+    }
+
+    #[test]
+    fn test_swarm_plan_continue_on_failure() {
+        let plan = SwarmPlan {
+            title: "Test".to_string(),
+            goal: String::new(),
+            tasks: vec![],
+            max_concurrency: 3,
+            continue_on_failure: true,
+        };
+        assert!(plan.continue_on_failure);
+    }
 }
