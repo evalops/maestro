@@ -313,6 +313,10 @@ pub mod layout_constraints;
 /// Emacs-style kill/yank buffer with word boundary detection.
 pub mod kill_ring;
 
+/// Confirmation dialog widget.
+/// Simple yes/no dialogs with keyboard navigation.
+pub mod confirm_dialog;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1103,3 +1107,10 @@ pub use kill_ring::{
     DEFAULT_KILL_RING_SIZE,
     WORD_SEPARATORS,
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIRM DIALOG EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Confirmation dialog for yes/no prompts.
+pub use confirm_dialog::{ConfirmDialog, ConfirmDialogWidget, ConfirmResult};
