@@ -223,7 +223,7 @@ impl ToolExecutor {
     ///
     /// Returns statistics about cache performance including hit rate, entries, etc.
     pub fn cache_stats(&self) -> CacheStats {
-        self.cache.read().unwrap().stats()
+        self.cache.read().unwrap_or_else(|e| e.into_inner()).stats()
     }
 
     /// Clear the tool result cache

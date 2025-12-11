@@ -378,8 +378,12 @@ impl PromptHistory {
             });
         }
 
-        // Sort by score descending
-        matches.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        // Sort by score descending (handle NaN safely)
+        matches.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         SearchResult {
             matches,

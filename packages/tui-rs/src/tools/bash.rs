@@ -537,8 +537,26 @@ impl BashTool {
 
         // Wait for completion with timeout
         let result = timeout(Duration::from_millis(timeout_ms), async {
-            let mut stdout = child.stdout.take().unwrap();
-            let mut stderr = child.stderr.take().unwrap();
+            let mut stdout = match child.stdout.take() {
+                Some(s) => s,
+                None => {
+                    return (
+                        Err(std::io::Error::other("Failed to capture stdout")),
+                        Err(std::io::Error::other("Failed to capture stdout")),
+                        Err(std::io::Error::other("Process pipes unavailable")),
+                    );
+                }
+            };
+            let mut stderr = match child.stderr.take() {
+                Some(s) => s,
+                None => {
+                    return (
+                        Err(std::io::Error::other("Failed to capture stderr")),
+                        Err(std::io::Error::other("Failed to capture stderr")),
+                        Err(std::io::Error::other("Process pipes unavailable")),
+                    );
+                }
+            };
 
             let mut stdout_buf = Vec::new();
             let mut stderr_buf = Vec::new();

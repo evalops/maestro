@@ -7,7 +7,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Configuration for the tool result cache
 #[derive(Debug, Clone)]
@@ -34,7 +36,7 @@ impl Default for CacheConfig {
 }
 
 /// Key for cache entries
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CacheKey {
     /// Tool name
     pub tool_name: String,
@@ -61,18 +63,27 @@ pub struct CachedResult {
     pub output: String,
     /// Whether the result was an error
     pub is_error: bool,
-    /// When the entry was created
+    /// When the entry was created (runtime use, not serialized)
     #[serde(skip)]
     pub created_at: Option<Instant>,
+    /// Timestamp for persistence (seconds since UNIX_EPOCH)
+    #[serde(default)]
+    pub created_timestamp: Option<u64>,
 }
 
 impl CachedResult {
     /// Create a new cached result
     pub fn new(output: impl Into<String>, is_error: bool) -> Self {
+        let now = Instant::now();
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .ok();
         Self {
             output: output.into(),
             is_error,
-            created_at: Some(Instant::now()),
+            created_at: Some(now),
+            created_timestamp: timestamp,
         }
     }
 
@@ -80,6 +91,27 @@ impl CachedResult {
     pub fn is_expired(&self, ttl: Duration) -> bool {
         self.created_at.map(|t| t.elapsed() > ttl).unwrap_or(true)
     }
+
+    /// Check if the entry is expired based on timestamp (for persisted entries)
+    pub fn is_expired_by_timestamp(&self, ttl: Duration) -> bool {
+        let Some(created) = self.created_timestamp else {
+            return true;
+        };
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        now.saturating_sub(created) > ttl.as_secs()
+    }
+}
+
+/// A persistable cache entry that combines key and result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistableCacheEntry {
+    /// The cache key
+    pub key: CacheKey,
+    /// The cached result
+    pub result: CachedResult,
 }
 
 /// Tool result cache
@@ -210,6 +242,118 @@ impl ToolResultCache {
     /// Update configuration
     pub fn set_config(&mut self, config: CacheConfig) {
         self.config = config;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PERSISTENCE METHODS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get the default cache file path for a workspace
+    pub fn default_cache_path(workspace: &Path) -> PathBuf {
+        workspace.join(".composer").join("tool-cache.jsonl")
+    }
+
+    /// Save the cache to a JSONL file
+    ///
+    /// Each line is a JSON object with a key and result.
+    /// Only saves entries that haven't expired.
+    pub fn save_to_file(&self, path: &Path) -> std::io::Result<()> {
+        // Create parent directories if needed
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file = std::fs::File::create(path)?;
+        let mut writer = std::io::BufWriter::new(file);
+
+        // Write each non-expired entry as a JSON line
+        for (key, result) in &self.entries {
+            // Skip expired entries
+            if result.is_expired(self.config.ttl) {
+                continue;
+            }
+
+            let entry = PersistableCacheEntry {
+                key: key.clone(),
+                result: result.clone(),
+            };
+
+            if let Ok(json) = serde_json::to_string(&entry) {
+                writeln!(writer, "{}", json)?;
+            }
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Load the cache from a JSONL file
+    ///
+    /// Replaces the current cache contents with entries from the file.
+    /// Expired entries are skipped during load.
+    pub fn load_from_file(&mut self, path: &Path) -> std::io::Result<usize> {
+        if !path.exists() {
+            return Ok(0);
+        }
+
+        let file = std::fs::File::open(path)?;
+        let reader = std::io::BufReader::new(file);
+
+        // Clear current entries
+        self.entries.clear();
+        self.access_order.clear();
+
+        let mut loaded = 0;
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Parse the entry
+            let entry: PersistableCacheEntry = match serde_json::from_str(&line) {
+                Ok(e) => e,
+                Err(_) => continue, // Skip malformed lines
+            };
+
+            // Skip expired entries based on timestamp
+            if entry.result.is_expired_by_timestamp(self.config.ttl) {
+                continue;
+            }
+
+            // Respect max_entries limit
+            if self.entries.len() >= self.config.max_entries {
+                break;
+            }
+
+            // Convert timestamp back to Instant for runtime use
+            let mut result = entry.result;
+            if result.created_at.is_none() && result.created_timestamp.is_some() {
+                // We can't directly create a past Instant, so we set Instant::now()
+                // The expiration check uses is_expired_by_timestamp for persisted entries
+                result.created_at = Some(Instant::now());
+            }
+
+            self.entries.insert(entry.key.clone(), result);
+            self.access_order.push(entry.key);
+            loaded += 1;
+        }
+
+        Ok(loaded)
+    }
+
+    /// Load cache from a file path, creating a new cache with default config
+    pub fn load_or_create(path: &Path) -> Self {
+        let mut cache = Self::new(CacheConfig::default());
+        let _ = cache.load_from_file(path);
+        cache
+    }
+
+    /// Save the cache and return the number of entries saved
+    pub fn save(&self, path: &Path) -> std::io::Result<usize> {
+        self.save_to_file(path)?;
+        Ok(self.entries.len())
     }
 }
 
@@ -463,6 +607,7 @@ mod tests {
             output: "test".to_string(),
             is_error: false,
             created_at: None,
+            created_timestamp: None,
         };
 
         // Without created_at, should always be considered expired
@@ -1016,7 +1161,8 @@ mod tests {
         let original = CachedResult {
             output: "test with\nnewlines\tand\ttabs".to_string(),
             is_error: true,
-            created_at: None, // Will be None after deserialization anyway
+            created_at: None,
+            created_timestamp: Some(1234567890),
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -1024,6 +1170,7 @@ mod tests {
 
         assert_eq!(deserialized.output, original.output);
         assert_eq!(deserialized.is_error, original.is_error);
+        assert_eq!(deserialized.created_timestamp, original.created_timestamp);
     }
 
     #[test]
@@ -1962,5 +2109,385 @@ mod tests {
         // Cache should be in valid state
         let stats = cache.stats().unwrap();
         assert!(stats.entries <= 10);
+    }
+
+    // ============================================================
+    // Persistence Tests
+    // ============================================================
+
+    #[test]
+    fn test_save_and_load_cache() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("test_cache_{}.jsonl", std::process::id()));
+
+        // Create and populate cache
+        let mut cache = ToolResultCache::default();
+        let key1 = CacheKey::new("read", &serde_json::json!({"path": "/test1"}));
+        let key2 = CacheKey::new("glob", &serde_json::json!({"pattern": "*.rs"}));
+
+        cache.put(key1.clone(), CachedResult::new("content1", false));
+        cache.put(key2.clone(), CachedResult::new("content2", false));
+
+        // Save to file
+        cache.save_to_file(&cache_file).unwrap();
+
+        // Load into new cache
+        let mut loaded_cache = ToolResultCache::default();
+        let count = loaded_cache.load_from_file(&cache_file).unwrap();
+
+        assert_eq!(count, 2);
+        assert!(loaded_cache.get(&key1).is_some());
+        assert!(loaded_cache.get(&key2).is_some());
+        assert_eq!(loaded_cache.get(&key1).unwrap().output, "content1");
+        assert_eq!(loaded_cache.get(&key2).unwrap().output, "content2");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let mut cache = ToolResultCache::default();
+        let result = cache.load_from_file(std::path::Path::new("/nonexistent/path/cache.jsonl"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_save_creates_parent_dirs() {
+        let temp_dir = std::env::temp_dir();
+        let nested_path = temp_dir
+            .join(format!("nested_{}", std::process::id()))
+            .join("subdir")
+            .join("cache.jsonl");
+
+        let mut cache = ToolResultCache::default();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+        cache.put(key, CachedResult::new("content", false));
+
+        let result = cache.save_to_file(&nested_path);
+        assert!(result.is_ok());
+        assert!(nested_path.exists());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&nested_path);
+        let _ = std::fs::remove_dir_all(temp_dir.join(format!("nested_{}", std::process::id())));
+    }
+
+    #[test]
+    fn test_load_skips_malformed_lines() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("malformed_{}.jsonl", std::process::id()));
+
+        // Write a file with some valid and some invalid lines
+        let valid_entry = PersistableCacheEntry {
+            key: CacheKey::new("read", &serde_json::json!({"path": "/valid"})),
+            result: CachedResult::new("valid content", false),
+        };
+
+        std::fs::write(
+            &cache_file,
+            format!(
+                "{}\nINVALID JSON LINE\n{}\n",
+                serde_json::to_string(&valid_entry).unwrap(),
+                "also invalid"
+            ),
+        )
+        .unwrap();
+
+        let mut cache = ToolResultCache::default();
+        let count = cache.load_from_file(&cache_file).unwrap();
+
+        // Should only load the valid entry
+        assert_eq!(count, 1);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
+    }
+
+    #[test]
+    fn test_load_respects_max_entries() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("max_entries_{}.jsonl", std::process::id()));
+
+        // Create a cache file with 100 entries
+        let mut lines = Vec::new();
+        for i in 0..100 {
+            let entry = PersistableCacheEntry {
+                key: CacheKey::new("read", &serde_json::json!({"id": i})),
+                result: CachedResult::new(format!("content{}", i), false),
+            };
+            lines.push(serde_json::to_string(&entry).unwrap());
+        }
+        std::fs::write(&cache_file, lines.join("\n")).unwrap();
+
+        // Load with max_entries = 10
+        let config = CacheConfig {
+            max_entries: 10,
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+        let count = cache.load_from_file(&cache_file).unwrap();
+
+        assert_eq!(count, 10);
+        assert_eq!(cache.stats().entries, 10);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
+    }
+
+    #[test]
+    fn test_load_skips_expired_entries() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("expired_{}.jsonl", std::process::id()));
+
+        // Create an entry with an old timestamp (1 hour ago)
+        let old_timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 3600; // 1 hour ago
+
+        let old_entry = PersistableCacheEntry {
+            key: CacheKey::new("read", &serde_json::json!({"path": "/old"})),
+            result: CachedResult {
+                output: "old content".to_string(),
+                is_error: false,
+                created_at: None,
+                created_timestamp: Some(old_timestamp),
+            },
+        };
+
+        // Create a fresh entry
+        let fresh_entry = PersistableCacheEntry {
+            key: CacheKey::new("read", &serde_json::json!({"path": "/fresh"})),
+            result: CachedResult::new("fresh content", false),
+        };
+
+        std::fs::write(
+            &cache_file,
+            format!(
+                "{}\n{}",
+                serde_json::to_string(&old_entry).unwrap(),
+                serde_json::to_string(&fresh_entry).unwrap()
+            ),
+        )
+        .unwrap();
+
+        // Load with 60 second TTL - old entry should be skipped
+        let config = CacheConfig {
+            ttl: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+        let count = cache.load_from_file(&cache_file).unwrap();
+
+        assert_eq!(count, 1);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
+    }
+
+    #[test]
+    fn test_save_skips_expired_entries() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("save_expired_{}.jsonl", std::process::id()));
+
+        // Create cache with very short TTL
+        let config = CacheConfig {
+            ttl: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+        cache.put(key.clone(), CachedResult::new("content", false));
+
+        // Wait for expiration
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Save - should skip expired entry
+        cache.save_to_file(&cache_file).unwrap();
+
+        // Read the file - should be empty or have no valid entries
+        let content = std::fs::read_to_string(&cache_file).unwrap_or_default();
+        assert!(content.trim().is_empty());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
+    }
+
+    #[test]
+    fn test_default_cache_path() {
+        let workspace = std::path::Path::new("/home/user/project");
+        let path = ToolResultCache::default_cache_path(workspace);
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/home/user/project/.composer/tool-cache.jsonl")
+        );
+    }
+
+    #[test]
+    fn test_load_or_create() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("load_or_create_{}.jsonl", std::process::id()));
+
+        // Non-existent file should create empty cache
+        let cache = ToolResultCache::load_or_create(&cache_file);
+        assert_eq!(cache.stats().entries, 0);
+
+        // Create a file with entries
+        let entry = PersistableCacheEntry {
+            key: CacheKey::new("read", &serde_json::json!({"path": "/test"})),
+            result: CachedResult::new("content", false),
+        };
+        std::fs::write(&cache_file, serde_json::to_string(&entry).unwrap()).unwrap();
+
+        // Load from existing file
+        let cache = ToolResultCache::load_or_create(&cache_file);
+        assert_eq!(cache.stats().entries, 1);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
+    }
+
+    #[test]
+    fn test_cached_result_timestamp() {
+        let result = CachedResult::new("test", false);
+        assert!(result.created_timestamp.is_some());
+
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Timestamp should be within 1 second of now
+        let ts = result.created_timestamp.unwrap();
+        assert!(ts >= now - 1 && ts <= now + 1);
+    }
+
+    #[test]
+    fn test_is_expired_by_timestamp() {
+        let result = CachedResult::new("test", false);
+
+        // Should not be expired with long TTL
+        assert!(!result.is_expired_by_timestamp(Duration::from_secs(3600)));
+
+        // A freshly created entry with zero TTL is NOT expired
+        // (same second, so age is 0, and 0 > 0 is false)
+        assert!(!result.is_expired_by_timestamp(Duration::from_secs(0)));
+
+        // Test with an old timestamp - should be expired
+        let old_timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 10; // 10 seconds ago
+        let old_result = CachedResult {
+            output: "old".to_string(),
+            is_error: false,
+            created_at: None,
+            created_timestamp: Some(old_timestamp),
+        };
+        assert!(old_result.is_expired_by_timestamp(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn test_is_expired_by_timestamp_no_timestamp() {
+        let result = CachedResult {
+            output: "test".to_string(),
+            is_error: false,
+            created_at: None,
+            created_timestamp: None,
+        };
+
+        // Without timestamp, should always be considered expired
+        assert!(result.is_expired_by_timestamp(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn test_persistable_cache_entry_serialization() {
+        let entry = PersistableCacheEntry {
+            key: CacheKey::new("read", &serde_json::json!({"path": "/test"})),
+            result: CachedResult::new("content", true),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: PersistableCacheEntry = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.key.tool_name, "read");
+        assert_eq!(deserialized.result.output, "content");
+        assert!(deserialized.result.is_error);
+    }
+
+    #[test]
+    fn test_cache_key_serialization() {
+        let key = CacheKey::new("glob", &serde_json::json!({"pattern": "*.rs"}));
+
+        let json = serde_json::to_string(&key).unwrap();
+        let deserialized: CacheKey = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.tool_name, key.tool_name);
+        assert_eq!(deserialized.args_hash, key.args_hash);
+    }
+
+    #[test]
+    fn test_save_empty_cache() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("empty_cache_{}.jsonl", std::process::id()));
+
+        let cache = ToolResultCache::default();
+        cache.save_to_file(&cache_file).unwrap();
+
+        let content = std::fs::read_to_string(&cache_file).unwrap();
+        assert!(content.is_empty());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
+    }
+
+    #[test]
+    fn test_roundtrip_preserves_data() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("roundtrip_{}.jsonl", std::process::id()));
+
+        // Create cache with various entries
+        let mut cache = ToolResultCache::default();
+
+        let entries = vec![
+            (
+                CacheKey::new("read", &serde_json::json!({"path": "/a"})),
+                CachedResult::new("content a", false),
+            ),
+            (
+                CacheKey::new("glob", &serde_json::json!({"pattern": "*.rs"})),
+                CachedResult::new("file1.rs\nfile2.rs", false),
+            ),
+            (
+                CacheKey::new("grep", &serde_json::json!({"query": "TODO"})),
+                CachedResult::new("Error: not found", true),
+            ),
+        ];
+
+        for (key, result) in entries.iter() {
+            cache.put(key.clone(), result.clone());
+        }
+
+        // Save
+        cache.save_to_file(&cache_file).unwrap();
+
+        // Load into new cache
+        let mut loaded = ToolResultCache::default();
+        loaded.load_from_file(&cache_file).unwrap();
+
+        // Verify all entries
+        for (key, original) in entries {
+            let loaded_result = loaded.get(&key).unwrap();
+            assert_eq!(loaded_result.output, original.output);
+            assert_eq!(loaded_result.is_error, original.is_error);
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
     }
 }

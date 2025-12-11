@@ -529,8 +529,8 @@ static CONFIG_CACHE: Lazy<RwLock<ConfigCache>> = Lazy::new(|| {
 /// Used primarily in tests to ensure a fresh config load.
 pub fn clear_config_cache() {
     // `.write()` acquires an exclusive write lock
-    // `.unwrap()` panics if the lock is poisoned
-    let mut cache = CONFIG_CACHE.write().unwrap();
+    // Use `unwrap_or_else` to recover from poisoned locks
+    let mut cache = CONFIG_CACHE.write().unwrap_or_else(|e| e.into_inner());
     cache.config = None;
     cache.workspace_dir = None;
     cache.profile_name = None;
@@ -847,7 +847,7 @@ fn apply_profile(config: &mut ComposerConfig, profile_name: &str) {
 pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> ComposerConfig {
     // Check cache - use a block to limit the scope of the read lock
     {
-        let cache = CONFIG_CACHE.read().unwrap();
+        let cache = CONFIG_CACHE.read().unwrap_or_else(|e| e.into_inner());
         // Return cached config if it matches the requested parameters
         if cache.config.is_some()
             && cache.workspace_dir.as_deref() == Some(workspace_dir)
@@ -889,7 +889,7 @@ pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> Composer
 
     // Cache the result
     {
-        let mut cache = CONFIG_CACHE.write().unwrap();
+        let mut cache = CONFIG_CACHE.write().unwrap_or_else(|e| e.into_inner());
         cache.config = Some(config.clone());
         cache.workspace_dir = Some(workspace_dir.to_path_buf());
         cache.profile_name = profile_name.map(String::from);
