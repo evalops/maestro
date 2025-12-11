@@ -205,6 +205,14 @@ pub mod live_wrap;
 /// Line manipulation, prefixing, and truncation helpers.
 pub mod render_utils;
 
+/// Color utilities (blending, perceptual distance, terminal detection).
+/// Includes xterm 256 color palette and best-match color selection.
+pub mod color_utils;
+
+/// Streaming markdown collector for incremental rendering.
+/// Buffers text and commits only complete lines.
+pub mod markdown_stream;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -661,3 +669,30 @@ pub use text_format::{
     truncate_text,                   // Character count truncation
     TOOL_OUTPUT_MAX_LINES,           // Default max lines for tool output
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COLOR UTILS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Color utilities for terminal rendering.
+///
+/// Provides perceptual color matching, blending, and terminal capability detection.
+pub use color_utils::{
+    best_color as best_color_match, // Find best matching color for terminal (renamed to avoid conflict)
+    blend,                          // Blend two RGB colors
+    has_256_color_support,          // Check for 256 color support
+    has_true_color_support,         // Check for true color (24-bit)
+    is_light,                       // Check if color is light
+    perceptual_distance,            // CIE76 color distance
+    XTERM_COLORS,                   // 256 color palette
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARKDOWN STREAM EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Streaming markdown collector for incremental rendering.
+///
+/// Buffers text deltas and commits only complete lines, preventing
+/// partial markdown from causing visual glitches.
+pub use markdown_stream::MarkdownStreamCollector;
