@@ -210,10 +210,7 @@ impl<K: Eq + Hash, V> WidthCache<K, V> {
         }
 
         // Insert entry
-        self.entries
-            .entry(width)
-            .or_insert_with(HashMap::new)
-            .insert(key, value);
+        self.entries.entry(width).or_default().insert(key, value);
     }
 
     /// Get a value at a specific width.

@@ -100,7 +100,7 @@ impl GoogleClient {
         let mut request = GoogleRequest {
             contents,
             generation_config: Some(GenerationConfig {
-                max_output_tokens: Some(config.max_tokens as u32),
+                max_output_tokens: Some(config.max_tokens),
                 temperature: config.temperature,
                 ..Default::default()
             }),

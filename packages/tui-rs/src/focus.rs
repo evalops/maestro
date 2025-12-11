@@ -421,7 +421,7 @@ mod tests {
     fn focus_callbacks_called() {
         let mut manager: FocusManager<TestWidget> = FocusManager::new();
 
-        let mut widget = TestWidget::new("test");
+        let widget = TestWidget::new("test");
         assert!(!widget.focused);
 
         manager.push(widget);
@@ -429,7 +429,7 @@ mod tests {
 
         manager.push(TestWidget::new("modal"));
         // Previous widget should be blurred
-        assert_eq!(manager.focus_stack[0].focused, false);
+        assert!(!manager.focus_stack[0].focused);
         assert!(manager.focused().unwrap().focused);
     }
 

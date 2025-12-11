@@ -108,7 +108,7 @@ impl TruncatedText {
 
     fn truncate_middle(&self, max_width: usize, ellipsis_width: usize) -> Line<'static> {
         let available = max_width - ellipsis_width;
-        let left_width = (available + 1) / 2; // Slightly favor left side
+        let left_width = available.div_ceil(2); // Slightly favor left side
         let right_width = available - left_width;
 
         let left = truncate_to_width(&self.text, left_width);

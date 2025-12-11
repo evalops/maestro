@@ -169,7 +169,7 @@ impl SafetyController {
         let timestamps = self
             .tool_timestamps
             .entry(tool_name.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
         timestamps.push(Instant::now());
 
         // Clean old timestamps
@@ -225,10 +225,7 @@ impl SafetyController {
 
     /// Check rate limit for a tool
     fn check_rate_limit(&self, tool_name: &str) -> Option<String> {
-        let timestamps = match self.tool_timestamps.get(tool_name) {
-            Some(ts) => ts,
-            None => return None,
-        };
+        let timestamps = self.tool_timestamps.get(tool_name)?;
 
         let window = self.config.rate_window;
         let recent_count = timestamps.iter().filter(|ts| ts.elapsed() < window).count();

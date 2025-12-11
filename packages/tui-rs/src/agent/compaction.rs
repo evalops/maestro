@@ -77,7 +77,7 @@ impl ContextCompactor {
     /// Uses a simple heuristic of ~4 characters per token.
     /// This is approximate but sufficient for compaction decisions.
     pub fn estimate_tokens(&self, messages: &[Message]) -> u64 {
-        messages.iter().map(|m| estimate_message_tokens(m)).sum()
+        messages.iter().map(estimate_message_tokens).sum()
     }
 
     /// Check if compaction is needed based on estimated token count
@@ -269,7 +269,7 @@ impl CompactionResult {
 fn estimate_message_tokens(message: &Message) -> u64 {
     match &message.content {
         MessageContent::Text(text) => estimate_text_tokens(text),
-        MessageContent::Blocks(blocks) => blocks.iter().map(|b| estimate_block_tokens(b)).sum(),
+        MessageContent::Blocks(blocks) => blocks.iter().map(estimate_block_tokens).sum(),
     }
 }
 

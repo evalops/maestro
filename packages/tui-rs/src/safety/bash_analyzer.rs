@@ -223,7 +223,7 @@ fn parse_commands(input: &str) -> Vec<ParsedCommand> {
     // Split by common separators (simplified parsing)
     // Note: This is a simplified parser - a full parser would use tree-sitter
     let parts: Vec<&str> = input
-        .split(|c| c == '|' || c == ';' || c == '\n')
+        .split(['|', ';', '\n'].as_ref())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();
@@ -315,7 +315,7 @@ fn tokenize(input: &str) -> Vec<String> {
 }
 
 /// Skip common command wrappers (env, nice, sudo, etc.)
-fn skip_wrappers<'a>(tokens: &'a [String]) -> (&'a str, &'a [String]) {
+fn skip_wrappers(tokens: &[String]) -> (&str, &[String]) {
     let mut idx = 0;
 
     while idx < tokens.len() {
@@ -430,11 +430,11 @@ fn determine_risk(
             if DANGEROUS_GIT_SUBCOMMANDS.contains(subcommand.as_str()) {
                 highest_risk = CommandRisk::RequiresApproval;
                 reason = format!("Git {} can modify repository", subcommand);
-            } else if !SAFE_GIT_SUBCOMMANDS.contains(subcommand.as_str()) {
-                if highest_risk == CommandRisk::Safe {
-                    highest_risk = CommandRisk::RequiresApproval;
-                    reason = format!("Unknown git subcommand: {}", subcommand);
-                }
+            } else if !SAFE_GIT_SUBCOMMANDS.contains(subcommand.as_str())
+                && highest_risk == CommandRisk::Safe
+            {
+                highest_risk = CommandRisk::RequiresApproval;
+                reason = format!("Unknown git subcommand: {}", subcommand);
             }
             continue;
         }
@@ -449,11 +449,9 @@ fn determine_risk(
         }
 
         // Check if command is safe
-        if !SAFE_COMMANDS.contains(program) {
-            if highest_risk == CommandRisk::Safe {
-                highest_risk = CommandRisk::RequiresApproval;
-                reason = format!("Unknown command: {}", program);
-            }
+        if !SAFE_COMMANDS.contains(program) && highest_risk == CommandRisk::Safe {
+            highest_risk = CommandRisk::RequiresApproval;
+            reason = format!("Unknown command: {}", program);
         }
     }
 

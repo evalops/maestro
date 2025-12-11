@@ -198,8 +198,6 @@ pub fn limit_lines_from_start(lines: &[Line<'static>], keep: usize) -> Vec<Line<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Stylize;
-
     #[test]
     fn test_prefix_lines_basic() {
         let lines = vec![

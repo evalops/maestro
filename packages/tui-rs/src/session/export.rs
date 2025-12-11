@@ -637,8 +637,7 @@ pub fn export_session_file(
     path: impl AsRef<std::path::Path>,
     options: ExportOptions,
 ) -> io::Result<String> {
-    let session = SessionReader::read_file(path)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let session = SessionReader::read_file(path).map_err(|e| io::Error::other(e.to_string()))?;
 
     let exporter = SessionExporter::from_session(&session, options);
     Ok(exporter.export_to_string())

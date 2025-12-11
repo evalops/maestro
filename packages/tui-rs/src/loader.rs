@@ -245,8 +245,8 @@ impl ProgressBarStyle {
         let filled_count = ((inner_width as f32) * percent).round() as usize;
         let empty_count = inner_width.saturating_sub(filled_count);
 
-        let filled_str: String = std::iter::repeat(self.filled).take(filled_count).collect();
-        let empty_str: String = std::iter::repeat(self.empty).take(empty_count).collect();
+        let filled_str: String = std::iter::repeat_n(self.filled, filled_count).collect();
+        let empty_str: String = std::iter::repeat_n(self.empty, empty_count).collect();
 
         Line::from(vec![
             Span::styled(
@@ -586,6 +586,6 @@ mod tests {
         let loader = Loader::new("Test").low_unicode(true);
         let frame = loader.current_frame();
         // ASCII frames use simple characters
-        assert!(frame.glyph.chars().all(|c| c.is_ascii()));
+        assert!(frame.glyph.is_ascii());
     }
 }

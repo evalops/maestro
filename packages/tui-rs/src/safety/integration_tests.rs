@@ -16,7 +16,6 @@ mod tests {
         FirewallVerdict,
     };
     use serde_json::json;
-    use std::path::PathBuf;
     use std::time::Duration;
 
     // ========================================================================
@@ -82,7 +81,8 @@ mod tests {
         // Threshold of 3 means block after 3 identical consecutive calls
         let config = SafetyConfig {
             doom_loop_threshold: 3,
-            ..Default::default()
+            rate_limit: SafetyConfig::default().rate_limit,
+            rate_window: SafetyConfig::default().rate_window,
         };
         let mut safety = SafetyController::with_config(config);
 
@@ -107,7 +107,6 @@ mod tests {
             rate_limit: 3,
             rate_window: Duration::from_secs(10),
             doom_loop_threshold: 100, // High threshold to avoid doom loop
-            ..Default::default()
         };
         let mut safety = SafetyController::with_config(config);
 
@@ -333,7 +332,8 @@ mod tests {
         let firewall = ActionFirewall::new("/workspace");
         let config = SafetyConfig {
             doom_loop_threshold: 2,
-            ..Default::default()
+            rate_limit: SafetyConfig::default().rate_limit,
+            rate_window: SafetyConfig::default().rate_window,
         };
         let mut safety = SafetyController::with_config(config);
 
@@ -365,7 +365,6 @@ mod tests {
             rate_limit: 2,
             rate_window: Duration::from_secs(10),
             doom_loop_threshold: 100,
-            ..Default::default()
         };
         let mut safety = SafetyController::with_config(config);
 

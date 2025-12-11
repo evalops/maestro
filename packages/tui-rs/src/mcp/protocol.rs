@@ -218,7 +218,7 @@ pub struct McpToolResult {
 
 impl McpToolResult {
     /// Convert to a string representation
-    pub fn to_string(&self) -> String {
+    pub fn as_string(&self) -> String {
         self.content
             .iter()
             .map(|c| c.to_string())
@@ -351,6 +351,6 @@ mod tests {
             ],
             is_error: false,
         };
-        assert_eq!(result.to_string(), "Line 1\nLine 2");
+        assert_eq!(result.as_string(), "Line 1\nLine 2");
     }
 }

@@ -436,14 +436,14 @@ impl UsageTracker {
         }
 
         if let Some(tps) = stats.tokens_per_second() {
-            lines.push(format!(""));
+            lines.push(String::new());
             lines.push(format!("Speed: {:.1} tokens/sec", tps));
         }
 
         // Per-model breakdown if multiple models used
         if self.session.by_model.len() > 1 {
-            lines.push(format!(""));
-            lines.push(format!("By Model:"));
+            lines.push(String::new());
+            lines.push("By Model:".to_string());
             for (model, model_stats) in &self.session.by_model {
                 lines.push(format!(
                     "  {}: {} turns, ${:.4}",
@@ -600,9 +600,11 @@ mod tests {
 
     #[test]
     fn test_usage_stats_cache_ratio() {
-        let mut stats = UsageStats::default();
-        stats.input_tokens = 2000;
-        stats.cache_read_tokens = 8000;
+        let stats = UsageStats {
+            input_tokens: 2000,
+            cache_read_tokens: 8000,
+            ..UsageStats::default()
+        };
 
         // 8000 cache hits out of 10000 total = 80%
         assert!((stats.cache_hit_ratio() - 0.8).abs() < 0.001);
