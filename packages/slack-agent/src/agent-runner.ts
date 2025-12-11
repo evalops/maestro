@@ -25,6 +25,7 @@ import type {
 	AgentTool,
 	Api,
 	AssistantMessage,
+	Message,
 	Model,
 	TextContent,
 	ThinkingContent,
@@ -943,13 +944,13 @@ export function createAgentRunner(
 			await queue.flush();
 
 			// Get final assistant message and replace main message
-			const messages = activeAgent.state.messages;
+			const messages = activeAgent.state.messages as Message[];
 			const lastAssistant = messages
-				.filter((m) => m.role === "assistant")
+				.filter((m): m is AssistantMessage => m.role === "assistant")
 				.pop();
 			const finalText =
 				lastAssistant?.content
-					.filter((c): c is { type: "text"; text: string } => c.type === "text")
+					.filter((c): c is TextContent => c.type === "text")
 					.map((c) => c.text)
 					.join("\n") || "";
 

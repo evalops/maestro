@@ -2,11 +2,11 @@
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
 		"outDir": "./dist",
-		"rootDir": "./src",
+		"rootDir": "../../",
 		"composite": true,
 		"emitDeclarationOnly": true
 	},
-	"include": ["src/**/*"],
+	"include": ["src/**/*.ts", "../../src/**/*.ts", "../../package.json"],
 	"exclude": ["node_modules", "dist", "test"],
-	"references": [{ "path": "../ai/tsconfig.build.json" }]
+	"references": []
 }
