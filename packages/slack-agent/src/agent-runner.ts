@@ -5,7 +5,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { appendToMemory, createMemoryUpdate } from "./auto-memory.js";
 import {
 	type ConversationTurn,
 	formatSummarizedContext,
@@ -628,14 +627,6 @@ export function createAgentRunner(
 				{ toolName: string; args: unknown; startTime: number }
 			>();
 
-			// Track completed tool calls for auto-memory
-			const completedToolCalls: Array<{
-				name: string;
-				args: Record<string, unknown>;
-				result?: string;
-				success: boolean;
-			}> = [];
-
 			let stopReason = "stop";
 			const SLACK_MAX_LENGTH = 40000;
 
@@ -764,14 +755,6 @@ export function createAgentRunner(
 						const pending = pendingTools.get(event.toolCallId);
 						pendingTools.delete(event.toolCallId);
 						toolsExecuted++;
-
-						// Track for auto-memory
-						completedToolCalls.push({
-							name: event.toolName,
-							args: (pending?.args as Record<string, unknown>) || {},
-							result: resultStr.substring(0, 500), // Limit result size
-							success: !event.isError,
-						});
 
 						const durationMs = pending ? Date.now() - pending.startTime : 0;
 
@@ -955,45 +938,6 @@ export function createAgentRunner(
 					const errMsg = err instanceof Error ? err.message : String(err);
 					logger.logWarning("Failed to replace message", errMsg);
 				}
-			}
-
-			// Auto-memory: extract and persist key facts from this conversation
-			try {
-				const agentMessages = agent.state.messages;
-				const conversationMessages: Array<{
-					role: "user" | "assistant";
-					text: string;
-				}> = [];
-
-				for (const msg of agentMessages) {
-					if (msg.role === "user" || msg.role === "assistant") {
-						const textContent = msg.content
-							.filter(
-								(c): c is { type: "text"; text: string } => c.type === "text",
-							)
-							.map((c) => c.text)
-							.join("\n");
-						if (textContent) {
-							conversationMessages.push({
-								role: msg.role,
-								text: textContent,
-							});
-						}
-					}
-				}
-
-				const memoryUpdate = createMemoryUpdate(
-					completedToolCalls,
-					conversationMessages,
-				);
-				const updated = appendToMemory(channelDir, memoryUpdate);
-				if (updated) {
-					logger.logInfo(`Auto-memory updated for channel ${channelId}`);
-				}
-			} catch (err) {
-				// Don't fail the run if auto-memory fails
-				const errMsg = err instanceof Error ? err.message : String(err);
-				logger.logWarning("Auto-memory update failed", errMsg);
 			}
 
 			return { stopReason };

@@ -265,8 +265,28 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 	};
 }
 
+// Handle notification before scheduled task
+async function handleTaskNotification(
+	task: ScheduledTask,
+	minutesUntil: number,
+): Promise<void> {
+	try {
+		await bot.postMessage(
+			task.channelId,
+			`_Reminder: "${task.description}" will run in ${minutesUntil} minute${minutesUntil > 1 ? "s" : ""}_`,
+		);
+	} catch (error) {
+		logger.logWarning(
+			`Failed to send task notification for ${task.id}`,
+			String(error),
+		);
+	}
+}
+
 // Handle scheduled task execution
-async function handleScheduledTask(task: ScheduledTask): Promise<void> {
+async function handleScheduledTask(
+	task: ScheduledTask,
+): Promise<{ success: boolean; error?: string }> {
 	const channelId = task.channelId;
 
 	// Check if already running in this channel
@@ -275,7 +295,7 @@ async function handleScheduledTask(task: ScheduledTask): Promise<void> {
 			`Skipping scheduled task ${task.id} - channel ${channelId} is busy`,
 			task.description,
 		);
-		return;
+		return { success: false, error: "Channel is busy" };
 	}
 
 	logger.logInfo(`Executing scheduled task: ${task.description}`);
@@ -320,6 +340,7 @@ async function handleScheduledTask(task: ScheduledTask): Promise<void> {
 
 		try {
 			await runner.run(scheduledCtx, channelDir, bot.store);
+			return { success: true };
 		} finally {
 			await scheduledCtx.setWorking(false);
 			activeRuns.delete(channelId);
@@ -327,6 +348,7 @@ async function handleScheduledTask(task: ScheduledTask): Promise<void> {
 	} catch (error) {
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		logger.logWarning(`Scheduled task failed: ${task.id}`, errorMsg);
+		return { success: false, error: errorMsg };
 	}
 }
 
@@ -641,6 +663,7 @@ const bot = new SlackBot(
 schedulerHolder.instance = new Scheduler({
 	workingDir,
 	onTaskDue: handleScheduledTask,
+	onNotify: handleTaskNotification,
 });
 schedulerHolder.instance.start();
 
