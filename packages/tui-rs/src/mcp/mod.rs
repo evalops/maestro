@@ -61,6 +61,7 @@
 
 mod config;
 mod protocol;
+mod http;
 mod client;
 
 pub use config::{McpConfig, McpServerConfig, McpTransport, load_mcp_config};
