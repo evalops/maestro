@@ -233,6 +233,10 @@ pub mod key_binding;
 /// Essential for proper scrolling over SSH.
 pub mod ansi_commands;
 
+/// Synchronized output for flicker-free terminal updates.
+/// Buffers output for atomic display.
+pub mod sync_output;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -811,4 +815,19 @@ pub use ansi_commands::{
     ScrollDown,              // Scroll down N lines (CSI T)
     ScrollUp,                // Scroll up N lines (CSI S)
     SetScrollRegion,         // Set scroll region (DECSTBM, ESC [ Pt;Pb r)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SYNCHRONIZED OUTPUT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Synchronized output for flicker-free terminal updates.
+///
+/// Wrap rendering in BeginSynchronizedUpdate/EndSynchronizedUpdate to buffer
+/// all output and display it atomically. Essential for reducing flicker over SSH.
+pub use sync_output::{
+    with_synchronized_output,  // Execute closure with sync output
+    BeginSynchronizedUpdate,   // Start buffering (ESC [ ? 2026 h)
+    EndSynchronizedUpdate,     // Flush buffer (ESC [ ? 2026 l)
+    SynchronizedOutputGuard,   // RAII guard for sync output
 };
