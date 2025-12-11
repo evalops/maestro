@@ -90,9 +90,11 @@
 pub mod compaction;
 mod native;
 mod protocol;
+pub mod retry;
 pub mod safety;
 
 pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor};
 pub use native::{NativeAgent, NativeAgentConfig, ToolDefinition};
 pub use protocol::{FromAgent, ToAgent, TokenUsage, ToolResult};
+pub use retry::{ErrorKind, RetryConfig, RetryDecision, RetryPolicy};
 pub use safety::{is_context_overflow, is_retryable_error, SafetyController, SafetyVerdict};
