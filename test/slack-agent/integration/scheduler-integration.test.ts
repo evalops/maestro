@@ -40,6 +40,7 @@ describe("Scheduler Integration", () => {
 					description: task.description,
 					prompt: task.prompt,
 				});
+				return { success: true };
 			},
 		});
 
@@ -69,7 +70,7 @@ describe("Scheduler Integration", () => {
 		// Create first scheduler and add a task
 		const scheduler1 = new Scheduler({
 			workingDir: testDir,
-			onTaskDue: async () => {},
+			onTaskDue: async () => ({ success: true }),
 		});
 
 		await scheduler1.schedule(
@@ -84,7 +85,7 @@ describe("Scheduler Integration", () => {
 		// Create second scheduler - should load the task
 		const scheduler2 = new Scheduler({
 			workingDir: testDir,
-			onTaskDue: async () => {},
+			onTaskDue: async () => ({ success: true }),
 		});
 
 		const tasks = scheduler2.listTasks("C123456");
@@ -105,6 +106,7 @@ describe("Scheduler Integration", () => {
 					description: task.description,
 					prompt: task.prompt,
 				});
+				return { success: true };
 			},
 		});
 
@@ -142,6 +144,7 @@ describe("Scheduler Integration", () => {
 					description: task.description,
 					prompt: task.prompt,
 				});
+				return { success: true };
 			},
 		});
 
@@ -187,6 +190,7 @@ describe("Scheduler Integration", () => {
 					description: task.description,
 					prompt: task.prompt,
 				});
+				return { success: true };
 			},
 		});
 
@@ -218,7 +222,7 @@ describe("Scheduler Integration", () => {
 	it("cancels scheduled tasks", async () => {
 		scheduler = new Scheduler({
 			workingDir: testDir,
-			onTaskDue: async () => {},
+			onTaskDue: async () => ({ success: true }),
 		});
 
 		const task = await scheduler.schedule(
@@ -242,7 +246,7 @@ describe("Scheduler Integration", () => {
 	it("handles multiple channels independently", async () => {
 		scheduler = new Scheduler({
 			workingDir: testDir,
-			onTaskDue: async () => {},
+			onTaskDue: async () => ({ success: true }),
 		});
 
 		await scheduler.schedule(
@@ -277,7 +281,7 @@ describe("Scheduler Integration", () => {
 	it("rejects invalid time expressions", async () => {
 		scheduler = new Scheduler({
 			workingDir: testDir,
-			onTaskDue: async () => {},
+			onTaskDue: async () => ({ success: true }),
 		});
 
 		const task = await scheduler.schedule(
