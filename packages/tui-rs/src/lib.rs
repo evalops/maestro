@@ -281,6 +281,18 @@ pub mod single_line_input;
 /// Smart truncation for text and paths.
 pub mod truncated_text;
 
+/// Undo/redo history with debounced snapshots.
+/// Generic history management for editors.
+pub mod undo_history;
+
+/// Focus management and input routing.
+/// Component hierarchy focus handling.
+pub mod focus;
+
+/// Terminal resize handling with cache invalidation.
+/// Smart redraw detection and width-keyed caching.
+pub mod resize_handler;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
