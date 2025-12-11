@@ -193,6 +193,10 @@ pub mod history;
 /// Watches config files and emits events on changes.
 pub mod config_watcher;
 
+/// Text formatting utilities (truncation, JSON compacting).
+/// Ported from OpenAI Codex CLI (MIT licensed).
+pub mod text_format;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
