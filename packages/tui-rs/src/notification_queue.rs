@@ -308,7 +308,9 @@ impl NotificationQueue {
     pub fn visible(&self) -> Vec<&Notification> {
         let mut sorted: Vec<_> = self.notifications.iter().collect();
         sorted.sort_by(|a, b| {
-            b.level.cmp(&a.level).then_with(|| a.created_at.cmp(&b.created_at))
+            b.level
+                .cmp(&a.level)
+                .then_with(|| a.created_at.cmp(&b.created_at))
         });
         sorted.into_iter().take(self.config.max_visible).collect()
     }
@@ -325,7 +327,10 @@ impl NotificationQueue {
 
     /// Render visible notifications.
     pub fn render(&self) -> Vec<Line<'static>> {
-        self.visible().iter().map(|n| n.render(self.config.use_ascii)).collect()
+        self.visible()
+            .iter()
+            .map(|n| n.render(self.config.use_ascii))
+            .collect()
     }
 }
 
@@ -350,12 +355,22 @@ impl Toast {
         }
     }
 
-    pub fn info(message: impl Into<String>) -> Self { Self::new(message, NotificationLevel::Info) }
-    pub fn success(message: impl Into<String>) -> Self { Self::new(message, NotificationLevel::Success) }
-    pub fn warning(message: impl Into<String>) -> Self { Self::new(message, NotificationLevel::Warning) }
-    pub fn error(message: impl Into<String>) -> Self { Self::new(message, NotificationLevel::Error) }
+    pub fn info(message: impl Into<String>) -> Self {
+        Self::new(message, NotificationLevel::Info)
+    }
+    pub fn success(message: impl Into<String>) -> Self {
+        Self::new(message, NotificationLevel::Success)
+    }
+    pub fn warning(message: impl Into<String>) -> Self {
+        Self::new(message, NotificationLevel::Warning)
+    }
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::new(message, NotificationLevel::Error)
+    }
 
-    pub fn is_expired(&self) -> bool { self.created_at.elapsed() >= self.duration }
+    pub fn is_expired(&self) -> bool {
+        self.created_at.elapsed() >= self.duration
+    }
 }
 
 #[cfg(test)]
