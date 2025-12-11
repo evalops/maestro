@@ -266,15 +266,9 @@ impl TruncatedPath {
         }
 
         Line::from(vec![
-            Span::styled(
-                left_segments.join(&self.separator.to_string()),
-                self.style,
-            ),
+            Span::styled(left_segments.join(&self.separator.to_string()), self.style),
             Span::styled(ellipsis_sep, self.style.fg(Color::DarkGray)),
-            Span::styled(
-                right_segments.join(&self.separator.to_string()),
-                self.style,
-            ),
+            Span::styled(right_segments.join(&self.separator.to_string()), self.style),
         ])
     }
 }
@@ -357,8 +351,7 @@ mod tests {
 
     #[test]
     fn truncate_middle_preserves_ends() {
-        let text = TruncatedText::new("hello world")
-            .truncation(TruncationStyle::Middle);
+        let text = TruncatedText::new("hello world").truncation(TruncationStyle::Middle);
         let line = text.render_line(9);
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.contains('…'));
@@ -368,8 +361,7 @@ mod tests {
 
     #[test]
     fn truncate_start_preserves_end() {
-        let text = TruncatedText::new("hello world")
-            .truncation(TruncationStyle::Start);
+        let text = TruncatedText::new("hello world").truncation(TruncationStyle::Start);
         let line = text.render_line(8);
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.starts_with('…'));

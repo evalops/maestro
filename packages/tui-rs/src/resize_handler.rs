@@ -396,9 +396,7 @@ mod tests {
     fn wrap_cache_get_or_wrap() {
         let mut cache = WrapCache::new(3);
 
-        let wrapped = cache.get_or_wrap(80, "hello world", |text, _width| {
-            vec![text.to_string()]
-        });
+        let wrapped = cache.get_or_wrap(80, "hello world", |text, _width| vec![text.to_string()]);
         assert_eq!(wrapped, &vec!["hello world".to_string()]);
 
         // Should return cached value

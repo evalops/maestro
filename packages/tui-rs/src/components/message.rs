@@ -758,7 +758,9 @@ impl Widget for MessageWidget<'_> {
                         Span::styled(prefix, Style::default().fg(Color::DarkGray)),
                         Span::styled(
                             (*line).to_string(),
-                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM),
                         ),
                     ]);
                     Paragraph::new(output_line).render(
@@ -780,7 +782,9 @@ impl Widget for MessageWidget<'_> {
                         Span::styled("    ", Style::default()),
                         Span::styled(
                             format!("… +{} lines", omitted),
-                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM),
                         ),
                     ]);
                     Paragraph::new(ellipsis_line).render(

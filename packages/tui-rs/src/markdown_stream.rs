@@ -150,9 +150,7 @@ fn render_markdown_to_lines(source: &str, width: Option<usize>) -> Vec<Line<'sta
             Line::from(
                 line.spans
                     .into_iter()
-                    .map(|span| {
-                        ratatui::text::Span::styled(span.content.to_string(), span.style)
-                    })
+                    .map(|span| ratatui::text::Span::styled(span.content.to_string(), span.style))
                     .collect::<Vec<_>>(),
             )
         })

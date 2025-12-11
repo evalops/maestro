@@ -368,8 +368,14 @@ mod tests {
     #[test]
     fn test_sanitize_header_value() {
         assert_eq!(sanitize_header_value("iTerm2"), "iTerm2");
-        assert_eq!(sanitize_header_value("WezTerm/20240101"), "WezTerm/20240101");
-        assert_eq!(sanitize_header_value("term with spaces"), "term_with_spaces");
+        assert_eq!(
+            sanitize_header_value("WezTerm/20240101"),
+            "WezTerm/20240101"
+        );
+        assert_eq!(
+            sanitize_header_value("term with spaces"),
+            "term_with_spaces"
+        );
         assert_eq!(sanitize_header_value("term@special!"), "term_special_");
     }
 

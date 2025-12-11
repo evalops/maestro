@@ -197,7 +197,11 @@ impl SingleLineInput {
         // Convert char positions to byte positions
         let (byte_start, byte_end) = char_range_to_bytes(&self.value, start_char, end_char);
 
-        (&self.value[byte_start..byte_end], cursor_display, start_char)
+        (
+            &self.value[byte_start..byte_end],
+            cursor_display,
+            start_char,
+        )
     }
 
     /// Render the input to a Line with cursor styling.

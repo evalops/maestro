@@ -144,24 +144,13 @@ impl<'a> SelectionList<'a> {
 
     /// Calculate the height needed to render the list.
     pub fn measure_height(&self, width: u16) -> u16 {
-        measure_rows_height(
-            self.rows,
-            self.state,
-            self.config.max_visible,
-            width,
-        )
+        measure_rows_height(self.rows, self.state, self.config.max_visible, width)
     }
 }
 
 impl Widget for SelectionList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        render_rows(
-            area,
-            buf,
-            self.rows,
-            self.state,
-            &self.config,
-        );
+        render_rows(area, buf, self.rows, self.state, &self.config);
     }
 }
 
@@ -208,7 +197,11 @@ fn get_wrap_indent(row: &SelectionRow, desc_col: usize, max_width: u16) -> usize
 }
 
 /// Build a display line for a row with fuzzy match highlighting.
-fn build_display_line(row: &SelectionRow, desc_col: usize, config: &SelectionListConfig) -> Line<'static> {
+fn build_display_line(
+    row: &SelectionRow,
+    desc_col: usize,
+    config: &SelectionListConfig,
+) -> Line<'static> {
     // Limit name width when there's a description
     let name_limit = row
         .description
@@ -235,7 +228,12 @@ fn build_display_line(row: &SelectionRow, desc_col: usize, config: &SelectionLis
             let ch_str = ch.to_string();
             if idx_iter.peek().is_some_and(|next| **next == char_idx) {
                 idx_iter.next();
-                name_spans.push(Span::styled(ch_str, config.normal_style.patch(Style::default().fg(Color::Yellow))));
+                name_spans.push(Span::styled(
+                    ch_str,
+                    config
+                        .normal_style
+                        .patch(Style::default().fg(Color::Yellow)),
+                ));
             } else {
                 name_spans.push(Span::styled(ch_str, config.normal_style));
             }
@@ -320,12 +318,7 @@ fn render_rows(
 
     // Render rows with wrapping
     let mut cur_y = area.y;
-    for (i, row) in rows
-        .iter()
-        .enumerate()
-        .skip(start_idx)
-        .take(visible_items)
-    {
+    for (i, row) in rows.iter().enumerate().skip(start_idx).take(visible_items) {
         if cur_y >= area.y + area.height {
             break;
         }
@@ -502,7 +495,10 @@ where
     // Sort by score (descending) then by original index
     matches.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
 
-    matches.into_iter().map(|(i, indices, _)| (i, indices)).collect()
+    matches
+        .into_iter()
+        .map(|(i, indices, _)| (i, indices))
+        .collect()
 }
 
 #[cfg(test)]

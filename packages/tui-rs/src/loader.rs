@@ -70,46 +70,130 @@ impl SpinnerStyle {
 
 // Spinner frame definitions
 static BRAILLE_FRAMES: [SpinnerFrame; 10] = [
-    SpinnerFrame { glyph: "⠋", color: Color::Rgb(125, 211, 252) },
-    SpinnerFrame { glyph: "⠙", color: Color::Rgb(125, 211, 252) },
-    SpinnerFrame { glyph: "⠹", color: Color::Rgb(147, 197, 253) },
-    SpinnerFrame { glyph: "⠸", color: Color::Rgb(147, 197, 253) },
-    SpinnerFrame { glyph: "⠼", color: Color::Rgb(196, 181, 253) },
-    SpinnerFrame { glyph: "⠴", color: Color::Rgb(196, 181, 253) },
-    SpinnerFrame { glyph: "⠦", color: Color::Rgb(147, 197, 253) },
-    SpinnerFrame { glyph: "⠧", color: Color::Rgb(147, 197, 253) },
-    SpinnerFrame { glyph: "⠇", color: Color::Rgb(125, 211, 252) },
-    SpinnerFrame { glyph: "⠏", color: Color::Rgb(125, 211, 252) },
+    SpinnerFrame {
+        glyph: "⠋",
+        color: Color::Rgb(125, 211, 252),
+    },
+    SpinnerFrame {
+        glyph: "⠙",
+        color: Color::Rgb(125, 211, 252),
+    },
+    SpinnerFrame {
+        glyph: "⠹",
+        color: Color::Rgb(147, 197, 253),
+    },
+    SpinnerFrame {
+        glyph: "⠸",
+        color: Color::Rgb(147, 197, 253),
+    },
+    SpinnerFrame {
+        glyph: "⠼",
+        color: Color::Rgb(196, 181, 253),
+    },
+    SpinnerFrame {
+        glyph: "⠴",
+        color: Color::Rgb(196, 181, 253),
+    },
+    SpinnerFrame {
+        glyph: "⠦",
+        color: Color::Rgb(147, 197, 253),
+    },
+    SpinnerFrame {
+        glyph: "⠧",
+        color: Color::Rgb(147, 197, 253),
+    },
+    SpinnerFrame {
+        glyph: "⠇",
+        color: Color::Rgb(125, 211, 252),
+    },
+    SpinnerFrame {
+        glyph: "⠏",
+        color: Color::Rgb(125, 211, 252),
+    },
 ];
 
 static DOTS_FRAMES: [SpinnerFrame; 6] = [
-    SpinnerFrame { glyph: "·  ", color: Color::Rgb(125, 211, 252) },
-    SpinnerFrame { glyph: "·· ", color: Color::Rgb(147, 197, 253) },
-    SpinnerFrame { glyph: "···", color: Color::Rgb(196, 181, 253) },
-    SpinnerFrame { glyph: " ··", color: Color::Rgb(147, 197, 253) },
-    SpinnerFrame { glyph: "  ·", color: Color::Rgb(125, 211, 252) },
-    SpinnerFrame { glyph: "   ", color: Color::Rgb(100, 116, 139) },
+    SpinnerFrame {
+        glyph: "·  ",
+        color: Color::Rgb(125, 211, 252),
+    },
+    SpinnerFrame {
+        glyph: "·· ",
+        color: Color::Rgb(147, 197, 253),
+    },
+    SpinnerFrame {
+        glyph: "···",
+        color: Color::Rgb(196, 181, 253),
+    },
+    SpinnerFrame {
+        glyph: " ··",
+        color: Color::Rgb(147, 197, 253),
+    },
+    SpinnerFrame {
+        glyph: "  ·",
+        color: Color::Rgb(125, 211, 252),
+    },
+    SpinnerFrame {
+        glyph: "   ",
+        color: Color::Rgb(100, 116, 139),
+    },
 ];
 
 static PULSE_FRAMES: [SpinnerFrame; 4] = [
-    SpinnerFrame { glyph: "◆", color: Color::Rgb(125, 211, 252) },
-    SpinnerFrame { glyph: "◇", color: Color::Rgb(100, 116, 139) },
-    SpinnerFrame { glyph: "◇", color: Color::Rgb(100, 116, 139) },
-    SpinnerFrame { glyph: "◇", color: Color::Rgb(100, 116, 139) },
+    SpinnerFrame {
+        glyph: "◆",
+        color: Color::Rgb(125, 211, 252),
+    },
+    SpinnerFrame {
+        glyph: "◇",
+        color: Color::Rgb(100, 116, 139),
+    },
+    SpinnerFrame {
+        glyph: "◇",
+        color: Color::Rgb(100, 116, 139),
+    },
+    SpinnerFrame {
+        glyph: "◇",
+        color: Color::Rgb(100, 116, 139),
+    },
 ];
 
 static LINE_FRAMES: [SpinnerFrame; 4] = [
-    SpinnerFrame { glyph: "|", color: Color::Rgb(125, 211, 252) },
-    SpinnerFrame { glyph: "/", color: Color::Rgb(147, 197, 253) },
-    SpinnerFrame { glyph: "-", color: Color::Rgb(196, 181, 253) },
-    SpinnerFrame { glyph: "\\", color: Color::Rgb(147, 197, 253) },
+    SpinnerFrame {
+        glyph: "|",
+        color: Color::Rgb(125, 211, 252),
+    },
+    SpinnerFrame {
+        glyph: "/",
+        color: Color::Rgb(147, 197, 253),
+    },
+    SpinnerFrame {
+        glyph: "-",
+        color: Color::Rgb(196, 181, 253),
+    },
+    SpinnerFrame {
+        glyph: "\\",
+        color: Color::Rgb(147, 197, 253),
+    },
 ];
 
 static ASCII_FRAMES: [SpinnerFrame; 4] = [
-    SpinnerFrame { glyph: "-", color: Color::Cyan },
-    SpinnerFrame { glyph: "\\", color: Color::Cyan },
-    SpinnerFrame { glyph: "|", color: Color::Cyan },
-    SpinnerFrame { glyph: "/", color: Color::Cyan },
+    SpinnerFrame {
+        glyph: "-",
+        color: Color::Cyan,
+    },
+    SpinnerFrame {
+        glyph: "\\",
+        color: Color::Cyan,
+    },
+    SpinnerFrame {
+        glyph: "|",
+        color: Color::Cyan,
+    },
+    SpinnerFrame {
+        glyph: "/",
+        color: Color::Cyan,
+    },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -388,7 +472,10 @@ impl Loader {
             let percent_str = format!(" {}%", (percent * 100.0).round() as u8);
 
             let mut bar_spans = bar.spans;
-            bar_spans.push(Span::styled(percent_str, Style::default().fg(Color::DarkGray)));
+            bar_spans.push(Span::styled(
+                percent_str,
+                Style::default().fg(Color::DarkGray),
+            ));
 
             lines.push(Line::from(bar_spans));
         }

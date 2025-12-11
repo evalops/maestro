@@ -226,7 +226,10 @@ fn write_styled_spans<W: Write>(writer: &mut W, spans: &[Span<'_>]) -> io::Resul
         let next_bg = span.style.bg.unwrap_or(Color::Reset);
 
         if next_fg != current_fg || next_bg != current_bg {
-            queue!(writer, SetColors(Colors::new(next_fg.into(), next_bg.into())))?;
+            queue!(
+                writer,
+                SetColors(Colors::new(next_fg.into(), next_bg.into()))
+            )?;
             current_fg = next_fg;
             current_bg = next_bg;
         }

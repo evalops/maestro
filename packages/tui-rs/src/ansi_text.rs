@@ -74,10 +74,7 @@ pub fn parse_ansi_line(s: &str, style: &mut Style) -> Vec<Span<'static>> {
         if ch == '\x1b' {
             // Flush current text
             if !current_text.is_empty() {
-                spans.push(Span::styled(
-                    std::mem::take(&mut current_text),
-                    *style,
-                ));
+                spans.push(Span::styled(std::mem::take(&mut current_text), *style));
             }
 
             // Parse escape sequence
@@ -122,10 +119,7 @@ fn apply_sgr(params: &str, style: &mut Style) {
         return;
     }
 
-    let codes: Vec<u8> = params
-        .split(';')
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let codes: Vec<u8> = params.split(';').filter_map(|s| s.parse().ok()).collect();
 
     let mut i = 0;
     while i < codes.len() {

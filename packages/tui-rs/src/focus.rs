@@ -497,7 +497,10 @@ mod tests {
         assert!(is_escape(make_key(KeyCode::Esc)));
         assert!(is_enter(make_key(KeyCode::Enter)));
         assert!(is_tab(make_key(KeyCode::Tab)));
-        assert!(is_shift_tab(make_key_mod(KeyCode::Tab, KeyModifiers::SHIFT)));
+        assert!(is_shift_tab(make_key_mod(
+            KeyCode::Tab,
+            KeyModifiers::SHIFT
+        )));
         assert!(is_navigation(make_key(KeyCode::Up)));
     }
 }

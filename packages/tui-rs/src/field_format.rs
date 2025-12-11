@@ -95,7 +95,11 @@ impl FieldFormatter {
     }
 
     /// Build the full spans for a label/value pair.
-    pub fn full_spans(&self, label: &str, mut value_spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    pub fn full_spans(
+        &self,
+        label: &str,
+        mut value_spans: Vec<Span<'static>>,
+    ) -> Vec<Span<'static>> {
         let mut spans = Vec::with_capacity(value_spans.len() + 1);
         spans.push(self.label_span(label));
         spans.append(&mut value_spans);
@@ -255,11 +259,7 @@ mod tests {
 
     #[test]
     fn line_display_width_sums_spans() {
-        let line = Line::from(vec![
-            Span::raw("hello"),
-            Span::raw(" "),
-            Span::raw("world"),
-        ]);
+        let line = Line::from(vec![Span::raw("hello"), Span::raw(" "), Span::raw("world")]);
         assert_eq!(line_display_width(&line), 11);
     }
 
@@ -272,9 +272,10 @@ mod tests {
 
     #[test]
     fn truncate_line_preserves_style() {
-        let line = Line::from(vec![
-            Span::styled("colored", Style::default().fg(Color::Red)),
-        ]);
+        let line = Line::from(vec![Span::styled(
+            "colored",
+            Style::default().fg(Color::Red),
+        )]);
         let truncated = truncate_line_to_width(line, 4);
         assert_eq!(truncated.spans[0].style.fg, Some(Color::Red));
     }

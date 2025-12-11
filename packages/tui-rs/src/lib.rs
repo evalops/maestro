@@ -722,14 +722,14 @@ pub use live_wrap::{
 /// - Converting borrowed lines to static
 /// - Truncating output with middle ellipsis
 pub use render_utils::{
-    ellipsis_line,           // Creates "… +N lines" ellipsis
-    is_blank_line,           // Checks if line is empty/whitespace
-    limit_lines_from_start,  // Limits lines with trailing ellipsis
-    line_to_static,          // Converts borrowed line to owned
-    prefix_lines,            // Adds tree-style prefixes
-    prefix_lines_borrowed,   // Prefix with borrowed prefixes
-    push_owned_lines,        // Appends owned copies of lines
-    truncate_lines_middle,   // Head/tail truncation with ellipsis
+    ellipsis_line,          // Creates "… +N lines" ellipsis
+    is_blank_line,          // Checks if line is empty/whitespace
+    limit_lines_from_start, // Limits lines with trailing ellipsis
+    line_to_static,         // Converts borrowed line to owned
+    prefix_lines,           // Adds tree-style prefixes
+    prefix_lines_borrowed,  // Prefix with borrowed prefixes
+    push_owned_lines,       // Appends owned copies of lines
+    truncate_lines_middle,  // Head/tail truncation with ellipsis
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -791,15 +791,15 @@ pub use markdown_stream::MarkdownStreamCollector;
 /// - WSL detection and path conversion
 pub use terminal_info::{
     convert_windows_path_to_wsl, // Convert Windows paths in WSL
-    is_interactive,             // Check if fully interactive terminal
-    is_ssh_session,             // Check if SSH session
-    is_stderr_tty,              // Check if stderr is TTY
-    is_stdin_tty,               // Check if stdin is TTY
-    is_stdout_tty,              // Check if stdout is TTY
-    is_wsl,                     // Check if WSL
-    normalize_pasted_path,      // Normalize pasted file paths
-    ssh_connection_info,        // Get SSH connection details
-    TerminalInfo,               // Full terminal info struct
+    is_interactive,              // Check if fully interactive terminal
+    is_ssh_session,              // Check if SSH session
+    is_stderr_tty,               // Check if stderr is TTY
+    is_stdin_tty,                // Check if stdin is TTY
+    is_stdout_tty,               // Check if stdout is TTY
+    is_wsl,                      // Check if WSL
+    normalize_pasted_path,       // Normalize pasted file paths
+    ssh_connection_info,         // Get SSH connection details
+    TerminalInfo,                // Full terminal info struct
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -836,16 +836,16 @@ pub use scroll_state::ScrollState;
 ///
 /// Platform-aware modifier display (⌥ on macOS, alt elsewhere).
 pub use key_binding::{
-    alt,                        // Alt + key binding
-    ctrl,                       // Ctrl + key binding
-    ctrl_alt,                   // Ctrl + Alt + key binding
-    ctrl_shift,                 // Ctrl + Shift + key binding
-    format_key_hint,            // Format binding for help text
-    has_ctrl_or_alt,            // Check for ctrl/alt modifiers
-    is_altgr,                   // Check for AltGr (Windows)
-    plain,                      // Plain key binding
-    shift,                      // Shift + key binding
-    KeyBinding as KeyShortcut,  // Key binding struct (renamed to avoid conflict)
+    alt,                       // Alt + key binding
+    ctrl,                      // Ctrl + key binding
+    ctrl_alt,                  // Ctrl + Alt + key binding
+    ctrl_shift,                // Ctrl + Shift + key binding
+    format_key_hint,           // Format binding for help text
+    has_ctrl_or_alt,           // Check for ctrl/alt modifiers
+    is_altgr,                  // Check for AltGr (Windows)
+    plain,                     // Plain key binding
+    shift,                     // Shift + key binding
+    KeyBinding as KeyShortcut, // Key binding struct (renamed to avoid conflict)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -860,19 +860,19 @@ pub use key_binding::{
 /// - Desktop notifications (OSC 9)
 /// - Cursor save/restore
 pub use ansi_commands::{
-    scroll_region_down,      // Scroll down within region using RI
-    scroll_region_up,        // Scroll up within region using IND
-    DisableAlternateScroll,  // Disable mouse wheel translation in alt screen
-    EnableAlternateScroll,   // Enable mouse wheel translation in alt screen
-    Index,                   // Move cursor down, scroll at bottom (ESC D)
-    PostNotification,        // Send desktop notification (OSC 9)
-    ResetScrollRegion,       // Reset scroll region to full screen (ESC [ r)
-    RestoreCursor,           // Restore cursor position (DECRC, ESC 8)
-    ReverseIndex,            // Move cursor up, scroll at top (ESC M)
-    SaveCursor,              // Save cursor position (DECSC, ESC 7)
-    ScrollDown,              // Scroll down N lines (CSI T)
-    ScrollUp,                // Scroll up N lines (CSI S)
-    SetScrollRegion,         // Set scroll region (DECSTBM, ESC [ Pt;Pb r)
+    scroll_region_down,     // Scroll down within region using RI
+    scroll_region_up,       // Scroll up within region using IND
+    DisableAlternateScroll, // Disable mouse wheel translation in alt screen
+    EnableAlternateScroll,  // Enable mouse wheel translation in alt screen
+    Index,                  // Move cursor down, scroll at bottom (ESC D)
+    PostNotification,       // Send desktop notification (OSC 9)
+    ResetScrollRegion,      // Reset scroll region to full screen (ESC [ r)
+    RestoreCursor,          // Restore cursor position (DECRC, ESC 8)
+    ReverseIndex,           // Move cursor up, scroll at top (ESC M)
+    SaveCursor,             // Save cursor position (DECSC, ESC 7)
+    ScrollDown,             // Scroll down N lines (CSI T)
+    ScrollUp,               // Scroll up N lines (CSI S)
+    SetScrollRegion,        // Set scroll region (DECSTBM, ESC [ Pt;Pb r)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -884,10 +884,10 @@ pub use ansi_commands::{
 /// Wrap rendering in BeginSynchronizedUpdate/EndSynchronizedUpdate to buffer
 /// all output and display it atomically. Essential for reducing flicker over SSH.
 pub use sync_output::{
-    with_synchronized_output,  // Execute closure with sync output
-    BeginSynchronizedUpdate,   // Start buffering (ESC [ ? 2026 h)
-    EndSynchronizedUpdate,     // Flush buffer (ESC [ ? 2026 l)
-    SynchronizedOutputGuard,   // RAII guard for sync output
+    with_synchronized_output, // Execute closure with sync output
+    BeginSynchronizedUpdate,  // Start buffering (ESC [ ? 2026 h)
+    EndSynchronizedUpdate,    // Flush buffer (ESC [ ? 2026 l)
+    SynchronizedOutputGuard,  // RAII guard for sync output
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -901,11 +901,11 @@ pub use sync_output::{
 /// - Auto-scroll (follow bottom) detection
 /// - Chunk-based visibility ensuring
 pub use viewport::{
-    CachedRenderable,   // Height-caching wrapper for Renderable
-    InsetRenderable,    // Padding/margin wrapper
-    Renderable,         // Trait for height-aware rendering
-    TextRenderable,     // Simple text implementation
-    ViewportView,       // Core viewport state and rendering
+    CachedRenderable, // Height-caching wrapper for Renderable
+    InsetRenderable,  // Padding/margin wrapper
+    Renderable,       // Trait for height-aware rendering
+    TextRenderable,   // Simple text implementation
+    ViewportView,     // Core viewport state and rendering
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -926,12 +926,12 @@ pub use inline_scroll::insert_history_lines;
 ///
 /// Includes fuzzy matching, aligned descriptions, and smart wrapping.
 pub use selection_list::{
-    fuzzy_filter,           // Filter items by fuzzy match
-    fuzzy_match,            // Perform fuzzy matching
-    fuzzy_score,            // Score a fuzzy match
-    SelectionList,          // Selection list widget
-    SelectionListConfig,    // Configuration for selection list
-    SelectionRow,           // A row in a selection list
+    fuzzy_filter,        // Filter items by fuzzy match
+    fuzzy_match,         // Perform fuzzy matching
+    fuzzy_score,         // Score a fuzzy match
+    SelectionList,       // Selection list widget
+    SelectionListConfig, // Configuration for selection list
+    SelectionRow,        // A row in a selection list
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -942,16 +942,16 @@ pub use selection_list::{
 ///
 /// Includes compact duration formatting and animated spinners.
 pub use elapsed::{
-    format_duration_compact,    // Format Duration compactly
-    format_elapsed_compact,     // Format seconds compactly
-    format_elapsed_precise,     // Format with ms precision
-    spinner,                    // Get current spinner frame
-    spinner_frame,              // Get spinner frame with custom interval
-    spinner_span,               // Get spinner as ratatui Span
-    PausableTimer,              // Timer with pause/resume
-    SPINNER_ASCII,              // ASCII spinner frames
-    SPINNER_DOTS,               // Braille dots spinner
-    SPINNER_FRAMES,             // Default spinner frames
+    format_duration_compact, // Format Duration compactly
+    format_elapsed_compact,  // Format seconds compactly
+    format_elapsed_precise,  // Format with ms precision
+    spinner,                 // Get current spinner frame
+    spinner_frame,           // Get spinner frame with custom interval
+    spinner_span,            // Get spinner as ratatui Span
+    PausableTimer,           // Timer with pause/resume
+    SPINNER_ASCII,           // ASCII spinner frames
+    SPINNER_DOTS,            // Braille dots spinner
+    SPINNER_FRAMES,          // Default spinner frames
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -974,12 +974,12 @@ pub use diff::{
 
 /// ANSI escape code handling for terminal output.
 pub use ansi_text::{
-    ansi_display_width,  // Width ignoring ANSI codes
-    expand_tabs,         // Replace tabs with spaces
-    expand_tabs_width,   // Replace tabs with custom width
-    parse_ansi,          // Parse ANSI to ratatui Text
-    parse_ansi_line,     // Parse single line with ANSI
-    strip_ansi,          // Remove ANSI codes from string
+    ansi_display_width, // Width ignoring ANSI codes
+    expand_tabs,        // Replace tabs with spaces
+    expand_tabs_width,  // Replace tabs with custom width
+    parse_ansi,         // Parse ANSI to ratatui Text
+    parse_ansi_line,    // Parse single line with ANSI
+    strip_ansi,         // Remove ANSI codes from string
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -988,14 +988,14 @@ pub use ansi_text::{
 
 /// Box and border drawing utilities.
 pub use borders::{
-    card_inner_width,       // Calculate usable inner width
-    horizontal_separator,   // Create horizontal separator line
-    padded_emoji,           // Emoji with hair space
-    separator_with_text,    // Separator with centered text
-    with_border,            // Wrap content in rounded border
-    with_border_style,      // Wrap with custom border style
-    with_border_width,      // Wrap with minimum width
-    BorderStyle,            // Border style configuration
+    card_inner_width,     // Calculate usable inner width
+    horizontal_separator, // Create horizontal separator line
+    padded_emoji,         // Emoji with hair space
+    separator_with_text,  // Separator with centered text
+    with_border,          // Wrap content in rounded border
+    with_border_style,    // Wrap with custom border style
+    with_border_width,    // Wrap with minimum width
+    BorderStyle,          // Border style configuration
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1004,9 +1004,9 @@ pub use borders::{
 
 /// Field formatting for aligned displays.
 pub use field_format::{
-    truncate_line_to_width,     // Truncate line to width
+    truncate_line_to_width,      // Truncate line to width
     truncate_line_with_ellipsis, // Truncate with ellipsis
-    FieldFormatter,             // Aligned field/value formatter
+    FieldFormatter,              // Aligned field/value formatter
 };
 // Note: is_blank_line, line_display_width, line_to_static already exported from render_utils
 

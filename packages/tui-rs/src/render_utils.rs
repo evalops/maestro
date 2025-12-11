@@ -136,8 +136,6 @@ pub fn truncate_lines_middle(
     max_lines: usize,
     omitted_hint: Option<usize>,
 ) -> Vec<Line<'static>> {
-    
-
     if max_lines == 0 {
         return Vec::new();
     }
@@ -218,18 +216,17 @@ mod tests {
 
     #[test]
     fn test_truncate_lines_middle_no_truncation() {
-        let lines: Vec<Line<'static>> = vec![
-            Line::from("one"),
-            Line::from("two"),
-            Line::from("three"),
-        ];
+        let lines: Vec<Line<'static>> =
+            vec![Line::from("one"), Line::from("two"), Line::from("three")];
         let result = truncate_lines_middle(&lines, 5, None);
         assert_eq!(result.len(), 3);
     }
 
     #[test]
     fn test_truncate_lines_middle_with_truncation() {
-        let lines: Vec<Line<'static>> = (1..=10).map(|i| Line::from(format!("line {}", i))).collect();
+        let lines: Vec<Line<'static>> = (1..=10)
+            .map(|i| Line::from(format!("line {}", i)))
+            .collect();
         let result = truncate_lines_middle(&lines, 5, None);
         assert_eq!(result.len(), 5);
         // Should have head lines, ellipsis, tail lines
@@ -239,7 +236,10 @@ mod tests {
     #[test]
     fn test_line_to_static() {
         let line = Line::from(vec![
-            Span::styled("Hello", ratatui::style::Style::default().fg(ratatui::style::Color::Red)),
+            Span::styled(
+                "Hello",
+                ratatui::style::Style::default().fg(ratatui::style::Color::Red),
+            ),
             Span::raw(" world"),
         ]);
         let static_line = line_to_static(&line);

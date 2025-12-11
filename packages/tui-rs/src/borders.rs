@@ -273,21 +273,26 @@ mod tests {
 
     #[test]
     fn border_wraps_content() {
-        let lines = vec![
-            Line::from("Hello"),
-            Line::from("World"),
-        ];
+        let lines = vec![Line::from("Hello"), Line::from("World")];
         let bordered = with_border(lines);
 
         // Should have 4 lines: top + 2 content + bottom
         assert_eq!(bordered.len(), 4);
 
         // First line should start with ╭
-        let first: String = bordered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let first: String = bordered[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(first.starts_with('╭'));
 
         // Last line should start with ╰
-        let last: String = bordered[3].spans.iter().map(|s| s.content.as_ref()).collect();
+        let last: String = bordered[3]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(last.starts_with('╰'));
     }
 
@@ -297,7 +302,11 @@ mod tests {
         let bordered = with_border_width(lines, 20);
 
         // The border should be at least 20 + 4 (for borders) wide
-        let top: String = bordered[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let top: String = bordered[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(top.len() >= 24);
     }
 

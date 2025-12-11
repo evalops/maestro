@@ -125,13 +125,11 @@ pub fn best_color(target: (u8, u8, u8)) -> Color {
 
     // Check for 256 color support
     if has_256_color_support() {
-        if let Some((idx, _)) = xterm_fixed_colors()
-            .min_by(|(_, a), (_, b)| {
-                perceptual_distance(*a, target)
-                    .partial_cmp(&perceptual_distance(*b, target))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-        {
+        if let Some((idx, _)) = xterm_fixed_colors().min_by(|(_, a), (_, b)| {
+            perceptual_distance(*a, target)
+                .partial_cmp(&perceptual_distance(*b, target))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
             return Color::Indexed(idx as u8);
         }
     }

@@ -433,14 +433,19 @@ pub fn render_diff_wrapped_with_styles(
             if !stats_spans.is_empty() {
                 stats_spans.push(Span::raw(" "));
             }
-            stats_spans.push(Span::styled(format!("-{}", diff.stats.removed), styles.removed));
+            stats_spans.push(Span::styled(
+                format!("-{}", diff.stats.removed),
+                styles.removed,
+            ));
         }
         output.push(Line::from(stats_spans));
         output.push(Line::from(""));
     }
 
     // Calculate line number width
-    let max_line = diff.lines.iter()
+    let max_line = diff
+        .lines
+        .iter()
         .filter_map(|l| l.old_line_num.or(l.new_line_num))
         .max()
         .unwrap_or(1);
@@ -449,23 +454,23 @@ pub fn render_diff_wrapped_with_styles(
     // Diff lines with wrapping
     for line in &diff.lines {
         if line.kind == DiffLineKind::HunkHeader {
-            output.push(Line::from(Span::styled(line.content.clone(), styles.hunk_header)));
+            output.push(Line::from(Span::styled(
+                line.content.clone(),
+                styles.hunk_header,
+            )));
             continue;
         }
         if line.kind == DiffLineKind::Header {
-            output.push(Line::from(Span::styled(line.content.clone(), styles.header)));
+            output.push(Line::from(Span::styled(
+                line.content.clone(),
+                styles.header,
+            )));
             continue;
         }
 
         let line_num = line.new_line_num.or(line.old_line_num).unwrap_or(0);
-        let wrapped = render_wrapped_diff_line(
-            line_num,
-            line.kind,
-            &line.content,
-            width,
-            ln_width,
-            styles,
-        );
+        let wrapped =
+            render_wrapped_diff_line(line_num, line.kind, &line.content, width, ln_width, styles);
         output.extend(wrapped);
     }
 
