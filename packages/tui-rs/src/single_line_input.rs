@@ -458,7 +458,7 @@ mod tests {
         let (visible, cursor_pos, _) = input.calculate_viewport(20);
         assert!(visible.len() <= 20);
         // Cursor should be roughly centered
-        assert!(cursor_pos >= 8 && cursor_pos <= 12);
+        assert!((8..=12).contains(&cursor_pos));
     }
 
     #[test]

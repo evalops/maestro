@@ -486,7 +486,7 @@ mod tests {
         let verdict = fw.check_bash("rm -rf /");
         assert!(verdict.is_blocked());
         let reason = verdict.reason().expect("Should have reason");
-        assert!(reason.len() > 0, "Reason should not be empty");
+        assert!(!reason.is_empty(), "Reason should not be empty");
     }
 
     #[test]

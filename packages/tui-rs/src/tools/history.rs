@@ -562,8 +562,9 @@ mod tests {
         let mut history = ToolHistory::new(3);
 
         for i in 0..5 {
-            history.start(&format!("{}", i), "test", json!({}));
-            history.complete(&format!("{}", i), "ok".to_string());
+            let id = format!("{}", i);
+            history.start(&id, "test", json!({}));
+            history.complete(&id, "ok".to_string());
         }
 
         assert_eq!(history.len(), 3);

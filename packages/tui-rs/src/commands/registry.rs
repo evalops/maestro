@@ -941,7 +941,7 @@ pub fn build_command_registry() -> CommandRegistry {
             "Export current session to file",
             CommandCategory::Session,
             Box::new(|ctx| {
-                let parts: Vec<&str> = ctx.raw_args.trim().split_whitespace().collect();
+                let parts: Vec<&str> = ctx.raw_args.split_whitespace().collect();
                 let format = parts.first().map(|s| s.to_lowercase());
                 let path = parts.get(1).map(|s| s.to_string());
 
@@ -1010,7 +1010,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 let args = ctx.raw_args.trim().to_lowercase();
                 let parts: Vec<&str> = args.split_whitespace().collect();
 
-                let action = match parts.first().map(|s| *s) {
+                let action = match parts.first().copied() {
                     None | Some("") => ToolHistoryAction::Recent(10),
                     Some("stats") | Some("statistics") => ToolHistoryAction::Stats,
                     Some("clear") => ToolHistoryAction::Clear,

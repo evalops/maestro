@@ -81,8 +81,7 @@ impl RateLimitWindow {
 
     /// Format reset time for display
     pub fn format_reset(&self) -> Option<String> {
-        self.resets_in_secs
-            .map(|secs| format_duration_compact(secs))
+        self.resets_in_secs.map(format_duration_compact)
     }
 }
 

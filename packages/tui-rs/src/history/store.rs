@@ -309,6 +309,7 @@ impl PromptHistory {
     }
 
     /// Get the next entry (down arrow)
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<&str> {
         match self.position {
             None => None,

@@ -428,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn test_logos_not_empty() {
         assert!(!logos::COMPOSER.is_empty());
         assert!(!logos::COMPOSER_SMALL.is_empty());

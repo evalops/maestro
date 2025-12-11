@@ -191,7 +191,7 @@ mod tests {
         assert!(!out1.is_empty(), "first line should commit");
 
         c.push_delta("Line 2\n");
-        let out2 = c.commit_complete_lines();
+        let _out2 = c.commit_complete_lines();
         // Second line may be empty if already committed, or have new content
         // The key invariant is no duplication
 
