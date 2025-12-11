@@ -99,10 +99,29 @@ export function parsePlanContent(content: string): ParsedPlan {
 		}
 	}
 
-	// Convert raw tasks to SwarmTasks
-	const tasks = rawTasks
-		.filter((t) => !t.completed) // Only include incomplete tasks
-		.map((raw, index) => convertToSwarmTask(raw, index, rawTasks));
+	// Convert raw tasks to SwarmTasks (incomplete only)
+	const incompleteTasks = rawTasks.filter((t) => !t.completed);
+	const tasks = incompleteTasks.map((raw, index) =>
+		convertToSwarmTask(raw, index, rawTasks),
+	);
+
+	// Map base task IDs (task-1, task-2, ...) to full IDs with UUID suffix.
+	const baseIdToFullId = new Map<string, string>();
+	for (const [index, task] of tasks.entries()) {
+		baseIdToFullId.set(`task-${index + 1}`, task.id);
+	}
+
+	// Resolve dependencies to full IDs so executor checks work.
+	for (const [index, raw] of incompleteTasks.entries()) {
+		const baseDeps = extractDependencies(raw.text, index, rawTasks);
+		if (baseDeps.length === 0) continue;
+		const fullDeps = baseDeps
+			.map((dep) => baseIdToFullId.get(dep))
+			.filter((dep): dep is string => Boolean(dep));
+		if (fullDeps.length > 0) {
+			tasks[index].dependsOn = fullDeps;
+		}
+	}
 
 	logger.debug("Parsed plan", {
 		title,
@@ -179,12 +198,6 @@ function convertToSwarmTask(
 	const files = extractFileReferences(raw.text);
 	if (files.length > 0) {
 		task.files = files;
-	}
-
-	// Check for dependency markers
-	const deps = extractDependencies(raw.text, index, allTasks);
-	if (deps.length > 0) {
-		task.dependsOn = deps;
 	}
 
 	return task;
