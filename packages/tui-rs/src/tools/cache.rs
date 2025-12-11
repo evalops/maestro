@@ -321,4 +321,309 @@ mod tests {
         assert_eq!(stats.misses, 1);
         assert!((stats.hit_rate - 0.666).abs() < 0.01);
     }
+
+    #[test]
+    fn test_cache_config_default() {
+        let config = CacheConfig::default();
+        assert_eq!(config.max_entries, 100);
+        assert_eq!(config.ttl, Duration::from_secs(60));
+        assert!(config.enabled);
+        assert!(config.excluded_tools.contains(&"bash".to_string()));
+        assert!(config.excluded_tools.contains(&"write".to_string()));
+        assert!(config.excluded_tools.contains(&"edit".to_string()));
+    }
+
+    #[test]
+    fn test_cache_key_hash_consistency() {
+        let args = serde_json::json!({"path": "/tmp/test.txt", "limit": 100});
+        let key1 = CacheKey::new("read", &args);
+        let key2 = CacheKey::new("read", &args);
+
+        assert_eq!(key1.tool_name, key2.tool_name);
+        assert_eq!(key1.args_hash, key2.args_hash);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_cache_key_different_args() {
+        let key1 = CacheKey::new("read", &serde_json::json!({"path": "/a"}));
+        let key2 = CacheKey::new("read", &serde_json::json!({"path": "/b"}));
+
+        assert_eq!(key1.tool_name, key2.tool_name);
+        assert_ne!(key1.args_hash, key2.args_hash);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_cache_key_different_tools() {
+        let args = serde_json::json!({"path": "/tmp/test.txt"});
+        let key1 = CacheKey::new("read", &args);
+        let key2 = CacheKey::new("glob", &args);
+
+        assert_ne!(key1.tool_name, key2.tool_name);
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_cached_result_is_error() {
+        let success = CachedResult::new("output", false);
+        let error = CachedResult::new("error message", true);
+
+        assert!(!success.is_error);
+        assert!(error.is_error);
+    }
+
+    #[test]
+    fn test_cached_result_created_at() {
+        let result = CachedResult::new("output", false);
+        assert!(result.created_at.is_some());
+    }
+
+    #[test]
+    fn test_cached_result_expiration() {
+        let result = CachedResult::new("output", false);
+
+        // Should not be expired with long TTL
+        assert!(!result.is_expired(Duration::from_secs(3600)));
+
+        // Should be expired with zero TTL
+        assert!(result.is_expired(Duration::from_secs(0)));
+    }
+
+    #[test]
+    fn test_cached_result_without_created_at() {
+        let result = CachedResult {
+            output: "test".to_string(),
+            is_error: false,
+            created_at: None,
+        };
+
+        // Without created_at, should always be considered expired
+        assert!(result.is_expired(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn test_cache_disabled() {
+        let config = CacheConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/tmp/test.txt"}));
+
+        cache.put(key.clone(), CachedResult::new("contents", false));
+
+        // Put should be ignored when disabled
+        assert_eq!(cache.stats().entries, 0);
+
+        // Get should return None and count as miss
+        assert!(cache.get(&key).is_none());
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn test_cache_is_cacheable_disabled() {
+        let config = CacheConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let cache = ToolResultCache::new(config);
+
+        // Even "read" should not be cacheable when cache is disabled
+        assert!(!cache.is_cacheable("read"));
+    }
+
+    #[test]
+    fn test_cache_is_cacheable_custom_exclusions() {
+        let config = CacheConfig {
+            excluded_tools: vec!["custom_tool".to_string()],
+            ..Default::default()
+        };
+        let cache = ToolResultCache::new(config);
+
+        assert!(cache.is_cacheable("read"));
+        assert!(cache.is_cacheable("bash")); // No longer excluded
+        assert!(!cache.is_cacheable("custom_tool"));
+    }
+
+    #[test]
+    fn test_cache_lru_behavior() {
+        let config = CacheConfig {
+            max_entries: 3,
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        let key1 = CacheKey::new("read", &serde_json::json!({"path": "1"}));
+        let key2 = CacheKey::new("read", &serde_json::json!({"path": "2"}));
+        let key3 = CacheKey::new("read", &serde_json::json!({"path": "3"}));
+        let key4 = CacheKey::new("read", &serde_json::json!({"path": "4"}));
+
+        cache.put(key1.clone(), CachedResult::new("1", false));
+        cache.put(key2.clone(), CachedResult::new("2", false));
+        cache.put(key3.clone(), CachedResult::new("3", false));
+
+        // Access key1 to make it recently used
+        cache.get(&key1);
+
+        // Add key4, should evict key2 (least recently used)
+        cache.put(key4.clone(), CachedResult::new("4", false));
+
+        assert!(cache.get(&key1).is_some()); // Recently accessed
+        assert!(cache.get(&key2).is_none()); // Evicted
+        assert!(cache.get(&key3).is_some());
+        assert!(cache.get(&key4).is_some());
+    }
+
+    #[test]
+    fn test_cache_stats() {
+        let config = CacheConfig {
+            max_entries: 50,
+            ..Default::default()
+        };
+        let cache = ToolResultCache::new(config);
+        let stats = cache.stats();
+
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.max_entries, 50);
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.hit_rate, 0.0);
+    }
+
+    #[test]
+    fn test_cache_stats_hit_rate_no_requests() {
+        let cache = ToolResultCache::default();
+        let stats = cache.stats();
+        assert_eq!(stats.hit_rate, 0.0);
+    }
+
+    #[test]
+    fn test_cache_config_accessor() {
+        let config = CacheConfig {
+            max_entries: 200,
+            ttl: Duration::from_secs(120),
+            enabled: true,
+            excluded_tools: vec!["test".to_string()],
+        };
+        let cache = ToolResultCache::new(config);
+
+        assert_eq!(cache.config().max_entries, 200);
+        assert_eq!(cache.config().ttl, Duration::from_secs(120));
+        assert!(cache.config().enabled);
+    }
+
+    #[test]
+    fn test_cache_set_config() {
+        let mut cache = ToolResultCache::default();
+        assert_eq!(cache.config().max_entries, 100);
+
+        let new_config = CacheConfig {
+            max_entries: 50,
+            ..Default::default()
+        };
+        cache.set_config(new_config);
+
+        assert_eq!(cache.config().max_entries, 50);
+    }
+
+    #[test]
+    fn test_cache_evict_expired() {
+        let config = CacheConfig {
+            ttl: Duration::from_millis(1), // Very short TTL
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/tmp/test.txt"}));
+        cache.put(key.clone(), CachedResult::new("contents", false));
+
+        assert_eq!(cache.stats().entries, 1);
+
+        // Wait for expiration
+        std::thread::sleep(Duration::from_millis(10));
+
+        cache.evict_expired();
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_cache_expired_entry_on_get() {
+        let config = CacheConfig {
+            ttl: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/tmp/test.txt"}));
+        cache.put(key.clone(), CachedResult::new("contents", false));
+
+        // Wait for expiration
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Get should return None and remove expired entry
+        assert!(cache.get(&key).is_none());
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_cache_multiple_puts_same_key() {
+        let mut cache = ToolResultCache::default();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/tmp/test.txt"}));
+
+        cache.put(key.clone(), CachedResult::new("version1", false));
+        cache.put(key.clone(), CachedResult::new("version2", false));
+
+        // Should have latest value
+        assert_eq!(cache.get(&key).unwrap().output, "version2");
+        // Should still only be 1 entry
+        assert_eq!(cache.stats().entries, 1);
+    }
+
+    #[test]
+    fn test_cache_clear_preserves_stats() {
+        let mut cache = ToolResultCache::default();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/tmp/test.txt"}));
+        cache.put(key.clone(), CachedResult::new("contents", false));
+        cache.get(&key); // 1 hit
+
+        cache.clear();
+
+        // Stats should be preserved after clear
+        assert_eq!(cache.stats().entries, 0);
+        assert_eq!(cache.stats().hits, 1);
+    }
+
+    #[test]
+    fn test_cached_result_serialization() {
+        let result = CachedResult::new("test output", true);
+
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: CachedResult = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.output, "test output");
+        assert!(deserialized.is_error);
+        // created_at is skipped during serialization
+        assert!(deserialized.created_at.is_none());
+    }
+
+    #[test]
+    fn test_cache_stats_serialization() {
+        let stats = CacheStats {
+            entries: 10,
+            max_entries: 100,
+            hits: 50,
+            misses: 25,
+            hit_rate: 0.666,
+        };
+
+        let json = serde_json::to_string(&stats).unwrap();
+        let deserialized: CacheStats = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.entries, stats.entries);
+        assert_eq!(deserialized.max_entries, stats.max_entries);
+        assert_eq!(deserialized.hits, stats.hits);
+        assert_eq!(deserialized.misses, stats.misses);
+        assert!((deserialized.hit_rate - stats.hit_rate).abs() < 0.001);
+    }
 }

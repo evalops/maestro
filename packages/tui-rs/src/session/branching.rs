@@ -242,6 +242,37 @@ mod tests {
         assert_eq!(branch.fork_message_id, "msg-123");
         assert_eq!(branch.fork_index, 5);
         assert!(branch.description.is_some());
+        assert_eq!(branch.description.unwrap(), "Testing alternative approach");
+    }
+
+    #[test]
+    fn test_branch_point_with_tags() {
+        let branch = BranchPoint::new("msg-1", 0)
+            .with_description("Experimental")
+            .with_tags(vec!["experiment".to_string(), "v2".to_string()]);
+
+        assert_eq!(branch.tags.len(), 2);
+        assert!(branch.tags.contains(&"experiment".to_string()));
+        assert!(branch.tags.contains(&"v2".to_string()));
+    }
+
+    #[test]
+    fn test_branch_point_created_at() {
+        let branch = BranchPoint::new("msg-1", 0);
+        // Timestamp should be recent (within last second)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(branch.created_at <= now);
+        assert!(branch.created_at > now - 1000); // within last second
+    }
+
+    #[test]
+    fn test_branch_point_unique_ids() {
+        let branch1 = BranchPoint::new("msg-1", 0);
+        let branch2 = BranchPoint::new("msg-1", 0);
+        assert_ne!(branch1.id, branch2.id);
     }
 
     #[test]
@@ -256,6 +287,71 @@ mod tests {
         assert!(metadata.is_branched());
         assert!(metadata.get_branch(&id1).is_some());
         assert_eq!(metadata.list_branches().len(), 1);
+    }
+
+    #[test]
+    fn test_branch_metadata_default() {
+        let metadata = BranchMetadata::default();
+        assert!(metadata.branches.is_empty());
+        assert!(metadata.active_branch.is_none());
+        assert!(metadata.parent_session.is_none());
+        assert!(metadata.parent_branch.is_none());
+    }
+
+    #[test]
+    fn test_branch_metadata_multiple_branches() {
+        let mut metadata = BranchMetadata::new();
+
+        let id1 = metadata.add_branch(BranchPoint::new("msg-1", 1));
+        let id2 = metadata.add_branch(BranchPoint::new("msg-2", 2));
+        let id3 = metadata.add_branch(BranchPoint::new("msg-3", 3));
+
+        assert_eq!(metadata.list_branches().len(), 3);
+        assert!(metadata.get_branch(&id1).is_some());
+        assert!(metadata.get_branch(&id2).is_some());
+        assert!(metadata.get_branch(&id3).is_some());
+        assert!(metadata.get_branch("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_branch_metadata_active_branch() {
+        let mut metadata = BranchMetadata::new();
+
+        let id1 = metadata.add_branch(BranchPoint::new("msg-1", 1));
+
+        assert!(metadata.get_active_branch().is_none());
+
+        metadata.set_active_branch(Some(id1.clone()));
+        assert!(metadata.get_active_branch().is_some());
+        assert_eq!(metadata.get_active_branch().unwrap().id, id1);
+
+        metadata.set_active_branch(None);
+        assert!(metadata.get_active_branch().is_none());
+    }
+
+    #[test]
+    fn test_branch_metadata_is_branched_with_parent() {
+        let mut metadata = BranchMetadata::new();
+        assert!(!metadata.is_branched());
+
+        // Adding a parent session also makes it "branched"
+        metadata.parent_session = Some("parent-session-id".to_string());
+        assert!(metadata.is_branched());
+    }
+
+    #[test]
+    fn test_branch_metadata_lineage() {
+        let mut metadata = BranchMetadata::new();
+        let id = metadata.add_branch(BranchPoint::new("msg-1", 1));
+
+        // No active branch = empty lineage
+        assert!(metadata.lineage().is_empty());
+
+        // With active branch
+        metadata.set_active_branch(Some(id.clone()));
+        let lineage = metadata.lineage();
+        assert_eq!(lineage.len(), 1);
+        assert_eq!(lineage[0].id, id);
     }
 
     #[test]
@@ -289,5 +385,155 @@ mod tests {
 
         // Try to switch to non-existent branch
         assert!(!manager.switch_to(Some("nonexistent".to_string())));
+    }
+
+    #[test]
+    fn test_branch_manager_from_metadata() {
+        let mut metadata = BranchMetadata::new();
+        let id = metadata.add_branch(BranchPoint::new("msg-5", 5));
+        metadata.set_active_branch(Some(id.clone()));
+
+        let manager = BranchManager::from_metadata(metadata);
+        assert_eq!(manager.metadata().list_branches().len(), 1);
+        assert!(manager.metadata().get_active_branch().is_some());
+    }
+
+    #[test]
+    fn test_branch_manager_branch_at_nonexistent_message() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-0", 0);
+
+        // Try to branch at unregistered message
+        assert!(manager.branch_at("msg-unknown", None).is_none());
+    }
+
+    #[test]
+    fn test_branch_manager_multiple_branches_at_same_message() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-0", 0);
+        manager.register_message("msg-1", 1);
+
+        let id1 = manager.branch_at("msg-1", Some("Branch A")).unwrap();
+        let id2 = manager.branch_at("msg-1", Some("Branch B")).unwrap();
+
+        assert_ne!(id1, id2);
+        assert_eq!(manager.list_branches().len(), 2);
+
+        // Both branches should fork at index 1
+        let branches = manager.list_branches();
+        assert!(branches.iter().all(|b| b.fork_index == 1));
+    }
+
+    #[test]
+    fn test_branch_manager_list_branches_is_active_flag() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-0", 0);
+        manager.register_message("msg-1", 1);
+
+        let id1 = manager.branch_at("msg-0", Some("Branch 1")).unwrap();
+        let _id2 = manager.branch_at("msg-1", Some("Branch 2")).unwrap();
+
+        // No active branch
+        let branches = manager.list_branches();
+        assert!(branches.iter().all(|b| !b.is_active));
+
+        // Activate one branch
+        manager.switch_to(Some(id1.clone()));
+        let branches = manager.list_branches();
+        let active_count = branches.iter().filter(|b| b.is_active).count();
+        assert_eq!(active_count, 1);
+        assert!(branches.iter().find(|b| b.id == id1).unwrap().is_active);
+    }
+
+    #[test]
+    fn test_branch_summary_fields() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-5", 5);
+
+        let id = manager
+            .branch_at("msg-5", Some("Test description"))
+            .unwrap();
+        manager.switch_to(Some(id.clone()));
+
+        let summaries = manager.list_branches();
+        assert_eq!(summaries.len(), 1);
+
+        let summary = &summaries[0];
+        assert_eq!(summary.id, id);
+        assert_eq!(summary.description, Some("Test description".to_string()));
+        assert_eq!(summary.fork_index, 5);
+        assert!(summary.is_active);
+        assert!(summary.created_at > 0);
+    }
+
+    #[test]
+    fn test_branch_manager_overwrite_message_index() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-0", 0);
+        manager.register_message("msg-0", 5); // Overwrite
+
+        let id = manager.branch_at("msg-0", None).unwrap();
+        manager.switch_to(Some(id));
+
+        // Should use the latest registered index
+        assert_eq!(manager.active_fork_index(), Some(5));
+    }
+
+    #[test]
+    fn test_branch_manager_metadata_accessor() {
+        let manager = BranchManager::new();
+        let metadata = manager.metadata();
+        assert!(metadata.branches.is_empty());
+    }
+
+    #[test]
+    fn test_branch_serialization() {
+        let branch = BranchPoint::new("msg-1", 1)
+            .with_description("Test")
+            .with_tags(vec!["tag1".to_string()]);
+
+        let json = serde_json::to_string(&branch).unwrap();
+        let deserialized: BranchPoint = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, branch.id);
+        assert_eq!(deserialized.fork_message_id, branch.fork_message_id);
+        assert_eq!(deserialized.fork_index, branch.fork_index);
+        assert_eq!(deserialized.description, branch.description);
+        assert_eq!(deserialized.tags, branch.tags);
+    }
+
+    #[test]
+    fn test_branch_metadata_serialization() {
+        let mut metadata = BranchMetadata::new();
+        let id = metadata.add_branch(BranchPoint::new("msg-1", 1));
+        metadata.set_active_branch(Some(id.clone()));
+        metadata.parent_session = Some("parent-123".to_string());
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: BranchMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.branches.len(), 1);
+        assert_eq!(deserialized.active_branch, Some(id));
+        assert_eq!(deserialized.parent_session, Some("parent-123".to_string()));
+    }
+
+    #[test]
+    fn test_branch_summary_serialization() {
+        let summary = BranchSummary {
+            id: "branch-123".to_string(),
+            description: Some("Test".to_string()),
+            fork_index: 5,
+            created_at: 1234567890,
+            is_active: true,
+        };
+
+        let json = serde_json::to_string(&summary).unwrap();
+        let deserialized: BranchSummary = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, summary.id);
+        assert_eq!(deserialized.description, summary.description);
+        assert_eq!(deserialized.fork_index, summary.fork_index);
+        assert_eq!(deserialized.created_at, summary.created_at);
+        assert_eq!(deserialized.is_active, summary.is_active);
     }
 }
