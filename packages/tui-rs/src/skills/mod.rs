@@ -428,4 +428,327 @@ mod tests {
             _ => panic!("Expected Deactivated event"),
         }
     }
+
+    #[test]
+    fn test_registry_activate_twice() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("test", "Test"));
+
+        registry.activate("test").unwrap();
+        assert!(registry.get("test").unwrap().is_active());
+
+        // Activating again should still work
+        registry.activate("test").unwrap();
+        assert!(registry.get("test").unwrap().is_active());
+    }
+
+    #[test]
+    fn test_registry_deactivate_inactive() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("test", "Test"));
+
+        // Skill starts inactive
+        assert!(!registry.get("test").unwrap().is_active());
+
+        // Deactivating inactive skill should work
+        registry.deactivate("test").unwrap();
+        assert!(!registry.get("test").unwrap().is_active());
+    }
+
+    #[test]
+    fn test_registry_many_skills() {
+        let mut registry = SkillRegistry::new();
+
+        for i in 0..100 {
+            registry.register(SkillDefinition::new(
+                format!("skill-{}", i),
+                format!("Skill {}", i),
+            ));
+        }
+
+        assert_eq!(registry.list().len(), 100);
+        assert!(registry.get("skill-0").is_some());
+        assert!(registry.get("skill-99").is_some());
+        assert!(registry.get("skill-100").is_none());
+    }
+
+    #[test]
+    fn test_registry_activate_many_skills() {
+        let mut registry = SkillRegistry::new();
+
+        for i in 0..10 {
+            registry.register(SkillDefinition::new(
+                format!("skill-{}", i),
+                format!("Skill {}", i),
+            ));
+        }
+
+        for i in 0..10 {
+            registry.activate(&format!("skill-{}", i)).unwrap();
+        }
+
+        assert_eq!(registry.active_skills().len(), 10);
+    }
+
+    #[test]
+    fn test_registry_system_prompt_additions_join() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("a", "A").with_system_prompt("First prompt"));
+        registry.register(SkillDefinition::new("b", "B").with_system_prompt("Second prompt"));
+        registry.register(SkillDefinition::new("c", "C").with_system_prompt("Third prompt"));
+
+        registry.activate("a").unwrap();
+        registry.activate("b").unwrap();
+        registry.activate("c").unwrap();
+
+        let additions = registry.active_system_prompt_additions();
+        assert!(additions.contains("First prompt"));
+        assert!(additions.contains("Second prompt"));
+        assert!(additions.contains("Third prompt"));
+        // Check they are joined with double newlines
+        assert!(additions.contains("\n\n"));
+    }
+
+    #[test]
+    fn test_registry_skill_tools_combined() {
+        let mut registry = SkillRegistry::new();
+        registry.register(
+            SkillDefinition::new("a", "A").with_tools(vec!["read".into(), "write".into()]),
+        );
+        registry.register(
+            SkillDefinition::new("b", "B").with_tools(vec!["bash".into(), "edit".into()]),
+        );
+
+        registry.activate("a").unwrap();
+        registry.activate("b").unwrap();
+
+        let tools = registry.active_skill_tools();
+        assert_eq!(tools.len(), 4);
+        assert!(tools.contains(&"read".to_string()));
+        assert!(tools.contains(&"write".to_string()));
+        assert!(tools.contains(&"bash".to_string()));
+        assert!(tools.contains(&"edit".to_string()));
+    }
+
+    #[test]
+    fn test_registry_skill_tools_duplicate_tools() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("a", "A").with_tools(vec!["read".into()]));
+        registry.register(
+            SkillDefinition::new("b", "B").with_tools(vec!["read".into()]), // Same tool
+        );
+
+        registry.activate("a").unwrap();
+        registry.activate("b").unwrap();
+
+        let tools = registry.active_skill_tools();
+        // Duplicates are included (no deduplication)
+        assert_eq!(tools.len(), 2);
+    }
+
+    #[test]
+    fn test_registry_match_triggers_partial_match() {
+        let mut registry = SkillRegistry::new();
+        registry.register(
+            SkillDefinition::new("frontend", "Frontend").with_triggers(vec!["design".into()]),
+        );
+
+        // "designing" contains "design"
+        let matches = registry.match_triggers("I'm designing a new interface");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_match_triggers_empty_input() {
+        let mut registry = SkillRegistry::new();
+        registry.register(
+            SkillDefinition::new("frontend", "Frontend").with_triggers(vec!["design".into()]),
+        );
+
+        let matches = registry.match_triggers("");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_registry_match_triggers_empty_trigger_pattern() {
+        let mut registry = SkillRegistry::new();
+        registry.register(
+            SkillDefinition::new("catch-all", "Catch All").with_triggers(vec!["".into()]), // Empty trigger matches everything
+        );
+
+        let matches = registry.match_triggers("Any input");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_match_triggers_whitespace() {
+        let mut registry = SkillRegistry::new();
+        registry.register(
+            SkillDefinition::new("frontend", "Frontend").with_triggers(vec!["design ui".into()]),
+        );
+
+        let matches = registry.match_triggers("Help me design ui components");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_events_count_multiple_operations() {
+        let mut registry = SkillRegistry::new();
+
+        registry.register(SkillDefinition::new("skill1", "Skill 1"));
+        registry.register(SkillDefinition::new("skill2", "Skill 2"));
+        registry.activate("skill1").unwrap();
+        registry.activate("skill2").unwrap();
+        registry.deactivate("skill1").unwrap();
+        registry.activate("skill1").unwrap();
+
+        // 2 registered + 3 activated + 1 deactivated = 6
+        assert_eq!(registry.events().len(), 6);
+    }
+
+    #[test]
+    fn test_registry_get_mut_modify_skill() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("test", "Test"));
+
+        {
+            let skill = registry.get_mut("test").unwrap();
+            skill.last_error = Some("Modified error".to_string());
+        }
+
+        assert_eq!(
+            registry.get("test").unwrap().last_error,
+            Some("Modified error".to_string())
+        );
+    }
+
+    #[test]
+    fn test_registry_list_returns_all() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("a", "A"));
+        registry.register(SkillDefinition::new("b", "B"));
+        registry.register(SkillDefinition::new("c", "C"));
+
+        registry.activate("a").unwrap();
+        // b and c remain inactive
+
+        let all = registry.list();
+        let active = registry.active_skills();
+
+        assert_eq!(all.len(), 3);
+        assert_eq!(active.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_debug_trait() {
+        let registry = SkillRegistry::new();
+        let debug_str = format!("{:?}", registry);
+        assert!(debug_str.contains("SkillRegistry"));
+    }
+
+    #[test]
+    fn test_registry_skill_with_no_triggers() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("no-triggers", "No Triggers"));
+
+        let matches = registry.match_triggers("any input");
+        assert!(matches.is_empty()); // No triggers means no matches
+    }
+
+    #[test]
+    fn test_registry_skill_tools_empty() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("no-tools", "No Tools"));
+        registry.activate("no-tools").unwrap();
+
+        let tools = registry.active_skill_tools();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_registry_active_system_prompt_no_prompts() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("no-prompt", "No Prompt"));
+        registry.activate("no-prompt").unwrap();
+
+        let additions = registry.active_system_prompt_additions();
+        assert!(additions.is_empty());
+    }
+
+    #[test]
+    fn test_registry_deactivate_then_activate_events() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("test", "Test"));
+
+        registry.activate("test").unwrap();
+        registry.deactivate("test").unwrap();
+        registry.activate("test").unwrap();
+
+        let events = registry.events();
+        // Registered, Activated, Deactivated, Activated
+        assert_eq!(events.len(), 4);
+    }
+
+    #[test]
+    fn test_registry_overwrite_skill_preserves_active_state() {
+        let mut registry = SkillRegistry::new();
+        registry.register(SkillDefinition::new("test", "Test 1"));
+        registry.activate("test").unwrap();
+
+        assert!(registry.get("test").unwrap().is_active());
+
+        // Re-register with same ID creates new skill (not active)
+        registry.register(SkillDefinition::new("test", "Test 2"));
+
+        // New skill should NOT be active (fresh registration)
+        assert!(!registry.get("test").unwrap().is_active());
+    }
+
+    #[test]
+    fn test_registry_match_triggers_unicode() {
+        let mut registry = SkillRegistry::new();
+        registry.register(
+            SkillDefinition::new("japanese", "Japanese").with_triggers(vec!["日本語".into()]),
+        );
+
+        let matches = registry.match_triggers("Help with 日本語 translation");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_match_triggers_special_chars() {
+        let mut registry = SkillRegistry::new();
+        registry.register(
+            SkillDefinition::new("regex-ish", "Regex-ish")
+                .with_triggers(vec!["$100".into(), "50%".into()]),
+        );
+
+        let matches = registry.match_triggers("It costs $100");
+        assert_eq!(matches.len(), 1);
+
+        let matches = registry.match_triggers("Get 50% off");
+        assert_eq!(matches.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_activate_error_message() {
+        let mut registry = SkillRegistry::new();
+        let result = registry.activate("nonexistent");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("nonexistent"));
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn test_registry_deactivate_error_message() {
+        let mut registry = SkillRegistry::new();
+        let result = registry.deactivate("nonexistent");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("nonexistent"));
+        assert!(err.contains("not found"));
+    }
 }

@@ -847,4 +847,281 @@ mod tests {
         let candidates = response.candidates.unwrap();
         assert_eq!(candidates[0].finish_reason, Some("TOOL_USE".to_string()));
     }
+
+    #[test]
+    fn test_vertex_response_empty_candidates() {
+        let json_str = r#"{
+            "candidates": [],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 0
+            }
+        }"#;
+
+        let response: VertexResponse = serde_json::from_str(json_str).unwrap();
+        assert!(response.candidates.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_vertex_response_no_usage_metadata() {
+        let json_str = r#"{
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "Hello"}]
+                }
+            }]
+        }"#;
+
+        let response: VertexResponse = serde_json::from_str(json_str).unwrap();
+        assert!(response.usage_metadata.is_none());
+    }
+
+    #[test]
+    fn test_vertex_response_multiple_candidates() {
+        let json_str = r#"{
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "Response 1"}]
+                    },
+                    "finishReason": "STOP"
+                },
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "Response 2"}]
+                    },
+                    "finishReason": "STOP"
+                }
+            ]
+        }"#;
+
+        let response: VertexResponse = serde_json::from_str(json_str).unwrap();
+        let candidates = response.candidates.unwrap();
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn test_message_to_content_empty_blocks() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert!(content.parts.is_empty());
+    }
+
+    #[test]
+    fn test_message_to_content_mixed_blocks() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let msg = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "Here's my response".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "read".to_string(),
+                    input: json!({"path": "/test"}),
+                },
+                ContentBlock::Thinking {
+                    thinking: "Let me think...".to_string(),
+                },
+            ]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert_eq!(content.parts.len(), 3);
+    }
+
+    #[test]
+    fn test_build_request_empty_messages() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let messages: Vec<Message> = vec![];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            ..Default::default()
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        assert!(request.contents.is_empty());
+    }
+
+    #[test]
+    fn test_generation_config_defaults() {
+        let config = GenerationConfig::default();
+        assert!(config.max_output_tokens.is_none());
+        assert!(config.temperature.is_none());
+        assert!(config.top_p.is_none());
+        assert!(config.top_k.is_none());
+    }
+
+    #[test]
+    fn test_part_text_serialization() {
+        let part = Part::Text {
+            text: "Hello world".to_string(),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("\"text\":\"Hello world\""));
+    }
+
+    #[test]
+    fn test_part_function_call_serialization() {
+        let part = Part::FunctionCall {
+            function_call: FunctionCall {
+                name: "test_fn".to_string(),
+                args: json!({"arg1": "value1"}),
+            },
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("functionCall"));
+        assert!(json.contains("test_fn"));
+    }
+
+    #[test]
+    fn test_part_function_response_serialization() {
+        let part = Part::FunctionResponse {
+            function_response: FunctionResponse {
+                name: "test_fn".to_string(),
+                response: json!({"result": "success"}),
+            },
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("functionResponse"));
+    }
+
+    #[test]
+    fn test_content_serialization() {
+        let content = Content {
+            role: Some("user".to_string()),
+            parts: vec![Part::Text {
+                text: "Hello".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&content).unwrap();
+        assert!(json.contains("\"role\":\"user\""));
+        assert!(json.contains("\"text\":\"Hello\""));
+    }
+
+    #[test]
+    fn test_content_no_role_serialization() {
+        let content = Content {
+            role: None,
+            parts: vec![Part::Text {
+                text: "System".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&content).unwrap();
+        // role should be skipped when None
+        assert!(!json.contains("\"role\""));
+    }
+
+    #[test]
+    fn test_vertex_request_minimal_serialization() {
+        let request = VertexRequest {
+            contents: vec![Content {
+                role: Some("user".to_string()),
+                parts: vec![Part::Text {
+                    text: "Hi".to_string(),
+                }],
+            }],
+            system_instruction: None,
+            generation_config: None,
+            tools: None,
+            safety_settings: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        // Optional fields should not appear when None
+        assert!(!json.contains("systemInstruction"));
+        assert!(!json.contains("generationConfig"));
+        assert!(!json.contains("tools"));
+        assert!(!json.contains("safetySettings"));
+    }
+
+    #[test]
+    fn test_vertex_client_different_regions() {
+        let regions = ["us-central1", "europe-west4", "asia-northeast1"];
+        for region in regions {
+            let client = VertexAiClient::new("project", region, Some("key".to_string()), None);
+            assert_eq!(client.region, region);
+        }
+    }
+
+    #[test]
+    fn test_build_request_preserves_message_order() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("First".to_string()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("Second".to_string()),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("Third".to_string()),
+            },
+        ];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            ..Default::default()
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+
+        // Verify order is preserved
+        match &request.contents[0].parts[0] {
+            Part::Text { text } => assert_eq!(text, "First"),
+            _ => panic!("Expected text"),
+        }
+        match &request.contents[1].parts[0] {
+            Part::Text { text } => assert_eq!(text, "Second"),
+            _ => panic!("Expected text"),
+        }
+        match &request.contents[2].parts[0] {
+            Part::Text { text } => assert_eq!(text, "Third"),
+            _ => panic!("Expected text"),
+        }
+    }
+
+    #[test]
+    fn test_function_declaration_serialization() {
+        let decl = FunctionDeclaration {
+            name: "test_function".to_string(),
+            description: "A test function".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "arg1": {"type": "string"}
+                }
+            }),
+        };
+        let json = serde_json::to_string(&decl).unwrap();
+        assert!(json.contains("\"name\":\"test_function\""));
+        assert!(json.contains("\"description\":\"A test function\""));
+    }
+
+    #[test]
+    fn test_vertex_tool_serialization() {
+        let tool = VertexTool {
+            function_declarations: vec![FunctionDeclaration {
+                name: "fn1".to_string(),
+                description: "First function".to_string(),
+                parameters: json!({}),
+            }],
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(json.contains("functionDeclarations"));
+    }
 }
