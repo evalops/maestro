@@ -133,8 +133,22 @@ export interface AgentRunner {
 		ctx: SlackContext,
 		channelDir: string,
 		store: ChannelStore,
-	): Promise<{ stopReason: string }>;
+	): Promise<AgentRunResult>;
 	abort(): void;
+}
+
+export interface AgentRunResult {
+	stopReason: string;
+	durationMs: number;
+	toolsExecuted: number;
+	cost: {
+		total: number;
+		inputTokens: number;
+		outputTokens: number;
+		cacheWriteTokens: number;
+		cacheReadTokens: number;
+		model?: string | null;
+	};
 }
 
 // Slack timestamp helpers
@@ -524,7 +538,8 @@ export function createAgentRunner(
 			ctx: SlackContext,
 			channelDir: string,
 			store: ChannelStore,
-		): Promise<{ stopReason: string }> {
+		): Promise<AgentRunResult> {
+			const runStartMs = Date.now();
 			await mkdir(channelDir, { recursive: true });
 
 			// Wait for any file downloads to complete before processing
@@ -618,10 +633,14 @@ export function createAgentRunner(
 				},
 			});
 
-			const logCtx = {
+			const logCtx: logger.LogContext = {
 				channelId: ctx.message.channel,
 				userName: ctx.message.userName,
 				channelName: ctx.channelName,
+				threadTs: ctx.message.threadTs,
+				runId: ctx.runId,
+				taskId: ctx.taskId,
+				source: ctx.source,
 			};
 
 			const pendingTools = new Map<
@@ -631,6 +650,12 @@ export function createAgentRunner(
 
 			let stopReason = "stop";
 			const SLACK_MAX_LENGTH = 40000;
+			let runCostTotal = 0;
+			let inputTokens = 0;
+			let outputTokens = 0;
+			let cacheWriteTokens = 0;
+			let cacheReadTokens = 0;
+			let modelUsed: string | null = null;
 
 			// Progress indicator - update status every 30 seconds during long operations
 			let lastStatusUpdate = Date.now();
@@ -814,13 +839,19 @@ export function createAgentRunner(
 
 							// Track costs
 							if (costTracker && assistantMsg.usage) {
-								costTracker.record(channelId, {
+								const record = costTracker.record(channelId, {
 									model: assistantMsg.model,
 									inputTokens: assistantMsg.usage.input,
 									outputTokens: assistantMsg.usage.output,
 									cacheWriteTokens: assistantMsg.usage.cacheWrite,
 									cacheReadTokens: assistantMsg.usage.cacheRead,
 								});
+								runCostTotal += record.estimatedCost;
+								inputTokens += record.inputTokens;
+								outputTokens += record.outputTokens;
+								cacheWriteTokens += record.cacheWriteTokens || 0;
+								cacheReadTokens += record.cacheReadTokens || 0;
+								modelUsed = record.model;
 							}
 
 							const content = event.message.content;
@@ -936,7 +967,20 @@ export function createAgentRunner(
 				}
 			}
 
-			return { stopReason };
+			const durationMs = Date.now() - runStartMs;
+			return {
+				stopReason,
+				durationMs,
+				toolsExecuted,
+				cost: {
+					total: runCostTotal,
+					inputTokens,
+					outputTokens,
+					cacheWriteTokens,
+					cacheReadTokens,
+					model: modelUsed,
+				},
+			};
 		},
 
 		abort(): void {
