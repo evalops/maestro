@@ -230,11 +230,13 @@ pub struct CacheStats {
 
 /// Thread-safe wrapper for ToolResultCache
 /// Use this when you need to share the cache across async tasks or threads.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct SharedCache {
     inner: std::sync::RwLock<ToolResultCache>,
 }
 
+#[allow(dead_code)]
 impl SharedCache {
     /// Create a new shared cache with default configuration
     pub fn new() -> Self {

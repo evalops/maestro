@@ -876,7 +876,7 @@ mod tests {
 
     #[test]
     fn test_swarm_status_all_variants() {
-        let statuses = vec![
+        let statuses = [
             SwarmStatus::Initializing,
             SwarmStatus::Planning,
             SwarmStatus::Running,
@@ -941,7 +941,7 @@ mod tests {
 
     #[test]
     fn test_task_status_all_variants() {
-        let statuses = vec![
+        let statuses = [
             TaskStatus::Pending,
             TaskStatus::Blocked,
             TaskStatus::Running,

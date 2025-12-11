@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_skill_activation_state_all_variants() {
-        let states = vec![
+        let states = [
             SkillActivationState::Inactive,
             SkillActivationState::Activating,
             SkillActivationState::Active,
@@ -1266,7 +1266,7 @@ mod tests {
             .insert("number_int".into(), serde_json::json!(42));
         skill
             .metadata
-            .insert("number_float".into(), serde_json::json!(3.14));
+            .insert("number_float".into(), serde_json::json!(3.15));
         skill
             .metadata
             .insert("string".into(), serde_json::json!("hello"));
