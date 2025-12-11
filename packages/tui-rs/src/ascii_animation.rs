@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(anim.frame_count(), 3);
 
         // Initial frame
-        let first = anim.current_frame_index();
+        let _first = anim.current_frame_index();
 
         // Wait for a few frames
         sleep(Duration::from_millis(35));
@@ -425,7 +425,7 @@ mod tests {
     fn reset_restarts_animation() {
         let mut anim = spinner_dots();
         sleep(Duration::from_millis(100));
-        let before = anim.current_frame_index();
+        let _before = anim.current_frame_index();
         anim.reset();
         // After reset, should be at or near frame 0
         assert!(anim.current_frame_index() <= 1);
