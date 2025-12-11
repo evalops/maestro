@@ -237,6 +237,14 @@ pub mod ansi_commands;
 /// Buffers output for atomic display.
 pub mod sync_output;
 
+/// Viewport management for scrollable content.
+/// Includes viewport clipping, scroll offset rendering, and auto-scroll.
+pub mod viewport;
+
+/// Inline scrolling with scroll regions.
+/// For inline TUI mode with terminal scrollback integration.
+pub mod inline_scroll;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -831,3 +839,31 @@ pub use sync_output::{
     EndSynchronizedUpdate,     // Flush buffer (ESC [ ? 2026 l)
     SynchronizedOutputGuard,   // RAII guard for sync output
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VIEWPORT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Viewport management for scrollable content with proper clipping.
+///
+/// This provides Codex-style viewport rendering with:
+/// - Negative y offset for partially visible content
+/// - Auto-scroll (follow bottom) detection
+/// - Chunk-based visibility ensuring
+pub use viewport::{
+    CachedRenderable,   // Height-caching wrapper for Renderable
+    InsetRenderable,    // Padding/margin wrapper
+    Renderable,         // Trait for height-aware rendering
+    TextRenderable,     // Simple text implementation
+    ViewportView,       // Core viewport state and rendering
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INLINE SCROLL EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Inline scrolling with scroll regions for terminal scrollback integration.
+///
+/// Use these for inline TUI mode where you want history to flow into
+/// the terminal's native scrollback rather than being lost.
+pub use inline_scroll::insert_history_lines;
