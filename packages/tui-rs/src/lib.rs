@@ -269,6 +269,18 @@ pub mod field_format;
 /// Animated text highlights for loading indicators.
 pub mod shimmer;
 
+/// ANSI code tracker with surgical resets.
+/// Stateful tracking of ANSI SGR codes for preventing visual artifacts.
+pub mod ansi_tracker;
+
+/// Single-line input with horizontal viewport scrolling.
+/// Responsive text input for long lines over SSH.
+pub mod single_line_input;
+
+/// Truncated text display with ellipsis.
+/// Smart truncation for text and paths.
+pub mod truncated_text;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────

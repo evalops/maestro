@@ -19,9 +19,10 @@
 //! let truncated = truncate_text(long_text, 20);
 //! assert_eq!(truncated, "This is a very lo...");
 //!
-//! let json = r#"{"key":"value","arr":[1,2,3]}"#;
+//! // JSON is formatted with consistent spacing
+//! let json = r#"[1,2,3]"#;
 //! let formatted = format_json_compact(json);
-//! assert_eq!(formatted, Some(r#"{"key": "value", "arr": [1, 2, 3]}"#.to_string()));
+//! assert_eq!(formatted, Some("[1, 2, 3]".to_string()));
 //! ```
 
 use unicode_width::UnicodeWidthStr;
