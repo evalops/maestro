@@ -1125,14 +1125,14 @@ pub use confirm_dialog::{ConfirmDialog, ConfirmDialogWidget, ConfirmResult};
 
 /// OSC-8 terminal hyperlinks for clickable URLs.
 pub use hyperlink::{
-    contains_hyperlink,         // Check if string has hyperlinks
-    extract_urls,               // Extract URLs from hyperlinked text
-    format_link,                // Format URL as clickable link
-    format_link_with_fallback,  // With non-TTY fallback
-    link_end,                   // OSC 8 end sequence
-    link_span,                  // Ratatui Span with link
-    link_start,                 // OSC 8 start sequence
-    strip_hyperlinks,           // Remove hyperlink formatting
-    url_span,                   // Span with URL as label
-    wrap_in_link,               // Wrap text in link
+    contains_hyperlink,        // Check if string has hyperlinks
+    extract_urls,              // Extract URLs from hyperlinked text
+    format_link,               // Format URL as clickable link
+    format_link_with_fallback, // With non-TTY fallback
+    link_end,                  // OSC 8 end sequence
+    link_span,                 // Ratatui Span with link
+    link_start,                // OSC 8 start sequence
+    strip_hyperlinks,          // Remove hyperlink formatting
+    url_span,                  // Span with URL as label
+    wrap_in_link,              // Wrap text in link
 };
