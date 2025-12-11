@@ -1,4 +1,4 @@
-//! Diff rendering for file changes
+//! Diff Rendering for File Changes
 //!
 //! This module generates and renders unified diffs for text comparison, using the
 //! `similar` crate's Myers diff algorithm. It produces styled ratatui output similar
@@ -18,6 +18,17 @@
 //! - Context lines (unchanged, no prefix)
 //! - Added lines (green, `+` prefix)
 //! - Removed lines (red, `-` prefix)
+//!
+//! # Line Wrapping
+//!
+//! Long diff lines are wrapped with proper gutter alignment:
+//! - First line shows: `123 +content here...`
+//! - Continuation shows: `      content continues...`
+//!
+//! This ensures the gutter (line numbers) stays aligned and the +/- sign
+//! only appears on the first visual line.
+//!
+//! Ported from OpenAI Codex CLI (MIT licensed).
 //!
 //! # Example
 //!
@@ -295,6 +306,191 @@ mod dirs {
     pub fn home_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(PathBuf::from)
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WRAPPED DIFF LINE RENDERING
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Render a diff line with proper wrapping and gutter alignment.
+///
+/// Long lines are wrapped so that:
+/// - First line: `123 +content...`
+/// - Continuation: `      content continues...`
+///
+/// This keeps the gutter aligned and shows the +/- sign only on the first line.
+pub fn render_wrapped_diff_line(
+    line_number: usize,
+    kind: DiffLineKind,
+    text: &str,
+    width: usize,
+    line_number_width: usize,
+    styles: &DiffStyles,
+) -> Vec<Line<'static>> {
+    let ln_str = line_number.to_string();
+    let mut remaining_text: &str = text;
+
+    // Reserve space for line number + space + sign
+    let gutter_width = line_number_width.max(1);
+    let prefix_cols = gutter_width + 1; // +1 for the sign column
+
+    let (sign_char, line_style) = match kind {
+        DiffLineKind::Added => ('+', styles.added),
+        DiffLineKind::Removed => ('-', styles.removed),
+        DiffLineKind::Context => (' ', styles.context),
+        DiffLineKind::HunkHeader | DiffLineKind::Header => (' ', styles.hunk_header),
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut first = true;
+
+    loop {
+        // Calculate available content width
+        let available_cols = width.saturating_sub(prefix_cols + 1).max(1);
+
+        // Split at character boundary
+        let split_at = remaining_text
+            .char_indices()
+            .nth(available_cols)
+            .map(|(i, _)| i)
+            .unwrap_or(remaining_text.len());
+
+        let (chunk, rest) = remaining_text.split_at(split_at);
+        remaining_text = rest;
+
+        if first {
+            // Build gutter (right-aligned line number + space)
+            let gutter = format!("{ln_str:>gutter_width$} ");
+            // Content with sign
+            let content = format!("{sign_char}{chunk}");
+            lines.push(Line::from(vec![
+                Span::styled(gutter, styles.line_number),
+                Span::styled(content, line_style),
+            ]));
+            first = false;
+        } else {
+            // Continuation lines keep space for sign column
+            let gutter = format!("{:gutter_width$}  ", "");
+            lines.push(Line::from(vec![
+                Span::styled(gutter, styles.line_number),
+                Span::styled(chunk.to_string(), line_style),
+            ]));
+        }
+
+        if remaining_text.is_empty() {
+            break;
+        }
+    }
+
+    lines
+}
+
+/// Calculate the width needed for line numbers.
+pub fn calculate_line_number_width(max_line: usize) -> usize {
+    if max_line == 0 {
+        1
+    } else {
+        max_line.to_string().len()
+    }
+}
+
+/// Render a diff with wrapping support.
+///
+/// This is like `render_diff` but wraps long lines properly.
+pub fn render_diff_wrapped(diff: &Diff, width: usize) -> Text<'static> {
+    render_diff_wrapped_with_styles(diff, width, &DiffStyles::default())
+}
+
+/// Render a diff with wrapping and custom styles.
+pub fn render_diff_wrapped_with_styles(
+    diff: &Diff,
+    width: usize,
+    styles: &DiffStyles,
+) -> Text<'static> {
+    let mut output = Vec::new();
+
+    // Header with file paths
+    if let Some(old_path) = &diff.old_path {
+        output.push(Line::from(vec![
+            Span::styled("--- ", styles.header),
+            Span::styled(old_path.clone(), styles.header),
+        ]));
+    }
+    if let Some(new_path) = &diff.new_path {
+        output.push(Line::from(vec![
+            Span::styled("+++ ", styles.header),
+            Span::styled(new_path.clone(), styles.header),
+        ]));
+    }
+
+    // Stats line
+    if diff.stats.total_changes() > 0 {
+        let mut stats_spans = Vec::new();
+        if diff.stats.added > 0 {
+            stats_spans.push(Span::styled(format!("+{}", diff.stats.added), styles.added));
+        }
+        if diff.stats.removed > 0 {
+            if !stats_spans.is_empty() {
+                stats_spans.push(Span::raw(" "));
+            }
+            stats_spans.push(Span::styled(format!("-{}", diff.stats.removed), styles.removed));
+        }
+        output.push(Line::from(stats_spans));
+        output.push(Line::from(""));
+    }
+
+    // Calculate line number width
+    let max_line = diff.lines.iter()
+        .filter_map(|l| l.old_line_num.or(l.new_line_num))
+        .max()
+        .unwrap_or(1);
+    let ln_width = calculate_line_number_width(max_line);
+
+    // Diff lines with wrapping
+    for line in &diff.lines {
+        if line.kind == DiffLineKind::HunkHeader {
+            output.push(Line::from(Span::styled(line.content.clone(), styles.hunk_header)));
+            continue;
+        }
+        if line.kind == DiffLineKind::Header {
+            output.push(Line::from(Span::styled(line.content.clone(), styles.header)));
+            continue;
+        }
+
+        let line_num = line.new_line_num.or(line.old_line_num).unwrap_or(0);
+        let wrapped = render_wrapped_diff_line(
+            line_num,
+            line.kind,
+            &line.content,
+            width,
+            ln_width,
+            styles,
+        );
+        output.extend(wrapped);
+    }
+
+    Text::from(output)
+}
+
+/// Render a hunk separator line.
+pub fn render_hunk_separator(line_number_width: usize, styles: &DiffStyles) -> Line<'static> {
+    let spacer = format!("{:width$} ", "", width = line_number_width.max(1));
+    Line::from(vec![
+        Span::styled(spacer, styles.line_number),
+        Span::styled("...", styles.context),
+    ])
+}
+
+/// Render a line count summary like "(+5 -3)".
+pub fn render_line_count_summary(added: usize, removed: usize) -> Vec<Span<'static>> {
+    use ratatui::style::Stylize;
+    vec![
+        Span::raw("("),
+        format!("+{added}").green(),
+        Span::raw(" "),
+        format!("-{removed}").red(),
+        Span::raw(")"),
+    ]
 }
 
 #[cfg(test)]

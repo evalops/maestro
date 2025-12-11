@@ -245,6 +245,14 @@ pub mod viewport;
 /// For inline TUI mode with terminal scrollback integration.
 pub mod inline_scroll;
 
+/// Selection list rendering for popups and menus.
+/// Fuzzy match highlighting, aligned descriptions, smart wrapping.
+pub mod selection_list;
+
+/// Elapsed time formatting and pausable timer.
+/// Compact duration display and animated spinners.
+pub mod elapsed;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -867,3 +875,53 @@ pub use viewport::{
 /// Use these for inline TUI mode where you want history to flow into
 /// the terminal's native scrollback rather than being lost.
 pub use inline_scroll::insert_history_lines;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SELECTION LIST EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Selection list rendering for popups and menus.
+///
+/// Includes fuzzy matching, aligned descriptions, and smart wrapping.
+pub use selection_list::{
+    fuzzy_filter,           // Filter items by fuzzy match
+    fuzzy_match,            // Perform fuzzy matching
+    fuzzy_score,            // Score a fuzzy match
+    SelectionList,          // Selection list widget
+    SelectionListConfig,    // Configuration for selection list
+    SelectionRow,           // A row in a selection list
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ELAPSED TIME EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Elapsed time formatting and timer utilities.
+///
+/// Includes compact duration formatting and animated spinners.
+pub use elapsed::{
+    format_duration_compact,    // Format Duration compactly
+    format_elapsed_compact,     // Format seconds compactly
+    format_elapsed_precise,     // Format with ms precision
+    spinner,                    // Get current spinner frame
+    spinner_frame,              // Get spinner frame with custom interval
+    spinner_span,               // Get spinner as ratatui Span
+    PausableTimer,              // Timer with pause/resume
+    SPINNER_ASCII,              // ASCII spinner frames
+    SPINNER_DOTS,               // Braille dots spinner
+    SPINNER_FRAMES,             // Default spinner frames
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DIFF EXPORTS (ENHANCED)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Enhanced diff rendering with proper line wrapping.
+pub use diff::{
+    calculate_line_number_width,     // Calculate gutter width
+    render_diff_wrapped,             // Render with line wrapping
+    render_diff_wrapped_with_styles, // Render with custom styles and wrapping
+    render_hunk_separator,           // Render hunk separator
+    render_line_count_summary,       // Render (+N -M) summary
+    render_wrapped_diff_line,        // Render single wrapped diff line
+};
