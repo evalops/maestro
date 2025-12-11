@@ -1,8 +1,9 @@
 //! # Composer TUI - Native Terminal Interface Library
 //!
-//! This crate provides the primary terminal UI for Composer. The Rust binary
-//! is the main entry point that users run directly. It spawns a Node.js
-//! subprocess for agent logic and handles all terminal rendering natively.
+//! This crate provides the primary terminal UI and native agent for Composer.
+//! The Rust binary is the user entry point: it owns terminal rendering, AI
+//! calls, tool execution, and safety enforcement without any Node.js
+//! subprocess.
 //!
 //! ## Rust Concept: Crate Structure
 //!
@@ -19,21 +20,18 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────┐
-//! │  Rust TUI Binary (ratatui + crossterm)      │
+//! │  Rust TUI + Native Agent (ratatui + tokio)  │
 //! │  - Main entry point (users run this)        │
-//! │  - Owns terminal completely                 │
-//! │  - Native rendering & scrollback            │
-//! │  - Chat UI, markdown display                │
-//! └──────────────────┬──────────────────────────┘
-//!                    │ Simple JSON IPC (prompts, responses)
-//!                    ▼
-//! ┌─────────────────────────────────────────────┐
-//! │  Node.js Agent (--headless mode)            │
-//! │  - API calls to Claude                      │
-//! │  - Tool execution                           │
-//! │  - Context management                       │
+//! │  - Owns terminal + scrollback               │
+//! │  - Native AI clients (Claude, OpenAI, etc.) │
+//! │  - Tool execution + safety + hooks          │
+//! │  - Chat UI, markdown, themes                │
 //! └─────────────────────────────────────────────┘
 //! ```
+//!
+//! Headless JSON IPC is still available via the `headless` module if you want
+//! to drive the agent from another process, but the default path is fully
+//! in-process Rust.
 //!
 //! ## Module Organization
 //!
