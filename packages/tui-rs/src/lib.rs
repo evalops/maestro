@@ -183,6 +183,14 @@ pub mod wrapping;
 /// Connects to external MCP servers for additional tools and capabilities.
 pub mod mcp;
 
+/// Usage and cost tracking.
+/// Tracks token consumption and estimates costs across sessions.
+pub mod usage;
+
+/// Prompt history with persistence and search.
+/// Stores and retrieves previous prompts for easy recall.
+pub mod history;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -304,9 +312,13 @@ pub use palette::{
 
 // Tool system
 pub use tools::{
-    BashTool,     // Executes shell commands
-    ToolExecutor, // Trait for tool execution
-    ToolRegistry, // Registry of available tools
+    BashTool,       // Executes shell commands
+    HistoryFilter,  // Filter for tool history search
+    ToolExecutor,   // Trait for tool execution
+    ToolExecution,  // Single tool execution record
+    ToolHistory,    // Tool execution history tracker
+    ToolRegistry,   // Registry of available tools
+    ToolStats,      // Statistics about tool executions
 };
 
 // Tooltips
@@ -522,4 +534,45 @@ pub use mcp::{
     McpResponse,   // JSON-RPC response message
     McpTool,       // Tool definition from server
     McpToolResult, // Result of tool execution
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USAGE EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Usage and cost tracking for token consumption.
+///
+/// Tracks token usage across turns and sessions with:
+/// - Per-model pricing configuration
+/// - Cost alerts and thresholds
+/// - Exportable statistics
+pub use usage::{
+    CostAlert,     // Configurable cost threshold alert
+    ModelPricing,  // Per-model pricing database
+    PricingTier,   // Cost per token tier
+    SessionUsage,  // Aggregated session usage
+    TurnUsage,     // Single turn usage record
+    UsageExport,   // Exportable usage data
+    UsageStats,    // Aggregated statistics
+    UsageTracker,  // Main usage tracker
+    DEFAULT_PRICING, // Global default pricing
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HISTORY EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Prompt history with persistence and fuzzy search.
+///
+/// Stores user prompts for recall with:
+/// - Arrow key navigation (up/down)
+/// - Fuzzy search matching
+/// - Persistent storage to disk
+/// - Per-session filtering
+pub use history::{
+    HistoryConfig as PromptHistoryConfig, // History configuration (renamed to avoid conflict with config::HistoryConfig)
+    HistoryEntry,   // Single history entry
+    PromptHistory,  // Main history store
+    SearchMatch,    // Search result match
+    SearchResult,   // Search results
 };
