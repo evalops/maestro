@@ -77,6 +77,40 @@ export interface UserInfo {
 	displayName: string;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function getRetryAfterMs(error: unknown): number | null {
+	const err = error as {
+		statusCode?: number;
+		code?: string;
+		retryAfter?: number | string;
+		data?: { error?: string; retry_after?: number | string };
+	};
+
+	const isRateLimited =
+		err?.statusCode === 429 ||
+		err?.code === "slack_webapi_rate_limited" ||
+		err?.data?.error === "ratelimited";
+	if (!isRateLimited) return null;
+
+	const retryAfterSeconds =
+		typeof err.retryAfter === "number"
+			? err.retryAfter
+			: typeof err.retryAfter === "string"
+				? Number(err.retryAfter)
+				: typeof err.data?.retry_after === "number"
+					? err.data.retry_after
+					: typeof err.data?.retry_after === "string"
+						? Number(err.data.retry_after)
+						: undefined;
+
+	if (retryAfterSeconds && Number.isFinite(retryAfterSeconds)) {
+		return Math.max(0, retryAfterSeconds) * 1000;
+	}
+
+	return 0;
+}
+
 export class SlackBot {
 	private socketClient: SocketModeClient;
 	private webClient: WebClient;
@@ -99,16 +133,49 @@ export class SlackBot {
 		this.setupEventHandlers();
 	}
 
+	private async callSlack<T>(
+		fn: () => Promise<T>,
+		context: string,
+		maxAttempts = 3,
+	): Promise<T> {
+		let attempt = 0;
+		while (true) {
+			try {
+				return await fn();
+			} catch (error) {
+				attempt++;
+				const retryAfterMs = getRetryAfterMs(error);
+				if (retryAfterMs !== null && attempt < maxAttempts) {
+					const delayMs =
+						retryAfterMs > 0
+							? retryAfterMs
+							: Math.min(1000 * 2 ** (attempt - 1), 10000);
+					logger.logWarning(
+						`Slack rate limited during ${context}; retrying`,
+						`${delayMs}ms`,
+					);
+					await sleep(delayMs);
+					continue;
+				}
+				throw error;
+			}
+		}
+	}
+
 	private async fetchChannels(): Promise<void> {
 		try {
 			let cursor: string | undefined;
 			do {
-				const result = await this.webClient.conversations.list({
-					types: "public_channel,private_channel",
-					exclude_archived: true,
-					limit: 200,
-					cursor,
-				});
+				const result = await this.callSlack(
+					() =>
+						this.webClient.conversations.list({
+							types: "public_channel,private_channel",
+							exclude_archived: true,
+							limit: 200,
+							cursor,
+						}),
+					"conversations.list",
+				);
 
 				const channels = result.channels as
 					| Array<{ id?: string; name?: string; is_member?: boolean }>
@@ -132,10 +199,14 @@ export class SlackBot {
 		try {
 			let cursor: string | undefined;
 			do {
-				const result = await this.webClient.users.list({
-					limit: 200,
-					cursor,
-				});
+				const result = await this.callSlack(
+					() =>
+						this.webClient.users.list({
+							limit: 200,
+							cursor,
+						}),
+					"users.list",
+				);
 
 				const members = result.members as
 					| Array<{
@@ -207,7 +278,10 @@ export class SlackBot {
 		}
 
 		try {
-			const result = await this.webClient.users.info({ user: userId });
+			const result = await this.callSlack(
+				() => this.webClient.users.info({ user: userId }),
+				"users.info",
+			);
 			const user = result.user as { name?: string; real_name?: string };
 			const info = {
 				userName: user?.name || userId,
@@ -346,17 +420,24 @@ export class SlackBot {
 				messageTs: reactionEvent.item.ts,
 				addReaction: async (emoji: string, channel: string, ts: string) => {
 					try {
-						await this.webClient.reactions.add({
-							name: emoji,
-							channel,
-							timestamp: ts,
-						});
+						await this.callSlack(
+							() =>
+								this.webClient.reactions.add({
+									name: emoji,
+									channel,
+									timestamp: ts,
+								}),
+							"reactions.add",
+						);
 					} catch {
 						// Ignore errors (e.g., already reacted)
 					}
 				},
 				postMessage: async (channel: string, text: string) => {
-					await this.webClient.chat.postMessage({ channel, text });
+					await this.callSlack(
+						() => this.webClient.chat.postMessage({ channel, text }),
+						"chat.postMessage",
+					);
 				},
 			});
 		});
@@ -421,9 +502,13 @@ export class SlackBot {
 		let channelName: string | undefined;
 		try {
 			if (event.channel.startsWith("C")) {
-				const result = await this.webClient.conversations.info({
-					channel: event.channel,
-				});
+				const result = await this.callSlack(
+					() =>
+						this.webClient.conversations.info({
+							channel: event.channel,
+						}),
+					"conversations.info",
+				);
 				channelName = result.channel?.name
 					? `#${result.channel.name}`
 					: undefined;
@@ -488,11 +573,16 @@ export class SlackBot {
 						parentThreadTs || (useThread ? userMessageTs : undefined);
 
 					if (messageTs) {
-						await this.webClient.chat.update({
-							channel: event.channel,
-							ts: messageTs,
-							text: displayText,
-						});
+						const currentMessageTs = messageTs;
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: event.channel,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
 					} else {
 						const postArgs = {
 							channel: event.channel,
@@ -503,7 +593,10 @@ export class SlackBot {
 								? useThread && !parentThreadTs
 								: undefined,
 						} as ChatPostMessageArguments;
-						const result = await this.webClient.chat.postMessage(postArgs);
+						const result = await this.callSlack(
+							() => this.webClient.chat.postMessage(postArgs),
+							"chat.postMessage",
+						);
 						messageTs = result.ts as string;
 					}
 
@@ -523,12 +616,17 @@ export class SlackBot {
 					if (!messageTs) {
 						return;
 					}
+					const currentMessageTs = messageTs;
 					const obfuscatedText = this.obfuscateUsernames(threadText);
-					await this.webClient.chat.postMessage({
-						channel: event.channel,
-						thread_ts: messageTs,
-						text: obfuscatedText,
-					});
+					await this.callSlack(
+						() =>
+							this.webClient.chat.postMessage({
+								channel: event.channel,
+								thread_ts: currentMessageTs,
+								text: obfuscatedText,
+							}),
+						"chat.postMessage",
+					);
 				});
 				await updatePromise;
 			},
@@ -545,7 +643,10 @@ export class SlackBot {
 							? useThread && !parentThreadTs
 							: undefined,
 					} as ChatPostMessageArguments;
-					const result = await this.webClient.chat.postMessage(postArgs);
+					const result = await this.callSlack(
+						() => this.webClient.chat.postMessage(postArgs),
+						"chat.postMessage",
+					);
 					messageTs = result.ts as string;
 				}
 			},
@@ -562,7 +663,10 @@ export class SlackBot {
 					title: fileName,
 					...(threadTs && { thread_ts: threadTs }),
 				} as FilesUploadV2Arguments;
-				await this.webClient.files.uploadV2(uploadArgs);
+				await this.callSlack(
+					() => this.webClient.files.uploadV2(uploadArgs),
+					"files.uploadV2",
+				);
 			},
 			replaceMessage: async (newText: string) => {
 				updatePromise = updatePromise.then(async () => {
@@ -576,11 +680,16 @@ export class SlackBot {
 						parentThreadTs || (useThread ? userMessageTs : undefined);
 
 					if (messageTs) {
-						await this.webClient.chat.update({
-							channel: event.channel,
-							ts: messageTs,
-							text: displayText,
-						});
+						const currentMessageTs = messageTs;
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: event.channel,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
 					} else {
 						const postArgs = {
 							channel: event.channel,
@@ -590,7 +699,10 @@ export class SlackBot {
 								? useThread && !parentThreadTs
 								: undefined,
 						} as ChatPostMessageArguments;
-						const result = await this.webClient.chat.postMessage(postArgs);
+						const result = await this.callSlack(
+							() => this.webClient.chat.postMessage(postArgs),
+							"chat.postMessage",
+						);
 						messageTs = result.ts as string;
 					}
 				});
@@ -601,14 +713,19 @@ export class SlackBot {
 					isWorking = working;
 
 					if (messageTs) {
+						const currentMessageTs = messageTs;
 						const displayText = isWorking
 							? accumulatedText + workingIndicator
 							: accumulatedText;
-						await this.webClient.chat.update({
-							channel: event.channel,
-							ts: messageTs,
-							text: displayText,
-						});
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: event.channel,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
 					}
 				});
 				await updatePromise;
@@ -616,13 +733,18 @@ export class SlackBot {
 			updateStatus: async (status: string) => {
 				updatePromise = updatePromise.then(async () => {
 					if (messageTs && isWorking) {
+						const currentMessageTs = messageTs;
 						// Update the working indicator with the status
 						const displayText = `${accumulatedText}\n_${status}_${workingIndicator}`;
-						await this.webClient.chat.update({
-							channel: event.channel,
-							ts: messageTs,
-							text: displayText,
-						});
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: event.channel,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
 					}
 				});
 				await updatePromise;
@@ -643,13 +765,17 @@ export class SlackBot {
 		const maxPages = 3;
 
 		do {
-			const result = await this.webClient.conversations.history({
-				channel: channelId,
-				oldest: lastTs ?? undefined,
-				inclusive: false,
-				limit: 1000,
-				cursor,
-			});
+			const result = await this.callSlack(
+				() =>
+					this.webClient.conversations.history({
+						channel: channelId,
+						oldest: lastTs ?? undefined,
+						inclusive: false,
+						limit: 1000,
+						cursor,
+					}),
+				"conversations.history",
+			);
 
 			if (result.messages) {
 				allMessages.push(...result.messages);
@@ -733,7 +859,10 @@ export class SlackBot {
 	}
 
 	async start(): Promise<void> {
-		const auth = await this.webClient.auth.test();
+		const auth = await this.callSlack(
+			() => this.webClient.auth.test(),
+			"auth.test",
+		);
 		this.botUserId = auth.user_id as string;
 
 		await Promise.all([this.fetchChannels(), this.fetchUsers()]);
@@ -757,10 +886,14 @@ export class SlackBot {
 	 */
 	async postMessage(channelId: string, text: string): Promise<string | null> {
 		try {
-			const result = await this.webClient.chat.postMessage({
-				channel: channelId,
-				text,
-			});
+			const result = await this.callSlack(
+				() =>
+					this.webClient.chat.postMessage({
+						channel: channelId,
+						text,
+					}),
+				"chat.postMessage",
+			);
 			return result.ts as string;
 		} catch (error) {
 			logger.logWarning(
@@ -817,16 +950,25 @@ export class SlackBot {
 						: accumulatedText;
 
 					if (messageTs) {
-						await this.webClient.chat.update({
-							channel: channelId,
-							ts: messageTs,
-							text: displayText,
-						});
+						const currentMessageTs = messageTs;
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: channelId,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
 					} else {
-						const result = await this.webClient.chat.postMessage({
-							channel: channelId,
-							text: displayText,
-						});
+						const result = await this.callSlack(
+							() =>
+								this.webClient.chat.postMessage({
+									channel: channelId,
+									text: displayText,
+								}),
+							"chat.postMessage",
+						);
 						messageTs = result.ts as string;
 					}
 
@@ -839,34 +981,47 @@ export class SlackBot {
 			respondInThread: async (threadText: string) => {
 				updatePromise = updatePromise.then(async () => {
 					if (!messageTs) return;
+					const currentMessageTs = messageTs;
 					const obfuscatedText = this.obfuscateUsernames(threadText);
-					await this.webClient.chat.postMessage({
-						channel: channelId,
-						thread_ts: messageTs,
-						text: obfuscatedText,
-					});
+					await this.callSlack(
+						() =>
+							this.webClient.chat.postMessage({
+								channel: channelId,
+								thread_ts: currentMessageTs,
+								text: obfuscatedText,
+							}),
+						"chat.postMessage",
+					);
 				});
 				await updatePromise;
 			},
 			setTyping: async (typing: boolean) => {
 				if (typing && !messageTs) {
 					accumulatedText = "_Thinking_";
-					const result = await this.webClient.chat.postMessage({
-						channel: channelId,
-						text: accumulatedText,
-					});
+					const result = await this.callSlack(
+						() =>
+							this.webClient.chat.postMessage({
+								channel: channelId,
+								text: accumulatedText,
+							}),
+						"chat.postMessage",
+					);
 					messageTs = result.ts as string;
 				}
 			},
 			uploadFile: async (filePath: string, title?: string) => {
 				const fileName = title || basename(filePath);
 				const fileContent = readFileSync(filePath);
-				await this.webClient.files.uploadV2({
-					channel_id: channelId,
-					file: fileContent,
-					filename: fileName,
-					title: fileName,
-				});
+				await this.callSlack(
+					() =>
+						this.webClient.files.uploadV2({
+							channel_id: channelId,
+							file: fileContent,
+							filename: fileName,
+							title: fileName,
+						}),
+					"files.uploadV2",
+				);
 			},
 			replaceMessage: async (newText: string) => {
 				updatePromise = updatePromise.then(async () => {
@@ -876,16 +1031,25 @@ export class SlackBot {
 						: accumulatedText;
 
 					if (messageTs) {
-						await this.webClient.chat.update({
-							channel: channelId,
-							ts: messageTs,
-							text: displayText,
-						});
+						const currentMessageTs = messageTs;
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: channelId,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
 					} else {
-						const result = await this.webClient.chat.postMessage({
-							channel: channelId,
-							text: displayText,
-						});
+						const result = await this.callSlack(
+							() =>
+								this.webClient.chat.postMessage({
+									channel: channelId,
+									text: displayText,
+								}),
+							"chat.postMessage",
+						);
 						messageTs = result.ts as string;
 					}
 				});
@@ -895,14 +1059,19 @@ export class SlackBot {
 				updatePromise = updatePromise.then(async () => {
 					isWorking = working;
 					if (messageTs) {
+						const currentMessageTs = messageTs;
 						const displayText = isWorking
 							? accumulatedText + workingIndicator
 							: accumulatedText;
-						await this.webClient.chat.update({
-							channel: channelId,
-							ts: messageTs,
-							text: displayText,
-						});
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: channelId,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
 					}
 				});
 				await updatePromise;
@@ -910,12 +1079,17 @@ export class SlackBot {
 			updateStatus: async (status: string) => {
 				updatePromise = updatePromise.then(async () => {
 					if (messageTs && isWorking) {
+						const currentMessageTs = messageTs;
 						const displayText = `${accumulatedText}\n_${status}_${workingIndicator}`;
-						await this.webClient.chat.update({
-							channel: channelId,
-							ts: messageTs,
-							text: displayText,
-						});
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: channelId,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
 					}
 				});
 				await updatePromise;
