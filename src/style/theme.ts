@@ -140,7 +140,7 @@ export function contextualBadge(
 }
 
 export const brand = {
-	glyph: (): string => chalkTheme.hex(themePalette.brandGlyph)("*"),
+	glyph: (): string => chalkTheme.hex(themePalette.brandGlyph)("◆"),
 	text: (): string => chalkTheme.hex(themePalette.brand).bold("composer"),
 	signature(modelName?: string, compact = false): string {
 		const tone = modelName
