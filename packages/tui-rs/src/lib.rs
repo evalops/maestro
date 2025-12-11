@@ -179,6 +179,10 @@ pub mod tooltips;
 /// Word-wraps text for terminal display, respecting ANSI codes.
 pub mod wrapping;
 
+/// Model Context Protocol (MCP) client.
+/// Connects to external MCP servers for additional tools and capabilities.
+pub mod mcp;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -490,4 +494,32 @@ pub use safety::{
     // Path containment
     is_path_contained, // Check if path is in safe zones
     PathContainment,   // Contained, Escaped, or SystemProtected
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MCP EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Model Context Protocol (MCP) client for external tool servers.
+///
+/// MCP allows the agent to connect to external servers that provide
+/// additional tools. Servers are configured via JSON files and can use
+/// different transports (stdio, HTTP, SSE).
+pub use mcp::{
+    // Client types
+    McpClient,     // Manages multiple server connections
+    McpConnection, // Single server connection
+    McpError,      // Error type for MCP operations
+
+    // Configuration
+    load_mcp_config,                        // Load config from standard locations
+    McpConfig,                              // Merged configuration from all sources
+    McpServerConfig as McpServerJsonConfig, // JSON-based server config (renamed to avoid conflict with config::McpServerConfig)
+    McpTransport,                           // Transport type (Stdio, Http, Sse)
+
+    // Protocol types
+    McpRequest,    // JSON-RPC request message
+    McpResponse,   // JSON-RPC response message
+    McpTool,       // Tool definition from server
+    McpToolResult, // Result of tool execution
 };
