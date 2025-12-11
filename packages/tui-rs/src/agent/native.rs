@@ -390,6 +390,9 @@ impl NativeAgent {
         // Create context compactor for handling long conversations
         let compactor = super::compaction::ContextCompactor::new(Default::default());
 
+        // Create retry policy for transient API errors
+        let retry_policy = super::retry::RetryPolicy::default();
+
         // Create the background runner
         let runner = NativeAgentRunner {
             client,
@@ -405,6 +408,7 @@ impl NativeAgent {
             hooks,
             safety,
             compactor,
+            retry_policy,
         };
 
         // Spawn the background task
@@ -633,6 +637,11 @@ struct NativeAgentRunner {
     /// Summarizes older messages when the context grows too large to fit
     /// within the model's token limit.
     compactor: super::compaction::ContextCompactor,
+
+    /// Retry policy for handling transient API errors
+    ///
+    /// Implements exponential backoff with jitter for rate limits and server errors.
+    retry_policy: super::retry::RetryPolicy,
 }
 
 impl NativeAgentRunner {
@@ -661,21 +670,58 @@ impl NativeAgentRunner {
                         content: MessageContent::text(content),
                     });
 
-                    // Run the agent loop with cancellation support
-                    let result = tokio::select! {
-                        res = self.run_loop() => res,
-                        _ = cancel_token.cancelled() => {
-                            Err(anyhow::anyhow!("Request cancelled"))
-                        }
-                    };
+                    // Reset retry policy for new request
+                    self.retry_policy.reset();
 
-                    if let Err(e) = result {
-                        let msg = e.to_string();
-                        if msg != "Request cancelled" {
-                            let _ = self.event_tx.send(FromAgent::Error {
-                                message: format!("Agent error: {}", e),
-                                fatal: false,
-                            });
+                    // Run the agent loop with cancellation and retry support
+                    loop {
+                        let result = tokio::select! {
+                            res = self.run_loop() => res,
+                            _ = cancel_token.cancelled() => {
+                                Err(anyhow::anyhow!("Request cancelled"))
+                            }
+                        };
+
+                        match result {
+                            Ok(()) => break,
+                            Err(e) => {
+                                let msg = e.to_string();
+                                if msg == "Request cancelled" {
+                                    break;
+                                }
+
+                                // Classify error and check if we should retry
+                                let error_kind = super::retry::ErrorKind::classify(&msg);
+                                match self.retry_policy.should_retry(error_kind) {
+                                    super::retry::RetryDecision::Retry { delay, attempt, reason } => {
+                                        // Notify UI about retry
+                                        let _ = self.event_tx.send(FromAgent::Status {
+                                            message: format!(
+                                                "{}. Retrying in {:.1}s (attempt {})...",
+                                                reason,
+                                                delay.as_secs_f64(),
+                                                attempt
+                                            ),
+                                        });
+
+                                        // Wait before retrying
+                                        tokio::time::sleep(delay).await;
+
+                                        // Check if cancelled during wait
+                                        if cancel_token.is_cancelled() {
+                                            break;
+                                        }
+                                    }
+                                    super::retry::RetryDecision::GiveUp { reason } => {
+                                        // Not retryable or exhausted retries
+                                        let _ = self.event_tx.send(FromAgent::Error {
+                                            message: format!("Agent error: {} ({})", msg, reason),
+                                            fatal: false,
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
 
