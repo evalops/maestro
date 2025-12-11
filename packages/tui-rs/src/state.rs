@@ -947,3 +947,979 @@ fn extract_thinking_header(text: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    // Message and MessageRole Tests
+    // ============================================================
+
+    #[test]
+    fn test_message_role_equality() {
+        assert_eq!(MessageRole::User, MessageRole::User);
+        assert_eq!(MessageRole::Assistant, MessageRole::Assistant);
+        assert_ne!(MessageRole::User, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn test_message_role_copy() {
+        let role = MessageRole::User;
+        let copied = role; // Copy, not move
+        assert_eq!(role, copied);
+    }
+
+    #[test]
+    fn test_tool_call_status_transitions() {
+        assert_eq!(ToolCallStatus::Pending, ToolCallStatus::Pending);
+        assert_ne!(ToolCallStatus::Pending, ToolCallStatus::Running);
+        assert_ne!(ToolCallStatus::Running, ToolCallStatus::Completed);
+        assert_ne!(ToolCallStatus::Completed, ToolCallStatus::Failed);
+    }
+
+    // ============================================================
+    // ApprovalMode Tests
+    // ============================================================
+
+    #[test]
+    fn test_approval_mode_default() {
+        assert_eq!(ApprovalMode::default(), ApprovalMode::Selective);
+    }
+
+    #[test]
+    fn test_approval_mode_parse() {
+        // Yolo mode aliases
+        assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Yolo));
+        assert_eq!(ApprovalMode::parse("auto"), Some(ApprovalMode::Yolo));
+        assert_eq!(ApprovalMode::parse("trust"), Some(ApprovalMode::Yolo));
+        assert_eq!(ApprovalMode::parse("YOLO"), Some(ApprovalMode::Yolo)); // case insensitive
+
+        // Selective mode aliases
+        assert_eq!(
+            ApprovalMode::parse("selective"),
+            Some(ApprovalMode::Selective)
+        );
+        assert_eq!(
+            ApprovalMode::parse("default"),
+            Some(ApprovalMode::Selective)
+        );
+        assert_eq!(ApprovalMode::parse("normal"), Some(ApprovalMode::Selective));
+
+        // Safe mode aliases
+        assert_eq!(ApprovalMode::parse("safe"), Some(ApprovalMode::Safe));
+        assert_eq!(ApprovalMode::parse("always"), Some(ApprovalMode::Safe));
+        assert_eq!(ApprovalMode::parse("paranoid"), Some(ApprovalMode::Safe));
+
+        // Invalid
+        assert_eq!(ApprovalMode::parse("invalid"), None);
+        assert_eq!(ApprovalMode::parse(""), None);
+    }
+
+    #[test]
+    fn test_approval_mode_next_cycle() {
+        assert_eq!(ApprovalMode::Yolo.next(), ApprovalMode::Selective);
+        assert_eq!(ApprovalMode::Selective.next(), ApprovalMode::Safe);
+        assert_eq!(ApprovalMode::Safe.next(), ApprovalMode::Yolo);
+    }
+
+    #[test]
+    fn test_approval_mode_label() {
+        assert!(ApprovalMode::Yolo.label().contains("YOLO"));
+        assert!(ApprovalMode::Selective.label().contains("Selective"));
+        assert!(ApprovalMode::Safe.label().contains("Safe"));
+    }
+
+    // ============================================================
+    // AppState Creation Tests
+    // ============================================================
+
+    #[test]
+    fn test_app_state_new() {
+        let state = AppState::new();
+        assert!(state.messages.is_empty());
+        assert!(state.model.is_none());
+        assert!(state.provider.is_none());
+        assert!(state.cwd.is_none());
+        assert!(state.git_branch.is_none());
+        assert!(state.session_id.is_none());
+        assert!(!state.busy);
+        assert!(state.busy_since.is_none());
+        assert!(state.status.is_none());
+        assert_eq!(state.scroll_offset, 0);
+        assert!(state.expanded_tool_calls.is_empty());
+        assert!(state.error.is_none());
+        assert!(state.thinking_header.is_none());
+        assert!(!state.zen_mode);
+        assert_eq!(state.approval_mode, ApprovalMode::Selective);
+    }
+
+    #[test]
+    fn test_app_state_default() {
+        let state = AppState::default();
+        assert!(state.messages.is_empty());
+    }
+
+    // ============================================================
+    // Text Input Tests (UTF-8 handling)
+    // ============================================================
+
+    #[test]
+    fn test_insert_char_ascii() {
+        let mut state = AppState::new();
+        state.insert_char('h');
+        state.insert_char('i');
+        assert_eq!(state.input(), "hi");
+        assert_eq!(state.cursor(), 2);
+    }
+
+    #[test]
+    fn test_insert_char_unicode() {
+        let mut state = AppState::new();
+        state.insert_char('こ');
+        state.insert_char('ん');
+        assert_eq!(state.input(), "こん");
+        // Each Japanese char is 3 bytes in UTF-8
+        assert_eq!(state.cursor(), 6);
+    }
+
+    #[test]
+    fn test_insert_char_emoji() {
+        let mut state = AppState::new();
+        state.insert_char('🎉');
+        assert_eq!(state.input(), "🎉");
+        // Emoji is 4 bytes in UTF-8
+        assert_eq!(state.cursor(), 4);
+    }
+
+    #[test]
+    fn test_insert_str() {
+        let mut state = AppState::new();
+        state.insert_str("hello");
+        assert_eq!(state.input(), "hello");
+        assert_eq!(state.cursor(), 5);
+    }
+
+    #[test]
+    fn test_insert_str_unicode() {
+        let mut state = AppState::new();
+        state.insert_str("日本語");
+        assert_eq!(state.input(), "日本語");
+        assert_eq!(state.cursor(), 9); // 3 chars * 3 bytes
+    }
+
+    #[test]
+    fn test_backspace_ascii() {
+        let mut state = AppState::new();
+        state.set_input("hello");
+        state.backspace();
+        assert_eq!(state.input(), "hell");
+        assert_eq!(state.cursor(), 4);
+    }
+
+    #[test]
+    fn test_backspace_unicode() {
+        let mut state = AppState::new();
+        state.set_input("日本語");
+        state.backspace();
+        assert_eq!(state.input(), "日本");
+        assert_eq!(state.cursor(), 6); // 2 remaining chars * 3 bytes
+    }
+
+    #[test]
+    fn test_backspace_emoji() {
+        let mut state = AppState::new();
+        state.set_input("hi🎉");
+        state.backspace();
+        assert_eq!(state.input(), "hi");
+        assert_eq!(state.cursor(), 2);
+    }
+
+    #[test]
+    fn test_backspace_at_start() {
+        let mut state = AppState::new();
+        state.set_input("hi");
+        state.move_home();
+        state.backspace(); // Should do nothing
+        assert_eq!(state.input(), "hi");
+        assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn test_delete_ascii() {
+        let mut state = AppState::new();
+        state.set_input("hello");
+        state.move_home();
+        state.delete();
+        assert_eq!(state.input(), "ello");
+    }
+
+    #[test]
+    fn test_delete_at_end() {
+        let mut state = AppState::new();
+        state.set_input("hi");
+        state.delete(); // Cursor at end, should do nothing
+        assert_eq!(state.input(), "hi");
+    }
+
+    #[test]
+    fn test_move_left_ascii() {
+        let mut state = AppState::new();
+        state.set_input("abc");
+        state.move_left();
+        assert_eq!(state.cursor(), 2);
+        state.move_left();
+        assert_eq!(state.cursor(), 1);
+    }
+
+    #[test]
+    fn test_move_left_unicode() {
+        let mut state = AppState::new();
+        state.set_input("日本");
+        // Cursor at end (6 bytes)
+        state.move_left();
+        assert_eq!(state.cursor(), 3); // After first char
+        state.move_left();
+        assert_eq!(state.cursor(), 0); // At start
+    }
+
+    #[test]
+    fn test_move_left_at_start() {
+        let mut state = AppState::new();
+        state.set_input("hi");
+        state.move_home();
+        state.move_left(); // Should stay at 0
+        assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn test_move_right_ascii() {
+        let mut state = AppState::new();
+        state.set_input("abc");
+        state.move_home();
+        state.move_right();
+        assert_eq!(state.cursor(), 1);
+        state.move_right();
+        assert_eq!(state.cursor(), 2);
+    }
+
+    #[test]
+    fn test_move_right_unicode() {
+        let mut state = AppState::new();
+        state.set_input("日本");
+        state.move_home();
+        state.move_right();
+        assert_eq!(state.cursor(), 3); // Past first 3-byte char
+        state.move_right();
+        assert_eq!(state.cursor(), 6); // At end
+    }
+
+    #[test]
+    fn test_move_right_at_end() {
+        let mut state = AppState::new();
+        state.set_input("hi");
+        state.move_right(); // Should stay at end
+        assert_eq!(state.cursor(), 2);
+    }
+
+    #[test]
+    fn test_move_home_end() {
+        let mut state = AppState::new();
+        state.set_input("hello world");
+        assert_eq!(state.cursor(), 11); // At end after set_input
+        state.move_home();
+        assert_eq!(state.cursor(), 0);
+        state.move_end();
+        assert_eq!(state.cursor(), 11);
+    }
+
+    #[test]
+    fn test_take_input() {
+        let mut state = AppState::new();
+        state.set_input("hello");
+        let taken = state.take_input();
+        assert_eq!(taken, "hello");
+        assert_eq!(state.input(), "");
+        assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn test_set_input_moves_cursor_to_end() {
+        let mut state = AppState::new();
+        state.set_input("hello");
+        assert_eq!(state.cursor(), 5);
+    }
+
+    // ============================================================
+    // Mixed UTF-8 Text Editing Tests
+    // ============================================================
+
+    #[test]
+    fn test_insert_in_middle_of_unicode() {
+        let mut state = AppState::new();
+        state.set_input("日語"); // 6 bytes total
+        state.move_home();
+        state.move_right(); // After first char (position 3)
+        state.insert_char('本'); // Insert in middle
+        assert_eq!(state.input(), "日本語");
+    }
+
+    #[test]
+    fn test_backspace_mixed_content() {
+        let mut state = AppState::new();
+        state.set_input("a日b本c");
+        state.backspace(); // Delete 'c'
+        assert_eq!(state.input(), "a日b本");
+        state.backspace(); // Delete '本'
+        assert_eq!(state.input(), "a日b");
+        state.backspace(); // Delete 'b'
+        assert_eq!(state.input(), "a日");
+    }
+
+    #[test]
+    fn test_cursor_movement_through_mixed_content() {
+        let mut state = AppState::new();
+        state.set_input("a日b"); // 'a' = 1 byte, '日' = 3 bytes, 'b' = 1 byte = 5 bytes total
+        state.move_home();
+        assert_eq!(state.cursor(), 0);
+        state.move_right(); // Past 'a'
+        assert_eq!(state.cursor(), 1);
+        state.move_right(); // Past '日'
+        assert_eq!(state.cursor(), 4);
+        state.move_right(); // Past 'b'
+        assert_eq!(state.cursor(), 5);
+    }
+
+    // ============================================================
+    // Message Management Tests
+    // ============================================================
+
+    #[test]
+    fn test_add_user_message() {
+        let mut state = AppState::new();
+        let id = state.add_user_message("Hello!".to_string());
+
+        assert!(!id.is_empty());
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].content, "Hello!");
+        assert_eq!(state.messages[0].role, MessageRole::User);
+        assert!(!state.messages[0].streaming);
+        assert!(state.busy);
+        assert!(state.busy_since.is_some());
+    }
+
+    #[test]
+    fn test_add_system_message() {
+        let mut state = AppState::new();
+        state.add_system_message("System info".to_string());
+
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].content, "System info");
+        assert_eq!(state.messages[0].role, MessageRole::Assistant);
+        assert!(!state.messages[0].streaming);
+    }
+
+    #[test]
+    fn test_toggle_thinking() {
+        let mut state = AppState::new();
+        let id = state.add_user_message("test".to_string());
+
+        // Initially not expanded
+        let msg = state.messages.iter().find(|m| m.id == id).unwrap();
+        assert!(!msg.thinking_expanded);
+
+        // Toggle on
+        state.toggle_thinking(&id);
+        let msg = state.messages.iter().find(|m| m.id == id).unwrap();
+        assert!(msg.thinking_expanded);
+
+        // Toggle off
+        state.toggle_thinking(&id);
+        let msg = state.messages.iter().find(|m| m.id == id).unwrap();
+        assert!(!msg.thinking_expanded);
+    }
+
+    #[test]
+    fn test_toggle_thinking_nonexistent_id() {
+        let mut state = AppState::new();
+        state.add_user_message("test".to_string());
+
+        // Should not panic
+        state.toggle_thinking("nonexistent-id");
+    }
+
+    // ============================================================
+    // Scroll Tests
+    // ============================================================
+
+    #[test]
+    fn test_scroll_up() {
+        let mut state = AppState::new();
+        state.scroll_offset = 10;
+        state.scroll_up(3);
+        assert_eq!(state.scroll_offset, 7);
+    }
+
+    #[test]
+    fn test_scroll_up_saturating() {
+        let mut state = AppState::new();
+        state.scroll_offset = 2;
+        state.scroll_up(10); // Should not go below 0
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_scroll_down() {
+        let mut state = AppState::new();
+        state.scroll_down(5);
+        assert_eq!(state.scroll_offset, 5);
+    }
+
+    #[test]
+    fn test_scroll_down_saturating() {
+        let mut state = AppState::new();
+        state.scroll_offset = usize::MAX - 5;
+        state.scroll_down(10); // Should saturate at MAX
+        assert_eq!(state.scroll_offset, usize::MAX);
+    }
+
+    // ============================================================
+    // Tool Call Expansion Tests
+    // ============================================================
+
+    #[test]
+    fn test_toggle_tool_call() {
+        let mut state = AppState::new();
+        let call_id = "call-123";
+
+        assert!(!state.is_tool_call_expanded(call_id));
+
+        state.toggle_tool_call(call_id);
+        assert!(state.is_tool_call_expanded(call_id));
+
+        state.toggle_tool_call(call_id);
+        assert!(!state.is_tool_call_expanded(call_id));
+    }
+
+    #[test]
+    fn test_multiple_tool_calls_expanded() {
+        let mut state = AppState::new();
+
+        state.toggle_tool_call("call-1");
+        state.toggle_tool_call("call-2");
+
+        assert!(state.is_tool_call_expanded("call-1"));
+        assert!(state.is_tool_call_expanded("call-2"));
+        assert!(!state.is_tool_call_expanded("call-3"));
+    }
+
+    // ============================================================
+    // Elapsed Time Tests
+    // ============================================================
+
+    #[test]
+    fn test_elapsed_busy_secs_not_busy() {
+        let state = AppState::new();
+        assert_eq!(state.elapsed_busy_secs(), 0);
+    }
+
+    #[test]
+    fn test_elapsed_busy_secs_when_busy() {
+        let mut state = AppState::new();
+        state.busy = true;
+        state.busy_since = Some(Instant::now());
+        // Should be 0 or very small (just started)
+        assert!(state.elapsed_busy_secs() < 2);
+    }
+
+    // ============================================================
+    // Tool Call State Tests
+    // ============================================================
+
+    #[test]
+    fn test_fail_tool_call() {
+        let mut state = AppState::new();
+
+        // Add a message with a tool call
+        state.messages.push(Message {
+            id: "msg-1".to_string(),
+            role: MessageRole::Assistant,
+            content: String::new(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: vec![ToolCallState {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+                args: serde_json::json!({"command": "ls"}),
+                status: ToolCallStatus::Pending,
+                output: String::new(),
+            }],
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
+
+        state.fail_tool_call("call-1", "User rejected");
+
+        let tc = &state.messages[0].tool_calls[0];
+        assert_eq!(tc.status, ToolCallStatus::Failed);
+        assert!(tc.output.contains("User rejected"));
+    }
+
+    #[test]
+    fn test_fail_tool_call_with_existing_output() {
+        let mut state = AppState::new();
+
+        state.messages.push(Message {
+            id: "msg-1".to_string(),
+            role: MessageRole::Assistant,
+            content: String::new(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: vec![ToolCallState {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+                args: serde_json::json!({}),
+                status: ToolCallStatus::Running,
+                output: "partial output".to_string(),
+            }],
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
+
+        state.fail_tool_call("call-1", "Timeout");
+
+        let tc = &state.messages[0].tool_calls[0];
+        assert_eq!(tc.status, ToolCallStatus::Failed);
+        assert!(tc.output.contains("partial output"));
+        assert!(tc.output.contains("Timeout"));
+    }
+
+    #[test]
+    fn test_fail_tool_call_nonexistent() {
+        let mut state = AppState::new();
+        state.add_user_message("test".to_string());
+
+        // Should not panic
+        state.fail_tool_call("nonexistent", "error");
+    }
+
+    // ============================================================
+    // Handle Agent Message Tests
+    // ============================================================
+
+    #[test]
+    fn test_handle_ready_message() {
+        let mut state = AppState::new();
+        state.busy = true;
+
+        state.handle_agent_message(FromAgent::Ready {
+            model: "claude-3".to_string(),
+            provider: "anthropic".to_string(),
+        });
+
+        assert_eq!(state.model, Some("claude-3".to_string()));
+        assert_eq!(state.provider, Some("anthropic".to_string()));
+        assert!(!state.busy);
+    }
+
+    #[test]
+    fn test_handle_response_start() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        assert!(state.busy);
+        assert!(state.busy_since.is_some());
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].id, "resp-1");
+        assert_eq!(state.messages[0].role, MessageRole::Assistant);
+        assert!(state.messages[0].streaming);
+    }
+
+    #[test]
+    fn test_handle_response_chunk() {
+        let mut state = AppState::new();
+
+        // Start response first
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        // Add content chunk
+        state.handle_agent_message(FromAgent::ResponseChunk {
+            response_id: "resp-1".to_string(),
+            content: "Hello ".to_string(),
+            is_thinking: false,
+        });
+
+        state.handle_agent_message(FromAgent::ResponseChunk {
+            response_id: "resp-1".to_string(),
+            content: "world!".to_string(),
+            is_thinking: false,
+        });
+
+        assert_eq!(state.messages[0].content, "Hello world!");
+    }
+
+    #[test]
+    fn test_handle_response_chunk_thinking() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        state.handle_agent_message(FromAgent::ResponseChunk {
+            response_id: "resp-1".to_string(),
+            content: "**Analyzing**".to_string(),
+            is_thinking: true,
+        });
+
+        assert_eq!(state.messages[0].thinking, "**Analyzing**");
+        assert_eq!(state.thinking_header, Some("Analyzing".to_string()));
+    }
+
+    #[test]
+    fn test_handle_response_end() {
+        let mut state = AppState::new();
+        state.busy = true;
+
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        state.handle_agent_message(FromAgent::ResponseEnd {
+            response_id: "resp-1".to_string(),
+            usage: None,
+        });
+
+        assert!(!state.messages[0].streaming);
+        assert!(!state.busy);
+        assert!(state.thinking_header.is_none());
+    }
+
+    #[test]
+    fn test_handle_tool_call() {
+        let mut state = AppState::new();
+
+        // Add an assistant message first
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        state.handle_agent_message(FromAgent::ToolCall {
+            call_id: "call-1".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({"command": "ls"}),
+            requires_approval: true,
+        });
+
+        assert_eq!(state.messages[0].tool_calls.len(), 1);
+        let tc = &state.messages[0].tool_calls[0];
+        assert_eq!(tc.call_id, "call-1");
+        assert_eq!(tc.tool, "bash");
+        assert_eq!(tc.status, ToolCallStatus::Pending);
+    }
+
+    #[test]
+    fn test_handle_tool_call_no_approval() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        state.handle_agent_message(FromAgent::ToolCall {
+            call_id: "call-1".to_string(),
+            tool: "read".to_string(),
+            args: serde_json::json!({}),
+            requires_approval: false,
+        });
+
+        let tc = &state.messages[0].tool_calls[0];
+        assert_eq!(tc.status, ToolCallStatus::Running);
+    }
+
+    #[test]
+    fn test_handle_tool_lifecycle() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        state.handle_agent_message(FromAgent::ToolCall {
+            call_id: "call-1".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({}),
+            requires_approval: false,
+        });
+
+        // Tool started
+        state.handle_agent_message(FromAgent::ToolStart {
+            call_id: "call-1".to_string(),
+        });
+        assert_eq!(
+            state.messages[0].tool_calls[0].status,
+            ToolCallStatus::Running
+        );
+
+        // Tool output
+        state.handle_agent_message(FromAgent::ToolOutput {
+            call_id: "call-1".to_string(),
+            content: "file1.txt\n".to_string(),
+        });
+        assert!(state.messages[0].tool_calls[0].output.contains("file1.txt"));
+
+        // Tool completed
+        state.handle_agent_message(FromAgent::ToolEnd {
+            call_id: "call-1".to_string(),
+            success: true,
+        });
+        assert_eq!(
+            state.messages[0].tool_calls[0].status,
+            ToolCallStatus::Completed
+        );
+    }
+
+    #[test]
+    fn test_handle_tool_failure() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        state.handle_agent_message(FromAgent::ToolCall {
+            call_id: "call-1".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({}),
+            requires_approval: false,
+        });
+
+        state.handle_agent_message(FromAgent::ToolEnd {
+            call_id: "call-1".to_string(),
+            success: false,
+        });
+
+        assert_eq!(
+            state.messages[0].tool_calls[0].status,
+            ToolCallStatus::Failed
+        );
+    }
+
+    #[test]
+    fn test_handle_error() {
+        let mut state = AppState::new();
+        state.busy = true;
+
+        state.handle_agent_message(FromAgent::Error {
+            message: "Connection failed".to_string(),
+            fatal: false,
+        });
+
+        assert_eq!(state.error, Some("Connection failed".to_string()));
+        assert!(!state.busy);
+    }
+
+    #[test]
+    fn test_handle_status() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::Status {
+            message: "Loading...".to_string(),
+        });
+
+        assert_eq!(state.status, Some("Loading...".to_string()));
+    }
+
+    #[test]
+    fn test_handle_session_info() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::SessionInfo {
+            session_id: Some("sess-123".to_string()),
+            cwd: "/home/user".to_string(),
+            git_branch: Some("main".to_string()),
+        });
+
+        assert_eq!(state.session_id, Some("sess-123".to_string()));
+        assert_eq!(state.cwd, Some("/home/user".to_string()));
+        assert_eq!(state.git_branch, Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_handle_batch_events() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::BatchStart { total: 5 });
+        assert!(state.status.as_ref().unwrap().contains("5"));
+
+        state.handle_agent_message(FromAgent::BatchEnd {
+            total: 5,
+            successes: 4,
+            failures: 1,
+        });
+        assert!(state.status.as_ref().unwrap().contains("4"));
+        assert!(state.status.as_ref().unwrap().contains("failed"));
+    }
+
+    #[test]
+    fn test_handle_hook_blocked() {
+        let mut state = AppState::new();
+
+        state.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        });
+
+        state.handle_agent_message(FromAgent::ToolCall {
+            call_id: "call-1".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({}),
+            requires_approval: false,
+        });
+
+        state.handle_agent_message(FromAgent::HookBlocked {
+            call_id: "call-1".to_string(),
+            tool: "bash".to_string(),
+            reason: "Blocked by security hook".to_string(),
+        });
+
+        assert_eq!(
+            state.messages[0].tool_calls[0].status,
+            ToolCallStatus::Blocked
+        );
+    }
+
+    // ============================================================
+    // Extract Thinking Header Tests
+    // ============================================================
+
+    #[test]
+    fn test_extract_thinking_header_basic() {
+        let text = "Some text **Header** more text";
+        assert_eq!(extract_thinking_header(text), Some("Header".to_string()));
+    }
+
+    #[test]
+    fn test_extract_thinking_header_multiple() {
+        let text = "**First** some text **Second**";
+        // Should extract the last complete header
+        assert_eq!(extract_thinking_header(text), Some("Second".to_string()));
+    }
+
+    #[test]
+    fn test_extract_thinking_header_none() {
+        assert_eq!(extract_thinking_header("no header here"), None);
+        assert_eq!(extract_thinking_header("**incomplete"), None);
+        assert_eq!(extract_thinking_header(""), None);
+    }
+
+    #[test]
+    fn test_extract_thinking_header_empty() {
+        let text = "**** more";
+        // Empty header between ** ** should not be extracted
+        assert_eq!(extract_thinking_header(text), None);
+    }
+
+    #[test]
+    fn test_extract_thinking_header_long() {
+        let long_header = "a".repeat(150);
+        let text = format!("**{}**", long_header);
+        // Headers > 100 chars are rejected
+        assert_eq!(extract_thinking_header(&text), None);
+    }
+
+    #[test]
+    fn test_extract_thinking_header_multiline() {
+        let text = "**Header\nwith newline**";
+        // Should only take first line
+        assert_eq!(extract_thinking_header(text), Some("Header".to_string()));
+    }
+
+    // ============================================================
+    // Edge Cases and Boundary Tests
+    // ============================================================
+
+    #[test]
+    fn test_empty_input_operations() {
+        let mut state = AppState::new();
+
+        // Operations on empty input should not panic
+        state.backspace();
+        state.delete();
+        state.move_left();
+        state.move_right();
+        state.move_home();
+        state.move_end();
+
+        assert_eq!(state.input(), "");
+        assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn test_very_long_input() {
+        let mut state = AppState::new();
+        let long_text = "a".repeat(100_000);
+        state.set_input(&long_text);
+
+        assert_eq!(state.input().len(), 100_000);
+        assert_eq!(state.cursor(), 100_000);
+
+        state.move_home();
+        assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn test_combining_characters() {
+        let mut state = AppState::new();
+        // é can be composed as e + combining acute accent
+        state.set_input("café");
+        assert_eq!(state.input(), "café");
+
+        // Cursor movement should work
+        state.move_home();
+        state.move_right();
+        state.move_right();
+        state.move_right();
+        state.move_right();
+    }
+
+    #[test]
+    fn test_tool_call_state_clone() {
+        let tc = ToolCallState {
+            call_id: "call-1".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({"command": "ls"}),
+            status: ToolCallStatus::Completed,
+            output: "output".to_string(),
+        };
+
+        let cloned = tc.clone();
+        assert_eq!(cloned.call_id, tc.call_id);
+        assert_eq!(cloned.status, tc.status);
+    }
+
+    #[test]
+    fn test_message_clone() {
+        let msg = Message {
+            id: "msg-1".to_string(),
+            role: MessageRole::User,
+            content: "Hello".to_string(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: vec![],
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        };
+
+        let cloned = msg.clone();
+        assert_eq!(cloned.id, msg.id);
+        assert_eq!(cloned.content, msg.content);
+    }
+}
