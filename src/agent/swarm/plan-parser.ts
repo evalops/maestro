@@ -99,10 +99,46 @@ export function parsePlanContent(content: string): ParsedPlan {
 		}
 	}
 
-	// Convert raw tasks to SwarmTasks
-	const tasks = rawTasks
-		.filter((t) => !t.completed) // Only include incomplete tasks
-		.map((raw, index) => convertToSwarmTask(raw, index, rawTasks));
+	// Convert raw tasks to SwarmTasks (incomplete only)
+	const incompleteTasks = rawTasks.filter((t) => !t.completed);
+	const tasks = incompleteTasks.map((raw, index) =>
+		convertToSwarmTask(raw, index, rawTasks),
+	);
+
+	// Build mapping from raw task index -> full task ID (only for incomplete tasks).
+	const rawIndexByLine = new Map<number, number>();
+	for (const [rawIndex, raw] of rawTasks.entries()) {
+		rawIndexByLine.set(raw.lineNumber, rawIndex);
+	}
+
+	const rawIndexToFullId = new Map<number, string>();
+	for (const [incompleteIndex, raw] of incompleteTasks.entries()) {
+		const rawIndex =
+			rawIndexByLine.get(raw.lineNumber) ?? rawTasks.indexOf(raw);
+		rawIndexToFullId.set(rawIndex, tasks[incompleteIndex].id);
+	}
+
+	// Resolve dependencies to full IDs so executor checks work.
+	// Dependencies refer to task numbers in the full raw list; if a dependency
+	// points to a completed task, it's considered already satisfied and skipped.
+	for (const [incompleteIndex, raw] of incompleteTasks.entries()) {
+		const currentRawIndex =
+			rawIndexByLine.get(raw.lineNumber) ?? rawTasks.indexOf(raw);
+		const baseDeps = extractDependencies(raw.text, currentRawIndex, rawTasks);
+		if (baseDeps.length === 0) continue;
+
+		const depRawIndices = baseDeps
+			.map((dep) => Number.parseInt(dep.replace(/^task-/, ""), 10) - 1)
+			.filter((idx) => idx >= 0);
+
+		const fullDeps = depRawIndices
+			.map((idx) => rawIndexToFullId.get(idx))
+			.filter((dep): dep is string => Boolean(dep));
+
+		if (fullDeps.length > 0) {
+			tasks[incompleteIndex].dependsOn = fullDeps;
+		}
+	}
 
 	logger.debug("Parsed plan", {
 		title,
@@ -179,12 +215,6 @@ function convertToSwarmTask(
 	const files = extractFileReferences(raw.text);
 	if (files.length > 0) {
 		task.files = files;
-	}
-
-	// Check for dependency markers
-	const deps = extractDependencies(raw.text, index, allTasks);
-	if (deps.length > 0) {
-		task.dependsOn = deps;
 	}
 
 	return task;

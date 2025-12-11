@@ -25,6 +25,7 @@ import type {
 	AgentTool,
 	Api,
 	AssistantMessage,
+	Message,
 	Model,
 	TextContent,
 	ThinkingContent,
@@ -663,9 +664,28 @@ export function createAgentRunner(
 				const parts: string[] = [];
 				let remaining = text;
 				let partNum = 1;
+				const maxChunk = SLACK_MAX_LENGTH - 50;
+
 				while (remaining.length > 0) {
-					const chunk = remaining.substring(0, SLACK_MAX_LENGTH - 50);
-					remaining = remaining.substring(SLACK_MAX_LENGTH - 50);
+					if (remaining.length <= maxChunk) {
+						parts.push(remaining);
+						break;
+					}
+
+					let cut = maxChunk;
+					const window = remaining.slice(0, maxChunk);
+					const breakCandidates = [
+						window.lastIndexOf("\n\n"),
+						window.lastIndexOf("\n"),
+						window.lastIndexOf(" "),
+					].filter((i) => i > -1);
+					const preferred = breakCandidates.find((i) => i >= maxChunk * 0.6);
+					if (preferred !== undefined) {
+						cut = preferred;
+					}
+
+					const chunk = remaining.slice(0, cut);
+					remaining = remaining.slice(cut);
 					const suffix =
 						remaining.length > 0 ? `\n_(continued ${partNum}...)_` : "";
 					parts.push(chunk + suffix);
@@ -877,25 +897,32 @@ export function createAgentRunner(
 				userPrompt += fileContentSection;
 			}
 
-			// Debug: write full context to file
-			const toolDefs = tools.map((t) => ({
-				name: t.name,
-				description: t.description,
-				parameters: t.parameters,
-			}));
-			const debugPrompt =
-				`=== SYSTEM PROMPT (${systemPrompt.length} chars) ===\n\n${systemPrompt}\n\n` +
-				`=== TOOL DEFINITIONS (${JSON.stringify(toolDefs).length} chars) ===\n\n${JSON.stringify(toolDefs, null, 2)}\n\n` +
-				`=== USER PROMPT (${userPrompt.length} chars) ===\n\n${userPrompt}`;
-			await writeFile(
-				join(channelDir, "last_prompt.txt"),
-				debugPrompt,
-				"utf-8",
-			);
+			// Debug: write full context to file (guarded to avoid persisting secrets)
+			if (process.env.SLACK_AGENT_DEBUG_PROMPTS === "1") {
+				const toolDefs = tools.map((t) => ({
+					name: t.name,
+					description: t.description,
+					parameters: t.parameters,
+				}));
+				const debugPrompt =
+					`=== SYSTEM PROMPT (${systemPrompt.length} chars) ===\n\n${systemPrompt}\n\n` +
+					`=== TOOL DEFINITIONS (${JSON.stringify(toolDefs).length} chars) ===\n\n${JSON.stringify(toolDefs, null, 2)}\n\n` +
+					`=== USER PROMPT (${userPrompt.length} chars) ===\n\n${userPrompt}`;
+				await writeFile(
+					join(channelDir, "last_prompt.txt"),
+					debugPrompt,
+					"utf-8",
+				);
+			}
+
+			const activeAgent = agent;
+			if (!activeAgent) {
+				throw new Error("Agent not initialized");
+			}
 
 			// Run with retry logic for transient API failures
 			await withRetry(
-				() => agent.prompt(userPrompt),
+				() => activeAgent.prompt(userPrompt),
 				DEFAULT_RETRY_CONFIG,
 				(attempt, error, delayMs) => {
 					const delaySec = (delayMs / 1000).toFixed(1);
@@ -917,13 +944,13 @@ export function createAgentRunner(
 			await queue.flush();
 
 			// Get final assistant message and replace main message
-			const messages = agent.state.messages;
+			const messages = activeAgent.state.messages as Message[];
 			const lastAssistant = messages
-				.filter((m) => m.role === "assistant")
+				.filter((m): m is AssistantMessage => m.role === "assistant")
 				.pop();
 			const finalText =
 				lastAssistant?.content
-					.filter((c): c is { type: "text"; text: string } => c.type === "text")
+					.filter((c): c is TextContent => c.type === "text")
 					.map((c) => c.text)
 					.join("\n") || "";
 

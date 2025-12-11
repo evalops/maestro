@@ -298,12 +298,17 @@ fn estimate_text_tokens(text: &str) -> u64 {
 
 /// Truncate text to a maximum length, preserving word boundaries
 fn truncate_text(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
+    if text.chars().count() <= max_chars {
         return text.to_string();
     }
 
-    // Find a good break point (space or newline)
-    let truncated = &text[..max_chars];
+    // Find a good break point (space or newline). Slice on a UTF-8 boundary.
+    let end_idx = text
+        .char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| text.len());
+    let truncated = &text[..end_idx];
     if let Some(pos) = truncated.rfind(|c: char| c.is_whitespace()) {
         format!("{}...", &truncated[..pos].trim())
     } else {
@@ -437,6 +442,14 @@ mod tests {
         let truncated = truncate_text(text, 15);
         assert!(truncated.ends_with("..."));
         assert!(truncated.len() <= 18); // 15 + "..."
+    }
+
+    #[test]
+    fn test_truncate_text_utf8_safe_no_panic() {
+        // Previously would panic because byte length > max_chars while char length <= max_chars.
+        let text = "😀😀😀";
+        let truncated = truncate_text(text, 5);
+        assert_eq!(truncated, text);
     }
 
     #[test]

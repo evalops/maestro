@@ -200,6 +200,10 @@ if (previousLines.length > newLines.length) {
 }
 ```
 
+## Related
+
+If you’re looking for the full Composer client with native scrollback support (especially over SSH), see the Rust TUI binary in `packages/tui-rs/README.md`.
+
 ### Synchronized Output (DECSET 2026)
 
 The TUI wraps render output in synchronized output markers to prevent tearing:

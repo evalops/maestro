@@ -33,16 +33,16 @@ describe("parseTimeExpression", () => {
 	it("parses 'at HH:MM' for future time today", () => {
 		const result = parseTimeExpression("at 14:00", now);
 		expect(result).not.toBeNull();
-		expect(result?.getHours()).toBe(14);
-		expect(result?.getMinutes()).toBe(0);
-		expect(result?.getDate()).toBe(now.getDate());
+		expect(result?.getUTCHours()).toBe(14);
+		expect(result?.getUTCMinutes()).toBe(0);
+		expect(result?.getUTCDate()).toBe(now.getUTCDate());
 	});
 
 	it("parses 'at HH:MM' for past time (schedules tomorrow)", () => {
 		// Use a time that's definitely in the past relative to 10:30
 		const result = parseTimeExpression("at 8:00", now);
 		expect(result).not.toBeNull();
-		expect(result?.getHours()).toBe(8);
+		expect(result?.getUTCHours()).toBe(8);
 		// Should be tomorrow (next day)
 		expect(result?.getTime()).toBeGreaterThan(now.getTime());
 	});
@@ -50,22 +50,22 @@ describe("parseTimeExpression", () => {
 	it("parses 'at Ham/pm' format", () => {
 		const result = parseTimeExpression("at 3pm", now);
 		expect(result).not.toBeNull();
-		expect(result?.getHours()).toBe(15);
+		expect(result?.getUTCHours()).toBe(15);
 	});
 
 	it("parses 'tomorrow at HH:MM'", () => {
 		const result = parseTimeExpression("tomorrow at 9:30", now);
 		expect(result).not.toBeNull();
-		expect(result?.getDate()).toBe(now.getDate() + 1);
-		expect(result?.getHours()).toBe(9);
-		expect(result?.getMinutes()).toBe(30);
+		expect(result?.getUTCDate()).toBe(now.getUTCDate() + 1);
+		expect(result?.getUTCHours()).toBe(9);
+		expect(result?.getUTCMinutes()).toBe(30);
 	});
 
 	it("parses 'tomorrow' without time (defaults to 9am)", () => {
 		const result = parseTimeExpression("tomorrow", now);
 		expect(result).not.toBeNull();
-		expect(result?.getDate()).toBe(now.getDate() + 1);
-		expect(result?.getHours()).toBe(9);
+		expect(result?.getUTCDate()).toBe(now.getUTCDate() + 1);
+		expect(result?.getUTCHours()).toBe(9);
 	});
 
 	it("returns null for invalid expressions", () => {
@@ -132,7 +132,7 @@ describe("getNextRunFromSchedule", () => {
 		const now = new Date("2024-01-15T10:30:00Z");
 		const next = getNextRunFromSchedule("0 * * * *", now);
 		// Should be at the next hour mark
-		expect(next.getMinutes()).toBe(0);
+		expect(next.getUTCMinutes()).toBe(0);
 		expect(next.getTime()).toBeGreaterThan(now.getTime());
 	});
 
@@ -141,8 +141,8 @@ describe("getNextRunFromSchedule", () => {
 		const next = getNextRunFromSchedule("0 9 * * *", now);
 		// Should be in the future
 		expect(next.getTime()).toBeGreaterThan(now.getTime());
-		expect(next.getHours()).toBe(9);
-		expect(next.getMinutes()).toBe(0);
+		expect(next.getUTCHours()).toBe(9);
+		expect(next.getUTCMinutes()).toBe(0);
 	});
 
 	it("calculates next run for weekday schedule", () => {
@@ -150,15 +150,15 @@ describe("getNextRunFromSchedule", () => {
 		const next = getNextRunFromSchedule("0 9 * * 1-5", now);
 		// Should be a weekday (1-5) in the future
 		expect(next.getTime()).toBeGreaterThan(now.getTime());
-		expect(next.getDay()).toBeGreaterThanOrEqual(1);
-		expect(next.getDay()).toBeLessThanOrEqual(5);
+		expect(next.getUTCDay()).toBeGreaterThanOrEqual(1);
+		expect(next.getUTCDay()).toBeLessThanOrEqual(5);
 	});
 
 	it("calculates next run for specific day schedule", () => {
 		const now = new Date("2024-01-15T10:30:00Z"); // Monday
 		const next = getNextRunFromSchedule("0 10 * * 3", now); // Wednesday
-		expect(next.getDay()).toBe(3);
-		expect(next.getHours()).toBe(10);
+		expect(next.getUTCDay()).toBe(3);
+		expect(next.getUTCHours()).toBe(10);
 		expect(next.getTime()).toBeGreaterThan(now.getTime());
 	});
 });
