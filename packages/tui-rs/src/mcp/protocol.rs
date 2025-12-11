@@ -227,6 +227,12 @@ impl McpToolResult {
     }
 }
 
+impl std::fmt::Display for McpToolResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_string())
+    }
+}
+
 /// Content in tool results
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
