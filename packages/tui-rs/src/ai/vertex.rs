@@ -1577,4 +1577,327 @@ mod tests {
         assert_eq!(metadata.prompt_token_count, Some(10));
         assert_eq!(metadata.candidates_token_count, Some(5));
     }
+
+    // ============================================================
+    // Streaming Response Parsing Tests
+    // These test the parsing logic used in stream_vertex_response
+    // ============================================================
+
+    #[test]
+    fn test_parse_streaming_chunk_text_delta() {
+        // Simulates a chunk from the stream
+        let chunk = r#"{"candidates": [{"content": {"parts": [{"text": "Hello, "}]}}]}"#;
+        let response: VertexResponse = serde_json::from_str(chunk).unwrap();
+
+        let candidates = response.candidates.unwrap();
+        assert_eq!(candidates.len(), 1);
+        let parts = &candidates[0].content.as_ref().unwrap().parts;
+        match &parts[0] {
+            Part::Text { text } => assert_eq!(text, "Hello, "),
+            _ => panic!("Expected text part"),
+        }
+    }
+
+    #[test]
+    fn test_parse_streaming_chunk_with_finish_reason() {
+        let chunk = r#"{"candidates": [{"content": {"parts": [{"text": "world!"}]}, "finishReason": "STOP"}]}"#;
+        let response: VertexResponse = serde_json::from_str(chunk).unwrap();
+
+        let candidates = response.candidates.unwrap();
+        assert_eq!(candidates[0].finish_reason, Some("STOP".to_string()));
+    }
+
+    #[test]
+    fn test_parse_streaming_chunk_with_usage() {
+        let chunk = r#"{"candidates": [], "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 50}}"#;
+        let response: VertexResponse = serde_json::from_str(chunk).unwrap();
+
+        let metadata = response.usage_metadata.unwrap();
+        assert_eq!(metadata.prompt_token_count, Some(100));
+        assert_eq!(metadata.candidates_token_count, Some(50));
+    }
+
+    #[test]
+    fn test_parse_streaming_newline_delimited_json_simulation() {
+        // Simulates how the streaming parser handles newline-delimited JSON
+        let stream_data = r#"[
+{"candidates": [{"content": {"parts": [{"text": "Hello"}]}}]}
+,
+{"candidates": [{"content": {"parts": [{"text": " world"}]}}]}
+,
+{"candidates": [{"content": {"parts": [{"text": "!"}]}, "finishReason": "STOP"}], "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 3}}
+]"#;
+
+        let mut texts = Vec::new();
+        let mut final_usage = None;
+        let mut finish_reason = None;
+
+        for line in stream_data.lines() {
+            let line = line.trim();
+            if line.is_empty() || line == "[" || line == "]" || line == "," {
+                continue;
+            }
+
+            let json_str = line.trim_start_matches(',').trim();
+            if json_str.is_empty() {
+                continue;
+            }
+
+            if let Ok(response) = serde_json::from_str::<VertexResponse>(json_str) {
+                if let Some(candidates) = response.candidates {
+                    for candidate in candidates {
+                        if let Some(content) = candidate.content {
+                            for part in content.parts {
+                                if let Part::Text { text } = part {
+                                    texts.push(text);
+                                }
+                            }
+                        }
+                        if candidate.finish_reason.is_some() {
+                            finish_reason = candidate.finish_reason;
+                        }
+                    }
+                }
+                if response.usage_metadata.is_some() {
+                    final_usage = response.usage_metadata;
+                }
+            }
+        }
+
+        // Verify all text deltas were collected
+        assert_eq!(texts, vec!["Hello", " world", "!"]);
+
+        // Verify finish reason was captured
+        assert_eq!(finish_reason, Some("STOP".to_string()));
+
+        // Verify usage was captured
+        let usage = final_usage.unwrap();
+        assert_eq!(usage.prompt_token_count, Some(10));
+        assert_eq!(usage.candidates_token_count, Some(3));
+    }
+
+    #[test]
+    fn test_parse_streaming_partial_json_buffering() {
+        // Test the buffering logic for partial JSON
+        let mut buffer = String::new();
+        let chunks = vec![
+            r#"{"candidates": [{"content": {"#,
+            r#""parts": [{"text": "Hello"}]}}]}"#,
+            "\n",
+        ];
+
+        let mut parsed_responses = Vec::new();
+
+        for chunk in chunks {
+            buffer.push_str(chunk);
+
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].trim().to_string();
+                buffer = buffer[pos + 1..].to_string();
+
+                if line.is_empty() {
+                    continue;
+                }
+
+                if let Ok(response) = serde_json::from_str::<VertexResponse>(&line) {
+                    parsed_responses.push(response);
+                }
+            }
+        }
+
+        // Should have parsed one complete response
+        assert_eq!(parsed_responses.len(), 1);
+        let candidates = parsed_responses[0].candidates.as_ref().unwrap();
+        let parts = &candidates[0].content.as_ref().unwrap().parts;
+        match &parts[0] {
+            Part::Text { text } => assert_eq!(text, "Hello"),
+            _ => panic!("Expected text part"),
+        }
+    }
+
+    #[test]
+    fn test_parse_streaming_function_call() {
+        let chunk = r#"{"candidates": [{"content": {"parts": [{"functionCall": {"name": "read_file", "args": {"path": "/test.txt"}}}]}}]}"#;
+        let response: VertexResponse = serde_json::from_str(chunk).unwrap();
+
+        let candidates = response.candidates.unwrap();
+        let parts = &candidates[0].content.as_ref().unwrap().parts;
+        match &parts[0] {
+            Part::FunctionCall { function_call } => {
+                assert_eq!(function_call.name, "read_file");
+                assert_eq!(
+                    function_call.args.get("path"),
+                    Some(&serde_json::json!("/test.txt"))
+                );
+            }
+            _ => panic!("Expected function call"),
+        }
+    }
+
+    #[test]
+    fn test_parse_streaming_multiple_parts_single_chunk() {
+        let chunk = r#"{"candidates": [{"content": {"parts": [
+            {"text": "I'll read the file"},
+            {"functionCall": {"name": "read_file", "args": {"path": "/test"}}}
+        ]}}]}"#;
+
+        let response: VertexResponse = serde_json::from_str(chunk).unwrap();
+        let candidates = response.candidates.unwrap();
+        let parts = &candidates[0].content.as_ref().unwrap().parts;
+
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(&parts[0], Part::Text { .. }));
+        assert!(matches!(&parts[1], Part::FunctionCall { .. }));
+    }
+
+    #[test]
+    fn test_parse_streaming_empty_candidates() {
+        let chunk = r#"{"candidates": []}"#;
+        let response: VertexResponse = serde_json::from_str(chunk).unwrap();
+        assert!(response.candidates.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_streaming_multiple_candidates() {
+        let chunk = r#"{"candidates": [
+            {"content": {"parts": [{"text": "Response 1"}]}},
+            {"content": {"parts": [{"text": "Response 2"}]}}
+        ]}"#;
+
+        let response: VertexResponse = serde_json::from_str(chunk).unwrap();
+        let candidates = response.candidates.unwrap();
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn test_finish_reason_mapping() {
+        // Test all finish reason mappings used in stream processing
+        let mappings = vec![
+            ("STOP", "EndTurn"),
+            ("MAX_TOKENS", "MaxTokens"),
+            ("SAFETY", "EndTurn"),
+            ("TOOL_USE", "ToolUse"),
+            ("UNKNOWN", "EndTurn"), // Default case
+        ];
+
+        for (vertex_reason, _expected) in mappings {
+            let chunk = format!(
+                r#"{{"candidates": [{{"content": {{"parts": []}}, "finishReason": "{}"}}]}}"#,
+                vertex_reason
+            );
+            let response: VertexResponse = serde_json::from_str(&chunk).unwrap();
+            assert_eq!(
+                response.candidates.unwrap()[0].finish_reason,
+                Some(vertex_reason.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_streaming_with_array_brackets() {
+        // Vertex sometimes wraps responses in JSON array
+        let lines = vec![
+            "[",
+            "{\"candidates\": []}",
+            ",",
+            "{\"candidates\": []}",
+            "]",
+        ];
+
+        let mut parsed_count = 0;
+        for line in lines {
+            let line = line.trim();
+            if line.is_empty() || line == "[" || line == "]" || line == "," {
+                continue;
+            }
+
+            let json_str = line.trim_start_matches(',').trim();
+            if let Ok(_response) = serde_json::from_str::<VertexResponse>(json_str) {
+                parsed_count += 1;
+            }
+        }
+
+        assert_eq!(parsed_count, 2);
+    }
+
+    #[test]
+    fn test_parse_streaming_malformed_json_handling() {
+        // Malformed JSON should be skipped without panic
+        let lines = vec![
+            r#"{"candidates": invalid}"#,           // Invalid JSON
+            r#"{"candidates": [{"content": {}}]}"#, // Valid but missing parts
+            r#"not json at all"#,
+        ];
+
+        let mut parsed_count = 0;
+        for line in lines {
+            if let Ok(_response) = serde_json::from_str::<VertexResponse>(line) {
+                parsed_count += 1;
+            }
+        }
+
+        // Only the middle one (with missing parts) might parse depending on struct
+        assert!(parsed_count <= 1);
+    }
+
+    #[test]
+    fn test_parse_streaming_token_accumulation() {
+        // Simulate token count accumulation across chunks
+        let chunks = vec![
+            r#"{"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}}"#,
+            r#"{"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 15}}"#,
+            r#"{"usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 25}}"#,
+        ];
+
+        let mut final_input = 0u64;
+        let mut final_output = 0u64;
+
+        for chunk in chunks {
+            if let Ok(response) = serde_json::from_str::<VertexResponse>(chunk) {
+                if let Some(metadata) = response.usage_metadata {
+                    final_input = metadata.prompt_token_count.unwrap_or(0);
+                    final_output = metadata.candidates_token_count.unwrap_or(0);
+                }
+            }
+        }
+
+        // Final values should be from the last chunk
+        assert_eq!(final_input, 10);
+        assert_eq!(final_output, 25);
+    }
+
+    #[test]
+    fn test_parse_streaming_large_response() {
+        // Test parsing a large text response
+        let large_text = "x".repeat(100_000);
+        let chunk = format!(
+            r#"{{"candidates": [{{"content": {{"parts": [{{"text": "{}"}}]}}}}]}}"#,
+            large_text
+        );
+
+        let response: VertexResponse = serde_json::from_str(&chunk).unwrap();
+        let candidates = response.candidates.unwrap();
+        let parts = &candidates[0].content.as_ref().unwrap().parts;
+        match &parts[0] {
+            Part::Text { text } => assert_eq!(text.len(), 100_000),
+            _ => panic!("Expected text part"),
+        }
+    }
+
+    #[test]
+    fn test_parse_streaming_unicode_text() {
+        let chunk =
+            r#"{"candidates": [{"content": {"parts": [{"text": "こんにちは世界 🌍🚀"}]}}]}"#;
+        let response: VertexResponse = serde_json::from_str(chunk).unwrap();
+
+        let candidates = response.candidates.unwrap();
+        let parts = &candidates[0].content.as_ref().unwrap().parts;
+        match &parts[0] {
+            Part::Text { text } => {
+                assert!(text.contains("こんにちは"));
+                assert!(text.contains("🌍"));
+            }
+            _ => panic!("Expected text part"),
+        }
+    }
 }

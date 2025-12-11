@@ -228,6 +228,67 @@ pub struct CacheStats {
     pub hit_rate: f64,
 }
 
+/// Thread-safe wrapper for ToolResultCache
+/// Use this when you need to share the cache across async tasks or threads.
+#[derive(Debug)]
+pub struct SharedCache {
+    inner: std::sync::RwLock<ToolResultCache>,
+}
+
+impl SharedCache {
+    /// Create a new shared cache with default configuration
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::RwLock::new(ToolResultCache::default()),
+        }
+    }
+
+    /// Create a new shared cache with the given configuration
+    pub fn with_config(config: CacheConfig) -> Self {
+        Self {
+            inner: std::sync::RwLock::new(ToolResultCache::new(config)),
+        }
+    }
+
+    /// Get a cached result (returns a clone)
+    pub fn get(&self, key: &CacheKey) -> Option<CachedResult> {
+        self.inner.write().ok()?.get(key).cloned()
+    }
+
+    /// Store a result in the cache
+    pub fn put(&self, key: CacheKey, result: CachedResult) {
+        if let Ok(mut cache) = self.inner.write() {
+            cache.put(key, result);
+        }
+    }
+
+    /// Get cache statistics
+    pub fn stats(&self) -> Option<CacheStats> {
+        self.inner.read().ok().map(|cache| cache.stats())
+    }
+
+    /// Clear all entries
+    pub fn clear(&self) {
+        if let Ok(mut cache) = self.inner.write() {
+            cache.clear();
+        }
+    }
+
+    /// Check if a tool is cacheable
+    pub fn is_cacheable(&self, tool_name: &str) -> bool {
+        self.inner
+            .read()
+            .map(|cache| cache.is_cacheable(tool_name))
+            .unwrap_or(false)
+    }
+}
+
+impl Default for SharedCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1635,5 +1696,265 @@ mod tests {
 
         let stats = cache.stats();
         assert!((stats.hit_rate - 0.333).abs() < 0.01);
+    }
+
+    // ============================================================
+    // SharedCache Thread Safety Tests
+    // ============================================================
+
+    #[test]
+    fn test_shared_cache_basic_operations() {
+        let cache = SharedCache::new();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+
+        cache.put(key.clone(), CachedResult::new("content", false));
+
+        let result = cache.get(&key);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().output, "content");
+    }
+
+    #[test]
+    fn test_shared_cache_stats() {
+        let cache = SharedCache::new();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+
+        cache.put(key.clone(), CachedResult::new("content", false));
+        let _ = cache.get(&key);
+
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.hits, 1);
+    }
+
+    #[test]
+    fn test_shared_cache_clear() {
+        let cache = SharedCache::new();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+
+        cache.put(key.clone(), CachedResult::new("content", false));
+        assert!(cache.get(&key).is_some());
+
+        cache.clear();
+        assert!(cache.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_shared_cache_is_cacheable() {
+        let cache = SharedCache::new();
+        assert!(cache.is_cacheable("read"));
+        assert!(!cache.is_cacheable("bash"));
+    }
+
+    #[test]
+    fn test_shared_cache_with_config() {
+        let config = CacheConfig {
+            max_entries: 5,
+            ..Default::default()
+        };
+        let cache = SharedCache::with_config(config);
+
+        // Add 10 entries
+        for i in 0..10 {
+            let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+            cache.put(key, CachedResult::new(format!("{}", i), false));
+        }
+
+        // Should only have 5 entries due to max_entries
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.entries, 5);
+    }
+
+    #[test]
+    fn test_shared_cache_concurrent_writes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(SharedCache::new());
+        let mut handles = vec![];
+
+        // Spawn 10 threads, each writing 100 entries
+        for thread_id in 0..10 {
+            let cache = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                for i in 0..100 {
+                    let key =
+                        CacheKey::new("read", &serde_json::json!({"thread": thread_id, "i": i}));
+                    cache.put(
+                        key,
+                        CachedResult::new(format!("t{}i{}", thread_id, i), false),
+                    );
+                }
+            }));
+        }
+
+        // Wait for all threads
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Cache should have entries (exact count depends on LRU eviction)
+        let stats = cache.stats().unwrap();
+        assert!(stats.entries > 0);
+        assert!(stats.entries <= 100); // max_entries default is 100
+    }
+
+    #[test]
+    fn test_shared_cache_concurrent_reads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(SharedCache::new());
+
+        // Pre-populate cache
+        for i in 0..50 {
+            let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+            cache.put(key, CachedResult::new(format!("{}", i), false));
+        }
+
+        let mut handles = vec![];
+
+        // Spawn 10 threads, each reading all entries
+        for _ in 0..10 {
+            let cache = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                let mut found = 0;
+                for i in 0..50 {
+                    let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+                    if cache.get(&key).is_some() {
+                        found += 1;
+                    }
+                }
+                found
+            }));
+        }
+
+        // Wait for all threads and count results
+        let total_found: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+
+        // Each thread should find all 50 entries (10 threads * 50 entries = 500)
+        assert_eq!(total_found, 500);
+    }
+
+    #[test]
+    fn test_shared_cache_concurrent_read_write() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(SharedCache::new());
+        let mut handles = vec![];
+
+        // Writer thread
+        let cache_w = Arc::clone(&cache);
+        handles.push(thread::spawn(move || {
+            for i in 0..1000 {
+                let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+                cache_w.put(key, CachedResult::new(format!("{}", i), false));
+            }
+        }));
+
+        // Reader threads
+        for _ in 0..5 {
+            let cache_r = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                for i in 0..1000 {
+                    let key = CacheKey::new("read", &serde_json::json!({"id": i % 100}));
+                    let _ = cache_r.get(&key);
+                }
+            }));
+        }
+
+        // All threads should complete without panics
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Stats should be accessible
+        let stats = cache.stats().unwrap();
+        assert!(stats.hits + stats.misses > 0);
+    }
+
+    #[test]
+    fn test_shared_cache_concurrent_clear() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(SharedCache::new());
+        let mut handles = vec![];
+
+        // Writer thread
+        let cache_w = Arc::clone(&cache);
+        handles.push(thread::spawn(move || {
+            for i in 0..500 {
+                let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+                cache_w.put(key, CachedResult::new(format!("{}", i), false));
+            }
+        }));
+
+        // Clearer thread (runs periodically)
+        let cache_c = Arc::clone(&cache);
+        handles.push(thread::spawn(move || {
+            for _ in 0..10 {
+                thread::sleep(std::time::Duration::from_millis(1));
+                cache_c.clear();
+            }
+        }));
+
+        // Reader thread
+        let cache_r = Arc::clone(&cache);
+        handles.push(thread::spawn(move || {
+            for i in 0..500 {
+                let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+                let _ = cache_r.get(&key);
+            }
+        }));
+
+        // All threads should complete without panics or deadlocks
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_shared_cache_default_impl() {
+        let cache = SharedCache::default();
+        let stats = cache.stats().unwrap();
+        assert_eq!(stats.entries, 0);
+    }
+
+    #[test]
+    fn test_shared_cache_stress_test() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(SharedCache::with_config(CacheConfig {
+            max_entries: 10,
+            ..Default::default()
+        }));
+
+        let mut handles = vec![];
+
+        // Many threads doing many operations
+        for thread_id in 0..20 {
+            let cache = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                for i in 0..200 {
+                    let key = CacheKey::new("read", &serde_json::json!({"t": thread_id, "i": i}));
+                    cache.put(key.clone(), CachedResult::new("data", false));
+                    let _ = cache.get(&key);
+                    if i % 50 == 0 {
+                        let _ = cache.stats();
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Cache should be in valid state
+        let stats = cache.stats().unwrap();
+        assert!(stats.entries <= 10);
     }
 }
