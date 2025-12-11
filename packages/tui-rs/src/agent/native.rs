@@ -387,6 +387,9 @@ impl NativeAgent {
         // Create safety controller for doom loop and rate limit detection
         let safety = SafetyController::new();
 
+        // Create context compactor for handling long conversations
+        let compactor = super::compaction::ContextCompactor::new(Default::default());
+
         // Create the background runner
         let runner = NativeAgentRunner {
             client,
@@ -401,6 +404,7 @@ impl NativeAgent {
             cancel_token: None,
             hooks,
             safety,
+            compactor,
         };
 
         // Spawn the background task
@@ -623,6 +627,12 @@ struct NativeAgentRunner {
     /// Prevents runaway agent behavior by blocking repeated identical tool calls
     /// and excessive tool invocations within a time window.
     safety: SafetyController,
+
+    /// Context compactor for handling long conversations
+    ///
+    /// Summarizes older messages when the context grows too large to fit
+    /// within the model's token limit.
+    compactor: super::compaction::ContextCompactor,
 }
 
 impl NativeAgentRunner {
@@ -901,10 +911,25 @@ impl NativeAgentRunner {
                         // Check for context overflow
                         if matches!(stop_reason, Some(crate::ai::StopReason::MaxTokens)) {
                             eprintln!("[agent] Context overflow detected (MaxTokens)");
-                            // Hooks can handle overflow
+                            // Check if compaction is needed and perform it
+                            if self.compactor.needs_compaction(&self.messages) {
+                                eprintln!("[agent] Performing context compaction...");
+                                let result = self.compactor.compact(&self.messages);
+                                if result.was_compacted() {
+                                    eprintln!("[agent] Compacted {} messages", result.compacted_count);
+                                    self.messages = result.messages;
+                                    // Notify the UI about compaction
+                                    let _ = self.event_tx.send(FromAgent::Status {
+                                        message: format!(
+                                            "Context compacted: {} messages summarized",
+                                            result.compacted_count
+                                        ),
+                                    });
+                                }
+                            }
+                            // Hooks can also handle overflow
                             if self.hooks.handle_overflow() {
-                                // TODO: Trigger compaction and continue
-                                eprintln!("[agent] Auto-compaction would trigger here");
+                                eprintln!("[agent] Hooks handling overflow");
                             }
                         }
                         break;
