@@ -115,6 +115,7 @@
 
 mod approval;
 mod command_palette;
+mod config_selector;
 mod file_search;
 mod input;
 mod layout;
@@ -128,6 +129,7 @@ mod theme_selector;
 
 pub use approval::{ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest};
 pub use command_palette::CommandPalette;
+pub use config_selector::{ConfigCategory, ConfigChangeEvent, ConfigOption, ConfigSelector};
 pub use file_search::FileSearchModal;
 pub use input::{EditorWidget, InputWidget};
 pub use layout::{column_layout, row_layout, BoxWidget};
