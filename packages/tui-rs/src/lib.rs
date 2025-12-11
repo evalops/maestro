@@ -217,6 +217,18 @@ pub mod markdown_stream;
 /// SSH, WSL, and terminal emulator detection.
 pub mod terminal_info;
 
+/// Paste burst detection for terminals without bracketed paste.
+/// Heuristic-based detection using keystroke timing.
+pub mod paste_burst;
+
+/// Scroll/selection state for list menus.
+/// Wrap-around navigation and scroll window management.
+pub mod scroll_state;
+
+/// Key binding utilities for keyboard shortcuts.
+/// Platform-aware modifier display.
+pub mod key_binding;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -722,4 +734,50 @@ pub use terminal_info::{
     normalize_pasted_path,      // Normalize pasted file paths
     ssh_connection_info,        // Get SSH connection details
     TerminalInfo,               // Full terminal info struct
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PASTE BURST EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Paste burst detection for terminals without bracketed paste.
+///
+/// Uses keystroke timing heuristics to detect paste-like input,
+/// preventing accidental form submission when pasting multiline content.
+pub use paste_burst::{
+    retro_start_index, // Find byte index for retro-grabbing chars
+    CharDecision,      // Decision for how to handle a character
+    FlushResult,       // Result of flushing the buffer
+    PasteBurst,        // Main detector struct
+    RetroGrab,         // Info about retroactively grabbed text
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCROLL STATE EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Scroll/selection state for list menus.
+///
+/// Encapsulates wrap-around navigation, page up/down, and
+/// automatic scroll window adjustment.
+pub use scroll_state::ScrollState;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KEY BINDING EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Key binding utilities for keyboard shortcuts.
+///
+/// Platform-aware modifier display (⌥ on macOS, alt elsewhere).
+pub use key_binding::{
+    alt,                        // Alt + key binding
+    ctrl,                       // Ctrl + key binding
+    ctrl_alt,                   // Ctrl + Alt + key binding
+    ctrl_shift,                 // Ctrl + Shift + key binding
+    format_key_hint,            // Format binding for help text
+    has_ctrl_or_alt,            // Check for ctrl/alt modifiers
+    is_altgr,                   // Check for AltGr (Windows)
+    plain,                      // Plain key binding
+    shift,                      // Shift + key binding
+    KeyBinding as KeyShortcut,  // Key binding struct (renamed to avoid conflict)
 };
