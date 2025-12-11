@@ -549,7 +549,7 @@ mod tests {
                 "type": "object",
                 "properties": {}
             }))],
-            thinking: None,
+            ..Default::default()
         };
 
         let request = client.build_request(&messages, &config).unwrap();
@@ -575,10 +575,7 @@ mod tests {
         let config = RequestConfig {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 1024,
-            temperature: None,
-            system: None,
-            tools: vec![],
-            thinking: None,
+            ..Default::default()
         };
 
         let request = client.build_request(&messages, &config).unwrap();
@@ -608,9 +605,7 @@ mod tests {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 1024,
             temperature: Some(0.5),
-            system: None,
-            tools: vec![],
-            thinking: None,
+            ..Default::default()
         };
 
         let request = client.build_request(&messages, &config).unwrap();
@@ -632,9 +627,7 @@ mod tests {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 2048,
             temperature: Some(0.9),
-            system: None,
-            tools: vec![],
-            thinking: None,
+            ..Default::default()
         };
 
         let request = client.build_request(&messages, &config).unwrap();
@@ -654,14 +647,12 @@ mod tests {
         let config = RequestConfig {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 1024,
-            temperature: None,
-            system: None,
             tools: vec![
                 Tool::new("tool1", "First tool").with_schema(json!({"type": "object"})),
                 Tool::new("tool2", "Second tool").with_schema(json!({"type": "object"})),
                 Tool::new("tool3", "Third tool").with_schema(json!({"type": "object"})),
             ],
-            thinking: None,
+            ..Default::default()
         };
 
         let request = client.build_request(&messages, &config).unwrap();
@@ -684,10 +675,7 @@ mod tests {
         let config = RequestConfig {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 1024,
-            temperature: None,
-            system: None,
-            tools: vec![],
-            thinking: None,
+            ..Default::default()
         };
 
         let request = client.build_request(&messages, &config).unwrap();
@@ -764,10 +752,8 @@ mod tests {
         let config = RequestConfig {
             model: "gemini-2.0-flash".to_string(),
             max_tokens: 1024,
-            temperature: None,
-            system: None,
             tools: vec![Tool::new("complex_tool", "A complex tool").with_schema(complex_schema.clone())],
-            thinking: None,
+            ..Default::default()
         };
 
         let request = client.build_request(&messages, &config).unwrap();
@@ -792,8 +778,7 @@ mod tests {
             max_tokens: 100,
             temperature: Some(0.5),
             system: Some("Be helpful".to_string()),
-            tools: vec![],
-            thinking: None,
+            ..Default::default()
         };
 
         let request = client.build_request(&messages, &config).unwrap();

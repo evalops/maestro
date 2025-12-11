@@ -146,6 +146,9 @@ pub struct RequestConfig {
     pub system: Option<String>,
     pub tools: Vec<Tool>,
     pub thinking: Option<ThinkingConfig>,
+    /// Enable prompt caching for system prompt (Anthropic only)
+    /// When true, the system prompt will be marked for caching
+    pub cache_system_prompt: bool,
 }
 
 impl Default for RequestConfig {
@@ -157,6 +160,7 @@ impl Default for RequestConfig {
             system: None,
             tools: Vec::new(),
             thinking: None,
+            cache_system_prompt: false,
         }
     }
 }

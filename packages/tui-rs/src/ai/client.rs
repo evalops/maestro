@@ -19,6 +19,8 @@ pub enum AiProvider {
     Mistral,
     /// Google Gemini
     Google,
+    /// Groq - uses OpenAI-compatible API for fast inference
+    Groq,
 }
 
 impl AiProvider {
@@ -40,6 +42,15 @@ impl AiProvider {
             || model_lower.contains("pixtral")
         {
             AiProvider::Mistral
+        } else if model_lower.contains("groq/")
+            || model_lower.starts_with("llama-")
+            || model_lower.starts_with("llama3")
+            || model_lower.contains("deepseek")
+            || model_lower.contains("qwen")
+        {
+            // Groq hosts Llama, DeepSeek, Qwen models with fast inference
+            // Models prefixed with "groq/" explicitly use Groq
+            AiProvider::Groq
         } else {
             // Default to Anthropic for unknown models
             AiProvider::Anthropic
@@ -69,6 +80,8 @@ pub enum UnifiedClient {
     Mistral(OpenAiClient),
     /// Google Gemini
     Google(GoogleClient),
+    /// Groq uses OpenAI client with custom base URL for fast inference
+    Groq(OpenAiClient),
 }
 
 impl UnifiedClient {
@@ -92,6 +105,11 @@ impl UnifiedClient {
         Ok(Self::Google(GoogleClient::from_env()?))
     }
 
+    /// Create client for Groq
+    pub fn groq() -> Result<Self> {
+        Ok(Self::Groq(OpenAiClient::groq_from_env()?))
+    }
+
     /// Create client based on provider
     pub fn from_provider(provider: AiProvider) -> Result<Self> {
         match provider {
@@ -99,6 +117,7 @@ impl UnifiedClient {
             AiProvider::OpenAI => Self::openai(),
             AiProvider::Mistral => Self::mistral(),
             AiProvider::Google => Self::google(),
+            AiProvider::Groq => Self::groq(),
         }
     }
 
@@ -114,6 +133,7 @@ impl UnifiedClient {
             Self::OpenAI(_) => AiProvider::OpenAI,
             Self::Mistral(_) => AiProvider::Mistral,
             Self::Google(_) => AiProvider::Google,
+            Self::Groq(_) => AiProvider::Groq,
         }
     }
 
@@ -128,6 +148,7 @@ impl UnifiedClient {
             Self::OpenAI(client) => client.stream(messages, config).await,
             Self::Mistral(client) => client.stream(messages, config).await,
             Self::Google(client) => client.stream(messages, config).await,
+            Self::Groq(client) => client.stream(messages, config).await,
         }
     }
 }
@@ -206,6 +227,22 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_from_model_groq() {
+        // Explicit Groq prefix
+        assert_eq!(AiProvider::from_model("groq/llama-3.1-70b"), AiProvider::Groq);
+        // Llama models (common on Groq)
+        assert_eq!(AiProvider::from_model("llama-3.1-70b-versatile"), AiProvider::Groq);
+        assert_eq!(AiProvider::from_model("llama3-8b-8192"), AiProvider::Groq);
+        assert_eq!(AiProvider::from_model("llama-guard-3-8b"), AiProvider::Groq);
+        // DeepSeek models
+        assert_eq!(AiProvider::from_model("deepseek-r1-distill-llama-70b"), AiProvider::Groq);
+        // Qwen models
+        assert_eq!(AiProvider::from_model("qwen-2.5-coder-32b"), AiProvider::Groq);
+        // Case insensitive
+        assert_eq!(AiProvider::from_model("Llama-3.1-8B"), AiProvider::Groq);
+    }
+
+    #[test]
     fn test_provider_from_model_default() {
         // Unknown models default to Anthropic
         assert_eq!(
@@ -220,7 +257,9 @@ mod tests {
         assert_eq!(AiProvider::Anthropic, AiProvider::Anthropic);
         assert_eq!(AiProvider::OpenAI, AiProvider::OpenAI);
         assert_eq!(AiProvider::Mistral, AiProvider::Mistral);
+        assert_eq!(AiProvider::Groq, AiProvider::Groq);
         assert_ne!(AiProvider::Anthropic, AiProvider::OpenAI);
         assert_ne!(AiProvider::OpenAI, AiProvider::Mistral);
+        assert_ne!(AiProvider::Mistral, AiProvider::Groq);
     }
 }

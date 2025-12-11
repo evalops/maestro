@@ -260,6 +260,24 @@ impl AnthropicClient {
     }
 
     /// Build the request body
+    ///
+    /// # Prompt Caching
+    ///
+    /// When `cache_system_prompt` is enabled, the system prompt is formatted
+    /// as a content block array with a `cache_control` marker. This enables
+    /// Anthropic's prompt caching feature which can significantly reduce
+    /// latency and cost for repeated requests with the same system prompt.
+    ///
+    /// The cached system prompt format is:
+    /// ```json
+    /// "system": [
+    ///   {
+    ///     "type": "text",
+    ///     "text": "Your system prompt here...",
+    ///     "cache_control": { "type": "ephemeral" }
+    ///   }
+    /// ]
+    /// ```
     fn build_request_body(
         &self,
         messages: &[Message],
@@ -272,16 +290,45 @@ impl AnthropicClient {
             "stream": true,
         });
 
+        // Add system prompt with optional caching
         if let Some(system) = &config.system {
-            body["system"] = serde_json::json!(system);
+            if config.cache_system_prompt {
+                // Use cache_control format for prompt caching
+                body["system"] = serde_json::json!([{
+                    "type": "text",
+                    "text": system,
+                    "cache_control": { "type": "ephemeral" }
+                }]);
+            } else {
+                // Simple string format (no caching)
+                body["system"] = serde_json::json!(system);
+            }
         }
 
         if let Some(temp) = config.temperature {
             body["temperature"] = serde_json::json!(temp);
         }
 
+        // Add tools with cache_control on the last tool for tool definition caching
         if !config.tools.is_empty() {
-            body["tools"] = serde_json::json!(config.tools);
+            if config.cache_system_prompt {
+                // Add cache_control to the last tool for tool definition caching
+                let mut tools_json: Vec<serde_json::Value> = config.tools
+                    .iter()
+                    .map(|t| serde_json::json!(t))
+                    .collect();
+
+                // Add cache_control to the last tool
+                if let Some(last_tool) = tools_json.last_mut() {
+                    if let Some(obj) = last_tool.as_object_mut() {
+                        obj.insert("cache_control".to_string(), serde_json::json!({ "type": "ephemeral" }));
+                    }
+                }
+
+                body["tools"] = serde_json::json!(tools_json);
+            } else {
+                body["tools"] = serde_json::json!(config.tools);
+            }
         }
 
         if let Some(thinking) = &config.thinking {
@@ -607,5 +654,192 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 
         let event = parse_sse_event(data).unwrap();
         assert!(matches!(event, StreamEvent::TextDelta { text, .. } if text == "Hello"));
+    }
+
+    #[test]
+    fn test_build_request_body_basic() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let config = RequestConfig {
+            model: "claude-3-opus-20240229".to_string(),
+            max_tokens: 4096,
+            system: Some("You are a helpful assistant.".to_string()),
+            cache_system_prompt: false,
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        assert_eq!(body["model"], "claude-3-opus-20240229");
+        assert_eq!(body["max_tokens"], 4096);
+        assert_eq!(body["stream"], true);
+        // Without caching, system is a simple string
+        assert_eq!(body["system"], "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn test_build_request_body_with_caching() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let config = RequestConfig {
+            model: "claude-3-opus-20240229".to_string(),
+            max_tokens: 4096,
+            system: Some("You are a helpful assistant.".to_string()),
+            cache_system_prompt: true,
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        // With caching, system is an array with cache_control
+        let system = body["system"].as_array().expect("system should be array");
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], "You are a helpful assistant.");
+        assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_build_request_body_tools_with_caching() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let tools = vec![
+            Tool::new("read", "Read a file"),
+            Tool::new("write", "Write a file"),
+        ];
+        let config = RequestConfig {
+            model: "claude-3-opus-20240229".to_string(),
+            max_tokens: 4096,
+            tools,
+            cache_system_prompt: true,
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        let tools = body["tools"].as_array().expect("tools should be array");
+        assert_eq!(tools.len(), 2);
+
+        // First tool should NOT have cache_control
+        assert!(tools[0].get("cache_control").is_none());
+
+        // Last tool should have cache_control
+        assert_eq!(tools[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_build_request_body_tools_without_caching() {
+        let client = AnthropicClient::new("test-key").unwrap();
+        let tools = vec![Tool::new("read", "Read a file")];
+        let config = RequestConfig {
+            model: "claude-3-opus-20240229".to_string(),
+            max_tokens: 4096,
+            tools,
+            cache_system_prompt: false,
+            ..Default::default()
+        };
+
+        let body = client.build_request_body(&[], &config).unwrap();
+
+        let tools = body["tools"].as_array().expect("tools should be array");
+        // Without caching, no cache_control should be added
+        assert!(tools[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn parse_thinking_delta() {
+        let data = r#"event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"Let me think..."}}"#;
+
+        let event = parse_sse_event(data).unwrap();
+        assert!(matches!(event, StreamEvent::ThinkingDelta { thinking, index } if thinking == "Let me think..." && index == 1));
+    }
+
+    #[test]
+    fn parse_input_json_delta() {
+        let data = r#"event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}"#;
+
+        let event = parse_sse_event(data).unwrap();
+        assert!(matches!(event, StreamEvent::InputJsonDelta { partial_json, index } if partial_json == "{\"path\":" && index == 2));
+    }
+
+    #[test]
+    fn parse_content_block_start_text() {
+        let data = r#"event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
+
+        let event = parse_sse_event(data).unwrap();
+        assert!(matches!(event, StreamEvent::ContentBlockStart { index: 0, block: ContentBlock::Text { .. } }));
+    }
+
+    #[test]
+    fn parse_content_block_start_tool_use() {
+        let data = r#"event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_123","name":"read_file"}}"#;
+
+        let event = parse_sse_event(data).unwrap();
+        match event {
+            StreamEvent::ContentBlockStart { index: 1, block: ContentBlock::ToolUse { id, name, .. } } => {
+                assert_eq!(id, "toolu_123");
+                assert_eq!(name, "read_file");
+            }
+            _ => panic!("Expected ContentBlockStart with ToolUse"),
+        }
+    }
+
+    #[test]
+    fn parse_content_block_stop() {
+        let data = r#"event: content_block_stop
+data: {"type":"content_block_stop","index":0}"#;
+
+        let event = parse_sse_event(data).unwrap();
+        assert!(matches!(event, StreamEvent::ContentBlockStop { index: 0 }));
+    }
+
+    #[test]
+    fn parse_message_delta_with_usage() {
+        let data = r#"event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}"#;
+
+        let event = parse_sse_event(data).unwrap();
+        match event {
+            StreamEvent::Usage { input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens } => {
+                assert_eq!(input_tokens, 100);
+                assert_eq!(output_tokens, 50);
+                assert_eq!(cache_read_tokens, Some(80));
+                assert_eq!(cache_creation_tokens, Some(20));
+            }
+            _ => panic!("Expected Usage event"),
+        }
+    }
+
+    #[test]
+    fn parse_error_event() {
+        let data = r#"event: error
+data: {"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}"#;
+
+        let event = parse_sse_event(data).unwrap();
+        match event {
+            StreamEvent::Error { message } => {
+                assert_eq!(message, "Rate limit exceeded");
+            }
+            _ => panic!("Expected Error event"),
+        }
+    }
+
+    #[test]
+    fn parse_ping_returns_none() {
+        let data = r#"event: ping
+data: {}"#;
+
+        let event = parse_sse_event(data);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn parse_unknown_event_returns_none() {
+        let data = r#"event: some_unknown_event
+data: {"some": "data"}"#;
+
+        let event = parse_sse_event(data);
+        assert!(event.is_none());
     }
 }

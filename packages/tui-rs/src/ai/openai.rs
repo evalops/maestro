@@ -490,6 +490,34 @@ fn is_mistral_model(model: &str, base_url: Option<&str>) -> bool {
     false
 }
 
+/// Check if this is a Groq-hosted model
+///
+/// Groq provides fast inference using their LPU (Language Processing Unit).
+/// They host models like Llama, Mixtral, Gemma, DeepSeek, and Qwen.
+/// Groq uses OpenAI-compatible API format with no special handling required.
+fn is_groq_model(model: &str, base_url: Option<&str>) -> bool {
+    let model_lower = model.to_lowercase();
+    // Explicit groq/ prefix
+    if model_lower.starts_with("groq/") {
+        return true;
+    }
+    // Check base URL
+    if let Some(url) = base_url {
+        if url.contains("groq.com") {
+            return true;
+        }
+    }
+    // Llama models are commonly hosted on Groq
+    if model_lower.starts_with("llama-") || model_lower.starts_with("llama3") {
+        return true;
+    }
+    // DeepSeek and Qwen models
+    if model_lower.contains("deepseek") || model_lower.contains("qwen") {
+        return true;
+    }
+    false
+}
+
 /// Normalize a tool call ID for Mistral compatibility.
 ///
 /// Mistral requires tool IDs to be exactly 9 alphanumeric characters.
@@ -582,6 +610,16 @@ impl OpenAiClient {
         let api_key = std::env::var("MISTRAL_API_KEY")
             .context("MISTRAL_API_KEY environment variable not set")?;
         Self::with_base_url(api_key, "https://api.mistral.ai/v1")
+    }
+
+    /// Create a new Groq client from environment variable
+    ///
+    /// Groq provides fast inference for open models like Llama, Mixtral, and Gemma.
+    /// Uses OpenAI-compatible API format.
+    pub fn groq_from_env() -> Result<Self> {
+        let api_key = std::env::var("GROQ_API_KEY")
+            .context("GROQ_API_KEY environment variable not set")?;
+        Self::with_base_url(api_key, "https://api.groq.com/openai/v1")
     }
 
     /// Build request headers
@@ -2106,6 +2144,39 @@ mod tests {
         assert!(!is_mistral_model("gpt-4o", None));
         assert!(!is_mistral_model("claude-opus-4-5", None));
         assert!(!is_mistral_model("llama-3.1", None));
+    }
+
+    #[test]
+    fn test_is_groq_model() {
+        // Explicit groq/ prefix
+        assert!(is_groq_model("groq/llama-3.1-70b", None));
+        assert!(is_groq_model("groq/mixtral-8x7b", None));
+
+        // By base URL
+        assert!(is_groq_model(
+            "some-model",
+            Some("https://api.groq.com/openai/v1")
+        ));
+
+        // Llama models
+        assert!(is_groq_model("llama-3.1-70b-versatile", None));
+        assert!(is_groq_model("llama3-8b-8192", None));
+        assert!(is_groq_model("llama-guard-3-8b", None));
+
+        // DeepSeek models
+        assert!(is_groq_model("deepseek-r1-distill-llama-70b", None));
+
+        // Qwen models
+        assert!(is_groq_model("qwen-2.5-coder-32b", None));
+
+        // Case insensitive
+        assert!(is_groq_model("Llama-3.1-8B", None));
+        assert!(is_groq_model("GROQ/llama", None));
+
+        // Non-Groq models
+        assert!(!is_groq_model("gpt-4o", None));
+        assert!(!is_groq_model("claude-opus-4-5", None));
+        assert!(!is_groq_model("gemini-pro", None));
     }
 
     #[test]
