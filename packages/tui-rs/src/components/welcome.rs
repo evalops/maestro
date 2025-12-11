@@ -25,7 +25,7 @@
 
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
+    widgets::{Clear, Paragraph, Widget, Wrap},
 };
 
 use super::ascii_animation::{logos, AsciiAnimation};

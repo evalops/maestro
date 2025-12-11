@@ -32,7 +32,7 @@ use once_cell::sync::Lazy;
 
 use super::bash_analyzer::{analyze_bash_command, CommandRisk};
 use super::dangerous_patterns::{check_dangerous_patterns, Severity};
-use super::path_containment::{is_path_contained, is_system_path, PathContainment};
+use super::path_containment::{has_path_traversal, is_path_contained, is_system_path, PathContainment};
 
 /// Result of a firewall check
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +194,13 @@ impl ActionFirewall {
 
     /// Check a file write operation
     pub fn check_file_write(&self, path: &str, _content: &str) -> FirewallVerdict {
+        // Check for path traversal attempts first (before any path parsing)
+        if has_path_traversal(path) {
+            return FirewallVerdict::Block {
+                reason: format!("Path traversal detected in: {}", path),
+            };
+        }
+
         let path = Path::new(path);
 
         // Check if path is in a system-protected directory
@@ -236,6 +243,13 @@ impl ActionFirewall {
 
     /// Check a file read operation
     pub fn check_file_read(&self, path: &str) -> FirewallVerdict {
+        // Check for path traversal attempts first
+        if has_path_traversal(path) {
+            return FirewallVerdict::Block {
+                reason: format!("Path traversal detected in: {}", path),
+            };
+        }
+
         let path = Path::new(path);
 
         // Reading is generally allowed, but we block certain sensitive files

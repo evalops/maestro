@@ -807,6 +807,8 @@ impl OpenAiClient {
     ) -> serde_json::Value {
         // Check if this is a Mistral model (needs special tool handling)
         let is_mistral = is_mistral_model(&config.model, self.base_url.as_deref());
+        // Check if this is a Groq model (may need parameter adjustments)
+        let is_groq = is_groq_model(&config.model, self.base_url.as_deref());
 
         // Build tool ID to name mapping for Mistral
         let tool_id_to_name = if is_mistral {
@@ -826,11 +828,14 @@ impl OpenAiClient {
                 "include_usage": true
             },
             // Nudge model to actually choose a tool when tools are present
-            "tool_choice": if config.tools.is_empty() { serde_json::json!("none") } else { serde_json::json!("auto") },
-            // Allow parallel tool calls when the model supports it (Codex default)
-            // Note: Mistral doesn't support this parameter, but ignores it
-            "parallel_tool_calls": true
+            "tool_choice": if config.tools.is_empty() { serde_json::json!("none") } else { serde_json::json!("auto") }
         });
+
+        // Only add parallel_tool_calls for providers that support it
+        // Groq doesn't support this parameter, Mistral ignores it
+        if !is_groq {
+            body["parallel_tool_calls"] = serde_json::json!(true);
+        }
 
         // Add system message if provided
         if let Some(system) = &config.system {
