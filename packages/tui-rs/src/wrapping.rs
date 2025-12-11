@@ -272,6 +272,19 @@ fn slice_line_spans<'a>(
     }
 }
 
+/// Count the total number of wrapped lines for a Text.
+///
+/// This is useful for calculating content height in viewports.
+pub fn wrapped_line_count(text: &ratatui::text::Text, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    text.lines
+        .iter()
+        .map(|line| word_wrap_line(line, width).len())
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
