@@ -12,10 +12,11 @@ pub type TaskId = String;
 pub type AgentId = String;
 
 /// Status of a swarm operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwarmStatus {
     /// Swarm is initializing
+    #[default]
     Initializing,
     /// Swarm is parsing the plan
     Planning,
@@ -29,17 +30,12 @@ pub enum SwarmStatus {
     Failed,
 }
 
-impl Default for SwarmStatus {
-    fn default() -> Self {
-        Self::Initializing
-    }
-}
-
 /// Status of an individual task
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     /// Task is waiting to be executed
+    #[default]
     Pending,
     /// Task is blocked by dependencies
     Blocked,
@@ -53,26 +49,15 @@ pub enum TaskStatus {
     Skipped,
 }
 
-impl Default for TaskStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
-
 /// Priority level for tasks
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskPriority {
     Low = 0,
+    #[default]
     Normal = 1,
     High = 2,
     Critical = 3,
-}
-
-impl Default for TaskPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 /// A single task in the swarm
