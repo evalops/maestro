@@ -681,9 +681,14 @@ impl Widget for MessageWidget<'_> {
                 area.width.saturating_sub(20) as usize,
             );
 
-            // Header line: • Called tool_name args_preview  [+]
+            // Get tool-specific icon
+            let tool_icon = get_tool_icon(&tool_call.tool);
+
+            // Header line: λ Called bash #12345678  [+]
             let header_line = Line::from(vec![
                 Span::styled(bullet, bullet_style.add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(tool_icon, Style::default().fg(Color::Cyan)),
                 Span::raw(" "),
                 Span::styled(verb, Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
@@ -908,10 +913,14 @@ impl Widget for ToolCallWidget<'_> {
             ToolCallStatus::Blocked => ("X", Color::Magenta),
         };
 
+        let tool_icon = get_tool_icon(self.tool);
+
         let header = Line::from(vec![
             Span::styled(status_icon, Style::default().fg(status_color)),
             Span::raw(" "),
-            Span::styled(self.tool, Style::default().fg(Color::Cyan)),
+            Span::styled(tool_icon, Style::default().fg(Color::Cyan)),
+            Span::raw(" "),
+            Span::styled(self.tool, Style::default().fg(Color::White)),
         ]);
 
         let header_para = Paragraph::new(header);

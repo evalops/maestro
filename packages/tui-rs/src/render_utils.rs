@@ -136,7 +136,7 @@ pub fn truncate_lines_middle(
     max_lines: usize,
     omitted_hint: Option<usize>,
 ) -> Vec<Line<'static>> {
-    use ratatui::style::Stylize;
+    
 
     if max_lines == 0 {
         return Vec::new();
