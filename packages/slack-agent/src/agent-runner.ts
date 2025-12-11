@@ -16,6 +16,7 @@ import { type SandboxConfig, createExecutor } from "./sandbox.js";
 import type { ChannelInfo, SlackContext, UserInfo } from "./slack/bot.js";
 import type { ChannelStore } from "./store.js";
 import { createSlackAgentTools, setUploadFunction } from "./tools/index.js";
+import { splitForSlack } from "./utils/split-for-slack.js";
 
 // Import from main composer source
 import { Agent } from "../../../src/agent/agent.js";
@@ -659,40 +660,8 @@ export function createAgentRunner(
 				}
 			};
 
-			const splitForSlack = (text: string): string[] => {
-				if (text.length <= SLACK_MAX_LENGTH) return [text];
-				const parts: string[] = [];
-				let remaining = text;
-				let partNum = 1;
-				const maxChunk = SLACK_MAX_LENGTH - 50;
-
-				while (remaining.length > 0) {
-					if (remaining.length <= maxChunk) {
-						parts.push(remaining);
-						break;
-					}
-
-					let cut = maxChunk;
-					const window = remaining.slice(0, maxChunk);
-					const breakCandidates = [
-						window.lastIndexOf("\n\n"),
-						window.lastIndexOf("\n"),
-						window.lastIndexOf(" "),
-					].filter((i) => i > -1);
-					const preferred = breakCandidates.find((i) => i >= maxChunk * 0.6);
-					if (preferred !== undefined) {
-						cut = preferred;
-					}
-
-					const chunk = remaining.slice(0, cut);
-					remaining = remaining.slice(cut);
-					const suffix =
-						remaining.length > 0 ? `\n_(continued ${partNum}...)_` : "";
-					parts.push(chunk + suffix);
-					partNum++;
-				}
-				return parts;
-			};
+			const splitForSlackText = (text: string): string[] =>
+				splitForSlack(text, { maxLength: SLACK_MAX_LENGTH });
 
 			// Promise queue for ordered Slack responses
 			const queue = {
@@ -718,7 +687,7 @@ export function createAgentRunner(
 					errorContext: string,
 					log = true,
 				): void {
-					const parts = splitForSlack(text);
+					const parts = splitForSlackText(text);
 					for (const part of parts) {
 						this.enqueue(
 							() =>
