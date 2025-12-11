@@ -1266,7 +1266,7 @@ mod tests {
             .insert("number_int".into(), serde_json::json!(42));
         skill
             .metadata
-            .insert("number_float".into(), serde_json::json!(3.15));
+            .insert("number_float".into(), serde_json::json!(1.5));
         skill
             .metadata
             .insert("string".into(), serde_json::json!("hello"));

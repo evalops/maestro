@@ -240,6 +240,7 @@ export function parseTimeExpression(
 		return dt.toJSDate();
 	}
 
+	// (duplicate legacy JS-Date implementation removed in favor of Luxon version above)
 	return null;
 }
 
@@ -461,6 +462,7 @@ export function parseRecurringSchedule(
 		}
 	}
 
+	// (duplicate legacy JS-Date recurring implementation removed)
 	return null;
 }
 

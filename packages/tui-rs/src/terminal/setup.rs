@@ -228,7 +228,8 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
     }));
 
     // Store the TTY handle globally for restore
-    *TTY.lock().unwrap() = Some(tty.try_clone()?);
+    // Use unwrap_or_else to recover from poisoned locks
+    *TTY.lock().unwrap_or_else(|e| e.into_inner()) = Some(tty.try_clone()?);
 
     // Create the terminal with inline viewport mode
     let backend = CrosstermBackend::new(tty);
@@ -254,8 +255,8 @@ pub fn restore() -> io::Result<()> {
 }
 
 fn restore_impl() -> io::Result<()> {
-    // Get the TTY handle
-    let mut guard = TTY.lock().unwrap();
+    // Get the TTY handle - recover from poisoned lock to ensure terminal cleanup
+    let mut guard = TTY.lock().unwrap_or_else(|e| e.into_inner());
 
     if let Some(ref mut tty) = *guard {
         // Pop keyboard enhancement flags

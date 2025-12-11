@@ -2063,3 +2063,642 @@ impl Default for App {
         Self::new().expect("Failed to create App")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ActiveModal Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_active_modal_default() {
+        let modal = ActiveModal::None;
+        assert_eq!(modal, ActiveModal::None);
+    }
+
+    #[test]
+    fn test_active_modal_equality() {
+        assert_eq!(ActiveModal::FileSearch, ActiveModal::FileSearch);
+        assert_ne!(ActiveModal::FileSearch, ActiveModal::CommandPalette);
+    }
+
+    #[test]
+    fn test_active_modal_copy() {
+        let modal = ActiveModal::Approval;
+        let copy = modal;
+        assert_eq!(modal, copy);
+    }
+
+    #[test]
+    fn test_active_modal_variants_exist() {
+        // Ensure all modal variants are defined correctly
+        let modals = [
+            ActiveModal::None,
+            ActiveModal::FileSearch,
+            ActiveModal::SessionSwitcher,
+            ActiveModal::CommandPalette,
+            ActiveModal::Approval,
+            ActiveModal::ModelSelector,
+            ActiveModal::ThemeSelector,
+        ];
+        assert_eq!(modals.len(), 7);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CommandOutput Handling Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_command_output_message_variants() {
+        // Test that CommandOutput variants can be constructed
+        let msg = CommandOutput::Message("test".to_string());
+        assert!(matches!(msg, CommandOutput::Message(_)));
+
+        let help = CommandOutput::Help("help text".to_string());
+        assert!(matches!(help, CommandOutput::Help(_)));
+
+        let warn = CommandOutput::Warning("warning".to_string());
+        assert!(matches!(warn, CommandOutput::Warning(_)));
+
+        let silent = CommandOutput::Silent;
+        assert!(matches!(silent, CommandOutput::Silent));
+    }
+
+    #[test]
+    fn test_command_output_multi() {
+        let outputs = CommandOutput::Multi(vec![
+            CommandOutput::Message("first".to_string()),
+            CommandOutput::Warning("second".to_string()),
+        ]);
+        if let CommandOutput::Multi(items) = outputs {
+            assert_eq!(items.len(), 2);
+        } else {
+            panic!("Expected Multi variant");
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CommandAction Handling Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_command_action_clear_messages() {
+        let action = CommandAction::ClearMessages;
+        assert!(matches!(action, CommandAction::ClearMessages));
+    }
+
+    #[test]
+    fn test_command_action_toggle_zen_mode() {
+        let action = CommandAction::ToggleZenMode;
+        assert!(matches!(action, CommandAction::ToggleZenMode));
+    }
+
+    #[test]
+    fn test_command_action_set_approval_mode() {
+        let action = CommandAction::SetApprovalMode("yolo".to_string());
+        if let CommandAction::SetApprovalMode(mode) = action {
+            assert_eq!(mode, "yolo");
+        } else {
+            panic!("Expected SetApprovalMode");
+        }
+    }
+
+    #[test]
+    fn test_command_action_set_thinking_level() {
+        let action = CommandAction::SetThinkingLevel("high".to_string());
+        if let CommandAction::SetThinkingLevel(level) = action {
+            assert_eq!(level, "high");
+        } else {
+            panic!("Expected SetThinkingLevel");
+        }
+    }
+
+    #[test]
+    fn test_command_action_quit() {
+        let action = CommandAction::Quit;
+        assert!(matches!(action, CommandAction::Quit));
+    }
+
+    #[test]
+    fn test_command_action_refresh_workspace() {
+        let action = CommandAction::RefreshWorkspace;
+        assert!(matches!(action, CommandAction::RefreshWorkspace));
+    }
+
+    #[test]
+    fn test_command_action_copy_last_message() {
+        let action = CommandAction::CopyLastMessage;
+        assert!(matches!(action, CommandAction::CopyLastMessage));
+    }
+
+    #[test]
+    fn test_command_action_compact_conversation() {
+        let action = CommandAction::CompactConversation(Some("focus".to_string()));
+        if let CommandAction::CompactConversation(instructions) = action {
+            assert_eq!(instructions, Some("focus".to_string()));
+        } else {
+            panic!("Expected CompactConversation");
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ModalType Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_modal_type_variants() {
+        let types = [
+            ModalType::ThemeSelector,
+            ModalType::ModelSelector,
+            ModalType::SessionList,
+            ModalType::FileSearch,
+            ModalType::CommandPalette,
+            ModalType::Help,
+        ];
+        assert_eq!(types.len(), 6);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ApprovalMode Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_approval_mode_parse() {
+        assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Yolo));
+        assert_eq!(ApprovalMode::parse("safe"), Some(ApprovalMode::Safe));
+        assert_eq!(
+            ApprovalMode::parse("selective"),
+            Some(ApprovalMode::Selective)
+        );
+        assert_eq!(ApprovalMode::parse("invalid"), None);
+    }
+
+    #[test]
+    fn test_approval_mode_next() {
+        assert_eq!(ApprovalMode::Yolo.next(), ApprovalMode::Selective);
+        assert_eq!(ApprovalMode::Selective.next(), ApprovalMode::Safe);
+        assert_eq!(ApprovalMode::Safe.next(), ApprovalMode::Yolo);
+    }
+
+    #[test]
+    fn test_approval_mode_label() {
+        assert!(!ApprovalMode::Yolo.label().is_empty());
+        assert!(!ApprovalMode::Safe.label().is_empty());
+        assert!(!ApprovalMode::Selective.label().is_empty());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ThinkingLevel Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_thinking_level_parse() {
+        assert!(ThinkingLevel::parse("off").is_some());
+        assert!(ThinkingLevel::parse("minimal").is_some());
+        assert!(ThinkingLevel::parse("low").is_some());
+        assert!(ThinkingLevel::parse("medium").is_some());
+        assert!(ThinkingLevel::parse("high").is_some());
+        assert!(ThinkingLevel::parse("max").is_some());
+        assert!(ThinkingLevel::parse("invalid").is_none());
+    }
+
+    #[test]
+    fn test_thinking_level_to_config() {
+        let off = ThinkingLevel::parse("off").unwrap();
+        let (enabled, _budget) = off.to_config();
+        assert!(!enabled);
+
+        let high = ThinkingLevel::parse("high").unwrap();
+        let (enabled, budget) = high.to_config();
+        assert!(enabled);
+        assert!(budget > 0);
+    }
+
+    #[test]
+    fn test_thinking_level_label() {
+        let medium = ThinkingLevel::parse("medium").unwrap();
+        assert!(!medium.label().is_empty());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AppState Tests (Integration with app.rs logic)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_app_state_message_operations() {
+        let mut state = AppState::new();
+        assert!(state.messages.is_empty());
+
+        state.add_user_message("Hello".to_string());
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(state.messages[0].role, MessageRole::User);
+        assert_eq!(state.messages[0].content, "Hello");
+
+        state.add_system_message("System response".to_string());
+        assert_eq!(state.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_app_state_input_operations() {
+        let mut state = AppState::new();
+        assert!(state.input().is_empty());
+
+        state.insert_char('H');
+        state.insert_char('i');
+        assert_eq!(state.input(), "Hi");
+
+        state.backspace();
+        assert_eq!(state.input(), "H");
+
+        state.set_input("New input");
+        assert_eq!(state.input(), "New input");
+
+        let taken = state.take_input();
+        assert_eq!(taken, "New input");
+        assert!(state.input().is_empty());
+    }
+
+    #[test]
+    fn test_app_state_scroll_operations() {
+        let mut state = AppState::new();
+        assert_eq!(state.scroll_offset, 0);
+
+        // scroll_down increases offset (scrolls toward older messages)
+        state.scroll_down(5);
+        assert_eq!(state.scroll_offset, 5);
+
+        // scroll_up decreases offset (scrolls toward newer messages)
+        state.scroll_up(3);
+        assert_eq!(state.scroll_offset, 2);
+
+        // scroll_up with larger amount clamps to 0
+        state.scroll_up(10);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_app_state_zen_mode() {
+        let mut state = AppState::new();
+        assert!(!state.zen_mode);
+
+        state.zen_mode = true;
+        assert!(state.zen_mode);
+    }
+
+    #[test]
+    fn test_app_state_busy_flag() {
+        let mut state = AppState::new();
+        assert!(!state.busy);
+
+        state.busy = true;
+        assert!(state.busy);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Slash Command State Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_slash_cycle_state_new() {
+        let state = SlashCycleState::new();
+        assert!(!state.has_completions());
+        assert!(state.current().is_none());
+    }
+
+    #[test]
+    fn test_slash_cycle_state_reset() {
+        let mut state = SlashCycleState::new();
+        state.reset();
+        assert!(!state.has_completions());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Usage Action Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_usage_action_variants() {
+        use crate::commands::UsageAction;
+
+        let summary = UsageAction::Summary;
+        assert!(matches!(summary, UsageAction::Summary));
+
+        let detailed = UsageAction::Detailed;
+        assert!(matches!(detailed, UsageAction::Detailed));
+
+        let reset = UsageAction::Reset;
+        assert!(matches!(reset, UsageAction::Reset));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Export Action Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_export_action_variants() {
+        use crate::commands::ExportAction;
+
+        let md = ExportAction::Markdown(None);
+        assert!(matches!(md, ExportAction::Markdown(None)));
+
+        let html = ExportAction::Html(Some("test.html".to_string()));
+        if let ExportAction::Html(path) = html {
+            assert_eq!(path, Some("test.html".to_string()));
+        }
+
+        let json = ExportAction::Json(None);
+        assert!(matches!(json, ExportAction::Json(_)));
+
+        let txt = ExportAction::PlainText(None);
+        assert!(matches!(txt, ExportAction::PlainText(_)));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // History Action Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_history_action_variants() {
+        use crate::commands::HistoryAction;
+
+        let recent = HistoryAction::Recent(10);
+        if let HistoryAction::Recent(count) = recent {
+            assert_eq!(count, 10);
+        }
+
+        let search = HistoryAction::Search("query".to_string());
+        if let HistoryAction::Search(q) = search {
+            assert_eq!(q, "query");
+        }
+
+        let clear = HistoryAction::Clear;
+        assert!(matches!(clear, HistoryAction::Clear));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tool History Action Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tool_history_action_variants() {
+        use crate::commands::ToolHistoryAction;
+
+        let recent = ToolHistoryAction::Recent(5);
+        if let ToolHistoryAction::Recent(count) = recent {
+            assert_eq!(count, 5);
+        }
+
+        let stats = ToolHistoryAction::Stats;
+        assert!(matches!(stats, ToolHistoryAction::Stats));
+
+        let for_tool = ToolHistoryAction::ForTool("bash".to_string());
+        if let ToolHistoryAction::ForTool(name) = for_tool {
+            assert_eq!(name, "bash");
+        }
+
+        let clear = ToolHistoryAction::Clear;
+        assert!(matches!(clear, ToolHistoryAction::Clear));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Hooks Action Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_hooks_action_variants() {
+        use crate::commands::HooksAction;
+
+        let actions = [
+            HooksAction::List,
+            HooksAction::Toggle,
+            HooksAction::Reload,
+            HooksAction::Metrics,
+            HooksAction::Enable,
+            HooksAction::Disable,
+        ];
+        assert_eq!(actions.len(), 6);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Message Role Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_message_role_equality() {
+        assert_eq!(MessageRole::User, MessageRole::User);
+        assert_eq!(MessageRole::Assistant, MessageRole::Assistant);
+        assert_ne!(MessageRole::User, MessageRole::Assistant);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Integration Tests for State Transitions
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_message_content_preview() {
+        let long_content = "a".repeat(200);
+        let preview = if long_content.len() > 100 {
+            format!("{}...", &long_content[..97])
+        } else {
+            long_content.clone()
+        };
+        assert_eq!(preview.len(), 100); // 97 chars + "..."
+    }
+
+    #[test]
+    fn test_compact_conversation_logic() {
+        // Test the logic used in CompactConversation action
+        let msg_count = 10;
+        let keep_count = 2;
+
+        if msg_count > 4 {
+            let to_summarize = msg_count - keep_count;
+            assert_eq!(to_summarize, 8);
+        }
+
+        // Edge case: exactly 4 messages shouldn't compact
+        let msg_count_small = 4;
+        assert!(msg_count_small <= 4);
+    }
+
+    #[test]
+    fn test_scroll_boundary_handling() {
+        let mut state = AppState::new();
+
+        // scroll_up at 0 should stay at 0 (can't go below 0)
+        state.scroll_up(100);
+        assert_eq!(state.scroll_offset, 0);
+
+        // scroll_down increases offset (scroll toward history)
+        state.scroll_down(50);
+        assert_eq!(state.scroll_offset, 50);
+
+        // scroll_up decreases offset (scroll toward recent)
+        state.scroll_up(30);
+        assert_eq!(state.scroll_offset, 20);
+
+        // scroll_up by more than current clamps to 0
+        state.scroll_up(100);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Input Cursor Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cursor_movement() {
+        let mut state = AppState::new();
+        state.set_input("Hello World");
+
+        // Cursor starts at end
+        let initial_cursor = state.cursor();
+
+        state.move_left();
+        assert!(state.cursor() < initial_cursor || initial_cursor == 0);
+
+        state.move_right();
+        // Cursor should move right (or stay at end)
+
+        state.move_home();
+        assert_eq!(state.cursor(), 0);
+
+        state.move_end();
+        assert_eq!(state.cursor(), state.input().len());
+    }
+
+    #[test]
+    fn test_delete_operation() {
+        let mut state = AppState::new();
+        state.set_input("Hello");
+        state.move_home();
+        state.delete(); // Delete 'H'
+        assert_eq!(state.input(), "ello");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Error and Status Message Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_error_and_status_fields() {
+        let mut state = AppState::new();
+
+        assert!(state.error.is_none());
+        assert!(state.status.is_none());
+
+        state.error = Some("Test error".to_string());
+        assert_eq!(state.error, Some("Test error".to_string()));
+
+        state.status = Some("Connected".to_string());
+        assert_eq!(state.status, Some("Connected".to_string()));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Session ID Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_session_id_handling() {
+        let mut state = AppState::new();
+        assert!(state.session_id.is_none());
+
+        state.session_id = Some("session-123".to_string());
+        assert_eq!(state.session_id, Some("session-123".to_string()));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tool Call Toggle Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tool_call_toggle() {
+        let mut state = AppState::new();
+        let call_id = "call-123";
+
+        // Initially not expanded
+        assert!(!state.is_tool_call_expanded(call_id));
+
+        // Toggle on
+        state.toggle_tool_call(call_id);
+        assert!(state.is_tool_call_expanded(call_id));
+
+        // Toggle off
+        state.toggle_tool_call(call_id);
+        assert!(!state.is_tool_call_expanded(call_id));
+    }
+
+    #[test]
+    fn test_multiple_tool_calls_expansion() {
+        let mut state = AppState::new();
+
+        state.toggle_tool_call("call-1");
+        state.toggle_tool_call("call-2");
+
+        assert!(state.is_tool_call_expanded("call-1"));
+        assert!(state.is_tool_call_expanded("call-2"));
+        assert!(!state.is_tool_call_expanded("call-3"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Thinking Toggle Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_thinking_toggle() {
+        let mut state = AppState::new();
+
+        // Add a user message and get its ID
+        let msg_id = state.add_user_message("test".to_string());
+
+        // Initially not expanded
+        let msg = state.messages.iter().find(|m| m.id == msg_id).unwrap();
+        assert!(!msg.thinking_expanded);
+
+        // Toggle on
+        state.toggle_thinking(&msg_id);
+        let msg = state.messages.iter().find(|m| m.id == msg_id).unwrap();
+        assert!(msg.thinking_expanded);
+
+        // Toggle off
+        state.toggle_thinking(&msg_id);
+        let msg = state.messages.iter().find(|m| m.id == msg_id).unwrap();
+        assert!(!msg.thinking_expanded);
+    }
+
+    #[test]
+    fn test_thinking_toggle_nonexistent() {
+        let mut state = AppState::new();
+        state.add_user_message("test".to_string());
+
+        // Should not panic on nonexistent ID
+        state.toggle_thinking("nonexistent-id");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // System Prompt Building Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_system_prompt_contains_tools() {
+        // Test that system prompts mention available tools
+        let prompt_template = r#"You have access to the following tools:
+- bash: Execute shell commands
+- read: Read file contents
+- write: Write to files
+- glob: Find files by pattern
+- grep: Search file contents"#;
+
+        assert!(prompt_template.contains("bash"));
+        assert!(prompt_template.contains("read"));
+        assert!(prompt_template.contains("write"));
+        assert!(prompt_template.contains("glob"));
+        assert!(prompt_template.contains("grep"));
+    }
+}

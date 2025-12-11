@@ -92,10 +92,12 @@
 //! 3. Adding a match arm in `ToolExecutor::execute()`
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 use tokio::sync::mpsc;
 
 use super::bash::{BashArgs, BashTool};
+use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
@@ -154,6 +156,12 @@ pub struct ToolExecutor {
     /// Contains tool definitions with JSON schemas, used for argument validation
     /// and approval checking before execution.
     registry: ToolRegistry,
+
+    /// Cache for tool results
+    ///
+    /// Caches results from read-only tools (read, glob, grep) to avoid redundant
+    /// operations. Uses RwLock for thread-safe access across async tasks.
+    cache: RwLock<ToolResultCache>,
 }
 
 impl ToolExecutor {
@@ -189,6 +197,52 @@ impl ToolExecutor {
             image: ImageTool::new(),
             cwd,
             registry: ToolRegistry::new(),
+            cache: RwLock::new(ToolResultCache::default()),
+        }
+    }
+
+    /// Create a new tool executor with custom cache configuration
+    ///
+    /// # Arguments
+    ///
+    /// - `cwd`: Working directory for all tool operations
+    /// - `cache_config`: Configuration for the tool result cache
+    pub fn with_cache_config(cwd: impl Into<String>, cache_config: CacheConfig) -> Self {
+        let cwd = cwd.into();
+        Self {
+            bash: BashTool::new(&cwd),
+            web_fetch: WebFetchTool::new(),
+            image: ImageTool::new(),
+            cwd,
+            registry: ToolRegistry::new(),
+            cache: RwLock::new(ToolResultCache::new(cache_config)),
+        }
+    }
+
+    /// Get cache statistics
+    ///
+    /// Returns statistics about cache performance including hit rate, entries, etc.
+    pub fn cache_stats(&self) -> CacheStats {
+        self.cache.read().unwrap_or_else(|e| e.into_inner()).stats()
+    }
+
+    /// Clear the tool result cache
+    pub fn clear_cache(&self) {
+        if let Ok(mut cache) = self.cache.write() {
+            cache.clear();
+        }
+    }
+
+    /// Invalidate cache entries for a specific file path
+    ///
+    /// Called when files are modified to ensure stale data isn't returned.
+    fn invalidate_file_cache(&self, path: &str) {
+        if let Ok(mut cache) = self.cache.write() {
+            // Clear all entries - a more sophisticated approach would track
+            // which cache entries depend on which files
+            cache.clear();
+            // Note: File modification triggered cache invalidation for: {path}
+            let _ = path; // silence unused warning
         }
     }
 
@@ -378,6 +432,79 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
     ) -> ToolResult {
+        // Check cache for cacheable tools
+        let cache_key = CacheKey::new(tool_name, args);
+        let is_cacheable = self
+            .cache
+            .read()
+            .map(|c| c.is_cacheable(tool_name))
+            .unwrap_or(false);
+
+        if is_cacheable {
+            if let Ok(mut cache) = self.cache.write() {
+                if let Some(cached) = cache.get(&cache_key) {
+                    // Cache hit for tool execution
+
+                    // Send events for cached result
+                    if let Some(tx) = event_tx {
+                        let _ = tx.send(FromAgent::ToolStart {
+                            call_id: call_id.to_string(),
+                        });
+                        if !cached.output.is_empty() {
+                            let _ = tx.send(FromAgent::ToolOutput {
+                                call_id: call_id.to_string(),
+                                content: cached.output.clone(),
+                            });
+                        }
+                        let _ = tx.send(FromAgent::ToolEnd {
+                            call_id: call_id.to_string(),
+                            success: !cached.is_error,
+                        });
+                    }
+
+                    return ToolResult {
+                        success: !cached.is_error,
+                        output: cached.output.clone(),
+                        error: if cached.is_error {
+                            Some(cached.output.clone())
+                        } else {
+                            None
+                        },
+                    };
+                }
+            }
+        }
+
+        // Execute the tool
+        let result = self.execute_impl(tool_name, args, event_tx, call_id).await;
+
+        // Store result in cache for cacheable tools
+        if is_cacheable {
+            if let Ok(mut cache) = self.cache.write() {
+                let cached_result = CachedResult::new(
+                    if result.success {
+                        &result.output
+                    } else {
+                        result.error.as_deref().unwrap_or("")
+                    },
+                    !result.success,
+                );
+                cache.put(cache_key, cached_result);
+                // Stored result in cache
+            }
+        }
+
+        result
+    }
+
+    /// Internal implementation of tool execution (without caching)
+    async fn execute_impl(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
+        call_id: &str,
+    ) -> ToolResult {
         match tool_name {
             "bash" | "Bash" => {
                 let bash_args: BashArgs = match serde_json::from_value(args.clone()) {
@@ -510,11 +637,15 @@ impl ToolExecutor {
                 }
 
                 match tokio::fs::write(path, content).await {
-                    Ok(_) => ToolResult {
-                        success: true,
-                        output: format!("File written successfully: {}", path),
-                        error: None,
-                    },
+                    Ok(_) => {
+                        // Invalidate cache since file was modified
+                        self.invalidate_file_cache(path);
+                        ToolResult {
+                            success: true,
+                            output: format!("File written successfully: {}", path),
+                            error: None,
+                        }
+                    }
                     Err(e) => ToolResult {
                         success: false,
                         output: String::new(),
@@ -671,6 +802,8 @@ impl ToolExecutor {
                 // Write back
                 match tokio::fs::write(path, &new_content).await {
                     Ok(_) => {
+                        // Invalidate cache since file was modified
+                        self.invalidate_file_cache(path);
                         let replaced = if replace_all { occurrences } else { 1 };
                         ToolResult {
                             success: true,
@@ -1577,5 +1710,139 @@ mod tests {
             "new_string": "bar"
         });
         assert!(registry.requires_approval("edit", &args));
+    }
+
+    // ========== Cache Integration Tests ==========
+
+    #[tokio::test]
+    async fn test_executor_cache_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("cache_test.txt");
+        std::fs::write(&file_path, "cached content").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
+
+        // First call - cache miss
+        let result1 = executor.execute("read", &args, None, "call-1").await;
+        assert!(result1.success);
+        let stats1 = executor.cache_stats();
+        assert_eq!(stats1.misses, 1);
+        assert_eq!(stats1.hits, 0);
+
+        // Second call - cache hit
+        let result2 = executor.execute("read", &args, None, "call-2").await;
+        assert!(result2.success);
+        assert_eq!(result1.output, result2.output);
+        let stats2 = executor.cache_stats();
+        assert_eq!(stats2.misses, 1);
+        assert_eq!(stats2.hits, 1);
+    }
+
+    #[tokio::test]
+    async fn test_executor_cache_invalidation_on_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("invalidate_test.txt");
+        std::fs::write(&file_path, "original content").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let read_args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
+
+        // Read file - populates cache
+        let result1 = executor.execute("read", &read_args, None, "call-1").await;
+        assert!(result1.success);
+        assert!(result1.output.contains("original content"));
+
+        // Write to file - should invalidate cache
+        let write_args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "content": "new content"
+        });
+        let write_result = executor.execute("write", &write_args, None, "call-2").await;
+        assert!(write_result.success);
+
+        // Read again - should get new content (cache was invalidated)
+        let result2 = executor.execute("read", &read_args, None, "call-3").await;
+        assert!(result2.success);
+        assert!(result2.output.contains("new content"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_cache_invalidation_on_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("edit_cache_test.txt");
+        std::fs::write(&file_path, "hello world").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let read_args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
+
+        // Read file - populates cache
+        let result1 = executor.execute("read", &read_args, None, "call-1").await;
+        assert!(result1.success);
+        assert!(result1.output.contains("hello world"));
+
+        // Edit file - should invalidate cache
+        let edit_args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "old_string": "world",
+            "new_string": "rust"
+        });
+        let edit_result = executor.execute("edit", &edit_args, None, "call-2").await;
+        assert!(edit_result.success);
+
+        // Read again - should get updated content (cache was invalidated)
+        let result2 = executor.execute("read", &read_args, None, "call-3").await;
+        assert!(result2.success);
+        assert!(result2.output.contains("hello rust"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_cache_not_used_for_bash() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+
+        let args = serde_json::json!({"command": "echo hello"});
+
+        // First call
+        executor.execute("bash", &args, None, "call-1").await;
+
+        // Second call - should NOT be cached (bash is excluded)
+        executor.execute("bash", &args, None, "call-2").await;
+
+        let stats = executor.cache_stats();
+        // Bash calls should not affect cache stats (they're excluded)
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+    }
+
+    #[test]
+    fn test_executor_clear_cache() {
+        let executor = ToolExecutor::new("/tmp");
+
+        // Verify cache starts empty
+        let stats1 = executor.cache_stats();
+        assert_eq!(stats1.entries, 0);
+
+        // Clear cache (no-op when empty, but should not panic)
+        executor.clear_cache();
+
+        let stats2 = executor.cache_stats();
+        assert_eq!(stats2.entries, 0);
+    }
+
+    #[test]
+    fn test_executor_with_custom_cache_config() {
+        use std::time::Duration;
+
+        let config = CacheConfig {
+            max_entries: 10,
+            ttl: Duration::from_secs(30),
+            enabled: true,
+            excluded_tools: vec!["bash".to_string()],
+        };
+
+        let executor = ToolExecutor::with_cache_config("/tmp", config);
+        let stats = executor.cache_stats();
+        assert_eq!(stats.max_entries, 10);
     }
 }
