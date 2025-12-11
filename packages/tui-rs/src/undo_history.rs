@@ -311,8 +311,8 @@ mod tests {
 
     #[test]
     fn save_and_undo() {
-        let mut history: UndoHistory<String> = UndoHistory::new()
-            .with_debounce(Duration::from_millis(0)); // Disable debounce for test
+        let mut history: UndoHistory<String> =
+            UndoHistory::new().with_debounce(Duration::from_millis(0)); // Disable debounce for test
 
         history.save("state1".to_string());
         history.save("state2".to_string());
@@ -327,8 +327,8 @@ mod tests {
 
     #[test]
     fn redo_works() {
-        let mut history: UndoHistory<String> = UndoHistory::new()
-            .with_debounce(Duration::from_millis(0));
+        let mut history: UndoHistory<String> =
+            UndoHistory::new().with_debounce(Duration::from_millis(0));
 
         history.save("state1".to_string());
         history.undo("state2".to_string());
@@ -339,8 +339,8 @@ mod tests {
 
     #[test]
     fn new_edit_clears_redo() {
-        let mut history: UndoHistory<String> = UndoHistory::new()
-            .with_debounce(Duration::from_millis(0));
+        let mut history: UndoHistory<String> =
+            UndoHistory::new().with_debounce(Duration::from_millis(0));
 
         history.save("state1".to_string());
         history.undo("state2".to_string());
@@ -353,8 +353,8 @@ mod tests {
 
     #[test]
     fn debounce_groups_rapid_saves() {
-        let mut history: UndoHistory<String> = UndoHistory::new()
-            .with_debounce(Duration::from_millis(100));
+        let mut history: UndoHistory<String> =
+            UndoHistory::new().with_debounce(Duration::from_millis(100));
 
         history.save("state1".to_string());
         history.save("state2".to_string()); // Should be skipped
@@ -365,8 +365,8 @@ mod tests {
 
     #[test]
     fn debounce_allows_after_delay() {
-        let mut history: UndoHistory<String> = UndoHistory::new()
-            .with_debounce(Duration::from_millis(10));
+        let mut history: UndoHistory<String> =
+            UndoHistory::new().with_debounce(Duration::from_millis(10));
 
         history.save("state1".to_string());
         thread::sleep(Duration::from_millis(20));
@@ -377,8 +377,8 @@ mod tests {
 
     #[test]
     fn force_save_bypasses_debounce() {
-        let mut history: UndoHistory<String> = UndoHistory::new()
-            .with_debounce(Duration::from_millis(1000));
+        let mut history: UndoHistory<String> =
+            UndoHistory::new().with_debounce(Duration::from_millis(1000));
 
         history.save("state1".to_string());
         history.force_save("state2".to_string()); // Should succeed despite debounce
@@ -403,8 +403,8 @@ mod tests {
 
     #[test]
     fn clear_removes_all() {
-        let mut history: UndoHistory<String> = UndoHistory::new()
-            .with_debounce(Duration::from_millis(0));
+        let mut history: UndoHistory<String> =
+            UndoHistory::new().with_debounce(Duration::from_millis(0));
 
         history.save("state1".to_string());
         history.undo("state2".to_string());
@@ -426,18 +426,13 @@ mod tests {
 
     #[test]
     fn editor_state_to_text() {
-        let state = EditorState::new(
-            vec!["line1".to_string(), "line2".to_string()],
-            0,
-            0,
-        );
+        let state = EditorState::new(vec!["line1".to_string(), "line2".to_string()], 0, 0);
         assert_eq!(state.to_text(), "line1\nline2");
     }
 
     #[test]
     fn editor_history_full_flow() {
-        let mut history: EditorHistory = UndoHistory::new()
-            .with_debounce(Duration::from_millis(0));
+        let mut history: EditorHistory = UndoHistory::new().with_debounce(Duration::from_millis(0));
 
         // Initial state
         let initial = EditorState::from_text("hello", 0, 5);
@@ -450,6 +445,9 @@ mod tests {
         // Undo should restore initial
         let current = EditorState::from_text("hello world!", 0, 12);
         let restored = history.undo(current);
-        assert_eq!(restored.map(|s| s.to_text()), Some("hello world".to_string()));
+        assert_eq!(
+            restored.map(|s| s.to_text()),
+            Some("hello world".to_string())
+        );
     }
 }

@@ -370,13 +370,16 @@ fn render_with_offset<R: Renderable>(
     renderable.render(*temp_buf.area(), &mut temp_buf);
 
     // Copy visible portion to target buffer
-    let copy_height = area.height.min(temp_buf.area().height.saturating_sub(scroll_offset));
+    let copy_height = area
+        .height
+        .min(temp_buf.area().height.saturating_sub(scroll_offset));
     for y in 0..copy_height {
         let src_y = y + scroll_offset;
         for x in 0..area.width {
-            if let (Some(src), Some(dst)) =
-                (temp_buf.cell((x, src_y)), buf.cell_mut((area.x + x, area.y + y)))
-            {
+            if let (Some(src), Some(dst)) = (
+                temp_buf.cell((x, src_y)),
+                buf.cell_mut((area.x + x, area.y + y)),
+            ) {
                 *dst = src.clone();
             }
         }
@@ -602,10 +605,7 @@ mod tests {
 
     #[test]
     fn text_renderable_wraps() {
-        let text = Text::from(vec![
-            Line::from("Short"),
-            Line::from("Another line"),
-        ]);
+        let text = Text::from(vec![Line::from("Short"), Line::from("Another line")]);
         let renderable = TextRenderable::new(text);
 
         // At width 10, should be 2 lines

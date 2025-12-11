@@ -504,7 +504,8 @@ mod tests {
     #[test]
     fn test_center_truncate_path_long() {
         let sep = std::path::MAIN_SEPARATOR;
-        let path = format!("{sep}home{sep}user{sep}very{sep}long{sep}path{sep}to{sep}some{sep}file.txt");
+        let path =
+            format!("{sep}home{sep}user{sep}very{sep}long{sep}path{sep}to{sep}some{sep}file.txt");
         let result = center_truncate_path(&path, 30);
         // Should contain ellipsis and fit within width
         assert!(result.contains('…'));

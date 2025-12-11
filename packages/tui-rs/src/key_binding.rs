@@ -199,7 +199,8 @@ mod tests {
     #[test]
     fn test_is_press_wrong_modifier() {
         let binding = ctrl(KeyCode::Char('c'));
-        let event = KeyEvent::new_with_kind(KeyCode::Char('c'), KeyModifiers::ALT, KeyEventKind::Press);
+        let event =
+            KeyEvent::new_with_kind(KeyCode::Char('c'), KeyModifiers::ALT, KeyEventKind::Press);
         assert!(!binding.is_press(event));
     }
 

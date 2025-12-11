@@ -101,8 +101,7 @@ pub fn shimmer_spans_with_config(text: &str, config: &ShimmerConfig) -> Vec<Span
 
     // Calculate current shimmer position based on time
     let period = chars.len() + config.padding * 2;
-    let pos_f = (elapsed_since_start().as_secs_f32() % config.sweep_seconds)
-        / config.sweep_seconds
+    let pos_f = (elapsed_since_start().as_secs_f32() % config.sweep_seconds) / config.sweep_seconds
         * (period as f32);
     let pos = pos_f as usize;
 
@@ -151,9 +150,8 @@ pub fn shimmer_spans_at_time(text: &str, elapsed: Duration) -> Vec<Span<'static>
     }
 
     let period = chars.len() + config.padding * 2;
-    let pos_f = (elapsed.as_secs_f32() % config.sweep_seconds)
-        / config.sweep_seconds
-        * (period as f32);
+    let pos_f =
+        (elapsed.as_secs_f32() % config.sweep_seconds) / config.sweep_seconds * (period as f32);
     let pos = pos_f as usize;
 
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(chars.len());
@@ -207,7 +205,10 @@ pub fn shimmer_line(text: &str) -> ratatui::text::Line<'static> {
 }
 
 /// Create a shimmer line with custom configuration.
-pub fn shimmer_line_with_config(text: &str, config: &ShimmerConfig) -> ratatui::text::Line<'static> {
+pub fn shimmer_line_with_config(
+    text: &str,
+    config: &ShimmerConfig,
+) -> ratatui::text::Line<'static> {
     ratatui::text::Line::from(shimmer_spans_with_config(text, config))
 }
 

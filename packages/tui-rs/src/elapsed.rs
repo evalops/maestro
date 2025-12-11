@@ -193,7 +193,11 @@ pub const SPINNER_ASCII: &[&str] = &["|", "/", "-", "\\"];
 /// * `start_time` - When the spinner started (for animation timing)
 /// * `frames` - The spinner frame characters
 /// * `interval_ms` - Milliseconds between frames
-pub fn spinner_frame<'a>(start_time: Option<Instant>, frames: &'a [&'a str], interval_ms: u64) -> &'a str {
+pub fn spinner_frame<'a>(
+    start_time: Option<Instant>,
+    frames: &'a [&'a str],
+    interval_ms: u64,
+) -> &'a str {
     let now = Instant::now();
     let elapsed = start_time
         .map(|t| now.saturating_duration_since(t))
