@@ -2,7 +2,7 @@
   "name": "@evalops/composer",
   "description": "Composer by EvalOps - Deterministic coding agent with TUI/CLI and Web UI for AI-assisted development",
   "version": "0.10.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "workspaces": [
     "packages/*"
