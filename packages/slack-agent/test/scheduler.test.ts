@@ -1,7 +1,11 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DateTime } from "luxon";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+	Scheduler,
 	getNextRunFromSchedule,
 	parseRecurringSchedule,
 	parseTimeExpression,
@@ -102,5 +106,56 @@ describe("getNextRunFromSchedule", () => {
 		const after = new Date("2025-01-01T08:00:00.000Z"); // Wed 08:00
 		const next = getNextRunFromSchedule("0 9 * * 1-5", after, "UTC");
 		expect(next.toISOString()).toBe("2025-01-01T09:00:00.000Z");
+	});
+});
+
+describe("Scheduler.runNow", () => {
+	let dir: string;
+
+	beforeEach(async () => {
+		dir = await mkdtemp(join(tmpdir(), "slack-agent-scheduler-"));
+	});
+
+	afterEach(async () => {
+		vi.useRealTimers();
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	it("prevents concurrent runs of the same task", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2025-01-01T00:00:00.000Z"));
+
+		let resolveDue: (() => void) | undefined;
+		const duePromise = new Promise<void>((resolve) => {
+			resolveDue = resolve;
+		});
+
+		const onTaskDue = vi.fn(async () => {
+			await duePromise;
+			return { success: true };
+		});
+
+		const scheduler = new Scheduler({ workingDir: dir, onTaskDue });
+		const task = await scheduler.schedule(
+			"C1",
+			"U1",
+			"Test task",
+			"Do thing",
+			"in 1 minute",
+		);
+		expect(task).not.toBeNull();
+
+		if (!task) throw new Error("Expected task to be scheduled");
+		const taskId = task.id;
+
+		const firstRun = scheduler.runNow(taskId);
+		const secondRun = await scheduler.runNow(taskId);
+		expect(secondRun?.success).toBe(false);
+		expect(secondRun?.error?.toLowerCase()).toContain("already running");
+
+		resolveDue?.();
+		const firstResult = await firstRun;
+		expect(firstResult?.success).toBe(true);
+		expect(onTaskDue).toHaveBeenCalledTimes(1);
 	});
 });

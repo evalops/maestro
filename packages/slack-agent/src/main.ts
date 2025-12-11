@@ -7,6 +7,7 @@
  */
 
 import { join, resolve } from "node:path";
+import { DateTime } from "luxon";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
 import { ApprovalManager } from "./approval.js";
 import { CostTracker } from "./cost-tracker.js";
@@ -20,7 +21,7 @@ import {
 	parseSandboxArg,
 	validateSandbox,
 } from "./sandbox.js";
-import { type ScheduledTask, Scheduler } from "./scheduler.js";
+import { type ScheduledTask, Scheduler, isValidTimezone } from "./scheduler.js";
 import {
 	type ReactionContext,
 	SlackBot,
@@ -33,6 +34,16 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_OAUTH_TOKEN = process.env.ANTHROPIC_OAUTH_TOKEN;
 const SLACK_AGENT_DEFAULT_TIMEZONE =
 	process.env.SLACK_AGENT_DEFAULT_TIMEZONE || "UTC";
+
+function formatNextRun(
+	task: Pick<ScheduledTask, "nextRun" | "timezone">,
+): string {
+	const dt = DateTime.fromISO(task.nextRun, { zone: "utc" }).setZone(
+		task.timezone,
+	);
+	const formatted = dt.toLocaleString(DateTime.DATETIME_MED);
+	return `${formatted} (${task.timezone})`;
+}
 
 function getSandboxDescription(sandbox: SandboxConfig): string {
 	if (sandbox.type === "host") {
@@ -219,6 +230,7 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 			success: boolean;
 			taskId?: string;
 			nextRun?: string;
+			warning?: string;
 			error?: string;
 		}> => {
 			if (!schedulerHolder.instance) {
@@ -232,10 +244,16 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 				when,
 			);
 			if (task) {
+				const warning =
+					!isValidTimezone(SLACK_AGENT_DEFAULT_TIMEZONE) &&
+					task.timezone === "UTC"
+						? `Default timezone "${SLACK_AGENT_DEFAULT_TIMEZONE}" is invalid; using UTC. Set SLACK_AGENT_DEFAULT_TIMEZONE to a valid IANA zone.`
+						: undefined;
 				return {
 					success: true,
 					taskId: task.id,
-					nextRun: new Date(task.nextRun).toLocaleString(),
+					nextRun: formatNextRun(task),
+					...(warning && { warning }),
 				};
 			}
 			return {
@@ -252,7 +270,7 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 			return tasks.map((t) => ({
 				id: t.id,
 				description: t.description,
-				nextRun: new Date(t.nextRun).toLocaleString(),
+				nextRun: formatNextRun(t),
 				recurring: t.schedule !== null,
 			}));
 		},
@@ -364,6 +382,11 @@ async function handleMessage(
 	const channelId = ctx.message.channel;
 	const messageText = ctx.message.text.toLowerCase().trim();
 
+	// Handle simple /tasks text commands (not Slack-registered slash commands).
+	if (await handleTasksCommand(ctx)) {
+		return;
+	}
+
 	const logCtx = {
 		channelId: ctx.message.channel,
 		userName: ctx.message.userName,
@@ -451,6 +474,115 @@ async function handleMessage(
 	} finally {
 		await ctx.setWorking(false);
 		activeRuns.delete(channelId);
+	}
+}
+
+async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
+	const raw = ctx.message.text.trim();
+	const match = raw.match(/^\/tasks\b\s*(.*)$/i);
+	if (!match) return false;
+
+	const channelId = ctx.message.channel;
+	if (!schedulerHolder.instance) {
+		await ctx.respond("_Scheduler not initialized._");
+		return true;
+	}
+
+	const rest = match[1]?.trim() || "";
+	const [subRaw, ...args] = rest.split(/\s+/).filter(Boolean);
+	const sub = (subRaw || "list").toLowerCase();
+
+	const usage = "_Usage: /tasks [list|pause|resume|cancel|run|help] <taskId>_";
+
+	switch (sub) {
+		case "help": {
+			await ctx.respond(
+				`${usage}\nExamples:\n• /tasks list\n• /tasks pause task_123\n• /tasks resume task_123\n• /tasks cancel task_123\n• /tasks run task_123`,
+			);
+			return true;
+		}
+		case "list": {
+			const tasks = schedulerHolder.instance.listTasks(channelId);
+			if (tasks.length === 0) {
+				await ctx.respond("_No scheduled tasks for this channel._");
+				return true;
+			}
+			const lines = tasks.map((t) => {
+				const recurring = t.schedule ? " (recurring)" : "";
+				const paused = t.paused ? " (paused)" : "";
+				return `• ${t.description}${recurring}${paused}\n  ID: ${t.id}\n  Next: ${formatNextRun(t)}`;
+			});
+			await ctx.respond(`*Scheduled Tasks:*\n\n${lines.join("\n\n")}`);
+			return true;
+		}
+		case "pause":
+		case "resume":
+		case "cancel":
+		case "delete":
+		case "run": {
+			const taskId = args[0];
+			if (!taskId) {
+				await ctx.respond(usage);
+				return true;
+			}
+
+			if (sub === "pause") {
+				const ok = await schedulerHolder.instance.pause(taskId);
+				await ctx.respond(
+					ok
+						? `_Paused task ${taskId}._`
+						: `_Could not pause ${taskId}. Only recurring tasks can be paused._`,
+				);
+				return true;
+			}
+
+			if (sub === "resume") {
+				const ok = await schedulerHolder.instance.resume(taskId);
+				await ctx.respond(
+					ok
+						? `_Resumed task ${taskId}._`
+						: `_Could not resume ${taskId}. Only recurring tasks can be resumed._`,
+				);
+				return true;
+			}
+
+			if (sub === "cancel" || sub === "delete") {
+				const ok = await schedulerHolder.instance.cancel(taskId);
+				await ctx.respond(
+					ok ? `_Cancelled task ${taskId}._` : `_Task ${taskId} not found._`,
+				);
+				return true;
+			}
+
+			// run
+			if (activeRuns.has(channelId)) {
+				await ctx.respond(
+					"_This channel is busy. Say `stop` first before running a task now._",
+				);
+				return true;
+			}
+			const task = schedulerHolder.instance
+				.listTasks(channelId)
+				.find((t) => t.id === taskId);
+			if (!task) {
+				await ctx.respond(`_Task ${taskId} not found in this channel._`);
+				return true;
+			}
+			void schedulerHolder.instance
+				.runNow(taskId)
+				.catch((err) =>
+					logger.logWarning(
+						`Failed to run task ${taskId} immediately`,
+						String(err),
+					),
+				);
+			await ctx.respond(`_Triggered task ${taskId}. Running now..._`);
+			return true;
+		}
+		default: {
+			await ctx.respond(usage);
+			return true;
+		}
 	}
 }
 
@@ -604,7 +736,7 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			} else {
 				const taskList = tasks
 					.map((t) => {
-						const nextRun = new Date(t.nextRun).toLocaleString();
+						const nextRun = formatNextRun(t);
 						const recurring = t.schedule ? " (recurring)" : "";
 						return `• ${t.description}${recurring} - next: ${nextRun}`;
 					})

@@ -55,6 +55,33 @@ describe("schedule tool", () => {
 			);
 		});
 
+		it("includes warning when provided by callback", async () => {
+			const onSchedule = vi.fn().mockResolvedValue({
+				success: true,
+				taskId: "task_123",
+				nextRun: "2024-01-15 09:00",
+				warning: "Default timezone invalid; using UTC",
+			});
+
+			const tool = createScheduleTool({
+				onSchedule,
+				onListTasks: vi.fn(),
+				onCancelTask: vi.fn(),
+			});
+
+			const result = await tool.execute("test-id", {
+				label: "Schedule reminder",
+				action: "schedule",
+				description: "Morning standup",
+				prompt: "Remind team about standup",
+				when: "every day at 9am",
+			});
+
+			const text = (result.content[0] as { text: string }).text;
+			expect(text).toContain("Warning");
+			expect(text).toContain("Default timezone invalid");
+		});
+
 		it("returns error when scheduling fails", async () => {
 			const onSchedule = vi.fn().mockResolvedValue({
 				success: false,
