@@ -220,10 +220,9 @@ fn path_starts_with(path: &Path, base: &Path) -> bool {
 
 /// Check if a path is in a system-protected directory
 pub fn is_system_path(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
     SYSTEM_PATHS.iter().any(|sys| {
         let sys_path = Path::new(sys);
-        path_starts_with(path, sys_path) || path_str.starts_with(sys)
+        path_starts_with(path, sys_path)
     })
 }
 
@@ -237,6 +236,10 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    // ========================================================================
+    // Basic Containment Tests
+    // ========================================================================
+
     #[test]
     fn test_workspace_containment() {
         let workspace = PathBuf::from("/home/user/project");
@@ -245,6 +248,28 @@ mod tests {
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
     }
+
+    #[test]
+    fn test_workspace_root_file() {
+        let workspace = PathBuf::from("/home/user/project");
+        let target = PathBuf::from("/home/user/project/README.md");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_workspace_deeply_nested() {
+        let workspace = PathBuf::from("/home/user/project");
+        let target = PathBuf::from("/home/user/project/a/b/c/d/e/f/file.rs");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    // ========================================================================
+    // System Path Protection Tests
+    // ========================================================================
 
     #[test]
     fn test_system_path_protection() {
@@ -256,34 +281,136 @@ mod tests {
     }
 
     #[test]
-    fn test_escaped_path() {
+    fn test_all_system_paths_protected() {
         let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/some/other/location/file.txt");
+
+        // All Linux system paths should be protected
+        let system_paths = [
+            "/etc/shadow",
+            "/usr/bin/ls",
+            "/var/log/syslog",
+            "/boot/grub/grub.cfg",
+            "/sys/class/net",
+            "/proc/1/status",
+            "/dev/sda",
+            "/bin/sh",
+            "/sbin/init",
+            "/lib/modules",
+            "/lib64/ld-linux.so",
+            "/opt/software",
+        ];
+
+        for path in system_paths {
+            let result = is_path_contained(Path::new(path), &workspace, &[]);
+            assert!(
+                matches!(result, PathContainment::SystemProtected { .. }),
+                "Expected {} to be system protected, got {:?}",
+                path,
+                result
+            );
+        }
+    }
+
+    // ========================================================================
+    // Escaped Path Tests (Strong Assertions)
+    // ========================================================================
+
+    #[test]
+    fn test_escaped_path_outside_all_zones() {
+        let workspace = PathBuf::from("/workspace/project");
+        // Use a path that's definitely not in workspace, home, temp, or system
+        let target = PathBuf::from("/mnt/external/data/file.txt");
 
         let result = is_path_contained(&target, &workspace, &[]);
-        // This may be escaped or contained in home depending on the actual paths
-        assert!(matches!(
-            result,
-            PathContainment::Escaped { .. } | PathContainment::Contained { .. }
-        ));
+        // Should be Escaped (not in any safe zone) or possibly home if /mnt is under home
+        match &result {
+            PathContainment::Escaped { reason } => {
+                assert!(reason.contains("outside workspace"), "Expected escape reason to mention workspace");
+            }
+            PathContainment::Contained { zone } => {
+                // Only acceptable if it's in home or temp
+                assert!(
+                    zone == "home" || zone == "temp",
+                    "Unexpected zone {} for path outside workspace",
+                    zone
+                );
+            }
+            PathContainment::SystemProtected { .. } => {
+                panic!("/mnt/external should not be system protected");
+            }
+        }
+    }
+
+    // ========================================================================
+    // Additional Safe Zone Tests (With Real Assertions)
+    // ========================================================================
+
+    #[test]
+    fn test_additional_safe_zone_logic() {
+        // Test the logic using temp directory which definitely exists
+        let workspace = PathBuf::from("/nonexistent/workspace");
+        let temp_dir = std::env::temp_dir();
+        let target = temp_dir.join("test_file.txt");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        // Should be contained in temp zone
+        assert!(
+            matches!(&result, PathContainment::Contained { zone } if zone == "temp"),
+            "Expected temp containment, got {:?}",
+            result
+        );
     }
 
     #[test]
-    fn test_additional_safe_zone() {
-        let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/data/shared/file.txt");
-        let safe_zones = vec![PathBuf::from("/data/shared")];
+    fn test_safe_zone_takes_precedence() {
+        // If we add a safe zone that's a parent of the target, it should be allowed
+        let workspace = PathBuf::from("/workspace");
+        let temp_dir = std::env::temp_dir();
+        let target = temp_dir.join("subdir/file.txt");
+        let safe_zones = vec![temp_dir.clone()];
 
-        // Note: This will only work if /data/shared exists
-        // For testing, we rely on the logic being correct
+        let result = is_path_contained(&target, &workspace, &safe_zones);
+        // Should be contained (either in temp or the additional safe zone)
+        assert!(
+            matches!(result, PathContainment::Contained { .. }),
+            "Expected containment with safe zone, got {:?}",
+            result
+        );
     }
+
+    // ========================================================================
+    // is_system_path Tests
+    // ========================================================================
 
     #[test]
     fn test_is_system_path() {
         assert!(is_system_path(Path::new("/etc/passwd")));
         assert!(is_system_path(Path::new("/usr/bin/ls")));
+        assert!(is_system_path(Path::new("/var/log/messages")));
         assert!(!is_system_path(Path::new("/home/user/file")));
+        assert!(!is_system_path(Path::new("/tmp/file")));
     }
+
+    #[test]
+    fn test_is_system_path_nested() {
+        // Deeply nested system paths should still be detected
+        assert!(is_system_path(Path::new("/etc/ssh/sshd_config")));
+        assert!(is_system_path(Path::new("/usr/local/bin/custom")));
+        assert!(is_system_path(Path::new("/var/lib/docker/overlay")));
+    }
+
+    #[test]
+    fn test_is_system_path_edge_cases() {
+        // Root is not a system path (it's the parent of them)
+        assert!(!is_system_path(Path::new("/")));
+        // Paths that start with system path names but aren't under them
+        assert!(!is_system_path(Path::new("/etcdata/file")));
+        assert!(!is_system_path(Path::new("/users/name"))); // not /usr
+    }
+
+    // ========================================================================
+    // Path Traversal Detection Tests
+    // ========================================================================
 
     #[test]
     fn test_has_path_traversal() {
@@ -293,6 +420,38 @@ mod tests {
         assert!(has_path_traversal("~/secret"));
         assert!(!has_path_traversal("/home/user/file.txt"));
     }
+
+    #[test]
+    fn test_has_path_traversal_complex() {
+        // Multiple traversals
+        assert!(has_path_traversal("../../etc/passwd"));
+        assert!(has_path_traversal("/a/b/c/../../../etc"));
+
+        // Traversal in the middle
+        assert!(has_path_traversal("/home/../root/.ssh"));
+
+        // Double slashes
+        assert!(has_path_traversal("//root//file"));
+        assert!(has_path_traversal("/home//user"));
+
+        // Tilde expansion
+        assert!(has_path_traversal("~root/.ssh"));
+        assert!(has_path_traversal("~/.ssh/id_rsa"));
+    }
+
+    #[test]
+    fn test_has_path_traversal_safe_paths() {
+        // These should NOT be flagged as traversal
+        assert!(!has_path_traversal("/home/user/project/src/main.rs"));
+        assert!(!has_path_traversal("relative/path/file.txt"));
+        assert!(!has_path_traversal("/absolute/path/to/file"));
+        // Single dots are OK (current directory)
+        assert!(!has_path_traversal("/home/user/./file"));
+    }
+
+    // ========================================================================
+    // path_starts_with Tests
+    // ========================================================================
 
     #[test]
     fn test_path_starts_with() {
@@ -311,8 +470,147 @@ mod tests {
     }
 
     #[test]
+    fn test_path_starts_with_edge_cases() {
+        // Trailing slash handling
+        assert!(path_starts_with(
+            Path::new("/home/user/project/"),
+            Path::new("/home/user/project")
+        ));
+        assert!(path_starts_with(
+            Path::new("/home/user/project"),
+            Path::new("/home/user/project/")
+        ));
+
+        // Root path
+        assert!(path_starts_with(Path::new("/etc"), Path::new("/")));
+
+        // Prefix that's not a path boundary
+        assert!(!path_starts_with(
+            Path::new("/home/username"),
+            Path::new("/home/user")
+        ));
+    }
+
+    // ========================================================================
+    // normalize_path Tests
+    // ========================================================================
+
+    #[test]
     fn test_normalize_path() {
         let path = normalize_path(Path::new("/home/user/../user/project/./src"));
         assert_eq!(path, PathBuf::from("/home/user/project/src"));
+    }
+
+    #[test]
+    fn test_normalize_path_multiple_traversals() {
+        let path = normalize_path(Path::new("/a/b/c/../../d/./e/../f"));
+        assert_eq!(path, PathBuf::from("/a/d/f"));
+    }
+
+    #[test]
+    fn test_normalize_path_at_root() {
+        // Can't go above root
+        let path = normalize_path(Path::new("/home/../../../etc"));
+        // This should normalize to /etc (can't go above root)
+        assert!(path.to_string_lossy().ends_with("etc"));
+    }
+
+    #[test]
+    fn test_normalize_path_current_dir() {
+        let path = normalize_path(Path::new("/home/./user/./project/./"));
+        assert_eq!(path, PathBuf::from("/home/user/project"));
+    }
+
+    // ========================================================================
+    // Path Traversal Attack Simulation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_path_traversal_attack_normalized() {
+        let workspace = PathBuf::from("/home/user/project");
+
+        // Attempt to escape via traversal - normalize_path should handle this
+        let malicious = Path::new("/home/user/project/../../../etc/passwd");
+        let normalized = normalize_path(malicious);
+
+        // The normalized path should be detected as system protected
+        let result = is_path_contained(&normalized, &workspace, &[]);
+        assert!(
+            matches!(result, PathContainment::SystemProtected { .. }),
+            "Traversal attack should be blocked: {:?} -> {:?}",
+            malicious,
+            result
+        );
+    }
+
+    #[test]
+    fn test_resolve_path_relative() {
+        let base = PathBuf::from("/home/user/project");
+        let relative = Path::new("src/main.rs");
+
+        let resolved = resolve_path(relative, &base).unwrap();
+        assert!(resolved.starts_with("/home/user/project"));
+        assert!(resolved.to_string_lossy().contains("src"));
+    }
+
+    // ========================================================================
+    // Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_empty_path() {
+        let workspace = PathBuf::from("/home/user/project");
+        let target = PathBuf::from("");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        // Empty path should either escape or be handled gracefully
+        assert!(
+            matches!(result, PathContainment::Escaped { .. } | PathContainment::Contained { .. }),
+            "Empty path should be handled: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_root_path() {
+        let workspace = PathBuf::from("/home/user/project");
+        let target = PathBuf::from("/");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        // Root should escape (not contained in workspace)
+        assert!(
+            !matches!(result, PathContainment::Contained { zone } if zone == "workspace"),
+            "Root should not be contained in workspace"
+        );
+    }
+
+    #[test]
+    fn test_workspace_itself() {
+        let workspace = PathBuf::from("/home/user/project");
+        let target = PathBuf::from("/home/user/project");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(
+            matches!(result, PathContainment::Contained { zone } if zone == "workspace"),
+            "Workspace itself should be contained"
+        );
+    }
+
+    #[test]
+    fn test_path_with_special_characters() {
+        let workspace = PathBuf::from("/home/user/project");
+        let target = PathBuf::from("/home/user/project/file with spaces.txt");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
+    }
+
+    #[test]
+    fn test_path_with_unicode() {
+        let workspace = PathBuf::from("/home/user/project");
+        let target = PathBuf::from("/home/user/project/文件.txt");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
     }
 }
