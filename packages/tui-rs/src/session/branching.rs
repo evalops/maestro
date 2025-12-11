@@ -1367,4 +1367,345 @@ mod tests {
         // Allows duplicates (not deduped)
         assert_eq!(branch.tags.len(), 3);
     }
+
+    // ============================================================
+    // Orphaned Branch Handling Tests
+    // ============================================================
+
+    #[test]
+    fn test_orphaned_active_branch_get_active_returns_none() {
+        let mut metadata = BranchMetadata::new();
+        // Add a real branch
+        let real_id = metadata.add_branch(BranchPoint::new("msg-1", 1));
+
+        // Set active to a non-existent branch
+        metadata.set_active_branch(Some("orphaned-id-12345".to_string()));
+
+        // get_active_branch should return None since the ID doesn't exist
+        assert!(metadata.get_active_branch().is_none());
+
+        // But active_branch field still holds the orphaned ID
+        assert_eq!(
+            metadata.active_branch,
+            Some("orphaned-id-12345".to_string())
+        );
+
+        // Real branch should still be accessible
+        assert!(metadata.get_branch(&real_id).is_some());
+    }
+
+    #[test]
+    fn test_orphaned_active_branch_lineage_is_empty() {
+        let mut metadata = BranchMetadata::new();
+        metadata.add_branch(BranchPoint::new("msg-1", 1));
+
+        // Set to orphaned branch
+        metadata.set_active_branch(Some("nonexistent-branch".to_string()));
+
+        // Lineage should be empty since active branch doesn't exist
+        assert!(metadata.lineage().is_empty());
+    }
+
+    #[test]
+    fn test_orphaned_active_branch_after_serialization() {
+        let mut metadata = BranchMetadata::new();
+        metadata.add_branch(BranchPoint::new("msg-1", 1));
+        metadata.set_active_branch(Some("orphaned-branch".to_string()));
+
+        // Serialize and deserialize
+        let json = serde_json::to_string(&metadata).unwrap();
+        let restored: BranchMetadata = serde_json::from_str(&json).unwrap();
+
+        // Orphaned reference should be preserved
+        assert_eq!(restored.active_branch, Some("orphaned-branch".to_string()));
+        // But get_active_branch still returns None
+        assert!(restored.get_active_branch().is_none());
+    }
+
+    #[test]
+    fn test_branch_manager_switch_to_orphaned_fails() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-0", 0);
+        manager.branch_at("msg-0", None).unwrap();
+
+        // Try to switch to non-existent branch
+        let result = manager.switch_to(Some("orphaned-id".to_string()));
+        assert!(!result);
+
+        // Active branch should remain unchanged (None in this case)
+        assert!(manager.active_fork_index().is_none());
+    }
+
+    #[test]
+    fn test_branch_manager_switch_preserves_state_on_failure() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-0", 0);
+        manager.register_message("msg-1", 1);
+
+        let valid_id = manager.branch_at("msg-1", None).unwrap();
+
+        // Switch to valid branch
+        assert!(manager.switch_to(Some(valid_id.clone())));
+        assert_eq!(manager.active_fork_index(), Some(1));
+
+        // Try to switch to orphaned branch - should fail
+        let result = manager.switch_to(Some("nonexistent".to_string()));
+        assert!(!result);
+
+        // Should still be on the valid branch
+        assert_eq!(manager.active_fork_index(), Some(1));
+    }
+
+    #[test]
+    fn test_branch_manager_from_metadata_with_orphaned_active() {
+        let mut metadata = BranchMetadata::new();
+        let _real_id = metadata.add_branch(BranchPoint::new("msg-1", 1));
+        metadata.set_active_branch(Some("orphaned-branch".to_string()));
+
+        let manager = BranchManager::from_metadata(metadata);
+
+        // active_fork_index relies on get_active_branch which returns None for orphaned
+        assert!(manager.active_fork_index().is_none());
+
+        // But we can still list the real branch
+        assert_eq!(manager.list_branches().len(), 1);
+
+        // And none should be marked active since the reference is orphaned
+        assert!(!manager.list_branches()[0].is_active);
+    }
+
+    #[test]
+    fn test_branch_manager_list_branches_with_orphaned_active() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-0", 0);
+        manager.register_message("msg-1", 1);
+
+        let _id1 = manager.branch_at("msg-0", Some("Branch 1")).unwrap();
+        let _id2 = manager.branch_at("msg-1", Some("Branch 2")).unwrap();
+
+        // Manually set orphaned active branch through metadata
+        // (Simulating corruption or deleted branch)
+        let metadata = BranchMetadata {
+            branches: vec![BranchPoint::new("msg-0", 0), BranchPoint::new("msg-1", 1)],
+            active_branch: Some("deleted-branch-xyz".to_string()),
+            parent_session: None,
+            parent_branch: None,
+        };
+
+        let manager = BranchManager::from_metadata(metadata);
+        let summaries = manager.list_branches();
+
+        // Both branches exist
+        assert_eq!(summaries.len(), 2);
+
+        // Neither should be marked active since the active reference is orphaned
+        for summary in &summaries {
+            assert!(
+                !summary.is_active,
+                "Branch {} should not be active",
+                summary.id
+            );
+        }
+    }
+
+    #[test]
+    fn test_recover_from_orphaned_active_by_switching() {
+        let mut metadata = BranchMetadata::new();
+        let real_id = metadata.add_branch(BranchPoint::new("msg-1", 1));
+        metadata.set_active_branch(Some("orphaned-id".to_string()));
+
+        let mut manager = BranchManager::from_metadata(metadata);
+
+        // Currently orphaned
+        assert!(manager.active_fork_index().is_none());
+
+        // Recovery: switch to a valid branch
+        assert!(manager.switch_to(Some(real_id.clone())));
+        assert_eq!(manager.active_fork_index(), Some(1));
+
+        // Or switch to main (None)
+        assert!(manager.switch_to(None));
+        assert!(manager.active_fork_index().is_none());
+    }
+
+    #[test]
+    fn test_orphaned_parent_branch_reference() {
+        let mut metadata = BranchMetadata::new();
+        metadata.add_branch(BranchPoint::new("msg-1", 1));
+        metadata.parent_branch = Some("deleted-parent-branch".to_string());
+
+        // parent_branch is just a reference, not validated
+        assert_eq!(
+            metadata.parent_branch,
+            Some("deleted-parent-branch".to_string())
+        );
+
+        // is_branched only checks parent_session or branches existence
+        assert!(metadata.is_branched()); // Has branches
+
+        // Serialize/deserialize preserves orphaned reference
+        let json = serde_json::to_string(&metadata).unwrap();
+        let restored: BranchMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.parent_branch,
+            Some("deleted-parent-branch".to_string())
+        );
+    }
+
+    #[test]
+    fn test_orphaned_parent_session_reference() {
+        let mut metadata = BranchMetadata::new();
+        metadata.parent_session = Some("nonexistent-session-abc".to_string());
+
+        // is_branched considers parent_session
+        assert!(metadata.is_branched());
+
+        // The reference is stored but not validated
+        assert_eq!(
+            metadata.parent_session,
+            Some("nonexistent-session-abc".to_string())
+        );
+    }
+
+    #[test]
+    fn test_multiple_orphaned_references() {
+        let mut metadata = BranchMetadata::new();
+        metadata.active_branch = Some("orphaned-active".to_string());
+        metadata.parent_branch = Some("orphaned-parent".to_string());
+        metadata.parent_session = Some("orphaned-session".to_string());
+
+        // All references are orphaned, but stored
+        assert_eq!(metadata.active_branch, Some("orphaned-active".to_string()));
+        assert_eq!(metadata.parent_branch, Some("orphaned-parent".to_string()));
+        assert_eq!(
+            metadata.parent_session,
+            Some("orphaned-session".to_string())
+        );
+
+        // is_branched still true due to parent_session
+        assert!(metadata.is_branched());
+
+        // get_active_branch returns None
+        assert!(metadata.get_active_branch().is_none());
+
+        // lineage is empty
+        assert!(metadata.lineage().is_empty());
+    }
+
+    #[test]
+    fn test_clear_orphaned_active_branch() {
+        let mut metadata = BranchMetadata::new();
+        metadata.add_branch(BranchPoint::new("msg-1", 1));
+        metadata.set_active_branch(Some("orphaned-id".to_string()));
+
+        // Verify it's orphaned
+        assert!(metadata.get_active_branch().is_none());
+
+        // Clear by setting to None
+        metadata.set_active_branch(None);
+
+        // Now explicitly no active branch
+        assert!(metadata.active_branch.is_none());
+        assert!(metadata.get_active_branch().is_none());
+    }
+
+    #[test]
+    fn test_branch_becomes_orphaned_conceptually() {
+        // Simulates the scenario where a branch existed, was set active,
+        // then the branch was "removed" (in real system) leaving orphaned reference
+
+        let mut metadata = BranchMetadata::new();
+        let id = metadata.add_branch(BranchPoint::new("msg-1", 1));
+
+        // Set as active
+        metadata.set_active_branch(Some(id.clone()));
+        assert!(metadata.get_active_branch().is_some());
+
+        // In a real system, if we could remove the branch, the reference becomes orphaned
+        // Simulate by creating new metadata with same active_branch but no branches
+        let orphaned_metadata = BranchMetadata {
+            branches: vec![],                // Branch was removed
+            active_branch: Some(id.clone()), // But reference remains
+            parent_session: None,
+            parent_branch: None,
+        };
+
+        // Now it's orphaned
+        assert!(orphaned_metadata.get_active_branch().is_none());
+        assert!(orphaned_metadata.lineage().is_empty());
+        assert!(!orphaned_metadata.is_branched()); // No branches or parent_session
+    }
+
+    #[test]
+    fn test_is_active_flag_with_orphaned_reference() {
+        let metadata = BranchMetadata {
+            branches: vec![BranchPoint::new("msg-0", 0), BranchPoint::new("msg-1", 1)],
+            active_branch: Some("orphaned".to_string()),
+            parent_session: None,
+            parent_branch: None,
+        };
+
+        let manager = BranchManager::from_metadata(metadata);
+        let summaries = manager.list_branches();
+
+        // The comparison in list_branches checks if active_branch == Some(branch.id)
+        // Since "orphaned" doesn't match any real branch ID, none are active
+        for summary in summaries {
+            assert!(!summary.is_active);
+        }
+    }
+
+    #[test]
+    fn test_switch_from_orphaned_to_main() {
+        let mut metadata = BranchMetadata::new();
+        metadata.add_branch(BranchPoint::new("msg-1", 1));
+        metadata.set_active_branch(Some("orphaned".to_string()));
+
+        let mut manager = BranchManager::from_metadata(metadata);
+
+        // Currently orphaned (active_fork_index returns None)
+        assert!(manager.active_fork_index().is_none());
+
+        // Switch to main (None) - should always succeed
+        assert!(manager.switch_to(None));
+        assert!(manager.metadata().active_branch.is_none());
+    }
+
+    #[test]
+    fn test_orphaned_branch_json_representation() {
+        let metadata = BranchMetadata {
+            branches: vec![],
+            active_branch: Some("orphaned-ref".to_string()),
+            parent_session: Some("orphaned-session".to_string()),
+            parent_branch: Some("orphaned-parent".to_string()),
+        };
+
+        let json = serde_json::to_string_pretty(&metadata).unwrap();
+
+        // Verify JSON contains the orphaned references
+        assert!(json.contains("orphaned-ref"));
+        assert!(json.contains("orphaned-session"));
+        assert!(json.contains("orphaned-parent"));
+
+        // Can deserialize back
+        let restored: BranchMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.active_branch, Some("orphaned-ref".to_string()));
+    }
+
+    #[test]
+    fn test_orphaned_branch_stress_many_invalid_switches() {
+        let mut manager = BranchManager::new();
+        manager.register_message("msg-0", 0);
+        let valid_id = manager.branch_at("msg-0", None).unwrap();
+
+        // Try many invalid switches
+        for i in 0..100 {
+            let result = manager.switch_to(Some(format!("fake-id-{}", i)));
+            assert!(!result);
+        }
+
+        // Manager should still be functional
+        assert!(manager.switch_to(Some(valid_id)));
+        assert_eq!(manager.active_fork_index(), Some(0));
+    }
 }

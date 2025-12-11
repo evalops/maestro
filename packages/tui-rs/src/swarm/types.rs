@@ -240,6 +240,105 @@ impl SwarmPlan {
     pub fn get_task_mut(&mut self, id: &str) -> Option<&mut SwarmTask> {
         self.tasks.iter_mut().find(|t| t.id == id)
     }
+
+    /// Check if the dependency graph has any cycles.
+    /// Returns Some(cycle) with the task IDs forming a cycle, or None if acyclic.
+    pub fn find_cycle(&self) -> Option<Vec<TaskId>> {
+        // Build adjacency map: task_id -> dependencies
+        let task_ids: HashSet<_> = self.tasks.iter().map(|t| t.id.as_str()).collect();
+
+        // Track visit state: 0 = unvisited, 1 = in current path, 2 = completed
+        let mut state: HashMap<&str, u8> = HashMap::new();
+        let mut path: Vec<&str> = Vec::new();
+
+        fn dfs<'a>(
+            task_id: &'a str,
+            tasks: &'a [SwarmTask],
+            task_ids: &HashSet<&str>,
+            state: &mut HashMap<&'a str, u8>,
+            path: &mut Vec<&'a str>,
+        ) -> Option<Vec<String>> {
+            match state.get(task_id) {
+                Some(2) => return None, // Already fully processed
+                Some(1) => {
+                    // Found cycle - extract it from path
+                    let cycle_start = path.iter().position(|&id| id == task_id).unwrap();
+                    let mut cycle: Vec<String> =
+                        path[cycle_start..].iter().map(|s| s.to_string()).collect();
+                    cycle.push(task_id.to_string());
+                    return Some(cycle);
+                }
+                _ => {}
+            }
+
+            state.insert(task_id, 1); // Mark as in current path
+            path.push(task_id);
+
+            // Find task and check its dependencies
+            if let Some(task) = tasks.iter().find(|t| t.id == task_id) {
+                for dep_id in &task.dependencies {
+                    // Only follow dependencies that exist in the plan
+                    if task_ids.contains(dep_id.as_str()) {
+                        if let Some(cycle) = dfs(dep_id, tasks, task_ids, state, path) {
+                            return Some(cycle);
+                        }
+                    }
+                }
+            }
+
+            path.pop();
+            state.insert(task_id, 2); // Mark as completed
+            None
+        }
+
+        // Check each task as a starting point
+        for task in &self.tasks {
+            if let Some(cycle) = dfs(&task.id, &self.tasks, &task_ids, &mut state, &mut path) {
+                return Some(cycle);
+            }
+        }
+
+        None
+    }
+
+    /// Check if the plan has valid dependencies (no cycles, no missing deps).
+    /// Returns Ok(()) if valid, or Err with description of the problem.
+    pub fn validate_dependencies(&self) -> Result<(), String> {
+        // Check for self-dependencies first (more specific error message)
+        for task in &self.tasks {
+            if task.dependencies.contains(&task.id) {
+                return Err(format!("Task '{}' depends on itself", task.id));
+            }
+        }
+
+        // Check for missing dependencies
+        let task_ids: HashSet<_> = self.tasks.iter().map(|t| t.id.as_str()).collect();
+        for task in &self.tasks {
+            for dep_id in &task.dependencies {
+                if !task_ids.contains(dep_id.as_str()) {
+                    return Err(format!(
+                        "Task '{}' depends on non-existent task '{}'",
+                        task.id, dep_id
+                    ));
+                }
+            }
+        }
+
+        // Check for cycles (multi-node cycles)
+        if let Some(cycle) = self.find_cycle() {
+            return Err(format!(
+                "Circular dependency detected: {}",
+                cycle.join(" -> ")
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Returns true if the dependency graph is acyclic (valid DAG)
+    pub fn is_acyclic(&self) -> bool {
+        self.find_cycle().is_none()
+    }
 }
 
 /// Configuration for swarm execution
@@ -1524,6 +1623,195 @@ mod tests {
         let ready = plan.ready_tasks(&completed);
         // Task can't start because "nonexistent" isn't completed
         assert!(ready.is_empty());
+    }
+
+    // ============================================================
+    // Cycle Detection Tests (find_cycle, validate_dependencies, is_acyclic)
+    // ============================================================
+
+    #[test]
+    fn test_find_cycle_no_cycle() {
+        // Linear chain: A -> B -> C (no cycle)
+        let task_a = SwarmTask::new("A", "Task A");
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+        let task_c = SwarmTask::new("C", "Task C").with_dependencies(vec!["B".into()]);
+
+        let plan = SwarmPlan::new("Linear").with_tasks(vec![task_a, task_b, task_c]);
+
+        assert!(plan.find_cycle().is_none());
+        assert!(plan.is_acyclic());
+    }
+
+    #[test]
+    fn test_find_cycle_self_reference() {
+        let task = SwarmTask::new("A", "Task A").with_dependencies(vec!["A".into()]);
+        let plan = SwarmPlan::new("Self").with_tasks(vec![task]);
+
+        let cycle = plan.find_cycle();
+        assert!(cycle.is_some());
+        let cycle = cycle.unwrap();
+        assert!(cycle.contains(&"A".to_string()));
+    }
+
+    #[test]
+    fn test_find_cycle_two_node() {
+        // A -> B -> A
+        let task_a = SwarmTask::new("A", "Task A").with_dependencies(vec!["B".into()]);
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+
+        let plan = SwarmPlan::new("Two").with_tasks(vec![task_a, task_b]);
+
+        let cycle = plan.find_cycle();
+        assert!(cycle.is_some());
+        assert!(!plan.is_acyclic());
+    }
+
+    #[test]
+    fn test_find_cycle_three_node() {
+        // A -> B -> C -> A
+        let task_a = SwarmTask::new("A", "Task A").with_dependencies(vec!["C".into()]);
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+        let task_c = SwarmTask::new("C", "Task C").with_dependencies(vec!["B".into()]);
+
+        let plan = SwarmPlan::new("Three").with_tasks(vec![task_a, task_b, task_c]);
+
+        let cycle = plan.find_cycle();
+        assert!(cycle.is_some());
+        let cycle = cycle.unwrap();
+        // Cycle should include all three
+        assert!(cycle.len() >= 3);
+    }
+
+    #[test]
+    fn test_find_cycle_with_independent_tasks() {
+        // Cycle: A -> B -> A
+        // Independent: C, D
+        let task_a = SwarmTask::new("A", "Task A").with_dependencies(vec!["B".into()]);
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+        let task_c = SwarmTask::new("C", "Task C");
+        let task_d = SwarmTask::new("D", "Task D").with_dependencies(vec!["C".into()]);
+
+        let plan = SwarmPlan::new("Mixed").with_tasks(vec![task_a, task_b, task_c, task_d]);
+
+        // Should still detect the cycle
+        assert!(plan.find_cycle().is_some());
+        assert!(!plan.is_acyclic());
+    }
+
+    #[test]
+    fn test_find_cycle_diamond_no_cycle() {
+        // Diamond pattern (no cycle):
+        //     A
+        //    / \
+        //   B   C
+        //    \ /
+        //     D
+        let task_a = SwarmTask::new("A", "Task A");
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+        let task_c = SwarmTask::new("C", "Task C").with_dependencies(vec!["A".into()]);
+        let task_d = SwarmTask::new("D", "Task D").with_dependencies(vec!["B".into(), "C".into()]);
+
+        let plan = SwarmPlan::new("Diamond").with_tasks(vec![task_a, task_b, task_c, task_d]);
+
+        assert!(plan.find_cycle().is_none());
+        assert!(plan.is_acyclic());
+    }
+
+    #[test]
+    fn test_find_cycle_long_chain() {
+        // Long chain with cycle at the end: 1 -> 2 -> ... -> 10 -> 1
+        let mut tasks = Vec::new();
+        for i in 1..=10 {
+            let deps = if i == 1 {
+                vec!["10".to_string()]
+            } else {
+                vec![format!("{}", i - 1)]
+            };
+            tasks.push(
+                SwarmTask::new(format!("{}", i), format!("Task {}", i)).with_dependencies(deps),
+            );
+        }
+
+        let plan = SwarmPlan::new("Long").with_tasks(tasks);
+
+        assert!(plan.find_cycle().is_some());
+    }
+
+    #[test]
+    fn test_validate_dependencies_valid() {
+        let task_a = SwarmTask::new("A", "Task A");
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+
+        let plan = SwarmPlan::new("Valid").with_tasks(vec![task_a, task_b]);
+
+        assert!(plan.validate_dependencies().is_ok());
+    }
+
+    #[test]
+    fn test_validate_dependencies_cycle_error() {
+        let task_a = SwarmTask::new("A", "Task A").with_dependencies(vec!["B".into()]);
+        let task_b = SwarmTask::new("B", "Task B").with_dependencies(vec!["A".into()]);
+
+        let plan = SwarmPlan::new("Cycle").with_tasks(vec![task_a, task_b]);
+
+        let result = plan.validate_dependencies();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Circular dependency"));
+    }
+
+    #[test]
+    fn test_validate_dependencies_missing_dep_error() {
+        let task = SwarmTask::new("A", "Task A").with_dependencies(vec!["nonexistent".into()]);
+
+        let plan = SwarmPlan::new("Missing").with_tasks(vec![task]);
+
+        let result = plan.validate_dependencies();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("non-existent task"));
+    }
+
+    #[test]
+    fn test_validate_dependencies_self_dep_error() {
+        let task = SwarmTask::new("A", "Task A").with_dependencies(vec!["A".into()]);
+
+        let plan = SwarmPlan::new("Self").with_tasks(vec![task]);
+
+        let result = plan.validate_dependencies();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("depends on itself"));
+    }
+
+    #[test]
+    fn test_validate_dependencies_empty_plan() {
+        let plan = SwarmPlan::new("Empty");
+        assert!(plan.validate_dependencies().is_ok());
+    }
+
+    #[test]
+    fn test_is_acyclic_empty_plan() {
+        let plan = SwarmPlan::new("Empty");
+        assert!(plan.is_acyclic());
+    }
+
+    #[test]
+    fn test_find_cycle_performance_many_tasks() {
+        // Create 100 tasks in a valid DAG (linear chain)
+        let tasks: Vec<SwarmTask> = (0..100)
+            .map(|i| {
+                if i == 0 {
+                    SwarmTask::new(format!("task-{}", i), format!("Task {}", i))
+                } else {
+                    SwarmTask::new(format!("task-{}", i), format!("Task {}", i))
+                        .with_dependencies(vec![format!("task-{}", i - 1)])
+                }
+            })
+            .collect();
+
+        let plan = SwarmPlan::new("Large").with_tasks(tasks);
+
+        // Should complete quickly and find no cycle
+        assert!(plan.find_cycle().is_none());
+        assert!(plan.is_acyclic());
     }
 
     // ============================================================

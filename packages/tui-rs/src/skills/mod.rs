@@ -135,13 +135,34 @@ impl SkillRegistry {
             .values()
             .filter(|skill| {
                 skill.definition.enabled
-                    && skill
-                        .definition
-                        .trigger_patterns
-                        .iter()
-                        .any(|pattern| input_lower.contains(&pattern.to_lowercase()))
+                    && skill.definition.trigger_patterns.iter().any(|pattern| {
+                        // Skip empty or whitespace-only patterns
+                        let pattern_trimmed = pattern.trim();
+                        !pattern_trimmed.is_empty() && input_lower.contains(&pattern.to_lowercase())
+                    })
             })
             .collect()
+    }
+
+    /// Validate a skill definition for common issues.
+    /// Returns Ok(()) if valid, or Err with a description of the problem.
+    pub fn validate_skill(skill: &SkillDefinition) -> Result<(), String> {
+        // Check for empty or whitespace-only triggers
+        for (i, trigger) in skill.trigger_patterns.iter().enumerate() {
+            if trigger.trim().is_empty() {
+                return Err(format!(
+                    "Skill '{}' has empty/whitespace trigger at index {}",
+                    skill.id, i
+                ));
+            }
+        }
+
+        // Check for empty ID
+        if skill.id.trim().is_empty() {
+            return Err("Skill ID cannot be empty or whitespace-only".to_string());
+        }
+
+        Ok(())
     }
 
     /// Get event history
@@ -573,11 +594,12 @@ mod tests {
     fn test_registry_match_triggers_empty_trigger_pattern() {
         let mut registry = SkillRegistry::new();
         registry.register(
-            SkillDefinition::new("catch-all", "Catch All").with_triggers(vec!["".into()]), // Empty trigger matches everything
+            SkillDefinition::new("catch-all", "Catch All").with_triggers(vec!["".into()]), // Empty trigger - should NOT match (security fix)
         );
 
+        // Empty triggers are now skipped to prevent accidental catch-all behavior
         let matches = registry.match_triggers("Any input");
-        assert_eq!(matches.len(), 1);
+        assert_eq!(matches.len(), 0);
     }
 
     #[test]
@@ -753,33 +775,32 @@ mod tests {
     }
 
     // ============================================================
-    // Empty Trigger Pattern Tests
+    // Empty Trigger Pattern Tests (FIXED BEHAVIOR)
     // ============================================================
 
     #[test]
-    fn test_empty_trigger_matches_any_non_empty_input() {
+    fn test_empty_trigger_does_not_match() {
         let mut registry = SkillRegistry::new();
         registry.register(
             SkillDefinition::new("catch-all", "Catch All").with_triggers(vec!["".into()]),
         );
 
-        // Empty trigger "" is contained in any string
-        assert_eq!(registry.match_triggers("hello").len(), 1);
-        assert_eq!(registry.match_triggers("any text at all").len(), 1);
-        assert_eq!(registry.match_triggers("x").len(), 1);
-        // Even matches empty string (empty contains empty)
-        assert_eq!(registry.match_triggers("").len(), 1);
+        // Empty trigger no longer matches (fixed security issue)
+        assert_eq!(registry.match_triggers("hello").len(), 0);
+        assert_eq!(registry.match_triggers("any text at all").len(), 0);
+        assert_eq!(registry.match_triggers("x").len(), 0);
+        assert_eq!(registry.match_triggers("").len(), 0);
     }
 
     #[test]
-    fn test_whitespace_only_trigger() {
+    fn test_whitespace_only_trigger_does_not_match() {
         let mut registry = SkillRegistry::new();
         registry
             .register(SkillDefinition::new("ws", "Whitespace").with_triggers(vec!["   ".into()]));
 
-        // Whitespace trigger matches input with whitespace
-        assert_eq!(registry.match_triggers("hello world").len(), 0); // single space
-        assert_eq!(registry.match_triggers("hello   world").len(), 1); // triple space
+        // Whitespace-only trigger no longer matches (fixed)
+        assert_eq!(registry.match_triggers("hello world").len(), 0);
+        assert_eq!(registry.match_triggers("hello   world").len(), 0);
     }
 
     #[test]
@@ -790,9 +811,52 @@ mod tests {
                 .with_triggers(vec!["specific".into(), "".into()]),
         );
 
-        // Empty trigger makes it match everything
-        assert_eq!(registry.match_triggers("random text").len(), 1);
+        // Empty trigger is ignored, only "specific" matches
+        assert_eq!(registry.match_triggers("random text").len(), 0);
         assert_eq!(registry.match_triggers("specific thing").len(), 1);
+    }
+
+    #[test]
+    fn test_validate_skill_empty_trigger() {
+        let skill =
+            SkillDefinition::new("test", "Test").with_triggers(vec!["valid".into(), "".into()]);
+
+        let result = SkillRegistry::validate_skill(&skill);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty/whitespace trigger"));
+    }
+
+    #[test]
+    fn test_validate_skill_whitespace_trigger() {
+        let skill = SkillDefinition::new("test", "Test").with_triggers(vec!["   ".into()]);
+
+        let result = SkillRegistry::validate_skill(&skill);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_skill_valid() {
+        let skill = SkillDefinition::new("test", "Test").with_triggers(vec!["trigger".into()]);
+
+        let result = SkillRegistry::validate_skill(&skill);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_skill_empty_id() {
+        let skill = SkillDefinition::new("", "Test");
+
+        let result = SkillRegistry::validate_skill(&skill);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("ID cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_skill_whitespace_id() {
+        let skill = SkillDefinition::new("   ", "Test");
+
+        let result = SkillRegistry::validate_skill(&skill);
+        assert!(result.is_err());
     }
 
     // ============================================================
