@@ -172,7 +172,12 @@ impl LayoutConstraints {
 /// let width = responsive_width(50, 40, 100, 0.8);
 /// assert_eq!(width, 40); // 50 * 0.8 = 40, exactly at min
 /// ```
-pub fn responsive_width(terminal_width: usize, min: usize, max: usize, preferred_ratio: f32) -> usize {
+pub fn responsive_width(
+    terminal_width: usize,
+    min: usize,
+    max: usize,
+    preferred_ratio: f32,
+) -> usize {
     let preferred = (terminal_width as f32 * preferred_ratio) as usize;
     preferred.clamp(min, max)
 }
@@ -295,7 +300,11 @@ pub fn distribute_flex(available: usize, items: &[FlexItem], gap: usize) -> Vec<
     }
 
     // Calculate total weight for flexible items
-    let total_weight: f32 = items.iter().filter(|i| i.weight > 0.0).map(|i| i.weight).sum();
+    let total_weight: f32 = items
+        .iter()
+        .filter(|i| i.weight > 0.0)
+        .map(|i| i.weight)
+        .sum();
     let available_for_flex = available_for_items.saturating_sub(fixed_total);
 
     // Second pass: distribute to flexible items
@@ -625,7 +634,9 @@ impl ZoneLayout {
 
         for id in &self.order {
             if let Some(config) = self.zones.get(id) {
-                let min = config.min_width.max((available as f32 * config.min_percent) as usize);
+                let min = config
+                    .min_width
+                    .max((available as f32 * config.min_percent) as usize);
                 let width = min.min(remaining);
                 assigned.insert(id.clone(), width);
                 remaining = remaining.saturating_sub(width);
@@ -717,10 +728,7 @@ mod tests {
 
     #[test]
     fn flex_distribution_unequal_weights() {
-        let items = vec![
-            FlexItem::weight(1.0),
-            FlexItem::weight(3.0),
-        ];
+        let items = vec![FlexItem::weight(1.0), FlexItem::weight(3.0)];
         let widths = distribute_flex(100, &items, 0);
         // 1:3 ratio of 100 = 25:75
         assert_eq!(widths, vec![25, 75]);
@@ -728,10 +736,7 @@ mod tests {
 
     #[test]
     fn flex_distribution_with_constraints() {
-        let items = vec![
-            FlexItem::weight(1.0).min(30),
-            FlexItem::weight(1.0).max(20),
-        ];
+        let items = vec![FlexItem::weight(1.0).min(30), FlexItem::weight(1.0).max(20)];
         let widths = distribute_flex(100, &items, 0);
         // Equal weights would be 50:50, but max constraint limits second
         // First gets 30 (min), second gets 20 (max), remainder distributed
