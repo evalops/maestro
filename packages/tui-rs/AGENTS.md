@@ -17,11 +17,11 @@ cargo test
 
 ## Architecture Overview
 
-This is a **native Rust TUI** that spawns a Node.js agent subprocess for AI interactions. The Rust side handles all terminal rendering, input, and UI state.
+This is a **native Rust TUI** with a fully native agent runtime, AI provider clients, and tool execution. It does **not** require a Node.js subprocess for normal operation. A small Node bridge is used only for optional TypeScript hook execution.
 
 ### Key Design Decisions
 
-1. **Subprocess Architecture**: The TUI spawns `node` to run the agent, communicating via stdin/stdout JSON-RPC. This keeps AI logic in TypeScript while getting native terminal performance.
+1. **Native Agent Architecture**: AI communication, tool execution, and streaming live entirely in Rust (`agent/`, `ai/`, `tools/`). This enables a standalone binary and avoids cross-process latency. A Node hook bridge exists only for running TS hooks when enabled.
 
 2. **Cursor Positioning**: Uses native terminal cursor (adapted from OpenAI Codex) rather than inline cursor rendering. See `components/textarea.rs` for the implementation.
 
@@ -51,9 +51,9 @@ All widgets implement ratatui's `Widget` trait.
 - **`matcher.rs`**: Fuzzy matching, scoring, tab completion (`SlashCommandMatcher`, `SlashCycleState`)
 - **`types.rs`**: `Command`, `CommandContext` definitions
 
-### `agent/` - Node.js Subprocess
-- **`process.rs`**: `AgentProcess` spawns and communicates with the agent
-- **`protocol.rs`**: Message types for agent communication
+### `agent/` - Native Agent Runtime
+- **`native.rs`**: Main agent loop, tool handling, provider orchestration
+- **`protocol.rs`**: Internal message/event types for agent state and streaming
 
 ### `session/` - Persistence
 - **`manager.rs`**: `SessionManager` lists/loads sessions
@@ -148,5 +148,5 @@ RUST_LOG=debug ./target/debug/composer-tui 2> debug.log
 
 1. Multi-line input doesn't fully support cursor movement across wrapped lines yet
 2. Headless protocol integration is partial
-3. MCP server support not yet implemented
+3. MCP support exists, but parity and UX with the TypeScript surfaces is still evolving
 4. Some dead code warnings for future features (textarea.rs utilities)
