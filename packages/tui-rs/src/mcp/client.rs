@@ -98,6 +98,11 @@ impl McpConnection {
         }
     }
 
+    /// Get the server name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Connect to the MCP server
     pub async fn connect(&mut self) -> Result<(), McpError> {
         match self.config.transport {
@@ -334,6 +339,18 @@ impl McpConnection {
         self.next_id.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// Try to receive a server notification (non-blocking)
+    ///
+    /// Returns any pending notifications from the server that weren't
+    /// responses to specific requests (e.g., progress updates, log messages).
+    pub fn try_recv_notification(&mut self) -> Option<McpResponse> {
+        if let Some(ConnectionBackend::Stdio { response_rx, .. }) = &mut self.backend {
+            response_rx.try_recv().ok()
+        } else {
+            None
+        }
+    }
+
     /// Disconnect from the server
     pub async fn disconnect(&mut self) {
         match self.backend.take() {
@@ -350,7 +367,22 @@ impl McpConnection {
 
     /// Check if connected
     pub fn is_connected(&self) -> bool {
-        self.initialized && self.backend.is_some()
+        if !self.initialized {
+            return false;
+        }
+        match &self.backend {
+            Some(ConnectionBackend::Stdio { .. }) => true,
+            Some(ConnectionBackend::Http(http)) => http.is_connected(),
+            None => false,
+        }
+    }
+
+    /// Get the server name for this connection
+    pub fn server_name(&self) -> &str {
+        match &self.backend {
+            Some(ConnectionBackend::Http(http)) => http.name(),
+            _ => &self.name,
+        }
     }
 }
 

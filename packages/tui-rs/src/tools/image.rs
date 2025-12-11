@@ -193,8 +193,15 @@ impl ImageTool {
 
         // Get image dimensions info if possible
         let dimensions = get_image_dimensions(&data);
+        let max_dim = args.max_dimension.unwrap_or(DEFAULT_MAX_DIMENSION);
         let dim_info = dimensions
-            .map(|(w, h)| format!(" ({}x{})", w, h))
+            .map(|(w, h)| {
+                if w > max_dim || h > max_dim {
+                    format!(" ({}x{}, exceeds max {})", w, h, max_dim)
+                } else {
+                    format!(" ({}x{})", w, h)
+                }
+            })
             .unwrap_or_default();
 
         // Format as data URI for easy consumption
