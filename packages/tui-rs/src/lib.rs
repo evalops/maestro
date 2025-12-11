@@ -297,6 +297,14 @@ pub mod resize_handler;
 /// Multiple styles with low-unicode/low-color fallbacks.
 pub mod loader;
 
+/// Keymap and chord detection system.
+/// Multi-key sequences, vim-style modes, timeout-based chords.
+pub mod keymap;
+
+/// Notification queue for TUI feedback.
+/// Priority-based notifications with batching and auto-dismiss.
+pub mod notification_queue;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
