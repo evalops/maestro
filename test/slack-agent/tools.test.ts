@@ -131,6 +131,127 @@ describe("slack-agent tools", () => {
 				),
 			).rejects.toThrow("aborted");
 		});
+
+		describe("approval workflow", () => {
+			it("executes non-destructive commands without approval", async () => {
+				let approvalCalled = false;
+				const tool = createBashTool(executor, {
+					onApprovalNeeded: async () => {
+						approvalCalled = true;
+						return true;
+					},
+				});
+
+				await tool.execute("test-id", {
+					label: "Safe command",
+					command: "echo hello",
+				});
+
+				expect(approvalCalled).toBe(false);
+			});
+
+			it("requests approval for destructive rm commands", async () => {
+				let approvalCalled = false;
+				let approvalCommand = "";
+				const tool = createBashTool(executor, {
+					onApprovalNeeded: async (cmd) => {
+						approvalCalled = true;
+						approvalCommand = cmd;
+						return false; // Reject to prevent actual execution
+					},
+				});
+
+				const result = await tool.execute("test-id", {
+					label: "Delete files",
+					command: "rm -rf /tmp/test",
+				});
+
+				expect(approvalCalled).toBe(true);
+				expect(approvalCommand).toContain("rm -rf");
+				expect((result.content[0] as { text: string }).text).toContain(
+					"rejected",
+				);
+			});
+
+			it("requests approval for git force push", async () => {
+				let approvalCalled = false;
+				const tool = createBashTool(executor, {
+					onApprovalNeeded: async () => {
+						approvalCalled = true;
+						return false;
+					},
+				});
+
+				await tool.execute("test-id", {
+					label: "Force push",
+					command: "git push --force",
+				});
+
+				expect(approvalCalled).toBe(true);
+			});
+
+			it("requests approval for DROP TABLE", async () => {
+				let approvalCalled = false;
+				const tool = createBashTool(executor, {
+					onApprovalNeeded: async () => {
+						approvalCalled = true;
+						return false;
+					},
+				});
+
+				await tool.execute("test-id", {
+					label: "Drop table",
+					command: "psql -c 'DROP TABLE users'",
+				});
+
+				expect(approvalCalled).toBe(true);
+			});
+
+			it("executes destructive command when approved", async () => {
+				const tool = createBashTool(executor, {
+					onApprovalNeeded: async () => true,
+				});
+
+				const result = await tool.execute("test-id", {
+					label: "Approved delete",
+					command: "rm -f /tmp/nonexistent-file-12345",
+				});
+
+				// Should execute and not return rejection message
+				expect((result.content[0] as { text: string }).text).not.toContain(
+					"rejected",
+				);
+			});
+
+			it("returns rejection details when command is rejected", async () => {
+				const tool = createBashTool(executor, {
+					onApprovalNeeded: async () => false,
+				});
+
+				const result = await tool.execute("test-id", {
+					label: "Rejected delete",
+					command: "rm -rf /important",
+				});
+
+				expect(result.details).toBeDefined();
+				expect((result.details as { rejected: boolean }).rejected).toBe(true);
+			});
+
+			it("skips approval check when no callback provided", async () => {
+				const tool = createBashTool(executor);
+
+				// Without approval callback, destructive commands execute directly
+				// This tests backwards compatibility
+				const result = await tool.execute("test-id", {
+					label: "No approval check",
+					command: "rm -f /tmp/nonexistent-test-file",
+				});
+
+				expect((result.content[0] as { text: string }).text).not.toContain(
+					"rejected",
+				);
+			});
+		});
 	});
 
 	describe("read tool", () => {
