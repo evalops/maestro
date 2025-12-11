@@ -161,6 +161,48 @@ const OPENAI_CODEX_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
+// Manual overlay for OpenAI GPT-5.2 (flagship coding/agentic model, Dec 11 2025)
+const OPENAI_GPT52_OVERLAY = {
+	openai: {
+		"gpt-5.2": {
+			id: "gpt-5.2",
+			name: "GPT-5.2",
+			api: "openai-completions",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1",
+			reasoning: true,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 1.75,
+				output: 14,
+				cacheRead: 0.175,
+				cacheWrite: 0,
+			},
+			contextWindow: 400000,
+			maxTokens: 128000,
+		} as Model<"openai-completions">,
+		"gpt-5.2-2025-12-11": {
+			id: "gpt-5.2-2025-12-11",
+			name: "GPT-5.2 (Dec 11 2025 Snapshot)",
+			api: "openai-completions",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1",
+			reasoning: true,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: {
+				input: 1.75,
+				output: 14,
+				cacheRead: 0.175,
+				cacheWrite: 0,
+			},
+			contextWindow: 400000,
+			maxTokens: 128000,
+		} as Model<"openai-completions">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 // Writer AI Palmyra models - OpenAI-compatible API with 1M context window
 // https://dev.writer.com/home/models
 const WRITER_OVERLAY = {
@@ -592,6 +634,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		OPENROUTER_RESPONSES_OVERLAY,
 		GROQ_RESPONSES_OVERLAY,
 		OPENAI_CODEX_OVERLAY,
+		OPENAI_GPT52_OVERLAY,
 		WRITER_OVERLAY,
 		BEDROCK_OVERLAY,
 	];
