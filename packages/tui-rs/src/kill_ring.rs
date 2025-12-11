@@ -407,10 +407,7 @@ pub fn kill_to_start(text: &str, cursor: usize) -> Option<KillResult> {
     }
 
     // Find start of current line
-    let start = text[..cursor]
-        .rfind('\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let start = text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
 
     if start == cursor {
         return None;

@@ -1082,23 +1082,23 @@ pub use layout_constraints::presets;
 /// - Ctrl+Y: yank (paste) last killed text
 /// - Alt+Y: rotate through kill ring
 pub use kill_ring::{
-    // Kill ring
-    KillRing,      // Main kill ring struct
-    KillResult,    // Result of a kill operation
-    YankInfo,      // Info about last yank for replacement
     // Word boundaries
-    current_word_end,    // Find end of current word
-    current_word_start,  // Find start of current word
-    is_word_separator,   // Check if char is word separator
-    next_word_end,       // Find end of next word
-    previous_word_start, // Find start of previous word
+    current_word_end,   // Find end of current word
+    current_word_start, // Find start of current word
+    is_word_separator,  // Check if char is word separator
     // Kill operations
     kill_to_end,         // Kill to end of line (Ctrl+K)
     kill_to_start,       // Kill to start of line (Ctrl+U)
     kill_word_backward,  // Kill word backward (Alt+Backspace)
     kill_word_forward,   // Kill word forward (Alt+Delete)
+    next_word_end,       // Find end of next word
+    previous_word_start, // Find start of previous word
     transpose_chars,     // Transpose characters (Ctrl+T)
     transpose_words,     // Transpose words (Alt+T)
+    KillResult,          // Result of a kill operation
+    // Kill ring
+    KillRing, // Main kill ring struct
+    YankInfo, // Info about last yank for replacement
     // Constants
     DEFAULT_KILL_RING_SIZE,
     WORD_SEPARATORS,
