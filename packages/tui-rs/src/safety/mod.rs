@@ -56,6 +56,9 @@ mod dangerous_patterns;
 mod firewall;
 mod path_containment;
 
+#[cfg(test)]
+mod integration_tests;
+
 pub use bash_analyzer::{analyze_bash_command, BashAnalysis, CommandRisk};
 pub use dangerous_patterns::{check_dangerous_patterns, DangerousPattern, PatternMatch};
 pub use firewall::{ActionFirewall, FirewallVerdict};
