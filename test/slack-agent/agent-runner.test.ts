@@ -124,6 +124,109 @@ describe("agent-runner", () => {
 			expect(parsed.attachments).toHaveLength(1);
 			expect(parsed.attachments[0].local).toContain("report.pdf");
 		});
+
+		it("stores threadTs for thread replies", () => {
+			const channelDir = join(testDir, "C123456");
+			mkdirSync(channelDir, { recursive: true });
+
+			const logPath = join(channelDir, "log.jsonl");
+			const messages = [
+				{
+					date: "2024-01-15T10:00:00.000Z",
+					ts: "1705312800.000000",
+					user: "U123456",
+					userName: "alice",
+					text: "Parent message",
+					attachments: [],
+					isBot: false,
+				},
+				{
+					date: "2024-01-15T10:01:00.000Z",
+					ts: "1705312860.000000",
+					threadTs: "1705312800.000000",
+					user: "U789",
+					userName: "bob",
+					text: "Reply in thread",
+					attachments: [],
+					isBot: false,
+				},
+			];
+
+			writeFileSync(
+				logPath,
+				`${messages.map((m) => JSON.stringify(m)).join("\n")}\n`,
+			);
+
+			const content = require("node:fs").readFileSync(logPath, "utf-8");
+			const lines = content.trim().split("\n");
+			const reply = JSON.parse(lines[1]);
+			expect(reply.threadTs).toBe("1705312800.000000");
+		});
+
+		it("preserves thread structure with multiple replies", () => {
+			const channelDir = join(testDir, "C123456");
+			mkdirSync(channelDir, { recursive: true });
+
+			const logPath = join(channelDir, "log.jsonl");
+			const parentTs = "1705312800.000000";
+			const messages = [
+				{
+					date: "2024-01-15T10:00:00.000Z",
+					ts: parentTs,
+					user: "U1",
+					userName: "alice",
+					text: "Thread starter",
+					attachments: [],
+					isBot: false,
+				},
+				{
+					date: "2024-01-15T10:01:00.000Z",
+					ts: "1705312860.000000",
+					threadTs: parentTs,
+					user: "U2",
+					userName: "bob",
+					text: "First reply",
+					attachments: [],
+					isBot: false,
+				},
+				{
+					date: "2024-01-15T10:02:00.000Z",
+					ts: "1705312920.000000",
+					threadTs: parentTs,
+					user: "U3",
+					userName: "charlie",
+					text: "Second reply",
+					attachments: [],
+					isBot: false,
+				},
+				{
+					date: "2024-01-15T10:03:00.000Z",
+					ts: "1705312980.000000",
+					user: "U1",
+					userName: "alice",
+					text: "New top-level message",
+					attachments: [],
+					isBot: false,
+				},
+			];
+
+			writeFileSync(
+				logPath,
+				`${messages.map((m) => JSON.stringify(m)).join("\n")}\n`,
+			);
+
+			const content = require("node:fs").readFileSync(logPath, "utf-8");
+			const lines = content.trim().split("\n");
+
+			// Verify thread structure is preserved
+			const parsed = lines.map((l: string) => JSON.parse(l));
+			const threadReplies = parsed.filter(
+				(m: { threadTs?: string }) => m.threadTs === parentTs,
+			);
+			expect(threadReplies).toHaveLength(2);
+			expect(threadReplies[0].userName).toBe("bob");
+			expect(threadReplies[1].userName).toBe("charlie");
+		});
 	});
 
 	describe("memory file handling", () => {

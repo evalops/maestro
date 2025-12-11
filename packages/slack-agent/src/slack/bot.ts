@@ -385,6 +385,7 @@ export class SlackBot {
 		await this.store.logMessage(event.channel, {
 			date: new Date(Number.parseFloat(event.ts) * 1000).toISOString(),
 			ts: event.ts,
+			threadTs: event.threadTs,
 			user: event.user,
 			userName,
 			displayName,

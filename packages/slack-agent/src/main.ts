@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
 import { ApprovalManager } from "./approval.js";
 import { CostTracker } from "./cost-tracker.js";
+import { FeedbackTracker } from "./feedback.js";
 import * as logger from "./logger.js";
 import { RateLimiter, formatRateLimitMessage } from "./rate-limiter.js";
 import {
@@ -139,6 +140,9 @@ const rateLimiter = new RateLimiter({
 // Cost tracker for usage reporting
 const costTracker = new CostTracker(workingDir);
 
+// Feedback tracker for reaction-based feedback
+const feedbackTracker = new FeedbackTracker(workingDir);
+
 // Approval manager for destructive operations
 const approvalManager = new ApprovalManager();
 approvalManager.start();
@@ -157,6 +161,109 @@ const lastContexts = new Map<string, SlackContext>();
 
 // Track thinking mode preference per channel
 const thinkingEnabled = new Map<string, boolean>();
+
+/**
+ * Create an approval callback for a specific channel context.
+ * Posts an approval request to Slack and waits for user reaction.
+ */
+function createApprovalCallback(
+	channelId: string,
+	postMessage: (text: string) => Promise<string | null>,
+): (command: string, description: string) => Promise<boolean> {
+	return async (command: string, description: string): Promise<boolean> => {
+		// Post approval request
+		const truncatedCmd =
+			command.length > 100 ? `${command.substring(0, 100)}...` : command;
+		const messageTs = await postMessage(
+			`⚠️ *Approval Required*\nOperation: ${description}\nCommand: \`${truncatedCmd}\`\n\nReact with ✅ to approve or ❌ to reject (expires in 5 minutes)`,
+		);
+
+		if (!messageTs) {
+			logger.logWarning(
+				"Failed to post approval request",
+				`channel: ${channelId}`,
+			);
+			return false;
+		}
+
+		// Register with approval manager and wait for response
+		return new Promise((resolve) => {
+			approvalManager.requestApproval(
+				channelId,
+				messageTs,
+				command,
+				description,
+				() => resolve(true),
+				() => resolve(false),
+			);
+		});
+	};
+}
+
+/**
+ * Create schedule callbacks for a specific channel.
+ * Wires up to the global scheduler instance.
+ */
+function createScheduleCallbacks(channelId: string, userId: string) {
+	return {
+		onSchedule: async (
+			description: string,
+			prompt: string,
+			when: string,
+		): Promise<{
+			success: boolean;
+			taskId?: string;
+			nextRun?: string;
+			error?: string;
+		}> => {
+			if (!schedulerHolder.instance) {
+				return { success: false, error: "Scheduler not initialized" };
+			}
+			const task = await schedulerHolder.instance.schedule(
+				channelId,
+				userId,
+				description,
+				prompt,
+				when,
+			);
+			if (task) {
+				return {
+					success: true,
+					taskId: task.id,
+					nextRun: new Date(task.nextRun).toLocaleString(),
+				};
+			}
+			return {
+				success: false,
+				error:
+					"Could not parse time expression. Try: 'in 2 hours', 'tomorrow at 9am', 'every day at 9am'",
+			};
+		},
+		onListTasks: async () => {
+			if (!schedulerHolder.instance) {
+				return [];
+			}
+			const tasks = schedulerHolder.instance.listTasks(channelId);
+			return tasks.map((t) => ({
+				id: t.id,
+				description: t.description,
+				nextRun: new Date(t.nextRun).toLocaleString(),
+				recurring: t.schedule !== null,
+			}));
+		},
+		onCancelTask: async (
+			taskId: string,
+		): Promise<{ success: boolean; error?: string }> => {
+			if (!schedulerHolder.instance) {
+				return { success: false, error: "Scheduler not initialized" };
+			}
+			const cancelled = await schedulerHolder.instance.cancel(taskId);
+			return cancelled
+				? { success: true }
+				: { success: false, error: "Task not found" };
+		},
+	};
+}
 
 // Handle scheduled task execution
 async function handleScheduledTask(task: ScheduledTask): Promise<void> {
@@ -184,8 +291,21 @@ async function handleScheduledTask(task: ScheduledTask): Promise<void> {
 		const channelDir = join(workingDir, channelId);
 		const useThinking = thinkingEnabled.get(channelId) ?? false;
 
+		// Create approval callback for this channel
+		const onApprovalNeeded = createApprovalCallback(channelId, (text) =>
+			bot.postMessage(channelId, text),
+		);
+
+		// Create schedule callbacks for this channel
+		const scheduleCallbacks = createScheduleCallbacks(
+			channelId,
+			task.createdBy,
+		);
+
 		const runner = createAgentRunner(sandbox, workingDir, {
 			thinking: useThinking,
+			onApprovalNeeded,
+			scheduleCallbacks,
 		});
 
 		// Create a simplified context for scheduled tasks
@@ -263,8 +383,21 @@ async function handleMessage(
 	// Check if thinking mode is enabled for this channel
 	const useThinking = thinkingEnabled.get(channelId) ?? false;
 
+	// Create approval callback for this channel
+	const onApprovalNeeded = createApprovalCallback(channelId, (text) =>
+		bot.postMessage(channelId, text),
+	);
+
+	// Create schedule callbacks for this channel
+	const scheduleCallbacks = createScheduleCallbacks(
+		channelId,
+		ctx.message.user,
+	);
+
 	const runner = createAgentRunner(sandbox, workingDir, {
 		thinking: useThinking,
+		onApprovalNeeded,
+		scheduleCallbacks,
 	});
 	activeRuns.set(channelId, { runner, context: ctx });
 
@@ -298,9 +431,12 @@ async function handleMessage(
 // 🛑 octagonal_sign - Stop current run
 // 👀 eyes - Check status
 // 💰 moneybag - Check usage/costs
+// 📊 bar_chart - View feedback summary
 // 🔄 arrows_counterclockwise - Retry last request
 // ☕ coffee - Toggle extended thinking
 // 🧹 broom - Clear conversation context
+// 📅 calendar - List scheduled tasks
+// 👍/👎 thumbsup/thumbsdown - Record feedback (tracked automatically)
 async function handleReaction(ctx: ReactionContext): Promise<void> {
 	const channelId = ctx.channel;
 	const active = activeRuns.get(channelId);
@@ -342,6 +478,16 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			const summary = costTracker.getSummary(channelId);
 			const formatted = costTracker.formatSummary(summary);
 			await ctx.postMessage(channelId, formatted);
+			break;
+		}
+
+		case "bar_chart":
+		case "clipboard": {
+			// 📊 or 📋 Feedback summary
+			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			const feedbackSummary = feedbackTracker.getSummary(channelId);
+			const feedbackFormatted = feedbackTracker.formatSummary(feedbackSummary);
+			await ctx.postMessage(channelId, feedbackFormatted);
 			break;
 		}
 
@@ -450,6 +596,20 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			);
 			if (handled) {
 				await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+				break;
+			}
+
+			// Track feedback reactions (👍/👎) on any message
+			const feedback = feedbackTracker.record(
+				channelId,
+				ctx.messageTs,
+				ctx.userId,
+				ctx.reaction,
+			);
+			if (feedback) {
+				logger.logInfo(
+					`Feedback recorded: ${feedback.reaction} (${feedback.emoji}) in ${channelId}`,
+				);
 			}
 			break;
 		}

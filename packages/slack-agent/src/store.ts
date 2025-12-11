@@ -18,6 +18,8 @@ export interface Attachment {
 export interface LoggedMessage {
 	date: string;
 	ts: string;
+	/** Parent thread timestamp - present if this is a thread reply */
+	threadTs?: string;
 	user: string;
 	userName?: string;
 	displayName?: string;

@@ -3,6 +3,10 @@
  */
 
 import { Type } from "@sinclair/typebox";
+import {
+	describeDestructiveOperation,
+	isDestructiveCommand,
+} from "../approval.js";
 import type { Executor } from "../sandbox.js";
 import type { AgentTool } from "./index.js";
 
@@ -18,14 +22,29 @@ const bashSchema = Type.Object({
 	),
 });
 
+/**
+ * Callback to request approval for destructive commands
+ * Returns true if approved, false if rejected
+ */
+export type ApprovalCallback = (
+	command: string,
+	description: string,
+) => Promise<boolean>;
+
+export interface BashToolOptions {
+	/** Callback to request approval for destructive commands */
+	onApprovalNeeded?: ApprovalCallback;
+}
+
 export function createBashTool(
 	executor: Executor,
+	options?: BashToolOptions,
 ): AgentTool<typeof bashSchema> {
 	return {
 		name: "bash",
 		label: "bash",
 		description:
-			"Execute a bash command in the current working directory. Returns stdout and stderr. Optionally provide a timeout in seconds.",
+			"Execute a bash command in the current working directory. Returns stdout and stderr. Optionally provide a timeout in seconds. Destructive commands (rm -rf, git push --force, DROP TABLE, etc.) require user approval.",
 		parameters: bashSchema,
 		execute: async (
 			_toolCallId: string,
@@ -37,6 +56,24 @@ export function createBashTool(
 				command: string;
 				timeout?: number;
 			};
+
+			// Check for destructive commands and request approval
+			if (isDestructiveCommand(command) && options?.onApprovalNeeded) {
+				const description = describeDestructiveOperation(command);
+				const approved = await options.onApprovalNeeded(command, description);
+				if (!approved) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Command rejected: ${description}. User did not approve this destructive operation.`,
+							},
+						],
+						details: { rejected: true, command, description },
+					};
+				}
+			}
+
 			const result = await executor.exec(command, { timeout, signal });
 			let output = "";
 			if (result.stdout) output += result.stdout;

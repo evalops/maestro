@@ -26,6 +26,101 @@ import type {
 } from "../../../src/agent/types.js";
 import { getModel } from "../../../src/models/builtin.js";
 
+/**
+ * Retry configuration for transient failures
+ */
+interface RetryConfig {
+	maxAttempts: number;
+	baseDelayMs: number;
+	maxDelayMs: number;
+}
+
+const DEFAULT_RETRY_CONFIG: RetryConfig = {
+	maxAttempts: 3,
+	baseDelayMs: 1000,
+	maxDelayMs: 30000,
+};
+
+/**
+ * Check if an error is likely transient and retryable
+ */
+function isRetryableError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+
+	const message = error.message.toLowerCase();
+
+	// Rate limit errors
+	if (message.includes("rate limit") || message.includes("429")) return true;
+
+	// Timeout errors
+	if (message.includes("timeout") || message.includes("timed out")) return true;
+
+	// Network errors
+	if (
+		message.includes("network") ||
+		message.includes("econnreset") ||
+		message.includes("econnrefused") ||
+		message.includes("socket hang up") ||
+		message.includes("fetch failed")
+	)
+		return true;
+
+	// Server errors (5xx)
+	if (
+		message.includes("500") ||
+		message.includes("502") ||
+		message.includes("503") ||
+		message.includes("504") ||
+		message.includes("internal server error") ||
+		message.includes("service unavailable") ||
+		message.includes("bad gateway")
+	)
+		return true;
+
+	// Overload errors
+	if (message.includes("overloaded") || message.includes("capacity"))
+		return true;
+
+	return false;
+}
+
+/**
+ * Execute a function with exponential backoff retry
+ */
+async function withRetry<T>(
+	fn: () => Promise<T>,
+	config: RetryConfig = DEFAULT_RETRY_CONFIG,
+	onRetry?: (attempt: number, error: Error, delayMs: number) => void,
+): Promise<T> {
+	let lastError: Error | undefined;
+
+	for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
+		try {
+			return await fn();
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+
+			// Don't retry if it's not a retryable error or if it's the last attempt
+			if (!isRetryableError(error) || attempt === config.maxAttempts) {
+				throw lastError;
+			}
+
+			// Calculate delay with exponential backoff and jitter
+			const exponentialDelay = config.baseDelayMs * 2 ** (attempt - 1);
+			const jitter = Math.random() * 0.3 * exponentialDelay; // 0-30% jitter
+			const delayMs = Math.min(exponentialDelay + jitter, config.maxDelayMs);
+
+			if (onRetry) {
+				onRetry(attempt, lastError, delayMs);
+			}
+
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+
+	throw lastError;
+}
+
 export interface AgentRunner {
 	run(
 		ctx: SlackContext,
@@ -64,6 +159,7 @@ function getAnthropicApiKey(): string {
 interface LogMessage {
 	date?: string;
 	ts?: string;
+	threadTs?: string;
 	user?: string;
 	userName?: string;
 	text?: string;
@@ -75,6 +171,11 @@ interface LogMessage {
 		size?: number;
 	}>;
 	isBot?: boolean;
+}
+
+interface Thread {
+	parentTs: string;
+	messages: LogMessage[];
 }
 
 function getRecentMessages(channelDir: string, turnCount: number): string {
@@ -104,13 +205,37 @@ function getRecentMessages(channelDir: string, turnCount: number): string {
 		return tsA - tsB;
 	});
 
-	// Group into turns
+	// Group messages by thread
+	const threads = new Map<string, Thread>();
+	const topLevelMessages: LogMessage[] = [];
+
+	for (const msg of messages) {
+		if (msg.threadTs) {
+			// This is a reply in a thread
+			const thread = threads.get(msg.threadTs);
+			if (thread) {
+				thread.messages.push(msg);
+			} else {
+				// Thread parent might come later or be missing
+				threads.set(msg.threadTs, { parentTs: msg.threadTs, messages: [msg] });
+			}
+		} else {
+			// Top-level message (might be a thread parent)
+			topLevelMessages.push(msg);
+			// Check if this is a thread parent
+			if (!threads.has(msg.ts || "")) {
+				threads.set(msg.ts || "", { parentTs: msg.ts || "", messages: [] });
+			}
+		}
+	}
+
+	// Group into turns (for limiting context)
 	const turns: LogMessage[][] = [];
 	let currentTurn: LogMessage[] = [];
 	let lastWasBot: boolean | null = null;
 
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
+	for (let i = topLevelMessages.length - 1; i >= 0; i--) {
+		const msg = topLevelMessages[i];
 		const isBot = msg.isBot === true;
 
 		if (lastWasBot === null) {
@@ -133,7 +258,10 @@ function getRecentMessages(channelDir: string, turnCount: number): string {
 		turns.unshift(currentTurn);
 	}
 
+	// Format messages with thread structure
 	const formatted: string[] = [];
+	const includedThreads = new Set<string>();
+
 	for (const turn of turns) {
 		for (const msg of turn) {
 			const date = (msg.date || "").substring(0, 19);
@@ -141,6 +269,28 @@ function getRecentMessages(channelDir: string, turnCount: number): string {
 			const text = msg.text || "";
 			const attachments = (msg.attachments || []).map((a) => a.local).join(",");
 			formatted.push(`${date}\t${user}\t${text}\t${attachments}`);
+
+			// Include thread replies if this message has a thread
+			const thread = threads.get(msg.ts || "");
+			if (
+				thread &&
+				thread.messages.length > 0 &&
+				!includedThreads.has(msg.ts || "")
+			) {
+				includedThreads.add(msg.ts || "");
+				for (const reply of thread.messages) {
+					const replyDate = (reply.date || "").substring(0, 19);
+					const replyUser = reply.userName || reply.user || "";
+					const replyText = reply.text || "";
+					const replyAttachments = (reply.attachments || [])
+						.map((a) => a.local)
+						.join(",");
+					// Indent thread replies with a marker
+					formatted.push(
+						`${replyDate}\t  ↳ ${replyUser}\t${replyText}\t${replyAttachments}`,
+					);
+				}
+			}
 		}
 	}
 
@@ -267,12 +417,13 @@ Update when you learn something important or when asked to remember something.
 ${memory}
 
 ## Tools
-- bash: Run shell commands (primary tool). Install packages as needed.
+- bash: Run shell commands (primary tool). Install packages as needed. Destructive commands require user approval.
 - read: Read files
 - write: Create/overwrite files
 - edit: Surgical file edits
 - attach: Share files to Slack
 - status: Check system health, resource usage (CPU, memory), and workspace disk usage
+- schedule: Schedule tasks for future execution (one-time or recurring)
 
 Each tool requires a "label" parameter (shown to user).
 
@@ -280,6 +431,11 @@ Use the status tool when:
 - User asks about your status, health, or resources
 - Before running memory-intensive tasks
 - Debugging performance issues
+
+Use the schedule tool for:
+- Reminders: "remind me in 2 hours to check deployment"
+- One-time tasks: "tomorrow at 9am run the test suite"
+- Recurring tasks: "every day at 9am summarize commits"
 `;
 }
 
@@ -316,9 +472,49 @@ function extractToolResultText(result: unknown): string {
 	return JSON.stringify(result);
 }
 
+/**
+ * Callback to request approval for destructive commands
+ * Returns true if approved, false if rejected/timeout
+ */
+export type ApprovalRequestCallback = (
+	command: string,
+	description: string,
+) => Promise<boolean>;
+
+/**
+ * Callbacks for scheduling tasks
+ */
+export interface ScheduleCallbacks {
+	onSchedule: (
+		description: string,
+		prompt: string,
+		when: string,
+	) => Promise<{
+		success: boolean;
+		taskId?: string;
+		nextRun?: string;
+		error?: string;
+	}>;
+	onListTasks: () => Promise<
+		Array<{
+			id: string;
+			description: string;
+			nextRun: string;
+			recurring: boolean;
+		}>
+	>;
+	onCancelTask: (
+		taskId: string,
+	) => Promise<{ success: boolean; error?: string }>;
+}
+
 export interface AgentRunnerOptions {
 	/** Enable extended thinking mode */
 	thinking?: boolean;
+	/** Callback to request approval for destructive commands */
+	onApprovalNeeded?: ApprovalRequestCallback;
+	/** Callbacks for scheduling tasks */
+	scheduleCallbacks?: ScheduleCallbacks;
 }
 
 export function createAgentRunner(
@@ -396,6 +592,8 @@ export function createAgentRunner(
 			// Create tools with executor
 			const tools = createSlackAgentTools(executor, {
 				containerName: executor.getContainerName(),
+				onApprovalNeeded: options?.onApprovalNeeded,
+				scheduleOptions: options?.scheduleCallbacks,
 			});
 
 			// Get the model - default to Claude Sonnet 4
@@ -705,7 +903,26 @@ export function createAgentRunner(
 				"utf-8",
 			);
 
-			await agent.prompt(userPrompt);
+			// Run with retry logic for transient API failures
+			await withRetry(
+				() => agent.prompt(userPrompt),
+				DEFAULT_RETRY_CONFIG,
+				(attempt, error, delayMs) => {
+					const delaySec = (delayMs / 1000).toFixed(1);
+					logger.logWarning(
+						`API call failed (attempt ${attempt}/${DEFAULT_RETRY_CONFIG.maxAttempts})`,
+						`${error.message}. Retrying in ${delaySec}s...`,
+					);
+					queue.enqueue(
+						() =>
+							ctx.respond(
+								`_Temporary error, retrying in ${delaySec}s..._`,
+								false,
+							),
+						"retry notice",
+					);
+				},
+			);
 
 			await queue.flush();
 
