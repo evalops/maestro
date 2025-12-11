@@ -569,9 +569,8 @@ function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.UNEXPECTED_TOOL_CALL:
 		case FinishReason.NO_IMAGE:
 			return "error";
-		default: {
-			const _exhaustive: never = reason;
-			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
-		}
+		default:
+			// Map any future/unknown reasons conservatively to an error so we don't throw at runtime
+			return "error";
 	}
 }
