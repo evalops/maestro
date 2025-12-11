@@ -825,6 +825,10 @@ export interface AgentState {
 		/** When the session started */
 		startedAt: Date;
 	};
+	/** Sampling temperature override (0.0-2.0, lower = more deterministic) */
+	temperature?: number;
+	/** Top-p sampling override (0.0-1.0) */
+	topP?: number;
 }
 
 /**
@@ -1056,6 +1060,10 @@ export interface AgentRunConfig {
 	runLLM?: (systemPrompt: string, userPrompt: string) => Promise<string>;
 	/** Optional sandbox for isolated tool execution */
 	sandbox?: import("../sandbox/types.js").Sandbox;
+	/** Sampling temperature override (0.0-2.0, lower = more deterministic) */
+	temperature?: number;
+	/** Top-p sampling override (0.0-1.0) */
+	topP?: number;
 }
 
 /**

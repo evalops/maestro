@@ -48,6 +48,8 @@ export interface ComposerConfig {
 	temperature?: number;
 	/** Top-p for LLM */
 	topP?: number;
+	/** Thinking/reasoning level for LLM */
+	thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "max";
 	/** Color for UI display */
 	color?: string;
 	/** Whether this is a built-in agent */

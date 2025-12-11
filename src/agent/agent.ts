@@ -486,6 +486,24 @@ export class Agent {
 	}
 
 	/**
+	 * Sets the sampling temperature for LLM generation.
+	 *
+	 * @param t - Temperature value (0.0-2.0, lower = more deterministic). Pass undefined to reset to default.
+	 */
+	setTemperature(t: number | undefined): void {
+		this._state.temperature = t;
+	}
+
+	/**
+	 * Sets the top-p sampling parameter for LLM generation.
+	 *
+	 * @param p - Top-p value (0.0-1.0). Pass undefined to reset to default.
+	 */
+	setTopP(p: number | undefined): void {
+		this._state.topP = p;
+	}
+
+	/**
 	 * Replaces the entire message history with a new set of messages.
 	 *
 	 * @param ms - New message array
@@ -716,6 +734,8 @@ export class Agent {
 				user: this._state.user,
 				session: this._state.session,
 				sandbox: this._state.sandbox,
+				temperature: this._state.temperature,
+				topP: this._state.topP,
 			};
 
 			for await (const event of this.transport.run(
@@ -874,6 +894,8 @@ export class Agent {
 				user: this._state.user,
 				session: this._state.session,
 				sandbox: this._state.sandbox,
+				temperature: this._state.temperature,
+				topP: this._state.topP,
 			};
 
 			for await (const event of this.transport.run(
