@@ -714,6 +714,7 @@ export class Scheduler {
 	private checking = false;
 	private tasksFile: string;
 	private historyFile: string;
+	private runningTaskIds: Set<string> = new Set();
 
 	constructor(config: SchedulerConfig) {
 		this.workingDir = config.workingDir;
@@ -1019,68 +1020,82 @@ export class Scheduler {
 		task: ScheduledTask,
 		now: Date,
 	): Promise<TaskRunResult> {
-		logger.logInfo(`Running scheduled task: ${task.id} - ${task.description}`);
-
-		let result: TaskRunResult;
-		try {
-			result = await this.onTaskDue(task);
-		} catch (error) {
-			result = {
+		if (this.runningTaskIds.has(task.id)) {
+			return {
 				success: false,
-				error: error instanceof Error ? error.message : String(error),
+				error: "Task already running",
 			};
 		}
 
-		task.runCount++;
-		task.lastRun = now.toISOString();
-		task.lastRunStatus = result.success ? "success" : "failure";
-		task.lastError = result.error || null;
+		this.runningTaskIds.add(task.id);
+		try {
+			logger.logInfo(
+				`Running scheduled task: ${task.id} - ${task.description}`,
+			);
 
-		if (result.success && !task.schedule) {
-			// One-time task: mark inactive immediately to avoid races with async logging
-			task.active = false;
-			this.tasks.delete(task.id);
-		}
-
-		await this.logHistory(task, result);
-
-		if (result.success) {
-			task.retryCount = 0;
-			task.notificationSent = false;
-
-			if (task.schedule) {
-				task.nextRun = getNextRunFromSchedule(
-					task.schedule,
-					now,
-					task.timezone,
-				).toISOString();
+			let result: TaskRunResult;
+			try {
+				result = await this.onTaskDue(task);
+			} catch (error) {
+				result = {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
 			}
-		} else {
-			if (!task.schedule && task.retryCount < task.maxRetries) {
-				task.retryCount++;
-				const retryTime = new Date(now.getTime() + 5 * 60 * 1000);
-				task.nextRun = retryTime.toISOString();
-				logger.logInfo(
-					`Task ${task.id} failed, scheduling retry ${task.retryCount}/${task.maxRetries}`,
-				);
-			} else if (task.schedule) {
-				task.nextRun = getNextRunFromSchedule(
-					task.schedule,
-					now,
-					task.timezone,
-				).toISOString();
-				task.notificationSent = false;
-			} else {
+
+			task.runCount++;
+			task.lastRun = now.toISOString();
+			task.lastRunStatus = result.success ? "success" : "failure";
+			task.lastError = result.error || null;
+
+			if (result.success && !task.schedule) {
+				// One-time task: mark inactive immediately to avoid races with async logging
 				task.active = false;
-				logger.logWarning(
-					`Task ${task.id} failed permanently after ${task.retryCount} retries`,
-					result.error || "unknown error",
-				);
+				this.tasks.delete(task.id);
 			}
-		}
 
-		await this.saveTasks();
-		return result;
+			await this.logHistory(task, result);
+
+			if (result.success) {
+				task.retryCount = 0;
+				task.notificationSent = false;
+
+				if (task.schedule) {
+					task.nextRun = getNextRunFromSchedule(
+						task.schedule,
+						now,
+						task.timezone,
+					).toISOString();
+				}
+			} else {
+				if (!task.schedule && task.retryCount < task.maxRetries) {
+					task.retryCount++;
+					const retryTime = new Date(now.getTime() + 5 * 60 * 1000);
+					task.nextRun = retryTime.toISOString();
+					logger.logInfo(
+						`Task ${task.id} failed, scheduling retry ${task.retryCount}/${task.maxRetries}`,
+					);
+				} else if (task.schedule) {
+					task.nextRun = getNextRunFromSchedule(
+						task.schedule,
+						now,
+						task.timezone,
+					).toISOString();
+					task.notificationSent = false;
+				} else {
+					task.active = false;
+					logger.logWarning(
+						`Task ${task.id} failed permanently after ${task.retryCount} retries`,
+						result.error || "unknown error",
+					);
+				}
+			}
+
+			await this.saveTasks();
+			return result;
+		} finally {
+			this.runningTaskIds.delete(task.id);
+		}
 	}
 
 	/**
