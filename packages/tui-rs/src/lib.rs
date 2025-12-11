@@ -229,6 +229,10 @@ pub mod scroll_state;
 /// Platform-aware modifier display.
 pub mod key_binding;
 
+/// ANSI terminal commands for scroll regions and terminal control.
+/// Essential for proper scrolling over SSH.
+pub mod ansi_commands;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -780,4 +784,31 @@ pub use key_binding::{
     plain,                      // Plain key binding
     shift,                      // Shift + key binding
     KeyBinding as KeyShortcut,  // Key binding struct (renamed to avoid conflict)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANSI COMMANDS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ANSI terminal commands for scroll regions and advanced terminal control.
+///
+/// These commands use standard ANSI escape sequences that work over SSH:
+/// - Scroll region commands (DECSTBM) for limiting scroll areas
+/// - Alternate screen scroll mode for mouse wheel translation
+/// - Desktop notifications (OSC 9)
+/// - Cursor save/restore
+pub use ansi_commands::{
+    scroll_region_down,      // Scroll down within region using RI
+    scroll_region_up,        // Scroll up within region using IND
+    DisableAlternateScroll,  // Disable mouse wheel translation in alt screen
+    EnableAlternateScroll,   // Enable mouse wheel translation in alt screen
+    Index,                   // Move cursor down, scroll at bottom (ESC D)
+    PostNotification,        // Send desktop notification (OSC 9)
+    ResetScrollRegion,       // Reset scroll region to full screen (ESC [ r)
+    RestoreCursor,           // Restore cursor position (DECRC, ESC 8)
+    ReverseIndex,            // Move cursor up, scroll at top (ESC M)
+    SaveCursor,              // Save cursor position (DECSC, ESC 7)
+    ScrollDown,              // Scroll down N lines (CSI T)
+    ScrollUp,                // Scroll up N lines (CSI S)
+    SetScrollRegion,         // Set scroll region (DECSTBM, ESC [ Pt;Pb r)
 };
