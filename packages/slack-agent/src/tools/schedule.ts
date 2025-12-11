@@ -55,6 +55,8 @@ export type ScheduleCallback = (
 	success: boolean;
 	taskId?: string;
 	nextRun?: string;
+	/** Optional warning to surface to the user (e.g., timezone fallback). */
+	warning?: string;
 	error?: string;
 }>;
 
@@ -117,11 +119,14 @@ export function createScheduleTool(
 
 					const result = await options.onSchedule(description, prompt, when);
 					if (result.success) {
+						const warningLine = result.warning
+							? `\n_Warning: ${result.warning}_`
+							: "";
 						return {
 							content: [
 								{
 									type: "text",
-									text: `Task scheduled successfully!\nID: ${result.taskId}\nNext run: ${result.nextRun}`,
+									text: `Task scheduled successfully!\nID: ${result.taskId}\nNext run: ${result.nextRun}${warningLine}`,
 								},
 							],
 							details: result,

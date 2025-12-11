@@ -7,6 +7,7 @@
  */
 
 import { join, resolve } from "node:path";
+import { DateTime } from "luxon";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
 import { ApprovalManager } from "./approval.js";
 import { CostTracker } from "./cost-tracker.js";
@@ -20,7 +21,7 @@ import {
 	parseSandboxArg,
 	validateSandbox,
 } from "./sandbox.js";
-import { type ScheduledTask, Scheduler } from "./scheduler.js";
+import { type ScheduledTask, Scheduler, isValidTimezone } from "./scheduler.js";
 import {
 	type ReactionContext,
 	SlackBot,
@@ -33,6 +34,16 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_OAUTH_TOKEN = process.env.ANTHROPIC_OAUTH_TOKEN;
 const SLACK_AGENT_DEFAULT_TIMEZONE =
 	process.env.SLACK_AGENT_DEFAULT_TIMEZONE || "UTC";
+
+function formatNextRun(
+	task: Pick<ScheduledTask, "nextRun" | "timezone">,
+): string {
+	const dt = DateTime.fromISO(task.nextRun, { zone: "utc" }).setZone(
+		task.timezone,
+	);
+	const formatted = dt.toLocaleString(DateTime.DATETIME_MED);
+	return `${formatted} (${task.timezone})`;
+}
 
 function getSandboxDescription(sandbox: SandboxConfig): string {
 	if (sandbox.type === "host") {
@@ -219,6 +230,7 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 			success: boolean;
 			taskId?: string;
 			nextRun?: string;
+			warning?: string;
 			error?: string;
 		}> => {
 			if (!schedulerHolder.instance) {
@@ -232,10 +244,16 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 				when,
 			);
 			if (task) {
+				const warning =
+					!isValidTimezone(SLACK_AGENT_DEFAULT_TIMEZONE) &&
+					task.timezone === "UTC"
+						? `Default timezone "${SLACK_AGENT_DEFAULT_TIMEZONE}" is invalid; using UTC. Set SLACK_AGENT_DEFAULT_TIMEZONE to a valid IANA zone.`
+						: undefined;
 				return {
 					success: true,
 					taskId: task.id,
-					nextRun: new Date(task.nextRun).toLocaleString(),
+					nextRun: formatNextRun(task),
+					...(warning && { warning }),
 				};
 			}
 			return {
@@ -252,7 +270,7 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 			return tasks.map((t) => ({
 				id: t.id,
 				description: t.description,
-				nextRun: new Date(t.nextRun).toLocaleString(),
+				nextRun: formatNextRun(t),
 				recurring: t.schedule !== null,
 			}));
 		},
@@ -604,7 +622,7 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			} else {
 				const taskList = tasks
 					.map((t) => {
-						const nextRun = new Date(t.nextRun).toLocaleString();
+						const nextRun = formatNextRun(t);
 						const recurring = t.schedule ? " (recurring)" : "";
 						return `• ${t.description}${recurring} - next: ${nextRun}`;
 					})
