@@ -945,14 +945,14 @@ impl ToolRegistry {
             ToolDefinition {
                 tool: Tool::new(
                     "read",
-                    "Read a TEXT file from the filesystem. Use this for source code (.rs, .ts, .py, etc), config files (.json, .toml, .yaml), documentation (.md, .txt), and any other text-based files. Returns file contents with line numbers. Do NOT use read_image for text files.",
+                    "Read a TEXT file from the filesystem. Use this for ALL text files: .txt, .md, .rs, .py, .js, .ts, .json, .toml, .yaml, .xml, .html, .css, .sh, source code, configs, docs, etc. Returns file contents with line numbers. Do NOT use read_image for text files - only use read_image for actual images (PNG/JPEG/GIF/WebP).",
                 )
                 .with_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "The absolute path to the file to read"
+                            "description": "The absolute path to the text file to read"
                         },
                         "offset": {
                             "type": "number",
