@@ -218,7 +218,7 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			const brandLine = brandLineFrom(rendered);
-			expect(brandLine).toContain("* composer");
+			expect(brandLine).toContain("◆ composer");
 		});
 
 		it("shows static responding stage badge", () => {
@@ -278,7 +278,7 @@ describe("FooterComponent", () => {
 			// Model and brand are now on the brand line (line 1)
 			const brandLine = brandLineFrom(rendered);
 			expect(brandLine).toContain("claude-sonnet-4");
-			expect(brandLine).toContain("* composer");
+			expect(brandLine).toContain("◆ composer");
 		});
 
 		it("should prioritize model name over brand when width is too small", () => {
