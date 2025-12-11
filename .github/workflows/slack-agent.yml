@@ -6,10 +6,6 @@ on:
     paths:
       - "packages/slack-agent/**"
       - ".github/workflows/slack-agent.yml"
-  pull_request:
-    paths:
-      - "packages/slack-agent/**"
-      - ".github/workflows/slack-agent.yml"
 
 jobs:
   build-and-test:
@@ -29,4 +25,3 @@ jobs:
 
       - name: Run slack-agent tests
         run: npx nx run slack-agent:test
-
