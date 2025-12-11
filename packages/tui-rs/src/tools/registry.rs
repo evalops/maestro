@@ -96,6 +96,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use super::bash::{BashArgs, BashTool};
+use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
 
@@ -130,6 +131,11 @@ pub struct ToolExecutor {
     ///
     /// Handles shell command execution with approval logic and timeout enforcement.
     bash: BashTool,
+
+    /// Web fetch tool for retrieving web content
+    ///
+    /// Fetches URLs and converts HTML to markdown for the agent to process.
+    web_fetch: WebFetchTool,
 
     /// Current working directory for all tool operations
     ///
@@ -173,6 +179,7 @@ impl ToolExecutor {
         let cwd = cwd.into();
         Self {
             bash: BashTool::new(&cwd),
+            web_fetch: WebFetchTool::new(),
             cwd,
             registry: ToolRegistry::new(),
         }
@@ -728,6 +735,44 @@ impl ToolExecutor {
                     })
                     .await
             }
+            "web_fetch" | "WebFetch" | "webfetch" => {
+                let fetch_args: WebFetchArgs = match serde_json::from_value(args.clone()) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        return ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!("Invalid web_fetch arguments: {}", e)),
+                        };
+                    }
+                };
+
+                // Send tool start event
+                if let Some(tx) = event_tx {
+                    let _ = tx.send(FromAgent::ToolStart {
+                        call_id: call_id.to_string(),
+                    });
+                }
+
+                let result = self.web_fetch.execute(fetch_args).await;
+
+                // Send tool output event
+                if let Some(tx) = event_tx {
+                    if !result.output.is_empty() {
+                        let _ = tx.send(FromAgent::ToolOutput {
+                            call_id: call_id.to_string(),
+                            content: result.output.clone(),
+                        });
+                    }
+
+                    let _ = tx.send(FromAgent::ToolEnd {
+                        call_id: call_id.to_string(),
+                        success: result.success,
+                    });
+                }
+
+                result
+            }
             _ => ToolResult {
                 success: false,
                 output: String::new(),
@@ -1000,6 +1045,15 @@ impl ToolRegistry {
             },
         );
 
+        // Web fetch tool - retrieve web content
+        tools.insert(
+            "web_fetch".to_string(),
+            ToolDefinition {
+                tool: WebFetchTool::definition(),
+                requires_approval: false, // Safe read-only operation
+            },
+        );
+
         Self { tools }
     }
 
@@ -1098,7 +1152,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 8);  // bash, read, write, edit, glob, grep, diff, list
+    /// assert_eq!(count, 9);  // bash, read, write, edit, glob, grep, diff, list, web_fetch
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {
@@ -1230,7 +1284,7 @@ mod tests {
     fn test_registry_tool_count() {
         let registry = ToolRegistry::new();
         let count = registry.tools().count();
-        assert_eq!(count, 8); // bash, read, write, glob, grep, edit, diff, list
+        assert_eq!(count, 9); // bash, read, write, glob, grep, edit, diff, list, web_fetch
     }
 
     #[test]
