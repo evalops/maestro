@@ -64,7 +64,7 @@ export type AgentMode = "smart" | "rush" | "free" | "custom";
  * Model tier representing capability levels that map to provider-specific models.
  *
  * The tier abstraction allows the same configuration to work across providers:
- * - "opus": Highest capability (claude-opus, gpt-5.1, gemini-thinking)
+ * - "opus": Highest capability (claude-opus, gpt-5.2, gemini-thinking)
  * - "sonnet": Balanced capability (claude-sonnet, gpt-4o, gemini-flash)
  * - "haiku": Fast/efficient (claude-haiku, gpt-4o-mini, gemini-flash-lite)
  */
@@ -192,7 +192,7 @@ export const MODEL_BY_TIER: Record<ModelTier, ModelMapping> = {
 	// Opus tier: Highest capability models with advanced reasoning
 	opus: {
 		anthropic: "claude-opus-4-5-20251101",
-		openai: "gpt-5.1",
+		openai: "gpt-5.2",
 		google: "gemini-2.0-flash-thinking-exp",
 	},
 	// Sonnet tier: Balanced performance models for general use
