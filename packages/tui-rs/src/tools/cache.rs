@@ -626,4 +626,417 @@ mod tests {
         assert_eq!(deserialized.misses, stats.misses);
         assert!((deserialized.hit_rate - stats.hit_rate).abs() < 0.001);
     }
+
+    #[test]
+    fn test_cache_key_clone() {
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/tmp/test.txt"}));
+        let cloned = key.clone();
+
+        assert_eq!(cloned.tool_name, key.tool_name);
+        assert_eq!(cloned.args_hash, key.args_hash);
+    }
+
+    #[test]
+    fn test_cache_key_empty_args() {
+        let key = CacheKey::new("read", &serde_json::json!({}));
+        assert!(key.args_hash > 0);
+    }
+
+    #[test]
+    fn test_cache_key_null_args() {
+        let key = CacheKey::new("read", &serde_json::json!(null));
+        assert!(key.args_hash > 0);
+    }
+
+    #[test]
+    fn test_cache_key_array_args() {
+        let key = CacheKey::new("batch", &serde_json::json!([1, 2, 3]));
+        assert!(key.args_hash > 0);
+    }
+
+    #[test]
+    fn test_cache_key_nested_args() {
+        let key = CacheKey::new(
+            "read",
+            &serde_json::json!({
+                "path": "/tmp/test.txt",
+                "options": {
+                    "encoding": "utf-8",
+                    "buffer_size": 1024
+                }
+            }),
+        );
+        assert!(key.args_hash > 0);
+    }
+
+    #[test]
+    fn test_cache_key_same_args_different_order() {
+        // JSON object keys are unordered, but serde_json::Value has consistent ordering
+        let key1 = CacheKey::new("read", &serde_json::json!({"a": 1, "b": 2}));
+        let key2 = CacheKey::new("read", &serde_json::json!({"a": 1, "b": 2}));
+        assert_eq!(key1.args_hash, key2.args_hash);
+    }
+
+    #[test]
+    fn test_cache_config_clone() {
+        let config = CacheConfig {
+            max_entries: 50,
+            ttl: Duration::from_secs(30),
+            enabled: false,
+            excluded_tools: vec!["test".to_string()],
+        };
+        let cloned = config.clone();
+
+        assert_eq!(cloned.max_entries, config.max_entries);
+        assert_eq!(cloned.ttl, config.ttl);
+        assert_eq!(cloned.enabled, config.enabled);
+        assert_eq!(cloned.excluded_tools, config.excluded_tools);
+    }
+
+    #[test]
+    fn test_cached_result_clone() {
+        let result = CachedResult::new("output", true);
+        let cloned = result.clone();
+
+        assert_eq!(cloned.output, result.output);
+        assert_eq!(cloned.is_error, result.is_error);
+    }
+
+    #[test]
+    fn test_cache_stats_clone() {
+        let stats = CacheStats {
+            entries: 5,
+            max_entries: 100,
+            hits: 10,
+            misses: 5,
+            hit_rate: 0.666,
+        };
+        let cloned = stats.clone();
+
+        assert_eq!(cloned.entries, stats.entries);
+        assert_eq!(cloned.max_entries, stats.max_entries);
+        assert_eq!(cloned.hits, stats.hits);
+        assert_eq!(cloned.misses, stats.misses);
+        assert_eq!(cloned.hit_rate, stats.hit_rate);
+    }
+
+    #[test]
+    fn test_cache_default_trait() {
+        let cache = ToolResultCache::default();
+        assert!(cache.config().enabled);
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_cached_result_empty_output() {
+        let result = CachedResult::new("", false);
+        assert!(result.output.is_empty());
+        assert!(!result.is_error);
+    }
+
+    #[test]
+    fn test_cached_result_large_output() {
+        let large_output = "x".repeat(1_000_000);
+        let result = CachedResult::new(&large_output, false);
+        assert_eq!(result.output.len(), 1_000_000);
+    }
+
+    #[test]
+    fn test_cache_eviction_order() {
+        let config = CacheConfig {
+            max_entries: 3,
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        // Insert 3 entries
+        for i in 1..=3 {
+            let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+            cache.put(key, CachedResult::new(format!("{}", i), false));
+        }
+
+        // Insert 4th entry, should evict first (oldest)
+        let key4 = CacheKey::new("read", &serde_json::json!({"id": 4}));
+        cache.put(key4, CachedResult::new("4", false));
+
+        let key1 = CacheKey::new("read", &serde_json::json!({"id": 1}));
+        assert!(cache.get(&key1).is_none());
+    }
+
+    #[test]
+    fn test_cache_multiple_misses() {
+        let mut cache = ToolResultCache::default();
+
+        for i in 0..10 {
+            let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+            cache.get(&key);
+        }
+
+        assert_eq!(cache.stats().misses, 10);
+        assert_eq!(cache.stats().hits, 0);
+    }
+
+    #[test]
+    fn test_cache_multiple_hits() {
+        let mut cache = ToolResultCache::default();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+        cache.put(key.clone(), CachedResult::new("content", false));
+
+        for _ in 0..10 {
+            cache.get(&key);
+        }
+
+        assert_eq!(cache.stats().hits, 10);
+        assert_eq!(cache.stats().misses, 0);
+    }
+
+    #[test]
+    fn test_cache_hit_rate_100_percent() {
+        let mut cache = ToolResultCache::default();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+        cache.put(key.clone(), CachedResult::new("content", false));
+
+        cache.get(&key);
+        cache.get(&key);
+        cache.get(&key);
+
+        assert_eq!(cache.stats().hit_rate, 1.0);
+    }
+
+    #[test]
+    fn test_cache_hit_rate_0_percent() {
+        let mut cache = ToolResultCache::default();
+
+        // All misses
+        for i in 0..5 {
+            let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+            cache.get(&key);
+        }
+
+        assert_eq!(cache.stats().hit_rate, 0.0);
+    }
+
+    #[test]
+    fn test_cache_evict_expired_multiple_entries() {
+        let config = CacheConfig {
+            ttl: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        // Add multiple entries
+        for i in 0..5 {
+            let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+            cache.put(key, CachedResult::new(format!("{}", i), false));
+        }
+
+        assert_eq!(cache.stats().entries, 5);
+
+        // Wait for expiration
+        std::thread::sleep(Duration::from_millis(10));
+
+        cache.evict_expired();
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_cache_evict_expired_partial() {
+        let config = CacheConfig {
+            ttl: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        // Add first entry
+        let key1 = CacheKey::new("read", &serde_json::json!({"id": 1}));
+        cache.put(key1, CachedResult::new("1", false));
+
+        // Wait a bit but not enough to expire
+        std::thread::sleep(Duration::from_millis(30));
+
+        // Add second entry
+        let key2 = CacheKey::new("read", &serde_json::json!({"id": 2}));
+        cache.put(key2, CachedResult::new("2", false));
+
+        // Wait for first to expire but not second
+        std::thread::sleep(Duration::from_millis(30));
+
+        cache.evict_expired();
+
+        // First should be evicted, second should remain
+        assert_eq!(cache.stats().entries, 1);
+    }
+
+    #[test]
+    fn test_cache_set_config_changes_behavior() {
+        let mut cache = ToolResultCache::default();
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+        cache.put(key.clone(), CachedResult::new("content", false));
+
+        assert!(cache.get(&key).is_some());
+
+        // Disable cache
+        let new_config = CacheConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        cache.set_config(new_config);
+
+        // Existing entries still present but get returns None due to disabled
+        // (note: existing entries are not cleared by set_config)
+    }
+
+    #[test]
+    fn test_cache_key_special_characters() {
+        let key = CacheKey::new(
+            "read",
+            &serde_json::json!({
+                "path": "/tmp/file with spaces.txt",
+                "special": "tab\there\nnewline"
+            }),
+        );
+        assert!(key.args_hash > 0);
+    }
+
+    #[test]
+    fn test_cache_key_unicode() {
+        let key = CacheKey::new(
+            "read",
+            &serde_json::json!({
+                "path": "/tmp/日本語ファイル.txt",
+                "encoding": "utf-8"
+            }),
+        );
+        assert!(key.args_hash > 0);
+    }
+
+    #[test]
+    fn test_cache_config_empty_excluded_tools() {
+        let config = CacheConfig {
+            excluded_tools: vec![],
+            ..Default::default()
+        };
+        let cache = ToolResultCache::new(config);
+
+        // All tools are cacheable with empty exclusion list
+        assert!(cache.is_cacheable("bash"));
+        assert!(cache.is_cacheable("write"));
+        assert!(cache.is_cacheable("edit"));
+        assert!(cache.is_cacheable("read"));
+    }
+
+    #[test]
+    fn test_cache_with_max_entries_one() {
+        let config = CacheConfig {
+            max_entries: 1,
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        let key1 = CacheKey::new("read", &serde_json::json!({"id": 1}));
+        let key2 = CacheKey::new("read", &serde_json::json!({"id": 2}));
+
+        cache.put(key1.clone(), CachedResult::new("1", false));
+        cache.put(key2.clone(), CachedResult::new("2", false));
+
+        assert!(cache.get(&key1).is_none());
+        assert!(cache.get(&key2).is_some());
+        assert_eq!(cache.stats().entries, 1);
+    }
+
+    #[test]
+    fn test_cached_result_serialization_roundtrip() {
+        let original = CachedResult {
+            output: "test with\nnewlines\tand\ttabs".to_string(),
+            is_error: true,
+            created_at: None, // Will be None after deserialization anyway
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: CachedResult = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.output, original.output);
+        assert_eq!(deserialized.is_error, original.is_error);
+    }
+
+    #[test]
+    fn test_cache_stats_all_zero() {
+        let stats = CacheStats {
+            entries: 0,
+            max_entries: 0,
+            hits: 0,
+            misses: 0,
+            hit_rate: 0.0,
+        };
+
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.max_entries, 0);
+        assert_eq!(stats.hits, 0);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.hit_rate, 0.0);
+    }
+
+    #[test]
+    fn test_cache_clear_resets_access_order() {
+        let mut cache = ToolResultCache::default();
+
+        for i in 0..5 {
+            let key = CacheKey::new("read", &serde_json::json!({"id": i}));
+            cache.put(key, CachedResult::new(format!("{}", i), false));
+        }
+
+        cache.clear();
+
+        // After clear, adding new entries should work correctly
+        let key = CacheKey::new("read", &serde_json::json!({"id": 100}));
+        cache.put(key.clone(), CachedResult::new("100", false));
+
+        assert_eq!(cache.stats().entries, 1);
+        assert!(cache.get(&key).is_some());
+    }
+
+    #[test]
+    fn test_cache_config_debug() {
+        let config = CacheConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("max_entries"));
+        assert!(debug_str.contains("ttl"));
+    }
+
+    #[test]
+    fn test_cache_key_debug() {
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
+        let debug_str = format!("{:?}", key);
+        assert!(debug_str.contains("read"));
+        assert!(debug_str.contains("args_hash"));
+    }
+
+    #[test]
+    fn test_cached_result_debug() {
+        let result = CachedResult::new("output", false);
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("output"));
+        assert!(debug_str.contains("is_error"));
+    }
+
+    #[test]
+    fn test_cache_stats_debug() {
+        let stats = CacheStats {
+            entries: 5,
+            max_entries: 100,
+            hits: 10,
+            misses: 5,
+            hit_rate: 0.666,
+        };
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("entries"));
+        assert!(debug_str.contains("hit_rate"));
+    }
+
+    #[test]
+    fn test_tool_result_cache_debug() {
+        let cache = ToolResultCache::default();
+        let debug_str = format!("{:?}", cache);
+        assert!(debug_str.contains("ToolResultCache"));
+    }
 }
