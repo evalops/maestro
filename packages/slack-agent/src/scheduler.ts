@@ -405,10 +405,6 @@ export function parseRecurringSchedule(
 			nextRun = nextRun.plus({ days: 1 });
 		}
 
-		if (intervalWeeks > 1) {
-			nextRun = nextRun.plus({ weeks: intervalWeeks - 1 });
-		}
-
 		return {
 			schedule: `W${intervalWeeks} ${minutes} ${hours} * * ${targetDayIndex}`,
 			nextRun: nextRun.toJSDate(),

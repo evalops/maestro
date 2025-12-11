@@ -50,6 +50,19 @@ describe("parseRecurringSchedule", () => {
 			expected.toUTC().toISO({ suppressMilliseconds: false }),
 		);
 	});
+
+	it("does not delay first run for weekly-interval schedules", () => {
+		const now = new Date("2025-01-01T00:00:00.000Z"); // Wed
+		const result = parseRecurringSchedule(
+			"every 2 weeks on monday at 9am",
+			now,
+			"UTC",
+		);
+
+		expect(result?.schedule).toBe("W2 0 9 * * 1");
+		// First run should be the next Monday (not two weeks out).
+		expect(result?.nextRun.toISOString()).toBe("2025-01-06T09:00:00.000Z");
+	});
 });
 
 describe("getNextRunFromSchedule", () => {
