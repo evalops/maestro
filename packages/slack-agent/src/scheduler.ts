@@ -7,7 +7,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as logger from "./logger.js";
 
@@ -654,6 +654,7 @@ export class Scheduler {
 	) => Promise<void>;
 	private defaultTimezone: string;
 	private checkInterval: ReturnType<typeof setInterval> | null = null;
+	private checking: boolean = false;
 	private tasksFile: string;
 	private historyFile: string;
 
@@ -690,6 +691,8 @@ export class Scheduler {
 	}
 
 	private async saveTasks(): Promise<void> {
+		// Ensure the working directory still exists (tests may clean tmp dirs)
+		await mkdir(this.workingDir, { recursive: true });
 		const tasksArray = Array.from(this.tasks.values());
 		await writeFile(this.tasksFile, JSON.stringify(tasksArray, null, 2));
 	}
@@ -849,11 +852,11 @@ export class Scheduler {
 		}
 
 		// Check every minute
-		this.checkInterval = setInterval(() => this.checkDueTasks(), 60000);
+		this.checkInterval = setInterval(() => void this.runCheck(), 60000);
 		logger.logInfo("Scheduler started");
 
 		// Run initial check
-		this.checkDueTasks();
+		void this.runCheck();
 	}
 
 	/**
@@ -864,6 +867,18 @@ export class Scheduler {
 			clearInterval(this.checkInterval);
 			this.checkInterval = null;
 			logger.logInfo("Scheduler stopped");
+		}
+	}
+
+	private async runCheck(): Promise<void> {
+		if (this.checking) return;
+		this.checking = true;
+		try {
+			await this.checkDueTasks();
+		} catch (error) {
+			logger.logWarning("Scheduler check failed", String(error));
+		} finally {
+			this.checking = false;
 		}
 	}
 
@@ -917,6 +932,12 @@ export class Scheduler {
 				task.lastRunStatus = result.success ? "success" : "failure";
 				task.lastError = result.error || null;
 
+				if (result.success && !task.schedule) {
+					// One-time task: mark inactive immediately to avoid races with async logging
+					task.active = false;
+					this.tasks.delete(task.id);
+				}
+
 				// Log to history
 				await this.logHistory(task, result);
 
@@ -931,8 +952,7 @@ export class Scheduler {
 							now,
 						).toISOString();
 					} else {
-						// One-time task - deactivate
-						task.active = false;
+						// One-time task already deactivated above
 					}
 				} else {
 					// Task failed
@@ -986,6 +1006,7 @@ export class Scheduler {
 		};
 
 		try {
+			await mkdir(this.workingDir, { recursive: true });
 			const { appendFile } = await import("node:fs/promises");
 			await appendFile(this.historyFile, `${JSON.stringify(entry)}\n`);
 		} catch (error) {
