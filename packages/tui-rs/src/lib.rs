@@ -317,6 +317,10 @@ pub mod kill_ring;
 /// Simple yes/no dialogs with keyboard navigation.
 pub mod confirm_dialog;
 
+/// OSC-8 terminal hyperlinks.
+/// Clickable links in modern terminals.
+pub mod hyperlink;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1114,3 +1118,21 @@ pub use kill_ring::{
 
 /// Confirmation dialog for yes/no prompts.
 pub use confirm_dialog::{ConfirmDialog, ConfirmDialogWidget, ConfirmResult};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HYPERLINK EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// OSC-8 terminal hyperlinks for clickable URLs.
+pub use hyperlink::{
+    contains_hyperlink,         // Check if string has hyperlinks
+    extract_urls,               // Extract URLs from hyperlinked text
+    format_link,                // Format URL as clickable link
+    format_link_with_fallback,  // With non-TTY fallback
+    link_end,                   // OSC 8 end sequence
+    link_span,                  // Ratatui Span with link
+    link_start,                 // OSC 8 start sequence
+    strip_hyperlinks,           // Remove hyperlink formatting
+    url_span,                   // Span with URL as label
+    wrap_in_link,               // Wrap text in link
+};
