@@ -76,9 +76,11 @@
 //! ```
 
 mod bash;
+mod image;
 mod registry;
 mod web_fetch;
 
 pub use bash::BashTool;
+pub use image::ImageTool;
 pub use registry::{ToolExecutor, ToolRegistry};
 pub use web_fetch::WebFetchTool;
