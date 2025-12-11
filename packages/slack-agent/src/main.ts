@@ -193,8 +193,8 @@ function createApprovalCallback(
 				messageTs,
 				command,
 				description,
-				() => resolve(true),
-				() => resolve(false),
+				async () => resolve(true),
+				async () => resolve(false),
 			);
 		});
 	};
@@ -625,7 +625,7 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			const feedback = feedbackTracker.record(
 				channelId,
 				ctx.messageTs,
-				ctx.userId,
+				ctx.user,
 				ctx.reaction,
 			);
 			if (feedback) {

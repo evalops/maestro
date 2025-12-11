@@ -11,9 +11,10 @@
 	"files": ["dist", "README.md"],
 	"scripts": {
 		"clean": "rm -rf dist",
-		"build": "tsc -p tsconfig.build.json && chmod +x dist/main.js",
+		"build": "tsc -p tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
 		"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
 		"check": "tsc -p tsconfig.build.json --noEmit",
+		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"keywords": ["slack", "bot", "agent", "ai", "docker", "sandbox", "composer"],
@@ -32,11 +33,14 @@
 		"@slack/socket-mode": "^2.0.0",
 		"@slack/web-api": "^7.0.0",
 		"chalk": "^5.5.0",
-		"diff": "^8.0.2"
+		"diff": "^8.0.2",
+		"luxon": "^3.5.0"
 	},
 	"devDependencies": {
 		"@types/diff": "^7.0.2",
+		"@types/luxon": "^3.4.2",
 		"@types/node": "^24.3.0",
-		"typescript": "^5.7.3"
+		"typescript": "^5.7.3",
+		"vitest": "^3.2.4"
 	}
 }

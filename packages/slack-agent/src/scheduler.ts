@@ -7,8 +7,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DateTime } from "luxon";
 import * as logger from "./logger.js";
 
 export interface ScheduledTask {
@@ -62,41 +63,19 @@ export interface SchedulerConfig {
 }
 
 /**
- * Get current time in a specific timezone
+ * Get current time in a specific timezone.
+ * Returns a Date representing the current instant, validated against IANA tz names.
  */
 export function getNowInTimezone(timezone: string): Date {
-	try {
-		const formatter = new Intl.DateTimeFormat("en-US", {
-			timeZone: timezone,
-			year: "numeric",
-			month: "2-digit",
-			day: "2-digit",
-			hour: "2-digit",
-			minute: "2-digit",
-			second: "2-digit",
-			hour12: false,
-		});
-		const parts = formatter.formatToParts(new Date());
-		const get = (type: string) =>
-			parts.find((p) => p.type === type)?.value || "0";
-		return new Date(
-			`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`,
-		);
-	} catch {
-		return new Date();
-	}
+	const zone = isValidTimezone(timezone) ? timezone : "UTC";
+	return DateTime.now().setZone(zone).toJSDate();
 }
 
 /**
- * Validate timezone string
+ * Validate timezone string (IANA format)
  */
 export function isValidTimezone(tz: string): boolean {
-	try {
-		Intl.DateTimeFormat(undefined, { timeZone: tz });
-		return true;
-	} catch {
-		return false;
-	}
+	return DateTime.now().setZone(tz).isValid;
 }
 
 /**
@@ -116,6 +95,12 @@ function getDayIndex(name: string): number {
 	return DAY_NAMES.indexOf(name.toLowerCase());
 }
 
+// Convert JS day index (0=Sunday..6=Saturday) to Luxon weekday (1=Monday..7=Sunday)
+function toLuxonWeekday(dayIndex: number): number {
+	if (dayIndex === 0) return 7;
+	return dayIndex;
+}
+
 /**
  * Parse a human-readable time expression into a Date
  * Examples: "in 2 hours", "in 30 minutes", "tomorrow at 9am", "at 3pm",
@@ -124,31 +109,34 @@ function getDayIndex(name: string): number {
 export function parseTimeExpression(
 	expr: string,
 	now = new Date(),
+	timezone = "UTC",
 ): Date | null {
 	const lowerExpr = expr.toLowerCase().trim();
+	const zone = isValidTimezone(timezone) ? timezone : "UTC";
+	const nowDt = DateTime.fromJSDate(now).setZone(zone);
 
-	// "in X minutes/hours/days"
+	// "in X minutes/hours/days/weeks" (relative, timezone-agnostic)
 	const inMatch = lowerExpr.match(
 		/^in\s+(\d+)\s*(min(?:ute)?s?|hour?s?|day?s?|week?s?)$/,
 	);
 	if (inMatch) {
 		const amount = Number.parseInt(inMatch[1], 10);
 		const unit = inMatch[2];
-		const result = new Date(now);
+		let dt = nowDt;
 
 		if (unit.startsWith("min")) {
-			result.setMinutes(result.getMinutes() + amount);
+			dt = dt.plus({ minutes: amount });
 		} else if (unit.startsWith("hour") || unit === "h") {
-			result.setHours(result.getHours() + amount);
+			dt = dt.plus({ hours: amount });
 		} else if (unit.startsWith("day") || unit === "d") {
-			result.setDate(result.getDate() + amount);
+			dt = dt.plus({ days: amount });
 		} else if (unit.startsWith("week") || unit === "w") {
-			result.setDate(result.getDate() + amount * 7);
+			dt = dt.plus({ weeks: amount });
 		}
-		return result;
+		return dt.toJSDate();
 	}
 
-	// "at HH:MM" or "at Ham/pm"
+	// "at HH:MM" or "at Ham/pm" (interpreted in task timezone)
 	const atMatch = lowerExpr.match(/^at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
 	if (atMatch) {
 		let hours = Number.parseInt(atMatch[1], 10);
@@ -158,14 +146,17 @@ export function parseTimeExpression(
 		if (ampm === "pm" && hours < 12) hours += 12;
 		if (ampm === "am" && hours === 12) hours = 0;
 
-		const result = new Date(now);
-		result.setHours(hours, minutes, 0, 0);
+		let dt = nowDt.set({
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		});
 
-		// If the time is in the past, schedule for tomorrow
-		if (result <= now) {
-			result.setDate(result.getDate() + 1);
+		if (dt.toMillis() <= nowDt.toMillis()) {
+			dt = dt.plus({ days: 1 });
 		}
-		return result;
+		return dt.toJSDate();
 	}
 
 	// "tomorrow at HH:MM"
@@ -173,24 +164,20 @@ export function parseTimeExpression(
 		/^tomorrow(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/,
 	);
 	if (tomorrowMatch) {
-		const result = new Date(now);
-		result.setDate(result.getDate() + 1);
-
+		let hours = 9;
+		let minutes = 0;
 		if (tomorrowMatch[1]) {
-			let hours = Number.parseInt(tomorrowMatch[1], 10);
-			const minutes = tomorrowMatch[2]
-				? Number.parseInt(tomorrowMatch[2], 10)
-				: 0;
+			hours = Number.parseInt(tomorrowMatch[1], 10);
+			minutes = tomorrowMatch[2] ? Number.parseInt(tomorrowMatch[2], 10) : 0;
 			const ampm = tomorrowMatch[3];
-
 			if (ampm === "pm" && hours < 12) hours += 12;
 			if (ampm === "am" && hours === 12) hours = 0;
-
-			result.setHours(hours, minutes, 0, 0);
-		} else {
-			result.setHours(9, 0, 0, 0); // Default to 9am
 		}
-		return result;
+
+		const dt = nowDt
+			.plus({ days: 1 })
+			.set({ hour: hours, minute: minutes, second: 0, millisecond: 0 });
+		return dt.toJSDate();
 	}
 
 	// "next monday/tuesday/etc" or "next monday at 3pm"
@@ -198,7 +185,7 @@ export function parseTimeExpression(
 		/^next\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/,
 	);
 	if (nextDayMatch) {
-		const targetDay = getDayIndex(nextDayMatch[1]);
+		const targetDay = toLuxonWeekday(getDayIndex(nextDayMatch[1]));
 		let hours = nextDayMatch[2] ? Number.parseInt(nextDayMatch[2], 10) : 9;
 		const minutes = nextDayMatch[3] ? Number.parseInt(nextDayMatch[3], 10) : 0;
 		const ampm = nextDayMatch[4];
@@ -206,15 +193,18 @@ export function parseTimeExpression(
 		if (ampm === "pm" && hours < 12) hours += 12;
 		if (ampm === "am" && hours === 12) hours = 0;
 
-		const result = new Date(now);
-		result.setHours(hours, minutes, 0, 0);
+		let dt = nowDt.set({
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		});
 
-		// Find next occurrence (must be in the future)
 		do {
-			result.setDate(result.getDate() + 1);
-		} while (result.getDay() !== targetDay);
+			dt = dt.plus({ days: 1 });
+		} while (dt.weekday !== targetDay);
 
-		return result;
+		return dt.toJSDate();
 	}
 
 	// "this friday" or "this friday at 3pm" (same week, or next if past)
@@ -222,7 +212,7 @@ export function parseTimeExpression(
 		/^this\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/,
 	);
 	if (thisDayMatch) {
-		const targetDay = getDayIndex(thisDayMatch[1]);
+		const targetDay = toLuxonWeekday(getDayIndex(thisDayMatch[1]));
 		let hours = thisDayMatch[2] ? Number.parseInt(thisDayMatch[2], 10) : 9;
 		const minutes = thisDayMatch[3] ? Number.parseInt(thisDayMatch[3], 10) : 0;
 		const ampm = thisDayMatch[4];
@@ -230,18 +220,24 @@ export function parseTimeExpression(
 		if (ampm === "pm" && hours < 12) hours += 12;
 		if (ampm === "am" && hours === 12) hours = 0;
 
-		const result = new Date(now);
-		result.setHours(hours, minutes, 0, 0);
+		let dt = nowDt.set({
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		});
 
-		// Find this week's occurrence or next week if past
-		const currentDay = result.getDay();
+		const currentDay = dt.weekday;
 		let daysToAdd = targetDay - currentDay;
-		if (daysToAdd < 0 || (daysToAdd === 0 && result <= now)) {
+		if (
+			daysToAdd < 0 ||
+			(daysToAdd === 0 && dt.toMillis() <= nowDt.toMillis())
+		) {
 			daysToAdd += 7;
 		}
-		result.setDate(result.getDate() + daysToAdd);
 
-		return result;
+		dt = dt.plus({ days: daysToAdd });
+		return dt.toJSDate();
 	}
 
 	return null;
@@ -255,9 +251,12 @@ export function parseTimeExpression(
  */
 export function parseRecurringSchedule(
 	expr: string,
+	now = new Date(),
+	timezone = "UTC",
 ): { schedule: string; nextRun: Date } | null {
 	const lowerExpr = expr.toLowerCase().trim();
-	const now = new Date();
+	const zone = isValidTimezone(timezone) ? timezone : "UTC";
+	const nowDt = DateTime.fromJSDate(now).setZone(zone);
 
 	// "every X minutes/hours"
 	const intervalMatch = lowerExpr.match(
@@ -266,23 +265,23 @@ export function parseRecurringSchedule(
 	if (intervalMatch) {
 		const amount = Number.parseInt(intervalMatch[1], 10);
 		const unit = intervalMatch[2];
-		const nextRun = new Date(now);
 
 		if (unit.startsWith("min")) {
-			nextRun.setMinutes(nextRun.getMinutes() + amount);
-			return { schedule: `*/${amount} * * * *`, nextRun };
+			const nextRun = nowDt.plus({ minutes: amount });
+			return { schedule: `*/${amount} * * * *`, nextRun: nextRun.toJSDate() };
 		}
 		if (unit.startsWith("hour")) {
-			nextRun.setHours(nextRun.getHours() + amount);
-			return { schedule: `0 */${amount} * * *`, nextRun };
+			const nextRun = nowDt.plus({ hours: amount });
+			return { schedule: `0 */${amount} * * *`, nextRun: nextRun.toJSDate() };
 		}
 	}
 
 	// "every hour"
 	if (lowerExpr === "every hour") {
-		const nextRun = new Date(now);
-		nextRun.setHours(nextRun.getHours() + 1, 0, 0, 0);
-		return { schedule: "0 * * * *", nextRun };
+		const nextRun = nowDt
+			.plus({ hours: 1 })
+			.set({ minute: 0, second: 0, millisecond: 0 });
+		return { schedule: "0 * * * *", nextRun: nextRun.toJSDate() };
 	}
 
 	// "every day at HH:MM"
@@ -297,13 +296,20 @@ export function parseRecurringSchedule(
 		if (ampm === "pm" && hours < 12) hours += 12;
 		if (ampm === "am" && hours === 12) hours = 0;
 
-		const nextRun = new Date(now);
-		nextRun.setHours(hours, minutes, 0, 0);
-		if (nextRun <= now) {
-			nextRun.setDate(nextRun.getDate() + 1);
+		let nextRun = nowDt.set({
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		});
+		if (nextRun.toMillis() <= nowDt.toMillis()) {
+			nextRun = nextRun.plus({ days: 1 });
 		}
 
-		return { schedule: `${minutes} ${hours} * * *`, nextRun };
+		return {
+			schedule: `${minutes} ${hours} * * *`,
+			nextRun: nextRun.toJSDate(),
+		};
 	}
 
 	// "every weekday at HH:MM" (Mon-Fri)
@@ -318,32 +324,30 @@ export function parseRecurringSchedule(
 		if (ampm === "pm" && hours < 12) hours += 12;
 		if (ampm === "am" && hours === 12) hours = 0;
 
-		const nextRun = new Date(now);
-		nextRun.setHours(hours, minutes, 0, 0);
+		let nextRun = nowDt.set({
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		});
 
-		// Find next weekday
-		while (nextRun <= now || nextRun.getDay() === 0 || nextRun.getDay() === 6) {
-			nextRun.setDate(nextRun.getDate() + 1);
+		while (nextRun.toMillis() <= nowDt.toMillis() || nextRun.weekday > 5) {
+			nextRun = nextRun.plus({ days: 1 });
 		}
 
-		return { schedule: `${minutes} ${hours} * * 1-5`, nextRun };
+		return {
+			schedule: `${minutes} ${hours} * * 1-5`,
+			nextRun: nextRun.toJSDate(),
+		};
 	}
 
 	// "every monday/tuesday/etc at HH:MM"
-	const dayNames = [
-		"sunday",
-		"monday",
-		"tuesday",
-		"wednesday",
-		"thursday",
-		"friday",
-		"saturday",
-	];
 	const dayMatch = lowerExpr.match(
 		/^every\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/,
 	);
 	if (dayMatch) {
-		const targetDay = dayNames.indexOf(dayMatch[1]);
+		const targetDayIndex = getDayIndex(dayMatch[1]);
+		const targetWeekday = toLuxonWeekday(targetDayIndex);
 		let hours = dayMatch[2] ? Number.parseInt(dayMatch[2], 10) : 9;
 		const minutes = dayMatch[3] ? Number.parseInt(dayMatch[3], 10) : 0;
 		const ampm = dayMatch[4];
@@ -351,15 +355,24 @@ export function parseRecurringSchedule(
 		if (ampm === "pm" && hours < 12) hours += 12;
 		if (ampm === "am" && hours === 12) hours = 0;
 
-		const nextRun = new Date(now);
-		nextRun.setHours(hours, minutes, 0, 0);
+		let nextRun = nowDt.set({
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		});
 
-		// Find next occurrence of this day
-		while (nextRun <= now || nextRun.getDay() !== targetDay) {
-			nextRun.setDate(nextRun.getDate() + 1);
+		while (
+			nextRun.toMillis() <= nowDt.toMillis() ||
+			nextRun.weekday !== targetWeekday
+		) {
+			nextRun = nextRun.plus({ days: 1 });
 		}
 
-		return { schedule: `${minutes} ${hours} * * ${targetDay}`, nextRun };
+		return {
+			schedule: `${minutes} ${hours} * * ${targetDayIndex}`,
+			nextRun: nextRun.toJSDate(),
+		};
 	}
 
 	// "every N weeks on monday at HH:MM"
@@ -368,7 +381,8 @@ export function parseRecurringSchedule(
 	);
 	if (weeksMatch) {
 		const intervalWeeks = Number.parseInt(weeksMatch[1], 10);
-		const targetDay = getDayIndex(weeksMatch[2]);
+		const targetDayIndex = getDayIndex(weeksMatch[2]);
+		const targetWeekday = toLuxonWeekday(targetDayIndex);
 		let hours = weeksMatch[3] ? Number.parseInt(weeksMatch[3], 10) : 9;
 		const minutes = weeksMatch[4] ? Number.parseInt(weeksMatch[4], 10) : 0;
 		const ampm = weeksMatch[5];
@@ -376,18 +390,27 @@ export function parseRecurringSchedule(
 		if (ampm === "pm" && hours < 12) hours += 12;
 		if (ampm === "am" && hours === 12) hours = 0;
 
-		const nextRun = new Date(now);
-		nextRun.setHours(hours, minutes, 0, 0);
+		let nextRun = nowDt.set({
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		});
 
-		// Find next occurrence of this day
-		while (nextRun <= now || nextRun.getDay() !== targetDay) {
-			nextRun.setDate(nextRun.getDate() + 1);
+		while (
+			nextRun.toMillis() <= nowDt.toMillis() ||
+			nextRun.weekday !== targetWeekday
+		) {
+			nextRun = nextRun.plus({ days: 1 });
 		}
 
-		// Use custom schedule format: "W<weeks> <min> <hour> * * <day>"
+		if (intervalWeeks > 1) {
+			nextRun = nextRun.plus({ weeks: intervalWeeks - 1 });
+		}
+
 		return {
-			schedule: `W${intervalWeeks} ${minutes} ${hours} * * ${targetDay}`,
-			nextRun,
+			schedule: `W${intervalWeeks} ${minutes} ${hours} * * ${targetDayIndex}`,
+			nextRun: nextRun.toJSDate(),
 		};
 	}
 
@@ -404,7 +427,8 @@ export function parseRecurringSchedule(
 			last: -1,
 		};
 		const nth = ordinals[nthDayMatch[1]];
-		const targetDay = getDayIndex(nthDayMatch[2]);
+		const targetDayIndex = getDayIndex(nthDayMatch[2]);
+		const targetWeekday = toLuxonWeekday(targetDayIndex);
 		let hours = nthDayMatch[3] ? Number.parseInt(nthDayMatch[3], 10) : 9;
 		const minutes = nthDayMatch[4] ? Number.parseInt(nthDayMatch[4], 10) : 0;
 		const ampm = nthDayMatch[5];
@@ -412,12 +436,17 @@ export function parseRecurringSchedule(
 		if (ampm === "pm" && hours < 12) hours += 12;
 		if (ampm === "am" && hours === 12) hours = 0;
 
-		const nextRun = findNthDayOfMonth(now, targetDay, nth, hours, minutes);
+		const nextRunDt = findNthDayOfMonth(
+			nowDt,
+			targetWeekday,
+			nth,
+			hours,
+			minutes,
+		);
 
-		// Use custom schedule format: "N<nth> <min> <hour> * * <day>"
 		return {
-			schedule: `N${nth} ${minutes} ${hours} * * ${targetDay}`,
-			nextRun,
+			schedule: `N${nth} ${minutes} ${hours} * * ${targetDayIndex}`,
+			nextRun: nextRunDt.toJSDate(),
 		};
 	}
 
@@ -427,7 +456,7 @@ export function parseRecurringSchedule(
 		const cronExpr = cronMatch[1].trim();
 		const parts = cronExpr.split(/\s+/);
 		if (parts.length === 5) {
-			const nextRun = getNextRunFromSchedule(cronExpr, now);
+			const nextRun = getNextRunFromSchedule(cronExpr, now, timezone);
 			return { schedule: cronExpr, nextRun };
 		}
 	}
@@ -436,79 +465,96 @@ export function parseRecurringSchedule(
 }
 
 /**
- * Find the nth occurrence of a weekday in a month
+ * Find the nth occurrence of a weekday in a month (timezone-aware).
+ * Weekday uses Luxon numbering (1=Mon..7=Sun).
  */
 function findNthDayOfMonth(
-	after: Date,
-	dayOfWeek: number,
+	after: DateTime,
+	weekday: number,
 	nth: number,
 	hours: number,
 	minutes: number,
-): Date {
-	const searchDate = new Date(after);
-	searchDate.setHours(hours, minutes, 0, 0);
+): DateTime {
+	const zone = after.zoneName || "UTC";
+	const base = after.set({
+		hour: hours,
+		minute: minutes,
+		second: 0,
+		millisecond: 0,
+	});
 
-	// Try current month first, then next months
 	for (let monthOffset = 0; monthOffset < 12; monthOffset++) {
-		const year = searchDate.getFullYear();
-		const month = searchDate.getMonth() + monthOffset;
-		const result = getNthDayInMonth(year, month, dayOfWeek, nth);
-		if (result) {
-			result.setHours(hours, minutes, 0, 0);
-			if (result > after) {
-				return result;
-			}
+		const monthDt = base.plus({ months: monthOffset });
+		const candidate = getNthDayInMonth(
+			monthDt.year,
+			monthDt.month,
+			weekday,
+			nth,
+			hours,
+			minutes,
+			zone,
+		);
+		if (candidate && candidate.toMillis() > after.toMillis()) {
+			return candidate;
 		}
 	}
 
-	// Fallback: next month
-	const fallback = new Date(after);
-	fallback.setMonth(fallback.getMonth() + 1);
-	fallback.setDate(1);
-	fallback.setHours(hours, minutes, 0, 0);
-	return fallback;
+	// Fallback: first day of next month at given time
+	return base
+		.plus({ months: 1 })
+		.startOf("month")
+		.set({ hour: hours, minute: minutes, second: 0, millisecond: 0 });
 }
 
 /**
- * Get the nth weekday of a specific month
+ * Get the nth weekday of a specific month (timezone-aware).
+ * Month is 1-based (Luxon). Weekday uses Luxon numbering (1=Mon..7=Sun).
  */
 function getNthDayInMonth(
 	year: number,
 	month: number,
-	dayOfWeek: number,
+	weekday: number,
 	nth: number,
-): Date | null {
-	const normalizedMonth = month % 12;
-	const normalizedYear = year + Math.floor(month / 12);
+	hours: number,
+	minutes: number,
+	zone: string,
+): DateTime | null {
+	const monthStart = DateTime.fromObject(
+		{
+			year,
+			month,
+			day: 1,
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		},
+		{ zone },
+	);
 
 	if (nth === -1) {
-		// Last occurrence: start from end of month
-		const lastDay = new Date(normalizedYear, normalizedMonth + 1, 0);
-		while (lastDay.getDay() !== dayOfWeek) {
-			lastDay.setDate(lastDay.getDate() - 1);
+		let last = monthStart.endOf("month");
+		while (last.weekday !== weekday) {
+			last = last.minus({ days: 1 });
 		}
-		return lastDay;
+		return last.set({
+			hour: hours,
+			minute: minutes,
+			second: 0,
+			millisecond: 0,
+		});
 	}
 
-	// Find first occurrence
-	const firstOfMonth = new Date(normalizedYear, normalizedMonth, 1);
-	let daysUntilTarget = dayOfWeek - firstOfMonth.getDay();
-	if (daysUntilTarget < 0) daysUntilTarget += 7;
+	const firstWeekday = monthStart.weekday;
+	const daysUntilTarget = (weekday - firstWeekday + 7) % 7;
+	const candidate = monthStart.plus({
+		days: daysUntilTarget + (nth - 1) * 7,
+	});
 
-	const firstOccurrence = new Date(
-		normalizedYear,
-		normalizedMonth,
-		1 + daysUntilTarget,
-	);
-	const nthOccurrence = new Date(firstOccurrence);
-	nthOccurrence.setDate(firstOccurrence.getDate() + (nth - 1) * 7);
-
-	// Check if still in same month
-	if (nthOccurrence.getMonth() !== normalizedMonth) {
+	if (candidate.month !== month) {
 		return null;
 	}
-
-	return nthOccurrence;
+	return candidate;
 }
 
 /**
@@ -521,30 +567,39 @@ function getNthDayInMonth(
 export function getNextRunFromSchedule(
 	schedule: string,
 	after = new Date(),
+	timezone = "UTC",
 ): Date {
 	const parts = schedule.split(" ");
+	const zone = isValidTimezone(timezone) ? timezone : "UTC";
+	const afterDt = DateTime.fromJSDate(after).setZone(zone);
 
 	// Handle custom weekly interval format: "W<weeks> min hour * * day"
 	if (parts[0].startsWith("W")) {
 		const weeks = Number.parseInt(parts[0].slice(1), 10);
 		const minute = Number.parseInt(parts[1], 10);
 		const hour = Number.parseInt(parts[2], 10);
-		const dayOfWeek = Number.parseInt(parts[5], 10);
+		const dayOfWeekIndex = Number.parseInt(parts[5], 10);
+		const targetWeekday = toLuxonWeekday(dayOfWeekIndex);
 
-		const next = new Date(after);
-		next.setHours(hour, minute, 0, 0);
+		let nextDt = afterDt.set({
+			hour,
+			minute,
+			second: 0,
+			millisecond: 0,
+		});
 
-		// Find next occurrence of this day
-		while (next <= after || next.getDay() !== dayOfWeek) {
-			next.setDate(next.getDate() + 1);
+		while (
+			nextDt.toMillis() <= afterDt.toMillis() ||
+			nextDt.weekday !== targetWeekday
+		) {
+			nextDt = nextDt.plus({ days: 1 });
 		}
 
-		// Add week interval (minus 1 since we already found next occurrence)
 		if (weeks > 1) {
-			next.setDate(next.getDate() + (weeks - 1) * 7);
+			nextDt = nextDt.plus({ weeks: weeks - 1 });
 		}
 
-		return next;
+		return nextDt.toJSDate();
 	}
 
 	// Handle custom nth day of month format: "N<nth> min hour * * day"
@@ -552,87 +607,91 @@ export function getNextRunFromSchedule(
 		const nth = Number.parseInt(parts[0].slice(1), 10);
 		const minute = Number.parseInt(parts[1], 10);
 		const hour = Number.parseInt(parts[2], 10);
-		const dayOfWeek = Number.parseInt(parts[5], 10);
+		const dayOfWeekIndex = Number.parseInt(parts[5], 10);
+		const targetWeekday = toLuxonWeekday(dayOfWeekIndex);
 
-		return findNthDayOfMonth(after, dayOfWeek, nth, hour, minute);
+		return findNthDayOfMonth(
+			afterDt,
+			targetWeekday,
+			nth,
+			hour,
+			minute,
+		).toJSDate();
 	}
 
 	// Standard cron format
 	if (parts.length !== 5) {
-		// Invalid schedule, return 1 hour from now
-		const next = new Date(after);
-		next.setHours(next.getHours() + 1);
-		return next;
+		return afterDt.plus({ hours: 1 }).toJSDate();
 	}
 
 	const [minutePart, hourPart, , , dayOfWeekPart] = parts;
 
-	const next = new Date(after);
-	next.setSeconds(0, 0);
+	let nextDt = afterDt.set({ second: 0, millisecond: 0 });
 
 	// Handle minute
 	if (minutePart.startsWith("*/")) {
 		const interval = Number.parseInt(minutePart.slice(2), 10);
-		const currentMinute = next.getMinutes();
+		const currentMinute = nextDt.minute;
 		const nextMinute = Math.ceil((currentMinute + 1) / interval) * interval;
 		if (nextMinute >= 60) {
-			next.setHours(next.getHours() + 1);
-			next.setMinutes(nextMinute % 60);
+			nextDt = nextDt.plus({ hours: 1 }).set({ minute: nextMinute % 60 });
 		} else {
-			next.setMinutes(nextMinute);
+			nextDt = nextDt.set({ minute: nextMinute });
 		}
-		return next;
+		return nextDt.toJSDate();
 	}
 
 	const minute = Number.parseInt(minutePart, 10);
-	next.setMinutes(minute);
+	nextDt = nextDt.set({ minute });
 
 	// Handle hour
 	if (hourPart === "*") {
-		// Every hour at this minute
-		if (next <= after) {
-			next.setHours(next.getHours() + 1);
+		if (nextDt.toMillis() <= afterDt.toMillis()) {
+			nextDt = nextDt.plus({ hours: 1 });
 		}
-		return next;
+		return nextDt.toJSDate();
 	}
 
 	if (hourPart.startsWith("*/")) {
 		const interval = Number.parseInt(hourPart.slice(2), 10);
-		const currentHour = next.getHours();
+		const currentHour = nextDt.hour;
 		const nextHour = Math.ceil((currentHour + 1) / interval) * interval;
 		if (nextHour >= 24) {
-			next.setDate(next.getDate() + 1);
-			next.setHours(nextHour % 24);
+			nextDt = nextDt.plus({ days: 1 }).set({ hour: nextHour % 24 });
 		} else {
-			next.setHours(nextHour);
+			nextDt = nextDt.set({ hour: nextHour });
 		}
-		if (next <= after) {
-			next.setHours(next.getHours() + interval);
+		if (nextDt.toMillis() <= afterDt.toMillis()) {
+			nextDt = nextDt.plus({ hours: interval });
 		}
-		return next;
+		return nextDt.toJSDate();
 	}
 
 	const hour = Number.parseInt(hourPart, 10);
-	next.setHours(hour);
+	nextDt = nextDt.set({ hour });
 
-	// Handle day of week
+	// Handle day of week (cron DOW uses JS indices 0-6)
 	if (dayOfWeekPart !== "*") {
 		const targetDays = dayOfWeekPart.includes("-")
 			? expandDayRange(dayOfWeekPart)
 			: [Number.parseInt(dayOfWeekPart, 10)];
+		const targetWeekdays = targetDays.map(toLuxonWeekday);
 
-		while (next <= after || !targetDays.includes(next.getDay())) {
-			next.setDate(next.getDate() + 1);
+		while (
+			nextDt.toMillis() <= afterDt.toMillis() ||
+			!targetWeekdays.includes(nextDt.weekday)
+		) {
+			nextDt = nextDt.plus({ days: 1 });
 		}
-		return next;
+		return nextDt.toJSDate();
 	}
 
 	// Daily at specific time
-	if (next <= after) {
-		next.setDate(next.getDate() + 1);
+	if (nextDt.toMillis() <= afterDt.toMillis()) {
+		nextDt = nextDt.plus({ days: 1 });
 	}
 
-	return next;
+	return nextDt.toJSDate();
 }
 
 function expandDayRange(range: string): number[] {
@@ -694,7 +753,16 @@ export class Scheduler {
 		// Ensure the working directory still exists (tests may clean tmp dirs)
 		await mkdir(this.workingDir, { recursive: true });
 		const tasksArray = Array.from(this.tasks.values());
-		await writeFile(this.tasksFile, JSON.stringify(tasksArray, null, 2));
+		const serialized = JSON.stringify(tasksArray, null, 2);
+		const tmpPath = `${this.tasksFile}.tmp`;
+		await writeFile(tmpPath, serialized);
+		try {
+			await rename(tmpPath, this.tasksFile);
+		} catch {
+			// Fallback to direct write if rename fails (e.g., cross-device)
+			await writeFile(this.tasksFile, serialized);
+			await unlink(tmpPath).catch(() => undefined);
+		}
 	}
 
 	/**
@@ -712,10 +780,14 @@ export class Scheduler {
 			notifyBefore?: number;
 		},
 	): Promise<ScheduledTask | null> {
-		const timezone = options?.timezone || this.defaultTimezone;
+		const requestedTz = options?.timezone || this.defaultTimezone;
+		const timezone = isValidTimezone(requestedTz)
+			? requestedTz
+			: this.defaultTimezone;
+		const now = new Date();
 
 		// Try parsing as recurring schedule first
-		const recurring = parseRecurringSchedule(when);
+		const recurring = parseRecurringSchedule(when, now, timezone);
 		if (recurring) {
 			const task: ScheduledTask = {
 				id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -748,7 +820,7 @@ export class Scheduler {
 		}
 
 		// Try parsing as one-time
-		const oneTime = parseTimeExpression(when);
+		const oneTime = parseTimeExpression(when, now, timezone);
 		if (oneTime) {
 			const task: ScheduledTask = {
 				id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -811,6 +883,7 @@ export class Scheduler {
 			task.nextRun = getNextRunFromSchedule(
 				task.schedule,
 				new Date(),
+				task.timezone,
 			).toISOString();
 		}
 		task.notificationSent = false;
@@ -950,6 +1023,7 @@ export class Scheduler {
 						task.nextRun = getNextRunFromSchedule(
 							task.schedule,
 							now,
+							task.timezone,
 						).toISOString();
 					} else {
 						// One-time task already deactivated above
@@ -970,6 +1044,7 @@ export class Scheduler {
 						task.nextRun = getNextRunFromSchedule(
 							task.schedule,
 							now,
+							task.timezone,
 						).toISOString();
 						task.notificationSent = false;
 					} else {
