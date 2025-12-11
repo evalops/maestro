@@ -253,6 +253,22 @@ pub mod selection_list;
 /// Compact duration display and animated spinners.
 pub mod elapsed;
 
+/// ANSI escape code handling.
+/// Converts ANSI-escaped strings to ratatui styled text.
+pub mod ansi_text;
+
+/// Box and border drawing utilities.
+/// Unicode box-drawing characters for cards and panels.
+pub mod borders;
+
+/// Field formatting for aligned label-value displays.
+/// Consistent formatting for status displays.
+pub mod field_format;
+
+/// Shimmer animation effect.
+/// Animated text highlights for loading indicators.
+pub mod shimmer;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -924,4 +940,60 @@ pub use diff::{
     render_hunk_separator,           // Render hunk separator
     render_line_count_summary,       // Render (+N -M) summary
     render_wrapped_diff_line,        // Render single wrapped diff line
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANSI TEXT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ANSI escape code handling for terminal output.
+pub use ansi_text::{
+    ansi_display_width,  // Width ignoring ANSI codes
+    expand_tabs,         // Replace tabs with spaces
+    expand_tabs_width,   // Replace tabs with custom width
+    parse_ansi,          // Parse ANSI to ratatui Text
+    parse_ansi_line,     // Parse single line with ANSI
+    strip_ansi,          // Remove ANSI codes from string
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BORDER EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Box and border drawing utilities.
+pub use borders::{
+    card_inner_width,       // Calculate usable inner width
+    horizontal_separator,   // Create horizontal separator line
+    padded_emoji,           // Emoji with hair space
+    separator_with_text,    // Separator with centered text
+    with_border,            // Wrap content in rounded border
+    with_border_style,      // Wrap with custom border style
+    with_border_width,      // Wrap with minimum width
+    BorderStyle,            // Border style configuration
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIELD FORMAT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Field formatting for aligned displays.
+pub use field_format::{
+    truncate_line_to_width,     // Truncate line to width
+    truncate_line_with_ellipsis, // Truncate with ellipsis
+    FieldFormatter,             // Aligned field/value formatter
+};
+// Note: is_blank_line, line_display_width, line_to_static already exported from render_utils
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHIMMER EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Shimmer animation effect for loading indicators.
+pub use shimmer::{
+    shimmer_line,              // Create shimmer line
+    shimmer_line_with_config,  // With custom config
+    shimmer_spans,             // Create shimmer spans
+    shimmer_spans_at_time,     // At specific time offset
+    shimmer_spans_with_config, // With custom config
+    ShimmerConfig,             // Shimmer configuration
 };
