@@ -293,6 +293,10 @@ pub mod focus;
 /// Smart redraw detection and width-keyed caching.
 pub mod resize_handler;
 
+/// Animated loading indicator with spinners and progress bars.
+/// Multiple styles with low-unicode/low-color fallbacks.
+pub mod loader;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
