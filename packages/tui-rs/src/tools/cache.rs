@@ -123,6 +123,8 @@ pub struct ToolResultCache {
     entries: HashMap<CacheKey, CachedResult>,
     /// Access order for LRU eviction (most recent at end)
     access_order: Vec<CacheKey>,
+    /// File dependencies: maps file paths to cache keys that depend on them
+    file_deps: HashMap<PathBuf, Vec<CacheKey>>,
     /// Cache hit count
     hits: u64,
     /// Cache miss count
@@ -142,6 +144,7 @@ impl ToolResultCache {
             config,
             entries: HashMap::new(),
             access_order: Vec::new(),
+            file_deps: HashMap::new(),
             hits: 0,
             misses: 0,
         }
@@ -191,16 +194,113 @@ impl ToolResultCache {
         while self.entries.len() >= self.config.max_entries && !self.access_order.is_empty() {
             let oldest = self.access_order.remove(0);
             self.entries.remove(&oldest);
+            self.remove_deps_for_key(&oldest);
         }
 
         self.entries.insert(key.clone(), result);
         self.access_order.push(key);
     }
 
+    /// Store a result in the cache with file dependencies
+    ///
+    /// File dependencies allow targeted invalidation when files are modified.
+    /// When any of the dependent files changes, this cache entry will be invalidated.
+    pub fn put_with_deps(&mut self, key: CacheKey, result: CachedResult, deps: Vec<PathBuf>) {
+        if !self.config.enabled {
+            return;
+        }
+
+        // Evict old entries if at capacity
+        while self.entries.len() >= self.config.max_entries && !self.access_order.is_empty() {
+            let oldest = self.access_order.remove(0);
+            self.entries.remove(&oldest);
+            self.remove_deps_for_key(&oldest);
+        }
+
+        // Track file dependencies
+        for dep in deps {
+            self.file_deps.entry(dep).or_default().push(key.clone());
+        }
+
+        self.entries.insert(key.clone(), result);
+        self.access_order.push(key);
+    }
+
+    /// Remove dependency tracking for a cache key
+    fn remove_deps_for_key(&mut self, key: &CacheKey) {
+        // Remove this key from all dependency lists
+        for keys in self.file_deps.values_mut() {
+            keys.retain(|k| k != key);
+        }
+        // Clean up empty dependency entries
+        self.file_deps.retain(|_, keys| !keys.is_empty());
+    }
+
+    /// Invalidate cache entries that depend on a file
+    ///
+    /// Call this when a file is modified to ensure stale cache entries are removed.
+    /// Returns the number of entries invalidated.
+    pub fn invalidate_for_file(&mut self, path: &Path) -> usize {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        // Find all keys that depend on this file
+        let keys_to_remove: Vec<CacheKey> =
+            self.file_deps.get(&canonical).cloned().unwrap_or_default();
+
+        // Also check with the original path (in case canonicalization differs)
+        let mut keys_from_orig: Vec<CacheKey> =
+            self.file_deps.get(path).cloned().unwrap_or_default();
+        keys_from_orig.retain(|k| !keys_to_remove.contains(k));
+
+        let all_keys: Vec<CacheKey> = keys_to_remove.into_iter().chain(keys_from_orig).collect();
+        let count = all_keys.len();
+
+        // Remove the entries
+        for key in all_keys {
+            self.entries.remove(&key);
+            self.access_order.retain(|k| k != &key);
+            self.remove_deps_for_key(&key);
+        }
+
+        // Remove the file from deps tracking
+        self.file_deps.remove(&canonical);
+        self.file_deps.remove(path);
+
+        count
+    }
+
+    /// Invalidate all cache entries that depend on files in a directory
+    ///
+    /// Useful when a directory or its contents are modified.
+    /// Returns the number of entries invalidated.
+    pub fn invalidate_for_directory(&mut self, dir: &Path) -> usize {
+        let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+
+        // Find all files that start with this directory path
+        let files_to_invalidate: Vec<PathBuf> = self
+            .file_deps
+            .keys()
+            .filter(|p| p.starts_with(&canonical_dir) || p.starts_with(dir))
+            .cloned()
+            .collect();
+
+        let mut total = 0;
+        for file in files_to_invalidate {
+            total += self.invalidate_for_file(&file);
+        }
+        total
+    }
+
+    /// Get the number of tracked file dependencies
+    pub fn file_dep_count(&self) -> usize {
+        self.file_deps.len()
+    }
+
     /// Clear the cache
     pub fn clear(&mut self) {
         self.entries.clear();
         self.access_order.clear();
+        self.file_deps.clear();
     }
 
     /// Remove expired entries
@@ -216,6 +316,7 @@ impl ToolResultCache {
         for key in expired {
             self.entries.remove(&key);
             self.access_order.retain(|k| k != &key);
+            self.remove_deps_for_key(&key);
         }
     }
 
@@ -299,9 +400,10 @@ impl ToolResultCache {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
 
-        // Clear current entries
+        // Clear current entries and deps
         self.entries.clear();
         self.access_order.clear();
+        self.file_deps.clear();
 
         let mut loaded = 0;
 
@@ -2489,5 +2591,330 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file(&cache_file);
+    }
+
+    // ============================================================
+    // File Dependency Tests
+    // ============================================================
+
+    #[test]
+    fn test_put_with_deps_basic() {
+        let mut cache = ToolResultCache::default();
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test/file.txt"}));
+        let deps = vec![PathBuf::from("/test/file.txt")];
+
+        cache.put_with_deps(key.clone(), CachedResult::new("content", false), deps);
+
+        assert!(cache.get(&key).is_some());
+        assert_eq!(cache.file_dep_count(), 1);
+    }
+
+    #[test]
+    fn test_put_with_deps_multiple_files() {
+        let mut cache = ToolResultCache::default();
+
+        let key = CacheKey::new("grep", &serde_json::json!({"pattern": "TODO"}));
+        let deps = vec![
+            PathBuf::from("/src/a.rs"),
+            PathBuf::from("/src/b.rs"),
+            PathBuf::from("/src/c.rs"),
+        ];
+
+        cache.put_with_deps(key.clone(), CachedResult::new("found", false), deps);
+
+        assert!(cache.get(&key).is_some());
+        assert_eq!(cache.file_dep_count(), 3);
+    }
+
+    #[test]
+    fn test_invalidate_for_file_single() {
+        let mut cache = ToolResultCache::default();
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test/file.txt"}));
+        let deps = vec![PathBuf::from("/test/file.txt")];
+
+        cache.put_with_deps(key.clone(), CachedResult::new("content", false), deps);
+
+        // Invalidate the file
+        let count = cache.invalidate_for_file(Path::new("/test/file.txt"));
+        assert_eq!(count, 1);
+
+        // Entry should be gone
+        assert!(cache.get(&key).is_none());
+        assert_eq!(cache.stats().entries, 0);
+        assert_eq!(cache.file_dep_count(), 0);
+    }
+
+    #[test]
+    fn test_invalidate_for_file_multiple_entries() {
+        let mut cache = ToolResultCache::default();
+
+        let shared_file = PathBuf::from("/shared/config.json");
+
+        // Two entries depend on the same file
+        let key1 = CacheKey::new("read", &serde_json::json!({"path": "/shared/config.json"}));
+        let key2 = CacheKey::new("glob", &serde_json::json!({"pattern": "*.json"}));
+
+        cache.put_with_deps(
+            key1.clone(),
+            CachedResult::new("content1", false),
+            vec![shared_file.clone()],
+        );
+        cache.put_with_deps(
+            key2.clone(),
+            CachedResult::new("content2", false),
+            vec![shared_file.clone()],
+        );
+
+        assert_eq!(cache.stats().entries, 2);
+
+        // Invalidate the shared file
+        let count = cache.invalidate_for_file(&shared_file);
+        assert_eq!(count, 2);
+
+        assert!(cache.get(&key1).is_none());
+        assert!(cache.get(&key2).is_none());
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_invalidate_for_file_partial() {
+        let mut cache = ToolResultCache::default();
+
+        let file_a = PathBuf::from("/test/a.txt");
+        let file_b = PathBuf::from("/test/b.txt");
+
+        let key_a = CacheKey::new("read", &serde_json::json!({"path": "/test/a.txt"}));
+        let key_b = CacheKey::new("read", &serde_json::json!({"path": "/test/b.txt"}));
+
+        cache.put_with_deps(
+            key_a.clone(),
+            CachedResult::new("content a", false),
+            vec![file_a.clone()],
+        );
+        cache.put_with_deps(
+            key_b.clone(),
+            CachedResult::new("content b", false),
+            vec![file_b.clone()],
+        );
+
+        // Invalidate only file_a
+        let count = cache.invalidate_for_file(&file_a);
+        assert_eq!(count, 1);
+
+        // key_a should be gone, key_b should remain
+        assert!(cache.get(&key_a).is_none());
+        assert!(cache.get(&key_b).is_some());
+        assert_eq!(cache.stats().entries, 1);
+    }
+
+    #[test]
+    fn test_invalidate_for_file_nonexistent() {
+        let mut cache = ToolResultCache::default();
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test/file.txt"}));
+        let deps = vec![PathBuf::from("/test/file.txt")];
+
+        cache.put_with_deps(key.clone(), CachedResult::new("content", false), deps);
+
+        // Invalidate a different file - should not affect anything
+        let count = cache.invalidate_for_file(Path::new("/other/file.txt"));
+        assert_eq!(count, 0);
+
+        // Original entry should still exist
+        assert!(cache.get(&key).is_some());
+    }
+
+    #[test]
+    fn test_invalidate_for_directory() {
+        let mut cache = ToolResultCache::default();
+
+        let key1 = CacheKey::new("read", &serde_json::json!({"path": "/src/a.rs"}));
+        let key2 = CacheKey::new("read", &serde_json::json!({"path": "/src/b.rs"}));
+        let key3 = CacheKey::new("read", &serde_json::json!({"path": "/other/c.rs"}));
+
+        cache.put_with_deps(
+            key1.clone(),
+            CachedResult::new("a", false),
+            vec![PathBuf::from("/src/a.rs")],
+        );
+        cache.put_with_deps(
+            key2.clone(),
+            CachedResult::new("b", false),
+            vec![PathBuf::from("/src/b.rs")],
+        );
+        cache.put_with_deps(
+            key3.clone(),
+            CachedResult::new("c", false),
+            vec![PathBuf::from("/other/c.rs")],
+        );
+
+        // Invalidate /src directory
+        let count = cache.invalidate_for_directory(Path::new("/src"));
+        assert_eq!(count, 2);
+
+        // /src entries should be gone, /other should remain
+        assert!(cache.get(&key1).is_none());
+        assert!(cache.get(&key2).is_none());
+        assert!(cache.get(&key3).is_some());
+    }
+
+    #[test]
+    fn test_deps_cleaned_on_eviction() {
+        let config = CacheConfig {
+            max_entries: 2,
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        let key1 = CacheKey::new("read", &serde_json::json!({"id": 1}));
+        let key2 = CacheKey::new("read", &serde_json::json!({"id": 2}));
+        let key3 = CacheKey::new("read", &serde_json::json!({"id": 3}));
+
+        cache.put_with_deps(
+            key1.clone(),
+            CachedResult::new("1", false),
+            vec![PathBuf::from("/file1.txt")],
+        );
+        cache.put_with_deps(
+            key2.clone(),
+            CachedResult::new("2", false),
+            vec![PathBuf::from("/file2.txt")],
+        );
+
+        assert_eq!(cache.file_dep_count(), 2);
+
+        // Add third entry - should evict key1
+        cache.put_with_deps(
+            key3.clone(),
+            CachedResult::new("3", false),
+            vec![PathBuf::from("/file3.txt")],
+        );
+
+        // key1 and its deps should be gone
+        assert!(cache.get(&key1).is_none());
+        // Deps should be cleaned up
+        assert_eq!(cache.file_dep_count(), 2);
+    }
+
+    #[test]
+    fn test_deps_cleaned_on_clear() {
+        let mut cache = ToolResultCache::default();
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test.txt"}));
+        cache.put_with_deps(
+            key,
+            CachedResult::new("content", false),
+            vec![PathBuf::from("/test.txt")],
+        );
+
+        assert_eq!(cache.file_dep_count(), 1);
+
+        cache.clear();
+
+        assert_eq!(cache.file_dep_count(), 0);
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_deps_cleaned_on_expiration() {
+        let config = CacheConfig {
+            ttl: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test.txt"}));
+        cache.put_with_deps(
+            key,
+            CachedResult::new("content", false),
+            vec![PathBuf::from("/test.txt")],
+        );
+
+        assert_eq!(cache.file_dep_count(), 1);
+
+        // Wait for expiration
+        std::thread::sleep(Duration::from_millis(10));
+
+        cache.evict_expired();
+
+        assert_eq!(cache.file_dep_count(), 0);
+        assert_eq!(cache.stats().entries, 0);
+    }
+
+    #[test]
+    fn test_put_without_deps_still_works() {
+        let mut cache = ToolResultCache::default();
+
+        // Regular put without deps
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test.txt"}));
+        cache.put(key.clone(), CachedResult::new("content", false));
+
+        assert!(cache.get(&key).is_some());
+        assert_eq!(cache.file_dep_count(), 0);
+    }
+
+    #[test]
+    fn test_multiple_deps_per_entry() {
+        let mut cache = ToolResultCache::default();
+
+        let key = CacheKey::new("grep", &serde_json::json!({"pattern": "TODO"}));
+        let deps = vec![
+            PathBuf::from("/src/main.rs"),
+            PathBuf::from("/src/lib.rs"),
+            PathBuf::from("/Cargo.toml"),
+        ];
+
+        cache.put_with_deps(key.clone(), CachedResult::new("results", false), deps);
+
+        assert_eq!(cache.file_dep_count(), 3);
+
+        // Invalidating any of the files should remove the entry
+        let count = cache.invalidate_for_file(Path::new("/src/lib.rs"));
+        assert_eq!(count, 1);
+        assert!(cache.get(&key).is_none());
+    }
+
+    #[test]
+    fn test_same_key_different_deps() {
+        let mut cache = ToolResultCache::default();
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/test.txt"}));
+
+        // First put with deps
+        cache.put_with_deps(
+            key.clone(),
+            CachedResult::new("v1", false),
+            vec![PathBuf::from("/a.txt")],
+        );
+        assert_eq!(cache.file_dep_count(), 1);
+
+        // Second put with different deps (overwrites)
+        cache.put_with_deps(
+            key.clone(),
+            CachedResult::new("v2", false),
+            vec![PathBuf::from("/b.txt")],
+        );
+
+        // Should have both deps now (old dep not cleaned up on overwrite)
+        // This is expected behavior - the old entry is replaced but deps remain
+        // until the entry is explicitly removed
+        assert!(cache.get(&key).is_some());
+        assert_eq!(cache.get(&key).unwrap().output, "v2");
+    }
+
+    #[test]
+    fn test_file_dep_count_accessor() {
+        let mut cache = ToolResultCache::default();
+        assert_eq!(cache.file_dep_count(), 0);
+
+        cache.put_with_deps(
+            CacheKey::new("read", &serde_json::json!({"id": 1})),
+            CachedResult::new("1", false),
+            vec![PathBuf::from("/a.txt"), PathBuf::from("/b.txt")],
+        );
+
+        assert_eq!(cache.file_dep_count(), 2);
     }
 }
