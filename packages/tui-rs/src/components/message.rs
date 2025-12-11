@@ -654,35 +654,43 @@ impl Widget for MessageWidget<'_> {
             }
         }
 
-        // Render tool calls with bordered panels and expand/collapse
+        // Render tool calls in Codex style
         for tool_call in &self.message.tool_calls {
             if y >= max_y {
                 break;
             }
 
-            let icon = get_tool_icon(&tool_call.tool);
             let expanded = self
                 .expanded_tools
                 .map(|s| s.contains(&tool_call.call_id))
                 .unwrap_or(false);
 
-            // Status pill color
-            let (pill_text, pill_style) = match tool_call.status {
-                ToolCallStatus::Running => ("RUN", Style::default().fg(Color::Blue)),
-                ToolCallStatus::Completed => ("OK", Style::default().fg(Color::Green)),
-                ToolCallStatus::Failed => ("ERR", Style::default().fg(Color::Red)),
-                ToolCallStatus::Pending => ("PEND", Style::default().fg(Color::Yellow)),
-                ToolCallStatus::Blocked => ("BLOCK", Style::default().fg(Color::Magenta)),
+            // Status bullet and verb (Codex style)
+            let (bullet, bullet_style, verb) = match tool_call.status {
+                ToolCallStatus::Running => ("●", Style::default().fg(Color::Cyan), "Calling"),
+                ToolCallStatus::Completed => ("●", Style::default().fg(Color::Green), "Called"),
+                ToolCallStatus::Failed => ("●", Style::default().fg(Color::Red), "Failed"),
+                ToolCallStatus::Pending => ("○", Style::default().fg(Color::Yellow), "Pending"),
+                ToolCallStatus::Blocked => ("●", Style::default().fg(Color::Magenta), "Blocked"),
             };
 
-            // Header line
+            // Get tool args preview for inline display
+            let args_preview = get_tool_args_preview(
+                &tool_call.tool,
+                &tool_call.args,
+                area.width.saturating_sub(20) as usize,
+            );
+
+            // Get tool-specific icon
+            let tool_icon = get_tool_icon(&tool_call.tool);
+
+            // Header line: λ Called bash #12345678  [+]
             let header_line = Line::from(vec![
-                Span::styled(
-                    format!("[{}]", pill_text),
-                    pill_style.add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(bullet, bullet_style.add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
-                Span::styled(icon, Style::default().fg(Color::Cyan)),
+                Span::styled(tool_icon, Style::default().fg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(verb, Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
                 Span::styled(
                     tool_call.tool.clone(),
@@ -694,7 +702,7 @@ impl Widget for MessageWidget<'_> {
                 Span::styled(
                     format!(
                         "#{}",
-                        &tool_call.call_id.chars().take(6).collect::<String>()
+                        &tool_call.call_id.chars().take(8).collect::<String>()
                     ),
                     Style::default().fg(Color::DarkGray),
                 ),
@@ -711,57 +719,11 @@ impl Widget for MessageWidget<'_> {
             );
             y += 1;
 
-            if expanded && y < max_y {
-                // Args block
-                let args_str = serde_json::to_string_pretty(&tool_call.args).unwrap_or_default();
-                let args_para = Paragraph::new(args_str)
-                    .wrap(Wrap { trim: false })
-                    .style(Style::default().fg(Color::DarkGray));
-                let args_height =
-                    (tool_call.args.to_string().len().max(1) as u16).min(max_y.saturating_sub(y));
-                args_para.render(
-                    Rect {
-                        x: area.x + 2,
-                        y,
-                        width: area.width.saturating_sub(2),
-                        height: args_height,
-                    },
-                    buf,
-                );
-                y += args_height;
-
-                // Output block
-                if y < max_y && !tool_call.output.is_empty() {
-                    let out_para = Paragraph::new(tool_call.output.as_str())
-                        .wrap(Wrap { trim: false })
-                        .style(Style::default().fg(Color::White));
-                    let out_height = (tool_call.output.lines().count().max(1) as u16)
-                        .min(max_y.saturating_sub(y));
-                    out_para.render(
-                        Rect {
-                            x: area.x + 2,
-                            y,
-                            width: area.width.saturating_sub(2),
-                            height: out_height,
-                        },
-                        buf,
-                    );
-                    y += out_height;
-                }
-            } else if y < max_y {
-                // Collapsed preview (args or first output line)
-                let preview = if !tool_call.output.is_empty() {
-                    tool_call.output.lines().next().unwrap_or("").to_string()
-                } else {
-                    get_tool_args_preview(
-                        &tool_call.tool,
-                        &tool_call.args,
-                        area.width.saturating_sub(6) as usize,
-                    )
-                };
+            // Show args preview inline with tree prefix
+            if y < max_y && !args_preview.is_empty() {
                 let preview_line = Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(preview, Style::default().fg(Color::DarkGray)),
+                    Span::styled("  └ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(args_preview.clone(), Style::default().fg(Color::DarkGray)),
                 ]);
                 Paragraph::new(preview_line).render(
                     Rect {
@@ -773,6 +735,65 @@ impl Widget for MessageWidget<'_> {
                     buf,
                 );
                 y += 1;
+            }
+
+            // Output block (truncated to max 5 lines when collapsed)
+            if y < max_y && !tool_call.output.is_empty() {
+                let output_lines: Vec<&str> = tool_call.output.lines().collect();
+                let max_output_lines = if expanded { 50 } else { 5 };
+                let total_lines = output_lines.len();
+                let truncated = total_lines > max_output_lines;
+
+                // Render output lines with tree prefix
+                for (i, line) in output_lines.iter().take(max_output_lines).enumerate() {
+                    if y >= max_y {
+                        break;
+                    }
+                    let prefix = if i == 0 && args_preview.is_empty() {
+                        "  └ "
+                    } else {
+                        "    "
+                    };
+                    let output_line = Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            (*line).to_string(),
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                        ),
+                    ]);
+                    Paragraph::new(output_line).render(
+                        Rect {
+                            x: area.x,
+                            y,
+                            width: area.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
+                    y += 1;
+                }
+
+                // Show ellipsis if truncated
+                if truncated && y < max_y {
+                    let omitted = total_lines - max_output_lines;
+                    let ellipsis_line = Line::from(vec![
+                        Span::styled("    ", Style::default()),
+                        Span::styled(
+                            format!("… +{} lines", omitted),
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                        ),
+                    ]);
+                    Paragraph::new(ellipsis_line).render(
+                        Rect {
+                            x: area.x,
+                            y,
+                            width: area.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
+                    y += 1;
+                }
             }
 
             // Spacer
@@ -892,10 +913,14 @@ impl Widget for ToolCallWidget<'_> {
             ToolCallStatus::Blocked => ("X", Color::Magenta),
         };
 
+        let tool_icon = get_tool_icon(self.tool);
+
         let header = Line::from(vec![
             Span::styled(status_icon, Style::default().fg(status_color)),
             Span::raw(" "),
-            Span::styled(self.tool, Style::default().fg(Color::Cyan)),
+            Span::styled(tool_icon, Style::default().fg(Color::Cyan)),
+            Span::raw(" "),
+            Span::styled(self.tool, Style::default().fg(Color::White)),
         ]);
 
         let header_para = Paragraph::new(header);

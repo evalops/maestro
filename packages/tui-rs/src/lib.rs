@@ -193,6 +193,94 @@ pub mod history;
 /// Watches config files and emits events on changes.
 pub mod config_watcher;
 
+/// Text formatting utilities (truncation, JSON compacting).
+/// Ported from OpenAI Codex CLI (MIT licensed).
+pub mod text_format;
+
+/// Live/incremental text wrapping for streaming content.
+/// Allows text to be pushed in fragments and wrapped correctly.
+pub mod live_wrap;
+
+/// Rendering utilities for terminal output.
+/// Line manipulation, prefixing, and truncation helpers.
+pub mod render_utils;
+
+/// Color utilities (blending, perceptual distance, terminal detection).
+/// Includes xterm 256 color palette and best-match color selection.
+pub mod color_utils;
+
+/// Streaming markdown collector for incremental rendering.
+/// Buffers text and commits only complete lines.
+pub mod markdown_stream;
+
+/// Terminal information and detection utilities.
+/// SSH, WSL, and terminal emulator detection.
+pub mod terminal_info;
+
+/// Paste burst detection for terminals without bracketed paste.
+/// Heuristic-based detection using keystroke timing.
+pub mod paste_burst;
+
+/// Scroll/selection state for list menus.
+/// Wrap-around navigation and scroll window management.
+pub mod scroll_state;
+
+/// Key binding utilities for keyboard shortcuts.
+/// Platform-aware modifier display.
+pub mod key_binding;
+
+/// ANSI terminal commands for scroll regions and terminal control.
+/// Essential for proper scrolling over SSH.
+pub mod ansi_commands;
+
+/// Synchronized output for flicker-free terminal updates.
+/// Buffers output for atomic display.
+pub mod sync_output;
+
+/// Viewport management for scrollable content.
+/// Includes viewport clipping, scroll offset rendering, and auto-scroll.
+pub mod viewport;
+
+/// Inline scrolling with scroll regions.
+/// For inline TUI mode with terminal scrollback integration.
+pub mod inline_scroll;
+
+/// Selection list rendering for popups and menus.
+/// Fuzzy match highlighting, aligned descriptions, smart wrapping.
+pub mod selection_list;
+
+/// Elapsed time formatting and pausable timer.
+/// Compact duration display and animated spinners.
+pub mod elapsed;
+
+/// ANSI escape code handling.
+/// Converts ANSI-escaped strings to ratatui styled text.
+pub mod ansi_text;
+
+/// Box and border drawing utilities.
+/// Unicode box-drawing characters for cards and panels.
+pub mod borders;
+
+/// Field formatting for aligned label-value displays.
+/// Consistent formatting for status displays.
+pub mod field_format;
+
+/// Shimmer animation effect.
+/// Animated text highlights for loading indicators.
+pub mod shimmer;
+
+/// ANSI code tracker with surgical resets.
+/// Stateful tracking of ANSI SGR codes for preventing visual artifacts.
+pub mod ansi_tracker;
+
+/// Single-line input with horizontal viewport scrolling.
+/// Responsive text input for long lines over SSH.
+pub mod single_line_input;
+
+/// Truncated text display with ellipsis.
+/// Smart truncation for text and paths.
+pub mod truncated_text;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -593,4 +681,331 @@ pub use config_watcher::{
     ConfigEvent,          // Change, Created, Deleted, or Error events
     ConfigWatcher,        // Main watcher struct
     ConfigWatcherBuilder, // Builder for easy setup
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LIVE WRAP EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Live/incremental text wrapping for streaming content.
+///
+/// Useful for rendering streaming AI responses in real-time, maintaining
+/// correct wrapping regardless of how text fragments arrive.
+pub use live_wrap::{
+    take_prefix_by_width, // Take a prefix of text fitting within a width
+    Row,                  // A single visual row with text and line break info
+    RowBuilder,           // Incremental text wrapper
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDER UTILS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Rendering utilities for styled terminal text.
+///
+/// Provides helpers for manipulating ratatui Lines/Spans:
+/// - Prefixing lines with tree-style indentation
+/// - Converting borrowed lines to static
+/// - Truncating output with middle ellipsis
+pub use render_utils::{
+    ellipsis_line,           // Creates "… +N lines" ellipsis
+    is_blank_line,           // Checks if line is empty/whitespace
+    limit_lines_from_start,  // Limits lines with trailing ellipsis
+    line_to_static,          // Converts borrowed line to owned
+    prefix_lines,            // Adds tree-style prefixes
+    prefix_lines_borrowed,   // Prefix with borrowed prefixes
+    push_owned_lines,        // Appends owned copies of lines
+    truncate_lines_middle,   // Head/tail truncation with ellipsis
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEXT FORMAT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Text formatting utilities for terminal display.
+///
+/// Ported from OpenAI Codex CLI (MIT licensed):
+/// - Truncate text to fit within a given character count
+/// - Format JSON in compact single-line format
+/// - Center-truncate paths with ellipsis in middle
+pub use text_format::{
+    center_truncate_path,            // Path truncation preserving endpoints
+    format_and_truncate_tool_result, // Format and truncate tool output
+    format_json_compact,             // Single-line JSON with spaces
+    relativize_to_home,              // Replace home dir with ~
+    truncate_lines,                  // Line count truncation
+    truncate_text,                   // Character count truncation
+    TOOL_OUTPUT_MAX_LINES,           // Default max lines for tool output
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COLOR UTILS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Color utilities for terminal rendering.
+///
+/// Provides perceptual color matching, blending, and terminal capability detection.
+pub use color_utils::{
+    best_color as best_color_match, // Find best matching color for terminal (renamed to avoid conflict)
+    blend,                          // Blend two RGB colors
+    has_256_color_support,          // Check for 256 color support
+    has_true_color_support,         // Check for true color (24-bit)
+    is_light,                       // Check if color is light
+    perceptual_distance,            // CIE76 color distance
+    XTERM_COLORS,                   // 256 color palette
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARKDOWN STREAM EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Streaming markdown collector for incremental rendering.
+///
+/// Buffers text deltas and commits only complete lines, preventing
+/// partial markdown from causing visual glitches.
+pub use markdown_stream::MarkdownStreamCollector;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TERMINAL INFO EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Terminal information and detection utilities.
+///
+/// Works across local, SSH, and WSL sessions:
+/// - Terminal emulator detection (kitty, iTerm2, Alacritty, etc.)
+/// - SSH session detection
+/// - WSL detection and path conversion
+pub use terminal_info::{
+    convert_windows_path_to_wsl, // Convert Windows paths in WSL
+    is_interactive,             // Check if fully interactive terminal
+    is_ssh_session,             // Check if SSH session
+    is_stderr_tty,              // Check if stderr is TTY
+    is_stdin_tty,               // Check if stdin is TTY
+    is_stdout_tty,              // Check if stdout is TTY
+    is_wsl,                     // Check if WSL
+    normalize_pasted_path,      // Normalize pasted file paths
+    ssh_connection_info,        // Get SSH connection details
+    TerminalInfo,               // Full terminal info struct
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PASTE BURST EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Paste burst detection for terminals without bracketed paste.
+///
+/// Uses keystroke timing heuristics to detect paste-like input,
+/// preventing accidental form submission when pasting multiline content.
+pub use paste_burst::{
+    retro_start_index, // Find byte index for retro-grabbing chars
+    CharDecision,      // Decision for how to handle a character
+    FlushResult,       // Result of flushing the buffer
+    PasteBurst,        // Main detector struct
+    RetroGrab,         // Info about retroactively grabbed text
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCROLL STATE EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Scroll/selection state for list menus.
+///
+/// Encapsulates wrap-around navigation, page up/down, and
+/// automatic scroll window adjustment.
+pub use scroll_state::ScrollState;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KEY BINDING EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Key binding utilities for keyboard shortcuts.
+///
+/// Platform-aware modifier display (⌥ on macOS, alt elsewhere).
+pub use key_binding::{
+    alt,                        // Alt + key binding
+    ctrl,                       // Ctrl + key binding
+    ctrl_alt,                   // Ctrl + Alt + key binding
+    ctrl_shift,                 // Ctrl + Shift + key binding
+    format_key_hint,            // Format binding for help text
+    has_ctrl_or_alt,            // Check for ctrl/alt modifiers
+    is_altgr,                   // Check for AltGr (Windows)
+    plain,                      // Plain key binding
+    shift,                      // Shift + key binding
+    KeyBinding as KeyShortcut,  // Key binding struct (renamed to avoid conflict)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANSI COMMANDS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ANSI terminal commands for scroll regions and advanced terminal control.
+///
+/// These commands use standard ANSI escape sequences that work over SSH:
+/// - Scroll region commands (DECSTBM) for limiting scroll areas
+/// - Alternate screen scroll mode for mouse wheel translation
+/// - Desktop notifications (OSC 9)
+/// - Cursor save/restore
+pub use ansi_commands::{
+    scroll_region_down,      // Scroll down within region using RI
+    scroll_region_up,        // Scroll up within region using IND
+    DisableAlternateScroll,  // Disable mouse wheel translation in alt screen
+    EnableAlternateScroll,   // Enable mouse wheel translation in alt screen
+    Index,                   // Move cursor down, scroll at bottom (ESC D)
+    PostNotification,        // Send desktop notification (OSC 9)
+    ResetScrollRegion,       // Reset scroll region to full screen (ESC [ r)
+    RestoreCursor,           // Restore cursor position (DECRC, ESC 8)
+    ReverseIndex,            // Move cursor up, scroll at top (ESC M)
+    SaveCursor,              // Save cursor position (DECSC, ESC 7)
+    ScrollDown,              // Scroll down N lines (CSI T)
+    ScrollUp,                // Scroll up N lines (CSI S)
+    SetScrollRegion,         // Set scroll region (DECSTBM, ESC [ Pt;Pb r)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SYNCHRONIZED OUTPUT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Synchronized output for flicker-free terminal updates.
+///
+/// Wrap rendering in BeginSynchronizedUpdate/EndSynchronizedUpdate to buffer
+/// all output and display it atomically. Essential for reducing flicker over SSH.
+pub use sync_output::{
+    with_synchronized_output,  // Execute closure with sync output
+    BeginSynchronizedUpdate,   // Start buffering (ESC [ ? 2026 h)
+    EndSynchronizedUpdate,     // Flush buffer (ESC [ ? 2026 l)
+    SynchronizedOutputGuard,   // RAII guard for sync output
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VIEWPORT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Viewport management for scrollable content with proper clipping.
+///
+/// This provides Codex-style viewport rendering with:
+/// - Negative y offset for partially visible content
+/// - Auto-scroll (follow bottom) detection
+/// - Chunk-based visibility ensuring
+pub use viewport::{
+    CachedRenderable,   // Height-caching wrapper for Renderable
+    InsetRenderable,    // Padding/margin wrapper
+    Renderable,         // Trait for height-aware rendering
+    TextRenderable,     // Simple text implementation
+    ViewportView,       // Core viewport state and rendering
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INLINE SCROLL EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Inline scrolling with scroll regions for terminal scrollback integration.
+///
+/// Use these for inline TUI mode where you want history to flow into
+/// the terminal's native scrollback rather than being lost.
+pub use inline_scroll::insert_history_lines;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SELECTION LIST EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Selection list rendering for popups and menus.
+///
+/// Includes fuzzy matching, aligned descriptions, and smart wrapping.
+pub use selection_list::{
+    fuzzy_filter,           // Filter items by fuzzy match
+    fuzzy_match,            // Perform fuzzy matching
+    fuzzy_score,            // Score a fuzzy match
+    SelectionList,          // Selection list widget
+    SelectionListConfig,    // Configuration for selection list
+    SelectionRow,           // A row in a selection list
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ELAPSED TIME EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Elapsed time formatting and timer utilities.
+///
+/// Includes compact duration formatting and animated spinners.
+pub use elapsed::{
+    format_duration_compact,    // Format Duration compactly
+    format_elapsed_compact,     // Format seconds compactly
+    format_elapsed_precise,     // Format with ms precision
+    spinner,                    // Get current spinner frame
+    spinner_frame,              // Get spinner frame with custom interval
+    spinner_span,               // Get spinner as ratatui Span
+    PausableTimer,              // Timer with pause/resume
+    SPINNER_ASCII,              // ASCII spinner frames
+    SPINNER_DOTS,               // Braille dots spinner
+    SPINNER_FRAMES,             // Default spinner frames
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DIFF EXPORTS (ENHANCED)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Enhanced diff rendering with proper line wrapping.
+pub use diff::{
+    calculate_line_number_width,     // Calculate gutter width
+    render_diff_wrapped,             // Render with line wrapping
+    render_diff_wrapped_with_styles, // Render with custom styles and wrapping
+    render_hunk_separator,           // Render hunk separator
+    render_line_count_summary,       // Render (+N -M) summary
+    render_wrapped_diff_line,        // Render single wrapped diff line
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANSI TEXT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ANSI escape code handling for terminal output.
+pub use ansi_text::{
+    ansi_display_width,  // Width ignoring ANSI codes
+    expand_tabs,         // Replace tabs with spaces
+    expand_tabs_width,   // Replace tabs with custom width
+    parse_ansi,          // Parse ANSI to ratatui Text
+    parse_ansi_line,     // Parse single line with ANSI
+    strip_ansi,          // Remove ANSI codes from string
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BORDER EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Box and border drawing utilities.
+pub use borders::{
+    card_inner_width,       // Calculate usable inner width
+    horizontal_separator,   // Create horizontal separator line
+    padded_emoji,           // Emoji with hair space
+    separator_with_text,    // Separator with centered text
+    with_border,            // Wrap content in rounded border
+    with_border_style,      // Wrap with custom border style
+    with_border_width,      // Wrap with minimum width
+    BorderStyle,            // Border style configuration
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIELD FORMAT EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Field formatting for aligned displays.
+pub use field_format::{
+    truncate_line_to_width,     // Truncate line to width
+    truncate_line_with_ellipsis, // Truncate with ellipsis
+    FieldFormatter,             // Aligned field/value formatter
+};
+// Note: is_blank_line, line_display_width, line_to_static already exported from render_utils
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHIMMER EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Shimmer animation effect for loading indicators.
+pub use shimmer::{
+    shimmer_line,              // Create shimmer line
+    shimmer_line_with_config,  // With custom config
+    shimmer_spans,             // Create shimmer spans
+    shimmer_spans_at_time,     // At specific time offset
+    shimmer_spans_with_config, // With custom config
+    ShimmerConfig,             // Shimmer configuration
 };
