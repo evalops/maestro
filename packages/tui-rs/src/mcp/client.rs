@@ -13,6 +13,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex, RwLock};
 
 use super::config::{expand_env_vars, McpServerConfig, McpTransport};
+use super::http::HttpConnection;
 use super::protocol::{
     ClientInfo, InitializeResult, McpRequest, McpResponse, McpTool, McpToolResult, ToolsListResult,
 };
@@ -53,21 +54,29 @@ pub enum McpError {
     Json(#[from] serde_json::Error),
 }
 
+/// Connection backend type
+enum ConnectionBackend {
+    /// Stdio subprocess
+    Stdio {
+        process: Child,
+        stdin: tokio::process::ChildStdin,
+        response_rx: mpsc::UnboundedReceiver<McpResponse>,
+    },
+    /// HTTP/SSE connection
+    Http(HttpConnection),
+}
+
 /// Connection to a single MCP server
 pub struct McpConnection {
     /// Server name
     name: String,
     /// Server configuration
     config: McpServerConfig,
-    /// Child process (for stdio transport)
-    process: Option<Child>,
-    /// Stdin writer
-    stdin: Option<tokio::process::ChildStdin>,
-    /// Response receiver
-    response_rx: Option<mpsc::UnboundedReceiver<McpResponse>>,
-    /// Request ID counter
+    /// Connection backend
+    backend: Option<ConnectionBackend>,
+    /// Request ID counter (for stdio)
     next_id: AtomicU64,
-    /// Pending requests
+    /// Pending requests (for stdio)
     pending: Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<McpResponse>>>>,
     /// Available tools
     tools: Vec<McpTool>,
@@ -81,9 +90,7 @@ impl McpConnection {
         Self {
             name: config.name.clone(),
             config,
-            process: None,
-            stdin: None,
-            response_rx: None,
+            backend: None,
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             tools: Vec::new(),
@@ -95,10 +102,21 @@ impl McpConnection {
     pub async fn connect(&mut self) -> Result<(), McpError> {
         match self.config.transport {
             McpTransport::Stdio => self.connect_stdio().await,
-            McpTransport::Http | McpTransport::Sse => {
-                Err(McpError::ConnectionFailed("HTTP/SSE transport not yet implemented".to_string()))
-            }
+            McpTransport::Http | McpTransport::Sse => self.connect_http().await,
         }
+    }
+
+    /// Connect via HTTP/SSE transport
+    async fn connect_http(&mut self) -> Result<(), McpError> {
+        let mut http_conn = HttpConnection::new(self.config.clone())?;
+        http_conn.connect().await?;
+
+        // Copy tools from HTTP connection
+        self.tools = http_conn.tools().to_vec();
+        self.initialized = true;
+        self.backend = Some(ConnectionBackend::Http(http_conn));
+
+        Ok(())
     }
 
     /// Connect via stdio transport
@@ -185,9 +203,11 @@ impl McpConnection {
             }
         });
 
-        self.process = Some(child);
-        self.stdin = Some(stdin);
-        self.response_rx = Some(response_rx);
+        self.backend = Some(ConnectionBackend::Stdio {
+            process: child,
+            stdin,
+            response_rx,
+        });
 
         // Initialize the connection
         self.initialize().await?;
@@ -247,6 +267,11 @@ impl McpConnection {
             return Err(McpError::ToolNotFound(tool_name.to_string()));
         }
 
+        // Delegate to HTTP backend if using HTTP/SSE
+        if let Some(ConnectionBackend::Http(ref mut http)) = self.backend {
+            return http.call_tool(tool_name, arguments).await;
+        }
+
         let request = McpRequest::call_tool(self.next_id(), tool_name, arguments);
         let response = self.send_request(request).await?;
 
@@ -261,7 +286,7 @@ impl McpConnection {
         Ok(result)
     }
 
-    /// Send a request and wait for response
+    /// Send a request and wait for response (stdio only)
     async fn send_request(&mut self, request: McpRequest) -> Result<McpResponse, McpError> {
         let id = request.id;
 
@@ -289,11 +314,12 @@ impl McpConnection {
         }
     }
 
-    /// Send raw JSON to the server
+    /// Send raw JSON to the server (stdio only)
     async fn send_raw(&mut self, value: &impl serde::Serialize) -> Result<(), McpError> {
-        let stdin = self.stdin.as_mut().ok_or_else(|| {
-            McpError::ConnectionFailed("Not connected".to_string())
-        })?;
+        let stdin = match &mut self.backend {
+            Some(ConnectionBackend::Stdio { stdin, .. }) => stdin,
+            _ => return Err(McpError::ConnectionFailed("Not connected via stdio".to_string())),
+        };
 
         let json = serde_json::to_string(value)?;
         stdin.write_all(json.as_bytes()).await?;
@@ -310,24 +336,28 @@ impl McpConnection {
 
     /// Disconnect from the server
     pub async fn disconnect(&mut self) {
-        if let Some(mut process) = self.process.take() {
-            let _ = process.kill().await;
+        match self.backend.take() {
+            Some(ConnectionBackend::Stdio { mut process, .. }) => {
+                let _ = process.kill().await;
+            }
+            Some(ConnectionBackend::Http(mut http)) => {
+                http.disconnect().await;
+            }
+            None => {}
         }
-        self.stdin = None;
-        self.response_rx = None;
         self.initialized = false;
     }
 
     /// Check if connected
     pub fn is_connected(&self) -> bool {
-        self.initialized && self.stdin.is_some()
+        self.initialized && self.backend.is_some()
     }
 }
 
 impl Drop for McpConnection {
     fn drop(&mut self) {
         // Try to kill the process synchronously
-        if let Some(mut process) = self.process.take() {
+        if let Some(ConnectionBackend::Stdio { mut process, .. }) = self.backend.take() {
             let _ = process.start_kill();
         }
     }

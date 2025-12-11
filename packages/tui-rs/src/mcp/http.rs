@@ -1,0 +1,411 @@
+//! HTTP and SSE Transport for MCP
+//!
+//! This module provides HTTP-based transports for MCP servers,
+//! supporting both standard HTTP POST and Server-Sent Events (SSE).
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use reqwest::{header, Client};
+use tokio::sync::{mpsc, Mutex, oneshot};
+
+use super::config::{expand_env_vars, McpServerConfig, McpTransport};
+use super::protocol::{
+    ClientInfo, InitializeResult, McpRequest, McpResponse, McpTool, McpToolResult, ToolsListResult,
+};
+use super::client::McpError;
+
+/// HTTP-based MCP connection
+pub struct HttpConnection {
+    /// Server name
+    name: String,
+    /// Server configuration
+    config: McpServerConfig,
+    /// HTTP client
+    client: Client,
+    /// Base URL for the server
+    base_url: String,
+    /// Request ID counter
+    next_id: AtomicU64,
+    /// Available tools
+    tools: Vec<McpTool>,
+    /// Whether initialized
+    initialized: bool,
+    /// SSE event receiver (for SSE transport)
+    sse_rx: Option<mpsc::UnboundedReceiver<McpResponse>>,
+    /// Pending SSE requests
+    pending_sse: Arc<Mutex<HashMap<u64, oneshot::Sender<McpResponse>>>>,
+    /// SSE task handle
+    sse_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl HttpConnection {
+    /// Create a new HTTP connection
+    pub fn new(config: McpServerConfig) -> Result<Self, McpError> {
+        let base_url = config.url.clone().ok_or_else(|| {
+            McpError::ConnectionFailed("URL required for HTTP/SSE transport".to_string())
+        })?;
+
+        // Build HTTP client with timeout
+        let timeout = Duration::from_millis(config.timeout.unwrap_or(30_000));
+        let client = Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| McpError::ConnectionFailed(format!("Failed to create HTTP client: {}", e)))?;
+
+        Ok(Self {
+            name: config.name.clone(),
+            config,
+            client,
+            base_url,
+            next_id: AtomicU64::new(1),
+            tools: Vec::new(),
+            initialized: false,
+            sse_rx: None,
+            pending_sse: Arc::new(Mutex::new(HashMap::new())),
+            sse_task: None,
+        })
+    }
+
+    /// Connect and initialize
+    pub async fn connect(&mut self) -> Result<(), McpError> {
+        match self.config.transport {
+            McpTransport::Http => self.connect_http().await,
+            McpTransport::Sse => self.connect_sse().await,
+            McpTransport::Stdio => {
+                Err(McpError::ConnectionFailed("Use McpConnection for stdio".to_string()))
+            }
+        }
+    }
+
+    /// Connect via HTTP (stateless request/response)
+    async fn connect_http(&mut self) -> Result<(), McpError> {
+        // Initialize the connection
+        self.initialize().await?;
+        Ok(())
+    }
+
+    /// Connect via SSE (persistent streaming connection)
+    async fn connect_sse(&mut self) -> Result<(), McpError> {
+        // Start SSE event stream
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.sse_rx = Some(rx);
+
+        let url = format!("{}/sse", self.base_url.trim_end_matches('/'));
+        let pending = self.pending_sse.clone();
+        let client = self.client.clone();
+        let headers = self.config.headers.clone();
+
+        // Spawn SSE reader task
+        let task = tokio::spawn(async move {
+            let mut request = client.get(&url);
+
+            // Add custom headers
+            for (key, value) in &headers {
+                request = request.header(key, expand_env_vars(value));
+            }
+
+            let response = match request.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[mcp/sse] Connection failed: {}", e);
+                    return;
+                }
+            };
+
+            let mut stream = response.bytes_stream().eventsource();
+
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(ev) => {
+                        // Parse SSE data as JSON-RPC response
+                        if let Ok(response) = serde_json::from_str::<McpResponse>(&ev.data) {
+                            // Check if this is a response to a pending request
+                            if let Some(id) = response.id {
+                                let mut pending = pending.lock().await;
+                                if let Some(sender) = pending.remove(&id) {
+                                    let _ = sender.send(response);
+                                    continue;
+                                }
+                            }
+                            // Otherwise send to general channel
+                            let _ = tx.send(response);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[mcp/sse] Stream error: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        self.sse_task = Some(task);
+
+        // Initialize the connection
+        self.initialize().await?;
+        Ok(())
+    }
+
+    /// Initialize the MCP connection
+    async fn initialize(&mut self) -> Result<(), McpError> {
+        let request = McpRequest::initialize(self.next_id(), &ClientInfo::default());
+        let response = self.send_request(request).await?;
+
+        let _init_result: InitializeResult = response.result_as().map_err(|e| {
+            McpError::Protocol(format!("Invalid initialize response: {}", e))
+        })?;
+
+        // Send initialized notification
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        });
+        self.send_notification(&notification).await?;
+
+        // List available tools
+        self.refresh_tools().await?;
+
+        self.initialized = true;
+        Ok(())
+    }
+
+    /// Refresh the list of available tools
+    pub async fn refresh_tools(&mut self) -> Result<(), McpError> {
+        let request = McpRequest::list_tools(self.next_id());
+        let response = self.send_request(request).await?;
+
+        let tools_result: ToolsListResult = response.result_as().map_err(|e| {
+            McpError::Protocol(format!("Invalid tools/list response: {}", e))
+        })?;
+
+        self.tools = tools_result.tools;
+        Ok(())
+    }
+
+    /// Get available tools
+    pub fn tools(&self) -> &[McpTool] {
+        &self.tools
+    }
+
+    /// Get server name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Call a tool
+    pub async fn call_tool(
+        &mut self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolResult, McpError> {
+        // Verify tool exists
+        if !self.tools.iter().any(|t| t.name == tool_name) {
+            return Err(McpError::ToolNotFound(tool_name.to_string()));
+        }
+
+        let request = McpRequest::call_tool(self.next_id(), tool_name, arguments);
+        let response = self.send_request(request).await?;
+
+        if let Some(error) = response.error {
+            return Err(McpError::RequestFailed(error.message));
+        }
+
+        let result: McpToolResult = response.result_as().map_err(|e| {
+            McpError::Protocol(format!("Invalid tool result: {}", e))
+        })?;
+
+        Ok(result)
+    }
+
+    /// Send a request and wait for response
+    async fn send_request(&mut self, request: McpRequest) -> Result<McpResponse, McpError> {
+        match self.config.transport {
+            McpTransport::Http => self.send_http_request(request).await,
+            McpTransport::Sse => self.send_sse_request(request).await,
+            McpTransport::Stdio => unreachable!(),
+        }
+    }
+
+    /// Send request via HTTP POST
+    async fn send_http_request(&self, request: McpRequest) -> Result<McpResponse, McpError> {
+        let url = format!("{}/message", self.base_url.trim_end_matches('/'));
+
+        let mut req = self.client.post(&url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .json(&request);
+
+        // Add custom headers
+        for (key, value) in &self.config.headers {
+            req = req.header(key, expand_env_vars(value));
+        }
+
+        let response = req.send().await.map_err(|e| {
+            McpError::RequestFailed(format!("HTTP request failed: {}", e))
+        })?;
+
+        if !response.status().is_success() {
+            return Err(McpError::RequestFailed(format!(
+                "HTTP error: {}",
+                response.status()
+            )));
+        }
+
+        let mcp_response: McpResponse = response.json().await.map_err(|e| {
+            McpError::Protocol(format!("Failed to parse response: {}", e))
+        })?;
+
+        Ok(mcp_response)
+    }
+
+    /// Send request via SSE channel
+    async fn send_sse_request(&mut self, request: McpRequest) -> Result<McpResponse, McpError> {
+        let id = request.id;
+
+        // Set up response channel
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.pending_sse.lock().await;
+            pending.insert(id, tx);
+        }
+
+        // Send via HTTP POST (SSE is for receiving)
+        let url = format!("{}/message", self.base_url.trim_end_matches('/'));
+
+        let mut req = self.client.post(&url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .json(&request);
+
+        // Add custom headers
+        for (key, value) in &self.config.headers {
+            req = req.header(key, expand_env_vars(value));
+        }
+
+        req.send().await.map_err(|e| {
+            McpError::RequestFailed(format!("SSE send failed: {}", e))
+        })?;
+
+        // Wait for response via SSE stream
+        let timeout = Duration::from_millis(self.config.timeout.unwrap_or(30_000));
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(_)) => Err(McpError::Protocol("SSE response channel closed".to_string())),
+            Err(_) => {
+                // Remove from pending
+                let mut pending = self.pending_sse.lock().await;
+                pending.remove(&id);
+                Err(McpError::Timeout)
+            }
+        }
+    }
+
+    /// Send a notification (no response expected)
+    async fn send_notification(&self, value: &impl serde::Serialize) -> Result<(), McpError> {
+        let url = format!("{}/message", self.base_url.trim_end_matches('/'));
+
+        let mut req = self.client.post(&url)
+            .header(header::CONTENT_TYPE, "application/json")
+            .json(value);
+
+        // Add custom headers
+        for (key, value) in &self.config.headers {
+            req = req.header(key, expand_env_vars(value));
+        }
+
+        req.send().await.map_err(|e| {
+            McpError::RequestFailed(format!("Notification failed: {}", e))
+        })?;
+
+        Ok(())
+    }
+
+    /// Get next request ID
+    fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Disconnect from the server
+    pub async fn disconnect(&mut self) {
+        if let Some(task) = self.sse_task.take() {
+            task.abort();
+        }
+        self.sse_rx = None;
+        self.initialized = false;
+    }
+
+    /// Check if connected
+    pub fn is_connected(&self) -> bool {
+        self.initialized
+    }
+}
+
+impl Drop for HttpConnection {
+    fn drop(&mut self) {
+        if let Some(task) = self.sse_task.take() {
+            task.abort();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(transport: McpTransport) -> McpServerConfig {
+        McpServerConfig {
+            name: "test".to_string(),
+            transport,
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            url: Some("http://localhost:8080".to_string()),
+            headers: HashMap::new(),
+            timeout: Some(5000),
+            enabled: true,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn test_http_connection_new() {
+        let config = test_config(McpTransport::Http);
+        let conn = HttpConnection::new(config);
+        assert!(conn.is_ok());
+    }
+
+    #[test]
+    fn test_http_connection_requires_url() {
+        let mut config = test_config(McpTransport::Http);
+        config.url = None;
+        let conn = HttpConnection::new(config);
+        assert!(conn.is_err());
+    }
+
+    #[test]
+    fn test_sse_connection_new() {
+        let config = test_config(McpTransport::Sse);
+        let conn = HttpConnection::new(config);
+        assert!(conn.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_http_connection_not_connected_initially() {
+        let config = test_config(McpTransport::Http);
+        let conn = HttpConnection::new(config).unwrap();
+        assert!(!conn.is_connected());
+    }
+
+    #[test]
+    fn test_next_id_increments() {
+        let config = test_config(McpTransport::Http);
+        let conn = HttpConnection::new(config).unwrap();
+        assert_eq!(conn.next_id(), 1);
+        assert_eq!(conn.next_id(), 2);
+        assert_eq!(conn.next_id(), 3);
+    }
+}
