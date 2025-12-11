@@ -114,6 +114,7 @@
 //! of immediate-mode UI architectures.
 
 mod approval;
+mod ascii_animation;
 mod command_palette;
 mod config_selector;
 mod context_indicator;
@@ -122,13 +123,16 @@ mod input;
 mod layout;
 mod message;
 mod model_selector;
+mod rate_limit;
 mod scroll;
 mod session_switcher;
+mod shortcuts_help;
+mod status_indicator;
 mod text;
 pub mod textarea;
 mod theme_selector;
 mod thinking_indicator;
-mod shortcuts_help;
+mod welcome;
 
 pub use approval::{ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest};
 pub use command_palette::CommandPalette;
@@ -147,3 +151,10 @@ pub use thinking_indicator::{
     ThinkingDisplayMode, ThinkingIndicator, ThinkingIndicatorBuilder, ThinkingPhase, ThinkingState,
 };
 pub use shortcuts_help::{Shortcut, ShortcutCategory, ShortcutsHelp, ShortcutsHelpBuilder};
+pub use rate_limit::{
+    format_duration_compact, format_elapsed, CreditsDisplay, RateLimitDisplay, RateLimitState,
+    RateLimitTracker, RateLimitWindow,
+};
+pub use status_indicator::{StatusIndicator, StatusIndicatorBuilder};
+pub use ascii_animation::{logos, AsciiAnimation, ALL_VARIANTS, FRAME_TICK_DEFAULT};
+pub use welcome::{OnboardingFlow, OnboardingStep, SplashScreen, WelcomeScreen};
