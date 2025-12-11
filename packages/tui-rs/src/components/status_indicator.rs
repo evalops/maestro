@@ -34,8 +34,8 @@ use ratatui::{
 };
 use std::time::{Duration, Instant};
 
-use crate::effects::shimmer_spans;
 use crate::effects::braille_spinner;
+use crate::effects::shimmer_spans;
 
 use super::rate_limit::format_duration_compact;
 
@@ -210,7 +210,9 @@ impl StatusIndicator {
         } else {
             spans.push(Span::styled(
                 self.header.clone(),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
 
@@ -232,11 +234,15 @@ impl StatusIndicator {
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
                 "Ctrl+C",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
             ));
             spans.push(Span::styled(
                 " to interrupt",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
             ));
         }
 
@@ -426,7 +432,10 @@ mod tests {
         assert!(indicator.status_message.is_none());
 
         indicator.set_status(Some("Reading files...".to_string()));
-        assert_eq!(indicator.status_message.as_deref(), Some("Reading files..."));
+        assert_eq!(
+            indicator.status_message.as_deref(),
+            Some("Reading files...")
+        );
 
         indicator.set_status(None);
         assert!(indicator.status_message.is_none());

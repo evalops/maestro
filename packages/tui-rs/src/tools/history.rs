@@ -48,7 +48,11 @@ pub struct ToolExecution {
 
 impl ToolExecution {
     /// Create a new in-progress execution
-    pub fn start(id: impl Into<String>, tool_name: impl Into<String>, args: serde_json::Value) -> Self {
+    pub fn start(
+        id: impl Into<String>,
+        tool_name: impl Into<String>,
+        args: serde_json::Value,
+    ) -> Self {
         Self {
             id: id.into(),
             tool_name: tool_name.into(),
@@ -102,7 +106,8 @@ impl ToolExecution {
     /// Get a summary line for display
     pub fn summary(&self) -> String {
         let status = if self.success { "✓" } else { "✗" };
-        let duration_str = self.duration
+        let duration_str = self
+            .duration
             .map(|d| format!("{:.0}ms", d.as_millis()))
             .unwrap_or_else(|| "...".to_string());
 
@@ -220,7 +225,9 @@ impl HistoryFilter {
 
         if let Some(ref text) = self.output_contains {
             let text_lower = text.to_lowercase();
-            let has_match = exec.output.as_ref()
+            let has_match = exec
+                .output
+                .as_ref()
                 .map(|o| o.to_lowercase().contains(&text_lower))
                 .unwrap_or(false);
             if !has_match {
@@ -272,7 +279,12 @@ impl ToolHistory {
     }
 
     /// Record the start of a tool execution
-    pub fn start(&mut self, id: impl Into<String>, tool_name: impl Into<String>, args: serde_json::Value) -> String {
+    pub fn start(
+        &mut self,
+        id: impl Into<String>,
+        tool_name: impl Into<String>,
+        args: serde_json::Value,
+    ) -> String {
         let id = id.into();
         let tool_name = tool_name.into();
 
@@ -302,8 +314,7 @@ impl ToolHistory {
 
         self.in_progress.insert(id.clone(), Instant::now());
 
-        let exec = ToolExecution::start(&id, &tool_name, args)
-            .with_approval(requires_approval);
+        let exec = ToolExecution::start(&id, &tool_name, args).with_approval(requires_approval);
         self.executions.push_back(exec);
 
         while self.executions.len() > self.max_size {
@@ -322,7 +333,9 @@ impl ToolHistory {
 
     /// Record successful completion
     pub fn complete(&mut self, id: &str, output: String) {
-        let duration = self.in_progress.remove(id)
+        let duration = self
+            .in_progress
+            .remove(id)
             .map(|start| start.elapsed())
             .unwrap_or(Duration::ZERO);
 
@@ -338,7 +351,9 @@ impl ToolHistory {
 
     /// Record failed completion
     pub fn fail(&mut self, id: &str, error: String) {
-        let duration = self.in_progress.remove(id)
+        let duration = self
+            .in_progress
+            .remove(id)
             .map(|start| start.elapsed())
             .unwrap_or(Duration::ZERO);
 
@@ -364,7 +379,8 @@ impl ToolHistory {
 
     /// Search history with filter
     pub fn search(&self, filter: &HistoryFilter) -> Vec<&ToolExecution> {
-        self.executions.iter()
+        self.executions
+            .iter()
             .rev()
             .filter(|e| filter.matches(e))
             .collect()
@@ -429,8 +445,14 @@ impl ToolHistory {
             format!("Tool Execution History"),
             format!("──────────────────────"),
             format!("Total: {} executions", self.global_stats.total),
-            format!("Success rate: {:.1}%", self.global_stats.success_rate() * 100.0),
-            format!("Avg duration: {:.0}ms", self.global_stats.avg_duration().as_millis()),
+            format!(
+                "Success rate: {:.1}%",
+                self.global_stats.success_rate() * 100.0
+            ),
+            format!(
+                "Avg duration: {:.0}ms",
+                self.global_stats.avg_duration().as_millis()
+            ),
         ];
 
         if !self.stats.is_empty() {

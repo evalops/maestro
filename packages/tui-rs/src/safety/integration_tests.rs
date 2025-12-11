@@ -10,10 +10,10 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::agent::safety::{SafetyController, SafetyConfig, SafetyVerdict};
+    use crate::agent::safety::{SafetyConfig, SafetyController, SafetyVerdict};
     use crate::safety::{
-        ActionFirewall, FirewallVerdict, analyze_bash_command, CommandRisk,
-        check_dangerous_patterns,
+        analyze_bash_command, check_dangerous_patterns, ActionFirewall, CommandRisk,
+        FirewallVerdict,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -33,14 +33,20 @@ mod tests {
         // Step 1: Check safety controller (doom loop, rate limit)
         match safety.check_tool_call(tool_name, args) {
             SafetyVerdict::Allow => {}
-            SafetyVerdict::BlockDoomLoop { reason } => return Err(format!("Doom loop: {}", reason)),
-            SafetyVerdict::BlockRateLimit { reason } => return Err(format!("Rate limit: {}", reason)),
+            SafetyVerdict::BlockDoomLoop { reason } => {
+                return Err(format!("Doom loop: {}", reason))
+            }
+            SafetyVerdict::BlockRateLimit { reason } => {
+                return Err(format!("Rate limit: {}", reason))
+            }
         }
 
         // Step 2: Check firewall
         match firewall.check_tool(tool_name, args) {
             FirewallVerdict::Allow => {}
-            FirewallVerdict::RequireApproval { reason } => return Err(format!("Needs approval: {}", reason)),
+            FirewallVerdict::RequireApproval { reason } => {
+                return Err(format!("Needs approval: {}", reason))
+            }
             FirewallVerdict::Block { reason } => return Err(format!("Blocked: {}", reason)),
         }
 
@@ -152,7 +158,12 @@ mod tests {
             let verdict = firewall.check_bash(cmd);
 
             // Both should consider these safe
-            assert_eq!(analysis.risk, CommandRisk::Safe, "Analyzer failed on: {}", cmd);
+            assert_eq!(
+                analysis.risk,
+                CommandRisk::Safe,
+                "Analyzer failed on: {}",
+                cmd
+            );
             assert!(verdict.is_allowed(), "Firewall failed on: {}", cmd);
         }
     }
@@ -172,8 +183,10 @@ mod tests {
 
             // Both should consider these dangerous/blocked
             assert!(
-                analysis.risk == CommandRisk::Dangerous || !check_dangerous_patterns(cmd).is_empty(),
-                "Analyzer didn't flag: {}", cmd
+                analysis.risk == CommandRisk::Dangerous
+                    || !check_dangerous_patterns(cmd).is_empty(),
+                "Analyzer didn't flag: {}",
+                cmd
             );
             assert!(verdict.is_blocked(), "Firewall didn't block: {}", cmd);
         }
@@ -274,7 +287,11 @@ mod tests {
                 "content": "malicious"
             });
             let result = validate_tool_call(&firewall, &mut safety, "write", &args);
-            assert!(result.is_err(), "Path traversal should be blocked: {}", path);
+            assert!(
+                result.is_err(),
+                "Path traversal should be blocked: {}",
+                path
+            );
         }
     }
 

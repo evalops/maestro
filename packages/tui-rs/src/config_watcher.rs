@@ -52,9 +52,7 @@ impl ConfigEvent {
     /// Get the path associated with this event (if any)
     pub fn path(&self) -> Option<&Path> {
         match self {
-            ConfigEvent::Changed(p) | ConfigEvent::Created(p) | ConfigEvent::Deleted(p) => {
-                Some(p)
-            }
+            ConfigEvent::Changed(p) | ConfigEvent::Created(p) | ConfigEvent::Deleted(p) => Some(p),
             ConfigEvent::Error(_) => None,
         }
     }

@@ -314,9 +314,11 @@ fn get_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Capture screenshot on Linux using scrot or gnome-screenshot
-async fn capture_screenshot_linux(window_title: Option<&str>) -> Result<(Vec<u8>, &'static str), String> {
-    use std::process::Command;
+async fn capture_screenshot_linux(
+    window_title: Option<&str>,
+) -> Result<(Vec<u8>, &'static str), String> {
     use std::env::temp_dir;
+    use std::process::Command;
 
     let temp_path = temp_dir().join(format!("composer_screenshot_{}.png", std::process::id()));
     let temp_str = temp_path.to_string_lossy().to_string();
@@ -373,9 +375,11 @@ async fn capture_screenshot_linux(window_title: Option<&str>) -> Result<(Vec<u8>
 }
 
 /// Capture screenshot on macOS using screencapture
-async fn capture_screenshot_macos(window_title: Option<&str>) -> Result<(Vec<u8>, &'static str), String> {
-    use std::process::Command;
+async fn capture_screenshot_macos(
+    window_title: Option<&str>,
+) -> Result<(Vec<u8>, &'static str), String> {
     use std::env::temp_dir;
+    use std::process::Command;
 
     let temp_path = temp_dir().join(format!("composer_screenshot_{}.png", std::process::id()));
     let temp_str = temp_path.to_string_lossy().to_string();
@@ -389,15 +393,13 @@ async fn capture_screenshot_macos(window_title: Option<&str>) -> Result<(Vec<u8>
     args.push(&temp_str);
 
     match Command::new("screencapture").args(&args).output() {
-        Ok(output) if output.status.success() => {
-            match std::fs::read(&temp_path) {
-                Ok(data) => {
-                    let _ = std::fs::remove_file(&temp_path);
-                    Ok((data, "image/png"))
-                }
-                Err(e) => Err(format!("Failed to read screenshot: {}", e)),
+        Ok(output) if output.status.success() => match std::fs::read(&temp_path) {
+            Ok(data) => {
+                let _ = std::fs::remove_file(&temp_path);
+                Ok((data, "image/png"))
             }
-        }
+            Err(e) => Err(format!("Failed to read screenshot: {}", e)),
+        },
         Ok(output) => Err(format!(
             "screencapture failed: {}",
             String::from_utf8_lossy(&output.stderr)
@@ -407,9 +409,11 @@ async fn capture_screenshot_macos(window_title: Option<&str>) -> Result<(Vec<u8>
 }
 
 /// Capture screenshot on Windows using PowerShell
-async fn capture_screenshot_windows(_window_title: Option<&str>) -> Result<(Vec<u8>, &'static str), String> {
-    use std::process::Command;
+async fn capture_screenshot_windows(
+    _window_title: Option<&str>,
+) -> Result<(Vec<u8>, &'static str), String> {
     use std::env::temp_dir;
+    use std::process::Command;
 
     let temp_path = temp_dir().join(format!("composer_screenshot_{}.png", std::process::id()));
     let temp_str = temp_path.to_string_lossy().to_string();
@@ -433,15 +437,13 @@ async fn capture_screenshot_windows(_window_title: Option<&str>) -> Result<(Vec<
         .args(["-Command", &script])
         .output()
     {
-        Ok(output) if output.status.success() => {
-            match std::fs::read(&temp_path) {
-                Ok(data) => {
-                    let _ = std::fs::remove_file(&temp_path);
-                    Ok((data, "image/png"))
-                }
-                Err(e) => Err(format!("Failed to read screenshot: {}", e)),
+        Ok(output) if output.status.success() => match std::fs::read(&temp_path) {
+            Ok(data) => {
+                let _ = std::fs::remove_file(&temp_path);
+                Ok((data, "image/png"))
             }
-        }
+            Err(e) => Err(format!("Failed to read screenshot: {}", e)),
+        },
         Ok(output) => Err(format!(
             "PowerShell screenshot failed: {}",
             String::from_utf8_lossy(&output.stderr)

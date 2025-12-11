@@ -29,6 +29,4 @@
 
 mod store;
 
-pub use store::{
-    HistoryConfig, HistoryEntry, PromptHistory, SearchMatch, SearchResult,
-};
+pub use store::{HistoryConfig, HistoryEntry, PromptHistory, SearchMatch, SearchResult};

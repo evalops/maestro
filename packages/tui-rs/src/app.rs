@@ -1350,11 +1350,13 @@ Add the required fields and retry.",
         match action {
             UsageAction::Summary => {
                 let summary = self.usage_tracker.summary();
-                self.state.add_system_message(format!("## Usage Summary\n\n{}", summary));
+                self.state
+                    .add_system_message(format!("## Usage Summary\n\n{}", summary));
             }
             UsageAction::Detailed => {
                 let detailed = self.usage_tracker.detailed_summary();
-                self.state.add_system_message(format!("## Usage Details\n\n```\n{}\n```", detailed));
+                self.state
+                    .add_system_message(format!("## Usage Details\n\n```\n{}\n```", detailed));
             }
             UsageAction::Reset => {
                 self.usage_tracker.reset();
@@ -1475,16 +1477,21 @@ Add the required fields and retry.",
                 let mut msg = String::from("## Recent Tool Executions\n\n");
                 for exec in recent {
                     let status = if exec.success { "✓" } else { "✗" };
-                    let duration = exec.duration
+                    let duration = exec
+                        .duration
                         .map(|d| format!("{:.0}ms", d.as_millis()))
                         .unwrap_or_else(|| "?".to_string());
-                    msg.push_str(&format!("{} **{}** ({})\n", status, exec.tool_name, duration));
+                    msg.push_str(&format!(
+                        "{} **{}** ({})\n",
+                        status, exec.tool_name, duration
+                    ));
                 }
                 self.state.add_system_message(msg);
             }
             ToolHistoryAction::Stats => {
                 let summary = self.tool_history.summary();
-                self.state.add_system_message(format!("## Tool Statistics\n\n```\n{}\n```", summary));
+                self.state
+                    .add_system_message(format!("## Tool Statistics\n\n```\n{}\n```", summary));
             }
             ToolHistoryAction::ForTool(name) => {
                 let execs = self.tool_history.for_tool(&name);
@@ -1496,10 +1503,16 @@ Add the required fields and retry.",
                 let mut msg = format!("## History for '{}'\n\n", name);
                 for exec in execs.iter().take(10) {
                     let status = if exec.success { "✓" } else { "✗" };
-                    let duration = exec.duration
+                    let duration = exec
+                        .duration
                         .map(|d| format!("{:.0}ms", d.as_millis()))
                         .unwrap_or_else(|| "?".to_string());
-                    msg.push_str(&format!("{} {} - {}\n", status, duration, exec.output_preview(50).unwrap_or_default()));
+                    msg.push_str(&format!(
+                        "{} {} - {}\n",
+                        status,
+                        duration,
+                        exec.output_preview(50).unwrap_or_default()
+                    ));
                 }
                 self.state.add_system_message(msg);
             }

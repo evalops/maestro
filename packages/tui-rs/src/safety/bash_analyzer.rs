@@ -54,29 +54,18 @@ pub struct ParsedCommand {
 static SAFE_COMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         // File reading
-        "cat", "head", "tail", "less", "more", "bat",
-        // Search
-        "grep", "rg", "ag", "find", "fd", "locate",
-        // Directory
-        "ls", "pwd", "tree", "exa",
-        // Output
-        "echo", "printf",
-        // Text processing (read-only)
-        "wc", "sort", "uniq", "diff", "cut", "tr", "awk", "sed",
-        // Metadata
-        "file", "stat", "du", "df",
-        // Lookup
-        "which", "whereis", "type", "command",
-        // Docs
-        "man", "help", "info",
-        // System info
-        "date", "cal", "whoami", "id", "groups", "hostname", "uname",
-        "env", "printenv",
+        "cat", "head", "tail", "less", "more", "bat", // Search
+        "grep", "rg", "ag", "find", "fd", "locate", // Directory
+        "ls", "pwd", "tree", "exa", // Output
+        "echo", "printf", // Text processing (read-only)
+        "wc", "sort", "uniq", "diff", "cut", "tr", "awk", "sed", // Metadata
+        "file", "stat", "du", "df", // Lookup
+        "which", "whereis", "type", "command", // Docs
+        "man", "help", "info", // System info
+        "date", "cal", "whoami", "id", "groups", "hostname", "uname", "env", "printenv",
         // Modern tools
-        "jq", "yq", "fzf",
-        // Pipeline
-        "tee", "xargs",
-        // Testing
+        "jq", "yq", "fzf", // Pipeline
+        "tee", "xargs", // Testing
         "test", "[", "true", "false",
     ]
     .into_iter()
@@ -86,9 +75,22 @@ static SAFE_COMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 /// Safe git subcommands that don't modify the repository
 static SAFE_GIT_SUBCOMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "status", "log", "diff", "show", "branch", "tag", "remote",
-        "config", "describe", "rev-parse", "ls-files", "ls-tree",
-        "blame", "shortlog", "reflog", "stash",
+        "status",
+        "log",
+        "diff",
+        "show",
+        "branch",
+        "tag",
+        "remote",
+        "config",
+        "describe",
+        "rev-parse",
+        "ls-files",
+        "ls-tree",
+        "blame",
+        "shortlog",
+        "reflog",
+        "stash",
     ]
     .into_iter()
     .collect()
@@ -97,8 +99,16 @@ static SAFE_GIT_SUBCOMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 /// Dangerous git subcommands that require approval
 static DANGEROUS_GIT_SUBCOMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "reset", "clean", "rm", "push", "rebase", "merge",
-        "cherry-pick", "checkout", "restore", "switch",
+        "reset",
+        "clean",
+        "rm",
+        "push",
+        "rebase",
+        "merge",
+        "cherry-pick",
+        "checkout",
+        "restore",
+        "switch",
     ]
     .into_iter()
     .collect()
@@ -108,20 +118,43 @@ static DANGEROUS_GIT_SUBCOMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 static DANGEROUS_COMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         // Destructive
-        "rm", "rmdir", "shred",
+        "rm",
+        "rmdir",
+        "shred",
         // Disk - including common mkfs variants
-        "mkfs", "mkfs.ext2", "mkfs.ext3", "mkfs.ext4", "mkfs.xfs",
-        "mkfs.btrfs", "mkfs.vfat", "mkfs.ntfs", "mkfs.fat",
-        "dd", "fdisk", "parted", "format",
+        "mkfs",
+        "mkfs.ext2",
+        "mkfs.ext3",
+        "mkfs.ext4",
+        "mkfs.xfs",
+        "mkfs.btrfs",
+        "mkfs.vfat",
+        "mkfs.ntfs",
+        "mkfs.fat",
+        "dd",
+        "fdisk",
+        "parted",
+        "format",
         // Permissions
-        "chmod", "chown", "chgrp",
+        "chmod",
+        "chown",
+        "chgrp",
         // Process
-        "kill", "killall", "pkill",
+        "kill",
+        "killall",
+        "pkill",
         // System
-        "reboot", "shutdown", "halt", "poweroff", "init",
-        "systemctl", "service",
+        "reboot",
+        "shutdown",
+        "halt",
+        "poweroff",
+        "init",
+        "systemctl",
+        "service",
         // Privilege
-        "sudo", "su", "doas",
+        "sudo",
+        "su",
+        "doas",
     ]
     .into_iter()
     .collect()
@@ -143,8 +176,7 @@ fn is_dangerous_command(program: &str) -> bool {
 /// Commands that can be dangerous with certain flags
 static CONDITIONALLY_DANGEROUS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "mv", "cp", "tar", "zip", "unzip", "gzip", "gunzip",
-        "curl", "wget", "scp", "rsync",
+        "mv", "cp", "tar", "zip", "unzip", "gzip", "gunzip", "curl", "wget", "scp", "rsync",
     ]
     .into_iter()
     .collect()
@@ -165,7 +197,12 @@ pub fn analyze_bash_command(command: &str) -> BashAnalysis {
     let commands = parse_commands(trimmed);
 
     // Determine overall risk
-    let (risk, reason) = determine_risk(&commands, has_pipes, has_redirects, has_command_substitution);
+    let (risk, reason) = determine_risk(
+        &commands,
+        has_pipes,
+        has_redirects,
+        has_command_substitution,
+    );
 
     BashAnalysis {
         risk,
@@ -288,7 +325,8 @@ fn skip_wrappers<'a>(tokens: &'a [String]) -> (&'a str, &'a [String]) {
         if token == "env" {
             idx += 1;
             // Skip env's VAR=value patterns and flags
-            while idx < tokens.len() && (tokens[idx].contains('=') || tokens[idx].starts_with('-')) {
+            while idx < tokens.len() && (tokens[idx].contains('=') || tokens[idx].starts_with('-'))
+            {
                 idx += 1;
             }
             continue;

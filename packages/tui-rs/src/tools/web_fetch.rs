@@ -147,7 +147,11 @@ impl WebFetchTool {
             return ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("HTTP error {}: {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown"))),
+                error: Some(format!(
+                    "HTTP error {}: {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("Unknown")
+                )),
             };
         }
 
@@ -166,7 +170,11 @@ impl WebFetchTool {
                     return ToolResult {
                         success: false,
                         output: String::new(),
-                        error: Some(format!("Response too large: {} bytes (max {})", b.len(), MAX_BODY_SIZE)),
+                        error: Some(format!(
+                            "Response too large: {} bytes (max {})",
+                            b.len(),
+                            MAX_BODY_SIZE
+                        )),
                     };
                 }
                 b
@@ -184,18 +192,19 @@ impl WebFetchTool {
         let body = String::from_utf8_lossy(&body_bytes).to_string();
 
         // Process based on content type
-        let content = if content_type.contains("text/html") || content_type.contains("application/xhtml") {
-            html_to_markdown(&body)
-        } else if content_type.contains("application/json") {
-            // Pretty print JSON
-            match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(json) => serde_json::to_string_pretty(&json).unwrap_or(body),
-                Err(_) => body,
-            }
-        } else {
-            // Plain text or other content
-            body
-        };
+        let content =
+            if content_type.contains("text/html") || content_type.contains("application/xhtml") {
+                html_to_markdown(&body)
+            } else if content_type.contains("application/json") {
+                // Pretty print JSON
+                match serde_json::from_str::<serde_json::Value>(&body) {
+                    Ok(json) => serde_json::to_string_pretty(&json).unwrap_or(body),
+                    Err(_) => body,
+                }
+            } else {
+                // Plain text or other content
+                body
+            };
 
         // Truncate if necessary
         let output = if content.len() > MAX_OUTPUT_SIZE {
@@ -258,7 +267,10 @@ fn html_to_markdown(html: &str) -> String {
 
     // Convert paragraphs
     let html = html.replace("<p>", "\n\n").replace("</p>", "\n\n");
-    let html = html.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n");
+    let html = html
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n");
 
     // Convert line breaks in divs
     let html = html.replace("<div>", "\n").replace("</div>", "\n");
@@ -269,7 +281,9 @@ fn html_to_markdown(html: &str) -> String {
     let html = html.replace("<li>", "- ").replace("</li>", "\n");
 
     // Convert code blocks
-    let html = html.replace("<pre>", "\n```\n").replace("</pre>", "\n```\n");
+    let html = html
+        .replace("<pre>", "\n```\n")
+        .replace("</pre>", "\n```\n");
     let html = html.replace("<code>", "`").replace("</code>", "`");
 
     // Convert emphasis
@@ -288,7 +302,8 @@ fn html_to_markdown(html: &str) -> String {
     let html = decode_html_entities(&html);
 
     // Clean up whitespace
-    let lines: Vec<&str> = html.lines()
+    let lines: Vec<&str> = html
+        .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .collect();
@@ -354,7 +369,12 @@ fn convert_tag(html: &str, tag: &str, marker: &str) -> String {
     let open_pattern = format!("<{} ", tag);
     while let Some(start) = result.to_lowercase().find(&open_pattern) {
         if let Some(end) = result[start..].find('>') {
-            result = format!("{}{}{}", &result[..start], marker, &result[start + end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                marker,
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }
@@ -562,10 +582,12 @@ mod tests {
     #[tokio::test]
     async fn test_execute_empty_url() {
         let tool = WebFetchTool::new();
-        let result = tool.execute(WebFetchArgs {
-            url: "".to_string(),
-            prompt: None,
-        }).await;
+        let result = tool
+            .execute(WebFetchArgs {
+                url: "".to_string(),
+                prompt: None,
+            })
+            .await;
         assert!(!result.success);
         assert!(result.error.unwrap().contains("required"));
     }
@@ -573,10 +595,12 @@ mod tests {
     #[tokio::test]
     async fn test_execute_invalid_url() {
         let tool = WebFetchTool::new();
-        let result = tool.execute(WebFetchArgs {
-            url: "not a valid url ://foo".to_string(),
-            prompt: None,
-        }).await;
+        let result = tool
+            .execute(WebFetchArgs {
+                url: "not a valid url ://foo".to_string(),
+                prompt: None,
+            })
+            .await;
         assert!(!result.success);
     }
 }

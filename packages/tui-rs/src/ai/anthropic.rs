@@ -313,15 +313,16 @@ impl AnthropicClient {
         if !config.tools.is_empty() {
             if config.cache_system_prompt {
                 // Add cache_control to the last tool for tool definition caching
-                let mut tools_json: Vec<serde_json::Value> = config.tools
-                    .iter()
-                    .map(|t| serde_json::json!(t))
-                    .collect();
+                let mut tools_json: Vec<serde_json::Value> =
+                    config.tools.iter().map(|t| serde_json::json!(t)).collect();
 
                 // Add cache_control to the last tool
                 if let Some(last_tool) = tools_json.last_mut() {
                     if let Some(obj) = last_tool.as_object_mut() {
-                        obj.insert("cache_control".to_string(), serde_json::json!({ "type": "ephemeral" }));
+                        obj.insert(
+                            "cache_control".to_string(),
+                            serde_json::json!({ "type": "ephemeral" }),
+                        );
                     }
                 }
 
@@ -749,7 +750,9 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
 data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"Let me think..."}}"#;
 
         let event = parse_sse_event(data).unwrap();
-        assert!(matches!(event, StreamEvent::ThinkingDelta { thinking, index } if thinking == "Let me think..." && index == 1));
+        assert!(
+            matches!(event, StreamEvent::ThinkingDelta { thinking, index } if thinking == "Let me think..." && index == 1)
+        );
     }
 
     #[test]
@@ -758,7 +761,9 @@ data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","
 data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}"#;
 
         let event = parse_sse_event(data).unwrap();
-        assert!(matches!(event, StreamEvent::InputJsonDelta { partial_json, index } if partial_json == "{\"path\":" && index == 2));
+        assert!(
+            matches!(event, StreamEvent::InputJsonDelta { partial_json, index } if partial_json == "{\"path\":" && index == 2)
+        );
     }
 
     #[test]
@@ -767,7 +772,13 @@ data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta"
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
 
         let event = parse_sse_event(data).unwrap();
-        assert!(matches!(event, StreamEvent::ContentBlockStart { index: 0, block: ContentBlock::Text { .. } }));
+        assert!(matches!(
+            event,
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                block: ContentBlock::Text { .. }
+            }
+        ));
     }
 
     #[test]
@@ -777,7 +788,10 @@ data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use"
 
         let event = parse_sse_event(data).unwrap();
         match event {
-            StreamEvent::ContentBlockStart { index: 1, block: ContentBlock::ToolUse { id, name, .. } } => {
+            StreamEvent::ContentBlockStart {
+                index: 1,
+                block: ContentBlock::ToolUse { id, name, .. },
+            } => {
                 assert_eq!(id, "toolu_123");
                 assert_eq!(name, "read_file");
             }
@@ -801,7 +815,12 @@ data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"ca
 
         let event = parse_sse_event(data).unwrap();
         match event {
-            StreamEvent::Usage { input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens } => {
+            StreamEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            } => {
                 assert_eq!(input_tokens, 100);
                 assert_eq!(output_tokens, 50);
                 assert_eq!(cache_read_tokens, Some(80));

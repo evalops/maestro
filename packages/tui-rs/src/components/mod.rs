@@ -135,6 +135,7 @@ mod thinking_indicator;
 mod welcome;
 
 pub use approval::{ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest};
+pub use ascii_animation::{logos, AsciiAnimation, ALL_VARIANTS, FRAME_TICK_DEFAULT};
 pub use command_palette::CommandPalette;
 pub use config_selector::{ConfigCategory, ConfigChangeEvent, ConfigOption, ConfigSelector};
 pub use context_indicator::{ContextIndicator, ContextIndicatorBuilder, UsageLevel};
@@ -143,18 +144,17 @@ pub use input::{EditorWidget, InputWidget};
 pub use layout::{column_layout, row_layout, BoxWidget};
 pub use message::{ChatInputWidget, ChatView, MessageWidget, StatusBarWidget, ToolCallWidget};
 pub use model_selector::ModelSelector;
+pub use rate_limit::{
+    format_duration_compact, format_elapsed, CreditsDisplay, RateLimitDisplay, RateLimitState,
+    RateLimitTracker, RateLimitWindow,
+};
 pub use scroll::render_scrollbar;
 pub use session_switcher::SessionSwitcher;
+pub use shortcuts_help::{Shortcut, ShortcutCategory, ShortcutsHelp, ShortcutsHelpBuilder};
+pub use status_indicator::{StatusIndicator, StatusIndicatorBuilder};
 pub use text::{StyledTextWidget, TextWidget};
 pub use theme_selector::ThemeSelector;
 pub use thinking_indicator::{
     ThinkingDisplayMode, ThinkingIndicator, ThinkingIndicatorBuilder, ThinkingPhase, ThinkingState,
 };
-pub use shortcuts_help::{Shortcut, ShortcutCategory, ShortcutsHelp, ShortcutsHelpBuilder};
-pub use rate_limit::{
-    format_duration_compact, format_elapsed, CreditsDisplay, RateLimitDisplay, RateLimitState,
-    RateLimitTracker, RateLimitWindow,
-};
-pub use status_indicator::{StatusIndicator, StatusIndicatorBuilder};
-pub use ascii_animation::{logos, AsciiAnimation, ALL_VARIANTS, FRAME_TICK_DEFAULT};
 pub use welcome::{OnboardingFlow, OnboardingStep, SplashScreen, WelcomeScreen};

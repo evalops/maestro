@@ -12,8 +12,8 @@ use std::io::{self, Write};
 use chrono::DateTime;
 
 use super::entries::{
-    AppMessage, ContentBlock, MessageContent, SessionHeader,
-    SessionMeta, SessionStats, ThinkingLevel,
+    AppMessage, ContentBlock, MessageContent, SessionHeader, SessionMeta, SessionStats,
+    ThinkingLevel,
 };
 use super::reader::{ParsedSession, SessionReader};
 
@@ -207,7 +207,12 @@ impl<'a> SessionExporter<'a> {
 
         // Metadata
         writeln!(md, "**Model:** {}  ", self.header.model).unwrap();
-        writeln!(md, "**Date:** {}  ", format_timestamp(&self.header.timestamp)).unwrap();
+        writeln!(
+            md,
+            "**Date:** {}  ",
+            format_timestamp(&self.header.timestamp)
+        )
+        .unwrap();
         if self.header.thinking_level != ThinkingLevel::Off {
             writeln!(md, "**Thinking:** {}  ", self.header.thinking_level.label()).unwrap();
         }
@@ -216,11 +221,19 @@ impl<'a> SessionExporter<'a> {
         // Stats
         if self.options.include_usage {
             writeln!(md, "---").unwrap();
-            writeln!(md, "**Stats:** {} user messages, {} assistant messages",
-                self.stats.user_messages, self.stats.assistant_messages).unwrap();
+            writeln!(
+                md,
+                "**Stats:** {} user messages, {} assistant messages",
+                self.stats.user_messages, self.stats.assistant_messages
+            )
+            .unwrap();
             if self.stats.total_input_tokens > 0 {
-                writeln!(md, "**Tokens:** {} in, {} out",
-                    self.stats.total_input_tokens, self.stats.total_output_tokens).unwrap();
+                writeln!(
+                    md,
+                    "**Tokens:** {} in, {} out",
+                    self.stats.total_input_tokens, self.stats.total_output_tokens
+                )
+                .unwrap();
             }
             if self.stats.total_cost > 0.0 {
                 writeln!(md, "**Cost:** ${:.4}", self.stats.total_cost).unwrap();
@@ -244,7 +257,9 @@ impl<'a> SessionExporter<'a> {
 
     fn write_message_markdown(&self, md: &mut String, msg: &AppMessage) {
         match msg {
-            AppMessage::User { content, timestamp, .. } => {
+            AppMessage::User {
+                content, timestamp, ..
+            } => {
                 writeln!(md, "## User").unwrap();
                 if self.options.include_timestamps && *timestamp > 0 {
                     writeln!(md, "*{}*\n", format_millis_timestamp(*timestamp)).unwrap();
@@ -261,12 +276,24 @@ impl<'a> SessionExporter<'a> {
                     }
                 }
             }
-            AppMessage::Assistant { content, model, usage, timestamp, .. } => {
+            AppMessage::Assistant {
+                content,
+                model,
+                usage,
+                timestamp,
+                ..
+            } => {
                 writeln!(md, "## Assistant").unwrap();
                 if self.options.include_timestamps {
                     let model_str = model.as_deref().unwrap_or(&self.header.model);
                     if *timestamp > 0 {
-                        writeln!(md, "*{} ({})*\n", format_millis_timestamp(*timestamp), model_str).unwrap();
+                        writeln!(
+                            md,
+                            "*{} ({})*\n",
+                            format_millis_timestamp(*timestamp),
+                            model_str
+                        )
+                        .unwrap();
                     } else {
                         writeln!(md, "*({})*\n", model_str).unwrap();
                     }
@@ -283,7 +310,9 @@ impl<'a> SessionExporter<'a> {
                             writeln!(md, "{}", text).unwrap();
                             writeln!(md, "</details>\n").unwrap();
                         }
-                        ContentBlock::ToolCall { name, args, .. } if self.options.include_tool_calls => {
+                        ContentBlock::ToolCall { name, args, .. }
+                            if self.options.include_tool_calls =>
+                        {
                             writeln!(md, "```tool").unwrap();
                             writeln!(md, "{}: {}", name, args).unwrap();
                             writeln!(md, "```\n").unwrap();
@@ -298,7 +327,12 @@ impl<'a> SessionExporter<'a> {
                     }
                 }
             }
-            AppMessage::ToolResult { tool_name, content, is_error, .. } if self.options.include_tool_results => {
+            AppMessage::ToolResult {
+                tool_name,
+                content,
+                is_error,
+                ..
+            } if self.options.include_tool_results => {
                 let status = if *is_error { "Error" } else { "Result" };
                 writeln!(md, "### {} {}\n", tool_name, status).unwrap();
                 writeln!(md, "```").unwrap();
@@ -327,7 +361,9 @@ impl<'a> SessionExporter<'a> {
             .unwrap_or("Conversation");
 
         // HTML header
-        writeln!(html, r#"<!DOCTYPE html>
+        writeln!(
+            html,
+            r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -379,13 +415,21 @@ impl<'a> SessionExporter<'a> {
         .footer {{ margin-top: 30px; text-align: center; color: #666; }}
     </style>
 </head>
-<body>"#, title).unwrap();
+<body>"#,
+            title
+        )
+        .unwrap();
 
         // Title and metadata
         writeln!(html, "<h1>{}</h1>", title).unwrap();
         writeln!(html, r#"<div class="meta">"#).unwrap();
         writeln!(html, "<p><strong>Model:</strong> {}</p>", self.header.model).unwrap();
-        writeln!(html, "<p><strong>Date:</strong> {}</p>", format_timestamp(&self.header.timestamp)).unwrap();
+        writeln!(
+            html,
+            "<p><strong>Date:</strong> {}</p>",
+            format_timestamp(&self.header.timestamp)
+        )
+        .unwrap();
         writeln!(html, "</div>").unwrap();
 
         // Messages
@@ -396,14 +440,27 @@ impl<'a> SessionExporter<'a> {
         // Stats
         if self.options.include_usage {
             writeln!(html, r#"<div class="stats">"#).unwrap();
-            writeln!(html, "<p><strong>Messages:</strong> {} user, {} assistant</p>",
-                self.stats.user_messages, self.stats.assistant_messages).unwrap();
+            writeln!(
+                html,
+                "<p><strong>Messages:</strong> {} user, {} assistant</p>",
+                self.stats.user_messages, self.stats.assistant_messages
+            )
+            .unwrap();
             if self.stats.total_input_tokens > 0 {
-                writeln!(html, "<p><strong>Tokens:</strong> {} in, {} out</p>",
-                    self.stats.total_input_tokens, self.stats.total_output_tokens).unwrap();
+                writeln!(
+                    html,
+                    "<p><strong>Tokens:</strong> {} in, {} out</p>",
+                    self.stats.total_input_tokens, self.stats.total_output_tokens
+                )
+                .unwrap();
             }
             if self.stats.total_cost > 0.0 {
-                writeln!(html, "<p><strong>Cost:</strong> ${:.4}</p>", self.stats.total_cost).unwrap();
+                writeln!(
+                    html,
+                    "<p><strong>Cost:</strong> ${:.4}</p>",
+                    self.stats.total_cost
+                )
+                .unwrap();
             }
             writeln!(html, "</div>").unwrap();
         }
@@ -424,7 +481,13 @@ impl<'a> SessionExporter<'a> {
                     MessageContent::Text(t) => t.clone(),
                     MessageContent::Blocks(blocks) => blocks
                         .iter()
-                        .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                        .filter_map(|b| {
+                            if let ContentBlock::Text { text } = b {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join(""),
                 };
@@ -446,8 +509,16 @@ impl<'a> SessionExporter<'a> {
                             writeln!(html, "{}", escape_html(text)).unwrap();
                             writeln!(html, "</div>").unwrap();
                         }
-                        ContentBlock::ToolCall { name, args, .. } if self.options.include_tool_calls => {
-                            writeln!(html, "<pre><code>{}: {}</code></pre>", name, escape_html(&args.to_string())).unwrap();
+                        ContentBlock::ToolCall { name, args, .. }
+                            if self.options.include_tool_calls =>
+                        {
+                            writeln!(
+                                html,
+                                "<pre><code>{}: {}</code></pre>",
+                                name,
+                                escape_html(&args.to_string())
+                            )
+                            .unwrap();
                         }
                         _ => {}
                     }
@@ -516,7 +587,13 @@ impl<'a> SessionExporter<'a> {
                         MessageContent::Text(t) => t.clone(),
                         MessageContent::Blocks(blocks) => blocks
                             .iter()
-                            .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                            .filter_map(|b| {
+                                if let ContentBlock::Text { text } = b {
+                                    Some(text.as_str())
+                                } else {
+                                    None
+                                }
+                            })
                             .collect::<Vec<_>>()
                             .join(""),
                     };
@@ -634,7 +711,8 @@ mod tests {
         let messages = sample_messages();
         let stats = sample_stats();
 
-        let exporter = SessionExporter::new(&header, &messages, None, &stats, ExportOptions::markdown());
+        let exporter =
+            SessionExporter::new(&header, &messages, None, &stats, ExportOptions::markdown());
         let md = exporter.export_to_string();
 
         assert!(md.contains("# Conversation"));
@@ -651,7 +729,8 @@ mod tests {
         let messages = sample_messages();
         let stats = sample_stats();
 
-        let exporter = SessionExporter::new(&header, &messages, None, &stats, ExportOptions::html());
+        let exporter =
+            SessionExporter::new(&header, &messages, None, &stats, ExportOptions::html());
         let html = exporter.export_to_string();
 
         assert!(html.contains("<!DOCTYPE html>"));
@@ -665,7 +744,8 @@ mod tests {
         let messages = sample_messages();
         let stats = sample_stats();
 
-        let exporter = SessionExporter::new(&header, &messages, None, &stats, ExportOptions::json());
+        let exporter =
+            SessionExporter::new(&header, &messages, None, &stats, ExportOptions::json());
         let json = exporter.export_to_string();
 
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -679,7 +759,13 @@ mod tests {
         let messages = sample_messages();
         let stats = sample_stats();
 
-        let exporter = SessionExporter::new(&header, &messages, None, &stats, ExportOptions::plain_text());
+        let exporter = SessionExporter::new(
+            &header,
+            &messages,
+            None,
+            &stats,
+            ExportOptions::plain_text(),
+        );
         let txt = exporter.export_to_string();
 
         assert!(txt.contains("USER:"));
