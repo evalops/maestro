@@ -693,7 +693,11 @@ impl NativeAgentRunner {
                                 // Classify error and check if we should retry
                                 let error_kind = super::retry::ErrorKind::classify(&msg);
                                 match self.retry_policy.should_retry(error_kind) {
-                                    super::retry::RetryDecision::Retry { delay, attempt, reason } => {
+                                    super::retry::RetryDecision::Retry {
+                                        delay,
+                                        attempt,
+                                        reason,
+                                    } => {
                                         // Notify UI about retry
                                         let _ = self.event_tx.send(FromAgent::Status {
                                             message: format!(
@@ -962,7 +966,10 @@ impl NativeAgentRunner {
                                 eprintln!("[agent] Performing context compaction...");
                                 let result = self.compactor.compact(&self.messages);
                                 if result.was_compacted() {
-                                    eprintln!("[agent] Compacted {} messages", result.compacted_count);
+                                    eprintln!(
+                                        "[agent] Compacted {} messages",
+                                        result.compacted_count
+                                    );
                                     self.messages = result.messages;
                                     // Notify the UI about compaction
                                     let _ = self.event_tx.send(FromAgent::Status {

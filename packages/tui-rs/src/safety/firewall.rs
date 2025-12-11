@@ -32,7 +32,9 @@ use once_cell::sync::Lazy;
 
 use super::bash_analyzer::{analyze_bash_command, CommandRisk};
 use super::dangerous_patterns::{check_dangerous_patterns, Severity};
-use super::path_containment::{has_path_traversal, is_path_contained, is_system_path, PathContainment};
+use super::path_containment::{
+    has_path_traversal, is_path_contained, is_system_path, PathContainment,
+};
 
 /// Result of a firewall check
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,8 +118,15 @@ pub struct ActionFirewall {
 /// Tools that are always safe (read-only)
 static SAFE_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "read", "glob", "grep", "list", "diff", "search",
-        "web_search", "web_fetch", "mcp_list",
+        "read",
+        "glob",
+        "grep",
+        "list",
+        "diff",
+        "search",
+        "web_search",
+        "web_fetch",
+        "mcp_list",
     ]
     .into_iter()
     .collect()
@@ -211,10 +220,20 @@ impl ActionFirewall {
         }
 
         // Check path containment
-        match is_path_contained(path, &self.config.workspace, &self.config.additional_safe_zones) {
+        match is_path_contained(
+            path,
+            &self.config.workspace,
+            &self.config.additional_safe_zones,
+        ) {
             PathContainment::Contained { zone } => {
                 // Allow writes to workspace and configured safe zones
-                if zone == "workspace" || self.config.additional_safe_zones.iter().any(|z| z.to_string_lossy() == zone) {
+                if zone == "workspace"
+                    || self
+                        .config
+                        .additional_safe_zones
+                        .iter()
+                        .any(|z| z.to_string_lossy() == zone)
+                {
                     FirewallVerdict::Allow
                 } else if zone == "home" && self.config.allow_home {
                     FirewallVerdict::RequireApproval {
@@ -224,7 +243,11 @@ impl ActionFirewall {
                     FirewallVerdict::Allow
                 } else {
                     FirewallVerdict::RequireApproval {
-                        reason: format!("File is outside workspace (in {}): {}", zone, path.display()),
+                        reason: format!(
+                            "File is outside workspace (in {}): {}",
+                            zone,
+                            path.display()
+                        ),
                     }
                 }
             }
@@ -289,7 +312,11 @@ impl ActionFirewall {
                 }
             }
             "write" | "edit" => {
-                if let Some(path) = args.get("file_path").or(args.get("path")).and_then(|v| v.as_str()) {
+                if let Some(path) = args
+                    .get("file_path")
+                    .or(args.get("path"))
+                    .and_then(|v| v.as_str())
+                {
                     let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     self.check_file_write(path, content)
                 } else {
@@ -299,7 +326,11 @@ impl ActionFirewall {
                 }
             }
             "read" => {
-                if let Some(path) = args.get("file_path").or(args.get("path")).and_then(|v| v.as_str()) {
+                if let Some(path) = args
+                    .get("file_path")
+                    .or(args.get("path"))
+                    .and_then(|v| v.as_str())
+                {
                     self.check_file_read(path)
                 } else {
                     FirewallVerdict::Block {
@@ -346,7 +377,8 @@ impl ActionFirewall {
     /// Check if a file is considered sensitive
     fn is_sensitive_file(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
-        let file_name = path.file_name()
+        let file_name = path
+            .file_name()
             .map(|n| n.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
@@ -394,14 +426,31 @@ mod tests {
     fn test_safe_bash_commands() {
         let fw = test_firewall();
         let safe_commands = [
-            "ls -la", "cat file.txt", "grep pattern file", "git status",
-            "pwd", "echo hello", "head -n 10 file", "tail -f log",
-            "wc -l file", "sort file", "uniq", "diff a b",
-            "find . -name '*.rs'", "tree", "date", "whoami",
+            "ls -la",
+            "cat file.txt",
+            "grep pattern file",
+            "git status",
+            "pwd",
+            "echo hello",
+            "head -n 10 file",
+            "tail -f log",
+            "wc -l file",
+            "sort file",
+            "uniq",
+            "diff a b",
+            "find . -name '*.rs'",
+            "tree",
+            "date",
+            "whoami",
         ];
         for cmd in safe_commands {
             let verdict = fw.check_bash(cmd);
-            assert!(verdict.is_allowed(), "Expected '{}' to be allowed, got {:?}", cmd, verdict);
+            assert!(
+                verdict.is_allowed(),
+                "Expected '{}' to be allowed, got {:?}",
+                cmd,
+                verdict
+            );
         }
     }
 
@@ -421,7 +470,13 @@ mod tests {
         ];
         for (cmd, desc) in dangerous {
             let verdict = fw.check_bash(cmd);
-            assert!(verdict.is_blocked(), "Expected '{}' ({}) to be blocked, got {:?}", cmd, desc, verdict);
+            assert!(
+                verdict.is_blocked(),
+                "Expected '{}' ({}) to be blocked, got {:?}",
+                cmd,
+                desc,
+                verdict
+            );
         }
     }
 
@@ -448,7 +503,13 @@ mod tests {
         ];
         for (cmd, desc) in needs_approval {
             let verdict = fw.check_bash(cmd);
-            assert!(verdict.requires_approval(), "Expected '{}' ({}) to require approval, got {:?}", cmd, desc, verdict);
+            assert!(
+                verdict.requires_approval(),
+                "Expected '{}' ({}) to require approval, got {:?}",
+                cmd,
+                desc,
+                verdict
+            );
         }
     }
 
@@ -489,7 +550,12 @@ mod tests {
         ];
         for path in allowed_paths {
             let verdict = fw.check_file_write(path, "content");
-            assert!(verdict.is_allowed(), "Expected write to '{}' to be allowed, got {:?}", path, verdict);
+            assert!(
+                verdict.is_allowed(),
+                "Expected write to '{}' to be allowed, got {:?}",
+                path,
+                verdict
+            );
         }
     }
 
@@ -497,14 +563,23 @@ mod tests {
     fn test_write_to_system_path() {
         let fw = test_firewall();
         let system_paths = [
-            "/etc/passwd", "/etc/shadow", "/etc/sudoers",
-            "/usr/bin/ls", "/usr/local/bin/app",
-            "/var/log/syslog", "/var/lib/data",
+            "/etc/passwd",
+            "/etc/shadow",
+            "/etc/sudoers",
+            "/usr/bin/ls",
+            "/usr/local/bin/app",
+            "/var/log/syslog",
+            "/var/lib/data",
             "/boot/grub/grub.cfg",
         ];
         for path in system_paths {
             let verdict = fw.check_file_write(path, "malicious");
-            assert!(verdict.is_blocked(), "Expected write to '{}' to be blocked, got {:?}", path, verdict);
+            assert!(
+                verdict.is_blocked(),
+                "Expected write to '{}' to be blocked, got {:?}",
+                path,
+                verdict
+            );
         }
     }
 
@@ -546,7 +621,12 @@ mod tests {
         ];
         for path in normal_files {
             let verdict = fw.check_file_read(path);
-            assert!(verdict.is_allowed(), "Expected read of '{}' to be allowed, got {:?}", path, verdict);
+            assert!(
+                verdict.is_allowed(),
+                "Expected read of '{}' to be allowed, got {:?}",
+                path,
+                verdict
+            );
         }
     }
 
@@ -565,7 +645,13 @@ mod tests {
         ];
         for (path, desc) in sensitive {
             let verdict = fw.check_file_read(path);
-            assert!(verdict.requires_approval(), "Expected read of '{}' ({}) to require approval, got {:?}", path, desc, verdict);
+            assert!(
+                verdict.requires_approval(),
+                "Expected read of '{}' ({}) to require approval, got {:?}",
+                path,
+                desc,
+                verdict
+            );
         }
     }
 
@@ -575,7 +661,12 @@ mod tests {
         let system_files = ["/etc/passwd", "/etc/hosts", "/etc/resolv.conf"];
         for path in system_files {
             let verdict = fw.check_file_read(path);
-            assert!(verdict.requires_approval(), "Expected read of '{}' to require approval, got {:?}", path, verdict);
+            assert!(
+                verdict.requires_approval(),
+                "Expected read of '{}' to require approval, got {:?}",
+                path,
+                verdict
+            );
         }
     }
 
@@ -586,43 +677,63 @@ mod tests {
     #[test]
     fn test_check_tool_bash() {
         let fw = test_firewall();
-        assert!(fw.check_tool("bash", &json!({ "command": "ls -la" })).is_allowed());
-        assert!(fw.check_tool("bash", &json!({ "command": "rm -rf /" })).is_blocked());
-        assert!(fw.check_tool("shell", &json!({ "command": "ls" })).is_allowed());
-        assert!(fw.check_tool("execute", &json!({ "command": "pwd" })).is_allowed());
+        assert!(fw
+            .check_tool("bash", &json!({ "command": "ls -la" }))
+            .is_allowed());
+        assert!(fw
+            .check_tool("bash", &json!({ "command": "rm -rf /" }))
+            .is_blocked());
+        assert!(fw
+            .check_tool("shell", &json!({ "command": "ls" }))
+            .is_allowed());
+        assert!(fw
+            .check_tool("execute", &json!({ "command": "pwd" }))
+            .is_allowed());
     }
 
     #[test]
     fn test_check_tool_write_with_path_variants() {
         let fw = test_firewall();
         // Test with file_path
-        let v1 = fw.check_tool("write", &json!({
-            "file_path": "/home/user/project/test.txt",
-            "content": "hello"
-        }));
+        let v1 = fw.check_tool(
+            "write",
+            &json!({
+                "file_path": "/home/user/project/test.txt",
+                "content": "hello"
+            }),
+        );
         assert!(v1.is_allowed());
 
         // Test with path (alternate key)
-        let v2 = fw.check_tool("write", &json!({
-            "path": "/home/user/project/test.txt",
-            "content": "hello"
-        }));
+        let v2 = fw.check_tool(
+            "write",
+            &json!({
+                "path": "/home/user/project/test.txt",
+                "content": "hello"
+            }),
+        );
         assert!(v2.is_allowed());
     }
 
     #[test]
     fn test_check_tool_edit() {
         let fw = test_firewall();
-        let allowed = fw.check_tool("edit", &json!({
-            "file_path": "/home/user/project/src/main.rs",
-            "content": "fn main() {}"
-        }));
+        let allowed = fw.check_tool(
+            "edit",
+            &json!({
+                "file_path": "/home/user/project/src/main.rs",
+                "content": "fn main() {}"
+            }),
+        );
         assert!(allowed.is_allowed());
 
-        let blocked = fw.check_tool("edit", &json!({
-            "file_path": "/etc/passwd",
-            "content": "malicious"
-        }));
+        let blocked = fw.check_tool(
+            "edit",
+            &json!({
+                "file_path": "/etc/passwd",
+                "content": "malicious"
+            }),
+        );
         assert!(blocked.is_blocked());
     }
 
@@ -630,9 +741,15 @@ mod tests {
     fn test_check_tool_glob_grep_list() {
         let fw = test_firewall();
         // These are read-only, should be allowed or check path
-        assert!(fw.check_tool("glob", &json!({ "pattern": "*.rs" })).is_allowed());
-        assert!(fw.check_tool("grep", &json!({ "pattern": "TODO" })).is_allowed());
-        assert!(fw.check_tool("list", &json!({ "path": "/home/user/project" })).is_allowed());
+        assert!(fw
+            .check_tool("glob", &json!({ "pattern": "*.rs" }))
+            .is_allowed());
+        assert!(fw
+            .check_tool("grep", &json!({ "pattern": "TODO" }))
+            .is_allowed());
+        assert!(fw
+            .check_tool("list", &json!({ "path": "/home/user/project" }))
+            .is_allowed());
     }
 
     #[test]
@@ -677,7 +794,11 @@ mod tests {
 
         let target = temp.join("test_file.txt");
         let verdict = fw.check_file_write(target.to_str().unwrap(), "content");
-        assert!(verdict.is_allowed(), "Temp dir should be allowed: {:?}", verdict);
+        assert!(
+            verdict.is_allowed(),
+            "Temp dir should be allowed: {:?}",
+            verdict
+        );
     }
 
     #[test]
@@ -693,7 +814,10 @@ mod tests {
         // With allow_home=false, home paths should not get special treatment
         // They would be escaped or blocked
         let verdict = fw.check_file_write("/home/someone/file.txt", "content");
-        assert!(!verdict.is_allowed(), "Home should not be allowed when allow_home=false");
+        assert!(
+            !verdict.is_allowed(),
+            "Home should not be allowed when allow_home=false"
+        );
     }
 
     #[test]
@@ -729,7 +853,10 @@ mod tests {
         // Permissive should be RequireApproval, strict should be Block (for non-system paths)
         if !matches!(strict_verdict, FirewallVerdict::Block { .. }) {
             // Path might be system-protected
-            assert!(matches!(permissive_verdict, FirewallVerdict::RequireApproval { .. } | FirewallVerdict::Block { .. }));
+            assert!(matches!(
+                permissive_verdict,
+                FirewallVerdict::RequireApproval { .. } | FirewallVerdict::Block { .. }
+            ));
         }
     }
 
@@ -751,13 +878,17 @@ mod tests {
         assert!(!allow.requires_approval());
         assert!(allow.reason().is_none());
 
-        let block = FirewallVerdict::Block { reason: "test block".to_string() };
+        let block = FirewallVerdict::Block {
+            reason: "test block".to_string(),
+        };
         assert!(!block.is_allowed());
         assert!(block.is_blocked());
         assert!(!block.requires_approval());
         assert_eq!(block.reason(), Some("test block"));
 
-        let approval = FirewallVerdict::RequireApproval { reason: "needs approval".to_string() };
+        let approval = FirewallVerdict::RequireApproval {
+            reason: "needs approval".to_string(),
+        };
         assert!(!approval.is_allowed());
         assert!(!approval.is_blocked());
         assert!(approval.requires_approval());
@@ -767,7 +898,10 @@ mod tests {
     #[test]
     fn test_verdict_equality() {
         assert_eq!(FirewallVerdict::Allow, FirewallVerdict::Allow);
-        assert_ne!(FirewallVerdict::Allow, FirewallVerdict::Block { reason: "x".into() });
+        assert_ne!(
+            FirewallVerdict::Allow,
+            FirewallVerdict::Block { reason: "x".into() }
+        );
     }
 
     // ========================================================================
@@ -801,7 +935,9 @@ mod tests {
         let fw = test_firewall();
 
         // Safe pipes
-        assert!(fw.check_bash("cat file.txt | grep pattern | wc -l").is_allowed());
+        assert!(fw
+            .check_bash("cat file.txt | grep pattern | wc -l")
+            .is_allowed());
         assert!(fw.check_bash("ls -la | head -10 | tail -5").is_allowed());
         assert!(fw.check_bash("git log | grep fix | wc -l").is_allowed());
 
@@ -834,7 +970,12 @@ mod tests {
         ];
         for path in traversals {
             let verdict = fw.check_file_write(path, "malicious");
-            assert!(verdict.is_blocked(), "Traversal attack '{}' should be blocked, got {:?}", path, verdict);
+            assert!(
+                verdict.is_blocked(),
+                "Traversal attack '{}' should be blocked, got {:?}",
+                path,
+                verdict
+            );
         }
     }
 
@@ -858,7 +999,9 @@ mod tests {
 
         assert!(fw.check_bash("echo 'hello world'").is_allowed());
         assert!(fw.check_bash("echo \"hello world\"").is_allowed());
-        assert!(fw.check_bash("grep 'pattern with spaces' file").is_allowed());
+        assert!(fw
+            .check_bash("grep 'pattern with spaces' file")
+            .is_allowed());
     }
 
     #[test]
@@ -901,7 +1044,8 @@ mod tests {
             assert!(
                 verdict.requires_approval(),
                 "Expected '{}' to be flagged as sensitive, got {:?}",
-                path, verdict
+                path,
+                verdict
             );
         }
     }
@@ -923,7 +1067,8 @@ mod tests {
             assert!(
                 verdict.is_allowed(),
                 "Expected '{}' to be allowed, got {:?}",
-                path, verdict
+                path,
+                verdict
             );
         }
     }
@@ -936,8 +1081,8 @@ mod tests {
         // are flagged even if they're normal code files - this is intentional
         // to prevent accidental credential exposure
         let sensitive_by_name = [
-            "/home/user/project/token_parser.js",    // contains "token"
-            "/home/user/project/password_utils.py",  // contains "password"
+            "/home/user/project/token_parser.js",   // contains "token"
+            "/home/user/project/password_utils.py", // contains "password"
         ];
 
         for path in sensitive_by_name {
@@ -945,7 +1090,8 @@ mod tests {
             assert!(
                 verdict.requires_approval(),
                 "Expected '{}' to require approval due to sensitive keyword, got {:?}",
-                path, verdict
+                path,
+                verdict
             );
         }
     }

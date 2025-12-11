@@ -28,17 +28,7 @@ pub enum PathContainment {
 /// Critical system paths that should never be written to
 #[cfg(target_os = "linux")]
 const SYSTEM_PATHS: &[&str] = &[
-    "/etc",
-    "/usr",
-    "/var",
-    "/boot",
-    "/sys",
-    "/proc",
-    "/dev",
-    "/bin",
-    "/sbin",
-    "/lib",
-    "/lib64",
+    "/etc", "/usr", "/var", "/boot", "/sys", "/proc", "/dev", "/bin", "/sbin", "/lib", "/lib64",
     "/opt",
 ];
 
@@ -376,7 +366,10 @@ mod tests {
         // Should be Escaped (not in any safe zone) or possibly home if /mnt is under home
         match &result {
             PathContainment::Escaped { reason } => {
-                assert!(reason.contains("outside workspace"), "Expected escape reason to mention workspace");
+                assert!(
+                    reason.contains("outside workspace"),
+                    "Expected escape reason to mention workspace"
+                );
             }
             PathContainment::Contained { zone } => {
                 // Only acceptable if it's in home or temp
@@ -616,7 +609,10 @@ mod tests {
         let result = is_path_contained(&target, &workspace, &[]);
         // Empty path should either escape or be handled gracefully
         assert!(
-            matches!(result, PathContainment::Escaped { .. } | PathContainment::Contained { .. }),
+            matches!(
+                result,
+                PathContainment::Escaped { .. } | PathContainment::Contained { .. }
+            ),
             "Empty path should be handled: {:?}",
             result
         );

@@ -229,15 +229,27 @@ mod tests {
     #[test]
     fn test_provider_from_model_groq() {
         // Explicit Groq prefix
-        assert_eq!(AiProvider::from_model("groq/llama-3.1-70b"), AiProvider::Groq);
+        assert_eq!(
+            AiProvider::from_model("groq/llama-3.1-70b"),
+            AiProvider::Groq
+        );
         // Llama models (common on Groq)
-        assert_eq!(AiProvider::from_model("llama-3.1-70b-versatile"), AiProvider::Groq);
+        assert_eq!(
+            AiProvider::from_model("llama-3.1-70b-versatile"),
+            AiProvider::Groq
+        );
         assert_eq!(AiProvider::from_model("llama3-8b-8192"), AiProvider::Groq);
         assert_eq!(AiProvider::from_model("llama-guard-3-8b"), AiProvider::Groq);
         // DeepSeek models
-        assert_eq!(AiProvider::from_model("deepseek-r1-distill-llama-70b"), AiProvider::Groq);
+        assert_eq!(
+            AiProvider::from_model("deepseek-r1-distill-llama-70b"),
+            AiProvider::Groq
+        );
         // Qwen models
-        assert_eq!(AiProvider::from_model("qwen-2.5-coder-32b"), AiProvider::Groq);
+        assert_eq!(
+            AiProvider::from_model("qwen-2.5-coder-32b"),
+            AiProvider::Groq
+        );
         // Case insensitive
         assert_eq!(AiProvider::from_model("Llama-3.1-8B"), AiProvider::Groq);
     }

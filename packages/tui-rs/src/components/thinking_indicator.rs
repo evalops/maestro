@@ -74,7 +74,9 @@ impl ThinkingPhase {
         match self {
             Self::Analyzing => &["◐", "◓", "◑", "◒"],
             Self::Reasoning => &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-            Self::Synthesizing => &["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"],
+            Self::Synthesizing => &[
+                "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+            ],
             Self::Verifying => &["◇", "◈", "◆", "◈"],
             Self::Complete => &["✓"],
         }
@@ -273,7 +275,10 @@ impl ThinkingIndicator {
 
         let mut parts = vec![
             Span::styled(format!("{} ", spinner), Style::default().fg(color)),
-            Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                label,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
         ];
 
         if self.show_elapsed && self.active {

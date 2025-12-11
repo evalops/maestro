@@ -236,7 +236,9 @@ impl ErrorKind {
         let s = s.trim_start_matches(|c: char| !c.is_ascii_digit());
 
         // Find the number
-        let num_end = s.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(s.len());
+        let num_end = s
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
+            .unwrap_or(s.len());
         let num_str = &s[..num_end];
         let num: f64 = num_str.parse().ok()?;
 
@@ -336,7 +338,9 @@ impl RetryPolicy {
                         "Context overflow - compaction required".to_string()
                     }
                     ErrorKind::AuthFailure => "Authentication failed - check API key".to_string(),
-                    ErrorKind::InvalidRequest => "Invalid request - won't succeed on retry".to_string(),
+                    ErrorKind::InvalidRequest => {
+                        "Invalid request - won't succeed on retry".to_string()
+                    }
                     ErrorKind::Unknown => "Unknown error - not retrying".to_string(),
                     _ => "Error is not retryable".to_string(),
                 },
@@ -346,10 +350,7 @@ impl RetryPolicy {
         // Check if we've exhausted retries
         if self.current_attempt >= self.config.max_retries {
             return RetryDecision::GiveUp {
-                reason: format!(
-                    "Exhausted {} retry attempts",
-                    self.config.max_retries
-                ),
+                reason: format!("Exhausted {} retry attempts", self.config.max_retries),
             };
         }
 
@@ -376,7 +377,10 @@ impl RetryPolicy {
     /// Calculate the delay for the current retry attempt
     fn calculate_delay(&self, error_kind: ErrorKind) -> Duration {
         // If rate limited with retry-after, use that
-        if let ErrorKind::RateLimited { retry_after: Some(suggested) } = error_kind {
+        if let ErrorKind::RateLimited {
+            retry_after: Some(suggested),
+        } = error_kind
+        {
             if self.config.respect_retry_after {
                 // Still apply max_delay cap
                 return suggested.min(self.config.max_delay);
@@ -385,7 +389,10 @@ impl RetryPolicy {
 
         // Calculate exponential backoff
         let base_delay = self.config.initial_delay.as_secs_f64()
-            * self.config.backoff_multiplier.powi(self.current_attempt as i32);
+            * self
+                .config
+                .backoff_multiplier
+                .powi(self.current_attempt as i32);
 
         // Apply max delay cap
         let capped_delay = base_delay.min(self.config.max_delay.as_secs_f64());
@@ -419,10 +426,7 @@ impl RetryPolicy {
 }
 
 /// Helper to execute a future with retry logic
-pub async fn with_retry<F, Fut, T, E>(
-    mut policy: RetryPolicy,
-    mut operation: F,
-) -> Result<T, E>
+pub async fn with_retry<F, Fut, T, E>(mut policy: RetryPolicy, mut operation: F) -> Result<T, E>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,

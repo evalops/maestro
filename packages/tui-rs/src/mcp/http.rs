@@ -11,13 +11,13 @@ use std::time::Duration;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use reqwest::{header, Client};
-use tokio::sync::{mpsc, Mutex, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
+use super::client::McpError;
 use super::config::{expand_env_vars, McpServerConfig, McpTransport};
 use super::protocol::{
     ClientInfo, InitializeResult, McpRequest, McpResponse, McpTool, McpToolResult, ToolsListResult,
 };
-use super::client::McpError;
 
 /// HTTP-based MCP connection
 pub struct HttpConnection {
@@ -52,10 +52,9 @@ impl HttpConnection {
 
         // Build HTTP client with timeout
         let timeout = Duration::from_millis(config.timeout.unwrap_or(30_000));
-        let client = Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| McpError::ConnectionFailed(format!("Failed to create HTTP client: {}", e)))?;
+        let client = Client::builder().timeout(timeout).build().map_err(|e| {
+            McpError::ConnectionFailed(format!("Failed to create HTTP client: {}", e))
+        })?;
 
         Ok(Self {
             name: config.name.clone(),
@@ -76,9 +75,9 @@ impl HttpConnection {
         match self.config.transport {
             McpTransport::Http => self.connect_http().await,
             McpTransport::Sse => self.connect_sse().await,
-            McpTransport::Stdio => {
-                Err(McpError::ConnectionFailed("Use McpConnection for stdio".to_string()))
-            }
+            McpTransport::Stdio => Err(McpError::ConnectionFailed(
+                "Use McpConnection for stdio".to_string(),
+            )),
         }
     }
 
@@ -156,9 +155,9 @@ impl HttpConnection {
         let request = McpRequest::initialize(self.next_id(), &ClientInfo::default());
         let response = self.send_request(request).await?;
 
-        let _init_result: InitializeResult = response.result_as().map_err(|e| {
-            McpError::Protocol(format!("Invalid initialize response: {}", e))
-        })?;
+        let _init_result: InitializeResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid initialize response: {}", e)))?;
 
         // Send initialized notification
         let notification = serde_json::json!({
@@ -179,9 +178,9 @@ impl HttpConnection {
         let request = McpRequest::list_tools(self.next_id());
         let response = self.send_request(request).await?;
 
-        let tools_result: ToolsListResult = response.result_as().map_err(|e| {
-            McpError::Protocol(format!("Invalid tools/list response: {}", e))
-        })?;
+        let tools_result: ToolsListResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid tools/list response: {}", e)))?;
 
         self.tools = tools_result.tools;
         Ok(())
@@ -215,9 +214,9 @@ impl HttpConnection {
             return Err(McpError::RequestFailed(error.message));
         }
 
-        let result: McpToolResult = response.result_as().map_err(|e| {
-            McpError::Protocol(format!("Invalid tool result: {}", e))
-        })?;
+        let result: McpToolResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid tool result: {}", e)))?;
 
         Ok(result)
     }
@@ -235,7 +234,9 @@ impl HttpConnection {
     async fn send_http_request(&self, request: McpRequest) -> Result<McpResponse, McpError> {
         let url = format!("{}/message", self.base_url.trim_end_matches('/'));
 
-        let mut req = self.client.post(&url)
+        let mut req = self
+            .client
+            .post(&url)
             .header(header::CONTENT_TYPE, "application/json")
             .json(&request);
 
@@ -244,9 +245,10 @@ impl HttpConnection {
             req = req.header(key, expand_env_vars(value));
         }
 
-        let response = req.send().await.map_err(|e| {
-            McpError::RequestFailed(format!("HTTP request failed: {}", e))
-        })?;
+        let response = req
+            .send()
+            .await
+            .map_err(|e| McpError::RequestFailed(format!("HTTP request failed: {}", e)))?;
 
         if !response.status().is_success() {
             return Err(McpError::RequestFailed(format!(
@@ -255,9 +257,10 @@ impl HttpConnection {
             )));
         }
 
-        let mcp_response: McpResponse = response.json().await.map_err(|e| {
-            McpError::Protocol(format!("Failed to parse response: {}", e))
-        })?;
+        let mcp_response: McpResponse = response
+            .json()
+            .await
+            .map_err(|e| McpError::Protocol(format!("Failed to parse response: {}", e)))?;
 
         Ok(mcp_response)
     }
@@ -276,7 +279,9 @@ impl HttpConnection {
         // Send via HTTP POST (SSE is for receiving)
         let url = format!("{}/message", self.base_url.trim_end_matches('/'));
 
-        let mut req = self.client.post(&url)
+        let mut req = self
+            .client
+            .post(&url)
             .header(header::CONTENT_TYPE, "application/json")
             .json(&request);
 
@@ -285,15 +290,17 @@ impl HttpConnection {
             req = req.header(key, expand_env_vars(value));
         }
 
-        req.send().await.map_err(|e| {
-            McpError::RequestFailed(format!("SSE send failed: {}", e))
-        })?;
+        req.send()
+            .await
+            .map_err(|e| McpError::RequestFailed(format!("SSE send failed: {}", e)))?;
 
         // Wait for response via SSE stream
         let timeout = Duration::from_millis(self.config.timeout.unwrap_or(30_000));
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(McpError::Protocol("SSE response channel closed".to_string())),
+            Ok(Err(_)) => Err(McpError::Protocol(
+                "SSE response channel closed".to_string(),
+            )),
             Err(_) => {
                 // Remove from pending
                 let mut pending = self.pending_sse.lock().await;
@@ -307,7 +314,9 @@ impl HttpConnection {
     async fn send_notification(&self, value: &impl serde::Serialize) -> Result<(), McpError> {
         let url = format!("{}/message", self.base_url.trim_end_matches('/'));
 
-        let mut req = self.client.post(&url)
+        let mut req = self
+            .client
+            .post(&url)
             .header(header::CONTENT_TYPE, "application/json")
             .json(value);
 
@@ -316,9 +325,9 @@ impl HttpConnection {
             req = req.header(key, expand_env_vars(value));
         }
 
-        req.send().await.map_err(|e| {
-            McpError::RequestFailed(format!("Notification failed: {}", e))
-        })?;
+        req.send()
+            .await
+            .map_err(|e| McpError::RequestFailed(format!("Notification failed: {}", e)))?;
 
         Ok(())
     }

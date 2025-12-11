@@ -584,9 +584,16 @@ impl AppState {
             FromAgent::BatchStart { total } => {
                 self.status = Some(format!("Executing {} tools in parallel...", total));
             }
-            FromAgent::BatchEnd { total, successes, failures } => {
+            FromAgent::BatchEnd {
+                total,
+                successes,
+                failures,
+            } => {
                 if failures > 0 {
-                    self.status = Some(format!("Batch complete: {}/{} succeeded, {} failed", successes, total, failures));
+                    self.status = Some(format!(
+                        "Batch complete: {}/{} succeeded, {} failed",
+                        successes, total, failures
+                    ));
                 } else {
                     self.status = Some(format!("Batch complete: {} tools succeeded", total));
                 }

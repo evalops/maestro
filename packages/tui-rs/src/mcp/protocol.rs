@@ -311,7 +311,8 @@ mod tests {
 
     #[test]
     fn test_response_deserialize_error() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#;
         let resp: McpResponse = serde_json::from_str(json).unwrap();
         assert!(resp.is_error());
         assert_eq!(resp.error.as_ref().unwrap().code, -32600);

@@ -42,7 +42,10 @@ impl ConfigOption {
         Self {
             key: key.to_string(),
             name: name.to_string(),
-            value: options.get(current).map(|s| s.to_string()).unwrap_or_default(),
+            value: options
+                .get(current)
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
             options: options.into_iter().map(String::from).collect(),
             current_option: current,
             description: description.to_string(),
@@ -342,8 +345,7 @@ impl ConfigSelector {
         frame.render_widget(block, modal_area);
 
         // Layout: settings list + description
-        let chunks =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(inner);
+        let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(inner);
 
         // Build list items grouped by category
         let mut items: Vec<ListItem> = Vec::new();
@@ -390,7 +392,11 @@ impl ConfigSelector {
             let line = Line::from(vec![
                 name_span,
                 Span::styled(
-                    format!("{:>width$}", value_str, width = 20 - opt.value.len().min(15)),
+                    format!(
+                        "{:>width$}",
+                        value_str,
+                        width = 20 - opt.value.len().min(15)
+                    ),
                     value_style,
                 ),
             ]);
@@ -513,7 +519,11 @@ mod tests {
         let mut selector = ConfigSelector::new();
 
         selector.set_option("sandbox_mode", 2);
-        let opt = selector.options.iter().find(|o| o.key == "sandbox_mode").unwrap();
+        let opt = selector
+            .options
+            .iter()
+            .find(|o| o.key == "sandbox_mode")
+            .unwrap();
         assert_eq!(opt.value, "strict");
     }
 
