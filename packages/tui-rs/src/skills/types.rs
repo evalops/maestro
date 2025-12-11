@@ -205,6 +205,91 @@ mod tests {
     }
 
     #[test]
+    fn test_skill_definition_defaults() {
+        let skill = SkillDefinition::new("test", "Test");
+
+        assert_eq!(skill.id, "test");
+        assert_eq!(skill.name, "Test");
+        assert!(skill.description.is_empty());
+        assert_eq!(skill.source, SkillSource::User);
+        assert!(skill.enabled);
+        assert!(skill.version.is_none());
+        assert!(skill.author.is_none());
+        assert!(skill.metadata.is_empty());
+        assert!(skill.system_prompt_additions.is_none());
+        assert!(skill.provided_tools.is_empty());
+        assert!(skill.trigger_patterns.is_empty());
+    }
+
+    #[test]
+    fn test_skill_definition_with_system_prompt() {
+        let skill = SkillDefinition::new("test", "Test")
+            .with_system_prompt("You are an expert at testing.");
+
+        assert_eq!(
+            skill.system_prompt_additions,
+            Some("You are an expert at testing.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_skill_source_variants() {
+        assert_eq!(SkillSource::Builtin, SkillSource::Builtin);
+        assert_ne!(SkillSource::Builtin, SkillSource::User);
+        assert_ne!(SkillSource::User, SkillSource::Plugin);
+        assert_ne!(SkillSource::Plugin, SkillSource::Remote);
+    }
+
+    #[test]
+    fn test_skill_source_serialization() {
+        let json = serde_json::to_string(&SkillSource::Builtin).unwrap();
+        assert_eq!(json, "\"builtin\"");
+
+        let json = serde_json::to_string(&SkillSource::User).unwrap();
+        assert_eq!(json, "\"user\"");
+
+        let json = serde_json::to_string(&SkillSource::Plugin).unwrap();
+        assert_eq!(json, "\"plugin\"");
+
+        let json = serde_json::to_string(&SkillSource::Remote).unwrap();
+        assert_eq!(json, "\"remote\"");
+    }
+
+    #[test]
+    fn test_skill_source_deserialization() {
+        let builtin: SkillSource = serde_json::from_str("\"builtin\"").unwrap();
+        assert_eq!(builtin, SkillSource::Builtin);
+
+        let user: SkillSource = serde_json::from_str("\"user\"").unwrap();
+        assert_eq!(user, SkillSource::User);
+    }
+
+    #[test]
+    fn test_skill_activation_state_variants() {
+        assert_eq!(
+            SkillActivationState::Inactive,
+            SkillActivationState::Inactive
+        );
+        assert_ne!(SkillActivationState::Inactive, SkillActivationState::Active);
+        assert_ne!(
+            SkillActivationState::Activating,
+            SkillActivationState::Deactivating
+        );
+    }
+
+    #[test]
+    fn test_skill_activation_state_serialization() {
+        let json = serde_json::to_string(&SkillActivationState::Inactive).unwrap();
+        assert_eq!(json, "\"inactive\"");
+
+        let json = serde_json::to_string(&SkillActivationState::Active).unwrap();
+        assert_eq!(json, "\"active\"");
+
+        let json = serde_json::to_string(&SkillActivationState::Failed).unwrap();
+        assert_eq!(json, "\"failed\"");
+    }
+
+    #[test]
     fn test_active_skill_lifecycle() {
         let definition = SkillDefinition::new("test", "Test Skill");
         let mut active = ActiveSkill::from_definition(definition);
@@ -222,5 +307,191 @@ mod tests {
 
         active.deactivate();
         assert!(!active.is_active());
+    }
+
+    #[test]
+    fn test_active_skill_from_definition() {
+        let definition = SkillDefinition::new("test", "Test")
+            .with_description("A test skill")
+            .with_source(SkillSource::Plugin);
+
+        let active = ActiveSkill::from_definition(definition);
+
+        assert_eq!(active.definition.id, "test");
+        assert_eq!(active.definition.name, "Test");
+        assert_eq!(active.definition.source, SkillSource::Plugin);
+        assert_eq!(active.state, SkillActivationState::Inactive);
+        assert!(active.activated_at.is_none());
+        assert_eq!(active.usage_count, 0);
+        assert!(active.last_error.is_none());
+    }
+
+    #[test]
+    fn test_active_skill_activated_at_timestamp() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.activate();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let activated = active.activated_at.unwrap();
+        assert!(activated <= now);
+        assert!(activated > now - 1000); // Within last second
+    }
+
+    #[test]
+    fn test_active_skill_deactivate_preserves_data() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        active.activate();
+        active.record_usage();
+        active.record_usage();
+        active.record_usage();
+
+        let activated_at = active.activated_at;
+
+        active.deactivate();
+
+        assert!(!active.is_active());
+        // These should be preserved
+        assert_eq!(active.usage_count, 3);
+        assert_eq!(active.activated_at, activated_at);
+    }
+
+    #[test]
+    fn test_skill_event_registered() {
+        let event = SkillEvent::Registered {
+            skill_id: "test".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"registered\""));
+        assert!(json.contains("\"skill_id\":\"test\""));
+    }
+
+    #[test]
+    fn test_skill_event_activated() {
+        let event = SkillEvent::Activated {
+            skill_id: "frontend".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"activated\""));
+    }
+
+    #[test]
+    fn test_skill_event_deactivated() {
+        let event = SkillEvent::Deactivated {
+            skill_id: "frontend".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"deactivated\""));
+    }
+
+    #[test]
+    fn test_skill_event_used() {
+        let event = SkillEvent::Used {
+            skill_id: "frontend".to_string(),
+            context: "designing a button".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"used\""));
+        assert!(json.contains("\"context\":\"designing a button\""));
+    }
+
+    #[test]
+    fn test_skill_event_activation_failed() {
+        let event = SkillEvent::ActivationFailed {
+            skill_id: "broken".to_string(),
+            error: "Missing dependency".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"activation_failed\""));
+        assert!(json.contains("\"error\":\"Missing dependency\""));
+    }
+
+    #[test]
+    fn test_skill_definition_serialization() {
+        let skill = SkillDefinition::new("test", "Test Skill")
+            .with_description("A test")
+            .with_source(SkillSource::Builtin)
+            .with_tools(vec!["read".to_string()])
+            .with_triggers(vec!["test".to_string()]);
+
+        let json = serde_json::to_string(&skill).unwrap();
+        let deserialized: SkillDefinition = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, skill.id);
+        assert_eq!(deserialized.name, skill.name);
+        assert_eq!(deserialized.description, skill.description);
+        assert_eq!(deserialized.source, skill.source);
+        assert_eq!(deserialized.provided_tools, skill.provided_tools);
+        assert_eq!(deserialized.trigger_patterns, skill.trigger_patterns);
+    }
+
+    #[test]
+    fn test_active_skill_serialization() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+        active.activate();
+        active.record_usage();
+
+        let json = serde_json::to_string(&active).unwrap();
+        let deserialized: ActiveSkill = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.definition.id, "test");
+        assert_eq!(deserialized.state, SkillActivationState::Active);
+        assert_eq!(deserialized.usage_count, 1);
+    }
+
+    #[test]
+    fn test_skill_definition_with_metadata() {
+        let mut skill = SkillDefinition::new("test", "Test");
+        skill
+            .metadata
+            .insert("key1".to_string(), serde_json::json!("value1"));
+        skill
+            .metadata
+            .insert("key2".to_string(), serde_json::json!(42));
+
+        assert_eq!(skill.metadata.len(), 2);
+        assert_eq!(
+            skill.metadata.get("key1").unwrap(),
+            &serde_json::json!("value1")
+        );
+        assert_eq!(skill.metadata.get("key2").unwrap(), &serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_skill_definition_with_version_and_author() {
+        let mut skill = SkillDefinition::new("test", "Test");
+        skill.version = Some("1.0.0".to_string());
+        skill.author = Some("Test Author".to_string());
+
+        assert_eq!(skill.version, Some("1.0.0".to_string()));
+        assert_eq!(skill.author, Some("Test Author".to_string()));
+    }
+
+    #[test]
+    fn test_active_skill_last_error() {
+        let definition = SkillDefinition::new("test", "Test");
+        let mut active = ActiveSkill::from_definition(definition);
+
+        assert!(active.last_error.is_none());
+
+        active.last_error = Some("Something went wrong".to_string());
+        active.state = SkillActivationState::Failed;
+
+        assert!(active.last_error.is_some());
+        assert_eq!(active.last_error.unwrap(), "Something went wrong");
+        assert_eq!(active.state, SkillActivationState::Failed);
     }
 }

@@ -472,6 +472,33 @@ mod tests {
     }
 
     #[test]
+    fn test_vertex_client_with_access_token() {
+        let client = VertexAiClient::new(
+            "my-project",
+            "europe-west4",
+            None,
+            Some("access-token-123".to_string()),
+        );
+        assert_eq!(client.project_id, "my-project");
+        assert_eq!(client.region, "europe-west4");
+        assert!(client.api_key.is_none());
+        assert!(client.access_token.is_some());
+    }
+
+    #[test]
+    fn test_vertex_client_with_both_auth_methods() {
+        let client = VertexAiClient::new(
+            "test-project",
+            "us-central1",
+            Some("api-key".to_string()),
+            Some("access-token".to_string()),
+        );
+        // Both are allowed, access_token takes precedence in actual requests
+        assert!(client.api_key.is_some());
+        assert!(client.access_token.is_some());
+    }
+
+    #[test]
     fn test_message_to_content_text() {
         let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
         let msg = Message {
@@ -498,6 +525,97 @@ mod tests {
 
         let content = client.message_to_content(&msg);
         assert_eq!(content.role, Some("model".to_string()));
+    }
+
+    #[test]
+    fn test_message_to_content_system_role() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let msg = Message {
+            role: Role::System,
+            content: MessageContent::Text("You are helpful".to_string()),
+        };
+
+        let content = client.message_to_content(&msg);
+        // System messages are converted to user role (system is handled via system_instruction)
+        assert_eq!(content.role, Some("user".to_string()));
+    }
+
+    #[test]
+    fn test_message_to_content_with_blocks() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let msg = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "Let me help.".to_string(),
+                },
+                ContentBlock::Thinking {
+                    thinking: "I should analyze this.".to_string(),
+                },
+            ]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert_eq!(content.role, Some("model".to_string()));
+        assert_eq!(content.parts.len(), 2);
+
+        match &content.parts[0] {
+            Part::Text { text } => assert_eq!(text, "Let me help."),
+            _ => panic!("Expected Text part"),
+        }
+
+        match &content.parts[1] {
+            Part::Text { text } => assert!(text.contains("<thinking>")),
+            _ => panic!("Expected Text part for thinking"),
+        }
+    }
+
+    #[test]
+    fn test_message_to_content_with_tool_use() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let msg = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "call-123".to_string(),
+                name: "read_file".to_string(),
+                input: json!({"path": "/tmp/test.txt"}),
+            }]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert_eq!(content.parts.len(), 1);
+
+        match &content.parts[0] {
+            Part::FunctionCall { function_call } => {
+                assert_eq!(function_call.name, "read_file");
+                assert_eq!(function_call.args["path"], "/tmp/test.txt");
+            }
+            _ => panic!("Expected FunctionCall part"),
+        }
+    }
+
+    #[test]
+    fn test_message_to_content_with_tool_result() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "read_file".to_string(),
+                content: "file contents here".to_string(),
+                is_error: Some(false),
+            }]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert_eq!(content.parts.len(), 1);
+
+        match &content.parts[0] {
+            Part::FunctionResponse { function_response } => {
+                assert_eq!(function_response.name, "read_file");
+                assert_eq!(function_response.response["result"], "file contents here");
+            }
+            _ => panic!("Expected FunctionResponse part"),
+        }
     }
 
     #[test]
@@ -530,6 +648,56 @@ mod tests {
     }
 
     #[test]
+    fn test_build_request_with_multiple_tools() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            tools: vec![
+                Tool::new("read", "Read a file").with_schema(json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}}
+                })),
+                Tool::new("write", "Write a file").with_schema(json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}}
+                })),
+            ],
+            ..Default::default()
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        let tools = request.tools.unwrap();
+        assert_eq!(tools[0].function_declarations.len(), 2);
+        assert_eq!(tools[0].function_declarations[0].name, "read");
+        assert_eq!(tools[0].function_declarations[1].name, "write");
+    }
+
+    #[test]
+    fn test_build_request_without_tools() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            tools: vec![],
+            ..Default::default()
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        assert!(request.tools.is_none());
+    }
+
+    #[test]
     fn test_build_request_generation_config() {
         let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
         let messages = vec![Message {
@@ -548,5 +716,135 @@ mod tests {
         let gen_config = request.generation_config.unwrap();
         assert_eq!(gen_config.max_output_tokens, Some(2048));
         assert_eq!(gen_config.temperature, Some(0.9));
+    }
+
+    #[test]
+    fn test_build_request_with_system_instruction() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            system: Some("You are a helpful coding assistant.".to_string()),
+            ..Default::default()
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        assert!(request.system_instruction.is_some());
+        let sys = request.system_instruction.unwrap();
+        assert!(sys.role.is_none()); // system_instruction doesn't have role
+        assert_eq!(sys.parts.len(), 1);
+        match &sys.parts[0] {
+            Part::Text { text } => assert_eq!(text, "You are a helpful coding assistant."),
+            _ => panic!("Expected Text part"),
+        }
+    }
+
+    #[test]
+    fn test_build_request_without_system() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            system: None,
+            ..Default::default()
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        assert!(request.system_instruction.is_none());
+    }
+
+    #[test]
+    fn test_build_request_multiple_messages() {
+        let client = VertexAiClient::new("test", "us-central1", Some("key".to_string()), None);
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("Hello".to_string()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("Hi! How can I help?".to_string()),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("Write some code".to_string()),
+            },
+        ];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            ..Default::default()
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        assert_eq!(request.contents.len(), 3);
+        assert_eq!(request.contents[0].role, Some("user".to_string()));
+        assert_eq!(request.contents[1].role, Some("model".to_string()));
+        assert_eq!(request.contents[2].role, Some("user".to_string()));
+    }
+
+    #[test]
+    fn test_default_region_constant() {
+        assert_eq!(DEFAULT_REGION, "us-central1");
+    }
+
+    #[test]
+    fn test_vertex_response_parsing() {
+        let json_str = r#"{
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "Hello!"}]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5
+            }
+        }"#;
+
+        let response: VertexResponse = serde_json::from_str(json_str).unwrap();
+        assert!(response.candidates.is_some());
+        let candidates = response.candidates.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].finish_reason, Some("STOP".to_string()));
+
+        let usage = response.usage_metadata.unwrap();
+        assert_eq!(usage.prompt_token_count, Some(10));
+        assert_eq!(usage.candidates_token_count, Some(5));
+    }
+
+    #[test]
+    fn test_vertex_response_with_function_call() {
+        let json_str = r#"{
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": "read_file",
+                            "args": {"path": "/tmp/test.txt"}
+                        }
+                    }]
+                },
+                "finishReason": "TOOL_USE"
+            }]
+        }"#;
+
+        let response: VertexResponse = serde_json::from_str(json_str).unwrap();
+        let candidates = response.candidates.unwrap();
+        assert_eq!(candidates[0].finish_reason, Some("TOOL_USE".to_string()));
     }
 }

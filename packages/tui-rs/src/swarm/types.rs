@@ -419,4 +419,357 @@ mod tests {
         state.failed_tasks.insert("2".into());
         assert_eq!(state.progress(), (2, 3));
     }
+
+    // ========== SwarmStatus Tests ==========
+
+    #[test]
+    fn test_swarm_status_default() {
+        assert_eq!(SwarmStatus::default(), SwarmStatus::Initializing);
+    }
+
+    #[test]
+    fn test_swarm_status_serialization() {
+        let status = SwarmStatus::Running;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"running\"");
+
+        let status: SwarmStatus = serde_json::from_str("\"completed\"").unwrap();
+        assert_eq!(status, SwarmStatus::Completed);
+    }
+
+    // ========== TaskStatus Tests ==========
+
+    #[test]
+    fn test_task_status_default() {
+        assert_eq!(TaskStatus::default(), TaskStatus::Pending);
+    }
+
+    #[test]
+    fn test_task_status_variants() {
+        assert_ne!(TaskStatus::Pending, TaskStatus::Running);
+        assert_ne!(TaskStatus::Running, TaskStatus::Completed);
+        assert_ne!(TaskStatus::Completed, TaskStatus::Failed);
+        assert_ne!(TaskStatus::Failed, TaskStatus::Skipped);
+    }
+
+    // ========== TaskPriority Tests ==========
+
+    #[test]
+    fn test_task_priority_default() {
+        assert_eq!(TaskPriority::default(), TaskPriority::Normal);
+    }
+
+    #[test]
+    fn test_task_priority_serialization() {
+        let priority = TaskPriority::High;
+        let json = serde_json::to_string(&priority).unwrap();
+        assert_eq!(json, "\"high\"");
+
+        let priority: TaskPriority = serde_json::from_str("\"critical\"").unwrap();
+        assert_eq!(priority, TaskPriority::Critical);
+    }
+
+    // ========== SwarmTask Tests ==========
+
+    #[test]
+    fn test_swarm_task_new() {
+        let task = SwarmTask::new("task-1", "Test Task");
+        assert_eq!(task.id, "task-1");
+        assert_eq!(task.title, "Test Task");
+        assert!(task.description.is_empty());
+        assert_eq!(task.priority, TaskPriority::Normal);
+        assert_eq!(task.status, TaskStatus::Pending);
+        assert!(task.dependencies.is_empty());
+        assert_eq!(task.complexity, 1);
+        assert!(task.assigned_agent.is_none());
+        assert!(task.result.is_none());
+        assert!(task.files.is_empty());
+        assert!(task.tags.is_empty());
+    }
+
+    #[test]
+    fn test_swarm_task_builder() {
+        let task = SwarmTask::new("task-1", "Test")
+            .with_description("A test task")
+            .with_dependencies(vec!["dep-1".into(), "dep-2".into()])
+            .with_priority(TaskPriority::High)
+            .with_complexity(7);
+
+        assert_eq!(task.description, "A test task");
+        assert_eq!(task.dependencies.len(), 2);
+        assert_eq!(task.priority, TaskPriority::High);
+        assert_eq!(task.complexity, 7);
+    }
+
+    #[test]
+    fn test_swarm_task_complexity_clamped() {
+        let task1 = SwarmTask::new("1", "T").with_complexity(0);
+        assert_eq!(task1.complexity, 1);
+
+        let task2 = SwarmTask::new("2", "T").with_complexity(15);
+        assert_eq!(task2.complexity, 10);
+
+        let task3 = SwarmTask::new("3", "T").with_complexity(5);
+        assert_eq!(task3.complexity, 5);
+    }
+
+    #[test]
+    fn test_swarm_task_can_start_no_deps() {
+        let task = SwarmTask::new("task-1", "Test");
+        let completed = HashSet::new();
+        assert!(task.can_start(&completed));
+    }
+
+    #[test]
+    fn test_swarm_task_can_start_with_status() {
+        let mut task = SwarmTask::new("task-1", "Test");
+        let completed = HashSet::new();
+
+        assert!(task.can_start(&completed));
+
+        task.status = TaskStatus::Running;
+        assert!(!task.can_start(&completed));
+
+        task.status = TaskStatus::Completed;
+        assert!(!task.can_start(&completed));
+    }
+
+    // ========== TaskResult Tests ==========
+
+    #[test]
+    fn test_task_result_success() {
+        let result = TaskResult {
+            success: true,
+            output: "Task completed successfully".to_string(),
+            files_modified: vec!["src/main.rs".to_string()],
+            duration_ms: 1500,
+            error: None,
+        };
+
+        assert!(result.success);
+        assert!(result.error.is_none());
+        assert_eq!(result.files_modified.len(), 1);
+    }
+
+    #[test]
+    fn test_task_result_failure() {
+        let result = TaskResult {
+            success: false,
+            output: String::new(),
+            files_modified: Vec::new(),
+            duration_ms: 500,
+            error: Some("Failed to compile".to_string()),
+        };
+
+        assert!(!result.success);
+        assert!(result.error.is_some());
+    }
+
+    // ========== SwarmPlan Tests ==========
+
+    #[test]
+    fn test_swarm_plan_default() {
+        let plan = SwarmPlan::default();
+        assert_eq!(plan.title, "Untitled Plan");
+        assert!(plan.goal.is_empty());
+        assert!(plan.tasks.is_empty());
+        assert_eq!(plan.max_concurrency, 3);
+        assert!(!plan.continue_on_failure);
+    }
+
+    #[test]
+    fn test_swarm_plan_builder() {
+        let plan = SwarmPlan::new("My Plan")
+            .with_goal("Complete the project")
+            .with_max_concurrency(5)
+            .with_tasks(vec![
+                SwarmTask::new("1", "First"),
+                SwarmTask::new("2", "Second"),
+            ]);
+
+        assert_eq!(plan.title, "My Plan");
+        assert_eq!(plan.goal, "Complete the project");
+        assert_eq!(plan.max_concurrency, 5);
+        assert_eq!(plan.tasks.len(), 2);
+    }
+
+    #[test]
+    fn test_swarm_plan_max_concurrency_minimum() {
+        let plan = SwarmPlan::new("Test").with_max_concurrency(0);
+        assert_eq!(plan.max_concurrency, 1);
+    }
+
+    #[test]
+    fn test_swarm_plan_get_task() {
+        let plan = SwarmPlan::new("Test").with_tasks(vec![
+            SwarmTask::new("task-1", "First"),
+            SwarmTask::new("task-2", "Second"),
+        ]);
+
+        assert!(plan.get_task("task-1").is_some());
+        assert!(plan.get_task("task-2").is_some());
+        assert!(plan.get_task("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_swarm_plan_get_task_mut() {
+        let mut plan = SwarmPlan::new("Test").with_tasks(vec![SwarmTask::new("task-1", "First")]);
+
+        {
+            let task = plan.get_task_mut("task-1").unwrap();
+            task.status = TaskStatus::Running;
+        }
+
+        assert_eq!(plan.get_task("task-1").unwrap().status, TaskStatus::Running);
+    }
+
+    // ========== SwarmConfig Tests ==========
+
+    #[test]
+    fn test_swarm_config_default() {
+        let config = SwarmConfig::default();
+        assert_eq!(config.max_concurrency, 3);
+        assert!(!config.continue_on_failure);
+        assert_eq!(config.task_timeout_ms, Some(300_000));
+        assert!(config.model.is_none());
+        assert!(config.system_prompt.is_none());
+    }
+
+    // ========== SwarmEvent Tests ==========
+
+    #[test]
+    fn test_swarm_event_started() {
+        let event = SwarmEvent::Started {
+            plan_title: "Test Plan".to_string(),
+            total_tasks: 5,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"started\""));
+        assert!(json.contains("\"plan_title\":\"Test Plan\""));
+        assert!(json.contains("\"total_tasks\":5"));
+    }
+
+    #[test]
+    fn test_swarm_event_task_started() {
+        let event = SwarmEvent::TaskStarted {
+            task_id: "task-1".to_string(),
+            task_title: "First Task".to_string(),
+            agent_id: "agent-123".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"task_started\""));
+    }
+
+    #[test]
+    fn test_swarm_event_completed() {
+        let event = SwarmEvent::Completed {
+            successful: 8,
+            failed: 1,
+            skipped: 1,
+            duration_ms: 60000,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"completed\""));
+        assert!(json.contains("\"successful\":8"));
+        assert!(json.contains("\"failed\":1"));
+    }
+
+    #[test]
+    fn test_swarm_event_cancelled() {
+        let event = SwarmEvent::Cancelled {
+            reason: "User requested".to_string(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"cancelled\""));
+    }
+
+    // ========== SwarmState Tests ==========
+
+    #[test]
+    fn test_swarm_state_new() {
+        let plan = SwarmPlan::new("Test");
+        let config = SwarmConfig::default();
+        let state = SwarmState::new(plan, config);
+
+        assert_eq!(state.status, SwarmStatus::Initializing);
+        assert!(state.completed_tasks.is_empty());
+        assert!(state.failed_tasks.is_empty());
+        assert!(state.running_tasks.is_empty());
+        assert!(state.started_at.is_none());
+        assert!(state.events.is_empty());
+    }
+
+    #[test]
+    fn test_swarm_state_is_done() {
+        let plan = SwarmPlan::new("Test");
+        let config = SwarmConfig::default();
+        let mut state = SwarmState::new(plan, config);
+
+        assert!(!state.is_done());
+
+        state.status = SwarmStatus::Running;
+        assert!(!state.is_done());
+
+        state.status = SwarmStatus::Completed;
+        assert!(state.is_done());
+
+        state.status = SwarmStatus::Cancelled;
+        assert!(state.is_done());
+
+        state.status = SwarmStatus::Failed;
+        assert!(state.is_done());
+    }
+
+    #[test]
+    fn test_swarm_state_can_start_more() {
+        let plan = SwarmPlan::new("Test");
+        let config = SwarmConfig {
+            max_concurrency: 2,
+            ..Default::default()
+        };
+        let mut state = SwarmState::new(plan, config);
+        state.status = SwarmStatus::Running;
+
+        assert!(state.can_start_more());
+
+        state
+            .running_tasks
+            .insert("task-1".into(), "agent-1".into());
+        assert!(state.can_start_more());
+
+        state
+            .running_tasks
+            .insert("task-2".into(), "agent-2".into());
+        assert!(!state.can_start_more()); // At max concurrency
+    }
+
+    #[test]
+    fn test_swarm_state_can_start_more_when_done() {
+        let plan = SwarmPlan::new("Test");
+        let config = SwarmConfig::default();
+        let mut state = SwarmState::new(plan, config);
+
+        state.status = SwarmStatus::Completed;
+        assert!(!state.can_start_more());
+
+        state.status = SwarmStatus::Cancelled;
+        assert!(!state.can_start_more());
+    }
+
+    #[test]
+    fn test_swarm_state_can_start_more_not_running() {
+        let plan = SwarmPlan::new("Test");
+        let config = SwarmConfig::default();
+        let mut state = SwarmState::new(plan, config);
+
+        state.status = SwarmStatus::Initializing;
+        assert!(!state.can_start_more());
+
+        state.status = SwarmStatus::Planning;
+        assert!(!state.can_start_more());
+    }
 }
