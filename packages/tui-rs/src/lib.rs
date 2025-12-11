@@ -321,6 +321,10 @@ pub mod confirm_dialog;
 /// Clickable links in modern terminals.
 pub mod hyperlink;
 
+/// ASCII animation system.
+/// Frame-based animations with built-in presets.
+pub mod ascii_animation;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1135,4 +1139,28 @@ pub use hyperlink::{
     strip_hyperlinks,          // Remove hyperlink formatting
     url_span,                  // Span with URL as label
     wrap_in_link,              // Wrap text in link
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ASCII ANIMATION EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// ASCII animation system with built-in presets.
+pub use ascii_animation::{
+    // Built-in animations
+    bouncing_ball,
+    box_spin,
+    clock,
+    earth,
+    progress_bar,
+    pulse_ascii,
+    spinner_dots,
+    spinner_grow,
+    spinner_line,
+    thinking,
+    wave,
+    AnimationPreset, // Built-in animation presets
+    // Core
+    AsciiAnimation, // Main animation struct
+    DEFAULT_FRAME_DURATION,
 };
