@@ -1439,6 +1439,29 @@ export async function main(args: string[]) {
 	// The composer manager handles spawning sub-agents and coordinating workflows
 	composerManager.initialize(agent, systemPrompt, allTools, process.cwd());
 
+	// Activate composer if specified via CLI flags
+	// --readonly activates the "explore" composer for read-only mode
+	// --composer <name> activates a specific composer profile
+	if (parsed.readonly) {
+		const success = composerManager.activate("explore", process.cwd());
+		if (!success) {
+			console.warn(
+				chalk.yellow(
+					'Warning: Could not activate read-only mode. The "explore" composer may not be available.',
+				),
+			);
+		}
+	} else if (parsed.composer) {
+		const success = composerManager.activate(parsed.composer, process.cwd());
+		if (!success) {
+			console.warn(
+				chalk.yellow(
+					`Warning: Could not activate composer "${parsed.composer}". Check that it exists.`,
+				),
+			);
+		}
+	}
+
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 11.5: TypeScript Hooks Initialization
 	// ─────────────────────────────────────────────────────────────────────────────

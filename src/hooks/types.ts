@@ -26,7 +26,8 @@ export type HookEventType =
 	| "Overflow"
 	| "PreMessage"
 	| "PostMessage"
-	| "OnError";
+	| "OnError"
+	| "Branch";
 
 /**
  * Base hook input shared across all hook types.
@@ -275,6 +276,21 @@ export interface OnErrorHookInput extends HookInputBase {
 }
 
 /**
+ * Input for Branch hooks - called when a session branch is created.
+ */
+export interface BranchHookInput extends HookInputBase {
+	hook_event_name: "Branch";
+	/** Session ID of the parent session */
+	parent_session_id?: string;
+	/** Index of the message being branched from */
+	branch_from_index: number;
+	/** Number of messages being kept in the new branch */
+	messages_kept: number;
+	/** The new session ID for the branched session */
+	new_session_id?: string;
+}
+
+/**
  * Union of all hook input types.
  */
 export type HookInput =
@@ -293,7 +309,8 @@ export type HookInput =
 	| OverflowHookInput
 	| PreMessageHookInput
 	| PostMessageHookInput
-	| OnErrorHookInput;
+	| OnErrorHookInput
+	| BranchHookInput;
 
 /**
  * Permission decision that hooks can return.
@@ -425,6 +442,19 @@ export interface PermissionRequestHookOutput {
 }
 
 /**
+ * Hook-specific output for Branch events.
+ */
+export interface BranchHookOutput {
+	hookEventName: "Branch";
+	/** If true, skip the default conversation restore behavior */
+	skipConversationRestore?: boolean;
+	/** Optional git ref to checkout when branching */
+	gitCheckout?: string;
+	/** Custom message to display after branching */
+	message?: string;
+}
+
+/**
  * Union of all hook-specific outputs.
  */
 export type HookSpecificOutput =
@@ -436,7 +466,8 @@ export type HookSpecificOutput =
 	| SubagentStartHookOutput
 	| SubagentStopHookOutput
 	| UserPromptSubmitHookOutput
-	| PermissionRequestHookOutput;
+	| PermissionRequestHookOutput
+	| BranchHookOutput;
 
 /**
  * JSON output format that hooks should return.

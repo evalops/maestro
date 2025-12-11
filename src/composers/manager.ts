@@ -27,6 +27,9 @@ export class ComposerManager extends EventEmitter {
 	private baseSystemPrompt = "";
 	private baseTools: AgentTool[] = [];
 	private baseModel: Model<Api> | null = null;
+	private baseTemperature: number | undefined = undefined;
+	private baseTopP: number | undefined = undefined;
+	private baseThinkingLevel: string | undefined = undefined;
 	private agent: Agent | null = null;
 
 	/**
@@ -42,6 +45,9 @@ export class ComposerManager extends EventEmitter {
 		this.baseSystemPrompt = baseSystemPrompt;
 		this.baseTools = baseTools;
 		this.baseModel = agent.state.model;
+		this.baseTemperature = agent.state.temperature;
+		this.baseTopP = agent.state.topP;
+		this.baseThinkingLevel = agent.state.thinkingLevel;
 		this.state.available = loadComposers(projectRoot);
 	}
 
@@ -104,6 +110,23 @@ export class ComposerManager extends EventEmitter {
 			// Restore base model if it was changed
 			if (this.baseModel) {
 				this.agent.setModel(this.baseModel);
+			}
+
+			// Restore base temperature and topP
+			this.agent.setTemperature(this.baseTemperature);
+			this.agent.setTopP(this.baseTopP);
+
+			// Restore base thinking level
+			if (this.baseThinkingLevel !== undefined) {
+				this.agent.setThinkingLevel(
+					this.baseThinkingLevel as
+						| "off"
+						| "minimal"
+						| "low"
+						| "medium"
+						| "high"
+						| "max",
+				);
 			}
 		}
 
@@ -247,6 +270,21 @@ export class ComposerManager extends EventEmitter {
 					error: e instanceof Error ? e.message : String(e),
 				});
 			}
+		}
+
+		// Apply temperature if specified
+		if (composer.temperature !== undefined) {
+			this.agent.setTemperature(composer.temperature);
+		}
+
+		// Apply topP if specified
+		if (composer.topP !== undefined) {
+			this.agent.setTopP(composer.topP);
+		}
+
+		// Apply thinking level if specified
+		if (composer.thinkingLevel !== undefined) {
+			this.agent.setThinkingLevel(composer.thinkingLevel);
 		}
 
 		this.state.active = composer;

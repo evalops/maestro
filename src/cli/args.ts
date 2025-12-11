@@ -37,6 +37,10 @@ export interface Args {
 	profile?: string;
 	/** CLI config overrides in key=value format */
 	configOverrides?: string[];
+	/** Start in read-only mode (activates explore composer) */
+	readonly?: boolean;
+	/** Composer profile to activate on startup */
+	composer?: string;
 }
 
 const COMMANDS = new Set([
@@ -154,6 +158,10 @@ export function parseArgs(args: string[]): Args {
 			if (toolNames.length > 0) {
 				result.tools = toolNames;
 			}
+		} else if (arg === "--readonly" || arg === "--read-only-mode") {
+			result.readonly = true;
+		} else if (arg === "--composer" && i + 1 < args.length) {
+			result.composer = args[++i];
 		} else if (arg === "--profile" && i + 1 < args.length) {
 			result.profile = args[++i];
 		} else if (arg === "--config" && i + 1 < args.length) {
