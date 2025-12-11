@@ -14,26 +14,48 @@ import { PANEL_WIDTHS, responsiveWidth } from "./utils/layout.js";
 /** Tool execution status for visual display */
 type ToolStatus = "running" | "done" | "error" | "waiting";
 
-/** Tool icon glyphs (Unicode, no emoji) */
+/** Tool icon glyphs - Claude Code style (geometric, purposeful) */
 const TOOL_ICONS: Record<string, string> = {
-	bash: "*",
+	bash: "⬢",
+	edit: "✎",
+	read: "◉",
+	write: "◎",
+	task: "◆",
+	glob: "◇",
+	grep: "⊙",
+	webfetch: "⊕",
+	websearch: "⊛",
+	notebookedit: "▣",
+	todowrite: "☑",
+	default: "●",
+};
+
+/** Fallback ASCII icons for low-unicode terminals */
+const TOOL_ICONS_ASCII: Record<string, string> = {
+	bash: "$",
 	edit: "~",
 	read: ">",
 	write: "+",
 	task: "?",
 	glob: "@",
 	grep: "#",
+	webfetch: "^",
+	websearch: "*",
+	notebookedit: "#",
+	todowrite: "x",
 	default: "*",
 };
 
-/** Status badge labels and colors */
-const STATUS_CONFIG: Record<ToolStatus, { label: string; color: ThemeColor }> =
-	{
-		running: { label: "[...]", color: "warning" },
-		done: { label: "[done]", color: "success" },
-		error: { label: "[err]", color: "error" },
-		waiting: { label: "[wait]", color: "warning" },
-	};
+/** Status badge config - Claude Code style (minimal, semantic) */
+const STATUS_CONFIG: Record<
+	ToolStatus,
+	{ label: string; glyph: string; color: ThemeColor }
+> = {
+	running: { label: "running", glyph: "◐", color: "warning" },
+	done: { label: "done", glyph: "●", color: "success" },
+	error: { label: "error", glyph: "✕", color: "error" },
+	waiting: { label: "waiting", glyph: "◑", color: "warning" },
+};
 
 /** Duration for border flash effect in ms */
 const FLASH_DURATION_MS = 400;
@@ -149,7 +171,12 @@ export class ToolExecutionComponent extends Container {
 		const icon = this.getToolIcon();
 		const label = `${icon} ${this.toolName.toLowerCase()}`;
 		const status = this.getStatus();
-		const { label: badge, color: badgeColor } = STATUS_CONFIG[status];
+		const {
+			label: statusLabel,
+			glyph,
+			color: badgeColor,
+		} = STATUS_CONFIG[status];
+		const badge = `${glyph} ${statusLabel}`;
 
 		return buildTopLineWithBadge(this.panelWidth(), {
 			style: "square",
