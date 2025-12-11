@@ -225,7 +225,8 @@ impl Keymap {
 
     /// Add a simple single-key binding.
     pub fn bind_key(&mut self, key: Key, action: ActionId) {
-        self.bindings.push(KeyBinding::new(KeySequence::single(key), action));
+        self.bindings
+            .push(KeyBinding::new(KeySequence::single(key), action));
     }
 
     /// Add a chord binding from string.
@@ -383,7 +384,11 @@ impl KeyBuffer {
             let action = binding.action; // Copy before clear
             self.clear();
             KeyResult::Matched(action)
-        } else if !self.keymap.find_partial_matches(&sequence, &self.mode).is_empty() {
+        } else if !self
+            .keymap
+            .find_partial_matches(&sequence, &self.mode)
+            .is_empty()
+        {
             // Return timed out keys, keep current as pending
             KeyResult::Timeout(timed_out)
         } else {
@@ -477,51 +482,95 @@ pub fn vim_normal_keymap() -> Keymap {
     let mut km = Keymap::new();
 
     // Movement
-    km.bind(KeyBinding::new(KeySequence::single(Key::plain(KeyCode::Char('h'))), "move_left")
-        .with_modes(vec!["normal".to_string()]));
-    km.bind(KeyBinding::new(KeySequence::single(Key::plain(KeyCode::Char('j'))), "move_down")
-        .with_modes(vec!["normal".to_string()]));
-    km.bind(KeyBinding::new(KeySequence::single(Key::plain(KeyCode::Char('k'))), "move_up")
-        .with_modes(vec!["normal".to_string()]));
-    km.bind(KeyBinding::new(KeySequence::single(Key::plain(KeyCode::Char('l'))), "move_right")
-        .with_modes(vec!["normal".to_string()]));
+    km.bind(
+        KeyBinding::new(
+            KeySequence::single(Key::plain(KeyCode::Char('h'))),
+            "move_left",
+        )
+        .with_modes(vec!["normal".to_string()]),
+    );
+    km.bind(
+        KeyBinding::new(
+            KeySequence::single(Key::plain(KeyCode::Char('j'))),
+            "move_down",
+        )
+        .with_modes(vec!["normal".to_string()]),
+    );
+    km.bind(
+        KeyBinding::new(
+            KeySequence::single(Key::plain(KeyCode::Char('k'))),
+            "move_up",
+        )
+        .with_modes(vec!["normal".to_string()]),
+    );
+    km.bind(
+        KeyBinding::new(
+            KeySequence::single(Key::plain(KeyCode::Char('l'))),
+            "move_right",
+        )
+        .with_modes(vec!["normal".to_string()]),
+    );
 
     // Mode switching
-    km.bind(KeyBinding::new(KeySequence::single(Key::plain(KeyCode::Char('i'))), "enter_insert")
-        .with_modes(vec!["normal".to_string()]));
-    km.bind(KeyBinding::new(KeySequence::single(Key::plain(KeyCode::Esc)), "enter_normal")
-        .with_modes(vec!["insert".to_string()]));
+    km.bind(
+        KeyBinding::new(
+            KeySequence::single(Key::plain(KeyCode::Char('i'))),
+            "enter_insert",
+        )
+        .with_modes(vec!["normal".to_string()]),
+    );
+    km.bind(
+        KeyBinding::new(
+            KeySequence::single(Key::plain(KeyCode::Esc)),
+            "enter_normal",
+        )
+        .with_modes(vec!["insert".to_string()]),
+    );
 
     // Vim escape sequence (jk)
-    km.bind(KeyBinding::new(
-        KeySequence::new(vec![
-            Key::plain(KeyCode::Char('j')),
-            Key::plain(KeyCode::Char('k')),
-        ]),
-        "enter_normal",
-    ).with_modes(vec!["insert".to_string()]));
+    km.bind(
+        KeyBinding::new(
+            KeySequence::new(vec![
+                Key::plain(KeyCode::Char('j')),
+                Key::plain(KeyCode::Char('k')),
+            ]),
+            "enter_normal",
+        )
+        .with_modes(vec!["insert".to_string()]),
+    );
 
     // Commands
-    km.bind(KeyBinding::new(KeySequence::single(Key::plain(KeyCode::Char(':'))), "command_mode")
-        .with_modes(vec!["normal".to_string()]));
+    km.bind(
+        KeyBinding::new(
+            KeySequence::single(Key::plain(KeyCode::Char(':'))),
+            "command_mode",
+        )
+        .with_modes(vec!["normal".to_string()]),
+    );
 
     // Delete
-    km.bind(KeyBinding::new(
-        KeySequence::new(vec![
-            Key::plain(KeyCode::Char('d')),
-            Key::plain(KeyCode::Char('d')),
-        ]),
-        "delete_line",
-    ).with_modes(vec!["normal".to_string()]));
+    km.bind(
+        KeyBinding::new(
+            KeySequence::new(vec![
+                Key::plain(KeyCode::Char('d')),
+                Key::plain(KeyCode::Char('d')),
+            ]),
+            "delete_line",
+        )
+        .with_modes(vec!["normal".to_string()]),
+    );
 
     // Yank
-    km.bind(KeyBinding::new(
-        KeySequence::new(vec![
-            Key::plain(KeyCode::Char('y')),
-            Key::plain(KeyCode::Char('y')),
-        ]),
-        "yank_line",
-    ).with_modes(vec!["normal".to_string()]));
+    km.bind(
+        KeyBinding::new(
+            KeySequence::new(vec![
+                Key::plain(KeyCode::Char('y')),
+                Key::plain(KeyCode::Char('y')),
+            ]),
+            "yank_line",
+        )
+        .with_modes(vec!["normal".to_string()]),
+    );
 
     km
 }
@@ -633,8 +682,11 @@ mod tests {
     fn mode_filtering() {
         let mut km = Keymap::new();
         km.bind(
-            KeyBinding::new(KeySequence::single(Key::plain(KeyCode::Char('i'))), "insert")
-                .with_modes(vec!["normal".to_string()]),
+            KeyBinding::new(
+                KeySequence::single(Key::plain(KeyCode::Char('i'))),
+                "insert",
+            )
+            .with_modes(vec!["normal".to_string()]),
         );
 
         // Should match in normal mode
