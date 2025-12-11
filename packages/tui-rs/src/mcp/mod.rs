@@ -60,10 +60,10 @@
 //! ```
 
 mod config;
-mod protocol;
+pub mod protocol;
 mod http;
 mod client;
 
 pub use config::{McpConfig, McpServerConfig, McpTransport, load_mcp_config};
 pub use client::{McpClient, McpConnection, McpError};
-pub use protocol::{McpRequest, McpResponse, McpTool, McpToolResult};
+pub use protocol::{McpContent, McpRequest, McpResponse, McpTool, McpToolResult};
