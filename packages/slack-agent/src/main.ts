@@ -382,6 +382,11 @@ async function handleMessage(
 	const channelId = ctx.message.channel;
 	const messageText = ctx.message.text.toLowerCase().trim();
 
+	// Handle simple /tasks text commands (not Slack-registered slash commands).
+	if (await handleTasksCommand(ctx)) {
+		return;
+	}
+
 	const logCtx = {
 		channelId: ctx.message.channel,
 		userName: ctx.message.userName,
@@ -469,6 +474,115 @@ async function handleMessage(
 	} finally {
 		await ctx.setWorking(false);
 		activeRuns.delete(channelId);
+	}
+}
+
+async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
+	const raw = ctx.message.text.trim();
+	const match = raw.match(/^\/tasks\b\s*(.*)$/i);
+	if (!match) return false;
+
+	const channelId = ctx.message.channel;
+	if (!schedulerHolder.instance) {
+		await ctx.respond("_Scheduler not initialized._");
+		return true;
+	}
+
+	const rest = match[1]?.trim() || "";
+	const [subRaw, ...args] = rest.split(/\s+/).filter(Boolean);
+	const sub = (subRaw || "list").toLowerCase();
+
+	const usage = "_Usage: /tasks [list|pause|resume|cancel|run|help] <taskId>_";
+
+	switch (sub) {
+		case "help": {
+			await ctx.respond(
+				`${usage}\nExamples:\n• /tasks list\n• /tasks pause task_123\n• /tasks resume task_123\n• /tasks cancel task_123\n• /tasks run task_123`,
+			);
+			return true;
+		}
+		case "list": {
+			const tasks = schedulerHolder.instance.listTasks(channelId);
+			if (tasks.length === 0) {
+				await ctx.respond("_No scheduled tasks for this channel._");
+				return true;
+			}
+			const lines = tasks.map((t) => {
+				const recurring = t.schedule ? " (recurring)" : "";
+				const paused = t.paused ? " (paused)" : "";
+				return `• ${t.description}${recurring}${paused}\n  ID: ${t.id}\n  Next: ${formatNextRun(t)}`;
+			});
+			await ctx.respond(`*Scheduled Tasks:*\n\n${lines.join("\n\n")}`);
+			return true;
+		}
+		case "pause":
+		case "resume":
+		case "cancel":
+		case "delete":
+		case "run": {
+			const taskId = args[0];
+			if (!taskId) {
+				await ctx.respond(usage);
+				return true;
+			}
+
+			if (sub === "pause") {
+				const ok = await schedulerHolder.instance.pause(taskId);
+				await ctx.respond(
+					ok
+						? `_Paused task ${taskId}._`
+						: `_Could not pause ${taskId}. Only recurring tasks can be paused._`,
+				);
+				return true;
+			}
+
+			if (sub === "resume") {
+				const ok = await schedulerHolder.instance.resume(taskId);
+				await ctx.respond(
+					ok
+						? `_Resumed task ${taskId}._`
+						: `_Could not resume ${taskId}. Only recurring tasks can be resumed._`,
+				);
+				return true;
+			}
+
+			if (sub === "cancel" || sub === "delete") {
+				const ok = await schedulerHolder.instance.cancel(taskId);
+				await ctx.respond(
+					ok ? `_Cancelled task ${taskId}._` : `_Task ${taskId} not found._`,
+				);
+				return true;
+			}
+
+			// run
+			if (activeRuns.has(channelId)) {
+				await ctx.respond(
+					"_This channel is busy. Say `stop` first before running a task now._",
+				);
+				return true;
+			}
+			const task = schedulerHolder.instance
+				.listTasks(channelId)
+				.find((t) => t.id === taskId);
+			if (!task) {
+				await ctx.respond(`_Task ${taskId} not found in this channel._`);
+				return true;
+			}
+			void schedulerHolder.instance
+				.runNow(taskId)
+				.catch((err) =>
+					logger.logWarning(
+						`Failed to run task ${taskId} immediately`,
+						String(err),
+					),
+				);
+			await ctx.respond(`_Triggered task ${taskId}. Running now..._`);
+			return true;
+		}
+		default: {
+			await ctx.respond(usage);
+			return true;
+		}
 	}
 }
 

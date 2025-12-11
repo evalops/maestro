@@ -998,80 +998,89 @@ export class Scheduler {
 
 			// Check if task is due
 			if (nextRun <= now) {
-				logger.logInfo(
-					`Running scheduled task: ${task.id} - ${task.description}`,
-				);
-
-				let result: TaskRunResult;
-				try {
-					result = await this.onTaskDue(task);
-				} catch (error) {
-					result = {
-						success: false,
-						error: error instanceof Error ? error.message : String(error),
-					};
-				}
-
-				task.runCount++;
-				task.lastRun = now.toISOString();
-				task.lastRunStatus = result.success ? "success" : "failure";
-				task.lastError = result.error || null;
-
-				if (result.success && !task.schedule) {
-					// One-time task: mark inactive immediately to avoid races with async logging
-					task.active = false;
-					this.tasks.delete(task.id);
-				}
-
-				// Log to history
-				await this.logHistory(task, result);
-
-				if (result.success) {
-					task.retryCount = 0;
-					task.notificationSent = false;
-
-					if (task.schedule) {
-						// Recurring task - calculate next run
-						task.nextRun = getNextRunFromSchedule(
-							task.schedule,
-							now,
-							task.timezone,
-						).toISOString();
-					} else {
-						// One-time task already deactivated above
-					}
-				} else {
-					// Task failed
-					if (!task.schedule && task.retryCount < task.maxRetries) {
-						// One-time task with retries remaining
-						task.retryCount++;
-						// Retry in 5 minutes
-						const retryTime = new Date(now.getTime() + 5 * 60 * 1000);
-						task.nextRun = retryTime.toISOString();
-						logger.logInfo(
-							`Task ${task.id} failed, scheduling retry ${task.retryCount}/${task.maxRetries}`,
-						);
-					} else if (task.schedule) {
-						// Recurring task - schedule next run anyway
-						task.nextRun = getNextRunFromSchedule(
-							task.schedule,
-							now,
-							task.timezone,
-						).toISOString();
-						task.notificationSent = false;
-					} else {
-						// One-time task with no retries left - deactivate
-						task.active = false;
-						logger.logWarning(
-							`Task ${task.id} failed permanently after ${task.retryCount} retries`,
-							result.error || "unknown error",
-						);
-					}
-				}
-
-				await this.saveTasks();
+				await this.runTaskAndUpdate(task, now);
 			}
 		}
+	}
+
+	/**
+	 * Run a task immediately and update state/logs as if it were due.
+	 * Returns null if task doesn't exist or is inactive.
+	 */
+	async runNow(taskId: string): Promise<TaskRunResult | null> {
+		const task = this.tasks.get(taskId);
+		if (!task || !task.active) return null;
+		const now = new Date();
+		const result = await this.runTaskAndUpdate(task, now);
+		return result;
+	}
+
+	private async runTaskAndUpdate(
+		task: ScheduledTask,
+		now: Date,
+	): Promise<TaskRunResult> {
+		logger.logInfo(`Running scheduled task: ${task.id} - ${task.description}`);
+
+		let result: TaskRunResult;
+		try {
+			result = await this.onTaskDue(task);
+		} catch (error) {
+			result = {
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+
+		task.runCount++;
+		task.lastRun = now.toISOString();
+		task.lastRunStatus = result.success ? "success" : "failure";
+		task.lastError = result.error || null;
+
+		if (result.success && !task.schedule) {
+			// One-time task: mark inactive immediately to avoid races with async logging
+			task.active = false;
+			this.tasks.delete(task.id);
+		}
+
+		await this.logHistory(task, result);
+
+		if (result.success) {
+			task.retryCount = 0;
+			task.notificationSent = false;
+
+			if (task.schedule) {
+				task.nextRun = getNextRunFromSchedule(
+					task.schedule,
+					now,
+					task.timezone,
+				).toISOString();
+			}
+		} else {
+			if (!task.schedule && task.retryCount < task.maxRetries) {
+				task.retryCount++;
+				const retryTime = new Date(now.getTime() + 5 * 60 * 1000);
+				task.nextRun = retryTime.toISOString();
+				logger.logInfo(
+					`Task ${task.id} failed, scheduling retry ${task.retryCount}/${task.maxRetries}`,
+				);
+			} else if (task.schedule) {
+				task.nextRun = getNextRunFromSchedule(
+					task.schedule,
+					now,
+					task.timezone,
+				).toISOString();
+				task.notificationSent = false;
+			} else {
+				task.active = false;
+				logger.logWarning(
+					`Task ${task.id} failed permanently after ${task.retryCount} retries`,
+					result.error || "unknown error",
+				);
+			}
+		}
+
+		await this.saveTasks();
+		return result;
 	}
 
 	/**

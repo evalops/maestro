@@ -464,7 +464,7 @@ The agent can use the `attach` tool to share files back to Slack.
 
 ## Scheduled Tasks
 
-Schedule tasks with natural language time expressions. **All times are interpreted in UTC** (the scheduler’s default timezone). If you embed the Scheduler programmatically, you can pass an IANA timezone (e.g. `"America/Los_Angeles"`) to interpret expressions in that zone.
+Schedule tasks with natural language time expressions. Times are interpreted in the scheduler’s default timezone (`SLACK_AGENT_DEFAULT_TIMEZONE`, default `UTC`). If an invalid timezone is configured, the scheduler falls back to `UTC` and will show a warning when scheduling.
 
 ### One-Time Tasks
 
@@ -508,6 +508,17 @@ Supported expressions:
 ### Managing Tasks
 
 View scheduled tasks:
+
+- React with 📅 or ⏰, or
+- Type `/tasks list`
+
+Other management commands:
+```
+/tasks pause <taskId>
+/tasks resume <taskId>
+/tasks cancel <taskId>
+/tasks run <taskId>
+```
 ```
 (react with 📅 or ⏰)
 ```
@@ -515,8 +526,8 @@ View scheduled tasks:
 Output:
 ```
 *Scheduled Tasks:*
-• Generate weekly report (recurring) - next: 12/6/2024, 9:00:00 AM
-• Check deployment - next: 12/5/2024, 3:00:00 PM
+• Generate weekly report (recurring) - next: Dec 6, 2024, 9:00 AM (UTC)
+• Check deployment - next: Dec 5, 2024, 3:00 PM (UTC)
 ```
 
 Tasks are persisted to `scheduled_tasks.json` and survive restarts.
