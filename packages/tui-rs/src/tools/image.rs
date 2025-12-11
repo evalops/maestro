@@ -83,7 +83,7 @@ impl ImageTool {
     pub fn read_image_definition() -> Tool {
         Tool::new(
             "read_image",
-            "Read an image file and encode it for vision analysis. Supports PNG, JPEG, GIF, and WebP formats. Returns base64-encoded image data.",
+            "Read an IMAGE file (PNG, JPEG, GIF, WebP only) and encode it for vision analysis. DO NOT use for text files like .txt, .md, .rs, .json - use the 'read' tool instead. Returns base64-encoded image data.",
         )
         .with_schema(serde_json::json!({
             "type": "object",
@@ -148,7 +148,10 @@ impl ImageTool {
                 return ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some(format!("Unsupported image format: {}", ext)),
+                    error: Some(format!(
+                        "Not an image file: .{} is not a supported image format. Use the 'read' tool for text files (.txt, .md, .rs, .json, etc). Supported image formats: PNG, JPEG, GIF, WebP, BMP, SVG",
+                        ext
+                    )),
                 };
             }
             None => {
@@ -523,7 +526,7 @@ mod tests {
             .await;
 
         assert!(!result.success);
-        assert!(result.error.unwrap().contains("Unsupported"));
+        assert!(result.error.unwrap().contains("Not an image file"));
 
         let _ = tokio::fs::remove_file(&temp_path).await;
     }
