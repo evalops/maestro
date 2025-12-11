@@ -65,8 +65,10 @@
 //! - **Borrowing**: Search returns references to indexed files (no allocation on search)
 //! - **Pattern Matching**: Fuzzy algorithm uses character-level pattern matching
 
+mod indexer;
 mod search;
 mod workspace;
 
+pub use indexer::{FileIndexer, IndexerConfig, IndexStatus};
 pub use search::{highlight_matches, FileMatch, FileSearch, FileSearchResult};
 pub use workspace::{get_workspace_files, patterns, WorkspaceFile};
