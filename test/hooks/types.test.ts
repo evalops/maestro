@@ -256,12 +256,12 @@ describe("Hook Types", () => {
 				cwd: "/home/user",
 				timestamp: new Date().toISOString(),
 				session_id: "sess_123",
-				reason: "user_quit",
+				reason: "user_exit",
 				duration_ms: 300000,
 				turn_count: 10,
 			};
 
-			expect(input.reason).toBe("user_quit");
+			expect(input.reason).toBe("user_exit");
 			expect(input.duration_ms).toBe(300000);
 			expect(input.turn_count).toBe(10);
 		});
@@ -314,6 +314,7 @@ describe("Hook Types", () => {
 				tool_call_id: "call_123",
 				tool_input: { command: "echo test" },
 				tool_output: "test",
+				is_error: false,
 			};
 
 			expect(input.hook_event_name).toBe("EvalGate");

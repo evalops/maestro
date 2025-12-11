@@ -40,6 +40,95 @@ export interface ProviderNetworkConfig {
 	backoffMultiplier: number;
 }
 
+/**
+ * Proxy configuration for network requests.
+ */
+export interface ProxyConfig {
+	/** HTTP proxy URL (e.g., http://proxy.example.com:8080) */
+	http?: string;
+	/** HTTPS proxy URL */
+	https?: string;
+	/** SOCKS proxy URL (e.g., socks5://proxy.example.com:1080) */
+	socks?: string;
+	/** Hosts to bypass proxy (comma-separated list) */
+	noProxy?: string[];
+}
+
+/**
+ * Get proxy configuration from environment variables.
+ *
+ * Checks COMPOSER_* variables first, then standard HTTP_PROXY/HTTPS_PROXY.
+ * Supports HTTP, HTTPS, and SOCKS proxies.
+ */
+export function getProxyConfig(): ProxyConfig {
+	const config: ProxyConfig = {};
+
+	// Check COMPOSER_* vars first, then standard vars
+	const httpProxy =
+		process.env.COMPOSER_HTTP_PROXY ||
+		process.env.HTTP_PROXY ||
+		process.env.http_proxy;
+	if (httpProxy) config.http = httpProxy;
+
+	const httpsProxy =
+		process.env.COMPOSER_HTTPS_PROXY ||
+		process.env.HTTPS_PROXY ||
+		process.env.https_proxy;
+	if (httpsProxy) config.https = httpsProxy;
+
+	const socksProxy = process.env.COMPOSER_SOCKS_PROXY;
+	if (socksProxy) config.socks = socksProxy;
+
+	const noProxy =
+		process.env.COMPOSER_NO_PROXY ||
+		process.env.NO_PROXY ||
+		process.env.no_proxy;
+	if (noProxy) {
+		config.noProxy = noProxy
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean);
+	}
+
+	return config;
+}
+
+/**
+ * Check if a URL should bypass the proxy.
+ */
+export function shouldBypassProxy(url: string, config: ProxyConfig): boolean {
+	if (!config.noProxy || config.noProxy.length === 0) {
+		return false;
+	}
+
+	try {
+		const parsedUrl = new URL(url);
+		const hostname = parsedUrl.hostname.toLowerCase();
+
+		for (const pattern of config.noProxy) {
+			const p = pattern.toLowerCase();
+
+			// Exact match
+			if (hostname === p) return true;
+
+			// Wildcard match (*.example.com or .example.com)
+			if (p.startsWith("*.")) {
+				const suffix = p.slice(1); // .example.com
+				if (hostname.endsWith(suffix)) return true;
+			} else if (p.startsWith(".")) {
+				if (hostname.endsWith(p) || hostname === p.slice(1)) return true;
+			}
+
+			// IP/CIDR match (simplified - just exact IP match)
+			if (hostname === p) return true;
+		}
+	} catch {
+		// Invalid URL, don't bypass
+	}
+
+	return false;
+}
+
 const DEFAULT_CONFIG: ProviderNetworkConfig = {
 	timeout: 120_000,
 	maxRetries: 3,

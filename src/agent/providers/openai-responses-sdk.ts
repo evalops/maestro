@@ -101,8 +101,11 @@ export async function* streamResponsesApiSdk(
 	}
 
 	if (model.reasoning && options.reasoningEffort) {
+		// OpenAI SDK only supports up to "high", map "ultra" to "high"
+		const effort =
+			options.reasoningEffort === "ultra" ? "high" : options.reasoningEffort;
 		params.reasoning = {
-			effort: options.reasoningEffort,
+			effort,
 		};
 	}
 

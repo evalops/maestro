@@ -493,7 +493,7 @@ export class SlackBot {
 							text: displayText,
 						});
 					} else {
-						const postArgs: ChatPostMessageArguments = {
+						const postArgs = {
 							channel: event.channel,
 							text: displayText,
 							thread_ts: threadTs,
@@ -501,7 +501,7 @@ export class SlackBot {
 							reply_broadcast: threadTs
 								? useThread && !parentThreadTs
 								: undefined,
-						};
+						} as ChatPostMessageArguments;
 						const result = await this.webClient.chat.postMessage(postArgs);
 						messageTs = result.ts as string;
 					}
@@ -536,14 +536,14 @@ export class SlackBot {
 					accumulatedText = "_Thinking_";
 					const threadTs =
 						parentThreadTs || (useThread ? userMessageTs : undefined);
-					const postArgs: ChatPostMessageArguments = {
+					const postArgs = {
 						channel: event.channel,
 						text: accumulatedText,
 						thread_ts: threadTs,
 						reply_broadcast: threadTs
 							? useThread && !parentThreadTs
 							: undefined,
-					};
+					} as ChatPostMessageArguments;
 					const result = await this.webClient.chat.postMessage(postArgs);
 					messageTs = result.ts as string;
 				}
@@ -554,13 +554,13 @@ export class SlackBot {
 				const threadTs =
 					parentThreadTs || (useThread ? userMessageTs : undefined);
 
-				const uploadArgs: FilesUploadV2Arguments = {
+				const uploadArgs = {
 					channel_id: event.channel,
 					file: fileContent,
 					filename: fileName,
 					title: fileName,
-					thread_ts: threadTs,
-				};
+					...(threadTs && { thread_ts: threadTs }),
+				} as FilesUploadV2Arguments;
 				await this.webClient.files.uploadV2(uploadArgs);
 			},
 			replaceMessage: async (newText: string) => {
@@ -581,14 +581,14 @@ export class SlackBot {
 							text: displayText,
 						});
 					} else {
-						const postArgs: ChatPostMessageArguments = {
+						const postArgs = {
 							channel: event.channel,
 							text: displayText,
 							thread_ts: threadTs,
 							reply_broadcast: threadTs
 								? useThread && !parentThreadTs
 								: undefined,
-						};
+						} as ChatPostMessageArguments;
 						const result = await this.webClient.chat.postMessage(postArgs);
 						messageTs = result.ts as string;
 					}

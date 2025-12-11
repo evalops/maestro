@@ -79,7 +79,7 @@ describe("SessionHookService", () => {
 				sessionId: "test-session",
 			});
 
-			const result = await service.runSessionEndHooks("user_quit", 60000, 5);
+			const result = await service.runSessionEndHooks("user_exit", 60000, 5);
 
 			expect(result).toBeDefined();
 			expect(result.blocked).toBe(false);
@@ -91,10 +91,10 @@ describe("SessionHookService", () => {
 			});
 
 			const reasons: SessionEndHookInput["reason"][] = [
-				"user_quit",
+				"user_exit",
 				"error",
 				"timeout",
-				"completed",
+				"complete",
 			];
 
 			for (const reason of reasons) {
@@ -491,7 +491,7 @@ describe("SessionHookService", () => {
 			await service.runPostMessageHooks("response", 100, 50, 500, "end_turn");
 			await service.runOnErrorHooks("error", "TestError", undefined, true);
 			await service.runOverflowHooks(100000, 80000);
-			await service.runSessionEndHooks("completed", 10000, 2);
+			await service.runSessionEndHooks("complete", 10000, 2);
 
 			// If we got here without errors, context propagation works
 			expect(true).toBe(true);

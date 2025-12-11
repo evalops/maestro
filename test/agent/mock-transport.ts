@@ -52,4 +52,17 @@ export class MockTransport implements AgentTransport {
 		yield { type: "message_start", message: assistantMessage };
 		yield { type: "message_end", message: assistantMessage };
 	}
+
+	async *continue(
+		messages: Message[],
+		config: AgentRunConfig,
+	): AsyncGenerator<AgentEvent, void, unknown> {
+		// Just delegate to run with an empty user message for mock purposes
+		const dummyUserMessage: Message = {
+			role: "user",
+			content: [{ type: "text", text: "" }],
+			timestamp: Date.now(),
+		};
+		yield* this.run(messages, dummyUserMessage, config);
+	}
 }

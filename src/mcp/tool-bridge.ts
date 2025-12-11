@@ -126,3 +126,152 @@ export function getMcpToolMap(): Map<
 
 	return map;
 }
+
+// ─────────────────────────────────────────────────────────────
+// MCP Resource Tools (inspired by Claude Code's ListMcpResources/ReadMcpResource)
+// ─────────────────────────────────────────────────────────────
+
+interface McpResourceListDetails {
+	servers: Array<{
+		name: string;
+		resources: string[];
+	}>;
+}
+
+const listMcpResourcesSchema = Type.Object({
+	server: Type.Optional(
+		Type.String({
+			description:
+				"Optional server name to filter resources. If omitted, lists resources from all servers.",
+		}),
+	),
+});
+
+/**
+ * Tool to list available MCP resources across all connected servers.
+ */
+export const listMcpResourcesTool = createTool<
+	typeof listMcpResourcesSchema,
+	McpResourceListDetails
+>({
+	name: "mcp_list_resources",
+	description:
+		"List available resources from MCP servers. Resources are data sources that can be read (files, configs, etc.).",
+	schema: listMcpResourcesSchema,
+	annotations: {
+		readOnlyHint: true,
+	},
+	async run(params, { respond }) {
+		const status = mcpManager.getStatus();
+		const result: Array<{ name: string; resources: string[] }> = [];
+
+		for (const server of status.servers) {
+			if (params.server && server.name !== params.server) {
+				continue;
+			}
+			if (server.connected && server.resources.length > 0) {
+				result.push({
+					name: server.name,
+					resources: server.resources,
+				});
+			}
+		}
+
+		if (result.length === 0) {
+			return respond
+				.text(
+					"No MCP resources available. Either no servers are connected or they don't expose resources.",
+				)
+				.detail({ servers: [] });
+		}
+
+		const lines: string[] = ["# Available MCP Resources\n"];
+		for (const server of result) {
+			lines.push(`## ${server.name}`);
+			for (const uri of server.resources) {
+				lines.push(`- ${uri}`);
+			}
+			lines.push("");
+		}
+
+		return respond.text(lines.join("\n")).detail({ servers: result });
+	},
+});
+
+interface McpResourceReadDetails {
+	server: string;
+	uri: string;
+	contents: Array<{
+		uri: string;
+		text?: string;
+		mimeType?: string;
+	}>;
+}
+
+const readMcpResourceSchema = Type.Object({
+	server: Type.String({
+		description: "Name of the MCP server that hosts the resource",
+	}),
+	uri: Type.String({
+		description: "URI of the resource to read",
+	}),
+});
+
+/**
+ * Tool to read a specific MCP resource.
+ */
+export const readMcpResourceTool = createTool<
+	typeof readMcpResourceSchema,
+	McpResourceReadDetails
+>({
+	name: "mcp_read_resource",
+	description:
+		"Read the contents of an MCP resource by URI. Use mcp_list_resources first to discover available resources.",
+	schema: readMcpResourceSchema,
+	annotations: {
+		readOnlyHint: true,
+	},
+	async run(params, { respond }) {
+		const { server, uri } = params;
+
+		try {
+			const result = await mcpManager.readResource(server, uri);
+
+			if (result.contents.length === 0) {
+				return respond.text(`Resource '${uri}' is empty.`).detail({
+					server,
+					uri,
+					contents: [],
+				});
+			}
+
+			// Format output based on content type
+			const textContents = result.contents
+				.filter((c) => c.text !== undefined)
+				.map((c) => c.text)
+				.join("\n---\n");
+
+			const output = textContents || JSON.stringify(result.contents, null, 2);
+
+			return respond.text(output).detail({
+				server,
+				uri,
+				contents: result.contents.map((c) => ({
+					uri: c.uri,
+					text: c.text,
+					mimeType: c.mimeType,
+				})),
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return respond.error(`Failed to read resource: ${message}`);
+		}
+	},
+});
+
+/**
+ * Get all MCP resource tools.
+ */
+export function getMcpResourceTools() {
+	return [listMcpResourcesTool, readMcpResourceTool];
+}

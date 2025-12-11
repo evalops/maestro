@@ -53,6 +53,9 @@ class MockContainer {
 	render(_width: number): string[] {
 		return [];
 	}
+	invalidate(): void {
+		// No-op for mock
+	}
 }
 
 type ToolOutputViewType = ConstructorParameters<

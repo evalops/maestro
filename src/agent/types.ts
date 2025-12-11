@@ -52,7 +52,8 @@ export type Api =
 	| "openai-responses"
 	| "anthropic-messages"
 	| "google-generative-ai"
-	| "bedrock-converse";
+	| "bedrock-converse"
+	| "vertex-ai";
 
 /**
  * Well-known LLM provider identifiers.
@@ -95,8 +96,12 @@ export type Provider = KnownProvider | string;
  * - `low` - Short reasoning steps
  * - `medium` - Moderate reasoning depth (recommended default)
  * - `high` - Thorough step-by-step reasoning
+ * - `ultra` - Maximum reasoning depth (for complex problems)
+ *
+ * Note: Claude Code uses keywords "think", "think hard", "think harder", "ultrathink"
+ * which map to low, medium, high, ultra respectively.
  */
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "ultra";
 
 /**
  * Plain text content block within a message.
@@ -728,6 +733,7 @@ export type ThinkingLevel =
 	| "low"
 	| "medium"
 	| "high"
+	| "ultra"
 	| "max";
 
 /**
