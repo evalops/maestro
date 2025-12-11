@@ -5,6 +5,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { appendToMemory, createMemoryUpdate } from "./auto-memory.js";
+import {
+	type ConversationTurn,
+	formatSummarizedContext,
+	summarizeContext,
+} from "./context-summarizer.js";
 import { CostTracker } from "./cost-tracker.js";
 import * as logger from "./logger.js";
 import { type SandboxConfig, createExecutor } from "./sandbox.js";
@@ -178,17 +184,20 @@ interface Thread {
 	messages: LogMessage[];
 }
 
-function getRecentMessages(channelDir: string, turnCount: number): string {
+/**
+ * Parse log messages into conversation turns with thread structure
+ */
+function parseLogMessages(channelDir: string): ConversationTurn[] {
 	const logPath = join(channelDir, "log.jsonl");
 	if (!existsSync(logPath)) {
-		return "(no message history yet)";
+		return [];
 	}
 
 	const content = readFileSync(logPath, "utf-8");
 	const lines = content.trim().split("\n").filter(Boolean);
 
 	if (lines.length === 0) {
-		return "(no message history yet)";
+		return [];
 	}
 
 	const messages: LogMessage[] = [];
@@ -229,72 +238,54 @@ function getRecentMessages(channelDir: string, turnCount: number): string {
 		}
 	}
 
-	// Group into turns (for limiting context)
-	const turns: LogMessage[][] = [];
-	let currentTurn: LogMessage[] = [];
-	let lastWasBot: boolean | null = null;
+	// Convert to ConversationTurn format
+	const turns: ConversationTurn[] = [];
+	for (const msg of topLevelMessages) {
+		const thread = threads.get(msg.ts || "");
+		const turn: ConversationTurn = {
+			date: msg.date || "",
+			user: msg.userName || msg.user || "",
+			text: msg.text || "",
+			isBot: msg.isBot === true,
+			attachments: msg.attachments?.map((a) => a.local),
+		};
 
-	for (let i = topLevelMessages.length - 1; i >= 0; i--) {
-		const msg = topLevelMessages[i];
-		const isBot = msg.isBot === true;
-
-		if (lastWasBot === null) {
-			currentTurn.unshift(msg);
-			lastWasBot = isBot;
-		} else if (isBot && lastWasBot) {
-			currentTurn.unshift(msg);
-		} else {
-			turns.unshift(currentTurn);
-			currentTurn = [msg];
-			lastWasBot = isBot;
-
-			if (turns.length >= turnCount) {
-				break;
-			}
+		// Include thread replies
+		if (thread && thread.messages.length > 0) {
+			turn.threadReplies = thread.messages.map((reply) => ({
+				date: reply.date || "",
+				user: reply.userName || reply.user || "",
+				text: reply.text || "",
+			}));
 		}
+
+		turns.push(turn);
 	}
 
-	if (currentTurn.length > 0 && turns.length < turnCount) {
-		turns.unshift(currentTurn);
+	return turns;
+}
+
+/**
+ * Get recent messages with optional summarization of older turns
+ */
+function getRecentMessages(channelDir: string, turnCount: number): string {
+	const turns = parseLogMessages(channelDir);
+
+	if (turns.length === 0) {
+		return "(no message history yet)";
 	}
 
-	// Format messages with thread structure
-	const formatted: string[] = [];
-	const includedThreads = new Set<string>();
+	// Limit to the requested number of turns
+	const limitedTurns = turns.slice(-turnCount);
 
-	for (const turn of turns) {
-		for (const msg of turn) {
-			const date = (msg.date || "").substring(0, 19);
-			const user = msg.userName || msg.user || "";
-			const text = msg.text || "";
-			const attachments = (msg.attachments || []).map((a) => a.local).join(",");
-			formatted.push(`${date}\t${user}\t${text}\t${attachments}`);
+	// Apply summarization (keeps recent 10 verbatim, summarizes older)
+	const summarized = summarizeContext(limitedTurns, channelDir, {
+		recentTurnCount: 10,
+		minTurnsForSummary: 15,
+		maxSummaryChars: 2000,
+	});
 
-			// Include thread replies if this message has a thread
-			const thread = threads.get(msg.ts || "");
-			if (
-				thread &&
-				thread.messages.length > 0 &&
-				!includedThreads.has(msg.ts || "")
-			) {
-				includedThreads.add(msg.ts || "");
-				for (const reply of thread.messages) {
-					const replyDate = (reply.date || "").substring(0, 19);
-					const replyUser = reply.userName || reply.user || "";
-					const replyText = reply.text || "";
-					const replyAttachments = (reply.attachments || [])
-						.map((a) => a.local)
-						.join(",");
-					// Indent thread replies with a marker
-					formatted.push(
-						`${replyDate}\t  ↳ ${replyUser}\t${replyText}\t${replyAttachments}`,
-					);
-				}
-			}
-		}
-	}
-
-	return formatted.join("\n");
+	return formatSummarizedContext(summarized);
 }
 
 function getMemory(channelDir: string): string {
@@ -637,6 +628,14 @@ export function createAgentRunner(
 				{ toolName: string; args: unknown; startTime: number }
 			>();
 
+			// Track completed tool calls for auto-memory
+			const completedToolCalls: Array<{
+				name: string;
+				args: Record<string, unknown>;
+				result?: string;
+				success: boolean;
+			}> = [];
+
 			let stopReason = "stop";
 			const SLACK_MAX_LENGTH = 40000;
 
@@ -765,6 +764,14 @@ export function createAgentRunner(
 						const pending = pendingTools.get(event.toolCallId);
 						pendingTools.delete(event.toolCallId);
 						toolsExecuted++;
+
+						// Track for auto-memory
+						completedToolCalls.push({
+							name: event.toolName,
+							args: (pending?.args as Record<string, unknown>) || {},
+							result: resultStr.substring(0, 500), // Limit result size
+							success: !event.isError,
+						});
 
 						const durationMs = pending ? Date.now() - pending.startTime : 0;
 
@@ -948,6 +955,45 @@ export function createAgentRunner(
 					const errMsg = err instanceof Error ? err.message : String(err);
 					logger.logWarning("Failed to replace message", errMsg);
 				}
+			}
+
+			// Auto-memory: extract and persist key facts from this conversation
+			try {
+				const agentMessages = agent.state.messages;
+				const conversationMessages: Array<{
+					role: "user" | "assistant";
+					text: string;
+				}> = [];
+
+				for (const msg of agentMessages) {
+					if (msg.role === "user" || msg.role === "assistant") {
+						const textContent = msg.content
+							.filter(
+								(c): c is { type: "text"; text: string } => c.type === "text",
+							)
+							.map((c) => c.text)
+							.join("\n");
+						if (textContent) {
+							conversationMessages.push({
+								role: msg.role,
+								text: textContent,
+							});
+						}
+					}
+				}
+
+				const memoryUpdate = createMemoryUpdate(
+					completedToolCalls,
+					conversationMessages,
+				);
+				const updated = appendToMemory(channelDir, memoryUpdate);
+				if (updated) {
+					logger.logInfo(`Auto-memory updated for channel ${channelId}`);
+				}
+			} catch (err) {
+				// Don't fail the run if auto-memory fails
+				const errMsg = err instanceof Error ? err.message : String(err);
+				logger.logWarning("Auto-memory update failed", errMsg);
 			}
 
 			return { stopReason };
