@@ -393,11 +393,26 @@ struct UsageMetadata {
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // Client Creation Tests
+    // ========================================================================
+
     #[test]
     fn test_google_client_creation() {
         let client = GoogleClient::new("test-key");
         assert_eq!(client.provider(), AiProvider::Google);
     }
+
+    #[test]
+    fn test_google_client_with_empty_key() {
+        let client = GoogleClient::new("");
+        assert_eq!(client.provider(), AiProvider::Google);
+        // Empty key is allowed at construction, will fail at API call
+    }
+
+    // ========================================================================
+    // Message Conversion Tests
+    // ========================================================================
 
     #[test]
     fn test_message_to_content_text() {
@@ -410,6 +425,10 @@ mod tests {
         let content = client.message_to_content(&msg);
         assert_eq!(content.role, Some("user".to_string()));
         assert_eq!(content.parts.len(), 1);
+        match &content.parts[0] {
+            Part::Text { text } => assert_eq!(text, "Hello"),
+            _ => panic!("Expected Text part"),
+        }
     }
 
     #[test]
@@ -423,6 +442,95 @@ mod tests {
         let content = client.message_to_content(&msg);
         assert_eq!(content.role, Some("model".to_string()));
     }
+
+    #[test]
+    fn test_message_to_content_system() {
+        let client = GoogleClient::new("test");
+        let msg = Message {
+            role: Role::System,
+            content: MessageContent::Text("You are helpful".to_string()),
+        };
+
+        let content = client.message_to_content(&msg);
+        // System messages are converted to user role in Google format
+        assert_eq!(content.role, Some("user".to_string()));
+    }
+
+    #[test]
+    fn test_message_to_content_with_blocks() {
+        let client = GoogleClient::new("test");
+        let msg = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text { text: "Hello".to_string() },
+                ContentBlock::Thinking { thinking: "Let me think...".to_string() },
+            ]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert_eq!(content.parts.len(), 2);
+
+        // First part should be plain text
+        match &content.parts[0] {
+            Part::Text { text } => assert_eq!(text, "Hello"),
+            _ => panic!("Expected Text part"),
+        }
+
+        // Second part should be thinking wrapped in tags
+        match &content.parts[1] {
+            Part::Text { text } => assert!(text.contains("<thinking>")),
+            _ => panic!("Expected Text part for thinking"),
+        }
+    }
+
+    #[test]
+    fn test_message_to_content_with_tool_use() {
+        let client = GoogleClient::new("test");
+        let msg = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "call_123".to_string(),
+                name: "get_weather".to_string(),
+                input: json!({"city": "Seattle"}),
+            }]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert_eq!(content.parts.len(), 1);
+        match &content.parts[0] {
+            Part::FunctionCall { function_call } => {
+                assert_eq!(function_call.name, "get_weather");
+                assert_eq!(function_call.args["city"], "Seattle");
+            }
+            _ => panic!("Expected FunctionCall part"),
+        }
+    }
+
+    #[test]
+    fn test_message_to_content_with_tool_result() {
+        let client = GoogleClient::new("test");
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "call_123".to_string(),
+                content: "72°F and sunny".to_string(),
+                is_error: Some(false),
+            }]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert_eq!(content.parts.len(), 1);
+        match &content.parts[0] {
+            Part::FunctionResponse { function_response } => {
+                assert_eq!(function_response.name, "call_123");
+            }
+            _ => panic!("Expected FunctionResponse part"),
+        }
+    }
+
+    // ========================================================================
+    // Request Building Tests
+    // ========================================================================
 
     #[test]
     fn test_build_request_with_tools() {
@@ -446,6 +554,275 @@ mod tests {
 
         let request = client.build_request(&messages, &config).unwrap();
         assert!(request.tools.is_some());
+        let tools = request.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].function_declarations.len(), 1);
+        assert_eq!(tools[0].function_declarations[0].name, "test");
+
         assert!(request.system_instruction.is_some());
+        let sys = request.system_instruction.unwrap();
+        assert_eq!(sys.parts.len(), 1);
+    }
+
+    #[test]
+    fn test_build_request_without_tools() {
+        let client = GoogleClient::new("test");
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            temperature: None,
+            system: None,
+            tools: vec![],
+            thinking: None,
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        assert!(request.tools.is_none());
+        assert!(request.system_instruction.is_none());
+    }
+
+    #[test]
+    fn test_build_request_with_multiple_messages() {
+        let client = GoogleClient::new("test");
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("Hello".to_string()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("Hi!".to_string()),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("How are you?".to_string()),
+            },
+        ];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            temperature: Some(0.5),
+            system: None,
+            tools: vec![],
+            thinking: None,
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        assert_eq!(request.contents.len(), 3);
+        assert_eq!(request.contents[0].role, Some("user".to_string()));
+        assert_eq!(request.contents[1].role, Some("model".to_string()));
+        assert_eq!(request.contents[2].role, Some("user".to_string()));
+    }
+
+    #[test]
+    fn test_build_request_generation_config() {
+        let client = GoogleClient::new("test");
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Test".to_string()),
+        }];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 2048,
+            temperature: Some(0.9),
+            system: None,
+            tools: vec![],
+            thinking: None,
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        let gen_config = request.generation_config.unwrap();
+        assert_eq!(gen_config.max_output_tokens, Some(2048));
+        assert_eq!(gen_config.temperature, Some(0.9));
+    }
+
+    #[test]
+    fn test_build_request_with_multiple_tools() {
+        let client = GoogleClient::new("test");
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            temperature: None,
+            system: None,
+            tools: vec![
+                Tool::new("tool1", "First tool").with_schema(json!({"type": "object"})),
+                Tool::new("tool2", "Second tool").with_schema(json!({"type": "object"})),
+                Tool::new("tool3", "Third tool").with_schema(json!({"type": "object"})),
+            ],
+            thinking: None,
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        let tools = request.tools.unwrap();
+        assert_eq!(tools[0].function_declarations.len(), 3);
+        assert_eq!(tools[0].function_declarations[0].name, "tool1");
+        assert_eq!(tools[0].function_declarations[1].name, "tool2");
+        assert_eq!(tools[0].function_declarations[2].name, "tool3");
+    }
+
+    // ========================================================================
+    // Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_empty_message_list() {
+        let client = GoogleClient::new("test");
+        let messages: Vec<Message> = vec![];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            temperature: None,
+            system: None,
+            tools: vec![],
+            thinking: None,
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        assert!(request.contents.is_empty());
+    }
+
+    #[test]
+    fn test_message_with_empty_text() {
+        let client = GoogleClient::new("test");
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::Text("".to_string()),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert_eq!(content.parts.len(), 1);
+        match &content.parts[0] {
+            Part::Text { text } => assert!(text.is_empty()),
+            _ => panic!("Expected Text part"),
+        }
+    }
+
+    #[test]
+    fn test_message_with_unicode() {
+        let client = GoogleClient::new("test");
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello 你好 مرحبا 🌍".to_string()),
+        };
+
+        let content = client.message_to_content(&msg);
+        match &content.parts[0] {
+            Part::Text { text } => assert!(text.contains("你好")),
+            _ => panic!("Expected Text part"),
+        }
+    }
+
+    #[test]
+    fn test_message_with_empty_blocks() {
+        let client = GoogleClient::new("test");
+        let msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![]),
+        };
+
+        let content = client.message_to_content(&msg);
+        assert!(content.parts.is_empty());
+    }
+
+    #[test]
+    fn test_tool_with_complex_schema() {
+        let client = GoogleClient::new("test");
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Test".to_string()),
+        }];
+
+        let complex_schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "User name"},
+                "age": {"type": "integer", "minimum": 0},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "created": {"type": "string", "format": "date-time"}
+                    }
+                }
+            },
+            "required": ["name"]
+        });
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 1024,
+            temperature: None,
+            system: None,
+            tools: vec![Tool::new("complex_tool", "A complex tool").with_schema(complex_schema.clone())],
+            thinking: None,
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        let tools = request.tools.unwrap();
+        assert_eq!(tools[0].function_declarations[0].parameters, complex_schema);
+    }
+
+    // ========================================================================
+    // Serialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_request_serialization() {
+        let client = GoogleClient::new("test");
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".to_string()),
+        }];
+
+        let config = RequestConfig {
+            model: "gemini-2.0-flash".to_string(),
+            max_tokens: 100,
+            temperature: Some(0.5),
+            system: Some("Be helpful".to_string()),
+            tools: vec![],
+            thinking: None,
+        };
+
+        let request = client.build_request(&messages, &config).unwrap();
+        let json_str = serde_json::to_string(&request).unwrap();
+
+        // Verify it can be serialized to JSON
+        assert!(json_str.contains("contents"));
+        assert!(json_str.contains("generationConfig"));
+        assert!(json_str.contains("systemInstruction"));
+    }
+
+    #[test]
+    fn test_part_serialization() {
+        // Test Text part
+        let text_part = Part::Text {
+            text: "Hello".to_string(),
+        };
+        let json = serde_json::to_string(&text_part).unwrap();
+        assert!(json.contains("Hello"));
+
+        // Test FunctionCall part
+        let fc_part = Part::FunctionCall {
+            function_call: FunctionCall {
+                name: "test".to_string(),
+                args: json!({"key": "value"}),
+            },
+        };
+        let json = serde_json::to_string(&fc_part).unwrap();
+        assert!(json.contains("functionCall"));
+        assert!(json.contains("test"));
     }
 }
