@@ -8,6 +8,10 @@ export interface LogContext {
 	channelId: string;
 	userName?: string;
 	channelName?: string;
+	threadTs?: string;
+	runId?: string;
+	taskId?: string;
+	source?: "channel" | "dm" | "slash" | "scheduled";
 }
 
 function timestamp(): string {
@@ -20,11 +24,26 @@ function timestamp(): string {
 
 function formatContext(ctx: LogContext): string {
 	if (ctx.channelId.startsWith("D")) {
-		return `[DM:${ctx.userName || ctx.channelId}]`;
+		const base = `[DM:${ctx.userName || ctx.channelId}]`;
+		return appendExtras(base, ctx);
 	}
 	const channel = ctx.channelName || ctx.channelId;
 	const user = ctx.userName || "unknown";
-	return `[${channel.startsWith("#") ? channel : `#${channel}`}:${user}]`;
+	const base = `[${channel.startsWith("#") ? channel : `#${channel}`}:${user}]`;
+	return appendExtras(base, ctx);
+}
+
+function appendExtras(base: string, ctx: LogContext): string {
+	const extras: string[] = [];
+	if (ctx.source) extras.push(`src=${ctx.source}`);
+	if (ctx.runId) extras.push(`run=${shorten(ctx.runId, 10)}`);
+	if (ctx.taskId) extras.push(`task=${shorten(ctx.taskId, 12)}`);
+	if (ctx.threadTs) extras.push(`thread=${shorten(ctx.threadTs, 10)}`);
+	return extras.length > 0 ? `${base} ${extras.join(" ")}` : base;
+}
+
+function shorten(value: string, maxLen: number): string {
+	return value.length <= maxLen ? value : value.slice(0, maxLen);
 }
 
 function truncate(text: string, maxLen: number): string {
@@ -155,6 +174,29 @@ export function logAgentError(ctx: LogContext | "system", error: string): void {
 	const context = ctx === "system" ? "[system]" : formatContext(ctx);
 	console.log(chalk.yellow(`${timestamp()} ${context} Agent error`));
 	console.log(chalk.dim(indent(error)));
+}
+
+export function logRunSummary(
+	ctx: LogContext,
+	summary: {
+		stopReason: string;
+		durationMs: number;
+		toolsExecuted: number;
+		cost: {
+			total: number;
+			inputTokens: number;
+			outputTokens: number;
+			cacheReadTokens: number;
+			cacheWriteTokens: number;
+			model?: string | null;
+		};
+	},
+): void {
+	const duration = (summary.durationMs / 1000).toFixed(1);
+	const modelPart = summary.cost.model ? ` model=${summary.cost.model}` : "";
+	const line = `stop=${summary.stopReason} dur=${duration}s tools=${summary.toolsExecuted} cost=$${summary.cost.total.toFixed(4)} tokens=${summary.cost.inputTokens}/${summary.cost.outputTokens}${modelPart}`;
+	console.log(chalk.blue(`${timestamp()} ${formatContext(ctx)} Run summary`));
+	console.log(chalk.dim(indent(line)));
 }
 
 export function logUsageSummary(

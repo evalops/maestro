@@ -33,6 +33,12 @@ export interface SlackContext {
 	users: UserInfo[];
 	/** Whether responses should go in a thread (true for channel mentions) */
 	useThread: boolean;
+	/** Per-run ID for observability (set by main.ts). */
+	runId?: string;
+	/** Scheduled task ID if this run is task-backed. */
+	taskId?: string;
+	/** Origin of the run (message, dm, slash, scheduled). */
+	source?: "channel" | "dm" | "slash" | "scheduled";
 	respond(text: string, log?: boolean): Promise<void>;
 	replaceMessage(text: string): Promise<void>;
 	respondInThread(text: string): Promise<void>;
@@ -58,6 +64,11 @@ export interface SlackAgentHandler {
 	onChannelMention(ctx: SlackContext): Promise<void>;
 	onDirectMessage(ctx: SlackContext): Promise<void>;
 	onReaction?(ctx: ReactionContext): Promise<void>;
+	onSlashCommand?(
+		ctx: SlackContext,
+		command: string,
+		text: string,
+	): Promise<void>;
 }
 
 export interface SlackBotConfig {
@@ -120,6 +131,10 @@ export class SlackBot {
 	private userCache: Map<string, { userName: string; displayName: string }> =
 		new Map();
 	private channelCache: Map<string, string> = new Map();
+	private recentEvents: Map<string, number> = new Map();
+	private readonly eventDedupeMs = 5 * 60 * 1000;
+	private lastEventCleanupMs = 0;
+	private readonly eventCleanupIntervalMs = 60 * 1000;
 
 	constructor(handler: SlackAgentHandler, config: SlackBotConfig) {
 		this.handler = handler;
@@ -294,6 +309,22 @@ export class SlackBot {
 		}
 	}
 
+	private shouldProcessEvent(key: string): boolean {
+		const now = Date.now();
+		if (now - this.lastEventCleanupMs > this.eventCleanupIntervalMs) {
+			const cutoff = now - this.eventDedupeMs;
+			for (const [k, t] of this.recentEvents.entries()) {
+				if (t < cutoff) this.recentEvents.delete(k);
+			}
+			this.lastEventCleanupMs = now;
+		}
+		if (this.recentEvents.has(key)) {
+			return false;
+		}
+		this.recentEvents.set(key, now);
+		return true;
+	}
+
 	private setupEventHandlers(): void {
 		this.socketClient.on("app_mention", async ({ event, ack }) => {
 			await ack();
@@ -314,6 +345,9 @@ export class SlackBot {
 				}>;
 			};
 
+			const dedupeKey = `app_mention:${slackEvent.channel}:${slackEvent.ts}`;
+			if (!this.shouldProcessEvent(dedupeKey)) return;
+
 			await this.logMessage({
 				text: slackEvent.text,
 				channel: slackEvent.channel,
@@ -328,6 +362,45 @@ export class SlackBot {
 			const ctx = await this.createContext(slackEvent, { useThread: true });
 			await this.handler.onChannelMention(ctx);
 		});
+
+		// Handle real Slack slash commands via Socket Mode (envelope type: slash_commands)
+		this.socketClient.on(
+			"slash_commands",
+			async ({ body, ack, envelope_id }) => {
+				await ack();
+
+				if (!this.handler.onSlashCommand) return;
+
+				const slackCommand = body as {
+					command: string;
+					text?: string;
+					channel_id: string;
+					user_id: string;
+					trigger_id?: string;
+					response_url?: string;
+				};
+
+				if (
+					!slackCommand.command ||
+					!slackCommand.channel_id ||
+					!slackCommand.user_id
+				) {
+					return;
+				}
+
+				const key = `slash:${slackCommand.channel_id}:${
+					slackCommand.trigger_id || envelope_id
+				}`;
+				if (!this.shouldProcessEvent(key)) return;
+
+				const ctx = await this.createSlashContext(slackCommand);
+				await this.handler.onSlashCommand(
+					ctx,
+					slackCommand.command,
+					slackCommand.text || "",
+				);
+			},
+		);
 
 		this.socketClient.on("message", async ({ event, ack }) => {
 			await ack();
@@ -364,6 +437,9 @@ export class SlackBot {
 				(!slackEvent.files || slackEvent.files.length === 0)
 			)
 				return;
+
+			const dedupeKey = `message:${slackEvent.channel}:${slackEvent.ts}`;
+			if (!this.shouldProcessEvent(dedupeKey)) return;
 
 			await this.logMessage({
 				text: slackEvent.text || "",
@@ -902,6 +978,210 @@ export class SlackBot {
 			);
 			return null;
 		}
+	}
+
+	/**
+	 * Create a context for a Slack slash command.
+	 * Slash commands arrive via Socket Mode as "slash_commands" envelopes.
+	 */
+	async createSlashContext(command: {
+		command: string;
+		text?: string;
+		channel_id: string;
+		user_id: string;
+	}): Promise<SlackContext> {
+		const now = Date.now();
+		const ts = `${Math.floor(now / 1000)}.${(now % 1000) * 1000}`;
+
+		let messageTs: string | null = null;
+		let accumulatedText = "";
+		let isThinking = true;
+		let isWorking = true;
+		const workingIndicator = " ...";
+		let updatePromise: Promise<void> = Promise.resolve();
+
+		const rawText = `${command.command} ${command.text || ""}`.trim();
+		const { userName } = await this.getUserInfo(command.user_id);
+
+		return {
+			message: {
+				text: rawText,
+				rawText,
+				user: command.user_id,
+				userName,
+				channel: command.channel_id,
+				ts,
+				attachments: [],
+			},
+			channelName: this.channelCache.get(command.channel_id),
+			store: this.store,
+			channels: this.getChannels(),
+			users: this.getUsers(),
+			useThread: false,
+			source: "slash",
+			respond: async (responseText: string, log = true) => {
+				updatePromise = updatePromise.then(async () => {
+					if (isThinking) {
+						accumulatedText = responseText;
+						isThinking = false;
+					} else {
+						accumulatedText += `\n${responseText}`;
+					}
+
+					const displayText = isWorking
+						? accumulatedText + workingIndicator
+						: accumulatedText;
+
+					if (messageTs) {
+						const currentMessageTs = messageTs;
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: command.channel_id,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
+					} else {
+						const result = await this.callSlack(
+							() =>
+								this.webClient.chat.postMessage({
+									channel: command.channel_id,
+									text: displayText,
+								}),
+							"chat.postMessage",
+						);
+						messageTs = result.ts as string;
+					}
+
+					if (log && messageTs) {
+						await this.store.logBotResponse(
+							command.channel_id,
+							responseText,
+							messageTs,
+						);
+					}
+				});
+				await updatePromise;
+			},
+			respondInThread: async (threadText: string) => {
+				updatePromise = updatePromise.then(async () => {
+					if (!messageTs) return;
+					const currentMessageTs = messageTs;
+					const obfuscatedText = this.obfuscateUsernames(threadText);
+					await this.callSlack(
+						() =>
+							this.webClient.chat.postMessage({
+								channel: command.channel_id,
+								thread_ts: currentMessageTs,
+								text: obfuscatedText,
+							}),
+						"chat.postMessage",
+					);
+				});
+				await updatePromise;
+			},
+			setTyping: async (typing: boolean) => {
+				if (typing && !messageTs) {
+					accumulatedText = "_Thinking_";
+					const result = await this.callSlack(
+						() =>
+							this.webClient.chat.postMessage({
+								channel: command.channel_id,
+								text: accumulatedText,
+							}),
+						"chat.postMessage",
+					);
+					messageTs = result.ts as string;
+				}
+			},
+			uploadFile: async (filePath: string, title?: string) => {
+				const fileName = title || basename(filePath);
+				const fileContent = readFileSync(filePath);
+				await this.callSlack(
+					() =>
+						this.webClient.files.uploadV2({
+							channel_id: command.channel_id,
+							file: fileContent,
+							filename: fileName,
+							title: fileName,
+						}),
+					"files.uploadV2",
+				);
+			},
+			replaceMessage: async (newText: string) => {
+				updatePromise = updatePromise.then(async () => {
+					accumulatedText = newText;
+					const displayText = isWorking
+						? accumulatedText + workingIndicator
+						: accumulatedText;
+
+					if (messageTs) {
+						const currentMessageTs = messageTs;
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: command.channel_id,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
+					} else {
+						const result = await this.callSlack(
+							() =>
+								this.webClient.chat.postMessage({
+									channel: command.channel_id,
+									text: displayText,
+								}),
+							"chat.postMessage",
+						);
+						messageTs = result.ts as string;
+					}
+				});
+				await updatePromise;
+			},
+			setWorking: async (working: boolean) => {
+				updatePromise = updatePromise.then(async () => {
+					isWorking = working;
+					if (messageTs) {
+						const currentMessageTs = messageTs;
+						const displayText = isWorking
+							? accumulatedText + workingIndicator
+							: accumulatedText;
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: command.channel_id,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
+					}
+				});
+				await updatePromise;
+			},
+			updateStatus: async (status: string) => {
+				updatePromise = updatePromise.then(async () => {
+					if (messageTs && isWorking) {
+						const currentMessageTs = messageTs;
+						const displayText = `${accumulatedText}\n_${status}_${workingIndicator}`;
+						await this.callSlack(
+							() =>
+								this.webClient.chat.update({
+									channel: command.channel_id,
+									ts: currentMessageTs,
+									text: displayText,
+								}),
+							"chat.update",
+						);
+					}
+				});
+				await updatePromise;
+			},
+		};
 	}
 
 	/**

@@ -512,6 +512,8 @@ View scheduled tasks:
 - React with 📅 or ⏰, or
 - Type `/tasks list`
 
+If you register a Slack slash command named `/tasks` in your app, it will be handled identically to the text command above.
+
 Other management commands:
 ```
 /tasks pause <taskId>

@@ -356,13 +356,32 @@ async function handleScheduledTask(
 			channelId,
 			task.prompt,
 		);
+		const runId = `run_${Date.now().toString(36)}_${Math.random()
+			.toString(36)
+			.slice(2, 6)}`;
+		scheduledCtx.runId = runId;
+		scheduledCtx.taskId = task.id;
+		scheduledCtx.source = "scheduled";
+
+		const logCtx: logger.LogContext = {
+			channelId,
+			userName: scheduledCtx.message.userName,
+			channelName: scheduledCtx.channelName,
+			runId,
+			taskId: task.id,
+			source: "scheduled",
+		};
 		activeRuns.set(channelId, { runner, context: scheduledCtx });
 
 		await scheduledCtx.setTyping(true);
 		await scheduledCtx.setWorking(true);
 
 		try {
-			await runner.run(scheduledCtx, channelDir, bot.store);
+			const result = await runner.run(scheduledCtx, channelDir, bot.store);
+			logger.logRunSummary(logCtx, result);
+			if (result.stopReason === "error") {
+				return { success: false, error: "Agent stopped with error" };
+			}
 			return { success: true };
 		} finally {
 			await scheduledCtx.setWorking(false);
@@ -377,8 +396,9 @@ async function handleScheduledTask(
 
 async function handleMessage(
 	ctx: SlackContext,
-	_source: "channel" | "dm",
+	source: "channel" | "dm",
 ): Promise<void> {
+	ctx.source = source;
 	const channelId = ctx.message.channel;
 	const messageText = ctx.message.text.toLowerCase().trim();
 
@@ -387,10 +407,19 @@ async function handleMessage(
 		return;
 	}
 
-	const logCtx = {
+	const runId = `run_${Date.now().toString(36)}_${Math.random()
+		.toString(36)
+		.slice(2, 6)}`;
+	ctx.runId = runId;
+
+	const logCtx: logger.LogContext = {
 		channelId: ctx.message.channel,
 		userName: ctx.message.userName,
 		channelName: ctx.channelName,
+		threadTs: ctx.message.threadTs,
+		runId,
+		taskId: ctx.taskId,
+		source: ctx.source,
 	};
 
 	// Check for stop command
@@ -467,6 +496,7 @@ async function handleMessage(
 		} else if (result.stopReason === "error") {
 			logger.logAgentError(logCtx, "Agent stopped with error");
 		}
+		logger.logRunSummary(logCtx, result);
 	} catch (error) {
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		logger.logAgentError(logCtx, errorMsg);
@@ -783,6 +813,18 @@ const bot = new SlackBot(
 
 		async onDirectMessage(ctx) {
 			await handleMessage(ctx, "dm");
+		},
+
+		async onSlashCommand(ctx, command, text) {
+			ctx.source = "slash";
+			// Currently only support /tasks as a real Slack slash command.
+			if (command.toLowerCase() === "/tasks") {
+				await handleTasksCommand(ctx);
+				return;
+			}
+			await ctx.respond(
+				`_Unsupported slash command: ${command}. Try /tasks help._`,
+			);
 		},
 
 		async onReaction(ctx) {
