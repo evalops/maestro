@@ -580,6 +580,18 @@ impl AppState {
                 );
             }
 
+            // Batch execution events (informational, handled by individual tool events)
+            FromAgent::BatchStart { total } => {
+                self.status = Some(format!("Executing {} tools in parallel...", total));
+            }
+            FromAgent::BatchEnd { total, successes, failures } => {
+                if failures > 0 {
+                    self.status = Some(format!("Batch complete: {}/{} succeeded, {} failed", successes, total, failures));
+                } else {
+                    self.status = Some(format!("Batch complete: {} tools succeeded", total));
+                }
+            }
+
             // Error occurred
             FromAgent::Error { message, fatal: _ } => {
                 self.error = Some(message);

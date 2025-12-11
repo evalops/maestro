@@ -76,11 +76,13 @@
 //! ```
 
 mod bash;
+mod batch;
 mod image;
 mod registry;
 mod web_fetch;
 
 pub use bash::BashTool;
+pub use batch::{BatchConfig, BatchExecutor, BatchToolCall, BatchToolResult};
 pub use image::ImageTool;
 pub use registry::{ToolExecutor, ToolRegistry};
 pub use web_fetch::WebFetchTool;

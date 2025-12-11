@@ -416,6 +416,26 @@ pub enum FromAgent {
         success: bool,
     },
 
+    /// Batch tool execution started
+    ///
+    /// Indicates multiple tools are being executed in parallel.
+    BatchStart {
+        /// Total number of tools in the batch
+        total: usize,
+    },
+
+    /// Batch tool execution completed
+    ///
+    /// Summary of batch execution results.
+    BatchEnd {
+        /// Total number of tools executed
+        total: usize,
+        /// Number of successful executions
+        successes: usize,
+        /// Number of failed executions
+        failures: usize,
+    },
+
     /// An error occurred
     ///
     /// Represents an error in the agent or tool execution. If fatal, the agent
