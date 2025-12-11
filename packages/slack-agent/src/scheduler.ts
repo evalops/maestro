@@ -723,7 +723,16 @@ export class Scheduler {
 		this.workingDir = config.workingDir;
 		this.onTaskDue = config.onTaskDue;
 		this.onNotify = config.onNotify;
-		this.defaultTimezone = config.defaultTimezone || "UTC";
+		const requestedDefaultTz = config.defaultTimezone || "UTC";
+		if (!isValidTimezone(requestedDefaultTz)) {
+			logger.logWarning(
+				"Invalid default timezone provided to Scheduler; falling back to UTC",
+				requestedDefaultTz,
+			);
+			this.defaultTimezone = "UTC";
+		} else {
+			this.defaultTimezone = requestedDefaultTz;
+		}
 		this.tasksFile = join(this.workingDir, "scheduled_tasks.json");
 		this.historyFile = join(this.workingDir, "task_history.jsonl");
 
@@ -743,6 +752,11 @@ export class Scheduler {
 			const content = readFileSync(this.tasksFile, "utf-8");
 			const tasksArray = JSON.parse(content) as ScheduledTask[];
 			for (const task of tasksArray) {
+				// Normalize invalid stored timezones to reflect actual scheduling behavior.
+				// Historically, invalid timezones were treated as UTC during parsing.
+				if (!task.timezone || !isValidTimezone(task.timezone)) {
+					task.timezone = "UTC";
+				}
 				this.tasks.set(task.id, task);
 			}
 			logger.logInfo(`Loaded ${this.tasks.size} scheduled tasks`);
