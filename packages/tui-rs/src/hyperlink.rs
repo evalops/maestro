@@ -125,7 +125,7 @@ pub fn strip_hyperlinks(s: &str) -> String {
                         chars.next(); // consume ';'
                         if chars.peek() == Some(&';') {
                             chars.next(); // consume ';'
-                            // Skip until BEL (0x07) or ST (ESC \)
+                                          // Skip until BEL (0x07) or ST (ESC \)
                             while let Some(ch) = chars.next() {
                                 if ch == '\x07' {
                                     break;
