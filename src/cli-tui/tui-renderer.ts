@@ -63,6 +63,10 @@ import {
 	type CompactionStats,
 } from "../agent/auto-compaction.js";
 import {
+	type AutoRetryController,
+	createAutoRetryController,
+} from "../agent/auto-retry.js";
+import {
 	SessionRecoveryManager,
 	listSessionBackups,
 } from "../agent/session-recovery.js";
@@ -267,6 +271,7 @@ export class TuiRenderer {
 		"Try /help for commands or /tools for status";
 	private readonly workingFooterHint = "Working… press esc to interrupt";
 	private autoCompactionMonitor: AutoCompactionMonitor;
+	private autoRetryController: AutoRetryController;
 	private sessionRecoveryManager: SessionRecoveryManager;
 	private testVerificationService: AutoVerifyService | null = null;
 	private sessionStartTime: number | null = null;
@@ -392,6 +397,7 @@ export class TuiRenderer {
 			startupChangelog?: string | null;
 			startupChangelogSummary?: string | null;
 			updateNotice?: UpdateCheckResult | null;
+			retryConfig?: import("../config/toml-config.js").RetryConfig;
 		} = {},
 	) {
 		this.uiState = loadUiState();
@@ -450,6 +456,14 @@ export class TuiRenderer {
 				this.handleAutoCompactionRecommendation(stats);
 			},
 		});
+		this.autoRetryController = createAutoRetryController();
+		this.autoRetryController.setEventListener((event) => {
+			this.handleAutoRetryEvent(event);
+		});
+		// Load retry config if available
+		if (options.retryConfig) {
+			this.autoRetryController.loadFromRetryConfig(options.retryConfig);
+		}
 		this.sessionRecoveryManager = new SessionRecoveryManager();
 		// Initialize test verification with auto-test hooks
 		this.testVerificationService = registerTestVerificationHooks(
@@ -795,6 +809,8 @@ export class TuiRenderer {
 			requestRender: () => this.ui.requestRender(),
 			clearPendingTools: () => this.pendingTools.clear(),
 			refreshPlanHint: () => this.planView.syncHintWithStore(),
+			onAssistantMessageEnd: (message) =>
+				this.autoRetryController.trackAssistantMessage(message),
 		});
 		this.importExportView = new ImportExportView({
 			agent: this.agent,
@@ -1362,6 +1378,34 @@ export class TuiRenderer {
 	}
 
 	/**
+	 * Handle auto-retry events from the retry controller.
+	 */
+	private handleAutoRetryEvent(event: AgentEvent): void {
+		if (event.type === "auto_retry_start") {
+			const delaySec = (event.delayMs / 1000).toFixed(1);
+			this.notificationView.showToast(
+				`Retrying (attempt ${event.attempt}/${event.maxAttempts}) in ${delaySec}s... Press Escape to cancel.`,
+				"warn",
+			);
+			// Mark as running again since we're retrying
+			this.isAgentRunning = true;
+			this.refreshFooterHint();
+		} else if (event.type === "auto_retry_end") {
+			if (event.success) {
+				this.notificationView.showToast(
+					`Retry succeeded after ${event.attempt} attempt(s).`,
+					"info",
+				);
+			} else if (event.finalError) {
+				this.notificationView.showError(
+					`Retry failed after ${event.attempt} attempt(s): ${event.finalError}`,
+				);
+			}
+			this.refreshFooterHint();
+		}
+	}
+
+	/**
 	 * Handle test verification result.
 	 * Shows a notification with test results - success is brief, failures are detailed.
 	 */
@@ -1518,6 +1562,9 @@ export class TuiRenderer {
 			this.sessionRecoveryManager.updateMessages([...state.messages]);
 			// Record token usage from the latest assistant message
 			this.recordTokenUsageFromMessages(state);
+			// Check for retryable errors (async, fire and forget)
+			const contextWindow = state.model?.contextWindow;
+			this.autoRetryController.checkAndRetry(this.agent, contextWindow);
 		}
 
 		// Update footer with current stats
@@ -1597,6 +1644,10 @@ export class TuiRenderer {
 	}
 
 	private handleInterruptRequest(): void {
+		// Also abort any in-progress retry
+		if (this.autoRetryController.isRetrying()) {
+			this.autoRetryController.abortRetry();
+		}
 		this.interruptController.handleInterruptRequest();
 	}
 

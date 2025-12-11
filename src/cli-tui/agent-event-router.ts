@@ -20,6 +20,7 @@ interface AgentEventRouterOptions {
 	requestRender: () => void;
 	clearPendingTools: () => void;
 	refreshPlanHint: () => void;
+	onAssistantMessageEnd?: (message: AssistantMessage) => void;
 }
 
 export class AgentEventRouter {
@@ -130,6 +131,8 @@ export class AgentEventRouter {
 				this.options.extractText(event.message as AppMessage),
 			);
 			this.options.streamingView.finishAssistantMessage(assistantMsg);
+			// Notify about assistant message for retry tracking
+			this.options.onAssistantMessageEnd?.(assistantMsg);
 		}
 		if (
 			event.message.role === "assistant" &&
