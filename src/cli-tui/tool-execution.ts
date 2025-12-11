@@ -9,59 +9,32 @@ import {
 	getBorderChars,
 	themedBottomLine,
 } from "./utils/borders.js";
+import {
+	type StatusName,
+	skeletonFrames,
+	statusGlyph,
+	toolIcon,
+} from "./utils/glyphs.js";
 import { PANEL_WIDTHS, responsiveWidth } from "./utils/layout.js";
 
 /** Tool execution status for visual display */
 type ToolStatus = "running" | "done" | "error" | "waiting";
 
-/** Tool icon glyphs - Claude Code style (geometric, purposeful) */
-const TOOL_ICONS: Record<string, string> = {
-	bash: "⬢",
-	edit: "✎",
-	read: "◉",
-	write: "◎",
-	task: "◆",
-	glob: "◇",
-	grep: "⊙",
-	webfetch: "⊕",
-	websearch: "⊛",
-	notebookedit: "▣",
-	todowrite: "☑",
-	default: "●",
-};
-
-/** Fallback ASCII icons for low-unicode terminals */
-const TOOL_ICONS_ASCII: Record<string, string> = {
-	bash: "$",
-	edit: "~",
-	read: ">",
-	write: "+",
-	task: "?",
-	glob: "@",
-	grep: "#",
-	webfetch: "^",
-	websearch: "*",
-	notebookedit: "#",
-	todowrite: "x",
-	default: "*",
-};
-
 /** Status badge config - Claude Code style (minimal, semantic) */
 const STATUS_CONFIG: Record<
 	ToolStatus,
-	{ label: string; glyph: string; color: ThemeColor }
+	{ label: string; glyphKey: StatusName; color: ThemeColor }
 > = {
-	running: { label: "running", glyph: "◐", color: "warning" },
-	done: { label: "done", glyph: "●", color: "success" },
-	error: { label: "error", glyph: "✕", color: "error" },
-	waiting: { label: "waiting", glyph: "◑", color: "warning" },
+	running: { label: "running", glyphKey: "running", color: "warning" },
+	done: { label: "done", glyphKey: "done", color: "success" },
+	error: { label: "error", glyphKey: "error", color: "error" },
+	waiting: { label: "waiting", glyphKey: "waiting", color: "warning" },
 };
 
 /** Duration for border flash effect in ms */
 const FLASH_DURATION_MS = 400;
 
-/** Skeleton shimmer animation frames */
-const SKELETON_FRAMES = ["░", "▒", "▓", "▒"];
+/** Skeleton shimmer animation interval */
 const SKELETON_INTERVAL_MS = 150;
 
 /**
@@ -122,7 +95,7 @@ export class ToolExecutionComponent extends Container {
 		if (this.skeletonTimer) return;
 		this.skeletonTimer = setInterval(() => {
 			if (!this.result) {
-				this.skeletonFrame = (this.skeletonFrame + 1) % SKELETON_FRAMES.length;
+				this.skeletonFrame = (this.skeletonFrame + 1) % skeletonFrames().length;
 				this.updateDisplay();
 			}
 		}, SKELETON_INTERVAL_MS);
@@ -136,7 +109,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private buildSkeletonLine(width: number): string {
-		const frame = SKELETON_FRAMES[this.skeletonFrame] ?? "░";
+		const frames = skeletonFrames();
+		const frame = frames[this.skeletonFrame] ?? frames[0];
 		return theme.fg("dim", frame.repeat(Math.min(width, 30)));
 	}
 
@@ -148,7 +122,7 @@ export class ToolExecutionComponent extends Container {
 	private static readonly PANEL_WIDTH = PANEL_WIDTHS.tool;
 
 	private getToolIcon(): string {
-		return TOOL_ICONS[this.toolName.toLowerCase()] ?? TOOL_ICONS.default;
+		return toolIcon(this.toolName);
 	}
 
 	private getStatus(): ToolStatus {
@@ -173,9 +147,10 @@ export class ToolExecutionComponent extends Container {
 		const status = this.getStatus();
 		const {
 			label: statusLabel,
-			glyph,
+			glyphKey,
 			color: badgeColor,
 		} = STATUS_CONFIG[status];
+		const glyph = statusGlyph(glyphKey);
 		const badge = `${glyph} ${statusLabel}`;
 
 		return buildTopLineWithBadge(this.panelWidth(), {

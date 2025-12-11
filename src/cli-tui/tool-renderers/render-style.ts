@@ -1,16 +1,24 @@
 import { visibleWidth } from "@evalops/tui";
 import { theme } from "../../theme/theme.js";
+import {
+	statusGlyph as rawStatusGlyph,
+	separatorChars,
+} from "../utils/glyphs.js";
 
 type Status = "success" | "error" | "pending" | "info";
 
-const STATUS_GLYPHS: Record<
+/** Map render-style status names to glyph status names */
+const STATUS_MAP: Record<
 	Status,
-	{ icon: string; color: Parameters<typeof theme.fg>[0] }
+	{
+		glyphKey: "success" | "error" | "running" | "info";
+		color: Parameters<typeof theme.fg>[0];
+	}
 > = {
-	success: { icon: "✓", color: "success" },
-	error: { icon: "✕", color: "error" },
-	pending: { icon: "…", color: "warning" },
-	info: { icon: "•", color: "muted" },
+	success: { glyphKey: "success", color: "success" },
+	error: { glyphKey: "error", color: "error" },
+	pending: { glyphKey: "running", color: "warning" }, // "pending" here means "in progress"
+	info: { glyphKey: "info", color: "muted" },
 };
 
 function padToWidth(text: string, width: number): string {
@@ -20,7 +28,7 @@ function padToWidth(text: string, width: number): string {
 }
 
 /**
- * Render a small ANSI “card”: adds left padding and a muted gutter so tool
+ * Render a small ANSI "card": adds left padding and a muted gutter so tool
  * outputs share a consistent visual rhythm without heavy box-drawing.
  */
 export function renderCard(
@@ -33,7 +41,7 @@ export function renderCard(
 	if (!lines.length) return "";
 	const padding = Math.max(0, options.padding ?? 1);
 	const gutterColor = options.gutterColor ?? "borderMuted";
-	const gutter = theme.fg(gutterColor, "│");
+	const gutter = theme.fg(gutterColor, separatorChars().vertical);
 	const indent = " ".repeat(padding);
 	return lines
 		.flatMap((line) => (line ? line.split(/\r?\n/) : [""]))
@@ -42,11 +50,12 @@ export function renderCard(
 }
 
 /**
- * Consistent status glyphs (fixed column width) so lists don’t jitter while
+ * Consistent status glyphs (fixed column width) so lists don't jitter while
  * streaming updates.
  */
 export function statusGlyph(status: Status): string {
-	const { icon, color } = STATUS_GLYPHS[status];
+	const { glyphKey, color } = STATUS_MAP[status];
+	const icon = rawStatusGlyph(glyphKey);
 	return theme.fg(color, padToWidth(icon, 2));
 }
 

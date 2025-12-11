@@ -53,6 +53,7 @@ import {
 	themePalette,
 	separator as themedSeparator,
 } from "../../style/theme.js";
+import { type GitStatusName, gitGlyph } from "./glyphs.js";
 import { shimmerText } from "./shimmer.js";
 import { STAGE_SHIMMER_OPTIONS } from "./stage-labels.js";
 
@@ -668,25 +669,21 @@ export function buildCostSparkline(costs: number[], width = 5): string {
 	return chalk.hex(themePalette.cost)(bars.join(""));
 }
 
-/**
- * Git status indicator glyphs.
- */
-export const GIT_STATUS_GLYPHS = {
-	clean: "○", // Clean working tree
-	dirty: "●", // Uncommitted changes
-	staged: "◐", // Staged changes
-	ahead: "↑", // Ahead of remote
-	behind: "↓", // Behind remote
-	diverged: "↕", // Diverged from remote
-} as const;
-
-export type GitStatusType = keyof typeof GIT_STATUS_GLYPHS;
+/** Git status type for UI display */
+export type GitStatusType =
+	| "clean"
+	| "dirty"
+	| "staged"
+	| "ahead"
+	| "behind"
+	| "diverged";
 
 /**
  * Build a git status glyph with color.
+ * Uses centralized glyphs from glyphs.ts with ASCII fallback support.
  */
 export function buildGitStatusGlyph(status: GitStatusType): string {
-	const glyph = GIT_STATUS_GLYPHS[status];
+	const glyph = gitGlyph(status as GitStatusName);
 	let color: string = themePalette.muted;
 
 	switch (status) {
