@@ -17,6 +17,7 @@ export type HookEventType =
 	| "EvalGate"
 	| "SessionStart"
 	| "SessionEnd"
+	| "SessionSwitch"
 	| "SubagentStart"
 	| "SubagentStop"
 	| "UserPromptSubmit"
@@ -129,6 +130,21 @@ export interface SessionEndHookInput extends HookInputBase {
 	duration_ms: number;
 	/** Number of turns in the session */
 	turn_count: number;
+}
+
+/**
+ * Input for SessionSwitch hooks - called when switching to a different session.
+ */
+export interface SessionSwitchHookInput extends HookInputBase {
+	hook_event_name: "SessionSwitch";
+	/** Session ID being switched from (null if no previous session) */
+	from_session_id?: string;
+	/** Session ID being switched to */
+	to_session_id: string;
+	/** Number of messages in the target session */
+	message_count: number;
+	/** Whether this is a resume operation */
+	is_resume: boolean;
 }
 
 /**
@@ -300,6 +316,7 @@ export type HookInput =
 	| EvalGateHookInput
 	| SessionStartHookInput
 	| SessionEndHookInput
+	| SessionSwitchHookInput
 	| SubagentStartHookInput
 	| SubagentStopHookInput
 	| UserPromptSubmitHookInput
@@ -421,6 +438,19 @@ export interface SubagentStopHookOutput {
 }
 
 /**
+ * Hook-specific output for SessionSwitch events.
+ */
+export interface SessionSwitchHookOutput {
+	hookEventName: "SessionSwitch";
+	/** Additional context to inject after session switch */
+	additionalContext?: string;
+	/** If true, skip restoring the conversation view */
+	skipConversationRestore?: boolean;
+	/** Custom message to display after switch */
+	message?: string;
+}
+
+/**
  * Hook-specific output for UserPromptSubmit events.
  */
 export interface UserPromptSubmitHookOutput {
@@ -465,6 +495,7 @@ export type HookSpecificOutput =
 	| SessionStartHookOutput
 	| SubagentStartHookOutput
 	| SubagentStopHookOutput
+	| SessionSwitchHookOutput
 	| UserPromptSubmitHookOutput
 	| PermissionRequestHookOutput
 	| BranchHookOutput;

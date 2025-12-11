@@ -199,6 +199,18 @@ export function calculateUsagePercent(
 // ============================================================================
 
 /**
+ * Result of finding a cut point, including split turn information.
+ */
+export interface CutPointResult {
+	/** Index of first message to keep (messages before this are summarized) */
+	firstKeptIndex: number;
+	/** Index of user message that starts the turn being split, or -1 if not splitting */
+	turnStartIndex: number;
+	/** Whether this cut splits a turn (cut point is not a user message) */
+	isSplitTurn: boolean;
+}
+
+/**
  * Find indices of user messages (turn boundaries) in a message array.
  *
  * Turn boundaries are important because we never want to split a turn
@@ -222,6 +234,27 @@ function findTurnBoundaries(
 		}
 	}
 	return boundaries;
+}
+
+/**
+ * Find the user message that starts the turn containing the given index.
+ *
+ * @param messages - Array of messages
+ * @param entryIndex - Index of the message to find the turn start for
+ * @param startIndex - First index to consider (inclusive)
+ * @returns Index of the user message that starts this turn, or -1 if not found
+ */
+export function findTurnStartIndex(
+	messages: AppMessage[],
+	entryIndex: number,
+	startIndex: number,
+): number {
+	for (let i = entryIndex; i >= startIndex; i--) {
+		if (messages[i].role === "user") {
+			return i;
+		}
+	}
+	return -1;
 }
 
 /**
@@ -294,6 +327,105 @@ export function findCutPoint(
 	}
 
 	return cutIndex;
+}
+
+/**
+ * Find valid cut points (user or assistant messages, not tool results).
+ * Tool results must stay with their preceding tool call.
+ *
+ * @param messages - Array of messages to scan
+ * @param startIndex - First index to consider (inclusive)
+ * @param endIndex - Last index to consider (exclusive)
+ * @returns Array of indices where valid cut points exist
+ */
+function findValidCutPoints(
+	messages: AppMessage[],
+	startIndex: number,
+	endIndex: number,
+): number[] {
+	const cutPoints: number[] = [];
+	for (let i = startIndex; i < endIndex; i++) {
+		const role = messages[i].role;
+		// user and assistant are valid cut points
+		// toolResult must stay with its preceding tool call
+		if (role === "user" || role === "assistant") {
+			cutPoints.push(i);
+		}
+	}
+	return cutPoints;
+}
+
+/**
+ * Find the optimal cut point with split turn information.
+ *
+ * Similar to findCutPoint but:
+ * - Can cut at assistant messages (not just user messages)
+ * - Returns information about whether we're splitting a turn
+ *
+ * This allows for more aggressive compaction when turns are very large,
+ * while providing the context needed to summarize the split turn prefix.
+ *
+ * @param messages - Array of messages to analyze
+ * @param startIndex - First index to consider for cutting
+ * @param endIndex - Last index to consider (exclusive)
+ * @param keepRecentTokens - Approximate tokens to preserve
+ * @returns CutPointResult with index and split turn information
+ */
+export function findCutPointWithSplitInfo(
+	messages: AppMessage[],
+	startIndex: number,
+	endIndex: number,
+	keepRecentTokens: number,
+): CutPointResult {
+	const cutPoints = findValidCutPoints(messages, startIndex, endIndex);
+
+	if (cutPoints.length === 0) {
+		return {
+			firstKeptIndex: startIndex,
+			turnStartIndex: -1,
+			isSplitTurn: false,
+		};
+	}
+
+	// Estimate message sizes for token-based cutting
+	let accumulatedTokens = 0;
+	let cutIndex = startIndex;
+
+	for (let i = endIndex - 1; i >= startIndex; i--) {
+		const usage = getAssistantUsage(messages[i]);
+		if (usage) {
+			accumulatedTokens = calculateContextTokens(usage);
+			// Using cumulative tokens from the last assistant message
+			if (accumulatedTokens >= keepRecentTokens) {
+				// Find the closest valid cut point at or after this index
+				for (const cp of cutPoints) {
+					if (cp >= i) {
+						cutIndex = cp;
+						break;
+					}
+				}
+				break;
+			}
+		}
+	}
+
+	// If no cut point found via tokens, use last assistant's token-based cut
+	if (cutIndex === startIndex) {
+		// Fall back to original algorithm
+		cutIndex = findCutPoint(messages, startIndex, endIndex, keepRecentTokens);
+	}
+
+	// Determine if this is a split turn
+	const isUserMessage = messages[cutIndex]?.role === "user";
+	const turnStartIndex = isUserMessage
+		? -1
+		: findTurnStartIndex(messages, cutIndex, startIndex);
+
+	return {
+		firstKeptIndex: cutIndex,
+		turnStartIndex,
+		isSplitTurn: !isUserMessage && turnStartIndex !== -1,
+	};
 }
 
 /**
@@ -378,6 +510,32 @@ Include:
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`;
 
 /**
+ * Prompt for summarizing the prefix of a split turn.
+ *
+ * Used when compaction cuts in the middle of a turn (at an assistant message
+ * rather than a user message). The prefix of the turn needs summarization
+ * to provide context for the kept suffix.
+ */
+export const TURN_PREFIX_SUMMARIZATION_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION for a split turn.
+This is the PREFIX of a turn that was too large to keep in full. The SUFFIX (recent work) is being kept.
+
+Create a handoff summary that captures:
+- What the user originally asked for in this turn
+- Key decisions and progress made early in this turn
+- Important context needed to understand the kept suffix
+
+Be concise. Focus on information needed to understand the retained recent work.`;
+
+/**
+ * Build the turn prefix summarization prompt.
+ *
+ * @returns Complete turn prefix summarization prompt
+ */
+export function buildTurnPrefixSummarizationPrompt(): string {
+	return TURN_PREFIX_SUMMARIZATION_PROMPT;
+}
+
+/**
  * Build the summarization prompt, optionally with custom instructions.
  *
  * @param customInstructions - Optional additional focus for the summary
@@ -412,6 +570,26 @@ export function decorateSummaryText(
 		: "_Local summary of prior discussion (model unavailable)._\n\n";
 
 	return `${handoffPrefix}${summaryText}\n\n(Compacted ${compactedCount} messages on ${new Date().toLocaleString()})`;
+}
+
+/**
+ * Merge a history summary with a turn prefix summary for split turn compaction.
+ *
+ * When compaction splits a turn, we generate two summaries:
+ * 1. History summary: everything before the split turn
+ * 2. Turn prefix summary: the beginning of the split turn
+ *
+ * This function combines them into a single coherent summary.
+ *
+ * @param historySummary - Summary of messages before the split turn
+ * @param turnPrefixSummary - Summary of the prefix of the split turn
+ * @returns Combined summary text
+ */
+export function mergeSplitTurnSummaries(
+	historySummary: string,
+	turnPrefixSummary: string,
+): string {
+	return `${historySummary}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixSummary}`;
 }
 
 /**

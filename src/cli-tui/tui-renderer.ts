@@ -359,6 +359,7 @@ export class TuiRenderer {
 	private reducedMotion = false;
 	private reducedMotionForced = false;
 	private zenMode = false;
+	private hideThinkingBlocks = false;
 	private readonly minimalMode = checkMinimalMode();
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
@@ -419,6 +420,9 @@ export class TuiRenderer {
 		setReducedMotionEnv(this.reducedMotion);
 		if (typeof this.uiState.zenMode === "boolean") {
 			this.zenMode = this.uiState.zenMode;
+		}
+		if (typeof this.uiState.hideThinkingBlocks === "boolean") {
+			this.hideThinkingBlocks = this.uiState.hideThinkingBlocks;
 		}
 		if (Array.isArray(this.uiState.recentCommands)) {
 			this.recentCommands = [...this.uiState.recentCommands];
@@ -493,6 +497,9 @@ export class TuiRenderer {
 		};
 		this.editor.onCtrlO = () => {
 			this.toggleToolOutputs();
+		};
+		this.editor.onCtrlT = () => {
+			this.toggleThinkingBlocks();
 		};
 		this.editor.onTab = () => this.handleSlashCycle(false);
 		this.editor.onShiftTab = () => {
@@ -767,6 +774,7 @@ export class TuiRenderer {
 			pendingTools: this.pendingTools,
 			registerToolComponent: (component) =>
 				this.toolOutputView.registerToolComponent(component),
+			getHideThinkingBlocks: () => this.hideThinkingBlocks,
 		});
 		this.streamingView = new StreamingView({
 			chatContainer: this.chatContainer,
@@ -774,6 +782,7 @@ export class TuiRenderer {
 			toolOutputView: this.toolOutputView,
 			lowBandwidth: this.lowBandwidthConfig,
 			getCleanMode: () => this.cleanMode,
+			getHideThinkingBlocks: () => this.hideThinkingBlocks,
 		});
 		this.agentEventRouter = new AgentEventRouter({
 			messageView: this.messageView,
@@ -1110,6 +1119,7 @@ export class TuiRenderer {
 			handleMemory: (context) => this.handleMemoryCommand(context),
 			handleMode: (context) => this.handleModeCommand(context),
 			handlePrompts: (context) => this.handlePromptsCommand(context),
+			handleCopy: (context) => this.handleCopyCommand(context),
 			// Grouped command handlers
 			handleSessionCommand: (context) =>
 				this.handleGroupedSessionCommand(context),
@@ -1545,6 +1555,13 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
+	private renderConversationView(): void {
+		// Clear and re-render conversation with current settings (e.g., after toggling thinking blocks)
+		this.chatContainer.clear();
+		this.toolOutputView.clearTrackedComponents();
+		this.messageView.renderInitialMessages(this.agent.state);
+	}
+
 	async getUserInput(): Promise<string> {
 		return new Promise((resolve) => {
 			this.onInputCallback = (text: string) => {
@@ -1937,6 +1954,49 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
+	private handleCopyCommand(context: CommandExecutionContext): void {
+		// Find the last assistant message
+		const messages = this.agent.state.messages;
+		let lastAssistant: AppMessage | null = null;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (messages[i].role === "assistant") {
+				lastAssistant = messages[i];
+				break;
+			}
+		}
+
+		if (!lastAssistant) {
+			context.showError("No assistant message to copy.");
+			return;
+		}
+
+		// Extract text content from the message
+		const { renderMessageToPlainText, createRenderableMessage } =
+			require("../conversation/render-model.js");
+		const renderable = createRenderableMessage(lastAssistant);
+		if (!renderable) {
+			context.showError("Could not render message.");
+			return;
+		}
+
+		const text = renderMessageToPlainText(renderable);
+		if (!text) {
+			context.showError("No text content to copy.");
+			return;
+		}
+
+		// Copy to clipboard
+		try {
+			const clipboard = require("clipboardy");
+			clipboard.writeSync(text);
+			context.showInfo("Copied last assistant message to clipboard.");
+		} catch (error) {
+			context.showError(
+				`Failed to copy to clipboard: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
 	private handleCleanCommand(context: CommandExecutionContext): void {
 		const arg = context.argumentText.trim().toLowerCase();
 		if (!arg) {
@@ -2231,6 +2291,20 @@ export class TuiRenderer {
 			"info",
 		);
 		this.refreshFooterHint();
+		this.persistUiState();
+	}
+
+	private toggleThinkingBlocks(): void {
+		this.hideThinkingBlocks = !this.hideThinkingBlocks;
+		this.notificationView.showToast(
+			this.hideThinkingBlocks
+				? "Thinking blocks hidden."
+				: "Thinking blocks visible.",
+			"info",
+		);
+		// Re-render conversation to apply the change
+		this.renderConversationView();
+		this.ui.requestRender();
 		this.persistUiState();
 	}
 
@@ -2537,6 +2611,7 @@ export class TuiRenderer {
 			footerMode: this.footerMode,
 			reducedMotion: this.reducedMotion,
 			cleanMode: this.cleanMode,
+			hideThinkingBlocks: this.hideThinkingBlocks,
 			recentCommands: this.recentCommands,
 			favoriteCommands: Array.from(this.favoriteCommands),
 			...extra,

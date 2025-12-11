@@ -18,6 +18,7 @@ interface MessageViewOptions {
 	pendingTools: Map<string, ToolExecutionComponent>;
 	registerToolComponent: (component: ToolExecutionComponent) => void;
 	getZenMode?: () => boolean;
+	getHideThinkingBlocks?: () => boolean;
 }
 
 /** Centered dot separator for zen mode */
@@ -42,6 +43,10 @@ export class MessageView {
 
 	private isZenMode(): boolean {
 		return this.options.getZenMode?.() ?? false;
+	}
+
+	private shouldHideThinkingBlocks(): boolean {
+		return this.options.getHideThinkingBlocks?.() ?? false;
 	}
 
 	addMessage(message: AppMessage): void {
@@ -73,7 +78,11 @@ export class MessageView {
 			if (this.isZenMode() && this.messageCount > 0) {
 				this.options.chatContainer.addChild(createZenSeparator());
 			}
-			const assistantComponent = new AssistantMessageComponent(renderable);
+			// Filter out thinking blocks if hidden
+			const messageToRender = this.shouldHideThinkingBlocks()
+				? { ...renderable, thinkingBlocks: [] }
+				: renderable;
+			const assistantComponent = new AssistantMessageComponent(messageToRender);
 			this.options.chatContainer.addChild(assistantComponent);
 			this.messageCount++;
 			for (const toolCall of renderable.toolCalls) {

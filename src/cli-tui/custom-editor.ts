@@ -11,6 +11,7 @@ export class CustomEditor extends Editor {
 	public onShiftTab?: () => boolean | undefined;
 	public onCtrlP?: () => void;
 	public onCtrlO?: () => void;
+	public onCtrlT?: () => void;
 	public onTyping?: () => void;
 	public onTab?: () => boolean;
 
@@ -31,6 +32,12 @@ export class CustomEditor extends Editor {
 		// Ctrl+O toggles tool output expansion
 		if (data === "\x0f" && this.onCtrlO) {
 			this.onCtrlO();
+			return;
+		}
+
+		// Ctrl+T toggles thinking block visibility
+		if (data === "\x14" && this.onCtrlT) {
+			this.onCtrlT();
 			return;
 		}
 
