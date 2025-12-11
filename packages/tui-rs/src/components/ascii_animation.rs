@@ -315,7 +315,11 @@ impl AsciiAnimation {
 
         let elapsed_ms = self.start.elapsed().as_millis();
         let rem_ms = elapsed_ms % tick_ms;
-        let delay_ms = if rem_ms == 0 { tick_ms } else { tick_ms - rem_ms };
+        let delay_ms = if rem_ms == 0 {
+            tick_ms
+        } else {
+            tick_ms - rem_ms
+        };
 
         Duration::from_millis(delay_ms as u64)
     }

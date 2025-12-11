@@ -305,7 +305,8 @@ impl ShortcutsHelp {
                 .with_context("tool approval"),
         );
         self.add(
-            Shortcut::new(ShortcutCategory::Tools, "r", "Reject tool").with_context("tool approval"),
+            Shortcut::new(ShortcutCategory::Tools, "r", "Reject tool")
+                .with_context("tool approval"),
         );
         self.add(
             Shortcut::new(ShortcutCategory::Tools, "e", "Edit before run")
@@ -328,11 +329,7 @@ impl ShortcutsHelp {
             "Ctrl+M",
             "Select model",
         ));
-        self.add(Shortcut::new(
-            ShortcutCategory::View,
-            "?",
-            "Show this help",
-        ));
+        self.add(Shortcut::new(ShortcutCategory::View, "?", "Show this help"));
         self.add(Shortcut::new(
             ShortcutCategory::View,
             "F1",
@@ -486,10 +483,13 @@ impl ShortcutsHelp {
         for (category, shortcuts) in groups {
             // Category header
             let header_text = format!("── {} ──", category.label());
-            rows.push(Row::new(vec![
-                String::new(),
-                header_text,
-            ]).style(Style::default().fg(category.color()).add_modifier(Modifier::BOLD)));
+            rows.push(
+                Row::new(vec![String::new(), header_text]).style(
+                    Style::default()
+                        .fg(category.color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            );
 
             // Shortcuts in this category
             for shortcut in shortcuts {
@@ -726,8 +726,10 @@ mod tests {
 
         let filtered = help.filtered_shortcuts();
         assert!(!filtered.is_empty());
-        assert!(filtered.iter().any(|s| s.keys.to_lowercase().contains("enter")
-            || s.description.to_lowercase().contains("enter")));
+        assert!(filtered
+            .iter()
+            .any(|s| s.keys.to_lowercase().contains("enter")
+                || s.description.to_lowercase().contains("enter")));
 
         help.clear_filter();
         assert!(help.filter.is_none());
@@ -741,7 +743,9 @@ mod tests {
 
         let filtered = help.filtered_shortcuts();
         assert!(!filtered.is_empty());
-        assert!(filtered.iter().all(|s| s.category == ShortcutCategory::Input));
+        assert!(filtered
+            .iter()
+            .all(|s| s.category == ShortcutCategory::Input));
     }
 
     #[test]

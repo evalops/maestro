@@ -69,6 +69,6 @@ mod indexer;
 mod search;
 mod workspace;
 
-pub use indexer::{FileIndexer, IndexerConfig, IndexStatus};
+pub use indexer::{FileIndexer, IndexStatus, IndexerConfig};
 pub use search::{highlight_matches, FileMatch, FileSearch, FileSearchResult};
 pub use workspace::{get_workspace_files, patterns, WorkspaceFile};

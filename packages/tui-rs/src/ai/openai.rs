@@ -617,8 +617,8 @@ impl OpenAiClient {
     /// Groq provides fast inference for open models like Llama, Mixtral, and Gemma.
     /// Uses OpenAI-compatible API format.
     pub fn groq_from_env() -> Result<Self> {
-        let api_key = std::env::var("GROQ_API_KEY")
-            .context("GROQ_API_KEY environment variable not set")?;
+        let api_key =
+            std::env::var("GROQ_API_KEY").context("GROQ_API_KEY environment variable not set")?;
         Self::with_base_url(api_key, "https://api.groq.com/openai/v1")
     }
 

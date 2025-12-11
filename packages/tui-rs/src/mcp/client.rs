@@ -132,7 +132,12 @@ impl McpConnection {
 
         // Expand environment variables in command and args
         let command = expand_env_vars(command);
-        let args: Vec<String> = self.config.args.iter().map(|a| expand_env_vars(a)).collect();
+        let args: Vec<String> = self
+            .config
+            .args
+            .iter()
+            .map(|a| expand_env_vars(a))
+            .collect();
 
         // Build command
         let mut cmd = Command::new(&command);
@@ -169,12 +174,14 @@ impl McpConnection {
         })?;
 
         // Take stdin/stdout
-        let stdin = child.stdin.take().ok_or_else(|| {
-            McpError::ConnectionFailed("Failed to get stdin".to_string())
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            McpError::ConnectionFailed("Failed to get stdout".to_string())
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| McpError::ConnectionFailed("Failed to get stdin".to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| McpError::ConnectionFailed("Failed to get stdout".to_string()))?;
 
         // Set up response reader
         let (response_tx, response_rx) = mpsc::unbounded_channel();
@@ -225,9 +232,9 @@ impl McpConnection {
         let request = McpRequest::initialize(self.next_id(), &ClientInfo::default());
         let response = self.send_request(request).await?;
 
-        let _init_result: InitializeResult = response.result_as().map_err(|e| {
-            McpError::Protocol(format!("Invalid initialize response: {}", e))
-        })?;
+        let _init_result: InitializeResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid initialize response: {}", e)))?;
 
         // Send initialized notification
         let notification = serde_json::json!({
@@ -248,9 +255,9 @@ impl McpConnection {
         let request = McpRequest::list_tools(self.next_id());
         let response = self.send_request(request).await?;
 
-        let tools_result: ToolsListResult = response.result_as().map_err(|e| {
-            McpError::Protocol(format!("Invalid tools/list response: {}", e))
-        })?;
+        let tools_result: ToolsListResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid tools/list response: {}", e)))?;
 
         self.tools = tools_result.tools;
         Ok(())
@@ -284,9 +291,9 @@ impl McpConnection {
             return Err(McpError::RequestFailed(error.message));
         }
 
-        let result: McpToolResult = response.result_as().map_err(|e| {
-            McpError::Protocol(format!("Invalid tool result: {}", e))
-        })?;
+        let result: McpToolResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid tool result: {}", e)))?;
 
         Ok(result)
     }
@@ -323,7 +330,11 @@ impl McpConnection {
     async fn send_raw(&mut self, value: &impl serde::Serialize) -> Result<(), McpError> {
         let stdin = match &mut self.backend {
             Some(ConnectionBackend::Stdio { stdin, .. }) => stdin,
-            _ => return Err(McpError::ConnectionFailed("Not connected via stdio".to_string())),
+            _ => {
+                return Err(McpError::ConnectionFailed(
+                    "Not connected via stdio".to_string(),
+                ))
+            }
         };
 
         let json = serde_json::to_string(value)?;

@@ -317,9 +317,7 @@ impl FileIndexer {
         if entries.len() > 100 {
             entries
                 .par_iter()
-                .flat_map(|entry| {
-                    self.process_entry(root, entry, depth)
-                })
+                .flat_map(|entry| self.process_entry(root, entry, depth))
                 .collect()
         } else {
             entries
@@ -439,7 +437,9 @@ mod tests {
         let files = indexer.get_files(dir.path());
 
         // Should not include node_modules files
-        assert!(!files.iter().any(|f| f.relative_path.contains("node_modules")));
+        assert!(!files
+            .iter()
+            .any(|f| f.relative_path.contains("node_modules")));
     }
 
     #[test]

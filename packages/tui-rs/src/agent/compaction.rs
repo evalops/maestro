@@ -53,9 +53,9 @@ pub struct CompactionConfig {
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            max_context_tokens: 100_000,  // ~100K tokens before compacting
-            target_tokens: 50_000,         // Target ~50K after compaction
-            preserve_recent_count: 10,     // Keep last 10 messages
+            max_context_tokens: 100_000, // ~100K tokens before compacting
+            target_tokens: 50_000,       // Target ~50K after compaction
+            preserve_recent_count: 10,   // Keep last 10 messages
             summarize_tool_results: true,
         }
     }
@@ -102,7 +102,9 @@ impl ContextCompactor {
         }
 
         // Split into messages to compact and messages to preserve
-        let split_point = messages.len().saturating_sub(self.config.preserve_recent_count);
+        let split_point = messages
+            .len()
+            .saturating_sub(self.config.preserve_recent_count);
         let to_compact = &messages[..split_point];
         let to_preserve = &messages[split_point..];
 
@@ -170,11 +172,18 @@ impl ContextCompactor {
                                 ContentBlock::ToolUse { name, .. } => {
                                     assistant_actions.push(format!("Used tool: {}", name));
                                 }
-                                ContentBlock::ToolResult { content, is_error, .. } => {
+                                ContentBlock::ToolResult {
+                                    content, is_error, ..
+                                } => {
                                     if self.config.summarize_tool_results {
-                                        let status = if is_error.unwrap_or(false) { "failed" } else { "succeeded" };
+                                        let status = if is_error.unwrap_or(false) {
+                                            "failed"
+                                        } else {
+                                            "succeeded"
+                                        };
                                         let truncated = truncate_text(content, 150);
-                                        tool_results.push(format!("Tool {}: {}", status, truncated));
+                                        tool_results
+                                            .push(format!("Tool {}: {}", status, truncated));
                                     }
                                 }
                                 _ => {}
@@ -260,9 +269,7 @@ impl CompactionResult {
 fn estimate_message_tokens(message: &Message) -> u64 {
     match &message.content {
         MessageContent::Text(text) => estimate_text_tokens(text),
-        MessageContent::Blocks(blocks) => {
-            blocks.iter().map(|b| estimate_block_tokens(b)).sum()
-        }
+        MessageContent::Blocks(blocks) => blocks.iter().map(|b| estimate_block_tokens(b)).sum(),
     }
 }
 
@@ -324,9 +331,9 @@ mod tests {
 
     #[test]
     fn test_estimate_text_tokens() {
-        assert_eq!(estimate_text_tokens("Hello"), 1);  // 5 chars / 4 = 1
-        assert_eq!(estimate_text_tokens("Hello, world!"), 3);  // 13 chars / 4 = 3
-        assert_eq!(estimate_text_tokens(""), 1);  // min 1
+        assert_eq!(estimate_text_tokens("Hello"), 1); // 5 chars / 4 = 1
+        assert_eq!(estimate_text_tokens("Hello, world!"), 3); // 13 chars / 4 = 3
+        assert_eq!(estimate_text_tokens(""), 1); // min 1
     }
 
     #[test]
@@ -355,7 +362,7 @@ mod tests {
     #[test]
     fn test_needs_compaction_large() {
         let config = CompactionConfig {
-            max_context_tokens: 10,  // Very small threshold for testing
+            max_context_tokens: 10, // Very small threshold for testing
             ..Default::default()
         };
         let compactor = ContextCompactor::new(config);
@@ -388,11 +395,15 @@ mod tests {
         let result = compactor.compact(&messages);
 
         assert!(result.was_compacted());
-        assert_eq!(result.compacted_count, 4);  // 6 - 2 = 4 compacted
-        // Summary + 2 preserved = 3 total
+        assert_eq!(result.compacted_count, 4); // 6 - 2 = 4 compacted
+                                               // Summary + 2 preserved = 3 total
         assert_eq!(result.messages.len(), 3);
         // First message should be the summary
-        assert!(result.messages[0].content.as_text().unwrap().contains("context_summary"));
+        assert!(result.messages[0]
+            .content
+            .as_text()
+            .unwrap()
+            .contains("context_summary"));
     }
 
     #[test]
@@ -425,7 +436,7 @@ mod tests {
         let text = "Hello world this is a long message";
         let truncated = truncate_text(text, 15);
         assert!(truncated.ends_with("..."));
-        assert!(truncated.len() <= 18);  // 15 + "..."
+        assert!(truncated.len() <= 18); // 15 + "..."
     }
 
     #[test]

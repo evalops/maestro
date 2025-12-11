@@ -147,12 +147,20 @@ impl WelcomeScreen {
         }
 
         // Welcome message
-        let welcome_text = self.welcome_message.clone().unwrap_or_else(|| "Welcome to".to_string());
+        let welcome_text = self
+            .welcome_message
+            .clone()
+            .unwrap_or_else(|| "Welcome to".to_string());
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::raw(welcome_text),
             Span::raw(" "),
-            Span::styled("Composer", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Composer",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         // Version
@@ -186,7 +194,9 @@ impl WelcomeScreen {
         // Getting started section
         lines.push(Line::from(Span::styled(
             "  Getting Started",
-            Style::default().add_modifier(Modifier::BOLD).add_modifier(Modifier::UNDERLINED),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED),
         )));
         lines.push(Line::from(""));
 
@@ -211,7 +221,9 @@ impl WelcomeScreen {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  Press Ctrl+. to change animation",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
             )));
         }
 
@@ -235,7 +247,12 @@ impl Widget for WelcomeScreen {
             0
         };
 
-        let content_area = Rect::new(area.x, area.y + y_offset, area.width, content_height.min(area.height));
+        let content_area = Rect::new(
+            area.x,
+            area.y + y_offset,
+            area.width,
+            content_height.min(area.height),
+        );
 
         Paragraph::new(content)
             .wrap(Wrap { trim: false })
@@ -426,7 +443,9 @@ impl Widget for SplashScreen {
 
         lines.push(Line::from(Span::styled(
             self.title.clone(),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )));
 
         if let Some(subtitle) = self.subtitle {
@@ -444,7 +463,12 @@ impl Widget for SplashScreen {
             0
         };
 
-        let content_area = Rect::new(area.x, area.y + y_offset, area.width, content_height.min(area.height));
+        let content_area = Rect::new(
+            area.x,
+            area.y + y_offset,
+            area.width,
+            content_height.min(area.height),
+        );
 
         Paragraph::new(lines)
             .alignment(Alignment::Center)

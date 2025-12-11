@@ -19,12 +19,7 @@ pub struct PricingTier {
 
 impl PricingTier {
     /// Create a new pricing tier
-    pub const fn new(
-        input: f64,
-        output: f64,
-        cache_read: f64,
-        cache_write: f64,
-    ) -> Self {
+    pub const fn new(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Self {
         Self {
             input_per_million: input,
             output_per_million: output,
@@ -48,8 +43,10 @@ impl PricingTier {
     ) -> f64 {
         let input_cost = (input_tokens as f64 / 1_000_000.0) * self.input_per_million;
         let output_cost = (output_tokens as f64 / 1_000_000.0) * self.output_per_million;
-        let cache_read_cost = (cache_read_tokens as f64 / 1_000_000.0) * self.cache_read_per_million;
-        let cache_write_cost = (cache_write_tokens as f64 / 1_000_000.0) * self.cache_write_per_million;
+        let cache_read_cost =
+            (cache_read_tokens as f64 / 1_000_000.0) * self.cache_read_per_million;
+        let cache_write_cost =
+            (cache_write_tokens as f64 / 1_000_000.0) * self.cache_write_per_million;
 
         input_cost + output_cost + cache_read_cost + cache_write_cost
     }
@@ -125,8 +122,12 @@ impl ModelPricing {
         cache_read_tokens: u64,
         cache_write_tokens: u64,
     ) -> f64 {
-        self.get_tier(model)
-            .calculate_cost(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        self.get_tier(model).calculate_cost(
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
     }
 }
 
