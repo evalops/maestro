@@ -325,6 +325,14 @@ pub mod hyperlink;
 /// Frame-based animations with built-in presets.
 pub mod ascii_animation;
 
+/// Skills system for dynamically activating specialized behaviors.
+/// Skills can modify system prompts, provide tools, and change how the agent approaches tasks.
+pub mod skills;
+
+/// Swarm mode for multi-agent task orchestration.
+/// Execute complex tasks across multiple agents in parallel with dependency management.
+pub mod swarm;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRIVATE MODULES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1163,4 +1171,53 @@ pub use ascii_animation::{
     // Core
     AsciiAnimation, // Main animation struct
     DEFAULT_FRAME_DURATION,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SKILLS EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Skills system for dynamically activating specialized behaviors.
+///
+/// Skills allow the agent to adapt its behavior based on context:
+/// - Frontend design skill: Enhanced UI/UX focus
+/// - Backend skill: API and database expertise
+/// - Testing skill: Test-first development
+pub use skills::{
+    ActiveSkill,          // Runtime skill state
+    SkillActivationState, // Inactive, Activating, Active, etc.
+    SkillDefinition,      // Skill metadata and configuration
+    SkillEvent,           // Skill lifecycle events
+    SkillId,              // Unique skill identifier
+    SkillRegistry,        // Skill management registry
+    SkillSource,          // Builtin, User, Plugin, Remote
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SWARM EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Swarm mode for multi-agent task orchestration.
+///
+/// Break down complex tasks into subtasks executed by multiple agents:
+/// - Dependency management between tasks
+/// - Parallel execution with configurable concurrency
+/// - Progress tracking and event streaming
+/// - Markdown-based plan parsing
+pub use swarm::{
+    parse_plan,        // Parse markdown plan to SwarmPlan
+    parse_simple_list, // Parse simple task list format
+    validate_plan,     // Validate plan for consistency
+    AgentId,           // Unique agent identifier
+    SwarmConfig,       // Execution configuration
+    SwarmEvent,        // Execution events
+    SwarmExecutor,     // Main executor
+    SwarmPlan,         // Execution plan
+    SwarmState,        // Current execution state
+    SwarmStatus,       // Running, Completed, Failed, etc.
+    SwarmTask,         // Individual task definition
+    TaskId,            // Unique task identifier
+    TaskPriority,      // Low, Normal, High, Critical
+    TaskResult,        // Task execution result
+    TaskStatus,        // Pending, Running, Completed, etc.
 };

@@ -9,6 +9,7 @@ use super::anthropic::AnthropicClient;
 use super::google::GoogleClient;
 use super::openai::OpenAiClient;
 use super::types::*;
+use super::vertex::VertexAiClient;
 
 /// AI provider enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub enum AiProvider {
     Google,
     /// Groq - uses OpenAI-compatible API for fast inference
     Groq,
+    /// Google Vertex AI - enterprise Gemini via GCP
+    VertexAi,
 }
 
 impl AiProvider {
@@ -82,6 +85,8 @@ pub enum UnifiedClient {
     Google(GoogleClient),
     /// Groq uses OpenAI client with custom base URL for fast inference
     Groq(OpenAiClient),
+    /// Google Vertex AI for enterprise Gemini
+    VertexAi(VertexAiClient),
 }
 
 impl UnifiedClient {
@@ -110,6 +115,11 @@ impl UnifiedClient {
         Ok(Self::Groq(OpenAiClient::groq_from_env()?))
     }
 
+    /// Create client for Vertex AI
+    pub fn vertex_ai() -> Result<Self> {
+        Ok(Self::VertexAi(VertexAiClient::from_env()?))
+    }
+
     /// Create client based on provider
     pub fn from_provider(provider: AiProvider) -> Result<Self> {
         match provider {
@@ -118,6 +128,7 @@ impl UnifiedClient {
             AiProvider::Mistral => Self::mistral(),
             AiProvider::Google => Self::google(),
             AiProvider::Groq => Self::groq(),
+            AiProvider::VertexAi => Self::vertex_ai(),
         }
     }
 
@@ -134,6 +145,7 @@ impl UnifiedClient {
             Self::Mistral(_) => AiProvider::Mistral,
             Self::Google(_) => AiProvider::Google,
             Self::Groq(_) => AiProvider::Groq,
+            Self::VertexAi(_) => AiProvider::VertexAi,
         }
     }
 
@@ -149,6 +161,7 @@ impl UnifiedClient {
             Self::Mistral(client) => client.stream(messages, config).await,
             Self::Google(client) => client.stream(messages, config).await,
             Self::Groq(client) => client.stream(messages, config).await,
+            Self::VertexAi(client) => client.stream(messages, config).await,
         }
     }
 }

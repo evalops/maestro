@@ -142,12 +142,16 @@
 //! }
 //! ```
 
+mod branching;
 mod entries;
 mod export;
 mod manager;
 mod reader;
 mod writer;
 
+pub use branching::{
+    BranchId, BranchManager, BranchMetadata, BranchPoint, BranchSummary, MessageId,
+};
 pub use entries::*;
 pub use export::{export_session_file, ExportFormat, ExportOptions, SessionExporter};
 pub use manager::{SessionInfo, SessionManager};
