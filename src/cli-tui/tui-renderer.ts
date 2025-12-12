@@ -37,10 +37,6 @@ import { getRegisteredModels } from "../models/registry.js";
 import { listOAuthProviders, loadOAuthCredentials } from "../oauth/storage.js";
 import { getOpenTelemetryStatus } from "../opentelemetry.js";
 import {
-	getBackgroundTaskSettings,
-	subscribeBackgroundTaskSettings,
-} from "../runtime/background-settings.js";
-import {
 	type SessionModelMetadata,
 	toSessionModelMetadata,
 } from "../session/manager.js";
@@ -52,10 +48,6 @@ import {
 	recordTokenUsage,
 } from "../telemetry.js";
 import { getCurrentThemeName, setTheme } from "../theme/theme.js";
-import {
-	type BackgroundTaskNotification,
-	backgroundTaskManager,
-} from "../tools/background-tasks.js";
 import { getTrainingStatus } from "../training.js";
 
 import {
@@ -81,13 +73,10 @@ import {
 import { createLogger } from "../utils/logger.js";
 import { AboutView } from "./about-view.js";
 import { AgentEventRouter } from "./agent-event-router.js";
+import { BackgroundTasksController } from "./background/background-tasks-controller.js";
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
-import {
-	type BackgroundRenderContext,
-	handleBackgroundCommand,
-} from "./commands/background-handlers.js";
 import {
 	type ComposerRenderContext,
 	handleComposerCommand,
@@ -263,8 +252,6 @@ export class TuiRenderer {
 	private explicitApiKey?: string;
 	private telemetryStatus = getTelemetryStatus();
 	private trainingStatus = getTrainingStatus();
-	private backgroundSettings = getBackgroundTaskSettings();
-	private backgroundSettingsUnsubscribe?: () => void;
 	private currentModelMetadata?: SessionModelMetadata;
 
 	// Track if this is the first user message (to skip spacer)
@@ -324,7 +311,7 @@ export class TuiRenderer {
 	private queueModeSelectorView: QueueModeSelectorView;
 	private userMessageSelectorView: UserMessageSelectorView;
 	private notificationView: NotificationView;
-	private backgroundTaskNotificationCleanup?: () => void;
+	private backgroundTasksController: BackgroundTasksController;
 	private mcpConnectedHandler?: (data: { name: string; tools: number }) => void;
 	private mcpDisconnectedHandler?: (data: { name: string }) => void;
 	private mcpToolsChangedHandler?: (data: { name: string }) => void;
@@ -472,11 +459,6 @@ export class TuiRenderer {
 				onTestComplete: (result) => {
 					this.handleTestVerificationResult(result);
 				},
-			},
-		);
-		this.backgroundSettingsUnsubscribe = subscribeBackgroundTaskSettings(
-			(settings) => {
-				this.backgroundSettings = settings;
 			},
 		);
 		this.startupChangelog = options.startupChangelog;
@@ -648,8 +630,14 @@ export class TuiRenderer {
 			},
 		});
 
+		this.backgroundTasksController = new BackgroundTasksController({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			notificationView: this.notificationView,
+		});
+		this.backgroundTasksController.startNotifications();
+
 		this.surfaceStartupWarnings();
-		this.registerBackgroundTaskNotifications();
 		this.approvalController = new ApprovalController({
 			approvalService,
 			ui: this.ui,
@@ -1088,7 +1076,8 @@ export class TuiRenderer {
 				this.ollamaView.handleOllamaCommand(context.rawInput),
 			handleDiagnostics: (context) =>
 				this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
-			handleBackground: (context) => this.handleBackgroundCommand(context),
+			handleBackground: (context) =>
+				this.backgroundTasksController.handleBackgroundCommand(context),
 			handleCompact: (context) => {
 				// Extract custom instructions from rawInput (e.g., "/compact Focus on API changes")
 				const customInstructions = context.rawInput
@@ -2349,37 +2338,6 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
-	private handleBackgroundCommand(context: CommandExecutionContext): void {
-		handleBackgroundCommand(
-			this.backgroundSettings,
-			this._createBackgroundRenderContext(context),
-		);
-	}
-
-	private _createBackgroundRenderContext(
-		context: CommandExecutionContext,
-	): BackgroundRenderContext {
-		return {
-			argumentText: context.argumentText,
-			addContent: (content: string) => {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(content, 1, 0));
-			},
-			showInfo: (message: string) => {
-				this.notificationView.showInfo(message);
-			},
-			showError: (message: string) => {
-				this.notificationView.showError(message);
-			},
-			renderHelp: () => {
-				context.renderHelp();
-			},
-			requestRender: () => {
-				this.ui.requestRender();
-			},
-		};
-	}
-
 	private recordCommandUsage(name: string): void {
 		// maintain uniqueness and recency
 		this.recentCommands = [
@@ -2923,7 +2881,7 @@ export class TuiRenderer {
 
 	private buildOperationalHints(): string[] {
 		const hints: string[] = [];
-		const backgroundCounts = this.getBackgroundTaskCounts();
+		const backgroundCounts = this.backgroundTasksController.getCounts();
 		if (backgroundCounts.running > 0 || backgroundCounts.failed > 0) {
 			const runningLabel = `${backgroundCounts.running} background ${backgroundCounts.running === 1 ? "task" : "tasks"} running`;
 			const failureSuffix =
@@ -2983,21 +2941,6 @@ export class TuiRenderer {
 			priority: 140,
 		});
 		this.footer.setToast(warning, "warn");
-	}
-
-	private getBackgroundTaskCounts(): { running: number; failed: number } {
-		const tasks = backgroundTaskManager.getTasks();
-		let running = 0;
-		let failed = 0;
-		for (const task of tasks) {
-			if (task.status === "running" || task.status === "restarting") {
-				running++;
-			}
-			if (task.status === "failed") {
-				failed++;
-			}
-		}
-		return { running, failed };
 	}
 
 	private cycleThinkingLevel(): void {
@@ -3238,7 +3181,8 @@ export class TuiRenderer {
 					handleAbout: () => this.aboutView.handleAboutCommand(),
 					handleContext: (ctx) => this.handleContextCommand(ctx),
 					handleStats: (ctx) => this.handleStatsCommand(ctx),
-					handleBackground: (ctx) => this.handleBackgroundCommand(ctx),
+					handleBackground: (ctx) =>
+						this.backgroundTasksController.handleBackgroundCommand(ctx),
 					handleDiagnostics: (ctx) =>
 						this.diagnosticsView.handleDiagnosticsCommand(ctx.rawInput),
 					handleTelemetry: (ctx) =>
@@ -3333,38 +3277,10 @@ export class TuiRenderer {
 		return this.groupedHandlers;
 	}
 
-	private registerBackgroundTaskNotifications(): void {
-		if (this.backgroundTaskNotificationCleanup) {
-			return;
-		}
-		const handler = (payload: BackgroundTaskNotification) => {
-			if (!this.backgroundSettings.notificationsEnabled) {
-				return;
-			}
-			const tone = payload.level === "warn" ? "warn" : "info";
-			const reason = payload.reason ? ` (${payload.reason})` : "";
-			const command =
-				payload.command.length > 40
-					? `${payload.command.slice(0, 37)}…`
-					: payload.command;
-			this.notificationView.showToast(
-				`Background task ${payload.taskId} ${payload.message} – ${command}${reason}`,
-				tone,
-			);
-		};
-		backgroundTaskManager.on("notification", handler);
-		this.backgroundTaskNotificationCleanup = () => {
-			backgroundTaskManager.off("notification", handler);
-		};
-	}
-
 	stop(): void {
 		this.loaderView.stop();
 		this.queueController.detach();
-		this.backgroundTaskNotificationCleanup?.();
-		this.backgroundTaskNotificationCleanup = undefined;
-		this.backgroundSettingsUnsubscribe?.();
-		this.backgroundSettingsUnsubscribe = undefined;
+		this.backgroundTasksController.stop();
 		// Clean up MCP and composer event listeners
 		if (this.mcpConnectedHandler) {
 			mcpManager.off("connected", this.mcpConnectedHandler);
