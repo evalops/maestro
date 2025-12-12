@@ -740,7 +740,7 @@ impl NativeAgentRunner {
             }
 
             if meta.len() > Self::MAX_ATTACHMENT_BYTES {
-                let size_mb = (meta.len() + 1024 * 1024 - 1) / (1024 * 1024);
+                let size_mb = meta.len().div_ceil(1024 * 1024);
                 let _ = self.event_tx.send(FromAgent::Error {
                     message: format!("Attachment too large ({}MB): {}", size_mb, raw),
                     fatal: false,
