@@ -27,15 +27,23 @@
  * - { type: "session_info", session_id?: string, cwd: string, git_branch?: string }
  */
 
+import { constants } from "node:fs";
+import { access, readFile, stat } from "node:fs/promises";
+import { basename } from "node:path";
+import { lookup as lookupMimeType } from "mime-types";
+
 import type { Agent } from "../agent/index.js";
 import type {
 	AgentEvent,
 	AppMessage,
 	AssistantMessage,
 	AssistantMessageEvent,
+	Attachment,
 } from "../agent/types.js";
 import type { SessionManager } from "../session/manager.js";
+import { isSupportedImageFormat } from "../tools/image-processor.js";
 import { getCurrentBranch, isInsideGitRepository } from "../utils/git.js";
+import { normalizePath } from "../utils/path-validation.js";
 
 // =============================================================================
 // Messages from TUI to Agent
@@ -184,6 +192,98 @@ let currentMessageId = "";
  */
 function generateMessageId(): string {
 	return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const MAX_HEADLESS_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10MB, aligned with read tool
+const MAX_TEXT_ATTACHMENT_CHARS = 100_000;
+
+async function loadAttachments(paths: string[]): Promise<Attachment[]> {
+	const attachments: Attachment[] = [];
+
+	for (const rawPath of paths) {
+		const absolutePath = normalizePath(rawPath);
+
+		try {
+			await access(absolutePath, constants.R_OK);
+		} catch {
+			send({
+				type: "error",
+				message: `Attachment not readable: ${rawPath}`,
+				fatal: false,
+			});
+			continue;
+		}
+
+		let fileStats: Awaited<ReturnType<typeof stat>>;
+		try {
+			fileStats = await stat(absolutePath);
+		} catch {
+			send({
+				type: "error",
+				message: `Attachment not found: ${rawPath}`,
+				fatal: false,
+			});
+			continue;
+		}
+
+		if (fileStats.size > MAX_HEADLESS_ATTACHMENT_BYTES) {
+			send({
+				type: "error",
+				message: `Attachment too large (${Math.round(
+					fileStats.size / (1024 * 1024),
+				)}MB): ${rawPath}`,
+				fatal: false,
+			});
+			continue;
+		}
+
+		const buffer = await readFile(absolutePath);
+		const fileName = basename(absolutePath);
+		const lookedUp = lookupMimeType(absolutePath);
+		const mimeType =
+			(typeof lookedUp === "string" ? lookedUp : null) ??
+			"application/octet-stream";
+
+		const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+		if (isSupportedImageFormat(absolutePath) || mimeType.startsWith("image/")) {
+			attachments.push({
+				id,
+				type: "image",
+				fileName,
+				mimeType,
+				size: fileStats.size,
+				content: buffer.toString("base64"),
+			});
+			continue;
+		}
+
+		// Attempt to treat as UTF-8 text document.
+		const text = buffer.toString("utf-8");
+		if (!text || text.includes("\u0000")) {
+			send({
+				type: "error",
+				message: `Unsupported attachment (not image/text): ${rawPath}`,
+				fatal: false,
+			});
+			continue;
+		}
+
+		attachments.push({
+			id,
+			type: "document",
+			fileName,
+			mimeType,
+			size: fileStats.size,
+			content: buffer.toString("base64"),
+			extractedText:
+				text.length > MAX_TEXT_ATTACHMENT_CHARS
+					? text.slice(0, MAX_TEXT_ATTACHMENT_CHARS)
+					: text,
+		});
+	}
+
+	return attachments;
 }
 
 /**
@@ -394,8 +494,20 @@ export async function runHeadlessMode(
 
 			switch (msg.type) {
 				case "prompt":
-					// TODO: Handle attachments
-					await agent.prompt(msg.content);
+					if (msg.attachments && msg.attachments.length > 0) {
+						const loaded = await loadAttachments(msg.attachments);
+						if (loaded.length > 0) {
+							send({
+								type: "status",
+								message: `Loaded ${loaded.length} attachment(s)`,
+							});
+							await agent.prompt(msg.content, loaded);
+						} else {
+							await agent.prompt(msg.content);
+						}
+					} else {
+						await agent.prompt(msg.content);
+					}
 					break;
 
 				case "interrupt":
