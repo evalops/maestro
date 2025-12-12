@@ -89,8 +89,11 @@
 //! triggered and the current request stops gracefully.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use tokio::fs;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -98,10 +101,11 @@ use uuid::Uuid;
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{FromAgent, TokenUsage, ToolResult};
 use crate::ai::{
-    AiProvider, ContentBlock, Message, MessageContent, RequestConfig, Role, StreamEvent,
-    ThinkingConfig, Tool, UnifiedClient,
+    AiProvider, ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role,
+    StreamEvent, ThinkingConfig, Tool, UnifiedClient,
 };
 use crate::hooks::{HookResult, IntegratedHookSystem};
+use crate::safety::{ActionFirewall, FirewallVerdict};
 use crate::tools::{ToolExecutor, ToolRegistry};
 
 /// Configuration for the native agent
@@ -227,7 +231,10 @@ enum AgentCommand {
     /// Adds the user message to conversation history and triggers a new
     /// AI completion request. The runner will stream the response via
     /// `FromAgent::ResponseChunk` events.
-    Prompt { content: String },
+    Prompt {
+        content: String,
+        attachments: Vec<String>,
+    },
 
     /// Cancel the current operation
     ///
@@ -465,7 +472,7 @@ impl NativeAgent {
     /// # Parameters
     ///
     /// - `content`: The user's message/prompt
-    /// - `_attachments`: File paths to attach (currently unused, reserved for future)
+    /// - `attachments`: File paths to attach (images or text files)
     ///
     /// # Returns
     ///
@@ -477,9 +484,12 @@ impl NativeAgent {
     /// agent.prompt("Explain async/await in Rust".to_string(), vec![]).await?;
     /// // Returns immediately, response arrives via events
     /// ```
-    pub async fn prompt(&self, content: String, _attachments: Vec<String>) -> Result<()> {
+    pub async fn prompt(&self, content: String, attachments: Vec<String>) -> Result<()> {
         self.command_tx
-            .send(AgentCommand::Prompt { content })
+            .send(AgentCommand::Prompt {
+                content,
+                attachments,
+            })
             .map_err(|e| anyhow::anyhow!("Failed to send prompt: {}", e))?;
         Ok(())
     }
@@ -645,11 +655,154 @@ struct NativeAgentRunner {
 }
 
 impl NativeAgentRunner {
+    const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024; // 10MB
+    const MAX_TEXT_ATTACHMENT_CHARS: usize = 100_000;
+
+    fn resolve_attachment_path(&self, raw: &str) -> PathBuf {
+        if let Some(stripped) = raw.strip_prefix("~/") {
+            if let Some(home) = dirs::home_dir() {
+                return home.join(stripped);
+            }
+        }
+
+        let p = PathBuf::from(raw);
+        if p.is_absolute() {
+            p
+        } else {
+            Path::new(&self.config.cwd).join(p)
+        }
+    }
+
+    fn detect_image_mime(path: &Path) -> Option<&'static str> {
+        let ext = path.extension().and_then(|e| e.to_str())?.to_lowercase();
+        match ext.as_str() {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "gif" => Some("image/gif"),
+            "webp" => Some("image/webp"),
+            "bmp" => Some("image/bmp"),
+            "svg" => Some("image/svg+xml"),
+            _ => None,
+        }
+    }
+
+    fn truncate_text(text: &str, max_chars: usize) -> String {
+        if text.chars().count() <= max_chars {
+            return text.to_string();
+        }
+        text.chars().take(max_chars).collect()
+    }
+
+    async fn load_attachment_blocks(&self, raw_paths: &[String]) -> Vec<ContentBlock> {
+        if raw_paths.is_empty() {
+            return Vec::new();
+        }
+
+        let firewall = ActionFirewall::new(&self.config.cwd);
+        let mut blocks = Vec::new();
+
+        for raw in raw_paths {
+            match firewall.check_file_read(raw) {
+                FirewallVerdict::Block { reason } => {
+                    let _ = self.event_tx.send(FromAgent::Error {
+                        message: format!("Attachment blocked: {}", reason),
+                        fatal: false,
+                    });
+                    continue;
+                }
+                FirewallVerdict::RequireApproval { reason } => {
+                    let _ = self.event_tx.send(FromAgent::Status {
+                        message: format!("Attachment is sensitive: {} (attaching anyway)", reason),
+                    });
+                }
+                FirewallVerdict::Allow => {}
+            }
+
+            let path = self.resolve_attachment_path(raw);
+
+            let meta = match fs::metadata(&path).await {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = self.event_tx.send(FromAgent::Error {
+                        message: format!("Failed to read attachment metadata for {}: {}", raw, e),
+                        fatal: false,
+                    });
+                    continue;
+                }
+            };
+
+            if !meta.is_file() {
+                let _ = self.event_tx.send(FromAgent::Error {
+                    message: format!("Attachment is not a file: {}", raw),
+                    fatal: false,
+                });
+                continue;
+            }
+
+            if meta.len() > Self::MAX_ATTACHMENT_BYTES {
+                let size_mb = (meta.len() + 1024 * 1024 - 1) / (1024 * 1024);
+                let _ = self.event_tx.send(FromAgent::Error {
+                    message: format!("Attachment too large ({}MB): {}", size_mb, raw),
+                    fatal: false,
+                });
+                continue;
+            }
+
+            if let Some(mime) = Self::detect_image_mime(&path) {
+                match fs::read(&path).await {
+                    Ok(bytes) => {
+                        let data = STANDARD.encode(&bytes);
+                        blocks.push(ContentBlock::Image {
+                            source: ImageSource::Base64 {
+                                media_type: mime.to_string(),
+                                data,
+                            },
+                        });
+                    }
+                    Err(e) => {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: format!("Failed to read image attachment {}: {}", raw, e),
+                            fatal: false,
+                        });
+                    }
+                }
+                continue;
+            }
+
+            match fs::read_to_string(&path).await {
+                Ok(text) => {
+                    let truncated = Self::truncate_text(&text, Self::MAX_TEXT_ATTACHMENT_CHARS);
+                    let file_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(raw.as_str());
+                    blocks.push(ContentBlock::Text {
+                        text: format!("\n\n[Document: {}]\n{}", file_name, truncated),
+                    });
+                }
+                Err(e) => {
+                    let _ = self.event_tx.send(FromAgent::Error {
+                        message: format!(
+                            "Unsupported attachment (not image/utf8 text) {}: {}",
+                            raw, e
+                        ),
+                        fatal: false,
+                    });
+                }
+            }
+        }
+
+        blocks
+    }
+
     /// Run the background task loop
     async fn run(mut self) {
         while let Some(cmd) = self.command_rx.recv().await {
             match cmd {
-                AgentCommand::Prompt { content } => {
+                AgentCommand::Prompt {
+                    content,
+                    attachments,
+                } => {
                     if self.busy {
                         let _ = self.event_tx.send(FromAgent::Error {
                             message: "Agent is busy".to_string(),
@@ -664,10 +817,23 @@ impl NativeAgentRunner {
                     let cancel_token = CancellationToken::new();
                     self.cancel_token = Some(cancel_token.clone());
 
-                    // Add user message to history
+                    let mut blocks = Vec::new();
+                    blocks.push(ContentBlock::Text { text: content });
+                    let attachment_blocks = self.load_attachment_blocks(&attachments).await;
+                    blocks.extend(attachment_blocks);
+
+                    let content = if blocks.len() == 1 {
+                        match &blocks[0] {
+                            ContentBlock::Text { text } => MessageContent::text(text.clone()),
+                            _ => MessageContent::Blocks(blocks),
+                        }
+                    } else {
+                        MessageContent::Blocks(blocks)
+                    };
+
                     self.messages.push(Message {
                         role: Role::User,
-                        content: MessageContent::text(content),
+                        content,
                     });
 
                     // Reset retry policy for new request
