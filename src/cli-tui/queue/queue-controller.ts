@@ -79,6 +79,12 @@ export class QueueController {
 		this.promptQueueUnsubscribe = queue.subscribe((event) =>
 			this.handleEvent(event),
 		);
+		// Sync counts immediately in case the queue already has pending entries.
+		this.updateQueuedPromptCount();
+		if (!this.callbacks.isAgentRunning()) {
+			this.callbacks.refreshFooterHint();
+		}
+		this.callbacks.requestRender();
 	}
 
 	/**

@@ -120,10 +120,14 @@ import { MessageView } from "./message-view.js";
 import { NotificationView } from "./notification-view.js";
 import { OAuthFlowController } from "./oauth/index.js";
 import { OllamaView } from "./ollama-view.js";
-import { PlanPanelModal } from "./plan-panel-modal.js";
-import { PlanView, type TodoStore, loadTodoStore } from "./plan-view.js";
-import type { PromptQueue, PromptQueueEvent } from "./prompt-queue.js";
-import { QueuePanelModal } from "./queue-panel-modal.js";
+import { PlanView } from "./plan-view.js";
+import { PlanController } from "./plan/plan-controller.js";
+import type { PromptQueue } from "./prompt-queue.js";
+import {
+	QueueController,
+	type QueueMode,
+	QueuePanelController,
+} from "./queue/index.js";
 import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
 import { FileSearchView } from "./search/file-search-view.js";
@@ -288,6 +292,7 @@ export class TuiRenderer {
 	private slashCycleState = new SlashCycleState();
 	private slashHintDebounce?: NodeJS.Timeout;
 	private planView: PlanView;
+	private planController?: PlanController;
 	private sessionView: SessionView;
 	private sessionDataProvider: SessionDataProvider;
 	private sessionSummaryController!: SessionSummaryController;
@@ -318,8 +323,6 @@ export class TuiRenderer {
 	private oauthFlowController!: OAuthFlowController;
 	private queueModeSelectorView: QueueModeSelectorView;
 	private userMessageSelectorView: UserMessageSelectorView;
-	private queuePanelModal?: QueuePanelModal;
-	private planPanelModal?: PlanPanelModal;
 	private notificationView: NotificationView;
 	private backgroundTaskNotificationCleanup?: () => void;
 	private mcpConnectedHandler?: (data: { name: string; tools: number }) => void;
@@ -350,15 +353,11 @@ export class TuiRenderer {
 	};
 	private agentEventRouter!: AgentEventRouter;
 	private sessionContext = new SessionContext();
-	private promptQueue?: PromptQueue;
-	private promptQueueUnsubscribe?: () => void;
-	private queuedPromptCount = 0;
-	private queueEnabled = false;
-	private promptQueueMode: "one" | "all" = "all";
+	private queueController: QueueController;
+	private queuePanelController?: QueuePanelController;
 	// Default to soft deduplication so repeated streamed lines don't appear in the TUI.
 	// Users can still override via /clean or env/UI state.
 	private cleanMode: CleanMode = "soft";
-	private nextQueuedPreview: string | null = null;
 	private uiState: UiState = {};
 	private footerMode: FooterMode = "ensemble";
 	private reducedMotion = false;
@@ -401,9 +400,10 @@ export class TuiRenderer {
 		} = {},
 	) {
 		this.uiState = loadUiState();
-		if (this.uiState.queueMode) {
-			this.promptQueueMode = this.uiState.queueMode;
-		}
+		const initialQueueMode: QueueMode =
+			this.uiState.queueMode === "one" || this.uiState.queueMode === "all"
+				? this.uiState.queueMode
+				: "all";
 		if (this.uiState.cleanMode) {
 			this.cleanMode = this.uiState.cleanMode;
 		}
@@ -446,7 +446,7 @@ export class TuiRenderer {
 			this.favoriteCommands.add(fav);
 		}
 		this.agent = agent;
-		this.agent.setQueueMode(this.promptQueueMode === "all" ? "all" : "one");
+		this.agent.setQueueMode(initialQueueMode === "all" ? "all" : "one");
 		this.sessionManager = sessionManager;
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;
@@ -592,6 +592,25 @@ export class TuiRenderer {
 			footer: this.footer,
 		});
 
+		this.queueController = new QueueController({
+			notificationView: this.notificationView,
+			editor: this.editor,
+			initialMode: initialQueueMode,
+			callbacks: {
+				onModeChange: (mode) => {
+					this.agent.setQueueMode(mode === "all" ? "all" : "one");
+					this.queuePanelController?.refreshPanel();
+				},
+				onQueueCountChange: () => {
+					this.queuePanelController?.refreshPanel();
+				},
+				isAgentRunning: () => this.isAgentRunning,
+				refreshFooterHint: () => this.refreshFooterHint(),
+				requestRender: () => this.ui.requestRender(),
+				persistUiState: (state) => this.persistUiState(state),
+			},
+		});
+
 		// Initialize OAuth flow controller
 		const editorRef = this.editor;
 		this.oauthFlowController = new OAuthFlowController({
@@ -621,7 +640,7 @@ export class TuiRenderer {
 			notificationView: this.notificationView,
 			callbacks: {
 				onInterrupt: (options) => this.onInterruptCallback?.(options),
-				restoreQueuedPrompts: () => this.restoreQueuedPromptIfAny(),
+				restoreQueuedPrompts: () => this.queueController.restoreQueuedPrompts(),
 				getWorkingHint: () => this.workingFooterHint,
 				isMinimalMode: () => this.isMinimalMode(),
 				isAgentRunning: () => this.isAgentRunning,
@@ -655,7 +674,14 @@ export class TuiRenderer {
 				this.planHint = hint;
 				this.refreshFooterHint();
 			},
-			onStoreChanged: (store) => this.handlePlanStoreChanged(store),
+			onStoreChanged: (store) => this.planController?.handleStoreChanged(store),
+		});
+		this.planController = new PlanController({
+			filePath: TODO_STORE_PATH,
+			planView: this.planView,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			notificationView: this.notificationView,
 		});
 		this.planView.syncHintWithStore();
 		this.runCommandView = new RunCommandView({
@@ -677,7 +703,8 @@ export class TuiRenderer {
 			ui: this.ui,
 			workingHint: this.workingFooterHint,
 			setEditorDisabled: (disabled) => {
-				this.editor.disableSubmit = disabled && !this.queueEnabled;
+				this.editor.disableSubmit =
+					disabled && !this.queueController.isEnabled();
 			},
 			focusEditor: () => this.focusEditor(),
 			clearEditor: () => this.clearEditor(),
@@ -881,7 +908,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			modalManager: this.modalManager,
 			notificationView: this.notificationView,
-			onModeSelected: (mode) => this.setQueueMode(mode),
+			onModeSelected: (mode) => this.queueController.setMode(mode),
 		});
 		this.reportSelectorView = new ReportSelectorView({
 			modalManager: this.modalManager,
@@ -916,44 +943,13 @@ export class TuiRenderer {
 				this.ui.requestRender();
 			},
 		});
-		this.queuePanelModal = new QueuePanelModal({
-			onClose: () => {
-				this.modalManager.pop();
-			},
-			onCancel: (id) => {
-				if (this.promptQueue) {
-					const removed = this.promptQueue.cancel(id);
-					if (removed) {
-						this.notificationView.showToast(
-							`Cancelled queued prompt #${id}`,
-							"success",
-						);
-						this.updateQueuedPromptCount();
-						this.refreshQueuePanel();
-						this.refreshFooterHint();
-					}
-				}
-			},
-			onToggleMode: () => {
-				const newMode = this.promptQueueMode === "all" ? "one" : "all";
-				this.setQueueMode(newMode);
-				this.refreshQueuePanel();
-			},
-		});
-		this.planPanelModal = new PlanPanelModal({
-			onClose: () => {
-				this.modalManager.pop();
-			},
-			onNavigate: (delta) => {
-				this.planPanelModal?.navigateTasks(delta);
-				this.ui.requestRender();
-			},
-			onToggleComplete: () => {
-				this.handlePlanPanelToggleComplete();
-			},
-			onMoveTask: (direction) => {
-				this.handlePlanPanelMoveTask(direction);
-			},
+		this.queuePanelController = new QueuePanelController({
+			queueController: this.queueController,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			notificationView: this.notificationView,
+			queueModeSelectorView: this.queueModeSelectorView,
+			chatContainer: this.chatContainer,
 		});
 		this.conversationCompactor = new ConversationCompactor({
 			agent: this.agent,
@@ -1077,7 +1073,13 @@ export class TuiRenderer {
 			handleTraining: (context) =>
 				this.trainingView.handleTrainingCommand(context),
 			handleStats: (context) => this.handleStatsCommand(context),
-			handlePlan: (context) => this.handlePlanCommand(context),
+			handlePlan: (context) => {
+				if (this.planController) {
+					this.planController.handlePlanCommand(context);
+					return;
+				}
+				context.showInfo("Plan panel is not available.");
+			},
 			handlePreview: (context) =>
 				this.gitView.handlePreviewCommand(context.rawInput),
 			handleRun: (context) =>
@@ -1100,7 +1102,13 @@ export class TuiRenderer {
 			handleCompactTools: (context) =>
 				this.handleCompactToolsCommand(context.rawInput),
 			handleCommands: (context) => this.handleCommandsCommand(context),
-			handleQueue: (context) => this.handleQueueCommand(context),
+			handleQueue: (context) => {
+				if (this.queuePanelController) {
+					this.queuePanelController.handleQueueCommand(context);
+					return;
+				}
+				context.showInfo("Prompt queue is not available.");
+			},
 			handleBranch: (context) => this.handleBranchCommand(context),
 			handleLogin: (context) =>
 				this.oauthFlowController.handleLoginCommand(
@@ -1290,12 +1298,7 @@ export class TuiRenderer {
 	}
 
 	attachPromptQueue(queue: PromptQueue): void {
-		this.promptQueue = queue;
-		this.queueEnabled = this.promptQueueMode === "all";
-		this.promptQueueUnsubscribe?.();
-		this.promptQueueUnsubscribe = queue.subscribe((event) =>
-			this.handlePromptQueueEvent(event),
-		);
+		this.queueController.attach(queue);
 	}
 
 	private handleSessionRecoverCommand(context: CommandExecutionContext): void {
@@ -1658,34 +1661,6 @@ export class TuiRenderer {
 	 */
 	handleKeepPartialRequest(): boolean {
 		return this.interruptController.handleKeepPartialRequest();
-	}
-
-	private restoreQueuedPromptIfAny(): void {
-		if (!this.promptQueue) {
-			return;
-		}
-		const snapshot = this.promptQueue.getSnapshot();
-		// Bring active back plus pending onto the editor, newest last
-		const messages: string[] = [];
-		if (snapshot.active) {
-			messages.push(snapshot.active.text);
-		}
-		for (const entry of snapshot.pending) {
-			messages.push(entry.text);
-		}
-		if (!messages.length) {
-			return;
-		}
-		const restored = messages.join("\n\n");
-		this.promptQueue.cancelAll?.({ silent: true });
-		this.promptQueue.clearActive?.();
-		this.editor.setText(restored);
-		this.notificationView.showToast(
-			`Restored ${messages.length} queued prompt${messages.length === 1 ? "" : "s"} to the editor.`,
-			"info",
-		);
-		this.updateQueuedPromptCount();
-		this.refreshFooterHint();
 	}
 
 	private async runCompactionTask(work: () => Promise<void>): Promise<boolean> {
@@ -2200,9 +2175,7 @@ export class TuiRenderer {
 			this.isAgentRunning = false;
 
 			// Cancel any queued prompts
-			this.promptQueue?.cancelAll?.({ silent: true });
-			this.nextQueuedPreview = null;
-			this.updateQueuedPromptCount();
+			this.queueController.cancelAll({ silent: true });
 
 			// Stop loading animation if present
 			this.loaderView.stop();
@@ -2359,32 +2332,6 @@ export class TuiRenderer {
 		this.persistUiState();
 	}
 
-	private handlePromptQueueEvent(event: PromptQueueEvent): void {
-		if (!this.promptQueue) {
-			return;
-		}
-		if (event.type === "error") {
-			const message = this.describeError(event.error);
-			this.showError(`Prompt #${event.entry.id} failed: ${message}`);
-		}
-		if (event.type === "enqueue" && !event.willRunImmediately) {
-			this.notificationView.showInfo(
-				`Queued prompt #${event.entry.id} (${event.pendingCount} pending)`,
-			);
-		}
-		if (event.type === "cancel") {
-			this.notificationView.showInfo(
-				`Removed queued prompt #${event.entry.id}`,
-			);
-		}
-		this.updateQueuedPromptCount();
-		this.refreshQueuePanel();
-		if (!this.isAgentRunning) {
-			this.refreshFooterHint();
-		}
-		this.ui.requestRender();
-	}
-
 	private handleApprovalRequired(request: ActionApprovalRequest): void {
 		this.approvalController?.enqueue(request);
 		const component = this.pendingTools.get(request.id);
@@ -2400,69 +2347,6 @@ export class TuiRenderer {
 		const component = this.pendingTools.get(request.id);
 		component?.setPendingStatus(null);
 		this.ui.requestRender();
-	}
-
-	private updateQueuedPromptCount(): void {
-		if (!this.promptQueue) {
-			this.queuedPromptCount = 0;
-			this.nextQueuedPreview = null;
-			return;
-		}
-		const snapshot = this.promptQueue.getSnapshot();
-		this.queuedPromptCount = snapshot.pending.length;
-		const next = snapshot.pending[0];
-		this.nextQueuedPreview = next ? this.formatQueuedText(next.text, 60) : null;
-	}
-
-	private handleQueueCommand(context: CommandExecutionContext): void {
-		if (!this.promptQueue) {
-			context.showInfo("Prompt queue is not available.");
-			return;
-		}
-		const args = context.argumentText.trim();
-		if (!args || args === "list") {
-			// Show modal instead of rendering to chat
-			this.showQueuePanel();
-			return;
-		}
-		const [action, idText] = args.split(/\s+/, 2);
-		if (action === "mode") {
-			const mode = (idText ?? "").toLowerCase();
-			if (!mode) {
-				// No mode specified - show interactive selector
-				this.queueModeSelectorView.show(this.promptQueueMode);
-				return;
-			}
-			if (mode !== "one" && mode !== "all") {
-				context.showError('Mode must be "one" or "all".');
-				return;
-			}
-			// setQueueMode already calls showToast, persistUiState, and refreshFooterHint
-			this.setQueueMode(mode);
-			return;
-		}
-		if (action === "cancel") {
-			const id = Number.parseInt(idText ?? "", 10);
-			if (!Number.isFinite(id)) {
-				context.showError("Provide a numeric prompt id to cancel.");
-				return;
-			}
-			const removed = this.promptQueue.cancel(id);
-			if (!removed) {
-				context.showError(`No queued prompt #${id} to cancel.`);
-				return;
-			}
-			this.notificationView.showToast(
-				`Cancelled queued prompt #${id}`,
-				"success",
-			);
-			this.updateQueuedPromptCount();
-			if (!this.isAgentRunning) {
-				this.refreshFooterHint();
-			}
-			return;
-		}
-		context.renderHelp();
 	}
 
 	private handleBackgroundCommand(context: CommandExecutionContext): void {
@@ -2494,111 +2378,6 @@ export class TuiRenderer {
 				this.ui.requestRender();
 			},
 		};
-	}
-
-	private showQueuePanel(): void {
-		if (!this.promptQueue || !this.queuePanelModal) {
-			return;
-		}
-		const snapshot = this.promptQueue.getSnapshot();
-		this.queuePanelModal.setData(
-			snapshot.active ?? null,
-			snapshot.pending,
-			this.promptQueueMode,
-		);
-		this.modalManager.push(this.queuePanelModal);
-	}
-
-	private refreshQueuePanel(): void {
-		if (!this.promptQueue || !this.queuePanelModal) {
-			return;
-		}
-		const snapshot = this.promptQueue.getSnapshot();
-		this.queuePanelModal.setData(
-			snapshot.active ?? null,
-			snapshot.pending,
-			this.promptQueueMode,
-		);
-		if (this.modalManager.getActiveModal() === this.queuePanelModal) {
-			this.ui.requestRender();
-		}
-	}
-
-	private handlePlanCommand(context: CommandExecutionContext): void {
-		const args = context.argumentText.trim();
-		if (!args || args === "list") {
-			// Show modal instead of rendering to chat
-			this.showPlanPanel();
-			return;
-		}
-		// Delegate to plan view for other commands (new, add, complete, etc.)
-		this.planView.handlePlanCommand(context.rawInput);
-	}
-
-	private showPlanPanel(): void {
-		if (!this.planPanelModal) {
-			return;
-		}
-		const store = loadTodoStore(TODO_STORE_PATH);
-		this.planPanelModal.setData(store);
-		this.modalManager.push(this.planPanelModal);
-	}
-
-	private handlePlanStoreChanged(store: TodoStore): void {
-		if (!this.planPanelModal) {
-			return;
-		}
-		this.planPanelModal.setData(store);
-		if (this.modalManager.getActiveModal() === this.planPanelModal) {
-			this.ui.requestRender();
-		}
-	}
-
-	private handlePlanPanelToggleComplete(): void {
-		if (!this.planPanelModal) {
-			return;
-		}
-		const selectedGoal = this.planPanelModal.getSelectedGoal();
-		const selectedTask = this.planPanelModal.getSelectedTask();
-		if (!selectedGoal || !selectedTask) {
-			this.notificationView.showInfo("Select a task to toggle.");
-			return;
-		}
-		this.planView.toggleTaskCompletion(selectedGoal.key, selectedTask.id);
-	}
-
-	private handlePlanPanelMoveTask(direction: "up" | "down"): void {
-		if (!this.planPanelModal) {
-			return;
-		}
-		const selectedGoal = this.planPanelModal.getSelectedGoal();
-		const selectedTask = this.planPanelModal.getSelectedTask();
-		if (!selectedGoal || !selectedTask) {
-			return;
-		}
-		// Move the task in the store
-		this.planView.moveTask(selectedGoal.key, selectedTask.id, direction);
-
-		// Adjust selection to follow the moved task
-		const delta = direction === "up" ? -1 : 1;
-		this.planPanelModal.navigateTasks(delta);
-	}
-
-	private setQueueMode(mode: "one" | "all"): void {
-		this.agent.setQueueMode(mode === "all" ? "all" : "one");
-		this.promptQueueMode = mode;
-		this.queueEnabled = mode === "all";
-		if (this.isAgentRunning) {
-			this.editor.disableSubmit = !this.queueEnabled;
-		}
-		this.persistUiState();
-		this.notificationView.showToast(
-			mode === "all"
-				? "Queue mode set to all: prompts will enqueue while the model is running."
-				: "Queue mode set to one: submissions pause until the current run finishes.",
-			"success",
-		);
-		this.refreshFooterHint();
 	}
 
 	private recordCommandUsage(name: string): void {
@@ -2657,7 +2436,7 @@ export class TuiRenderer {
 
 	private persistUiState(extra?: Partial<UiState>): void {
 		saveUiState({
-			queueMode: this.promptQueueMode,
+			queueMode: this.queueController.getMode(),
 			compactTools: this.toolOutputView.isCompact(),
 			footerMode: this.footerMode,
 			reducedMotion: this.reducedMotion,
@@ -3012,48 +2791,6 @@ export class TuiRenderer {
 		};
 	}
 
-	private renderQueueList(): void {
-		if (!this.promptQueue) {
-			return;
-		}
-		const snapshot = this.promptQueue.getSnapshot();
-		const lines: string[] = [];
-		const modeLabel =
-			this.promptQueueMode === "all"
-				? "all (submissions enqueue while running)"
-				: "one-at-a-time (submissions paused while running)";
-		lines.push(`Mode: ${modeLabel}`);
-		if (snapshot.active) {
-			lines.push(
-				`Active: #${snapshot.active.id} – ${this.formatQueuedText(snapshot.active.text)}`,
-			);
-		}
-		if (snapshot.pending.length === 0) {
-			lines.push("No queued prompts.");
-		} else {
-			lines.push("Pending prompts:");
-			snapshot.pending.forEach((entry, index) => {
-				lines.push(
-					`${index + 1}. #${entry.id} – ${this.formatQueuedText(entry.text)}`,
-				);
-			});
-			lines.push(
-				"Use /queue cancel <id> to remove a prompt. Use /queue mode <one|all> to change behavior.",
-			);
-		}
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		this.ui.requestRender();
-	}
-
-	private formatQueuedText(message: string, maxLength = 80): string {
-		const singleLine = message.replace(/\s+/g, " ").trim();
-		if (singleLine.length <= maxLength) {
-			return singleLine || "(empty message)";
-		}
-		return `${singleLine.slice(0, Math.max(0, maxLength - 1))}…`;
-	}
-
 	private createCommandContext({
 		command,
 		rawInput,
@@ -3145,9 +2882,9 @@ export class TuiRenderer {
 		this.footer.setRuntimeBadges(
 			buildRuntimeBadges({
 				approvalMode: this.approvalService.getMode(),
-				promptQueueMode: this.promptQueueMode,
-				queuedPromptCount: this.queuedPromptCount,
-				hasPromptQueue: Boolean(this.promptQueue),
+				promptQueueMode: this.queueController.getMode(),
+				queuedPromptCount: this.queueController.getQueuedCount(),
+				hasPromptQueue: this.queueController.hasQueue(),
 				thinkingLevel: this.agent.state.thinkingLevel,
 				sandboxMode,
 				isSafeMode: process.env.COMPOSER_SAFE_MODE === "1",
@@ -3177,7 +2914,7 @@ export class TuiRenderer {
 		if (this.planHint) {
 			hints.push(`Plan ${this.planHint}`);
 		}
-		const queueHint = this.buildQueueHint();
+		const queueHint = this.queueController.buildQueueHint();
 		if (queueHint) {
 			hints.push(queueHint);
 		}
@@ -3246,19 +2983,6 @@ export class TuiRenderer {
 			priority: 140,
 		});
 		this.footer.setToast(warning, "warn");
-	}
-
-	private buildQueueHint(): string | null {
-		if (this.isAgentRunning) {
-			return null;
-		}
-		if (this.nextQueuedPreview) {
-			return `Next queued: ${this.nextQueuedPreview}`;
-		}
-		if (this.queuedPromptCount > 0) {
-			return `${this.queuedPromptCount} queued ${this.queuedPromptCount === 1 ? "prompt" : "prompts"}`;
-		}
-		return null;
 	}
 
 	private getBackgroundTaskCounts(): { running: number; failed: number } {
@@ -3496,7 +3220,13 @@ export class TuiRenderer {
 					handleSessionsList: (ctx) =>
 						this.sessionView.handleSessionsCommand(ctx.rawInput),
 					handleBranch: (ctx) => this.handleBranchCommand(ctx),
-					handleQueue: (ctx) => this.handleQueueCommand(ctx),
+					handleQueue: (ctx) => {
+						if (this.queuePanelController) {
+							this.queuePanelController.handleQueueCommand(ctx);
+							return;
+						}
+						ctx.showInfo("Prompt queue is not available.");
+					},
 					handleExport: (ctx) =>
 						this.importExportView.handleExportCommand(ctx.rawInput),
 					handleShare: (ctx) =>
@@ -3630,8 +3360,7 @@ export class TuiRenderer {
 
 	stop(): void {
 		this.loaderView.stop();
-		this.promptQueueUnsubscribe?.();
-		this.promptQueueUnsubscribe = undefined;
+		this.queueController.detach();
 		this.backgroundTaskNotificationCleanup?.();
 		this.backgroundTaskNotificationCleanup = undefined;
 		this.backgroundSettingsUnsubscribe?.();
