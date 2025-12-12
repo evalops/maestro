@@ -123,6 +123,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
+use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::state::{Message, MessageRole, ToolCallStatus};
 use crate::wrapping::{word_wrap_lines, RtOptions};
@@ -984,8 +985,7 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 ///
 /// ```rust,ignore
 /// let widget = ChatInputWidget::new(
-///     input_text,
-///     cursor_pos,
+///     &state.textarea,
 ///     "Type a message...",
 ///     busy,
 ///     elapsed_secs,
@@ -998,8 +998,7 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// }
 /// ```
 pub struct ChatInputWidget<'a> {
-    input: &'a str,
-    cursor: usize,
+    textarea: &'a TextArea,
     placeholder: &'a str,
     busy: bool,
     elapsed_secs: u64,
@@ -1008,16 +1007,14 @@ pub struct ChatInputWidget<'a> {
 
 impl<'a> ChatInputWidget<'a> {
     pub fn new(
-        input: &'a str,
-        cursor: usize,
+        textarea: &'a TextArea,
         placeholder: &'a str,
         busy: bool,
         elapsed_secs: u64,
         thinking_header: Option<&'a str>,
     ) -> Self {
         Self {
-            input,
-            cursor,
+            textarea,
             placeholder,
             busy,
             elapsed_secs,
@@ -1042,34 +1039,14 @@ impl<'a> ChatInputWidget<'a> {
             return None;
         }
 
-        // Inner area after borders
-        let inner_x = input_area.x + 1;
-        let inner_y = input_area.y + 1;
-        let inner_width = input_area.width.saturating_sub(2) as usize;
-        let inner_height = input_area.height.saturating_sub(2) as usize;
-
-        if inner_width == 0 {
-            return None;
-        }
-
-        // Calculate cursor position using unicode display width
-        use unicode_width::UnicodeWidthStr;
-        let text_before_cursor = if self.cursor <= self.input.len() {
-            &self.input[..self.cursor]
-        } else {
-            self.input
+        let inner = Rect {
+            x: input_area.x + 1,
+            y: input_area.y + 1,
+            width: input_area.width.saturating_sub(2),
+            height: input_area.height.saturating_sub(2),
         };
-        let total_col = text_before_cursor.width();
 
-        // Calculate which wrapped line and column the cursor is on
-        let wrap_row = total_col / inner_width;
-        let wrap_col = total_col % inner_width;
-
-        // Clamp to visible area
-        let visible_row = wrap_row.min(inner_height.saturating_sub(1));
-        let visible_col = wrap_col.min(inner_width.saturating_sub(1));
-
-        Some((inner_x + visible_col as u16, inner_y + visible_row as u16))
+        self.textarea.cursor_pos(inner)
     }
 }
 
@@ -1122,24 +1099,51 @@ impl Widget for ChatInputWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Content
-        let display = if self.input.is_empty() {
-            self.placeholder
-        } else {
-            self.input
-        };
+        let text_style = Style::default();
+        let placeholder_style = Style::default().fg(Color::DarkGray);
 
-        let style = if self.input.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default()
-        };
+        let textarea_widget = TextAreaWidget::new(self.textarea)
+            .style(text_style)
+            .placeholder(self.placeholder, placeholder_style);
 
-        let para = Paragraph::new(display)
-            .style(style)
-            .wrap(Wrap { trim: false });
-        para.render(inner, buf);
+        textarea_widget.render(inner, buf);
     }
+}
+
+const MIN_TOTAL_INPUT_HEIGHT: u16 = 3;
+const MAX_VISIBLE_INPUT_LINES: u16 = 6;
+const MIN_MESSAGES_HEIGHT: u16 = 3;
+
+/// Calculate dynamic chat input height based on wrapped lines.
+///
+/// The height includes borders. It grows with content up to a cap, and
+/// always leaves at least a small message viewport.
+pub(crate) fn calculate_input_height(state: &crate::state::AppState, area: Rect) -> u16 {
+    let status_height = if state.zen_mode { 0 } else { 1 };
+
+    // If space is tight, fall back to minimum.
+    let available_after_status = area.height.saturating_sub(status_height);
+    if available_after_status <= MIN_TOTAL_INPUT_HEIGHT {
+        return available_after_status.max(1);
+    }
+
+    let inner_width = area.width.saturating_sub(2).max(1);
+    let desired_inner_lines = state.textarea.desired_height(inner_width).max(1);
+
+    let max_total_for_input = available_after_status
+        .saturating_sub(MIN_MESSAGES_HEIGHT)
+        .max(MIN_TOTAL_INPUT_HEIGHT);
+    let max_inner_for_input = max_total_for_input.saturating_sub(2).max(1);
+
+    let visible_inner = desired_inner_lines
+        .min(MAX_VISIBLE_INPUT_LINES)
+        .min(max_inner_for_input)
+        .max(1);
+
+    visible_inner
+        .saturating_add(2)
+        .max(MIN_TOTAL_INPUT_HEIGHT)
+        .min(available_after_status)
 }
 
 /// Token usage summary for display
@@ -1328,7 +1332,7 @@ impl Widget for StatusBarWidget<'_> {
 /// │  Please do              │
 /// │                         │
 /// ├─────────────────────────┤
-/// │ > Type message_         │ <- Input box (3 rows)
+/// │ > Type message_         │ <- Input box (auto-growing)
 /// ├─────────────────────────┤
 /// │ opus-4 | project (main) │ <- Status bar (1 row, hidden in zen mode)
 /// └─────────────────────────┘
@@ -1366,11 +1370,11 @@ impl Widget for ChatView<'_> {
             return;
         }
 
-        // Layout: messages area, input (3 lines), status bar (1 line unless zen mode)
         let status_height = if self.state.zen_mode { 0 } else { 1 };
+        let input_height = calculate_input_height(self.state, area);
         let chunks = Layout::vertical([
             Constraint::Min(0),                // Messages
-            Constraint::Length(3),             // Input
+            Constraint::Length(input_height),  // Input (auto-grow)
             Constraint::Length(status_height), // Status (hidden in zen mode)
         ])
         .split(area);
@@ -1380,8 +1384,7 @@ impl Widget for ChatView<'_> {
 
         // Render input
         let input_widget = ChatInputWidget::new(
-            self.state.input(),
-            self.state.cursor(),
+            &self.state.textarea,
             "Type a message...",
             self.state.busy,
             self.state.elapsed_busy_secs(),

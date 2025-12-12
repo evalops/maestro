@@ -142,6 +142,7 @@ pub use context_indicator::{ContextIndicator, ContextIndicatorBuilder, UsageLeve
 pub use file_search::FileSearchModal;
 pub use input::{EditorWidget, InputWidget};
 pub use layout::{column_layout, row_layout, BoxWidget};
+pub(crate) use message::calculate_input_height;
 pub use message::{ChatInputWidget, ChatView, MessageWidget, StatusBarWidget, ToolCallWidget};
 pub use model_selector::ModelSelector;
 pub use rate_limit::{

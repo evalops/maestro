@@ -69,8 +69,9 @@ use crate::commands::{
     SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
-    ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest, ChatInputWidget,
-    ChatView, CommandPalette, FileSearchModal, ModelSelector, SessionSwitcher, ThemeSelector,
+    calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
+    ChatInputWidget, ChatView, CommandPalette, FileSearchModal, ModelSelector, SessionSwitcher,
+    ThemeSelector,
 };
 use crate::files::get_workspace_files;
 use crate::git;
@@ -1954,19 +1955,22 @@ Slash Commands:
             }
 
             // Position terminal cursor in the input area
-            // Layout: [Messages(Min), Input(3), Status(1)]
+            // Layout: [Messages(Min), Input(auto), Status(1)]
             if active_modal == ActiveModal::None && !state.busy {
                 // Calculate input area position (same layout as ChatView)
+                let status_height = if state.zen_mode { 0 } else { 1 };
+                let input_height = calculate_input_height(state, area);
                 let input_area = Rect {
                     x: area.x,
-                    y: area.y + area.height.saturating_sub(4),
+                    y: area
+                        .y
+                        .saturating_add(area.height.saturating_sub(status_height + input_height)),
                     width: area.width,
-                    height: 3,
+                    height: input_height,
                 };
 
                 // Create widget just to calculate cursor position
-                let input_widget =
-                    ChatInputWidget::new(state.input(), state.cursor(), "", state.busy, 0, None);
+                let input_widget = ChatInputWidget::new(&state.textarea, "", state.busy, 0, None);
 
                 if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
                     frame.set_cursor_position((cursor_x, cursor_y));
