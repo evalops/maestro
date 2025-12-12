@@ -226,7 +226,9 @@ impl HttpConnection {
         match self.config.transport {
             McpTransport::Http => self.send_http_request(request).await,
             McpTransport::Sse => self.send_sse_request(request).await,
-            McpTransport::Stdio => unreachable!(),
+            McpTransport::Stdio => Err(McpError::ConnectionFailed(
+                "HttpConnection does not support stdio transport".to_string(),
+            )),
         }
     }
 
