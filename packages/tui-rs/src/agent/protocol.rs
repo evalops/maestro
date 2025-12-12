@@ -123,9 +123,10 @@ pub enum ToAgent {
         /// The user's message
         content: String,
 
-        /// Files to attach (paths)
+        /// Files to attach (paths).
         ///
-        /// Reserved for future use. Will allow attaching file contents as context.
+        /// Images are attached as vision blocks; UTF-8 text files are attached
+        /// as document text blocks.
         #[serde(default)]
         attachments: Vec<String>,
     },
