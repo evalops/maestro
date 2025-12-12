@@ -82,6 +82,11 @@ pub struct McpConnection {
     tools: Vec<McpTool>,
     /// Whether initialized
     initialized: bool,
+
+    /// Whether a reconnect is currently in progress
+    ///
+    /// Used to avoid overlapping reconnect attempts.
+    reconnecting: bool,
 }
 
 impl McpConnection {
@@ -95,6 +100,7 @@ impl McpConnection {
             pending: Arc::new(Mutex::new(HashMap::new())),
             tools: Vec::new(),
             initialized: false,
+            reconnecting: false,
         }
     }
 
@@ -274,6 +280,9 @@ impl McpConnection {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolResult, McpError> {
+        // Ensure stdio transport is alive before using cached tools list.
+        self.ensure_stdio_connected().await?;
+
         // Verify tool exists
         if !self.tools.iter().any(|t| t.name == tool_name) {
             return Err(McpError::ToolNotFound(tool_name.to_string()));
@@ -298,6 +307,41 @@ impl McpConnection {
         Ok(result)
     }
 
+    /// Ensure stdio transport is connected, with a single auto-reconnect if the process died.
+    async fn ensure_stdio_connected(&mut self) -> Result<(), McpError> {
+        if self.config.transport != McpTransport::Stdio {
+            return Ok(());
+        }
+
+        // If not initialized or backend missing, connect fresh.
+        if !self.initialized || !matches!(self.backend, Some(ConnectionBackend::Stdio { .. })) {
+            return self.connect_stdio().await;
+        }
+
+        // Check child is still alive, reconnect once if not.
+        let exited = if let Some(ConnectionBackend::Stdio { process, .. }) = &mut self.backend {
+            matches!(process.try_wait(), Ok(Some(_)))
+        } else {
+            false
+        };
+
+        if exited {
+            if self.reconnecting {
+                return Err(McpError::ConnectionFailed(
+                    "MCP stdio server exited while reconnecting".to_string(),
+                ));
+            }
+            self.reconnecting = true;
+            self.disconnect().await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let result = self.connect_stdio().await;
+            self.reconnecting = false;
+            return result;
+        }
+
+        Ok(())
+    }
+
     /// Send a request and wait for response (stdio only)
     async fn send_request(&mut self, request: McpRequest) -> Result<McpResponse, McpError> {
         let id = request.id;
@@ -310,7 +354,11 @@ impl McpConnection {
         }
 
         // Send request
-        self.send_raw(&request).await?;
+        if let Err(send_err) = self.send_raw(&request).await {
+            let mut pending = self.pending.lock().await;
+            pending.remove(&id);
+            return Err(send_err);
+        }
 
         // Wait for response with timeout
         let timeout = Duration::from_millis(self.config.timeout.unwrap_or(30_000));
@@ -328,21 +376,32 @@ impl McpConnection {
 
     /// Send raw JSON to the server (stdio only)
     async fn send_raw(&mut self, value: &impl serde::Serialize) -> Result<(), McpError> {
-        let stdin = match &mut self.backend {
-            Some(ConnectionBackend::Stdio { stdin, .. }) => stdin,
-            _ => {
-                return Err(McpError::ConnectionFailed(
-                    "Not connected via stdio".to_string(),
-                ))
+        match &mut self.backend {
+            Some(ConnectionBackend::Stdio { process, stdin, .. }) => {
+                if let Ok(Some(status)) = process.try_wait() {
+                    self.initialized = false;
+                    return Err(McpError::ConnectionFailed(format!(
+                        "MCP stdio server exited: {}",
+                        status
+                    )));
+                }
+
+                let json = serde_json::to_string(value)?;
+                if let Err(e) = stdin.write_all(json.as_bytes()).await {
+                    self.initialized = false;
+                    return Err(McpError::ConnectionFailed(format!(
+                        "Failed to write to MCP stdio stdin: {}",
+                        e
+                    )));
+                }
+                stdin.write_all(b"\n").await?;
+                stdin.flush().await?;
+                Ok(())
             }
-        };
-
-        let json = serde_json::to_string(value)?;
-        stdin.write_all(json.as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-        stdin.flush().await?;
-
-        Ok(())
+            _ => Err(McpError::ConnectionFailed(
+                "Not connected via stdio".to_string(),
+            )),
+        }
     }
 
     /// Get next request ID
