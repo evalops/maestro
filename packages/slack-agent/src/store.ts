@@ -45,6 +45,9 @@ export class ChannelStore {
 	private pendingDownloads: PendingDownload[] = [];
 	private isDownloading = false;
 	private recentlyLogged = new Map<string, number>();
+	private lastRecentlyLoggedCleanupMs = 0;
+	private readonly recentlyLoggedTtlMs = 60 * 1000;
+	private readonly recentlyLoggedCleanupIntervalMs = 15 * 1000;
 
 	constructor(config: ChannelStoreConfig) {
 		this.workingDir = config.workingDir;
@@ -263,13 +266,26 @@ export class ChannelStore {
 		channelId: string,
 		message: LoggedMessage,
 	): Promise<boolean> {
+		const now = Date.now();
+		if (
+			now - this.lastRecentlyLoggedCleanupMs >
+			this.recentlyLoggedCleanupIntervalMs
+		) {
+			const cutoff = now - this.recentlyLoggedTtlMs;
+			for (const [key, timestamp] of this.recentlyLogged.entries()) {
+				if (timestamp < cutoff) {
+					this.recentlyLogged.delete(key);
+				}
+			}
+			this.lastRecentlyLoggedCleanupMs = now;
+		}
+
 		const dedupeKey = `${channelId}:${message.ts}`;
 		if (this.recentlyLogged.has(dedupeKey)) {
 			return false;
 		}
 
-		this.recentlyLogged.set(dedupeKey, Date.now());
-		setTimeout(() => this.recentlyLogged.delete(dedupeKey), 60000);
+		this.recentlyLogged.set(dedupeKey, now);
 
 		const logPath = join(this.getChannelDir(channelId), "log.jsonl");
 
