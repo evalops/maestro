@@ -4,11 +4,8 @@
 
 import { Type } from "@sinclair/typebox";
 import type { Executor } from "../sandbox.js";
+import { shellEscape } from "../utils/shell-escape.js";
 import type { AgentTool } from "./index.js";
-
-function shellEscape(s: string): string {
-	return `'${s.replace(/'/g, "'\\''")}'`;
-}
 
 const writeSchema = Type.Object({
 	label: Type.String({

@@ -9,6 +9,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { shellEscape } from "./utils/shell-escape.js";
 
 export type SandboxConfig =
 	| { type: "host" }
@@ -493,9 +494,4 @@ function killProcessTree(pid: number): void {
 			}
 		}
 	}
-}
-
-function shellEscape(s: string): string {
-	// Escape for passing to sh -c
-	return `'${s.replace(/'/g, "'\\''")}'`;
 }

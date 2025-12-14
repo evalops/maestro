@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DateTime } from "luxon";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
 	Scheduler,
@@ -117,23 +117,21 @@ describe("Scheduler.runNow", () => {
 	});
 
 	afterEach(async () => {
-		vi.useRealTimers();
 		await rm(dir, { recursive: true, force: true });
 	});
 
 	it("prevents concurrent runs of the same task", async () => {
-		vi.useFakeTimers();
-		vi.setSystemTime(new Date("2025-01-01T00:00:00.000Z"));
-
 		let resolveDue: (() => void) | undefined;
 		const duePromise = new Promise<void>((resolve) => {
 			resolveDue = resolve;
 		});
 
-		const onTaskDue = vi.fn(async () => {
+		let callCount = 0;
+		const onTaskDue = async () => {
+			callCount++;
 			await duePromise;
 			return { success: true };
-		});
+		};
 
 		const scheduler = new Scheduler({ workingDir: dir, onTaskDue });
 		const task = await scheduler.schedule(
@@ -141,21 +139,85 @@ describe("Scheduler.runNow", () => {
 			"U1",
 			"Test task",
 			"Do thing",
-			"in 1 minute",
+			"in 1 hour", // Use a long time so it doesn't trigger during test
 		);
 		expect(task).not.toBeNull();
 
 		if (!task) throw new Error("Expected task to be scheduled");
 		const taskId = task.id;
 
+		// Start first run (will block on duePromise)
 		const firstRun = scheduler.runNow(taskId);
+
+		// Give the first run a moment to start
+		await new Promise((r) => setTimeout(r, 10));
+
+		// Try second run while first is still running
 		const secondRun = await scheduler.runNow(taskId);
 		expect(secondRun?.success).toBe(false);
 		expect(secondRun?.error?.toLowerCase()).toContain("already running");
 
+		// Complete the first run
 		resolveDue?.();
 		const firstResult = await firstRun;
 		expect(firstResult?.success).toBe(true);
-		expect(onTaskDue).toHaveBeenCalledTimes(1);
+		expect(callCount).toBe(1);
+	});
+
+	it("removes one-time task after successful run", async () => {
+		const onTaskDue = async () => ({ success: true });
+
+		const scheduler = new Scheduler({ workingDir: dir, onTaskDue });
+		const task = await scheduler.schedule(
+			"C1",
+			"U1",
+			"Test task",
+			"Do thing",
+			"in 1 hour",
+		);
+
+		if (!task) throw new Error("Expected task to be scheduled");
+
+		const firstResult = await scheduler.runNow(task.id);
+		expect(firstResult?.success).toBe(true);
+
+		// One-time task should be removed after running
+		const secondResult = await scheduler.runNow(task.id);
+		expect(secondResult).toBeNull();
+	});
+
+	it("allows running recurring task multiple times", async () => {
+		let callCount = 0;
+		const onTaskDue = async () => {
+			callCount++;
+			return { success: true };
+		};
+
+		const scheduler = new Scheduler({ workingDir: dir, onTaskDue });
+		const task = await scheduler.schedule(
+			"C1",
+			"U1",
+			"Recurring task",
+			"Do thing",
+			"every day at 9am",
+		);
+
+		if (!task) throw new Error("Expected task to be scheduled");
+
+		const firstResult = await scheduler.runNow(task.id);
+		expect(firstResult?.success).toBe(true);
+
+		const secondResult = await scheduler.runNow(task.id);
+		expect(secondResult?.success).toBe(true);
+
+		expect(callCount).toBe(2);
+	});
+
+	it("returns null for non-existent task", async () => {
+		const onTaskDue = async () => ({ success: true });
+		const scheduler = new Scheduler({ workingDir: dir, onTaskDue });
+
+		const result = await scheduler.runNow("nonexistent-task-id");
+		expect(result).toBeNull();
 	});
 });

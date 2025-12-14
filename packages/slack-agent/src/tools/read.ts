@@ -5,6 +5,7 @@
 import { extname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Executor } from "../sandbox.js";
+import { shellEscape } from "../utils/shell-escape.js";
 import type { AgentTool } from "./index.js";
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
@@ -18,10 +19,6 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 function isImageFile(filePath: string): string | null {
 	const ext = extname(filePath).toLowerCase();
 	return IMAGE_MIME_TYPES[ext] || null;
-}
-
-function shellEscape(s: string): string {
-	return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 const readSchema = Type.Object({

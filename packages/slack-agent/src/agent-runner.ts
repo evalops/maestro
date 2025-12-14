@@ -36,13 +36,13 @@ import { getModel } from "../../../src/models/builtin.js";
 /**
  * Retry configuration for transient failures
  */
-interface RetryConfig {
+export interface RetryConfig {
 	maxAttempts: number;
 	baseDelayMs: number;
 	maxDelayMs: number;
 }
 
-const DEFAULT_RETRY_CONFIG: RetryConfig = {
+export const DEFAULT_RETRY_CONFIG: RetryConfig = {
 	maxAttempts: 3,
 	baseDelayMs: 1000,
 	maxDelayMs: 30000,
@@ -51,7 +51,7 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
 /**
  * Check if an error is likely transient and retryable
  */
-function isRetryableError(error: unknown): boolean {
+export function isRetryableError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 
 	const message = error.message.toLowerCase();
@@ -94,7 +94,7 @@ function isRetryableError(error: unknown): boolean {
 /**
  * Execute a function with exponential backoff retry
  */
-async function withRetry<T>(
+export async function withRetry<T>(
 	fn: () => Promise<T>,
 	config: RetryConfig = DEFAULT_RETRY_CONFIG,
 	onRetry?: (attempt: number, error: Error, delayMs: number) => void,
@@ -989,7 +989,7 @@ export function createAgentRunner(
 	};
 }
 
-function translateToHostPath(
+export function translateToHostPath(
 	containerPath: string,
 	channelDir: string,
 	workspacePath: string,

@@ -5,11 +5,8 @@
 import { Type } from "@sinclair/typebox";
 import * as Diff from "diff";
 import type { Executor } from "../sandbox.js";
+import { shellEscape } from "../utils/shell-escape.js";
 import type { AgentTool } from "./index.js";
-
-function shellEscape(s: string): string {
-	return `'${s.replace(/'/g, "'\\''")}'`;
-}
 
 function generateDiffString(
 	oldContent: string,
