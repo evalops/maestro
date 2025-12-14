@@ -2,17 +2,15 @@
  * Slack Bot - Socket Mode integration
  */
 
-import { readFileSync } from "node:fs";
-import { basename } from "node:path";
 import { SocketModeClient } from "@slack/socket-mode";
 import {
 	type ChatPostMessageArguments,
 	type ConversationsHistoryResponse,
-	type FilesUploadV2Arguments,
 	WebClient,
 } from "@slack/web-api";
 import * as logger from "../logger.js";
 import { type Attachment, ChannelStore } from "../store.js";
+import { createResponseHandlers } from "./response-state.js";
 
 export interface SlackMessage {
 	text: string;
@@ -604,13 +602,18 @@ export class SlackBot {
 		const useThread = options.useThread;
 		const parentThreadTs = event.thread_ts; // Existing thread the user messaged in
 		const userMessageTs = event.ts; // The user's message timestamp
+		const threadTs = parentThreadTs || (useThread ? userMessageTs : undefined);
 
-		let messageTs: string | null = null;
-		let accumulatedText = "";
-		let isThinking = true;
-		let isWorking = true;
-		const workingIndicator = " ...";
-		let updatePromise: Promise<void> = Promise.resolve();
+		const responseHandlers = createResponseHandlers({
+			channelId: event.channel,
+			webClient: this.webClient,
+			store: this.store,
+			callSlack: this.callSlack.bind(this),
+			obfuscateUsernames: this.obfuscateUsernames.bind(this),
+			threadTs,
+			// Also post to channel when starting a new thread (not replying to existing)
+			replyBroadcast: threadTs ? useThread && !parentThreadTs : undefined,
+		});
 
 		return {
 			message: {
@@ -628,203 +631,7 @@ export class SlackBot {
 			channels: this.getChannels(),
 			users: this.getUsers(),
 			useThread,
-			respond: async (responseText: string, log = true) => {
-				updatePromise = updatePromise.then(async () => {
-					if (isThinking) {
-						accumulatedText = responseText;
-						isThinking = false;
-					} else {
-						accumulatedText += `\n${responseText}`;
-					}
-
-					const displayText = isWorking
-						? accumulatedText + workingIndicator
-						: accumulatedText;
-
-					// Determine thread_ts for the response:
-					// - If user is in a thread, reply in that thread
-					// - If useThread mode, reply as thread to user's message
-					// - Otherwise post to channel directly
-					const threadTs =
-						parentThreadTs || (useThread ? userMessageTs : undefined);
-
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: event.channel,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					} else {
-						const postArgs = {
-							channel: event.channel,
-							text: displayText,
-							thread_ts: threadTs,
-							// Also post to channel when starting a new thread (not replying to existing)
-							reply_broadcast: threadTs
-								? useThread && !parentThreadTs
-								: undefined,
-						} as ChatPostMessageArguments;
-						const result = await this.callSlack(
-							() => this.webClient.chat.postMessage(postArgs),
-							"chat.postMessage",
-						);
-						messageTs = result.ts as string;
-					}
-
-					if (log && messageTs) {
-						await this.store.logBotResponse(
-							event.channel,
-							responseText,
-							messageTs,
-						);
-					}
-				});
-
-				await updatePromise;
-			},
-			respondInThread: async (threadText: string) => {
-				updatePromise = updatePromise.then(async () => {
-					if (!messageTs) {
-						return;
-					}
-					const currentMessageTs = messageTs;
-					const obfuscatedText = this.obfuscateUsernames(threadText);
-					await this.callSlack(
-						() =>
-							this.webClient.chat.postMessage({
-								channel: event.channel,
-								thread_ts: currentMessageTs,
-								text: obfuscatedText,
-							}),
-						"chat.postMessage",
-					);
-				});
-				await updatePromise;
-			},
-			setTyping: async (typing: boolean) => {
-				if (typing && !messageTs) {
-					accumulatedText = "_Thinking_";
-					const threadTs =
-						parentThreadTs || (useThread ? userMessageTs : undefined);
-					const postArgs = {
-						channel: event.channel,
-						text: accumulatedText,
-						thread_ts: threadTs,
-						reply_broadcast: threadTs
-							? useThread && !parentThreadTs
-							: undefined,
-					} as ChatPostMessageArguments;
-					const result = await this.callSlack(
-						() => this.webClient.chat.postMessage(postArgs),
-						"chat.postMessage",
-					);
-					messageTs = result.ts as string;
-				}
-			},
-			uploadFile: async (filePath: string, title?: string) => {
-				const fileName = title || basename(filePath);
-				const fileContent = readFileSync(filePath);
-				const threadTs =
-					parentThreadTs || (useThread ? userMessageTs : undefined);
-
-				const uploadArgs = {
-					channel_id: event.channel,
-					file: fileContent,
-					filename: fileName,
-					title: fileName,
-					...(threadTs && { thread_ts: threadTs }),
-				} as FilesUploadV2Arguments;
-				await this.callSlack(
-					() => this.webClient.files.uploadV2(uploadArgs),
-					"files.uploadV2",
-				);
-			},
-			replaceMessage: async (newText: string) => {
-				updatePromise = updatePromise.then(async () => {
-					accumulatedText = newText;
-
-					const displayText = isWorking
-						? accumulatedText + workingIndicator
-						: accumulatedText;
-
-					const threadTs =
-						parentThreadTs || (useThread ? userMessageTs : undefined);
-
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: event.channel,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					} else {
-						const postArgs = {
-							channel: event.channel,
-							text: displayText,
-							thread_ts: threadTs,
-							reply_broadcast: threadTs
-								? useThread && !parentThreadTs
-								: undefined,
-						} as ChatPostMessageArguments;
-						const result = await this.callSlack(
-							() => this.webClient.chat.postMessage(postArgs),
-							"chat.postMessage",
-						);
-						messageTs = result.ts as string;
-					}
-				});
-				await updatePromise;
-			},
-			setWorking: async (working: boolean) => {
-				updatePromise = updatePromise.then(async () => {
-					isWorking = working;
-
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						const displayText = isWorking
-							? accumulatedText + workingIndicator
-							: accumulatedText;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: event.channel,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					}
-				});
-				await updatePromise;
-			},
-			updateStatus: async (status: string) => {
-				updatePromise = updatePromise.then(async () => {
-					if (messageTs && isWorking) {
-						const currentMessageTs = messageTs;
-						// Update the working indicator with the status
-						const displayText = `${accumulatedText}\n_${status}_${workingIndicator}`;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: event.channel,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					}
-				});
-				await updatePromise;
-			},
+			...responseHandlers,
 		};
 	}
 
@@ -993,15 +800,16 @@ export class SlackBot {
 		const now = Date.now();
 		const ts = `${Math.floor(now / 1000)}.${(now % 1000) * 1000}`;
 
-		let messageTs: string | null = null;
-		let accumulatedText = "";
-		let isThinking = true;
-		let isWorking = true;
-		const workingIndicator = " ...";
-		let updatePromise: Promise<void> = Promise.resolve();
-
 		const rawText = `${command.command} ${command.text || ""}`.trim();
 		const { userName } = await this.getUserInfo(command.user_id);
+
+		const responseHandlers = createResponseHandlers({
+			channelId: command.channel_id,
+			webClient: this.webClient,
+			store: this.store,
+			callSlack: this.callSlack.bind(this),
+			obfuscateUsernames: this.obfuscateUsernames.bind(this),
+		});
 
 		return {
 			message: {
@@ -1019,168 +827,7 @@ export class SlackBot {
 			users: this.getUsers(),
 			useThread: false,
 			source: "slash",
-			respond: async (responseText: string, log = true) => {
-				updatePromise = updatePromise.then(async () => {
-					if (isThinking) {
-						accumulatedText = responseText;
-						isThinking = false;
-					} else {
-						accumulatedText += `\n${responseText}`;
-					}
-
-					const displayText = isWorking
-						? accumulatedText + workingIndicator
-						: accumulatedText;
-
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: command.channel_id,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					} else {
-						const result = await this.callSlack(
-							() =>
-								this.webClient.chat.postMessage({
-									channel: command.channel_id,
-									text: displayText,
-								}),
-							"chat.postMessage",
-						);
-						messageTs = result.ts as string;
-					}
-
-					if (log && messageTs) {
-						await this.store.logBotResponse(
-							command.channel_id,
-							responseText,
-							messageTs,
-						);
-					}
-				});
-				await updatePromise;
-			},
-			respondInThread: async (threadText: string) => {
-				updatePromise = updatePromise.then(async () => {
-					if (!messageTs) return;
-					const currentMessageTs = messageTs;
-					const obfuscatedText = this.obfuscateUsernames(threadText);
-					await this.callSlack(
-						() =>
-							this.webClient.chat.postMessage({
-								channel: command.channel_id,
-								thread_ts: currentMessageTs,
-								text: obfuscatedText,
-							}),
-						"chat.postMessage",
-					);
-				});
-				await updatePromise;
-			},
-			setTyping: async (typing: boolean) => {
-				if (typing && !messageTs) {
-					accumulatedText = "_Thinking_";
-					const result = await this.callSlack(
-						() =>
-							this.webClient.chat.postMessage({
-								channel: command.channel_id,
-								text: accumulatedText,
-							}),
-						"chat.postMessage",
-					);
-					messageTs = result.ts as string;
-				}
-			},
-			uploadFile: async (filePath: string, title?: string) => {
-				const fileName = title || basename(filePath);
-				const fileContent = readFileSync(filePath);
-				await this.callSlack(
-					() =>
-						this.webClient.files.uploadV2({
-							channel_id: command.channel_id,
-							file: fileContent,
-							filename: fileName,
-							title: fileName,
-						}),
-					"files.uploadV2",
-				);
-			},
-			replaceMessage: async (newText: string) => {
-				updatePromise = updatePromise.then(async () => {
-					accumulatedText = newText;
-					const displayText = isWorking
-						? accumulatedText + workingIndicator
-						: accumulatedText;
-
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: command.channel_id,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					} else {
-						const result = await this.callSlack(
-							() =>
-								this.webClient.chat.postMessage({
-									channel: command.channel_id,
-									text: displayText,
-								}),
-							"chat.postMessage",
-						);
-						messageTs = result.ts as string;
-					}
-				});
-				await updatePromise;
-			},
-			setWorking: async (working: boolean) => {
-				updatePromise = updatePromise.then(async () => {
-					isWorking = working;
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						const displayText = isWorking
-							? accumulatedText + workingIndicator
-							: accumulatedText;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: command.channel_id,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					}
-				});
-				await updatePromise;
-			},
-			updateStatus: async (status: string) => {
-				updatePromise = updatePromise.then(async () => {
-					if (messageTs && isWorking) {
-						const currentMessageTs = messageTs;
-						const displayText = `${accumulatedText}\n_${status}_${workingIndicator}`;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: command.channel_id,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					}
-				});
-				await updatePromise;
-			},
+			...responseHandlers,
 		};
 	}
 
@@ -1194,12 +841,13 @@ export class SlackBot {
 		const now = Date.now();
 		const ts = `${Math.floor(now / 1000)}.${(now % 1000) * 1000}`;
 
-		let messageTs: string | null = null;
-		let accumulatedText = "";
-		let isThinking = true;
-		let isWorking = true;
-		const workingIndicator = " ...";
-		let updatePromise: Promise<void> = Promise.resolve();
+		const responseHandlers = createResponseHandlers({
+			channelId,
+			webClient: this.webClient,
+			store: this.store,
+			callSlack: this.callSlack.bind(this),
+			obfuscateUsernames: this.obfuscateUsernames.bind(this),
+		});
 
 		return {
 			message: {
@@ -1216,164 +864,7 @@ export class SlackBot {
 			channels: this.getChannels(),
 			users: this.getUsers(),
 			useThread: false,
-			respond: async (responseText: string, log = true) => {
-				updatePromise = updatePromise.then(async () => {
-					if (isThinking) {
-						accumulatedText = responseText;
-						isThinking = false;
-					} else {
-						accumulatedText += `\n${responseText}`;
-					}
-
-					const displayText = isWorking
-						? accumulatedText + workingIndicator
-						: accumulatedText;
-
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: channelId,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					} else {
-						const result = await this.callSlack(
-							() =>
-								this.webClient.chat.postMessage({
-									channel: channelId,
-									text: displayText,
-								}),
-							"chat.postMessage",
-						);
-						messageTs = result.ts as string;
-					}
-
-					if (log && messageTs) {
-						await this.store.logBotResponse(channelId, responseText, messageTs);
-					}
-				});
-				await updatePromise;
-			},
-			respondInThread: async (threadText: string) => {
-				updatePromise = updatePromise.then(async () => {
-					if (!messageTs) return;
-					const currentMessageTs = messageTs;
-					const obfuscatedText = this.obfuscateUsernames(threadText);
-					await this.callSlack(
-						() =>
-							this.webClient.chat.postMessage({
-								channel: channelId,
-								thread_ts: currentMessageTs,
-								text: obfuscatedText,
-							}),
-						"chat.postMessage",
-					);
-				});
-				await updatePromise;
-			},
-			setTyping: async (typing: boolean) => {
-				if (typing && !messageTs) {
-					accumulatedText = "_Thinking_";
-					const result = await this.callSlack(
-						() =>
-							this.webClient.chat.postMessage({
-								channel: channelId,
-								text: accumulatedText,
-							}),
-						"chat.postMessage",
-					);
-					messageTs = result.ts as string;
-				}
-			},
-			uploadFile: async (filePath: string, title?: string) => {
-				const fileName = title || basename(filePath);
-				const fileContent = readFileSync(filePath);
-				await this.callSlack(
-					() =>
-						this.webClient.files.uploadV2({
-							channel_id: channelId,
-							file: fileContent,
-							filename: fileName,
-							title: fileName,
-						}),
-					"files.uploadV2",
-				);
-			},
-			replaceMessage: async (newText: string) => {
-				updatePromise = updatePromise.then(async () => {
-					accumulatedText = newText;
-					const displayText = isWorking
-						? accumulatedText + workingIndicator
-						: accumulatedText;
-
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: channelId,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					} else {
-						const result = await this.callSlack(
-							() =>
-								this.webClient.chat.postMessage({
-									channel: channelId,
-									text: displayText,
-								}),
-							"chat.postMessage",
-						);
-						messageTs = result.ts as string;
-					}
-				});
-				await updatePromise;
-			},
-			setWorking: async (working: boolean) => {
-				updatePromise = updatePromise.then(async () => {
-					isWorking = working;
-					if (messageTs) {
-						const currentMessageTs = messageTs;
-						const displayText = isWorking
-							? accumulatedText + workingIndicator
-							: accumulatedText;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: channelId,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					}
-				});
-				await updatePromise;
-			},
-			updateStatus: async (status: string) => {
-				updatePromise = updatePromise.then(async () => {
-					if (messageTs && isWorking) {
-						const currentMessageTs = messageTs;
-						const displayText = `${accumulatedText}\n_${status}_${workingIndicator}`;
-						await this.callSlack(
-							() =>
-								this.webClient.chat.update({
-									channel: channelId,
-									ts: currentMessageTs,
-									text: displayText,
-								}),
-							"chat.update",
-						);
-					}
-				});
-				await updatePromise;
-			},
+			...responseHandlers,
 		};
 	}
 }
