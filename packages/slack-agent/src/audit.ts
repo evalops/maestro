@@ -73,20 +73,20 @@ const PII_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
 		pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
 		replacement: "[EMAIL]",
 	},
-	// Phone numbers
+	// Credit Card Numbers (before phone - more specific pattern)
 	{
-		pattern: /(\+?1[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g,
-		replacement: "[PHONE]",
+		pattern: /\b(?:\d{4}[-.\s]?){3}\d{4}\b/g,
+		replacement: "[CARD]",
 	},
-	// Social Security Numbers
+	// Social Security Numbers (before phone - more specific)
 	{
 		pattern: /\b\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b/g,
 		replacement: "[SSN]",
 	},
-	// Credit Card Numbers
+	// Phone numbers (last among digit patterns - most greedy)
 	{
-		pattern: /\b(?:\d{4}[-.\s]?){3}\d{4}\b/g,
-		replacement: "[CARD]",
+		pattern: /(\+?1[-.\s]?)?(\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/g,
+		replacement: "[PHONE]",
 	},
 	// IP Addresses
 	{

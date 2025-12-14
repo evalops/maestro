@@ -19,6 +19,7 @@ A Slack bot that runs an AI coding agent in a sandboxed environment. The agent c
 - [Programmatic Usage](#programmatic-usage)
 - [Architecture](#architecture)
 - [Security](#security)
+- [Enterprise Features](#enterprise-features)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 
@@ -56,6 +57,17 @@ A Slack bot that runs an AI coding agent in a sandboxed environment. The agent c
 | **Progress Indicators** | Live status updates during long-running tasks |
 | **File Uploads** | Share files back to Slack from the agent |
 | **Message Backfill** | Automatically syncs channel history on startup |
+
+### Enterprise Features
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-Workspace OAuth** | OAuth 2.0 installation flow for multi-tenant deployments |
+| **Role-Based Access Control** | Four roles: admin, power_user, user, viewer |
+| **Audit Logging** | Tamper-evident logs with hash chaining and PII redaction |
+| **Thread Memory** | Per-thread context management with token limits |
+| **Idempotency** | Atomic event deduplication for reliability |
+| **Pluggable Storage** | File, in-memory, or custom (Redis) storage backends |
 
 ---
 
@@ -1077,6 +1089,222 @@ Prevents abuse through per-user and per-channel request limits.
 5. **Rotate workspace data** - Periodically clean up old logs/files
 6. **Restrict channels** - Only add bot to channels that need it
 7. **Audit logs** - Review `log.jsonl` files for activity
+
+---
+
+## Enterprise Features
+
+The slack-agent includes enterprise-grade features for production deployments supporting multiple workspaces and teams.
+
+### Multi-Workspace OAuth
+
+Support OAuth 2.0 installation flow for multi-workspace deployments:
+
+```typescript
+import { startOAuthServer, WorkspaceManager } from '@evalops/slack-agent';
+
+// Start OAuth installation server
+const { server, stop } = startOAuthServer({
+  clientId: process.env.SLACK_CLIENT_ID!,
+  clientSecret: process.env.SLACK_CLIENT_SECRET!,
+  workingDir: './data',
+  port: 3000,
+  onInstall: (workspace) => {
+    console.log(`Installed to ${workspace.teamName}`);
+  },
+});
+
+// Direct users to: http://localhost:3000/slack/install
+
+// Load workspace tokens
+const workspaces = new WorkspaceManager('./data');
+const allActive = workspaces.getAll();
+```
+
+### Role-Based Access Control (RBAC)
+
+Control user permissions with four built-in roles:
+
+| Role | Description | Tool Access |
+|------|-------------|-------------|
+| `admin` | Full access to all features and settings | All tools + user management |
+| `power_user` | Execute any tool, manage tasks and context | All tools |
+| `user` | Execute common tools, manage own tasks | read, write, edit, bash, search |
+| `viewer` | Read-only access, can search and view status | read, search, status |
+
+```typescript
+import { PermissionManager } from '@evalops/slack-agent';
+
+const permissions = new PermissionManager('./data', {
+  defaultRole: 'user',
+});
+
+// Check permissions
+const result = permissions.check(userId, 'execute_tool', 'bash');
+if (!result.allowed) {
+  console.log(`Denied: ${result.reason}`);
+}
+
+// Admin operations
+permissions.setRole(adminId, targetUserId, 'power_user');
+permissions.blockUser(adminId, targetUserId, 'Policy violation');
+```
+
+### Audit Logging
+
+Tamper-evident audit trail with hash chaining and automatic PII redaction:
+
+```typescript
+import { AuditLogger } from '@evalops/slack-agent';
+
+const audit = new AuditLogger('./data', {
+  enablePiiRedaction: true,
+  maxPreviewLength: 200,
+  retentionDays: 90,
+  rotateAtMB: 100,
+});
+
+// Log events
+audit.logMessage(userId, channelId, 'Hello world', threadTs);
+audit.logToolCall(userId, channelId, 'bash', { command: 'ls' }, 'success', 'output', 150);
+audit.logApproval(userId, channelId, 'approval_granted', 'rm -rf build/');
+
+// Query logs
+const userActions = audit.query({ userId, limit: 100 });
+
+// Verify integrity (detect tampering)
+const integrity = audit.verifyIntegrity();
+if (!integrity.valid) {
+  console.error('Audit log tampered!', integrity.errors);
+}
+```
+
+**PII Patterns Automatically Redacted:**
+- Email addresses → `[EMAIL]`
+- Phone numbers → `[PHONE]`
+- Credit card numbers → `[CARD]`
+- Social Security Numbers → `[SSN]`
+- API keys/tokens → `[REDACTED_KEY]`
+- AWS keys → `[AWS_KEY]`
+
+### Thread Memory Management
+
+Per-thread conversation context with configurable limits:
+
+```typescript
+import { ThreadMemoryManager } from '@evalops/slack-agent';
+
+const memory = new ThreadMemoryManager('./data', {
+  maxMessages: 50,
+  maxTokens: 8000,
+  retentionDays: 30,
+});
+
+// Add messages
+await memory.addMessage(channelId, threadTs, {
+  role: 'user',
+  content: 'Hello',
+  userId: 'U123',
+});
+
+// Get context for agent
+const messages = await memory.getMessagesForAgent(channelId, threadTs);
+
+// Get summary
+const summary = await memory.getThreadSummary(channelId, threadTs);
+console.log(`${summary.messageCount} messages, ${summary.totalTokens} tokens`);
+
+// Clear thread
+await memory.clearThread(channelId, threadTs);
+```
+
+### Event Idempotency
+
+Prevent duplicate processing with atomic locking:
+
+```typescript
+import { IdempotencyManager, withIdempotency } from '@evalops/slack-agent';
+
+const idempotency = new IdempotencyManager('./data', {
+  ttlMs: 3600000,  // 1 hour
+  lockTimeout: 30000,
+});
+
+// Check and lock
+const check = await idempotency.checkAndLock(eventId, 'message');
+if (!check.shouldProcess) {
+  if (check.isDuplicate) {
+    console.log('Already processed');
+  }
+  return;
+}
+
+try {
+  await processEvent(event);
+  await idempotency.markComplete(eventId);
+} catch (err) {
+  await idempotency.markFailed(eventId, err.message);
+}
+
+// Or use the wrapper
+const handler = withIdempotency(
+  idempotency,
+  async (event) => { /* process */ },
+  (event) => event.id  // extract event ID
+);
+
+const result = await handler(event);
+if (result.skipped) {
+  console.log('Duplicate event');
+}
+```
+
+### Signature Verification
+
+Verify Slack request signatures for HTTP webhook mode:
+
+```typescript
+import { verifySlackSignature } from '@evalops/slack-agent';
+
+// In your HTTP handler
+const isValid = verifySlackSignature(
+  process.env.SLACK_SIGNING_SECRET!,
+  req.headers['x-slack-signature'],
+  req.headers['x-slack-request-timestamp'],
+  rawBody
+);
+
+if (!isValid) {
+  return res.status(401).send('Invalid signature');
+}
+```
+
+### Pluggable Storage Backends
+
+All enterprise features support pluggable storage for distributed deployments:
+
+```typescript
+import { FileStorageBackend, InMemoryStorage } from '@evalops/slack-agent';
+
+// File-based (default) - good for single instance
+const fileStorage = new FileStorageBackend('./data/state');
+
+// In-memory - good for tests
+const memStorage = new InMemoryStorage();
+
+// Custom Redis backend (implement StorageBackend interface)
+interface StorageBackend {
+  get<T>(key: string): Promise<T | null>;
+  set(key: string, value: unknown, ttlMs?: number): Promise<void>;
+  setNX(key: string, value: unknown, ttlMs?: number): Promise<boolean>;
+  delete(key: string): Promise<boolean>;
+  exists(key: string): Promise<boolean>;
+  keys(pattern: string): Promise<string[]>;
+}
+
+// Pass to enterprise features
+const idempotency = new IdempotencyManager(null, { storage: redisStorage });
+```
 
 ---
 
