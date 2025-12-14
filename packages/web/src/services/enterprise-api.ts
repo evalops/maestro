@@ -511,6 +511,244 @@ export class EnterpriseApiClient {
 			headers: this.headers,
 		});
 	}
+
+	// =========================================================================
+	// SLACK INTEGRATION
+	// =========================================================================
+
+	async getSlackInstallUrl(): Promise<{ url: string }> {
+		const response = await fetch(`${this.baseUrl}/api/slack/install`, {
+			headers: this.headers,
+		});
+		return safeJson(response);
+	}
+
+	async listSlackWorkspaces(): Promise<{ workspaces: SlackWorkspace[] }> {
+		const response = await fetch(`${this.baseUrl}/api/slack/workspaces`, {
+			headers: this.headers,
+		});
+		return safeJson(response);
+	}
+
+	async getSlackWorkspace(id: string): Promise<{
+		workspace: SlackWorkspaceDetails;
+		runtime: WorkspaceRuntime;
+		quota: SlackQuotaStatus;
+	}> {
+		const response = await fetch(`${this.baseUrl}/api/slack/workspaces/${id}`, {
+			headers: this.headers,
+		});
+		return safeJson(response);
+	}
+
+	async updateSlackWorkspaceConfig(
+		id: string,
+		config: Record<string, unknown>,
+	): Promise<void> {
+		await fetch(`${this.baseUrl}/api/slack/workspaces/${id}/config`, {
+			method: "PUT",
+			headers: this.headers,
+			body: JSON.stringify(config),
+		});
+	}
+
+	async suspendSlackWorkspace(id: string, reason: string): Promise<void> {
+		await fetch(`${this.baseUrl}/api/slack/workspaces/${id}/suspend`, {
+			method: "POST",
+			headers: this.headers,
+			body: JSON.stringify({ reason }),
+		});
+	}
+
+	async reactivateSlackWorkspace(id: string): Promise<void> {
+		await fetch(`${this.baseUrl}/api/slack/workspaces/${id}/reactivate`, {
+			method: "POST",
+			headers: this.headers,
+		});
+	}
+
+	async setSlackWorkspaceQuota(
+		id: string,
+		quota: number | null,
+	): Promise<void> {
+		await fetch(`${this.baseUrl}/api/slack/workspaces/${id}/quota`, {
+			method: "PUT",
+			headers: this.headers,
+			body: JSON.stringify({ quota }),
+		});
+	}
+
+	async listSlackWorkspaceUsers(
+		workspaceId: string,
+	): Promise<{ users: SlackUser[] }> {
+		const response = await fetch(
+			`${this.baseUrl}/api/slack/workspaces/${workspaceId}/users`,
+			{ headers: this.headers },
+		);
+		return safeJson(response);
+	}
+
+	async setSlackUserRole(
+		workspaceId: string,
+		slackUserId: string,
+		role: string,
+	): Promise<void> {
+		await fetch(
+			`${this.baseUrl}/api/slack/workspaces/${workspaceId}/users/${slackUserId}/role`,
+			{
+				method: "PUT",
+				headers: this.headers,
+				body: JSON.stringify({ role }),
+			},
+		);
+	}
+
+	async blockSlackUser(
+		workspaceId: string,
+		slackUserId: string,
+		reason: string,
+	): Promise<void> {
+		await fetch(
+			`${this.baseUrl}/api/slack/workspaces/${workspaceId}/users/${slackUserId}/block`,
+			{
+				method: "POST",
+				headers: this.headers,
+				body: JSON.stringify({ reason }),
+			},
+		);
+	}
+
+	async unblockSlackUser(
+		workspaceId: string,
+		slackUserId: string,
+	): Promise<void> {
+		await fetch(
+			`${this.baseUrl}/api/slack/workspaces/${workspaceId}/users/${slackUserId}/unblock`,
+			{
+				method: "POST",
+				headers: this.headers,
+			},
+		);
+	}
+
+	async getSlackWorkspaceUsage(
+		workspaceId: string,
+	): Promise<SlackUsageSummary> {
+		const response = await fetch(
+			`${this.baseUrl}/api/slack/workspaces/${workspaceId}/usage`,
+			{ headers: this.headers },
+		);
+		return safeJson(response);
+	}
+
+	async getSlackWorkspaceAuditLogs(
+		workspaceId: string,
+		options?: {
+			startDate?: string;
+			endDate?: string;
+			limit?: number;
+		},
+	): Promise<{ logs: SlackAuditLogEntry[] }> {
+		const params = new URLSearchParams();
+		if (options?.startDate) params.set("startDate", options.startDate);
+		if (options?.endDate) params.set("endDate", options.endDate);
+		if (options?.limit) params.set("limit", String(options.limit));
+		const query = params.toString();
+		const response = await fetch(
+			`${this.baseUrl}/api/slack/workspaces/${workspaceId}/audit${query ? `?${query}` : ""}`,
+			{ headers: this.headers },
+		);
+		return safeJson(response);
+	}
+
+	async verifySlackAuditIntegrity(workspaceId: string): Promise<{
+		valid: boolean;
+		totalRecords: number;
+		invalidRecords: string[];
+	}> {
+		const response = await fetch(
+			`${this.baseUrl}/api/slack/workspaces/${workspaceId}/audit/verify`,
+			{
+				method: "POST",
+				headers: this.headers,
+			},
+		);
+		return safeJson(response);
+	}
+}
+
+// ============================================================================
+// SLACK TYPES
+// ============================================================================
+
+export interface SlackWorkspace {
+	id: string;
+	slackTeamId: string;
+	slackTeamName: string;
+	status: "active" | "suspended" | "uninstalled";
+	tokenQuotaMonthly: number | null;
+	tokenUsedMonthly: number;
+	installedAt: string;
+	createdAt: string;
+}
+
+export interface SlackWorkspaceDetails extends SlackWorkspace {
+	config?: Record<string, unknown>;
+	installedBy?: string;
+}
+
+export interface WorkspaceRuntime {
+	workspaceId: string;
+	activeRuns: number;
+	maxConcurrentRuns: number;
+	requestsLastMinute: number;
+	rateLimitRemaining: number;
+}
+
+export interface SlackQuotaStatus {
+	quotaUsed: number;
+	quotaLimit: number | null;
+	isOverQuota: boolean;
+	percentUsed: number;
+}
+
+export interface SlackUser {
+	id: string;
+	workspaceId: string;
+	slackUserId: string;
+	slackUserName: string;
+	displayName?: string;
+	role: "admin" | "power_user" | "user" | "viewer";
+	isBlocked: boolean;
+	lastActiveAt?: string;
+	createdAt: string;
+}
+
+export interface SlackUsageSummary {
+	workspaceId: string;
+	periodStart: string;
+	periodEnd: string;
+	totalTokens: number;
+	inputTokens: number;
+	outputTokens: number;
+	totalCost: number;
+	totalRuns: number;
+	modelBreakdown: Array<{ model: string; tokens: number; cost: number }>;
+	dailyUsage: Array<{ date: string; tokens: number }>;
+}
+
+export interface SlackAuditLogEntry {
+	id: string;
+	workspaceId: string;
+	slackUserId: string;
+	slackUserName?: string;
+	action: string;
+	resourceType?: string;
+	resourceId?: string;
+	status: "success" | "failure" | "error" | "denied";
+	metadata?: Record<string, unknown>;
+	ipAddress?: string;
+	timestamp: string;
 }
 
 // Singleton instance

@@ -52,4 +52,11 @@ export type {
 	Alert,
 	ModelApproval,
 	DirectoryRule,
+	SlackWorkspace,
+	SlackWorkspaceDetails,
+	WorkspaceRuntime,
+	SlackQuotaStatus,
+	SlackUser,
+	SlackUsageSummary,
+	SlackAuditLogEntry,
 } from "./services/enterprise-api.js";

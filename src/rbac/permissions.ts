@@ -165,16 +165,18 @@ export async function checkPermission(
 			return false;
 		}
 
-		const hasPermission = membership.role.permissions.some((rp) => {
-			const perm = rp.permission;
-			const resourceMatches =
-				perm.resource === resource || perm.resource === RESOURCES.ANY;
-			const actionMatches =
-				perm.action === action ||
-				perm.action === ACTIONS.WILDCARD ||
-				(perm.action === ACTIONS.ADMIN && perm.resource === resource);
-			return resourceMatches && actionMatches;
-		});
+		const hasPermission = membership.role.permissions.some(
+			(rp: { permission: { resource: string; action: string } }) => {
+				const perm = rp.permission;
+				const resourceMatches =
+					perm.resource === resource || perm.resource === RESOURCES.ANY;
+				const actionMatches =
+					perm.action === action ||
+					perm.action === ACTIONS.WILDCARD ||
+					(perm.action === ACTIONS.ADMIN && perm.resource === resource);
+				return resourceMatches && actionMatches;
+			},
+		);
 
 		// Ownership check removed - all access must go through RBAC
 		// This ensures audit requirements and organizational policies are enforced

@@ -600,6 +600,22 @@ export async function startWebServer(port = 8080) {
 		initializeAuditIntegration();
 	}
 
+	// Initialize enterprise features (RBAC, permissions, default roles) if database is configured
+	const { isDatabaseConfigured } = await import("./db/client.js");
+	if (isDatabaseConfigured()) {
+		try {
+			const { initializeEnterpriseFeatures } = await import(
+				"./api/enterprise-routes.js"
+			);
+			await initializeEnterpriseFeatures();
+			logger.info("Enterprise features initialized");
+		} catch (error) {
+			logger.warn("Failed to initialize enterprise features", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
 	// Configure safe mode settings (e.g., disabling certain tools in sandboxed environments)
 	configureSafeMode(true);
 

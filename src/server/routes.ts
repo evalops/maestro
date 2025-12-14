@@ -1,5 +1,7 @@
 import type { ApprovalMode } from "../agent/action-approval.js";
 import type { ThinkingLevel } from "../agent/types.js";
+import { createEnterpriseRoutes } from "../api/enterprise-routes.js";
+import { isDatabaseConfigured } from "../db/client.js";
 import type { WebServerContext } from "./app-context.js";
 import { handleAdminCleanup, handleAdminWarmCaches } from "./handlers/admin.js";
 import { handleApproval } from "./handlers/approval.js";
@@ -508,5 +510,7 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/api/admin/warm-caches",
 			handler: (req, res) => handleAdminWarmCaches(req, res, corsHeaders),
 		},
+		// Add enterprise routes when database is configured
+		...(isDatabaseConfigured() ? createEnterpriseRoutes(corsHeaders) : []),
 	];
 }

@@ -54,6 +54,7 @@ This document defines the operational parameters for **Composer**. It serves two
 2. **Never force-push to main.** This rewrites shared history and breaks collaborators.
 3. **Atomic commits only.** Each commit should be one logical change. Don't mix unrelated changes.
 4. **Never use `--force` or `--force-with-lease` on shared branches.**
+5. **Never use `--no-verify` to skip pre-commit hooks.** If hooks fail, fix the underlying issue. Pre-commit hooks exist for a reason - they catch errors before they enter the codebase.
 
 If you make a mistake, fix it with a new commit. Do not rewrite history to cover it up.
 

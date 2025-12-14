@@ -80,3 +80,59 @@ export {
 
 // Logging
 export * as logger from "./logger.js";
+
+// Enterprise Features
+
+// Storage abstraction (file or Redis)
+export {
+	FileStorageBackend,
+	createRedisBackend,
+	createStorageBackend,
+	type StorageBackend,
+	type StorageConfig,
+	type StorageType,
+	type RedisConfig,
+} from "./storage.js";
+
+// OAuth & Multi-workspace
+export {
+	WorkspaceManager,
+	startOAuthServer,
+	verifySlackSignature,
+	DEFAULT_BOT_SCOPES,
+	type OAuthConfig,
+	type OAuthServerConfig,
+	type WorkspaceCredentials,
+} from "./oauth.js";
+
+// Permissions (RBAC)
+export {
+	PermissionManager,
+	type SlackRole,
+	type UserPermissions,
+	type PermissionCheck,
+} from "./permissions.js";
+
+// Thread memory (conversation context)
+export {
+	ThreadMemoryManager,
+	type ThreadMessage,
+	type ThreadContext,
+	type ThreadMemoryConfig,
+} from "./thread-memory.js";
+
+// Idempotency (duplicate event prevention)
+export {
+	IdempotencyManager,
+	withIdempotency,
+	type IdempotencyConfig,
+	type IdempotencyCheckResult,
+} from "./idempotency.js";
+
+// Audit logging
+export {
+	AuditLogger,
+	type AuditAction,
+	type AuditEntry,
+	type AuditLoggerConfig,
+} from "./audit.js";
