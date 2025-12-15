@@ -10,6 +10,7 @@ import {
 } from "@slack/web-api";
 import * as logger from "../logger.js";
 import { type Attachment, ChannelStore } from "../store.js";
+import { TtlCache } from "../utils/ttl-cache.js";
 import { createResponseHandlers } from "./response-state.js";
 
 export interface SlackMessage {
@@ -126,9 +127,16 @@ export class SlackBot {
 	private handler: SlackAgentHandler;
 	private botUserId: string | null = null;
 	public readonly store: ChannelStore;
-	private userCache: Map<string, { userName: string; displayName: string }> =
-		new Map();
-	private channelCache: Map<string, string> = new Map();
+	// Caches with 1-hour TTL to prevent unbounded memory growth
+	private userCache = new TtlCache<
+		string,
+		{ userName: string; displayName: string }
+	>({
+		defaultTtlMs: 60 * 60 * 1000, // 1 hour
+	});
+	private channelCache = new TtlCache<string, string>({
+		defaultTtlMs: 60 * 60 * 1000, // 1 hour
+	});
 	private recentEvents: Map<string, number> = new Map();
 	private readonly eventDedupeMs = 5 * 60 * 1000;
 	private lastEventCleanupMs = 0;

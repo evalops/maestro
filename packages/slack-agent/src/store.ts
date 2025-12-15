@@ -2,10 +2,11 @@
  * Channel Store - Message logging and attachment management
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as logger from "./logger.js";
+import { ensureDirSync } from "./utils/fs.js";
 
 export interface Attachment {
 	original: string;
@@ -52,17 +53,12 @@ export class ChannelStore {
 	constructor(config: ChannelStoreConfig) {
 		this.workingDir = config.workingDir;
 		this.botToken = config.botToken;
-
-		if (!existsSync(this.workingDir)) {
-			mkdirSync(this.workingDir, { recursive: true });
-		}
+		ensureDirSync(this.workingDir);
 	}
 
 	getChannelDir(channelId: string): string {
 		const dir = join(this.workingDir, channelId);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
-		}
+		ensureDirSync(dir);
 		return dir;
 	}
 
@@ -372,9 +368,7 @@ export class ChannelStore {
 			this.workingDir,
 			localPath.substring(0, localPath.lastIndexOf("/")),
 		);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
-		}
+		ensureDirSync(dir);
 
 		const response = await fetch(url, {
 			headers: {

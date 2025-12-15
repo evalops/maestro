@@ -9,7 +9,6 @@ import crypto from "node:crypto";
 import {
 	appendFileSync,
 	existsSync,
-	mkdirSync,
 	readFileSync,
 	readdirSync,
 	renameSync,
@@ -18,6 +17,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import * as logger from "./logger.js";
+import { ensureDirSync } from "./utils/fs.js";
 
 // ============================================================================
 // Types
@@ -126,9 +126,7 @@ export class AuditLogger {
 		};
 
 		// Ensure audit directory exists
-		if (!existsSync(this.auditDir)) {
-			mkdirSync(this.auditDir, { recursive: true });
-		}
+		ensureDirSync(this.auditDir);
 
 		// Set current file based on date
 		this.currentFile = this.getLogFileName(new Date());

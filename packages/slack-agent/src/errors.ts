@@ -89,7 +89,11 @@ export class FileSystemError extends SlackAgentError {
 
 	constructor(
 		message: string,
-		options?: { path?: string; cause?: Error; context?: Record<string, unknown> },
+		options?: {
+			path?: string;
+			cause?: Error;
+			context?: Record<string, unknown>;
+		},
 	) {
 		super(message, { code: "FS_ERROR", ...options });
 		this.name = "FileSystemError";

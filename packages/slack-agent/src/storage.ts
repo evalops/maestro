@@ -11,15 +11,10 @@
  * - Enable audit logging
  */
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as logger from "./logger.js";
+import { ensureDirSync } from "./utils/fs.js";
 
 // ============================================================================
 // Storage Interface
@@ -46,9 +41,7 @@ export interface StorageBackend {
 
 export class FileStorageBackend implements StorageBackend {
 	constructor(private baseDir: string) {
-		if (!existsSync(baseDir)) {
-			mkdirSync(baseDir, { recursive: true });
-		}
+		ensureDirSync(baseDir);
 	}
 
 	private getPath(key: string): string {

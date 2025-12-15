@@ -11,16 +11,11 @@
  * ```
  */
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	readdirSync,
-	unlinkSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import * as logger from "./logger.js";
 import { FileStorageBackend, type StorageBackend } from "./storage.js";
+import { ensureDirSync } from "./utils/fs.js";
 
 // ============================================================================
 // Types
@@ -94,9 +89,7 @@ export class ThreadMemoryManager {
 			this.storage = config.storage;
 		} else {
 			this.memoryDir = join(workingDir, "threads");
-			if (!existsSync(this.memoryDir)) {
-				mkdirSync(this.memoryDir, { recursive: true });
-			}
+			ensureDirSync(this.memoryDir);
 			this.storage = new FileStorageBackend(this.memoryDir);
 		}
 	}

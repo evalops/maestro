@@ -488,7 +488,9 @@ describe("ApprovalManager", () => {
 
 			// Trigger cleanup manually (since we're not running the interval)
 			// Access private method via type assertion for testing
-			await (manager as unknown as { cleanupExpired: () => Promise<void> }).cleanupExpired();
+			await (
+				manager as unknown as { cleanupExpired: () => Promise<void> }
+			).cleanupExpired();
 
 			expect(rejected).toBe(true);
 			expect(manager.getPendingForChannel("C123")).toHaveLength(0);

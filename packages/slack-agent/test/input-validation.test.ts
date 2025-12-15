@@ -136,7 +136,8 @@ describe("sanitizeForLogging", () => {
 
 	it("masks Bearer tokens", () => {
 		// Concatenate to avoid triggering heuristic scanner
-		const text = "Authorization: Bearer " + "eyJhbGciOiJIUzI1" + "NiIsInR5cCI6IkpXVCJ9";
+		const text =
+			"Authorization: Bearer " + "eyJhbGciOiJIUzI1" + "NiIsInR5cCI6IkpXVCJ9";
 		const result = sanitizeForLogging(text);
 
 		expect(result).toBe("Authorization: Bearer ***");

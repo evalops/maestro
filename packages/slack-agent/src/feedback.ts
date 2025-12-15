@@ -5,8 +5,9 @@
  * This data can be used for analysis and improving the agent.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ensureDirSync } from "./utils/fs.js";
 
 export interface FeedbackRecord {
 	timestamp: string;
@@ -154,9 +155,7 @@ export class FeedbackTracker {
 
 	private getFeedbackLogPath(channelId: string): string {
 		const dir = join(this.workingDir, channelId);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true });
-		}
+		ensureDirSync(dir);
 		return join(dir, "feedback.jsonl");
 	}
 

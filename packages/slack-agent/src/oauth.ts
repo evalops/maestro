@@ -12,7 +12,7 @@
  */
 
 import crypto from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
 	type IncomingMessage,
 	type ServerResponse,
@@ -21,6 +21,7 @@ import {
 import { join } from "node:path";
 import * as logger from "./logger.js";
 import { FileStorageBackend, type StorageBackend } from "./storage.js";
+import { ensureDirSync } from "./utils/fs.js";
 
 // ============================================================================
 // Types
@@ -297,9 +298,7 @@ export function startOAuthServer(config: OAuthServerConfig): {
 		config.redirectUri ?? `http://localhost:${port}/slack/callback`;
 
 	// Ensure working directory exists
-	if (!existsSync(workingDir)) {
-		mkdirSync(workingDir, { recursive: true });
-	}
+	ensureDirSync(workingDir);
 
 	// Use provided storage or default to file-based for OAuth state
 	const stateStorage =

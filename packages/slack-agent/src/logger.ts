@@ -1,5 +1,9 @@
 /**
  * Console logging utilities for the Slack agent
+ *
+ * Supports structured logging with automatic context propagation.
+ * Use withContext() or setCurrentContext() to attach context that
+ * will be included in all log messages.
  */
 
 import chalk from "chalk";
@@ -12,6 +16,69 @@ export interface LogContext {
 	runId?: string;
 	taskId?: string;
 	source?: "channel" | "dm" | "slash" | "scheduled";
+}
+
+// ============================================================================
+// Context Management
+// ============================================================================
+
+/**
+ * Current execution context - automatically included in log messages
+ */
+let currentContext: LogContext | null = null;
+
+/**
+ * Set the current logging context (will be included in all log messages)
+ */
+export function setCurrentContext(ctx: LogContext | null): void {
+	currentContext = ctx;
+}
+
+/**
+ * Get the current logging context
+ */
+export function getCurrentContext(): LogContext | null {
+	return currentContext;
+}
+
+/**
+ * Execute a function with a specific logging context
+ * Context is automatically restored after the function completes
+ */
+export function withContext<T>(ctx: LogContext, fn: () => T): T {
+	const previousContext = currentContext;
+	currentContext = ctx;
+	try {
+		return fn();
+	} finally {
+		currentContext = previousContext;
+	}
+}
+
+/**
+ * Execute an async function with a specific logging context
+ * Context is automatically restored after the function completes
+ */
+export async function withContextAsync<T>(
+	ctx: LogContext,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const previousContext = currentContext;
+	currentContext = ctx;
+	try {
+		return await fn();
+	} finally {
+		currentContext = previousContext;
+	}
+}
+
+/**
+ * Generate a unique run ID for tracking request execution
+ */
+export function generateRunId(): string {
+	const timestamp = Date.now().toString(36);
+	const random = Math.random().toString(36).substring(2, 8);
+	return `${timestamp}_${random}`;
 }
 
 function timestamp(): string {
@@ -159,15 +226,36 @@ export function logResponse(ctx: LogContext, text: string): void {
 	console.log(chalk.dim(indent(truncate(text, 1000))));
 }
 
-export function logInfo(message: string): void {
-	console.log(chalk.blue(`${timestamp()} [system] ${message}`));
+export function logInfo(message: string, ctx?: LogContext): void {
+	const context = ctx ?? currentContext;
+	const contextStr = context ? formatContext(context) : "[system]";
+	console.log(chalk.blue(`${timestamp()} ${contextStr} ${message}`));
 }
 
-export function logWarning(message: string, details?: string): void {
-	console.log(chalk.yellow(`${timestamp()} [system] warning: ${message}`));
+export function logWarning(
+	message: string,
+	details?: string,
+	ctx?: LogContext,
+): void {
+	const context = ctx ?? currentContext;
+	const contextStr = context ? formatContext(context) : "[system]";
+	console.log(chalk.yellow(`${timestamp()} ${contextStr} warning: ${message}`));
 	if (details) {
 		console.log(chalk.dim(indent(details)));
 	}
+}
+
+export function logDebug(
+	message: string,
+	data?: Record<string, unknown>,
+): void {
+	if (process.env.DEBUG !== "true" && process.env.DEBUG !== "1") {
+		return;
+	}
+	const context = currentContext;
+	const contextStr = context ? formatContext(context) : "[debug]";
+	const dataStr = data ? ` ${JSON.stringify(data)}` : "";
+	console.log(chalk.gray(`${timestamp()} ${contextStr} ${message}${dataStr}`));
 }
 
 export function logAgentError(ctx: LogContext | "system", error: string): void {

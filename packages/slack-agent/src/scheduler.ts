@@ -6,11 +6,12 @@
  * - Recurring tasks: "run this every morning at 9am"
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DateTime } from "luxon";
 import * as logger from "./logger.js";
+import { ensureDir, ensureDirSync } from "./utils/fs.js";
 
 export interface ScheduledTask {
 	id: string;
@@ -733,10 +734,7 @@ export class Scheduler {
 		this.tasksFile = join(this.workingDir, "scheduled_tasks.json");
 		this.historyFile = join(this.workingDir, "task_history.jsonl");
 
-		if (!existsSync(this.workingDir)) {
-			mkdirSync(this.workingDir, { recursive: true });
-		}
-
+		ensureDirSync(this.workingDir);
 		this.loadTasks();
 	}
 
@@ -764,7 +762,7 @@ export class Scheduler {
 
 	private async saveTasks(): Promise<void> {
 		// Ensure the working directory still exists (tests may clean tmp dirs)
-		await mkdir(this.workingDir, { recursive: true });
+		await ensureDir(this.workingDir);
 		const tasksArray = Array.from(this.tasks.values());
 		const serialized = JSON.stringify(tasksArray, null, 2);
 		const tmpPath = `${this.tasksFile}.tmp`;
@@ -1117,7 +1115,7 @@ export class Scheduler {
 		};
 
 		try {
-			await mkdir(this.workingDir, { recursive: true });
+			await ensureDir(this.workingDir);
 			const { appendFile } = await import("node:fs/promises");
 			await appendFile(this.historyFile, `${JSON.stringify(entry)}\n`);
 		} catch (error) {

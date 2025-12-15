@@ -32,40 +32,315 @@ describe("parseTimeExpression", () => {
 });
 
 describe("parseRecurringSchedule", () => {
-	it("parses daily schedules in a specific timezone", () => {
-		const tz = "America/New_York";
-		const now = new Date("2025-01-01T12:00:00.000Z"); // 07:00 local
-		const result = parseRecurringSchedule("every day at 9am", now, tz);
+	describe("interval expressions", () => {
+		it("parses 'every N minutes'", () => {
+			const now = new Date("2025-01-01T12:00:00.000Z");
+			const result = parseRecurringSchedule("every 15 minutes", now, "UTC");
 
-		expect(result?.schedule).toBe("0 9 * * *");
-
-		const nowDt = DateTime.fromJSDate(now).setZone(tz);
-		let expected = nowDt.set({
-			hour: 9,
-			minute: 0,
-			second: 0,
-			millisecond: 0,
+			expect(result?.schedule).toBe("*/15 * * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T12:15:00.000Z");
 		});
-		if (expected.toMillis() <= nowDt.toMillis()) {
-			expected = expected.plus({ days: 1 });
-		}
 
-		expect(result?.nextRun.toISOString()).toBe(
-			expected.toUTC().toISO({ suppressMilliseconds: false }),
-		);
+		it("parses 'every N mins'", () => {
+			const now = new Date("2025-01-01T12:00:00.000Z");
+			const result = parseRecurringSchedule("every 30 mins", now, "UTC");
+
+			expect(result?.schedule).toBe("*/30 * * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T12:30:00.000Z");
+		});
+
+		it("parses 'every N hours'", () => {
+			const now = new Date("2025-01-01T12:00:00.000Z");
+			const result = parseRecurringSchedule("every 2 hours", now, "UTC");
+
+			expect(result?.schedule).toBe("0 */2 * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T14:00:00.000Z");
+		});
+
+		it("parses 'every hour'", () => {
+			const now = new Date("2025-01-01T12:30:00.000Z");
+			const result = parseRecurringSchedule("every hour", now, "UTC");
+
+			expect(result?.schedule).toBe("0 * * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T13:00:00.000Z");
+		});
 	});
 
-	it("does not delay first run for weekly-interval schedules", () => {
-		const now = new Date("2025-01-01T00:00:00.000Z"); // Wed
-		const result = parseRecurringSchedule(
-			"every 2 weeks on monday at 9am",
-			now,
-			"UTC",
-		);
+	describe("daily expressions", () => {
+		it("parses 'every day at 9am'", () => {
+			const tz = "America/New_York";
+			const now = new Date("2025-01-01T12:00:00.000Z"); // 07:00 local
+			const result = parseRecurringSchedule("every day at 9am", now, tz);
 
-		expect(result?.schedule).toBe("W2 0 9 * * 1");
-		// First run should be the next Monday (not two weeks out).
-		expect(result?.nextRun.toISOString()).toBe("2025-01-06T09:00:00.000Z");
+			expect(result?.schedule).toBe("0 9 * * *");
+
+			const nowDt = DateTime.fromJSDate(now).setZone(tz);
+			let expected = nowDt.set({
+				hour: 9,
+				minute: 0,
+				second: 0,
+				millisecond: 0,
+			});
+			if (expected.toMillis() <= nowDt.toMillis()) {
+				expected = expected.plus({ days: 1 });
+			}
+
+			expect(result?.nextRun.toISOString()).toBe(
+				expected.toUTC().toISO({ suppressMilliseconds: false }),
+			);
+		});
+
+		it("parses 'every day at 3pm'", () => {
+			const now = new Date("2025-01-01T12:00:00.000Z");
+			const result = parseRecurringSchedule("every day at 3pm", now, "UTC");
+
+			expect(result?.schedule).toBe("0 15 * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T15:00:00.000Z");
+		});
+
+		it("parses 'every day at 14:30'", () => {
+			const now = new Date("2025-01-01T12:00:00.000Z");
+			const result = parseRecurringSchedule("every day at 14:30", now, "UTC");
+
+			expect(result?.schedule).toBe("30 14 * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T14:30:00.000Z");
+		});
+
+		it("parses 'every day' with default 9am", () => {
+			const now = new Date("2025-01-01T06:00:00.000Z");
+			const result = parseRecurringSchedule("every day", now, "UTC");
+
+			expect(result?.schedule).toBe("0 9 * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T09:00:00.000Z");
+		});
+
+		it("rolls to next day when time has passed", () => {
+			const now = new Date("2025-01-01T20:00:00.000Z"); // 8pm, past 3pm
+			const result = parseRecurringSchedule("every day at 3pm", now, "UTC");
+
+			expect(result?.nextRun.toISOString()).toBe("2025-01-02T15:00:00.000Z");
+		});
+
+		it("handles 12am correctly", () => {
+			const now = new Date("2025-01-01T12:00:00.000Z");
+			const result = parseRecurringSchedule("every day at 12am", now, "UTC");
+
+			expect(result?.schedule).toBe("0 0 * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-02T00:00:00.000Z");
+		});
+
+		it("handles 12pm correctly", () => {
+			const now = new Date("2025-01-01T06:00:00.000Z");
+			const result = parseRecurringSchedule("every day at 12pm", now, "UTC");
+
+			expect(result?.schedule).toBe("0 12 * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T12:00:00.000Z");
+		});
+	});
+
+	describe("weekday expressions", () => {
+		it("parses 'every weekday at 9am'", () => {
+			const now = new Date("2025-01-01T06:00:00.000Z"); // Wed
+			const result = parseRecurringSchedule("every weekday at 9am", now, "UTC");
+
+			expect(result?.schedule).toBe("0 9 * * 1-5");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T09:00:00.000Z");
+		});
+
+		it("skips to Monday when now is Saturday", () => {
+			const now = new Date("2025-01-04T12:00:00.000Z"); // Saturday
+			const result = parseRecurringSchedule("every weekday at 9am", now, "UTC");
+
+			expect(result?.schedule).toBe("0 9 * * 1-5");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-06T09:00:00.000Z"); // Monday
+		});
+
+		it("parses 'every weekday' with default 9am", () => {
+			const now = new Date("2025-01-01T06:00:00.000Z"); // Wed
+			const result = parseRecurringSchedule("every weekday", now, "UTC");
+
+			expect(result?.schedule).toBe("0 9 * * 1-5");
+		});
+	});
+
+	describe("specific day expressions", () => {
+		it("parses 'every monday at 10am'", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z"); // Wed
+			const result = parseRecurringSchedule("every monday at 10am", now, "UTC");
+
+			expect(result?.schedule).toBe("0 10 * * 1");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-06T10:00:00.000Z");
+		});
+
+		it("parses 'every friday at 5pm'", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z"); // Wed
+			const result = parseRecurringSchedule("every friday at 5pm", now, "UTC");
+
+			expect(result?.schedule).toBe("0 17 * * 5");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-03T17:00:00.000Z");
+		});
+
+		it("parses 'every sunday' with default 9am", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z"); // Wed
+			const result = parseRecurringSchedule("every sunday", now, "UTC");
+
+			expect(result?.schedule).toBe("0 9 * * 0");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-05T09:00:00.000Z");
+		});
+
+		it("parses all days of week", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z");
+			const days = [
+				"sunday",
+				"monday",
+				"tuesday",
+				"wednesday",
+				"thursday",
+				"friday",
+				"saturday",
+			];
+			const expectedDayIndices = [0, 1, 2, 3, 4, 5, 6];
+
+			days.forEach((day, i) => {
+				const result = parseRecurringSchedule(`every ${day}`, now, "UTC");
+				expect(result?.schedule).toBe(`0 9 * * ${expectedDayIndices[i]}`);
+			});
+		});
+	});
+
+	describe("weekly interval expressions", () => {
+		it("parses 'every 2 weeks on monday at 9am'", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z"); // Wed
+			const result = parseRecurringSchedule(
+				"every 2 weeks on monday at 9am",
+				now,
+				"UTC",
+			);
+
+			expect(result?.schedule).toBe("W2 0 9 * * 1");
+			// First run should be the next Monday (not two weeks out).
+			expect(result?.nextRun.toISOString()).toBe("2025-01-06T09:00:00.000Z");
+		});
+
+		it("parses 'every 1 week on friday at 3pm'", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z"); // Wed
+			const result = parseRecurringSchedule(
+				"every 1 week on friday at 3pm",
+				now,
+				"UTC",
+			);
+
+			expect(result?.schedule).toBe("W1 0 15 * * 5");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-03T15:00:00.000Z");
+		});
+	});
+
+	describe("nth day of month expressions", () => {
+		it("parses 'first monday of month at 9am'", () => {
+			const now = new Date("2025-01-15T00:00:00.000Z");
+			const result = parseRecurringSchedule(
+				"first monday of month at 9am",
+				now,
+				"UTC",
+			);
+
+			expect(result?.schedule).toBe("N1 0 9 * * 1");
+			// First Monday of Feb 2025 is Feb 3
+			expect(result?.nextRun.toISOString()).toBe("2025-02-03T09:00:00.000Z");
+		});
+
+		it("parses 'second tuesday of the month'", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z");
+			const result = parseRecurringSchedule(
+				"second tuesday of the month",
+				now,
+				"UTC",
+			);
+
+			expect(result?.schedule).toBe("N2 0 9 * * 2");
+			// Second Tuesday of Jan 2025 is Jan 14
+			expect(result?.nextRun.toISOString()).toBe("2025-01-14T09:00:00.000Z");
+		});
+
+		it("parses 'third wednesday of month at 2pm'", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z");
+			const result = parseRecurringSchedule(
+				"third wednesday of month at 2pm",
+				now,
+				"UTC",
+			);
+
+			expect(result?.schedule).toBe("N3 0 14 * * 3");
+			// Third Wednesday of Jan 2025 is Jan 15
+			expect(result?.nextRun.toISOString()).toBe("2025-01-15T14:00:00.000Z");
+		});
+
+		it("parses 'last friday of month'", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z");
+			const result = parseRecurringSchedule("last friday of month", now, "UTC");
+
+			expect(result?.schedule).toBe("N-1 0 9 * * 5");
+			// Last Friday of Jan 2025 is Jan 31
+			expect(result?.nextRun.toISOString()).toBe("2025-01-31T09:00:00.000Z");
+		});
+	});
+
+	describe("raw cron expressions", () => {
+		it("parses 'cron 0 9 * * 1'", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z"); // Wed
+			const result = parseRecurringSchedule("cron 0 9 * * 1", now, "UTC");
+
+			expect(result?.schedule).toBe("0 9 * * 1");
+			// Next Monday 9am
+			expect(result?.nextRun.toISOString()).toBe("2025-01-06T09:00:00.000Z");
+		});
+
+		it("parses complex cron expressions", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z");
+			const result = parseRecurringSchedule("cron 30 14 1 * *", now, "UTC");
+
+			expect(result?.schedule).toBe("30 14 1 * *");
+			// 1st of month at 14:30
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T14:30:00.000Z");
+		});
+	});
+
+	describe("edge cases", () => {
+		it("returns null for invalid expressions", () => {
+			const now = new Date();
+			expect(parseRecurringSchedule("invalid", now, "UTC")).toBeNull();
+			expect(parseRecurringSchedule("", now, "UTC")).toBeNull();
+			expect(parseRecurringSchedule("at 9am", now, "UTC")).toBeNull();
+			expect(parseRecurringSchedule("tomorrow", now, "UTC")).toBeNull();
+		});
+
+		it("handles case insensitivity", () => {
+			const now = new Date("2025-01-01T00:00:00.000Z");
+			const result1 = parseRecurringSchedule("EVERY DAY AT 9AM", now, "UTC");
+			const result2 = parseRecurringSchedule("Every Monday At 3PM", now, "UTC");
+
+			expect(result1?.schedule).toBe("0 9 * * *");
+			expect(result2?.schedule).toBe("0 15 * * 1");
+		});
+
+		it("handles invalid timezone by falling back to UTC", () => {
+			const now = new Date("2025-01-01T06:00:00.000Z");
+			const result = parseRecurringSchedule(
+				"every day at 9am",
+				now,
+				"Invalid/Timezone",
+			);
+
+			expect(result?.schedule).toBe("0 9 * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T09:00:00.000Z");
+		});
+
+		it("handles leading/trailing whitespace", () => {
+			const now = new Date("2025-01-01T06:00:00.000Z");
+			const result = parseRecurringSchedule("  every day at 9am  ", now, "UTC");
+
+			expect(result?.schedule).toBe("0 9 * * *");
+		});
 	});
 });
 

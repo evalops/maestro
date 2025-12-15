@@ -117,8 +117,9 @@ export function createValidator(config: Partial<ValidationConfig> = {}) {
 
 	return {
 		validateMessage: (text: string) => validateMessage(text, cfg),
-		validateAttachments: (attachments: Array<{ size?: number; name?: string }>) =>
-			validateAttachments(attachments, cfg),
+		validateAttachments: (
+			attachments: Array<{ size?: number; name?: string }>,
+		) => validateAttachments(attachments, cfg),
 		config: cfg,
 	};
 }

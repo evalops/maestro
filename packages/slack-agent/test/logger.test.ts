@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LogContext } from "../src/logger.js";
 import {
+	generateRunId,
+	getCurrentContext,
 	logAgentError,
 	logBackfillChannel,
 	logBackfillComplete,
 	logBackfillStart,
 	logConnected,
+	logDebug,
 	logDisconnected,
 	logInfo,
 	logResponse,
@@ -19,6 +22,9 @@ import {
 	logUsageSummary,
 	logUserMessage,
 	logWarning,
+	setCurrentContext,
+	withContext,
+	withContextAsync,
 } from "../src/logger.js";
 
 describe("logger", () => {
@@ -38,9 +44,8 @@ describe("logger", () => {
 
 	function getStrippedOutput(): string[] {
 		// Strip ANSI codes for easier assertions
-		return getLogOutput().map((s) =>
-			s.replace(/\x1b\[[0-9;]*m/g, ""),
-		);
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: needed for ANSI strip
+		return getLogOutput().map((s) => s.replace(/\x1b\[[0-9;]*m/g, ""));
 	}
 
 	describe("logUserMessage", () => {
@@ -546,6 +551,210 @@ describe("logger", () => {
 			for (const line of lines) {
 				expect(line).toMatch(/^\s{11}/); // 11 spaces indent
 			}
+		});
+	});
+
+	describe("context management", () => {
+		afterEach(() => {
+			setCurrentContext(null); // Clean up after each test
+		});
+
+		it("setCurrentContext and getCurrentContext work together", () => {
+			expect(getCurrentContext()).toBeNull();
+
+			const ctx: LogContext = { channelId: "C123", userName: "user" };
+			setCurrentContext(ctx);
+
+			expect(getCurrentContext()).toBe(ctx);
+
+			setCurrentContext(null);
+			expect(getCurrentContext()).toBeNull();
+		});
+
+		it("withContext sets context for the duration of the callback", () => {
+			const ctx: LogContext = { channelId: "C123", userName: "user" };
+
+			expect(getCurrentContext()).toBeNull();
+
+			const result = withContext(ctx, () => {
+				expect(getCurrentContext()).toBe(ctx);
+				return "result";
+			});
+
+			expect(result).toBe("result");
+			expect(getCurrentContext()).toBeNull();
+		});
+
+		it("withContext restores previous context after callback", () => {
+			const ctx1: LogContext = { channelId: "C1", userName: "user1" };
+			const ctx2: LogContext = { channelId: "C2", userName: "user2" };
+
+			setCurrentContext(ctx1);
+
+			withContext(ctx2, () => {
+				expect(getCurrentContext()).toBe(ctx2);
+			});
+
+			expect(getCurrentContext()).toBe(ctx1);
+		});
+
+		it("withContext restores context even if callback throws", () => {
+			const ctx1: LogContext = { channelId: "C1", userName: "user1" };
+			const ctx2: LogContext = { channelId: "C2", userName: "user2" };
+
+			setCurrentContext(ctx1);
+
+			expect(() =>
+				withContext(ctx2, () => {
+					throw new Error("test error");
+				}),
+			).toThrow("test error");
+
+			expect(getCurrentContext()).toBe(ctx1);
+		});
+
+		it("withContextAsync sets context for async callback", async () => {
+			const ctx: LogContext = { channelId: "C123", userName: "user" };
+
+			expect(getCurrentContext()).toBeNull();
+
+			const result = await withContextAsync(ctx, async () => {
+				expect(getCurrentContext()).toBe(ctx);
+				await new Promise((r) => setTimeout(r, 10));
+				expect(getCurrentContext()).toBe(ctx);
+				return "async result";
+			});
+
+			expect(result).toBe("async result");
+			expect(getCurrentContext()).toBeNull();
+		});
+
+		it("withContextAsync restores context even if callback rejects", async () => {
+			const ctx1: LogContext = { channelId: "C1", userName: "user1" };
+			const ctx2: LogContext = { channelId: "C2", userName: "user2" };
+
+			setCurrentContext(ctx1);
+
+			await expect(
+				withContextAsync(ctx2, async () => {
+					throw new Error("async error");
+				}),
+			).rejects.toThrow("async error");
+
+			expect(getCurrentContext()).toBe(ctx1);
+		});
+
+		it("logInfo uses current context when no explicit context provided", () => {
+			const ctx: LogContext = {
+				channelId: "C123",
+				channelName: "general",
+				userName: "user",
+			};
+			setCurrentContext(ctx);
+
+			logInfo("Test message");
+
+			const output = getStrippedOutput();
+			expect(output[0]).toContain("[#general:user]");
+			expect(output[0]).toContain("Test message");
+		});
+
+		it("logInfo uses explicit context over current context", () => {
+			const currentCtx: LogContext = { channelId: "C1", userName: "current" };
+			const explicitCtx: LogContext = { channelId: "C2", userName: "explicit" };
+
+			setCurrentContext(currentCtx);
+			logInfo("Test message", explicitCtx);
+
+			const output = getStrippedOutput();
+			expect(output[0]).toContain("explicit");
+			expect(output[0]).not.toContain("current");
+		});
+
+		it("logWarning uses current context", () => {
+			const ctx: LogContext = {
+				channelId: "C123",
+				channelName: "general",
+				userName: "user",
+			};
+			setCurrentContext(ctx);
+
+			logWarning("Warning message");
+
+			const output = getStrippedOutput();
+			expect(output[0]).toContain("[#general:user]");
+			expect(output[0]).toContain("warning: Warning message");
+		});
+	});
+
+	describe("generateRunId", () => {
+		it("generates unique IDs", () => {
+			const id1 = generateRunId();
+			const id2 = generateRunId();
+
+			expect(id1).not.toBe(id2);
+		});
+
+		it("generates IDs with expected format", () => {
+			const id = generateRunId();
+
+			// Format: timestamp_random (base36 characters)
+			expect(id).toMatch(/^[0-9a-z]+_[0-9a-z]+$/);
+		});
+	});
+
+	describe("logDebug", () => {
+		it("does not log when DEBUG is not set", () => {
+			const originalDebug = process.env.DEBUG;
+			process.env.DEBUG = undefined;
+
+			logDebug("Debug message");
+
+			expect(consoleLogSpy).not.toHaveBeenCalled();
+
+			process.env.DEBUG = originalDebug;
+		});
+
+		it("logs when DEBUG is true", () => {
+			const originalDebug = process.env.DEBUG;
+			process.env.DEBUG = "true";
+
+			logDebug("Debug message");
+
+			expect(consoleLogSpy).toHaveBeenCalled();
+			const output = getStrippedOutput();
+			expect(output[0]).toContain("Debug message");
+
+			process.env.DEBUG = originalDebug;
+		});
+
+		it("logs when DEBUG is 1", () => {
+			const originalDebug = process.env.DEBUG;
+			process.env.DEBUG = "1";
+
+			logDebug("Debug message", { key: "value" });
+
+			expect(consoleLogSpy).toHaveBeenCalled();
+			const output = getStrippedOutput();
+			expect(output[0]).toContain("Debug message");
+			expect(output[0]).toContain('{"key":"value"}');
+
+			process.env.DEBUG = originalDebug;
+		});
+
+		it("includes current context in debug output", () => {
+			const originalDebug = process.env.DEBUG;
+			process.env.DEBUG = "true";
+
+			const ctx: LogContext = { channelId: "C123", userName: "user" };
+			setCurrentContext(ctx);
+
+			logDebug("Debug with context");
+
+			const output = getStrippedOutput();
+			expect(output[0]).toContain("user");
+
+			process.env.DEBUG = originalDebug;
 		});
 	});
 });

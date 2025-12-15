@@ -3,7 +3,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	type ConversationTurn,
@@ -16,6 +16,7 @@ import { type SandboxConfig, createExecutor } from "./sandbox.js";
 import type { ChannelInfo, SlackContext, UserInfo } from "./slack/bot.js";
 import type { ChannelStore } from "./store.js";
 import { createSlackAgentTools, setUploadFunction } from "./tools/index.js";
+import { ensureDir } from "./utils/fs.js";
 import { splitForSlack } from "./utils/split-for-slack.js";
 
 // Import from main composer source
@@ -540,7 +541,7 @@ export function createAgentRunner(
 			store: ChannelStore,
 		): Promise<AgentRunResult> {
 			const runStartMs = Date.now();
-			await mkdir(channelDir, { recursive: true });
+			await ensureDir(channelDir);
 
 			// Wait for any file downloads to complete before processing
 			if (ctx.message.attachments.length > 0) {
