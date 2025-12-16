@@ -120,8 +120,7 @@ describe("sanitizeForLogging", () => {
 
 	it("masks Slack bot tokens", () => {
 		// Using format that matches real tokens but with FAKE prefix to indicate test data
-		// Split "Token" to avoid triggering heuristic scanners in CI.
-		const text = "Tok" + "en: " + "xoxb" + "-FAKE-TEST-TOKEN-abc";
+		const text = "Token: xoxb-FAKE-TEST-TOKEN-abc";
 		const result = sanitizeForLogging(text);
 
 		expect(result).toBe("Token: xoxb-***");
@@ -129,8 +128,7 @@ describe("sanitizeForLogging", () => {
 
 	it("masks Slack app tokens", () => {
 		// Using format that matches real tokens but with FAKE prefix to indicate test data
-		// Split "token" to avoid triggering heuristic scanners in CI.
-		const text = "App tok" + "en: " + "xapp" + "-FAKE-TEST-TOKEN";
+		const text = "App token: xapp-FAKE-TEST-TOKEN";
 		const result = sanitizeForLogging(text);
 
 		expect(result).toBe("App token: xapp-***");
