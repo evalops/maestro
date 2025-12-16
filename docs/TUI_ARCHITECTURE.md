@@ -17,7 +17,7 @@ The TUI is split into two layers:
 ```
 
 - **`packages/tui/`** (~3,400 LOC) - A portable terminal UI library with differential rendering
-- **`src/cli-tui/`** (~3,400 LOC, 100+ files) - Composer's UI built on top of the library
+- **`src/cli-tui/`** (~2,550 LOC main + extracted modules, 100+ files) - Composer's UI built on top of the library
 
 ## Library Layer (`@evalops/tui`)
 
@@ -143,9 +143,10 @@ private wrapCache = new Map<number, Map<string, string[]>>();
 
 | Directory/File | Purpose |
 |----------------|---------|
-| `tui-renderer.ts` | Main orchestrator (3,400 LOC) |
-| `tui-renderer/*.ts` | Setup/initialization modules |
-| `commands/` | Slash command handling |
+| `tui-renderer.ts` | Main orchestrator (~2,550 LOC) |
+| `tui-renderer/*.ts` | Extracted controllers + setup modules |
+| `commands/` | Slash command handling + extracted handlers |
+| `commands/grouped/` | Grouped subcommand handlers (/sess, /dx, etc.) |
 | `selectors/` | Modal selection UIs (theme, model, etc.) |
 | `session/` | Session management views |
 | `approval/` | Tool approval modal |
@@ -154,7 +155,7 @@ private wrapCache = new Map<number, Map<string, string[]>>();
 
 ### TuiRenderer
 
-The main orchestrator that:
+The main orchestrator (~2,550 LOC, down from ~3,400) that:
 - Creates the TUI instance and terminal
 - Manages 40+ specialized views
 - Handles slash command dispatch
@@ -168,8 +169,37 @@ class TuiRenderer {
   private modalManager: ModalManager;
   private editor: CustomEditor;
   // ... 40+ view instances
+  // ... extracted controllers
 }
 ```
+
+### Extracted Controllers
+
+Domain logic has been extracted from TuiRenderer into focused modules:
+
+| Controller | File | Purpose |
+|------------|------|---------|
+| CompactionController | `tui-renderer/compaction-controller.ts` | Context window compaction |
+| SlashHintController | `tui-renderer/slash-hint-controller.ts` | Command autocomplete hints |
+| CustomCommandsController | `tui-renderer/custom-commands-controller.ts` | /prompts, /commands |
+| BranchController | `tui-renderer/branch-controller.ts` | Session branching |
+| ClearController | `tui-renderer/clear-controller.ts` | /clear command |
+| UiStateController | `tui-renderer/ui-state-controller.ts` | UI preferences |
+
+### Handler Modules
+
+Stateless command handlers live in `commands/`:
+
+| Handler | File | Commands |
+|---------|------|----------|
+| SafetyHandlers | `commands/safety-handlers.ts` | /approvals, /plan |
+| UtilityHandlers | `commands/utility-handlers.ts` | /copy, /init, /report |
+| GuardianHandlers | `commands/guardian-handlers.ts` | /guardian |
+| FrameworkHandlers | `commands/framework-handlers.ts` | /framework |
+| OtelHandlers | `commands/otel-handlers.ts` | /otel |
+| McpHandlers | `commands/mcp-handlers.ts` | /mcp |
+
+See [TUI Controller Extraction Pattern](./patterns/tui-controller-extraction.md) for the extraction methodology.
 
 ### Component Hierarchy
 
@@ -307,6 +337,33 @@ tui.setFocus(selectList);   // Modal mode: selector has focus
 | `modal-manager.ts` | Modal stack management |
 | `commands/registry.ts` | Slash command registration |
 | `prompt-queue.ts` | Multi-prompt queue handling |
+
+### Extracted Modules (`src/cli-tui/tui-renderer/`)
+
+| File | Purpose |
+|------|---------|
+| `compaction-controller.ts` | Context window compaction logic |
+| `slash-hint-controller.ts` | Command autocomplete and cycling |
+| `custom-commands-controller.ts` | User-defined prompts/commands |
+| `branch-controller.ts` | Session branching operations |
+| `clear-controller.ts` | Conversation clearing |
+| `ui-state-controller.ts` | UI preferences (zen, clean, footer) |
+| `quick-settings-controller.ts` | Quick settings panel |
+| `mcp-events-setup.ts` | MCP event handling setup |
+
+### Handler Modules (`src/cli-tui/commands/`)
+
+| File | Purpose |
+|------|---------|
+| `safety-handlers.ts` | /approvals, /plan command handlers |
+| `utility-handlers.ts` | /copy, /init, /report handlers |
+| `guardian-handlers.ts` | /guardian command handler |
+| `framework-handlers.ts` | /framework command handler |
+| `otel-handlers.ts` | /otel command handler |
+| `mcp-handlers.ts` | /mcp command handler |
+| `composer-handlers.ts` | /composer config handler |
+| `grouped/session-commands.ts` | /sess subcommand routing |
+| `grouped/diag-commands.ts` | /dx subcommand routing |
 
 ## Performance Characteristics
 
