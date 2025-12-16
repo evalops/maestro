@@ -210,7 +210,9 @@ export class HealthChecker {
 			const latencyMs = Date.now() - startTime;
 			const message = error instanceof Error ? error.message : String(error);
 
-			logger.logDebug(`Health check failed: ${registered.name}`, message);
+			logger.logDebug(`Health check failed: ${registered.name}`, {
+				error: message,
+			});
 
 			return {
 				healthy: false,

@@ -199,7 +199,7 @@ export {
 	type TimestampGenerator,
 } from "./utils/slack-timestamp.js";
 
-export { TTLCache, type TTLCacheOptions } from "./utils/ttl-cache.js";
+export { TtlCache, type TtlCacheConfig } from "./utils/ttl-cache.js";
 
 export {
 	ShutdownManager,

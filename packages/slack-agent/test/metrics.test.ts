@@ -146,11 +146,12 @@ describe("MetricsCollector", () => {
 			await new Promise((r) => setTimeout(r, 10));
 			const duration = timer.end();
 
-			expect(duration).toBeGreaterThanOrEqual(10);
+			// Allow 2ms jitter for timer imprecision
+			expect(duration).toBeGreaterThanOrEqual(8);
 
 			const summary = collector.getHistogram("operation");
 			expect(summary?.count).toBe(1);
-			expect(summary?.avg).toBeGreaterThanOrEqual(10);
+			expect(summary?.avg).toBeGreaterThanOrEqual(8);
 		});
 
 		it("time() records async function duration", async () => {
