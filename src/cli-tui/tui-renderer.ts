@@ -25,12 +25,6 @@ import type {
 	AppMessage,
 	ThinkingLevel,
 } from "../agent/types.js";
-import {
-	loadCommandCatalog,
-	parseCommandArgs,
-	renderCommandPrompt,
-	validateCommandArgs,
-} from "../commands/catalog.js";
 import type { CleanMode } from "../conversation/render-model.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
@@ -191,6 +185,10 @@ import {
 	type CompactionController,
 	createCompactionController,
 } from "./tui-renderer/compaction-controller.js";
+import {
+	type CustomCommandsController,
+	createCustomCommandsController,
+} from "./tui-renderer/custom-commands-controller.js";
 import { attachEditorBindings } from "./tui-renderer/editor-bindings.js";
 import { loadInitialTuiRendererPreferences } from "./tui-renderer/initial-preferences.js";
 import { createInterruptController } from "./tui-renderer/interrupt-setup.js";
@@ -389,6 +387,7 @@ export class TuiRenderer {
 	private clearController!: ClearController;
 	private compactionController!: CompactionController;
 	private slashHintController!: SlashHintController;
+	private customCommandsController!: CustomCommandsController;
 
 	constructor(
 		agent: Agent,
@@ -1104,7 +1103,8 @@ export class TuiRenderer {
 			handleFooter: (context) => this.handleFooterCommand(context),
 			handleCompactTools: (context) =>
 				this.handleCompactToolsCommand(context.rawInput),
-			handleCommands: (context) => this.handleCommandsCommand(context),
+			handleCommands: (context) =>
+				this.customCommandsController.handleCommandsCommand(context),
 			handleQueue: (context) => {
 				if (this.queuePanelController) {
 					this.queuePanelController.handleQueueCommand(context);
@@ -1146,7 +1146,8 @@ export class TuiRenderer {
 			handleCheckpoint: (context) => this.handleCheckpointCommand(context),
 			handleMemory: (context) => this.handleMemoryCommand(context),
 			handleMode: (context) => this.handleModeCommand(context),
-			handlePrompts: (context) => this.handlePromptsCommand(context),
+			handlePrompts: (context) =>
+				this.customCommandsController.handlePromptsCommand(context),
 			handleCopy: (context) => this.handleCopyCommand(context),
 			// Grouped command handlers - delegate directly to lazy-initialized handlers
 			handleSessionCommand: (context) =>
@@ -1189,6 +1190,18 @@ export class TuiRenderer {
 			},
 			initialRecentCommands: this.recentCommands,
 			initialFavoriteCommands: this.favoriteCommands,
+		});
+		this.customCommandsController = createCustomCommandsController({
+			cwd: process.cwd(),
+			callbacks: {
+				addContent: (text) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(text, 1, 0));
+				},
+				setEditorText: (text) => this.editor.setText(text),
+				showToast: (msg, type) => this.notificationView.showToast(msg, type),
+				requestRender: () => this.ui.requestRender(),
+			},
 		});
 
 		const autocompleteProvider = new SmartAutocompleteProvider(
@@ -1688,72 +1701,6 @@ export class TuiRenderer {
 		handler(context);
 	}
 
-	private handlePromptsCommand(context: CommandExecutionContext): void {
-		const {
-			loadPrompts,
-			findPrompt,
-			parsePromptArgs,
-			validatePromptArgs,
-			renderPrompt,
-			formatPromptListItem,
-			getPromptUsageHint,
-		} = require("../commands/catalog.js");
-
-		const arg = context.argumentText.trim();
-		const [action, ...rest] = arg.split(/\s+/).filter(Boolean);
-		const prompts = loadPrompts(process.cwd());
-
-		// No args or "list" - show available prompts
-		if (!action || action === "list") {
-			if (prompts.length === 0) {
-				context.showInfo(
-					"No prompts found. Add .md files to ~/.composer/prompts/ or .composer/prompts/",
-				);
-				return;
-			}
-			const lines = prompts.map(
-				(p: { name: string; description?: string; sourceType: string }) =>
-					`• ${formatPromptListItem(p)}`,
-			);
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(`Prompts (${prompts.length}):\n${lines.join("\n")}`, 1, 0),
-			);
-			this.ui.requestRender();
-			return;
-		}
-
-		// Find the prompt by name
-		const promptName = action;
-		const prompt = findPrompt(prompts, promptName);
-		if (!prompt) {
-			const suggestions =
-				prompts.length > 0
-					? `Available: ${prompts.map((p: { name: string }) => p.name).join(", ")}`
-					: "No prompts available.";
-			context.showError(`Prompt "${promptName}" not found. ${suggestions}`);
-			return;
-		}
-
-		// Parse and validate arguments
-		const argsString = rest.join(" ");
-		const args = parsePromptArgs(argsString);
-		const validation = validatePromptArgs(prompt, args);
-		if (validation) {
-			context.showError(`${validation}\nUsage: ${getPromptUsageHint(prompt)}`);
-			return;
-		}
-
-		// Render the prompt and insert into editor
-		const rendered = renderPrompt(prompt, args);
-		this.editor.setText(rendered);
-		this.notificationView.showToast(
-			`Inserted prompt "${prompt.name}". Edit and submit.`,
-			"info",
-		);
-		this.ui.requestRender();
-	}
-
 	private handleCopyCommand(context: CommandExecutionContext): void {
 		// Find the last assistant message
 		const messages = this.agent.state.messages;
@@ -2004,57 +1951,6 @@ export class TuiRenderer {
 			showError: (msg) => this.notificationView.showError(msg),
 			showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
 		});
-	}
-
-	private handleCommandsCommand(context: CommandExecutionContext): void {
-		const arg = context.argumentText.trim();
-		const [action, ...rest] = arg.split(/\s+/).filter(Boolean);
-		const catalog = loadCommandCatalog(process.cwd());
-		if (!action || action === "list") {
-			if (catalog.length === 0) {
-				context.showInfo(
-					"No commands found in ~/.composer/commands or .composer/commands.",
-				);
-				return;
-			}
-			const lines = catalog.map(
-				(cmd) =>
-					`• ${cmd.name} – ${cmd.description ?? "(no description)"} (${cmd.source})`,
-			);
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-			this.ui.requestRender();
-			return;
-		}
-		if (action !== "run") {
-			context.showError(
-				"Usage: /commands list | /commands run <name> arg=value ...",
-			);
-			return;
-		}
-		const name = rest.shift();
-		if (!name) {
-			context.showError("Specify a command name to run.");
-			return;
-		}
-		const cmd = catalog.find((c) => c.name === name);
-		if (!cmd) {
-			context.showError(`Command ${name} not found.`);
-			return;
-		}
-		const args = parseCommandArgs(rest);
-		const validation = validateCommandArgs(cmd, args);
-		if (validation) {
-			context.showError(validation);
-			return;
-		}
-		const prompt = renderCommandPrompt(cmd, args);
-		this.editor.setText(prompt);
-		this.notificationView.showToast(
-			`Inserted command "${cmd.name}" into the composer. Edit then submit.`,
-			"info",
-		);
-		this.ui.requestRender();
 	}
 
 	private handleNewChatCommand(context: CommandExecutionContext): void {
@@ -2576,7 +2472,8 @@ export class TuiRenderer {
 					handleWorkflow: (ctx) => this.handleWorkflowCommand(ctx),
 					handleRun: (ctx) =>
 						this.runCommandView.handleRunCommand(ctx.rawInput),
-					handleCommands: (ctx) => this.handleCommandsCommand(ctx),
+					handleCommands: (ctx) =>
+						this.customCommandsController.handleCommandsCommand(ctx),
 				},
 			});
 		}
