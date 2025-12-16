@@ -1,27 +1,10 @@
-import { mkdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { enforceEndpoint } from "../../scripts/generate-models.js";
+import { describe, expect, it } from "vitest";
+import {
+	enforceEndpoint,
+	resolveProviderApi,
+} from "../../scripts/generate-models.js";
 
 describe("enforceEndpoint", () => {
-	const tempDir = join(process.cwd(), ".tmp-models-out");
-	const tempOut = join(tempDir, "models.generated.ts");
-
-	beforeEach(() => {
-		mkdirSync(tempDir, { recursive: true });
-		process.env.MODELS_OUT_PATH = tempOut;
-	});
-
-	afterEach(() => {
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.MODELS_OUT_PATH;
-		try {
-			unlinkSync(tempOut);
-		} catch {
-			// ignore
-		}
-	});
-
 	it("throws when responses API is paired with /chat/completions", () => {
 		expect(() =>
 			enforceEndpoint(
@@ -57,5 +40,16 @@ describe("enforceEndpoint", () => {
 				"openai-completions",
 			),
 		).toBe("https://api.example.com/v1/chat/completions");
+	});
+});
+
+describe("resolveProviderApi", () => {
+	it("prefers Composer's mapping over models.dev provider api", () => {
+		expect(resolveProviderApi("mistral", "openai-responses")).toBe(
+			"openai-completions",
+		);
+		expect(resolveProviderApi("mistral", "openai-completions")).toBe(
+			"openai-completions",
+		);
 	});
 });

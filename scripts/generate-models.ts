@@ -59,6 +59,8 @@ const BASE_URLS: Record<string, string> = {
 	google: "https://generativelanguage.googleapis.com/v1beta",
 	cerebras: "https://api.cerebras.ai/v1",
 	zai: "https://api.zaidomain.com/v1",
+	mistral: "https://api.mistral.ai/v1",
+	writer: "https://api.writer.com/v1",
 };
 
 const API_BY_PROVIDER: Record<string, string> = {
@@ -67,18 +69,42 @@ const API_BY_PROVIDER: Record<string, string> = {
 	groq: "openai-completions",
 	cerebras: "openai-completions",
 	zai: "openai-completions",
+	mistral: "openai-completions",
+	writer: "openai-completions",
 	anthropic: "anthropic-messages",
 	google: "google-generative-ai",
 };
 
-function apiFor(providerId: string, modelApi?: string): string {
+/**
+ * models.dev includes many provider IDs that Composer can't safely assign an API
+ * endpoint for. Only emit providers we can map to a known baseUrl; everything
+ * else should be configured explicitly via models.json.
+ */
+const SUPPORTED_PROVIDER_IDS = new Set(Object.keys(BASE_URLS));
+
+export function resolveProviderApi(
+	providerId: string,
+	registryApi?: string,
+): string {
 	const cleanApi =
-		modelApi && modelApi.startsWith("http") ? undefined : modelApi;
-	return cleanApi ?? API_BY_PROVIDER[providerId] ?? "openai-completions";
+		registryApi && registryApi.startsWith("http") ? undefined : registryApi;
+
+	const mapped = API_BY_PROVIDER[providerId];
+	if (mapped) {
+		return mapped;
+	}
+
+	return cleanApi ?? "openai-completions";
 }
 
 function baseUrlFor(providerId: string): string {
-	return BASE_URLS[providerId] ?? "https://api.openai.com/v1";
+	const baseUrl = BASE_URLS[providerId];
+	if (!baseUrl) {
+		throw new Error(
+			`No baseUrl mapping for provider '${providerId}'. Add it to BASE_URLS or configure via models.json.`,
+		);
+	}
+	return baseUrl;
 }
 
 export function enforceEndpoint(
@@ -188,9 +214,10 @@ async function main() {
 	const MODELS: Record<string, Record<string, any>> = {};
 
 	for (const [providerId, provider] of Object.entries(data)) {
+		if (!SUPPORTED_PROVIDER_IDS.has(providerId)) continue;
 		const providerBase = baseUrlFor(providerId);
 		for (const [modelId, model] of Object.entries(provider.models)) {
-			const api = apiFor(providerId, provider.api as string | undefined);
+			const api = resolveProviderApi(providerId, provider.api as string | undefined);
 			if (!MODELS[providerId]) MODELS[providerId] = {};
 			const cost = model.cost ?? {};
 			const rawInput = model.modalities?.input ?? ["text"];
@@ -237,7 +264,9 @@ export const MODELS = ${toTs(MODELS)} as Record<string, Record<string, Model<any
 	);
 }
 
-main().catch((err) => {
-	console.error("[generate-models] failed:", err);
-	process.exit(1);
-});
+if (import.meta.main) {
+	main().catch((err) => {
+		console.error("[generate-models] failed:", err);
+		process.exit(1);
+	});
+}

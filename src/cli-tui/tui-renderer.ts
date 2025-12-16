@@ -72,8 +72,9 @@ import {
 } from "../testing/index.js";
 import { createLogger } from "../utils/logger.js";
 import { AboutView } from "./about-view.js";
-import { AgentEventRouter } from "./agent-event-router.js";
-import { BackgroundTasksController } from "./background/background-tasks-controller.js";
+import type { AgentEventRouter } from "./agent-event-router.js";
+import type { ApprovalController } from "./approval/approval-controller.js";
+import type { BackgroundTasksController } from "./background/background-tasks-controller.js";
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
@@ -103,23 +104,24 @@ import { GitView } from "./git/git-view.js";
 import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
+import type { InterruptController } from "./interrupt-controller.js";
 import { LoaderView } from "./loader/loader-view.js";
 import { LspView } from "./lsp-view.js";
-import { MessageView } from "./message-view.js";
+import type { MessageView } from "./message-view.js";
 import { NotificationView } from "./notification-view.js";
-import { OAuthFlowController } from "./oauth/index.js";
+import type { OAuthFlowController } from "./oauth/index.js";
 import { OllamaView } from "./ollama-view.js";
-import { PlanView } from "./plan-view.js";
-import { PlanController } from "./plan/plan-controller.js";
+import type { PlanView } from "./plan-view.js";
+import type { PlanController } from "./plan/plan-controller.js";
 import type { PromptQueue } from "./prompt-queue.js";
 import {
-	QueueController,
+	type QueueController,
 	type QueueMode,
 	QueuePanelController,
 } from "./queue/index.js";
 import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
-import { FileSearchView } from "./search/file-search-view.js";
+import type { FileSearchView } from "./search/file-search-view.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
 import { QueueModeSelectorView } from "./selectors/queue-mode-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
@@ -128,20 +130,20 @@ import { ThinkingSelectorView } from "./selectors/thinking-selector-view.js";
 import { UserMessageSelectorView } from "./selectors/user-message-selector-view.js";
 import { ConversationCompactor } from "./session/conversation-compactor.js";
 import { SessionContext } from "./session/session-context.js";
-import { SessionDataProvider } from "./session/session-data-provider.js";
-import { SessionSummaryController } from "./session/session-summary-controller.js";
-import { SessionSwitcherView } from "./session/session-switcher-view.js";
-import { SessionView } from "./session/session-view.js";
+import type { SessionDataProvider } from "./session/session-data-provider.js";
+import type { SessionSummaryController } from "./session/session-summary-controller.js";
+import type { SessionSwitcherView } from "./session/session-switcher-view.js";
+import type { SessionView } from "./session/session-view.js";
 import { SlashCommandMatcher, SlashCycleState } from "./slash/index.js";
 import { renderStartupAnnouncements } from "./startup-announcements.js";
 import { CostView } from "./status/cost-view.js";
-import { DiagnosticsView } from "./status/diagnostics-view.js";
+import type { DiagnosticsView } from "./status/diagnostics-view.js";
 import { QuotaView } from "./status/quota-view.js";
 import { TelemetryView } from "./status/telemetry-view.js";
 import { TrainingView } from "./status/training-view.js";
-import { StreamingView } from "./streaming-view.js";
+import type { StreamingView } from "./streaming-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
-import { ToolOutputView } from "./tool-output-view.js";
+import type { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
 import {
 	type UiState,
@@ -151,7 +153,7 @@ import {
 	saveUiState,
 } from "./ui-state.js";
 import { UpdateView } from "./update-view.js";
-import { CommandPaletteView } from "./utils/commands/command-palette-view.js";
+import type { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildCommandRegistry } from "./utils/commands/command-registry-builder.js";
 import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
 import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
@@ -167,12 +169,10 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import { validateFrameworkPreference } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
-import { ApprovalController } from "./approval/approval-controller.js";
-import { parseCleanMode, readCleanModeFromEnv } from "./clean-mode.js";
+import { parseCleanMode } from "./clean-mode.js";
 import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
 import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
 import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
-import { InterruptController } from "./interrupt-controller.js";
 import { ModalManager } from "./modal-manager.js";
 import { PasteHandler } from "./paste/paste-handler.js";
 import {
@@ -184,7 +184,17 @@ import {
 	getTerminalCapabilities,
 	probeTerminalBackground,
 } from "./terminal/terminal-utils.js";
-import { isReducedMotionEnabled, setReducedMotionEnv } from "./utils/motion.js";
+import { createApprovalController } from "./tui-renderer/approval-setup.js";
+import { createBackgroundTasksController } from "./tui-renderer/background-tasks-setup.js";
+import { attachEditorBindings } from "./tui-renderer/editor-bindings.js";
+import { loadInitialTuiRendererPreferences } from "./tui-renderer/initial-preferences.js";
+import { createInterruptController } from "./tui-renderer/interrupt-setup.js";
+import { createOAuthFlowController } from "./tui-renderer/oauth-setup.js";
+import { createPlanSubsystem } from "./tui-renderer/plan-setup.js";
+import { createQueueController } from "./tui-renderer/queue-setup.js";
+import { createSessionSubsystem } from "./tui-renderer/session-setup.js";
+import { createToolingViews } from "./tui-renderer/tooling-views-setup.js";
+import { createUtilityViews } from "./tui-renderer/utility-views-setup.js";
 import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
@@ -386,52 +396,25 @@ export class TuiRenderer {
 			retryConfig?: import("../config/toml-config.js").RetryConfig;
 		} = {},
 	) {
-		this.uiState = loadUiState();
-		const initialQueueMode: QueueMode =
-			this.uiState.queueMode === "one" || this.uiState.queueMode === "all"
-				? this.uiState.queueMode
-				: "all";
-		if (this.uiState.cleanMode) {
-			this.cleanMode = this.uiState.cleanMode;
+		const initialPrefs = loadInitialTuiRendererPreferences();
+		this.uiState = initialPrefs.uiState;
+		const initialQueueMode: QueueMode = initialPrefs.initialQueueMode;
+		if (initialPrefs.cleanMode) {
+			this.cleanMode = initialPrefs.cleanMode;
 		}
-		const envCleanMode = readCleanModeFromEnv();
-		if (envCleanMode) {
-			this.cleanMode = envCleanMode;
+		if (initialPrefs.footerMode) {
+			this.footerMode = initialPrefs.footerMode;
 		}
-		if (this.uiState.footerMode) {
-			this.footerMode = this.uiState.footerMode;
+		this.reducedMotion = initialPrefs.reducedMotion ?? false;
+		this.reducedMotionForced = initialPrefs.reducedMotionForced;
+		if (typeof initialPrefs.zenMode === "boolean") {
+			this.zenMode = initialPrefs.zenMode;
 		}
-		const envReducedMotion = isReducedMotionEnabled();
-		if (typeof this.uiState.reducedMotion === "boolean") {
-			this.reducedMotion = this.uiState.reducedMotion;
-		} else {
-			this.reducedMotion = envReducedMotion;
+		if (typeof initialPrefs.hideThinkingBlocks === "boolean") {
+			this.hideThinkingBlocks = initialPrefs.hideThinkingBlocks;
 		}
-		if (envReducedMotion && this.uiState.reducedMotion !== false) {
-			this.reducedMotionForced = true;
-		}
-		setReducedMotionEnv(this.reducedMotion);
-		if (typeof this.uiState.zenMode === "boolean") {
-			this.zenMode = this.uiState.zenMode;
-		}
-		if (typeof this.uiState.hideThinkingBlocks === "boolean") {
-			this.hideThinkingBlocks = this.uiState.hideThinkingBlocks;
-		}
-		if (Array.isArray(this.uiState.recentCommands)) {
-			this.recentCommands = [...this.uiState.recentCommands];
-		}
-		if (Array.isArray(this.uiState.favoriteCommands)) {
-			for (const name of this.uiState.favoriteCommands) {
-				this.favoriteCommands.add(name);
-			}
-		}
-		const diskPrefs = loadCommandPrefs();
-		if (diskPrefs.recents.length > 0) {
-			this.recentCommands = diskPrefs.recents;
-		}
-		for (const fav of diskPrefs.favorites) {
-			this.favoriteCommands.add(fav);
-		}
+		this.recentCommands = initialPrefs.recentCommands;
+		this.favoriteCommands = initialPrefs.favoriteCommands;
 		this.agent = agent;
 		this.agent.setQueueMode(initialQueueMode === "all" ? "all" : "one");
 		this.sessionManager = sessionManager;
@@ -482,81 +465,20 @@ export class TuiRenderer {
 		});
 		this.statusContainer = new Container();
 		this.editor = new CustomEditor();
-		this.editor.onLargePaste = (event) => {
-			void this.pasteHandler.handleLargePaste(event);
-		};
-		this.editor.onTyping = () => {
-			this.handleEditorTyping();
-		};
-		this.editor.onCtrlP = () => {
-			void this.cycleModel();
-		};
-		this.editor.onCtrlO = () => {
-			this.toggleToolOutputs();
-		};
-		this.editor.onCtrlT = () => {
-			this.toggleThinkingBlocks();
-		};
-		this.editor.onTab = () => this.handleSlashCycle(false);
-		this.editor.onShiftTab = () => {
-			// reverse cycle; if not handled, fall back to thinking level cycle
-			const handled = this.handleSlashCycle(true);
-			if (handled) return true;
-			this.cycleThinkingLevel();
-			return true;
-		};
-		// Handle scroll shortcuts (PageUp, PageDown, Ctrl+U, Ctrl+D, etc.)
-		this.editor.onShortcut = (shortcut: string) => {
-			switch (shortcut) {
-				case "pageup":
-					this.scrollContainer.pageUp();
-					this.ui.requestRender();
-					return true;
-				case "pagedown":
-					this.scrollContainer.pageDown();
-					this.ui.requestRender();
-					return true;
-				case "ctrl+u":
-					this.scrollContainer.halfPageUp();
-					this.ui.requestRender();
-					return true;
-				case "ctrl+d":
-					this.scrollContainer.halfPageDown();
-					this.ui.requestRender();
-					return true;
-				case "ctrl+home":
-					this.scrollContainer.scrollToTop();
-					this.ui.requestRender();
-					return true;
-				case "ctrl+end":
-					this.scrollContainer.scrollToBottom();
-					this.ui.requestRender();
-					return true;
-				case "ctrl+k":
-					// Command palette - handled elsewhere
-					return false;
-				case "at":
-					// File search - handled elsewhere
-					return false;
-				case "k":
-					// Keep partial during interrupt - handled elsewhere
-					return false;
-				default:
-					return false;
-			}
-		};
-		this.editor.onHistoryNavigate = (direction) => {
-			// Up/Down arrow prompt history navigation
-			const dir = direction === "prev" ? -1 : 1;
-			// Only navigate history when editor is empty OR when browsing and at first/last line
-			if (this.editor.isEditorEmpty()) {
-				return this.editor.navigatePromptHistory(dir);
-			}
-			if (this.editor.isBrowsingHistory()) {
-				return this.editor.navigatePromptHistory(dir);
-			}
-			return false;
-		};
+		attachEditorBindings({
+			editor: this.editor,
+			scrollContainer: this.scrollContainer,
+			ui: this.ui,
+			handlers: {
+				handleLargePaste: (event) => this.pasteHandler.handleLargePaste(event),
+				handleTyping: () => this.handleEditorTyping(),
+				cycleModel: () => this.cycleModel(),
+				toggleToolOutputs: () => this.toggleToolOutputs(),
+				toggleThinkingBlocks: () => this.toggleThinkingBlocks(),
+				handleSlashCycle: (reverse) => this.handleSlashCycle(reverse),
+				cycleThinkingLevel: () => this.cycleThinkingLevel(),
+			},
+		});
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.slashHintBar = new SlashHintBar();
 		this.editorContainer.addChild(this.slashHintBar);
@@ -574,71 +496,46 @@ export class TuiRenderer {
 			footer: this.footer,
 		});
 
-		this.queueController = new QueueController({
+		this.queueController = createQueueController({
+			agent: this.agent,
 			notificationView: this.notificationView,
 			editor: this.editor,
 			initialMode: initialQueueMode,
-			callbacks: {
-				onModeChange: (mode) => {
-					this.agent.setQueueMode(mode === "all" ? "all" : "one");
-					this.queuePanelController?.refreshPanel();
-				},
-				onQueueCountChange: () => {
-					this.queuePanelController?.refreshPanel();
-				},
-				isAgentRunning: () => this.isAgentRunning,
-				refreshFooterHint: () => this.refreshFooterHint(),
-				requestRender: () => this.ui.requestRender(),
-				persistUiState: (state) => this.persistUiState(state),
-			},
+			refreshQueuePanel: () => this.queuePanelController?.refreshPanel(),
+			isAgentRunning: () => this.isAgentRunning,
+			refreshFooterHint: () => this.refreshFooterHint(),
+			requestRender: () => this.ui.requestRender(),
+			persistUiState: (state) => this.persistUiState(state),
 		});
 
-		// Initialize OAuth flow controller
-		const editorRef = this.editor;
-		this.oauthFlowController = new OAuthFlowController({
+		this.oauthFlowController = createOAuthFlowController({
 			modalManager: this.modalManager,
 			notificationView: this.notificationView,
-			renderContext: {
-				chatContainer: this.chatContainer,
-				ui: this.ui,
-				requestRender: () => this.ui.requestRender(),
-			},
-			editorCallbacks: {
-				clearEditor: () => this.clearEditor(),
-				getText: () => editorRef.getText(),
-				setText: (text) => editorRef.setText(text),
-				get onSubmit() {
-					return editorRef.onSubmit;
-				},
-				set onSubmit(handler) {
-					editorRef.onSubmit = handler;
-				},
-			},
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			editor: this.editor,
+			clearEditor: () => this.clearEditor(),
 		});
 
-		// Initialize interrupt controller
-		this.interruptController = new InterruptController({
+		this.interruptController = createInterruptController({
 			footer: this.footer,
 			notificationView: this.notificationView,
-			callbacks: {
-				onInterrupt: (options) => this.onInterruptCallback?.(options),
-				restoreQueuedPrompts: () => this.queueController.restoreQueuedPrompts(),
-				getWorkingHint: () => this.workingFooterHint,
-				isMinimalMode: () => this.isMinimalMode(),
-				isAgentRunning: () => this.isAgentRunning,
-				refreshFooterHint: () => this.refreshFooterHint(),
-			},
+			onInterrupt: (options) => this.onInterruptCallback?.(options),
+			restoreQueuedPrompts: () => this.queueController.restoreQueuedPrompts(),
+			getWorkingHint: () => this.workingFooterHint,
+			isMinimalMode: () => this.isMinimalMode(),
+			isAgentRunning: () => this.isAgentRunning,
+			refreshFooterHint: () => this.refreshFooterHint(),
 		});
 
-		this.backgroundTasksController = new BackgroundTasksController({
+		this.backgroundTasksController = createBackgroundTasksController({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			notificationView: this.notificationView,
 		});
-		this.backgroundTasksController.startNotifications();
 
 		this.surfaceStartupWarnings();
-		this.approvalController = new ApprovalController({
+		this.approvalController = createApprovalController({
 			approvalService,
 			ui: this.ui,
 			editor: this.editor,
@@ -653,25 +550,20 @@ export class TuiRenderer {
 			lowColor: this.terminalFeatures.lowColor,
 			lowUnicode: this.terminalFeatures.lowUnicode,
 		});
-		this.planView = new PlanView({
+		const planSubsystem = createPlanSubsystem({
 			filePath: TODO_STORE_PATH,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			modalManager: this.modalManager,
+			notificationView: this.notificationView,
 			setPlanHint: (hint) => {
 				this.planHint = hint;
 				this.refreshFooterHint();
 			},
 			onStoreChanged: (store) => this.planController?.handleStoreChanged(store),
 		});
-		this.planController = new PlanController({
-			filePath: TODO_STORE_PATH,
-			planView: this.planView,
-			modalManager: this.modalManager,
-			ui: this.ui,
-			notificationView: this.notificationView,
-		});
-		this.planView.syncHintWithStore();
+		this.planView = planSubsystem.planView;
+		this.planController = planSubsystem.planController;
 		this.runCommandView = new RunCommandView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -708,25 +600,15 @@ export class TuiRenderer {
 			getTools: () => this.agent.state.tools,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
-		this.sessionDataProvider = new SessionDataProvider(this.sessionManager);
-		this.sessionSummaryController = new SessionSummaryController({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			sessionDataProvider: this.sessionDataProvider,
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showError: (message) => this.notificationView.showError(message),
-		});
-		this.sessionView = new SessionView({
+		const sessionSubsystem = createSessionSubsystem({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			sessionDataProvider: this.sessionDataProvider,
-			openSessionSwitcher: () => this.sessionSwitcherView.show(),
-			summarizeSession: (session) =>
-				this.sessionSummaryController.summarize(session),
+			modalManager: this.modalManager,
+			notificationView: this.notificationView,
+			sessionContext: this.sessionContext,
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			onSessionLoaded: (sessionInfo) => {
 				this.toolOutputView.clearTrackedComponents();
 				this.renderInitialMessages(this.agent.state);
@@ -735,17 +617,11 @@ export class TuiRenderer {
 					`Loaded session ${sessionInfo.id} (${sessionInfo.messageCount} messages).`,
 				);
 			},
-			sessionContext: this.sessionContext,
 		});
-		this.sessionSwitcherView = new SessionSwitcherView({
-			sessionDataProvider: this.sessionDataProvider,
-			modalManager: this.modalManager,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			loadSession: (session) => this.sessionView.loadSessionFromItem(session),
-			summarizeSession: (session) =>
-				this.sessionSummaryController.summarize(session),
-		});
+		this.sessionDataProvider = sessionSubsystem.sessionDataProvider;
+		this.sessionSummaryController = sessionSubsystem.sessionSummaryController;
+		this.sessionView = sessionSubsystem.sessionView;
+		this.sessionSwitcherView = sessionSubsystem.sessionSwitcherView;
 
 		// Initialize paste handler
 		this.pasteHandler = new PasteHandler({
@@ -756,7 +632,7 @@ export class TuiRenderer {
 			refreshFooterHint: () => this.refreshFooterHint(),
 		});
 
-		this.diagnosticsView = new DiagnosticsView({
+		const utilityViews = createUtilityViews({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			telemetryStatus: this.telemetryStatus,
@@ -765,6 +641,8 @@ export class TuiRenderer {
 			explicitApiKey: this.explicitApiKey,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
+			editor: this.editor,
+			modalManager: this.modalManager,
 			getCurrentModelMetadata: () => this.currentModelMetadata,
 			getPendingTools: () => this.pendingTools,
 			toolStatusView: this.toolStatusView,
@@ -772,50 +650,23 @@ export class TuiRenderer {
 			todoStorePath: TODO_STORE_PATH,
 			getApprovalMode: () => this.approvalService.getMode(),
 			getAlertCount: () => this.footer.getUnseenAlertCount(),
-		});
-		this.fileSearchView = new FileSearchView({
-			editor: this.editor,
-			modalManager: this.modalManager,
-			chatContainer: this.chatContainer,
-			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
-		});
-		this.commandPaletteView = new CommandPaletteView({
-			editor: this.editor,
-			modalManager: this.modalManager,
-			ui: this.ui,
 			getCommands: () => this.slashCommands,
 			getRecentCommands: () => this.recentCommands,
 			getFavoriteCommands: () => this.favoriteCommands,
 			onToggleFavorite: (name) => this.toggleFavoriteCommand(name),
 		});
-		this.toolOutputView = new ToolOutputView({
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-		});
-		if (typeof this.uiState.compactTools === "boolean") {
-			this.toolOutputView.setCompactMode(this.uiState.compactTools, true);
-		}
-		this.messageView = new MessageView({
+		this.diagnosticsView = utilityViews.diagnosticsView;
+		this.fileSearchView = utilityViews.fileSearchView;
+		this.commandPaletteView = utilityViews.commandPaletteView;
+		const toolingViews = createToolingViews({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			toolComponents: this.toolOutputView.getTrackedComponents(),
+			uiStateCompactTools: this.uiState.compactTools,
 			pendingTools: this.pendingTools,
-			registerToolComponent: (component) =>
-				this.toolOutputView.registerToolComponent(component),
-			getHideThinkingBlocks: () => this.hideThinkingBlocks,
-		});
-		this.streamingView = new StreamingView({
-			chatContainer: this.chatContainer,
-			pendingTools: this.pendingTools,
-			toolOutputView: this.toolOutputView,
 			lowBandwidth: this.lowBandwidthConfig,
 			getCleanMode: () => this.cleanMode,
 			getHideThinkingBlocks: () => this.hideThinkingBlocks,
-		});
-		this.agentEventRouter = new AgentEventRouter({
-			messageView: this.messageView,
-			streamingView: this.streamingView,
 			loaderView: this.loaderView,
 			runController: this.runController,
 			sessionContext: this.sessionContext,
@@ -826,7 +677,12 @@ export class TuiRenderer {
 			refreshPlanHint: () => this.planView.syncHintWithStore(),
 			onAssistantMessageEnd: (message) =>
 				this.autoRetryController.trackAssistantMessage(message),
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
+		this.toolOutputView = toolingViews.toolOutputView;
+		this.messageView = toolingViews.messageView;
+		this.streamingView = toolingViews.streamingView;
+		this.agentEventRouter = toolingViews.agentEventRouter;
 		this.importExportView = new ImportExportView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
