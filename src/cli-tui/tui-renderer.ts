@@ -43,17 +43,13 @@ import {
 import type { SessionManager } from "../session/manager.js";
 import {
 	getTelemetryStatus,
-	recordCompaction,
 	recordSessionStart,
 	recordTokenUsage,
 } from "../telemetry.js";
 import { getCurrentThemeName, setTheme } from "../theme/theme.js";
 import { getTrainingStatus } from "../training.js";
 
-import {
-	AutoCompactionMonitor,
-	type CompactionStats,
-} from "../agent/auto-compaction.js";
+import { AutoCompactionMonitor } from "../agent/auto-compaction.js";
 import {
 	type AutoRetryController,
 	createAutoRetryController,
@@ -191,6 +187,10 @@ import {
 	type ClearController,
 	createClearController,
 } from "./tui-renderer/clear-controller.js";
+import {
+	type CompactionController,
+	createCompactionController,
+} from "./tui-renderer/compaction-controller.js";
 import { attachEditorBindings } from "./tui-renderer/editor-bindings.js";
 import { loadInitialTuiRendererPreferences } from "./tui-renderer/initial-preferences.js";
 import { createInterruptController } from "./tui-renderer/interrupt-setup.js";
@@ -366,7 +366,6 @@ export class TuiRenderer {
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
 	private approvalService: ActionApprovalService;
-	private compactionInProgress = false;
 	private contextWarningLevel: "none" | "warn" | "danger" = "none";
 	private modelScope: RegisteredModel[] = [];
 	private startupChangelog?: string | null;
@@ -385,6 +384,7 @@ export class TuiRenderer {
 	private quickSettingsController!: QuickSettingsController;
 	private branchController!: BranchController;
 	private clearController!: ClearController;
+	private compactionController!: CompactionController;
 
 	constructor(
 		agent: Agent,
@@ -468,7 +468,7 @@ export class TuiRenderer {
 		this.modelScope = options.modelScope ?? [];
 		this.autoCompactionMonitor = new AutoCompactionMonitor({
 			onCompactionRecommended: (stats) => {
-				this.handleAutoCompactionRecommendation(stats);
+				this.compactionController?.handleAutoCompactionRecommendation(stats);
 			},
 		});
 		this.autoRetryController = createAutoRetryController();
@@ -937,6 +937,22 @@ export class TuiRenderer {
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
+		this.compactionController = createCompactionController({
+			deps: {
+				getAgentState: () => this.agent.state,
+				getSessionId: () => this.sessionManager.getSessionId(),
+				conversationCompactor: this.conversationCompactor,
+				autoCompactionMonitor: this.autoCompactionMonitor,
+				sessionContext: this.sessionContext,
+			},
+			callbacks: {
+				showInfo: (msg) => this.notificationView.showInfo(msg),
+				refreshFooterHint: () => this.refreshFooterHint(),
+				setContextWarningLevel: (level) => {
+					this.contextWarningLevel = level;
+				},
+			},
+		});
 		this.updateView = new UpdateView({
 			currentVersion: this.version,
 			chatContainer: this.chatContainer,
@@ -1070,10 +1086,12 @@ export class TuiRenderer {
 				const customInstructions = context.rawInput
 					.replace(/^\/compact\s*/i, "")
 					.trim();
-				return this.handleCompactCommand(customInstructions || undefined);
+				return this.compactionController.handleCompactCommand(
+					customInstructions || undefined,
+				);
 			},
 			handleAutocompact: (context) =>
-				this.handleAutocompactCommand(context.rawInput),
+				this.compactionController.handleAutocompactCommand(context.rawInput),
 			handleFooter: (context) => this.handleFooterCommand(context),
 			handleCompactTools: (context) =>
 				this.handleCompactToolsCommand(context.rawInput),
@@ -1219,52 +1237,7 @@ export class TuiRenderer {
 	}
 
 	public async ensureContextBudgetBeforePrompt(): Promise<void> {
-		if (this.compactionInProgress) {
-			return;
-		}
-		const state = this.agent.state;
-		if (!state?.model?.contextWindow) {
-			return;
-		}
-
-		// Use AutoCompactionMonitor for rate-limited context checking
-		const compactionStats = this.autoCompactionMonitor.check(
-			state.messages,
-			state.model,
-		);
-
-		if (!compactionStats.shouldCompact) {
-			return;
-		}
-
-		const percentLabel = compactionStats.usagePercent.toFixed(1);
-		this.notificationView.showInfo(
-			`Context ${percentLabel}% full – compacting history before sending prompt…`,
-		);
-		const footerStats = calculateFooterStats(state);
-		const compacted = await this.runCompactionTask(() =>
-			this.conversationCompactor.compactHistory(),
-		);
-		if (compacted) {
-			this.autoCompactionMonitor.recordCompaction();
-			this.recordCompactionDelta(footerStats, "auto");
-		}
-	}
-
-	/**
-	 * Handle auto-compaction recommendation from the monitor.
-	 */
-	private handleAutoCompactionRecommendation(stats: CompactionStats): void {
-		// Update context warning level based on usage
-		const thresholds = this.autoCompactionMonitor.getWarningThresholds();
-		if (stats.usagePercent >= thresholds.critical) {
-			this.contextWarningLevel = "danger";
-		} else if (stats.usagePercent >= thresholds.warning) {
-			this.contextWarningLevel = "warn";
-		} else {
-			this.contextWarningLevel = "none";
-		}
-		this.refreshFooterHint();
+		await this.compactionController.ensureContextBudgetBeforePrompt();
 	}
 
 	/**
@@ -1548,65 +1521,6 @@ export class TuiRenderer {
 	 */
 	handleKeepPartialRequest(): boolean {
 		return this.interruptController.handleKeepPartialRequest();
-	}
-
-	private async runCompactionTask(work: () => Promise<void>): Promise<boolean> {
-		if (this.compactionInProgress) {
-			return false;
-		}
-		this.compactionInProgress = true;
-		try {
-			await work();
-			return true;
-		} finally {
-			this.compactionInProgress = false;
-		}
-	}
-
-	private async handleCompactCommand(
-		customInstructions?: string,
-	): Promise<void> {
-		if (this.compactionInProgress) {
-			this.notificationView.showInfo("Already compacting history…");
-			return;
-		}
-		const beforeStats = calculateFooterStats(this.agent.state);
-		const compacted = await this.runCompactionTask(() =>
-			this.conversationCompactor.compactHistory({
-				customInstructions,
-				auto: false,
-			}),
-		);
-		if (compacted) {
-			this.recordCompactionDelta(beforeStats, "manual");
-		}
-	}
-
-	private handleAutocompactCommand(rawInput: string): void {
-		const parts = rawInput.trim().split(/\s+/);
-		const arg = parts[1]?.toLowerCase();
-
-		if (arg === "on" || arg === "true" || arg === "enable") {
-			this.conversationCompactor.updateSettings({ enabled: true });
-			this.notificationView.showInfo("Auto-compaction enabled.");
-		} else if (arg === "off" || arg === "false" || arg === "disable") {
-			this.conversationCompactor.updateSettings({ enabled: false });
-			this.notificationView.showInfo("Auto-compaction disabled.");
-		} else if (arg === "status" || !arg) {
-			const enabled = this.conversationCompactor.isAutoCompactionEnabled();
-			const settings = this.conversationCompactor.getSettings();
-			this.notificationView.showInfo(
-				`Auto-compaction: ${enabled ? "enabled" : "disabled"}\n` +
-					`Reserve tokens: ${settings.reserveTokens}\n` +
-					`Keep recent tokens: ${settings.keepRecentTokens}`,
-			);
-		} else {
-			// Toggle
-			const newState = this.conversationCompactor.toggleAutoCompaction();
-			this.notificationView.showInfo(
-				`Auto-compaction ${newState ? "enabled" : "disabled"}.`,
-			);
-		}
 	}
 
 	private renderHeader(): void {
@@ -2426,7 +2340,7 @@ export class TuiRenderer {
 					: "";
 			hints.push(`${runningLabel}${failureSuffix} (use /background list)`);
 		}
-		if (this.compactionInProgress) {
+		if (this.compactionController?.isCompacting()) {
 			hints.push("Compacting history…");
 		}
 		if (this.pasteHandler?.hasPending()) {
@@ -2542,37 +2456,6 @@ export class TuiRenderer {
 			);
 		}
 		this.contextWarningLevel = nextLevel;
-	}
-
-	private recordCompactionDelta(
-		before: FooterStats,
-		trigger: "auto" | "manual",
-	): void {
-		const after = calculateFooterStats(this.agent.state);
-		if (after.contextTokens === before.contextTokens) {
-			return;
-		}
-		this.sessionContext.recordCompactionArtifact({
-			beforeTokens: before.contextTokens,
-			afterTokens: after.contextTokens,
-			trigger,
-		});
-		// Record compaction telemetry
-		recordCompaction(this.sessionManager.getSessionId(), {
-			model: this.agent.state.model
-				? `${this.agent.state.model.provider}/${this.agent.state.model.id}`
-				: undefined,
-			provider: this.agent.state.model?.provider,
-			trigger,
-			tokensBefore: before.contextTokens,
-			tokensAfter: after.contextTokens,
-		});
-		const beforeLabel = formatTokenCount(before.contextTokens);
-		const afterLabel = formatTokenCount(after.contextTokens);
-		const prefix = trigger === "auto" ? "Auto-" : "";
-		this.notificationView.showInfo(
-			`${prefix}compact reduced context ${beforeLabel} → ${afterLabel}.`,
-		);
 	}
 
 	private describeError(error: unknown): string {
