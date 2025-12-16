@@ -107,39 +107,56 @@ export class TtlCache<K, V> {
 	}
 
 	/**
-	 * Get all valid entries as an array
+	 * Get all valid entries as an array (also cleans up expired entries)
 	 */
 	entries(): Array<[K, V]> {
 		const now = Date.now();
 		const result: Array<[K, V]> = [];
+		const expired: K[] = [];
 
 		for (const [key, entry] of this.cache) {
 			if (now <= entry.expiresAt) {
 				result.push([key, entry.value]);
+			} else {
+				expired.push(key);
 			}
+		}
+
+		// Clean up expired entries found during iteration
+		for (const key of expired) {
+			this.cache.delete(key);
 		}
 
 		return result;
 	}
 
 	/**
-	 * Get all valid values as an array
+	 * Get all valid values as an array (also cleans up expired entries)
 	 */
 	values(): V[] {
 		const now = Date.now();
 		const result: V[] = [];
+		const expired: K[] = [];
 
-		for (const entry of this.cache.values()) {
+		for (const [key, entry] of this.cache) {
 			if (now <= entry.expiresAt) {
 				result.push(entry.value);
+			} else {
+				expired.push(key);
 			}
+		}
+
+		// Clean up expired entries found during iteration
+		for (const key of expired) {
+			this.cache.delete(key);
 		}
 
 		return result;
 	}
 
 	/**
-	 * Iterate over valid entries
+	 * Iterate over valid entries (note: does not clean up during iteration
+	 * to avoid mutating the map while iterating via generator)
 	 */
 	*[Symbol.iterator](): Iterator<[K, V]> {
 		const now = Date.now();

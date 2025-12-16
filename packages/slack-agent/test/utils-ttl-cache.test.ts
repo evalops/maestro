@@ -156,6 +156,47 @@ describe("TtlCache", () => {
 			expect(cache.values()).toEqual([2]);
 		});
 
+		it("cleans up expired entries during entries() call", () => {
+			const cache = new TtlCache<string, number>({
+				defaultTtlMs: 1000,
+				cleanupIntervalMs: 10000, // Long interval to prevent auto-cleanup
+			});
+
+			cache.set("expired1", 1, 500);
+			cache.set("expired2", 2, 500);
+			cache.set("valid", 3);
+
+			vi.advanceTimersByTime(600);
+
+			// Before calling entries(), size includes expired entries
+			expect(cache.size).toBe(3);
+
+			// entries() should clean up expired entries
+			cache.entries();
+
+			// After calling entries(), expired entries should be removed
+			expect(cache.size).toBe(1);
+		});
+
+		it("cleans up expired entries during values() call", () => {
+			const cache = new TtlCache<string, number>({
+				defaultTtlMs: 1000,
+				cleanupIntervalMs: 10000, // Long interval to prevent auto-cleanup
+			});
+
+			cache.set("expired", 1, 500);
+			cache.set("valid", 2);
+
+			vi.advanceTimersByTime(600);
+
+			expect(cache.size).toBe(2);
+
+			// values() should clean up expired entries
+			cache.values();
+
+			expect(cache.size).toBe(1);
+		});
+
 		it("supports for..of iteration", () => {
 			const cache = new TtlCache<string, number>();
 

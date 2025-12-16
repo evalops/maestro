@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LogContext } from "../src/logger.js";
 import {
+	configureLogger,
 	generateRunId,
 	getCurrentContext,
 	logAgentError,
@@ -22,6 +23,7 @@ import {
 	logUsageSummary,
 	logUserMessage,
 	logWarning,
+	runWithContext,
 	setCurrentContext,
 	withContext,
 	withContextAsync,
@@ -555,29 +557,13 @@ describe("logger", () => {
 	});
 
 	describe("context management", () => {
-		afterEach(() => {
-			setCurrentContext(null); // Clean up after each test
-		});
-
-		it("setCurrentContext and getCurrentContext work together", () => {
-			expect(getCurrentContext()).toBeNull();
-
-			const ctx: LogContext = { channelId: "C123", userName: "user" };
-			setCurrentContext(ctx);
-
-			expect(getCurrentContext()).toBe(ctx);
-
-			setCurrentContext(null);
-			expect(getCurrentContext()).toBeNull();
-		});
-
-		it("withContext sets context for the duration of the callback", () => {
+		it("runWithContext sets context for the duration of the callback", () => {
 			const ctx: LogContext = { channelId: "C123", userName: "user" };
 
 			expect(getCurrentContext()).toBeNull();
 
-			const result = withContext(ctx, () => {
-				expect(getCurrentContext()).toBe(ctx);
+			const result = runWithContext(ctx, () => {
+				expect(getCurrentContext()).toEqual(ctx);
 				return "result";
 			});
 
@@ -585,32 +571,34 @@ describe("logger", () => {
 			expect(getCurrentContext()).toBeNull();
 		});
 
-		it("withContext restores previous context after callback", () => {
+		it("runWithContext restores previous context after callback (nested)", () => {
 			const ctx1: LogContext = { channelId: "C1", userName: "user1" };
 			const ctx2: LogContext = { channelId: "C2", userName: "user2" };
 
-			setCurrentContext(ctx1);
+			runWithContext(ctx1, () => {
+				expect(getCurrentContext()).toEqual(ctx1);
 
-			withContext(ctx2, () => {
-				expect(getCurrentContext()).toBe(ctx2);
+				runWithContext(ctx2, () => {
+					expect(getCurrentContext()).toEqual(ctx2);
+				});
+
+				expect(getCurrentContext()).toEqual(ctx1);
 			});
-
-			expect(getCurrentContext()).toBe(ctx1);
 		});
 
-		it("withContext restores context even if callback throws", () => {
+		it("runWithContext restores context even if callback throws", () => {
 			const ctx1: LogContext = { channelId: "C1", userName: "user1" };
 			const ctx2: LogContext = { channelId: "C2", userName: "user2" };
 
-			setCurrentContext(ctx1);
+			runWithContext(ctx1, () => {
+				expect(() =>
+					runWithContext(ctx2, () => {
+						throw new Error("test error");
+					}),
+				).toThrow("test error");
 
-			expect(() =>
-				withContext(ctx2, () => {
-					throw new Error("test error");
-				}),
-			).toThrow("test error");
-
-			expect(getCurrentContext()).toBe(ctx1);
+				expect(getCurrentContext()).toEqual(ctx1);
+			});
 		});
 
 		it("withContextAsync sets context for async callback", async () => {
@@ -619,9 +607,9 @@ describe("logger", () => {
 			expect(getCurrentContext()).toBeNull();
 
 			const result = await withContextAsync(ctx, async () => {
-				expect(getCurrentContext()).toBe(ctx);
+				expect(getCurrentContext()).toEqual(ctx);
 				await new Promise((r) => setTimeout(r, 10));
-				expect(getCurrentContext()).toBe(ctx);
+				expect(getCurrentContext()).toEqual(ctx);
 				return "async result";
 			});
 
@@ -629,19 +617,19 @@ describe("logger", () => {
 			expect(getCurrentContext()).toBeNull();
 		});
 
-		it("withContextAsync restores context even if callback rejects", async () => {
+		it("withContextAsync restores context even if callback rejects (nested)", async () => {
 			const ctx1: LogContext = { channelId: "C1", userName: "user1" };
 			const ctx2: LogContext = { channelId: "C2", userName: "user2" };
 
-			setCurrentContext(ctx1);
+			await runWithContext(ctx1, async () => {
+				await expect(
+					withContextAsync(ctx2, async () => {
+						throw new Error("async error");
+					}),
+				).rejects.toThrow("async error");
 
-			await expect(
-				withContextAsync(ctx2, async () => {
-					throw new Error("async error");
-				}),
-			).rejects.toThrow("async error");
-
-			expect(getCurrentContext()).toBe(ctx1);
+				expect(getCurrentContext()).toEqual(ctx1);
+			});
 		});
 
 		it("logInfo uses current context when no explicit context provided", () => {
@@ -650,9 +638,10 @@ describe("logger", () => {
 				channelName: "general",
 				userName: "user",
 			};
-			setCurrentContext(ctx);
 
-			logInfo("Test message");
+			runWithContext(ctx, () => {
+				logInfo("Test message");
+			});
 
 			const output = getStrippedOutput();
 			expect(output[0]).toContain("[#general:user]");
@@ -663,8 +652,9 @@ describe("logger", () => {
 			const currentCtx: LogContext = { channelId: "C1", userName: "current" };
 			const explicitCtx: LogContext = { channelId: "C2", userName: "explicit" };
 
-			setCurrentContext(currentCtx);
-			logInfo("Test message", explicitCtx);
+			runWithContext(currentCtx, () => {
+				logInfo("Test message", explicitCtx);
+			});
 
 			const output = getStrippedOutput();
 			expect(output[0]).toContain("explicit");
@@ -677,13 +667,34 @@ describe("logger", () => {
 				channelName: "general",
 				userName: "user",
 			};
-			setCurrentContext(ctx);
 
-			logWarning("Warning message");
+			runWithContext(ctx, () => {
+				logWarning("Warning message");
+			});
 
 			const output = getStrippedOutput();
 			expect(output[0]).toContain("[#general:user]");
 			expect(output[0]).toContain("warning: Warning message");
+		});
+
+		it("setCurrentContext is deprecated no-op (backward compat)", () => {
+			// setCurrentContext is now a no-op - context should be set via runWithContext
+			const ctx: LogContext = { channelId: "C123", userName: "user" };
+			setCurrentContext(ctx);
+			// Should still be null because setCurrentContext is a no-op
+			expect(getCurrentContext()).toBeNull();
+		});
+
+		it("withContext is alias for runWithContext", () => {
+			const ctx: LogContext = { channelId: "C123", userName: "user" };
+
+			const result = withContext(ctx, () => {
+				expect(getCurrentContext()).toEqual(ctx);
+				return 42;
+			});
+
+			expect(result).toBe(42);
+			expect(getCurrentContext()).toBeNull();
 		});
 	});
 
@@ -747,14 +758,191 @@ describe("logger", () => {
 			process.env.DEBUG = "true";
 
 			const ctx: LogContext = { channelId: "C123", userName: "user" };
-			setCurrentContext(ctx);
-
-			logDebug("Debug with context");
+			runWithContext(ctx, () => {
+				logDebug("Debug with context");
+			});
 
 			const output = getStrippedOutput();
 			expect(output[0]).toContain("user");
 
 			process.env.DEBUG = originalDebug;
+		});
+	});
+
+	describe("runWithContext (AsyncLocalStorage)", () => {
+		it("sets context for synchronous code", () => {
+			const ctx: LogContext = { channelId: "C123", userName: "alice" };
+
+			expect(getCurrentContext()).toBeNull();
+
+			const result = runWithContext(ctx, () => {
+				expect(getCurrentContext()).toEqual(ctx);
+				return "sync-result";
+			});
+
+			expect(result).toBe("sync-result");
+			expect(getCurrentContext()).toBeNull();
+		});
+
+		it("propagates context through async operations", async () => {
+			const ctx: LogContext = { channelId: "C123", userName: "alice" };
+
+			const result = await runWithContext(ctx, async () => {
+				expect(getCurrentContext()).toEqual(ctx);
+
+				// Simulate async operation
+				await new Promise((r) => setTimeout(r, 10));
+
+				// Context should still be available after await
+				expect(getCurrentContext()).toEqual(ctx);
+
+				return "async-result";
+			});
+
+			expect(result).toBe("async-result");
+			expect(getCurrentContext()).toBeNull();
+		});
+
+		it("maintains separate contexts for concurrent async operations", async () => {
+			const ctx1: LogContext = { channelId: "C1", userName: "user1" };
+			const ctx2: LogContext = { channelId: "C2", userName: "user2" };
+
+			const results: string[] = [];
+
+			// Run two async operations concurrently
+			await Promise.all([
+				runWithContext(ctx1, async () => {
+					expect(getCurrentContext()).toEqual(ctx1);
+					await new Promise((r) => setTimeout(r, 20));
+					expect(getCurrentContext()).toEqual(ctx1);
+					results.push(`ctx1: ${getCurrentContext()?.userName}`);
+				}),
+				runWithContext(ctx2, async () => {
+					expect(getCurrentContext()).toEqual(ctx2);
+					await new Promise((r) => setTimeout(r, 10));
+					expect(getCurrentContext()).toEqual(ctx2);
+					results.push(`ctx2: ${getCurrentContext()?.userName}`);
+				}),
+			]);
+
+			// Both should have maintained their own context
+			expect(results).toContain("ctx1: user1");
+			expect(results).toContain("ctx2: user2");
+		});
+
+		it("nests contexts correctly", () => {
+			const outer: LogContext = { channelId: "C1", userName: "outer" };
+			const inner: LogContext = { channelId: "C2", userName: "inner" };
+
+			runWithContext(outer, () => {
+				expect(getCurrentContext()).toEqual(outer);
+
+				runWithContext(inner, () => {
+					expect(getCurrentContext()).toEqual(inner);
+				});
+
+				// Outer context should be restored
+				expect(getCurrentContext()).toEqual(outer);
+			});
+
+			expect(getCurrentContext()).toBeNull();
+		});
+	});
+
+	describe("configureLogger", () => {
+		afterEach(() => {
+			// Reset to defaults
+			configureLogger({ format: "pretty", minLevel: "debug" });
+		});
+
+		it("outputs JSON when format is json", () => {
+			configureLogger({ format: "json" });
+
+			logInfo("Test message");
+
+			expect(consoleLogSpy).toHaveBeenCalled();
+			const output = consoleLogSpy.mock.calls[0][0] as string;
+
+			// Should be valid JSON
+			const parsed = JSON.parse(output);
+			expect(parsed.level).toBe("info");
+			expect(parsed.message).toBe("Test message");
+			expect(parsed.timestamp).toBeDefined();
+		});
+
+		it("includes context in JSON output", () => {
+			configureLogger({ format: "json" });
+			const ctx: LogContext = { channelId: "C123", userName: "alice" };
+
+			logInfo("Test", ctx);
+
+			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const parsed = JSON.parse(output);
+			expect(parsed.context).toEqual(ctx);
+		});
+
+		it("includes data in JSON output for warnings", () => {
+			configureLogger({ format: "json" });
+
+			logWarning("Warning", "Stack trace details");
+
+			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const parsed = JSON.parse(output);
+			expect(parsed.level).toBe("warn");
+			expect(parsed.data).toEqual({ details: "Stack trace details" });
+		});
+
+		it("respects minLevel setting", () => {
+			configureLogger({ minLevel: "warn" });
+
+			logInfo("Should not appear");
+			logWarning("Should appear");
+
+			expect(consoleLogSpy).toHaveBeenCalledTimes(1);
+			const output = consoleLogSpy.mock.calls[0][0] as string;
+			expect(output).toContain("warning:");
+		});
+
+		it("logRunSummary outputs JSON with all fields", () => {
+			configureLogger({ format: "json" });
+
+			const ctx: LogContext = { channelId: "C123", userName: "user" };
+			logRunSummary(ctx, {
+				stopReason: "end_turn",
+				durationMs: 5000,
+				toolsExecuted: 3,
+				cost: {
+					total: 0.0025,
+					inputTokens: 1000,
+					outputTokens: 500,
+					cacheReadTokens: 200,
+					cacheWriteTokens: 100,
+					model: "claude-sonnet-4",
+				},
+			});
+
+			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const parsed = JSON.parse(output);
+			expect(parsed.level).toBe("info");
+			expect(parsed.message).toBe("Run summary");
+			expect(parsed.data.stopReason).toBe("end_turn");
+			expect(parsed.data.durationMs).toBe(5000);
+			expect(parsed.data.toolsExecuted).toBe(3);
+			expect(parsed.data.cost).toBe(0.0025);
+			expect(parsed.data.model).toBe("claude-sonnet-4");
+		});
+
+		it("logAgentError outputs JSON", () => {
+			configureLogger({ format: "json" });
+
+			const ctx: LogContext = { channelId: "C123", userName: "user" };
+			logAgentError(ctx, "Something went wrong");
+
+			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const parsed = JSON.parse(output);
+			expect(parsed.level).toBe("error");
+			expect(parsed.message).toBe("Agent error");
+			expect(parsed.data.error).toBe("Something went wrong");
 		});
 	});
 });
