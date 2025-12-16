@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import type { SlashCommand } from "@evalops/tui";
 import {
 	Container,
@@ -86,6 +86,11 @@ import type {
 	CommandEntry,
 	CommandExecutionContext,
 } from "./commands/types.js";
+import {
+	handleCopyCommand,
+	handleInitCommand,
+	handleReportCommand,
+} from "./commands/utility-handlers.js";
 import { ConfigView } from "./config-view.js";
 import { ContextView } from "./context-view.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -158,7 +163,6 @@ import {
 } from "./utils/footer-utils.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
-import { handleAgentsInit } from "../cli/commands/agents.js";
 import { validateFrameworkPreference } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
@@ -1055,7 +1059,12 @@ export class TuiRenderer {
 				this.sessionView.handleSessionCommand(context.rawInput),
 			handleSessions: (context) =>
 				this.sessionView.handleSessionsCommand(context.rawInput),
-			handleReport: (context) => this.handleReportCommand(context),
+			handleReport: (context) =>
+				handleReportCommand(context, {
+					showBugReport: () => this.feedbackView.handleBugCommand(),
+					showFeedback: () => this.feedbackView.handleFeedbackCommand(),
+					showReportSelector: () => this.reportSelectorView.show(),
+				}),
 			handleAbout: (_context) => this.aboutView.handleAboutCommand(),
 			handleClear: async (_context) =>
 				await this.clearController.handleClearCommand(),
@@ -1156,7 +1165,16 @@ export class TuiRenderer {
 					requestRender: () => this.ui.requestRender(),
 				}),
 			handleNewChat: (context) => this.handleNewChatCommand(context),
-			handleInitAgents: (context) => this.handleInitCommand(context),
+			handleInitAgents: (context) =>
+				handleInitCommand(context, {
+					showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
+					showError: (msg) => context.showError(msg),
+					addContent: (text) => {
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(new Text(text, 1, 0));
+					},
+					requestRender: () => this.ui.requestRender(),
+				}),
 			handleMcp: (context) => this.handleMcpCommand(context),
 			handleComposer: (context) => this.handleComposerCommand(context),
 			handleZen: (context) => this.uiStateController.handleZenCommand(context),
@@ -1173,7 +1191,15 @@ export class TuiRenderer {
 			handleMode: (context) => this.handleModeCommand(context),
 			handlePrompts: (context) =>
 				this.customCommandsController.handlePromptsCommand(context),
-			handleCopy: (context) => this.handleCopyCommand(context),
+			handleCopy: (context) =>
+				handleCopyCommand(
+					context,
+					{ getMessages: () => this.agent.state.messages },
+					{
+						showInfo: (msg) => context.showInfo(msg),
+						showError: (msg) => context.showError(msg),
+					},
+				),
 			// Grouped command handlers - delegate directly to lazy-initialized handlers
 			handleSessionCommand: (context) =>
 				this.getGroupedHandlers().handleSession(context),
@@ -1726,49 +1752,6 @@ export class TuiRenderer {
 		handler(context);
 	}
 
-	private handleCopyCommand(context: CommandExecutionContext): void {
-		// Find the last assistant message
-		const messages = this.agent.state.messages;
-		let lastAssistant: AppMessage | null = null;
-		for (let i = messages.length - 1; i >= 0; i--) {
-			if (messages[i].role === "assistant") {
-				lastAssistant = messages[i];
-				break;
-			}
-		}
-
-		if (!lastAssistant) {
-			context.showError("No assistant message to copy.");
-			return;
-		}
-
-		// Extract text content from the message
-		const { renderMessageToPlainText, createRenderableMessage } =
-			require("../conversation/render-model.js");
-		const renderable = createRenderableMessage(lastAssistant);
-		if (!renderable) {
-			context.showError("Could not render message.");
-			return;
-		}
-
-		const text = renderMessageToPlainText(renderable);
-		if (!text) {
-			context.showError("No text content to copy.");
-			return;
-		}
-
-		// Copy to clipboard
-		try {
-			const clipboard = require("clipboardy");
-			clipboard.writeSync(text);
-			context.showInfo("Copied last assistant message to clipboard.");
-		} catch (error) {
-			context.showError(
-				`Failed to copy to clipboard: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	}
-
 	private handleContextCommand(_context: CommandExecutionContext): void {
 		const contextView = new ContextView({
 			state: this.agent.state,
@@ -1787,30 +1770,6 @@ export class TuiRenderer {
 	private handleCompactToolsCommand(rawInput: string): void {
 		this.toolOutputView.handleCompactToolsCommand(rawInput);
 		this.persistUiState();
-	}
-
-	private handleReportCommand(context: CommandExecutionContext): void {
-		const parsedType = context.parsedArgs?.type;
-		const inlineArg = context.argumentText.trim().split(/\s+/)[0] ?? "";
-		const candidate =
-			typeof parsedType === "string" && parsedType.length > 0
-				? parsedType.toLowerCase()
-				: inlineArg.toLowerCase();
-
-		if (candidate === "bug") {
-			this.feedbackView.handleBugCommand();
-			return;
-		}
-		if (candidate === "feedback") {
-			this.feedbackView.handleFeedbackCommand();
-			return;
-		}
-		if (candidate.length > 0) {
-			context.showError('Report type must be "bug" or "feedback".');
-			context.renderHelp();
-			return;
-		}
-		this.reportSelectorView.show();
 	}
 
 	private async handleReviewCommand(
@@ -1952,37 +1911,6 @@ export class TuiRenderer {
 		}
 		if (toastMessage) {
 			this.notificationView.showToast(toastMessage, "success");
-		}
-	}
-
-	private handleInitCommand(context: CommandExecutionContext): void {
-		try {
-			const targetArg = context.argumentText.trim() || undefined;
-			const createdPath = handleAgentsInit(targetArg, { force: false });
-			const relativePath = relative(process.cwd(), createdPath);
-			const displayPath =
-				relativePath && !relativePath.startsWith("..") && relativePath !== ""
-					? `./${relativePath}`
-					: createdPath;
-			this.notificationView.showToast(
-				`Scaffolded ${displayPath}. Update it before your next run.`,
-				"success",
-			);
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(
-					`Created AGENTS instructions at ${displayPath}. Customize it with project-specific guidance to improve future sessions.`,
-					1,
-					0,
-				),
-			);
-			this.ui.requestRender();
-		} catch (error) {
-			const message =
-				error instanceof Error
-					? error.message
-					: "Failed to scaffold AGENTS file.";
-			context.showError(message);
 		}
 	}
 
@@ -2441,7 +2369,17 @@ export class TuiRenderer {
 						this.importExportView.handleImportCommand(ctx.rawInput),
 					handleFramework: (ctx) => this.handleFrameworkCommand(ctx),
 					handleComposer: (ctx) => this.handleComposerCommand(ctx),
-					handleInit: (ctx) => this.handleInitCommand(ctx),
+					handleInit: (ctx) =>
+						handleInitCommand(ctx, {
+							showSuccess: (msg) =>
+								this.notificationView.showToast(msg, "success"),
+							showError: (msg) => ctx.showError(msg),
+							addContent: (text) => {
+								this.chatContainer.addChild(new Spacer(1));
+								this.chatContainer.addChild(new Text(text, 1, 0));
+							},
+							requestRender: () => this.ui.requestRender(),
+						}),
 				},
 				tools: {
 					handleTools: (ctx) =>
