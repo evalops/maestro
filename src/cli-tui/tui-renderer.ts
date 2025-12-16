@@ -206,6 +206,10 @@ import {
 	createQuickSettingsController,
 } from "./tui-renderer/quick-settings-controller.js";
 import { createSessionSubsystem } from "./tui-renderer/session-setup.js";
+import {
+	type SlashHintController,
+	createSlashHintController,
+} from "./tui-renderer/slash-hint-controller.js";
 import { createToolingViews } from "./tui-renderer/tooling-views-setup.js";
 import {
 	type UiStateController,
@@ -304,7 +308,6 @@ export class TuiRenderer {
 	private slashHintBar!: SlashHintBar;
 	private slashCommandMatcher!: SlashCommandMatcher;
 	private slashCycleState = new SlashCycleState();
-	private slashHintDebounce?: NodeJS.Timeout;
 	private planView: PlanView;
 	private planController?: PlanController;
 	private sessionView: SessionView;
@@ -385,6 +388,7 @@ export class TuiRenderer {
 	private branchController!: BranchController;
 	private clearController!: ClearController;
 	private compactionController!: CompactionController;
+	private slashHintController!: SlashHintController;
 
 	constructor(
 		agent: Agent,
@@ -522,7 +526,8 @@ export class TuiRenderer {
 					this.quickSettingsController.toggleToolOutputs(),
 				toggleThinkingBlocks: () =>
 					this.quickSettingsController.toggleThinkingBlocks(),
-				handleSlashCycle: (reverse) => this.handleSlashCycle(reverse),
+				handleSlashCycle: (reverse) =>
+					this.slashHintController?.handleSlashCycle(reverse) ?? false,
 				cycleThinkingLevel: () =>
 					this.quickSettingsController.cycleThinkingLevel(),
 			},
@@ -700,9 +705,13 @@ export class TuiRenderer {
 			getAlertCount: () => this.footer.getUnseenAlertCount(),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			getCommands: () => this.slashCommands,
-			getRecentCommands: () => this.recentCommands,
-			getFavoriteCommands: () => this.favoriteCommands,
-			onToggleFavorite: (name) => this.toggleFavoriteCommand(name),
+			getRecentCommands: () =>
+				this.slashHintController?.getRecentCommands() ?? this.recentCommands,
+			getFavoriteCommands: () =>
+				this.slashHintController?.getFavoriteCommands() ??
+				this.favoriteCommands,
+			onToggleFavorite: (name) =>
+				this.slashHintController?.toggleFavoriteCommand(name),
 		});
 		this.diagnosticsView = utilityViews.diagnosticsView;
 		this.fileSearchView = utilityViews.fileSearchView;
@@ -1164,6 +1173,23 @@ export class TuiRenderer {
 		this.commandEntries = registry.entries;
 		this.slashCommands = registry.commands;
 		this.slashCommandMatcher = new SlashCommandMatcher(this.slashCommands);
+		this.slashHintController = createSlashHintController({
+			deps: {
+				slashHintBar: this.slashHintBar,
+				slashCommandMatcher: this.slashCommandMatcher,
+				slashCycleState: this.slashCycleState,
+				getSlashCommands: () => this.slashCommands,
+				getEditorText: () => this.editor.getText(),
+				setEditorText: (text) => this.editor.setText(text),
+				isShowingAutocomplete: () => this.editor.isShowingAutocomplete(),
+			},
+			callbacks: {
+				persistUiState: (extra) => this.persistUiState(extra),
+				requestRender: () => this.ui.requestRender(),
+			},
+			initialRecentCommands: this.recentCommands,
+			initialFavoriteCommands: this.favoriteCommands,
+		});
 
 		const autocompleteProvider = new SmartAutocompleteProvider(
 			this.slashCommands,
@@ -1182,7 +1208,8 @@ export class TuiRenderer {
 			editor: this.editor,
 			getCommandEntries: () => this.commandEntries,
 			onFirstInput: () => this.dismissWelcomeAnimation(),
-			onCommandExecuted: (name) => this.recordCommandUsage(name),
+			onCommandExecuted: (name) =>
+				this.slashHintController.recordCommandUsage(name),
 			onSubmit: (text) => {
 				void this.handleTextSubmit(text);
 			},
@@ -1888,61 +1915,11 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
-	private recordCommandUsage(name: string): void {
-		// maintain uniqueness and recency
-		this.recentCommands = [
-			name,
-			...this.recentCommands.filter((n) => n !== name),
-		].slice(0, 20);
-		this.persistUiState({
-			recentCommands: this.recentCommands,
-			favoriteCommands: Array.from(this.favoriteCommands),
-		});
-		this.refreshSlashHint();
-		this.ui.requestRender();
-	}
-
-	private toggleFavoriteCommand(name: string): void {
-		if (this.favoriteCommands.has(name)) {
-			this.favoriteCommands.delete(name);
-		} else {
-			this.favoriteCommands.add(name);
-		}
-		this.persistUiState({
-			recentCommands: this.recentCommands,
-			favoriteCommands: Array.from(this.favoriteCommands),
-		});
-	}
-
-	private handleSlashCycle(reverse = false): boolean {
-		const text = this.editor.getText().trim();
-		if (!text.startsWith("/")) return false;
-
-		const [commandToken, ...restTokens] = text.split(/\s+/);
-		const query = (commandToken ?? "/").slice(1).toLowerCase();
-		const matches = this.getSlashMatches(query);
-
-		if (matches.length === 0) return false;
-
-		const replacement = this.slashCycleState.cycle(query, matches, reverse);
-		if (!replacement) return false;
-
-		const rest =
-			restTokens && restTokens.length > 0 ? ` ${restTokens.join(" ")}` : " ";
-		this.editor.setText(`/${replacement}${rest}`);
-		this.refreshSlashHint();
-		this.ui.requestRender();
-		return true;
-	}
-
-	private getSlashMatches(query: string): SlashCommand[] {
-		return this.slashCommandMatcher.getMatches(query, {
-			favorites: this.favoriteCommands,
-			recents: new Set(this.recentCommands),
-		});
-	}
-
 	private persistUiState(extra?: Partial<UiState>): void {
+		const recentCommands =
+			this.slashHintController?.getRecentCommands() ?? this.recentCommands;
+		const favoriteCommands =
+			this.slashHintController?.getFavoriteCommands() ?? this.favoriteCommands;
 		saveUiState({
 			queueMode: this.queueController.getMode(),
 			compactTools: this.toolOutputView.isCompact(),
@@ -1950,13 +1927,13 @@ export class TuiRenderer {
 			reducedMotion: this.reducedMotion,
 			cleanMode: this.cleanMode,
 			hideThinkingBlocks: this.hideThinkingBlocks,
-			recentCommands: this.recentCommands,
-			favoriteCommands: Array.from(this.favoriteCommands),
+			recentCommands,
+			favoriteCommands: Array.from(favoriteCommands),
 			...extra,
 		});
 		saveCommandPrefs({
-			favorites: Array.from(this.favoriteCommands),
-			recents: this.recentCommands,
+			favorites: Array.from(favoriteCommands),
+			recents: recentCommands,
 		});
 	}
 
@@ -2354,32 +2331,8 @@ export class TuiRenderer {
 
 	private handleEditorTyping(): void {
 		this.footer.clearToast();
-		this.refreshSlashHintDebounced();
+		this.slashHintController?.refreshSlashHintDebounced();
 		this.ui.requestRender();
-	}
-
-	private refreshSlashHint(): void {
-		if (!this.slashHintBar) return;
-		if (this.editor.isShowingAutocomplete()) {
-			this.slashHintBar.clear();
-			return;
-		}
-		const text = this.editor.getText();
-		this.slashHintBar.update(
-			text,
-			this.slashCommands,
-			new Set(this.recentCommands),
-			this.favoriteCommands,
-		);
-	}
-
-	private refreshSlashHintDebounced(): void {
-		if (this.slashHintDebounce) {
-			clearTimeout(this.slashHintDebounce);
-		}
-		this.slashHintDebounce = setTimeout(() => {
-			this.refreshSlashHint();
-		}, 30);
 	}
 
 	private surfaceStartupWarnings(): void {
