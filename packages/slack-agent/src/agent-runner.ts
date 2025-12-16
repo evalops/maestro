@@ -19,6 +19,7 @@ import type { ChannelStore } from "./store.js";
 import { createSlackAgentTools, setUploadFunction } from "./tools/index.js";
 import { ensureDir } from "./utils/fs.js";
 import { MessageQueue } from "./utils/message-queue.js";
+import { createTimestampGenerator } from "./utils/slack-timestamp.js";
 import { splitForSlack } from "./utils/split-for-slack.js";
 
 // Import from main composer source
@@ -106,22 +107,8 @@ export interface AgentRunResult {
 	};
 }
 
-// Slack timestamp helpers
-let lastTsMs = 0;
-let tsCounter = 0;
-
-function toSlackTs(): string {
-	const now = Date.now();
-	if (now === lastTsMs) {
-		tsCounter++;
-	} else {
-		lastTsMs = now;
-		tsCounter = 0;
-	}
-	const seconds = Math.floor(now / 1000);
-	const micros = (now % 1000) * 1000 + tsCounter;
-	return `${seconds}.${micros.toString().padStart(6, "0")}`;
-}
+// Slack timestamp generator for logging
+const slackTsGenerator = createTimestampGenerator();
 
 function getAnthropicApiKey(): string {
 	const key =
@@ -672,7 +659,7 @@ export function createAgentRunner(
 
 						await store.logMessage(ctx.message.channel, {
 							date: new Date().toISOString(),
-							ts: toSlackTs(),
+							ts: slackTsGenerator.generate(),
 							user: "bot",
 							text: `[Tool] ${event.toolName}: ${JSON.stringify(event.args)}`,
 							attachments: [],
@@ -715,7 +702,7 @@ export function createAgentRunner(
 
 						await store.logMessage(ctx.message.channel, {
 							date: new Date().toISOString(),
-							ts: toSlackTs(),
+							ts: slackTsGenerator.generate(),
 							user: "bot",
 							text: `[Tool Result] ${event.toolName}: ${event.isError ? "ERROR: " : ""}${truncate(resultStr, 1000)}`,
 							attachments: [],
