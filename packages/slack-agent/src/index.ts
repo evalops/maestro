@@ -231,3 +231,23 @@ export {
 	type HealthCheckFn,
 	type HealthCheckerConfig,
 } from "./utils/health-check.js";
+
+export {
+	MetricsCollector,
+	createMetricsCollector,
+	createSlackMetrics,
+	type Tags,
+	type Timer,
+	type HistogramSummary,
+	type MetricSummary,
+	type MetricsCollectorConfig,
+} from "./utils/metrics.js";
+
+export {
+	TypedEmitter,
+	createTypedEmitter,
+	createSlackAgentEmitter,
+	type EventHandler,
+	type AsyncEventHandler,
+	type SlackAgentEvents,
+} from "./utils/typed-emitter.js";
