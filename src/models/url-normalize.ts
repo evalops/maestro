@@ -36,8 +36,7 @@ export function normalizeLLMBaseUrl(
 	const hasPath = (pathname: string): boolean =>
 		pathname.endsWith(desiredPath) || pathname.includes(`${desiredPath}/`);
 
-	const isPrivateIp = (host: string): boolean => {
-		// Only check IPv4 literals; hostnames are allowed (DNS resolution not performed here).
+	const isPrivateIpv4 = (host: string): boolean => {
 		const ipv4Match = host.match(/^\d+\.\d+\.\d+\.\d+$/);
 		if (!ipv4Match) return false;
 		const octets = host.split(".").map(Number);
@@ -60,6 +59,52 @@ export function normalizeLLMBaseUrl(
 			// link-local 169.254.0.0/16
 			(a === 169 && b === 254)
 		);
+	};
+
+	const isPrivateIpv6 = (host: string): boolean => {
+		// Remove brackets from IPv6 literals (e.g., [::1] -> ::1)
+		const addr = host.replace(/^\[|\]$/g, "").toLowerCase();
+
+		// Check for obvious IPv6 patterns
+		if (!addr.includes(":")) return false;
+
+		// Loopback ::1
+		if (addr === "::1" || addr === "0:0:0:0:0:0:0:1") return true;
+
+		// Unspecified address ::
+		if (addr === "::" || addr === "0:0:0:0:0:0:0:0") return true;
+
+		// Link-local fe80::/10
+		if (
+			addr.startsWith("fe8") ||
+			addr.startsWith("fe9") ||
+			addr.startsWith("fea") ||
+			addr.startsWith("feb")
+		)
+			return true;
+
+		// Unique local fc00::/7 (fc00::/8 and fd00::/8)
+		if (addr.startsWith("fc") || addr.startsWith("fd")) return true;
+
+		// IPv4-mapped IPv6 addresses ::ffff:x.x.x.x
+		const ipv4MappedMatch = addr.match(
+			/^(?:::ffff:|0:0:0:0:0:ffff:)(\d+\.\d+\.\d+\.\d+)$/i,
+		);
+		if (ipv4MappedMatch) {
+			return isPrivateIpv4(ipv4MappedMatch[1]);
+		}
+
+		// IPv4-compatible IPv6 (deprecated but still block) ::x.x.x.x
+		const ipv4CompatMatch = addr.match(/^::(\d+\.\d+\.\d+\.\d+)$/);
+		if (ipv4CompatMatch) {
+			return isPrivateIpv4(ipv4CompatMatch[1]);
+		}
+
+		return false;
+	};
+
+	const isPrivateIp = (host: string): boolean => {
+		return isPrivateIpv4(host) || isPrivateIpv6(host);
 	};
 
 	const isSafeHttpUrl = (value: string): boolean => {

@@ -16,6 +16,33 @@ type BucketKey = string;
 
 const hits = new Map<BucketKey, { count: number; windowStart: number }>();
 
+/**
+ * Lua script for atomic rate limit check.
+ *
+ * This script ensures that INCR and PEXPIRE happen atomically, preventing
+ * the race condition where INCR succeeds but PEXPIRE fails, leaving keys
+ * without TTL that would permanently block users.
+ *
+ * The script also repairs keys that somehow lost their TTL by re-applying it.
+ */
+const RATE_LIMIT_SCRIPT = `
+local key = KEYS[1]
+local window_ms = tonumber(ARGV[1])
+
+-- Increment the counter
+local count = redis.call('INCR', key)
+
+-- Get current TTL
+local ttl = redis.call('PTTL', key)
+
+-- Set expiration if key is new (count == 1) or has no TTL (-1 means no expiry, -2 means key doesn't exist)
+if ttl < 0 then
+	redis.call('PEXPIRE', key, window_ms)
+end
+
+return count
+`;
+
 async function checkBucket(
 	key: BucketKey,
 	limit: number,
@@ -26,14 +53,19 @@ async function checkBucket(
 	if (isRedisAvailable()) {
 		const client = getRedisClient();
 		if (client) {
-			const ttlKey = `${key}:ttl`;
-			const count = await client.incr(key);
-			if (count === 1) {
-				await client.pexpire(key, WINDOW_MS);
+			try {
+				// Use Lua script for atomic incr + expire
+				const count = (await client.eval(
+					RATE_LIMIT_SCRIPT,
+					1,
+					key,
+					String(WINDOW_MS),
+				)) as number;
+				const remaining = Math.max(0, limit - count);
+				return { allowed: count <= limit, remaining };
+			} catch {
+				// Fall through to in-memory fallback on Redis errors
 			}
-			const ttl = await client.pttl(key);
-			const remaining = Math.max(0, limit - count);
-			return { allowed: count <= limit, remaining };
 		}
 	}
 

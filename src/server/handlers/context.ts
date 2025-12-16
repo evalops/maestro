@@ -15,6 +15,44 @@ function assertSessionId(sessionId: string): void {
 	}
 }
 
+/**
+ * Check if a user has access to a session.
+ *
+ * In multi-user deployments, sessions should only be accessible by their owner.
+ * This function verifies ownership by checking if the session belongs to the
+ * authenticated user's scope.
+ *
+ * Session ownership is determined by:
+ * 1. If session has an explicit 'owner' field, it must match the subject
+ * 2. If session has a 'subject' field (API-created sessions), it must match
+ * 3. Otherwise, access is denied for API requests in strict mode (prevents IDOR)
+ *
+ * Note: Current sessions don't store owner info, so this defaults to denying
+ * access in strict mode. Set COMPOSER_STRICT_SESSION_ACCESS=false for backwards
+ * compatibility in single-user deployments.
+ */
+function verifySessionOwnership(
+	session: Record<string, unknown>,
+	subject: string,
+): boolean {
+	// Check explicit owner field
+	if (typeof session.owner === "string" && session.owner) {
+		return session.owner === subject;
+	}
+
+	// Check subject field (for API-created sessions)
+	if (typeof session.subject === "string" && session.subject) {
+		return session.subject === subject;
+	}
+
+	// For sessions without ownership info:
+	// In strict mode (multi-user), deny access to prevent IDOR attacks.
+	// Sessions created via CLI don't have ownership info, but API access
+	// should be restricted in hosted environments.
+	const strictMode = process.env.COMPOSER_STRICT_SESSION_ACCESS !== "false";
+	return !strictMode;
+}
+
 export async function handleContext(
 	req: IncomingMessage,
 	res: ServerResponse,
@@ -66,6 +104,17 @@ export async function handleContext(
 				res,
 				404,
 				{ error: "Session file exists but could not be loaded" },
+				corsHeaders,
+			);
+			return;
+		}
+
+		// Verify session ownership to prevent IDOR attacks
+		if (!verifySessionOwnership(session, subject)) {
+			sendJson(
+				res,
+				403,
+				{ error: "Access denied: session belongs to another user" },
 				corsHeaders,
 			);
 			return;
