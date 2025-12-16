@@ -8,6 +8,26 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionFileWriter } from "../../src/session/file-writer.js";
 import type { SessionEntry } from "../../src/session/types.js";
 
+// Helper to create a simple entry that satisfies SessionEntry union
+function createMessageEntry(content: string): SessionEntry {
+	return {
+		type: "thinking_level_change",
+		timestamp: new Date().toISOString(),
+		thinkingLevel: content, // Use thinkingLevel to store test content
+	};
+}
+
+function createSessionEntry(id: string): SessionEntry {
+	return {
+		type: "session",
+		id,
+		timestamp: new Date().toISOString(),
+		cwd: "/test",
+		model: "test/model",
+		thinkingLevel: "off",
+	};
+}
+
 describe("SessionFileWriter", () => {
 	let testDir: string;
 	let testFile: string;
@@ -26,11 +46,7 @@ describe("SessionFileWriter", () => {
 
 	it("creates file on first flush", () => {
 		const writer = new SessionFileWriter(testFile);
-		const entry: SessionEntry = {
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message: { role: "user", content: "Hello" },
-		};
+		const entry = createMessageEntry("Hello");
 
 		writer.write(entry);
 		expect(existsSync(testFile)).toBe(false);
@@ -39,22 +55,14 @@ describe("SessionFileWriter", () => {
 		expect(existsSync(testFile)).toBe(true);
 
 		const contents = readFileSync(testFile, "utf8");
-		expect(contents).toContain('"type":"message"');
+		expect(contents).toContain('"type":"thinking_level_change"');
 		writer.dispose();
 	});
 
 	it("buffers writes until flush", () => {
 		const writer = new SessionFileWriter(testFile, 10); // High batch size
-		const entry1: SessionEntry = {
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message: { role: "user", content: "First" },
-		};
-		const entry2: SessionEntry = {
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message: { role: "assistant", content: "Second" },
-		};
+		const entry1 = createMessageEntry("First");
+		const entry2 = createMessageEntry("Second");
 
 		writer.write(entry1);
 		writer.write(entry2);
@@ -75,18 +83,10 @@ describe("SessionFileWriter", () => {
 	it("auto-flushes when batch size is reached", () => {
 		const writer = new SessionFileWriter(testFile, 2); // Small batch size
 
-		writer.write({
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message: { role: "user", content: "One" },
-		});
+		writer.write(createMessageEntry("One"));
 		expect(existsSync(testFile)).toBe(false);
 
-		writer.write({
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message: { role: "user", content: "Two" },
-		});
+		writer.write(createMessageEntry("Two"));
 
 		// Should auto-flush after 2 entries
 		expect(existsSync(testFile)).toBe(true);
@@ -98,12 +98,7 @@ describe("SessionFileWriter", () => {
 
 	it("handles async flush", async () => {
 		const writer = new SessionFileWriter(testFile);
-		writer.write({
-			type: "session",
-			id: "test-id",
-			timestamp: new Date().toISOString(),
-			cwd: "/test",
-		});
+		writer.write(createSessionEntry("test-id"));
 
 		await writer.flush();
 
@@ -115,11 +110,7 @@ describe("SessionFileWriter", () => {
 
 	it("dispose removes writer from registry", () => {
 		const writer = new SessionFileWriter(testFile);
-		writer.write({
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message: { role: "user", content: "Test" },
-		});
+		writer.write(createMessageEntry("Test"));
 
 		// Dispose should not throw
 		writer.dispose();
@@ -132,18 +123,10 @@ describe("SessionFileWriter", () => {
 	it("handles multiple flushes correctly", () => {
 		const writer = new SessionFileWriter(testFile);
 
-		writer.write({
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message: { role: "user", content: "First batch" },
-		});
+		writer.write(createMessageEntry("First batch"));
 		writer.flushSync();
 
-		writer.write({
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message: { role: "assistant", content: "Second batch" },
-		});
+		writer.write(createMessageEntry("Second batch"));
 		writer.flushSync();
 
 		const contents = readFileSync(testFile, "utf8");

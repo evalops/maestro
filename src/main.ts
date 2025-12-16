@@ -182,6 +182,7 @@ import {
 	readOnlyToolNames,
 	toolRegistry,
 } from "./tools/index.js";
+import { loadInlineTools } from "./tools/inline-tools.js";
 import {
 	formatChangelogVersion,
 	getChangelogPath,
@@ -1361,7 +1362,10 @@ export async function main(args: string[]) {
 			),
 		);
 	}
-	const allTools = [...baseTools];
+
+	// Load inline tools from .composer/tools.json and ~/.composer/tools.json
+	const inlineTools = loadInlineTools();
+	const allTools = [...baseTools, ...inlineTools];
 
 	// Create sandbox for isolated tool execution if requested
 	// Sandbox modes:

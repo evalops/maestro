@@ -8,6 +8,21 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionMetadataCache } from "../../src/session/metadata-cache.js";
 import type { SessionEntry } from "../../src/session/types.js";
 
+// Helper to create a valid session entry for testing
+function createSessionEntry(
+	overrides: Partial<SessionEntry & { type: "session" }> = {},
+): SessionEntry {
+	return {
+		type: "session",
+		id: "test-id",
+		timestamp: new Date().toISOString(),
+		cwd: "/test",
+		model: "anthropic/claude-opus-4-5-20251101",
+		thinkingLevel: "off",
+		...overrides,
+	};
+}
+
 describe("SessionMetadataCache", () => {
 	let testDir: string;
 
@@ -25,13 +40,7 @@ describe("SessionMetadataCache", () => {
 	describe("apply", () => {
 		it("extracts thinking level from session entry", () => {
 			const cache = new SessionMetadataCache();
-			const entry: SessionEntry = {
-				type: "session",
-				id: "test-id",
-				timestamp: new Date().toISOString(),
-				cwd: "/test",
-				thinkingLevel: "high",
-			};
+			const entry = createSessionEntry({ thinkingLevel: "high" });
 
 			cache.apply(entry);
 
@@ -40,13 +49,9 @@ describe("SessionMetadataCache", () => {
 
 		it("extracts model from session entry", () => {
 			const cache = new SessionMetadataCache();
-			const entry: SessionEntry = {
-				type: "session",
-				id: "test-id",
-				timestamp: new Date().toISOString(),
-				cwd: "/test",
+			const entry = createSessionEntry({
 				model: "anthropic/claude-opus-4-5-20251101",
-			};
+			});
 
 			cache.apply(entry);
 
@@ -55,12 +60,9 @@ describe("SessionMetadataCache", () => {
 
 		it("extracts model metadata from session entry", () => {
 			const cache = new SessionMetadataCache();
-			const entry: SessionEntry = {
-				type: "session",
-				id: "test-id",
-				timestamp: new Date().toISOString(),
-				cwd: "/test",
+			const entry = createSessionEntry({
 				model: "anthropic/claude-sonnet-4-20250514",
+				thinkingLevel: "medium",
 				modelMetadata: {
 					provider: "anthropic",
 					modelId: "claude-sonnet-4-20250514",
@@ -68,7 +70,7 @@ describe("SessionMetadataCache", () => {
 					reasoning: true,
 					contextWindow: 200000,
 				},
-			};
+			});
 
 			cache.apply(entry);
 
@@ -82,14 +84,7 @@ describe("SessionMetadataCache", () => {
 		it("updates thinking level from thinking_level_change entry", () => {
 			const cache = new SessionMetadataCache();
 
-			cache.apply({
-				type: "session",
-				id: "test-id",
-				timestamp: new Date().toISOString(),
-				cwd: "/test",
-				thinkingLevel: "off",
-			});
-
+			cache.apply(createSessionEntry({ thinkingLevel: "off" }));
 			expect(cache.getThinkingLevel()).toBe("off");
 
 			cache.apply({
@@ -104,14 +99,9 @@ describe("SessionMetadataCache", () => {
 		it("updates model from model_change entry", () => {
 			const cache = new SessionMetadataCache();
 
-			cache.apply({
-				type: "session",
-				id: "test-id",
-				timestamp: new Date().toISOString(),
-				cwd: "/test",
-				model: "anthropic/claude-sonnet-4-20250514",
-			});
-
+			cache.apply(
+				createSessionEntry({ model: "anthropic/claude-sonnet-4-20250514" }),
+			);
 			expect(cache.getModel()).toBe("anthropic/claude-sonnet-4-20250514");
 
 			cache.apply({
@@ -132,10 +122,12 @@ describe("SessionMetadataCache", () => {
 		it("ignores irrelevant entry types", () => {
 			const cache = new SessionMetadataCache();
 
+			// Use thinking_level_change as a proxy for testing non-session entries
+			// since message entries require complex AppMessage types
 			cache.apply({
-				type: "message",
+				type: "session_meta",
 				timestamp: new Date().toISOString(),
-				message: { role: "user", content: "Hello" },
+				summary: "Test summary",
 			});
 
 			expect(cache.getThinkingLevel()).toBe("off"); // Default
@@ -146,7 +138,8 @@ describe("SessionMetadataCache", () => {
 	describe("seedFromFile", () => {
 		it("loads metadata from existing session file", () => {
 			const testFile = join(testDir, "session.jsonl");
-			const entries: SessionEntry[] = [
+			// Use raw JSON that represents valid entries - file parsing is lenient
+			const entries = [
 				{
 					type: "session",
 					id: "test-session",
@@ -154,11 +147,6 @@ describe("SessionMetadataCache", () => {
 					cwd: "/test",
 					model: "anthropic/claude-opus-4-5-20251101",
 					thinkingLevel: "medium",
-				},
-				{
-					type: "message",
-					timestamp: "2024-01-01T00:00:01Z",
-					message: { role: "user", content: "Hello" },
 				},
 				{
 					type: "thinking_level_change",
@@ -207,6 +195,7 @@ describe("SessionMetadataCache", () => {
 					timestamp: "2024-01-01T00:00:00Z",
 					cwd: "/test",
 					model: "anthropic/claude-opus-4-5-20251101",
+					thinkingLevel: "off",
 				}),
 				"{ invalid json",
 				JSON.stringify({
@@ -231,18 +220,16 @@ describe("SessionMetadataCache", () => {
 		it("resets cache to initial state", () => {
 			const cache = new SessionMetadataCache();
 
-			cache.apply({
-				type: "session",
-				id: "test-id",
-				timestamp: new Date().toISOString(),
-				cwd: "/test",
-				model: "anthropic/claude-opus-4-5-20251101",
-				thinkingLevel: "high",
-				modelMetadata: {
-					provider: "anthropic",
-					modelId: "claude-opus-4-5-20251101",
-				},
-			});
+			cache.apply(
+				createSessionEntry({
+					model: "anthropic/claude-opus-4-5-20251101",
+					thinkingLevel: "high",
+					modelMetadata: {
+						provider: "anthropic",
+						modelId: "claude-opus-4-5-20251101",
+					},
+				}),
+			);
 
 			expect(cache.getModel()).toBe("anthropic/claude-opus-4-5-20251101");
 			expect(cache.getThinkingLevel()).toBe("high");
