@@ -187,6 +187,10 @@ import {
 	type BranchController,
 	createBranchController,
 } from "./tui-renderer/branch-controller.js";
+import {
+	type ClearController,
+	createClearController,
+} from "./tui-renderer/clear-controller.js";
 import { attachEditorBindings } from "./tui-renderer/editor-bindings.js";
 import { loadInitialTuiRendererPreferences } from "./tui-renderer/initial-preferences.js";
 import { createInterruptController } from "./tui-renderer/interrupt-setup.js";
@@ -380,6 +384,7 @@ export class TuiRenderer {
 	private uiStateController!: UiStateController;
 	private quickSettingsController!: QuickSettingsController;
 	private branchController!: BranchController;
+	private clearController!: ClearController;
 
 	constructor(
 		agent: Agent,
@@ -763,6 +768,47 @@ export class TuiRenderer {
 				addContent: (text) => {
 					this.chatContainer.addChild(new Spacer(1));
 					this.chatContainer.addChild(new Text(text, 1, 0));
+				},
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
+
+		// Initialize clear controller for session clearing
+		this.clearController = createClearController({
+			callbacks: {
+				abortAndWait: async () => {
+					this.agent.abort();
+					await this.agent.waitForIdle();
+				},
+				setAgentRunning: (running) => {
+					this.isAgentRunning = running;
+				},
+				cancelQueuedPrompts: () =>
+					this.queueController.cancelAll({ silent: true }),
+				stopLoader: () => this.loaderView.stop(),
+				clearStatusContainer: () => this.statusContainer.clear(),
+				resetAgent: () => this.agent.reset(),
+				resetSession: () => this.sessionManager.reset(),
+				resetArtifacts: () => this.sessionContext.resetArtifacts(),
+				clearToolTracking: () => this.toolOutputView.clearTrackedComponents(),
+				clearChatContainer: () => this.chatContainer.clear(),
+				clearScrollHistory: () => this.scrollContainer.clearHistory(),
+				clearStartupContainer: () => this.startupContainer.clear(),
+				syncPlanHint: () => this.planView.syncHintWithStore(),
+				setPlanHint: (hint) => {
+					this.planHint = hint;
+				},
+				clearEditor: () => this.editor.setText(""),
+				clearPendingTools: () => this.pendingTools.clear(),
+				clearInterruptState: () => this.interruptController.clear(),
+				renderInitialMessages: (state) => this.renderInitialMessages(state),
+				getAgentState: () => this.agent.state,
+				updateFooterState: (state) => this.footer.updateState(state),
+				refreshFooterHint: () => this.refreshFooterHint(),
+				showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
+				showError: (msg) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(msg, 1, 1));
 				},
 				requestRender: () => this.ui.requestRender(),
 			},
@@ -1834,82 +1880,8 @@ export class TuiRenderer {
 		this.persistUiState();
 	}
 
-	private clearInProgress = false;
-
 	private async handleClearCommand(): Promise<void> {
-		// Prevent concurrent clear operations
-		if (this.clearInProgress) {
-			return;
-		}
-		this.clearInProgress = true;
-
-		try {
-			// Abort any in-flight agent work
-			this.agent.abort();
-			await this.agent.waitForIdle();
-
-			// Reset running flag immediately so the UI reflects idle state while agent_end propagates
-			this.isAgentRunning = false;
-
-			// Cancel any queued prompts
-			this.queueController.cancelAll({ silent: true });
-
-			// Stop loading animation if present
-			this.loaderView.stop();
-			this.statusContainer.clear();
-
-			// Reset agent and session
-			this.agent.reset();
-			this.sessionManager.reset();
-
-			// Reset session artifacts and tool tracking
-			this.sessionContext.resetArtifacts();
-			this.toolOutputView.clearTrackedComponents();
-
-			// Clear all UI containers and scroll history
-			this.chatContainer.clear();
-			this.scrollContainer.clearHistory();
-			this.startupContainer.clear();
-
-			// Reset plan state
-			this.planView.syncHintWithStore();
-			this.planHint = null;
-
-			// Clear editor input
-			this.editor.setText("");
-
-			// Clear pending tools
-			this.pendingTools.clear();
-
-			// Clear interrupt state if armed
-			this.interruptController.clear();
-
-			// Reset message view state and render initial messages
-			this.renderInitialMessages(this.agent.state);
-
-			// Update footer and refresh hints
-			this.footer.updateState(this.agent.state);
-			this.refreshFooterHint();
-
-			// Show success confirmation
-			this.notificationView.showToast(
-				"Context cleared - started fresh session",
-				"success",
-			);
-		} catch (error) {
-			// On error, ensure UI is in a consistent state
-			this.loaderView.stop();
-			this.statusContainer.clear();
-
-			const errorMsg = error instanceof Error ? error.message : String(error);
-			this.chatContainer.addChild(new Spacer(1));
-			this.chatContainer.addChild(
-				new Text(`✗ Error clearing context: ${errorMsg}`, 1, 1),
-			);
-		} finally {
-			this.clearInProgress = false;
-			this.ui.requestRender();
-		}
+		await this.clearController.handleClearCommand();
 	}
 
 	private handleReportCommand(context: CommandExecutionContext): void {
