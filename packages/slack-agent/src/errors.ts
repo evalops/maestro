@@ -210,6 +210,50 @@ export function trySync<T>(
 }
 
 /**
+ * Check if an error is likely transient and retryable.
+ * Checks for rate limits, timeouts, network errors, and server errors.
+ */
+export function isRetryableError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+
+	const message = error.message.toLowerCase();
+
+	// Rate limit errors
+	if (message.includes("rate limit") || message.includes("429")) return true;
+
+	// Timeout errors
+	if (message.includes("timeout") || message.includes("timed out")) return true;
+
+	// Network errors
+	if (
+		message.includes("network") ||
+		message.includes("econnreset") ||
+		message.includes("econnrefused") ||
+		message.includes("socket hang up") ||
+		message.includes("fetch failed")
+	)
+		return true;
+
+	// Server errors (5xx)
+	if (
+		message.includes("500") ||
+		message.includes("502") ||
+		message.includes("503") ||
+		message.includes("504") ||
+		message.includes("internal server error") ||
+		message.includes("service unavailable") ||
+		message.includes("bad gateway")
+	)
+		return true;
+
+	// Overload errors
+	if (message.includes("overloaded") || message.includes("capacity"))
+		return true;
+
+	return false;
+}
+
+/**
  * Retry an async operation with exponential backoff
  */
 export async function retryAsync<T>(
@@ -219,14 +263,20 @@ export async function retryAsync<T>(
 		maxAttempts?: number;
 		initialDelayMs?: number;
 		maxDelayMs?: number;
+		/** Custom retry predicate. Defaults to isRetryableError. */
 		shouldRetry?: (error: unknown) => boolean;
+		/** Add jitter to delays (0-1, default 0.3 = 30%) */
+		jitter?: number;
+		/** Callback when retrying */
+		onRetry?: (attempt: number, error: Error, delayMs: number) => void;
 		context?: Record<string, unknown>;
 	},
 ): Promise<T> {
 	const maxAttempts = options?.maxAttempts ?? 3;
 	const initialDelayMs = options?.initialDelayMs ?? 1000;
 	const maxDelayMs = options?.maxDelayMs ?? 10000;
-	const shouldRetry = options?.shouldRetry ?? (() => true);
+	const shouldRetry = options?.shouldRetry ?? isRetryableError;
+	const jitterRatio = options?.jitter ?? 0.3;
 
 	let lastError: unknown;
 
@@ -240,11 +290,21 @@ export async function retryAsync<T>(
 				break;
 			}
 
-			const delay = Math.min(initialDelayMs * 2 ** (attempt - 1), maxDelayMs);
-			logger.logWarning(
-				`${operation} failed (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms`,
-				getErrorMessage(error),
-			);
+			// Exponential backoff with jitter
+			const exponentialDelay = initialDelayMs * 2 ** (attempt - 1);
+			const jitter = Math.random() * jitterRatio * exponentialDelay;
+			const delay = Math.min(exponentialDelay + jitter, maxDelayMs);
+
+			if (options?.onRetry) {
+				const err = error instanceof Error ? error : new Error(String(error));
+				options.onRetry(attempt, err, delay);
+			} else {
+				logger.logWarning(
+					`${operation} failed (attempt ${attempt}/${maxAttempts}), retrying in ${Math.round(delay)}ms`,
+					getErrorMessage(error),
+				);
+			}
+
 			await new Promise((r) => setTimeout(r, delay));
 		}
 	}

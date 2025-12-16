@@ -11,6 +11,7 @@ import {
 	summarizeContext,
 } from "./context-summarizer.js";
 import { CostTracker } from "./cost-tracker.js";
+import { isRetryableError, retryAsync } from "./errors.js";
 import * as logger from "./logger.js";
 import { type SandboxConfig, createExecutor } from "./sandbox.js";
 import type { ChannelInfo, SlackContext, UserInfo } from "./slack/bot.js";
@@ -34,8 +35,12 @@ import type {
 } from "../../../src/agent/types.js";
 import { getModel } from "../../../src/models/builtin.js";
 
+// Re-export for backwards compatibility
+export { isRetryableError } from "./errors.js";
+
 /**
  * Retry configuration for transient failures
+ * @deprecated Use retryAsync options directly
  */
 export interface RetryConfig {
 	maxAttempts: number;
@@ -43,6 +48,9 @@ export interface RetryConfig {
 	maxDelayMs: number;
 }
 
+/**
+ * @deprecated Use retryAsync options directly
+ */
 export const DEFAULT_RETRY_CONFIG: RetryConfig = {
 	maxAttempts: 3,
 	baseDelayMs: 1000,
@@ -50,83 +58,28 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
 };
 
 /**
- * Check if an error is likely transient and retryable
- */
-export function isRetryableError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-
-	const message = error.message.toLowerCase();
-
-	// Rate limit errors
-	if (message.includes("rate limit") || message.includes("429")) return true;
-
-	// Timeout errors
-	if (message.includes("timeout") || message.includes("timed out")) return true;
-
-	// Network errors
-	if (
-		message.includes("network") ||
-		message.includes("econnreset") ||
-		message.includes("econnrefused") ||
-		message.includes("socket hang up") ||
-		message.includes("fetch failed")
-	)
-		return true;
-
-	// Server errors (5xx)
-	if (
-		message.includes("500") ||
-		message.includes("502") ||
-		message.includes("503") ||
-		message.includes("504") ||
-		message.includes("internal server error") ||
-		message.includes("service unavailable") ||
-		message.includes("bad gateway")
-	)
-		return true;
-
-	// Overload errors
-	if (message.includes("overloaded") || message.includes("capacity"))
-		return true;
-
-	return false;
-}
-
-/**
  * Execute a function with exponential backoff retry
+ * @deprecated Use retryAsync from errors.ts instead
  */
 export async function withRetry<T>(
 	fn: () => Promise<T>,
 	config: RetryConfig = DEFAULT_RETRY_CONFIG,
 	onRetry?: (attempt: number, error: Error, delayMs: number) => void,
 ): Promise<T> {
-	let lastError: Error | undefined;
-
-	for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
-		try {
-			return await fn();
-		} catch (error) {
-			lastError = error instanceof Error ? error : new Error(String(error));
-
-			// Don't retry if it's not a retryable error or if it's the last attempt
-			if (!isRetryableError(error) || attempt === config.maxAttempts) {
-				throw lastError;
-			}
-
-			// Calculate delay with exponential backoff and jitter
-			const exponentialDelay = config.baseDelayMs * 2 ** (attempt - 1);
-			const jitter = Math.random() * 0.3 * exponentialDelay; // 0-30% jitter
-			const delayMs = Math.min(exponentialDelay + jitter, config.maxDelayMs);
-
-			if (onRetry) {
-				onRetry(attempt, lastError, delayMs);
-			}
-
-			await new Promise((resolve) => setTimeout(resolve, delayMs));
+	try {
+		return await retryAsync("withRetry", fn, {
+			maxAttempts: config.maxAttempts,
+			initialDelayMs: config.baseDelayMs,
+			maxDelayMs: config.maxDelayMs,
+			onRetry,
+		});
+	} catch (error) {
+		// Maintain backwards compatibility: throw original error, not wrapped
+		if (error && typeof error === "object" && "cause" in error && error.cause) {
+			throw error.cause;
 		}
+		throw error;
 	}
-
-	throw lastError;
 }
 
 export interface AgentRunner {
@@ -922,13 +875,14 @@ export function createAgentRunner(
 			}
 
 			// Run with retry logic for transient API failures
-			await withRetry(
-				() => activeAgent.prompt(userPrompt),
-				DEFAULT_RETRY_CONFIG,
-				(attempt, error, delayMs) => {
+			await retryAsync("Agent prompt", () => activeAgent.prompt(userPrompt), {
+				maxAttempts: 3,
+				initialDelayMs: 1000,
+				maxDelayMs: 30000,
+				onRetry: (attempt, error, delayMs) => {
 					const delaySec = (delayMs / 1000).toFixed(1);
 					logger.logWarning(
-						`API call failed (attempt ${attempt}/${DEFAULT_RETRY_CONFIG.maxAttempts})`,
+						`API call failed (attempt ${attempt}/3)`,
 						`${error.message}. Retrying in ${delaySec}s...`,
 					);
 					queue.enqueue(
@@ -940,7 +894,7 @@ export function createAgentRunner(
 						"retry notice",
 					);
 				},
-			);
+			});
 
 			await queue.flush();
 

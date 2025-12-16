@@ -9,6 +9,7 @@ import {
 	assertValid,
 	getErrorMessage,
 	getErrorStack,
+	isRetryableError,
 	logError,
 	retryAsync,
 	tryAsync,
@@ -308,7 +309,7 @@ describe("retryAsync", () => {
 		expect(attempts).toBe(1);
 	});
 
-	it("retries on failure", async () => {
+	it("retries on failure when shouldRetry returns true", async () => {
 		let attempts = 0;
 		const result = await retryAsync(
 			"Test",
@@ -317,11 +318,27 @@ describe("retryAsync", () => {
 				if (attempts < 3) throw new Error("Fail");
 				return "success";
 			},
-			{ maxAttempts: 3, initialDelayMs: 10 },
+			{ maxAttempts: 3, initialDelayMs: 10, shouldRetry: () => true },
 		);
 
 		expect(result).toBe("success");
 		expect(attempts).toBe(3);
+	});
+
+	it("retries on retryable errors by default", async () => {
+		let attempts = 0;
+		const result = await retryAsync(
+			"Test",
+			async () => {
+				attempts++;
+				if (attempts < 2) throw new Error("Connection timeout");
+				return "success";
+			},
+			{ maxAttempts: 3, initialDelayMs: 10 },
+		);
+
+		expect(result).toBe("success");
+		expect(attempts).toBe(2);
 	});
 
 	it("throws after max attempts", async () => {
@@ -333,7 +350,7 @@ describe("retryAsync", () => {
 					attempts++;
 					throw new Error("Always fails");
 				},
-				{ maxAttempts: 2, initialDelayMs: 10 },
+				{ maxAttempts: 2, initialDelayMs: 10, shouldRetry: () => true },
 			),
 		).rejects.toThrow("Test failed after 2 attempts");
 		expect(attempts).toBe(2);
@@ -356,6 +373,59 @@ describe("retryAsync", () => {
 			),
 		).rejects.toThrow();
 		expect(attempts).toBe(1); // Only tried once
+	});
+});
+
+describe("isRetryableError", () => {
+	it("returns false for non-Error values", () => {
+		expect(isRetryableError(null)).toBe(false);
+		expect(isRetryableError(undefined)).toBe(false);
+		expect(isRetryableError("string")).toBe(false);
+		expect(isRetryableError(42)).toBe(false);
+		expect(isRetryableError({})).toBe(false);
+	});
+
+	it("detects rate limit errors", () => {
+		expect(isRetryableError(new Error("Rate limit exceeded"))).toBe(true);
+		expect(isRetryableError(new Error("rate limit reached"))).toBe(true);
+		expect(isRetryableError(new Error("HTTP 429 Too Many Requests"))).toBe(
+			true,
+		);
+	});
+
+	it("detects timeout errors", () => {
+		expect(isRetryableError(new Error("Request timeout"))).toBe(true);
+		expect(isRetryableError(new Error("Connection timed out"))).toBe(true);
+	});
+
+	it("detects network errors", () => {
+		expect(isRetryableError(new Error("Network error"))).toBe(true);
+		expect(isRetryableError(new Error("ECONNRESET"))).toBe(true);
+		expect(isRetryableError(new Error("ECONNREFUSED"))).toBe(true);
+		expect(isRetryableError(new Error("Socket hang up"))).toBe(true);
+		expect(isRetryableError(new Error("Fetch failed"))).toBe(true);
+	});
+
+	it("detects server errors (5xx)", () => {
+		expect(isRetryableError(new Error("HTTP 500"))).toBe(true);
+		expect(isRetryableError(new Error("Internal server error"))).toBe(true);
+		expect(isRetryableError(new Error("HTTP 502"))).toBe(true);
+		expect(isRetryableError(new Error("Bad gateway"))).toBe(true);
+		expect(isRetryableError(new Error("HTTP 503"))).toBe(true);
+		expect(isRetryableError(new Error("Service unavailable"))).toBe(true);
+		expect(isRetryableError(new Error("HTTP 504"))).toBe(true);
+	});
+
+	it("detects overload errors", () => {
+		expect(isRetryableError(new Error("Server overloaded"))).toBe(true);
+		expect(isRetryableError(new Error("At capacity"))).toBe(true);
+	});
+
+	it("returns false for non-retryable errors", () => {
+		expect(isRetryableError(new Error("Unauthorized"))).toBe(false);
+		expect(isRetryableError(new Error("Invalid API key"))).toBe(false);
+		expect(isRetryableError(new Error("HTTP 400 Bad Request"))).toBe(false);
+		expect(isRetryableError(new Error("HTTP 404 Not Found"))).toBe(false);
 	});
 });
 
