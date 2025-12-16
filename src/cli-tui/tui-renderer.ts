@@ -1046,20 +1046,26 @@ export class TuiRenderer {
 			handleMode: (context) => this.handleModeCommand(context),
 			handlePrompts: (context) => this.handlePromptsCommand(context),
 			handleCopy: (context) => this.handleCopyCommand(context),
-			// Grouped command handlers
+			// Grouped command handlers - delegate directly to lazy-initialized handlers
 			handleSessionCommand: (context) =>
-				this.handleGroupedSessionCommand(context),
-			handleDiagCommand: (context) => this.handleGroupedDiagCommand(context),
-			handleUiCommand: (context) => this.handleGroupedUiCommand(context),
+				this.getGroupedHandlers().handleSession(context),
+			handleDiagCommand: (context) =>
+				this.getGroupedHandlers().handleDiag(context),
+			handleUiCommand: (context) => this.getGroupedHandlers().handleUi(context),
 			handleSafetyCommand: (context) =>
-				this.handleGroupedSafetyCommand(context),
-			handleGitCommand: (context) => this.handleGroupedGitCommand(context),
-			handleAuthCommand: (context) => this.handleGroupedAuthCommand(context),
-			handleUsageCommand: (context) => this.handleGroupedUsageCommand(context),
-			handleUndoCommand: (context) => this.handleGroupedUndoCommand(context),
+				this.getGroupedHandlers().handleSafety(context),
+			handleGitCommand: (context) =>
+				this.getGroupedHandlers().handleGit(context),
+			handleAuthCommand: (context) =>
+				this.getGroupedHandlers().handleAuth(context),
+			handleUsageCommand: (context) =>
+				this.getGroupedHandlers().handleUsage(context),
+			handleUndoCommand: (context) =>
+				this.getGroupedHandlers().handleUndo(context),
 			handleConfigCommand: (context) =>
-				this.handleGroupedConfigCommand(context),
-			handleToolsCommand: (context) => this.handleGroupedToolsCommand(context),
+				this.getGroupedHandlers().handleConfig(context),
+			handleToolsCommand: (context) =>
+				this.getGroupedHandlers().handleTools(context),
 		});
 
 		this.commandEntries = registry.entries;
@@ -3009,69 +3015,5 @@ export class TuiRenderer {
 				throw new Error(message);
 			});
 		}
-	}
-
-	// ═══════════════════════════════════════════════════════════════════════════
-	// GROUPED COMMAND HANDLERS
-	// ═══════════════════════════════════════════════════════════════════════════
-
-	private async handleGroupedSessionCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleSession(context);
-	}
-
-	private async handleGroupedDiagCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleDiag(context);
-	}
-
-	private async handleGroupedUiCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleUi(context);
-	}
-
-	private async handleGroupedSafetyCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleSafety(context);
-	}
-
-	private async handleGroupedGitCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleGit(context);
-	}
-
-	private async handleGroupedAuthCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleAuth(context);
-	}
-
-	private async handleGroupedUsageCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleUsage(context);
-	}
-
-	private async handleGroupedUndoCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleUndo(context);
-	}
-
-	private async handleGroupedConfigCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleConfig(context);
-	}
-
-	private async handleGroupedToolsCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.getGroupedHandlers().handleTools(context);
 	}
 }
