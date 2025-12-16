@@ -382,18 +382,52 @@ export class Orchestrator {
 		this.memory.updateTaskStatus(task.id, "in_progress");
 		this.memory.incrementAttempts(task.id);
 
-		const result = await this.executor.execute(task);
+		try {
+			const result = await this.executor.execute(task);
 
-		if (result.success && result.prNumber) {
-			this.memory.updateTaskStatus(task.id, "completed", result);
-			this.memory.recordOutcome(task.id, result.prNumber);
-			console.log(
-				`[orchestrator] Task completed: ${task.id} -> PR #${result.prNumber}`,
-			);
-			console.log(`[orchestrator] PR URL: ${result.prUrl}`);
-		} else {
-			this.memory.updateTaskStatus(task.id, "failed", result);
-			console.log(`[orchestrator] Task failed: ${result.error}`);
+			if (result.success && result.prNumber) {
+				this.memory.updateTaskStatus(task.id, "completed", result);
+				this.memory.recordOutcome(task.id, result.prNumber);
+				console.log(
+					`[orchestrator] Task completed: ${task.id} -> PR #${result.prNumber}`,
+				);
+				console.log(`[orchestrator] PR URL: ${result.prUrl}`);
+			} else {
+				// Match processNextTask behavior: allow retries if attempts remain
+				if (task.attempts < this.config.maxAttemptsPerTask) {
+					this.memory.updateTaskStatus(task.id, "pending", result);
+					console.log(
+						`[orchestrator] Task failed, will retry on next run (attempt ${task.attempts}/${this.config.maxAttemptsPerTask}): ${result.error}`,
+					);
+				} else {
+					this.memory.updateTaskStatus(task.id, "failed", result);
+					console.log(
+						`[orchestrator] Task failed permanently: ${result.error}`,
+					);
+				}
+			}
+		} catch (err) {
+			// Handle unexpected exceptions - don't leave task stuck in_progress
+			const error = err instanceof Error ? err.message : String(err);
+			console.error(`[orchestrator] Task threw exception: ${task.id}`, error);
+
+			// Match processNextTask behavior: allow retries if attempts remain
+			if (task.attempts < this.config.maxAttemptsPerTask) {
+				this.memory.updateTaskStatus(task.id, "pending", {
+					success: false,
+					error,
+					duration: 0,
+				});
+				console.log(
+					`[orchestrator] Task will retry on next run (attempt ${task.attempts}/${this.config.maxAttemptsPerTask})`,
+				);
+			} else {
+				this.memory.updateTaskStatus(task.id, "failed", {
+					success: false,
+					error,
+					duration: 0,
+				});
+			}
 		}
 	}
 
