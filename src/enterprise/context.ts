@@ -1,8 +1,12 @@
 /**
  * Enterprise Context
  * Centralized user/org context for audit logging, policy checks, and billing
+ *
+ * This module uses AsyncLocalStorage to provide request-scoped context isolation.
+ * This prevents session/metadata leakage between concurrent web server requests.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter } from "node:events";
 import { createLogger } from "../utils/logger.js";
 
@@ -37,13 +41,27 @@ type ContextEventMap = {
 	toolExecuted: [toolName: string, status: "success" | "failure" | "denied"];
 };
 
+/**
+ * AsyncLocalStorage for request-scoped context.
+ * This ensures each concurrent request has isolated session/metadata.
+ */
+const requestScopedContext = new AsyncLocalStorage<EnterpriseContextData>();
+
 class EnterpriseContextManager extends EventEmitter<ContextEventMap> {
-	private context: EnterpriseContextData = {
+	private globalContext: EnterpriseContextData = {
 		user: null,
 		session: null,
 	};
 
 	private initialized = false;
+
+	/**
+	 * Get the current context (request-scoped if available, otherwise global).
+	 * This allows both CLI (global) and web server (request-scoped) usage.
+	 */
+	private get context(): EnterpriseContextData {
+		return requestScopedContext.getStore() ?? this.globalContext;
+	}
 
 	/**
 	 * Initialize enterprise context from environment/token
@@ -178,14 +196,60 @@ class EnterpriseContextManager extends EventEmitter<ContextEventMap> {
 	}
 
 	/**
-	 * Reset the context (for testing)
+	 * Reset the global context (for testing)
 	 */
 	reset(): void {
-		this.context = {
+		this.globalContext = {
 			user: null,
 			session: null,
 		};
 		this.initialized = false;
+	}
+
+	/**
+	 * Run a callback with an isolated request-scoped context.
+	 * Use this for web server requests to prevent context leakage.
+	 *
+	 * @param callback - The function to run within the isolated context
+	 * @param initialContext - Optional initial context data
+	 * @returns The return value of the callback
+	 */
+	runWithContext<T>(
+		callback: () => T,
+		initialContext?: Partial<EnterpriseContextData>,
+	): T {
+		const scopedContext: EnterpriseContextData = {
+			user: initialContext?.user ?? this.globalContext.user,
+			session: initialContext?.session ?? null,
+			requestId: initialContext?.requestId,
+			traceId: initialContext?.traceId,
+			ipAddress: initialContext?.ipAddress,
+			userAgent: initialContext?.userAgent,
+		};
+		return requestScopedContext.run(scopedContext, callback);
+	}
+
+	/**
+	 * Run an async callback with an isolated request-scoped context.
+	 * Use this for web server requests to prevent context leakage.
+	 *
+	 * @param callback - The async function to run within the isolated context
+	 * @param initialContext - Optional initial context data
+	 * @returns A promise that resolves to the return value of the callback
+	 */
+	async runWithContextAsync<T>(
+		callback: () => Promise<T>,
+		initialContext?: Partial<EnterpriseContextData>,
+	): Promise<T> {
+		const scopedContext: EnterpriseContextData = {
+			user: initialContext?.user ?? this.globalContext.user,
+			session: initialContext?.session ?? null,
+			requestId: initialContext?.requestId,
+			traceId: initialContext?.traceId,
+			ipAddress: initialContext?.ipAddress,
+			userAgent: initialContext?.userAgent,
+		};
+		return requestScopedContext.run(scopedContext, callback);
 	}
 }
 

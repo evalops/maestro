@@ -154,6 +154,18 @@ export function sendJson(
 			headers["Content-Encoding"] = "gzip";
 			res.writeHead(status, headers);
 			const gzip = createGzip();
+			// Handle compression stream errors to prevent process crash
+			gzip.on("error", (err) => {
+				// Stream error during compression - destroy streams cleanly
+				gzip.destroy();
+				if (!res.writableEnded) {
+					res.destroy(err);
+				}
+			});
+			res.on("error", () => {
+				// Client disconnect - destroy compression stream
+				gzip.destroy();
+			});
 			gzip.pipe(res);
 			gzip.end(body);
 			return;
@@ -163,6 +175,18 @@ export function sendJson(
 			headers["Content-Encoding"] = "deflate";
 			res.writeHead(status, headers);
 			const deflate = createDeflate();
+			// Handle compression stream errors to prevent process crash
+			deflate.on("error", (err) => {
+				// Stream error during compression - destroy streams cleanly
+				deflate.destroy();
+				if (!res.writableEnded) {
+					res.destroy(err);
+				}
+			});
+			res.on("error", () => {
+				// Client disconnect - destroy compression stream
+				deflate.destroy();
+			});
 			deflate.pipe(res);
 			deflate.end(body);
 			return;

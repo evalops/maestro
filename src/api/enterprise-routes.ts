@@ -698,6 +698,9 @@ async function handleUpdateMemberRole(
 			),
 		);
 
+	// Clear permission cache for the updated user to ensure new role takes effect immediately
+	PermissionChecker.clearCache(userId, auth.orgId);
+
 	sendJson(res, 200, { success: true }, cors, req);
 }
 
