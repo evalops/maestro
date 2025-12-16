@@ -78,6 +78,10 @@ import {
 	type McpRenderContext,
 	handleMcpCommand,
 } from "./commands/mcp-handlers.js";
+import {
+	handleApprovalsCommand,
+	handlePlanModeCommand,
+} from "./commands/safety-handlers.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
@@ -1131,8 +1135,26 @@ export class TuiRenderer {
 				this.stop();
 				process.exit(0);
 			},
-			handleApprovals: (context) => this.handleApprovalsCommand(context),
-			handlePlanMode: (context) => this.handlePlanModeCommand(context),
+			handleApprovals: (context) =>
+				handleApprovalsCommand(context, this.approvalService, {
+					showToast: (msg, type) => this.notificationView.showToast(msg, type),
+					refreshFooterHint: () => this.refreshFooterHint(),
+					addContent: (text) => {
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(new Text(text, 1, 0));
+					},
+					requestRender: () => this.ui.requestRender(),
+				}),
+			handlePlanMode: (context) =>
+				handlePlanModeCommand(context, {
+					showToast: (msg, type) => this.notificationView.showToast(msg, type),
+					refreshFooterHint: () => this.refreshFooterHint(),
+					addContent: (text) => {
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(new Text(text, 1, 0));
+					},
+					requestRender: () => this.ui.requestRender(),
+				}),
 			handleNewChat: (context) => this.handleNewChatCommand(context),
 			handleInitAgents: (context) => this.handleInitCommand(context),
 			handleMcp: (context) => this.handleMcpCommand(context),
@@ -1879,63 +1901,6 @@ export class TuiRenderer {
 		});
 	}
 
-	private handleApprovalsCommand(context: CommandExecutionContext): void {
-		const arg = context.argumentText.trim().toLowerCase();
-		if (arg) {
-			if (!["auto", "prompt", "fail"].includes(arg)) {
-				context.showError('Mode must be one of "auto", "prompt", or "fail".');
-				context.renderHelp();
-				return;
-			}
-			this.approvalService.setMode(arg as ApprovalMode);
-			this.notificationView.showToast(
-				`Switched approval mode to ${arg}.`,
-				"success",
-			);
-			this.refreshFooterHint();
-		}
-		const pending = this.approvalService.getPendingRequests();
-		const pendingSummary = pending.length
-			? `Pending approvals (${pending.length}):${pending
-					.slice(0, 5)
-					.map((req) => `\n• ${req.toolName} – ${req.reason ?? "awaiting"}`)
-					.join("")}`
-			: "No pending approval requests.";
-		const summaryLines = [
-			`Approval mode: ${this.approvalService.getMode()}`,
-			pendingSummary,
-		];
-		if (pending.length > 5) {
-			summaryLines.push(
-				`Showing first 5 of ${pending.length}. Use the approvals panel to review all.`,
-			);
-		}
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(summaryLines.join("\n"), 1, 0));
-		this.ui.requestRender();
-	}
-
-	private handlePlanModeCommand(context: CommandExecutionContext): void {
-		const arg = context.argumentText.trim().toLowerCase();
-		if (arg) {
-			if (!["on", "off"].includes(arg)) {
-				context.showError('Plan mode must be "on" or "off".');
-				return;
-			}
-			process.env.COMPOSER_PLAN_MODE = arg === "on" ? "1" : "0";
-			this.notificationView.showToast(
-				`Plan mode ${arg === "on" ? "enabled" : "disabled"}.`,
-				"success",
-			);
-			this.refreshFooterHint();
-		}
-		const status =
-			process.env.COMPOSER_PLAN_MODE === "1" ? "enabled" : "disabled";
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(`Plan mode is ${status}.`, 1, 0));
-		this.ui.requestRender();
-	}
-
 	private handleFrameworkCommand(context: CommandExecutionContext): void {
 		frameworkHandler(context, {
 			showInfo: (msg) => this.notificationView.showInfo(msg),
@@ -2404,8 +2369,28 @@ export class TuiRenderer {
 					}),
 				},
 				safety: {
-					handleApprovals: (ctx) => this.handleApprovalsCommand(ctx),
-					handlePlanMode: (ctx) => this.handlePlanModeCommand(ctx),
+					handleApprovals: (ctx) =>
+						handleApprovalsCommand(ctx, this.approvalService, {
+							showToast: (msg, type) =>
+								this.notificationView.showToast(msg, type),
+							refreshFooterHint: () => this.refreshFooterHint(),
+							addContent: (text) => {
+								this.chatContainer.addChild(new Spacer(1));
+								this.chatContainer.addChild(new Text(text, 1, 0));
+							},
+							requestRender: () => this.ui.requestRender(),
+						}),
+					handlePlanMode: (ctx) =>
+						handlePlanModeCommand(ctx, {
+							showToast: (msg, type) =>
+								this.notificationView.showToast(msg, type),
+							refreshFooterHint: () => this.refreshFooterHint(),
+							addContent: (text) => {
+								this.chatContainer.addChild(new Spacer(1));
+								this.chatContainer.addChild(new Text(text, 1, 0));
+							},
+							requestRender: () => this.ui.requestRender(),
+						}),
 					handleGuardian: (ctx) => this.handleGuardianCommand(ctx),
 					getSafetyState: () => ({
 						approvalMode: process.env.COMPOSER_APPROVALS ?? "prompt",
