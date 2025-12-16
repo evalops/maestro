@@ -1,0 +1,104 @@
+name: Composer Self-Improvement
+
+on:
+  # Trigger on labeled issues
+  issues:
+    types: [labeled]
+
+  # Trigger on @composer mentions in issue comments
+  issue_comment:
+    types: [created]
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to process'
+        required: true
+        type: number
+
+# Only allow one run at a time
+concurrency:
+  group: github-agent
+  cancel-in-progress: false
+
+jobs:
+  process-issue:
+    # Run on labeled issues with 'composer-task' label
+    # Or on issue comments containing '@composer'
+    # Or on manual trigger
+    if: |
+      (github.event_name == 'issues' && github.event.label.name == 'composer-task') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@composer')) ||
+      github.event_name == 'workflow_dispatch'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main  # Always work from main branch
+          fetch-depth: 0  # Full history for proper git operations
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build Composer
+        run: npx nx run composer:build:all --skip-nx-cache
+
+      - name: Determine issue number
+        id: issue
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_ISSUE: ${{ inputs.issue_number }}
+          EVENT_ISSUE: ${{ github.event.issue.number }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "number=$DISPATCH_ISSUE" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=$EVENT_ISSUE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run GitHub Agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          WORKSPACE: ${{ github.workspace }}
+          COMPOSER_BIN: ${{ github.workspace }}/dist/composer-bun
+        run: |
+          # Build the github-agent
+          cd packages/github-agent
+          bun run build
+
+          # Run for a single issue
+          node dist/main.js "$REPO" \
+            --issue "$ISSUE_NUMBER" \
+            --working-dir "$WORKSPACE" \
+            --memory-dir /tmp/agent-memory
+
+      - name: Comment on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = ${{ steps.issue.outputs.number }};
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: `The GitHub Agent encountered an error while processing this issue. Check the [workflow run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`
+            });
