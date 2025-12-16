@@ -507,11 +507,14 @@ export class TuiRenderer {
 			handlers: {
 				handleLargePaste: (event) => this.pasteHandler.handleLargePaste(event),
 				handleTyping: () => this.handleEditorTyping(),
-				cycleModel: () => this.cycleModel(),
-				toggleToolOutputs: () => this.toggleToolOutputs(),
-				toggleThinkingBlocks: () => this.toggleThinkingBlocks(),
+				cycleModel: () => this.quickSettingsController.cycleModel(),
+				toggleToolOutputs: () =>
+					this.quickSettingsController.toggleToolOutputs(),
+				toggleThinkingBlocks: () =>
+					this.quickSettingsController.toggleThinkingBlocks(),
 				handleSlashCycle: (reverse) => this.handleSlashCycle(reverse),
-				cycleThinkingLevel: () => this.cycleThinkingLevel(),
+				cycleThinkingLevel: () =>
+					this.quickSettingsController.cycleThinkingLevel(),
 			},
 		});
 		this.editorContainer = new Container(); // Container to hold editor or selector
@@ -1956,14 +1959,6 @@ export class TuiRenderer {
 		this.ui.requestRender();
 	}
 
-	private toggleToolOutputs(): void {
-		this.quickSettingsController.toggleToolOutputs();
-	}
-
-	private toggleThinkingBlocks(): void {
-		this.quickSettingsController.toggleThinkingBlocks();
-	}
-
 	private handleApprovalRequired(request: ActionApprovalRequest): void {
 		this.approvalController?.enqueue(request);
 		const component = this.pendingTools.get(request.id);
@@ -2584,14 +2579,6 @@ export class TuiRenderer {
 			priority: 140,
 		});
 		this.footer.setToast(warning, "warn");
-	}
-
-	private cycleThinkingLevel(): void {
-		this.quickSettingsController.cycleThinkingLevel();
-	}
-
-	private async cycleModel(): Promise<void> {
-		await this.quickSettingsController.cycleModel();
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {
