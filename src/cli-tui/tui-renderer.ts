@@ -193,6 +193,10 @@ import {
 import { createOAuthFlowController } from "./tui-renderer/oauth-setup.js";
 import { createPlanSubsystem } from "./tui-renderer/plan-setup.js";
 import { createQueueController } from "./tui-renderer/queue-setup.js";
+import {
+	type QuickSettingsController,
+	createQuickSettingsController,
+} from "./tui-renderer/quick-settings-controller.js";
 import { createSessionSubsystem } from "./tui-renderer/session-setup.js";
 import { createToolingViews } from "./tui-renderer/tooling-views-setup.js";
 import {
@@ -361,7 +365,6 @@ export class TuiRenderer {
 	private startupChangelogSummary?: string | null;
 	private updateNotice?: UpdateCheckResult | null;
 	private startupWarnings: FooterHint[] = [];
-	private isCyclingModel = false;
 	private modalManager: ModalManager;
 	private terminalCapabilities: TerminalCapabilities =
 		getTerminalCapabilities();
@@ -371,6 +374,7 @@ export class TuiRenderer {
 	private pasteHandler!: PasteHandler;
 	private groupedHandlers?: GroupedCommandHandlers;
 	private uiStateController!: UiStateController;
+	private quickSettingsController!: QuickSettingsController;
 
 	constructor(
 		agent: Agent,
@@ -714,6 +718,27 @@ export class TuiRenderer {
 		this.messageView = toolingViews.messageView;
 		this.streamingView = toolingViews.streamingView;
 		this.agentEventRouter = toolingViews.agentEventRouter;
+
+		// Initialize quick settings controller for keyboard shortcuts
+		this.quickSettingsController = createQuickSettingsController({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			notificationView: this.notificationView,
+			modelScope: this.modelScope,
+			callbacks: {
+				refreshFooterHint: () => this.refreshFooterHint(),
+				persistUiState: () => this.persistUiState(),
+				renderConversationView: () => this.renderConversationView(),
+				requestRender: () => this.ui.requestRender(),
+				getToolOutputCompact: () => this.toolOutputView.isCompact(),
+				toggleToolOutputCompact: () => this.toolOutputView.toggleCompactMode(),
+				getHideThinkingBlocks: () => this.hideThinkingBlocks,
+				setHideThinkingBlocks: (hidden) => {
+					this.hideThinkingBlocks = hidden;
+				},
+			},
+		});
+
 		this.importExportView = new ImportExportView({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1926,27 +1951,11 @@ export class TuiRenderer {
 	}
 
 	private toggleToolOutputs(): void {
-		const compact = this.toolOutputView.toggleCompactMode();
-		this.notificationView.showToast(
-			compact ? "Tool outputs collapsed." : "Tool outputs expanded.",
-			"info",
-		);
-		this.refreshFooterHint();
-		this.persistUiState();
+		this.quickSettingsController.toggleToolOutputs();
 	}
 
 	private toggleThinkingBlocks(): void {
-		this.hideThinkingBlocks = !this.hideThinkingBlocks;
-		this.notificationView.showToast(
-			this.hideThinkingBlocks
-				? "Thinking blocks hidden."
-				: "Thinking blocks visible.",
-			"info",
-		);
-		// Re-render conversation to apply the change
-		this.renderConversationView();
-		this.ui.requestRender();
-		this.persistUiState();
+		this.quickSettingsController.toggleThinkingBlocks();
 	}
 
 	private handleApprovalRequired(request: ActionApprovalRequest): void {
@@ -2572,67 +2581,11 @@ export class TuiRenderer {
 	}
 
 	private cycleThinkingLevel(): void {
-		const model = this.agent.state.model as RegisteredModel | undefined;
-		if (!model?.reasoning) {
-			this.notificationView.showInfo(
-				"Current model does not support thinking levels.",
-			);
-			return;
-		}
-		const levels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
-		const current = this.agent.state.thinkingLevel || "off";
-		const index = levels.indexOf(current);
-		const nextLevel = levels[(index + 1) % levels.length];
-		this.agent.setThinkingLevel(nextLevel);
-		this.sessionManager.saveThinkingLevelChange(nextLevel);
-		this.notificationView.showInfo(`Thinking level: ${nextLevel}`);
-		this.refreshFooterHint();
+		this.quickSettingsController.cycleThinkingLevel();
 	}
 
 	private async cycleModel(): Promise<void> {
-		if (this.isCyclingModel) {
-			return;
-		}
-		this.isCyclingModel = true;
-		try {
-			const candidates =
-				this.modelScope.length > 0
-					? this.modelScope
-					: (getRegisteredModels() as RegisteredModel[]);
-			if (candidates.length === 0) {
-				this.notificationView.showInfo("No models available to cycle.");
-				return;
-			}
-			if (candidates.length === 1) {
-				this.notificationView.showInfo(
-					"Only one model in scope. Add more via --models to enable cycling.",
-				);
-				return;
-			}
-			const current = this.agent.state.model;
-			let index = candidates.findIndex(
-				(model) =>
-					model.id === current.id && model.provider === current.provider,
-			);
-			if (index === -1) {
-				index = -1;
-			}
-			const nextModel = candidates[(index + 1) % candidates.length];
-			this.agent.setModel(nextModel);
-			this.sessionManager.saveModelChange(
-				`${nextModel.provider}/${nextModel.id}`,
-				toSessionModelMetadata(nextModel),
-			);
-			const label = nextModel.name ?? nextModel.id;
-			this.notificationView.showToast(`Model: ${label}`, "success");
-			this.refreshFooterHint();
-		} catch (error) {
-			this.notificationView.showError(
-				`Failed to cycle model: ${this.describeError(error)}`,
-			);
-		} finally {
-			this.isCyclingModel = false;
-		}
+		await this.quickSettingsController.cycleModel();
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {
