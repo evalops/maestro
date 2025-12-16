@@ -62,8 +62,6 @@ import {
 	SessionRecoveryManager,
 	listSessionBackups,
 } from "../agent/session-recovery.js";
-import { composerManager } from "../composers/index.js";
-import { mcpManager } from "../mcp/index.js";
 import {
 	type AutoVerifyService,
 	type TestResult,
@@ -188,6 +186,10 @@ import { createBackgroundTasksController } from "./tui-renderer/background-tasks
 import { attachEditorBindings } from "./tui-renderer/editor-bindings.js";
 import { loadInitialTuiRendererPreferences } from "./tui-renderer/initial-preferences.js";
 import { createInterruptController } from "./tui-renderer/interrupt-setup.js";
+import {
+	type McpEventsController,
+	createMcpEventsController,
+} from "./tui-renderer/mcp-events-setup.js";
 import { createOAuthFlowController } from "./tui-renderer/oauth-setup.js";
 import { createPlanSubsystem } from "./tui-renderer/plan-setup.js";
 import { createQueueController } from "./tui-renderer/queue-setup.js";
@@ -325,23 +327,7 @@ export class TuiRenderer {
 	private userMessageSelectorView: UserMessageSelectorView;
 	private notificationView: NotificationView;
 	private backgroundTasksController: BackgroundTasksController;
-	private mcpConnectedHandler?: (data: { name: string; tools: number }) => void;
-	private mcpDisconnectedHandler?: (data: { name: string }) => void;
-	private mcpToolsChangedHandler?: (data: { name: string }) => void;
-	private mcpProgressHandler?: (data: {
-		name: string;
-		progress: number;
-		total?: number;
-		message?: string;
-	}) => void;
-	private mcpLogHandler?: (data: {
-		name: string;
-		level: string;
-		data: unknown;
-	}) => void;
-	private mcpToolsChangedTimeout?: ReturnType<typeof setTimeout>;
-	private composerActivatedHandler?: (composer: { name: string }) => void;
-	private composerDeactivatedHandler?: (composer: { name: string }) => void;
+	private mcpEventsController: McpEventsController;
 	private resizeHandler: () => void;
 	private updateView: UpdateView;
 	private configView: ConfigView;
@@ -1085,107 +1071,11 @@ export class TuiRenderer {
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
 		});
 
-		// Listen for MCP server connections to show notifications
-		this.mcpConnectedHandler = ({ name, tools }) => {
-			this.notificationView.showToast(
-				`MCP server "${name}" connected (${tools} tools)`,
-				"success",
-			);
-			this.refreshFooterHint();
-		};
-		this.mcpDisconnectedHandler = ({ name }) => {
-			this.notificationView.showToast(
-				`MCP server "${name}" disconnected`,
-				"warn",
-			);
-			this.refreshFooterHint();
-		};
-		mcpManager.on("connected", this.mcpConnectedHandler);
-		mcpManager.on("disconnected", this.mcpDisconnectedHandler);
-
-		// Listen for tool list changes (debounced to avoid spam)
-		const pendingToolsChangedServers = new Set<string>();
-		this.mcpToolsChangedHandler = ({ name }) => {
-			pendingToolsChangedServers.add(name);
-			this.refreshFooterHint();
-			if (this.mcpToolsChangedTimeout)
-				clearTimeout(this.mcpToolsChangedTimeout);
-			this.mcpToolsChangedTimeout = setTimeout(() => {
-				const servers = Array.from(pendingToolsChangedServers);
-				pendingToolsChangedServers.clear();
-				const msg =
-					servers.length === 1
-						? `MCP server "${servers[0]}" tools updated`
-						: `MCP servers updated: ${servers.join(", ")}`;
-				this.notificationView.showToast(msg, "info");
-			}, 500);
-		};
-		mcpManager.on("tools_changed", this.mcpToolsChangedHandler);
-
-		// Listen for progress notifications
-		this.mcpProgressHandler = ({ name, progress, total, message }) => {
-			let msg: string;
-			if (total && total > 0) {
-				// Determinate progress - show percentage
-				const percent = Math.min(
-					100,
-					Math.max(0, Math.round((progress / total) * 100)),
-				);
-				msg = message
-					? `${name}: ${message} (${percent}%)`
-					: `${name}: ${percent}%`;
-			} else {
-				// Indeterminate progress - skip percentage, show message only
-				msg = message ? `${name}: ${message}` : `${name}: in progress`;
-			}
-			this.notificationView.showToast(msg, "info");
-		};
-		mcpManager.on("progress", this.mcpProgressHandler);
-
-		// Listen for log messages
-		this.mcpLogHandler = ({ name, level, data }) => {
-			// Only show warnings and errors as toasts
-			if (level === "warning" || level === "error") {
-				// Safe JSON.stringify that handles undefined and circular refs
-				let msg: string;
-				if (typeof data === "string") {
-					msg = data;
-				} else if (data === undefined || data === null) {
-					msg = String(data);
-				} else {
-					try {
-						msg = JSON.stringify(data);
-					} catch {
-						msg = "[Unserializable data]";
-					}
-				}
-				// Use substring to avoid breaking multi-byte characters
-				msg = msg.substring(0, 100);
-				this.notificationView.showToast(
-					`[${name}] ${msg}`,
-					level === "error" ? "warn" : "info",
-				);
-			}
-		};
-		mcpManager.on("log", this.mcpLogHandler);
-
-		// Listen for composer activation changes
-		this.composerActivatedHandler = (composer) => {
-			this.notificationView.showToast(
-				`Composer "${composer.name}" activated`,
-				"success",
-			);
-			this.refreshFooterHint();
-		};
-		this.composerDeactivatedHandler = (composer) => {
-			this.notificationView.showToast(
-				`Composer "${composer.name}" deactivated`,
-				"info",
-			);
-			this.refreshFooterHint();
-		};
-		composerManager.on("activated", this.composerActivatedHandler);
-		composerManager.on("deactivated", this.composerDeactivatedHandler);
+		// Set up MCP and Composer event handlers for notifications
+		this.mcpEventsController = createMcpEventsController({
+			notificationView: this.notificationView,
+			refreshFooterHint: () => this.refreshFooterHint(),
+		});
 	}
 
 	attachPromptQueue(queue: PromptQueue): void {
@@ -3018,38 +2908,7 @@ export class TuiRenderer {
 		this.queueController.detach();
 		this.backgroundTasksController.stop();
 		// Clean up MCP and composer event listeners
-		if (this.mcpConnectedHandler) {
-			mcpManager.off("connected", this.mcpConnectedHandler);
-			this.mcpConnectedHandler = undefined;
-		}
-		if (this.mcpDisconnectedHandler) {
-			mcpManager.off("disconnected", this.mcpDisconnectedHandler);
-			this.mcpDisconnectedHandler = undefined;
-		}
-		if (this.mcpToolsChangedHandler) {
-			mcpManager.off("tools_changed", this.mcpToolsChangedHandler);
-			this.mcpToolsChangedHandler = undefined;
-		}
-		if (this.mcpToolsChangedTimeout) {
-			clearTimeout(this.mcpToolsChangedTimeout);
-			this.mcpToolsChangedTimeout = undefined;
-		}
-		if (this.mcpProgressHandler) {
-			mcpManager.off("progress", this.mcpProgressHandler);
-			this.mcpProgressHandler = undefined;
-		}
-		if (this.mcpLogHandler) {
-			mcpManager.off("log", this.mcpLogHandler);
-			this.mcpLogHandler = undefined;
-		}
-		if (this.composerActivatedHandler) {
-			composerManager.off("activated", this.composerActivatedHandler);
-			this.composerActivatedHandler = undefined;
-		}
-		if (this.composerDeactivatedHandler) {
-			composerManager.off("deactivated", this.composerDeactivatedHandler);
-			this.composerDeactivatedHandler = undefined;
-		}
+		this.mcpEventsController.stop();
 		if (this.isInitialized) {
 			this.ui.stop();
 			this.isInitialized = false;
