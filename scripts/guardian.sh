@@ -6,6 +6,7 @@ DIST="$ROOT/dist/guardian/cli.js"
 
 SRC_CLI="$ROOT/src/guardian/cli.ts"
 SRC_RUNNER="$ROOT/src/guardian/runner.ts"
+SRC_STATE="$ROOT/src/guardian/state.ts"
 SRC_CONFIG="$ROOT/src/guardian/config.ts"
 SRC_TYPES="$ROOT/src/guardian/types.ts"
 
@@ -15,7 +16,7 @@ if [[ -f "$DIST" ]]; then
 	# causing false positives/negatives during local development).
 	if [[ ! -f "$SRC_CLI" ]]; then
 		use_dist=1
-	elif [[ "$DIST" -nt "$SRC_CLI" && "$DIST" -nt "$SRC_RUNNER" && "$DIST" -nt "$SRC_CONFIG" && "$DIST" -nt "$SRC_TYPES" ]]; then
+	elif [[ "$DIST" -nt "$SRC_CLI" && "$DIST" -nt "$SRC_RUNNER" && ( ! -f "$SRC_STATE" || "$DIST" -nt "$SRC_STATE" ) && "$DIST" -nt "$SRC_CONFIG" && "$DIST" -nt "$SRC_TYPES" ]]; then
 		use_dist=1
 	fi
 fi
