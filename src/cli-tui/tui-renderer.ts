@@ -1053,7 +1053,8 @@ export class TuiRenderer {
 				this.sessionView.handleSessionsCommand(context.rawInput),
 			handleReport: (context) => this.handleReportCommand(context),
 			handleAbout: (_context) => this.aboutView.handleAboutCommand(),
-			handleClear: async (_context) => await this.handleClearCommand(),
+			handleClear: async (_context) =>
+				await this.clearController.handleClearCommand(),
 			showStatus: (_context) => this.diagnosticsView.handleStatusCommand(),
 			handleReview: (context) => this.handleReviewCommand(context),
 			handleUndo: (context) => this.handleEnhancedUndoCommand(context),
@@ -1068,7 +1069,8 @@ export class TuiRenderer {
 			handleQuota: (context) => this.quotaView.handleQuotaCommand(context),
 			handleTelemetry: (context) =>
 				this.telemetryView.handleTelemetryCommand(context),
-			handleOtel: (context) => this.handleOtelCommand(context),
+			handleOtel: (_context) =>
+				otelHandler({ showInfo: (msg) => this.notificationView.showInfo(msg) }),
 			handleTraining: (context) =>
 				this.trainingView.handleTrainingCommand(context),
 			handleStats: (context) => this.handleStatsCommand(context),
@@ -1112,7 +1114,8 @@ export class TuiRenderer {
 				}
 				context.showInfo("Prompt queue is not available.");
 			},
-			handleBranch: (context) => this.handleBranchCommand(context),
+			handleBranch: (context) =>
+				this.branchController.handleBranchCommand(context),
 			handleLogin: (context) =>
 				this.oauthFlowController.handleLoginCommand(
 					context.argumentText,
@@ -1759,17 +1762,9 @@ export class TuiRenderer {
 		});
 	}
 
-	private handleOtelCommand(_context: CommandExecutionContext): void {
-		otelHandler({ showInfo: (msg) => this.notificationView.showInfo(msg) });
-	}
-
 	private handleCompactToolsCommand(rawInput: string): void {
 		this.toolOutputView.handleCompactToolsCommand(rawInput);
 		this.persistUiState();
-	}
-
-	private async handleClearCommand(): Promise<void> {
-		await this.clearController.handleClearCommand();
 	}
 
 	private handleReportCommand(context: CommandExecutionContext): void {
@@ -1882,10 +1877,6 @@ export class TuiRenderer {
 			favorites: Array.from(favoriteCommands),
 			recents: recentCommands,
 		});
-	}
-
-	private handleBranchCommand(context: CommandExecutionContext): void {
-		this.branchController.handleBranchCommand(context);
 	}
 
 	private handleApprovalsCommand(context: CommandExecutionContext): void {
@@ -2361,12 +2352,12 @@ export class TuiRenderer {
 			this.groupedHandlers = createGroupedCommandHandlers({
 				session: {
 					handleNewChat: (context) => this.handleNewChatCommand(context),
-					handleClear: () => this.handleClearCommand(),
+					handleClear: () => this.clearController.handleClearCommand(),
 					handleSessionInfo: (ctx) =>
 						this.sessionView.handleSessionCommand(ctx.rawInput),
 					handleSessionsList: (ctx) =>
 						this.sessionView.handleSessionsCommand(ctx.rawInput),
-					handleBranch: (ctx) => this.handleBranchCommand(ctx),
+					handleBranch: (ctx) => this.branchController.handleBranchCommand(ctx),
 					handleQueue: (ctx) => {
 						if (this.queuePanelController) {
 							this.queuePanelController.handleQueueCommand(ctx);
@@ -2392,7 +2383,10 @@ export class TuiRenderer {
 					handleTelemetry: (ctx) =>
 						this.telemetryView.handleTelemetryCommand(ctx),
 					handleTraining: (ctx) => this.trainingView.handleTrainingCommand(ctx),
-					handleOtel: (ctx) => this.handleOtelCommand(ctx),
+					handleOtel: (_ctx) =>
+						otelHandler({
+							showInfo: (msg) => this.notificationView.showInfo(msg),
+						}),
 					handleConfig: (ctx) => this.configView.handleConfigCommand(ctx),
 					handleLsp: (ctx) => this.lspView.handleLspCommand(ctx.rawInput),
 					handleMcp: (ctx) => this.handleMcpCommand(ctx),
