@@ -370,11 +370,14 @@ function runTrufflehog(files: string[], root: string): GuardianToolResult {
 	}
 }
 
-function runHeuristicScan(files: string[], root: string): GuardianToolResult {
-	const started = Date.now();
-	const findings: string[] = [];
-	const ignorePatterns = [/test\/enterprise\/pii-detector\.test\.ts$/];
-	const patterns: Array<{ name: string; regex: RegExp }> = [
+export type HeuristicFindingName =
+	| "AWS access key"
+	| "Private key block"
+	| "Generic API key"
+	| "Slack token";
+
+const HEURISTIC_PATTERNS: Array<{ name: HeuristicFindingName; regex: RegExp }> =
+	[
 		{ name: "AWS access key", regex: /AKIA[0-9A-Z]{16}/ },
 		{
 			name: "Private key block",
@@ -382,12 +385,43 @@ function runHeuristicScan(files: string[], root: string): GuardianToolResult {
 		},
 		{
 			name: "Generic API key",
-			regex: /\b(api[_-]?key|token)\b[^\n]{0,20}['"][A-Za-z0-9_\-]{20,}['"]/i,
+			// Avoid matching natural language inside string literals while still catching
+			// typical config patterns like:
+			//   token: "...." / token = "...."
+			//   apiKey: "...." / api_key = "...."
+			// And JSON-style:
+			//   "token": "...."
+			regex:
+				/(?:(?<!['"])\b(?:api[_-]?key|token)\b\s*[:=]\s*['"][A-Za-z0-9_-]{20,}['"]|['"](?:api[_-]?key|token)['"]\s*:\s*['"][A-Za-z0-9_-]{20,}['"])/i,
 		},
 		{
 			name: "Slack token",
-			regex: /xox[baprs]-[A-Za-z0-9-]{10,48}/,
+			// Slack tokens are typically segmented and include numeric IDs:
+			//   xoxb-<digits>-<digits>-<secret>
+			//   xapp-<digits>-<digits>-<secret>
+			// Use a stricter shape to avoid false positives in tests/docs.
+			regex: /\b(?:xox[baprs]|xapp)-\d{6,}(?:-\d{6,}){1,2}-[A-Za-z0-9-]{10,}\b/,
 		},
+	];
+
+export function detectHeuristicFindings(
+	contents: string,
+): HeuristicFindingName[] {
+	const matches: HeuristicFindingName[] = [];
+	for (const pattern of HEURISTIC_PATTERNS) {
+		if (pattern.regex.test(contents)) {
+			matches.push(pattern.name);
+		}
+	}
+	return matches;
+}
+
+function runHeuristicScan(files: string[], root: string): GuardianToolResult {
+	const started = Date.now();
+	const findings: string[] = [];
+	const ignorePatterns = [
+		/test\/enterprise\/pii-detector\.test\.ts$/,
+		/test\/guardian\/heuristic-scan\.test\.ts$/,
 	];
 
 	for (const relative of files) {
@@ -407,10 +441,8 @@ function runHeuristicScan(files: string[], root: string): GuardianToolResult {
 			continue;
 		}
 		if (contents.includes("\0")) continue; // likely binary
-		for (const pattern of patterns) {
-			if (pattern.regex.test(contents)) {
-				findings.push(`${pattern.name}: ${relative}`);
-			}
+		for (const match of detectHeuristicFindings(contents)) {
+			findings.push(`${match}: ${relative}`);
 		}
 	}
 
