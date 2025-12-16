@@ -136,3 +136,67 @@ export {
 	type AuditEntry,
 	type AuditLoggerConfig,
 } from "./audit.js";
+
+// Error handling
+export {
+	SlackAgentError,
+	ApiError,
+	ConfigError,
+	FileSystemError,
+	ValidationError,
+	getErrorMessage,
+	getErrorStack,
+	wrapError,
+	logError,
+	tryAsync,
+	trySync,
+	retryAsync,
+	isRetryableError,
+	assertValid,
+	assertDefined,
+} from "./errors.js";
+
+// Utilities
+export {
+	ok,
+	err,
+	isOk,
+	isErr,
+	unwrap,
+	unwrapOr,
+	map,
+	mapErr,
+	andThen,
+	tryCatch,
+	tryCatchAsync,
+	all,
+	tap,
+	tapErr,
+	toPromise,
+	fromPromise,
+	type Result,
+} from "./utils/result.js";
+
+export {
+	ApiQueue,
+	createApiQueue,
+	RATE_LIMIT_TIERS,
+	METHOD_TIERS,
+	type ApiQueueOptions,
+	type RateLimitTier,
+} from "./utils/api-queue.js";
+
+export {
+	MessageQueue,
+	type MessageHandler,
+	type MessageQueueOptions,
+} from "./utils/message-queue.js";
+
+export {
+	createTimestampGenerator,
+	parseSlackTimestamp,
+	compareSlackTimestamps,
+	type TimestampGenerator,
+} from "./utils/slack-timestamp.js";
+
+export { TTLCache, type TTLCacheOptions } from "./utils/ttl-cache.js";
