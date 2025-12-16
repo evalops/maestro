@@ -183,6 +183,10 @@ import {
 } from "./terminal/terminal-utils.js";
 import { createApprovalController } from "./tui-renderer/approval-setup.js";
 import { createBackgroundTasksController } from "./tui-renderer/background-tasks-setup.js";
+import {
+	type BranchController,
+	createBranchController,
+} from "./tui-renderer/branch-controller.js";
 import { attachEditorBindings } from "./tui-renderer/editor-bindings.js";
 import { loadInitialTuiRendererPreferences } from "./tui-renderer/initial-preferences.js";
 import { createInterruptController } from "./tui-renderer/interrupt-setup.js";
@@ -375,6 +379,7 @@ export class TuiRenderer {
 	private groupedHandlers?: GroupedCommandHandlers;
 	private uiStateController!: UiStateController;
 	private quickSettingsController!: QuickSettingsController;
+	private branchController!: BranchController;
 
 	constructor(
 		agent: Agent,
@@ -739,6 +744,27 @@ export class TuiRenderer {
 				setHideThinkingBlocks: (hidden) => {
 					this.hideThinkingBlocks = hidden;
 				},
+			},
+		});
+
+		// Initialize branch controller for session branching
+		this.branchController = createBranchController({
+			callbacks: {
+				isAgentRunning: () => this.isAgentRunning,
+				getMessages: () => this.agent.state.messages ?? [],
+				showSelector: () => this.userMessageSelectorView.show(),
+				createBranchedSession: (count) =>
+					this.sessionManager.createBranchedSession(this.agent.state, count),
+				setSessionFile: (path) => this.sessionManager.setSessionFile(path),
+				resetConversation: (messages, seed, notification) =>
+					this.resetConversation(messages, seed, notification, {
+						preserveSession: true,
+					}),
+				addContent: (text) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(text, 1, 0));
+				},
+				requestRender: () => this.ui.requestRender(),
 			},
 		});
 
@@ -2049,107 +2075,7 @@ export class TuiRenderer {
 	}
 
 	private handleBranchCommand(context: CommandExecutionContext): void {
-		if (this.isAgentRunning) {
-			context.showError(
-				"Wait for the current run to finish before branching the session.",
-			);
-			return;
-		}
-		const messages = this.agent.state.messages ?? [];
-		const userMessages = messages
-			.map((msg, index) => ({ msg, index }))
-			.filter(({ msg }) => "role" in msg && msg.role === "user");
-		if (userMessages.length === 0) {
-			context.showInfo("No user messages available to branch from yet.");
-			return;
-		}
-
-		const arg = context.argumentText.trim();
-		if (!arg) {
-			// No argument - show interactive selector
-			this.userMessageSelectorView.show();
-			return;
-		}
-		if (arg === "list") {
-			this.renderBranchList(userMessages);
-			return;
-		}
-
-		const targetIndex = Number.parseInt(arg, 10);
-		if (!Number.isFinite(targetIndex) || targetIndex < 1) {
-			context.showError("Provide a valid user message number to branch from.");
-			return;
-		}
-		if (targetIndex > userMessages.length) {
-			context.showError(
-				`Only ${userMessages.length} user message${userMessages.length === 1 ? "" : "s"} available.`,
-			);
-			return;
-		}
-
-		const selection = userMessages[targetIndex - 1];
-		const slice = messages.slice(0, selection.index);
-		const editorSeed = this.extractUserText(selection.msg as AppMessage);
-		const newSessionFile = this.sessionManager.createBranchedSession(
-			this.agent.state,
-			slice.length,
-		);
-		this.sessionManager.setSessionFile(newSessionFile);
-		this.resetConversation(
-			slice,
-			editorSeed,
-			`Branched to new session before user message #${targetIndex}.`,
-			{ preserveSession: true },
-		);
-	}
-
-	private renderBranchList(
-		userMessages: Array<{ msg: AppMessage; index: number }>,
-	): void {
-		const lines: string[] = ["User messages (use /branch <number>):"];
-		userMessages.forEach(({ msg }, userIndex) => {
-			const created = this.getMessageTimestamp(msg);
-			const preview = this.extractUserTextPreview(msg as AppMessage);
-			const meta = created ? ` • ${created}` : "";
-			lines.push(`${userIndex + 1}. ${preview}${meta}`);
-		});
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(lines.join("\n"), 1, 0));
-		this.ui.requestRender();
-	}
-
-	private getMessageTimestamp(message: AppMessage): string | null {
-		const ts = "timestamp" in message ? message.timestamp : undefined;
-		if (!ts || typeof ts !== "number") return null;
-		try {
-			return new Date(ts).toLocaleString();
-		} catch {
-			return null;
-		}
-	}
-
-	private extractUserText(message: AppMessage): string {
-		const content = "content" in message ? message.content : undefined;
-		if (typeof content === "string") {
-			return content;
-		}
-		if (Array.isArray(content)) {
-			const textBlock = content.find(
-				(block): block is { type: "text"; text: string } =>
-					block != null &&
-					typeof block === "object" &&
-					"type" in block &&
-					block.type === "text",
-			);
-			return textBlock?.text ?? "";
-		}
-		return "";
-	}
-
-	private extractUserTextPreview(message: AppMessage): string {
-		const text = this.extractUserText(message).replace(/\s+/g, " ").trim();
-		if (!text) return "(empty)";
-		return text.length > 80 ? `${text.slice(0, 77)}…` : text;
+		this.branchController.handleBranchCommand(context);
 	}
 
 	private handleApprovalsCommand(context: CommandExecutionContext): void {
