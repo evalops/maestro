@@ -598,7 +598,7 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 				await ctx.respond(`_Task ${taskId} not found in this channel._`);
 				return true;
 			}
-			void schedulerHolder.instance
+			schedulerHolder.instance
 				.runNow(taskId)
 				.catch((err) =>
 					logger.logWarning(

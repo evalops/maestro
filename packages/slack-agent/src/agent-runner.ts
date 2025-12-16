@@ -621,8 +621,11 @@ export function createAgentRunner(
 					}
 					try {
 						await ctx.updateStatus(status);
-					} catch {
-						// Ignore status update errors
+					} catch (err) {
+						// Log but don't fail on status update errors
+						logger.logDebug("Status update failed", {
+							error: err instanceof Error ? err.message : String(err),
+						});
 					}
 				}
 			};
