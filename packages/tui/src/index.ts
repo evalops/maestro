@@ -101,7 +101,12 @@ export {
 	type ScrollContainerOptions,
 } from "./components/scroll-container.js";
 export { ProcessTerminal, type Terminal } from "./terminal.js";
-export { type Component, Container, TUI } from "./tui.js";
+export {
+	type Component,
+	type LifecycleComponent,
+	Container,
+	TUI,
+} from "./tui.js";
 export {
 	truncateToWidth,
 	visibleWidth,

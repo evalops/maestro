@@ -30,6 +30,32 @@ export interface Component {
 	 * Components that cache rendered output should clear their caches here.
 	 */
 	invalidate?(): void;
+
+	/**
+	 * Optional lifecycle method called when component is mounted/shown.
+	 * Use for subscribing to events, starting timers, etc.
+	 */
+	onMount?(): void;
+
+	/**
+	 * Optional lifecycle method called when component is unmounted/hidden.
+	 * Use for unsubscribing from events, stopping timers, cleaning up resources.
+	 */
+	onUnmount?(): void;
+
+	/**
+	 * Optional cleanup method called when component is permanently destroyed.
+	 * Alias for onUnmount for compatibility with dispose() pattern.
+	 */
+	dispose?(): void;
+}
+
+/**
+ * Helper type for components with full lifecycle support
+ */
+export interface LifecycleComponent extends Component {
+	onMount(): void;
+	onUnmount(): void;
 }
 
 export { visibleWidth };
