@@ -9,6 +9,7 @@
 
 import { Type } from "@sinclair/typebox";
 import type { Executor } from "../sandbox.js";
+import { shellEscape } from "../utils/shell-escape.js";
 import type { AgentTool } from "./index.js";
 
 export interface ContainerHealth {
@@ -159,7 +160,7 @@ export function createStatusTool(
 					const hostExec = await import("node:child_process");
 					const inspectResult = await new Promise<string>((resolve, reject) => {
 						hostExec.exec(
-							`docker inspect ${containerName}`,
+							`docker inspect ${shellEscape(containerName)}`,
 							{ timeout: 5000 },
 							(err, stdout) => {
 								if (err) reject(err);
@@ -187,7 +188,7 @@ export function createStatusTool(
 					// Get container stats
 					const statsResult = await new Promise<string>((resolve, reject) => {
 						hostExec.exec(
-							`docker stats --no-stream --format "{{json .}}" ${containerName}`,
+							`docker stats --no-stream --format "{{json .}}" ${shellEscape(containerName)}`,
 							{ timeout: 5000 },
 							(err, stdout) => {
 								if (err) reject(err);

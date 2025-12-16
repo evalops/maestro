@@ -193,8 +193,8 @@ export async function getUsageQuota(
 
 	const orgSettings = membership.organization
 		.settings as OrganizationSettings | null;
-	const defaultQuota = orgSettings?.maxTokensPerUser || null;
-	const tokenQuota = membership.tokenQuota || defaultQuota;
+	const defaultQuota = orgSettings?.maxTokensPerUser ?? null;
+	const tokenQuota = membership.tokenQuota ?? defaultQuota;
 	const tokenUsed = membership.tokenUsed;
 
 	return {
@@ -230,7 +230,7 @@ export async function canConsumeTokens(
 	}
 
 	if (
-		quota.tokenQuota &&
+		quota.tokenQuota !== null &&
 		quota.tokenUsed + requestedTokens > quota.tokenQuota
 	) {
 		return {

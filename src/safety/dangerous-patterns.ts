@@ -51,7 +51,7 @@ export const dangerousPatterns = {
 	netcatListener: /\bnc\s+(-l|-p)\s+\d+/i,
 	sshTunnel: /ssh\s+.*-[LRD]\s+\d+:/i,
 	dockerPrivileged:
-		/docker\s+(run|exec).*--privileged(?!=(?:false|0))(?:\s+|=(?:true|1)(?=\s|$)|\s*$)/i,
+		/docker\s+(run|exec).*--privileged(?!=(?:false|f|0))(?:\s+|=(?:true|t|1)(?=\s|$)|\s*$)/i,
 
 	// Fork bombs
 	forkBomb: /:(\(|\s+)\)\s*\{\s*:(\s*\|\s*:)?\s*&?\s*;?\s*\}\s*;?\s*:?/i,

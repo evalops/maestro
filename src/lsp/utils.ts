@@ -27,7 +27,12 @@ export function pathToUri(path: string): string {
  */
 export function uriToPath(uri: string): string {
 	if (uri.startsWith("file://")) {
-		return uri.slice(7);
+		let path = uri.slice(7);
+		// Remove leading slash for Windows drive-letter paths (e.g., "/C:/...")
+		if (path.length >= 3 && path[0] === "/" && path[2] === ":") {
+			path = path.slice(1);
+		}
+		return path;
 	}
 	return uri;
 }

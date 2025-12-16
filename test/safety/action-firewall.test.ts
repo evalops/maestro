@@ -216,6 +216,27 @@ describe("ActionFirewall", () => {
 		expect(verdict.action).toBe("allow");
 	});
 
+	it("flags privileged docker execution with short-form t", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeBashContext("docker run --privileged=t myimage"),
+		);
+		expect(verdict.action).toBe("require_approval");
+	});
+
+	it("flags privileged docker execution with short-form T", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeBashContext("docker run --privileged=T myimage"),
+		);
+		expect(verdict.action).toBe("require_approval");
+	});
+
+	it("allows docker when privileged=f (short form false)", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeBashContext("docker run --privileged=f ubuntu"),
+		);
+		expect(verdict.action).toBe("allow");
+	});
+
 	it("flags sudoers persistence attempts", async () => {
 		const verdict = await defaultActionFirewall.evaluate(
 			makeBashContext("echo 'ALL ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers"),

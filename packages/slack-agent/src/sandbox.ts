@@ -74,6 +74,14 @@ export function parseSandboxArg(value: string): SandboxConfig {
 			);
 			process.exit(1);
 		}
+		// Validate container name to prevent command injection
+		// Docker container names must match [a-zA-Z0-9][a-zA-Z0-9_.-]*
+		if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(container)) {
+			console.error(
+				`Error: Invalid container name '${container}'. Container names must start with alphanumeric and contain only [a-zA-Z0-9_.-]`,
+			);
+			process.exit(1);
+		}
 		return { type: "docker", container };
 	}
 
@@ -310,7 +318,8 @@ class DockerExecutor implements Executor {
 		if (options?.cwd) {
 			dockerCmd += ` -w ${shellEscape(options.cwd)}`;
 		}
-		dockerCmd += ` ${this.container} sh -c ${shellEscape(command)}`;
+		// Escape container name for defense-in-depth (validated at parse time)
+		dockerCmd += ` ${shellEscape(this.container)} sh -c ${shellEscape(command)}`;
 
 		const hostExecutor = new HostExecutor();
 		return hostExecutor.exec(dockerCmd, {
