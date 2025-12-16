@@ -169,7 +169,6 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { handleAgentsInit } from "../cli/commands/agents.js";
 import { validateFrameworkPreference } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
-import { parseCleanMode } from "./clean-mode.js";
 import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
 import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
 import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
@@ -194,6 +193,10 @@ import { createPlanSubsystem } from "./tui-renderer/plan-setup.js";
 import { createQueueController } from "./tui-renderer/queue-setup.js";
 import { createSessionSubsystem } from "./tui-renderer/session-setup.js";
 import { createToolingViews } from "./tui-renderer/tooling-views-setup.js";
+import {
+	type UiStateController,
+	createUiStateController,
+} from "./tui-renderer/ui-state-setup.js";
 import { createUtilityViews } from "./tui-renderer/utility-views-setup.js";
 import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
@@ -381,6 +384,7 @@ export class TuiRenderer {
 	private interruptController!: InterruptController;
 	private pasteHandler!: PasteHandler;
 	private groupedHandlers?: GroupedCommandHandlers;
+	private uiStateController!: UiStateController;
 
 	constructor(
 		agent: Agent,
@@ -413,6 +417,47 @@ export class TuiRenderer {
 		if (typeof initialPrefs.hideThinkingBlocks === "boolean") {
 			this.hideThinkingBlocks = initialPrefs.hideThinkingBlocks;
 		}
+
+		// Initialize UI state controller with loaded preferences
+		this.uiStateController = createUiStateController({
+			initialCleanMode: this.cleanMode,
+			initialFooterMode: this.footerMode,
+			initialZenMode: this.zenMode,
+			initialHideThinkingBlocks: this.hideThinkingBlocks,
+			callbacks: {
+				onZenModeChange: (enabled) => {
+					this.zenMode = enabled;
+					if (enabled) {
+						this.headerContainer?.clear();
+						this.footer?.setMode("solo");
+						if (this.welcomeAnimation) {
+							this.dismissWelcomeAnimation();
+						}
+					} else {
+						this.renderHeader();
+						// Restore footer mode from state if zen owned it
+						const currentFooterMode = this.footer?.getMode();
+						if (currentFooterMode === "solo") {
+							this.footer?.setMode(this.footerMode);
+						}
+					}
+				},
+				onFooterModeChange: (mode) => {
+					this.footerMode = mode;
+					this.footer?.setMode(mode);
+					if (!this.isAgentRunning) {
+						this.refreshFooterHint();
+					}
+				},
+				onHideThinkingBlocksChange: (hidden) => {
+					this.hideThinkingBlocks = hidden;
+				},
+				requestRender: () => {
+					this.ui?.requestRender();
+				},
+			},
+		});
+
 		this.recentCommands = initialPrefs.recentCommands;
 		this.favoriteCommands = initialPrefs.favoriteCommands;
 		this.agent = agent;
@@ -976,11 +1021,12 @@ export class TuiRenderer {
 			handleInitAgents: (context) => this.handleInitCommand(context),
 			handleMcp: (context) => this.handleMcpCommand(context),
 			handleComposer: (context) => this.handleComposerCommand(context),
-			handleZen: (context) => this.handleZenCommand(context),
+			handleZen: (context) => this.uiStateController.handleZenCommand(context),
 			handleContext: (context) => this.handleContextCommand(context),
 			handleLsp: (context) => this.lspView.handleLspCommand(context.rawInput),
 			handleFramework: (context) => this.handleFrameworkCommand(context),
-			handleClean: (context) => this.handleCleanCommand(context),
+			handleClean: (context) =>
+				this.uiStateController.handleCleanCommand(context),
 			handleGuardian: (context) => this.handleGuardianCommand(context),
 			handleWorkflow: (context) => this.handleWorkflowCommand(context),
 			handleChanges: (context) => this.handleChangesCommand(context),
@@ -1567,65 +1613,11 @@ export class TuiRenderer {
 		}
 	}
 
-	private setZenMode(enabled: boolean): void {
-		this.zenMode = enabled;
-		this.persistUiState({ zenMode: enabled });
-
-		if (enabled) {
-			this.headerContainer.clear();
-			this.footer.setMode("solo");
-			if (this.welcomeAnimation) {
-				this.dismissWelcomeAnimation();
-			}
-		} else {
-			this.renderHeader();
-			// Restore footer mode from state if zen owned it; otherwise keep user's choice
-			const currentFooterMode = this.footer.getMode();
-			if (currentFooterMode === "solo") {
-				this.footer.setMode(this.footerMode);
-			}
-		}
-		this.ui.requestRender();
-	}
-
 	private renderHeader(): void {
 		this.headerContainer.clear();
 		this.headerContainer.addChild(new Spacer(1));
 		this.headerContainer.addChild(new InstructionPanelComponent(this.version));
 		this.headerContainer.addChild(new Spacer(1));
-	}
-
-	private handleZenCommand(context: CommandExecutionContext): void {
-		const arg = context.argumentText.trim().toLowerCase();
-		if (!arg) {
-			const newState = !this.zenMode;
-			this.setZenMode(newState);
-			context.showInfo(
-				newState
-					? "Zen mode enabled. Distractions removed."
-					: "Zen mode disabled.",
-			);
-			return;
-		}
-		if (arg === "on") {
-			if (this.zenMode) {
-				context.showInfo("Zen mode is already on.");
-				return;
-			}
-			this.setZenMode(true);
-			context.showInfo("Zen mode enabled. Distractions removed.");
-			return;
-		}
-		if (arg === "off") {
-			if (!this.zenMode) {
-				context.showInfo("Zen mode is already off.");
-				return;
-			}
-			this.setZenMode(false);
-			context.showInfo("Zen mode disabled.");
-			return;
-		}
-		context.showError("Usage: /zen [on|off]");
 	}
 
 	private async handleGuardianCommand(
@@ -1868,28 +1860,6 @@ export class TuiRenderer {
 		}
 	}
 
-	private handleCleanCommand(context: CommandExecutionContext): void {
-		const arg = context.argumentText.trim().toLowerCase();
-		if (!arg) {
-			context.showInfo(
-				`Clean mode is ${this.cleanMode} (streaming only). Use /clean off|soft|aggressive.`,
-			);
-			return;
-		}
-
-		const parsed = parseCleanMode(arg);
-		if (!parsed) {
-			context.showError("Usage: /clean [off|soft|aggressive]");
-			return;
-		}
-
-		this.cleanMode = parsed;
-		this.persistUiState({ cleanMode: parsed });
-		context.showInfo(
-			`Clean mode set to ${parsed}. Dedupe applies only while text streams; transcripts stay raw.`,
-		);
-	}
-
 	private handleContextCommand(_context: CommandExecutionContext): void {
 		const contextView = new ContextView({
 			state: this.agent.state,
@@ -1899,102 +1869,14 @@ export class TuiRenderer {
 	}
 
 	private handleFooterCommand(context: CommandExecutionContext): void {
-		if (this.zenMode) {
-			context.showInfo(
-				'Footer mode is controlled by Zen mode. Turn Zen off with "/zen off" to change the footer style.',
-			);
-			return;
-		}
-
-		const tokens = context.argumentText
-			.trim()
-			.toLowerCase()
-			.split(/\s+/)
-			.filter((token) => token.length > 0);
-
-		if (tokens.length === 0 || tokens[0] === "help") {
-			context.showInfo(
-				`Footer mode is ${this.describeFooterMode(this.footerMode)}. Use "/footer ensemble" for the full Composer Ensemble or "/footer solo" for the minimal Solo style.`,
-			);
-			return;
-		}
-
-		if (tokens[0] === "history") {
-			const history = this.footer
-				.getToastHistory(5)
-				.map((t) => `${t.tone}: ${t.message}`)
-				.join("\n");
-			context.showInfo(history || "No recent footer alerts (toasts).");
-			return;
-		}
-
-		if (tokens[0] === "clear") {
-			this.footer.clearAlerts();
-			context.showInfo("Footer alerts cleared.");
-			this.ui.requestRender();
-			return;
-		}
-
-		let candidate = tokens[0];
-		if (candidate === "mode" || candidate === "set" || candidate === "style") {
-			candidate = tokens[1] ?? "";
-		}
-		const parsed = this.parseFooterMode(candidate);
-		if (!parsed) {
-			context.showError(
-				"Footer mode must be either 'ensemble' (rich) or 'solo' (minimal).",
-			);
-			return;
-		}
-		if (parsed === this.footerMode) {
-			context.showInfo(
-				`Footer already using ${this.describeFooterMode(parsed)} mode.`,
-			);
-			return;
-		}
-		this.setFooterMode(parsed);
-		context.showInfo(
-			`Footer switched to ${this.describeFooterMode(parsed)} mode.`,
-		);
-	}
-
-	private setFooterMode(mode: FooterMode): void {
-		if (this.zenMode) {
-			// Zen mode owns the footer; ignore external mode changes
-			return;
-		}
-		this.footerMode = mode;
-		this.footer.setMode(mode);
-		this.persistUiState({ footerMode: mode });
-		if (!this.isAgentRunning) {
-			this.refreshFooterHint();
-		}
-		this.ui.requestRender();
+		this.uiStateController.handleFooterCommand(context, {
+			getToastHistory: (count: number) => this.footer.getToastHistory(count),
+			clearAlerts: () => this.footer.clearAlerts(),
+		});
 	}
 
 	private handleOtelCommand(_context: CommandExecutionContext): void {
 		otelHandler({ showInfo: (msg) => this.notificationView.showInfo(msg) });
-	}
-
-	private parseFooterMode(value: string): FooterMode | null {
-		switch (value) {
-			case "ensemble":
-			case "rich":
-			case "classic":
-			case "full":
-				return "ensemble";
-			case "solo":
-			case "minimal":
-			case "lean":
-			case "lite":
-				return "solo";
-			default:
-				return null;
-		}
-	}
-
-	private describeFooterMode(mode: FooterMode): string {
-		return mode === "ensemble" ? "Ensemble (rich)" : "Solo (minimal)";
 	}
 
 	private handleCompactToolsCommand(rawInput: string): void {
@@ -3051,15 +2933,13 @@ export class TuiRenderer {
 				},
 				ui: {
 					showTheme: () => this.themeSelectorView.show(),
-					handleClean: (ctx) => this.handleCleanCommand(ctx),
+					handleClean: (ctx) => this.uiStateController.handleCleanCommand(ctx),
 					handleFooter: (ctx) => this.handleFooterCommand(ctx),
-					handleZen: (ctx) => this.handleZenCommand(ctx),
+					handleZen: (ctx) => this.uiStateController.handleZenCommand(ctx),
 					handleCompactTools: (ctx) =>
 						this.handleCompactToolsCommand(ctx.rawInput),
 					getUiState: () => ({
-						zenMode: this.zenMode,
-						cleanMode: this.cleanMode,
-						footerMode: this.footerMode,
+						...this.uiStateController.getState(),
 						compactTools: this.toolOutputView?.isCompact() ?? false,
 					}),
 				},
