@@ -18,6 +18,7 @@ import type { ChannelInfo, SlackContext, UserInfo } from "./slack/bot.js";
 import type { ChannelStore } from "./store.js";
 import { createSlackAgentTools, setUploadFunction } from "./tools/index.js";
 import { ensureDir } from "./utils/fs.js";
+import { MessageQueue } from "./utils/message-queue.js";
 import { splitForSlack } from "./utils/split-for-slack.js";
 
 // Import from main composer source
@@ -639,48 +640,15 @@ export function createAgentRunner(
 				}
 			};
 
-			const splitForSlackText = (text: string): string[] =>
-				splitForSlack(text, { maxLength: SLACK_MAX_LENGTH });
-
 			// Promise queue for ordered Slack responses
-			const queue = {
-				chain: Promise.resolve(),
-				enqueue(fn: () => Promise<void>, errorContext: string): void {
-					this.chain = this.chain.then(async () => {
-						try {
-							await fn();
-						} catch (err) {
-							const errMsg = err instanceof Error ? err.message : String(err);
-							logger.logWarning(`Slack API error (${errorContext})`, errMsg);
-							try {
-								await ctx.respondInThread(`_Error: ${errMsg}_`);
-							} catch {
-								// Ignore
-							}
-						}
-					});
+			const queue = new MessageQueue({
+				handler: {
+					respond: (text, log) => ctx.respond(text, log),
+					respondInThread: (text) => ctx.respondInThread(text),
 				},
-				enqueueMessage(
-					text: string,
-					target: "main" | "thread",
-					errorContext: string,
-					log = true,
-				): void {
-					const parts = splitForSlackText(text);
-					for (const part of parts) {
-						this.enqueue(
-							() =>
-								target === "main"
-									? ctx.respond(part, log)
-									: ctx.respondInThread(part),
-							errorContext,
-						);
-					}
-				},
-				flush(): Promise<void> {
-					return this.chain;
-				},
-			};
+				splitText: (text) =>
+					splitForSlack(text, { maxLength: SLACK_MAX_LENGTH }),
+			});
 
 			// Subscribe to agent events
 			agent.subscribe(async (event: AgentEvent) => {
