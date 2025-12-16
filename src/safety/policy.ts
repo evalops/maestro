@@ -671,7 +671,18 @@ export async function checkPolicy(context: ActionApprovalContext): Promise<{
 
 			if (policy.dependencies) {
 				const deps = extractDependencies(command);
-				if (deps.length > 0 && /[;&|`$()<>]/.test(command)) {
+
+				// Check for shell metacharacters in any package install command,
+				// even when no explicit package names are extracted (e.g., "npm install").
+				// This prevents bypass via "npm install && rm -rf /"
+				const isPackageInstallCommand =
+					/(?:npm|yarn|pnpm|bun|pip|pip3|gem|cargo|go\s+get|composer)\s+(?:install|add|i\b)/i.test(
+						command,
+					);
+				if (
+					(deps.length > 0 || isPackageInstallCommand) &&
+					/[;&|`$()<>]/.test(command)
+				) {
 					return {
 						allowed: false,
 						reason:

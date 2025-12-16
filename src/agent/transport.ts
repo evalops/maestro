@@ -100,6 +100,42 @@ interface ToolExecutionOutcome {
 	isError: boolean;
 }
 
+/**
+ * Extract text content from a message content field.
+ * Handles both string format and array format (multimodal messages).
+ *
+ * This is critical for semantic safety analysis - without this, multimodal
+ * messages would bypass intent extraction and skip the semantic judge.
+ */
+function extractTextFromContent(
+	content: string | { type: string; text?: string }[] | undefined,
+): string | undefined {
+	if (!content) return undefined;
+
+	// Simple string content
+	if (typeof content === "string") {
+		return content;
+	}
+
+	// Array content (multimodal) - extract text from all text blocks
+	if (Array.isArray(content)) {
+		const textParts: string[] = [];
+		for (const block of content) {
+			if (
+				typeof block === "object" &&
+				block !== null &&
+				block.type === "text" &&
+				typeof block.text === "string"
+			) {
+				textParts.push(block.text);
+			}
+		}
+		return textParts.length > 0 ? textParts.join("\n") : undefined;
+	}
+
+	return undefined;
+}
+
 interface PendingExecution {
 	toolCall: ToolCall;
 	promise: Promise<ToolExecutionOutcome>;
@@ -997,12 +1033,8 @@ export class ProviderTransport implements AgentTransport {
 						},
 						user: cfg.user,
 						session: cfg.session,
-						// We don't have the explicit userIntent here easily without passing it down
-						// For now, we can use the last user message content if available
-						userIntent:
-							userMessage.content && typeof userMessage.content === "string"
-								? userMessage.content
-								: undefined,
+						// Extract user intent from message content (supports both string and array formats)
+						userIntent: extractTextFromContent(userMessage.content),
 					});
 
 					if (verdict.action === "block") {
