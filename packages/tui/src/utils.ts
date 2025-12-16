@@ -366,3 +366,50 @@ export function wrapAnsiLines(lines: string[], width: number): string[] {
 	}
 	return wrapped;
 }
+
+/**
+ * Truncate a line to fit within the given width, preserving ANSI styling.
+ * Adds an ellipsis at the end if truncation occurs.
+ *
+ * This is a safety fallback for lines that somehow exceed the terminal width
+ * after wrapping (which shouldn't happen, but we handle it gracefully).
+ */
+export function truncateToWidth(line: string, width: number): string {
+	if (width <= 0) return "";
+	if (visibleWidth(line) <= width) return line;
+
+	const tracker = new AnsiCodeTracker();
+	const segments = parseLineSegments(line);
+
+	// Reserve 1 column for ellipsis
+	const targetWidth = width - 1;
+	let result = "";
+	let currentWidth = 0;
+
+	for (const seg of segments) {
+		if (seg.type === "ansi") {
+			result += seg.value;
+			tracker.process(seg.value);
+			continue;
+		}
+
+		const grapheme = seg.value;
+		const graphemeWidth = visibleWidth(grapheme);
+
+		if (currentWidth + graphemeWidth > targetWidth) {
+			break;
+		}
+
+		result += grapheme;
+		currentWidth += graphemeWidth;
+	}
+
+	// Add ellipsis and reset if there are active ANSI codes
+	if (tracker.hasActiveCodes()) {
+		result += "\u2026\x1b[0m";
+	} else {
+		result += "\u2026";
+	}
+
+	return result;
+}

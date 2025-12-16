@@ -1,11 +1,8 @@
 /**
  * Minimal TUI implementation with differential rendering
  */
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import type { Terminal } from "./terminal.js";
-import { visibleWidth, wrapAnsiLines } from "./utils.js";
+import { truncateToWidth, visibleWidth, wrapAnsiLines } from "./utils.js";
 import {
 	type TerminalFeatures,
 	detectTerminalFeatures,
@@ -554,28 +551,13 @@ export class TUI extends Container {
 		for (let i = firstChanged; i < newLines.length; i++) {
 			if (i > firstChanged) buffer += "\r\n";
 			buffer += "\x1b[2K"; // Clear current line before writing
-			const line = newLines[i];
+			let line = newLines[i];
+			// Safety fallback: if a line somehow exceeds width after wrapping,
+			// truncate it gracefully instead of crashing. This shouldn't happen
+			// in normal operation, but we handle it to avoid breaking the UI.
 			if (visibleWidth(line) > width) {
-				const crashLogPath = path.join(
-					os.homedir(),
-					".composer",
-					"agent",
-					"tui-crash.log",
-				);
-				const crashData = [
-					`Crash at ${new Date().toISOString()}`,
-					`Terminal width: ${width}`,
-					`Line ${i} visible width: ${visibleWidth(line)}`,
-					"",
-					"=== Rendered lines ===",
-					...newLines.map((l, idx) => `[${idx}] (w=${visibleWidth(l)}) ${l}`),
-					"",
-				].join("\n");
-				fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
-				fs.writeFileSync(crashLogPath, crashData);
-				throw new Error(
-					`Rendered line ${i} exceeds terminal width. Debug log written to ${crashLogPath}`,
-				);
+				line = truncateToWidth(line, width);
+				newLines[i] = line; // Update for previousLines tracking
 			}
 			buffer += line;
 		}

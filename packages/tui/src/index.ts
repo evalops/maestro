@@ -102,5 +102,17 @@ export {
 } from "./components/scroll-container.js";
 export { ProcessTerminal, type Terminal } from "./terminal.js";
 export { type Component, Container, TUI } from "./tui.js";
-export { visibleWidth, wrapAnsiLine, wrapAnsiLines } from "./utils.js";
+export {
+	truncateToWidth,
+	visibleWidth,
+	wrapAnsiLine,
+	wrapAnsiLines,
+} from "./utils.js";
 export { detectTerminalFeatures } from "./utils/terminal-features.js";
+export {
+	AnsiKeys,
+	ControlCodes,
+	ctrl,
+	Keymap,
+	type KeyBinding,
+} from "./keymap.js";
