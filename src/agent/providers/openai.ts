@@ -157,6 +157,32 @@ export type OpenAIToolChoice =
 	| "required"
 	| { type: "function"; function: { name: string } };
 
+/**
+ * Response format options for structured outputs.
+ * - `json_object`: Guarantees valid JSON output (legacy JSON mode)
+ * - `json_schema`: Guarantees output matching a specific schema (Structured Outputs)
+ *
+ * Note: The format differs between APIs:
+ * - Chat Completions API: `response_format: { type: "json_schema", json_schema: {...} }`
+ * - Responses API: `text: { format: { type: "json_schema", name, schema, ... } }`
+ *
+ * This type represents the unified format; the provider handles the translation.
+ *
+ * @see https://platform.openai.com/docs/guides/structured-outputs
+ */
+export type OpenAIResponseFormat =
+	| { type: "json_object" }
+	| { type: "text" }
+	| {
+			type: "json_schema";
+			json_schema: {
+				name: string;
+				schema: object;
+				strict?: boolean;
+				description?: string;
+			};
+	  };
+
 export interface OpenAIOptions extends StreamOptions {
 	reasoningEffort?: ReasoningEffort;
 	/**
@@ -167,6 +193,14 @@ export interface OpenAIOptions extends StreamOptions {
 	 * - { type: "function", function: { name: "..." } }: Force specific tool
 	 */
 	toolChoice?: OpenAIToolChoice;
+	/**
+	 * Response format for structured outputs.
+	 * - `{ type: "json_object" }`: Guarantees valid JSON output
+	 * - `{ type: "json_schema", json_schema: { name, schema, strict? } }`: Guarantees output matching schema
+	 *
+	 * @see https://platform.openai.com/docs/guides/structured-outputs
+	 */
+	responseFormat?: OpenAIResponseFormat;
 }
 
 // OpenAI API Types
@@ -222,6 +256,7 @@ interface OpenAICompletionsRequestBody {
 	tool_choice?: OpenAIToolChoice;
 	temperature?: number;
 	reasoning_effort?: string;
+	response_format?: OpenAIResponseFormat;
 }
 
 // =============================================================================
@@ -542,6 +577,11 @@ export async function* streamOpenAI(
 
 	if (options.temperature !== undefined) {
 		requestBody.temperature = options.temperature;
+	}
+
+	// Add response format for structured outputs
+	if (options.responseFormat) {
+		requestBody.response_format = options.responseFormat;
 	}
 
 	// Add reasoning effort for reasoning-capable models

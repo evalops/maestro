@@ -109,6 +109,29 @@ export async function* streamResponsesApiSdk(
 		};
 	}
 
+	// Add structured outputs via text.format (Responses API format)
+	if (options.responseFormat) {
+		if (options.responseFormat.type === "json_schema") {
+			params.text = {
+				format: {
+					type: "json_schema",
+					name: options.responseFormat.json_schema.name,
+					schema: options.responseFormat.json_schema.schema as Record<
+						string,
+						unknown
+					>,
+					strict: options.responseFormat.json_schema.strict ?? true,
+					description: options.responseFormat.json_schema.description,
+				},
+			};
+		} else if (options.responseFormat.type === "json_object") {
+			params.text = {
+				format: { type: "json_object" },
+			};
+		}
+		// type: "text" is the default, no need to set
+	}
+
 	// For reasoning models, include encrypted_content to enable multi-turn conversations
 	// This is required for stateless usage of the Responses API with reasoning items
 	if (model.reasoning) {

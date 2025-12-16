@@ -2,6 +2,7 @@ import { TextEncoder } from "node:util";
 import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	type OpenAIResponseFormat,
 	type OpenAIToolChoice,
 	filterResponsesApiTools,
 	streamOpenAI,
@@ -335,5 +336,206 @@ describe("toolChoice parameter", () => {
 		const [, fetchOptions] = mockFetch.mock.calls[0];
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.tool_choice).toBeUndefined();
+	});
+});
+
+describe("responseFormat parameter (Structured Outputs)", () => {
+	let mockFetch: ReturnType<typeof vi.fn>;
+
+	beforeEach(() => {
+		mockFetch = vi.fn();
+		vi.stubGlobal("fetch", mockFetch);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const baseContext: Context = {
+		systemPrompt: "",
+		messages: [],
+		tools: [],
+	};
+
+	const completionsModel: Model<"openai-completions"> = {
+		id: "gpt-4o-2024-08-06",
+		name: "GPT-4o",
+		api: "openai-completions",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1/chat/completions",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 0 },
+		contextWindow: 128000,
+		maxTokens: 1024,
+	};
+
+	it("includes json_object response_format in request body", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"{\\"name\\":\\"test\\"}"}}]}\n',
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+		const mockResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					for (const line of lines) {
+						controller.enqueue(new TextEncoder().encode(line));
+					}
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const responseFormat: OpenAIResponseFormat = { type: "json_object" };
+
+		for await (const _ of streamOpenAI(completionsModel, baseContext, {
+			apiKey: "k",
+			responseFormat,
+		})) {
+			// consume events
+		}
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const body = JSON.parse(fetchOptions.body);
+		expect(body.response_format).toEqual({ type: "json_object" });
+	});
+
+	it("includes json_schema response_format in request body", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"{\\"name\\":\\"Alice\\",\\"age\\":30}"}}]}\n',
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+		const mockResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					for (const line of lines) {
+						controller.enqueue(new TextEncoder().encode(line));
+					}
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const responseFormat: OpenAIResponseFormat = {
+			type: "json_schema",
+			json_schema: {
+				name: "person",
+				strict: true,
+				schema: {
+					type: "object",
+					properties: {
+						name: { type: "string" },
+						age: { type: "number" },
+					},
+					required: ["name", "age"],
+					additionalProperties: false,
+				},
+			},
+		};
+
+		for await (const _ of streamOpenAI(completionsModel, baseContext, {
+			apiKey: "k",
+			responseFormat,
+		})) {
+			// consume events
+		}
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const body = JSON.parse(fetchOptions.body);
+		expect(body.response_format).toEqual(responseFormat);
+	});
+
+	it("includes json_schema with description in request body", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"{\\"items\\":[]}"}}]}\n',
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+		const mockResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					for (const line of lines) {
+						controller.enqueue(new TextEncoder().encode(line));
+					}
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const responseFormat: OpenAIResponseFormat = {
+			type: "json_schema",
+			json_schema: {
+				name: "shopping_list",
+				description: "A list of items to buy",
+				strict: true,
+				schema: {
+					type: "object",
+					properties: {
+						items: {
+							type: "array",
+							items: { type: "string" },
+						},
+					},
+					required: ["items"],
+					additionalProperties: false,
+				},
+			},
+		};
+
+		for await (const _ of streamOpenAI(completionsModel, baseContext, {
+			apiKey: "k",
+			responseFormat,
+		})) {
+			// consume events
+		}
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const body = JSON.parse(fetchOptions.body);
+		expect(body.response_format).toEqual(responseFormat);
+		expect(body.response_format.json_schema.description).toBe(
+			"A list of items to buy",
+		);
+	});
+
+	it("does not include response_format when not specified", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+		const mockResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					for (const line of lines) {
+						controller.enqueue(new TextEncoder().encode(line));
+					}
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		for await (const _ of streamOpenAI(completionsModel, baseContext, {
+			apiKey: "k",
+		})) {
+			// consume events
+		}
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const body = JSON.parse(fetchOptions.body);
+		expect(body.response_format).toBeUndefined();
 	});
 });
