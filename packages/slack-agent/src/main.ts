@@ -172,6 +172,43 @@ const activeRuns = new Map<
 	{ runner: AgentRunner; context: SlackContext; stopContext?: SlackContext }
 >();
 
+// Track channels that are starting (to prevent race conditions)
+// This is checked synchronously before any async work to prevent double-starts
+const startingRuns = new Set<string>();
+
+/**
+ * Check if a channel is available for a new run.
+ * Returns true if available and marks it as starting.
+ * This is atomic - the check and mark happen synchronously.
+ */
+function tryStartRun(channelId: string): boolean {
+	if (activeRuns.has(channelId) || startingRuns.has(channelId)) {
+		return false;
+	}
+	startingRuns.add(channelId);
+	return true;
+}
+
+/**
+ * Mark a run as fully started (move from starting to active).
+ */
+function markRunActive(
+	channelId: string,
+	runner: AgentRunner,
+	context: SlackContext,
+): void {
+	startingRuns.delete(channelId);
+	activeRuns.set(channelId, { runner, context });
+}
+
+/**
+ * Clear run state for a channel.
+ */
+function clearRunState(channelId: string): void {
+	startingRuns.delete(channelId);
+	activeRuns.delete(channelId);
+}
+
 // Track last context per channel for retry
 const lastContexts = new Map<string, SlackContext>();
 
@@ -312,8 +349,8 @@ async function handleScheduledTask(
 ): Promise<{ success: boolean; error?: string }> {
 	const channelId = task.channelId;
 
-	// Check if already running in this channel
-	if (activeRuns.has(channelId)) {
+	// Check if already running in this channel (atomic check-and-mark)
+	if (!tryStartRun(channelId)) {
 		logger.logWarning(
 			`Skipping scheduled task ${task.id} - channel ${channelId} is busy`,
 			task.description,
@@ -371,7 +408,7 @@ async function handleScheduledTask(
 			taskId: task.id,
 			source: "scheduled",
 		};
-		activeRuns.set(channelId, { runner, context: scheduledCtx });
+		markRunActive(channelId, runner, scheduledCtx);
 
 		await scheduledCtx.setTyping(true);
 		await scheduledCtx.setWorking(true);
@@ -385,9 +422,11 @@ async function handleScheduledTask(
 			return { success: true };
 		} finally {
 			await scheduledCtx.setWorking(false);
-			activeRuns.delete(channelId);
+			clearRunState(channelId);
 		}
 	} catch (error) {
+		// Clear starting state if we fail before marking active
+		clearRunState(channelId);
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		logger.logWarning(`Scheduled task failed: ${task.id}`, errorMsg);
 		return { success: false, error: errorMsg };
@@ -435,8 +474,8 @@ async function handleMessage(
 		return;
 	}
 
-	// Check if already running in this channel
-	if (activeRuns.has(channelId)) {
+	// Check if already running in this channel (atomic check-and-mark)
+	if (!tryStartRun(channelId)) {
 		await ctx.respond("_Already working on something. Say `stop` to cancel._");
 		return;
 	}
@@ -444,6 +483,7 @@ async function handleMessage(
 	// Check rate limit
 	const rateCheck = rateLimiter.check(ctx.message.user, channelId);
 	if (!rateCheck.allowed) {
+		clearRunState(channelId); // Clear starting state since we're not proceeding
 		const msg = formatRateLimitMessage(rateCheck);
 		logger.logWarning(
 			`Rate limited: ${ctx.message.userName} in ${channelId}`,
@@ -478,7 +518,7 @@ async function handleMessage(
 		onApprovalNeeded,
 		scheduleCallbacks,
 	});
-	activeRuns.set(channelId, { runner, context: ctx });
+	markRunActive(channelId, runner, ctx);
 
 	await ctx.setTyping(true);
 	await ctx.setWorking(true);
@@ -503,7 +543,7 @@ async function handleMessage(
 		await ctx.respond(`_Error: ${errorMsg}_`);
 	} finally {
 		await ctx.setWorking(false);
-		activeRuns.delete(channelId);
+		clearRunState(channelId);
 	}
 }
 
@@ -585,7 +625,7 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 			}
 
 			// run
-			if (activeRuns.has(channelId)) {
+			if (activeRuns.has(channelId) || startingRuns.has(channelId)) {
 				await ctx.respond(
 					"_This channel is busy. Say `stop` first before running a task now._",
 				);
