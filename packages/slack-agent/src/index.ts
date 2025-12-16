@@ -200,3 +200,34 @@ export {
 } from "./utils/slack-timestamp.js";
 
 export { TTLCache, type TTLCacheOptions } from "./utils/ttl-cache.js";
+
+export {
+	ShutdownManager,
+	createShutdownManager,
+	setupGracefulShutdown,
+	type ShutdownHandler,
+	type ShutdownManagerConfig,
+	type ShutdownResult,
+} from "./utils/graceful-shutdown.js";
+
+export {
+	CircuitBreaker,
+	CircuitOpenError,
+	createCircuitBreaker,
+	createSlackCircuitBreaker,
+	type CircuitState,
+	type CircuitBreakerConfig,
+	type CircuitBreakerStats,
+} from "./utils/circuit-breaker.js";
+
+export {
+	HealthChecker,
+	createHealthChecker,
+	createHealthEndpoints,
+	standardChecks,
+	type HealthStatus,
+	type ComponentHealth,
+	type HealthCheckResult,
+	type HealthCheckFn,
+	type HealthCheckerConfig,
+} from "./utils/health-check.js";
