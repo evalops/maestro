@@ -6,10 +6,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::future::join_all;
 use tokio::sync::{mpsc, Semaphore};
 
+use super::details::BatchDetails;
 use super::registry::ToolExecutor;
 use crate::agent::{FromAgent, ToolResult};
 
@@ -208,6 +210,126 @@ impl BatchExecutor {
         results
     }
 
+    /// Execute multiple tools in parallel and return detailed execution info
+    ///
+    /// Returns results along with batch-level details including timing,
+    /// success rates, and per-tool durations.
+    pub async fn execute_with_details(
+        &self,
+        calls: Vec<BatchToolCall>,
+        event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
+    ) -> (Vec<BatchToolResult>, BatchDetails) {
+        let start_time = Instant::now();
+        let total = calls.len();
+
+        if calls.is_empty() {
+            let details = BatchDetails::new(0)
+                .with_results(0, 0)
+                .with_duration(0)
+                .with_concurrency(self.config.max_concurrency);
+            return (Vec::new(), details);
+        }
+
+        // Send batch start event
+        if let Some(ref tx) = event_tx {
+            if self.config.emit_events {
+                let _ = tx.send(FromAgent::BatchStart { total });
+            }
+        }
+
+        let semaphore = Arc::new(Semaphore::new(self.config.max_concurrency));
+        let mut handles = Vec::with_capacity(calls.len());
+
+        for call in calls {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let cwd = self.cwd.clone();
+            let event_tx_clone = event_tx.clone();
+            let emit_events = self.config.emit_events;
+
+            let call_id = call.call_id.clone();
+            let tool_name = call.tool_name.clone();
+            let args = call.args.clone();
+
+            handles.push(tokio::spawn(async move {
+                let tool_start = Instant::now();
+                // Each task creates its own executor
+                let executor = ToolExecutor::new(&cwd);
+                let result = executor
+                    .execute(
+                        &tool_name,
+                        &args,
+                        if emit_events {
+                            event_tx_clone.as_ref()
+                        } else {
+                            None
+                        },
+                        &call_id,
+                    )
+                    .await;
+
+                let duration_ms = tool_start.elapsed().as_millis() as u64;
+
+                // Release permit when done
+                drop(permit);
+
+                (
+                    BatchToolResult {
+                        call_id: call_id.clone(),
+                        tool_name,
+                        result,
+                    },
+                    call_id,
+                    duration_ms,
+                )
+            }));
+        }
+
+        // Wait for all tasks to complete
+        let task_results: Vec<_> = join_all(handles)
+            .await
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Separate results from durations
+        let mut results = Vec::with_capacity(task_results.len());
+        let mut tool_durations = HashMap::new();
+
+        for (result, call_id, duration) in task_results {
+            tool_durations.insert(call_id, duration);
+            results.push(result);
+        }
+
+        // Calculate stats
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let successes = results.iter().filter(|r| r.result.success).count();
+        let failures = results.len() - successes;
+
+        // Build details
+        let mut details = BatchDetails::new(total)
+            .with_results(successes, failures)
+            .with_duration(duration_ms)
+            .with_concurrency(self.config.max_concurrency)
+            .with_tool_durations(tool_durations);
+
+        if self.config.continue_on_error {
+            details = details.with_continue_on_error();
+        }
+
+        // Send batch end event
+        if let Some(ref tx) = event_tx {
+            if self.config.emit_events {
+                let _ = tx.send(FromAgent::BatchEnd {
+                    total: results.len(),
+                    successes,
+                    failures,
+                });
+            }
+        }
+
+        (results, details)
+    }
+
     /// Execute tools sequentially (useful for dependent operations)
     pub async fn execute_sequential(
         &self,
@@ -376,5 +498,49 @@ mod tests {
         let needs_approval = batch.filter_needs_approval(&calls);
         assert_eq!(needs_approval.len(), 1);
         assert_eq!(needs_approval[0].call_id, "2");
+    }
+
+    #[tokio::test]
+    async fn test_batch_executor_with_details_empty() {
+        let batch = BatchExecutor::new("/tmp");
+
+        let (results, details) = batch.execute_with_details(vec![], None).await;
+        assert!(results.is_empty());
+        assert_eq!(details.total, 0);
+        assert_eq!(details.successes, 0);
+        assert_eq!(details.failures, 0);
+        assert!(details.duration_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_batch_executor_with_details_tracks_timing() {
+        let batch = BatchExecutor::new("/tmp");
+
+        // Use glob which should succeed quickly
+        let calls = vec![BatchToolCall::new("1", "glob", json!({"pattern": "*.rs"}))];
+
+        let (results, details) = batch.execute_with_details(calls, None).await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(details.total, 1);
+        assert!(details.duration_ms.is_some());
+        assert!(details.duration_ms.unwrap() >= 0);
+
+        // Should have tool durations
+        let tool_durations = details.tool_durations.as_ref().unwrap();
+        assert!(tool_durations.contains_key("1"));
+    }
+
+    #[tokio::test]
+    async fn test_batch_executor_with_details_config() {
+        let config = BatchConfig::default()
+            .with_concurrency(2)
+            .continue_on_error(true);
+        let batch = BatchExecutor::with_config("/tmp", config);
+
+        let (_, details) = batch.execute_with_details(vec![], None).await;
+
+        assert_eq!(details.max_concurrency, Some(2));
+        // Empty batch doesn't set continue_on_error since it's only set on non-empty
     }
 }

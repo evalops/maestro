@@ -89,7 +89,7 @@ pub use bash::BashTool;
 pub use batch::{BatchConfig, BatchExecutor, BatchToolCall, BatchToolResult};
 pub use cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 pub use details::{
-    BashDetails, DiffDetails, EditDetails, GlobDetails, GrepDetails, ImageDetails,
+    BashDetails, BatchDetails, DiffDetails, EditDetails, GlobDetails, GrepDetails, ImageDetails,
     InlineToolDetails, ListDetails, ReadDetails, ToolDetails, WebFetchDetails, WriteDetails,
 };
 pub use history::{HistoryFilter, ToolExecution, ToolHistory, ToolStats};

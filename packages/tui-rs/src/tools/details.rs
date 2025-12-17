@@ -787,6 +787,90 @@ impl InlineToolDetails {
     }
 }
 
+/// Detailed information about a batch tool execution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BatchDetails {
+    /// Total number of tools in the batch
+    pub total: usize,
+
+    /// Number of successful executions
+    pub successes: usize,
+
+    /// Number of failed executions
+    pub failures: usize,
+
+    /// Total batch duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+
+    /// Maximum concurrency used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_concurrency: Option<usize>,
+
+    /// Whether execution continued after errors
+    #[serde(default)]
+    pub continued_on_error: bool,
+
+    /// Individual tool durations in milliseconds (keyed by call_id)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_durations: Option<std::collections::HashMap<String, u64>>,
+}
+
+impl BatchDetails {
+    pub fn new(total: usize) -> Self {
+        Self {
+            total,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_results(mut self, successes: usize, failures: usize) -> Self {
+        self.successes = successes;
+        self.failures = failures;
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn with_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.max_concurrency = Some(max_concurrency);
+        self
+    }
+
+    pub fn with_continue_on_error(mut self) -> Self {
+        self.continued_on_error = true;
+        self
+    }
+
+    pub fn with_tool_durations(
+        mut self,
+        durations: std::collections::HashMap<String, u64>,
+    ) -> Self {
+        self.tool_durations = Some(durations);
+        self
+    }
+
+    /// Calculate success rate (0.0 - 1.0)
+    pub fn success_rate(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.successes as f64 / self.total as f64
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
 /// Union type for tool details that can be stored in ToolResult.details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "tool_type", rename_all = "snake_case")]
@@ -802,6 +886,7 @@ pub enum ToolDetails {
     Diff(DiffDetails),
     List(ListDetails),
     InlineTool(InlineToolDetails),
+    Batch(BatchDetails),
 }
 
 impl ToolDetails {
@@ -1336,5 +1421,101 @@ mod tests {
 
         let parsed = ToolDetails::from_json(&json).unwrap();
         assert!(matches!(parsed, ToolDetails::InlineTool(_)));
+    }
+
+    #[test]
+    fn test_batch_details_new() {
+        let details = BatchDetails::new(5)
+            .with_results(4, 1)
+            .with_duration(1500)
+            .with_concurrency(4);
+
+        assert_eq!(details.total, 5);
+        assert_eq!(details.successes, 4);
+        assert_eq!(details.failures, 1);
+        assert_eq!(details.duration_ms, Some(1500));
+        assert_eq!(details.max_concurrency, Some(4));
+        assert!(!details.continued_on_error);
+    }
+
+    #[test]
+    fn test_batch_details_continue_on_error() {
+        let details = BatchDetails::new(3)
+            .with_results(2, 1)
+            .with_continue_on_error();
+
+        assert!(details.continued_on_error);
+    }
+
+    #[test]
+    fn test_batch_details_success_rate() {
+        let details = BatchDetails::new(10).with_results(8, 2);
+        assert!((details.success_rate() - 0.8).abs() < 0.001);
+
+        let empty = BatchDetails::new(0);
+        assert_eq!(empty.success_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_batch_details_with_tool_durations() {
+        let mut durations = std::collections::HashMap::new();
+        durations.insert("call-1".to_string(), 100);
+        durations.insert("call-2".to_string(), 200);
+        durations.insert("call-3".to_string(), 150);
+
+        let details = BatchDetails::new(3)
+            .with_results(3, 0)
+            .with_tool_durations(durations);
+
+        let tool_durations = details.tool_durations.as_ref().unwrap();
+        assert_eq!(tool_durations.len(), 3);
+        assert_eq!(tool_durations.get("call-1"), Some(&100));
+        assert_eq!(tool_durations.get("call-2"), Some(&200));
+    }
+
+    #[test]
+    fn test_batch_details_to_json() {
+        let details = BatchDetails::new(4)
+            .with_results(3, 1)
+            .with_duration(500)
+            .with_concurrency(2);
+
+        let json = details.to_json();
+        assert_eq!(json["total"], 4);
+        assert_eq!(json["successes"], 3);
+        assert_eq!(json["failures"], 1);
+        assert_eq!(json["duration_ms"], 500);
+        assert_eq!(json["max_concurrency"], 2);
+    }
+
+    #[test]
+    fn test_batch_details_from_json() {
+        let json = serde_json::json!({
+            "total": 5,
+            "successes": 4,
+            "failures": 1,
+            "duration_ms": 1000,
+            "max_concurrency": 4,
+            "continued_on_error": true
+        });
+
+        let details = BatchDetails::from_json(&json).unwrap();
+        assert_eq!(details.total, 5);
+        assert_eq!(details.successes, 4);
+        assert_eq!(details.failures, 1);
+        assert_eq!(details.duration_ms, Some(1000));
+        assert!(details.continued_on_error);
+    }
+
+    #[test]
+    fn test_batch_tool_details_union() {
+        let batch = ToolDetails::Batch(BatchDetails::new(3).with_results(2, 1));
+        let json = batch.to_json();
+
+        assert_eq!(json["tool_type"], "batch");
+        assert_eq!(json["total"], 3);
+
+        let parsed = ToolDetails::from_json(&json).unwrap();
+        assert!(matches!(parsed, ToolDetails::Batch(_)));
     }
 }
