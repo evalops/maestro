@@ -125,7 +125,7 @@ describe("backgroundTasksTool", () => {
 	it("starts tasks and lists them", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-start", {
 			action: "start",
-			command: "node -e \"console.log('ready'); setTimeout(() => {}, 5000)\"",
+			command: "node -e \"console.log('ready'); setTimeout(() => {}, 2000)\"",
 		});
 
 		expect(startResult.details).toMatchObject({ status: "running" });
@@ -142,7 +142,7 @@ describe("backgroundTasksTool", () => {
 		const startResult = await backgroundTasksTool.execute("bg-start-stop", {
 			action: "start",
 			command:
-				"node -e \"console.log('log-line'); setTimeout(() => {}, 5000)\"",
+				"node -e \"console.log('log-line'); setTimeout(() => {}, 2000)\"",
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
 
@@ -289,7 +289,7 @@ describe("backgroundTasksTool", () => {
 	it("restarts failing tasks when restart policy is configured", async () => {
 		const flagPath = join(logDir, "restart-flag.txt");
 		const flagLiteral = JSON.stringify(flagPath).replace(/"/g, '\\"');
-		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, 5000); }"`;
+		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, 2000); }"`;
 		const startResult = await backgroundTasksTool.execute("bg-restart", {
 			action: "start",
 			command,

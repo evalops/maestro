@@ -57,6 +57,7 @@ append_failed_tasks_summary() {
 }
 
 if run_attempt 1; then
+	rm -f nx-tests-attempt-1.log || true
 	exit 0
 fi
 

@@ -35,7 +35,7 @@ jobs:
         run: bash scripts/ci-nx-tests.sh
 
       - name: Upload Nx test logs (if any)
-        if: always()
+        if: ${{ always() && hashFiles('nx-tests-attempt-*.log') != '' }}
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: nx-tests-logs-${{ github.run_id }}
