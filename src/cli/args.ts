@@ -6,6 +6,8 @@ export interface Args {
 	modelsFile?: string;
 	apiKey?: string;
 	systemPrompt?: string;
+	/** Port for `composer web` (defaults to PORT env or 8080) */
+	port?: number;
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
@@ -49,6 +51,7 @@ const COMMANDS = new Set([
 	"cost",
 	"agents",
 	"exec",
+	"web",
 	"anthropic",
 	"openai",
 	"hooks",
@@ -116,6 +119,11 @@ export function parseArgs(args: string[]): Args {
 			result.modelsFile = args[++i];
 		} else if (arg === "--api-key" && i + 1 < args.length) {
 			result.apiKey = args[++i];
+		} else if (arg === "--port" && i + 1 < args.length) {
+			const value = Number.parseInt(args[++i] ?? "", 10);
+			if (Number.isFinite(value) && value > 0 && value < 65536) {
+				result.port = value;
+			}
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {
 			result.systemPrompt = args[++i];
 		} else if (arg === "--no-session") {

@@ -692,6 +692,24 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	// Handle `composer web` early exit (start the bundled web server + UI).
+	if (parsed.command === "web") {
+		if (parsed.messages.length > 0) {
+			console.error(
+				chalk.red(
+					"`composer web` does not accept prompt arguments. Use `composer` (interactive) or `composer exec` instead.",
+				),
+			);
+			process.exit(1);
+		}
+
+		const { startWebServer } = await import("./web-server.js");
+		const port =
+			parsed.port ?? (Number.parseInt(process.env.PORT || "8080", 10) || 8080);
+		await startWebServer(port);
+		return;
+	}
+
 	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
 	// or headless mode (stdout is JSON-only), redirect all logging/console output to a file.
 	// This must run before model loading to catch any early warnings.

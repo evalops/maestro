@@ -55,7 +55,7 @@ npm run dev
 
 This will start:
 - The web server on `http://localhost:8080`
-- Vite dev server with hot module reloading
+- Vite dev server with hot module reloading (default: `http://localhost:3000`)
 
 ### Production Build
 
@@ -69,6 +69,9 @@ npm run build
 ```bash
 # From root
 npm run web
+
+# Or via the CLI
+composer web
 
 # Or with custom port
 PORT=3000 npm run web

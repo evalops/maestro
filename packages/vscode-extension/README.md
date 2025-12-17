@@ -19,7 +19,7 @@ Use Composer's deterministic AI assistant directly inside VS Code. Chat with AI,
 1. Install the extension from the VS Code Marketplace
 2. Start the Composer API server:
    ```bash
-   composer web --port 8080
+   composer web
    ```
 3. Open the Composer sidebar from the Activity Bar
 4. Start chatting with the AI assistant

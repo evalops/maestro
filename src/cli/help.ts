@@ -61,6 +61,7 @@ export function printHelp(version: string) {
 		"--auth <mode>           Credential mode: auto (default), api-key, claude",
 		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
 		"--sandbox <mode>        Sandbox mode: docker, local, none (see docs/SAFETY.md)",
+		"--port <n>              Port for `composer web` (defaults to PORT env or 8080)",
 		"--continue, -c          Continue previous session",
 		"--resume, -r            Select a session to resume",
 		"--session <path>        Use specific session file",
@@ -110,6 +111,13 @@ export function printHelp(version: string) {
     --resume <sessionId>        Resume a prior exec session by id
     --last                      Resume the most recent exec session`,
 	)}`;
+	const webSection = `${sectionHeading("composer web")}${muted(
+		`  # Start the bundled web UI + API server
+  composer web
+
+  # Use a custom port
+  composer web --port 3000`,
+	)}`;
 	const sessionsSection = `${sectionHeading("Session Metadata")}${muted(
 		`  /session favorite|unfavorite      Toggle favorite for current session
   /session summary "<text>"         Save a manual summary for current session
@@ -151,6 +159,7 @@ export function printHelp(version: string) {
 			examples,
 			env,
 			execSection,
+			webSection,
 			sessionsSection,
 			sessionsDiscovery,
 			`${sectionHeading("Tips")}${badge(

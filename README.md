@@ -86,7 +86,7 @@ composer
 
 # Or start the web UI
 composer web
-# Then open http://localhost:3000
+# Then open http://localhost:8080
 ```
 
 Once running, chat with the AI: `Create a simple Express server in src/server.ts`. Composer will read/write files and run shell commands via explicit slash commands.
