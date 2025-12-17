@@ -11,6 +11,8 @@ Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md)
   - CI wiring: `.github/actions/setup-bun-nx/action.yml` uses `actions/setup-node` with `node-version-file`.
 - **Bun**
   - CI wiring: `.github/actions/setup-bun-nx/action.yml` input `bun-version` (default value).
+- **Semgrep**
+  - CI wiring: `.github/workflows/evals.yml` installs a pinned Semgrep version for Guardian runs.
 - **GitHub Actions**
   - Workflows and composite actions pin `uses:` refs to full commit SHAs under `.github/workflows/` and `.github/actions/`.
 
@@ -40,3 +42,8 @@ Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md)
    - `gh api repos/actions/setup-node/git/ref/tags/<tag> --jq .object.sha`
 3. Replace the pinned `uses: ...@<sha>` in `.github/workflows/*` and `.github/actions/*`.
 4. Run `bun run bun:lint` locally and confirm the `actionlint` workflow is green in CI.
+
+### 4) Update Semgrep
+
+1. Update the pinned `semgrep==...` version in `.github/workflows/evals.yml`.
+2. Open a PR and confirm `evals` is green.

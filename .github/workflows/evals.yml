@@ -42,7 +42,7 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Install Semgrep CLI
-        run: python3 -m pip install --user semgrep && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        run: python3 -m pip install --user "semgrep==1.144.0" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Composer Guardian
         run: bash scripts/guardian.sh --all --trigger ci
       - run: npx nx run composer:build:all
