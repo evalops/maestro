@@ -359,6 +359,93 @@ impl ImageDetails {
     }
 }
 
+/// Detailed information about a web fetch operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebFetchDetails {
+    /// URL that was fetched
+    pub url: String,
+
+    /// HTTP status code
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+
+    /// Content type from response headers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+
+    /// Response body size in bytes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_size: Option<usize>,
+
+    /// Whether the content was truncated
+    #[serde(default)]
+    pub truncated: bool,
+
+    /// Fetch duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+
+    /// Final URL after redirects (if different from original)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_url: Option<String>,
+
+    /// Optional prompt used for content extraction
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
+impl WebFetchDetails {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_status(mut self, code: u16) -> Self {
+        self.status_code = Some(code);
+        self
+    }
+
+    pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.content_type = Some(content_type.into());
+        self
+    }
+
+    pub fn with_body_size(mut self, size: usize) -> Self {
+        self.body_size = Some(size);
+        self
+    }
+
+    pub fn with_truncation(mut self) -> Self {
+        self.truncated = true;
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn with_final_url(mut self, url: impl Into<String>) -> Self {
+        self.final_url = Some(url.into());
+        self
+    }
+
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = Some(prompt.into());
+        self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
 /// Union type for tool details that can be stored in ToolResult.details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "tool_type", rename_all = "snake_case")]
@@ -368,6 +455,7 @@ pub enum ToolDetails {
     Write(WriteDetails),
     Edit(EditDetails),
     Image(ImageDetails),
+    WebFetch(WebFetchDetails),
 }
 
 impl ToolDetails {
@@ -519,5 +607,67 @@ mod tests {
         assert_eq!(details.path, Some("/test.jpg".to_string()));
         assert_eq!(details.mime_type, Some("image/jpeg".to_string()));
         assert!(!details.is_screenshot);
+    }
+
+    #[test]
+    fn test_web_fetch_details_new() {
+        let details = WebFetchDetails::new("https://example.com")
+            .with_status(200)
+            .with_content_type("text/html")
+            .with_body_size(1024)
+            .with_duration(150);
+
+        assert_eq!(details.url, "https://example.com");
+        assert_eq!(details.status_code, Some(200));
+        assert_eq!(details.content_type, Some("text/html".to_string()));
+        assert_eq!(details.body_size, Some(1024));
+        assert_eq!(details.duration_ms, Some(150));
+        assert!(!details.truncated);
+    }
+
+    #[test]
+    fn test_web_fetch_details_with_redirect() {
+        let details = WebFetchDetails::new("https://old.com")
+            .with_status(200)
+            .with_final_url("https://new.com");
+
+        assert_eq!(details.url, "https://old.com");
+        assert_eq!(details.final_url, Some("https://new.com".to_string()));
+    }
+
+    #[test]
+    fn test_web_fetch_details_truncated() {
+        let details = WebFetchDetails::new("https://example.com")
+            .with_truncation()
+            .with_prompt("Find the title");
+
+        assert!(details.truncated);
+        assert_eq!(details.prompt, Some("Find the title".to_string()));
+    }
+
+    #[test]
+    fn test_web_fetch_details_to_json() {
+        let details = WebFetchDetails::new("https://example.com")
+            .with_status(200)
+            .with_body_size(500);
+
+        let json = details.to_json();
+        assert_eq!(json["url"], "https://example.com");
+        assert_eq!(json["status_code"], 200);
+        assert_eq!(json["body_size"], 500);
+    }
+
+    #[test]
+    fn test_web_fetch_details_from_json() {
+        let json = serde_json::json!({
+            "url": "https://test.com",
+            "status_code": 404,
+            "truncated": true
+        });
+
+        let details = WebFetchDetails::from_json(&json).unwrap();
+        assert_eq!(details.url, "https://test.com");
+        assert_eq!(details.status_code, Some(404));
+        assert!(details.truncated);
     }
 }

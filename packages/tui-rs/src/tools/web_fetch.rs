@@ -35,8 +35,11 @@
 //! # }
 //! ```
 
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 
+use super::details::WebFetchDetails;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 
@@ -149,6 +152,8 @@ impl WebFetchTool {
 
     /// Execute the web fetch tool
     pub async fn execute(&self, args: WebFetchArgs) -> ToolResult {
+        let start_time = Instant::now();
+
         // Validate URL
         let url = args.url.trim();
         if url.is_empty() {
@@ -166,7 +171,10 @@ impl WebFetchTool {
         let parsed_url = match reqwest::Url::parse(&url) {
             Ok(u) => u,
             Err(e) => {
-                return ToolResult::failure(format!("Invalid URL: {}", e));
+                let details = WebFetchDetails::new(&url)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                return ToolResult::failure(format!("Invalid URL: {}", e))
+                    .with_details(details.to_json());
             }
         };
 
@@ -174,18 +182,29 @@ impl WebFetchTool {
         let response = match self.client.get(parsed_url.clone()).send().await {
             Ok(r) => r,
             Err(e) => {
-                return ToolResult::failure(format!("Failed to fetch URL: {}", e));
+                let details = WebFetchDetails::new(&url)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                return ToolResult::failure(format!("Failed to fetch URL: {}", e))
+                    .with_details(details.to_json());
             }
         };
 
         // Check for success status
         let status = response.status();
+        let final_url = response.url().to_string();
         if !status.is_success() {
+            let mut details = WebFetchDetails::new(&url)
+                .with_status(status.as_u16())
+                .with_duration(start_time.elapsed().as_millis() as u64);
+            if final_url != url {
+                details = details.with_final_url(&final_url);
+            }
             return ToolResult::failure(format!(
                 "HTTP error {}: {}",
                 status.as_u16(),
                 status.canonical_reason().unwrap_or("Unknown")
-            ));
+            ))
+            .with_details(details.to_json());
         }
 
         // Get content type
@@ -200,16 +219,27 @@ impl WebFetchTool {
         let body_bytes = match response.bytes().await {
             Ok(b) => {
                 if b.len() > MAX_BODY_SIZE {
+                    let details = WebFetchDetails::new(&url)
+                        .with_status(status.as_u16())
+                        .with_content_type(&content_type)
+                        .with_body_size(b.len())
+                        .with_duration(start_time.elapsed().as_millis() as u64);
                     return ToolResult::failure(format!(
                         "Response too large: {} bytes (max {})",
                         b.len(),
                         MAX_BODY_SIZE
-                    ));
+                    ))
+                    .with_details(details.to_json());
                 }
                 b
             }
             Err(e) => {
-                return ToolResult::failure(format!("Failed to read response body: {}", e));
+                let details = WebFetchDetails::new(&url)
+                    .with_status(status.as_u16())
+                    .with_content_type(&content_type)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                return ToolResult::failure(format!("Failed to read response body: {}", e))
+                    .with_details(details.to_json());
             }
         };
 
@@ -232,7 +262,8 @@ impl WebFetchTool {
             };
 
         // Truncate if necessary
-        let output = if content.len() > MAX_OUTPUT_SIZE {
+        let truncated = content.len() > MAX_OUTPUT_SIZE;
+        let output = if truncated {
             format!(
                 "{}\n\n... (content truncated, {} more bytes)",
                 &content[..MAX_OUTPUT_SIZE],
@@ -242,6 +273,22 @@ impl WebFetchTool {
             content
         };
 
+        // Build WebFetchDetails
+        let mut details = WebFetchDetails::new(&url)
+            .with_status(status.as_u16())
+            .with_content_type(&content_type)
+            .with_body_size(body_bytes.len())
+            .with_duration(start_time.elapsed().as_millis() as u64);
+        if truncated {
+            details = details.with_truncation();
+        }
+        if final_url != url {
+            details = details.with_final_url(&final_url);
+        }
+        if let Some(ref prompt) = args.prompt {
+            details = details.with_prompt(prompt);
+        }
+
         // Add URL header and optional prompt context
         let mut result = format!("# Content from {}\n\n", parsed_url);
         if let Some(prompt) = &args.prompt {
@@ -249,7 +296,7 @@ impl WebFetchTool {
         }
         result.push_str(&output);
 
-        ToolResult::success(result)
+        ToolResult::success(result).with_details(details.to_json())
     }
 }
 
