@@ -160,7 +160,7 @@ async function executeCommand(
 		signal?: AbortSignal;
 	},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-	return new Promise((resolvePromise, reject) => {
+	return new Promise((resolvePromise, rejectPromise) => {
 		const cwd = options.cwd ? resolve(options.cwd) : process.cwd();
 		const timeout = options.timeout ?? 120000; // 2 minute default
 
@@ -181,12 +181,33 @@ async function executeCommand(
 		let stdout = "";
 		let stderr = "";
 		let killed = false;
+		let settled = false;
+
+		const resolveOnce = (value: {
+			stdout: string;
+			stderr: string;
+			exitCode: number;
+		}) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			resolvePromise(value);
+		};
+
+		const rejectOnce = (error: Error) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			rejectPromise(error);
+		};
 
 		// Handle timeout
 		const timeoutId = setTimeout(() => {
 			killed = true;
 			child.kill("SIGTERM");
-			reject(new Error(`Command timed out after ${timeout}ms`));
+			rejectOnce(new Error(`Command timed out after ${timeout}ms`));
 		}, timeout);
 
 		// Handle abort signal
@@ -195,7 +216,7 @@ async function executeCommand(
 				killed = true;
 				child.kill("SIGTERM");
 				clearTimeout(timeoutId);
-				reject(new Error("Command aborted"));
+				rejectOnce(new Error("Command aborted"));
 			});
 		}
 
@@ -209,13 +230,13 @@ async function executeCommand(
 
 		child.on("error", (error) => {
 			clearTimeout(timeoutId);
-			reject(error);
+			rejectOnce(error);
 		});
 
 		child.on("close", (code) => {
 			clearTimeout(timeoutId);
 			if (!killed) {
-				resolvePromise({
+				resolveOnce({
 					stdout,
 					stderr,
 					exitCode: code ?? 0,
@@ -225,8 +246,39 @@ async function executeCommand(
 
 		// Send parameters as JSON via stdin
 		const input = JSON.stringify(params);
-		child.stdin?.write(input);
-		child.stdin?.end();
+		if (child.stdin) {
+			child.stdin.on("error", (error) => {
+				// If the child exits quickly (e.g. `exit 1`), stdin may be closed before
+				// we can write. Treat EPIPE as non-fatal and rely on the exit code.
+				if (
+					error &&
+					typeof error === "object" &&
+					"code" in error &&
+					(error as { code?: string }).code === "EPIPE"
+				) {
+					return;
+				}
+				clearTimeout(timeoutId);
+				rejectOnce(error instanceof Error ? error : new Error(String(error)));
+			});
+
+			child.stdin.write(input, (err) => {
+				if (!err) {
+					return;
+				}
+				if (
+					typeof err === "object" &&
+					err !== null &&
+					"code" in err &&
+					(err as { code?: string }).code === "EPIPE"
+				) {
+					return;
+				}
+				clearTimeout(timeoutId);
+				rejectOnce(err instanceof Error ? err : new Error(String(err)));
+			});
+			child.stdin.end();
+		}
 	});
 }
 
