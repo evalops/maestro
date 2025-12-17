@@ -11,7 +11,7 @@
 		"build": "tsc -p tsconfig.build.json",
 		"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
 		"check": "tsc -p tsconfig.build.json --noEmit",
-		"test": "vitest --run",
+		"test": "vitest --run --passWithNoTests",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"keywords": ["ai", "llm", "agent", "streaming", "composer"],

@@ -4,9 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   run-evals:
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-evals') }}
     strategy:
       fail-fast: false
       matrix:
@@ -17,19 +27,38 @@ jobs:
             chunkIndex: 2
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v1
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
         with:
           bun-version: 1.1.31
-      - name: Install ripgrep (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - name: Install ripgrep (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install ripgrep
-      - run: bun install
-      - run: bun install --cwd packages/tui
-      - run: bun install --cwd packages/web
+
+      - name: Cache Bun
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Ensure ripgrep
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
+
+      - run: bun install --frozen-lockfile
+
+      - name: Cache pip
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('.github/workflows/evals.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install Semgrep CLI
         run: python3 -m pip install --user semgrep && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Composer Guardian

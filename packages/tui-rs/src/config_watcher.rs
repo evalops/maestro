@@ -173,6 +173,8 @@ impl ConfigWatcher {
     /// Stop watching a file
     pub fn unwatch(&mut self, path: impl AsRef<Path>) {
         let path = path.as_ref().to_path_buf();
+        #[cfg(feature = "hot-reload")]
+        let path = path.canonicalize().unwrap_or(path);
         self.watched_paths.remove(&path);
         self.debounce_states.remove(&path);
     }

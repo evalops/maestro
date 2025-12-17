@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  NX_DAEMON: false
+
+jobs:
+  pr-checks:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
+        with:
+          bun-version: 1.1.31
+
+      - name: Cache Bun
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Cache Nx
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .nx/cache
+          key: ${{ runner.os }}-nx-${{ hashFiles('bun.lockb', 'nx.json', 'project.json', 'packages/**/project.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nx-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run bun:lint
+
+      - name: Test (Nx affected)
+        env:
+          NX_BASE: origin/${{ github.base_ref }}
+          NX_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}"
+          # If global config changes, be conservative and run all tests.
+          if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(nx\.json|project\.json|tsconfig\.base\.json|package\.json|bun\.lockb|package-lock\.json|packages/.*/project\.json)$'; then
+            npx nx run-many -t test --all --parallel=3
+          else
+            npx nx affected -t test --base="$NX_BASE" --head="$NX_HEAD" --parallel=3
+          fi

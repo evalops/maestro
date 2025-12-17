@@ -390,6 +390,8 @@ Composer is built for automated evaluation pipelines, making it easy to benchmar
 npx nx run composer:evals --skip-nx-cache
 ```
 
+**CI note:** Evals are opt-in on pull requests to keep CI fast. Add the `run-evals` label to a PR to trigger the evals workflow.
+
 This executes scenarios defined in `evals/scenarios.json` and reports pass/fail based on stdout assertions.
 
 ### Scenario Format

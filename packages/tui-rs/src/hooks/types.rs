@@ -35,6 +35,7 @@ pub enum HookEventType {
     PostToolUseFailure,
     SessionStart,
     SessionEnd,
+    SessionSwitch,
     UserPromptSubmit,
     PreCompact,
     Notification,
@@ -53,6 +54,8 @@ pub enum HookEventType {
     SubagentStop,
     /// When permission is required for a tool
     PermissionRequest,
+    /// When a session branch is created
+    Branch,
 }
 
 /// Input data for PreToolUse hooks

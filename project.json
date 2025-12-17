@@ -3,7 +3,7 @@
 	"projectType": "application",
 	"root": ".",
 	"sourceRoot": "src",
-	"implicitDependencies": ["composer-web", "tui"],
+	"implicitDependencies": ["composer-web", "tui", "@evalops/ai", "contracts"],
 	"targets": {
 		"build": {
 			"executor": "nx:run-commands",
@@ -42,6 +42,7 @@
 		},
 		"test": {
 			"executor": "nx:run-commands",
+			"dependsOn": ["build"],
 			"options": {
 				"command": "bun run bun:test",
 				"forwardAllArgs": true

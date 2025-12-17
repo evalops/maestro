@@ -280,7 +280,9 @@ impl HookRegistry {
             HookEventType::PostToolUseFailure
             | HookEventType::UserPromptSubmit
             | HookEventType::PreCompact
-            | HookEventType::Notification => false,
+            | HookEventType::Notification
+            | HookEventType::SessionSwitch
+            | HookEventType::Branch => false,
         }
     }
 

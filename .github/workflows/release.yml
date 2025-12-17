@@ -15,6 +15,10 @@ permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   validate-trigger:
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -59,7 +63,7 @@ jobs:
       release_tag: ${{ steps.meta.outputs.release_tag }}
       release_version: ${{ steps.meta.outputs.release_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
@@ -124,24 +128,32 @@ jobs:
             chunkIndex: 2
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.release_tag }}
 
-      - uses: oven-sh/setup-bun@v1
+      - uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
         with:
           bun-version: 1.1.31
 
-      - name: Install ripgrep (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Cache Bun
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
 
-      - name: Install ripgrep (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install ripgrep
+      - name: Ensure ripgrep
+        run: |
+          set -euo pipefail
+          if ! command -v rg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep
+          fi
 
-      - run: bun install
+      - run: bun install --frozen-lockfile
       - run: bun run bun:lint
       - run: bun run bun:test
       - run: bun run build
@@ -158,16 +170,24 @@ jobs:
       - quality-gate
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.release_tag }}
 
-      - uses: oven-sh/setup-bun@v1
+      - uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
         with:
           bun-version: 1.1.31
 
-      - run: bun install
+      - name: Cache Bun
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - run: bun install --frozen-lockfile
       - run: bun run build
       - name: Generate version metadata
         run: node scripts/create-version-json.js
@@ -180,7 +200,7 @@ jobs:
           FILE=$(echo "$PACK_JSON" | jq -r '.[0].filename')
           echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
           path: ${{ steps.pack.outputs.tarball }}
@@ -246,7 +266,7 @@ jobs:
           popd >/dev/null
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           name: Composer CLI ${{ needs.prepare.outputs.release_version }}
