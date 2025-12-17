@@ -32,6 +32,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 
 ## Deployment & Operations
 - [Enterprise](ENTERPRISE.md) — deployment, configuration, and hardening guidance for controlled environments.
+- [CI Version Pins](CI_VERSION_PINS.md) — where Node/Bun/action SHAs are pinned and how to update them safely.
 - [Open Code Parity](opencode-parity.md) — notes on parity with open code releases.
 - [Changelog](../CHANGELOG.md) — release history and notable changes.
 

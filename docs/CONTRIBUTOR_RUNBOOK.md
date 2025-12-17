@@ -6,6 +6,7 @@ Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference]
 ## 0. Clone & Install
 
 - `bun install` (workspace-aware)  
+- Node is pinned via `.node-version` (and `.nvmrc` for nvm users).
 - Keys: export provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) or place in `~/.composer/keys.json`.
 
 ## 1. Build & Verify (fresh repo)

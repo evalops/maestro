@@ -57,7 +57,7 @@ jobs:
       - uses: ./.github/actions/setup-bun-nx
 
       - name: Build packages
-        run: bun run build:all
+        run: npx nx run composer:build:all
 
       - name: Run integration tests
         env:
