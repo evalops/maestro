@@ -68,6 +68,11 @@ pub enum ContentBlock {
     },
     Thinking {
         thinking: String,
+        /// Cryptographic signature for replaying thinking blocks to the API.
+        /// This signature is required when sending a conversation with thinking
+        /// blocks back to Claude - without it, the API will reject the request.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
 }
 
@@ -119,8 +124,14 @@ pub enum StreamEvent {
     ThinkingDelta { index: usize, thinking: String },
     /// Tool use input delta (JSON string chunk)
     InputJsonDelta { index: usize, partial_json: String },
+    /// Thinking block signature (required for replaying thinking to API)
+    ThinkingSignature { index: usize, signature: String },
     /// Content block completed
-    ContentBlockStop { index: usize },
+    ContentBlockStop {
+        index: usize,
+        /// Signature for thinking blocks (captured from signature_delta)
+        thinking_signature: Option<String>,
+    },
     /// Message completed
     MessageStop {
         /// Stop reason from the API (MaxTokens indicates overflow)

@@ -277,7 +277,7 @@ fn estimate_message_tokens(message: &Message) -> u64 {
 fn estimate_block_tokens(block: &ContentBlock) -> u64 {
     match block {
         ContentBlock::Text { text } => estimate_text_tokens(text),
-        ContentBlock::Thinking { thinking } => estimate_text_tokens(thinking),
+        ContentBlock::Thinking { thinking, .. } => estimate_text_tokens(thinking),
         ContentBlock::ToolUse { name, input, .. } => {
             let input_str = serde_json::to_string(input).unwrap_or_default();
             estimate_text_tokens(name) + estimate_text_tokens(&input_str)

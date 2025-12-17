@@ -1199,6 +1199,7 @@ impl AiClient for OpenAiClient {
 
                                             let _ = tx.send(StreamEvent::ContentBlockStop {
                                                 index: tool_index,
+                                                thinking_signature: None,
                                             });
                                         }
                                         // Only extract text as fallback if we didn't receive streaming deltas
@@ -1259,7 +1260,10 @@ impl AiClient for OpenAiClient {
                                 "response.completed" => {
                                     // Now close the content block
                                     if content_started {
-                                        let _ = tx.send(StreamEvent::ContentBlockStop { index: 0 });
+                                        let _ = tx.send(StreamEvent::ContentBlockStop {
+                                            index: 0,
+                                            thinking_signature: None,
+                                        });
                                     }
                                     // Extract usage from response if present
                                     if let Some(resp) = &event.response {
@@ -1396,6 +1400,7 @@ impl AiClient for OpenAiClient {
                                             });
                                             let _ = tx.send(StreamEvent::ContentBlockStop {
                                                 index: block_idx,
+                                                thinking_signature: None,
                                             });
                                         }
                                     }
@@ -1468,6 +1473,7 @@ impl AiClient for OpenAiClient {
                                                     let _ =
                                                         tx.send(StreamEvent::ContentBlockStop {
                                                             index: 0,
+                                                            thinking_signature: None,
                                                         });
                                                 }
                                                 // On tool_calls finish, flush completed tool calls
@@ -1508,6 +1514,7 @@ impl AiClient for OpenAiClient {
                                                         let _ = tx.send(
                                                             StreamEvent::ContentBlockStop {
                                                                 index: block_idx,
+                                                                thinking_signature: None,
                                                             },
                                                         );
                                                     }

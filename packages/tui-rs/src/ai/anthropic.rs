@@ -80,15 +80,19 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::Deserialize;
-use std::cell::RefCell;
 use tokio::sync::mpsc;
 
 use super::client::{AiClient, AiProvider};
 use super::types::*;
 
-// Thread-local storage for stop_reason from message_delta to message_stop
-thread_local! {
-    static LAST_STOP_REASON: RefCell<Option<StopReason>> = const { RefCell::new(None) };
+/// Parser state for accumulating data across SSE events within a single stream.
+/// This replaces thread-local storage to avoid race conditions in async contexts.
+#[derive(Debug, Default)]
+struct SseParserState {
+    /// Stop reason from message_delta, consumed by message_stop
+    pending_stop_reason: Option<StopReason>,
+    /// Thinking signature from signature_delta, associated with thinking blocks
+    pending_thinking_signature: Option<String>,
 }
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -223,6 +227,8 @@ impl AnthropicClient {
         tokio::spawn(async move {
             // Buffer for accumulating incomplete SSE events
             let mut buffer = String::new();
+            // Parser state - local to this stream, avoiding thread-local race conditions
+            let mut parser_state = SseParserState::default();
 
             // Process chunks as they arrive from the HTTP stream
             while let Some(chunk) = stream.next().await {
@@ -238,7 +244,7 @@ impl AnthropicClient {
                             buffer = buffer[pos + 2..].to_string();
 
                             // Parse SSE event and send to receiver
-                            if let Some(event) = parse_sse_event(&event_data) {
+                            if let Some(event) = parse_sse_event(&event_data, &mut parser_state) {
                                 if tx.send(event).is_err() {
                                     return; // Receiver dropped - consumer stopped listening
                                 }
@@ -372,6 +378,15 @@ impl AiClient for AnthropicClient {
 /// 3. Deserialize JSON data into appropriate Rust struct using serde
 /// 4. Convert API-specific struct to unified `StreamEvent` enum
 ///
+/// # State Management
+///
+/// The `state` parameter maintains context across SSE events within a single stream:
+/// - `pending_stop_reason`: Captured from `message_delta`, consumed by `message_stop`
+/// - `pending_thinking_signature`: Captured from `signature_delta` for thinking blocks
+///
+/// This approach replaces thread-local storage to avoid race conditions when
+/// multiple streams run concurrently in async contexts.
+///
 /// # Serde Tagged Enums
 ///
 /// Many API types use `#[serde(tag = "type")]` for JSON discrimination:
@@ -392,7 +407,7 @@ impl AiClient for AnthropicClient {
 ///
 /// - `Some(StreamEvent)` if parsing succeeds
 /// - `None` if parsing fails or event should be ignored (e.g., ping events)
-fn parse_sse_event(data: &str) -> Option<StreamEvent> {
+fn parse_sse_event(data: &str, state: &mut SseParserState) -> Option<StreamEvent> {
     let mut event_type = None;
     let mut event_data = None;
 
@@ -427,7 +442,10 @@ fn parse_sse_event(data: &str) -> Option<StreamEvent> {
                     name,
                     input: input.unwrap_or(serde_json::Value::Object(Default::default())),
                 },
-                RawContentBlock::Thinking { thinking } => ContentBlock::Thinking { thinking },
+                RawContentBlock::Thinking { thinking } => ContentBlock::Thinking {
+                    thinking,
+                    signature: None, // Will be populated from signature_delta
+                },
             };
             Some(StreamEvent::ContentBlockStart {
                 index: parsed.index,
@@ -449,20 +467,32 @@ fn parse_sse_event(data: &str) -> Option<StreamEvent> {
                     index: parsed.index,
                     partial_json,
                 }),
+                DeltaType::SignatureDelta { signature } => {
+                    // Store signature in state for association with thinking block
+                    state.pending_thinking_signature = Some(signature.clone());
+                    Some(StreamEvent::ThinkingSignature {
+                        index: parsed.index,
+                        signature,
+                    })
+                }
             }
         }
         "content_block_stop" => {
             let parsed: ContentBlockStopEvent = serde_json::from_str(event_data).ok()?;
+            // Take pending signature - it will be associated with the stopped block
+            let signature = state.pending_thinking_signature.take();
             Some(StreamEvent::ContentBlockStop {
                 index: parsed.index,
+                thinking_signature: signature,
             })
         }
         "message_delta" => {
             let parsed: MessageDeltaEvent = serde_json::from_str(event_data).ok()?;
-            // Store stop_reason in thread-local for message_stop to pick up
+            // Store stop_reason in parser state for message_stop to pick up
+            // This replaces thread-local storage to avoid race conditions
             if let Some(delta) = &parsed.delta {
                 if delta.stop_reason.is_some() {
-                    LAST_STOP_REASON.with(|r| *r.borrow_mut() = delta.stop_reason);
+                    state.pending_stop_reason = delta.stop_reason;
                 }
             }
             parsed.usage.map(|usage| StreamEvent::Usage {
@@ -473,7 +503,8 @@ fn parse_sse_event(data: &str) -> Option<StreamEvent> {
             })
         }
         "message_stop" => {
-            let stop_reason = LAST_STOP_REASON.with(|r| r.borrow_mut().take());
+            // Consume the pending stop_reason from parser state
+            let stop_reason = state.pending_stop_reason.take();
             Some(StreamEvent::MessageStop { stop_reason })
         }
         "error" => {
@@ -596,6 +627,8 @@ enum DeltaType {
     ThinkingDelta { thinking: String },
     /// Partial JSON for tool arguments (streamed incrementally)
     InputJsonDelta { partial_json: String },
+    /// Signature for thinking block (required for replaying thinking to API)
+    SignatureDelta { signature: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -639,12 +672,18 @@ struct ErrorInfo {
 mod tests {
     use super::*;
 
+    /// Helper to create a fresh parser state for tests
+    fn new_state() -> SseParserState {
+        SseParserState::default()
+    }
+
     #[test]
     fn parse_message_start() {
         let data = r#"event: message_start
 data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-3-opus-20240229","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":25,"output_tokens":1}}}"#;
 
-        let event = parse_sse_event(data).unwrap();
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
         assert!(matches!(event, StreamEvent::MessageStart { id, .. } if id == "msg_123"));
     }
 
@@ -653,7 +692,8 @@ data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":
         let data = r#"event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
 
-        let event = parse_sse_event(data).unwrap();
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
         assert!(matches!(event, StreamEvent::TextDelta { text, .. } if text == "Hello"));
     }
 
@@ -749,7 +789,8 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         let data = r#"event: content_block_delta
 data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"Let me think..."}}"#;
 
-        let event = parse_sse_event(data).unwrap();
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
         assert!(
             matches!(event, StreamEvent::ThinkingDelta { thinking, index } if thinking == "Let me think..." && index == 1)
         );
@@ -760,7 +801,8 @@ data: {"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","
         let data = r#"event: content_block_delta
 data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}"#;
 
-        let event = parse_sse_event(data).unwrap();
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
         assert!(
             matches!(event, StreamEvent::InputJsonDelta { partial_json, index } if partial_json == "{\"path\":" && index == 2)
         );
@@ -771,7 +813,8 @@ data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta"
         let data = r#"event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
 
-        let event = parse_sse_event(data).unwrap();
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
         assert!(matches!(
             event,
             StreamEvent::ContentBlockStart {
@@ -786,7 +829,8 @@ data: {"type":"content_block_start","index":0,"content_block":{"type":"text","te
         let data = r#"event: content_block_start
 data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_123","name":"read_file"}}"#;
 
-        let event = parse_sse_event(data).unwrap();
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
         match event {
             StreamEvent::ContentBlockStart {
                 index: 1,
@@ -804,8 +848,15 @@ data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use"
         let data = r#"event: content_block_stop
 data: {"type":"content_block_stop","index":0}"#;
 
-        let event = parse_sse_event(data).unwrap();
-        assert!(matches!(event, StreamEvent::ContentBlockStop { index: 0 }));
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
+        assert!(matches!(
+            event,
+            StreamEvent::ContentBlockStop {
+                index: 0,
+                thinking_signature: None
+            }
+        ));
     }
 
     #[test]
@@ -813,7 +864,8 @@ data: {"type":"content_block_stop","index":0}"#;
         let data = r#"event: message_delta
 data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}"#;
 
-        let event = parse_sse_event(data).unwrap();
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
         match event {
             StreamEvent::Usage {
                 input_tokens,
@@ -835,7 +887,8 @@ data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":50,"ca
         let data = r#"event: error
 data: {"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}"#;
 
-        let event = parse_sse_event(data).unwrap();
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
         match event {
             StreamEvent::Error { message } => {
                 assert_eq!(message, "Rate limit exceeded");
@@ -849,7 +902,8 @@ data: {"type":"error","error":{"type":"rate_limit_error","message":"Rate limit e
         let data = r#"event: ping
 data: {}"#;
 
-        let event = parse_sse_event(data);
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state);
         assert!(event.is_none());
     }
 
@@ -858,7 +912,81 @@ data: {}"#;
         let data = r#"event: some_unknown_event
 data: {"some": "data"}"#;
 
-        let event = parse_sse_event(data);
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state);
         assert!(event.is_none());
+    }
+
+    #[test]
+    fn parse_signature_delta() {
+        let data = r#"event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_abc123"}}"#;
+
+        let mut state = new_state();
+        let event = parse_sse_event(data, &mut state).unwrap();
+        assert!(
+            matches!(event, StreamEvent::ThinkingSignature { signature, index } if signature == "sig_abc123" && index == 0)
+        );
+        // Signature should be stored in state
+        assert_eq!(
+            state.pending_thinking_signature,
+            Some("sig_abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_content_block_stop_with_signature() {
+        let mut state = new_state();
+        // First, process a signature_delta
+        let sig_data = r#"event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"thinking_sig_xyz"}}"#;
+        let _ = parse_sse_event(sig_data, &mut state);
+
+        // Then process content_block_stop
+        let stop_data = r#"event: content_block_stop
+data: {"type":"content_block_stop","index":0}"#;
+        let event = parse_sse_event(stop_data, &mut state).unwrap();
+
+        match event {
+            StreamEvent::ContentBlockStop {
+                index: 0,
+                thinking_signature,
+            } => {
+                assert_eq!(thinking_signature, Some("thinking_sig_xyz".to_string()));
+            }
+            _ => panic!("Expected ContentBlockStop with signature"),
+        }
+        // Signature should be consumed
+        assert!(state.pending_thinking_signature.is_none());
+    }
+
+    #[test]
+    fn parse_stop_reason_via_state() {
+        let mut state = new_state();
+
+        // First, process message_delta with stop_reason
+        let delta_data = r#"event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#;
+        let _ = parse_sse_event(delta_data, &mut state);
+
+        // Verify stop_reason is stored in state
+        assert!(matches!(
+            state.pending_stop_reason,
+            Some(StopReason::EndTurn)
+        ));
+
+        // Then process message_stop
+        let stop_data = r#"event: message_stop
+data: {"type":"message_stop"}"#;
+        let event = parse_sse_event(stop_data, &mut state).unwrap();
+
+        match event {
+            StreamEvent::MessageStop { stop_reason } => {
+                assert!(matches!(stop_reason, Some(StopReason::EndTurn)));
+            }
+            _ => panic!("Expected MessageStop"),
+        }
+        // Stop reason should be consumed
+        assert!(state.pending_stop_reason.is_none());
     }
 }

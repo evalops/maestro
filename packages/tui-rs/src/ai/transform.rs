@@ -61,7 +61,7 @@ pub fn transform_messages(
                     let transformed_blocks: Vec<ContentBlock> = blocks
                         .iter()
                         .map(|block| match block {
-                            ContentBlock::Thinking { thinking } => ContentBlock::Text {
+                            ContentBlock::Thinking { thinking, .. } => ContentBlock::Text {
                                 text: format!("<thinking>\n{}\n</thinking>", thinking),
                             },
                             other => other.clone(),
@@ -153,7 +153,7 @@ pub fn transform_messages_full(
                     let transformed_blocks: Vec<ContentBlock> = blocks
                         .iter()
                         .map(|block| match block {
-                            ContentBlock::Thinking { thinking } => ContentBlock::Text {
+                            ContentBlock::Thinking { thinking, .. } => ContentBlock::Text {
                                 text: format!("<thinking>\n{}\n</thinking>", thinking),
                             },
                             other => other.clone(),
@@ -256,6 +256,7 @@ mod tests {
         let messages = vec![create_assistant_message(vec![
             ContentBlock::Thinking {
                 thinking: "Let me think...".to_string(),
+                signature: None,
             },
             ContentBlock::Text {
                 text: "Here's my answer".to_string(),
@@ -284,6 +285,7 @@ mod tests {
     fn test_preserve_thinking_same_provider() {
         let messages = vec![create_assistant_message(vec![ContentBlock::Thinking {
             thinking: "Reasoning here".to_string(),
+            signature: None,
         }])];
 
         let result = transform_messages(

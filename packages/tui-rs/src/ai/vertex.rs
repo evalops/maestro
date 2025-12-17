@@ -187,7 +187,7 @@ impl VertexAiClient {
                 .iter()
                 .filter_map(|block| match block {
                     ContentBlock::Text { text } => Some(Part::Text { text: text.clone() }),
-                    ContentBlock::Thinking { thinking } => Some(Part::Text {
+                    ContentBlock::Thinking { thinking, .. } => Some(Part::Text {
                         text: format!("<thinking>{}</thinking>", thinking),
                     }),
                     ContentBlock::ToolUse { id: _, name, input } => Some(Part::FunctionCall {
@@ -551,6 +551,7 @@ mod tests {
                 },
                 ContentBlock::Thinking {
                     thinking: "I should analyze this.".to_string(),
+                    signature: None,
                 },
             ]),
         };
@@ -931,6 +932,7 @@ mod tests {
                 },
                 ContentBlock::Thinking {
                     thinking: "Let me think...".to_string(),
+                    signature: None,
                 },
             ]),
         };

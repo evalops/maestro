@@ -1043,7 +1043,7 @@ impl NativeAgentRunner {
                         ContentBlock::Text { text } => {
                             current_text = text.clone();
                         }
-                        ContentBlock::Thinking { thinking } => {
+                        ContentBlock::Thinking { thinking, .. } => {
                             current_thinking = thinking.clone();
                         }
                         ContentBlock::ToolUse { id, name, .. } => {
@@ -1068,6 +1068,11 @@ impl NativeAgentRunner {
                             is_thinking: true,
                         });
                     }
+                    StreamEvent::ThinkingSignature { .. } => {
+                        // Signature is captured in ContentBlockStop via parser state
+                        // No action needed here - the signature is associated with the
+                        // thinking block when the content block stops
+                    }
                     StreamEvent::InputJsonDelta {
                         index,
                         partial_json,
@@ -1085,7 +1090,10 @@ impl NativeAgentRunner {
                             }
                         }
                     }
-                    StreamEvent::ContentBlockStop { index: _ } => {
+                    StreamEvent::ContentBlockStop {
+                        index: _,
+                        thinking_signature,
+                    } => {
                         // Finalize current content block
                         if !current_text.is_empty() {
                             assistant_content.push(ContentBlock::Text {
@@ -1095,6 +1103,7 @@ impl NativeAgentRunner {
                         if !current_thinking.is_empty() {
                             assistant_content.push(ContentBlock::Thinking {
                                 thinking: std::mem::take(&mut current_thinking),
+                                signature: thinking_signature,
                             });
                         }
                         if let Some((active_index, id, name, mut json)) = current_tool.take() {
