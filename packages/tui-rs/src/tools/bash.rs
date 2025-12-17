@@ -122,6 +122,7 @@
 //! # }
 //! ```
 
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -137,8 +138,88 @@ use crate::ai::Tool;
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// Maximum timeout (10 minutes)
 const MAX_TIMEOUT_MS: u64 = 600_000;
-/// Maximum output size (30KB)
+/// Maximum output size (30KB) - output beyond this is written to temp file
 const MAX_OUTPUT_SIZE: usize = 30_000;
+/// Maximum lines to show in truncated output
+const MAX_OUTPUT_LINES: usize = 500;
+
+/// Generate a unique temp file path for storing large bash output.
+///
+/// Creates a path in the system temp directory with a random ID to avoid conflicts.
+/// The file is prefixed with "composer-bash-" for easy identification and cleanup.
+///
+/// # Returns
+///
+/// A PathBuf pointing to a unique temp file location.
+fn get_temp_file_path() -> PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+
+    std::env::temp_dir().join(format!("composer-bash-{}-{}.log", pid, timestamp))
+}
+
+/// Truncate output from the tail (keep last N lines/bytes).
+///
+/// Unlike head truncation which keeps the beginning, tail truncation keeps
+/// the most recent output which is usually more useful for debugging.
+///
+/// # Arguments
+///
+/// * `output` - The full output string
+/// * `max_bytes` - Maximum bytes to keep
+/// * `max_lines` - Maximum lines to keep
+///
+/// # Returns
+///
+/// A tuple of (truncated_output, was_truncated, stats_message)
+fn truncate_output_tail(
+    output: &str,
+    max_bytes: usize,
+    max_lines: usize,
+) -> (String, bool, Option<String>) {
+    let total_bytes = output.len();
+    let lines: Vec<&str> = output.lines().collect();
+    let total_lines = lines.len();
+
+    // Check if truncation needed
+    if total_bytes <= max_bytes && total_lines <= max_lines {
+        return (output.to_string(), false, None);
+    }
+
+    // Determine how much to keep
+    let mut result_lines: Vec<&str> = Vec::new();
+    let mut result_bytes = 0;
+    let mut lines_kept = 0;
+
+    // Iterate from end to beginning
+    for line in lines.iter().rev() {
+        let line_bytes = line.len() + 1; // +1 for newline
+
+        if result_bytes + line_bytes > max_bytes || lines_kept >= max_lines {
+            break;
+        }
+
+        result_lines.push(line);
+        result_bytes += line_bytes;
+        lines_kept += 1;
+    }
+
+    // Reverse to restore order
+    result_lines.reverse();
+
+    let truncated = result_lines.join("\n");
+    let stats = format!(
+        "[Showing last {} lines ({} bytes) of {} lines ({} bytes total)]",
+        lines_kept, result_bytes, total_lines, total_bytes
+    );
+
+    (truncated, true, Some(stats))
+}
 
 /// Kill an entire process tree by PID.
 ///
@@ -634,15 +715,48 @@ impl BashTool {
                     output.push_str(&stderr_str);
                 }
 
-                // Truncate if too long
-                if output.len() > MAX_OUTPUT_SIZE {
-                    output.truncate(MAX_OUTPUT_SIZE);
-                    output.push_str("\n... (output truncated)");
-                }
+                // Handle large output: write to temp file and tail-truncate
+                let (final_output, truncation_notice) = if output.len() > MAX_OUTPUT_SIZE
+                    || output.lines().count() > MAX_OUTPUT_LINES
+                {
+                    // Write full output to temp file for agent access
+                    let temp_path = get_temp_file_path();
+                    let temp_file_notice = match std::fs::write(&temp_path, &output) {
+                        Ok(()) => Some(format!("Full output saved to: {}", temp_path.display())),
+                        Err(e) => {
+                            // Log but don't fail the command
+                            eprintln!("Failed to write temp output file: {}", e);
+                            None
+                        }
+                    };
+
+                    // Tail-truncate: keep the most recent output
+                    let (truncated, was_truncated, stats) =
+                        truncate_output_tail(&output, MAX_OUTPUT_SIZE, MAX_OUTPUT_LINES);
+
+                    let notice = match (was_truncated, stats, temp_file_notice) {
+                        (true, Some(stats), Some(temp_notice)) => {
+                            Some(format!("{}\n{}", stats, temp_notice))
+                        }
+                        (true, Some(stats), None) => Some(stats),
+                        (_, _, Some(temp_notice)) => Some(temp_notice),
+                        _ => None,
+                    };
+
+                    (truncated, notice)
+                } else {
+                    (output, None)
+                };
+
+                // Build final output with truncation notice
+                let output_with_notice = match truncation_notice {
+                    Some(notice) => format!("{}\n\n{}", notice, final_output),
+                    None => final_output,
+                };
 
                 ToolResult {
                     success: status.success(),
-                    output,
+                    output: output_with_notice,
                     error: if status.success() {
                         None
                     } else {
@@ -851,9 +965,11 @@ mod tests {
             .await;
 
         assert!(result.success);
-        // Output should be truncated
-        assert!(result.output.len() <= 30_100); // Allow for truncation message
-        assert!(result.output.contains("truncated"));
+        // Output should be truncated with stats notice
+        assert!(result.output.contains("Showing last"));
+        assert!(result.output.contains("bytes total"));
+        // Should reference temp file
+        assert!(result.output.contains("Full output saved to:"));
     }
 
     #[tokio::test]
@@ -869,7 +985,92 @@ mod tests {
             .await;
 
         assert!(result.success);
-        assert!(!result.output.contains("truncated"));
+        assert!(!result.output.contains("Showing last"));
+    }
+
+    #[tokio::test]
+    async fn test_output_tail_truncation_keeps_recent() {
+        let tool = BashTool::new(".");
+        // Generate numbered lines - with tail truncation, we should see the LAST lines
+        let result = tool
+            .execute(BashArgs {
+                command: "seq 1 10000".to_string(), // 10000 lines, ~50KB
+                timeout: Some(5000),
+                description: Some("Tail truncation test".to_string()),
+                run_in_background: false,
+            })
+            .await;
+
+        assert!(result.success);
+        // Should contain the last number (10000), not the first (1)
+        assert!(result.output.contains("10000"));
+        // First line should NOT be in output (tail truncation)
+        // Note: The output may contain "1" in the stats message, so we check more specifically
+        let lines: Vec<&str> = result.output.lines().collect();
+        // Find the actual output lines (after the stats)
+        let output_start = lines
+            .iter()
+            .position(|l| l.parse::<u32>().is_ok())
+            .unwrap_or(0);
+        let first_number: u32 = lines[output_start].parse().unwrap_or(0);
+        // First number in truncated output should be > 1 (we lost the beginning)
+        assert!(
+            first_number > 1,
+            "Expected tail truncation to skip first lines, but got line starting with {}",
+            first_number
+        );
+    }
+
+    // ============================================================
+    // Truncation Helper Tests
+    // ============================================================
+
+    #[test]
+    fn test_truncate_output_tail_no_truncation_needed() {
+        let input = "line1\nline2\nline3";
+        let (output, truncated, stats) = super::truncate_output_tail(input, 1000, 100);
+
+        assert_eq!(output, input);
+        assert!(!truncated);
+        assert!(stats.is_none());
+    }
+
+    #[test]
+    fn test_truncate_output_tail_by_lines() {
+        let input = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10";
+        let (output, truncated, stats) = super::truncate_output_tail(input, 10000, 5);
+
+        assert!(truncated);
+        assert!(stats.is_some());
+        // Should keep last 5 lines: 6, 7, 8, 9, 10
+        assert!(output.contains("10"));
+        assert!(output.contains("6"));
+        assert!(!output.contains("\n1\n")); // "1" alone shouldn't be in output
+    }
+
+    #[test]
+    fn test_truncate_output_tail_by_bytes() {
+        let input = "a".repeat(100);
+        let (output, truncated, stats) = super::truncate_output_tail(&input, 50, 1000);
+
+        assert!(truncated);
+        assert!(stats.is_some());
+        // Output should be limited by bytes
+        assert!(output.len() <= 50);
+    }
+
+    #[test]
+    fn test_get_temp_file_path_unique() {
+        let path1 = super::get_temp_file_path();
+        std::thread::sleep(std::time::Duration::from_nanos(100)); // Ensure different timestamp
+        let path2 = super::get_temp_file_path();
+
+        // Paths should be different
+        assert_ne!(path1, path2);
+        // Should be in temp directory
+        assert!(path1.starts_with(std::env::temp_dir()));
+        // Should have our prefix
+        assert!(path1.to_string_lossy().contains("composer-bash-"));
     }
 
     // ============================================================
