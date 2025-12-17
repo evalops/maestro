@@ -27,7 +27,7 @@
     "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
     "test:watch": "vitest --watch",
     "lint": "biome check . && npm run lint:evals",
-    "lint:evals": "node scripts/verify-evals.js",
+		"lint:evals": "node scripts/verify-evals.js && node scripts/verify-tool-versions.js",
     "format": "biome format .",
     "check": "npm run lint && npm run check --workspaces --if-present && tsc --noEmit",
     "evals": "npm run build && node scripts/run-evals.js",
