@@ -98,6 +98,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::message_queue::MessageQueue;
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{FromAgent, TokenUsage, ToolResult};
 use crate::ai::{
@@ -400,6 +401,9 @@ impl NativeAgent {
         // Create retry policy for transient API errors
         let retry_policy = super::retry::RetryPolicy::default();
 
+        // Create message queue for pending prompts (max 10 queued messages)
+        let pending_messages = MessageQueue::with_max_size(10);
+
         // Create the background runner
         let runner = NativeAgentRunner {
             client,
@@ -416,6 +420,7 @@ impl NativeAgent {
             safety,
             compactor,
             retry_policy,
+            pending_messages,
         };
 
         // Spawn the background task
@@ -652,6 +657,13 @@ struct NativeAgentRunner {
     ///
     /// Implements exponential backoff with jitter for rate limits and server errors.
     retry_policy: super::retry::RetryPolicy,
+
+    /// Message queue for pending user prompts
+    ///
+    /// When the agent is busy processing a request, incoming prompts are queued
+    /// instead of rejected. After each request completes, pending messages are
+    /// automatically processed.
+    pending_messages: MessageQueue,
 }
 
 impl NativeAgentRunner {
@@ -804,9 +816,25 @@ impl NativeAgentRunner {
                     attachments,
                 } => {
                     if self.busy {
-                        let _ = self.event_tx.send(FromAgent::Error {
-                            message: "Agent is busy".to_string(),
-                            fatal: false,
+                        // Queue the message instead of rejecting it
+                        // Note: attachments are not supported for queued messages yet
+                        if !attachments.is_empty() {
+                            let _ = self.event_tx.send(FromAgent::Status {
+                                message: "Warning: attachments will be ignored for queued message"
+                                    .to_string(),
+                            });
+                        }
+                        if let Some(dropped) = self.pending_messages.push(&content) {
+                            let _ = self.event_tx.send(FromAgent::Status {
+                                message: format!(
+                                    "Queue full, dropped oldest message: {}...",
+                                    &dropped.content[..dropped.content.len().min(30)]
+                                ),
+                            });
+                        }
+                        let stats = self.pending_messages.stats();
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: stats.status_string(),
                         });
                         continue;
                     }
@@ -903,12 +931,106 @@ impl NativeAgentRunner {
                         response_id: "done".to_string(),
                         usage: None,
                     });
+
+                    // Process any pending messages that were queued while busy
+                    while let Some(pending) = self.pending_messages.pop() {
+                        let remaining = self.pending_messages.len();
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: if remaining > 0 {
+                                format!("Processing queued message ({} remaining)...", remaining)
+                            } else {
+                                "Processing queued message...".to_string()
+                            },
+                        });
+
+                        self.busy = true;
+                        let cancel_token = CancellationToken::new();
+                        self.cancel_token = Some(cancel_token.clone());
+
+                        // Add the pending message to conversation history
+                        self.messages.push(Message {
+                            role: Role::User,
+                            content: MessageContent::text(pending.content),
+                        });
+
+                        self.retry_policy.reset();
+
+                        // Run the agent loop for this pending message
+                        loop {
+                            let result = tokio::select! {
+                                res = self.run_loop() => res,
+                                _ = cancel_token.cancelled() => {
+                                    Err(anyhow::anyhow!("Request cancelled"))
+                                }
+                            };
+
+                            match result {
+                                Ok(()) => break,
+                                Err(e) => {
+                                    let msg = e.to_string();
+                                    if msg == "Request cancelled" {
+                                        // Clear remaining pending messages on cancel
+                                        self.pending_messages.clear();
+                                        break;
+                                    }
+
+                                    let error_kind = super::retry::ErrorKind::classify(&msg);
+                                    match self.retry_policy.should_retry(error_kind) {
+                                        super::retry::RetryDecision::Retry {
+                                            delay,
+                                            attempt,
+                                            reason,
+                                        } => {
+                                            let _ = self.event_tx.send(FromAgent::Status {
+                                                message: format!(
+                                                    "{}. Retrying in {:.1}s (attempt {})...",
+                                                    reason,
+                                                    delay.as_secs_f64(),
+                                                    attempt
+                                                ),
+                                            });
+                                            tokio::time::sleep(delay).await;
+                                            if cancel_token.is_cancelled() {
+                                                self.pending_messages.clear();
+                                                break;
+                                            }
+                                        }
+                                        super::retry::RetryDecision::GiveUp { reason } => {
+                                            let _ = self.event_tx.send(FromAgent::Error {
+                                                message: format!(
+                                                    "Agent error: {} ({})",
+                                                    msg, reason
+                                                ),
+                                                fatal: false,
+                                            });
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        self.busy = false;
+                        self.cancel_token = None;
+
+                        let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                            response_id: "queued".to_string(),
+                            usage: None,
+                        });
+                    }
                 }
                 AgentCommand::Cancel => {
                     if let Some(token) = &self.cancel_token {
                         token.cancel();
                     }
                     self.busy = false;
+                    // Also clear any pending messages on cancel
+                    let cleared = self.pending_messages.clear();
+                    if !cleared.is_empty() {
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: format!("Cleared {} pending message(s)", cleared.len()),
+                        });
+                    }
                 }
                 AgentCommand::SetModel { model } => match UnifiedClient::from_model(&model) {
                     Ok(client) => {
@@ -928,6 +1050,7 @@ impl NativeAgentRunner {
                 }
                 AgentCommand::ClearHistory => {
                     self.messages.clear();
+                    self.pending_messages.clear();
                     self.safety.reset(); // Reset doom loop / rate limit state
                 }
                 AgentCommand::Continue => {
