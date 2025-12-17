@@ -128,6 +128,44 @@ impl ToolExecution {
         self.details.as_ref()
     }
 
+    /// Get typed details, deserializing to the specified type.
+    /// Returns None if no details exist or if deserialization fails.
+    pub fn get_typed_details<T>(&self) -> Option<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        self.details
+            .as_ref()
+            .and_then(|d| serde_json::from_value(d.clone()).ok())
+    }
+
+    /// Get duration in milliseconds
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.duration.map(|d| d.as_millis() as u64)
+    }
+
+    /// Get the exit code from bash/inline tool details if available
+    pub fn exit_code(&self) -> Option<i32> {
+        self.details
+            .as_ref()
+            .and_then(|d| d.get("exit_code")?.as_i64().map(|i| i as i32))
+    }
+
+    /// Check if this execution timed out
+    pub fn timed_out(&self) -> bool {
+        self.details
+            .as_ref()
+            .and_then(|d| d.get("timed_out")?.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Get the command that was executed (for bash/inline tools)
+    pub fn command(&self) -> Option<&str> {
+        self.details
+            .as_ref()
+            .and_then(|d| d.get("command")?.as_str())
+    }
+
     /// Set approval status
     pub fn set_approved(&mut self, approved: bool) {
         self.approved = Some(approved);
@@ -868,5 +906,128 @@ mod tests {
         // Without details, should not have "details" key in JSON
         let serialized = serde_json::to_string(&exec).unwrap();
         assert!(!serialized.contains("\"details\""));
+    }
+
+    #[test]
+    fn test_get_typed_details() {
+        use crate::tools::details::BashDetails;
+
+        let mut exec = ToolExecution::start("1", "bash", json!({"command": "ls -la"}));
+        let details = BashDetails::success("ls -la")
+            .with_duration(50)
+            .with_cwd("/home/user");
+
+        exec.complete_with_details(
+            "file1\nfile2".to_string(),
+            Duration::from_millis(50),
+            Some(details.to_json()),
+        );
+
+        // Get typed details
+        let typed: Option<BashDetails> = exec.get_typed_details();
+        assert!(typed.is_some());
+
+        let bash_details = typed.unwrap();
+        assert_eq!(bash_details.command, "ls -la");
+        assert_eq!(bash_details.exit_code, 0);
+        assert_eq!(bash_details.duration_ms, Some(50));
+    }
+
+    #[test]
+    fn test_exit_code_accessor() {
+        let mut exec = ToolExecution::start("1", "bash", json!({"command": "false"}));
+        let details = json!({
+            "command": "false",
+            "exit_code": 1,
+            "duration_ms": 10
+        });
+
+        exec.complete_with_details("".to_string(), Duration::from_millis(10), Some(details));
+
+        assert_eq!(exec.exit_code(), Some(1));
+    }
+
+    #[test]
+    fn test_exit_code_accessor_none() {
+        let mut exec = ToolExecution::start("1", "read", json!({"file_path": "/test.txt"}));
+        exec.complete("content".to_string(), Duration::from_millis(10));
+
+        // No details, so exit_code should be None
+        assert_eq!(exec.exit_code(), None);
+    }
+
+    #[test]
+    fn test_timed_out_accessor() {
+        let mut exec = ToolExecution::start("1", "bash", json!({"command": "sleep 100"}));
+        let details = json!({
+            "command": "sleep 100",
+            "timed_out": true,
+            "duration_ms": 30000
+        });
+
+        exec.fail_with_details(
+            "Command timed out after 30000ms".to_string(),
+            Duration::from_millis(30000),
+            Some(details),
+        );
+
+        assert!(exec.timed_out());
+    }
+
+    #[test]
+    fn test_timed_out_accessor_false() {
+        let mut exec = ToolExecution::start("1", "bash", json!({"command": "echo hi"}));
+        let details = json!({
+            "command": "echo hi",
+            "timed_out": false,
+            "exit_code": 0
+        });
+
+        exec.complete_with_details("hi".to_string(), Duration::from_millis(5), Some(details));
+
+        assert!(!exec.timed_out());
+    }
+
+    #[test]
+    fn test_command_accessor() {
+        let mut exec = ToolExecution::start("1", "bash", json!({"command": "cargo build"}));
+        let details = json!({
+            "command": "cargo build",
+            "exit_code": 0
+        });
+
+        exec.complete_with_details(
+            "Built".to_string(),
+            Duration::from_millis(1000),
+            Some(details),
+        );
+
+        assert_eq!(exec.command(), Some("cargo build"));
+    }
+
+    #[test]
+    fn test_command_accessor_none() {
+        let mut exec = ToolExecution::start("1", "read", json!({"file_path": "/test.txt"}));
+        let details = json!({
+            "file_path": "/test.txt",
+            "bytes_read": 100
+        });
+
+        exec.complete_with_details(
+            "content".to_string(),
+            Duration::from_millis(10),
+            Some(details),
+        );
+
+        // Read tool doesn't have a "command" field
+        assert_eq!(exec.command(), None);
+    }
+
+    #[test]
+    fn test_duration_ms_accessor() {
+        let mut exec = ToolExecution::start("1", "bash", json!({"command": "ls"}));
+        exec.complete("output".to_string(), Duration::from_millis(123));
+
+        assert_eq!(exec.duration_ms(), Some(123));
     }
 }
