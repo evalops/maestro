@@ -344,33 +344,38 @@ describe("Auto-Compaction", () => {
 		});
 
 		it("calls callback when compaction recommended", async () => {
-			const callback = vi.fn();
-			const monitor = new AutoCompactionMonitor({
-				thresholdPercent: 50,
-				minMessages: 2,
-				onCompactionRecommended: callback,
-			});
+			vi.useFakeTimers();
+			try {
+				const callback = vi.fn();
+				const monitor = new AutoCompactionMonitor({
+					thresholdPercent: 50,
+					minMessages: 2,
+					onCompactionRecommended: callback,
+				});
 
-			const messages: AppMessage[] = Array(5)
-				.fill(null)
-				.map(() => ({
-					role: "user" as const,
-					content: "x".repeat(200),
-					timestamp: Date.now(),
-				}));
+				const messages: AppMessage[] = Array(5)
+					.fill(null)
+					.map(() => ({
+						role: "user" as const,
+						content: "x".repeat(200),
+						timestamp: Date.now(),
+					}));
 
-			// Force check by waiting and checking
-			monitor.check(messages, mockModel);
+				// Force check by waiting and checking
+				monitor.check(messages, mockModel);
 
-			// Wait a bit for rate limiting
-			await new Promise((resolve) => setTimeout(resolve, 5100));
-			monitor.check(messages, mockModel);
+				// Advance past rate limiting interval
+				await vi.advanceTimersByTimeAsync(5100);
+				monitor.check(messages, mockModel);
 
-			// Callback should have been called if compaction was recommended
-			if (callback.mock.calls.length > 0) {
-				expect(callback).toHaveBeenCalledWith(
-					expect.objectContaining({ shouldCompact: true }),
-				);
+				// Callback should have been called if compaction was recommended
+				if (callback.mock.calls.length > 0) {
+					expect(callback).toHaveBeenCalledWith(
+						expect.objectContaining({ shouldCompact: true }),
+					);
+				}
+			} finally {
+				vi.useRealTimers();
 			}
 		});
 	});
