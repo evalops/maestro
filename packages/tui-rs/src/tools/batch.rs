@@ -524,7 +524,6 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(details.total, 1);
         assert!(details.duration_ms.is_some());
-        assert!(details.duration_ms.unwrap() >= 0);
 
         // Should have tool durations
         let tool_durations = details.tool_durations.as_ref().unwrap();

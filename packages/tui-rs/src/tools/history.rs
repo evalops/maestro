@@ -2131,11 +2131,11 @@ mod tests {
 
         // P50 should be around 50-60ms
         let p50 = stats.percentile_ms(50).unwrap();
-        assert!(p50 >= 50 && p50 <= 60);
+        assert!((50..=60).contains(&p50));
 
         // P90 should be around 90-100ms
         let p90 = stats.percentile_ms(90).unwrap();
-        assert!(p90 >= 90 && p90 <= 100);
+        assert!((90..=100).contains(&p90));
 
         // P0 should be min
         let p0 = stats.percentile_ms(0).unwrap();
@@ -2350,7 +2350,7 @@ mod tests {
         let results = history.search(&filter);
 
         // Should match executions with ~4ms and ~6ms duration
-        assert!(results.len() >= 1);
+        assert!(!results.is_empty());
     }
 
     #[test]
@@ -2428,7 +2428,7 @@ mod tests {
     #[test]
     fn test_filter_time_range() {
         let mut history = ToolHistory::new(100);
-        let before_all = SystemTime::now();
+        let _before_all = SystemTime::now();
 
         std::thread::sleep(Duration::from_millis(5));
 
@@ -2495,7 +2495,7 @@ mod tests {
         assert!(stats_by_tool.contains_key("bash"));
 
         // All should have only failures
-        for (_, stats) in &stats_by_tool {
+        for stats in stats_by_tool.values() {
             assert_eq!(stats.successes, 0);
         }
     }
@@ -2709,7 +2709,7 @@ mod tests {
         let mut history = create_test_history();
 
         // Verify we have data
-        assert!(history.len() > 0);
+        assert!(!history.is_empty());
         assert!(history.global_stats().total > 0);
 
         // Clear
