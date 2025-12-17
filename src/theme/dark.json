@@ -18,6 +18,7 @@
 	},
 	"colors": {
 		"accent": "accent",
+		"accentWarm": "#f0c674",
 		"border": "blue",
 		"borderAccent": "cyan",
 		"borderMuted": "darkGray",

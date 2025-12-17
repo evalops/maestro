@@ -17,6 +17,7 @@
 	},
 	"colors": {
 		"accent": "teal",
+		"accentWarm": "yellow",
 		"border": "blue",
 		"borderAccent": "teal",
 		"borderMuted": "lightGray",

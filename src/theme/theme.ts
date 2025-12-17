@@ -13,6 +13,7 @@ import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@evalops/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import chalk from "chalk";
+import { createLogger } from "../utils/logger.js";
 import {
 	type ColorMode,
 	bgAnsi,
@@ -22,6 +23,7 @@ import {
 } from "./color-utils.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const logger = createLogger("theme");
 
 function getBuiltinThemeCandidateDirs(): string[] {
 	const candidates = [
@@ -507,12 +509,34 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 		const loadBuiltinTheme = (name: "dark" | "light"): ThemeJson => {
 			for (const dir of getBuiltinThemeCandidateDirs()) {
 				const themePath = path.join(dir, `${name}.json`);
-				if (fs.existsSync(themePath)) {
-					return JSON.parse(fs.readFileSync(themePath, "utf-8")) as ThemeJson;
+				if (!fs.existsSync(themePath)) continue;
+
+				try {
+					const parsed = normalizeThemeJson(
+						JSON.parse(fs.readFileSync(themePath, "utf-8")) as unknown,
+					);
+					if (validateThemeJson.Check(parsed)) {
+						return parsed as ThemeJson;
+					}
+					logger.warn("Invalid built-in theme JSON; using embedded theme", {
+						themePath,
+						name,
+					});
+				} catch (error) {
+					logger.warn(
+						"Failed to load built-in theme JSON; using embedded theme",
+						{
+							themePath,
+							name,
+							error: error instanceof Error ? error.message : String(error),
+						},
+					);
 				}
 			}
+
 			return EMBEDDED_THEMES[name];
 		};
+
 		BUILTIN_THEMES = {
 			dark: loadBuiltinTheme("dark"),
 			light: loadBuiltinTheme("light"),
@@ -539,6 +563,68 @@ export function getAvailableThemes(): string[] {
 	return Array.from(themes).sort();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeThemeJson(raw: unknown): unknown {
+	if (!isRecord(raw)) return raw;
+	if (!isRecord(raw.colors)) return raw;
+
+	// pi-mono compatibility / forward-compat:
+	// - Composer requires `accentWarm`; fall back to `accent` when missing.
+	// - pi-mono includes `thinkingXhigh` and `bashMode` which Composer does not use.
+	const {
+		bashMode: _bashMode,
+		thinkingXhigh: _thinkingXhigh,
+		...restColors
+	} = raw.colors;
+
+	const colors: Record<string, unknown> = { ...restColors };
+
+	if (colors.accentWarm === undefined && colors.accent !== undefined) {
+		colors.accentWarm = colors.accent;
+	}
+
+	const setIfMissing = (key: string, fallback: unknown): void => {
+		if (colors[key] === undefined && fallback !== undefined) {
+			colors[key] = fallback;
+		}
+	};
+
+	// Ensure thinking-level colors exist (older themes may not specify them).
+	setIfMissing(
+		"thinkingOff",
+		colors.borderMuted ??
+			colors.dim ??
+			colors.muted ??
+			colors.border ??
+			colors.accent,
+	);
+	setIfMissing(
+		"thinkingMinimal",
+		colors.dim ??
+			colors.muted ??
+			colors.borderMuted ??
+			colors.border ??
+			colors.accent,
+	);
+	setIfMissing(
+		"thinkingLow",
+		colors.border ?? colors.accent ?? colors.borderAccent,
+	);
+	setIfMissing(
+		"thinkingMedium",
+		colors.accent ?? colors.borderAccent ?? colors.border ?? colors.muted,
+	);
+	setIfMissing(
+		"thinkingHigh",
+		colors.borderAccent ?? colors.accent ?? colors.border ?? colors.warning,
+	);
+
+	return { ...raw, colors };
+}
+
 function loadThemeJson(name: string): ThemeJson {
 	const builtinThemes = getBuiltinThemes();
 	if (name in builtinThemes) {
@@ -556,14 +642,15 @@ function loadThemeJson(name: string): ThemeJson {
 	} catch (error) {
 		throw new Error(`Failed to parse theme ${name}: ${error}`);
 	}
-	if (!validateThemeJson.Check(json)) {
-		const errors = Array.from(validateThemeJson.Errors(json));
+	const normalized = normalizeThemeJson(json);
+	if (!validateThemeJson.Check(normalized)) {
+		const errors = Array.from(validateThemeJson.Errors(normalized));
 		const errorMessages = errors
 			.map((e) => `  - ${e.path}: ${e.message}`)
 			.join("\n");
 		throw new Error(`Invalid theme ${name}:\n${errorMessages}`);
 	}
-	return json as ThemeJson;
+	return normalized as ThemeJson;
 }
 
 function createTheme(themeJson: ThemeJson, mode?: ColorMode): Theme {

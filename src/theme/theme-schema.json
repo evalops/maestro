@@ -1,7 +1,7 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"title": "Pi Coding Agent Theme",
-	"description": "Theme schema for Pi coding agent",
+	"title": "Composer Theme",
+	"description": "Theme schema for Composer (terminal UI).",
 	"type": "object",
 	"required": ["name", "colors"],
 	"properties": {
@@ -16,26 +16,14 @@
 		"vars": {
 			"type": "object",
 			"description": "Reusable color variables",
-			"additionalProperties": {
-				"oneOf": [
-					{
-						"type": "string",
-						"description": "Hex color (#RRGGBB), variable reference, or empty string for terminal default"
-					},
-					{
-						"type": "integer",
-						"minimum": 0,
-						"maximum": 255,
-						"description": "256-color palette index (0-255)"
-					}
-				]
-			}
+			"additionalProperties": { "$ref": "#/$defs/colorValue" }
 		},
 		"colors": {
 			"type": "object",
 			"description": "Theme color definitions (all required)",
 			"required": [
 				"accent",
+				"accentWarm",
 				"border",
 				"borderAccent",
 				"borderMuted",
@@ -53,8 +41,8 @@
 				"toolTitle",
 				"toolOutput",
 				"mdHeading",
-				"mdLinkUrl",
 				"mdLink",
+				"mdLinkUrl",
 				"mdCode",
 				"mdCodeBlock",
 				"mdCodeBlockBorder",
@@ -73,12 +61,21 @@
 				"syntaxNumber",
 				"syntaxType",
 				"syntaxOperator",
-				"syntaxPunctuation"
+				"syntaxPunctuation",
+				"thinkingOff",
+				"thinkingMinimal",
+				"thinkingLow",
+				"thinkingMedium",
+				"thinkingHigh"
 			],
 			"properties": {
 				"accent": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Primary accent color (logo, selected items, cursor)"
+				},
+				"accentWarm": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Warm accent for interactive/actionable elements"
 				},
 				"border": {
 					"$ref": "#/$defs/colorValue",
@@ -151,6 +148,10 @@
 				"mdLink": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Markdown link text"
+				},
+				"mdLinkUrl": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Markdown link URL"
 				},
 				"mdCode": {
 					"$ref": "#/$defs/colorValue",
@@ -227,6 +228,26 @@
 				"syntaxPunctuation": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Syntax highlighting: punctuation"
+				},
+				"thinkingOff": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Thinking level border: off"
+				},
+				"thinkingMinimal": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Thinking level border: minimal"
+				},
+				"thinkingLow": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Thinking level border: low"
+				},
+				"thinkingMedium": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Thinking level border: medium"
+				},
+				"thinkingHigh": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Thinking level border: high"
 				}
 			},
 			"additionalProperties": false
