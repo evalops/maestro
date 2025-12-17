@@ -121,7 +121,6 @@ mod context_indicator;
 mod file_search;
 mod input;
 mod layout;
-pub mod lifecycle;
 mod message;
 mod model_selector;
 mod rate_limit;
@@ -160,9 +159,3 @@ pub use thinking_indicator::{
     ThinkingDisplayMode, ThinkingIndicator, ThinkingIndicatorBuilder, ThinkingPhase, ThinkingState,
 };
 pub use welcome::{OnboardingFlow, OnboardingStep, SplashScreen, WelcomeScreen};
-
-// Lifecycle management
-pub use lifecycle::{
-    dispose_component, mount_component, unmount_component, Lifecycle, LifecyclePhase,
-    LifecycleState, SubscriptionManager,
-};

@@ -146,7 +146,6 @@ mod branching;
 mod entries;
 mod export;
 mod manager;
-mod metadata_cache;
 mod reader;
 mod writer;
 
@@ -156,6 +155,5 @@ pub use branching::{
 pub use entries::*;
 pub use export::{export_session_file, ExportFormat, ExportOptions, SessionExporter};
 pub use manager::{SessionInfo, SessionManager};
-pub use metadata_cache::SessionMetadataCache;
 pub use reader::SessionReader;
 pub use writer::SessionWriter;
