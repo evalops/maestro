@@ -546,6 +546,8 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 }
 
 function getThemesDir(): string {
+	const override = process.env.COMPOSER_THEMES_DIR?.trim();
+	if (override) return path.resolve(override);
 	return path.join(os.homedir(), ".composer", "agent", "themes");
 }
 
