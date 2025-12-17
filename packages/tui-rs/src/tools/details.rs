@@ -705,6 +705,88 @@ impl ListDetails {
     }
 }
 
+/// Detailed information about an inline (custom) tool execution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InlineToolDetails {
+    /// Name of the inline tool
+    pub tool_name: String,
+
+    /// Command that was executed
+    pub command: String,
+
+    /// Working directory
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+
+    /// Exit code of the command
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+
+    /// Execution duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+
+    /// Whether the command timed out
+    #[serde(default)]
+    pub timed_out: bool,
+
+    /// Source of the tool definition
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
+    /// Configured timeout in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+impl InlineToolDetails {
+    pub fn new(tool_name: impl Into<String>, command: impl Into<String>) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            command: command.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_cwd(mut self, cwd: impl Into<String>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
+    pub fn with_exit_code(mut self, code: i32) -> Self {
+        self.exit_code = Some(code);
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn with_timeout(mut self) -> Self {
+        self.timed_out = true;
+        self
+    }
+
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+
+    pub fn with_timeout_config(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
 /// Union type for tool details that can be stored in ToolResult.details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "tool_type", rename_all = "snake_case")]
@@ -719,6 +801,7 @@ pub enum ToolDetails {
     Grep(GrepDetails),
     Diff(DiffDetails),
     List(ListDetails),
+    InlineTool(InlineToolDetails),
 }
 
 impl ToolDetails {
@@ -1173,5 +1256,85 @@ mod tests {
 
         let parsed = ToolDetails::from_json(&json).unwrap();
         assert!(matches!(parsed, ToolDetails::List(_)));
+    }
+
+    #[test]
+    fn test_inline_tool_details_new() {
+        let details = InlineToolDetails::new("deploy", "./deploy.sh --env prod")
+            .with_cwd("/project")
+            .with_exit_code(0)
+            .with_duration(1500)
+            .with_source("project")
+            .with_timeout_config(60000);
+
+        assert_eq!(details.tool_name, "deploy");
+        assert_eq!(details.command, "./deploy.sh --env prod");
+        assert_eq!(details.cwd, Some("/project".to_string()));
+        assert_eq!(details.exit_code, Some(0));
+        assert_eq!(details.duration_ms, Some(1500));
+        assert_eq!(details.source, Some("project".to_string()));
+        assert_eq!(details.timeout_ms, Some(60000));
+        assert!(!details.timed_out);
+    }
+
+    #[test]
+    fn test_inline_tool_details_timeout() {
+        let details = InlineToolDetails::new("slow_task", "sleep 1000")
+            .with_duration(120000)
+            .with_timeout()
+            .with_timeout_config(120000);
+
+        assert!(details.timed_out);
+        assert_eq!(details.duration_ms, Some(120000));
+        assert_eq!(details.timeout_ms, Some(120000));
+    }
+
+    #[test]
+    fn test_inline_tool_details_to_json() {
+        let details = InlineToolDetails::new("test", "echo hello")
+            .with_cwd("/tmp")
+            .with_exit_code(0)
+            .with_source("user");
+
+        let json = details.to_json();
+        assert_eq!(json["tool_name"], "test");
+        assert_eq!(json["command"], "echo hello");
+        assert_eq!(json["cwd"], "/tmp");
+        assert_eq!(json["exit_code"], 0);
+        assert_eq!(json["source"], "user");
+    }
+
+    #[test]
+    fn test_inline_tool_details_from_json() {
+        let json = serde_json::json!({
+            "tool_name": "build",
+            "command": "npm run build",
+            "cwd": "/app",
+            "exit_code": 1,
+            "duration_ms": 5000,
+            "timed_out": false
+        });
+
+        let details = InlineToolDetails::from_json(&json).unwrap();
+        assert_eq!(details.tool_name, "build");
+        assert_eq!(details.command, "npm run build");
+        assert_eq!(details.cwd, Some("/app".to_string()));
+        assert_eq!(details.exit_code, Some(1));
+        assert_eq!(details.duration_ms, Some(5000));
+        assert!(!details.timed_out);
+    }
+
+    #[test]
+    fn test_inline_tool_details_union() {
+        let inline = ToolDetails::InlineTool(
+            InlineToolDetails::new("custom", "bash script.sh").with_exit_code(0),
+        );
+        let json = inline.to_json();
+
+        assert_eq!(json["tool_type"], "inline_tool");
+        assert_eq!(json["tool_name"], "custom");
+
+        let parsed = ToolDetails::from_json(&json).unwrap();
+        assert!(matches!(parsed, ToolDetails::InlineTool(_)));
     }
 }

@@ -59,10 +59,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use super::details::InlineToolDetails;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 
@@ -397,6 +398,8 @@ impl InlineToolExecutor {
 
     /// Execute an inline tool with the given arguments
     pub async fn execute(&self, tool: &InlineTool, args: serde_json::Value) -> ToolResult {
+        let start_time = Instant::now();
+
         // Determine working directory
         let cwd = match &tool.definition.cwd {
             Some(dir) => {
@@ -409,6 +412,15 @@ impl InlineToolExecutor {
             }
             None => self.workspace_dir.clone(),
         };
+
+        // Build base details
+        let mut details = InlineToolDetails::new(&tool.definition.name, &tool.definition.command)
+            .with_cwd(cwd.display().to_string())
+            .with_timeout_config(tool.definition.timeout)
+            .with_source(match tool.source {
+                InlineToolSource::User => "user",
+                InlineToolSource::Project => "project",
+            });
 
         // Build the command
         let mut cmd = Command::new("sh");
@@ -428,7 +440,9 @@ impl InlineToolExecutor {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                return ToolResult::failure(format!("Failed to spawn command: {}", e));
+                details = details.with_duration(start_time.elapsed().as_millis() as u64);
+                return ToolResult::failure(format!("Failed to spawn command: {}", e))
+                    .with_details(details.to_json());
             }
         };
 
@@ -453,10 +467,13 @@ impl InlineToolExecutor {
 
             status_result = child.wait() => {
                 // Process completed
+                let duration_ms = start_time.elapsed().as_millis() as u64;
                 let status = match status_result {
                     Ok(s) => s,
                     Err(e) => {
-                        return ToolResult::failure(format!("Command failed: {}", e));
+                        details = details.with_duration(duration_ms);
+                        return ToolResult::failure(format!("Command failed: {}", e))
+                            .with_details(details.to_json());
                     }
                 };
 
@@ -479,8 +496,12 @@ impl InlineToolExecutor {
                     String::new()
                 };
 
+                // Update details with exit code and duration
+                let exit_code = status.code().unwrap_or(-1);
+                details = details.with_exit_code(exit_code).with_duration(duration_ms);
+
                 if status.success() {
-                    ToolResult::success(stdout.trim())
+                    ToolResult::success(stdout.trim()).with_details(details.to_json())
                 } else {
                     let error_msg = if stderr.is_empty() {
                         format!("Command exited with status: {}", status)
@@ -492,7 +513,7 @@ impl InlineToolExecutor {
                         success: false,
                         output: stdout,
                         error: Some(error_msg),
-                        details: None,
+                        details: Some(details.to_json()),
                     }
                 }
             }
@@ -500,10 +521,13 @@ impl InlineToolExecutor {
             _ = tokio::time::sleep(timeout_duration) => {
                 // Timeout - kill the process
                 let _ = child.kill().await;
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+                details = details.with_duration(duration_ms).with_timeout();
+
                 ToolResult::failure(format!(
                     "Command timed out after {}ms",
                     tool.definition.timeout
-                ))
+                )).with_details(details.to_json())
             }
         }
     }
