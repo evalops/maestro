@@ -99,7 +99,9 @@ use tokio::sync::mpsc;
 
 use super::bash::{BashArgs, BashTool};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
-use super::details::{EditDetails, GlobDetails, GrepDetails, ReadDetails, WriteDetails};
+use super::details::{
+    DiffDetails, EditDetails, GlobDetails, GrepDetails, ListDetails, ReadDetails, WriteDetails,
+};
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
@@ -973,6 +975,7 @@ impl ToolExecutor {
                 }
             }
             "diff" | "Diff" => {
+                let start_time = Instant::now();
                 // Git diff tool - shows changes in working tree or between commits
                 let target = args
                     .get("target")
@@ -997,9 +1000,44 @@ impl ToolExecutor {
                     })
                     .await;
 
-                result
+                // Build diff details
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+                let mut details = DiffDetails::new(target).with_duration(duration_ms);
+
+                if let Some(p) = path {
+                    details = details.with_path(p);
+                }
+
+                // Parse diff stats from output (count +/- lines)
+                let insertions = result
+                    .output
+                    .lines()
+                    .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+                    .count();
+                let deletions = result
+                    .output
+                    .lines()
+                    .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+                    .count();
+                let files_changed = result
+                    .output
+                    .lines()
+                    .filter(|line| line.starts_with("diff --git"))
+                    .count();
+
+                if files_changed > 0 || insertions > 0 || deletions > 0 {
+                    details = details.with_stats(files_changed, insertions, deletions);
+                }
+
+                if result.success {
+                    ToolResult::success(result.output).with_details(details.to_json())
+                } else {
+                    ToolResult::failure(result.error.unwrap_or_default())
+                        .with_details(details.to_json())
+                }
             }
             "list" | "List" | "ls" => {
+                let start_time = Instant::now();
                 // Directory listing tool
                 let path = args
                     .get("path")
@@ -1017,14 +1055,39 @@ impl ToolExecutor {
                     format!("ls -la {}", path)
                 };
 
-                self.bash
+                let result = self
+                    .bash
                     .execute(BashArgs {
                         command: cmd,
                         timeout: Some(10000),
                         description: Some("List directory".to_string()),
                         run_in_background: false,
                     })
-                    .await
+                    .await;
+
+                // Build list details
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+                let entries_count = result.output.lines().count();
+                let truncated = recursive && entries_count >= 200;
+
+                let mut details = ListDetails::new(path)
+                    .with_entries(entries_count)
+                    .with_duration(duration_ms);
+
+                if recursive {
+                    details = details.with_recursive();
+                }
+
+                if truncated {
+                    details = details.with_truncation();
+                }
+
+                if result.success {
+                    ToolResult::success(result.output).with_details(details.to_json())
+                } else {
+                    ToolResult::failure(result.error.unwrap_or_default())
+                        .with_details(details.to_json())
+                }
             }
             "web_fetch" | "WebFetch" | "webfetch" => {
                 let fetch_args: WebFetchArgs = match serde_json::from_value(args.clone()) {

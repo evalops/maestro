@@ -584,6 +584,127 @@ impl GrepDetails {
     }
 }
 
+/// Detailed information about a git diff operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DiffDetails {
+    /// Target commit or ref (e.g., "HEAD", "main")
+    pub target: String,
+
+    /// Path filter if specified
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+
+    /// Number of files changed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_changed: Option<usize>,
+
+    /// Number of insertions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insertions: Option<usize>,
+
+    /// Number of deletions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deletions: Option<usize>,
+
+    /// Diff duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+impl DiffDetails {
+    pub fn new(target: impl Into<String>) -> Self {
+        Self {
+            target: target.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub fn with_stats(mut self, files: usize, insertions: usize, deletions: usize) -> Self {
+        self.files_changed = Some(files);
+        self.insertions = Some(insertions);
+        self.deletions = Some(deletions);
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
+/// Detailed information about a directory listing operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListDetails {
+    /// Directory path listed
+    pub path: String,
+
+    /// Number of entries found
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entries_count: Option<usize>,
+
+    /// Whether listing was recursive
+    #[serde(default)]
+    pub recursive: bool,
+
+    /// Whether results were truncated
+    #[serde(default)]
+    pub truncated: bool,
+
+    /// List duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+impl ListDetails {
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_entries(mut self, count: usize) -> Self {
+        self.entries_count = Some(count);
+        self
+    }
+
+    pub fn with_recursive(mut self) -> Self {
+        self.recursive = true;
+        self
+    }
+
+    pub fn with_truncation(mut self) -> Self {
+        self.truncated = true;
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
 /// Union type for tool details that can be stored in ToolResult.details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "tool_type", rename_all = "snake_case")]
@@ -596,6 +717,8 @@ pub enum ToolDetails {
     WebFetch(WebFetchDetails),
     Glob(GlobDetails),
     Grep(GrepDetails),
+    Diff(DiffDetails),
+    List(ListDetails),
 }
 
 impl ToolDetails {
@@ -930,5 +1053,125 @@ mod tests {
 
         let parsed = ToolDetails::from_json(&json).unwrap();
         assert!(matches!(parsed, ToolDetails::Grep(_)));
+    }
+
+    #[test]
+    fn test_diff_details_new() {
+        let details = DiffDetails::new("HEAD")
+            .with_path("src/main.rs")
+            .with_stats(3, 45, 12)
+            .with_duration(100);
+
+        assert_eq!(details.target, "HEAD");
+        assert_eq!(details.path, Some("src/main.rs".to_string()));
+        assert_eq!(details.files_changed, Some(3));
+        assert_eq!(details.insertions, Some(45));
+        assert_eq!(details.deletions, Some(12));
+        assert_eq!(details.duration_ms, Some(100));
+    }
+
+    #[test]
+    fn test_diff_details_to_json() {
+        let details = DiffDetails::new("main").with_stats(2, 10, 5);
+
+        let json = details.to_json();
+        assert_eq!(json["target"], "main");
+        assert_eq!(json["files_changed"], 2);
+        assert_eq!(json["insertions"], 10);
+        assert_eq!(json["deletions"], 5);
+    }
+
+    #[test]
+    fn test_diff_details_from_json() {
+        let json = serde_json::json!({
+            "target": "feature-branch",
+            "path": "lib/",
+            "files_changed": 5,
+            "insertions": 100,
+            "deletions": 25
+        });
+
+        let details = DiffDetails::from_json(&json).unwrap();
+        assert_eq!(details.target, "feature-branch");
+        assert_eq!(details.path, Some("lib/".to_string()));
+        assert_eq!(details.files_changed, Some(5));
+        assert_eq!(details.insertions, Some(100));
+        assert_eq!(details.deletions, Some(25));
+    }
+
+    #[test]
+    fn test_diff_tool_details_union() {
+        let diff = ToolDetails::Diff(DiffDetails::new("HEAD").with_stats(1, 10, 5));
+        let json = diff.to_json();
+
+        assert_eq!(json["tool_type"], "diff");
+        assert_eq!(json["target"], "HEAD");
+
+        let parsed = ToolDetails::from_json(&json).unwrap();
+        assert!(matches!(parsed, ToolDetails::Diff(_)));
+    }
+
+    #[test]
+    fn test_list_details_new() {
+        let details = ListDetails::new("/home/user")
+            .with_entries(25)
+            .with_duration(15);
+
+        assert_eq!(details.path, "/home/user");
+        assert_eq!(details.entries_count, Some(25));
+        assert_eq!(details.duration_ms, Some(15));
+        assert!(!details.recursive);
+        assert!(!details.truncated);
+    }
+
+    #[test]
+    fn test_list_details_recursive() {
+        let details = ListDetails::new("/src")
+            .with_entries(200)
+            .with_recursive()
+            .with_truncation();
+
+        assert_eq!(details.path, "/src");
+        assert!(details.recursive);
+        assert!(details.truncated);
+        assert_eq!(details.entries_count, Some(200));
+    }
+
+    #[test]
+    fn test_list_details_to_json() {
+        let details = ListDetails::new("/tmp").with_entries(10).with_recursive();
+
+        let json = details.to_json();
+        assert_eq!(json["path"], "/tmp");
+        assert_eq!(json["entries_count"], 10);
+        assert_eq!(json["recursive"], true);
+    }
+
+    #[test]
+    fn test_list_details_from_json() {
+        let json = serde_json::json!({
+            "path": "/var/log",
+            "entries_count": 50,
+            "recursive": true,
+            "truncated": false
+        });
+
+        let details = ListDetails::from_json(&json).unwrap();
+        assert_eq!(details.path, "/var/log");
+        assert_eq!(details.entries_count, Some(50));
+        assert!(details.recursive);
+        assert!(!details.truncated);
+    }
+
+    #[test]
+    fn test_list_tool_details_union() {
+        let list = ToolDetails::List(ListDetails::new("/home").with_entries(30));
+        let json = list.to_json();
+
+        assert_eq!(json["tool_type"], "list");
+        assert_eq!(json["path"], "/home");
+
+        let parsed = ToolDetails::from_json(&json).unwrap();
+        assert!(matches!(parsed, ToolDetails::List(_)));
     }
 }
