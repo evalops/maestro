@@ -506,6 +506,84 @@ impl GlobDetails {
     }
 }
 
+/// Detailed information about a grep/search operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GrepDetails {
+    /// The regex pattern used for searching
+    pub pattern: String,
+
+    /// Path or directory searched
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+
+    /// Number of matches found
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matches_count: Option<usize>,
+
+    /// Number of files with matches
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_matched: Option<usize>,
+
+    /// Whether results were truncated (hit the limit)
+    #[serde(default)]
+    pub truncated: bool,
+
+    /// Search duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+
+    /// Which search tool was used (rg, grep)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_tool: Option<String>,
+}
+
+impl GrepDetails {
+    pub fn new(pattern: impl Into<String>) -> Self {
+        Self {
+            pattern: pattern.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub fn with_matches(mut self, count: usize) -> Self {
+        self.matches_count = Some(count);
+        self
+    }
+
+    pub fn with_files_matched(mut self, count: usize) -> Self {
+        self.files_matched = Some(count);
+        self
+    }
+
+    pub fn with_truncation(mut self) -> Self {
+        self.truncated = true;
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn with_search_tool(mut self, tool: impl Into<String>) -> Self {
+        self.search_tool = Some(tool.into());
+        self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
 /// Union type for tool details that can be stored in ToolResult.details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "tool_type", rename_all = "snake_case")]
@@ -517,6 +595,7 @@ pub enum ToolDetails {
     Image(ImageDetails),
     WebFetch(WebFetchDetails),
     Glob(GlobDetails),
+    Grep(GrepDetails),
 }
 
 impl ToolDetails {
@@ -778,5 +857,78 @@ mod tests {
         assert_eq!(details.pattern, "**/*.md");
         assert_eq!(details.matches_count, Some(10));
         assert!(!details.truncated);
+    }
+
+    #[test]
+    fn test_grep_details_new() {
+        let details = GrepDetails::new("TODO")
+            .with_path("/src")
+            .with_matches(15)
+            .with_files_matched(3)
+            .with_duration(25);
+
+        assert_eq!(details.pattern, "TODO");
+        assert_eq!(details.path, Some("/src".to_string()));
+        assert_eq!(details.matches_count, Some(15));
+        assert_eq!(details.files_matched, Some(3));
+        assert_eq!(details.duration_ms, Some(25));
+        assert!(!details.truncated);
+    }
+
+    #[test]
+    fn test_grep_details_truncated() {
+        let details = GrepDetails::new("error")
+            .with_matches(100)
+            .with_truncation()
+            .with_search_tool("rg");
+
+        assert!(details.truncated);
+        assert_eq!(details.matches_count, Some(100));
+        assert_eq!(details.search_tool, Some("rg".to_string()));
+    }
+
+    #[test]
+    fn test_grep_details_to_json() {
+        let details = GrepDetails::new("fn main")
+            .with_path("/project")
+            .with_matches(5)
+            .with_files_matched(2);
+
+        let json = details.to_json();
+        assert_eq!(json["pattern"], "fn main");
+        assert_eq!(json["path"], "/project");
+        assert_eq!(json["matches_count"], 5);
+        assert_eq!(json["files_matched"], 2);
+    }
+
+    #[test]
+    fn test_grep_details_from_json() {
+        let json = serde_json::json!({
+            "pattern": "use std::",
+            "path": "/src",
+            "matches_count": 42,
+            "files_matched": 8,
+            "truncated": true
+        });
+
+        let details = GrepDetails::from_json(&json).unwrap();
+        assert_eq!(details.pattern, "use std::");
+        assert_eq!(details.path, Some("/src".to_string()));
+        assert_eq!(details.matches_count, Some(42));
+        assert_eq!(details.files_matched, Some(8));
+        assert!(details.truncated);
+    }
+
+    #[test]
+    fn test_grep_tool_details_union() {
+        let grep = ToolDetails::Grep(GrepDetails::new("pattern").with_matches(10));
+        let json = grep.to_json();
+
+        assert_eq!(json["tool_type"], "grep");
+        assert_eq!(json["pattern"], "pattern");
+        assert_eq!(json["matches_count"], 10);
+
+        let parsed = ToolDetails::from_json(&json).unwrap();
+        assert!(matches!(parsed, ToolDetails::Grep(_)));
     }
 }

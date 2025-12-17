@@ -99,7 +99,7 @@ use tokio::sync::mpsc;
 
 use super::bash::{BashArgs, BashTool};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
-use super::details::{EditDetails, GlobDetails, ReadDetails, WriteDetails};
+use super::details::{EditDetails, GlobDetails, GrepDetails, ReadDetails, WriteDetails};
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
@@ -792,12 +792,15 @@ impl ToolExecutor {
                 }
             }
             "grep" | "Grep" => {
+                let start_time = Instant::now();
                 let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-
                 let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
                 if pattern.is_empty() {
-                    return ToolResult::failure("Missing pattern argument");
+                    let details =
+                        GrepDetails::new("").with_duration(start_time.elapsed().as_millis() as u64);
+                    return ToolResult::failure("Missing pattern argument")
+                        .with_details(details.to_json());
                 }
 
                 // Use ripgrep if available, fall back to grep
@@ -814,7 +817,35 @@ impl ToolExecutor {
                     })
                     .await;
 
-                result
+                // Build grep details from result
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+                let matches_count = result.output.lines().count();
+                let files_matched = result
+                    .output
+                    .lines()
+                    .filter_map(|line| line.split(':').next())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                let truncated = matches_count >= 100; // We use head -100
+
+                let details = GrepDetails::new(pattern)
+                    .with_path(path)
+                    .with_matches(matches_count)
+                    .with_files_matched(files_matched)
+                    .with_duration(duration_ms);
+
+                let details = if truncated {
+                    details.with_truncation()
+                } else {
+                    details
+                };
+
+                if result.success {
+                    ToolResult::success(result.output).with_details(details.to_json())
+                } else {
+                    ToolResult::failure(result.error.unwrap_or_default())
+                        .with_details(details.to_json())
+                }
             }
             "edit" | "Edit" => {
                 let start_time = Instant::now();
