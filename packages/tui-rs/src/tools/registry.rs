@@ -93,11 +93,13 @@
 
 use std::collections::HashMap;
 use std::sync::RwLock;
+use std::time::Instant;
 
 use tokio::sync::mpsc;
 
 use super::bash::{BashArgs, BashTool};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
+use super::details::{EditDetails, ReadDetails, WriteDetails};
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
@@ -610,6 +612,7 @@ impl ToolExecutor {
             }
             "read" | "Read" => {
                 // File reading tool with optional offset/limit
+                let start_time = Instant::now();
                 let path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
@@ -648,6 +651,9 @@ impl ToolExecutor {
                             None => total_lines,
                         };
 
+                        let lines_read = end_idx - start_idx;
+                        let truncated = limit.is_some() && end_idx < total_lines;
+
                         let numbered: String = lines[start_idx..end_idx]
                             .iter()
                             .enumerate()
@@ -655,12 +661,33 @@ impl ToolExecutor {
                             .collect::<Vec<_>>()
                             .join("\n");
 
-                        ToolResult::success(numbered)
+                        // Build ReadDetails
+                        let details = ReadDetails {
+                            path: path.to_string(),
+                            size_bytes: Some(content.len() as u64),
+                            lines_read: Some(lines_read),
+                            truncated,
+                            offset: if offset > 1 { Some(offset) } else { None },
+                            limit,
+                            mime_type: None,
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        };
+
+                        ToolResult::success(numbered).with_details(details.to_json())
                     }
-                    Err(e) => ToolResult::failure(format!("Failed to read file: {}", e)),
+                    Err(e) => {
+                        let details = ReadDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        ToolResult::failure(format!("Failed to read file: {}", e))
+                            .with_details(details.to_json())
+                    }
                 }
             }
             "write" | "Write" => {
+                let start_time = Instant::now();
                 let path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
@@ -673,10 +700,19 @@ impl ToolExecutor {
                     return ToolResult::failure("Missing file_path argument");
                 }
 
+                // Check if file exists (to determine if it's a create or overwrite)
+                let file_existed = std::path::Path::new(path).exists();
+
                 // Create parent directories if needed
                 if let Some(parent) = std::path::Path::new(path).parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        return ToolResult::failure(format!("Failed to create directory: {}", e));
+                        let details = WriteDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        return ToolResult::failure(format!("Failed to create directory: {}", e))
+                            .with_details(details.to_json());
                     }
                 }
 
@@ -684,9 +720,26 @@ impl ToolExecutor {
                     Ok(_) => {
                         // Invalidate cache since file was modified
                         self.invalidate_file_cache(path);
+
+                        let details = WriteDetails {
+                            path: path.to_string(),
+                            bytes_written: Some(content.len() as u64),
+                            created: !file_existed,
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        };
+
                         ToolResult::success(format!("File written successfully: {}", path))
+                            .with_details(details.to_json())
                     }
-                    Err(e) => ToolResult::failure(format!("Failed to write file: {}", e)),
+                    Err(e) => {
+                        let details = WriteDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        ToolResult::failure(format!("Failed to write file: {}", e))
+                            .with_details(details.to_json())
+                    }
                 }
             }
             "glob" | "Glob" => {
@@ -744,6 +797,7 @@ impl ToolExecutor {
                 result
             }
             "edit" | "Edit" => {
+                let start_time = Instant::now();
                 let path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
@@ -775,25 +829,51 @@ impl ToolExecutor {
                 let content = match tokio::fs::read_to_string(path).await {
                     Ok(c) => c,
                     Err(e) => {
-                        return ToolResult::failure(format!("Failed to read file: {}", e));
+                        let details = EditDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        return ToolResult::failure(format!("Failed to read file: {}", e))
+                            .with_details(details.to_json());
                     }
                 };
 
                 // Check if old_string exists in file
                 let occurrences = content.matches(old_string).count();
                 if occurrences == 0 {
+                    let details = EditDetails {
+                        path: path.to_string(),
+                        replacements: Some(0),
+                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        ..Default::default()
+                    };
                     return ToolResult::failure(
                         "old_string not found in file. Make sure the string matches exactly.",
-                    );
+                    )
+                    .with_details(details.to_json());
                 }
 
                 // Check for uniqueness if not replace_all
                 if !replace_all && occurrences > 1 {
+                    let details = EditDetails {
+                        path: path.to_string(),
+                        replacements: Some(0),
+                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        ..Default::default()
+                    };
                     return ToolResult::failure(format!(
                         "old_string found {} times. Use replace_all: true or provide more context to make it unique.",
                         occurrences
-                    ));
+                    )).with_details(details.to_json());
                 }
+
+                // Calculate line diff
+                let old_lines = old_string.lines().count() as i32;
+                let new_lines = new_string.lines().count() as i32;
+                let lines_added = new_lines - old_lines;
+                let replacements = if replace_all { occurrences } else { 1 };
+                let total_lines_diff = lines_added * (replacements as i32);
 
                 // Perform replacement
                 let new_content = if replace_all {
@@ -807,13 +887,38 @@ impl ToolExecutor {
                     Ok(_) => {
                         // Invalidate cache since file was modified
                         self.invalidate_file_cache(path);
-                        let replaced = if replace_all { occurrences } else { 1 };
+
+                        let details = EditDetails {
+                            path: path.to_string(),
+                            replacements: Some(replacements),
+                            lines_added: if total_lines_diff > 0 {
+                                Some(total_lines_diff)
+                            } else {
+                                None
+                            },
+                            lines_removed: if total_lines_diff < 0 {
+                                Some(-total_lines_diff)
+                            } else {
+                                None
+                            },
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        };
+
                         ToolResult::success(format!(
                             "Successfully replaced {} occurrence(s) in {}",
-                            replaced, path
+                            replacements, path
                         ))
+                        .with_details(details.to_json())
                     }
-                    Err(e) => ToolResult::failure(format!("Failed to write file: {}", e)),
+                    Err(e) => {
+                        let details = EditDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        ToolResult::failure(format!("Failed to write file: {}", e))
+                            .with_details(details.to_json())
+                    }
                 }
             }
             "diff" | "Diff" => {
@@ -1559,6 +1664,7 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::details;
 
     #[test]
     fn test_registry_has_default_tools() {
@@ -1902,5 +2008,123 @@ mod tests {
         let executor = ToolExecutor::with_cache_config("/tmp", config);
         let stats = executor.cache_stats();
         assert_eq!(stats.max_entries, 10);
+    }
+
+    // ============================================================
+    // Tool Details Tests
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_read_details_populated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "line1\nline2\nline3\n").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": path.to_str().unwrap()
+        });
+
+        let result = executor.execute("read", &args, None, "test-call").await;
+        assert!(result.success);
+        assert!(result.details.is_some());
+
+        let details: details::ReadDetails =
+            serde_json::from_value(result.details.unwrap()).unwrap();
+        assert_eq!(details.path, path.to_str().unwrap());
+        assert!(details.size_bytes.is_some());
+        assert_eq!(details.lines_read, Some(3));
+        assert!(!details.truncated);
+        assert!(details.duration_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_write_details_populated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new_file.txt");
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "content": "hello world"
+        });
+
+        let result = executor.execute("write", &args, None, "test-call").await;
+        assert!(result.success);
+        assert!(result.details.is_some());
+
+        let details: details::WriteDetails =
+            serde_json::from_value(result.details.unwrap()).unwrap();
+        assert_eq!(details.path, path.to_str().unwrap());
+        assert_eq!(details.bytes_written, Some(11));
+        assert!(details.created); // New file was created
+        assert!(details.duration_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_write_details_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.txt");
+        std::fs::write(&path, "old content").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "content": "new content"
+        });
+
+        let result = executor.execute("write", &args, None, "test-call").await;
+        assert!(result.success);
+        assert!(result.details.is_some());
+
+        let details: details::WriteDetails =
+            serde_json::from_value(result.details.unwrap()).unwrap();
+        assert!(!details.created); // File already existed
+    }
+
+    #[tokio::test]
+    async fn test_edit_details_populated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edit_test.txt");
+        std::fs::write(&path, "hello world").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "old_string": "world",
+            "new_string": "rust"
+        });
+
+        let result = executor.execute("edit", &args, None, "test-call").await;
+        assert!(result.success);
+        assert!(result.details.is_some());
+
+        let details: details::EditDetails =
+            serde_json::from_value(result.details.unwrap()).unwrap();
+        assert_eq!(details.path, path.to_str().unwrap());
+        assert_eq!(details.replacements, Some(1));
+        assert!(details.duration_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_edit_details_with_line_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multiline.txt");
+        std::fs::write(&path, "single line").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": path.to_str().unwrap(),
+            "old_string": "single line",
+            "new_string": "line one\nline two\nline three"
+        });
+
+        let result = executor.execute("edit", &args, None, "test-call").await;
+        assert!(result.success);
+        assert!(result.details.is_some());
+
+        let details: details::EditDetails =
+            serde_json::from_value(result.details.unwrap()).unwrap();
+        assert_eq!(details.lines_added, Some(2)); // Added 2 lines
     }
 }
