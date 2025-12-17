@@ -88,12 +88,14 @@
 //! ```
 
 pub mod compaction;
+pub mod message_queue;
 mod native;
 mod protocol;
 pub mod retry;
 pub mod safety;
 
-pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor};
+pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor, CutPoint};
+pub use message_queue::{MessageQueue, PendingMessage, QueueStats};
 pub use native::{NativeAgent, NativeAgentConfig, ToolDefinition};
 pub use protocol::{FromAgent, ToAgent, TokenUsage, ToolResult};
 pub use retry::{ErrorKind, RetryConfig, RetryDecision, RetryPolicy};
