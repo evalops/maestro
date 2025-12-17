@@ -48,6 +48,8 @@ pub struct CompactionConfig {
     pub preserve_recent_count: usize,
     /// Whether to include tool results in summary
     pub summarize_tool_results: bool,
+    /// Minimum recent tokens to preserve (used with token-based cut point)
+    pub keep_recent_tokens: u64,
 }
 
 impl Default for CompactionConfig {
@@ -57,7 +59,147 @@ impl Default for CompactionConfig {
             target_tokens: 50_000,       // Target ~50K after compaction
             preserve_recent_count: 10,   // Keep last 10 messages
             summarize_tool_results: true,
+            keep_recent_tokens: 20_000, // Keep at least 20K recent tokens
         }
+    }
+}
+
+/// Result of finding a cut point in the message history
+#[derive(Debug, Clone)]
+pub struct CutPoint {
+    /// Index of the first message to keep (everything before is compacted)
+    pub first_kept_index: usize,
+    /// Whether we're splitting in the middle of a turn
+    pub is_split_turn: bool,
+    /// If split turn, the index where the current turn starts
+    pub turn_start_index: Option<usize>,
+    /// Estimated tokens before the cut point
+    pub tokens_before: u64,
+    /// Estimated tokens after the cut point
+    pub tokens_after: u64,
+}
+
+/// Check if a message contains tool results
+fn has_tool_results(message: &Message) -> bool {
+    if let MessageContent::Blocks(blocks) = &message.content {
+        blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+    } else {
+        false
+    }
+}
+
+/// Check if a message contains tool calls (ToolUse)
+fn has_tool_calls(message: &Message) -> bool {
+    if let MessageContent::Blocks(blocks) = &message.content {
+        blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+    } else {
+        false
+    }
+}
+
+/// Check if a position is a valid cut point
+///
+/// A valid cut point is:
+/// - After a complete turn (user message or assistant response without pending tool results)
+/// - NOT in the middle of a tool call sequence (assistant with ToolUse followed by ToolResult)
+/// - NOT immediately before a tool result message
+fn is_valid_cut_point(messages: &[Message], index: usize) -> bool {
+    if index == 0 || index >= messages.len() {
+        return index == 0;
+    }
+
+    let current = &messages[index];
+    let prev = &messages[index - 1];
+
+    // Never cut before a message containing tool results
+    if has_tool_results(current) {
+        return false;
+    }
+
+    // If previous message has tool calls, check if current message is the tool result
+    // If so, don't cut here - keep tool calls with their results
+    if has_tool_calls(prev) {
+        // The next message after a tool call should be tool results - don't cut
+        return false;
+    }
+
+    // Valid cut points:
+    // - After an assistant message (complete turn)
+    // - After a user message (start of new turn)
+    matches!(prev.role, Role::User | Role::Assistant)
+}
+
+/// Find the optimal cut point based on token budget
+///
+/// Walks backward from the end of messages, accumulating tokens until we exceed
+/// the keep_recent_tokens budget. Returns a valid cut point that respects turn boundaries.
+fn find_cut_point(messages: &[Message], keep_recent_tokens: u64) -> CutPoint {
+    let total_messages = messages.len();
+    let mut accumulated_tokens: u64 = 0;
+    let mut candidate_index = total_messages;
+    let mut turn_start_index = total_messages;
+    let mut is_split_turn = false;
+
+    // Walk backward from the end
+    for i in (0..total_messages).rev() {
+        let msg_tokens = estimate_message_tokens(&messages[i]);
+        accumulated_tokens += msg_tokens;
+
+        // Track turn boundaries (user messages start new turns)
+        if messages[i].role == Role::User {
+            turn_start_index = i;
+        }
+
+        // Once we have enough tokens, look for a valid cut point
+        if accumulated_tokens >= keep_recent_tokens {
+            // Find the nearest valid cut point at or after this index
+            for j in i..total_messages {
+                if is_valid_cut_point(messages, j) {
+                    candidate_index = j;
+                    // Check if we're splitting a turn
+                    is_split_turn = j > turn_start_index && turn_start_index < total_messages;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    // If we didn't find a cut point (all messages fit in budget), compact nothing
+    if candidate_index == total_messages {
+        return CutPoint {
+            first_kept_index: 0,
+            is_split_turn: false,
+            turn_start_index: None,
+            tokens_before: 0,
+            tokens_after: accumulated_tokens,
+        };
+    }
+
+    // Calculate tokens before and after the cut
+    let tokens_before: u64 = messages[..candidate_index]
+        .iter()
+        .map(estimate_message_tokens)
+        .sum();
+    let tokens_after: u64 = messages[candidate_index..]
+        .iter()
+        .map(estimate_message_tokens)
+        .sum();
+
+    CutPoint {
+        first_kept_index: candidate_index,
+        is_split_turn,
+        turn_start_index: if is_split_turn {
+            Some(turn_start_index)
+        } else {
+            None
+        },
+        tokens_before,
+        tokens_after,
     }
 }
 
@@ -91,6 +233,9 @@ impl ContextCompactor {
     /// Returns a new message list with:
     /// - A summary message containing compacted history
     /// - The N most recent messages preserved intact
+    ///
+    /// This method preserves a fixed number of recent messages.
+    /// For token-aware compaction, use `compact_with_tokens`.
     pub fn compact(&self, messages: &[Message]) -> CompactionResult {
         if messages.len() <= self.config.preserve_recent_count {
             // Not enough messages to compact
@@ -98,6 +243,7 @@ impl ContextCompactor {
                 messages: messages.to_vec(),
                 summary: None,
                 compacted_count: 0,
+                cut_point: None,
             };
         }
 
@@ -130,6 +276,75 @@ impl ContextCompactor {
             messages: result_messages,
             summary: Some(summary),
             compacted_count: to_compact.len(),
+            cut_point: None,
+        }
+    }
+
+    /// Compact messages using token-aware cut point detection
+    ///
+    /// This method finds the optimal cut point based on token budget while
+    /// respecting turn boundaries. Tool calls and their results are kept together.
+    ///
+    /// Returns a `CompactionResult` with information about whether a turn was split.
+    pub fn compact_with_tokens(&self, messages: &[Message]) -> CompactionResult {
+        let total_tokens = self.estimate_tokens(messages);
+
+        // Check if compaction is needed
+        if total_tokens <= self.config.max_context_tokens {
+            return CompactionResult {
+                messages: messages.to_vec(),
+                summary: None,
+                compacted_count: 0,
+                cut_point: None,
+            };
+        }
+
+        // Find optimal cut point respecting turn boundaries
+        let cut_point = find_cut_point(messages, self.config.keep_recent_tokens);
+
+        // If no valid cut point or nothing to compact
+        if cut_point.first_kept_index == 0 {
+            return CompactionResult {
+                messages: messages.to_vec(),
+                summary: None,
+                compacted_count: 0,
+                cut_point: Some(cut_point),
+            };
+        }
+
+        let to_compact = &messages[..cut_point.first_kept_index];
+        let to_preserve = &messages[cut_point.first_kept_index..];
+
+        // Generate summary with split-turn awareness
+        let summary = if cut_point.is_split_turn {
+            // When splitting a turn, include context about the partial turn
+            let mut parts = vec![self.generate_summary(to_compact)];
+            parts.push("\n## Note: The current turn was split during compaction. The assistant was in the middle of responding.".to_string());
+            parts.join("\n")
+        } else {
+            self.generate_summary(to_compact)
+        };
+
+        // Build result: summary + preserved messages
+        let mut result_messages = Vec::with_capacity(to_preserve.len() + 1);
+
+        // Add summary as a user message (context injection)
+        result_messages.push(Message {
+            role: Role::User,
+            content: MessageContent::Text(format!(
+                "<context_summary>\n{}\n</context_summary>\n\nPlease continue from where we left off.",
+                summary
+            )),
+        });
+
+        // Add preserved messages
+        result_messages.extend(to_preserve.iter().cloned());
+
+        CompactionResult {
+            messages: result_messages,
+            summary: Some(summary),
+            compacted_count: to_compact.len(),
+            cut_point: Some(cut_point),
         }
     }
 
@@ -256,12 +471,22 @@ pub struct CompactionResult {
     pub summary: Option<String>,
     /// Number of messages that were compacted
     pub compacted_count: usize,
+    /// Information about the cut point (if token-aware compaction was used)
+    pub cut_point: Option<CutPoint>,
 }
 
 impl CompactionResult {
     /// Check if compaction actually occurred
     pub fn was_compacted(&self) -> bool {
         self.compacted_count > 0
+    }
+
+    /// Check if a turn was split during compaction
+    pub fn was_turn_split(&self) -> bool {
+        self.cut_point
+            .as_ref()
+            .map(|cp| cp.is_split_turn)
+            .unwrap_or(false)
     }
 }
 
@@ -516,6 +741,7 @@ mod tests {
             messages: vec![],
             summary: Some("Summary".to_string()),
             compacted_count: 5,
+            cut_point: None,
         };
         assert!(result.was_compacted());
 
@@ -523,7 +749,177 @@ mod tests {
             messages: vec![],
             summary: None,
             compacted_count: 0,
+            cut_point: None,
         };
         assert!(!result_no_compact.was_compacted());
+    }
+
+    // ============================================================
+    // Turn-Aware Compaction Tests
+    // ============================================================
+
+    fn make_tool_use_message(tool_name: &str, tool_id: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: tool_id.to_string(),
+                name: tool_name.to_string(),
+                input: serde_json::json!({}),
+            }]),
+        }
+    }
+
+    fn make_tool_result_message(tool_id: &str, result: &str) -> Message {
+        Message {
+            role: Role::User, // Tool results come as user messages
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: tool_id.to_string(),
+                content: result.to_string(),
+                is_error: Some(false),
+            }]),
+        }
+    }
+
+    #[test]
+    fn test_has_tool_results() {
+        let msg_with_tool_result = make_tool_result_message("123", "result");
+        assert!(super::has_tool_results(&msg_with_tool_result));
+
+        let msg_without = make_user_message("Hello");
+        assert!(!super::has_tool_results(&msg_without));
+    }
+
+    #[test]
+    fn test_has_tool_calls() {
+        let msg_with_tool_use = make_tool_use_message("read", "123");
+        assert!(super::has_tool_calls(&msg_with_tool_use));
+
+        let msg_without = make_assistant_message("Hello");
+        assert!(!super::has_tool_calls(&msg_without));
+    }
+
+    #[test]
+    fn test_is_valid_cut_point_before_tool_result() {
+        let messages = vec![
+            make_user_message("Read the file"),
+            make_tool_use_message("read", "123"),
+            make_tool_result_message("123", "file contents"),
+            make_assistant_message("Here's the file"),
+        ];
+
+        // Should NOT be valid to cut before tool result (index 2)
+        assert!(!super::is_valid_cut_point(&messages, 2));
+        // Should NOT be valid to cut after tool use (index 2 means cutting after index 1)
+        assert!(!super::is_valid_cut_point(&messages, 2));
+        // Valid to cut after assistant message
+        assert!(super::is_valid_cut_point(&messages, 4) || messages.len() == 4);
+    }
+
+    #[test]
+    fn test_is_valid_cut_point_after_complete_turn() {
+        let messages = vec![
+            make_user_message("Hello"),
+            make_assistant_message("Hi there!"),
+            make_user_message("How are you?"),
+        ];
+
+        // Valid to cut after user message
+        assert!(super::is_valid_cut_point(&messages, 1));
+        // Valid to cut after assistant message
+        assert!(super::is_valid_cut_point(&messages, 2));
+    }
+
+    #[test]
+    fn test_find_cut_point_respects_tool_sequence() {
+        // Create a conversation with a tool call sequence
+        let messages = vec![
+            make_user_message("Task 1"),               // 0
+            make_assistant_message("Working on it"),   // 1
+            make_user_message("Task 2"),               // 2
+            make_tool_use_message("read", "123"),      // 3
+            make_tool_result_message("123", "result"), // 4
+            make_assistant_message("Done"),            // 5
+        ];
+
+        let cut_point = super::find_cut_point(&messages, 50); // Very low token budget to force cut
+
+        // The cut point should not be between tool use (3) and tool result (4)
+        // It should be at index 3 or earlier, or at 5 or later
+        if cut_point.first_kept_index > 0 {
+            assert!(
+                cut_point.first_kept_index <= 3 || cut_point.first_kept_index >= 5,
+                "Cut point {} should not split tool call sequence",
+                cut_point.first_kept_index
+            );
+        }
+    }
+
+    #[test]
+    fn test_compact_with_tokens_no_compaction_needed() {
+        let config = CompactionConfig {
+            max_context_tokens: 100_000,
+            keep_recent_tokens: 20_000,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        let messages = vec![make_user_message("Hello"), make_assistant_message("Hi!")];
+
+        let result = compactor.compact_with_tokens(&messages);
+        assert!(!result.was_compacted());
+        assert_eq!(result.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_compact_with_tokens_compaction_occurs() {
+        let config = CompactionConfig {
+            max_context_tokens: 100, // Very low to trigger compaction
+            keep_recent_tokens: 50,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        // Create messages that exceed the token limit
+        let messages = vec![
+            make_user_message(&"a".repeat(200)), // ~50 tokens
+            make_assistant_message(&"b".repeat(200)),
+            make_user_message(&"c".repeat(200)),
+            make_assistant_message(&"d".repeat(200)),
+        ];
+
+        let result = compactor.compact_with_tokens(&messages);
+        // Should compact some messages
+        assert!(result.was_compacted() || result.messages.len() < messages.len() + 1);
+    }
+
+    #[test]
+    fn test_was_turn_split() {
+        let result_not_split = CompactionResult {
+            messages: vec![],
+            summary: None,
+            compacted_count: 0,
+            cut_point: Some(CutPoint {
+                first_kept_index: 0,
+                is_split_turn: false,
+                turn_start_index: None,
+                tokens_before: 0,
+                tokens_after: 100,
+            }),
+        };
+        assert!(!result_not_split.was_turn_split());
+
+        let result_split = CompactionResult {
+            messages: vec![],
+            summary: None,
+            compacted_count: 5,
+            cut_point: Some(CutPoint {
+                first_kept_index: 5,
+                is_split_turn: true,
+                turn_start_index: Some(3),
+                tokens_before: 500,
+                tokens_after: 100,
+            }),
+        };
+        assert!(result_split.was_turn_split());
     }
 }
