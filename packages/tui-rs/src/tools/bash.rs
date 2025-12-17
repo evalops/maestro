@@ -140,6 +140,48 @@ const MAX_TIMEOUT_MS: u64 = 600_000;
 /// Maximum output size (30KB)
 const MAX_OUTPUT_SIZE: usize = 30_000;
 
+/// Kill an entire process tree by PID.
+///
+/// On Unix systems, this uses SIGKILL to terminate the process and all its descendants.
+/// This is important for commands like `npm run dev` that spawn child processes -
+/// just killing the parent shell would leave orphan processes running.
+///
+/// # Platform Behavior
+///
+/// - **macOS/Linux**: Uses `pkill -KILL -P <pid>` to kill child processes, then kills the parent.
+///   Falls back to direct kill if pkill fails.
+/// - **Other platforms**: Falls back to killing just the process.
+///
+/// # Arguments
+///
+/// * `pid` - Process ID to kill along with its descendants
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) {
+    use std::process::Command as StdCommand;
+
+    // First, try to kill all child processes using pkill
+    // pkill -P kills processes whose parent PID matches
+    let _ = StdCommand::new("pkill")
+        .args(["-KILL", "-P", &pid.to_string()])
+        .output();
+
+    // Then kill the process itself using libc
+    // SIGKILL (9) ensures immediate termination
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_tree(pid: u32) {
+    // On non-Unix systems, we can only kill the direct process
+    // Windows would need taskkill /T /F /PID <pid>
+    use std::process::Command as StdCommand;
+    let _ = StdCommand::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .output();
+}
+
 /// Arguments for bash command execution
 ///
 /// These arguments are deserialized from the AI's tool call JSON. All fields except
@@ -526,11 +568,14 @@ impl BashTool {
             }
         };
 
+        // Capture PID for process tree killing on timeout
+        let child_pid = child.id();
+
         // If running in background, return immediately
         if args.run_in_background {
             return ToolResult {
                 success: true,
-                output: format!("Command started in background (PID: {:?})", child.id()),
+                output: format!("Command started in background (PID: {:?})", child_pid),
                 error: None,
             };
         }
@@ -616,8 +661,14 @@ impl BashTool {
                 error: Some(format!("Process error: {}", e)),
             },
             Err(_) => {
-                // Timeout - try to kill the process
-                let _ = child.kill().await;
+                // Timeout - kill the entire process tree to avoid orphan processes
+                // This is important for commands like `npm run dev` that spawn children
+                if let Some(pid) = child_pid {
+                    kill_process_tree(pid);
+                } else {
+                    // Fallback to direct kill if PID not available
+                    let _ = child.kill().await;
+                }
                 ToolResult {
                     success: false,
                     output: String::new(),
