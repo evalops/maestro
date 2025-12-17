@@ -110,11 +110,19 @@ slack-agent --sandbox=docker:slack-agent-sandbox ./data
 ## Installation
 
 ```bash
-# Using bun (recommended)
+# Global CLI install (recommended for `slack-agent` command)
+bun install -g @evalops/slack-agent
+
+# Or project-local install (library + CLI)
 bun add @evalops/slack-agent
 
 # Using npm
 npm install @evalops/slack-agent
+
+# Or run without installing (one-off)
+bunx @evalops/slack-agent --help
+# or
+npx -y @evalops/slack-agent --help
 ```
 
 ### Requirements
@@ -607,7 +615,7 @@ _All Time:_
 
 ### Pricing Model
 
-Based on Claude Sonnet 4 pricing:
+The default cost estimator uses a fixed price table **last verified on December 17, 2025** (update the code/docs if you change models or pricing):
 
 | Token Type | Cost per Million |
 |------------|------------------|

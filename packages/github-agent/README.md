@@ -44,8 +44,13 @@ This agent watches a GitHub repository for issues with specific labels, implemen
 ### As a CLI
 
 ```bash
-# Install
+# Install (global CLI)
 bun install -g @evalops/github-agent
+
+# Or run without installing (one-off)
+bunx @evalops/github-agent owner/repo
+# or
+npx -y @evalops/github-agent owner/repo
 
 # Run as daemon (watches for new issues)
 github-agent owner/repo
