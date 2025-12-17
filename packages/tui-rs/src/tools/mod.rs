@@ -80,6 +80,7 @@ mod batch;
 mod cache;
 mod history;
 mod image;
+pub mod inline;
 mod registry;
 mod web_fetch;
 
@@ -88,5 +89,9 @@ pub use batch::{BatchConfig, BatchExecutor, BatchToolCall, BatchToolResult};
 pub use cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 pub use history::{HistoryFilter, ToolExecution, ToolHistory, ToolStats};
 pub use image::ImageTool;
+pub use inline::{
+    get_config_paths as get_inline_tools_config_paths, load_inline_tools, InlineTool,
+    InlineToolExecutor, InlineToolSource, InlineToolsConfig, InlineToolsPaths,
+};
 pub use registry::{ToolExecutor, ToolRegistry};
 pub use web_fetch::WebFetchTool;

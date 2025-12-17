@@ -99,6 +99,7 @@ use tokio::sync::mpsc;
 use super::bash::{BashArgs, BashTool};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
+use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
@@ -144,6 +145,16 @@ pub struct ToolExecutor {
     ///
     /// Enables vision-capable models to work with images.
     image: ImageTool,
+
+    /// Inline tool executor for user-defined shell-based tools
+    ///
+    /// Executes tools defined in .composer/tools.json files.
+    inline_executor: InlineToolExecutor,
+
+    /// Inline tools loaded from configuration
+    ///
+    /// Maps lowercase tool names to their definitions.
+    inline_tools: HashMap<String, InlineTool>,
 
     /// Current working directory for all tool operations
     ///
@@ -191,12 +202,34 @@ impl ToolExecutor {
     /// ```
     pub fn new(cwd: impl Into<String>) -> Self {
         let cwd = cwd.into();
+        let cwd_path = std::path::Path::new(&cwd);
+
+        // Load inline tools from config files
+        let inline_tools_list = load_inline_tools(cwd_path);
+        let mut inline_tools = HashMap::new();
+        let mut registry = ToolRegistry::new();
+
+        // Register inline tools
+        for tool in inline_tools_list {
+            let name = tool.definition.name.to_lowercase();
+            registry.register(
+                &name,
+                ToolDefinition {
+                    tool: tool.to_tool(),
+                    requires_approval: tool.requires_approval(),
+                },
+            );
+            inline_tools.insert(name, tool);
+        }
+
         Self {
             bash: BashTool::new(&cwd),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
+            inline_executor: InlineToolExecutor::new(&cwd),
+            inline_tools,
             cwd,
-            registry: ToolRegistry::new(),
+            registry,
             cache: RwLock::new(ToolResultCache::default()),
         }
     }
@@ -209,14 +242,48 @@ impl ToolExecutor {
     /// - `cache_config`: Configuration for the tool result cache
     pub fn with_cache_config(cwd: impl Into<String>, cache_config: CacheConfig) -> Self {
         let cwd = cwd.into();
+        let cwd_path = std::path::Path::new(&cwd);
+
+        // Load inline tools from config files
+        let inline_tools_list = load_inline_tools(cwd_path);
+        let mut inline_tools = HashMap::new();
+        let mut registry = ToolRegistry::new();
+
+        // Register inline tools
+        for tool in inline_tools_list {
+            let name = tool.definition.name.to_lowercase();
+            registry.register(
+                &name,
+                ToolDefinition {
+                    tool: tool.to_tool(),
+                    requires_approval: tool.requires_approval(),
+                },
+            );
+            inline_tools.insert(name, tool);
+        }
+
         Self {
             bash: BashTool::new(&cwd),
             web_fetch: WebFetchTool::new(),
             image: ImageTool::new(),
+            inline_executor: InlineToolExecutor::new(&cwd),
+            inline_tools,
             cwd,
-            registry: ToolRegistry::new(),
+            registry,
             cache: RwLock::new(ToolResultCache::new(cache_config)),
         }
+    }
+
+    /// Get the list of loaded inline tools
+    ///
+    /// Returns an iterator over the inline tool definitions.
+    pub fn inline_tools(&self) -> impl Iterator<Item = &InlineTool> {
+        self.inline_tools.values()
+    }
+
+    /// Get the count of loaded inline tools
+    pub fn inline_tool_count(&self) -> usize {
+        self.inline_tools.len()
     }
 
     /// Get cache statistics
@@ -989,11 +1056,46 @@ impl ToolExecutor {
 
                 result
             }
-            _ => ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Unknown tool: {}", tool_name)),
-            },
+            _ => {
+                // Check if this is an inline tool
+                let tool_key = tool_name.to_lowercase();
+                if let Some(inline_tool) = self.inline_tools.get(&tool_key) {
+                    // Send tool start event
+                    if let Some(tx) = event_tx {
+                        let _ = tx.send(FromAgent::ToolStart {
+                            call_id: call_id.to_string(),
+                        });
+                    }
+
+                    let result = self
+                        .inline_executor
+                        .execute(inline_tool, args.clone())
+                        .await;
+
+                    // Send tool output and end events
+                    if let Some(tx) = event_tx {
+                        if !result.output.is_empty() {
+                            let _ = tx.send(FromAgent::ToolOutput {
+                                call_id: call_id.to_string(),
+                                content: result.output.clone(),
+                            });
+                        }
+
+                        let _ = tx.send(FromAgent::ToolEnd {
+                            call_id: call_id.to_string(),
+                            success: result.success,
+                        });
+                    }
+
+                    result
+                } else {
+                    ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Unknown tool: {}", tool_name)),
+                    }
+                }
+            }
         }
     }
 }
@@ -1489,6 +1591,50 @@ impl ToolRegistry {
                 .map(|d| d.requires_approval)
                 .unwrap_or(true),
         }
+    }
+
+    /// Register a tool from an external source (e.g., inline tools, MCP)
+    ///
+    /// This method adds a new tool to the registry. If a tool with the same name
+    /// already exists, it will be overwritten.
+    ///
+    /// # Arguments
+    ///
+    /// - `name`: Tool name (will be normalized to lowercase)
+    /// - `definition`: The tool definition to register
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use composer_tui::tools::ToolRegistry;
+    /// use composer_tui::agent::ToolDefinition;
+    /// use composer_tui::ai::Tool;
+    ///
+    /// let mut registry = ToolRegistry::new();
+    ///
+    /// let tool = Tool::new("my_tool", "A custom tool")
+    ///     .with_schema(serde_json::json!({
+    ///         "type": "object",
+    ///         "properties": {},
+    ///         "required": []
+    ///     }));
+    ///
+    /// registry.register("my_tool", ToolDefinition {
+    ///     tool,
+    ///     requires_approval: true,
+    /// });
+    ///
+    /// assert!(registry.get("my_tool").is_some());
+    /// ```
+    pub fn register(&mut self, name: &str, definition: ToolDefinition) {
+        self.tools.insert(name.to_lowercase(), definition);
+    }
+
+    /// Unregister a tool by name
+    ///
+    /// Returns true if the tool was found and removed, false otherwise.
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.tools.remove(&name.to_lowercase()).is_some()
     }
 }
 
