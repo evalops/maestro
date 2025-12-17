@@ -8,7 +8,7 @@ Contents: [Prerequisites](#prerequisites) · [Install](#install) · [Configure k
 Composer is a Bun + Nx workspace. Follow this path to go from a fresh clone to a working CLI/TUI/Web build.
 
 Doc conventions:
-- Audience: contributors. For feature usage see [Feature Guide](file://docs/FEATURES.md); for tools see [Tools Reference](file://docs/TOOLS_REFERENCE.md).
+- Audience: contributors. For feature usage see [Feature Guide](FEATURES.md); for tools see [Tools Reference](TOOLS_REFERENCE.md).
 - Defaults: provider/model default to `claude-opus-4-5-20251101` unless overridden.
 - Build targets: `composer:build` = CLI only; `composer:build:all` = CLI + TUI + Web.
 
@@ -16,7 +16,7 @@ Doc conventions:
 - Node.js 20+ (ES modules + top-level `await`)
 - Bun 1.1+ (recommended) or npm 9+ for install
 - Git + a GitHub token if you plan to run the hosted evals/CI
-- Optional: [MCP Guide](file://docs/MCP_GUIDE.md) if you need Model Context Protocol servers
+- Optional: [MCP Guide](MCP_GUIDE.md) if you need Model Context Protocol servers
 
 ## Install
 ```bash
@@ -32,7 +32,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 ```
 
-You can also keep keys in `~/.composer/keys.json`; see [Sessions](file://docs/SESSIONS.md) for how the client resolves config files and per-workspace overrides.
+You can also keep keys in `~/.composer/keys.json`; see [Sessions](SESSIONS.md) for how the client resolves config files and per-workspace overrides.
 
 ## Build & Run
 ```bash
@@ -73,7 +73,7 @@ If you touch a specific package, pair the workspace checks with `bun run --filte
 | `bun run cli --`                                   | Convenience wrapper around `node dist/cli.js ...` using Bun    |
 
 ## Next Steps
-- Explore the [Feature Guide](file://docs/FEATURES.md) for TUI/CLI workflows.
-- Keep [Tools Reference](file://docs/TOOLS_REFERENCE.md) handy while running slash commands.
-- Review [Safety](file://docs/SAFETY.md) and [Prompt Queue](file://docs/PROMPT_QUEUE.md) to understand approvals and job flow.
-- Check [Web UI Guide](file://docs/WEB_UI.md) for browser usage and parity notes.
+- Explore the [Feature Guide](FEATURES.md) for TUI/CLI workflows.
+- Keep [Tools Reference](TOOLS_REFERENCE.md) handy while running slash commands.
+- Review [Safety](SAFETY.md) and [Prompt Queue](PROMPT_QUEUE.md) to understand approvals and job flow.
+- Check [Web UI Guide](WEB_UI.md) for browser usage and parity notes.
