@@ -18,6 +18,10 @@ inputs:
     description: Whether to enable Nx cache
     required: false
     default: "true"
+  ensure-ripgrep:
+    description: Whether to install ripgrep if missing
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -43,6 +47,16 @@ runs:
         key: ${{ runner.os }}-nx-${{ hashFiles('bun.lockb', 'nx.json', 'project.json', 'packages/**/project.json') }}
         restore-keys: |
           ${{ runner.os }}-nx-
+
+    - name: Ensure ripgrep
+      if: ${{ inputs.ensure-ripgrep == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v rg >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+        fi
 
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}

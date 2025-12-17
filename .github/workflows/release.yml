@@ -133,14 +133,8 @@ jobs:
           ref: ${{ needs.prepare.outputs.release_tag }}
 
       - uses: ./.github/actions/setup-bun-nx
-
-      - name: Ensure ripgrep
-        run: |
-          set -euo pipefail
-          if ! command -v rg >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ripgrep
-          fi
+        with:
+          ensure-ripgrep: "true"
 
       - run: bun run bun:lint
       - run: bun run bun:test
