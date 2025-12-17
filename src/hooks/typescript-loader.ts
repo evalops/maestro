@@ -35,6 +35,12 @@ const logger = createLogger("hooks:typescript-loader");
  */
 const loadedHooks: LoadedTypeScriptHook[] = [];
 
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+function normalizeUnicodeSpaces(str: string): string {
+	return str.replace(UNICODE_SPACES, " ");
+}
+
 /**
  * Global send handler - set by the session/mode that enables message injection.
  */
@@ -52,13 +58,14 @@ let globalSessionFile: string | null = null;
  * Expand ~ to home directory in paths.
  */
 function expandPath(p: string): string {
-	if (p.startsWith("~/")) {
-		return join(homedir(), p.slice(2));
+	const normalized = normalizeUnicodeSpaces(p);
+	if (normalized.startsWith("~/")) {
+		return join(homedir(), normalized.slice(2));
 	}
-	if (p.startsWith("~")) {
-		return join(homedir(), p.slice(1));
+	if (normalized.startsWith("~")) {
+		return join(homedir(), normalized.slice(1));
 	}
-	return p;
+	return normalized;
 }
 
 /**

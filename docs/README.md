@@ -21,6 +21,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Architecture Diagram](file://docs/ARCHITECTURE_DIAGRAM.md) — high-level system layout.
 - [VS Code Architecture](file://docs/VSCODE_ARCHITECTURE.md) — extension-specific architecture and flows.
 - [Patterns](file://docs/patterns/INDEX.md) — implementation patterns (e.g., event suppression, tool error handling).
+- [Upstreams: pi-mono](file://docs/upstreams/pi-mono.md) — notes on upstream inspirations/adaptations.
 
 ## Feature Design Docs
 - [Design Index](file://docs/design/INDEX.md) — comprehensive design documentation for all major subsystems.
