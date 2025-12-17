@@ -428,11 +428,7 @@ impl InlineToolExecutor {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                return ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Failed to spawn command: {}", e)),
-                };
+                return ToolResult::failure(format!("Failed to spawn command: {}", e));
             }
         };
 
@@ -460,11 +456,7 @@ impl InlineToolExecutor {
                 let status = match status_result {
                     Ok(s) => s,
                     Err(e) => {
-                        return ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Command failed: {}", e)),
-                        };
+                        return ToolResult::failure(format!("Command failed: {}", e));
                     }
                 };
 
@@ -488,11 +480,7 @@ impl InlineToolExecutor {
                 };
 
                 if status.success() {
-                    ToolResult {
-                        success: true,
-                        output: stdout.trim().to_string(),
-                        error: None,
-                    }
+                    ToolResult::success(stdout.trim())
                 } else {
                     let error_msg = if stderr.is_empty() {
                         format!("Command exited with status: {}", status)
@@ -504,6 +492,7 @@ impl InlineToolExecutor {
                         success: false,
                         output: stdout,
                         error: Some(error_msg),
+                        details: None,
                     }
                 }
             }
@@ -511,14 +500,10 @@ impl InlineToolExecutor {
             _ = tokio::time::sleep(timeout_duration) => {
                 // Timeout - kill the process
                 let _ = child.kill().await;
-                ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!(
-                        "Command timed out after {}ms",
-                        tool.definition.timeout
-                    )),
-                }
+                ToolResult::failure(format!(
+                    "Command timed out after {}ms",
+                    tool.definition.timeout
+                ))
             }
         }
     }

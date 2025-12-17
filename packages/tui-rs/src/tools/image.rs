@@ -129,11 +129,7 @@ impl ImageTool {
 
         // Check if file exists
         if !path.exists() {
-            return ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Image file not found: {}", args.file_path)),
-            };
+            return ToolResult::failure(format!("Image file not found: {}", args.file_path));
         }
 
         // Determine MIME type from extension
@@ -145,21 +141,13 @@ impl ImageTool {
             Some("bmp") => "image/bmp",
             Some("svg") => "image/svg+xml",
             Some(ext) => {
-                return ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!(
-                        "Not an image file: .{} is not a supported image format. Use the 'read' tool for text files (.txt, .md, .rs, .json, etc). Supported image formats: PNG, JPEG, GIF, WebP, BMP, SVG",
-                        ext
-                    )),
-                };
+                return ToolResult::failure(format!(
+                    "Not an image file: .{} is not a supported image format. Use the 'read' tool for text files (.txt, .md, .rs, .json, etc). Supported image formats: PNG, JPEG, GIF, WebP, BMP, SVG",
+                    ext
+                ));
             }
             None => {
-                return ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some("Could not determine image format from extension".to_string()),
-                };
+                return ToolResult::failure("Could not determine image format from extension");
             }
         };
 
@@ -167,25 +155,17 @@ impl ImageTool {
         let data = match tokio::fs::read(path).await {
             Ok(data) => data,
             Err(e) => {
-                return ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Failed to read image: {}", e)),
-                };
+                return ToolResult::failure(format!("Failed to read image: {}", e));
             }
         };
 
         // Check file size
         if data.len() > MAX_IMAGE_SIZE {
-            return ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!(
-                    "Image too large: {} bytes (max {} bytes)",
-                    data.len(),
-                    MAX_IMAGE_SIZE
-                )),
-            };
+            return ToolResult::failure(format!(
+                "Image too large: {} bytes (max {} bytes)",
+                data.len(),
+                MAX_IMAGE_SIZE
+            ));
         }
 
         // Encode to base64
@@ -216,17 +196,13 @@ impl ImageTool {
             "data_uri": data_uri,
         });
 
-        ToolResult {
-            success: true,
-            output: format!(
-                "Image loaded: {} ({} bytes){}\n\n{}",
-                args.file_path,
-                data.len(),
-                dim_info,
-                serde_json::to_string_pretty(&output).unwrap_or_default()
-            ),
-            error: None,
-        }
+        ToolResult::success(format!(
+            "Image loaded: {} ({} bytes){}\n\n{}",
+            args.file_path,
+            data.len(),
+            dim_info,
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        ))
     }
 
     /// Capture a screenshot
@@ -261,21 +237,13 @@ impl ImageTool {
                     "data_uri": data_uri,
                 });
 
-                ToolResult {
-                    success: true,
-                    output: format!(
-                        "Screenshot captured ({} bytes)\n\n{}",
-                        data.len(),
-                        serde_json::to_string_pretty(&output).unwrap_or_default()
-                    ),
-                    error: None,
-                }
+                ToolResult::success(format!(
+                    "Screenshot captured ({} bytes)\n\n{}",
+                    data.len(),
+                    serde_json::to_string_pretty(&output).unwrap_or_default()
+                ))
             }
-            Err(e) => ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Screenshot failed: {}", e)),
-            },
+            Err(e) => ToolResult::failure(format!("Screenshot failed: {}", e)),
         }
     }
 }

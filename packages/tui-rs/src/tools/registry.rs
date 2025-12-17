@@ -537,6 +537,7 @@ impl ToolExecutor {
                         } else {
                             None
                         },
+                        details: None,
                     };
                 }
             }
@@ -577,11 +578,7 @@ impl ToolExecutor {
                 let bash_args: BashArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
                     Err(e) => {
-                        return ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Invalid bash arguments: {}", e)),
-                        };
+                        return ToolResult::failure(format!("Invalid bash arguments: {}", e));
                     }
                 };
 
@@ -633,11 +630,7 @@ impl ToolExecutor {
                     .map(|v| v as usize);
 
                 if path.is_empty() {
-                    return ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("Missing file_path argument".to_string()),
-                    };
+                    return ToolResult::failure("Missing file_path argument");
                 }
 
                 match tokio::fs::read_to_string(path).await {
@@ -662,17 +655,9 @@ impl ToolExecutor {
                             .collect::<Vec<_>>()
                             .join("\n");
 
-                        ToolResult {
-                            success: true,
-                            output: numbered,
-                            error: None,
-                        }
+                        ToolResult::success(numbered)
                     }
-                    Err(e) => ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!("Failed to read file: {}", e)),
-                    },
+                    Err(e) => ToolResult::failure(format!("Failed to read file: {}", e)),
                 }
             }
             "write" | "Write" => {
@@ -685,21 +670,13 @@ impl ToolExecutor {
                 let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
                 if path.is_empty() {
-                    return ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("Missing file_path argument".to_string()),
-                    };
+                    return ToolResult::failure("Missing file_path argument");
                 }
 
                 // Create parent directories if needed
                 if let Some(parent) = std::path::Path::new(path).parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        return ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Failed to create directory: {}", e)),
-                        };
+                        return ToolResult::failure(format!("Failed to create directory: {}", e));
                     }
                 }
 
@@ -707,17 +684,9 @@ impl ToolExecutor {
                     Ok(_) => {
                         // Invalidate cache since file was modified
                         self.invalidate_file_cache(path);
-                        ToolResult {
-                            success: true,
-                            output: format!("File written successfully: {}", path),
-                            error: None,
-                        }
+                        ToolResult::success(format!("File written successfully: {}", path))
                     }
-                    Err(e) => ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!("Failed to write file: {}", e)),
-                    },
+                    Err(e) => ToolResult::failure(format!("Failed to write file: {}", e)),
                 }
             }
             "glob" | "Glob" => {
@@ -744,17 +713,9 @@ impl ToolExecutor {
                             .map(|p| p.display().to_string())
                             .collect();
 
-                        ToolResult {
-                            success: true,
-                            output: matches.join("\n"),
-                            error: None,
-                        }
+                        ToolResult::success(matches.join("\n"))
                     }
-                    Err(e) => ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!("Glob error: {}", e)),
-                    },
+                    Err(e) => ToolResult::failure(format!("Glob error: {}", e)),
                 }
             }
             "grep" | "Grep" => {
@@ -763,11 +724,7 @@ impl ToolExecutor {
                 let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
                 if pattern.is_empty() {
-                    return ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("Missing pattern argument".to_string()),
-                    };
+                    return ToolResult::failure("Missing pattern argument");
                 }
 
                 // Use ripgrep if available, fall back to grep
@@ -807,56 +764,35 @@ impl ToolExecutor {
                     .unwrap_or(false);
 
                 if path.is_empty() {
-                    return ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("Missing file_path argument".to_string()),
-                    };
+                    return ToolResult::failure("Missing file_path argument");
                 }
 
                 if old_string.is_empty() {
-                    return ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("Missing old_string argument".to_string()),
-                    };
+                    return ToolResult::failure("Missing old_string argument");
                 }
 
                 // Read file content
                 let content = match tokio::fs::read_to_string(path).await {
                     Ok(c) => c,
                     Err(e) => {
-                        return ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Failed to read file: {}", e)),
-                        };
+                        return ToolResult::failure(format!("Failed to read file: {}", e));
                     }
                 };
 
                 // Check if old_string exists in file
                 let occurrences = content.matches(old_string).count();
                 if occurrences == 0 {
-                    return ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(
-                            "old_string not found in file. Make sure the string matches exactly."
-                                .to_string(),
-                        ),
-                    };
+                    return ToolResult::failure(
+                        "old_string not found in file. Make sure the string matches exactly.",
+                    );
                 }
 
                 // Check for uniqueness if not replace_all
                 if !replace_all && occurrences > 1 {
-                    return ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!(
-                            "old_string found {} times. Use replace_all: true or provide more context to make it unique.",
-                            occurrences
-                        )),
-                    };
+                    return ToolResult::failure(format!(
+                        "old_string found {} times. Use replace_all: true or provide more context to make it unique.",
+                        occurrences
+                    ));
                 }
 
                 // Perform replacement
@@ -872,20 +808,12 @@ impl ToolExecutor {
                         // Invalidate cache since file was modified
                         self.invalidate_file_cache(path);
                         let replaced = if replace_all { occurrences } else { 1 };
-                        ToolResult {
-                            success: true,
-                            output: format!(
-                                "Successfully replaced {} occurrence(s) in {}",
-                                replaced, path
-                            ),
-                            error: None,
-                        }
+                        ToolResult::success(format!(
+                            "Successfully replaced {} occurrence(s) in {}",
+                            replaced, path
+                        ))
                     }
-                    Err(e) => ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!("Failed to write file: {}", e)),
-                    },
+                    Err(e) => ToolResult::failure(format!("Failed to write file: {}", e)),
                 }
             }
             "diff" | "Diff" => {
@@ -946,11 +874,7 @@ impl ToolExecutor {
                 let fetch_args: WebFetchArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
                     Err(e) => {
-                        return ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Invalid web_fetch arguments: {}", e)),
-                        };
+                        return ToolResult::failure(format!("Invalid web_fetch arguments: {}", e));
                     }
                 };
 
@@ -984,11 +908,7 @@ impl ToolExecutor {
                 let image_args: ReadImageArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
                     Err(e) => {
-                        return ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Invalid read_image arguments: {}", e)),
-                        };
+                        return ToolResult::failure(format!("Invalid read_image arguments: {}", e));
                     }
                 };
 
@@ -1022,11 +942,7 @@ impl ToolExecutor {
                 let screenshot_args: ScreenshotArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
                     Err(e) => {
-                        return ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(format!("Invalid screenshot arguments: {}", e)),
-                        };
+                        return ToolResult::failure(format!("Invalid screenshot arguments: {}", e));
                     }
                 };
 
@@ -1089,11 +1005,7 @@ impl ToolExecutor {
 
                     result
                 } else {
-                    ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!("Unknown tool: {}", tool_name)),
-                    }
+                    ToolResult::failure(format!("Unknown tool: {}", tool_name))
                 }
             }
         }

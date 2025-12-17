@@ -606,20 +606,12 @@ impl BashTool {
     pub async fn execute(&self, args: BashArgs) -> ToolResult {
         // Reject empty commands early to avoid no-op approvals
         if args.command.trim().is_empty() {
-            return ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Empty bash command".to_string()),
-            };
+            return ToolResult::failure("Empty bash command");
         }
 
         // Check for dangerous commands
         if let Some(warning) = Self::is_dangerous(&args.command) {
-            return ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Dangerous command blocked: {}", warning)),
-            };
+            return ToolResult::failure(format!("Dangerous command blocked: {}", warning));
         }
 
         // Determine timeout
@@ -641,11 +633,7 @@ impl BashTool {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                return ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Failed to spawn process: {}", e)),
-                };
+                return ToolResult::failure(format!("Failed to spawn process: {}", e));
             }
         };
 
@@ -654,11 +642,10 @@ impl BashTool {
 
         // If running in background, return immediately
         if args.run_in_background {
-            return ToolResult {
-                success: true,
-                output: format!("Command started in background (PID: {:?})", child_pid),
-                error: None,
-            };
+            return ToolResult::success(format!(
+                "Command started in background (PID: {:?})",
+                child_pid
+            ));
         }
 
         // Wait for completion with timeout
@@ -754,26 +741,22 @@ impl BashTool {
                     None => final_output,
                 };
 
+                let exit_code = status.code().unwrap_or(-1);
                 ToolResult {
                     success: status.success(),
                     output: output_with_notice,
                     error: if status.success() {
                         None
                     } else {
-                        Some(format!("Exit code: {}", status.code().unwrap_or(-1)))
+                        Some(format!("Exit code: {}", exit_code))
                     },
+                    details: None, // BashDetails can be added by caller if needed
                 }
             }
-            Ok((Err(e), _, _)) | Ok((_, Err(e), _)) => ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("IO error: {}", e)),
-            },
-            Ok((_, _, Err(e))) => ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Process error: {}", e)),
-            },
+            Ok((Err(e), _, _)) | Ok((_, Err(e), _)) => {
+                ToolResult::failure(format!("IO error: {}", e))
+            }
+            Ok((_, _, Err(e))) => ToolResult::failure(format!("Process error: {}", e)),
             Err(_) => {
                 // Timeout - kill the entire process tree to avoid orphan processes
                 // This is important for commands like `npm run dev` that spawn children
@@ -783,11 +766,7 @@ impl BashTool {
                     // Fallback to direct kill if PID not available
                     let _ = child.kill().await;
                 }
-                ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Command timed out after {}ms", timeout_ms)),
-                }
+                ToolResult::failure(format!("Command timed out after {}ms", timeout_ms))
             }
         }
     }

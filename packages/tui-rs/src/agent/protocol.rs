@@ -184,21 +184,15 @@ pub enum ToAgent {
 /// ```
 /// use composer_tui::agent::ToolResult;
 ///
-/// // Successful execution
-/// let result = ToolResult {
-///     success: true,
-///     output: "Hello, world!".to_string(),
-///     error: None,
-/// };
+/// // Successful execution using helper method
+/// let result = ToolResult::success("Hello, world!");
+/// assert!(result.success);
 ///
-/// // Failed execution
-/// let result = ToolResult {
-///     success: false,
-///     output: String::new(),
-///     error: Some("Permission denied".to_string()),
-/// };
+/// // Failed execution using helper method
+/// let result = ToolResult::failure("Permission denied");
+/// assert!(!result.success);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolResult {
     /// Whether the tool succeeded
     ///
@@ -218,6 +212,40 @@ pub struct ToolResult {
     /// (stderr, exception message, etc.).
     #[serde(default)]
     pub error: Option<String>,
+
+    /// Structured details about the tool execution
+    ///
+    /// Contains tool-specific metadata like execution time, exit codes,
+    /// file paths, etc. Use `serde_json::from_value` to deserialize into
+    /// the appropriate detail type (e.g., `BashDetails`, `ReadDetails`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+impl ToolResult {
+    /// Create a successful tool result
+    pub fn success(output: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            output: output.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Create a failed tool result
+    pub fn failure(error: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            error: Some(error.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Add details to the result
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
 }
 
 // ============================================================================

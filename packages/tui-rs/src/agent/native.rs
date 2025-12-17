@@ -1671,20 +1671,12 @@ mod tests {
 
     #[test]
     fn test_tool_result_structure() {
-        let success_result = ToolResult {
-            success: true,
-            output: "Command executed successfully".to_string(),
-            error: None,
-        };
+        let success_result = ToolResult::success("Command executed successfully");
         assert!(success_result.success);
         assert!(!success_result.output.is_empty());
         assert!(success_result.error.is_none());
 
-        let error_result = ToolResult {
-            success: false,
-            output: String::new(),
-            error: Some("Permission denied".to_string()),
-        };
+        let error_result = ToolResult::failure("Permission denied");
         assert!(!error_result.success);
         assert!(error_result.output.is_empty());
         assert!(error_result.error.is_some());

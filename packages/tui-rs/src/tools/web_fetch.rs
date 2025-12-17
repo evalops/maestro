@@ -152,11 +152,7 @@ impl WebFetchTool {
         // Validate URL
         let url = args.url.trim();
         if url.is_empty() {
-            return ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("URL is required".to_string()),
-            };
+            return ToolResult::failure("URL is required");
         }
 
         // Ensure URL has a scheme
@@ -170,11 +166,7 @@ impl WebFetchTool {
         let parsed_url = match reqwest::Url::parse(&url) {
             Ok(u) => u,
             Err(e) => {
-                return ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Invalid URL: {}", e)),
-                };
+                return ToolResult::failure(format!("Invalid URL: {}", e));
             }
         };
 
@@ -182,26 +174,18 @@ impl WebFetchTool {
         let response = match self.client.get(parsed_url.clone()).send().await {
             Ok(r) => r,
             Err(e) => {
-                return ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Failed to fetch URL: {}", e)),
-                };
+                return ToolResult::failure(format!("Failed to fetch URL: {}", e));
             }
         };
 
         // Check for success status
         let status = response.status();
         if !status.is_success() {
-            return ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!(
-                    "HTTP error {}: {}",
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("Unknown")
-                )),
-            };
+            return ToolResult::failure(format!(
+                "HTTP error {}: {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown")
+            ));
         }
 
         // Get content type
@@ -216,24 +200,16 @@ impl WebFetchTool {
         let body_bytes = match response.bytes().await {
             Ok(b) => {
                 if b.len() > MAX_BODY_SIZE {
-                    return ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!(
-                            "Response too large: {} bytes (max {})",
-                            b.len(),
-                            MAX_BODY_SIZE
-                        )),
-                    };
+                    return ToolResult::failure(format!(
+                        "Response too large: {} bytes (max {})",
+                        b.len(),
+                        MAX_BODY_SIZE
+                    ));
                 }
                 b
             }
             Err(e) => {
-                return ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Failed to read response body: {}", e)),
-                };
+                return ToolResult::failure(format!("Failed to read response body: {}", e));
             }
         };
 
@@ -273,11 +249,7 @@ impl WebFetchTool {
         }
         result.push_str(&output);
 
-        ToolResult {
-            success: true,
-            output: result,
-            error: None,
-        }
+        ToolResult::success(result)
     }
 }
 
