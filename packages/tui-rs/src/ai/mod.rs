@@ -76,6 +76,7 @@
 //! ```
 
 mod anthropic;
+pub mod app_message;
 mod client;
 mod google;
 mod openai;
@@ -85,6 +86,7 @@ mod types;
 mod vertex;
 
 pub use anthropic::AnthropicClient;
+pub use app_message::{from_api_messages, transform_to_api_messages, AppMessage, BashExecution};
 pub use client::{create_client, create_client_for_model, AiClient, AiProvider, UnifiedClient};
 pub use google::GoogleClient;
 pub use openai::OpenAiClient;
