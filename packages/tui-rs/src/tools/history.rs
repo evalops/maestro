@@ -241,6 +241,67 @@ impl ToolStats {
             Duration::ZERO
         }
     }
+
+    /// Get average execution time in milliseconds
+    pub fn avg_duration_ms(&self) -> u64 {
+        self.avg_duration().as_millis() as u64
+    }
+
+    /// Get total execution time in milliseconds
+    pub fn total_duration_ms(&self) -> u64 {
+        self.total_duration.as_millis() as u64
+    }
+
+    /// Get failure rate (0.0 - 1.0)
+    pub fn failure_rate(&self) -> f64 {
+        if self.total > 0 {
+            self.failures as f64 / self.total as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Check if all executions succeeded
+    pub fn all_succeeded(&self) -> bool {
+        self.total > 0 && self.failures == 0
+    }
+
+    /// Check if any execution failed
+    pub fn has_failures(&self) -> bool {
+        self.failures > 0
+    }
+
+    /// Merge stats from another ToolStats
+    pub fn merge(&mut self, other: &ToolStats) {
+        self.total += other.total;
+        self.successes += other.successes;
+        self.failures += other.failures;
+        self.total_duration += other.total_duration;
+        self.cached_avg = None;
+    }
+
+    /// Create a summary string for display
+    pub fn summary(&self) -> String {
+        format!(
+            "{}/{} ({}%) avg: {}ms",
+            self.successes,
+            self.total,
+            (self.success_rate() * 100.0) as u32,
+            self.avg_duration_ms()
+        )
+    }
+
+    /// Convert to JSON
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "total": self.total,
+            "successes": self.successes,
+            "failures": self.failures,
+            "total_duration_ms": self.total_duration_ms(),
+            "avg_duration_ms": self.avg_duration_ms(),
+            "success_rate": self.success_rate()
+        })
+    }
 }
 
 /// Filter criteria for searching history
@@ -555,6 +616,168 @@ impl ToolHistory {
     /// Get all tool stats
     pub fn all_stats(&self) -> &std::collections::HashMap<String, ToolStats> {
         &self.stats
+    }
+
+    /// Get tools ranked by usage count (descending)
+    pub fn most_used_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
+        let mut ranked: Vec<_> = self.stats.iter().map(|(k, v)| (k.as_str(), v)).collect();
+        ranked.sort_by(|a, b| b.1.total.cmp(&a.1.total));
+        ranked.truncate(limit);
+        ranked
+    }
+
+    /// Get tools ranked by average duration (slowest first)
+    pub fn slowest_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
+        let mut ranked: Vec<_> = self
+            .stats
+            .iter()
+            .filter(|(_, s)| s.total > 0)
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        ranked.sort_by(|a, b| b.1.avg_duration().cmp(&a.1.avg_duration()));
+        ranked.truncate(limit);
+        ranked
+    }
+
+    /// Get tools ranked by average duration (fastest first)
+    pub fn fastest_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
+        let mut ranked: Vec<_> = self
+            .stats
+            .iter()
+            .filter(|(_, s)| s.total > 0)
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        ranked.sort_by(|a, b| a.1.avg_duration().cmp(&b.1.avg_duration()));
+        ranked.truncate(limit);
+        ranked
+    }
+
+    /// Get tools ranked by failure count (most failures first)
+    pub fn most_failed_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
+        let mut ranked: Vec<_> = self
+            .stats
+            .iter()
+            .filter(|(_, s)| s.failures > 0)
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        ranked.sort_by(|a, b| b.1.failures.cmp(&a.1.failures));
+        ranked.truncate(limit);
+        ranked
+    }
+
+    /// Get tools with the highest failure rates (at least `min_calls` total)
+    pub fn highest_failure_rate(&self, limit: usize, min_calls: u64) -> Vec<(&str, &ToolStats)> {
+        let mut ranked: Vec<_> = self
+            .stats
+            .iter()
+            .filter(|(_, s)| s.total >= min_calls && s.failures > 0)
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.failure_rate()
+                .partial_cmp(&a.1.failure_rate())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        ranked.truncate(limit);
+        ranked
+    }
+
+    /// Get the total time spent executing tools
+    pub fn total_execution_time(&self) -> Duration {
+        self.global_stats.total_duration
+    }
+
+    /// Get the total time spent executing tools in milliseconds
+    pub fn total_execution_time_ms(&self) -> u64 {
+        self.global_stats.total_duration_ms()
+    }
+
+    /// Export all statistics as JSON
+    pub fn stats_json(&self) -> serde_json::Value {
+        let tool_stats: serde_json::Map<String, serde_json::Value> = self
+            .stats
+            .iter()
+            .map(|(name, stats)| (name.clone(), stats.to_json()))
+            .collect();
+
+        serde_json::json!({
+            "global": self.global_stats.to_json(),
+            "by_tool": tool_stats,
+            "total_executions": self.executions.len(),
+            "in_progress": self.in_progress.len(),
+            "tools_used": self.stats.len()
+        })
+    }
+
+    /// Get a detailed stats summary with all tools
+    pub fn detailed_summary(&self) -> String {
+        let mut lines = vec![
+            "Tool Execution Statistics".to_string(),
+            "═".repeat(50),
+            format!(
+                "Total: {} executions ({} in progress)",
+                self.global_stats.total,
+                self.in_progress.len()
+            ),
+            format!(
+                "Success Rate: {:.1}% ({}/{} succeeded)",
+                self.global_stats.success_rate() * 100.0,
+                self.global_stats.successes,
+                self.global_stats.total
+            ),
+            format!(
+                "Total Time: {:.2}s (avg: {}ms)",
+                self.global_stats.total_duration.as_secs_f64(),
+                self.global_stats.avg_duration_ms()
+            ),
+            String::new(),
+        ];
+
+        if !self.stats.is_empty() {
+            lines.push("Most Used Tools:".to_string());
+            lines.push("─".repeat(50));
+            for (name, stats) in self.most_used_tools(5) {
+                lines.push(format!(
+                    "  {:15} {:>4} calls  {:>5.1}% success  {:>6}ms avg",
+                    name,
+                    stats.total,
+                    stats.success_rate() * 100.0,
+                    stats.avg_duration_ms()
+                ));
+            }
+
+            let slowest = self.slowest_tools(3);
+            if !slowest.is_empty() {
+                lines.push(String::new());
+                lines.push("Slowest Tools:".to_string());
+                lines.push("─".repeat(50));
+                for (name, stats) in slowest {
+                    lines.push(format!(
+                        "  {:15} {:>6}ms avg  ({} calls)",
+                        name,
+                        stats.avg_duration_ms(),
+                        stats.total
+                    ));
+                }
+            }
+
+            let failed = self.most_failed_tools(3);
+            if !failed.is_empty() {
+                lines.push(String::new());
+                lines.push("Most Failed Tools:".to_string());
+                lines.push("─".repeat(50));
+                for (name, stats) in failed {
+                    lines.push(format!(
+                        "  {:15} {:>4} failures  ({:.1}% failure rate)",
+                        name,
+                        stats.failures,
+                        stats.failure_rate() * 100.0
+                    ));
+                }
+            }
+        }
+
+        lines.join("\n")
     }
 
     /// Get the number of executions
@@ -1029,5 +1252,367 @@ mod tests {
         exec.complete("output".to_string(), Duration::from_millis(123));
 
         assert_eq!(exec.duration_ms(), Some(123));
+    }
+
+    // ==================== ToolStats utility method tests ====================
+
+    #[test]
+    fn test_tool_stats_avg_duration_ms() {
+        let mut stats = ToolStats::default();
+        stats.record(true, Duration::from_millis(100));
+        stats.record(true, Duration::from_millis(200));
+        stats.record(true, Duration::from_millis(300));
+
+        assert_eq!(stats.avg_duration_ms(), 200);
+    }
+
+    #[test]
+    fn test_tool_stats_avg_duration_ms_empty() {
+        let stats = ToolStats::default();
+        assert_eq!(stats.avg_duration_ms(), 0);
+    }
+
+    #[test]
+    fn test_tool_stats_total_duration_ms() {
+        let mut stats = ToolStats::default();
+        stats.record(true, Duration::from_millis(100));
+        stats.record(true, Duration::from_millis(200));
+        stats.record(false, Duration::from_millis(50));
+
+        assert_eq!(stats.total_duration_ms(), 350);
+    }
+
+    #[test]
+    fn test_tool_stats_failure_rate() {
+        let mut stats = ToolStats::default();
+        stats.record(true, Duration::from_millis(10));
+        stats.record(false, Duration::from_millis(10));
+        stats.record(false, Duration::from_millis(10));
+        stats.record(false, Duration::from_millis(10));
+
+        assert!((stats.failure_rate() - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_tool_stats_failure_rate_empty() {
+        let stats = ToolStats::default();
+        assert_eq!(stats.failure_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_tool_stats_all_succeeded() {
+        let mut stats = ToolStats::default();
+        stats.record(true, Duration::from_millis(10));
+        stats.record(true, Duration::from_millis(10));
+
+        assert!(stats.all_succeeded());
+
+        stats.record(false, Duration::from_millis(10));
+        assert!(!stats.all_succeeded());
+    }
+
+    #[test]
+    fn test_tool_stats_all_succeeded_empty() {
+        let stats = ToolStats::default();
+        // Empty stats should return false for all_succeeded
+        assert!(!stats.all_succeeded());
+    }
+
+    #[test]
+    fn test_tool_stats_has_failures() {
+        let mut stats = ToolStats::default();
+        assert!(!stats.has_failures());
+
+        stats.record(true, Duration::from_millis(10));
+        assert!(!stats.has_failures());
+
+        stats.record(false, Duration::from_millis(10));
+        assert!(stats.has_failures());
+    }
+
+    #[test]
+    fn test_tool_stats_merge() {
+        let mut stats1 = ToolStats::default();
+        stats1.record(true, Duration::from_millis(100));
+        stats1.record(true, Duration::from_millis(200));
+
+        let mut stats2 = ToolStats::default();
+        stats2.record(false, Duration::from_millis(50));
+        stats2.record(true, Duration::from_millis(150));
+
+        stats1.merge(&stats2);
+
+        assert_eq!(stats1.total, 4);
+        assert_eq!(stats1.successes, 3);
+        assert_eq!(stats1.failures, 1);
+        assert_eq!(stats1.total_duration_ms(), 500);
+    }
+
+    #[test]
+    fn test_tool_stats_summary() {
+        let mut stats = ToolStats::default();
+        stats.record(true, Duration::from_millis(100));
+        stats.record(true, Duration::from_millis(200));
+        stats.record(false, Duration::from_millis(50));
+
+        let summary = stats.summary();
+        assert!(summary.contains("2/3")); // 2 successes out of 3 total
+        assert!(summary.contains("66%")); // ~66% success rate
+    }
+
+    #[test]
+    fn test_tool_stats_to_json() {
+        let mut stats = ToolStats::default();
+        stats.record(true, Duration::from_millis(100));
+        stats.record(false, Duration::from_millis(50));
+
+        let json = stats.to_json();
+
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["successes"], 1);
+        assert_eq!(json["failures"], 1);
+        assert_eq!(json["total_duration_ms"], 150);
+        assert_eq!(json["avg_duration_ms"], 75);
+        assert!((json["success_rate"].as_f64().unwrap() - 0.5).abs() < 0.01);
+    }
+
+    // ==================== ToolHistory analysis method tests ====================
+
+    fn create_test_history() -> ToolHistory {
+        let mut history = ToolHistory::new(100);
+
+        // read: 5 calls, 4 success, avg 100ms
+        for i in 0..5 {
+            let id = format!("read-{}", i);
+            history.start(&id, "read", json!({}));
+            std::thread::sleep(Duration::from_millis(1)); // Simulate some time passing
+            if i < 4 {
+                history.complete(&id, "ok".to_string());
+            } else {
+                history.fail(&id, "error".to_string());
+            }
+        }
+
+        // write: 3 calls, 2 success, avg 200ms
+        for i in 0..3 {
+            let id = format!("write-{}", i);
+            history.start(&id, "write", json!({}));
+            std::thread::sleep(Duration::from_millis(2));
+            if i < 2 {
+                history.complete(&id, "ok".to_string());
+            } else {
+                history.fail(&id, "error".to_string());
+            }
+        }
+
+        // bash: 2 calls, 0 success (100% failure rate)
+        for i in 0..2 {
+            let id = format!("bash-{}", i);
+            history.start(&id, "bash", json!({}));
+            std::thread::sleep(Duration::from_millis(3));
+            history.fail(&id, "error".to_string());
+        }
+
+        history
+    }
+
+    #[test]
+    fn test_history_most_used_tools() {
+        let history = create_test_history();
+
+        let most_used = history.most_used_tools(10);
+        assert_eq!(most_used.len(), 3);
+
+        // read should be first (5 calls)
+        assert_eq!(most_used[0].0, "read");
+        assert_eq!(most_used[0].1.total, 5);
+
+        // write should be second (3 calls)
+        assert_eq!(most_used[1].0, "write");
+        assert_eq!(most_used[1].1.total, 3);
+
+        // bash should be third (2 calls)
+        assert_eq!(most_used[2].0, "bash");
+        assert_eq!(most_used[2].1.total, 2);
+    }
+
+    #[test]
+    fn test_history_most_used_tools_limit() {
+        let history = create_test_history();
+
+        let most_used = history.most_used_tools(2);
+        assert_eq!(most_used.len(), 2);
+        assert_eq!(most_used[0].0, "read");
+        assert_eq!(most_used[1].0, "write");
+    }
+
+    #[test]
+    fn test_history_slowest_tools() {
+        let history = create_test_history();
+
+        let slowest = history.slowest_tools(10);
+        assert_eq!(slowest.len(), 3);
+
+        // bash should be slowest (3ms sleep per call)
+        assert_eq!(slowest[0].0, "bash");
+
+        // write should be second (2ms sleep per call)
+        assert_eq!(slowest[1].0, "write");
+
+        // read should be fastest (1ms sleep per call)
+        assert_eq!(slowest[2].0, "read");
+    }
+
+    #[test]
+    fn test_history_fastest_tools() {
+        let history = create_test_history();
+
+        let fastest = history.fastest_tools(10);
+        assert_eq!(fastest.len(), 3);
+
+        // read should be fastest
+        assert_eq!(fastest[0].0, "read");
+
+        // write should be second
+        assert_eq!(fastest[1].0, "write");
+
+        // bash should be slowest
+        assert_eq!(fastest[2].0, "bash");
+    }
+
+    #[test]
+    fn test_history_most_failed_tools() {
+        let history = create_test_history();
+
+        let most_failed = history.most_failed_tools(10);
+        assert_eq!(most_failed.len(), 3);
+
+        // bash has 2 failures
+        assert_eq!(most_failed[0].0, "bash");
+        assert_eq!(most_failed[0].1.failures, 2);
+
+        // read and write each have 1 failure
+        assert!(most_failed[1].1.failures == 1);
+        assert!(most_failed[2].1.failures == 1);
+    }
+
+    #[test]
+    fn test_history_highest_failure_rate() {
+        let history = create_test_history();
+
+        // bash has 100% failure rate, write has 33%, read has 20%
+        let highest = history.highest_failure_rate(10, 1);
+        assert_eq!(highest.len(), 3);
+
+        // bash should be first (100% failure)
+        assert_eq!(highest[0].0, "bash");
+        assert!((highest[0].1.failure_rate() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_history_highest_failure_rate_min_calls() {
+        let history = create_test_history();
+
+        // With min_calls=3, bash (2 calls) should be excluded
+        let highest = history.highest_failure_rate(10, 3);
+        assert_eq!(highest.len(), 2);
+
+        // Only read and write should be included
+        let names: Vec<_> = highest.iter().map(|(n, _)| *n).collect();
+        assert!(!names.contains(&"bash"));
+    }
+
+    #[test]
+    fn test_history_total_execution_time() {
+        let history = create_test_history();
+
+        let total = history.total_execution_time();
+        // Should have some time recorded
+        assert!(total.as_millis() > 0);
+
+        let total_ms = history.total_execution_time_ms();
+        assert_eq!(total_ms, total.as_millis() as u64);
+    }
+
+    #[test]
+    fn test_history_stats_json() {
+        let history = create_test_history();
+
+        let json = history.stats_json();
+
+        assert!(json.get("global").is_some());
+        assert!(json.get("by_tool").is_some());
+        assert_eq!(json["total_executions"], 10);
+        assert_eq!(json["in_progress"], 0);
+        assert_eq!(json["tools_used"], 3);
+
+        let by_tool = json["by_tool"].as_object().unwrap();
+        assert!(by_tool.contains_key("read"));
+        assert!(by_tool.contains_key("write"));
+        assert!(by_tool.contains_key("bash"));
+    }
+
+    #[test]
+    fn test_history_stats_json_global() {
+        let history = create_test_history();
+
+        let json = history.stats_json();
+        let global = &json["global"];
+
+        assert_eq!(global["total"], 10);
+        assert_eq!(global["successes"], 6);
+        assert_eq!(global["failures"], 4);
+    }
+
+    #[test]
+    fn test_history_detailed_summary() {
+        let history = create_test_history();
+
+        let summary = history.detailed_summary();
+
+        // Check header
+        assert!(summary.contains("Tool Execution Statistics"));
+
+        // Check total
+        assert!(summary.contains("10 executions"));
+
+        // Check success rate
+        assert!(summary.contains("60.0%")); // 6/10 = 60%
+
+        // Check most used tools section
+        assert!(summary.contains("Most Used Tools"));
+        assert!(summary.contains("read"));
+        assert!(summary.contains("write"));
+
+        // Check slowest tools section
+        assert!(summary.contains("Slowest Tools"));
+        assert!(summary.contains("bash"));
+
+        // Check most failed tools section
+        assert!(summary.contains("Most Failed Tools"));
+    }
+
+    #[test]
+    fn test_history_detailed_summary_empty() {
+        let history = ToolHistory::new(100);
+
+        let summary = history.detailed_summary();
+
+        assert!(summary.contains("Tool Execution Statistics"));
+        assert!(summary.contains("0 executions"));
+        // Should not have tool sections when empty
+        assert!(!summary.contains("Most Used Tools"));
+    }
+
+    #[test]
+    fn test_history_analysis_empty() {
+        let history = ToolHistory::new(100);
+
+        assert!(history.most_used_tools(10).is_empty());
+        assert!(history.slowest_tools(10).is_empty());
+        assert!(history.fastest_tools(10).is_empty());
+        assert!(history.most_failed_tools(10).is_empty());
+        assert!(history.highest_failure_rate(10, 1).is_empty());
+        assert_eq!(history.total_execution_time_ms(), 0);
     }
 }
