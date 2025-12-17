@@ -238,6 +238,162 @@ RUST_BACKTRACE=1 ./target/debug/composer-tui
 RUST_LOG=debug ./target/debug/composer-tui 2> debug.log
 ```
 
+## Advanced Architecture Patterns
+
+### Agent Communication: Actor Model with Channels
+
+The agent uses a **channel-based actor model** with a lightweight handle and background task:
+
+```
+┌─────────────┐                              ┌────────────────────┐
+│   App/TUI   │ ── ToAgent ──► mpsc ──────► │ NativeAgentRunner  │
+│             │                              │   (tokio::spawn)   │
+│             │ ◄── FromAgent ── mpsc ◄──── │                    │
+└─────────────┘                              └────────────────────┘
+```
+
+**Key Types** (`agent/protocol.rs`):
+- `ToAgent`: `Prompt`, `ToolResponse`, `Cancel`, `SetModel`, `SetThinkingLevel`
+- `FromAgent`: `ResponseChunk`, `ToolCall`, `ResponseEnd`, `Error`, `Ready`
+
+**Why Unbounded Channels**: Commands are user-initiated (low volume), events are streamed but backpressure handled by TUI renderer. No risk of unbounded growth.
+
+### Tool Execution Flow
+
+```
+Agent Request
+    ↓
+ToolExecutor::execute()
+    ├─ Validate args against JSON Schema
+    ├─ Check approval (static or dynamic analysis)
+    └─ Route to implementation
+        ├─ BashTool → command analysis, timeout
+        ├─ ReadTool → line numbers, offset/limit
+        ├─ WriteTool → create dirs, write content
+        ├─ EditTool → exact string replacement
+        ├─ GlobTool → pattern matching
+        └─ GrepTool → ripgrep integration
+    ↓
+Emit events (ToolStart, ToolOutput, ToolEnd)
+    ↓
+Return ToolResult { success, output, error }
+```
+
+**Tool Result Caching** (`tools/cache.rs`):
+- LRU cache for read-only tools (read, glob, grep)
+- Excluded: bash, write, edit (side effects)
+- Configurable TTL and max entries
+
+### Safety Systems
+
+**Action Firewall** (`safety/`):
+- Path containment checks (no escaping workspace)
+- Dangerous pattern detection (regex-based)
+- Severity levels: Low, Medium, High, Critical
+- Returns `FirewallVerdict`: Block, RequireApproval, Allow
+
+**Doom Loop Detection** (`agent/safety.rs`):
+- Sliding window of recent tool calls
+- Detects repeated identical calls (same tool + args hash)
+- Blocks if threshold exceeded (default: 3 identical)
+- Prevents infinite retry loops
+
+**Rate Limiting**:
+- Per-tool rate limits with sliding time window
+- Prevents token waste and API throttling
+
+### Hooks System (`hooks/`)
+
+Multi-backend extensibility system:
+
+| Backend | Use Case | Implementation |
+|---------|----------|----------------|
+| **Rust traits** | Zero overhead, inline hooks | Direct trait impl |
+| **Lua scripts** | Lightweight scripting | `mlua` crate |
+| **WASM plugins** | Sandboxed, polyglot | WASM runtime |
+| **Node.js bridge** | TypeScript hook compat | IPC subprocess |
+
+**Hook Types**:
+- `PreToolUse` / `PostToolUse` - intercept/modify tool calls
+- `SessionStart` / `SessionEnd` - lifecycle hooks
+- `PreMessage` / `PostMessage` - message interception
+- `Overflow` - context overflow detection
+
+### Skills System (`skills/`)
+
+Dynamic capability activation without code changes:
+
+```rust
+pub struct SkillDefinition {
+    pub id: String,
+    pub name: String,
+    pub trigger_patterns: Vec<String>,      // Auto-activation
+    pub system_prompt_additions: String,    // Injected into prompt
+    pub provided_tools: Vec<ToolDef>,       // Additional tools
+}
+```
+
+**Activation**: Skills auto-activate via case-insensitive trigger matching on user input. Example: "frontend-design" skill activates on "build a landing page".
+
+### Swarm Mode (`swarm/`)
+
+Multi-agent orchestration for complex tasks:
+
+- `SwarmTask`: Individual task with dependencies
+- `SwarmPlan`: Task graph with topological ordering
+- `SwarmExecutor`: Parallel execution with dependency resolution
+
+**Plan Format**: Markdown-based natural language:
+```markdown
+[task-1] Set up project structure
+[task-2] Implement API routes (depends on: task-1)
+[task-3] Add tests (depends on: task-2)
+```
+
+### Configuration Layering (`config.rs`)
+
+Precedence (highest to lowest):
+1. CLI flags (`--model`, `--config key=value`)
+2. Environment variables (`COMPOSER_*`)
+3. Active profile settings
+4. Project config (`.composer/config.toml`)
+5. Global config (`~/.composer/config.toml`)
+6. Built-in defaults
+
+Uses `once_cell::sync::Lazy<RwLock<ComposerConfig>>` for thread-safe global state.
+
+### Session Format (`session/entries.rs`)
+
+Tagged enum with serde discriminator:
+
+```rust
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionEntry {
+    Session { id, timestamp, model, thinking_level, ... },
+    Message { timestamp, message },
+    ToolCall { call_id, tool, args },
+    ToolResult { call_id, output, is_error },
+    SessionMeta { title, tags },
+    ModelChange { old_model, new_model },
+    ThinkingLevelChange { level },
+    Compaction { reason },
+}
+```
+
+**Durability**: Append-only JSONL format. Each line is valid JSON. Crash-safe without transactions.
+
+## Module Scale Reference
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `app.rs` | ~2,700 | Main event loop |
+| `state.rs` | ~1,925 | Centralized state |
+| `sandbox.rs` | ~1,755 | Execution sandbox |
+| `agent/native.rs` | ~1,000 | Agent implementation |
+| `tools/registry.rs` | ~800 | Tool dispatch |
+| `config.rs` | ~1,500 | Configuration |
+| **Total** | ~28,000 | Full codebase |
+
 ## Known Issues / TODOs
 
 1. Multi-line input doesn't fully support cursor movement across wrapped lines yet
