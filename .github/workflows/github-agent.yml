@@ -50,29 +50,7 @@ jobs:
           ref: main  # Always work from main branch
           fetch-depth: 0  # Full history for proper git operations
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
-        with:
-          bun-version: 1.1.31
-
-      - name: Cache Bun
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Cache Nx
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: .nx/cache
-          key: ${{ runner.os }}-nx-${{ hashFiles('bun.lockb', 'nx.json', 'project.json', 'packages/**/project.json') }}
-          restore-keys: |
-            ${{ runner.os }}-nx-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - uses: ./.github/actions/setup-bun-nx
 
       - name: Build Composer
         run: npx nx run composer:build:all --skip-nx-cache

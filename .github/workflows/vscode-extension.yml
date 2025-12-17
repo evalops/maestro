@@ -39,26 +39,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
-        with:
-          bun-version: 1.1.31
-
-      - name: Cache Bun
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Cache Nx
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: .nx/cache
-          key: ${{ runner.os }}-nx-${{ hashFiles('bun.lockb', 'nx.json', 'project.json', 'packages/**/project.json') }}
-          restore-keys: |
-            ${{ runner.os }}-nx-
-
       - name: Determine and validate version
         id: version
         env:
@@ -85,8 +65,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Determined version: $VERSION"
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - uses: ./.github/actions/setup-bun-nx
 
       - name: Build extension (includes dependencies via Nx)
         run: npx nx run vscode-extension:build
@@ -134,20 +113,9 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
+      - uses: ./.github/actions/setup-bun-nx
         with:
-          bun-version: 1.1.31
-
-      - name: Cache Bun
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+          cache-nx: "false"
 
       - name: Download VSIX artifact
         uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8

@@ -29,17 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
-        with:
-          bun-version: 1.1.31
-
-      - name: Cache Bun
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+      - uses: ./.github/actions/setup-bun-nx
 
       - name: Ensure ripgrep
         run: |
@@ -48,8 +38,6 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y ripgrep
           fi
-
-      - run: bun install --frozen-lockfile
 
       - name: Cache pip
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
