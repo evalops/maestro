@@ -35,10 +35,12 @@
 //! ```
 
 use std::path::Path;
+use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
+use super::details::ImageDetails;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 
@@ -125,11 +127,15 @@ impl ImageTool {
 
     /// Read an image file and return base64-encoded data
     pub async fn read_image(&self, args: ReadImageArgs) -> ToolResult {
+        let start_time = Instant::now();
         let path = Path::new(&args.file_path);
 
         // Check if file exists
         if !path.exists() {
-            return ToolResult::failure(format!("Image file not found: {}", args.file_path));
+            let details = ImageDetails::from_file(&args.file_path)
+                .with_duration(start_time.elapsed().as_millis() as u64);
+            return ToolResult::failure(format!("Image file not found: {}", args.file_path))
+                .with_details(details.to_json());
         }
 
         // Determine MIME type from extension
@@ -141,13 +147,18 @@ impl ImageTool {
             Some("bmp") => "image/bmp",
             Some("svg") => "image/svg+xml",
             Some(ext) => {
+                let details = ImageDetails::from_file(&args.file_path)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
                 return ToolResult::failure(format!(
                     "Not an image file: .{} is not a supported image format. Use the 'read' tool for text files (.txt, .md, .rs, .json, etc). Supported image formats: PNG, JPEG, GIF, WebP, BMP, SVG",
                     ext
-                ));
+                )).with_details(details.to_json());
             }
             None => {
-                return ToolResult::failure("Could not determine image format from extension");
+                let details = ImageDetails::from_file(&args.file_path)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                return ToolResult::failure("Could not determine image format from extension")
+                    .with_details(details.to_json());
             }
         };
 
@@ -155,17 +166,26 @@ impl ImageTool {
         let data = match tokio::fs::read(path).await {
             Ok(data) => data,
             Err(e) => {
-                return ToolResult::failure(format!("Failed to read image: {}", e));
+                let details = ImageDetails::from_file(&args.file_path)
+                    .with_mime_type(mime_type)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                return ToolResult::failure(format!("Failed to read image: {}", e))
+                    .with_details(details.to_json());
             }
         };
 
         // Check file size
         if data.len() > MAX_IMAGE_SIZE {
+            let details = ImageDetails::from_file(&args.file_path)
+                .with_mime_type(mime_type)
+                .with_size(data.len() as u64)
+                .with_duration(start_time.elapsed().as_millis() as u64);
             return ToolResult::failure(format!(
                 "Image too large: {} bytes (max {} bytes)",
                 data.len(),
                 MAX_IMAGE_SIZE
-            ));
+            ))
+            .with_details(details.to_json());
         }
 
         // Encode to base64
@@ -196,6 +216,16 @@ impl ImageTool {
             "data_uri": data_uri,
         });
 
+        // Build ImageDetails
+        let mut details = ImageDetails::from_file(&args.file_path)
+            .with_mime_type(mime_type)
+            .with_size(data.len() as u64)
+            .with_base64_length(base64_data.len())
+            .with_duration(start_time.elapsed().as_millis() as u64);
+        if let Some((w, h)) = dimensions {
+            details = details.with_dimensions(w, h);
+        }
+
         ToolResult::success(format!(
             "Image loaded: {} ({} bytes){}\n\n{}",
             args.file_path,
@@ -203,10 +233,13 @@ impl ImageTool {
             dim_info,
             serde_json::to_string_pretty(&output).unwrap_or_default()
         ))
+        .with_details(details.to_json())
     }
 
     /// Capture a screenshot
     pub async fn screenshot(&self, args: ScreenshotArgs) -> ToolResult {
+        let start_time = Instant::now();
+
         // Apply delay if specified
         if let Some(delay) = args.delay_ms {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
@@ -237,13 +270,29 @@ impl ImageTool {
                     "data_uri": data_uri,
                 });
 
+                // Build ImageDetails for screenshot
+                let mut details = ImageDetails::screenshot()
+                    .with_mime_type(mime_type)
+                    .with_size(data.len() as u64)
+                    .with_base64_length(base64_data.len())
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                if let Some((w, h)) = dimensions {
+                    details = details.with_dimensions(w, h);
+                }
+
                 ToolResult::success(format!(
                     "Screenshot captured ({} bytes)\n\n{}",
                     data.len(),
                     serde_json::to_string_pretty(&output).unwrap_or_default()
                 ))
+                .with_details(details.to_json())
             }
-            Err(e) => ToolResult::failure(format!("Screenshot failed: {}", e)),
+            Err(e) => {
+                let details = ImageDetails::screenshot()
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                ToolResult::failure(format!("Screenshot failed: {}", e))
+                    .with_details(details.to_json())
+            }
         }
     }
 }
