@@ -2,10 +2,14 @@ name: Setup Bun + Nx
 description: Setup Bun, restore Bun/Nx caches, and optionally install dependencies.
 
 inputs:
-  node-version:
-    description: Node.js version to install
+  node-version-file:
+    description: Path to a Node version file (e.g. .node-version)
     required: false
-    default: "20"
+    default: ".node-version"
+  node-version:
+    description: Node.js version to install (used only if node-version-file is empty)
+    required: false
+    default: ""
   bun-version:
     description: Bun version to install
     required: false
@@ -30,7 +34,15 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+    - name: Setup Node (from version file)
+      if: ${{ inputs.node-version-file != '' }}
+      uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+      with:
+        node-version-file: ${{ inputs.node-version-file }}
+
+    - name: Setup Node (from explicit version)
+      if: ${{ inputs.node-version-file == '' }}
+      uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
       with:
         node-version: ${{ inputs.node-version }}
 
