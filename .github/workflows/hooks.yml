@@ -28,6 +28,7 @@ jobs:
   typescript-hooks:
     name: TypeScript Hook Tests
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -67,6 +68,7 @@ jobs:
   rust-hooks:
     name: Rust Hook Tests
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: packages/tui-rs
@@ -74,21 +76,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            packages/tui-rs/target
-          key: ${{ runner.os }}-cargo-hooks-${{ hashFiles('packages/tui-rs/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-hooks-
+          workspaces: packages/tui-rs -> target
 
       - name: Run hook integration tests
         run: cargo test --test hooks_integration --all-features -- --nocapture
@@ -124,6 +115,7 @@ jobs:
   hooks-parity:
     name: TypeScript/Rust Parity Check
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
     needs: [typescript-hooks, rust-hooks]
 
     steps:

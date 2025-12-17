@@ -25,6 +25,7 @@ concurrency:
 jobs:
   integration-tests:
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 45
     services:
       redis:
         image: redis:7-alpine

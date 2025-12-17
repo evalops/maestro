@@ -1,0 +1,66 @@
+name: Setup Rust
+description: Install Rust toolchain and restore Cargo caches.
+
+inputs:
+  toolchain:
+    description: Rust toolchain to install (e.g. stable, nightly, 1.89.0)
+    required: false
+    default: stable
+  components:
+    description: Comma-separated components to install (e.g. rustfmt, clippy)
+    required: false
+    default: ""
+  targets:
+    description: Comma-separated targets to install (e.g. wasm32-unknown-unknown)
+    required: false
+    default: ""
+  workspaces:
+    description: Rust-cache workspaces (newline-separated "$workspace -> $target")
+    required: false
+    default: ". -> target"
+  install-cargo-llvm-cov:
+    description: Whether to install cargo-llvm-cov (prebuilt)
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain (toolchain only)
+      if: ${{ inputs.components == '' && inputs.targets == '' }}
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      with:
+        toolchain: ${{ inputs.toolchain }}
+
+    - name: Install Rust toolchain (toolchain + components)
+      if: ${{ inputs.components != '' && inputs.targets == '' }}
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+
+    - name: Install Rust toolchain (toolchain + targets)
+      if: ${{ inputs.components == '' && inputs.targets != '' }}
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        targets: ${{ inputs.targets }}
+
+    - name: Install Rust toolchain (toolchain + components + targets)
+      if: ${{ inputs.components != '' && inputs.targets != '' }}
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - name: Cache Cargo
+      uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+      with:
+        workspaces: ${{ inputs.workspaces }}
+
+    - name: Install cargo-llvm-cov
+      if: ${{ inputs.install-cargo-llvm-cov == 'true' }}
+      uses: taiki-e/install-action@d850aa816998e5cf15f67a78c7b933f2a5033f8a # v2.63.3
+      with:
+        tool: cargo-llvm-cov
