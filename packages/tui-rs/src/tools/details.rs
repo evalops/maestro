@@ -446,6 +446,66 @@ impl WebFetchDetails {
     }
 }
 
+/// Detailed information about a glob/file search operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GlobDetails {
+    /// The glob pattern used
+    pub pattern: String,
+
+    /// Base path for the search
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_path: Option<String>,
+
+    /// Number of matches found
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matches_count: Option<usize>,
+
+    /// Whether results were truncated (hit the limit)
+    #[serde(default)]
+    pub truncated: bool,
+
+    /// Search duration in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+impl GlobDetails {
+    pub fn new(pattern: impl Into<String>) -> Self {
+        Self {
+            pattern: pattern.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_base_path(mut self, path: impl Into<String>) -> Self {
+        self.base_path = Some(path.into());
+        self
+    }
+
+    pub fn with_matches(mut self, count: usize) -> Self {
+        self.matches_count = Some(count);
+        self
+    }
+
+    pub fn with_truncation(mut self) -> Self {
+        self.truncated = true;
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
+
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+}
+
 /// Union type for tool details that can be stored in ToolResult.details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "tool_type", rename_all = "snake_case")]
@@ -456,6 +516,7 @@ pub enum ToolDetails {
     Edit(EditDetails),
     Image(ImageDetails),
     WebFetch(WebFetchDetails),
+    Glob(GlobDetails),
 }
 
 impl ToolDetails {
@@ -669,5 +730,53 @@ mod tests {
         assert_eq!(details.url, "https://test.com");
         assert_eq!(details.status_code, Some(404));
         assert!(details.truncated);
+    }
+
+    #[test]
+    fn test_glob_details_new() {
+        let details = GlobDetails::new("**/*.rs")
+            .with_base_path("/src")
+            .with_matches(42)
+            .with_duration(10);
+
+        assert_eq!(details.pattern, "**/*.rs");
+        assert_eq!(details.base_path, Some("/src".to_string()));
+        assert_eq!(details.matches_count, Some(42));
+        assert_eq!(details.duration_ms, Some(10));
+        assert!(!details.truncated);
+    }
+
+    #[test]
+    fn test_glob_details_truncated() {
+        let details = GlobDetails::new("*").with_matches(150).with_truncation();
+
+        assert!(details.truncated);
+        assert_eq!(details.matches_count, Some(150));
+    }
+
+    #[test]
+    fn test_glob_details_to_json() {
+        let details = GlobDetails::new("*.txt")
+            .with_base_path("/docs")
+            .with_matches(5);
+
+        let json = details.to_json();
+        assert_eq!(json["pattern"], "*.txt");
+        assert_eq!(json["base_path"], "/docs");
+        assert_eq!(json["matches_count"], 5);
+    }
+
+    #[test]
+    fn test_glob_details_from_json() {
+        let json = serde_json::json!({
+            "pattern": "**/*.md",
+            "matches_count": 10,
+            "truncated": false
+        });
+
+        let details = GlobDetails::from_json(&json).unwrap();
+        assert_eq!(details.pattern, "**/*.md");
+        assert_eq!(details.matches_count, Some(10));
+        assert!(!details.truncated);
     }
 }

@@ -99,7 +99,7 @@ use tokio::sync::mpsc;
 
 use super::bash::{BashArgs, BashTool};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
-use super::details::{EditDetails, ReadDetails, WriteDetails};
+use super::details::{EditDetails, GlobDetails, ReadDetails, WriteDetails};
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
@@ -743,6 +743,7 @@ impl ToolExecutor {
                 }
             }
             "glob" | "Glob" => {
+                let start_time = Instant::now();
                 let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
 
                 let base_path = args
@@ -760,15 +761,34 @@ impl ToolExecutor {
                 // Use native glob crate
                 match glob::glob(&full_pattern) {
                     Ok(paths) => {
-                        let matches: Vec<String> = paths
+                        let all_matches: Vec<String> = paths
                             .filter_map(|p| p.ok())
-                            .take(100)
                             .map(|p| p.display().to_string())
                             .collect();
 
-                        ToolResult::success(matches.join("\n"))
+                        let total_count = all_matches.len();
+                        let truncated = total_count > 100;
+                        let matches: Vec<String> = all_matches.into_iter().take(100).collect();
+
+                        let details = GlobDetails::new(pattern)
+                            .with_base_path(base_path)
+                            .with_matches(total_count)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        let details = if truncated {
+                            details.with_truncation()
+                        } else {
+                            details
+                        };
+
+                        ToolResult::success(matches.join("\n")).with_details(details.to_json())
                     }
-                    Err(e) => ToolResult::failure(format!("Glob error: {}", e)),
+                    Err(e) => {
+                        let details = GlobDetails::new(pattern)
+                            .with_base_path(base_path)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        ToolResult::failure(format!("Glob error: {}", e))
+                            .with_details(details.to_json())
+                    }
                 }
             }
             "grep" | "Grep" => {
