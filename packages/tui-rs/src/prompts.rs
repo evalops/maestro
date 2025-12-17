@@ -76,6 +76,9 @@ static NAMED_PLACEHOLDER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$([A-Z][A-Z0-9_]*)").unwrap());
 static POSITIONAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$[1-9]|\$ARGUMENTS").unwrap());
+/// Regex for parsing named arguments (KEY=value) from argument strings
+static NAMED_ARG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([A-Z][A-Z0-9_]*)=(.*)$").unwrap());
 
 /// Parse YAML frontmatter from markdown content.
 fn parse_frontmatter(content: &str) -> (HashMap<String, String>, &str) {
@@ -279,10 +282,8 @@ pub fn parse_args(arg_string: &str) -> ParsedArgs {
     }
 
     // Separate named and positional arguments
-    let named_re = Regex::new(r"^([A-Z][A-Z0-9_]*)=(.*)$").unwrap();
-
     for token in tokens {
-        if let Some(caps) = named_re.captures(&token) {
+        if let Some(caps) = NAMED_ARG_RE.captures(&token) {
             let key = caps.get(1).unwrap().as_str().to_string();
             let value = caps.get(2).unwrap().as_str().to_string();
             result.named.insert(key, value);

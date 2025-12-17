@@ -47,6 +47,55 @@ const MAX_BODY_SIZE: usize = 1_000_000;
 /// Maximum output size after processing (50KB)
 const MAX_OUTPUT_SIZE: usize = 50_000;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UTF-8 SAFE CASE-INSENSITIVE SEARCH
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Find a pattern case-insensitively, returning the byte position in the original string.
+///
+/// This is needed because `str.to_lowercase().find(pattern)` returns a byte position
+/// in the LOWERCASED string, which may differ from the original if non-ASCII characters
+/// change byte length when lowercased (e.g., Turkish "İ" -> "i").
+///
+/// This function returns the correct byte position in the original string.
+fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let needle_lower: String = needle.to_lowercase();
+    let needle_chars: Vec<char> = needle_lower.chars().collect();
+
+    if needle_chars.is_empty() {
+        return Some(0);
+    }
+
+    for (byte_pos, _) in haystack.char_indices() {
+        let remaining = &haystack[byte_pos..];
+        let mut matched = true;
+        let mut remaining_chars = remaining.chars();
+
+        for needle_char in &needle_chars {
+            match remaining_chars.next() {
+                Some(hay_char) => {
+                    // Compare lowercased characters
+                    let hay_lower = hay_char.to_lowercase().next().unwrap_or(hay_char);
+                    if hay_lower != *needle_char {
+                        matched = false;
+                        break;
+                    }
+                }
+                None => {
+                    matched = false;
+                    break;
+                }
+            }
+        }
+
+        if matched {
+            return Some(byte_pos);
+        }
+    }
+
+    None
+}
+
 /// Arguments for web fetch execution
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebFetchArgs {
@@ -317,8 +366,8 @@ fn remove_tag_with_content(html: &str, tag: &str) -> String {
     let open_tag = format!("<{}", tag);
     let close_tag = format!("</{}>", tag);
 
-    while let Some(start) = result.to_lowercase().find(&open_tag) {
-        if let Some(end_pos) = result[start..].to_lowercase().find(&close_tag) {
+    while let Some(start) = find_case_insensitive(&result, &open_tag) {
+        if let Some(end_pos) = find_case_insensitive(&result[start..], &close_tag) {
             let end = start + end_pos + close_tag.len();
             result = format!("{}{}", &result[..start], &result[end..]);
         } else {
@@ -336,11 +385,11 @@ fn convert_heading(html: &str, tag: &str, prefix: &str) -> String {
     let open_tag = format!("<{}", tag);
     let close_tag = format!("</{}>", tag);
 
-    while let Some(start) = result.to_lowercase().find(&open_tag) {
-        // Find the end of the opening tag
+    while let Some(start) = find_case_insensitive(&result, &open_tag) {
+        // Find the end of the opening tag (> is ASCII, so regular find is safe here)
         if let Some(tag_end) = result[start..].find('>') {
             let content_start = start + tag_end + 1;
-            if let Some(end_offset) = result[content_start..].to_lowercase().find(&close_tag) {
+            if let Some(end_offset) = find_case_insensitive(&result[content_start..], &close_tag) {
                 let content = &result[content_start..content_start + end_offset];
                 let replacement = format!("\n\n{} {}\n\n", prefix, content.trim());
                 let end = content_start + end_offset + close_tag.len();
@@ -367,7 +416,8 @@ fn convert_tag(html: &str, tag: &str, marker: &str) -> String {
 
     // Handle tags with attributes
     let open_pattern = format!("<{} ", tag);
-    while let Some(start) = result.to_lowercase().find(&open_pattern) {
+    while let Some(start) = find_case_insensitive(&result, &open_pattern) {
+        // > is ASCII, so regular find is safe after we have the correct start position
         if let Some(end) = result[start..].find('>') {
             result = format!(
                 "{}{}{}",
@@ -388,14 +438,14 @@ fn convert_links(html: &str) -> String {
     let mut result = html.to_string();
     let open_tag = "<a ";
 
-    while let Some(start) = result.to_lowercase().find(open_tag) {
-        // Find href
+    while let Some(start) = find_case_insensitive(&result, open_tag) {
+        // Find href (> is ASCII, so regular find is safe after correct start)
         let tag_content = &result[start..];
         if let Some(tag_end) = tag_content.find('>') {
             let tag_str = &tag_content[..tag_end];
 
-            // Extract href
-            let href = if let Some(href_start) = tag_str.to_lowercase().find("href=") {
+            // Extract href (href= is ASCII, safe to use find_case_insensitive)
+            let href = if let Some(href_start) = find_case_insensitive(tag_str, "href=") {
                 let href_content = &tag_str[href_start + 5..];
                 let quote_char = href_content.chars().next().unwrap_or('"');
                 if quote_char == '"' || quote_char == '\'' {
@@ -415,7 +465,7 @@ fn convert_links(html: &str) -> String {
 
             // Find closing tag
             let after_open = &result[start + tag_end + 1..];
-            if let Some(close_offset) = after_open.to_lowercase().find("</a>") {
+            if let Some(close_offset) = find_case_insensitive(after_open, "</a>") {
                 let link_text = &after_open[..close_offset];
                 let markdown_link = if href.is_empty() {
                     link_text.to_string()
@@ -602,5 +652,82 @@ mod tests {
             })
             .await;
         assert!(!result.success);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // UTF-8 SAFE CASE-INSENSITIVE SEARCH TESTS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_find_case_insensitive_ascii() {
+        assert_eq!(find_case_insensitive("Hello World", "world"), Some(6));
+        assert_eq!(find_case_insensitive("Hello World", "WORLD"), Some(6));
+        assert_eq!(find_case_insensitive("Hello World", "WoRlD"), Some(6));
+        assert_eq!(find_case_insensitive("Hello World", "xyz"), None);
+    }
+
+    #[test]
+    fn test_find_case_insensitive_empty() {
+        assert_eq!(find_case_insensitive("Hello", ""), Some(0));
+        assert_eq!(find_case_insensitive("", "hello"), None);
+        assert_eq!(find_case_insensitive("", ""), Some(0));
+    }
+
+    #[test]
+    fn test_find_case_insensitive_html_tags() {
+        // The main use case - finding HTML tags
+        assert_eq!(find_case_insensitive("<A HREF='x'>", "<a "), Some(0));
+        assert_eq!(find_case_insensitive("text<A HREF='x'>", "<a "), Some(4));
+        assert_eq!(find_case_insensitive("text</A>more", "</a>"), Some(4));
+    }
+
+    #[test]
+    fn test_find_case_insensitive_utf8_before_pattern() {
+        // This is the bug we fixed: non-ASCII chars before the pattern
+        // German text with ß (which stays ß when lowercased in Rust)
+        let html = "Größe<a href='x'>link</a>";
+        let pos = find_case_insensitive(html, "<a ");
+        assert!(pos.is_some());
+        // Verify we can actually slice at this position without panic
+        let slice = &html[pos.unwrap()..];
+        assert!(slice.starts_with("<a "));
+    }
+
+    #[test]
+    fn test_find_case_insensitive_utf8_multibyte() {
+        // Test with various multibyte UTF-8 characters
+        let html = "日本語<DIV>content</div>";
+        let pos = find_case_insensitive(html, "<div>");
+        assert!(pos.is_some());
+        let slice = &html[pos.unwrap()..];
+        assert!(slice.to_lowercase().starts_with("<div>"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_utf8_content() {
+        // Ensure HTML conversion works with UTF-8 content before tags
+        let html = "<p>Größenangabe</p><a href='x'>日本語リンク</a>";
+        let md = html_to_markdown(html);
+        assert!(md.contains("Größenangabe"));
+        assert!(md.contains("日本語リンク"));
+    }
+
+    #[test]
+    fn test_remove_tag_utf8_before_tag() {
+        // Test removing tags when UTF-8 appears before them
+        let html = "Ümläuts<script>evil()</script>after";
+        let result = remove_tag_with_content(html, "script");
+        assert!(result.contains("Ümläuts"));
+        assert!(result.contains("after"));
+        assert!(!result.contains("evil"));
+    }
+
+    #[test]
+    fn test_convert_links_utf8() {
+        // Test link conversion with UTF-8
+        let html = r#"Größe<a href="https://example.com">日本語</a>text"#;
+        let result = convert_links(html);
+        assert!(result.contains("[日本語](https://example.com)"));
+        assert!(result.contains("Größe"));
     }
 }

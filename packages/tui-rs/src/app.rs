@@ -158,7 +158,6 @@ pub struct App {
 
     /// Registry of all available slash commands.
     /// Wrapped in Arc for shared access from command palette.
-    #[allow(dead_code)]
     command_registry: Arc<CommandRegistry>,
 
     /// Fuzzy matcher for slash command completion.

@@ -6,8 +6,35 @@
 use anyhow::Result;
 use regex::Regex;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use super::types::{SwarmPlan, SwarmTask, TaskId, TaskPriority};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATIC REGEXES - compiled once, reused across all parse calls
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Regex for extracting title from first heading (multiline mode)
+static TITLE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^#\s+(.+)$").expect("valid title regex"));
+
+/// Regex for extracting goal/objective/purpose
+static GOAL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:goal|objective|purpose):\s*(.+?)(?:\n\n|\n#|$)").expect("valid goal regex")
+});
+
+/// Regex for extracting concurrency setting
+static CONCURRENCY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:concurrency|max[-_]?concurrent):\s*(\d+)").expect("valid concurrency regex")
+});
+
+/// Regex for parsing task items from markdown lists
+static TASK_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)^(?:\d+\.|[-*])\s*(?:\[([^\]]+)\])?\s*(.+?)(?:\s*\(depends?\s*(?:on)?:?\s*([^)]+)\))?$",
+    )
+    .expect("valid task regex")
+});
 
 /// Parse a plan from markdown text
 ///
@@ -33,15 +60,13 @@ use super::types::{SwarmPlan, SwarmTask, TaskId, TaskPriority};
 pub fn parse_plan(markdown: &str) -> Result<SwarmPlan> {
     let mut plan = SwarmPlan::default();
 
-    // Extract title from first heading (multiline mode for ^ to match line start)
-    let title_re = Regex::new(r"(?m)^#\s+(.+)$").unwrap();
-    if let Some(cap) = title_re.captures_iter(markdown).next() {
+    // Extract title from first heading
+    if let Some(cap) = TITLE_REGEX.captures_iter(markdown).next() {
         plan.title = cap[1].trim().to_string();
     }
 
     // Extract goal
-    let goal_re = Regex::new(r"(?i)(?:goal|objective|purpose):\s*(.+?)(?:\n\n|\n#|$)").unwrap();
-    if let Some(cap) = goal_re.captures(markdown) {
+    if let Some(cap) = GOAL_REGEX.captures(markdown) {
         plan.goal = cap[1].trim().to_string();
     }
 
@@ -50,8 +75,7 @@ pub fn parse_plan(markdown: &str) -> Result<SwarmPlan> {
     plan.tasks = tasks;
 
     // Extract concurrency setting if present
-    let concurrency_re = Regex::new(r"(?i)(?:concurrency|max[-_]?concurrent):\s*(\d+)").unwrap();
-    if let Some(cap) = concurrency_re.captures(markdown) {
+    if let Some(cap) = CONCURRENCY_REGEX.captures(markdown) {
         if let Ok(n) = cap[1].parse::<usize>() {
             plan.max_concurrency = n.max(1);
         }
@@ -64,20 +88,10 @@ pub fn parse_plan(markdown: &str) -> Result<SwarmPlan> {
 fn parse_tasks(markdown: &str) -> Result<Vec<SwarmTask>> {
     let mut tasks = Vec::new();
 
-    // Pattern for task items: numbered list with optional ID in brackets
-    // Examples:
-    // - 1. [task-1] Task title
-    // - 2. Task title (depends on: task-1)
-    // - - [setup] Setup task
-    let task_re = Regex::new(
-        r"(?m)^(?:\d+\.|[-*])\s*(?:\[([^\]]+)\])?\s*(.+?)(?:\s*\(depends?\s*(?:on)?:?\s*([^)]+)\))?$",
-    )
-    .unwrap();
-
     let mut task_id_counter = 0;
     let mut id_map: HashMap<String, TaskId> = HashMap::new();
 
-    for cap in task_re.captures_iter(markdown) {
+    for cap in TASK_REGEX.captures_iter(markdown) {
         let explicit_id = cap.get(1).map(|m| m.as_str().trim().to_string());
         let title = cap[2].trim().to_string();
         let deps_str = cap.get(3).map(|m| m.as_str());
