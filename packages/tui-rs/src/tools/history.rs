@@ -33,6 +33,10 @@ pub struct ToolExecution {
     /// Error message if failed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Structured execution details (timing, metadata, etc.)
+    /// This captures tool-specific metadata like exit codes, file sizes, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
     /// When execution started
     pub started_at: SystemTime,
     /// Execution duration
@@ -60,6 +64,7 @@ impl ToolExecution {
             output: None,
             success: false,
             error: None,
+            details: None,
             started_at: SystemTime::now(),
             duration: None,
             required_approval: false,
@@ -80,11 +85,47 @@ impl ToolExecution {
         self.duration = Some(duration);
     }
 
+    /// Complete the execution with structured details
+    pub fn complete_with_details(
+        &mut self,
+        output: String,
+        duration: Duration,
+        details: Option<serde_json::Value>,
+    ) {
+        self.output = Some(output);
+        self.success = true;
+        self.duration = Some(duration);
+        self.details = details;
+    }
+
     /// Complete the execution with an error
     pub fn fail(&mut self, error: String, duration: Duration) {
         self.error = Some(error);
         self.success = false;
         self.duration = Some(duration);
+    }
+
+    /// Complete the execution with an error and details
+    pub fn fail_with_details(
+        &mut self,
+        error: String,
+        duration: Duration,
+        details: Option<serde_json::Value>,
+    ) {
+        self.error = Some(error);
+        self.success = false;
+        self.duration = Some(duration);
+        self.details = details;
+    }
+
+    /// Set the execution details
+    pub fn set_details(&mut self, details: serde_json::Value) {
+        self.details = Some(details);
+    }
+
+    /// Get the execution details
+    pub fn get_details(&self) -> Option<&serde_json::Value> {
+        self.details.as_ref()
     }
 
     /// Set approval status
@@ -350,6 +391,29 @@ impl ToolHistory {
         }
     }
 
+    /// Record successful completion with structured details
+    pub fn complete_with_details(
+        &mut self,
+        id: &str,
+        output: String,
+        details: Option<serde_json::Value>,
+    ) {
+        let duration = self
+            .in_progress
+            .remove(id)
+            .map(|start| start.elapsed())
+            .unwrap_or(Duration::ZERO);
+
+        if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {
+            exec.complete_with_details(output, duration, details);
+
+            // Update stats
+            let tool_stats = self.stats.entry(exec.tool_name.clone()).or_default();
+            tool_stats.record(true, duration);
+            self.global_stats.record(true, duration);
+        }
+    }
+
     /// Record failed completion
     pub fn fail(&mut self, id: &str, error: String) {
         let duration = self
@@ -366,6 +430,44 @@ impl ToolHistory {
             tool_stats.record(false, duration);
             self.global_stats.record(false, duration);
         }
+    }
+
+    /// Record failed completion with structured details
+    pub fn fail_with_details(
+        &mut self,
+        id: &str,
+        error: String,
+        details: Option<serde_json::Value>,
+    ) {
+        let duration = self
+            .in_progress
+            .remove(id)
+            .map(|start| start.elapsed())
+            .unwrap_or(Duration::ZERO);
+
+        if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {
+            exec.fail_with_details(error, duration, details);
+
+            // Update stats
+            let tool_stats = self.stats.entry(exec.tool_name.clone()).or_default();
+            tool_stats.record(false, duration);
+            self.global_stats.record(false, duration);
+        }
+    }
+
+    /// Set details on an existing execution by ID
+    pub fn set_details(&mut self, id: &str, details: serde_json::Value) {
+        if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {
+            exec.set_details(details);
+        }
+    }
+
+    /// Get details from an execution by ID
+    pub fn get_details(&self, id: &str) -> Option<&serde_json::Value> {
+        self.executions
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| e.get_details())
     }
 
     /// Get all executions (most recent first)
@@ -610,5 +712,161 @@ mod tests {
         let exec = history.get("1").unwrap();
         assert!(exec.required_approval);
         assert_eq!(exec.approved, Some(true));
+    }
+
+    #[test]
+    fn test_execution_with_details() {
+        let mut exec = ToolExecution::start("1", "bash", json!({"command": "ls"}));
+        let details = json!({
+            "command": "ls",
+            "exit_code": 0,
+            "duration_ms": 50
+        });
+
+        exec.complete_with_details(
+            "file1\nfile2".to_string(),
+            Duration::from_millis(50),
+            Some(details.clone()),
+        );
+
+        assert!(exec.success);
+        assert_eq!(exec.output, Some("file1\nfile2".to_string()));
+        assert!(exec.details.is_some());
+
+        let exec_details = exec.get_details().unwrap();
+        assert_eq!(exec_details["exit_code"], 0);
+        assert_eq!(exec_details["command"], "ls");
+    }
+
+    #[test]
+    fn test_execution_fail_with_details() {
+        let mut exec = ToolExecution::start("1", "bash", json!({"command": "invalid"}));
+        let details = json!({
+            "command": "invalid",
+            "exit_code": 127,
+            "duration_ms": 10
+        });
+
+        exec.fail_with_details(
+            "command not found".to_string(),
+            Duration::from_millis(10),
+            Some(details.clone()),
+        );
+
+        assert!(!exec.success);
+        assert_eq!(exec.error, Some("command not found".to_string()));
+        assert!(exec.details.is_some());
+
+        let exec_details = exec.get_details().unwrap();
+        assert_eq!(exec_details["exit_code"], 127);
+    }
+
+    #[test]
+    fn test_history_complete_with_details() {
+        let mut history = ToolHistory::new(100);
+
+        history.start("1", "read", json!({"file_path": "/test.txt"}));
+
+        let details = json!({
+            "file_path": "/test.txt",
+            "bytes_read": 1024,
+            "lines_returned": 50
+        });
+
+        history.complete_with_details("1", "file contents".to_string(), Some(details));
+
+        let exec = history.get("1").unwrap();
+        assert!(exec.success);
+        assert!(exec.details.is_some());
+
+        let stored_details = history.get_details("1").unwrap();
+        assert_eq!(stored_details["bytes_read"], 1024);
+        assert_eq!(stored_details["lines_returned"], 50);
+    }
+
+    #[test]
+    fn test_history_fail_with_details() {
+        let mut history = ToolHistory::new(100);
+
+        history.start("1", "read", json!({"file_path": "/missing.txt"}));
+
+        let details = json!({
+            "file_path": "/missing.txt",
+            "error_code": "ENOENT"
+        });
+
+        history.fail_with_details("1", "file not found".to_string(), Some(details));
+
+        let exec = history.get("1").unwrap();
+        assert!(!exec.success);
+        assert!(exec.details.is_some());
+
+        let stored_details = history.get_details("1").unwrap();
+        assert_eq!(stored_details["error_code"], "ENOENT");
+    }
+
+    #[test]
+    fn test_history_set_and_get_details() {
+        let mut history = ToolHistory::new(100);
+
+        history.start("1", "glob", json!({"pattern": "*.rs"}));
+
+        // Set details after the fact
+        history.set_details(
+            "1",
+            json!({
+                "pattern": "*.rs",
+                "matches_count": 42,
+                "base_path": "/src"
+            }),
+        );
+
+        let details = history.get_details("1").unwrap();
+        assert_eq!(details["matches_count"], 42);
+        assert_eq!(details["base_path"], "/src");
+
+        // Complete the execution
+        history.complete("1", "found 42 files".to_string());
+
+        // Details should still be present
+        let exec = history.get("1").unwrap();
+        assert!(exec.success);
+        assert!(exec.details.is_some());
+    }
+
+    #[test]
+    fn test_details_serialization() {
+        let mut exec = ToolExecution::start("1", "image", json!({"path": "/screenshot.png"}));
+        let details = json!({
+            "path": "/screenshot.png",
+            "mime_type": "image/png",
+            "size_bytes": 50000,
+            "dimensions": {"width": 1920, "height": 1080}
+        });
+
+        exec.complete_with_details(
+            "base64...".to_string(),
+            Duration::from_millis(100),
+            Some(details),
+        );
+
+        // Test serialization round-trip
+        let serialized = serde_json::to_string(&exec).unwrap();
+        let deserialized: ToolExecution = serde_json::from_str(&serialized).unwrap();
+
+        assert!(deserialized.details.is_some());
+        let d = deserialized.details.unwrap();
+        assert_eq!(d["mime_type"], "image/png");
+        assert_eq!(d["dimensions"]["width"], 1920);
+    }
+
+    #[test]
+    fn test_details_none_not_serialized() {
+        let mut exec = ToolExecution::start("1", "read", json!({}));
+        exec.complete("content".to_string(), Duration::from_millis(10));
+
+        // Without details, should not have "details" key in JSON
+        let serialized = serde_json::to_string(&exec).unwrap();
+        assert!(!serialized.contains("\"details\""));
     }
 }
