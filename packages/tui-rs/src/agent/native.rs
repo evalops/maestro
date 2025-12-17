@@ -1136,24 +1136,38 @@ impl NativeAgentRunner {
                         // Check for context overflow
                         if matches!(stop_reason, Some(crate::ai::StopReason::MaxTokens)) {
                             eprintln!("[agent] Context overflow detected (MaxTokens)");
-                            // Check if compaction is needed and perform it
-                            if self.compactor.needs_compaction(&self.messages) {
-                                eprintln!("[agent] Performing context compaction...");
-                                let result = self.compactor.compact(&self.messages);
-                                if result.was_compacted() {
-                                    eprintln!(
-                                        "[agent] Compacted {} messages",
+                            // Use token-aware compaction that respects turn boundaries
+                            eprintln!("[agent] Performing context compaction...");
+                            let result = self.compactor.compact_with_tokens(&self.messages);
+                            if result.was_compacted() {
+                                let split_note = if result.was_turn_split() {
+                                    " (turn was split)"
+                                } else {
+                                    ""
+                                };
+                                eprintln!(
+                                    "[agent] Compacted {} messages{}",
+                                    result.compacted_count, split_note
+                                );
+                                self.messages = result.messages;
+                                // Notify the UI about compaction with details
+                                let status_msg = if let Some(ref cut_point) = result.cut_point {
+                                    format!(
+                                        "Context compacted: {} messages summarized (~{} tokens → ~{} tokens){}",
+                                        result.compacted_count,
+                                        cut_point.tokens_before,
+                                        cut_point.tokens_after,
+                                        split_note
+                                    )
+                                } else {
+                                    format!(
+                                        "Context compacted: {} messages summarized",
                                         result.compacted_count
-                                    );
-                                    self.messages = result.messages;
-                                    // Notify the UI about compaction
-                                    let _ = self.event_tx.send(FromAgent::Status {
-                                        message: format!(
-                                            "Context compacted: {} messages summarized",
-                                            result.compacted_count
-                                        ),
-                                    });
-                                }
+                                    )
+                                };
+                                let _ = self.event_tx.send(FromAgent::Status {
+                                    message: status_msg,
+                                });
                             }
                             // Hooks can also handle overflow
                             if self.hooks.handle_overflow() {

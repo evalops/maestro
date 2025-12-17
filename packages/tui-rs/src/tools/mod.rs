@@ -78,6 +78,7 @@
 mod bash;
 mod batch;
 mod cache;
+pub mod details;
 mod history;
 mod image;
 pub mod inline;
@@ -87,6 +88,7 @@ mod web_fetch;
 pub use bash::BashTool;
 pub use batch::{BatchConfig, BatchExecutor, BatchToolCall, BatchToolResult};
 pub use cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
+pub use details::{BashDetails, EditDetails, ReadDetails, ToolDetails, WriteDetails};
 pub use history::{HistoryFilter, ToolExecution, ToolHistory, ToolStats};
 pub use image::ImageTool;
 pub use inline::{
