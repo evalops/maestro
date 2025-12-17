@@ -36,6 +36,26 @@ run_attempt() {
 	return "$status"
 }
 
+append_failed_tasks_summary() {
+	local logfile="$1"
+
+	if [[ -z "${GITHUB_STEP_SUMMARY:-}" ]]; then
+		return 0
+	fi
+
+	{
+		echo ""
+		echo "### Failed tasks (from ${logfile})"
+		echo ""
+	} >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+	awk '
+		/^Failed tasks:/ { in_block=1; next }
+		in_block && /^[[:space:]]*-[[:space:]]/ { print $0; next }
+		in_block && NF==0 { exit }
+	' "$logfile" | sed 's/^/ /' >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+}
+
 if run_attempt 1; then
 	exit 0
 fi
@@ -48,6 +68,7 @@ if run_attempt 2; then
 		echo ""
 		echo "- Attempt 1: failed"
 		echo "- Attempt 2: passed"
+		append_failed_tasks_summary "nx-tests-attempt-1.log"
 		echo ""
 		echo "This indicates a flaky test/task. Please fix flakiness instead of relying on retries."
 	} >>"${GITHUB_STEP_SUMMARY:-/dev/null}" 2>/dev/null || true
@@ -55,5 +76,13 @@ if run_attempt 2; then
 	echo "::error::Nx tests passed on retry; flaky tests suspected"
 	exit 1
 fi
+
+{
+	echo "## Nx tests failed"
+	echo ""
+	echo "- Attempt 1: failed"
+	echo "- Attempt 2: failed"
+	append_failed_tasks_summary "nx-tests-attempt-2.log"
+} >>"${GITHUB_STEP_SUMMARY:-/dev/null}" 2>/dev/null || true
 
 exit 1
