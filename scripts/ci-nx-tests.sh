@@ -56,6 +56,30 @@ append_failed_tasks_summary() {
 	' "$logfile" | sed 's/^/ /' >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 }
 
+append_unhandled_error_summary() {
+	local logfile="$1"
+
+	if [[ -z "${GITHUB_STEP_SUMMARY:-}" ]]; then
+		return 0
+	fi
+
+	local start
+	start="$(grep -n "Unhandled Error" "$logfile" | head -n1 | cut -d: -f1 || true)"
+	if [[ -z "$start" ]]; then
+		return 0
+	fi
+
+	local end=$((start + 80))
+	{
+		echo ""
+		echo "### Unhandled error excerpt (from ${logfile})"
+		echo ""
+		echo '```text'
+		sed -n "${start},${end}p" "$logfile"
+		echo '```'
+	} >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+}
+
 if run_attempt 1; then
 	rm -f nx-tests-attempt-1.log || true
 	exit 0
@@ -70,6 +94,7 @@ if run_attempt 2; then
 		echo "- Attempt 1: failed"
 		echo "- Attempt 2: passed"
 		append_failed_tasks_summary "nx-tests-attempt-1.log"
+		append_unhandled_error_summary "nx-tests-attempt-1.log"
 		echo ""
 		echo "This indicates a flaky test/task. Please fix flakiness instead of relying on retries."
 	} >>"${GITHUB_STEP_SUMMARY:-/dev/null}" 2>/dev/null || true
@@ -84,6 +109,7 @@ fi
 	echo "- Attempt 1: failed"
 	echo "- Attempt 2: failed"
 	append_failed_tasks_summary "nx-tests-attempt-2.log"
+	append_unhandled_error_summary "nx-tests-attempt-2.log"
 } >>"${GITHUB_STEP_SUMMARY:-/dev/null}" 2>/dev/null || true
 
 exit 1

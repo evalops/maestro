@@ -21,7 +21,7 @@ jobs:
   canary:
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 75
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -30,15 +30,23 @@ jobs:
 
       - uses: ./.github/actions/setup-bun-nx
 
-      - name: Run test suite twice (flake canary)
+      - name: Run flake-prone tests twice
         run: |
           set -euo pipefail
+
+          files=(
+            test/tools/inline-tools.test.ts
+            test/tools/inline-tools-epipe.test.ts
+            test/tools/background-tasks.test.ts
+            test/tools/tools.test.ts
+            test/agent/auto-compaction.test.ts
+          )
 
           statuses=()
           for i in 1 2; do
             echo "=== Run ${i} ==="
             set +e
-            npx nx run composer:test --skip-nx-cache 2>&1 | tee "composer-test-run-${i}.log"
+            bunx vitest --run "${files[@]}" 2>&1 | tee "flaky-canary-run-${i}.log"
             status="${PIPESTATUS[0]}"
             set -e
             statuses+=("$status")
@@ -48,16 +56,16 @@ jobs:
           s2="${statuses[1]}"
 
           if [[ "$s1" -eq 0 && "$s2" -eq 0 ]]; then
-            echo "✅ composer:test passed twice"
+            echo "✅ flake-prone tests passed twice"
             exit 0
           fi
 
           if [[ "$s1" -ne 0 && "$s2" -ne 0 ]]; then
-            echo "::error::composer:test failed twice (consistent failure)"
+            echo "::error::flake-prone tests failed twice (consistent failure)"
             exit 1
           fi
 
-          echo "::error::composer:test was flaky (one pass, one fail)"
+          echo "::error::flake-prone tests were flaky (one pass, one fail)"
           exit 1
 
       - name: Upload logs (on failure)
@@ -65,5 +73,5 @@ jobs:
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: flaky-canary-logs-${{ github.run_id }}
-          path: composer-test-run-*.log
+          path: flaky-canary-run-*.log
           if-no-files-found: ignore
