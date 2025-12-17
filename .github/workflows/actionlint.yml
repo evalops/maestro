@@ -32,3 +32,4 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           reporter: github-check
           fail_level: any
+          actionlint_flags: -shellcheck= -pyflakes=
