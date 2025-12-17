@@ -124,13 +124,14 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use super::details::BashDetails;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 
@@ -629,11 +630,23 @@ impl BashTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Track execution timing
+        let start_time = Instant::now();
+        let cwd_string = self.cwd.clone();
+
         // Spawn process
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                return ToolResult::failure(format!("Failed to spawn process: {}", e));
+                let details = BashDetails::failed(&args.command, -1)
+                    .with_cwd(cwd_string.clone())
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                if let Some(ref desc) = args.description {
+                    return ToolResult::failure(format!("Failed to spawn process: {}", e))
+                        .with_details(details.with_description(desc).to_json());
+                }
+                return ToolResult::failure(format!("Failed to spawn process: {}", e))
+                    .with_details(details.to_json());
             }
         };
 
@@ -642,10 +655,17 @@ impl BashTool {
 
         // If running in background, return immediately
         if args.run_in_background {
+            let mut details = BashDetails::background(&args.command, child_pid.unwrap_or(0))
+                .with_cwd(cwd_string.clone())
+                .with_duration(start_time.elapsed().as_millis() as u64);
+            if let Some(ref desc) = args.description {
+                details = details.with_description(desc);
+            }
             return ToolResult::success(format!(
                 "Command started in background (PID: {:?})",
                 child_pid
-            ));
+            ))
+            .with_details(details.to_json());
         }
 
         // Wait for completion with timeout
@@ -703,25 +723,30 @@ impl BashTool {
                 }
 
                 // Handle large output: write to temp file and tail-truncate
-                let (final_output, truncation_notice) = if output.len() > MAX_OUTPUT_SIZE
+                let (final_output, truncation_notice, was_truncated, temp_file_path) = if output
+                    .len()
+                    > MAX_OUTPUT_SIZE
                     || output.lines().count() > MAX_OUTPUT_LINES
                 {
                     // Write full output to temp file for agent access
                     let temp_path = get_temp_file_path();
-                    let temp_file_notice = match std::fs::write(&temp_path, &output) {
-                        Ok(()) => Some(format!("Full output saved to: {}", temp_path.display())),
+                    let (temp_file_notice, saved_path) = match std::fs::write(&temp_path, &output) {
+                        Ok(()) => (
+                            Some(format!("Full output saved to: {}", temp_path.display())),
+                            Some(temp_path.display().to_string()),
+                        ),
                         Err(e) => {
                             // Log but don't fail the command
                             eprintln!("Failed to write temp output file: {}", e);
-                            None
+                            (None, None)
                         }
                     };
 
                     // Tail-truncate: keep the most recent output
-                    let (truncated, was_truncated, stats) =
+                    let (truncated, truncated_flag, stats) =
                         truncate_output_tail(&output, MAX_OUTPUT_SIZE, MAX_OUTPUT_LINES);
 
-                    let notice = match (was_truncated, stats, temp_file_notice) {
+                    let notice = match (truncated_flag, stats, temp_file_notice) {
                         (true, Some(stats), Some(temp_notice)) => {
                             Some(format!("{}\n{}", stats, temp_notice))
                         }
@@ -730,9 +755,9 @@ impl BashTool {
                         _ => None,
                     };
 
-                    (truncated, notice)
+                    (truncated, notice, truncated_flag, saved_path)
                 } else {
-                    (output, None)
+                    (output, None, false, None)
                 };
 
                 // Build final output with truncation notice
@@ -742,6 +767,24 @@ impl BashTool {
                 };
 
                 let exit_code = status.code().unwrap_or(-1);
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+
+                // Build BashDetails with all metadata
+                let mut details = if status.success() {
+                    BashDetails::success(&args.command)
+                } else {
+                    BashDetails::failed(&args.command, exit_code)
+                };
+                details = details
+                    .with_cwd(cwd_string.clone())
+                    .with_duration(duration_ms);
+                if was_truncated {
+                    details = details.with_truncation(temp_file_path);
+                }
+                if let Some(ref desc) = args.description {
+                    details = details.with_description(desc);
+                }
+
                 ToolResult {
                     success: status.success(),
                     output: output_with_notice,
@@ -750,13 +793,27 @@ impl BashTool {
                     } else {
                         Some(format!("Exit code: {}", exit_code))
                     },
-                    details: None, // BashDetails can be added by caller if needed
+                    details: Some(details.to_json()),
                 }
             }
             Ok((Err(e), _, _)) | Ok((_, Err(e), _)) => {
-                ToolResult::failure(format!("IO error: {}", e))
+                let mut details = BashDetails::failed(&args.command, -1)
+                    .with_cwd(cwd_string.clone())
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                if let Some(ref desc) = args.description {
+                    details = details.with_description(desc);
+                }
+                ToolResult::failure(format!("IO error: {}", e)).with_details(details.to_json())
             }
-            Ok((_, _, Err(e))) => ToolResult::failure(format!("Process error: {}", e)),
+            Ok((_, _, Err(e))) => {
+                let mut details = BashDetails::failed(&args.command, -1)
+                    .with_cwd(cwd_string.clone())
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                if let Some(ref desc) = args.description {
+                    details = details.with_description(desc);
+                }
+                ToolResult::failure(format!("Process error: {}", e)).with_details(details.to_json())
+            }
             Err(_) => {
                 // Timeout - kill the entire process tree to avoid orphan processes
                 // This is important for commands like `npm run dev` that spawn children
@@ -766,7 +823,14 @@ impl BashTool {
                     // Fallback to direct kill if PID not available
                     let _ = child.kill().await;
                 }
+                let mut details = BashDetails::failed(&args.command, 124) // 124 = timeout exit code
+                    .with_cwd(cwd_string)
+                    .with_duration(timeout_ms); // We know it hit the timeout
+                if let Some(ref desc) = args.description {
+                    details = details.with_description(desc);
+                }
                 ToolResult::failure(format!("Command timed out after {}ms", timeout_ms))
+                    .with_details(details.to_json())
             }
         }
     }
@@ -1456,5 +1520,100 @@ mod tests {
 
         assert!(result.success);
         assert!(result.output.trim().contains("2"));
+    }
+
+    // ============================================================
+    // BashDetails Integration Tests
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_bash_details_populated_on_success() {
+        let tool = BashTool::new(".");
+        let result = tool
+            .execute(BashArgs {
+                command: "echo hello".to_string(),
+                timeout: None,
+                description: Some("Test command".to_string()),
+                run_in_background: false,
+            })
+            .await;
+
+        assert!(result.success);
+        assert!(result.details.is_some());
+
+        let details = BashDetails::from_json(&result.details.unwrap()).unwrap();
+        assert_eq!(details.command, "echo hello");
+        assert_eq!(details.exit_code, 0);
+        assert!(details.duration_ms.is_some());
+        assert!(details.cwd.is_some());
+        assert_eq!(details.description, Some("Test command".to_string()));
+        assert!(!details.truncated);
+        assert!(!details.background);
+    }
+
+    #[tokio::test]
+    async fn test_bash_details_populated_on_failure() {
+        let tool = BashTool::new(".");
+        let result = tool
+            .execute(BashArgs {
+                command: "exit 42".to_string(),
+                timeout: None,
+                description: None,
+                run_in_background: false,
+            })
+            .await;
+
+        assert!(!result.success);
+        assert!(result.details.is_some());
+
+        let details = BashDetails::from_json(&result.details.unwrap()).unwrap();
+        assert_eq!(details.command, "exit 42");
+        assert_eq!(details.exit_code, 42);
+        assert!(details.duration_ms.is_some());
+        assert!(!details.succeeded());
+    }
+
+    #[tokio::test]
+    async fn test_bash_details_populated_on_timeout() {
+        let tool = BashTool::new(".");
+        let result = tool
+            .execute(BashArgs {
+                command: "sleep 10".to_string(),
+                timeout: Some(100), // 100ms timeout
+                description: Some("Should timeout".to_string()),
+                run_in_background: false,
+            })
+            .await;
+
+        assert!(!result.success);
+        assert!(result.details.is_some());
+
+        let details = BashDetails::from_json(&result.details.unwrap()).unwrap();
+        assert_eq!(details.command, "sleep 10");
+        assert_eq!(details.exit_code, 124); // Timeout exit code
+        assert!(details.duration_ms.is_some());
+        assert_eq!(details.description, Some("Should timeout".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_bash_details_populated_background() {
+        let tool = BashTool::new(".");
+        let result = tool
+            .execute(BashArgs {
+                command: "sleep 1".to_string(),
+                timeout: None,
+                description: Some("Background task".to_string()),
+                run_in_background: true,
+            })
+            .await;
+
+        assert!(result.success);
+        assert!(result.details.is_some());
+
+        let details = BashDetails::from_json(&result.details.unwrap()).unwrap();
+        assert_eq!(details.command, "sleep 1");
+        assert!(details.background);
+        assert!(details.pid.is_some());
+        assert_eq!(details.description, Some("Background task".to_string()));
     }
 }
