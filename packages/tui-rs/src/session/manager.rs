@@ -355,8 +355,9 @@ impl SessionInfo {
                 return title.clone();
             }
             if let Some(ref summary) = meta.summary {
-                if summary.len() > 50 {
-                    return format!("{}...", &summary[..47]);
+                let chars: Vec<char> = summary.chars().collect();
+                if chars.len() > 50 {
+                    return format!("{}...", chars[..47].iter().collect::<String>());
                 }
                 return summary.clone();
             }

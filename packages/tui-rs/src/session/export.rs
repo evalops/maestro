@@ -336,9 +336,10 @@ impl<'a> SessionExporter<'a> {
                 let status = if *is_error { "Error" } else { "Result" };
                 writeln!(md, "### {} {}\n", tool_name, status).unwrap();
                 writeln!(md, "```").unwrap();
-                // Truncate long outputs
-                let truncated = if content.len() > 500 {
-                    format!("{}...(truncated)", &content[..500])
+                // Truncate long outputs (using chars to handle UTF-8 safely)
+                let chars: Vec<char> = content.chars().collect();
+                let truncated = if chars.len() > 500 {
+                    format!("{}...(truncated)", chars[..500].iter().collect::<String>())
                 } else {
                     content.clone()
                 };

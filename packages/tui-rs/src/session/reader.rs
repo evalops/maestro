@@ -370,8 +370,9 @@ impl ParsedSession {
         self.first_user_message()
             .map(|s| {
                 let s = s.trim();
-                if s.len() > 50 {
-                    format!("{}...", &s[..47])
+                let chars: Vec<char> = s.chars().collect();
+                if chars.len() > 50 {
+                    format!("{}...", chars[..47].iter().collect::<String>())
                 } else {
                     s.to_string()
                 }

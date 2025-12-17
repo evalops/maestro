@@ -92,11 +92,12 @@ impl ToolExecution {
         self.approved = Some(approved);
     }
 
-    /// Get a preview of the output (truncated)
+    /// Get a preview of the output (truncated, UTF-8 safe)
     pub fn output_preview(&self, max_len: usize) -> Option<String> {
         self.output.as_ref().map(|o| {
-            if o.len() > max_len {
-                format!("{}...", &o[..max_len])
+            let chars: Vec<char> = o.chars().collect();
+            if chars.len() > max_len {
+                format!("{}...", chars[..max_len].iter().collect::<String>())
             } else {
                 o.clone()
             }

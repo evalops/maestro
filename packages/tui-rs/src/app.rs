@@ -1246,8 +1246,9 @@ Add the required fields and retry.",
                 {
                     match self.clipboard.copy(&msg.content) {
                         Ok(_) => {
-                            let preview = if msg.content.len() > 50 {
-                                format!("{}...", &msg.content[..47])
+                            let chars: Vec<char> = msg.content.chars().collect();
+                            let preview = if chars.len() > 50 {
+                                format!("{}...", chars[..47].iter().collect::<String>())
                             } else {
                                 msg.content.clone()
                             };
@@ -1282,8 +1283,9 @@ Add the required fields and retry.",
                         MessageRole::User => "User",
                         MessageRole::Assistant => "Assistant",
                     };
-                    let preview = if msg.content.len() > 100 {
-                        format!("{}...", &msg.content[..97])
+                    let chars: Vec<char> = msg.content.chars().collect();
+                    let preview = if chars.len() > 100 {
+                        format!("{}...", chars[..97].iter().collect::<String>())
                     } else {
                         msg.content.clone()
                     };
@@ -1427,8 +1429,9 @@ Add the required fields and retry.",
 
                 let mut msg = String::from("## Recent Prompts\n\n");
                 for (i, entry) in recent.iter().enumerate() {
-                    let preview = if entry.prompt.len() > 60 {
-                        format!("{}...", &entry.prompt[..57])
+                    let chars: Vec<char> = entry.prompt.chars().collect();
+                    let preview = if chars.len() > 60 {
+                        format!("{}...", chars[..57].iter().collect::<String>())
                     } else {
                         entry.prompt.clone()
                     };
@@ -1445,8 +1448,9 @@ Add the required fields and retry.",
 
                 let mut msg = format!("## Search Results for '{}'\n\n", query);
                 for (i, m) in results.matches.iter().take(10).enumerate() {
-                    let preview = if m.entry.prompt.len() > 60 {
-                        format!("{}...", &m.entry.prompt[..57])
+                    let chars: Vec<char> = m.entry.prompt.chars().collect();
+                    let preview = if chars.len() > 60 {
+                        format!("{}...", chars[..57].iter().collect::<String>())
                     } else {
                         m.entry.prompt.clone()
                     };
@@ -1791,8 +1795,9 @@ Add the required fields and retry.",
                 {
                     match self.clipboard.copy(&msg.content) {
                         Ok(_) => {
-                            let preview = if msg.content.len() > 50 {
-                                format!("{}...", &msg.content[..47])
+                            let chars: Vec<char> = msg.content.chars().collect();
+                            let preview = if chars.len() > 50 {
+                                format!("{}...", chars[..47].iter().collect::<String>())
                             } else {
                                 msg.content.clone()
                             };
@@ -2506,8 +2511,9 @@ mod tests {
     #[test]
     fn test_message_content_preview() {
         let long_content = "a".repeat(200);
-        let preview = if long_content.len() > 100 {
-            format!("{}...", &long_content[..97])
+        let chars: Vec<char> = long_content.chars().collect();
+        let preview = if chars.len() > 100 {
+            format!("{}...", chars[..97].iter().collect::<String>())
         } else {
             long_content.clone()
         };

@@ -221,8 +221,9 @@ impl SessionMetadata {
     pub fn set_title_from_prompt(&mut self, content: &str) {
         if self.title.is_none() {
             let title = content.lines().next().unwrap_or(content);
-            let title = if title.len() > 80 {
-                format!("{}...", &title[..77])
+            let chars: Vec<char> = title.chars().collect();
+            let title = if chars.len() > 80 {
+                format!("{}...", chars[..77].iter().collect::<String>())
             } else {
                 title.to_string()
             };
