@@ -94,6 +94,16 @@ export class Editor implements Component {
 	private preferredCol: number | null = null;
 	// Simple kill buffer for yank-after-kill flows
 	private killBuffer = "";
+	private killRing: string[] = [];
+	private killRingIndex = 0;
+	private lastYankRange: {
+		startLine: number;
+		startCol: number;
+		endLine: number;
+		endCol: number;
+	} | null = null;
+	private lastCommandWasYank = false;
+	private static readonly MAX_KILL_RING_ENTRIES = 10;
 
 	// Prompt history for up/down navigation (separate from undo/redo)
 	private promptHistory: string[] = [];
@@ -249,6 +259,11 @@ export class Editor implements Component {
 		}
 
 		let data = this.normalizeArrowInput(inputData);
+		const isYankKey = data === "\x1by";
+		if (!isYankKey) {
+			this.lastYankRange = null;
+			this.lastCommandWasYank = false;
+		}
 		// Handle bracketed paste mode
 		// Start of paste: \x1b[200~
 		// End of paste: \x1b[201~
@@ -662,7 +677,16 @@ export class Editor implements Component {
 		}
 	}
 
-	insertText(text: string): void {
+	insertText(text: string, options?: { skipHistory?: boolean }): void {
+		this.insertTextInternal(text, {
+			skipHistory: options?.skipHistory ?? false,
+		});
+	}
+
+	private insertTextInternal(
+		text: string,
+		options: { skipHistory: boolean },
+	): void {
 		if (!text) return;
 
 		// Normalize line breaks so we can treat "\n" uniformly.
@@ -671,12 +695,14 @@ export class Editor implements Component {
 
 		// Fast path: single-line insert
 		if (parts.length === 1) {
-			this.insertCharacter(parts[0], { skipHistory: false });
+			this.insertCharacter(parts[0], { skipHistory: options.skipHistory });
 			return;
 		}
 
 		// Multi-line insert (also used for yanking a newline)
-		this.saveToHistory();
+		if (!options.skipHistory) {
+			this.saveToHistory();
+		}
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		const beforeCursor = currentLine.slice(0, this.state.cursorCol);
 		const afterCursor = currentLine.slice(this.state.cursorCol);
@@ -895,12 +921,71 @@ export class Editor implements Component {
 		}
 	}
 
+	private recordKill(text: string): void {
+		this.killBuffer = text;
+		if (!text) return;
+
+		// Keep most-recent-first, avoid consecutive duplicates
+		if (this.killRing[0] !== text) {
+			this.killRing.unshift(text);
+			if (this.killRing.length > Editor.MAX_KILL_RING_ENTRIES) {
+				this.killRing.length = Editor.MAX_KILL_RING_ENTRIES;
+			}
+		}
+		this.killRingIndex = 0;
+		this.lastYankRange = null;
+		this.lastCommandWasYank = false;
+	}
+
+	private replaceRangeWithText(
+		range: {
+			startLine: number;
+			startCol: number;
+			endLine: number;
+			endCol: number;
+		},
+		replacement: string,
+	): { endLine: number; endCol: number } {
+		this.promptHistoryIndex = -1; // Exit history browsing mode
+		this.saveToHistory();
+
+		const lines = this.state.lines;
+		const startLine = Math.max(0, Math.min(range.startLine, lines.length - 1));
+		const endLine = Math.max(0, Math.min(range.endLine, lines.length - 1));
+		const startCol = Math.max(0, range.startCol);
+		const endCol = Math.max(0, range.endCol);
+
+		const startText = lines[startLine] || "";
+		const endText = lines[endLine] || "";
+
+		const before = startText.slice(0, startCol);
+		const after = endText.slice(endCol);
+
+		const newLines: string[] = [];
+		for (let i = 0; i < startLine; i++) newLines.push(lines[i] || "");
+		newLines.push(before + after);
+		for (let i = endLine + 1; i < lines.length; i++)
+			newLines.push(lines[i] || "");
+
+		this.state.lines = newLines.length > 0 ? newLines : [""];
+		this.state.cursorLine = startLine;
+		this.state.cursorCol = startCol;
+		this.preferredCol = this.state.cursorCol;
+
+		this.insertTextInternal(replacement, { skipHistory: true });
+
+		return {
+			endLine: this.state.cursorLine,
+			endCol: this.state.cursorCol,
+		};
+	}
+
 	private deleteToStartOfLine(): void {
 		this.saveToHistory();
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		if (this.state.cursorCol > 0) {
 			// Delete from start of line up to cursor
-			this.killBuffer = currentLine.slice(0, this.state.cursorCol);
+			this.recordKill(currentLine.slice(0, this.state.cursorCol));
 			this.state.lines[this.state.cursorLine] = currentLine.slice(
 				this.state.cursorCol,
 			);
@@ -908,7 +993,7 @@ export class Editor implements Component {
 		} else if (this.state.cursorLine > 0) {
 			// At start of line - merge with previous line
 			const previousLine = this.state.lines[this.state.cursorLine - 1] || "";
-			this.killBuffer = "\n";
+			this.recordKill("\n");
 			this.state.lines[this.state.cursorLine - 1] = previousLine + currentLine;
 			this.state.lines.splice(this.state.cursorLine, 1);
 			this.state.cursorLine--;
@@ -924,7 +1009,7 @@ export class Editor implements Component {
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		if (this.state.cursorCol < currentLine.length) {
 			// Delete from cursor to end of line
-			this.killBuffer = currentLine.slice(this.state.cursorCol);
+			this.recordKill(currentLine.slice(this.state.cursorCol));
 			this.state.lines[this.state.cursorLine] = currentLine.slice(
 				0,
 				this.state.cursorCol,
@@ -932,7 +1017,7 @@ export class Editor implements Component {
 		} else if (this.state.cursorLine < this.state.lines.length - 1) {
 			// At end of line - merge with next line
 			const nextLine = this.state.lines[this.state.cursorLine + 1] || "";
-			this.killBuffer = "\n";
+			this.recordKill("\n");
 			this.state.lines[this.state.cursorLine] = currentLine + nextLine;
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
@@ -953,7 +1038,7 @@ export class Editor implements Component {
 				this.state.lines.splice(this.state.cursorLine, 1);
 				this.state.cursorLine--;
 				this.state.cursorCol = previousLine.length;
-				this.killBuffer = "\n";
+				this.recordKill("\n");
 			}
 		} else {
 			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
@@ -988,7 +1073,7 @@ export class Editor implements Component {
 			this.state.lines[this.state.cursorLine] =
 				currentLine.slice(0, deleteFrom) +
 				currentLine.slice(this.state.cursorCol);
-			this.killBuffer = currentLine.slice(deleteFrom, this.state.cursorCol);
+			this.recordKill(currentLine.slice(deleteFrom, this.state.cursorCol));
 			this.state.cursorCol = deleteFrom;
 		}
 		if (this.onChange) {
@@ -1073,8 +1158,44 @@ export class Editor implements Component {
 	}
 
 	private yankKillBuffer(): void {
-		if (!this.killBuffer) return;
-		this.insertText(this.killBuffer);
+		if (this.killRing.length === 0 && !this.killBuffer) return;
+		if (this.killRing.length === 0 && this.killBuffer) {
+			this.recordKill(this.killBuffer);
+		}
+		if (this.killRing.length === 0) return;
+
+		// Yank-pop: if the last command was a yank and we still know what range we inserted,
+		// cycle through the ring by replacing that range in-place.
+		if (
+			this.lastCommandWasYank &&
+			this.lastYankRange &&
+			this.killRing.length > 1
+		) {
+			this.killRingIndex = (this.killRingIndex + 1) % this.killRing.length;
+			const next = this.killRing[this.killRingIndex] || "";
+			const end = this.replaceRangeWithText(this.lastYankRange, next);
+			this.lastYankRange = {
+				startLine: this.lastYankRange.startLine,
+				startCol: this.lastYankRange.startCol,
+				endLine: end.endLine,
+				endCol: end.endCol,
+			};
+			this.lastCommandWasYank = true;
+			return;
+		}
+
+		// Normal yank: insert most recent kill.
+		this.killRingIndex = 0;
+		const startLine = this.state.cursorLine;
+		const startCol = this.state.cursorCol;
+		this.insertTextInternal(this.killRing[0] || "", { skipHistory: false });
+		this.lastYankRange = {
+			startLine,
+			startCol,
+			endLine: this.state.cursorLine,
+			endCol: this.state.cursorCol,
+		};
+		this.lastCommandWasYank = true;
 	}
 	private moveCursor(deltaLine: number, deltaCol: number): void {
 		if (deltaLine !== 0) {
