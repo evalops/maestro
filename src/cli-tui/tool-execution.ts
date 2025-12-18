@@ -70,9 +70,15 @@ export class ToolExecutionComponent extends Container {
 	/** Skeleton shimmer animation state */
 	private skeletonFrame = 0;
 	private skeletonTimer: NodeJS.Timeout | null = null;
+	private readonly animate: boolean;
 
-	constructor(toolName: string, args: Record<string, unknown>) {
+	constructor(
+		toolName: string,
+		args: Record<string, unknown>,
+		options: { disableAnimations?: boolean } = {},
+	) {
 		super();
+		this.animate = !options.disableAnimations;
 		this.toolName = toolName;
 		this.args = args;
 		this.partialArgs = args;
@@ -88,7 +94,9 @@ export class ToolExecutionComponent extends Container {
 		this.addChild(this.bottomLine);
 		this.renderer = createToolRenderer(this.toolName);
 		this.updateDisplay();
-		this.startSkeletonAnimation();
+		if (this.animate) {
+			this.startSkeletonAnimation();
+		}
 	}
 
 	private startSkeletonAnimation(): void {
@@ -221,7 +229,7 @@ export class ToolExecutionComponent extends Container {
 		this.stopSkeletonAnimation();
 
 		// Trigger border flash on completion
-		if (wasRunning) {
+		if (wasRunning && this.animate) {
 			this.triggerFlash(result.isError ? "error" : "success");
 		} else {
 			this.updateDisplay();

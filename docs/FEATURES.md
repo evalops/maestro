@@ -30,6 +30,10 @@ See [Tools Reference](TOOLS_REFERENCE.md) for every command and flag. Availabili
 - Footer shows cwd, token usage, prompt queue depth, plan hints, and bash mode state.
 - Use `/files` or `@` search to jump to files without leaving the chat.
 
+### Accessibility / reduced motion
+- Set `COMPOSER_REDUCED_MOTION=1` to reduce animated UI elements (auto-enabled by default on SSH/tmux/screen).
+- Set `COMPOSER_DISABLE_ANIMATIONS=1` to hard-disable all TUI animations (spinners, typing dots, shimmer effects).
+
 ### Bash mode
 Prefix a message with `!` to enter persistent bash mode.
 - Inputs go straight to your shell (`cd` is handled as a builtin that tracks cwd).

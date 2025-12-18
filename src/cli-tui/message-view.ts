@@ -17,6 +17,7 @@ interface MessageViewOptions {
 	toolComponents: Set<ToolExecutionComponent>;
 	pendingTools: Map<string, ToolExecutionComponent>;
 	registerToolComponent: (component: ToolExecutionComponent) => void;
+	disableAnimations?: boolean;
 	getZenMode?: () => boolean;
 	getHideThinkingBlocks?: () => boolean;
 }
@@ -82,13 +83,19 @@ export class MessageView {
 			const messageToRender = this.shouldHideThinkingBlocks()
 				? { ...renderable, thinkingBlocks: [] }
 				: renderable;
-			const assistantComponent = new AssistantMessageComponent(messageToRender);
+			const assistantComponent = new AssistantMessageComponent(
+				messageToRender,
+				{
+					disableAnimations: this.options.disableAnimations,
+				},
+			);
 			this.options.chatContainer.addChild(assistantComponent);
 			this.messageCount++;
 			for (const toolCall of renderable.toolCalls) {
 				const component = new ToolExecutionComponent(
 					toolCall.name,
 					toolCall.arguments,
+					{ disableAnimations: this.options.disableAnimations },
 				);
 				this.options.chatContainer.addChild(component);
 				this.options.registerToolComponent(component);

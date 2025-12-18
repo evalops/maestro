@@ -22,6 +22,7 @@ export class AssistantMessageComponent extends Container {
 	private typingFrame = 0;
 	private typingTimer: NodeJS.Timeout | null = null;
 	private isStreaming = false;
+	private readonly animate: boolean;
 
 	// Track existing components for incremental updates during streaming
 	private textMarkdowns: Markdown[] = [];
@@ -30,8 +31,12 @@ export class AssistantMessageComponent extends Container {
 	private statusText: Text | null = null;
 	private topSpacer: Spacer | null = null;
 
-	constructor(message?: RenderableAssistantMessage) {
+	constructor(
+		message?: RenderableAssistantMessage,
+		options: { disableAnimations?: boolean } = {},
+	) {
 		super();
+		this.animate = !options.disableAnimations;
 		this.contentContainer = new Container();
 
 		// Header with minimal style; updated per message to reflect cleaning state
@@ -68,6 +73,13 @@ export class AssistantMessageComponent extends Container {
 
 		this.typingIndicator = new Text(this.buildTypingLine(), 1, 0);
 		this.contentContainer.addChild(this.typingIndicator);
+
+		// Reduced motion / accessibility: render a static indicator and skip timers.
+		if (!this.animate) {
+			this.typingFrame = 2; // "···"
+			this.typingIndicator.setText(this.buildTypingLine());
+			return;
+		}
 
 		this.typingTimer = setInterval(() => {
 			this.typingFrame = (this.typingFrame + 1) % TYPING_FRAMES.length;

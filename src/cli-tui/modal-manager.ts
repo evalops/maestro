@@ -92,6 +92,7 @@ export class ModalManager {
 		private readonly container: Container,
 		private readonly ui: TUI,
 		private readonly defaultComponent: Component,
+		private readonly options: { onLayoutChange?: () => void } = {},
 	) {}
 
 	/**
@@ -179,6 +180,7 @@ export class ModalManager {
 		const active = this.getActiveModal() ?? this.defaultComponent;
 		this.container.addChild(active);
 		this.ui.setFocus(active);
+		this.options.onLayoutChange?.();
 		this.ui.requestRender();
 	}
 }

@@ -17,6 +17,7 @@ export function createToolingViews(params: {
 	uiStateCompactTools?: boolean;
 	pendingTools: Map<string, ToolExecutionComponent>;
 	lowBandwidth: LowBandwidthConfig;
+	disableAnimations?: boolean;
 	getCleanMode: () => CleanMode;
 	getHideThinkingBlocks: () => boolean;
 	loaderView: LoaderView;
@@ -41,6 +42,7 @@ export function createToolingViews(params: {
 		uiStateCompactTools,
 		pendingTools,
 		lowBandwidth,
+		disableAnimations,
 		getCleanMode,
 		getHideThinkingBlocks,
 		loaderView,
@@ -71,12 +73,14 @@ export function createToolingViews(params: {
 		registerToolComponent: (component) =>
 			toolOutputView.registerToolComponent(component),
 		getHideThinkingBlocks,
+		disableAnimations,
 	});
 
 	const streamingView = new StreamingView({
 		chatContainer,
 		pendingTools,
 		toolOutputView,
+		disableAnimations,
 		lowBandwidth,
 		getCleanMode,
 		getHideThinkingBlocks,

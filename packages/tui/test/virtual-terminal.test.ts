@@ -160,6 +160,50 @@ describe("VirtualTerminal", () => {
 			expect(lines[1].trim()).toBe("");
 			expect(lines[2].trim()).toBe("");
 		});
+
+		it("preserves scrollback on full re-render (no \\x1b[3J)", async () => {
+			// Pre-populate scrollback with a marker line.
+			term.start(
+				() => {},
+				() => {},
+			);
+			term.write(
+				[
+					"SCROLLBACK_MARKER",
+					"line2",
+					"line3",
+					"line4",
+					"line5",
+					"line6",
+					"line7",
+					"line8",
+					"line9",
+					"line10",
+					"line11",
+					"line12",
+				].join("\r\n"),
+			);
+			await term.flush();
+
+			// Sanity check: marker should exist in the full buffer.
+			expect(term.getScrollBuffer().join("\n")).toContain("SCROLLBACK_MARKER");
+
+			const tui = new TUI(term, defaultFeatures);
+			tui.addChild(new Text("Hello World", 0, 0));
+			tui.start();
+
+			// Initial render happens on nextTick
+			await new Promise((r) => process.nextTick(r));
+			await term.flush();
+
+			// Trigger a full re-render via width change.
+			term.resize(41, 10);
+			await new Promise((r) => process.nextTick(r));
+			await term.flush();
+
+			// Marker should still be present (scrollback preserved).
+			expect(term.getScrollBuffer().join("\n")).toContain("SCROLLBACK_MARKER");
+		});
 	});
 
 	describe("screen buffer operations", () => {

@@ -172,6 +172,9 @@ export class SlashHintController {
 		}
 		this.debounceTimeout = setTimeout(() => {
 			this.refreshSlashHint();
+			// The hint bar can change height (0 ↔ 1–2 lines). Ensure we repaint even if
+			// the user pauses typing so the UI stays within the viewport.
+			this.callbacks.requestRender();
 		}, 30);
 	}
 

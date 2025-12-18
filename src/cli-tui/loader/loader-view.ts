@@ -13,6 +13,8 @@ interface LoaderViewOptions {
 	footer: FooterComponent;
 	lowColor?: boolean;
 	lowUnicode?: boolean;
+	disableAnimations?: boolean;
+	onLayoutChange?: () => void;
 }
 
 export class LoaderView {
@@ -118,6 +120,7 @@ export class LoaderView {
 	private setIdlePlaceholder(): void {
 		this.clearStatus();
 		this.options.statusContainer.addChild(this.idlePlaceholder);
+		this.options.onLayoutChange?.();
 	}
 
 	private clearStatus(): void {
@@ -160,7 +163,9 @@ export class LoaderView {
 			mode: "compact",
 			lowColor: this.options.lowColor,
 			lowUnicode: this.options.lowUnicode,
+			animate: !this.options.disableAnimations,
 		});
 		this.options.statusContainer.addChild(this.loader);
+		this.options.onLayoutChange?.();
 	}
 }

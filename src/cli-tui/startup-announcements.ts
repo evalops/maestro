@@ -13,6 +13,7 @@ export type StartupAnnouncementsOptions = {
 	startupChangelogSummary?: string | null;
 	modelScope: RegisteredModel[];
 	renderSuggestion?: string;
+	onLayoutChange?: () => void;
 };
 
 export function renderStartupAnnouncements({
@@ -23,6 +24,7 @@ export function renderStartupAnnouncements({
 	startupChangelogSummary,
 	modelScope,
 	renderSuggestion = "/review src/cli-tui/tui-renderer.ts — summarize rendering flow",
+	onLayoutChange,
 }: StartupAnnouncementsOptions): void {
 	container.clear();
 	let announced = false;
@@ -83,8 +85,10 @@ export function renderStartupAnnouncements({
 	}
 
 	if (announced) {
+		onLayoutChange?.();
 		ui.requestRender();
 	} else {
 		container.clear();
+		onLayoutChange?.();
 	}
 }

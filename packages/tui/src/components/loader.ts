@@ -99,6 +99,8 @@ interface LoaderOptions {
 	lowUnicode?: boolean;
 	/** Spinner animation style */
 	spinner?: SpinnerStyle;
+	/** Disable animation timers (useful for reduced motion / accessibility) */
+	animate?: boolean;
 }
 
 /**
@@ -190,6 +192,9 @@ export class Loader extends Text {
 	/** Whether to use ASCII-only characters */
 	private readonly lowUnicode: boolean;
 
+	/** Whether animations are enabled */
+	private readonly animate: boolean;
+
 	/**
 	 * Creates a new Loader instance.
 	 *
@@ -207,6 +212,7 @@ export class Loader extends Text {
 		this.lowColor = Boolean(options.lowColor);
 		this.lowUnicode = Boolean(options.lowUnicode);
 		this.spinnerStyle = options.spinner ?? "braille";
+		this.animate = options.animate ?? true;
 		this.start();
 	}
 
@@ -227,6 +233,7 @@ export class Loader extends Text {
 	 */
 	start(): void {
 		this.updateDisplay();
+		if (!this.animate) return;
 		const frames = SPINNERS[this.spinnerStyle];
 		this.intervalId = setInterval(() => {
 			this.progressOffset = (this.progressOffset + 1) % frames.length;

@@ -301,11 +301,15 @@ export class TUI extends Container {
 			const height = this.terminal.rows;
 			const lines = render(width, height);
 			let buffer = this.syncOutput ? "\x1b[?2026h" : "";
-			buffer += "\x1b[3J\x1b[2J\x1b[H";
+			// Clear only what's needed: home, clear+rewrite lines, then clear the remainder.
+			// Avoids blank-frame flashes when synchronized output is unavailable.
+			buffer += "\x1b[H";
 			for (let i = 0; i < lines.length; i++) {
 				if (i > 0) buffer += "\r\n";
+				buffer += "\x1b[2K";
 				buffer += lines[i];
 			}
+			buffer += "\x1b[J";
 			if (this.syncOutput) buffer += "\x1b[?2026l";
 			this.terminal.write(buffer);
 			this.requestRender();
@@ -454,11 +458,9 @@ export class TUI extends Container {
 		// between previousLines and newLines. We MUST do a full re-render.
 		const overflowChanged = isOverflowing !== this.overflowedLastRender;
 
-		// If content shrinks, stale lines would remain visible without full clear
-		const lineCountDecreased = newLines.length < this.previousLines.length;
-
-		const shouldFullRender =
-			widthChanged || overflowChanged || lineCountDecreased;
+		// Shrinking content can be handled in the differential path (we clear stale
+		// lines there). Avoid full clears unless layout invariants break.
+		const shouldFullRender = widthChanged || overflowChanged;
 
 		// Never throttle when overflow changes - the index mismatch makes
 		// differential rendering produce garbled output (see class docstring).
@@ -478,7 +480,7 @@ export class TUI extends Container {
 			this.terminal.write(buffer);
 
 			// After rendering N lines, cursor is at end of last line (line N-1)
-			this.cursorRow = newLines.length - 1;
+			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.previousLines = newLines;
 			this.previousWidth = width;
 			this.overflowedLastRender = isOverflowing;
@@ -489,19 +491,24 @@ export class TUI extends Container {
 		// ─────────────────────────────────────────────────────────────────────────
 		// RENDER PATH B: Full re-render (layout changed significantly)
 		// ─────────────────────────────────────────────────────────────────────────
-		// Clear entire screen and scrollback, then redraw everything.
-		// Required when: width changed, overflow state changed, or content shrunk.
+		// Redraw the full viewport from home (without clearing scrollback).
+		// Required when: width changed or overflow state changed.
 		if (shouldFullRender && !overflowRerenderThrottled) {
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
-			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
+			// Home, clear+rewrite each line, then clear the remainder.
+			// This avoids nuking scrollback and reduces blank-frame flashes when
+			// synchronized output is unavailable.
+			buffer += "\x1b[H";
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
+				buffer += "\x1b[2K";
 				buffer += newLines[i];
 			}
+			buffer += "\x1b[J";
 			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
 
-			this.cursorRow = newLines.length - 1;
+			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.previousLines = newLines;
 			this.previousWidth = width;
 			this.overflowedLastRender = isOverflowing;
@@ -543,15 +550,17 @@ export class TUI extends Container {
 		if (firstChanged < viewportTop) {
 			// First change is above viewport - fall back to full re-render
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
-			buffer += "\x1b[3J\x1b[2J\x1b[H"; // Clear scrollback, screen, and home
+			buffer += "\x1b[H";
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
+				buffer += "\x1b[2K";
 				buffer += newLines[i];
 			}
+			buffer += "\x1b[J";
 			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
 
-			this.cursorRow = newLines.length - 1;
+			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.previousLines = newLines;
 			this.previousWidth = width;
 			this.overflowedLastRender = isOverflowing;
@@ -574,9 +583,14 @@ export class TUI extends Container {
 		// Step C5: Clear and write each changed line
 		// We clear each line individually (not cursor-to-end) to avoid
 		// visual flashes in buffered terminals like xterm.js over SSH.
-		for (let i = firstChanged; i < newLines.length; i++) {
+		const renderEnd = Math.max(newLines.length, this.previousLines.length);
+		for (let i = firstChanged; i < renderEnd; i++) {
 			if (i > firstChanged) buffer += "\r\n";
 			buffer += "\x1b[2K"; // Clear current line before writing
+			if (i >= newLines.length) {
+				// Clear stale line (content shrank); nothing to write.
+				continue;
+			}
 			let line = newLines[i];
 			// Safety fallback: if a line somehow exceeds width after wrapping,
 			// truncate it gracefully instead of crashing. This shouldn't happen
@@ -588,16 +602,15 @@ export class TUI extends Container {
 			buffer += line;
 		}
 
-		// Step C6: Clean up stale lines if content shrunk
-		// If previous render had more lines, those old lines are still on screen.
-		// Move down to each stale line and clear it, then move back up.
-		if (this.previousLines.length > newLines.length) {
-			const extraLines = this.previousLines.length - newLines.length;
-			for (let i = newLines.length; i < this.previousLines.length; i++) {
-				buffer += "\r\n\x1b[2K"; // Move to next line and clear it
+		// If we cleared stale lines beyond the new content, move the cursor back up
+		// to the last actual content line (or row 0 if the frame is empty).
+		const targetCursorRow = Math.max(0, newLines.length - 1);
+		if (renderEnd > 0) {
+			const endRow = renderEnd - 1;
+			const moveUp = endRow - targetCursorRow;
+			if (moveUp > 0) {
+				buffer += `\x1b[${moveUp}A`; // CSI n A = Cursor Up n lines
 			}
-			// Move cursor back up to the last actual content line
-			buffer += `\x1b[${extraLines}A`; // CSI n A = Cursor Up n lines
 		}
 
 		if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
@@ -606,8 +619,8 @@ export class TUI extends Container {
 		// Write entire buffer atomically to minimize visual artifacts
 		this.terminal.write(buffer);
 
-		// Update cursor tracking - cursor ends at the last line we wrote
-		this.cursorRow = newLines.length - 1;
+		// Update cursor tracking - cursor ends at the last line of content (or row 0 if empty)
+		this.cursorRow = Math.max(0, newLines.length - 1);
 		this.previousLines = newLines;
 		this.previousWidth = width;
 		this.overflowedLastRender = isOverflowing;

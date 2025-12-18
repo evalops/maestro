@@ -53,6 +53,8 @@ Components return an array of strings, each representing a terminal line. The TU
 
 The core innovation is differential rendering - only changed lines are redrawn:
 
+Terminal rendering is constrained by the VT100 model: there’s only a **viewport** (a fixed-size grid the app can write to) and an emulator-managed **scrollback buffer** (which apps can’t modify). If the UI spills into scrollback, updates often require heavy-handed redraws that look like flicker. For an excellent deep dive (and motivation for many of these design choices), see: https://github.com/anthropics/claude-code/issues/769#issuecomment-3667315590
+
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ 1. RENDER: Components produce string[] lines                      │
@@ -65,7 +67,7 @@ The core innovation is differential rendering - only changed lines are redrawn:
 ├──────────────────────────────────────────────────────────────────┤
 │ 5. OUTPUT: Choose strategy based on what changed                  │
 │    - First render: write all lines                                │
-│    - Full re-render: clear screen + write all                     │
+│    - Full re-render: home, clear+rewrite viewport, clear remainder │
 │    - Differential: move cursor, update only changed lines         │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -75,12 +77,13 @@ The core innovation is differential rendering - only changed lines are redrawn:
 ```typescript
 // Full re-render required when:
 const shouldFullRender =
-  widthChanged ||           // Terminal resized horizontally
-  overflowChanged ||        // Went from non-clipped to clipped (or vice versa)
-  lineCountDecreased;       // Fewer lines than before (stale content)
+  widthChanged ||           // Terminal resized horizontally (re-wrapping changes layout)
+  overflowChanged;          // Went from non-clipped to clipped (or vice versa)
 ```
 
 **Critical Invariant**: When overflow state changes, line indices shift. `previousLines[0]` might have been "actual line 0" but `newLines[0]` is now "actual line 5" after clipping. Differential rendering would compare wrong content, so we must do a full re-render.
+
+When content shrinks (fewer rendered lines), we avoid a full clear: the differential path clears any stale lines below the new content, which prevents disruptive flashes in terminals that don’t support synchronized output.
 
 ### Terminal Abstraction
 

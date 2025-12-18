@@ -165,6 +165,7 @@ import {
 } from "./utils/footer-utils.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
+import { areAnimationsDisabled } from "../config/env-vars.js";
 import { validateFrameworkPreference } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
@@ -384,6 +385,22 @@ export class TuiRenderer {
 	private updateNotice?: UpdateCheckResult | null;
 	private startupWarnings: FooterHint[] = [];
 	private modalManager: ModalManager;
+	private readonly viewportLayout = {
+		columns: 0,
+		header: 0,
+		startup: 0,
+		status: 0,
+		editor: 0,
+		footer: 0,
+	};
+	private readonly viewportDirty = {
+		header: true,
+		startup: true,
+		status: true,
+		editor: true,
+		footer: true,
+	};
+	private appliedChatViewportHeight = 0;
 	private terminalCapabilities: TerminalCapabilities =
 		getTerminalCapabilities();
 	private terminalFeatures = detectTerminalFeatures();
@@ -454,6 +471,9 @@ export class TuiRenderer {
 							this.footer?.setMode(this.footerMode);
 						}
 					}
+					this.viewportDirty.header = true;
+					this.viewportDirty.footer = true;
+					this.updateScrollViewport();
 				},
 				onFooterModeChange: (mode) => {
 					this.footerMode = mode;
@@ -461,6 +481,8 @@ export class TuiRenderer {
 					if (!this.isAgentRunning) {
 						this.refreshFooterHint();
 					}
+					this.viewportDirty.footer = true;
+					this.updateScrollViewport();
 				},
 				onHideThinkingBlocksChange: (hidden) => {
 					this.hideThinkingBlocks = hidden;
@@ -507,10 +529,6 @@ export class TuiRenderer {
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
 		this.configureRenderThrottle();
-		this.refreshTerminalCapabilities();
-
-		this.resizeHandler = () => this.refreshTerminalCapabilities();
-		process.stdout.on("resize", this.resizeHandler);
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
@@ -518,7 +536,8 @@ export class TuiRenderer {
 		this.scrollContainer = new ScrollContainer(this.chatContainer, {
 			stickyScroll: true,
 			showIndicator: true,
-			reservedLines: 6, // Header, status, editor, footer
+			// We dynamically compute viewport height based on non-chat components.
+			reservedLines: 0,
 			onScroll: () => this.ui.requestRender(),
 		});
 		this.statusContainer = new Container();
@@ -549,6 +568,12 @@ export class TuiRenderer {
 			this.editorContainer,
 			this.ui,
 			this.editor,
+			{
+				onLayoutChange: () => {
+					this.viewportDirty.editor = true;
+					this.updateScrollViewport();
+				},
+			},
 		);
 		this.footer = new FooterComponent(agent.state, this.footerMode);
 		this.footer.startBranchTracking(() => this.ui.requestRender());
@@ -557,6 +582,12 @@ export class TuiRenderer {
 			ui: this.ui,
 			footer: this.footer,
 		});
+
+		// Now that all core layout containers exist, compute the initial viewport
+		// sizing and wire resize handling.
+		this.refreshTerminalCapabilities();
+		this.resizeHandler = () => this.refreshTerminalCapabilities();
+		process.stdout.on("resize", this.resizeHandler);
 
 		this.queueController = createQueueController({
 			agent: this.agent,
@@ -611,6 +642,11 @@ export class TuiRenderer {
 			footer: this.footer,
 			lowColor: this.terminalFeatures.lowColor,
 			lowUnicode: this.terminalFeatures.lowUnicode,
+			disableAnimations: this.shouldDisableAnimations(),
+			onLayoutChange: () => {
+				this.viewportDirty.status = true;
+				this.updateScrollViewport();
+			},
 		});
 		const planSubsystem = createPlanSubsystem({
 			filePath: TODO_STORE_PATH,
@@ -731,6 +767,7 @@ export class TuiRenderer {
 			uiStateCompactTools: this.uiState.compactTools,
 			pendingTools: this.pendingTools,
 			lowBandwidth: this.lowBandwidthConfig,
+			disableAnimations: this.shouldDisableAnimations(),
 			getCleanMode: () => this.cleanMode,
 			getHideThinkingBlocks: () => this.hideThinkingBlocks,
 			loaderView: this.loaderView,
@@ -1264,7 +1301,13 @@ export class TuiRenderer {
 			},
 			callbacks: {
 				persistUiState: (extra) => this.persistUiState(extra),
-				requestRender: () => this.ui.requestRender(),
+				requestRender: () => {
+					// Slash hint updates can change editorContainer height (0 ↔ 1–2 lines).
+					// Keep the scroll viewport sized so we never spill into scrollback.
+					this.viewportDirty.editor = true;
+					this.updateScrollViewport({ fast: true });
+					this.ui.requestRender();
+				},
 			},
 			initialRecentCommands: this.recentCommands,
 			initialFavoriteCommands: this.favoriteCommands,
@@ -1295,6 +1338,17 @@ export class TuiRenderer {
 			editor: this.editor,
 			defaultAutocomplete: autocompleteProvider,
 		});
+
+		// Keep the chat viewport within the terminal viewport. We recompute on
+		// editor changes (including paste/history/backspace) so wrapping changes
+		// don't push the UI into scrollback for a frame.
+		const previousOnChange = this.editor.onChange;
+		this.editor.onChange = (text) => {
+			previousOnChange?.(text);
+			this.viewportDirty.editor = true;
+			this.updateScrollViewport({ fast: true });
+		};
+
 		new EditorView({
 			editor: this.editor,
 			getCommandEntries: () => this.commandEntries,
@@ -1466,8 +1520,9 @@ export class TuiRenderer {
 
 		// Show welcome animation initially (can be disabled in minimal mode)
 		if (!this.isMinimalMode() && !this.zenMode) {
-			this.welcomeAnimation = new WelcomeAnimation(() =>
-				this.ui.requestRender(),
+			this.welcomeAnimation = new WelcomeAnimation(
+				() => this.ui.requestRender(),
+				{ animate: !this.shouldDisableAnimations() },
 			);
 			this.chatContainer.addChild(this.welcomeAnimation);
 		}
@@ -1494,6 +1549,10 @@ export class TuiRenderer {
 			startupChangelog: this.startupChangelog,
 			startupChangelogSummary: this.startupChangelogSummary,
 			modelScope: this.modelScope,
+			onLayoutChange: () => {
+				this.viewportDirty.startup = true;
+				this.updateScrollViewport();
+			},
 		});
 
 		this.ui.start();
@@ -1644,8 +1703,34 @@ export class TuiRenderer {
 
 	private renderHeader(): void {
 		this.headerContainer.clear();
-		this.headerContainer.addChild(new Spacer(1));
-		this.headerContainer.addChild(new InstructionPanelComponent(this.version));
+		this.viewportDirty.header = true;
+
+		// The full instruction panel is helpful but very tall; when it pushes the UI
+		// into scrollback it becomes a major source of flicker (terminals can't update
+		// scrollback, so we end up full-redrawing). Default to a compact header unless
+		// we have enough vertical room.
+		const rows = process.stdout.rows ?? 24;
+		const showFullPanel = rows >= 40;
+
+		if (showFullPanel) {
+			this.headerContainer.addChild(new Spacer(1));
+			this.headerContainer.addChild(
+				new InstructionPanelComponent(this.version),
+			);
+			this.headerContainer.addChild(new Spacer(1));
+			return;
+		}
+
+		const title =
+			chalk.bold(`composer v${this.version}`) + chalk.gray(" · EvalOps");
+		const hintParts = [
+			`${chalk.gray("esc")} interrupt`,
+			`${chalk.gray("ctrl+c")} clear`,
+			`${chalk.gray("ctrl+k")} palette`,
+			`${chalk.gray("/help")} commands`,
+		];
+		const hints = hintParts.join(chalk.gray("  │  "));
+		this.headerContainer.addChild(new Text(`${title}\n${hints}`, 1, 0));
 		this.headerContainer.addChild(new Spacer(1));
 	}
 
@@ -2056,8 +2141,14 @@ export class TuiRenderer {
 			return;
 		}
 		this.welcomeAnimation.stop();
-		this.chatContainer.clear();
+		this.chatContainer.removeChild(this.welcomeAnimation);
 		this.welcomeAnimation = null;
+	}
+
+	private shouldDisableAnimations(): boolean {
+		// Reduced motion is a user preference (and defaults on SSH/tmux).
+		// COMPOSER_DISABLE_ANIMATIONS is an explicit hard-disable switch.
+		return this.reducedMotion || areAnimationsDisabled();
 	}
 
 	showError(errorMessage: string): void {
@@ -2140,7 +2231,6 @@ export class TuiRenderer {
 	private handleEditorTyping(): void {
 		this.footer.clearToast();
 		this.slashHintController?.refreshSlashHintDebounced();
-		this.ui.requestRender();
 	}
 
 	private surfaceStartupWarnings(): void {
@@ -2426,6 +2516,7 @@ export class TuiRenderer {
 	}
 
 	stop(): void {
+		this.slashHintController?.dispose();
 		this.loaderView.stop();
 		this.queueController.detach();
 		this.backgroundTasksController.stop();
@@ -2512,6 +2603,9 @@ export class TuiRenderer {
 			rows: process.stdout.rows ?? 24,
 			colorLevel: chalk.level || 0,
 		};
+		if (!this.zenMode) {
+			this.renderHeader();
+		}
 		// Update scroll viewport on resize
 		this.updateScrollViewport();
 	}
@@ -2520,11 +2614,78 @@ export class TuiRenderer {
 	 * Updates the scroll container's viewport height based on terminal size.
 	 * Called on init and resize.
 	 */
-	private updateScrollViewport(): void {
+	private updateScrollViewport(options: { fast?: boolean } = {}): void {
 		// Guard: scrollContainer may not be initialized yet during constructor
 		if (!this.scrollContainer) return;
 		const rows = process.stdout.rows ?? 24;
-		this.scrollContainer.setViewportHeight(rows);
+		const columns = process.stdout.columns ?? 80;
+
+		// Heights depend on terminal width due to wrapping.
+		if (columns !== this.viewportLayout.columns) {
+			this.viewportLayout.columns = columns;
+			this.viewportDirty.header = true;
+			this.viewportDirty.startup = true;
+			this.viewportDirty.status = true;
+			this.viewportDirty.editor = true;
+			this.viewportDirty.footer = true;
+		}
+
+		// Fast path (typing): only re-measure editorContainer unless other layout
+		// regions are dirty. This avoids re-rendering the whole UI just to compute
+		// reserved height on every keystroke.
+		const shouldMeasureAll =
+			!options.fast ||
+			this.viewportDirty.header ||
+			this.viewportDirty.startup ||
+			this.viewportDirty.status ||
+			this.viewportDirty.footer;
+
+		if (shouldMeasureAll) {
+			if (this.viewportDirty.header) {
+				this.viewportLayout.header =
+					this.headerContainer.render(columns).length;
+				this.viewportDirty.header = false;
+			}
+			if (this.viewportDirty.startup) {
+				this.viewportLayout.startup =
+					this.startupContainer.render(columns).length;
+				this.viewportDirty.startup = false;
+			}
+			if (this.viewportDirty.status) {
+				this.viewportLayout.status =
+					this.statusContainer.render(columns).length;
+				this.viewportDirty.status = false;
+			}
+			if (this.viewportDirty.editor) {
+				this.viewportLayout.editor =
+					this.editorContainer.render(columns).length;
+				this.viewportDirty.editor = false;
+			}
+			if (this.viewportDirty.footer) {
+				this.viewportLayout.footer = this.footer.render(columns).length;
+				this.viewportDirty.footer = false;
+			}
+		} else if (this.viewportDirty.editor) {
+			this.viewportLayout.editor = this.editorContainer.render(columns).length;
+			this.viewportDirty.editor = false;
+		}
+
+		// Compute how many rows are taken by non-chat UI elements so the scroll
+		// viewport never forces the terminal into scrollback (a major cause of flicker).
+		const reserved =
+			this.viewportLayout.header +
+			this.viewportLayout.startup +
+			this.viewportLayout.status +
+			1 + // spacer between status + editor
+			this.viewportLayout.editor +
+			this.viewportLayout.footer;
+
+		const available = Math.max(1, rows - reserved);
+		if (available === this.appliedChatViewportHeight) {
+			return;
+		}
+		this.scrollContainer.setViewportHeight(available);
+		this.appliedChatViewportHeight = available;
 	}
 
 	/**

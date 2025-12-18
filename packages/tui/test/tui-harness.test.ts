@@ -73,7 +73,8 @@ describe("TUI harness", () => {
 			expect(term.writes.length).toBe(0);
 
 			vi.advanceTimersByTime(60);
-			expect(term.writes.join("")).toContain("\x1b[2J");
+			// Width changes force a full re-render, but we avoid screen/scrollback clears.
+			expect(term.writes.join("")).toContain("\x1b[H");
 		} finally {
 			vi.useRealTimers();
 		}

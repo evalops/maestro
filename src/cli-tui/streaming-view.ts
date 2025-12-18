@@ -13,6 +13,7 @@ interface StreamingViewOptions {
 	chatContainer: Container;
 	toolOutputView: ToolOutputView;
 	pendingTools: Map<string, ToolExecutionComponent>;
+	disableAnimations?: boolean;
 	lowBandwidth: {
 		enabled: boolean;
 		batchIntervalMs: number;
@@ -30,7 +31,9 @@ export class StreamingView {
 	constructor(private readonly options: StreamingViewOptions) {}
 
 	beginAssistantMessage(message: AssistantMessage): void {
-		this.streamingComponent = new AssistantMessageComponent();
+		this.streamingComponent = new AssistantMessageComponent(undefined, {
+			disableAnimations: this.options.disableAnimations,
+		});
 		this.options.chatContainer.addChild(this.streamingComponent);
 		this.streamingComponent.updateContent(this.renderStreaming(message));
 	}
@@ -100,7 +103,9 @@ export class StreamingView {
 			return;
 		}
 		this.options.chatContainer.addChild(new Text("", 0, 0));
-		const component = new ToolExecutionComponent(name, args);
+		const component = new ToolExecutionComponent(name, args, {
+			disableAnimations: this.options.disableAnimations,
+		});
 		this.options.chatContainer.addChild(component);
 		this.options.pendingTools.set(toolCallId, component);
 		this.options.toolOutputView.registerToolComponent(component);

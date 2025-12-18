@@ -35,14 +35,21 @@ export class WelcomeAnimation extends Container {
 	private readonly textComponent: Text;
 	private readonly onRenderRequest?: () => void;
 	private modelName = "";
+	private readonly animate: boolean;
 
-	constructor(onRenderRequest?: () => void) {
+	constructor(
+		onRenderRequest?: () => void,
+		options: { animate?: boolean } = {},
+	) {
 		super();
 		this.onRenderRequest = onRenderRequest;
+		this.animate = options.animate ?? true;
 		this.textComponent = new Text("", 0, 0);
 		this.addChild(this.textComponent);
 		this.updateFrame();
-		this.startAnimation();
+		if (this.animate) {
+			this.startAnimation();
+		}
 	}
 
 	private startAnimation(): void {

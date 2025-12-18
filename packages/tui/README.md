@@ -130,8 +130,8 @@ The TUI uses a **differential rendering** system to minimize terminal writes and
 | Strategy | When Used | What Happens |
 |----------|-----------|--------------|
 | **First Render** | `previousLines.length === 0` | Write all lines from cursor, no clear |
-| **Full Re-render** | Width changed, overflow state changed, or line count decreased | Clear screen (`\x1b[3J\x1b[2J\x1b[H`), write all lines |
-| **Differential** | Only content changed (same dimensions) | Move cursor to first changed line, clear+write only changed lines |
+| **Full Re-render** | Width changed or overflow state changed | Cursor home (`\x1b[H`), clear+rewrite each line (`\x1b[2K`), clear remainder (`\x1b[J`) |
+| **Differential** | Only content changed (same dimensions) | Move cursor to first changed line, clear+write changes, and clear stale lines if content shrank |
 
 ### Key State Variables
 
