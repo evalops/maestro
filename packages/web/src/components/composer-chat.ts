@@ -2,7 +2,7 @@
  * Main chat interface component
  */
 
-import { LitElement, css, html } from "lit";
+import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
 	ApiClient,
@@ -364,6 +364,32 @@ export class ComposerChat extends LitElement {
 			border-color: var(--accent-amber, #d4a012);
 		}
 
+		.history-btn:disabled {
+			opacity: 0.6;
+			cursor: not-allowed;
+		}
+
+		.jump-latest {
+			position: sticky;
+			bottom: 0.75rem;
+			align-self: center;
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--accent-blue-dim, rgba(59, 130, 246, 0.12));
+			color: var(--text-primary, #e8e9eb);
+			font-family: var(--font-mono, monospace);
+			font-size: 0.7rem;
+			padding: 0.5rem 0.8rem;
+			cursor: pointer;
+			letter-spacing: 0.02em;
+			backdrop-filter: blur(8px);
+			z-index: 5;
+		}
+
+		.jump-latest:hover {
+			border-color: var(--accent-blue, #3b82f6);
+			background: var(--accent-blue-dim, rgba(59, 130, 246, 0.18));
+		}
+
 		.input-container {
 			padding: 1rem 1.5rem 1.5rem;
 			background: var(--bg-deep, #08090a);
@@ -707,6 +733,9 @@ export class ComposerChat extends LitElement {
 	@state() private currentSessionId: string | null = null;
 	@state() private shareToken: string | null = null;
 	@state() private renderLimit = 200;
+	@state() private renderEndIndex = 0;
+	@state() private unseenMessages = 0;
+	@state() private loadingEarlier = false;
 	@state() private settingsOpen = false;
 	@state() private adminSettingsOpen = false;
 	@state() private artifactsOpen = false;
@@ -762,6 +791,11 @@ export class ComposerChat extends LitElement {
 	private apiClient!: ApiClient;
 	private attachmentContentCache = new Map<string, string>();
 	private unsubscribeStore?: () => void;
+	private autoScroll = true;
+	private lastMessagesLength = 0;
+	private messagesScrollRaf: number | null = null;
+	private historyObserver: IntersectionObserver | null = null;
+	private observedHistoryEl: Element | null = null;
 	private handleOnline = () => {
 		this.clientOnline = true;
 		this.refreshStatus();
@@ -796,20 +830,147 @@ export class ComposerChat extends LitElement {
 		this.showShortcuts = false;
 	}
 
+	private getMessagesScroller(): HTMLElement | null {
+		return (
+			(this.shadowRoot?.querySelector(".messages") as HTMLElement | null) ??
+			null
+		);
+	}
+
+	private getRenderEnd(): number {
+		const total = this.messages.length;
+		if (this.renderEndIndex > 0 && this.renderEndIndex <= total)
+			return this.renderEndIndex;
+		return total;
+	}
+
+	private getRenderWindow(): { start: number; end: number; total: number } {
+		const total = this.messages.length;
+		const end = this.getRenderEnd();
+		const windowSize = Math.max(1, this.renderLimit);
+		const start = Math.max(0, end - windowSize);
+		return { start, end, total };
+	}
+
+	private syncRenderWindowToBottom() {
+		this.autoScroll = true;
+		this.unseenMessages = 0;
+		this.renderEndIndex = this.messages.length;
+		this.lastMessagesLength = this.messages.length;
+	}
+
+	private ensureHistoryObserver() {
+		if (typeof window === "undefined") return;
+		if (!("IntersectionObserver" in window)) return;
+		if (this.historyObserver) return;
+
+		const scroller = this.getMessagesScroller();
+		if (!scroller) return;
+
+		this.historyObserver = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((e) => e.isIntersecting)) {
+					void this.maybeAutoLoadEarlier();
+				}
+			},
+			{ root: scroller, threshold: 0.01 },
+		);
+	}
+
+	private refreshHistoryObserverTarget() {
+		if (!this.historyObserver) return;
+		const next = this.shadowRoot?.querySelector("[data-history-truncation]");
+		if (next === this.observedHistoryEl) return;
+
+		if (this.observedHistoryEl) {
+			try {
+				this.historyObserver.unobserve(this.observedHistoryEl);
+			} catch {
+				// ignore
+			}
+		}
+
+		this.observedHistoryEl = next;
+		if (next) {
+			this.historyObserver.observe(next);
+		}
+	}
+
+	private handleMessagesScroll = () => {
+		if (this.messagesScrollRaf !== null) return;
+		const raf = window.requestAnimationFrame
+			? window.requestAnimationFrame.bind(window)
+			: (cb: FrameRequestCallback) =>
+					window.setTimeout(() => cb(Date.now()), 16);
+		this.messagesScrollRaf = raf(() => {
+			this.messagesScrollRaf = null;
+			const scroller = this.getMessagesScroller();
+			if (!scroller) return;
+
+			const remaining =
+				scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+			const nearBottom = remaining < 64;
+
+			if (nearBottom) {
+				if (!this.autoScroll) {
+					this.autoScroll = true;
+					if (this.unseenMessages !== 0) this.unseenMessages = 0;
+					const total = this.messages.length;
+					if (this.renderEndIndex !== total) this.renderEndIndex = total;
+					this.scrollToBottom({ force: true });
+				} else if (this.unseenMessages !== 0) {
+					this.unseenMessages = 0;
+				}
+			} else if (this.autoScroll) {
+				this.autoScroll = false;
+			}
+
+			if (scroller.scrollTop < 80) {
+				void this.maybeAutoLoadEarlier();
+			}
+		});
+	};
+
+	private async maybeAutoLoadEarlier() {
+		const scroller = this.getMessagesScroller();
+		if (!scroller) return;
+		if (this.loadingEarlier) return;
+		if (scroller.scrollTop > 120) return;
+
+		const { start } = this.getRenderWindow();
+		if (start <= 0) return;
+
+		await this.loadEarlierMessages();
+	}
+
+	private jumpToLatest = () => {
+		this.syncRenderWindowToBottom();
+		this.scrollToBottom({ force: true });
+	};
+
 	private async loadEarlierMessages() {
+		if (this.loadingEarlier) return;
+		const { start, end } = this.getRenderWindow();
+		if (start <= 0) return;
+
+		this.loadingEarlier = true;
 		const messagesEl = this.shadowRoot?.querySelector(
 			".messages",
 		) as HTMLElement | null;
 		const prevScrollHeight = messagesEl?.scrollHeight ?? 0;
 		const prevScrollTop = messagesEl?.scrollTop ?? 0;
 
-		this.renderLimit = Math.min(this.messages.length, this.renderLimit + 200);
-		await this.updateComplete;
+		try {
+			this.renderLimit = Math.min(end, this.renderLimit + 200);
+			await this.updateComplete;
 
-		if (!messagesEl) return;
-		const nextScrollHeight = messagesEl.scrollHeight;
-		const delta = Math.max(0, nextScrollHeight - prevScrollHeight);
-		messagesEl.scrollTop = prevScrollTop + delta;
+			if (!messagesEl) return;
+			const nextScrollHeight = messagesEl.scrollHeight;
+			const delta = Math.max(0, nextScrollHeight - prevScrollHeight);
+			messagesEl.scrollTop = prevScrollTop + delta;
+		} finally {
+			this.loadingEarlier = false;
+		}
 	}
 
 	private handleOpenAttachment = (
@@ -880,6 +1041,7 @@ export class ComposerChat extends LitElement {
 				? [...session.messages]
 				: [];
 			this.renderLimit = 200;
+			this.syncRenderWindowToBottom();
 			this.sessions = [];
 			this.attachmentContentCache.clear();
 			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
@@ -888,7 +1050,7 @@ export class ComposerChat extends LitElement {
 			this.error = null;
 			this.requestUpdate();
 			await this.updateComplete;
-			this.scrollToBottom();
+			this.scrollToBottom({ force: true });
 		} catch (e) {
 			console.error("Failed to load shared session:", e);
 			this.error =
@@ -1022,6 +1184,78 @@ export class ComposerChat extends LitElement {
 			"open-attachment",
 			this.handleOpenAttachment as EventListener,
 		);
+		const scroller = this.getMessagesScroller();
+		scroller?.removeEventListener("scroll", this.handleMessagesScroll);
+		if (this.messagesScrollRaf !== null) {
+			if (window.cancelAnimationFrame) {
+				window.cancelAnimationFrame(this.messagesScrollRaf);
+			} else {
+				window.clearTimeout(this.messagesScrollRaf);
+			}
+			this.messagesScrollRaf = null;
+		}
+		if (this.historyObserver) {
+			try {
+				this.historyObserver.disconnect();
+			} catch {
+				// ignore
+			}
+			this.historyObserver = null;
+			this.observedHistoryEl = null;
+		}
+	}
+
+	protected firstUpdated(): void {
+		const scroller = this.getMessagesScroller();
+		scroller?.addEventListener("scroll", this.handleMessagesScroll, {
+			passive: true,
+		});
+		this.ensureHistoryObserver();
+		this.refreshHistoryObserverTarget();
+
+		if (this.renderEndIndex === 0) {
+			this.renderEndIndex = this.messages.length;
+		}
+		this.lastMessagesLength = this.messages.length;
+	}
+
+	protected updated(changed: PropertyValues): void {
+		super.updated(changed);
+		this.ensureHistoryObserver();
+		this.refreshHistoryObserverTarget();
+
+		const total = this.messages.length;
+		if (this.renderEndIndex > total) {
+			this.renderEndIndex = total;
+		}
+		if (this.renderEndIndex === 0 && total > 0) {
+			this.renderEndIndex = total;
+		}
+
+		if (changed.has("messages")) {
+			const prev = changed.get("messages") as Message[] | undefined;
+			const prevLen = Array.isArray(prev)
+				? prev.length
+				: this.lastMessagesLength;
+			const nextLen = total;
+			const delta = nextLen - prevLen;
+			this.lastMessagesLength = nextLen;
+
+			if (delta > 0) {
+				if (this.autoScroll) {
+					if (this.renderEndIndex !== nextLen) this.renderEndIndex = nextLen;
+					if (this.unseenMessages !== 0) this.unseenMessages = 0;
+				} else {
+					this.unseenMessages += delta;
+				}
+			} else if (nextLen === 0) {
+				this.unseenMessages = 0;
+			}
+		}
+
+		if (this.autoScroll && this.renderEndIndex !== total) {
+			this.renderEndIndex = total;
+		}
 	}
 
 	private hydrateDisplayPrefs() {
@@ -1345,6 +1579,7 @@ export class ComposerChat extends LitElement {
 			this.currentSessionId = session.id;
 			this.messages = session.messages || [];
 			this.renderLimit = 200;
+			this.syncRenderWindowToBottom();
 			this.attachmentContentCache.clear();
 			this.artifactsState = createEmptyArtifactsState();
 			this.activeArtifact = null;
@@ -1369,13 +1604,14 @@ export class ComposerChat extends LitElement {
 				? [...session.messages]
 				: [];
 			this.renderLimit = 200;
+			this.syncRenderWindowToBottom();
 			this.attachmentContentCache.clear();
 			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
 			this.activeArtifact = null;
 			this.error = null;
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
-			this.scrollToBottom();
+			this.scrollToBottom({ force: true });
 		} catch (e) {
 			console.error("Failed to load session:", e);
 			this.error = e instanceof Error ? e.message : "Failed to load session";
@@ -1390,6 +1626,8 @@ export class ComposerChat extends LitElement {
 			if (this.currentSessionId === sessionId) {
 				this.currentSessionId = null;
 				this.messages = [];
+				this.syncRenderWindowToBottom();
+				this.renderLimit = 200;
 				this.attachmentContentCache.clear();
 			}
 			await this.loadSessions();
@@ -1540,6 +1778,14 @@ export class ComposerChat extends LitElement {
 			thinking: "",
 		};
 		this.messages = [...this.messages, assistantMessage];
+
+		// Ensure the user sees the newly appended messages immediately, and keep the
+		// rendered window anchored to the bottom while streaming.
+		this.autoScroll = true;
+		this.unseenMessages = 0;
+		this.renderEndIndex = this.messages.length;
+		this.lastMessagesLength = this.messages.length;
+		this.scrollToBottom({ force: true });
 
 		// Track active tool calls
 		const activeTools = new Map<string, ActiveToolInfo>();
@@ -1802,7 +2048,7 @@ export class ComposerChat extends LitElement {
 						break;
 				}
 
-				this.scrollToBottom();
+				if (this.autoScroll) this.scrollToBottom();
 			}
 
 			// Refresh sessions list
@@ -2028,12 +2274,12 @@ export class ComposerChat extends LitElement {
 		);
 	};
 
-	private scrollToBottom() {
+	private scrollToBottom(options?: { force?: boolean }) {
+		if (!options?.force && !this.autoScroll) return;
 		this.updateComplete.then(() => {
-			const messagesEl = this.shadowRoot?.querySelector(".messages");
-			if (messagesEl) {
-				messagesEl.scrollTop = messagesEl.scrollHeight;
-			}
+			const messagesEl = this.getMessagesScroller();
+			if (!messagesEl) return;
+			messagesEl.scrollTop = messagesEl.scrollHeight;
 		});
 	}
 
@@ -2145,13 +2391,14 @@ export class ComposerChat extends LitElement {
 		const showSessionGallery =
 			!isShared && this.messages.length === 0 && this.sessions.length > 0;
 		const hasMessages = this.messages.length > 0;
-		const totalMessages = this.messages.length;
-		const windowSize = Math.max(1, this.renderLimit);
-		const windowStart =
-			totalMessages > windowSize ? totalMessages - windowSize : 0;
-		const visibleMessages =
-			windowStart > 0 ? this.messages.slice(windowStart) : this.messages;
-		const hiddenCount = windowStart;
+		const {
+			start: windowStart,
+			end: windowEnd,
+			total: totalMessages,
+		} = this.getRenderWindow();
+		const visibleMessages = this.messages.slice(windowStart, windowEnd);
+		const hiddenOldCount = windowStart;
+		const hiddenNewCount = totalMessages - windowEnd;
 		const renderedMessages = visibleMessages.map(
 			(msg) => html`
 				<composer-message
@@ -2488,21 +2735,35 @@ export class ComposerChat extends LitElement {
 						  `
 								: html`
 										${
-											hiddenCount > 0
+											hiddenOldCount > 0
 												? html`
-														<div class="history-truncation">
-															Showing last ${renderedMessages.length} of ${totalMessages}.
+														<div class="history-truncation" data-history-truncation>
+															Showing ${renderedMessages.length} of ${totalMessages}${
+																hiddenNewCount > 0
+																	? ` (+${hiddenNewCount} newer hidden)`
+																	: ""
+															}.
 															<button
 																class="history-btn"
 																@click=${this.loadEarlierMessages}
+																?disabled=${this.loadingEarlier}
 															>
-																Load earlier
+																${this.loadingEarlier ? "Loading..." : "Load earlier"}
 															</button>
 														</div>
 													`
 												: ""
 										}
 										${renderedMessages}
+										${
+											this.unseenMessages > 0
+												? html`
+													<button class="jump-latest" @click=${this.jumpToLatest}>
+														${this.unseenMessages} new message${this.unseenMessages === 1 ? "" : "s"} — Jump to latest
+													</button>
+												`
+												: ""
+										}
 									`
 						}
 					${this.loading ? html`<div class="loading">Processing...</div>` : ""}
