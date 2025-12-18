@@ -199,6 +199,38 @@ Every operation is exposed as an explicit slash command. Type `/help` for the fu
 - **gh_issue** – Issue operations
 - **gh_repo** – Repository operations
 
+### API Compatibility Notes
+
+#### OpenAI Responses API (tool schema filtering)
+
+When using an OpenAI **Responses API** model (e.g. `api: "openai-responses"`), tool parameter schemas have stricter requirements than typical Chat Completions-style function calling.
+
+In practice, tool `parameters` often need to be a top-level JSON Schema `object` (the root must not be `anyOf`), and some composition keywords (like `allOf` / `not`) are not supported by Structured Outputs.
+
+Composer will automatically **filter out tools** whose `parameters` schema uses these JSON Schema keywords at the **top level**:
+- `oneOf`, `anyOf`, `allOf`
+- `enum`
+- `not`
+
+Composer logs a warning listing filtered tools (see `filterResponsesApiTools()`), but users may still be surprised if an external/MCP tool disappears.
+
+Workaround: wrap the constrained value inside an object:
+
+```json
+// ❌ filtered (top-level enum)
+{ "enum": ["a", "b", "c"] }
+
+// ✅ compatible (enum nested under properties)
+{
+  "type": "object",
+  "properties": { "value": { "enum": ["a", "b", "c"] } }
+}
+```
+
+References:
+- OpenAI docs: Structured Outputs supported schemas (`https://platform.openai.com/docs/guides/structured-outputs/supported-schemas`)
+- OpenAI docs: unsupported keywords (`https://platform.openai.com/docs/guides/structured-outputs/some-type-specific-keywords-are-not-yet-supported`)
+
 ### Framework Preference
 
 - Set a default stack for new tasks with `/framework <id>` (e.g., `fastapi`, `express`, `node`).

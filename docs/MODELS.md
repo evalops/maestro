@@ -79,6 +79,44 @@ To add more Responses-capable models (or override these), drop them into
 `.composer/config.json` with `api: "openai-responses"`; Composer will normalize
 the base URL to `/responses` automatically.
 
+### Responses API Compatibility Notes (Tools)
+
+When `api: "openai-responses"` is enabled for a model, Composer must filter tool
+definitions to match Responses API schema constraints.
+
+In particular, Composer filters out any tool whose `parameters` JSON Schema
+contains these keywords at the **top level**:
+
+- `oneOf`, `anyOf`, `allOf`
+- `enum`
+- `not`
+
+This filtering is implemented in `filterResponsesApiTools()` (`src/agent/providers/openai.ts`).
+When tools are filtered, Composer logs a warning listing the affected tool names
+(`src/agent/providers/openai-responses-sdk.ts`).
+
+Background:
+- OpenAI’s Structured Outputs docs describe the supported JSON Schema subset and
+  the requirement that the root schema not be `anyOf` and that some keywords
+  (including `allOf` / `not`) are not supported. See:
+  `https://platform.openai.com/docs/guides/structured-outputs/supported-schemas`
+  and
+  `https://platform.openai.com/docs/guides/structured-outputs/some-type-specific-keywords-are-not-yet-supported`
+
+**Workaround:** wrap constrained values inside an object schema (nest under
+`properties`) so the top-level schema remains an object:
+
+```json
+// ❌ filtered (top-level enum)
+{ "enum": ["a", "b", "c"] }
+
+// ✅ compatible (enum nested under properties)
+{
+  "type": "object",
+  "properties": { "value": { "enum": ["a", "b", "c"] } }
+}
+```
+
 > Note: Codex subscription models are intentionally excluded. The Codex endpoint
 > requires the Codex CLI system prompt and tool set verbatim, which Composer
 > does not forward for security and transparency reasons.
