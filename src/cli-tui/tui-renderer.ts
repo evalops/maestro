@@ -1559,6 +1559,7 @@ export class TuiRenderer {
 	private renderConversationView(): void {
 		// Clear and re-render conversation with current settings (e.g., after toggling thinking blocks)
 		this.chatContainer.clear();
+		this.scrollContainer.clearHistory();
 		this.toolOutputView.clearTrackedComponents();
 		this.messageView.renderInitialMessages(this.agent.state);
 	}

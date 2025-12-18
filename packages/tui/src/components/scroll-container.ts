@@ -70,6 +70,13 @@ export interface ScrollContainerOptions {
 	 * @default 0
 	 */
 	reservedLines?: number;
+
+	/**
+	 * Maximum number of lines kept in scrollback history.
+	 * When exceeded, the oldest lines are evicted (FIFO) and scrollOffset is adjusted.
+	 * @default 10000
+	 */
+	maxHistoryLines?: number;
 }
 
 /**
@@ -142,7 +149,7 @@ export class ScrollContainer implements Component {
 		this.onScroll = options.onScroll;
 		this.reservedLines = options.reservedLines ?? 0;
 		// Keep up to 10000 lines of history (~5MB at 500 chars/line)
-		this.maxHistoryLines = 10000;
+		this.maxHistoryLines = options.maxHistoryLines ?? 10000;
 	}
 
 	/**
