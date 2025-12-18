@@ -282,15 +282,26 @@ class ModalManager {
   private modalStack: Modal[] = [];
 
   push(modal: Modal): void {
+    // Hide the previous modal (still on the stack)
+    const previous = this.modalStack[this.modalStack.length - 1];
+    previous?.unmount?.();
+
     this.modalStack.push(modal);
-    modal.onMount();
     this.render();
+    modal.mount?.();
   }
 
   pop(): Modal | undefined {
     const modal = this.modalStack.pop();
-    modal?.onUnmount();
     this.render();
+
+    // Permanent removal cleanup
+    modal?.dispose?.();
+
+    // Re-show the new top after focus/render restore
+    const top = this.modalStack[this.modalStack.length - 1];
+    top?.mount?.();
+
     return modal;
   }
 

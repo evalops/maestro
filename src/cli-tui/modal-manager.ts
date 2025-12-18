@@ -2,22 +2,39 @@ import type { Component, Container, TUI } from "@evalops/tui";
 
 export interface Modal extends Component {
 	/**
-	 * @deprecated Use onUnmount instead. Called when modal is closed.
+	 * @deprecated Prefer `dispose()` (or `unmount()` for temporary hides).
+	 * Called when a modal is permanently removed (pop/replace/clear).
 	 */
 	onClose?: () => void;
 
 	/**
-	 * Lifecycle: Called when modal is pushed onto the stack and becomes visible.
+	 * @deprecated Prefer `mount()`. Called when modal becomes visible.
 	 */
 	onMount?: () => void;
 
 	/**
-	 * Lifecycle: Called when modal is removed from the stack.
+	 * @deprecated Prefer `unmount()`. Called when modal becomes hidden.
 	 */
 	onUnmount?: () => void;
 
 	/**
-	 * Cleanup: Called for permanent disposal. Alias for onUnmount.
+	 * Lifecycle: Called when modal becomes visible (active/top of stack).
+	 * Idempotent implementations are strongly recommended.
+	 */
+	mount?: () => void;
+
+	/**
+	 * Lifecycle: Called when modal becomes hidden (covered by another modal).
+	 * Idempotent implementations are strongly recommended.
+	 */
+	unmount?: () => void;
+
+	/**
+	 * Cleanup: Called when a modal is permanently removed (pop/replace/clear).
+	 *
+	 * Convention: `dispose()` should ensure the modal is unmounted first (or
+	 * otherwise release resources as if unmounted). `BaseView` already follows
+	 * this pattern.
 	 */
 	dispose?: () => void;
 }
@@ -26,16 +43,46 @@ export interface Modal extends Component {
  * Helper to invoke lifecycle methods on a modal
  */
 function mountModal(modal: Modal): void {
+	if (modal.mount) {
+		modal.mount();
+		return;
+	}
 	modal.onMount?.();
 }
 
 /**
- * Helper to invoke cleanup methods on a modal
+ * Helper to invoke "hidden" lifecycle methods on a modal (still on stack).
  */
 function unmountModal(modal: Modal): void {
+	if (modal.unmount) {
+		modal.unmount();
+		return;
+	}
 	modal.onUnmount?.();
-	modal.onClose?.(); // Backwards compatibility
-	modal.dispose?.();
+}
+
+/**
+ * Helper to invoke permanent cleanup on a modal (removed from stack).
+ */
+function disposeModal(modal: Modal): void {
+	const unmountFn = modal.unmount ?? modal.onUnmount;
+	const disposeFn = modal.dispose;
+	const closeFn = modal.onClose;
+	const call = (fn: (() => void) | undefined) => fn?.call(modal);
+
+	// Ensure unmount semantics happen exactly once.
+	if (unmountFn && disposeFn && unmountFn !== disposeFn) {
+		call(unmountFn);
+	} else if (unmountFn && !disposeFn) {
+		call(unmountFn);
+	}
+
+	call(disposeFn);
+
+	// Backwards compatibility: avoid double-calling if onClose is an alias.
+	if (closeFn && closeFn !== unmountFn && closeFn !== disposeFn) {
+		call(closeFn);
+	}
 }
 
 export class ModalManager {
@@ -56,7 +103,7 @@ export class ModalManager {
 		// Unmount previous top modal (it's being covered)
 		const previous = this.getActiveModal();
 		if (previous) {
-			previous.onUnmount?.();
+			unmountModal(previous);
 		}
 
 		this.stack.push(modal);
@@ -72,16 +119,15 @@ export class ModalManager {
 	pop(): Modal | undefined {
 		const modal = this.stack.pop();
 		if (modal) {
-			unmountModal(modal);
-		}
-
-		// Re-mount the newly visible modal
-		const newTop = this.getActiveModal();
-		if (newTop) {
-			newTop.onMount?.();
+			disposeModal(modal);
 		}
 
 		this.updateView();
+		// Re-mount the newly visible modal after focus is restored
+		const newTop = this.getActiveModal();
+		if (newTop) {
+			mountModal(newTop);
+		}
 		return modal;
 	}
 
@@ -93,7 +139,7 @@ export class ModalManager {
 	replace(modal: Modal): void {
 		const old = this.stack.pop();
 		if (old) {
-			unmountModal(old);
+			disposeModal(old);
 		}
 		this.stack.push(modal);
 		this.updateView();
@@ -108,7 +154,7 @@ export class ModalManager {
 		while (this.stack.length > 0) {
 			const modal = this.stack.pop();
 			if (modal) {
-				unmountModal(modal);
+				disposeModal(modal);
 			}
 		}
 		this.updateView();

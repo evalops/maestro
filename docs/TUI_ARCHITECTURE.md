@@ -230,6 +230,15 @@ class ModalManager {
 }
 ```
 
+If a modal implements lifecycle methods (recommended), `ModalManager` will call:
+- `mount()` when it becomes active (top of stack)
+- `unmount()` when it becomes hidden (covered by another modal)
+- `dispose()` when it is permanently removed (pop/replace/clear)
+
+For simple components without lifecycle needs, implementing `render()` and optional
+`handleInput()` is enough. For lifecycle-managed modals, prefer extending
+`BaseView` (`src/cli-tui/base-view.ts`).
+
 When a modal is active, it receives focus and input. The main content remains rendered but doesn't receive keyboard events.
 
 ### Agent Integration
