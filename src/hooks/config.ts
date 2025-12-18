@@ -9,8 +9,9 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createLogger } from "../utils/logger.js";
 import type {
 	HookCommandConfig,
@@ -23,10 +24,22 @@ import type {
 
 const logger = createLogger("hooks:config");
 
+function resolveHomeDirectory(): string {
+	return process.env.HOME || process.env.USERPROFILE || homedir();
+}
+
+function expandHome(path: string): string {
+	if (path.startsWith("~/")) {
+		return join(resolveHomeDirectory(), path.slice(2));
+	}
+	return path;
+}
+
 /**
  * Raw hook configuration from JSON files.
  */
 interface RawHooksConfig {
+	extends?: string | string[];
 	hooks?: Partial<
 		Record<
 			HookEventType,
@@ -58,11 +71,51 @@ const CONFIG_CACHE_TTL_MS = 30_000; // 30 seconds
  */
 const registeredHooks: HookConfiguration = {};
 
+function applyRegisteredHooks(
+	base: HookConfiguration,
+	registered: HookConfiguration,
+): HookConfiguration {
+	const result: HookConfiguration = {};
+
+	for (const [eventType, matchers] of Object.entries(base)) {
+		if (!matchers) continue;
+		result[eventType as HookEventType] = matchers.map((matcher) => ({
+			matcher: matcher.matcher,
+			hooks: [...matcher.hooks],
+		}));
+	}
+
+	for (const [eventType, matchers] of Object.entries(registered)) {
+		if (!matchers || matchers.length === 0) continue;
+		const key = eventType as HookEventType;
+		const current = [...(result[key] ?? [])];
+
+		for (const matcher of matchers) {
+			const matcherKey = matcher.matcher ?? "*";
+			const existing = current.find(
+				(entry) => (entry.matcher ?? "*") === matcherKey,
+			);
+			if (existing) {
+				existing.hooks.push(...matcher.hooks);
+			} else {
+				current.push({
+					matcher: matcher.matcher,
+					hooks: [...matcher.hooks],
+				});
+			}
+		}
+
+		result[key] = current;
+	}
+
+	return result;
+}
+
 /**
  * Get the user hooks config path.
  */
 export function getUserHooksConfigPath(): string {
-	return join(homedir(), ".composer", "hooks.json");
+	return join(resolveHomeDirectory(), ".composer", "hooks.json");
 }
 
 /**
@@ -72,10 +125,23 @@ export function getProjectHooksConfigPath(cwd: string): string {
 	return join(cwd, ".composer", "hooks.json");
 }
 
+function maybeResolveCommand(command: string, sourceDir: string): string {
+	const trimmed = command.trim();
+	if (trimmed !== command) return command;
+	if (/\s/.test(trimmed)) return command;
+	if (trimmed.startsWith("./") || trimmed.startsWith("../")) {
+		return resolve(sourceDir, trimmed);
+	}
+	return command;
+}
+
 /**
  * Parse raw hook config from a file into the internal format.
  */
-function parseRawHooksConfig(raw: RawHooksConfig): HookConfiguration {
+function parseRawHooksConfig(
+	raw: RawHooksConfig,
+	sourceDir?: string,
+): HookConfiguration {
 	const result: HookConfiguration = {};
 
 	if (!raw.hooks) {
@@ -106,9 +172,12 @@ function parseRawHooksConfig(raw: RawHooksConfig): HookConfiguration {
 						logger.warn("Command hook missing command field");
 						continue;
 					}
+					const command = sourceDir
+						? maybeResolveCommand(hookDef.command, sourceDir)
+						: hookDef.command;
 					hooks.push({
 						type: "command",
-						command: hookDef.command,
+						command,
 						timeout: hookDef.timeout,
 					} satisfies HookCommandConfig);
 				} else if (hookDef.type === "prompt" || hookDef.prompt) {
@@ -144,14 +213,118 @@ function parseRawHooksConfig(raw: RawHooksConfig): HookConfiguration {
  * Load hooks configuration from a JSON file.
  */
 function loadHooksFromFile(path: string): HookConfiguration {
+	return loadHooksFromFileWithExtends(path);
+}
+
+function normalizeExtends(value: RawHooksConfig["extends"]): string[] {
+	if (!value) return [];
+	if (Array.isArray(value)) return value.filter((v) => typeof v === "string");
+	if (typeof value === "string") return [value];
+	return [];
+}
+
+function resolveExtendsTarget(spec: string, baseDir: string): string | null {
+	const expanded = expandHome(spec.trim());
+	if (!expanded) return null;
+
+	// Local / absolute file path
+	if (
+		expanded.startsWith("./") ||
+		expanded.startsWith("../") ||
+		expanded.startsWith("~/") ||
+		isAbsolute(expanded)
+	) {
+		return resolve(baseDir, expanded);
+	}
+
+	const req = createRequire(import.meta.url);
+
+	// Explicit module path (e.g., pkg/path/to/file.json)
+	try {
+		return req.resolve(expanded, { paths: [baseDir] });
+	} catch {
+		// fall through
+	}
+
+	// Package root convention: <pkg>/hooks.json
+	try {
+		return req.resolve(`${expanded}/hooks.json`, { paths: [baseDir] });
+	} catch {
+		// fall through
+	}
+
+	// Package root + manual check (works even if hooks.json isn't in exports)
+	try {
+		const pkgJson = req.resolve(`${expanded}/package.json`, {
+			paths: [baseDir],
+		});
+		const candidate = join(dirname(pkgJson), "hooks.json");
+		if (existsSync(candidate)) return candidate;
+	} catch {
+		// ignore
+	}
+
+	return null;
+}
+
+function loadHooksFromFileWithExtends(
+	path: string,
+	state: { stack: string[]; seen: Set<string> } = {
+		stack: [],
+		seen: new Set(),
+	},
+): HookConfiguration {
 	if (!existsSync(path)) {
 		return {};
 	}
 
 	try {
+		const resolvedPath = resolve(path);
+		const identity = `file:${resolvedPath}`;
+		if (state.stack.includes(identity)) {
+			logger.warn("Circular hooks config extends detected", {
+				chain: [...state.stack, identity],
+			});
+			return {};
+		}
+		if (state.seen.has(identity)) {
+			return {};
+		}
+
+		state.seen.add(identity);
+		const nextState = {
+			stack: [...state.stack, identity],
+			seen: state.seen,
+		};
+
 		const content = readFileSync(path, "utf-8");
 		const raw = JSON.parse(content) as RawHooksConfig;
-		return parseRawHooksConfig(raw);
+		const sourceDir = dirname(resolvedPath);
+
+		const extended = normalizeExtends(raw.extends);
+		const resolvedExtends: HookConfiguration[] = [];
+		for (const spec of extended) {
+			const target = resolveExtendsTarget(spec, sourceDir);
+			if (!target) {
+				logger.warn("Unable to resolve hooks config extends entry", {
+					spec,
+					from: resolvedPath,
+				});
+				continue;
+			}
+			if (!existsSync(target)) {
+				logger.warn("Hooks config extends target does not exist", {
+					spec,
+					target,
+					from: resolvedPath,
+				});
+				continue;
+			}
+			resolvedExtends.push(loadHooksFromFileWithExtends(target, nextState));
+		}
+
+		const self = parseRawHooksConfig(raw, sourceDir);
+		return mergeHookConfigs(...resolvedExtends, self);
 	} catch (error) {
 		logger.warn(`Failed to load hooks from ${path}`, {
 			error: error instanceof Error ? error.message : String(error),
@@ -224,8 +397,24 @@ function mergeHookConfigs(...configs: HookConfiguration[]): HookConfiguration {
 
 	for (const config of configs) {
 		for (const [eventType, matchers] of Object.entries(config)) {
-			const existing = result[eventType as HookEventType] ?? [];
-			result[eventType as HookEventType] = [...existing, ...(matchers ?? [])];
+			const current = result[eventType as HookEventType] ?? [];
+			const merged = new Map<string, HookMatcher>();
+
+			const upsert = (matcher: HookMatcher) => {
+				const key = matcher.matcher ?? "*";
+				if (merged.has(key)) merged.delete(key);
+				merged.set(key, matcher);
+			};
+
+			for (const matcher of current) {
+				upsert(matcher);
+			}
+
+			for (const matcher of matchers ?? []) {
+				upsert(matcher);
+			}
+
+			result[eventType as HookEventType] = Array.from(merged.values());
 		}
 	}
 
@@ -241,7 +430,7 @@ export function loadHookConfiguration(cwd: string): HookConfiguration {
 	// Return cached config if still valid for this cwd
 	const cached = configCache.get(cwd);
 	if (cached && now - cached.loadedAt < CONFIG_CACHE_TTL_MS) {
-		return mergeHookConfigs(cached.config, registeredHooks);
+		return applyRegisteredHooks(cached.config, registeredHooks);
 	}
 
 	// Load from all sources
@@ -261,7 +450,7 @@ export function loadHookConfiguration(cwd: string): HookConfiguration {
 		projectHookCount: Object.keys(projectHooks).length,
 	});
 
-	return mergeHookConfigs(config, registeredHooks);
+	return applyRegisteredHooks(config, registeredHooks);
 }
 
 /**
@@ -283,21 +472,35 @@ export function registerHook(
 		registeredHooks[eventType] = [];
 	}
 
-	const hookMatcher: HookMatcher = {
-		matcher,
-		hooks: [hook],
-	};
+	const matcherKey = matcher ?? "*";
+	const existing = registeredHooks[eventType]?.find(
+		(entry) => (entry.matcher ?? "*") === matcherKey,
+	);
 
-	registeredHooks[eventType]?.push(hookMatcher);
+	if (existing) {
+		existing.hooks.push(hook);
+	} else {
+		registeredHooks[eventType]?.push({
+			matcher,
+			hooks: [hook],
+		});
+	}
 
 	// Return unregister function
 	return () => {
 		const matchers = registeredHooks[eventType];
-		if (matchers) {
-			const index = matchers.indexOf(hookMatcher);
-			if (index >= 0) {
-				matchers.splice(index, 1);
-			}
+		if (!matchers) return;
+		const group = matchers.find(
+			(entry) => (entry.matcher ?? "*") === matcherKey,
+		);
+		if (!group) return;
+		const index = group.hooks.indexOf(hook);
+		if (index >= 0) {
+			group.hooks.splice(index, 1);
+		}
+		if (group.hooks.length === 0) {
+			const groupIndex = matchers.indexOf(group);
+			if (groupIndex >= 0) matchers.splice(groupIndex, 1);
 		}
 	};
 }
@@ -395,15 +598,17 @@ export function getMatchingHooks(
 		}
 	}
 
-	// Deduplicate by command (for command hooks) or reference
+	// Deduplicate by command (command hooks), preferring later entries so higher
+	// precedence configs can override lower precedence ones.
 	const seen = new Set<string>();
-	return matchedHooks.filter((hook) => {
+	const dedupedReversed: HookConfig[] = [];
+	for (let i = matchedHooks.length - 1; i >= 0; i--) {
+		const hook = matchedHooks[i];
 		if (hook.type === "command") {
-			if (seen.has(hook.command)) {
-				return false;
-			}
+			if (seen.has(hook.command)) continue;
 			seen.add(hook.command);
 		}
-		return true;
-	});
+		dedupedReversed.push(hook);
+	}
+	return dedupedReversed.reverse();
 }

@@ -314,3 +314,38 @@ COMPOSER_NOTIFY_TERMINAL=true
 COMPOSER_NOTIFY_EVENTS=turn-complete,session-end,error
 COMPOSER_NOTIFY_PROGRAM=/path/to/notifier
 ```
+
+## hooks.json configuration (presets via `extends`)
+
+You can also configure command and prompt hooks via JSON:
+
+- User: `~/.composer/hooks.json`
+- Project: `.composer/hooks.json`
+
+```json
+{
+  "extends": [
+    "my-hooks-preset",
+    "./hooks.local.json"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "bash|write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/pre-tool.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Notes:
+- `extends` supports local files (relative to the config file) and npm packages. For packages, Composer looks for `hooks.json` at the package root.
+- Project config overrides user config, and user config overrides env vars (when matcher keys collide).
+- For command hooks, bare relative commands like `./scripts/check.sh` (no spaces) are resolved relative to the config file directory.
