@@ -3,14 +3,50 @@
  */
 
 import DOMPurify from "dompurify";
-import hljs from "highlight.js";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { marked } from "marked";
 import "./composer-sandboxed-iframe.js";
 
+type HljsApi = {
+	getLanguage: (name: string) => unknown;
+	highlight: (code: string, options: { language: string }) => { value: string };
+	highlightAuto: (code: string) => { value: string };
+};
+
+let cachedHljs: HljsApi | undefined;
+let hljsLoadPromise: Promise<HljsApi> | undefined;
+const hljsLoadListeners = new Set<() => void>();
+
 const NO_PROVIDERS: unknown[] = [];
+
+function escapeHtml(input: string): string {
+	return input
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
+}
+
+function ensureHljsLoaded(): void {
+	if (cachedHljs || hljsLoadPromise) return;
+
+	hljsLoadPromise = (async () => {
+		const mod = await import("highlight.js");
+		return (mod.default ?? mod) as unknown as HljsApi;
+	})();
+
+	void hljsLoadPromise
+		.then((hljs) => {
+			cachedHljs = hljs;
+			for (const listener of hljsLoadListeners) listener();
+		})
+		.catch(() => {
+			// Best-effort: if highlighting fails to load, render without it.
+		});
+}
 
 function randomId(prefix: string): string {
 	const cryptoObj = globalThis.crypto;
@@ -33,17 +69,29 @@ marked.use({
 		code(token) {
 			const lang = token.lang || "";
 			const code = token.text;
+			const langClass = lang ? ` class="language-${lang}"` : "";
+
+			const hljs = cachedHljs;
+			if (!hljs) {
+				ensureHljsLoaded();
+				return `<pre><code${langClass}>${escapeHtml(code)}</code></pre>`;
+			}
+
 			let highlighted: string;
-			if (lang && hljs.getLanguage(lang)) {
+			if (lang) {
 				try {
-					highlighted = hljs.highlight(code, { language: lang }).value;
+					if (hljs.getLanguage(lang)) {
+						highlighted = hljs.highlight(code, { language: lang }).value;
+					} else {
+						highlighted = hljs.highlightAuto(code).value;
+					}
 				} catch {
 					highlighted = hljs.highlightAuto(code).value;
 				}
 			} else {
 				highlighted = hljs.highlightAuto(code).value;
 			}
-			const langClass = lang ? ` class="language-${lang}"` : "";
+
 			return `<pre><code${langClass}>${highlighted}</code></pre>`;
 		},
 	},
@@ -440,6 +488,17 @@ export class ComposerMessage extends LitElement {
 
 	@state() private previewOpen: Record<number, boolean> = {};
 	private readonly instanceId = randomId("msg_");
+	private readonly onHljsLoaded = () => this.requestUpdate();
+
+	connectedCallback(): void {
+		super.connectedCallback();
+		hljsLoadListeners.add(this.onHljsLoaded);
+	}
+
+	disconnectedCallback(): void {
+		hljsLoadListeners.delete(this.onHljsLoaded);
+		super.disconnectedCallback();
+	}
 
 	private extractHtmlArtifacts(): Array<{ language: string; code: string }> {
 		// Simple fenced-code extraction. This is intentionally conservative:
