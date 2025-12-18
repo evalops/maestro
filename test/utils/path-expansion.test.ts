@@ -28,8 +28,13 @@ describe("path-expansion", () => {
 		expect(expandTildePath("~/projects")).toBe("/tmp/home/projects");
 	});
 
-	it("expands ~prefix paths for compatibility", () => {
+	it("does not expand ~prefix paths (e.g. ~user)", () => {
 		process.env.HOME = "/tmp/home";
-		expect(expandTildePath("~foo")).toBe("/tmp/home/foo");
+		expect(expandTildePath("~foo")).toBe("~foo");
+	});
+
+	it("expands ~\\ paths too", () => {
+		process.env.HOME = "/tmp/home";
+		expect(expandTildePath("~\\projects")).toBe("/tmp/home/projects");
 	});
 });

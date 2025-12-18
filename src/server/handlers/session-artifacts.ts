@@ -19,24 +19,23 @@ function escapeScriptContent(code: string): string {
 }
 
 function injectLiveReload(html: string, eventsUrl: string): string {
-	const script = `
-<script>
-(function() {
-  try {
-    const es = new EventSource(${JSON.stringify(eventsUrl)});
-    es.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data && data.type === "artifact_updated") {
-          location.reload();
-        }
-      } catch (_) {}
-    };
-  } catch (_) {}
-})();
-</script>
-`.trim();
-	const injected = `\n${escapeScriptContent(script)}\n`;
+	const scriptBody = `
+	(function() {
+	  try {
+	    const es = new EventSource(${JSON.stringify(eventsUrl)});
+	    es.onmessage = (e) => {
+	      try {
+	        const data = JSON.parse(e.data);
+	        if (data && data.type === "artifact_updated") {
+	          location.reload();
+	        }
+	      } catch (_) {}
+	    };
+	  } catch (_) {}
+	})();
+	`.trim();
+	const script = `<script>\n${escapeScriptContent(scriptBody)}\n</script>`;
+	const injected = `\n${script}\n`;
 	if (/<\/body>/i.test(html)) {
 		return html.replace(/<\/body>/i, `${injected}</body>`);
 	}

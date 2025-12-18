@@ -234,7 +234,7 @@ function resolveExtendsTarget(spec: string, baseDir: string): string | null {
 		expanded.startsWith("~/") ||
 		isAbsolute(expanded)
 	) {
-		return resolve(baseDir, expanded);
+		return isAbsolute(expanded) ? expanded : resolve(baseDir, expanded);
 	}
 
 	const req = createRequire(import.meta.url);

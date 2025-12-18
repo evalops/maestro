@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
-import { webfetchTool } from "../../src/tools/webfetch.js";
 
 // Mock the exa-client
 vi.mock("../../src/tools/exa-client.js", () => ({
@@ -8,6 +7,7 @@ vi.mock("../../src/tools/exa-client.js", () => ({
 }));
 
 import { callExa } from "../../src/tools/exa-client.js";
+import { webfetchTool } from "../../src/tools/webfetch.js";
 
 const mockCallExa = vi.mocked(callExa);
 

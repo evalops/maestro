@@ -6,7 +6,13 @@ export default defineConfig({
     environment: 'node',
     include: ['test/**/*.test.ts'],
     testTimeout: 30000, // 30 seconds for API calls
-    setupFiles: ['test/setup/suppress-warnings.ts', 'test/setup/todo-store.ts'],
+    hookTimeout: 30000,
+    setupFiles: [
+      'test/setup/suppress-warnings.ts',
+      'test/setup/todo-store.ts',
+      'test/setup/restore-cwd.ts',
+      'test/setup/reset-safety-state.ts',
+    ],
     // Disable file parallelism to reduce memory pressure and prevent test hangs
     // Each test file runs sequentially, reducing concurrent memory usage
     fileParallelism: false,

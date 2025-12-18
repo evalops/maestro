@@ -122,13 +122,18 @@ async function executeCommandHook(
 		let stdout = "";
 		let stderr = "";
 		let resolved = false;
-		// biome-ignore lint/style/useConst: timeout must be declared before cleanup but assigned after
-		let timeout: ReturnType<typeof setTimeout>;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const clearHookTimeout = () => {
+			if (timeout) {
+				clearTimeout(timeout);
+				timeout = undefined;
+			}
+		};
 
 		const cleanup = (reason: "abort" | "timeout") => {
 			if (!resolved) {
 				resolved = true;
-				clearTimeout(timeout);
+				clearHookTimeout();
 				child.kill("SIGTERM");
 				if (reason === "abort") {
 					resolve({
@@ -175,7 +180,10 @@ async function executeCommandHook(
 					if (isAsyncHookResponse(parsed)) {
 						// Hook is going async, resolve immediately with the response
 						resolved = true;
-						clearTimeout(timeout);
+						clearHookTimeout();
+						if (abortListener && signal) {
+							signal.removeEventListener("abort", abortListener);
+						}
 						resolve({
 							stdout,
 							stderr,
@@ -195,7 +203,7 @@ async function executeCommandHook(
 		child.on("error", (error) => {
 			if (!resolved) {
 				resolved = true;
-				clearTimeout(timeout);
+				clearHookTimeout();
 				if (abortListener && signal) {
 					signal.removeEventListener("abort", abortListener);
 				}
@@ -210,7 +218,7 @@ async function executeCommandHook(
 		child.on("close", (code) => {
 			if (!resolved) {
 				resolved = true;
-				clearTimeout(timeout);
+				clearHookTimeout();
 				if (abortListener && signal) {
 					signal.removeEventListener("abort", abortListener);
 				}
@@ -233,19 +241,36 @@ async function executeCommandHook(
 			}
 		});
 
-		// Write input to stdin
-		child.stdin?.write(jsonInput, (err) => {
-			if (err) {
-				// Ignore EPIPE - process may have exited
-				if ((err as NodeJS.ErrnoException).code !== "EPIPE") {
-					logger.warn("Failed to write to hook stdin", {
-						error: err.message,
-						command: hook.command,
-					});
-				}
+		// Write input to stdin and close it immediately so hooks that read until EOF
+		// (e.g. `cat`) don't hang waiting for more input.
+		if (!child.stdin) {
+			resolved = true;
+			clearHookTimeout();
+			if (abortListener && signal) {
+				signal.removeEventListener("abort", abortListener);
 			}
-			child.stdin?.end();
-		});
+			child.kill("SIGTERM");
+			resolve({
+				stdout,
+				stderr: `${stderr}\nHook stdin unavailable`,
+				status: 1,
+			});
+			return;
+		}
+		try {
+			child.stdin.end(jsonInput);
+		} catch (err) {
+			const error = err instanceof Error ? err : new Error(String(err));
+			logger.warn("Failed to write to hook stdin", {
+				error: error.message,
+				command: hook.command,
+			});
+			try {
+				child.stdin.end();
+			} catch {
+				// ignore
+			}
+		}
 	});
 }
 

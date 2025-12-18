@@ -18,8 +18,9 @@ export function expandTildePathWithHomeDir(
 	homeDir: string,
 ): string {
 	if (path === "~") return homeDir;
-	if (path.startsWith("~/")) return join(homeDir, path.slice(2));
-	if (path.startsWith("~")) return join(homeDir, path.slice(1));
+	if (path.startsWith("~/") || path.startsWith("~\\")) {
+		return join(homeDir, path.slice(2));
+	}
 	return path;
 }
 
@@ -28,7 +29,6 @@ export function expandTildePathWithHomeDir(
  *
  * - `~` -> `/home/user`
  * - `~/path` -> `/home/user/path`
- * - `~path` -> `/home/user/path` (compat with some callers)
  */
 export function expandTildePath(path: string): string {
 	return expandTildePathWithHomeDir(path, getHomeDir());
