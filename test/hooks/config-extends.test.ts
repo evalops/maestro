@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	clearHookConfigCache,
 	getMatchingHooks,
@@ -11,12 +11,18 @@ import type { PreToolUseHookInput } from "../../src/hooks/types.js";
 
 describe("hooks/config extends", () => {
 	const originalHome = process.env.HOME;
+	const originalPreToolUse = process.env.COMPOSER_HOOKS_PRE_TOOL_USE;
 	let homeDir: string;
 	let workspaceDir: string;
 
 	beforeEach(() => {
 		clearHookConfigCache();
-		vi.unstubAllEnvs();
+		if (originalPreToolUse === undefined) {
+			// biome-ignore lint/performance/noDelete: Intentional env cleanup in test
+			delete process.env.COMPOSER_HOOKS_PRE_TOOL_USE;
+		} else {
+			process.env.COMPOSER_HOOKS_PRE_TOOL_USE = originalPreToolUse;
+		}
 
 		homeDir = join(tmpdir(), `composer-hooks-home-${Date.now()}`);
 		workspaceDir = join(tmpdir(), `composer-hooks-workspace-${Date.now()}`);
@@ -28,6 +34,12 @@ describe("hooks/config extends", () => {
 	afterEach(() => {
 		clearHookConfigCache();
 		process.env.HOME = originalHome;
+		if (originalPreToolUse === undefined) {
+			// biome-ignore lint/performance/noDelete: Intentional env cleanup in test
+			delete process.env.COMPOSER_HOOKS_PRE_TOOL_USE;
+		} else {
+			process.env.COMPOSER_HOOKS_PRE_TOOL_USE = originalPreToolUse;
+		}
 		if (existsSync(homeDir)) rmSync(homeDir, { recursive: true, force: true });
 		if (existsSync(workspaceDir))
 			rmSync(workspaceDir, { recursive: true, force: true });
@@ -142,7 +154,7 @@ describe("hooks/config extends", () => {
 	});
 
 	it("user hooks.json overrides env hooks when matcher collides", () => {
-		vi.stubEnv("COMPOSER_HOOKS_PRE_TOOL_USE", "env.sh");
+		process.env.COMPOSER_HOOKS_PRE_TOOL_USE = "env.sh";
 
 		writeFileSync(
 			join(homeDir, ".composer", "hooks.json"),

@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	ConcurrencySlots,
-	createConcurrencySlotsFromEnv,
-} from "../../src/utils/concurrency-slots.js";
+	ConcurrencyManager,
+	createConcurrencyManagerFromEnv,
+} from "../../src/utils/concurrency-manager.js";
+import { ConcurrencySlots } from "../../src/utils/concurrency-slots.js";
 
-describe("ConcurrencySlots", () => {
+describe("ConcurrencyManager", () => {
 	describe("constructor and basic state", () => {
 		it("creates with specified max slots", () => {
-			const slots = new ConcurrencySlots(3);
+			const slots = new ConcurrencyManager(3);
 			const snapshot = slots.getSnapshot();
 			expect(snapshot.max).toBe(3);
 			expect(snapshot.active).toBe(0);
@@ -15,44 +16,44 @@ describe("ConcurrencySlots", () => {
 		});
 
 		it("creates with zero max slots (unlimited)", () => {
-			const slots = new ConcurrencySlots(0);
+			const slots = new ConcurrencyManager(0);
 			expect(slots.isEnabled()).toBe(false);
 		});
 
 		it("creates with negative max slots (unlimited)", () => {
-			const slots = new ConcurrencySlots(-1);
+			const slots = new ConcurrencyManager(-1);
 			expect(slots.isEnabled()).toBe(false);
 		});
 	});
 
 	describe("isEnabled", () => {
 		it("returns true for positive max slots", () => {
-			expect(new ConcurrencySlots(1).isEnabled()).toBe(true);
-			expect(new ConcurrencySlots(5).isEnabled()).toBe(true);
+			expect(new ConcurrencyManager(1).isEnabled()).toBe(true);
+			expect(new ConcurrencyManager(5).isEnabled()).toBe(true);
 		});
 
 		it("returns false for zero or negative max slots", () => {
-			expect(new ConcurrencySlots(0).isEnabled()).toBe(false);
-			expect(new ConcurrencySlots(-1).isEnabled()).toBe(false);
+			expect(new ConcurrencyManager(0).isEnabled()).toBe(false);
+			expect(new ConcurrencyManager(-1).isEnabled()).toBe(false);
 		});
 	});
 
 	describe("acquire and release", () => {
 		it("acquires slot immediately when available", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 			await slots.acquire();
 			expect(slots.getSnapshot().active).toBe(1);
 		});
 
 		it("releases slot correctly", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 			await slots.acquire();
 			slots.release();
 			expect(slots.getSnapshot().active).toBe(0);
 		});
 
 		it("handles multiple acquire/release cycles", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 			await slots.acquire();
 			await slots.acquire();
 			expect(slots.getSnapshot().active).toBe(2);
@@ -63,7 +64,7 @@ describe("ConcurrencySlots", () => {
 		});
 
 		it("does not go below zero on extra release", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 			await slots.acquire();
 			slots.release();
 			slots.release();
@@ -74,7 +75,7 @@ describe("ConcurrencySlots", () => {
 
 	describe("unlimited mode (maxSlots <= 0)", () => {
 		it("acquire returns immediately with no limit", async () => {
-			const slots = new ConcurrencySlots(0);
+			const slots = new ConcurrencyManager(0);
 			await slots.acquire();
 			await slots.acquire();
 			await slots.acquire();
@@ -83,7 +84,7 @@ describe("ConcurrencySlots", () => {
 		});
 
 		it("release is safe in unlimited mode", async () => {
-			const slots = new ConcurrencySlots(0);
+			const slots = new ConcurrencyManager(0);
 			slots.release();
 			slots.release();
 			expect(slots.getSnapshot().active).toBe(0);
@@ -92,7 +93,7 @@ describe("ConcurrencySlots", () => {
 
 	describe("waiting and queuing", () => {
 		it("queues when at capacity", async () => {
-			const slots = new ConcurrencySlots(1);
+			const slots = new ConcurrencyManager(1);
 			await slots.acquire();
 
 			// Start a second acquire (will queue)
@@ -116,7 +117,7 @@ describe("ConcurrencySlots", () => {
 		});
 
 		it("maintains FIFO order", async () => {
-			const slots = new ConcurrencySlots(1);
+			const slots = new ConcurrencyManager(1);
 			await slots.acquire();
 
 			const order: number[] = [];
@@ -138,7 +139,7 @@ describe("ConcurrencySlots", () => {
 
 	describe("withSlot", () => {
 		it("acquires and releases around function", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 			let innerActive = 0;
 
 			await slots.withSlot(async () => {
@@ -150,13 +151,13 @@ describe("ConcurrencySlots", () => {
 		});
 
 		it("returns function result", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 			const result = await slots.withSlot(async () => 42);
 			expect(result).toBe(42);
 		});
 
 		it("releases slot even on error", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 
 			await expect(
 				slots.withSlot(async () => {
@@ -168,7 +169,7 @@ describe("ConcurrencySlots", () => {
 		});
 
 		it("works with concurrent operations", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 			let maxConcurrent = 0;
 			let current = 0;
 
@@ -193,7 +194,7 @@ describe("ConcurrencySlots", () => {
 
 	describe("reset", () => {
 		it("clears active slots", async () => {
-			const slots = new ConcurrencySlots(2);
+			const slots = new ConcurrencyManager(2);
 			await slots.acquire();
 			await slots.acquire();
 			slots.reset();
@@ -201,7 +202,7 @@ describe("ConcurrencySlots", () => {
 		});
 
 		it("resolves pending waiters", async () => {
-			const slots = new ConcurrencySlots(1);
+			const slots = new ConcurrencyManager(1);
 			await slots.acquire();
 
 			let waiterResolved = false;
@@ -217,7 +218,7 @@ describe("ConcurrencySlots", () => {
 	});
 });
 
-describe("createConcurrencySlotsFromEnv", () => {
+describe("createConcurrencyManagerFromEnv", () => {
 	const originalEnv = { ...process.env };
 
 	beforeEach(() => {
@@ -230,47 +231,53 @@ describe("createConcurrencySlotsFromEnv", () => {
 
 	it("reads limit from environment variable", () => {
 		process.env.TEST_CONCURRENCY = "5";
-		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY");
+		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY");
 		expect(slots.getSnapshot().max).toBe(5);
 	});
 
 	it("uses fallback when env var not set", () => {
 		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
 		delete process.env.TEST_CONCURRENCY;
-		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY", 3);
+		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY", 3);
 		expect(slots.getSnapshot().max).toBe(3);
 	});
 
 	it("uses fallback when env var is empty string", () => {
 		process.env.TEST_CONCURRENCY = "";
-		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY", 3);
+		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY", 3);
 		expect(slots.getSnapshot().max).toBe(3);
 	});
 
 	it("uses fallback when env var is not a number", () => {
 		process.env.TEST_CONCURRENCY = "not-a-number";
-		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY", 3);
+		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY", 3);
 		expect(slots.getSnapshot().max).toBe(3);
 	});
 
 	it("uses default fallback of 0 (unlimited)", () => {
 		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
 		delete process.env.TEST_CONCURRENCY;
-		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY");
+		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY");
 		expect(slots.getSnapshot().max).toBe(0);
 		expect(slots.isEnabled()).toBe(false);
 	});
 
 	it("parses zero correctly", () => {
 		process.env.TEST_CONCURRENCY = "0";
-		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY", 5);
+		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY", 5);
 		expect(slots.getSnapshot().max).toBe(0);
 	});
 
 	it("parses negative numbers", () => {
 		process.env.TEST_CONCURRENCY = "-1";
-		const slots = createConcurrencySlotsFromEnv("TEST_CONCURRENCY", 5);
+		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY", 5);
 		expect(slots.getSnapshot().max).toBe(-1);
 		expect(slots.isEnabled()).toBe(false);
+	});
+});
+
+describe("concurrency-slots compatibility shim", () => {
+	it("exports ConcurrencySlots alias", () => {
+		expect(ConcurrencySlots).toBe(ConcurrencyManager);
 	});
 });

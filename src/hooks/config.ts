@@ -264,6 +264,53 @@ function resolveExtendsTarget(spec: string, baseDir: string): string | null {
 		// ignore
 	}
 
+	// Fallback for runtimes that don't fully support require.resolve({ paths }),
+	// and for local test fixtures that place packages under workspaceDir/node_modules.
+	const { packageName, packageSubpath } = parsePackageSpecifier(expanded);
+	if (packageName) {
+		const packageRoot = findPackageRoot(baseDir, packageName);
+		if (packageRoot) {
+			if (packageSubpath) {
+				const candidate = join(packageRoot, packageSubpath);
+				if (existsSync(candidate)) return candidate;
+			}
+			const hooksJson = join(packageRoot, "hooks.json");
+			if (existsSync(hooksJson)) return hooksJson;
+		}
+	}
+
+	return null;
+}
+
+function parsePackageSpecifier(spec: string): {
+	packageName: string | null;
+	packageSubpath: string | null;
+} {
+	const normalized = spec.replaceAll("\\", "/");
+	const parts = normalized.split("/").filter(Boolean);
+	if (parts.length === 0) return { packageName: null, packageSubpath: null };
+
+	if (parts[0]?.startsWith("@")) {
+		if (parts.length < 2) return { packageName: null, packageSubpath: null };
+		const packageName = `${parts[0]}/${parts[1]}`;
+		const packageSubpath = parts.length > 2 ? parts.slice(2).join("/") : null;
+		return { packageName, packageSubpath };
+	}
+
+	const packageName = parts[0] ?? null;
+	const packageSubpath = parts.length > 1 ? parts.slice(1).join("/") : null;
+	return { packageName, packageSubpath };
+}
+
+function findPackageRoot(startDir: string, packageName: string): string | null {
+	let current = resolve(startDir);
+	for (;;) {
+		const candidate = join(current, "node_modules", packageName);
+		if (existsSync(candidate)) return candidate;
+		const next = dirname(current);
+		if (next === current) break;
+		current = next;
+	}
 	return null;
 }
 

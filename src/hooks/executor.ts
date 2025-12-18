@@ -6,8 +6,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { createConcurrencySlotsFromEnv } from "../utils/concurrency-slots.js";
+import { createConcurrencyManagerFromEnv } from "../utils/concurrency-manager.js";
 import { createLogger } from "../utils/logger.js";
+import { AsyncHookTracker } from "./async-hook-tracker.js";
 import { getMatchingHooks, loadHookConfiguration } from "./config.js";
 import { parseHookOutput } from "./output.js";
 import type {
@@ -27,7 +28,7 @@ const logger = createLogger("hooks:executor");
 
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // 60 seconds
 
-const hookSlots = createConcurrencySlotsFromEnv(
+const hookSlots = createConcurrencyManagerFromEnv(
 	"COMPOSER_HOOKS_MAX_CONCURRENCY",
 	0,
 );
@@ -56,18 +57,7 @@ export function getHookConcurrencySnapshot(): {
 	return hookSlots.getSnapshot();
 }
 
-/**
- * Tracking for background/async hooks.
- */
-interface AsyncHookProcess {
-	processId: string;
-	hookEvent: HookEventType;
-	hookName: string;
-	command: string;
-	startedAt: number;
-}
-
-const asyncHookProcesses = new Map<string, AsyncHookProcess>();
+const asyncHookTracker = new AsyncHookTracker();
 
 /**
  * Create a hook result message for UI display.
@@ -337,12 +327,11 @@ function processHookResult(
 
 	// Check for async hook response
 	if (isAsyncHookResponse(parsed)) {
-		asyncHookProcesses.set(parsed.processId, {
+		asyncHookTracker.track({
 			processId: parsed.processId,
 			hookEvent,
 			hookName,
 			command: hookName,
-			startedAt: Date.now(),
 		});
 		logger.debug("Hook running async", {
 			processId: parsed.processId,
@@ -720,14 +709,14 @@ export function hasHooksForEvent(
  * Get count of in-progress hook invocations.
  */
 export function getAsyncHookCount(): number {
-	return asyncHookProcesses.size;
+	return asyncHookTracker.getCount();
 }
 
 /**
  * Mark an async hook as completed (for future async completion plumbing).
  */
 export function markAsyncHookCompleted(processId: string): void {
-	if (asyncHookProcesses.delete(processId)) {
+	if (asyncHookTracker.markCompleted(processId)) {
 		logger.debug("Async hook reported complete", { processId });
 	}
 }
@@ -736,22 +725,12 @@ export function markAsyncHookCompleted(processId: string): void {
  * Clean up completed async hook processes.
  */
 export function cleanupAsyncHooks(): void {
-	const now = Date.now();
-	const maxAge = 10 * 60 * 1000; // 10 minutes
-
-	let removed = 0;
-	for (const [id, proc] of asyncHookProcesses) {
-		if (now - proc.startedAt > maxAge) {
-			asyncHookProcesses.delete(id);
-			removed += 1;
-		}
-	}
-
-	if (removed > 0 || asyncHookProcesses.size > 0) {
+	const { removed, remaining, maxAgeMs } = asyncHookTracker.cleanup();
+	if (removed > 0 || remaining > 0) {
 		logger.debug("Async hook registry sweep", {
 			removed,
-			remaining: asyncHookProcesses.size,
-			maxAgeMs: maxAge,
+			remaining,
+			maxAgeMs,
 		});
 	}
 }
