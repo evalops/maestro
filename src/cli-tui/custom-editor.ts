@@ -1,5 +1,143 @@
 import { Editor } from "@evalops/tui";
 
+type CustomEditorBinding = {
+	description: string;
+	matches: (data: string) => boolean;
+	when?: (editor: CustomEditor) => boolean;
+	handle: (editor: CustomEditor, data: string) => boolean;
+};
+
+const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
+	{
+		description:
+			"Tab cycles slash hints when provided (unless autocomplete is open)",
+		matches: (data) => data === "\t",
+		when: (editor) => Boolean(editor.onTab) && !editor.isShowingAutocomplete(),
+		handle: (editor) => editor.onTab?.() === true,
+	},
+	{
+		description: "Ctrl+P cycles models",
+		matches: (data) => data === "\x10",
+		when: (editor) => Boolean(editor.onCtrlP),
+		handle: (editor) => {
+			editor.onCtrlP?.();
+			return true;
+		},
+	},
+	{
+		description: "Ctrl+O toggles tool output expansion",
+		matches: (data) => data === "\x0f",
+		when: (editor) => Boolean(editor.onCtrlO),
+		handle: (editor) => {
+			editor.onCtrlO?.();
+			return true;
+		},
+	},
+	{
+		description: "Ctrl+T toggles thinking block visibility",
+		matches: (data) => data === "\x14",
+		when: (editor) => Boolean(editor.onCtrlT),
+		handle: (editor) => {
+			editor.onCtrlT?.();
+			return true;
+		},
+	},
+	{
+		description: "Shift+Tab cycles thinking levels (or slash reverse cycle)",
+		matches: (data) => data === "\x1b[Z",
+		when: (editor) => Boolean(editor.onShiftTab),
+		handle: (editor) => editor.onShiftTab?.() === true,
+	},
+	{
+		description: "Escape closes Composer modals (unless autocomplete is open)",
+		matches: (data) => data === "\x1b",
+		when: (editor) =>
+			Boolean(editor.onEscape) && !editor.isShowingAutocomplete(),
+		handle: (editor) => {
+			editor.onEscape?.();
+			return true;
+		},
+	},
+	{
+		description: "Ctrl+K opens command palette",
+		matches: (data) => data === "\x0b",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("ctrl+k") === true,
+	},
+	{
+		description: "@ triggers file search (only when not autocompleting)",
+		matches: (data) => data === "@",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("at") === true,
+	},
+	{
+		description:
+			"'k' can trigger keep-partial during interrupt (if handler returns true)",
+		matches: (data) => data === "k" || data === "K",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("k") === true,
+	},
+	{
+		description: "Ctrl+C interrupts the current run",
+		matches: (data) => data === "\x03",
+		when: (editor) => Boolean(editor.onCtrlC),
+		handle: (editor) => {
+			editor.onCtrlC?.();
+			return true;
+		},
+	},
+	{
+		description: "Up arrow navigates history (when autocomplete is hidden)",
+		matches: (data) => data === "\x1b[A",
+		when: (editor) =>
+			Boolean(editor.onHistoryNavigate) && !editor.isShowingAutocomplete(),
+		handle: (editor) => editor.onHistoryNavigate?.("prev") === true,
+	},
+	{
+		description: "Down arrow navigates history (when autocomplete is hidden)",
+		matches: (data) => data === "\x1b[B",
+		when: (editor) =>
+			Boolean(editor.onHistoryNavigate) && !editor.isShowingAutocomplete(),
+		handle: (editor) => editor.onHistoryNavigate?.("next") === true,
+	},
+	{
+		description: "Page Up scrolls chat history",
+		matches: (data) => data === "\x1b[5~",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("pageup") === true,
+	},
+	{
+		description: "Page Down scrolls chat history",
+		matches: (data) => data === "\x1b[6~",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("pagedown") === true,
+	},
+	{
+		description: "Ctrl+U scrolls chat history half a page up (vim-style)",
+		matches: (data) => data === "\x15",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("ctrl+u") === true,
+	},
+	{
+		description: "Ctrl+D scrolls chat history half a page down (vim-style)",
+		matches: (data) => data === "\x04",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("ctrl+d") === true,
+	},
+	{
+		description: "Ctrl+Home jumps to top of chat history",
+		matches: (data) => data === "\x1b[1;5H",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("ctrl+home") === true,
+	},
+	{
+		description: "Ctrl+End jumps to bottom of chat history",
+		matches: (data) => data === "\x1b[1;5F",
+		when: (editor) => Boolean(editor.onShortcut),
+		handle: (editor) => editor.onShortcut?.("ctrl+end") === true,
+	},
+];
+
 /**
  * Custom editor that handles Escape and Ctrl+C keys for Composer
  */
@@ -17,126 +155,7 @@ export class CustomEditor extends Editor {
 
 	handleInput(rawData: string): void {
 		const data = this.normalizeArrowInput(rawData);
-		// Tab cycles slash hints when provided (unless autocomplete is open)
-		if (data === "\t" && this.onTab && !this.isShowingAutocomplete()) {
-			const handled = this.onTab();
-			if (handled) return;
-		}
-
-		// Ctrl+P cycles models
-		if (data === "\x10" && this.onCtrlP) {
-			this.onCtrlP();
-			return;
-		}
-
-		// Ctrl+O toggles tool output expansion
-		if (data === "\x0f" && this.onCtrlO) {
-			this.onCtrlO();
-			return;
-		}
-
-		// Ctrl+T toggles thinking block visibility
-		if (data === "\x14" && this.onCtrlT) {
-			this.onCtrlT();
-			return;
-		}
-
-		// Shift+Tab cycles thinking levels (or slash reverse cycle)
-		if (data === "\x1b[Z" && this.onShiftTab) {
-			const handled = this.onShiftTab();
-			if (handled) return;
-		}
-
-		// Intercept Escape key - but only if autocomplete is NOT active
-		// (let parent handle escape for autocomplete cancellation)
-		if (data === "\x1b" && this.onEscape && !this.isShowingAutocomplete()) {
-			this.onEscape();
-			return;
-		}
-
-		// Ctrl+K opens palette
-		if (data === "\x0b" && this.onShortcut) {
-			const handled = this.onShortcut("ctrl+k");
-			if (handled) {
-				return;
-			}
-		}
-
-		// @ triggers file search (only when not autocompleting)
-		if (data === "@" && this.onShortcut) {
-			const handled = this.onShortcut("at");
-			if (handled) {
-				return;
-			}
-		}
-
-		// 'k' or 'K' can trigger keep-partial during interrupt (if handler returns true)
-		if ((data === "k" || data === "K") && this.onShortcut) {
-			const handled = this.onShortcut("k");
-			if (handled) {
-				return;
-			}
-		}
-
-		// Intercept Ctrl+C
-		if (data === "\x03" && this.onCtrlC) {
-			this.onCtrlC();
-			return;
-		}
-
-		if (
-			data === "\x1b[A" &&
-			this.onHistoryNavigate &&
-			!this.isShowingAutocomplete()
-		) {
-			const handled = this.onHistoryNavigate("prev");
-			if (handled) {
-				return;
-			}
-		}
-
-		if (
-			data === "\x1b[B" &&
-			this.onHistoryNavigate &&
-			!this.isShowingAutocomplete()
-		) {
-			const handled = this.onHistoryNavigate("next");
-			if (handled) {
-				return;
-			}
-		}
-
-		// Scroll keys - Page Up, Page Down, Ctrl+U, Ctrl+D
-		if (data === "\x1b[5~" && this.onShortcut) {
-			// Page Up
-			const handled = this.onShortcut("pageup");
-			if (handled) return;
-		}
-		if (data === "\x1b[6~" && this.onShortcut) {
-			// Page Down
-			const handled = this.onShortcut("pagedown");
-			if (handled) return;
-		}
-		if (data === "\x15" && this.onShortcut) {
-			// Ctrl+U - half page up (vim-style)
-			const handled = this.onShortcut("ctrl+u");
-			if (handled) return;
-		}
-		if (data === "\x04" && this.onShortcut) {
-			// Ctrl+D - half page down (vim-style)
-			const handled = this.onShortcut("ctrl+d");
-			if (handled) return;
-		}
-		if (data === "\x1b[1;5H" && this.onShortcut) {
-			// Ctrl+Home - jump to top
-			const handled = this.onShortcut("ctrl+home");
-			if (handled) return;
-		}
-		if (data === "\x1b[1;5F" && this.onShortcut) {
-			// Ctrl+End - jump to bottom
-			const handled = this.onShortcut("ctrl+end");
-			if (handled) return;
-		}
+		if (this.tryHandleKeyBindings(data)) return;
 
 		if (this.isPrintableInput(data) && this.onTyping) {
 			this.onTyping();
@@ -144,6 +163,15 @@ export class CustomEditor extends Editor {
 
 		// Pass to parent for normal handling
 		super.handleInput(data);
+	}
+
+	private tryHandleKeyBindings(data: string): boolean {
+		for (const binding of CUSTOM_EDITOR_KEYMAP) {
+			if (!binding.matches(data)) continue;
+			if (binding.when && !binding.when(this)) continue;
+			if (binding.handle(this, data)) return true;
+		}
+		return false;
 	}
 
 	private isPrintableInput(data: string): boolean {
