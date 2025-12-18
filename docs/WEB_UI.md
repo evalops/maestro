@@ -8,8 +8,8 @@ Contents: [Features](#features) · [Architecture](#architecture) · [Quick Start
 A browser-based interface for the Composer AI coding assistant with core parity to the TUI. Parity is documented once—in the appendix below—to keep a single source of truth.
 
 Parity at a glance:
-- Full: chat, sessions, models, config, usage, approvals.
-- Not included by design: git operations, queue controls, diagnostics/LSP/MCP, guardian scans, export/share, theming tweaks, and other terminal-only UX.
+- Full: chat, sessions, models, config, usage, approvals, attachments, artifacts, share links (read-only), document extraction.
+- Not included by design: git operations, some diagnostics/LSP/MCP workflows, guardian controls, and other terminal-only UX.
 
 ## Features
 
@@ -19,6 +19,9 @@ Parity at a glance:
 - **Model Selection**: Switch between different AI models
 - **Syntax Highlighting**: Code blocks with highlight.js
 - **Markdown Rendering**: Rich text formatting with marked
+- **Attachments**: Upload images/documents; preview (PDF/DOCX/XLSX/PPTX text), download, and lazy-load bytes for session history
+- **Artifacts**: View generated artifacts with sandboxed HTML rendering and downloads
+- **Share Links**: Generate `/share/:token` read-only links for sessions
 - **Auto-approval**: Tools execute automatically in web mode for seamless experience
 
 ## Architecture
@@ -419,22 +422,22 @@ curl -N -X POST http://localhost:8080/api/chat \
 
 ## Parity Appendix (summary)
 
-Full parity (Web + TUI): chat streaming, session create/list/load/delete, model select/list, thinking level, config get/set, cost/usage, status/health, approval mode, policy validation, file list, commands list, queue mode/status, zen/clean/footer/compact toggles, branching.
+Full parity (Web + TUI): chat streaming, session create/list/load/delete, model select/list, thinking level, config get/set, cost/usage, status/health, approval mode, policy validation, file list, commands list, queue mode/status, zen/clean/footer/compact toggles, branching, attachments, artifacts, share links (read-only).
 
-TUI-only (by design): git operations (`/diff`, `/review`, `/undo`), diagnostics/LSP/MCP/telemetry, guardian scans and plan-mode prompts, favorites/compaction, export/share, OAuth login/logout, workspace script runner, tools list/failures/clear, Ollama/local model control.
+TUI-only (by design): git operations (`/diff`, `/review`, `/undo`), deep diagnostics/LSP/MCP/telemetry, guardian scans and plan-mode prompts, OAuth login/logout, workspace script runner, tools list/failures/clear, Ollama/local model control.
 
 Security note: Web API stays stateless and limits filesystem/git access; keep using TUI for those workflows.
 
 - [x] Authentication (JWT/shared-secret). OAuth still pending
-- [ ] Session persistence and resume
-- [ ] File upload for attachments
+- [x] Session persistence and resume
+- [x] File upload for attachments
 - [ ] Multi-user support
 - [x] Rate limiting (session/IP)
 - [ ] WebSocket alternative to SSE
 - [ ] Dark/Light theme toggle
 - [ ] Mobile responsive design
-- [ ] Export conversations
-- [ ] Keyboard shortcuts
+- [ ] Export conversations (web UI)
+- [x] Keyboard shortcuts
 - [ ] Voice input
 
 ## Contributing

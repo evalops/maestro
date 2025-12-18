@@ -629,7 +629,8 @@ export async function handleSharedSession(
 
 		// Return a read-only view of the session
 		const responseBody: ComposerSession = {
-			id: session.id,
+			// Don't leak the underlying session id through share links; treat token as the public id.
+			id: `shared:${shareToken}`,
 			title: session.title,
 			createdAt: session.createdAt,
 			updatedAt: session.updatedAt,

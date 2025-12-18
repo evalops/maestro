@@ -46,7 +46,10 @@ import {
 	handleSessionArtifactsIndex,
 	handleSessionArtifactsZip,
 } from "./handlers/session-artifacts.js";
-import { handleSessionAttachment } from "./handlers/session-attachments.js";
+import {
+	handleSessionAttachment,
+	handleSessionAttachmentExtract,
+} from "./handlers/session-attachments.js";
 import {
 	handleSessionExport,
 	handleSessionShare,
@@ -524,6 +527,17 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/api/sessions/:id/attachments/:attachmentId",
 			handler: (req, res, params) =>
 				handleSessionAttachment(
+					req,
+					res,
+					params as { id: string; attachmentId: string },
+					corsHeaders,
+				),
+		},
+		{
+			method: "POST",
+			path: "/api/sessions/:id/attachments/:attachmentId/extract",
+			handler: (req, res, params) =>
+				handleSessionAttachmentExtract(
 					req,
 					res,
 					params as { id: string; attachmentId: string },

@@ -44,6 +44,16 @@ function decodeBase64ToBytes(base64: string): Uint8Array {
 	return bytes;
 }
 
+function encodeBytesToBase64(bytes: Uint8Array): string {
+	let binary = "";
+	const chunkSize = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunkSize) {
+		const chunk = bytes.slice(i, i + chunkSize);
+		binary += String.fromCharCode(...chunk);
+	}
+	return btoa(binary);
+}
+
 function safeDecodeBase64ToText(base64: string): string | null {
 	try {
 		return atob(base64);
@@ -309,6 +319,7 @@ export class ComposerAttachmentViewer extends LitElement {
 	@state() private xlsxActiveSheet = 0;
 	@state() private xlsxHtml: string | null = null;
 	@state() private pptxActiveSlide = 0;
+	@state() private extracting = false;
 
 	private loadedBytes: Uint8Array | null = null;
 	private pdfDoc: unknown | null = null;
@@ -569,6 +580,94 @@ export class ComposerAttachmentViewer extends LitElement {
 		}
 	}
 
+	private async extractText() {
+		const att = this.attachment;
+		const apiEndpoint = (this.apiEndpoint || "").replace(/\/$/, "");
+		if (!att?.id || !apiEndpoint) return;
+
+		const kind = this.getKind(att);
+		if (!["pdf", "docx", "xlsx", "pptx"].includes(kind)) return;
+
+		this.extracting = true;
+		this.loadError = null;
+		try {
+			const canPersistToSession =
+				!this.shareToken &&
+				Boolean(this.sessionId && this.sessionId.length > 0);
+
+			let extractedText: string | null = null;
+
+			if (canPersistToSession) {
+				const url = `${apiEndpoint}/api/sessions/${encodeURIComponent(
+					this.sessionId as string,
+				)}/attachments/${encodeURIComponent(att.id)}/extract`;
+				const res = await fetch(url, { method: "POST" });
+				if (!res.ok) {
+					throw new Error(
+						`Failed to extract (${res.status} ${res.statusText})`,
+					);
+				}
+				const json = (await res.json()) as { extractedText?: unknown };
+				extractedText =
+					typeof json.extractedText === "string" ? json.extractedText : null;
+			} else {
+				const base64 =
+					typeof att.content === "string" && att.content.length > 0
+						? att.content
+						: await (async () => {
+								await this.ensureBytesLoaded({ decodeText: false });
+								return this.loadedBytes
+									? encodeBytesToBase64(this.loadedBytes)
+									: "";
+							})();
+
+				if (!base64) {
+					throw new Error("Missing attachment content for extraction");
+				}
+
+				const res = await fetch(`${apiEndpoint}/api/attachments/extract`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Accept: "application/json",
+					},
+					body: JSON.stringify({
+						fileName: att.fileName,
+						mimeType: att.mimeType,
+						contentBase64: base64,
+					}),
+				});
+				if (!res.ok) {
+					throw new Error(
+						`Failed to extract (${res.status} ${res.statusText})`,
+					);
+				}
+				const json = (await res.json()) as { extractedText?: unknown };
+				extractedText =
+					typeof json.extractedText === "string" ? json.extractedText : null;
+			}
+
+			if (!extractedText) {
+				throw new Error("Extractor returned no text");
+			}
+
+			this.attachment = { ...att, extractedText };
+			this.renderedAttachmentId = null;
+			this.dispatchEvent(
+				new CustomEvent("attachment-updated", {
+					bubbles: true,
+					composed: true,
+					detail: { attachmentId: att.id, extractedText },
+				}),
+			);
+		} catch (e) {
+			this.loadError =
+				e instanceof Error ? e.message : "Failed to extract text";
+		} finally {
+			this.extracting = false;
+		}
+	}
+
 	private async renderPdf(bytes: Uint8Array, token: number): Promise<void> {
 		const pdfjsLib = await loadPdfjs();
 		const root = this.renderRoot as ShadowRoot;
@@ -697,6 +796,8 @@ export class ComposerAttachmentViewer extends LitElement {
 		const kind = this.getKind(att);
 		const canToggleText =
 			this.viewMode === "preview" ? Boolean(att.extractedText) : true;
+		const canExtractText =
+			["pdf", "docx", "xlsx", "pptx"].includes(kind) && !att.extractedText;
 		const previewBase64 = att.preview || att.content || "";
 		const canDownload =
 			Boolean(att.content) ||
@@ -754,6 +855,19 @@ export class ComposerAttachmentViewer extends LitElement {
 						<button class="btn" @click=${this.copyText} ?disabled=${!text}>
 							${copyLabel}
 						</button>
+						${
+							canExtractText
+								? html`
+										<button
+											class="btn"
+											@click=${this.extractText}
+											?disabled=${this.extracting}
+										>
+											${this.extracting ? "Extracting..." : "Extract"}
+										</button>
+									`
+								: ""
+						}
 						<button class="btn" @click=${this.download} ?disabled=${!canDownload}>
 							Download
 						</button>

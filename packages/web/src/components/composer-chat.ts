@@ -331,6 +331,39 @@ export class ComposerChat extends LitElement {
 			padding: 1rem;
 		}
 
+		.history-truncation {
+			font-family: var(--font-mono, monospace);
+			font-size: 0.7rem;
+			color: var(--text-tertiary, #5c5e62);
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--bg-elevated, #161719);
+			padding: 0.5rem 0.75rem;
+			margin-bottom: 0.75rem;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 0.75rem;
+		}
+
+		.history-btn {
+			border: 1px solid var(--border-primary, #1e2023);
+			background: transparent;
+			color: var(--text-tertiary, #5c5e62);
+			height: 26px;
+			padding: 0 0.6rem;
+			cursor: pointer;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.65rem;
+			letter-spacing: 0.06em;
+			text-transform: uppercase;
+		}
+
+		.history-btn:hover {
+			background: var(--bg-surface, #1a1b1e);
+			color: var(--text-primary, #e8e9eb);
+			border-color: var(--accent-amber, #d4a012);
+		}
+
 		.input-container {
 			padding: 1rem 1.5rem 1.5rem;
 			background: var(--bg-deep, #08090a);
@@ -390,6 +423,17 @@ export class ComposerChat extends LitElement {
 			color: var(--text-primary, #e8e9eb);
 		}
 
+		.icon-btn:disabled {
+			opacity: 0.4;
+			cursor: not-allowed;
+		}
+
+		.icon-btn:disabled:hover {
+			background: transparent;
+			border-color: var(--border-primary, #1e2023);
+			color: var(--text-tertiary, #5c5e62);
+		}
+
 		.icon-btn.active {
 			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
 			border-color: var(--accent-amber, #d4a012);
@@ -434,6 +478,108 @@ export class ComposerChat extends LitElement {
 		.toast.success { border-left: 2px solid var(--accent-green, #22c55e); }
 		.toast.error { border-left: 2px solid var(--accent-red, #ef4444); }
 		.toast.info { border-left: 2px solid var(--accent-amber, #d4a012); }
+
+		/* Modal */
+		.modal-overlay {
+			position: fixed;
+			inset: 0;
+			background: rgba(0, 0, 0, 0.7);
+			z-index: 260;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: 1.25rem;
+		}
+
+		.modal-dialog {
+			width: min(520px, 100%);
+			background: var(--bg-deep, #08090a);
+			border: 1px solid var(--border-primary, #1e2023);
+			box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+			padding: 0.9rem;
+			font-family: var(--font-mono, monospace);
+		}
+
+		.modal-title {
+			font-size: 0.75rem;
+			font-weight: 700;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+			color: var(--text-secondary, #8b8d91);
+			margin-bottom: 0.75rem;
+		}
+
+		.modal-row {
+			display: flex;
+			gap: 0.5rem;
+			align-items: center;
+			margin-bottom: 0.6rem;
+		}
+
+		.modal-row label {
+			font-size: 0.7rem;
+			color: var(--text-tertiary, #5c5e62);
+			min-width: 130px;
+		}
+
+		.modal-row input[type="number"],
+		.modal-row input[type="text"] {
+			flex: 1;
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-primary, #e8e9eb);
+			padding: 0.35rem 0.5rem;
+			font-family: inherit;
+			font-size: 0.75rem;
+		}
+
+		.modal-help {
+			font-size: 0.7rem;
+			color: var(--text-tertiary, #5c5e62);
+			line-height: 1.35;
+			margin: 0.5rem 0 0.75rem 0;
+		}
+
+		.modal-actions {
+			display: flex;
+			justify-content: flex-end;
+			gap: 0.5rem;
+		}
+
+		.modal-btn {
+			border: 1px solid var(--border-primary, #1e2023);
+			background: transparent;
+			color: var(--text-tertiary, #5c5e62);
+			height: 30px;
+			padding: 0 0.75rem;
+			cursor: pointer;
+			font-family: inherit;
+			font-size: 0.7rem;
+			letter-spacing: 0.06em;
+			text-transform: uppercase;
+		}
+
+		.modal-btn.primary {
+			border-color: var(--accent-amber, #d4a012);
+			color: var(--accent-amber, #d4a012);
+			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+		}
+
+		.modal-btn:hover:not(:disabled) {
+			background: var(--bg-elevated, #161719);
+			color: var(--text-primary, #e8e9eb);
+		}
+
+		.modal-btn:disabled {
+			opacity: 0.4;
+			cursor: not-allowed;
+		}
+
+		.modal-error {
+			font-size: 0.75rem;
+			color: var(--accent-red, #ef4444);
+			margin: 0.5rem 0;
+		}
 
 		/* Empty State */
 		.empty-state {
@@ -550,6 +696,7 @@ export class ComposerChat extends LitElement {
 	@state() private sessions: SessionSummary[] = [];
 	@state() private currentSessionId: string | null = null;
 	@state() private shareToken: string | null = null;
+	@state() private renderLimit = 200;
 	@state() private settingsOpen = false;
 	@state() private adminSettingsOpen = false;
 	@state() private artifactsOpen = false;
@@ -565,6 +712,16 @@ export class ComposerChat extends LitElement {
 	@state() private currentModelTokens: string | null = null;
 	@state() private models: Model[] = [];
 	@state() private usage: UsageSummary | null = null;
+	@state() private shareDialogOpen = false;
+	@state() private shareDialogLoading = false;
+	@state() private shareDialogError: string | null = null;
+	@state() private shareExpiresHours = 24;
+	@state() private shareMaxAccesses: number | null = 100;
+	@state() private shareResult: {
+		webShareUrl: string;
+		expiresAt: string;
+		maxAccesses: number | null;
+	} | null = null;
 	@state() private toast: {
 		message: string;
 		type: "info" | "error" | "success";
@@ -625,6 +782,22 @@ export class ComposerChat extends LitElement {
 		this.showShortcuts = false;
 	}
 
+	private async loadEarlierMessages() {
+		const messagesEl = this.shadowRoot?.querySelector(
+			".messages",
+		) as HTMLElement | null;
+		const prevScrollHeight = messagesEl?.scrollHeight ?? 0;
+		const prevScrollTop = messagesEl?.scrollTop ?? 0;
+
+		this.renderLimit = Math.min(this.messages.length, this.renderLimit + 200);
+		await this.updateComplete;
+
+		if (!messagesEl) return;
+		const nextScrollHeight = messagesEl.scrollHeight;
+		const delta = Math.max(0, nextScrollHeight - prevScrollHeight);
+		messagesEl.scrollTop = prevScrollTop + delta;
+	}
+
 	private handleOpenAttachment = (
 		e: CustomEvent<{ attachment?: Message["attachments"][number] }>,
 	) => {
@@ -637,6 +810,31 @@ export class ComposerChat extends LitElement {
 	private closeAttachmentViewer = () => {
 		this.attachmentViewerOpen = false;
 		this.attachmentViewerAttachment = null;
+	};
+
+	private handleAttachmentUpdated = (
+		e: CustomEvent<{ attachmentId?: unknown; extractedText?: unknown }>,
+	) => {
+		const attachmentId = e.detail?.attachmentId;
+		const extractedText = e.detail?.extractedText;
+		if (typeof attachmentId !== "string" || attachmentId.length === 0) return;
+		if (typeof extractedText !== "string" || extractedText.length === 0) return;
+
+		this.messages = this.messages.map((msg) => {
+			const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
+			if (atts.length === 0) return msg;
+			const nextAtts = atts.map((a) =>
+				a?.id === attachmentId ? { ...a, extractedText } : a,
+			);
+			return { ...msg, attachments: nextAtts };
+		});
+
+		if (this.attachmentViewerAttachment?.id === attachmentId) {
+			this.attachmentViewerAttachment = {
+				...this.attachmentViewerAttachment,
+				extractedText,
+			};
+		}
 	};
 
 	private getShareTokenFromLocation(): string | null {
@@ -667,6 +865,7 @@ export class ComposerChat extends LitElement {
 			this.messages = Array.isArray(session.messages)
 				? [...session.messages]
 				: [];
+			this.renderLimit = 200;
 			this.sessions = [];
 			this.attachmentContentCache.clear();
 			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
@@ -911,8 +1110,10 @@ export class ComposerChat extends LitElement {
 			| "info"
 			| "refresh"
 			| "globe"
+			| "share"
 			| "settings"
 			| "grid"
+			| "file"
 			| "reduce"
 			| "close",
 	) {
@@ -924,6 +1125,8 @@ export class ComposerChat extends LitElement {
 				"M4.93 4.93A10 10 0 0 1 19.07 5M20 9v-4h-4M19.07 19.07A10 10 0 0 1 4.93 19M4 15v4h4",
 			globe:
 				"M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0 0c3 0 5-4 5-9s-2-9-5-9-5 4-5 9 2 9 5 9Zm0 0c2.5 0 4.5-4 4.5-9S14.5 3 12 3 7.5 7 7.5 12 9.5 21 12 21Zm0-9h9M3 12h9",
+			share:
+				"M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 0 6Zm-12 4a3 3 0 1 0 2.83 4H9a3 3 0 0 0 0-6Zm12 0a3 3 0 1 0 2.83 4H21a3 3 0 0 0 0-6Zm-4.59-1.51L8.59 15.5M15.41 8.5 8.59 11.5",
 			settings:
 				"M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.63a1 1 0 0 0 0-1.74l-1.17-.68a1 1 0 0 1-.46-.86l.05-1.35a1 1 0 0 0-1.17-1.01l-1.35.23a1 1 0 0 1-.9-.26L13.2 6a1 1 0 0 0-1.4 0l-.9.9a1 1 0 0 1-.9.26l-1.35-.23a1 1 0 0 0-1.17 1.01l.05 1.35a1 1 0 0 1-.46.86l-1.17.68a1 1 0 0 0 0 1.74l1.17.68a1 1 0 0 1 .46.86l-.05 1.35a1 1 0 0 0 1.17 1.01l1.35-.23a1 1 0 0 1 .9.26l.9.9a1 1 0 0 0 1.4 0l.9-.9a1 1 0 0 1 .9-.26l1.35.23a1 1 0 0 0 1.17-1.01l-.05-1.35a1 1 0 0 1 .46-.86Z",
 			grid: "M4 4h7v7H4Zm9 0h7v7h-7ZM4 13h7v7H4Zm9 7v-7h7v7Z",
@@ -948,7 +1151,67 @@ export class ComposerChat extends LitElement {
 		this.adminSettingsOpen = !this.adminSettingsOpen;
 	}
 
+	private openShareDialog = async () => {
+		if (this.shareToken) return;
+		if (!this.currentSessionId) {
+			this.showToast("Create or select a session first", "info", 1800);
+			return;
+		}
+		this.shareDialogOpen = true;
+		this.shareDialogError = null;
+		this.shareResult = null;
+	};
+
+	private closeShareDialog = () => {
+		this.shareDialogOpen = false;
+		this.shareDialogLoading = false;
+		this.shareDialogError = null;
+		this.shareResult = null;
+	};
+
+	private createShareLink = async () => {
+		if (!this.currentSessionId) return;
+		this.shareDialogLoading = true;
+		this.shareDialogError = null;
+		try {
+			const res = await this.apiClient.shareSession(this.currentSessionId, {
+				expiresInHours: Math.min(168, Math.max(1, this.shareExpiresHours)),
+				maxAccesses: this.shareMaxAccesses,
+			});
+			const webUrl = res.webShareUrl
+				? new URL(res.webShareUrl, window.location.origin).toString()
+				: new URL(
+						`/share/${res.shareToken}`,
+						window.location.origin,
+					).toString();
+			this.shareResult = {
+				webShareUrl: webUrl,
+				expiresAt: res.expiresAt,
+				maxAccesses: res.maxAccesses,
+			};
+		} catch (e) {
+			this.shareDialogError =
+				e instanceof Error ? e.message : "Failed to create share link";
+		} finally {
+			this.shareDialogLoading = false;
+		}
+	};
+
+	private copyShareLink = async () => {
+		if (!this.shareResult) return;
+		try {
+			await navigator.clipboard.writeText(this.shareResult.webShareUrl);
+			this.showToast("Share link copied", "success", 1500);
+		} catch {
+			this.showToast("Copy failed", "error", 1500);
+		}
+	};
+
 	private toggleArtifactsPanel() {
+		if (this.shareToken) {
+			this.showToast("Shared sessions are read-only", "info", 1800);
+			return;
+		}
 		this.artifactsOpen = !this.artifactsOpen;
 	}
 
@@ -957,6 +1220,10 @@ export class ComposerChat extends LitElement {
 	}
 
 	private setActiveArtifact(filename: string) {
+		if (this.shareToken) {
+			this.showToast("Shared sessions are read-only", "info", 1800);
+			return;
+		}
 		this.activeArtifact = filename;
 		this.artifactsOpen = true;
 	}
@@ -1010,6 +1277,7 @@ export class ComposerChat extends LitElement {
 			const session = await this.apiClient.createSession("New Chat");
 			this.currentSessionId = session.id;
 			this.messages = session.messages || [];
+			this.renderLimit = 200;
 			this.attachmentContentCache.clear();
 			this.artifactsState = createEmptyArtifactsState();
 			this.activeArtifact = null;
@@ -1033,6 +1301,7 @@ export class ComposerChat extends LitElement {
 			this.messages = Array.isArray(session.messages)
 				? [...session.messages]
 				: [];
+			this.renderLimit = 200;
 			this.attachmentContentCache.clear();
 			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
 			this.activeArtifact = null;
@@ -1809,7 +2078,14 @@ export class ComposerChat extends LitElement {
 		const showSessionGallery =
 			!isShared && this.messages.length === 0 && this.sessions.length > 0;
 		const hasMessages = this.messages.length > 0;
-		const renderedMessages = this.messages.map(
+		const totalMessages = this.messages.length;
+		const windowSize = Math.max(1, this.renderLimit);
+		const windowStart =
+			totalMessages > windowSize ? totalMessages - windowSize : 0;
+		const visibleMessages =
+			windowStart > 0 ? this.messages.slice(windowStart) : this.messages;
+		const hiddenCount = windowStart;
+		const renderedMessages = visibleMessages.map(
 			(msg) => html`
 				<composer-message
 					role=${msg.role}
@@ -1850,6 +2126,7 @@ export class ComposerChat extends LitElement {
 				.apiEndpoint=${this.apiClient?.baseUrl || this.apiEndpoint}
 				.sessionId=${isShared ? null : this.currentSessionId}
 				.shareToken=${this.shareToken}
+				@attachment-updated=${this.handleAttachmentUpdated}
 				@close=${this.closeAttachmentViewer}
 			></composer-attachment-viewer>
 			${
@@ -2020,9 +2297,24 @@ export class ComposerChat extends LitElement {
 					<span>${this.currentModel.split("/").pop()?.toUpperCase() || "MODEL"}</span>
 						</div>
 						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${this.renderIcon("globe")}</button>
+						<button
+							class="icon-btn"
+							title=${isShared ? "Shared sessions are read-only" : "Share session"}
+							@click=${this.openShareDialog}
+							?disabled=${isShared || !this.currentSessionId}
+						>
+							${this.renderIcon("share")}
+						</button>
 						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
 						<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>
-						<button class="icon-btn ${this.artifactsOpen ? "active" : ""}" title="Artifacts" @click=${this.toggleArtifactsPanel}>${this.renderIcon("file")}</button>
+						<button
+							class="icon-btn ${this.artifactsOpen ? "active" : ""}"
+							title=${isShared ? "Shared sessions are read-only" : "Artifacts"}
+							@click=${this.toggleArtifactsPanel}
+							?disabled=${isShared}
+						>
+							${this.renderIcon("file")}
+						</button>
 						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
 						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
 					</div>
@@ -2119,7 +2411,24 @@ export class ComposerChat extends LitElement {
 									}
 								</div>
 						  `
-								: renderedMessages
+								: html`
+										${
+											hiddenCount > 0
+												? html`
+														<div class="history-truncation">
+															Showing last ${renderedMessages.length} of ${totalMessages}.
+															<button
+																class="history-btn"
+																@click=${this.loadEarlierMessages}
+															>
+																Load earlier
+															</button>
+														</div>
+													`
+												: ""
+										}
+										${renderedMessages}
+									`
 						}
 					${this.loading ? html`<div class="loading">Processing...</div>` : ""}
 				</div>
@@ -2132,7 +2441,7 @@ export class ComposerChat extends LitElement {
 				</div>
 
 				${
-					this.artifactsOpen
+					this.artifactsOpen && !isShared
 						? html`
 							<composer-artifacts-panel
 								.artifacts=${this.getArtifactsList()}
@@ -2225,6 +2534,99 @@ export class ComposerChat extends LitElement {
 					? html`
 						<div class="toast ${this.toast.type}">
 							${this.toast.message}
+						</div>
+				  `
+					: ""
+			}
+
+			${
+				this.shareDialogOpen
+					? html`
+						<div class="modal-overlay" @click=${this.closeShareDialog}>
+							<div class="modal-dialog" @click=${(e: Event) => e.stopPropagation()}>
+								<div class="modal-title">Share session</div>
+								<div class="modal-row">
+									<label for="share-exp">Expires (hours)</label>
+									<input
+										id="share-exp"
+										type="number"
+										min="1"
+										max="168"
+										.value=${String(this.shareExpiresHours)}
+										@input=${(e: Event) => {
+											const raw = (e.target as HTMLInputElement).value;
+											const n = Number.parseInt(raw, 10);
+											this.shareExpiresHours = Number.isFinite(n) ? n : 24;
+										}}
+									/>
+								</div>
+								<div class="modal-row">
+									<label for="share-max">Max opens</label>
+									<input
+										id="share-max"
+										type="number"
+										min="1"
+										.value=${this.shareMaxAccesses === null ? "" : String(this.shareMaxAccesses)}
+										placeholder="Unlimited"
+										@input=${(e: Event) => {
+											const raw = (e.target as HTMLInputElement).value.trim();
+											if (!raw) {
+												this.shareMaxAccesses = null;
+												return;
+											}
+											const n = Number.parseInt(raw, 10);
+											this.shareMaxAccesses = Number.isFinite(n) ? n : 100;
+										}}
+									/>
+								</div>
+
+								${
+									this.shareResult
+										? html`
+											<div class="modal-row">
+												<label>Link</label>
+												<input type="text" readonly .value=${this.shareResult.webShareUrl} />
+											</div>
+											<div class="modal-help">
+												Expires at ${new Date(this.shareResult.expiresAt).toLocaleString()}${
+													this.shareResult.maxAccesses === null
+														? " • unlimited opens"
+														: ` • max ${this.shareResult.maxAccesses} opens`
+												}
+											</div>
+										`
+										: html`<div class="modal-help">
+												Generates a read-only link for viewing this session in the web UI.
+											</div>`
+								}
+
+								${this.shareDialogError ? html`<div class="modal-error">${this.shareDialogError}</div>` : ""}
+
+								<div class="modal-actions">
+									<button class="modal-btn" @click=${this.closeShareDialog}>Close</button>
+									${
+										this.shareResult
+											? html`
+												<button
+													class="modal-btn primary"
+													@click=${this.copyShareLink}
+													?disabled=${this.shareDialogLoading}
+												>
+													Copy
+												</button>
+											`
+											: html`
+												<button
+													class="modal-btn primary"
+													@click=${this.createShareLink}
+													?disabled=${this.shareDialogLoading}
+												>
+													${this.shareDialogLoading ? "Creating..." : "Create link"}
+												</button>
+											`
+									}
+								</div>
+							</div>
 						</div>
 				  `
 					: ""

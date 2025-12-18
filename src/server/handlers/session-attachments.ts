@@ -1,5 +1,7 @@
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { SessionManager } from "../../session/manager.js";
+import { extractDocumentText } from "../../utils/document-extractor.js";
 import {
 	buildContentDisposition,
 	respondWithApiError,
@@ -17,6 +19,7 @@ function findAttachmentInSession(
 	mimeType: string;
 	contentBase64: string;
 	size?: number;
+	extractedText?: string;
 } | null {
 	const messages = Array.isArray(session.messages) ? session.messages : [];
 	for (const msg of messages) {
@@ -32,6 +35,7 @@ function findAttachmentInSession(
 				mimeType?: unknown;
 				content?: unknown;
 				size?: unknown;
+				extractedText?: unknown;
 			};
 			if (a.id !== attachmentId) continue;
 			if (typeof a.fileName !== "string" || !a.fileName) return null;
@@ -45,10 +49,68 @@ function findAttachmentInSession(
 					typeof a.size === "number" && Number.isFinite(a.size)
 						? a.size
 						: undefined,
+				extractedText:
+					typeof a.extractedText === "string" && a.extractedText.length > 0
+						? a.extractedText
+						: undefined,
 			};
 		}
 	}
 	return null;
+}
+
+function persistExtractedTextToSessionFile(opts: {
+	sessionFile: string;
+	attachmentId: string;
+	extractedText: string;
+}): boolean {
+	const raw = readFileSync(opts.sessionFile, "utf8");
+	const lines = raw
+		.trimEnd()
+		.split("\n")
+		.filter((l) => l.trim().length > 0);
+	if (lines.length === 0) return false;
+
+	let updated = false;
+	const nextLines: string[] = [];
+	for (const line of lines) {
+		try {
+			const entry = JSON.parse(line) as {
+				type?: unknown;
+				message?: { attachments?: unknown };
+			};
+
+			if (entry?.type === "message") {
+				const atts = entry.message?.attachments;
+				if (Array.isArray(atts)) {
+					let changed = false;
+					const nextAtts = atts.map((att) => {
+						if (!att || typeof att !== "object") return att;
+						const a = att as { id?: unknown; extractedText?: unknown };
+						if (a.id !== opts.attachmentId) return att;
+						changed = true;
+						return {
+							...(att as Record<string, unknown>),
+							extractedText: opts.extractedText,
+						};
+					});
+					if (changed && entry.message) {
+						entry.message.attachments = nextAtts;
+						updated = true;
+					}
+				}
+			}
+			nextLines.push(JSON.stringify(entry));
+		} catch {
+			nextLines.push(line);
+		}
+	}
+
+	if (!updated) return false;
+	const tmp = `${opts.sessionFile}.${Date.now()}.tmp`;
+	writeFileSync(tmp, `${nextLines.join("\n")}\n`, "utf8");
+	renameSync(tmp, opts.sessionFile);
+	return true;
 }
 
 export async function handleSessionAttachment(
@@ -107,6 +169,104 @@ export async function handleSessionAttachment(
 			...cors,
 		});
 		res.end(bytes);
+	} catch (error) {
+		respondWithApiError(res, error, 500, cors, req);
+	}
+}
+
+export async function handleSessionAttachmentExtract(
+	req: IncomingMessage,
+	res: ServerResponse,
+	params: { id: string; attachmentId: string },
+	cors: Record<string, string>,
+) {
+	const sessionManager = new SessionManager(true);
+
+	try {
+		if (req.method !== "POST") {
+			sendJson(res, 405, { error: "Method not allowed" }, cors, req);
+			return;
+		}
+
+		const sessionId = params.id;
+		const attachmentId = params.attachmentId;
+
+		if (!sessionIdPattern.test(sessionId)) {
+			sendJson(res, 400, { error: "Invalid session id" }, cors, req);
+			return;
+		}
+		if (!attachmentIdPattern.test(attachmentId)) {
+			sendJson(res, 400, { error: "Invalid attachment id" }, cors, req);
+			return;
+		}
+
+		const requestUrl = new URL(req.url || "/", "http://localhost");
+		const force = requestUrl.searchParams.get("force");
+		const shouldForce = force === "1" || force === "true";
+
+		const session = await sessionManager.loadSession(sessionId);
+		if (!session) {
+			sendJson(res, 404, { error: "Session not found" }, cors, req);
+			return;
+		}
+
+		const attachment = findAttachmentInSession(session, attachmentId);
+		if (!attachment) {
+			sendJson(res, 404, { error: "Attachment not found" }, cors, req);
+			return;
+		}
+
+		if (attachment.extractedText && !shouldForce) {
+			sendJson(
+				res,
+				200,
+				{
+					fileName: attachment.fileName,
+					format: "unknown",
+					size: attachment.size ?? 0,
+					truncated: false,
+					extractedText: attachment.extractedText,
+					cached: true,
+				},
+				cors,
+				req,
+			);
+			return;
+		}
+
+		const bytes = Buffer.from(attachment.contentBase64, "base64");
+		const extracted = await extractDocumentText({
+			buffer: bytes,
+			fileName: attachment.fileName,
+			mimeType: attachment.mimeType,
+		});
+
+		const sessionFile = sessionManager.getSessionFileById(sessionId);
+		if (sessionFile) {
+			try {
+				persistExtractedTextToSessionFile({
+					sessionFile,
+					attachmentId,
+					extractedText: extracted.extractedText,
+				});
+			} catch {
+				// ignore persistence errors; extraction result still returned
+			}
+		}
+
+		sendJson(
+			res,
+			200,
+			{
+				fileName: attachment.fileName,
+				format: extracted.format,
+				size: extracted.sizeBytes,
+				truncated: extracted.truncated,
+				extractedText: extracted.extractedText,
+			},
+			cors,
+			req,
+		);
 	} catch (error) {
 		respondWithApiError(res, error, 500, cors, req);
 	}

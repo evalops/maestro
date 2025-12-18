@@ -1,12 +1,21 @@
-import hljs from "highlight.js";
+type HljsModule = typeof import("highlight.js");
 import { LitElement, css, html } from "lit";
-import { customElement, property } from "lit/decorators.js";
+import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import type { Artifact } from "../services/artifacts.js";
 import { ArtifactsRuntimeProvider } from "./sandbox/artifacts-runtime-provider.js";
 import { AttachmentsRuntimeProvider } from "./sandbox/attachments-runtime-provider.js";
 import "./composer-sandboxed-iframe.js";
 import type { ComposerAttachment } from "@evalops/contracts";
+
+let cachedHljs: HljsModule | null = null;
+
+async function loadHljs(): Promise<HljsModule> {
+	if (!cachedHljs) {
+		cachedHljs = await import("highlight.js");
+	}
+	return cachedHljs;
+}
 
 function languageFromFilename(filename: string): string {
 	const ext = filename.split(".").pop()?.toLowerCase();
@@ -139,6 +148,10 @@ export class ComposerArtifactsPanel extends LitElement {
 	@property() apiBaseUrl = "";
 	@property({ attribute: false }) attachments: ComposerAttachment[] = [];
 
+	@state() private highlightedForKey: string | null = null;
+	@state() private highlightedHtml: string | null = null;
+	@state() private highlightError: string | null = null;
+
 	private buildRuntimeProviders() {
 		const providers = [new ArtifactsRuntimeProvider(() => this.artifacts)];
 		const attachments = Array.isArray(this.attachments) ? this.attachments : [];
@@ -212,6 +225,36 @@ export class ComposerArtifactsPanel extends LitElement {
 		a.rel = "noopener";
 		a.target = "_blank";
 		a.click();
+	}
+
+	private async highlightIfNeeded(active: Artifact) {
+		if (active.filename.toLowerCase().endsWith(".html")) return;
+		const key = `${active.filename}:${active.content.length}`;
+		if (this.highlightedForKey === key && this.highlightedHtml) return;
+
+		this.highlightedForKey = key;
+		this.highlightedHtml = null;
+		this.highlightError = null;
+
+		try {
+			const mod = await loadHljs();
+			const hljs = (mod as unknown as { default?: unknown }).default ?? mod;
+			const lang = languageFromFilename(active.filename);
+			const highlighted = (
+				hljs as {
+					highlight: (
+						code: string,
+						opts: { language: string },
+					) => { value: string };
+				}
+			).highlight(active.content, { language: lang }).value;
+
+			if (this.highlightedForKey !== key) return;
+			this.highlightedHtml = highlighted;
+		} catch (e) {
+			this.highlightError =
+				e instanceof Error ? e.message : "Failed to highlight";
+		}
 	}
 
 	render() {
@@ -294,14 +337,29 @@ export class ComposerArtifactsPanel extends LitElement {
 								.htmlContent=${active.content}
 								.providers=${this.buildRuntimeProviders()}
 						  ></composer-sandboxed-iframe>`
-							: html`<pre><code class="hljs language-${languageFromFilename(active.filename)}">${unsafeHTML(
-									hljs.highlight(active.content, {
-										language: languageFromFilename(active.filename),
-									}).value,
-								)}</code></pre>`
+							: this.highlightedHtml
+								? html`<pre><code class="hljs language-${languageFromFilename(active.filename)}">${unsafeHTML(
+										this.highlightedHtml,
+									)}</code></pre>`
+								: html`<pre><code class="hljs language-${languageFromFilename(active.filename)}">${active.content}</code></pre>`
 						: ""
 				}
+				${this.highlightError ? html`<div class="empty">${this.highlightError}</div>` : ""}
 			</div>
 		`;
+	}
+
+	override updated(changed: Map<string, unknown>): void {
+		super.updated(changed);
+		if (!changed.has("artifacts") && !changed.has("activeFilename")) return;
+
+		const artifacts = Array.isArray(this.artifacts) ? this.artifacts : [];
+		const active =
+			(this.activeFilename &&
+				artifacts.find((a) => a.filename === this.activeFilename)) ||
+			(artifacts.length > 0 ? artifacts[0] : null);
+		if (!active) return;
+
+		void this.highlightIfNeeded(active);
 	}
 }

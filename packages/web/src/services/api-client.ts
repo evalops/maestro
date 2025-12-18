@@ -757,6 +757,40 @@ export class ApiClient {
 	}
 
 	/**
+	 * Create a share link for a session.
+	 */
+	async shareSession(
+		sessionId: string,
+		options?: { expiresInHours?: number; maxAccesses?: number | null },
+	): Promise<{
+		shareToken: string;
+		shareUrl: string;
+		webShareUrl?: string;
+		expiresAt: string;
+		maxAccesses: number | null;
+	}> {
+		const response = await this.tryFallbackFetch(
+			`/api/sessions/${encodeURIComponent(sessionId)}/share`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Accept: "application/json",
+				},
+				body: JSON.stringify(options || {}),
+			},
+		);
+
+		return (await safeJson(response)) as {
+			shareToken: string;
+			shareUrl: string;
+			webShareUrl?: string;
+			expiresAt: string;
+			maxAccesses: number | null;
+		};
+	}
+
+	/**
 	 * Get a shared session by share token (read-only).
 	 */
 	async getSharedSession(shareToken: string): Promise<Session> {
