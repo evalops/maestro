@@ -50,22 +50,12 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { relative, resolve as resolvePath, sep } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { globSync } from "glob";
+import { expandTildePath } from "../utils/path-expansion.js";
 import { createTool } from "./tool-dsl.js";
 import { ensureTool } from "./tools-manager.js";
-
-function expandPath(filePath: string): string {
-	if (filePath === "~") {
-		return homedir();
-	}
-	if (filePath.startsWith("~/")) {
-		return homedir() + filePath.slice(1);
-	}
-	return filePath;
-}
 
 const findSchema = Type.Object({
 	pattern: Type.String({
@@ -123,7 +113,7 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 				});
 		}
 
-		const searchPath = resolvePath(expandPath(searchDir || "."));
+		const searchPath = resolvePath(expandTildePath(searchDir || "."));
 		const effectiveLimit = limit ?? DEFAULT_LIMIT;
 
 		const args: string[] = [

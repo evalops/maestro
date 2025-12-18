@@ -24,9 +24,9 @@
  */
 
 import { existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { minimatch } from "minimatch";
+import { expandTildePathWithHomeDir, getOsHomeDir } from "./path-expansion.js";
 
 /**
  * Expand ~ to user's home directory.
@@ -42,10 +42,9 @@ import { minimatch } from "minimatch";
  * @returns Expanded path with ~ replaced by home directory
  */
 export function expandHomeDir(filePath: string): string {
-	if (filePath === "~" || filePath.startsWith("~/")) {
-		return join(homedir(), filePath.slice(1));
-	}
-	return filePath;
+	// Policy enforcement should use the OS-reported home directory. Avoid `HOME`
+	// environment overrides which can be user-controlled.
+	return expandTildePathWithHomeDir(filePath, getOsHomeDir());
 }
 
 /**

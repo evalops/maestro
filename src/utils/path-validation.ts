@@ -5,10 +5,10 @@
 
 import { constants } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { ERRORS, LIMITS } from "../config/constants.js";
 import { createLogger } from "./logger.js";
+import { getHomeDir } from "./path-expansion.js";
 
 const logger = createLogger("path-validation");
 
@@ -31,10 +31,7 @@ export class PathValidationError extends Error {
  */
 export function expandUserPath(path: string): string {
 	if (path.startsWith("~/") || path === "~") {
-		const envHome = process.env.HOME?.trim();
-		const envUserProfile = process.env.USERPROFILE?.trim();
-		const homeDir = envHome || envUserProfile || homedir();
-		return path.replace(/^~/, homeDir);
+		return path.replace(/^~/, getHomeDir());
 	}
 	return path;
 }

@@ -10,9 +10,9 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createLogger } from "../utils/logger.js";
+import { expandTildePath, getHomeDir } from "../utils/path-expansion.js";
 import type {
 	ExecResult,
 	HookAPI,
@@ -58,14 +58,7 @@ let globalSessionFile: string | null = null;
  * Expand ~ to home directory in paths.
  */
 function expandPath(p: string): string {
-	const normalized = normalizeUnicodeSpaces(p);
-	if (normalized.startsWith("~/")) {
-		return join(homedir(), normalized.slice(2));
-	}
-	if (normalized.startsWith("~")) {
-		return join(homedir(), normalized.slice(1));
-	}
-	return normalized;
+	return expandTildePath(normalizeUnicodeSpaces(p));
 }
 
 /**
@@ -274,7 +267,7 @@ export async function discoverAndLoadTypeScriptHooks(
 	const seenPaths = new Set<string>();
 
 	// Discover global hooks
-	const globalHooksDir = join(homedir(), ".composer", "hooks");
+	const globalHooksDir = join(getHomeDir(), ".composer", "hooks");
 	const globalHookPaths = discoverHooksInDir(globalHooksDir);
 
 	// Discover project hooks

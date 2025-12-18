@@ -7,8 +7,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { expandTildePath } from "./path-expansion.js";
 
 /**
  * Logger interface for warning about missing env vars.
@@ -105,12 +105,10 @@ export function substituteFileRefs(text: string, configDir: string): string {
 		for (const match of matches) {
 			let filePath = match[1];
 
-			// Handle home directory (~/)
-			if (filePath.startsWith("~/")) {
-				filePath = join(homedir(), filePath.slice(2));
-			}
+			filePath = expandTildePath(filePath);
+
 			// Handle relative paths
-			else if (!filePath.startsWith("/")) {
+			if (!isAbsolute(filePath)) {
 				filePath = join(configDir, filePath);
 			}
 
