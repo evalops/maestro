@@ -5,6 +5,10 @@
  * - ~/.composer/prompts/*.md (user prompts)
  * - .composer/prompts/*.md (project prompts)
  *
+ * Additionally, Composer treats Markdown files in `.composer/commands/*.md` and
+ * `~/.composer/commands/*.md` as prompts. This lets teams colocate "prompt-like"
+ * commands alongside other command templates.
+ *
  * Each prompt is a Markdown file with optional YAML frontmatter:
  *
  * ```markdown
@@ -30,6 +34,11 @@ import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("commands:prompts");
 
+function resolveHomeDirectory(): string {
+	// Prefer env vars so tests (and some shells) can override HOME reliably.
+	return process.env.HOME || process.env.USERPROFILE || homedir();
+}
+
 /**
  * Prompt definition from YAML frontmatter.
  */
@@ -38,6 +47,8 @@ export interface PromptDefinition {
 	name: string;
 	/** Short description shown in slash popup */
 	description?: string;
+	/** Alternative names for this prompt */
+	aliases?: string[];
 	/** Hint for expected arguments */
 	argumentHint?: string;
 	/** Full markdown body (content after frontmatter) */
@@ -79,27 +90,90 @@ function parseFrontmatter(content: string): {
 	const [, yamlContent, body] = match;
 	const frontmatter: Record<string, unknown> = {};
 
-	// Simple YAML parser for key: value pairs
-	for (const line of yamlContent.split("\n")) {
+	// Simple YAML parser for common patterns (key: value and arrays)
+	const lines = yamlContent.split("\n");
+	let currentKey: string | null = null;
+	let currentArray: string[] | null = null;
+
+	for (const line of lines) {
 		const trimmed = line.trim();
 		if (!trimmed || trimmed.startsWith("#")) continue;
 
-		const colonIndex = trimmed.indexOf(":");
-		if (colonIndex > 0) {
-			const key = trimmed.slice(0, colonIndex).trim();
-			let value = trimmed.slice(colonIndex + 1).trim();
-			// Remove surrounding quotes if present
-			if (
-				(value.startsWith('"') && value.endsWith('"')) ||
-				(value.startsWith("'") && value.endsWith("'"))
-			) {
-				value = value.slice(1, -1);
-			}
-			frontmatter[key] = value;
+		// Array item
+		if (trimmed.startsWith("- ") && currentKey && currentArray) {
+			currentArray.push(trimmed.slice(2).trim());
+			continue;
 		}
+
+		// Save previous array
+		if (currentKey && currentArray) {
+			frontmatter[currentKey] = currentArray;
+			currentKey = null;
+			currentArray = null;
+		}
+
+		const colonIndex = trimmed.indexOf(":");
+		if (colonIndex <= 0) continue;
+		const key = trimmed.slice(0, colonIndex).trim();
+		let value = trimmed.slice(colonIndex + 1).trim();
+
+		if (value === "") {
+			currentKey = key;
+			currentArray = [];
+			continue;
+		}
+
+		// Remove surrounding quotes if present
+		if (
+			(value.startsWith('"') && value.endsWith('"')) ||
+			(value.startsWith("'") && value.endsWith("'"))
+		) {
+			value = value.slice(1, -1);
+		}
+
+		frontmatter[key] = value;
+	}
+
+	// Save trailing array
+	if (currentKey && currentArray) {
+		frontmatter[currentKey] = currentArray;
 	}
 
 	return { frontmatter, body };
+}
+
+function isValidPromptName(value: string): boolean {
+	return /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(value);
+}
+
+function parseAliases(raw: unknown): string[] | undefined {
+	const values: string[] = [];
+
+	if (Array.isArray(raw)) {
+		for (const item of raw) {
+			if (typeof item === "string") values.push(item);
+		}
+	} else if (typeof raw === "string") {
+		// Accept simple comma-separated strings as well.
+		values.push(
+			...raw
+				.split(",")
+				.map((part) => part.trim())
+				.filter(Boolean),
+		);
+	}
+
+	const normalized = new Set<string>();
+	const cleaned: string[] = [];
+	for (const value of values) {
+		if (!isValidPromptName(value)) continue;
+		const key = value.toLowerCase();
+		if (normalized.has(key)) continue;
+		normalized.add(key);
+		cleaned.push(value);
+	}
+
+	return cleaned.length > 0 ? cleaned : undefined;
 }
 
 /**
@@ -138,13 +212,22 @@ function loadPromptFromFile(
 		const content = readFileSync(filePath, "utf-8");
 		const { frontmatter, body } = parseFrontmatter(content);
 
-		// Derive name from filename (without .md extension)
-		const name = basename(filePath, ".md");
+		// Derive name from filename (without .md extension), but allow override.
+		const fileName = basename(filePath, ".md");
+		const frontmatterName =
+			typeof frontmatter.name === "string" ? frontmatter.name.trim() : "";
+		const nameCandidate = frontmatterName || fileName;
+		const name = isValidPromptName(nameCandidate) ? nameCandidate : fileName;
 
 		if (!name || name.startsWith(".")) {
 			logger.debug("Skipping hidden or invalid prompt file", { filePath });
 			return null;
 		}
+
+		const aliases = parseAliases(frontmatter.aliases);
+		const filteredAliases = aliases?.filter(
+			(alias) => alias.toLowerCase() !== name.toLowerCase(),
+		);
 
 		const prompt: PromptDefinition = {
 			name,
@@ -152,6 +235,7 @@ function loadPromptFromFile(
 				typeof frontmatter.description === "string"
 					? frontmatter.description
 					: undefined,
+			aliases: filteredAliases?.length ? filteredAliases : undefined,
 			argumentHint:
 				typeof frontmatter["argument-hint"] === "string"
 					? frontmatter["argument-hint"]
@@ -229,13 +313,28 @@ function scanPromptsDirectory(
  * @returns Array of loaded prompts (project prompts override user prompts by name)
  */
 export function loadPrompts(workspaceDir: string): PromptDefinition[] {
-	const userPromptsDir = join(homedir(), ".composer", "prompts");
+	const homeDir = resolveHomeDirectory();
+	const userPromptsDir = join(homeDir, ".composer", "prompts");
+	const userCommandsDir = join(homeDir, ".composer", "commands");
 	const projectPromptsDir = join(workspaceDir, ".composer", "prompts");
+	const projectCommandsDir = join(workspaceDir, ".composer", "commands");
 
-	logger.debug("Scanning for prompts", { userPromptsDir, projectPromptsDir });
+	logger.debug("Scanning for prompts", {
+		userPromptsDir,
+		projectPromptsDir,
+		userCommandsDir,
+		projectCommandsDir,
+	});
 
-	const userPrompts = scanPromptsDirectory(userPromptsDir, "user");
-	const projectPrompts = scanPromptsDirectory(projectPromptsDir, "project");
+	// Commands dir first, prompts dir second (prompts override commands by name).
+	const userPrompts = [
+		...scanPromptsDirectory(userCommandsDir, "user"),
+		...scanPromptsDirectory(userPromptsDir, "user"),
+	];
+	const projectPrompts = [
+		...scanPromptsDirectory(projectCommandsDir, "project"),
+		...scanPromptsDirectory(projectPromptsDir, "project"),
+	];
 
 	// Project prompts override user prompts by name
 	const promptMap = new Map<string, PromptDefinition>();
@@ -276,7 +375,10 @@ export function findPrompt(
 	name: string,
 ): PromptDefinition | undefined {
 	const normalizedName = name.toLowerCase();
-	return prompts.find((p) => p.name.toLowerCase() === normalizedName);
+	return prompts.find((p) => {
+		if (p.name.toLowerCase() === normalizedName) return true;
+		return p.aliases?.some((alias) => alias.toLowerCase() === normalizedName);
+	});
 }
 
 /**
@@ -421,7 +523,10 @@ export function renderPrompt(
 export function formatPromptListItem(prompt: PromptDefinition): string {
 	const source = prompt.sourceType === "user" ? "(user)" : "(project)";
 	const desc = prompt.description ?? "(no description)";
-	return `${prompt.name} ${source} - ${desc}`;
+	const aliases = prompt.aliases?.length
+		? ` (aliases: ${prompt.aliases.join(", ")})`
+		: "";
+	return `${prompt.name}${aliases} ${source} - ${desc}`;
 }
 
 /**

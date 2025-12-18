@@ -52,6 +52,7 @@ import {
 	SessionRecoveryManager,
 	listSessionBackups,
 } from "../agent/session-recovery.js";
+import { loadPrompts } from "../commands/catalog.js";
 import {
 	type AutoVerifyService,
 	type TestResult,
@@ -142,6 +143,7 @@ import type { StreamingView } from "./streaming-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import type { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
+import { buildPromptTemplateSlashCommands } from "./tui-renderer/prompt-template-slash-commands.js";
 import {
 	type UiState,
 	loadCommandPrefs,
@@ -1221,6 +1223,31 @@ export class TuiRenderer {
 			handleToolsCommand: (context) =>
 				this.getGroupedHandlers().handleTools(context),
 		});
+
+		const promptTemplates = loadPrompts(process.cwd());
+		const promptTemplateCommands = buildPromptTemplateSlashCommands({
+			prompts: promptTemplates,
+			existingCommands: registry.commands,
+			createContext: (ctx) => this.createCommandContext(ctx),
+			executePromptTemplate: (promptName, userArgumentText, context) => {
+				const combined = [promptName, userArgumentText]
+					.filter(Boolean)
+					.join(" ");
+				const syntheticContext: CommandExecutionContext = {
+					...context,
+					argumentText: combined,
+				};
+				this.customCommandsController.handlePromptsCommand(syntheticContext);
+			},
+		});
+		if (promptTemplateCommands.commands.length > 0) {
+			registry.entries.push(...promptTemplateCommands.entries);
+			registry.commands.push(...promptTemplateCommands.commands);
+			logger.debug("Registered prompt templates as slash commands", {
+				added: promptTemplateCommands.commands.length,
+				skipped: promptTemplateCommands.skipped,
+			});
+		}
 
 		this.commandEntries = registry.entries;
 		this.slashCommands = registry.commands;

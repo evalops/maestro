@@ -793,13 +793,14 @@ export function createCommandRegistry({
 			{
 				name: "prompts",
 				description:
-					"Run user-defined prompts from markdown files (~/.composer/prompts/)",
+					"List/run prompt templates from markdown files (~/.composer/prompts/, .composer/prompts/).",
 				usage: "/prompts [list|<name> [args]]",
 				tags: ["automation", "session"],
 				examples: [
 					"/prompts",
 					"/prompts list",
 					"/prompts review FILE=src/main.ts",
+					"/pr-review FILE=src/main.ts",
 					'/prompts ticket TICKET_ID=123 TITLE="Fix bug"',
 				],
 			},

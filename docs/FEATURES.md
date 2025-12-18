@@ -21,6 +21,7 @@ Type `/` in the editor for completions. Highlights:
 - `/run <script>` — run workspace scripts with streamed output.
 - `/sessions` — list or load transcripts; format details live in [Sessions](SESSIONS.md).
 - `/report` — collect info for bug reports or feedback.
+- **Prompt templates** — drop markdown files into `.composer/prompts/*.md` (project) or `~/.composer/prompts/*.md` (user), then run them via `/prompts <name> …` or directly as `/<name> …` (if the name doesn’t collide with a built-in command). Markdown files in `.composer/commands/*.md` are also treated as prompt templates.
 
 See [Tools Reference](TOOLS_REFERENCE.md) for every command and flag. Availability by surface (TUI vs Web) is summarized in [Web UI Guide](WEB_UI.md#parity-appendix).
 
