@@ -533,6 +533,16 @@ export class ComposerChat extends LitElement {
 			font-size: 0.75rem;
 		}
 
+		.modal-row select {
+			flex: 1;
+			background: var(--bg-elevated, #161719);
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-primary, #e8e9eb);
+			padding: 0.35rem 0.5rem;
+			font-family: inherit;
+			font-size: 0.75rem;
+		}
+
 		.modal-help {
 			font-size: 0.7rem;
 			color: var(--text-tertiary, #5c5e62);
@@ -722,6 +732,10 @@ export class ComposerChat extends LitElement {
 		expiresAt: string;
 		maxAccesses: number | null;
 	} | null = null;
+	@state() private exportDialogOpen = false;
+	@state() private exportDialogLoading = false;
+	@state() private exportDialogError: string | null = null;
+	@state() private exportFormat: "json" | "markdown" | "text" = "json";
 	@state() private toast: {
 		message: string;
 		type: "info" | "error" | "success";
@@ -1204,6 +1218,59 @@ export class ComposerChat extends LitElement {
 			this.showToast("Share link copied", "success", 1500);
 		} catch {
 			this.showToast("Copy failed", "error", 1500);
+		}
+	};
+
+	private openExportDialog = async () => {
+		if (this.shareToken) return;
+		if (!this.currentSessionId) {
+			this.showToast("Create or select a session first", "info", 1800);
+			return;
+		}
+		this.exportDialogOpen = true;
+		this.exportDialogError = null;
+		this.exportFormat = "json";
+	};
+
+	private closeExportDialog = () => {
+		this.exportDialogOpen = false;
+		this.exportDialogLoading = false;
+		this.exportDialogError = null;
+	};
+
+	private exportSession = async () => {
+		const sessionId = this.currentSessionId;
+		if (!sessionId) return;
+		this.exportDialogLoading = true;
+		this.exportDialogError = null;
+		try {
+			const res = await this.apiClient.exportSession(sessionId, {
+				format: this.exportFormat,
+			});
+			if (!res.ok) {
+				throw new Error(`Export failed (${res.status} ${res.statusText})`);
+			}
+			const blob = await res.blob();
+			const ext =
+				this.exportFormat === "markdown"
+					? "md"
+					: this.exportFormat === "text"
+						? "txt"
+						: "json";
+			const filename = `session-${sessionId}.${ext}`;
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.href = url;
+			a.download = filename;
+			a.rel = "noopener";
+			a.click();
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
+			this.showToast("Export downloaded", "success", 1500);
+			this.closeExportDialog();
+		} catch (e) {
+			this.exportDialogError = e instanceof Error ? e.message : "Export failed";
+		} finally {
+			this.exportDialogLoading = false;
 		}
 	};
 
@@ -2305,6 +2372,14 @@ export class ComposerChat extends LitElement {
 						>
 							${this.renderIcon("share")}
 						</button>
+						<button
+							class="icon-btn"
+							title=${isShared ? "Shared sessions are read-only" : "Export session"}
+							@click=${this.openExportDialog}
+							?disabled=${isShared || !this.currentSessionId}
+						>
+							⤓
+						</button>
 						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
 						<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>
 						<button
@@ -2625,6 +2700,51 @@ export class ComposerChat extends LitElement {
 												</button>
 											`
 									}
+								</div>
+							</div>
+						</div>
+				  `
+					: ""
+			}
+
+			${
+				this.exportDialogOpen
+					? html`
+						<div class="modal-overlay" @click=${this.closeExportDialog}>
+							<div class="modal-dialog" @click=${(e: Event) => e.stopPropagation()}>
+								<div class="modal-title">Export session</div>
+								<div class="modal-row">
+									<label for="export-format">Format</label>
+									<select
+										id="export-format"
+										.value=${this.exportFormat}
+										@change=${(e: Event) => {
+											const v = (e.target as HTMLSelectElement).value;
+											this.exportFormat =
+												v === "markdown" || v === "text" ? v : "json";
+										}}
+									>
+										<option value="json">JSON</option>
+										<option value="markdown">Markdown</option>
+										<option value="text">Text</option>
+									</select>
+								</div>
+
+								<div class="modal-help">
+									Downloads the full session including attachment content.
+								</div>
+
+								${this.exportDialogError ? html`<div class="modal-error">${this.exportDialogError}</div>` : ""}
+
+								<div class="modal-actions">
+									<button class="modal-btn" @click=${this.closeExportDialog}>Close</button>
+									<button
+										class="modal-btn primary"
+										@click=${this.exportSession}
+										?disabled=${this.exportDialogLoading}
+									>
+										${this.exportDialogLoading ? "Exporting..." : "Download"}
+									</button>
 								</div>
 							</div>
 						</div>

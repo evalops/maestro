@@ -790,6 +790,22 @@ export class ApiClient {
 		};
 	}
 
+	async exportSession(
+		sessionId: string,
+		options?: { format?: "json" | "markdown" | "text" },
+	): Promise<Response> {
+		return await this.tryFallbackFetch(
+			`/api/sessions/${encodeURIComponent(sessionId)}/export`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ format: options?.format || "json" }),
+			},
+		);
+	}
+
 	/**
 	 * Get a shared session by share token (read-only).
 	 */
