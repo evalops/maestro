@@ -46,6 +46,7 @@ import { SessionManager } from "../../session/manager.js";
 import { createLogger } from "../../utils/logger.js";
 import { RateLimiter } from "../rate-limiter.js";
 import {
+	buildContentDisposition,
 	readJsonBody,
 	respondWithApiError,
 	sendJson,
@@ -54,6 +55,49 @@ import { convertAppMessagesToComposer } from "../session-serialization.js";
 
 const logger = createLogger("sessions-handler");
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
+const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
+
+function findAttachmentInSession(
+	session: { messages?: Array<unknown> },
+	attachmentId: string,
+): {
+	fileName: string;
+	mimeType: string;
+	contentBase64: string;
+	size?: number;
+} | null {
+	const messages = Array.isArray(session.messages) ? session.messages : [];
+	for (const msg of messages) {
+		if (!msg || typeof msg !== "object") continue;
+		const maybeAttachments = (msg as { attachments?: unknown }).attachments;
+		if (!Array.isArray(maybeAttachments)) continue;
+
+		for (const att of maybeAttachments) {
+			if (!att || typeof att !== "object") continue;
+			const a = att as {
+				id?: unknown;
+				fileName?: unknown;
+				mimeType?: unknown;
+				content?: unknown;
+				size?: unknown;
+			};
+			if (a.id !== attachmentId) continue;
+			if (typeof a.fileName !== "string" || !a.fileName) return null;
+			if (typeof a.mimeType !== "string" || !a.mimeType) return null;
+			if (typeof a.content !== "string" || !a.content) return null;
+			return {
+				fileName: a.fileName,
+				mimeType: a.mimeType,
+				contentBase64: a.content,
+				size:
+					typeof a.size === "number" && Number.isFinite(a.size)
+						? a.size
+						: undefined,
+			};
+		}
+	}
+	return null;
+}
 
 // ============================================================================
 // RATE LIMITING (uses Redis when COMPOSER_REDIS_URL is configured)
@@ -344,7 +388,9 @@ export async function handleSessions(
 				messageCount: session.messageCount,
 				favorite: session.favorite,
 				tags: session.tags,
-				messages: convertAppMessagesToComposer(session.messages || []),
+				messages: convertAppMessagesToComposer(session.messages || [], {
+					includeAttachmentContent: false,
+				}),
 			};
 
 			sendJson(res, 200, responseBody, cors, req);
@@ -359,7 +405,9 @@ export async function handleSessions(
 				messageCount: session.messageCount,
 				favorite: false,
 				tags: undefined,
-				messages: convertAppMessagesToComposer(session.messages || []),
+				messages: convertAppMessagesToComposer(session.messages || [], {
+					includeAttachmentContent: false,
+				}),
 			};
 
 			sendJson(res, 201, responseBody, cors, req);
@@ -491,6 +539,7 @@ export async function handleSessionShare(
 			{
 				shareToken,
 				shareUrl: `/api/sessions/shared/${shareToken}`,
+				webShareUrl: `/share/${shareToken}`,
 				expiresAt: expiresAt.toISOString(),
 				maxAccesses,
 			},
@@ -585,10 +634,91 @@ export async function handleSharedSession(
 			createdAt: session.createdAt,
 			updatedAt: session.updatedAt,
 			messageCount: session.messageCount,
-			messages: convertAppMessagesToComposer(session.messages || []),
+			messages: convertAppMessagesToComposer(session.messages || [], {
+				includeAttachmentContent: false,
+			}),
 		};
 
 		sendJson(res, 200, { ...responseBody, isShared: true }, cors, req);
+	} catch (error) {
+		respondWithApiError(res, error, 500, cors, req);
+	}
+}
+
+/**
+ * Fetch a shared session attachment by token (for lazy-loaded attachment content).
+ *
+ * This does NOT increment accessCount (unlike handleSharedSession), so users
+ * can fetch attachments after opening the shared session even when maxAccesses
+ * is low (e.g., 1).
+ */
+export async function handleSharedSessionAttachment(
+	req: IncomingMessage,
+	res: ServerResponse,
+	params: { token: string; attachmentId: string },
+	cors: Record<string, string>,
+) {
+	const sessionManager = new SessionManager(true);
+	const shareToken = params.token;
+	const attachmentId = params.attachmentId;
+
+	try {
+		if (req.method !== "GET") {
+			sendJson(res, 405, { error: "Method not allowed" }, cors, req);
+			return;
+		}
+
+		if (!attachmentIdPattern.test(attachmentId)) {
+			sendJson(res, 400, { error: "Invalid attachment id" }, cors, req);
+			return;
+		}
+
+		const share = await getSharedSessionFromDb(shareToken);
+		if (!share) {
+			sendJson(
+				res,
+				404,
+				{ error: "Share link not found or expired" },
+				cors,
+				req,
+			);
+			return;
+		}
+		if (share.expiresAt < new Date()) {
+			await deleteShareByToken(shareToken);
+			sendJson(res, 410, { error: "Share link has expired" }, cors, req);
+			return;
+		}
+
+		const session = await sessionManager.loadSession(share.sessionId);
+		if (!session) {
+			sendJson(res, 404, { error: "Session not found" }, cors, req);
+			return;
+		}
+
+		const attachment = findAttachmentInSession(session, attachmentId);
+		if (!attachment) {
+			sendJson(res, 404, { error: "Attachment not found" }, cors, req);
+			return;
+		}
+
+		const bytes = Buffer.from(attachment.contentBase64, "base64");
+		const requestUrl = new URL(req.url || "/", "http://localhost");
+		const download = requestUrl.searchParams.get("download");
+		const shouldDownload = download === "1" || download === "true";
+
+		res.writeHead(200, {
+			"Content-Type": attachment.mimeType,
+			"Content-Length": bytes.length,
+			"Cache-Control": "private, max-age=3600",
+			...(shouldDownload
+				? {
+						"Content-Disposition": buildContentDisposition(attachment.fileName),
+					}
+				: {}),
+			...cors,
+		});
+		res.end(bytes);
 	} catch (error) {
 		respondWithApiError(res, error, 500, cors, req);
 	}
@@ -650,7 +780,9 @@ export async function handleSessionExport(
 						createdAt: session.createdAt,
 						updatedAt: session.updatedAt,
 						messageCount: session.messageCount,
-						messages: convertAppMessagesToComposer(messages),
+						messages: convertAppMessagesToComposer(messages, {
+							includeAttachmentContent: true,
+						}),
 					},
 					null,
 					2,
@@ -662,7 +794,7 @@ export async function handleSessionExport(
 
 		res.writeHead(200, {
 			"Content-Type": contentType,
-			"Content-Disposition": `attachment; filename="${filename}"`,
+			"Content-Disposition": buildContentDisposition(filename),
 			...cors,
 		});
 		res.end(content);

@@ -159,13 +159,24 @@ export type AgentEvent =
 			assistantMessageEvent: AssistantMessageEvent;
 	  }
 	| { type: "message_end"; message: Message }
-	| { type: "tool_execution_start"; toolCallId: string; toolName: string }
+	| {
+			type: "tool_execution_start";
+			toolCallId: string;
+			toolName: string;
+			args?: unknown;
+	  }
 	| {
 			type: "tool_execution_end";
 			toolCallId: string;
 			toolName: string;
-			result: string;
+			result: unknown;
 			isError: boolean;
+	  }
+	| {
+			type: "client_tool_request";
+			toolCallId: string;
+			toolName: string;
+			args: unknown;
 	  }
 	| { type: "error"; message: string }
 	| { type: "status"; status: string; details: Record<string, unknown> };
@@ -197,6 +208,17 @@ export type Session = ComposerSession;
 export type SessionSummary = ComposerSessionSummary;
 
 export type ChatRequest = ComposerChatRequest;
+
+function arrayBufferToBase64(arrayBuffer: ArrayBuffer): string {
+	const bytes = new Uint8Array(arrayBuffer);
+	let binary = "";
+	const chunkSize = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunkSize) {
+		const chunk = bytes.slice(i, i + chunkSize);
+		binary += String.fromCharCode(...chunk);
+	}
+	return btoa(binary);
+}
 
 export interface ChatResponse {
 	message: Message;
@@ -554,6 +576,7 @@ export class ApiClient {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
+				"x-composer-client-tools": "1",
 			},
 			body: JSON.stringify({ ...request, stream: true }),
 		});
@@ -595,6 +618,35 @@ export class ApiClient {
 			}
 		} finally {
 			reader.releaseLock();
+		}
+	}
+
+	/**
+	 * Submit the result of a client-side tool execution back to the server.
+	 *
+	 * The server will resolve the pending tool call and continue the agent loop.
+	 */
+	async sendClientToolResult(input: {
+		toolCallId: string;
+		content: Array<
+			| { type: "text"; text: string }
+			| { type: "image"; data: string; mimeType: string }
+		>;
+		isError: boolean;
+	}): Promise<void> {
+		const response = await fetch(
+			`${this.baseUrl}/api/chat/client-tool-result`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(input),
+			},
+		);
+
+		if (!response.ok) {
+			throw new Error(
+				`Failed to submit client tool result: ${response.statusText}`,
+			);
 		}
 	}
 
@@ -702,6 +754,71 @@ export class ApiClient {
 	async getSession(sessionId: string): Promise<Session> {
 		const data = await this.fetchJsonWithFallback(`/api/sessions/${sessionId}`);
 		return data as Session;
+	}
+
+	/**
+	 * Get a shared session by share token (read-only).
+	 */
+	async getSharedSession(shareToken: string): Promise<Session> {
+		const data = await this.fetchJsonWithFallback(
+			`/api/sessions/shared/${encodeURIComponent(shareToken)}`,
+		);
+		return data as Session;
+	}
+
+	/**
+	 * Fetch raw bytes for a session attachment (for lazy-loaded session history).
+	 */
+	async getSessionAttachmentBytes(
+		sessionId: string,
+		attachmentId: string,
+	): Promise<ArrayBuffer> {
+		const path = `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`;
+		const response = await this.tryFallbackFetch(path, { method: "GET" });
+		return await response.arrayBuffer();
+	}
+
+	/**
+	 * Fetch base64 content for a session attachment (for chat request hydration).
+	 */
+	async getSessionAttachmentContentBase64(
+		sessionId: string,
+		attachmentId: string,
+	): Promise<string> {
+		const bytes = await this.getSessionAttachmentBytes(sessionId, attachmentId);
+		return arrayBufferToBase64(bytes);
+	}
+
+	/**
+	 * Server-side document extraction (PDF/DOCX/XLSX/PPTX/text).
+	 */
+	async extractAttachmentText(input: {
+		fileName: string;
+		mimeType?: string;
+		contentBase64: string;
+		maxChars?: number;
+	}): Promise<{
+		fileName: string;
+		format: string;
+		size: number;
+		truncated: boolean;
+		extractedText: string;
+	}> {
+		const response = await this.tryFallbackFetch("/api/attachments/extract", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Accept: "application/json",
+			},
+			body: JSON.stringify(input),
+		});
+		return (await safeJson(response)) as {
+			fileName: string;
+			format: string;
+			size: number;
+			truncated: boolean;
+			extractedText: string;
+		};
 	}
 
 	/**

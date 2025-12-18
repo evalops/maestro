@@ -14,6 +14,13 @@ import {
 	type UsageSummary,
 	type WorkspaceStatus,
 } from "../services/api-client.js";
+import type { Artifact } from "../services/artifacts.js";
+import {
+	applyArtifactsCommand,
+	coerceArtifactsArgs,
+	createEmptyArtifactsState,
+	reconstructArtifactsFromMessages,
+} from "../services/artifacts.js";
 import { dataStore } from "../services/data-store.js";
 import "./command-drawer.js";
 import { WEB_SLASH_COMMANDS } from "./slash-commands.js";
@@ -23,6 +30,14 @@ import type { ComposerInput } from "./composer-input.js";
 import "./composer-settings.js";
 import "./model-selector.js";
 import "./admin-settings.js";
+import "./composer-artifacts-panel.js";
+import "./composer-attachment-viewer.js";
+import { ArtifactsRuntimeProvider } from "./sandbox/artifacts-runtime-provider.js";
+import { AttachmentsRuntimeProvider } from "./sandbox/attachments-runtime-provider.js";
+import { getSandboxConsoleSnapshot } from "./sandbox/console-runtime-provider.js";
+import { getSandboxDownloadsSnapshot } from "./sandbox/file-download-runtime-provider.js";
+import { FileDownloadRuntimeProvider } from "./sandbox/file-download-runtime-provider.js";
+import { JavascriptReplRuntimeProvider } from "./sandbox/javascript-repl-runtime-provider.js";
 
 const STATUS_CACHE_KEY = "composer_status_cache";
 const MODELS_CACHE_KEY = "composer_models_cache";
@@ -534,8 +549,12 @@ export class ComposerChat extends LitElement {
 	@state() private sidebarOpen = true;
 	@state() private sessions: SessionSummary[] = [];
 	@state() private currentSessionId: string | null = null;
+	@state() private shareToken: string | null = null;
 	@state() private settingsOpen = false;
 	@state() private adminSettingsOpen = false;
+	@state() private artifactsOpen = false;
+	@state() private activeArtifact: string | null = null;
+	@state() private artifactsState = createEmptyArtifactsState();
 	@state() private status: WorkspaceStatus | null = null;
 	@state() private commandPrefs: { favorites: string[]; recents: string[] } = {
 		favorites: [],
@@ -558,6 +577,10 @@ export class ComposerChat extends LitElement {
 	@state() private showHealth = false;
 	@state() private showShortcuts = false;
 	@state() private sessionSearch = "";
+	@state() private attachmentViewerOpen = false;
+	@state() private attachmentViewerAttachment:
+		| Message["attachments"][number]
+		| null = null;
 	@property({ type: Boolean, reflect: true, attribute: "reduced-motion" })
 	private reducedMotion = false;
 	@property({ type: Boolean }) private compactMode = false;
@@ -566,6 +589,7 @@ export class ComposerChat extends LitElement {
 	private static REDUCED_MOTION_KEY = "composer_reduced_motion";
 
 	private apiClient!: ApiClient;
+	private attachmentContentCache = new Map<string, string>();
 	private unsubscribeStore?: () => void;
 	private handleOnline = () => {
 		this.clientOnline = true;
@@ -600,6 +624,68 @@ export class ComposerChat extends LitElement {
 	private closeShortcuts() {
 		this.showShortcuts = false;
 	}
+
+	private handleOpenAttachment = (
+		e: CustomEvent<{ attachment?: Message["attachments"][number] }>,
+	) => {
+		const attachment = e.detail?.attachment ?? null;
+		if (!attachment) return;
+		this.attachmentViewerAttachment = attachment;
+		this.attachmentViewerOpen = true;
+	};
+
+	private closeAttachmentViewer = () => {
+		this.attachmentViewerOpen = false;
+		this.attachmentViewerAttachment = null;
+	};
+
+	private getShareTokenFromLocation(): string | null {
+		if (typeof window === "undefined") return null;
+		try {
+			const url = new URL(window.location.href);
+			const match = /^\/share\/([^/]+)\/?$/.exec(url.pathname || "/");
+			if (match?.[1]) return match[1];
+			return (
+				url.searchParams.get("share") ||
+				url.searchParams.get("shareToken") ||
+				url.searchParams.get("token")
+			);
+		} catch {
+			return null;
+		}
+	}
+
+	private async loadSharedSession(shareToken: string) {
+		this.loading = true;
+		this.error = null;
+		try {
+			const session = await this.apiClient.getSharedSession(shareToken);
+			if (!session || !session.id) {
+				throw new Error("Invalid shared session response");
+			}
+			this.currentSessionId = session.id;
+			this.messages = Array.isArray(session.messages)
+				? [...session.messages]
+				: [];
+			this.sessions = [];
+			this.attachmentContentCache.clear();
+			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
+			this.activeArtifact = null;
+			this.artifactsOpen = false;
+			this.error = null;
+			this.requestUpdate();
+			await this.updateComplete;
+			this.scrollToBottom();
+		} catch (e) {
+			console.error("Failed to load shared session:", e);
+			this.error =
+				e instanceof Error ? e.message : "Failed to load shared session";
+			this.showToast(this.error, "error");
+		} finally {
+			this.loading = false;
+		}
+	}
+
 	private toggleCompact() {
 		this.compactMode = !this.compactMode;
 		try {
@@ -690,16 +776,27 @@ export class ComposerChat extends LitElement {
 		super.connectedCallback();
 		this.apiClient = new ApiClient(this.apiEndpoint);
 		this.subscribeToStore();
-		this.loadCurrentModel();
-		this.loadSessions();
-		dataStore.ensureStatus(this.apiClient);
-		dataStore.ensureModels(this.apiClient);
-		dataStore.ensureUsage(this.apiClient);
+		const shareToken = this.getShareTokenFromLocation();
+		if (shareToken) {
+			this.shareToken = shareToken;
+			this.sidebarOpen = false;
+			void this.loadSharedSession(shareToken);
+		} else {
+			this.loadCurrentModel();
+			this.loadSessions();
+			dataStore.ensureStatus(this.apiClient);
+			dataStore.ensureModels(this.apiClient);
+			dataStore.ensureUsage(this.apiClient);
+			this.loadCommandPrefs();
+		}
 		this.hydrateDisplayPrefs();
-		this.loadCommandPrefs();
 		window.addEventListener("online", this.handleOnline);
 		window.addEventListener("offline", this.handleOffline);
 		window.addEventListener("keydown", this.handleKeydown);
+		this.addEventListener(
+			"open-attachment",
+			this.handleOpenAttachment as EventListener,
+		);
 	}
 
 	disconnectedCallback(): void {
@@ -708,6 +805,10 @@ export class ComposerChat extends LitElement {
 		window.removeEventListener("online", this.handleOnline);
 		window.removeEventListener("offline", this.handleOffline);
 		window.removeEventListener("keydown", this.handleKeydown);
+		this.removeEventListener(
+			"open-attachment",
+			this.handleOpenAttachment as EventListener,
+		);
 	}
 
 	private hydrateDisplayPrefs() {
@@ -826,6 +927,7 @@ export class ComposerChat extends LitElement {
 			settings:
 				"M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.63a1 1 0 0 0 0-1.74l-1.17-.68a1 1 0 0 1-.46-.86l.05-1.35a1 1 0 0 0-1.17-1.01l-1.35.23a1 1 0 0 1-.9-.26L13.2 6a1 1 0 0 0-1.4 0l-.9.9a1 1 0 0 1-.9.26l-1.35-.23a1 1 0 0 0-1.17 1.01l.05 1.35a1 1 0 0 1-.46.86l-1.17.68a1 1 0 0 0 0 1.74l1.17.68a1 1 0 0 1 .46.86l-.05 1.35a1 1 0 0 0 1.17 1.01l1.35-.23a1 1 0 0 1 .9.26l.9.9a1 1 0 0 0 1.4 0l.9-.9a1 1 0 0 1 .9-.26l1.35.23a1 1 0 0 0 1.17-1.01l-.05-1.35a1 1 0 0 1 .46-.86Z",
 			grid: "M4 4h7v7H4Zm9 0h7v7h-7ZM4 13h7v7H4Zm9 7v-7h7v7Z",
+			file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6",
 			reduce: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Zm-5-9h10",
 			close: "M18 6 6 18M6 6l12 12",
 		};
@@ -845,6 +947,27 @@ export class ComposerChat extends LitElement {
 	private toggleAdminSettings() {
 		this.adminSettingsOpen = !this.adminSettingsOpen;
 	}
+
+	private toggleArtifactsPanel() {
+		this.artifactsOpen = !this.artifactsOpen;
+	}
+
+	private closeArtifactsPanel() {
+		this.artifactsOpen = false;
+	}
+
+	private setActiveArtifact(filename: string) {
+		this.activeArtifact = filename;
+		this.artifactsOpen = true;
+	}
+
+	private handleOpenArtifact = (e: Event) => {
+		const evt = e as CustomEvent<{ filename?: unknown }>;
+		const filename = evt.detail?.filename;
+		if (typeof filename !== "string" || filename.trim().length === 0) return;
+		e.stopPropagation();
+		this.setActiveArtifact(filename);
+	};
 
 	private openModelSelector() {
 		// Ensure models are ready for the dialog
@@ -887,6 +1010,9 @@ export class ComposerChat extends LitElement {
 			const session = await this.apiClient.createSession("New Chat");
 			this.currentSessionId = session.id;
 			this.messages = session.messages || [];
+			this.attachmentContentCache.clear();
+			this.artifactsState = createEmptyArtifactsState();
+			this.activeArtifact = null;
 			await this.loadSessions();
 			this.showToast("New session created", "success");
 		} catch (e) {
@@ -907,6 +1033,9 @@ export class ComposerChat extends LitElement {
 			this.messages = Array.isArray(session.messages)
 				? [...session.messages]
 				: [];
+			this.attachmentContentCache.clear();
+			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
+			this.activeArtifact = null;
 			this.error = null;
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
@@ -925,6 +1054,7 @@ export class ComposerChat extends LitElement {
 			if (this.currentSessionId === sessionId) {
 				this.currentSessionId = null;
 				this.messages = [];
+				this.attachmentContentCache.clear();
 			}
 			await this.loadSessions();
 			this.showToast("Session deleted", "success");
@@ -934,21 +1064,128 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
+	private async ensureExtractedTextForAttachments(
+		attachments: NonNullable<Message["attachments"]>,
+	): Promise<NonNullable<Message["attachments"]>> {
+		const out: NonNullable<Message["attachments"]> = [];
+		for (const att of attachments) {
+			if (!att || typeof att !== "object") continue;
+
+			if (
+				att.type !== "document" ||
+				typeof att.extractedText === "string" ||
+				typeof att.content !== "string" ||
+				att.content.length === 0
+			) {
+				out.push(att);
+				continue;
+			}
+
+			try {
+				const res = await this.apiClient.extractAttachmentText({
+					fileName: att.fileName,
+					mimeType: att.mimeType,
+					contentBase64: att.content,
+				});
+				out.push({
+					...att,
+					extractedText: res.extractedText || undefined,
+				});
+			} catch (e) {
+				console.warn("Attachment extraction failed", e);
+				out.push(att);
+			}
+		}
+		return out;
+	}
+
+	private async hydrateAttachmentForRequest(
+		att: NonNullable<Message["attachments"]>[number],
+		sessionId: string,
+	): Promise<NonNullable<Message["attachments"]>[number]> {
+		if (!att?.id) return att;
+
+		if (typeof att.content === "string" && att.content.length > 0) {
+			if (!this.attachmentContentCache.has(att.id)) {
+				this.attachmentContentCache.set(att.id, att.content);
+			}
+			return att;
+		}
+
+		if (!att.contentOmitted) return att;
+
+		const cached = this.attachmentContentCache.get(att.id);
+		if (cached) {
+			return { ...att, content: cached, contentOmitted: undefined };
+		}
+
+		try {
+			const base64 = await this.apiClient.getSessionAttachmentContentBase64(
+				sessionId,
+				att.id,
+			);
+			this.attachmentContentCache.set(att.id, base64);
+			return { ...att, content: base64, contentOmitted: undefined };
+		} catch (e) {
+			console.warn("Failed to hydrate attachment content", e);
+			return att;
+		}
+	}
+
+	private async buildMessagesForChatRequest(
+		messages: Message[],
+	): Promise<Message[]> {
+		const sessionId = this.currentSessionId;
+		if (!sessionId) return messages;
+
+		const out: Message[] = [];
+		for (const msg of messages) {
+			const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
+			if (msg.role !== "user" || atts.length === 0) {
+				out.push(msg);
+				continue;
+			}
+
+			const hydrated = await Promise.all(
+				atts.map((a) => this.hydrateAttachmentForRequest(a, sessionId)),
+			);
+			out.push({ ...msg, attachments: hydrated });
+		}
+		return out;
+	}
+
 	private async handleSubmit(
-		event: CustomEvent<{ text: string; retry?: boolean }>,
+		event: CustomEvent<{
+			text: string;
+			retry?: boolean;
+			attachments?: Message["attachments"];
+		}>,
 	) {
 		const text = event.detail.text.trim();
-		if (!text || this.loading || !this.clientOnline) {
+		const attachments =
+			Array.isArray(event.detail.attachments) && event.detail.attachments.length
+				? event.detail.attachments
+				: undefined;
+		if ((!text && !attachments) || this.loading || !this.clientOnline) {
+			return;
+		}
+		if (this.shareToken) {
+			this.showToast("Shared sessions are read-only", "info", 1800);
 			return;
 		}
 		this.lastSendFailed = null;
 		this.lastApiError = null;
+
+		const enrichedAttachments = attachments
+			? await this.ensureExtractedTextForAttachments(attachments)
+			: undefined;
 
 		// Add user message unless reusing the existing one for a retry
 		if (!event.detail.retry) {
 			const userMessage: Message = {
 				role: "user",
 				content: text,
+				attachments: enrichedAttachments,
 				timestamp: new Date().toISOString(),
 			};
 			this.messages = [...this.messages, userMessage];
@@ -974,10 +1211,14 @@ export class ComposerChat extends LitElement {
 		let currentThinkingIndex: number | null = null;
 
 		try {
+			const requestMessages = await this.buildMessagesForChatRequest(
+				this.messages.slice(0, -1), // Exclude placeholder
+			);
+
 			// Stream response with FULL events
 			const stream = this.apiClient.chatWithEvents({
 				model: this.currentModel,
-				messages: this.messages.slice(0, -1), // Exclude placeholder
+				messages: requestMessages,
 				sessionId: this.currentSessionId || undefined,
 			});
 
@@ -1151,6 +1392,67 @@ export class ComposerChat extends LitElement {
 						break;
 					}
 
+					case "client_tool_request": {
+						if (agentEvent.toolName === "artifacts") {
+							const args = coerceArtifactsArgs(agentEvent.args);
+							if (args.command === "logs" && args.filename) {
+								const sandboxId = `artifact:${args.filename}`;
+								const snap = getSandboxConsoleSnapshot(sandboxId);
+								const logs = snap?.logs ?? [];
+								const error = snap?.lastError ?? null;
+								const text = (() => {
+									if (logs.length === 0 && !error) {
+										return `No logs captured for ${args.filename}. Open the artifact preview to generate logs.`;
+									}
+									const lines: string[] = [`Logs for ${args.filename}`, ""];
+									for (const l of logs) {
+										lines.push(`[${l.level}] ${l.text}`);
+									}
+									if (error) {
+										lines.push("", "Last error:", error.message);
+										if (error.stack) lines.push(error.stack);
+									}
+									return lines.filter(Boolean).join("\n");
+								})();
+								await this.apiClient.sendClientToolResult({
+									toolCallId: agentEvent.toolCallId,
+									content: [{ type: "text", text }],
+									isError: false,
+								});
+								break;
+							}
+							const result = applyArtifactsCommand(this.artifactsState, args);
+							this.artifactsState = result.state;
+							if (!result.isError && args.filename) {
+								this.setActiveArtifact(args.filename);
+							}
+							await this.apiClient.sendClientToolResult({
+								toolCallId: agentEvent.toolCallId,
+								content: [{ type: "text", text: result.output }],
+								isError: result.isError,
+							});
+						} else if (agentEvent.toolName === "javascript_repl") {
+							const res = await this.runJavascriptRepl(agentEvent.args);
+							await this.apiClient.sendClientToolResult({
+								toolCallId: agentEvent.toolCallId,
+								content: [{ type: "text", text: res.text }],
+								isError: res.isError,
+							});
+						} else {
+							await this.apiClient.sendClientToolResult({
+								toolCallId: agentEvent.toolCallId,
+								content: [
+									{
+										type: "text",
+										text: `Unsupported client tool: ${agentEvent.toolName}`,
+									},
+								],
+								isError: true,
+							});
+						}
+						break;
+					}
+
 					case "message_end":
 						// Finalize assistant message
 						if (agentEvent.message.role === "assistant") {
@@ -1180,6 +1482,207 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
+	private async runJavascriptRepl(args: unknown): Promise<{
+		isError: boolean;
+		text: string;
+	}> {
+		const obj = (
+			args && typeof args === "object" ? (args as Record<string, unknown>) : {}
+		) as Record<string, unknown>;
+		const code = typeof obj.code === "string" ? obj.code : "";
+		const timeoutMs =
+			typeof obj.timeoutMs === "number" && Number.isFinite(obj.timeoutMs)
+				? obj.timeoutMs
+				: 10_000;
+
+		if (!code.trim()) {
+			return { isError: true, text: "Error: javascript_repl requires code" };
+		}
+
+		const sandboxId = `repl:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+
+		let settled = false;
+		let returnValue: string | null = null;
+		let error: { message: string; stack?: string } | null = null;
+
+		let resolveDone!: () => void;
+		const done = new Promise<void>((resolve) => {
+			resolveDone = resolve;
+		});
+
+		const consumer = {
+			handleMessage: async (message: unknown) => {
+				if (settled || !message || typeof message !== "object") return;
+				const m = message as Record<string, unknown>;
+				if (m.type === "execution-complete") {
+					settled = true;
+					returnValue =
+						typeof m.returnValue === "string"
+							? m.returnValue
+							: String(m.returnValue ?? "");
+					resolveDone();
+				}
+				if (m.type === "execution-error") {
+					settled = true;
+					const err = m.error;
+					if (err && typeof err === "object") {
+						const rec = err as Record<string, unknown>;
+						error = {
+							message:
+								typeof rec.message === "string"
+									? rec.message
+									: "Execution error",
+							stack: typeof rec.stack === "string" ? rec.stack : undefined,
+						};
+					} else {
+						error = { message: "Execution error" };
+					}
+					resolveDone();
+				}
+			},
+		};
+
+		const el = document.createElement(
+			"composer-sandboxed-iframe",
+		) as unknown as HTMLElement & {
+			sandboxId: string;
+			htmlContent: string;
+			providers: unknown[];
+			consumers: unknown[];
+		};
+
+		el.style.position = "fixed";
+		el.style.left = "-99999px";
+		el.style.top = "-99999px";
+		el.style.width = "1px";
+		el.style.height = "1px";
+		el.style.opacity = "0";
+		el.style.pointerEvents = "none";
+
+		el.sandboxId = sandboxId;
+		el.htmlContent = "<!doctype html><html><body></body></html>";
+
+		const artifactsProvider = new ArtifactsRuntimeProvider(
+			() => this.getArtifactsList(),
+			{
+				createOrUpdate: async (filename, content) => {
+					const exists = this.artifactsState.byFilename.has(filename);
+					const cmd = exists ? "rewrite" : "create";
+					const res = applyArtifactsCommand(this.artifactsState, {
+						command: cmd,
+						filename,
+						content,
+					});
+					this.artifactsState = res.state;
+					if (!res.isError) {
+						this.setActiveArtifact(filename);
+					}
+				},
+				delete: async (filename) => {
+					const res = applyArtifactsCommand(this.artifactsState, {
+						command: "delete",
+						filename,
+					});
+					this.artifactsState = res.state;
+					if (this.activeArtifact === filename) {
+						this.activeArtifact = null;
+					}
+				},
+			},
+		);
+
+		const attachmentsForSandbox = await (async () => {
+			const list = this.getAllAttachments();
+			const sessionId = this.currentSessionId;
+			if (!sessionId) return list;
+			return await Promise.all(
+				list.map((a) =>
+					this.hydrateAttachmentForRequest(
+						a as NonNullable<Message["attachments"]>[number],
+						sessionId,
+					),
+				),
+			);
+		})();
+
+		el.providers = [
+			artifactsProvider,
+			new AttachmentsRuntimeProvider(
+				attachmentsForSandbox
+					.filter((a) => typeof a.content === "string" && a.content.length > 0)
+					.map((a) => ({
+						id: a.id,
+						fileName: a.fileName,
+						mimeType: a.mimeType,
+						size: a.size,
+						content: a.content as string,
+						extractedText: a.extractedText,
+					})),
+			),
+			new FileDownloadRuntimeProvider(),
+			new JavascriptReplRuntimeProvider(code, { timeoutMs }),
+		];
+		el.consumers = [consumer];
+
+		document.body.appendChild(el);
+
+		const hardTimeout = window.setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			error = { message: "Execution timed out" };
+			resolveDone();
+		}, timeoutMs + 200);
+
+		try {
+			await done;
+		} finally {
+			window.clearTimeout(hardTimeout);
+			try {
+				el.remove();
+			} catch {
+				// ignore
+			}
+		}
+
+		const snap = getSandboxConsoleSnapshot(sandboxId);
+		const logs = snap?.logs ?? [];
+		const lastError = snap?.lastError ?? null;
+		const downloads = getSandboxDownloadsSnapshot(sandboxId)?.files ?? [];
+
+		const lines: string[] = [];
+		if (error) {
+			lines.push(`Error: ${error.message}`);
+			if (error.stack) lines.push(error.stack);
+		} else if (returnValue !== null) {
+			lines.push("Return value:");
+			lines.push(returnValue);
+		} else {
+			lines.push("No return value.");
+		}
+
+		if (logs.length > 0) {
+			lines.push("", "Console:");
+			for (const l of logs) {
+				lines.push(`[${l.level}] ${l.text}`);
+			}
+		}
+
+		if (!error && lastError) {
+			lines.push("", "Last error:");
+			lines.push(lastError.message);
+			if (lastError.stack) lines.push(lastError.stack);
+		}
+
+		if (downloads.length > 0) {
+			lines.push("", "Downloads:");
+			for (const f of downloads) {
+				lines.push(`- ${f.fileName} (${f.mimeType})`);
+			}
+		}
+
+		return { isError: Boolean(error), text: lines.filter(Boolean).join("\n") };
+	}
+
 	private retryLastSend = () => {
 		if (!this.lastSendFailed) return;
 		this.handleSubmit(
@@ -1195,6 +1698,47 @@ export class ComposerChat extends LitElement {
 			if (messagesEl) {
 				messagesEl.scrollTop = messagesEl.scrollHeight;
 			}
+		});
+	}
+
+	private getArtifactsList(): Artifact[] {
+		return Array.from(this.artifactsState.byFilename.values()).sort((a, b) =>
+			a.filename.localeCompare(b.filename),
+		);
+	}
+
+	private getAllAttachments(): NonNullable<Message["attachments"]> {
+		const byId = new Map<string, Message["attachments"][number]>();
+
+		for (const msg of this.messages) {
+			if (msg.role !== "user") continue;
+			const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+			for (const a of attachments) {
+				if (!a || typeof a !== "object") continue;
+				const id = typeof a.id === "string" ? a.id : "";
+				if (!id) continue;
+
+				const existing = byId.get(id);
+				if (!existing) {
+					byId.set(id, a);
+					continue;
+				}
+
+				byId.set(id, {
+					...existing,
+					...a,
+					content: a.content ?? existing.content,
+					preview: a.preview ?? existing.preview,
+					extractedText: a.extractedText ?? existing.extractedText,
+				});
+			}
+		}
+
+		return Array.from(byId.values()).map((a) => {
+			if (typeof a.content === "string" && a.content.length > 0) return a;
+			if (!a.contentOmitted) return a;
+			const cached = this.attachmentContentCache.get(a.id);
+			return cached ? { ...a, content: cached, contentOmitted: undefined } : a;
 		});
 	}
 
@@ -1261,8 +1805,9 @@ export class ComposerChat extends LitElement {
 		const taskHealth = this.status?.backgroundTasks;
 		const taskRunning = taskHealth?.running ?? 0;
 		const taskFailed = taskHealth?.failed ?? 0;
+		const isShared = Boolean(this.shareToken);
 		const showSessionGallery =
-			this.messages.length === 0 && this.sessions.length > 0;
+			!isShared && this.messages.length === 0 && this.sessions.length > 0;
 		const hasMessages = this.messages.length > 0;
 		const renderedMessages = this.messages.map(
 			(msg) => html`
@@ -1270,6 +1815,7 @@ export class ComposerChat extends LitElement {
 					role=${msg.role}
 					content=${msg.content}
 					timestamp=${msg.timestamp || ""}
+					.attachments=${msg.attachments || []}
 					.thinking=${(msg as MessageWithThinking).thinking || ""}
 					.tools=${msg.tools || []}
 					.compact=${this.compactMode}
@@ -1298,6 +1844,34 @@ export class ComposerChat extends LitElement {
 						: "fast";
 
 		return html`
+			<composer-attachment-viewer
+				.open=${this.attachmentViewerOpen}
+				.attachment=${this.attachmentViewerAttachment}
+				.apiEndpoint=${this.apiClient?.baseUrl || this.apiEndpoint}
+				.sessionId=${isShared ? null : this.currentSessionId}
+				.shareToken=${this.shareToken}
+				@close=${this.closeAttachmentViewer}
+			></composer-attachment-viewer>
+			${
+				isShared
+					? html`<div class="banner info">
+							Shared session — read-only.
+							<button
+								class="icon-btn"
+								@click=${async () => {
+									try {
+										await navigator.clipboard.writeText(window.location.href);
+										this.showToast("Link copied", "success", 1500);
+									} catch {
+										this.showToast("Copy failed", "error", 1500);
+									}
+								}}
+							>
+								Copy link
+							</button>
+						</div>`
+					: ""
+			}
 			${
 				!this.clientOnline
 					? html`<div class="banner offline">Offline detected — messages will pause until connection returns.</div>`
@@ -1311,53 +1885,74 @@ export class ComposerChat extends LitElement {
 					</div>`
 					: ""
 			}
-			<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
-				<div class="sidebar-header">
-					<h2>Sessions</h2>
-					<button class="new-session-btn" @click=${this.createNewSession}>
-						New Chat
-					</button>
-					<input
-						type="search"
-						placeholder="Filter..."
-						value=${this.sessionSearch}
-						@input=${(e: Event) => {
-							const value = (e.target as HTMLInputElement).value.toLowerCase();
-							this.sessionSearch = value;
-						}}
-						style="margin-top:0.4rem; width:100%; padding:0.35rem 0.5rem; background:#0a0e14; border:1px solid #30363d; color:#e6edf3; border-radius:3px; font-family:'SF Mono','Menlo','Monaco',monospace; font-size:0.75rem;"
-					/>
-				</div>
-				<div class="sessions-list">
-					${this.sessions.map((session) =>
-						this.sessionSearch &&
-						!session.title?.toLowerCase().includes(this.sessionSearch) &&
-						!session.id?.toLowerCase().includes(this.sessionSearch)
-							? ""
-							: html`
-							<div
-								class="session-item ${this.currentSessionId === session.id ? "active" : ""}"
-								@click=${() => this.selectSession(session.id)}
-							>
-								<div class="session-title">${session.title || "Untitled Session"}</div>
-							<div class="session-meta">
-								${this.formatSessionDate(session.updatedAt)} • ${session.messageCount || 0} msgs
+			${
+				isShared
+					? html`<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
+							<div class="sidebar-header">
+								<h2>Shared</h2>
+								<button
+									class="new-session-btn"
+									@click=${() => {
+										window.location.href = "/";
+									}}
+								>
+									Exit
+								</button>
 							</div>
-							<button
-								class="icon-btn"
-								title="Delete"
-								@click=${(e: Event) => {
-									e.stopPropagation();
-									this.deleteSession(session.id);
-								}}
-							>
-								${this.renderIcon("close")}
-							</button>
+							<div class="sessions-list">
+								<div class="loading">Read-only shared session</div>
 							</div>
-						`,
-					)}
-				</div>
-			</div>
+						</div>`
+					: html`<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
+							<div class="sidebar-header">
+								<h2>Sessions</h2>
+								<button class="new-session-btn" @click=${this.createNewSession}>
+									New Chat
+								</button>
+								<input
+									type="search"
+									placeholder="Filter..."
+									value=${this.sessionSearch}
+									@input=${(e: Event) => {
+										const value = (
+											e.target as HTMLInputElement
+										).value.toLowerCase();
+										this.sessionSearch = value;
+									}}
+									style="margin-top:0.4rem; width:100%; padding:0.35rem 0.5rem; background:#0a0e14; border:1px solid #30363d; color:#e6edf3; border-radius:3px; font-family:'SF Mono','Menlo','Monaco',monospace; font-size:0.75rem;"
+								/>
+							</div>
+							<div class="sessions-list">
+								${this.sessions.map((session) =>
+									this.sessionSearch &&
+									!session.title?.toLowerCase().includes(this.sessionSearch) &&
+									!session.id?.toLowerCase().includes(this.sessionSearch)
+										? ""
+										: html`
+										<div
+											class="session-item ${this.currentSessionId === session.id ? "active" : ""}"
+											@click=${() => this.selectSession(session.id)}
+										>
+											<div class="session-title">${session.title || "Untitled Session"}</div>
+										<div class="session-meta">
+											${this.formatSessionDate(session.updatedAt)} • ${session.messageCount || 0} msgs
+										</div>
+										<button
+											class="icon-btn"
+											title="Delete"
+											@click=${(e: Event) => {
+												e.stopPropagation();
+												this.deleteSession(session.id);
+											}}
+										>
+											${this.renderIcon("close")}
+										</button>
+										</div>
+									`,
+								)}
+							</div>
+						</div>`
+			}
 
 			<div class="main-content">
 		<div class="header">
@@ -1427,6 +2022,7 @@ export class ComposerChat extends LitElement {
 						<button class="icon-btn" title="Choose Model" @click=${this.openModelSelector}>${this.renderIcon("globe")}</button>
 						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
 						<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>
+						<button class="icon-btn ${this.artifactsOpen ? "active" : ""}" title="Artifacts" @click=${this.toggleArtifactsPanel}>${this.renderIcon("file")}</button>
 						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
 						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
 					</div>
@@ -1434,7 +2030,10 @@ export class ComposerChat extends LitElement {
 
 				${this.error ? html`<div class="error">${this.error}</div>` : ""}
 
-				<div class="messages ${this.compactMode ? "compact" : ""}">
+				<div
+					class="messages ${this.compactMode ? "compact" : ""}"
+					@open-artifact=${this.handleOpenArtifact}
+				>
 						${
 							this.messages.length === 0
 								? html`
@@ -1528,9 +2127,26 @@ export class ComposerChat extends LitElement {
 				<div class="input-container">
 					<composer-input
 						@submit=${this.handleSubmit}
-						?disabled=${this.loading}
+						?disabled=${this.loading || isShared}
 					></composer-input>
 				</div>
+
+				${
+					this.artifactsOpen
+						? html`
+							<composer-artifacts-panel
+								.artifacts=${this.getArtifactsList()}
+								.activeFilename=${this.activeArtifact}
+								.sessionId=${this.currentSessionId}
+								.apiBaseUrl=${this.apiClient.baseUrl}
+								.attachments=${this.getAllAttachments()}
+								@close=${this.closeArtifactsPanel}
+								@select-artifact=${(e: CustomEvent<{ filename: string }>) =>
+									this.setActiveArtifact(e.detail.filename)}
+							></composer-artifacts-panel>
+					  `
+						: ""
+				}
 			</div>
 
 			${

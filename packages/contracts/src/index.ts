@@ -90,6 +90,36 @@ export interface ComposerToolCall {
 }
 
 /**
+ * File attachment included in a user message.
+ *
+ * Attachments can be images (for vision-capable models) or documents
+ * (typically accompanied by extracted text for model consumption).
+ *
+ * `content` is base64-encoded raw bytes. Servers may omit `content` in some
+ * read APIs for size reasons; when omitted, `contentOmitted` is set to true.
+ */
+export interface ComposerAttachment {
+	/** Unique identifier for this attachment */
+	id: string;
+	/** Attachment type */
+	type: "image" | "document";
+	/** Original filename */
+	fileName: string;
+	/** MIME type */
+	mimeType: string;
+	/** Size in bytes */
+	size: number;
+	/** Base64-encoded file content (may be omitted) */
+	content?: string;
+	/** True when `content` was intentionally omitted */
+	contentOmitted?: boolean;
+	/** Extracted text content (for documents) */
+	extractedText?: string;
+	/** Preview image (typically base64, small) */
+	preview?: string;
+}
+
+/**
  * A message in the Composer conversation.
  *
  * Messages can contain text content, tool calls, thinking traces,
@@ -101,6 +131,8 @@ export interface ComposerMessage {
 	role: ComposerRole;
 	/** Text content of the message */
 	content: string;
+	/** Optional file attachments (for user messages) */
+	attachments?: ComposerAttachment[];
 	/** ISO 8601 timestamp when the message was created */
 	timestamp?: string;
 	/** Extended thinking/reasoning trace (for supported models) */

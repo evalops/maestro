@@ -80,7 +80,7 @@ vi.mock("../src/session/manager.js", () => ({
 
 // Mock session-serialization
 vi.mock("../src/server/session-serialization.js", () => ({
-	convertAppMessagesToComposer: vi.fn((msgs) => msgs),
+	convertAppMessagesToComposer: vi.fn((msgs, _opts) => msgs),
 }));
 
 function createMockRequest(method: string, body?: unknown): IncomingMessage {

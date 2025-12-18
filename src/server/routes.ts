@@ -6,6 +6,7 @@ import type { WebServerContext } from "./app-context.js";
 import { handleAdminCleanup, handleAdminWarmCaches } from "./handlers/admin.js";
 import { handleApproval } from "./handlers/approval.js";
 import { handleApprovals } from "./handlers/approvals.js";
+import { handleAttachmentExtract } from "./handlers/attachments.js";
 import { handleBackground } from "./handlers/background.js";
 import { handleBranch } from "./handlers/branch.js";
 import { handleChat } from "./handlers/chat.js";
@@ -39,10 +40,19 @@ import { handleQuota } from "./handlers/quota.js";
 import { handleReview } from "./handlers/review.js";
 import { handleRun } from "./handlers/run.js";
 import {
+	handleSessionArtifactFile,
+	handleSessionArtifactViewer,
+	handleSessionArtifactsEvents,
+	handleSessionArtifactsIndex,
+	handleSessionArtifactsZip,
+} from "./handlers/session-artifacts.js";
+import { handleSessionAttachment } from "./handlers/session-attachments.js";
+import {
 	handleSessionExport,
 	handleSessionShare,
 	handleSessions,
 	handleSharedSession,
+	handleSharedSessionAttachment,
 } from "./handlers/sessions.js";
 import { handleStats } from "./handlers/stats.js";
 import { handleStatus } from "./handlers/status.js";
@@ -450,6 +460,77 @@ export function createRoutes(context: WebServerContext): Route[] {
 			handler: (req, res) => handleClientToolResult(req, res, context),
 		},
 		{
+			method: "POST",
+			path: "/api/attachments/extract",
+			handler: (req, res) => handleAttachmentExtract(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/:id/artifacts",
+			handler: (req, res, params) =>
+				handleSessionArtifactsIndex(
+					req,
+					res,
+					params as { id: string },
+					corsHeaders,
+				),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/:id/artifacts.zip",
+			handler: (req, res, params) =>
+				handleSessionArtifactsZip(
+					req,
+					res,
+					params as { id: string },
+					corsHeaders,
+				),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/:id/artifacts/events",
+			handler: (req, res, params) =>
+				handleSessionArtifactsEvents(
+					req,
+					res,
+					params as { id: string },
+					corsHeaders,
+				),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/:id/artifacts/:filename",
+			handler: (req, res, params) =>
+				handleSessionArtifactFile(
+					req,
+					res,
+					params as { id: string; filename: string },
+					corsHeaders,
+				),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/:id/artifacts/:filename/view",
+			handler: (req, res, params) =>
+				handleSessionArtifactViewer(
+					req,
+					res,
+					params as { id: string; filename: string },
+					corsHeaders,
+				),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/:id/attachments/:attachmentId",
+			handler: (req, res, params) =>
+				handleSessionAttachment(
+					req,
+					res,
+					params as { id: string; attachmentId: string },
+					corsHeaders,
+				),
+		},
+		{
 			method: "GET",
 			path: "/api/sessions",
 			handler: (req, res) => handleSessions(req, res, {}, corsHeaders),
@@ -494,6 +575,17 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/api/sessions/shared/:token",
 			handler: (req, res, params) =>
 				handleSharedSession(req, res, params as { token: string }, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/shared/:token/attachments/:attachmentId",
+			handler: (req, res, params) =>
+				handleSharedSessionAttachment(
+					req,
+					res,
+					params as { token: string; attachmentId: string },
+					corsHeaders,
+				),
 		},
 		{
 			method: "POST",

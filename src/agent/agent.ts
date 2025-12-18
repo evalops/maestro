@@ -86,8 +86,11 @@ import {
 	AgentContextManager,
 	type AgentContextSource,
 } from "./context-manager.js";
-
-const logger = createLogger("agent");
+import {
+	type PreprocessMessagesFn,
+	chainPreprocessMessages,
+	defaultPreprocessMessages,
+} from "./preprocess-messages.js";
 import type {
 	AgentEvent,
 	AgentState,
@@ -108,6 +111,8 @@ import type {
 	UserMessage,
 	UserMessageWithAttachments,
 } from "./types.js";
+
+const logger = createLogger("agent");
 
 /**
  * Default message transformer that converts app messages to LLM-ready format.
@@ -261,6 +266,10 @@ export interface AgentOptions {
 	messageTransformer?: (
 		messages: AppMessage[],
 	) => Message[] | Promise<Message[]>;
+	/** Optional message preprocessor executed immediately before provider invocation */
+	preprocessMessages?: PreprocessMessagesFn;
+	/** Disable Composer's built-in preprocessing (not recommended) */
+	disableDefaultPreprocessMessages?: boolean;
 	/** Optional context sources for environment injection */
 	contextSources?: AgentContextSource[];
 }
@@ -295,6 +304,7 @@ export class Agent {
 	private messageTransformer: (
 		messages: AppMessage[],
 	) => Message[] | Promise<Message[]>;
+	private preprocessMessages?: PreprocessMessagesFn;
 	private messageQueue: Array<QueuedMessage<AppMessage>> = [];
 	private queueMode: "all" | "one" = "all";
 	private runningPrompt?: Promise<void>;
@@ -311,6 +321,12 @@ export class Agent {
 		this.messageTransformer =
 			opts.messageTransformer ??
 			((messages) => defaultMessageTransformer(messages));
+		this.preprocessMessages = chainPreprocessMessages(
+			opts.disableDefaultPreprocessMessages
+				? undefined
+				: defaultPreprocessMessages,
+			opts.preprocessMessages,
+		);
 
 		this.contextManager = new AgentContextManager();
 		if (opts.contextSources) {
@@ -730,6 +746,7 @@ export class Agent {
 				tools: this._state.tools,
 				model: this._state.model,
 				reasoning,
+				preprocessMessages: this.preprocessMessages,
 				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
 				user: this._state.user,
 				session: this._state.session,
@@ -890,6 +907,7 @@ export class Agent {
 				tools: this._state.tools,
 				model: this._state.model,
 				reasoning,
+				preprocessMessages: this.preprocessMessages,
 				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
 				user: this._state.user,
 				session: this._state.session,
@@ -1020,6 +1038,7 @@ export class Agent {
 			tools: [],
 			model: summaryModel,
 			reasoning: undefined,
+			preprocessMessages: this.preprocessMessages,
 		};
 
 		const controller = new AbortController();

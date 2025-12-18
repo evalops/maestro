@@ -1700,6 +1700,7 @@ describe("codingTools bundle", () => {
 			"list",
 			"oracle",
 			"find",
+			"extract_document",
 			"search",
 			"parallel_ripgrep",
 			"diff",

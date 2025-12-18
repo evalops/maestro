@@ -524,6 +524,7 @@ export class ComposerToolExecution extends LitElement {
 			gh_pr: "🔀",
 			gh_issue: "🐛",
 			gh_repo: "📦",
+			artifacts: "🗂️",
 		};
 		return glyphs[toolName] || "🔧";
 	}
@@ -535,7 +536,19 @@ export class ComposerToolExecution extends LitElement {
 		if (typeof filePath === "string") return filePath;
 		const filePathCamel = this.args?.filePath;
 		if (typeof filePathCamel === "string") return filePathCamel;
+		const filename = this.args?.filename;
+		if (typeof filename === "string") return filename;
 		return null;
+	}
+
+	private dispatchOpenArtifact(filename: string) {
+		this.dispatchEvent(
+			new CustomEvent("open-artifact", {
+				bubbles: true,
+				composed: true,
+				detail: { filename },
+			}),
+		);
 	}
 
 	private formatValue(value: unknown): string {
@@ -862,11 +875,33 @@ export class ComposerToolExecution extends LitElement {
 						<span>${this.toolName}</span>
 						${
 							this.getFilePathFromArgs()
-								? html`<span class="file-badge" title="${this.getFilePathFromArgs()}">${this.getFilePathFromArgs()?.split("/").pop()}</span>`
+								? html`<span
+										class="file-badge"
+										title="${this.getFilePathFromArgs()}"
+										@click=${() => {
+											const filename = this.getFilePathFromArgs();
+											if (this.toolName === "artifacts" && filename) {
+												this.dispatchOpenArtifact(filename);
+											}
+										}}
+									>${this.getFilePathFromArgs()?.split("/").pop()}</span>`
 								: ""
 						}
 					</div>
 					<div style="display:flex; align-items:center; gap:0.35rem;">
+						${
+							this.toolName === "artifacts" && this.getFilePathFromArgs()
+								? html`<button
+										class="collapse-toggle"
+										@click=${() => {
+											const filename = this.getFilePathFromArgs();
+											if (filename) this.dispatchOpenArtifact(filename);
+										}}
+									>
+										Open
+									</button>`
+								: ""
+						}
 						<button class="collapse-toggle" @click=${this.toggleBodyCollapse}>
 							${this.bodyCollapsed ? "Expand" : "Collapse"}
 						</button>

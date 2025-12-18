@@ -51,7 +51,9 @@ import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-h
 import { configureSafeMode } from "./safety/safe-mode.js";
 import type { WebServerContext } from "./server/app-context.js";
 import { recordApiRequest } from "./telemetry.js";
+import { artifactsClientTool } from "./tools/artifacts-client.js";
 import { codingTools, vscodeTools } from "./tools/index.js";
+import { javascriptReplClientTool } from "./tools/javascript-repl-client.js";
 import { createLogger } from "./utils/logger.js";
 
 const logger = createLogger("web-server");
@@ -352,12 +354,12 @@ async function createAgent(
 	registeredModel: RegisteredModel,
 	thinkingLevel: ThinkingLevel = "off",
 	approvalMode: ApprovalMode = DEFAULT_APPROVAL_MODE,
-	options?: { includeClientTools?: boolean },
+	options?: { enableClientTools?: boolean; includeVscodeTools?: boolean },
 ): Promise<Agent> {
 	const transport = new ProviderTransport({
 		getAuthContext: async (provider: string) => authResolver(provider),
 		approvalService: new WebActionApprovalService(approvalMode),
-		clientToolService: options?.includeClientTools
+		clientToolService: options?.enableClientTools
 			? clientToolService
 			: undefined,
 	});
@@ -367,9 +369,13 @@ async function createAgent(
 	// Only include vscodeTools if a client is connected (indicated by includeClientTools)
 	// Without a connected VS Code client, these tools will hang waiting for responses
 	const mcpTools = getAllMcpTools();
-	const tools = options?.includeClientTools
+	const tools = options?.includeVscodeTools
 		? [...codingTools, ...vscodeTools, ...mcpTools]
 		: [...codingTools, ...mcpTools];
+	if (options?.enableClientTools) {
+		tools.push(artifactsClientTool);
+		tools.push(javascriptReplClientTool);
+	}
 
 	const agent = new Agent({
 		transport,
@@ -452,6 +458,7 @@ const router = createRequestHandler(
 			corsHeaders: CORS_HEADERS,
 			maxAgeSeconds: STATIC_MAX_AGE,
 			securityHeaders: SECURITY_HEADERS,
+			spaFallback: true,
 		});
 	},
 	CORS_HEADERS,

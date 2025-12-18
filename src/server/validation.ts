@@ -20,6 +20,21 @@ export const ChatRequestSchema = Type.Object({
 		Type.Object({
 			role: Type.String(),
 			content: Type.Optional(Type.String()),
+			attachments: Type.Optional(
+				Type.Array(
+					Type.Object({
+						id: Type.String(),
+						type: Type.String(),
+						fileName: Type.String(),
+						mimeType: Type.String(),
+						size: Type.Number(),
+						content: Type.Optional(Type.String()),
+						contentOmitted: Type.Optional(Type.Boolean()),
+						extractedText: Type.Optional(Type.String()),
+						preview: Type.Optional(Type.String()),
+					}),
+				),
+			),
 		}),
 	),
 	model: Type.Optional(Type.String()),

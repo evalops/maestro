@@ -60,6 +60,7 @@ import { diffTool } from "./diff.js";
 
 // File manipulation
 import { editTool } from "./edit.js";
+import { extractDocumentTool } from "./extract-document.js";
 import { findTool } from "./find.js";
 import { listTool } from "./list.js";
 import { notebookEditTool } from "./notebook.js";
@@ -102,6 +103,7 @@ export { backgroundTasksTool } from "./background-tasks.js";
 export { codesearchTool } from "./codesearch.js";
 export { diffTool } from "./diff.js";
 export { editTool } from "./edit.js";
+export { extractDocumentTool } from "./extract-document.js";
 export { findTool } from "./find.js";
 export { listTool } from "./list.js";
 export { notebookEditTool } from "./notebook.js";
@@ -133,6 +135,7 @@ export const codingTools = [
 	listTool,
 	oracleTool,
 	findTool,
+	extractDocumentTool,
 	// Search capabilities
 	searchTool,
 	parallelRipgrepTool,
@@ -171,6 +174,7 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	list: listTool,
 	oracle: oracleTool,
 	find: findTool,
+	extract_document: extractDocumentTool,
 	search: searchTool,
 	parallel_ripgrep: parallelRipgrepTool,
 	diff: diffTool,

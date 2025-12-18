@@ -188,6 +188,12 @@ export interface ToolCall {
 	name: string;
 	/** Arguments to pass to the tool */
 	arguments: Record<string, unknown>;
+	/**
+	 * Provider-specific signature used by some APIs (notably Gemini 3) to
+	 * associate tool calls with preceding thoughts. If present, it must be
+	 * preserved across turns when replaying the message history back to the provider.
+	 */
+	thoughtSignature?: string;
 }
 
 /**
@@ -1042,6 +1048,24 @@ export interface AgentRunConfig {
 	reasoning?: ReasoningEffort;
 	/** Function to retrieve queued messages for batch sending */
 	getQueuedMessages?: <T>() => Promise<QueuedMessage<T>[]>;
+	/**
+	 * Optional message preprocessor applied immediately before calling the LLM provider.
+	 *
+	 * Use this to implement provider-specific compatibility transforms (e.g., image limits,
+	 * signature preservation, prompt caching markers) without polluting the core tools.
+	 *
+	 * Note: This is a pure preprocessing hook. It should not execute tools or perform I/O.
+	 */
+	preprocessMessages?: (
+		messages: Message[],
+		context: {
+			systemPrompt: string;
+			tools: AgentTool[];
+			model: Model<Api>;
+			userMessage?: Message;
+		},
+		signal?: AbortSignal,
+	) => Message[] | Promise<Message[]>;
 	/** User identification for tracking */
 	user?: {
 		/** User UUID */

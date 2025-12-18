@@ -23,7 +23,10 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
-import type { AgentEvent } from "../../agent/types.js";
+import type {
+	Attachment as AgentAttachment,
+	AgentEvent,
+} from "../../agent/types.js";
 import {
 	createNotificationFromAgentEvent,
 	isNotificationEnabled,
@@ -42,6 +45,7 @@ import {
 } from "../../session/manager.js";
 import { recordSseSkip } from "../../telemetry.js";
 import type { WebServerContext } from "../app-context.js";
+import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
@@ -113,8 +117,91 @@ export async function handleChat(
 			return;
 		}
 
+		const { attachmentsToSend, attachmentError } = (() => {
+			const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+			const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+
+			const raw = latestMessage.attachments;
+			if (!Array.isArray(raw) || raw.length === 0) {
+				return {
+					attachmentsToSend: undefined as AgentAttachment[] | undefined,
+					attachmentError: null as string | null,
+				};
+			}
+
+			const attachments: AgentAttachment[] = [];
+			let totalBytes = 0;
+
+			for (const item of raw) {
+				if (!item || typeof item !== "object") continue;
+				const a = item as unknown as Record<string, unknown>;
+
+				const id = typeof a.id === "string" ? a.id : "";
+				const type =
+					a.type === "image" || a.type === "document" ? a.type : null;
+				const fileName =
+					typeof a.fileName === "string" ? a.fileName : "attachment";
+				const mimeType =
+					typeof a.mimeType === "string"
+						? a.mimeType
+						: "application/octet-stream";
+				const size =
+					typeof a.size === "number" && Number.isFinite(a.size) ? a.size : 0;
+				const content = typeof a.content === "string" ? a.content : "";
+				const extractedText =
+					typeof a.extractedText === "string" ? a.extractedText : undefined;
+				const preview = typeof a.preview === "string" ? a.preview : undefined;
+
+				if (!id || !type) continue;
+				if (!content) {
+					// Content omitted (e.g., session fetch); keep metadata for UI but do not send to model.
+					continue;
+				}
+
+				// Base64 -> bytes (approx). Prefer validating against actual content length.
+				const approxBytes = Math.floor((content.length * 3) / 4);
+				const bytes = approxBytes > 0 ? approxBytes : size;
+
+				if (bytes > MAX_ATTACHMENT_BYTES) {
+					return {
+						attachmentsToSend: undefined,
+						attachmentError: `Attachment too large: ${fileName} (${Math.ceil(bytes / 1024 / 1024)}MB). Max per file is ${Math.ceil(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB.`,
+					};
+				}
+
+				totalBytes += bytes;
+				if (totalBytes > MAX_TOTAL_BYTES) {
+					return {
+						attachmentsToSend: undefined,
+						attachmentError: `Attachments too large: total exceeds ${Math.ceil(MAX_TOTAL_BYTES / 1024 / 1024)}MB.`,
+					};
+				}
+
+				attachments.push({
+					id,
+					type,
+					fileName,
+					mimeType,
+					size: size || bytes,
+					content,
+					extractedText,
+					preview,
+				});
+			}
+
+			return {
+				attachmentsToSend: attachments.length ? attachments : undefined,
+				attachmentError: null,
+			};
+		})();
+
+		if (attachmentError) {
+			sendJson(res, 413, { error: attachmentError }, cors, req);
+			return;
+		}
+
 		const userInput = (latestMessage.content ?? "").trim();
-		if (!userInput) {
+		if (!userInput && !attachmentsToSend) {
 			sendJson(res, 400, { error: "User message cannot be empty" }, cors, req);
 			return;
 		}
@@ -172,10 +259,17 @@ export async function handleChat(
 				: (defaultApprovalMode as "auto" | "prompt" | "fail");
 
 		// Create the agent with the resolved configuration
+		const clientToolsHeader = (() => {
+			const header = req.headers["x-composer-client-tools"];
+			const raw = Array.isArray(header) ? header[0] : header;
+			return raw?.trim() === "1";
+		})();
+
 		const agent = await createAgent(
 			registeredModel,
 			chatReq.thinkingLevel || "off",
 			effectiveApproval,
+			clientToolsHeader ? { enableClientTools: true } : undefined,
 		);
 
 		// Hydrate conversation history (all messages except the current user input)
@@ -228,9 +322,50 @@ export async function handleChat(
 		// Pre-load enterprise context for session tracking
 		const { enterpriseContext } = await import("../../enterprise/context.js");
 
+		const toolArgsByCallId = new Map<string, Record<string, unknown>>();
+
 		const unsubscribe = agent.subscribe((event: AgentEvent) => {
 			// Forward event to client
 			sendSSE(sseSession, event);
+
+			// Track tool args for later event correlation (used by artifact live reload)
+			if (event.type === "tool_execution_start") {
+				toolArgsByCallId.set(
+					event.toolCallId,
+					(event.args && typeof event.args === "object"
+						? (event.args as Record<string, unknown>)
+						: {}) as Record<string, unknown>,
+				);
+			}
+			if (event.type === "client_tool_request") {
+				toolArgsByCallId.set(
+					event.toolCallId,
+					(event.args && typeof event.args === "object"
+						? (event.args as Record<string, unknown>)
+						: {}) as Record<string, unknown>,
+				);
+			}
+			if (event.type === "tool_execution_end") {
+				if (event.toolName === "artifacts" && !event.isError) {
+					const sessionId = sessionManager.getSessionId();
+					const args = toolArgsByCallId.get(event.toolCallId) ?? {};
+					const filename =
+						typeof args.filename === "string" ? args.filename : null;
+					const command =
+						typeof args.command === "string" ? args.command : null;
+					if (
+						sessionId &&
+						filename &&
+						(command === "create" ||
+							command === "update" ||
+							command === "rewrite" ||
+							command === "delete")
+					) {
+						publishArtifactUpdate(sessionId, filename);
+					}
+				}
+				toolArgsByCallId.delete(event.toolCallId);
+			}
 
 			// Handle message completion - persist to session
 			if (event.type === "message_end") {
@@ -374,7 +509,7 @@ export async function handleChat(
 			const breaker = getAgentCircuitBreaker(registeredModel.provider);
 
 			// Execute the agent with the user's input
-			await breaker.execute(() => agent.prompt(userInput));
+			await breaker.execute(() => agent.prompt(userInput, attachmentsToSend));
 
 			// Send completion signal if connection is still open
 			if (!res.writableEnded) {

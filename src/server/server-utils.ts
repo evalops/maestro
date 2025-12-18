@@ -197,6 +197,16 @@ export function sendJson(
 	res.end(body);
 }
 
+export function buildContentDisposition(filename: string): string {
+	// Avoid header injection via CRLF, and keep the value ASCII-safe.
+	const trimmed = (filename || "")
+		.replaceAll("\r", "")
+		.replaceAll("\n", "")
+		.trim();
+	const safe = trimmed.length > 0 ? trimmed : "attachment";
+	return `attachment; filename*=UTF-8''${encodeURIComponent(safe)}`;
+}
+
 export function secureCompare(value: string, secret: string): boolean {
 	const hashProvided = createHash("sha256").update(value).digest();
 	const hashSecret = createHash("sha256").update(secret).digest();

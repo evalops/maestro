@@ -10,6 +10,7 @@ interface ServeStaticOptions {
 	corsHeaders?: Record<string, string>;
 	maxAgeSeconds?: number;
 	securityHeaders?: Record<string, string>;
+	spaFallback?: boolean;
 }
 
 export function serveStatic(
@@ -37,9 +38,25 @@ export function serveStatic(
 	}
 
 	if (!existsSync(filePath)) {
-		res.writeHead(404, { "Content-Type": "text/plain" });
-		res.end("Not Found");
-		return;
+		const accept =
+			typeof req.headers.accept === "string" ? req.headers.accept : "";
+		const lastSegment = (
+			pathname.split("/").filter(Boolean).pop() || ""
+		).trim();
+		const looksLikeAsset = lastSegment.includes(".");
+		const wantsHtml = accept.includes("text/html") || accept.includes("*/*");
+		if (
+			options.spaFallback &&
+			req.method === "GET" &&
+			wantsHtml &&
+			!looksLikeAsset
+		) {
+			filePath = join(safeRoot, "index.html");
+		} else {
+			res.writeHead(404, { "Content-Type": "text/plain" });
+			res.end("Not Found");
+			return;
+		}
 	}
 
 	const ext = filePath.split(".").pop();

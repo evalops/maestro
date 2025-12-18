@@ -2,6 +2,7 @@
  * Message input component
  */
 
+import type { ComposerAttachment } from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { ApiClient } from "../services/api-client.js";
@@ -134,6 +135,75 @@ export class ComposerInput extends LitElement {
 			gap: 0.5rem;
 		}
 
+		.attach-button {
+			width: 34px;
+			height: 34px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-tertiary, #5c5e62);
+			cursor: pointer;
+			transition: all 0.15s ease;
+		}
+
+		.attach-button:hover:not(:disabled) {
+			background: var(--bg-elevated, #161719);
+			color: var(--text-primary, #e8e9eb);
+		}
+
+		.attachments {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.5rem;
+			margin-top: 0.75rem;
+		}
+
+		.attachment-tile {
+			position: relative;
+			width: 48px;
+			height: 48px;
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--bg-elevated, #161719);
+			overflow: hidden;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			color: var(--text-secondary, #8b8d91);
+			font-family: var(--font-mono, monospace);
+			font-size: 0.6rem;
+		}
+
+		.attachment-tile img {
+			width: 100%;
+			height: 100%;
+			object-fit: cover;
+			display: block;
+		}
+
+		.attachment-remove {
+			position: absolute;
+			top: -8px;
+			right: -8px;
+			width: 20px;
+			height: 20px;
+			border-radius: 999px;
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--bg-deep, #08090a);
+			color: var(--text-tertiary, #5c5e62);
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		.attachment-remove:hover {
+			background: var(--bg-elevated, #161719);
+			color: var(--text-primary, #e8e9eb);
+		}
+
 		.suggestions {
 			position: absolute;
 			bottom: 100%;
@@ -262,6 +332,7 @@ export class ComposerInput extends LitElement {
 	@state() private slashHint: WebSlashCommand | null = null;
 	@state() private slashMatches: WebSlashCommand[] = [];
 	@state() private slashIndex = 0;
+	@state() private attachments: ComposerAttachment[] = [];
 
 	private maxLength = 10000;
 	private allFiles: string[] = [];
@@ -497,13 +568,169 @@ export class ComposerInput extends LitElement {
 		});
 	}
 
+	private async fileToBase64(file: File): Promise<string> {
+		const dataUrl = await new Promise<string>((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onerror = () => reject(new Error("Failed to read file"));
+			reader.onload = () => resolve(String(reader.result || ""));
+			reader.readAsDataURL(file);
+		});
+		const comma = dataUrl.indexOf(",");
+		return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+	}
+
+	private async imageToPreviewBase64(file: File): Promise<string | undefined> {
+		try {
+			const blobUrl = URL.createObjectURL(file);
+			try {
+				const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+					const el = new Image();
+					el.onload = () => resolve(el);
+					el.onerror = () => reject(new Error("Failed to load image"));
+					el.src = blobUrl;
+				});
+
+				const maxDim = 128;
+				const scale = Math.min(
+					1,
+					maxDim /
+						Math.max(img.naturalWidth || maxDim, img.naturalHeight || maxDim),
+				);
+				const w = Math.max(1, Math.round((img.naturalWidth || maxDim) * scale));
+				const h = Math.max(
+					1,
+					Math.round((img.naturalHeight || maxDim) * scale),
+				);
+
+				const canvas = document.createElement("canvas");
+				canvas.width = w;
+				canvas.height = h;
+				const ctx = canvas.getContext("2d");
+				if (!ctx) return undefined;
+				ctx.drawImage(img, 0, 0, w, h);
+
+				const previewUrl = canvas.toDataURL("image/png", 0.9);
+				const comma = previewUrl.indexOf(",");
+				return comma >= 0 ? previewUrl.slice(comma + 1) : previewUrl;
+			} finally {
+				URL.revokeObjectURL(blobUrl);
+			}
+		} catch {
+			return undefined;
+		}
+	}
+
+	private isTextLike(file: File): boolean {
+		const type = (file.type || "").toLowerCase();
+		if (type.startsWith("text/")) return true;
+		if (
+			type.includes("json") ||
+			type.includes("xml") ||
+			type.includes("yaml") ||
+			type.includes("csv")
+		) {
+			return true;
+		}
+		const name = file.name.toLowerCase();
+		return (
+			name.endsWith(".txt") ||
+			name.endsWith(".md") ||
+			name.endsWith(".markdown") ||
+			name.endsWith(".json") ||
+			name.endsWith(".yaml") ||
+			name.endsWith(".yml") ||
+			name.endsWith(".csv") ||
+			name.endsWith(".ts") ||
+			name.endsWith(".tsx") ||
+			name.endsWith(".js") ||
+			name.endsWith(".jsx")
+		);
+	}
+
+	private async addFiles(files: FileList | File[]) {
+		const list = Array.from(files || []);
+		if (list.length === 0) return;
+
+		const MAX_BYTES = 8 * 1024 * 1024;
+		const next: ComposerAttachment[] = [...this.attachments];
+
+		for (const file of list) {
+			if (!file) continue;
+			if (file.size > MAX_BYTES) continue;
+
+			const id =
+				typeof crypto !== "undefined" && "randomUUID" in crypto
+					? crypto.randomUUID()
+					: `att_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+			const mimeType = file.type?.trim() || "application/octet-stream";
+			const type: ComposerAttachment["type"] = mimeType.startsWith("image/")
+				? "image"
+				: "document";
+
+			const content = await this.fileToBase64(file);
+			const preview =
+				type === "image" ? await this.imageToPreviewBase64(file) : undefined;
+
+			let extractedText: string | undefined;
+			if (type === "document" && this.isTextLike(file)) {
+				try {
+					const text = await file.text();
+					extractedText = text.length > 200_000 ? text.slice(0, 200_000) : text;
+				} catch {
+					extractedText = undefined;
+				}
+			}
+
+			next.push({
+				id,
+				type,
+				fileName: file.name || "attachment",
+				mimeType,
+				size: file.size,
+				content,
+				preview,
+				extractedText,
+			});
+		}
+
+		this.attachments = next;
+	}
+
+	private handleAttachClick() {
+		const input = this.shadowRoot?.querySelector(
+			"input[type=file]",
+		) as HTMLInputElement | null;
+		input?.click();
+	}
+
+	private handleFileChange(e: Event) {
+		const input = e.target as HTMLInputElement | null;
+		if (!input?.files) return;
+		void this.addFiles(input.files);
+		input.value = "";
+	}
+
+	private removeAttachment(id: string) {
+		this.attachments = this.attachments.filter((a) => a.id !== id);
+	}
+
+	private openAttachment(attachment: ComposerAttachment) {
+		this.dispatchEvent(
+			new CustomEvent("open-attachment", {
+				bubbles: true,
+				composed: true,
+				detail: { attachment },
+			}),
+		);
+	}
+
 	private submit() {
 		const text = this.value.trim();
-		if (!text || this.disabled) return;
+		if ((!text && this.attachments.length === 0) || this.disabled) return;
 
 		this.dispatchEvent(
 			new CustomEvent("submit", {
-				detail: { text },
+				detail: { text, attachments: this.attachments },
 				bubbles: true,
 				composed: true,
 			}),
@@ -511,6 +738,7 @@ export class ComposerInput extends LitElement {
 
 		// Clear input
 		this.value = "";
+		this.attachments = [];
 		this.showSuggestions = false;
 		const textarea = this.shadowRoot?.querySelector("textarea");
 		if (textarea) {
@@ -604,11 +832,65 @@ export class ComposerInput extends LitElement {
 							: ""
 					}
 					<div class="actions">
-						<button @click=${this.submit} ?disabled=${this.disabled || !this.value.trim()}>
+						<input
+							type="file"
+							style="display:none"
+							multiple
+							@change=${this.handleFileChange}
+						/>
+						<button
+							class="attach-button"
+							?disabled=${this.disabled}
+							@click=${this.handleAttachClick}
+							title="Attach files"
+						>
+							＋
+						</button>
+						<button
+							@click=${this.submit}
+							?disabled=${this.disabled || (!this.value.trim() && this.attachments.length === 0)}
+						>
 							SEND
 						</button>
 					</div>
 				</div>
+				${
+					this.attachments.length
+						? html`<div class="attachments">
+								${this.attachments.map((a) => {
+									const isImage = a.type === "image";
+									const preview = a.preview || a.content || "";
+									return html`<div
+										class="attachment-tile"
+										title=${a.fileName}
+										@click=${() => this.openAttachment(a)}
+									>
+										${
+											isImage && preview
+												? html`<img
+														alt=${a.fileName}
+														src=${`data:${a.mimeType};base64,${preview}`}
+													/>`
+												: html`<span>
+														${(a.fileName || "?").slice(0, 2).toUpperCase()}
+													</span>`
+										}
+										<button
+											class="attachment-remove"
+											@click=${(e: Event) => {
+												e.preventDefault();
+												e.stopPropagation();
+												this.removeAttachment(a.id);
+											}}
+											title="Remove"
+										>
+											×
+										</button>
+									</div>`;
+								})}
+						  </div>`
+						: ""
+				}
 			</div>
 			<div class="hint">
 				<kbd>↵</kbd> send • <kbd>⇧</kbd> + <kbd>↵</kbd> newline • <kbd>@</kbd> mention file

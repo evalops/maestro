@@ -46,7 +46,7 @@ describe("ComposerMessage", () => {
 		assert.ok(message?.classList.contains("assistant"));
 
 		const avatar = element.shadowRoot?.querySelector(".avatar");
-		assert.equal(avatar?.textContent, "A");
+		assert.equal(avatar?.textContent, "C");
 
 		const bubble = element.shadowRoot?.querySelector(".bubble");
 		assert.include(bubble?.textContent || "", "Hi there!");
@@ -116,5 +116,68 @@ describe("ComposerMessage", () => {
 		assert.ok(pre);
 		assert.ok(code);
 		assert.include(code?.textContent || "", "const x = 1;");
+	});
+
+	it("renders a sandboxed preview for ```html fenced blocks", async () => {
+		element = await fixture(
+			html`<composer-message
+				role="assistant"
+				content="\`\`\`html\n<!doctype html><html><body><h1>Hi</h1></body></html>\n\`\`\`"
+			></composer-message>`,
+		);
+		await element.updateComplete;
+
+		const toggle = element.shadowRoot?.querySelector(
+			".artifact-toggle",
+		) as HTMLButtonElement | null;
+		assert.ok(toggle);
+		assert.include(toggle?.textContent || "", "Preview");
+
+		toggle?.click();
+		await element.updateComplete;
+
+		const sandbox = element.shadowRoot?.querySelector(
+			"composer-sandboxed-iframe",
+		) as HTMLElement | null;
+		assert.ok(sandbox);
+
+		const iframe = sandbox?.shadowRoot?.querySelector("iframe");
+		assert.ok(iframe);
+		assert.include(iframe?.getAttribute("sandbox") || "", "allow-scripts");
+	});
+
+	it("renders attachments on user messages and emits open-attachment", async () => {
+		const attachment = {
+			id: "att1",
+			type: "image" as const,
+			fileName: "x.png",
+			mimeType: "image/png",
+			size: 1,
+			content: "AA==",
+		};
+
+		element = await fixture(
+			html`<composer-message
+				role="user"
+				content="here"
+				.attachments=${[attachment]}
+			></composer-message>`,
+		);
+		await element.updateComplete;
+
+		const tile = element.shadowRoot?.querySelector(
+			".attachment",
+		) as HTMLElement | null;
+		assert.ok(tile);
+
+		const got = new Promise<unknown>((resolve) => {
+			element.addEventListener("open-attachment", (e) => resolve(e), {
+				once: true,
+			});
+		});
+
+		tile?.click();
+		const event = await got;
+		assert.ok(event);
 	});
 });

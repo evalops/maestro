@@ -5,9 +5,24 @@
 import DOMPurify from "dompurify";
 import hljs from "highlight.js";
 import { LitElement, css, html } from "lit";
-import { customElement, property } from "lit/decorators.js";
+import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { marked } from "marked";
+import "./composer-sandboxed-iframe.js";
+
+const NO_PROVIDERS: unknown[] = [];
+
+function randomId(prefix: string): string {
+	const cryptoObj = globalThis.crypto;
+	if (cryptoObj && "randomUUID" in cryptoObj) {
+		try {
+			return `${prefix}${(cryptoObj as Crypto).randomUUID()}`;
+		} catch {
+			// ignore
+		}
+	}
+	return `${prefix}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
 // Configure marked with code highlighting using custom renderer
 // Note: highlight option is deprecated in marked v5+, so we use a custom renderer
@@ -165,6 +180,50 @@ export class ComposerMessage extends LitElement {
 			margin-top: 1rem;
 		}
 
+		/* Artifact previews */
+		.artifacts {
+			margin-top: 1rem;
+			display: flex;
+			flex-direction: column;
+			gap: 0.75rem;
+		}
+
+		.artifact-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 0.75rem;
+		}
+
+		.artifact-title {
+			font-size: 0.65rem;
+			text-transform: uppercase;
+			letter-spacing: 0.08em;
+			color: var(--text-tertiary, #5c5e62);
+			font-weight: 600;
+		}
+
+		.artifact-toggle {
+			padding: 0.25rem 0.5rem;
+			background: transparent;
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-secondary, #8b8d91);
+			cursor: pointer;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.65rem;
+			transition: all 0.15s ease;
+		}
+
+		.artifact-toggle:hover {
+			background: var(--bg-elevated, #161719);
+			color: var(--text-primary, #e8e9eb);
+			border-color: var(--border-hover, #3a3d42);
+		}
+
+		.artifact-frame {
+			height: 320px;
+		}
+
 		/* Markdown styles - Control Room */
 		.bubble :global(pre) {
 			background: var(--bg-deep, #08090a);
@@ -315,6 +374,36 @@ export class ComposerMessage extends LitElement {
 			background: var(--accent-green-dim, rgba(34, 197, 94, 0.12));
 		}
 
+		.attachments {
+			margin-top: 0.75rem;
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.5rem;
+		}
+
+		.attachment {
+			width: 56px;
+			height: 56px;
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--bg-elevated, #161719);
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			overflow: hidden;
+			cursor: pointer;
+			color: var(--text-tertiary, #5c5e62);
+			font-family: var(--font-mono, monospace);
+			font-size: 0.6rem;
+			position: relative;
+		}
+
+		.attachment img {
+			width: 100%;
+			height: 100%;
+			object-fit: cover;
+			display: block;
+		}
+
 		@media (max-width: 768px) {
 			.message { padding: 1rem 0; gap: 0.75rem; }
 			.avatar-column { flex: 0 0 24px; }
@@ -334,9 +423,44 @@ export class ComposerMessage extends LitElement {
 		args?: Record<string, unknown>;
 		result?: unknown;
 	}> = [];
+	@property({ attribute: false })
+	attachments: Array<{
+		id: string;
+		type: "image" | "document";
+		fileName: string;
+		mimeType: string;
+		size: number;
+		content?: string;
+		preview?: string;
+		extractedText?: string;
+	}> = [];
 	@property({ type: Boolean }) compact = false;
 	@property({ type: Boolean, reflect: true, attribute: "reduced-motion" })
 	reducedMotion = false;
+
+	@state() private previewOpen: Record<number, boolean> = {};
+	private readonly instanceId = randomId("msg_");
+
+	private extractHtmlArtifacts(): Array<{ language: string; code: string }> {
+		// Simple fenced-code extraction. This is intentionally conservative:
+		// we only treat explicit ```html / ```svg blocks as previewable artifacts.
+		const artifacts: Array<{ language: string; code: string }> = [];
+		const pattern = /```(html|svg)\s*\n([\s\S]*?)```/gi;
+		for (;;) {
+			const match = pattern.exec(this.content);
+			if (!match) break;
+			const language = (match[1] || "").toLowerCase();
+			const code = match[2] ?? "";
+			if (code.trim().length === 0) continue;
+			artifacts.push({ language, code });
+		}
+		return artifacts;
+	}
+
+	private togglePreview(index: number) {
+		const current = Boolean(this.previewOpen[index]);
+		this.previewOpen = { ...this.previewOpen, [index]: !current };
+	}
 
 	private formatTimestamp(ts: string): string {
 		if (!ts) return "";
@@ -384,6 +508,39 @@ export class ComposerMessage extends LitElement {
 		}
 	}
 
+	private openAttachment(att: (typeof this.attachments)[number]) {
+		this.dispatchEvent(
+			new CustomEvent("open-attachment", {
+				bubbles: true,
+				composed: true,
+				detail: { attachment: att },
+			}),
+		);
+	}
+
+	private renderAttachments() {
+		const attachments = Array.isArray(this.attachments) ? this.attachments : [];
+		if (this.role !== "user" || attachments.length === 0) return null;
+
+		return html`<div class="attachments">
+			${attachments.map((a) => {
+				const isImage = a.type === "image";
+				const preview = a.preview || a.content || "";
+				return html`<div
+					class="attachment"
+					title=${a.fileName}
+					@click=${() => this.openAttachment(a)}
+				>
+					${
+						isImage && preview
+							? html`<img alt=${a.fileName} src=${`data:${a.mimeType};base64,${preview}`} />`
+							: html`<span>${(a.fileName || "?").slice(0, 2).toUpperCase()}</span>`
+					}
+				</div>`;
+			})}
+		</div>`;
+	}
+
 	private renderContent() {
 		if (this.role === "user") {
 			// User messages are plain text with basic formatting
@@ -407,9 +564,55 @@ export class ComposerMessage extends LitElement {
 			'<pre class="has-copy"><button class="copy-button" data-copy-button>Copy</button><code',
 		);
 
-		return html`<div class="bubble" @click=${this.handleCopyClick}>
-			${unsafeHTML(withCopyButtons)}
-		</div>`;
+		const artifacts =
+			this.role === "assistant" ? this.extractHtmlArtifacts() : [];
+
+		return html`
+			<div class="bubble" @click=${this.handleCopyClick}>
+				${unsafeHTML(withCopyButtons)}
+			</div>
+			${
+				artifacts.length > 0
+					? html`<div class="artifacts">
+						${artifacts.map((artifact, i) => {
+							const open = Boolean(this.previewOpen[i]);
+							const title =
+								artifact.language === "svg" ? "SVG preview" : "HTML preview";
+							const htmlContent = (() => {
+								if (artifact.language !== "svg") {
+									return artifact.code;
+								}
+								// If the fenced block already contains an <svg> root, use as-is.
+								if (/<svg[\s>]/i.test(artifact.code)) {
+									return artifact.code;
+								}
+								return `<svg xmlns="http://www.w3.org/2000/svg">${artifact.code}</svg>`;
+							})();
+							return html`
+								<div>
+									<div class="artifact-header">
+										<div class="artifact-title">${title}</div>
+										<button class="artifact-toggle" @click=${() => this.togglePreview(i)}>
+											${open ? "Hide" : "Preview"}
+										</button>
+									</div>
+									${
+										open
+											? html`<composer-sandboxed-iframe
+													class="artifact-frame"
+													.sandboxId=${`msg-${this.instanceId}-${i}`}
+													.htmlContent=${htmlContent}
+													.providers=${NO_PROVIDERS}
+												></composer-sandboxed-iframe>`
+											: null
+									}
+								</div>
+							`;
+						})}
+					</div>`
+					: null
+			}
+		`;
 	}
 
 	render() {
@@ -455,6 +658,7 @@ export class ComposerMessage extends LitElement {
 						}
 
 						${this.renderContent()}
+						${this.renderAttachments()}
 
 						${
 							hasTools

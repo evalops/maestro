@@ -103,6 +103,12 @@ export async function* streamGoogle(
 				for (const part of candidate.content.parts) {
 					if (part.text !== undefined) {
 						const isThinking = part.thought === true;
+						const thoughtSignature =
+							"thoughtSignature" in part &&
+							typeof (part as { thoughtSignature?: unknown })
+								.thoughtSignature === "string"
+								? (part as { thoughtSignature: string }).thoughtSignature
+								: undefined;
 
 						if (
 							!currentBlock ||
@@ -130,7 +136,13 @@ export async function* streamGoogle(
 
 							// Start new block
 							if (isThinking) {
-								currentBlock = { type: "thinking", thinking: "" };
+								currentBlock = {
+									type: "thinking",
+									thinking: "",
+									...(thoughtSignature
+										? { thinkingSignature: thoughtSignature }
+										: {}),
+								};
 								partial.content.push(currentBlock);
 								yield {
 									type: "thinking_start",
@@ -150,6 +162,9 @@ export async function* streamGoogle(
 
 						// Accumulate delta
 						if (currentBlock.type === "thinking") {
+							if (thoughtSignature && !currentBlock.thinkingSignature) {
+								currentBlock.thinkingSignature = thoughtSignature;
+							}
 							currentBlock.thinking += part.text;
 							yield {
 								type: "thinking_delta",
@@ -207,6 +222,14 @@ export async function* streamGoogle(
 							arguments: isRecord(part.functionCall.args)
 								? part.functionCall.args
 								: {},
+							...("thoughtSignature" in part &&
+							typeof (part as { thoughtSignature?: unknown })
+								.thoughtSignature === "string"
+								? {
+										thoughtSignature: (part as { thoughtSignature: string })
+											.thoughtSignature,
+									}
+								: {}),
 						};
 
 						// Note: Validation happens in the agent executor, not during streaming
@@ -331,7 +354,7 @@ function buildParams(
 	context: Context,
 	options: GoogleOptions,
 ): GenerateContentParameters {
-	const contents = convertMessages(model, context);
+	const contents = convertMessagesForGoogle(model, context);
 
 	const generationConfig: GenerateContentConfig = {};
 	if (options.temperature !== undefined) {
@@ -398,7 +421,7 @@ function buildParams(
 	};
 }
 
-function convertMessages(
+export function convertMessagesForGoogle(
 	model: Model<"google-generative-ai">,
 	context: Context,
 ): Content[] {
@@ -435,23 +458,32 @@ function convertMessages(
 			}
 		} else if (msg.role === "assistant") {
 			const parts: Part[] = [];
+			type PartWithThoughtSignature = Part & { thoughtSignature?: string };
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
 					parts.push({ text: sanitizeSurrogates(block.text) });
 				} else if (block.type === "thinking") {
-					parts.push({
+					const thinkingPart: PartWithThoughtSignature = {
 						thought: true,
 						text: sanitizeSurrogates(block.thinking),
-					});
+					} as PartWithThoughtSignature;
+					if (block.thinkingSignature) {
+						thinkingPart.thoughtSignature = block.thinkingSignature;
+					}
+					parts.push(thinkingPart);
 				} else if (block.type === "toolCall") {
-					parts.push({
+					const toolPart: PartWithThoughtSignature = {
 						functionCall: {
 							id: block.id,
 							name: block.name,
 							args: block.arguments,
 						},
-					});
+					} as PartWithThoughtSignature;
+					if (block.thoughtSignature) {
+						toolPart.thoughtSignature = block.thoughtSignature;
+					}
+					parts.push(toolPart);
 				}
 			}
 

@@ -14,6 +14,9 @@ import "./components/composer-tool-execution.js";
 import "./components/composer-thinking.js";
 import "./components/composer-approval.js";
 import "./components/admin-settings.js";
+import "./components/composer-sandboxed-iframe.js";
+import "./components/composer-artifacts-panel.js";
+import "./components/composer-attachment-viewer.js";
 
 // Export components for programmatic use
 export { ComposerChat } from "./components/composer-chat.js";
@@ -25,6 +28,9 @@ export { ComposerToolExecution } from "./components/composer-tool-execution.js";
 export { ComposerThinking } from "./components/composer-thinking.js";
 export { ComposerApproval } from "./components/composer-approval.js";
 export { AdminSettings } from "./components/admin-settings.js";
+export { ComposerSandboxedIframe } from "./components/composer-sandboxed-iframe.js";
+export { ComposerArtifactsPanel } from "./components/composer-artifacts-panel.js";
+export { ComposerAttachmentViewer } from "./components/composer-attachment-viewer.js";
 
 // Export services
 export { ApiClient } from "./services/api-client.js";

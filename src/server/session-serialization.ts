@@ -22,6 +22,7 @@
  */
 
 import type {
+	ComposerAttachment,
 	ComposerMessage,
 	ComposerToolCall,
 	ComposerUsage,
@@ -29,6 +30,7 @@ import type {
 import type {
 	AppMessage,
 	AssistantMessage,
+	Attachment,
 	ImageContent,
 	TextContent,
 	ThinkingContent,
@@ -117,6 +119,58 @@ function safeStringify(value: unknown): string {
 /** Type guard for plain objects (not arrays or null) */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function toComposerAttachments(
+	attachments: Attachment[] | undefined,
+	options?: { includeAttachmentContent?: boolean },
+): ComposerAttachment[] | undefined {
+	if (!attachments || attachments.length === 0) return undefined;
+	const includeAttachmentContent = options?.includeAttachmentContent !== false;
+	return attachments.map((a) => ({
+		id: a.id,
+		type: a.type,
+		fileName: a.fileName,
+		mimeType: a.mimeType,
+		size: a.size,
+		content: includeAttachmentContent ? a.content : undefined,
+		contentOmitted: includeAttachmentContent ? undefined : true,
+		extractedText: a.extractedText,
+		preview: a.preview,
+	}));
+}
+
+function fromComposerAttachments(
+	attachments: ComposerAttachment[] | undefined,
+): Attachment[] | undefined {
+	if (!attachments || attachments.length === 0) return undefined;
+
+	const out: Attachment[] = [];
+	for (const a of attachments) {
+		if (!a) continue;
+		if (typeof a.id !== "string" || !a.id) continue;
+		if (a.type !== "image" && a.type !== "document") continue;
+		if (typeof a.fileName !== "string" || !a.fileName) continue;
+		if (typeof a.mimeType !== "string" || !a.mimeType) continue;
+		if (typeof a.size !== "number" || !Number.isFinite(a.size)) continue;
+		if (typeof a.content !== "string" || a.content.length === 0) {
+			// Content omitted in session responses; do not pass to agent.
+			continue;
+		}
+		out.push({
+			id: a.id,
+			type: a.type,
+			fileName: a.fileName,
+			mimeType: a.mimeType,
+			size: a.size,
+			content: a.content,
+			extractedText:
+				typeof a.extractedText === "string" ? a.extractedText : undefined,
+			preview: typeof a.preview === "string" ? a.preview : undefined,
+		});
+	}
+
+	return out.length ? out : undefined;
 }
 
 /** Helper to construct error context from conversion parameters */
@@ -322,6 +376,7 @@ function extractToolCalls(
 export function convertAppMessageToComposer(
 	message: AppMessage,
 	index = 0,
+	options?: { includeAttachmentContent?: boolean },
 ): ComposerMessage {
 	const context = buildContext("app->composer", index, message.role);
 	const timestamp = toIsoString(
@@ -331,10 +386,17 @@ export function convertAppMessageToComposer(
 
 	// User messages - simple text extraction
 	if (message.role === "user") {
+		const attachments = toComposerAttachments(
+			"attachments" in message
+				? (message as { attachments?: Attachment[] }).attachments
+				: undefined,
+			options,
+		);
 		return {
 			role: "user",
 			content: extractTextContent(message.content),
 			timestamp,
+			attachments,
 		};
 	}
 
@@ -386,9 +448,10 @@ export function convertAppMessageToComposer(
  */
 export function convertAppMessagesToComposer(
 	messages: AppMessage[],
+	options?: { includeAttachmentContent?: boolean },
 ): ComposerMessage[] {
 	return messages.map((message, index) =>
-		convertAppMessageToComposer(message, index),
+		convertAppMessageToComposer(message, index, options),
 	);
 }
 
@@ -466,10 +529,12 @@ export function convertComposerMessageToApp(
 
 	// User messages - wrap content in text block
 	if (message.role === "user") {
+		const attachments = fromComposerAttachments(message.attachments);
 		return [
 			{
 				role: "user",
 				content: [{ type: "text", text: message.content || "" }],
+				attachments,
 				timestamp: toTimestamp(message.timestamp, context),
 			},
 		];

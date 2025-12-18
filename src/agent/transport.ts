@@ -631,9 +631,22 @@ export class ProviderTransport implements AgentTransport {
 			let pendingNextTurn = false;
 			let encounteredError = false;
 
+			const currentMessages = cfg.preprocessMessages
+				? await cfg.preprocessMessages(
+						allMessages,
+						{
+							systemPrompt,
+							tools,
+							model,
+							userMessage,
+						},
+						signal,
+					)
+				: allMessages;
+
 			const currentContext = {
 				...context,
-				messages: allMessages,
+				messages: currentMessages,
 			};
 
 			// Stream retry logic for idle timeouts
