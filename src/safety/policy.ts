@@ -122,6 +122,7 @@ import {
 	extractUrlsFromShellCommand,
 	extractUrlsFromValue,
 } from "../utils/url-extractor.js";
+import { dangerousPatterns as shellDangerousPatterns } from "./dangerous-patterns.js";
 
 const logger = createLogger("safety:policy");
 
@@ -648,18 +649,18 @@ export async function checkPolicy(context: ActionApprovalContext): Promise<{
 		const command = getCommandArg(context);
 		if (command) {
 			// Check for obfuscation and dangerous patterns
-			const dangerousPatterns = [
-				/base64\s+-d/i,
-				/openssl\s+enc/i,
-				/python\s+-c/i,
-				/perl\s+-e/i,
-				/node\s+-e/i,
-				/php\s+-r/i,
-				/ruby\s+-e/i,
-				/eval\s*\(+/i,
-				/exec\s*\(+/i,
+			const obfuscationPatterns = [
+				shellDangerousPatterns.base64Decode,
+				shellDangerousPatterns.opensslEnc,
+				shellDangerousPatterns.pythonEval,
+				shellDangerousPatterns.perlEval,
+				shellDangerousPatterns.nodeEval,
+				shellDangerousPatterns.phpEval,
+				shellDangerousPatterns.rubyEval,
+				shellDangerousPatterns.evalCall,
+				shellDangerousPatterns.execCall,
 			];
-			for (const pattern of dangerousPatterns) {
+			for (const pattern of obfuscationPatterns) {
 				if (pattern.test(command)) {
 					return {
 						allowed: false,
