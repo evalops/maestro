@@ -38,7 +38,7 @@ pub use types::{
     ActiveSkill, SkillActivationState, SkillDefinition, SkillEvent, SkillId, SkillSource,
 };
 
-pub use loader::{LoadedSkill, SkillLoadError, SkillLoader, SkillResources};
+pub use loader::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillResources};
 
 use std::collections::HashMap;
 

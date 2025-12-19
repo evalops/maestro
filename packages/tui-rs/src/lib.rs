@@ -1191,6 +1191,7 @@ pub use ascii_animation::{
 /// - `~/.composer/skills/` for global user skills
 /// - `.composer/skills/` for project-specific skills
 pub use skills::{
+    skills_to_prompt,     // Generate XML prompt block for skills
     ActiveSkill,          // Runtime skill state
     LoadedSkill,          // Result of loading a skill file
     SkillActivationState, // Inactive, Activating, Active, etc.

@@ -100,6 +100,14 @@ pub enum SkillLoadError {
         name: String,
         reason: String,
     },
+
+    /// Directory name doesn't match skill name
+    #[error("Directory name '{dir_name}' doesn't match skill name '{skill_name}' in '{path}'")]
+    NameMismatch {
+        path: PathBuf,
+        dir_name: String,
+        skill_name: String,
+    },
 }
 
 /// YAML frontmatter structure for skill files (per Agent Skills spec)
@@ -346,6 +354,19 @@ impl SkillLoader {
         // Parse the skill
         let definition = self.parse_skill_content(&content, path, source)?;
 
+        // Validate directory name matches skill name (per Agent Skills spec)
+        // Skip this check for SKILL.md files in the root skills directory
+        if let Some(dir_name) = skill_dir.file_name().and_then(|n| n.to_str()) {
+            // Only validate if we're in a subdirectory (not the root skills dir)
+            if dir_name != "skills" && dir_name != definition.name {
+                return Err(SkillLoadError::NameMismatch {
+                    path: path.to_path_buf(),
+                    dir_name: dir_name.to_string(),
+                    skill_name: definition.name.clone(),
+                });
+            }
+        }
+
         Ok(LoadedSkill {
             definition,
             source_path: path.to_path_buf(),
@@ -508,6 +529,56 @@ impl SkillLoader {
     }
 }
 
+/// Generate an XML prompt block for available skills (per Agent Skills spec)
+///
+/// This generates the `<available_skills>` XML block that should be included
+/// in system prompts to make skills discoverable by the agent.
+///
+/// # Example Output
+///
+/// ```xml
+/// <available_skills>
+/// <skill>
+///   <name>pdf-processing</name>
+///   <description>Extract text and tables from PDFs</description>
+///   <location>/home/user/.composer/skills/pdf-processing/SKILL.md</location>
+/// </skill>
+/// </available_skills>
+/// ```
+pub fn skills_to_prompt(skills: &[LoadedSkill]) -> String {
+    if skills.is_empty() {
+        return "<available_skills>\n</available_skills>".to_string();
+    }
+
+    let mut output = String::from("<available_skills>\n");
+
+    for skill in skills {
+        let def = &skill.definition;
+        // Escape XML special characters
+        let name = html_escape(&def.name);
+        let description = html_escape(&def.description);
+        let location = html_escape(&skill.source_path.display().to_string());
+
+        output.push_str("<skill>\n");
+        output.push_str(&format!("  <name>{}</name>\n", name));
+        output.push_str(&format!("  <description>{}</description>\n", description));
+        output.push_str(&format!("  <location>{}</location>\n", location));
+        output.push_str("</skill>\n");
+    }
+
+    output.push_str("</available_skills>");
+    output
+}
+
+/// Escape HTML/XML special characters
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 impl Default for SkillLoader {
     fn default() -> Self {
         Self::new()
@@ -519,12 +590,6 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-
-    fn create_skill_file(dir: &Path, content: &str) -> PathBuf {
-        let skill_file = dir.join("SKILL.md");
-        fs::write(&skill_file, content).unwrap();
-        skill_file
-    }
 
     #[test]
     fn test_loader_new() {
@@ -859,14 +924,20 @@ Content.
     #[test]
     fn test_load_skill_file() {
         let temp_dir = TempDir::new().unwrap();
+
+        // Create a properly named subdirectory for the skill
+        let skill_dir = temp_dir.path().join("file-test");
+        fs::create_dir(&skill_dir).unwrap();
+
         let skill_content = r#"---
 name: file-test
 description: Testing file loading
 ---
 File loaded successfully.
 "#;
+        let skill_path = skill_dir.join("SKILL.md");
+        fs::write(&skill_path, skill_content).unwrap();
 
-        let skill_path = create_skill_file(temp_dir.path(), skill_content);
         let loader = SkillLoader::new();
         let result = loader.load_skill_file(&skill_path, SkillSource::User);
 
@@ -1179,8 +1250,12 @@ More content.
     fn test_skill_in_root_of_skills_dir() {
         let temp_dir = TempDir::new().unwrap();
 
+        // Create a "skills" directory to simulate the actual skills directory
+        let skills_dir = temp_dir.path().join("skills");
+        fs::create_dir(&skills_dir).unwrap();
+
         fs::write(
-            temp_dir.path().join("SKILL.md"),
+            skills_dir.join("SKILL.md"),
             r#"---
 name: root-skill
 description: Root skill in skills directory
@@ -1191,7 +1266,7 @@ Root skill content.
         .unwrap();
 
         let loader = SkillLoader::new();
-        let results = loader.load_from_directory(temp_dir.path());
+        let results = loader.load_from_directory(&skills_dir);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
@@ -1247,5 +1322,162 @@ Content.
             skill.provided_tools,
             vec!["read", "write", "bash", "edit", "glob", "grep"]
         );
+    }
+
+    #[test]
+    fn test_directory_name_mismatch() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a skill with a mismatched directory name
+        let skill_dir = temp_dir.path().join("wrong-name");
+        fs::create_dir(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: correct-name
+description: Skill with mismatched directory
+---
+Content.
+"#,
+        )
+        .unwrap();
+
+        let loader = SkillLoader::new();
+        let result = loader.load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::User);
+
+        assert!(matches!(result, Err(SkillLoadError::NameMismatch { .. })));
+    }
+
+    #[test]
+    fn test_directory_name_matches() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a skill with matching directory name
+        let skill_dir = temp_dir.path().join("my-skill");
+        fs::create_dir(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: my-skill
+description: Skill with matching directory
+---
+Content.
+"#,
+        )
+        .unwrap();
+
+        let loader = SkillLoader::new();
+        let result = loader.load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::User);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_skills_to_prompt_empty() {
+        let result = skills_to_prompt(&[]);
+        assert_eq!(result, "<available_skills>\n</available_skills>");
+    }
+
+    #[test]
+    fn test_skills_to_prompt_single() {
+        let temp_dir = TempDir::new().unwrap();
+        let skill_dir = temp_dir.path().join("test-skill");
+        fs::create_dir(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: test-skill
+description: A test skill for prompt generation
+---
+Content.
+"#,
+        )
+        .unwrap();
+
+        let loader = SkillLoader::new();
+        let skill = loader
+            .load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::User)
+            .unwrap();
+
+        let result = skills_to_prompt(&[skill]);
+
+        assert!(result.contains("<available_skills>"));
+        assert!(result.contains("</available_skills>"));
+        assert!(result.contains("<name>test-skill</name>"));
+        assert!(result.contains("<description>A test skill for prompt generation</description>"));
+        assert!(result.contains("<location>"));
+    }
+
+    #[test]
+    fn test_skills_to_prompt_escapes_xml() {
+        let temp_dir = TempDir::new().unwrap();
+        let skill_dir = temp_dir.path().join("xml-skill");
+        fs::create_dir(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: xml-skill
+description: Skill with <xml> & "special" 'chars'
+---
+Content.
+"#,
+        )
+        .unwrap();
+
+        let loader = SkillLoader::new();
+        let skill = loader
+            .load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::User)
+            .unwrap();
+
+        let result = skills_to_prompt(&[skill]);
+
+        // Check XML escaping
+        assert!(result.contains("&lt;xml&gt;"));
+        assert!(result.contains("&amp;"));
+        assert!(result.contains("&quot;special&quot;"));
+        assert!(result.contains("&#39;chars&#39;"));
+    }
+
+    #[test]
+    fn test_skills_to_prompt_multiple() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut skills = Vec::new();
+
+        for name in &["skill-a", "skill-b"] {
+            let skill_dir = temp_dir.path().join(name);
+            fs::create_dir(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!(
+                    r#"---
+name: {}
+description: Description for {}
+---
+"#,
+                    name, name
+                ),
+            )
+            .unwrap();
+
+            let loader = SkillLoader::new();
+            skills.push(
+                loader
+                    .load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::User)
+                    .unwrap(),
+            );
+        }
+
+        let result = skills_to_prompt(&skills);
+
+        assert!(result.contains("<name>skill-a</name>"));
+        assert!(result.contains("<name>skill-b</name>"));
+        assert_eq!(result.matches("<skill>").count(), 2);
+    }
+
+    #[test]
+    fn test_html_escape() {
+        assert_eq!(html_escape("hello"), "hello");
+        assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#39;");
+        assert_eq!(html_escape("a<b>c"), "a&lt;b&gt;c");
     }
 }
