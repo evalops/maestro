@@ -77,6 +77,9 @@ supports-color = "3"
 # Date/time handling
 chrono = "0.4"
 
+# YAML parsing for skill files
+serde_yaml = "0.9"
+
 # Clipboard support (optional)
 arboard = { version = "3", optional = true }
 

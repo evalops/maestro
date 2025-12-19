@@ -75,7 +75,7 @@ use std::sync::Arc;
 use super::types::{
     ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
     CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
-    ModalType, ToolHistoryAction, UsageAction,
+    ModalType, SkillsAction, ToolHistoryAction, UsageAction,
 };
 
 /// Registry of all available commands with efficient lookup and execution
@@ -1040,6 +1040,61 @@ pub fn build_command_registry() -> CommandRegistry {
         .alias("th")
         .arg(CommandArgument::string("action", "Action or tool name"))
         .usage("/toolhistory [count|stats|clear|tool <name>]"),
+    );
+
+    // Skills command
+    registry.register(
+        Command::new(
+            "skills",
+            "Manage skills (specialized behaviors from SKILL.md files)",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                let args = ctx.raw_args.trim().to_lowercase();
+                let parts: Vec<&str> = args.split_whitespace().collect();
+
+                let action = match parts.first().copied() {
+                    None | Some("") | Some("list") => SkillsAction::List,
+                    Some("reload") | Some("refresh") => SkillsAction::Reload,
+                    Some("activate") | Some("enable") | Some("on") => {
+                        let name = parts.get(1).unwrap_or(&"").to_string();
+                        if name.is_empty() {
+                            return Err(CommandError::new("Skill name required")
+                                .with_hint("Usage: /skills activate <skill-name>"));
+                        }
+                        SkillsAction::Activate(name)
+                    }
+                    Some("deactivate") | Some("disable") | Some("off") => {
+                        let name = parts.get(1).unwrap_or(&"").to_string();
+                        if name.is_empty() {
+                            return Err(CommandError::new("Skill name required")
+                                .with_hint("Usage: /skills deactivate <skill-name>"));
+                        }
+                        SkillsAction::Deactivate(name)
+                    }
+                    Some("info") | Some("show") => {
+                        let name = parts.get(1).unwrap_or(&"").to_string();
+                        if name.is_empty() {
+                            return Err(CommandError::new("Skill name required")
+                                .with_hint("Usage: /skills info <skill-name>"));
+                        }
+                        SkillsAction::Info(name)
+                    }
+                    Some(other) => {
+                        // Treat unknown as skill name for info
+                        SkillsAction::Info(other.to_string())
+                    }
+                };
+
+                Ok(CommandOutput::Action(CommandAction::Skills(action)))
+            }),
+        )
+        .alias("skill")
+        .arg(CommandArgument::string(
+            "action",
+            "list|activate|deactivate|reload|info",
+        ))
+        .arg(CommandArgument::string("name", "Skill name"))
+        .usage("/skills [list|activate|deactivate|reload|info] [skill-name]"),
     );
 
     registry

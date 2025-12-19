@@ -1186,13 +1186,21 @@ pub use ascii_animation::{
 /// - Frontend design skill: Enhanced UI/UX focus
 /// - Backend skill: API and database expertise
 /// - Testing skill: Test-first development
+///
+/// Skills can be loaded from SKILL.md files following the Agent Skills spec:
+/// - `~/.composer/skills/` for global user skills
+/// - `.composer/skills/` for project-specific skills
 pub use skills::{
     ActiveSkill,          // Runtime skill state
+    LoadedSkill,          // Result of loading a skill file
     SkillActivationState, // Inactive, Activating, Active, etc.
     SkillDefinition,      // Skill metadata and configuration
     SkillEvent,           // Skill lifecycle events
     SkillId,              // Unique skill identifier
+    SkillLoadError,       // Errors from skill loading
+    SkillLoader,          // Filesystem skill loader
     SkillRegistry,        // Skill management registry
+    SkillResources,       // Resource directories (scripts, references, assets)
     SkillSource,          // Builtin, User, Plugin, Remote
 };
 

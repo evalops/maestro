@@ -236,6 +236,8 @@ pub enum CommandAction {
     ShowHistory(HistoryAction),
     /// Show tool execution history
     ShowToolHistory(ToolHistoryAction),
+    /// Skills system action
+    Skills(SkillsAction),
 }
 
 /// Actions for usage/cost display
@@ -303,6 +305,21 @@ pub enum HooksAction {
     Enable,
     /// Disable hooks
     Disable,
+}
+
+/// Actions for the skills system
+#[derive(Debug, Clone)]
+pub enum SkillsAction {
+    /// List all available skills
+    List,
+    /// Activate a skill by name
+    Activate(String),
+    /// Deactivate a skill by name
+    Deactivate(String),
+    /// Reload skills from filesystem
+    Reload,
+    /// Show detailed info about a skill
+    Info(String),
 }
 
 /// Types of modals that can be opened by commands

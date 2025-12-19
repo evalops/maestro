@@ -31,11 +31,14 @@
 //! registry.activate("frontend-design")?;
 //! ```
 
+pub mod loader;
 mod types;
 
 pub use types::{
     ActiveSkill, SkillActivationState, SkillDefinition, SkillEvent, SkillId, SkillSource,
 };
+
+pub use loader::{LoadedSkill, SkillLoadError, SkillLoader, SkillResources};
 
 use std::collections::HashMap;
 

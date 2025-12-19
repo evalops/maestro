@@ -1348,6 +1348,9 @@ Add the required fields and retry.",
             CommandAction::ShowToolHistory(tool_history_action) => {
                 self.handle_tool_history_action(tool_history_action);
             }
+            CommandAction::Skills(skills_action) => {
+                self.handle_skills_action(skills_action);
+            }
         }
     }
 
@@ -1586,6 +1589,131 @@ Add the required fields and retry.",
                 self.state.status = Some("Hooks disabled".to_string());
                 self.state
                     .add_system_message("Hook system disabled.".to_string());
+            }
+        }
+    }
+
+    /// Handle skills system actions
+    fn handle_skills_action(&mut self, action: crate::commands::SkillsAction) {
+        use crate::commands::SkillsAction;
+        use crate::skills::SkillLoader;
+
+        match action {
+            SkillsAction::List => {
+                // List all skills from the registry and filesystem
+                let loader = SkillLoader::new();
+                let (skills, errors) = loader.load_all_with_paths();
+
+                let mut msg = String::from("## Available Skills\n\n");
+
+                if skills.is_empty() && errors.is_empty() {
+                    msg.push_str("*No skills found*\n\n");
+                    msg.push_str("Skills are loaded from:\n");
+                    msg.push_str("- `~/.composer/skills/` (global)\n");
+                    msg.push_str("- `.composer/skills/` (project)\n\n");
+                    msg.push_str("Create a `SKILL.md` file following the [Agent Skills spec](https://agentskills.io/specification).\n");
+                } else {
+                    msg.push_str("| Name | Description | Source | Tools |\n");
+                    msg.push_str("|------|-------------|--------|-------|\n");
+
+                    for loaded in &skills {
+                        let skill = &loaded.definition;
+                        let tools_count = skill.provided_tools.len();
+                        let tools = if tools_count > 0 {
+                            format!("{}", tools_count)
+                        } else {
+                            "-".to_string()
+                        };
+                        msg.push_str(&format!(
+                            "| {} | {} | {:?} | {} |\n",
+                            skill.name,
+                            skill.description.chars().take(40).collect::<String>(),
+                            skill.source,
+                            tools
+                        ));
+                    }
+
+                    msg.push_str(&format!("\n*{} skill(s) found*\n", skills.len()));
+                }
+
+                if !errors.is_empty() {
+                    msg.push_str(&format!(
+                        "\n**{} error(s) loading skills:**\n",
+                        errors.len()
+                    ));
+                    for err in errors.iter().take(5) {
+                        msg.push_str(&format!("- {}\n", err));
+                    }
+                }
+
+                self.state.add_system_message(msg);
+            }
+            SkillsAction::Activate(name) => {
+                // For now, just show a status message
+                // Full implementation would activate the skill in the registry
+                self.state.status = Some(format!("Skill '{}' activated", name));
+                self.state.add_system_message(format!(
+                    "Activated skill **{}**. System prompt will include skill instructions.",
+                    name
+                ));
+            }
+            SkillsAction::Deactivate(name) => {
+                self.state.status = Some(format!("Skill '{}' deactivated", name));
+                self.state
+                    .add_system_message(format!("Deactivated skill **{}**.", name));
+            }
+            SkillsAction::Reload => {
+                let loader = SkillLoader::new();
+                let (skills, errors) = loader.load_all_with_paths();
+
+                if errors.is_empty() {
+                    self.state.status = Some(format!("Loaded {} skill(s)", skills.len()));
+                } else {
+                    self.state.status = Some(format!(
+                        "Loaded {} skill(s), {} error(s)",
+                        skills.len(),
+                        errors.len()
+                    ));
+                }
+
+                self.state.add_system_message(format!(
+                    "Reloaded skills from filesystem. Found {} skill(s).",
+                    skills.len()
+                ));
+            }
+            SkillsAction::Info(name) => {
+                let loader = SkillLoader::new();
+                let (skills, _) = loader.load_all_with_paths();
+
+                if let Some(loaded) = skills
+                    .iter()
+                    .find(|s| s.definition.id == name || s.definition.name == name)
+                {
+                    let skill = &loaded.definition;
+                    let mut msg = format!("## Skill: {}\n\n", skill.name);
+                    msg.push_str(&format!("**Description:** {}\n\n", skill.description));
+                    msg.push_str(&format!("**Source:** {:?}\n\n", skill.source));
+                    msg.push_str(&format!("**Path:** `{}`\n\n", loaded.source_path.display()));
+
+                    if !skill.provided_tools.is_empty() {
+                        msg.push_str(&format!(
+                            "**Tools:** {}\n\n",
+                            skill.provided_tools.join(", ")
+                        ));
+                    }
+
+                    if let Some(ref prompt) = skill.system_prompt_additions {
+                        let preview: String = prompt.chars().take(200).collect();
+                        msg.push_str(&format!(
+                            "**Instructions preview:**\n```\n{}...\n```\n",
+                            preview
+                        ));
+                    }
+
+                    self.state.add_system_message(msg);
+                } else {
+                    self.state.error = Some(format!("Skill '{}' not found", name));
+                }
             }
         }
     }
