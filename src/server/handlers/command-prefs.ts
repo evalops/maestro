@@ -10,12 +10,14 @@ type CommandPrefs = {
 	recents: string[];
 };
 
-const PREF_PATH = PATHS.COMMAND_PREFS_FILE;
+const getPrefsPath = () =>
+	process.env.COMPOSER_COMMAND_PREFS ?? PATHS.COMMAND_PREFS_FILE;
 
 function loadPrefs(): CommandPrefs {
 	try {
-		if (!existsSync(PREF_PATH)) return { favorites: [], recents: [] };
-		const raw = readFileSync(PREF_PATH, "utf8");
+		const prefsPath = getPrefsPath();
+		if (!existsSync(prefsPath)) return { favorites: [], recents: [] };
+		const raw = readFileSync(prefsPath, "utf8");
 		const parsed = JSON.parse(raw);
 		return {
 			favorites: Array.isArray(parsed.favorites)
@@ -31,8 +33,9 @@ function loadPrefs(): CommandPrefs {
 }
 
 function savePrefs(prefs: CommandPrefs): void {
-	mkdirSync(dirname(PREF_PATH), { recursive: true });
-	writeFileSync(PREF_PATH, JSON.stringify(prefs, null, 2), "utf8");
+	const prefsPath = getPrefsPath();
+	mkdirSync(dirname(prefsPath), { recursive: true });
+	writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), "utf8");
 }
 
 export async function handleCommandPrefs(

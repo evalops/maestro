@@ -18,16 +18,19 @@ export interface UiState {
 	favoriteCommands?: string[];
 }
 
-const UI_STATE_PATH = PATHS.UI_STATE_FILE;
+const getUiStatePath = () =>
+	process.env.COMPOSER_UI_STATE ?? PATHS.UI_STATE_FILE;
 
-const getCommandPrefsPath = () => PATHS.COMMAND_PREFS_FILE;
+const getCommandPrefsPath = () =>
+	process.env.COMPOSER_COMMAND_PREFS ?? PATHS.COMMAND_PREFS_FILE;
 
 export function loadUiState(): UiState {
-	if (!existsSync(UI_STATE_PATH)) {
+	const uiStatePath = getUiStatePath();
+	if (!existsSync(uiStatePath)) {
 		return {};
 	}
 	try {
-		const raw = readFileSync(UI_STATE_PATH, "utf-8");
+		const raw = readFileSync(uiStatePath, "utf-8");
 		const parsed = JSON.parse(raw) as UiState;
 		return {
 			queueMode:
@@ -76,8 +79,9 @@ export function loadUiState(): UiState {
 export function saveUiState(partial: UiState): void {
 	const current = loadUiState();
 	const next: UiState = { ...current, ...partial };
-	mkdirSync(dirname(UI_STATE_PATH), { recursive: true });
-	writeFileSync(UI_STATE_PATH, JSON.stringify(next, null, 2), "utf-8");
+	const uiStatePath = getUiStatePath();
+	mkdirSync(dirname(uiStatePath), { recursive: true });
+	writeFileSync(uiStatePath, JSON.stringify(next, null, 2), "utf-8");
 }
 
 export function loadCommandPrefs(): {
