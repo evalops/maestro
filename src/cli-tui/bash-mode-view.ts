@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import {
 	type AutocompleteProvider,
 	type Container,
@@ -9,6 +9,10 @@ import {
 } from "@evalops/tui";
 import chalk from "chalk";
 import { badge, heading, italic, muted } from "../style/theme.js";
+import {
+	expandTildePathWithHomeDir,
+	getHomeDir,
+} from "../utils/path-expansion.js";
 import { BashShellBlock } from "./bash-shell-block.js";
 import {
 	type BackgroundLaunchSource,
@@ -77,7 +81,7 @@ export class BashModeView {
 
 	constructor(private readonly options: BashModeViewOptions) {
 		this.projectRoot = this.normalizePath(process.cwd());
-		const rawHome = process.env.HOME ?? process.cwd();
+		const rawHome = getHomeDir();
 		this.homeDir = this.normalizePath(rawHome);
 		this.currentCwd = this.projectRoot;
 		this.defaultAutocomplete = options.defaultAutocomplete;
@@ -471,13 +475,12 @@ ${muted("(persists for this bash mode session)")}`;
 		let resolvedPath: string;
 		let displayTarget = target || "~";
 		if (!target || target === "~") {
-			resolvedPath = process.env.HOME ?? process.cwd();
+			resolvedPath = this.homeDir;
 			displayTarget = "~";
-		} else if (target.startsWith("~/")) {
-			const home = process.env.HOME ?? process.cwd();
-			resolvedPath = resolve(home, target.slice(2));
+		} else if (target.startsWith("~")) {
+			resolvedPath = expandTildePathWithHomeDir(target, this.homeDir);
 			displayTarget = target;
-		} else if (target.startsWith("/")) {
+		} else if (isAbsolute(target)) {
 			resolvedPath = target;
 			displayTarget = target;
 		} else {

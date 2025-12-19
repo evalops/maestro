@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import chalk from "chalk";
 
 /**
@@ -190,10 +191,11 @@ function tokenize(input: string): Token[] {
 
 function looksLikePath(value: string): boolean {
 	return (
-		value.startsWith("/") ||
+		isAbsolute(value) ||
 		value.startsWith("./") ||
 		value.startsWith("../") ||
 		value.startsWith("~/") ||
-		value.includes("/")
+		value.includes("/") ||
+		value.includes("\\")
 	);
 }
