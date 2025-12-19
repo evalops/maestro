@@ -266,6 +266,7 @@ type TodoStore = Record<
 >;
 
 export const defaultStorePath = PATHS.TODO_STORE;
+const getStorePath = () => process.env.COMPOSER_TODO_FILE ?? defaultStorePath;
 
 async function ensureParentDirectory(filePath: string) {
 	await mkdir(dirname(filePath), { recursive: true });
@@ -273,7 +274,7 @@ async function ensureParentDirectory(filePath: string) {
 
 export async function loadStore(): Promise<TodoStore> {
 	try {
-		const raw = await readFile(defaultStorePath, "utf-8");
+		const raw = await readFile(getStorePath(), "utf-8");
 		const result = safeJsonParse<TodoStore>(raw, "TODO store");
 		if (!result.success) {
 			logger.warn("Corrupted store file", {
@@ -291,12 +292,9 @@ export async function loadStore(): Promise<TodoStore> {
 }
 
 export async function saveStore(store: TodoStore): Promise<void> {
-	await ensureParentDirectory(defaultStorePath);
-	await writeFile(
-		defaultStorePath,
-		`${JSON.stringify(store, null, 2)}\n`,
-		"utf-8",
-	);
+	const storePath = getStorePath();
+	await ensureParentDirectory(storePath);
+	await writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf-8");
 }
 
 function normalizeItems(
