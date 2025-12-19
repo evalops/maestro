@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { UiState } from "../../cli-tui/ui-state.js";
 import { getAgentDir } from "../../config/constants.js";
 import { tryParseJson } from "../../utils/json.js";
 
 const UI_STATE_PATH =
-	process.env.COMPOSER_WEB_UI_STATE ?? join(getAgentDir(), "web-ui-state.json");
+	process.env.COMPOSER_WEB_UI_STATE ??
+	resolve(getAgentDir(), "web-ui-state.json");
 
 const KEY_REGEX = /^[A-Za-z0-9._-]+$/;
 

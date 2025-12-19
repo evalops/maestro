@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../config/constants.js";
 
@@ -17,7 +17,7 @@ const resolveStatePath = (): string => {
 	if (override) {
 		return override;
 	}
-	return join(getAgentDir(), "changelog-state.json");
+	return resolve(getAgentDir(), "changelog-state.json");
 };
 
 export function getChangelogPath(): string {

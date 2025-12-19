@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, resolve } from "node:path";
 import { getAgentDir } from "../../config/constants.js";
 import { tryParseJson } from "../../utils/json.js";
 
@@ -21,7 +21,8 @@ interface QueueStateFile {
 }
 
 const QUEUE_STATE_PATH =
-	process.env.COMPOSER_QUEUE_STATE ?? join(getAgentDir(), "queue-state.json");
+	process.env.COMPOSER_QUEUE_STATE ??
+	resolve(getAgentDir(), "queue-state.json");
 
 const MAX_SESSIONS = 200;
 const MAX_AGE_MS =
