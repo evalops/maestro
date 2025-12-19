@@ -75,6 +75,8 @@ export const PATHS = {
 	BASH_HISTORY_FILE:
 		process.env.COMPOSER_BASH_HISTORY ??
 		join(homedir(), ".composer", "bash-history.json"),
+	/** Tools install directory */
+	TOOLS_DIR: join(homedir(), ".composer", "tools"),
 	/** Cost tracking database path */
 	COST_DB:
 		process.env.COMPOSER_COST_DB ?? join(homedir(), ".composer", "costs.db"),
