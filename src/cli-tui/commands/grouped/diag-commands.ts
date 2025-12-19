@@ -26,6 +26,7 @@
  */
 
 import { getBedrockStatus } from "../../../providers/aws-auth.js";
+import { handleAccessCommand } from "../access-command.js";
 import type { CommandExecutionContext } from "../types.js";
 import { isHelpRequest, parseSubcommand } from "./utils.js";
 
@@ -145,8 +146,11 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 				break;
 
 			case "access":
-				deps.showInfo(
-					"Directory Access Control: Configures safe and restricted paths.\nUse /diag access safe|restricted|test <path>.",
+				handleAccessCommand(
+					customContext(
+						`/access ${args.slice(1).join(" ")}`.trim(),
+						args.slice(1).join(" "),
+					),
 				);
 				break;
 

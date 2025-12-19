@@ -1,6 +1,7 @@
 import type { SlashCommand } from "@evalops/tui";
 import { parseCommandArguments, shouldShowHelp } from "./argument-parser.js";
 import {
+	ACCESS_SUBCOMMANDS,
 	AUTH_SUBCOMMANDS,
 	CONFIG_SUBCOMMANDS,
 	DIAG_SUBCOMMANDS,
@@ -68,6 +69,19 @@ export function createCommandRegistry({
 			},
 			equals("context"),
 			handlers.context,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "access",
+				description: "Directory access rules and path testing",
+				usage: "/access [safe|restricted|test <path>]",
+				tags: ["diagnostics", "safety"],
+				examples: ["/access", "/access safe", "/access test ./logs/output.txt"],
+				getArgumentCompletions: createSubcommandCompletions(ACCESS_SUBCOMMANDS),
+			},
+			withArgs("access"),
+			handlers.access,
 			createContext,
 		),
 		buildEntry(

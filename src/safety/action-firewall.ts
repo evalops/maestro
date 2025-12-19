@@ -53,10 +53,6 @@ import type {
 	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
-import { realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
-import { getFirewallConfig } from "../config/firewall-config.js";
 import { createLogger } from "../utils/logger.js";
 import { isCommandAllowlisted } from "./bash-allowlist.js";
 import {
@@ -70,6 +66,7 @@ import {
 	tokenizeSimple,
 	unwrapShellCommand,
 } from "./bash-safety-analyzer.js";
+import { isContainedInWorkspace, isSystemPath } from "./path-containment.js";
 import { checkPolicy } from "./policy.js";
 import { RuleCache } from "./rule-cache.js";
 import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
@@ -399,38 +396,6 @@ const treeSitterCommandRule: ActionFirewallRule = {
  * Note: /var/folders (macOS temp) and /tmp are explicitly allowed
  * through the isContainedInWorkspace check before system path blocking.
  */
-const SYSTEM_PATHS = [
-	// Linux system directories
-	"/etc",
-	"/usr",
-	"/var",
-	"/boot",
-	"/sys",
-	"/proc",
-	"/dev",
-	"/bin",
-	"/sbin",
-	"/lib",
-	"/lib64",
-	"/opt",
-	// Windows system directories
-	"C:\\Windows",
-	"C:\\Program Files",
-	"C:\\Program Files (x86)",
-];
-
-function isSystemPath(filePath: string): boolean {
-	const normalized = resolve(filePath);
-	return SYSTEM_PATHS.some((sysPath) => {
-		// Exact match or subdirectory
-		return (
-			normalized === sysPath ||
-			normalized.startsWith(`${sysPath}/`) ||
-			normalized.startsWith(`${sysPath}\\`)
-		);
-	});
-}
-
 function extractFilePaths(context: ActionApprovalContext): string[] {
 	const args = getArgsObject(context);
 	if (!args) return [];
@@ -484,64 +449,6 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
  * @param filePath - The path to check (may be relative or absolute)
  * @returns true if path is contained in a safe zone, false otherwise
  */
-function isContainedInWorkspace(filePath: string): boolean {
-	// Resolve to absolute path for consistent comparison
-	const resolvedPath = resolve(filePath);
-	const workspaceRoot = process.cwd();
-	const tempDir = tmpdir();
-
-	// Check 1: Is path within the current working directory?
-	const relToWorkspace = relative(workspaceRoot, resolvedPath);
-	const isInsideWorkspace =
-		!relToWorkspace.startsWith("..") && !isAbsolute(relToWorkspace);
-
-	// Check 2: Is path within the system temp directory?
-	// Handle symlinks: on macOS, /var/folders is the real path for $TMPDIR
-	let resolvedTemp = tempDir;
-	try {
-		resolvedTemp = realpathSync(tempDir);
-	} catch {
-		// Keep original if realpath fails (shouldn't happen for temp dir)
-	}
-
-	// Also try to resolve the target file's real path
-	let realFilePath = resolvedPath;
-	try {
-		realFilePath = realpathSync(resolvedPath);
-	} catch {
-		// File might not exist yet (creating new file), use logical path
-		// This is expected and not an error
-	}
-
-	// Check both the resolved real path and the logical path
-	// This handles cases where temp is symlinked
-	const relToTemp = relative(resolvedTemp, realFilePath);
-	const relToTempLogical = relative(tempDir, resolvedPath);
-
-	const isInsideTemp =
-		(!relToTemp.startsWith("..") && !isAbsolute(relToTemp)) ||
-		(!relToTempLogical.startsWith("..") && !isAbsolute(relToTempLogical));
-
-	if (isInsideWorkspace || isInsideTemp) {
-		return true;
-	}
-
-	// Check 3: Is path within a user-configured trusted path?
-	// Users can add paths to ~/.composer/firewall.json containment.trustedPaths
-	const config = getFirewallConfig();
-	if (config.containment?.trustedPaths) {
-		for (const trustedPath of config.containment.trustedPaths) {
-			const resolvedTrusted = resolve(trustedPath);
-			const relToTrusted = relative(resolvedTrusted, resolvedPath);
-			if (!relToTrusted.startsWith("..") && !isAbsolute(relToTrusted)) {
-				return true;
-			}
-		}
-	}
-
-	// Path is outside all safe zones
-	return false;
-}
 
 export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
@@ -581,11 +488,10 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 				return { allowed: true };
 			}
 			const paths = extractFilePaths(ctx);
-			// We check system paths first, but if it's in temp (safe), we should allow it.
-			// System paths like /var include /var/folders (temp on mac), so we need to exclude safe temp paths from system path blocking
-			// if they are legitimately inside the temp dir.
+			// We check system paths first, but if it's in workspace, temp, or a trusted path (safe), we should allow it.
+			// System paths like /var include /var/folders (temp on mac), so we need to exclude safe temp paths from system path blocking.
 
-			// Filter out paths that are inside the temp directory (which is safe)
+			// Filter out paths that are inside the workspace, temp, or trusted paths (which are safe)
 			const unsafePaths = paths.filter((p) => !isContainedInWorkspace(p));
 
 			// Only check remaining paths against system blocklist
