@@ -11,9 +11,10 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { homedir, platform } from "node:os";
+import { platform } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "../utils/logger.js";
+import { getHomeDir } from "../utils/path-expansion.js";
 
 const logger = createLogger("ide-auto-connect");
 
@@ -121,7 +122,7 @@ export function getIDEAutoConnectConfig(): IDEAutoConnectConfig {
  * Check if VS Code is running by looking for socket files.
  */
 function detectVSCode(): IDEInfo | null {
-	const home = homedir();
+	const home = getHomeDir();
 	const os = platform();
 
 	const vscodeServerDirs = [
@@ -159,7 +160,7 @@ function detectVSCode(): IDEInfo | null {
  * Check if VS Code Insiders is running.
  */
 function detectVSCodeInsiders(): IDEInfo | null {
-	const home = homedir();
+	const home = getHomeDir();
 	const os = platform();
 
 	const insidersDirs = [
@@ -188,7 +189,7 @@ function detectVSCodeInsiders(): IDEInfo | null {
  * Check if Cursor is running.
  */
 function detectCursor(): IDEInfo | null {
-	const home = homedir();
+	const home = getHomeDir();
 	const os = platform();
 
 	const cursorDirs = [
@@ -217,7 +218,7 @@ function detectCursor(): IDEInfo | null {
  * Check if Windsurf is running.
  */
 function detectWindsurf(): IDEInfo | null {
-	const home = homedir();
+	const home = getHomeDir();
 	const os = platform();
 
 	const windsurfDirs = [
@@ -246,7 +247,7 @@ function detectWindsurf(): IDEInfo | null {
  * Check if Zed is running.
  */
 function detectZed(): IDEInfo | null {
-	const home = homedir();
+	const home = getHomeDir();
 	const os = platform();
 
 	const zedDirs = [
@@ -275,7 +276,7 @@ function detectZed(): IDEInfo | null {
  * Detect JetBrains IDEs by looking for config directories.
  */
 function detectJetBrainsIDEs(): IDEInfo[] {
-	const home = homedir();
+	const home = getHomeDir();
 	const os = platform();
 	const results: IDEInfo[] = [];
 
@@ -328,7 +329,7 @@ function detectJetBrainsIDEs(): IDEInfo[] {
  * Detect Vim/Neovim.
  */
 function detectVim(): IDEInfo[] {
-	const home = homedir();
+	const home = getHomeDir();
 	const results: IDEInfo[] = [];
 
 	// Check for Neovim
@@ -363,7 +364,7 @@ function detectVim(): IDEInfo[] {
  * Detect Emacs.
  */
 function detectEmacs(): IDEInfo | null {
-	const home = homedir();
+	const home = getHomeDir();
 
 	const emacsConfigs = [
 		join(home, ".emacs.d"),
@@ -390,7 +391,7 @@ function detectEmacs(): IDEInfo | null {
  * Detect Sublime Text.
  */
 function detectSublime(): IDEInfo | null {
-	const home = homedir();
+	const home = getHomeDir();
 	const os = platform();
 
 	const sublimeDirs = [

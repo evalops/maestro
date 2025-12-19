@@ -6,6 +6,7 @@ import chalk from "chalk";
 import clipboard from "clipboardy";
 import type { Agent } from "../agent/agent.js";
 import { loadProjectContextFiles } from "../cli/system-prompt.js";
+import { PATHS } from "../config/constants.js";
 import type { SessionManager } from "../session/manager.js";
 import type { GitView } from "./git/git-view.js";
 import { TOOL_FAILURE_LOG_PATH } from "./tool-status-view.js";
@@ -149,7 +150,7 @@ export class AboutView {
 		const cwd = process.cwd();
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		const sessionDir = sessionFile ? dirname(sessionFile) : "(pending)";
-		const composerDir = join(os.homedir(), ".composer");
+		const composerDir = PATHS.COMPOSER_HOME;
 		const lines = [
 			`${this.badge("cwd")}${cwd}`,
 			`${this.badge("session")}${sessionDir}`,

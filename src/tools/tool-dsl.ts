@@ -276,7 +276,7 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 	});
 }
 
-import os from "node:os";
+import { getHomeDir } from "../utils/path-expansion.js";
 import { expandUserPath as expandUserPathBase } from "../utils/path-validation.js";
 
 // Re-export shared path expansion utility to keep tool-dsl API stable
@@ -290,7 +290,7 @@ export function interpolateContext(value: string): string {
 	return value
 		.replace(/\$\{env\.([^}]+)\}/g, (_, varName) => process.env[varName] ?? "")
 		.replace(/\$\{cwd\}/g, process.cwd())
-		.replace(/\$\{home\}/g, os.homedir());
+		.replace(/\$\{home\}/g, getHomeDir());
 }
 
 export interface CreateTextToolOptions<Schema extends TSchema, Details>

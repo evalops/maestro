@@ -23,7 +23,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { platform } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { ExecResult, Sandbox } from "./types.js";
 
@@ -572,7 +572,7 @@ export class NativeSandbox implements Sandbox {
 
 	private resolvePath(path: string): string {
 		// If absolute, use as-is; otherwise resolve relative to cwd
-		if (path.startsWith("/")) {
+		if (isAbsolute(path)) {
 			return path;
 		}
 		return join(this.cwd, path);

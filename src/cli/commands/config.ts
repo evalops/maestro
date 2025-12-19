@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
 import { PATHS } from "../../config/constants.js";
@@ -18,6 +17,7 @@ import {
 } from "../../style/theme.js";
 // Use the UMD build to avoid ESM subpath resolution issues in some environments
 import { parseJsonc } from "../../utils/jsonc-umd.js";
+import { getHomeDir } from "../../utils/path-expansion.js";
 
 import type { Api } from "../../agent/types.js";
 import { getEnvVarsForProvider } from "../../providers/api-keys.js";
@@ -148,8 +148,9 @@ export function buildConfigShowSections(
 	inspection: ConfigInspection,
 	options: ConfigShowRenderOptions,
 ): string[] {
-	const homeDir = options.homeDir ?? homedir();
-	const rel = (path: string) => path.replace(homeDir, "~");
+	const homeDir = options.homeDir ?? getHomeDir();
+	const rel = (path: string) =>
+		path.startsWith(homeDir) ? `~${path.slice(homeDir.length)}` : path;
 	const output: string[] = [];
 
 	output.push(sectionHeading("Configuration Inspection"));
@@ -251,12 +252,15 @@ export async function handleConfigValidate(): Promise<void> {
 	console.log(sectionHeading("Validating Configuration"));
 
 	const result: ConfigValidationResult = validateConfig();
+	const homeDir = getHomeDir();
 
 	// Show config files
 	if (result.summary.configFiles.length > 0) {
 		console.log(muted("Config Files:"));
 		for (const file of result.summary.configFiles) {
-			const relPath = file.replace(homedir(), "~");
+			const relPath = file.startsWith(homeDir)
+				? `~${file.slice(homeDir.length)}`
+				: file;
 			console.log(muted(`  • ${relPath}`));
 		}
 		console.log();
@@ -327,7 +331,9 @@ function renderConfigShowLegacy(
 	// Show config sources
 	console.log(badge("Config Sources", undefined, "info"));
 	for (const source of inspection.sources) {
-		const relPath = source.path.replace(homeDir, "~");
+		const relPath = source.path.startsWith(homeDir)
+			? `~${source.path.slice(homeDir.length)}`
+			: source.path;
 		const status = source.exists
 			? badge("present", undefined, "success")
 			: badge("missing", undefined, "warn");
@@ -387,7 +393,9 @@ function renderConfigShowLegacy(
 			),
 		);
 		for (const ref of inspection.fileReferences) {
-			const relPath = ref.path.replace(homeDir, "~");
+			const relPath = ref.path.startsWith(homeDir)
+				? `~${ref.path.slice(homeDir.length)}`
+				: ref.path;
 			const status = ref.exists
 				? badge("present", undefined, "success")
 				: badge("missing", undefined, "danger");
@@ -423,7 +431,7 @@ function renderConfigShowLegacy(
 export async function handleConfigShow(): Promise<void> {
 	const inspection: ConfigInspection = inspectConfig();
 	const hierarchy = getConfigHierarchy();
-	const homeDir = homedir();
+	const homeDir = getHomeDir();
 	const layoutPref = (
 		process.env.COMPOSER_CONFIG_SHOW_LAYOUT ?? "v2"
 	).toLowerCase();

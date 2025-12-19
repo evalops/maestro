@@ -13,7 +13,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auto-verify");
@@ -293,7 +293,7 @@ export function shouldTriggerTests(
 	}
 
 	// Get relative path for pattern matching
-	const relativePath = filePath.startsWith("/")
+	const relativePath = isAbsolute(filePath)
 		? relative(process.cwd(), filePath)
 		: filePath;
 

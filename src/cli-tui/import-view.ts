@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import {
 	dirname,
 	isAbsolute,
@@ -17,6 +17,10 @@ import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import { importFactoryConfig } from "../factory/index.js";
 import { reloadModelConfig } from "../models/registry.js";
 import type { SessionManager } from "../session/manager.js";
+import {
+	expandTildePathWithHomeDir,
+	getHomeDir,
+} from "../utils/path-expansion.js";
 
 interface ImportExportViewOptions {
 	agent: Agent;
@@ -32,7 +36,7 @@ export class ImportExportView {
 	private readonly allowedExportRoots: string[] = Array.from(
 		new Set([
 			normalize(resolve(process.cwd())),
-			normalize(homedir()),
+			normalize(getHomeDir()),
 			normalize(PATHS.COMPOSER_HOME),
 			normalize(tmpdir()),
 		]),
@@ -44,13 +48,8 @@ export class ImportExportView {
 		if (!input) {
 			return input;
 		}
-		if (input === "~") {
-			return homedir();
-		}
-		if (input.startsWith("~/")) {
-			return join(homedir(), input.slice(2));
-		}
-		return resolve(process.cwd(), input);
+		const expanded = expandTildePathWithHomeDir(input, getHomeDir());
+		return isAbsolute(expanded) ? expanded : resolve(process.cwd(), expanded);
 	}
 
 	private resolveExportPath(input: string): string {

@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { normalize, resolve } from "node:path";
+import { isAbsolute, normalize, resolve } from "node:path";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
@@ -616,7 +616,7 @@ Use /diff <file> to inspect diffs.`;
 
 	private isSafePath(path: string): boolean {
 		if (!path.trim()) return false;
-		if (path.startsWith("/") || path.startsWith("~")) return false;
+		if (isAbsolute(path) || path.startsWith("~")) return false;
 		// Normalize to catch traversal segments
 		const normalized = normalize(path);
 		if (normalized.startsWith("..")) return false;
