@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getAgentDir } from "../config/constants.js";
 
 export interface ChangelogEntry {
 	major: number;
@@ -17,7 +17,7 @@ const resolveStatePath = (): string => {
 	if (override) {
 		return override;
 	}
-	return join(homedir(), ".composer", "agent", "changelog-state.json");
+	return join(getAgentDir(), "changelog-state.json");
 };
 
 export function getChangelogPath(): string {

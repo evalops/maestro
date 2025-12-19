@@ -7,9 +7,9 @@ import {
 	watch,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import { getAgentDir } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { expandUserPath, safejoin } from "../utils/path-validation.js";
 
@@ -25,7 +25,7 @@ const DEFAULT_SETTINGS: BackgroundTaskSettings = {
 	statusDetailsEnabled: false,
 };
 
-const SETTINGS_ROOT = join(homedir(), ".composer", "agent");
+const SETTINGS_ROOT = resolve(getAgentDir());
 const SETTINGS_FILENAME = "background-settings.json";
 const DEFAULT_SETTINGS_PATH = join(SETTINGS_ROOT, SETTINGS_FILENAME);
 const RELOAD_THROTTLE_MS = 500;
