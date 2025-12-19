@@ -169,6 +169,7 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { areAnimationsDisabled } from "../config/env-vars.js";
 import { validateFrameworkPreference } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
 import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
 import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
@@ -231,7 +232,7 @@ import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 const logger = createLogger("tui:renderer");
 
 const getTodoStorePath = () =>
-	process.env.COMPOSER_TODO_FILE ?? PATHS.TODO_STORE;
+	resolveEnvPath(process.env.COMPOSER_TODO_FILE) ?? PATHS.TODO_STORE;
 
 /**
  * Main TUI (Terminal User Interface) renderer for the Composer coding agent.

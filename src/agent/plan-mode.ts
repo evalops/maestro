@@ -47,9 +47,10 @@ import {
 	readdirSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 
 // Logger for plan mode operations, useful for debugging state persistence
 const logger = createLogger("plan-mode");
@@ -98,7 +99,7 @@ export interface PlanModeConfig {
  */
 const DEFAULT_CONFIG: PlanModeConfig = {
 	planDir: join(process.cwd(), ".composer", "plans"),
-	stateFile: join(homedir(), ".composer", "plan-state.json"),
+	stateFile: join(PATHS.COMPOSER_HOME, "plan-state.json"),
 };
 
 /**
@@ -113,9 +114,10 @@ const DEFAULT_CONFIG: PlanModeConfig = {
 export function getPlanModeConfig(): PlanModeConfig {
 	// Allow environment override for plan directory (useful for monorepos)
 	const planDir =
-		process.env.COMPOSER_PLAN_DIR || join(process.cwd(), ".composer", "plans");
+		resolveEnvPath(process.env.COMPOSER_PLAN_DIR) ??
+		join(process.cwd(), ".composer", "plans");
 	// State file is always user-global to track active plan across projects
-	const stateFile = join(homedir(), ".composer", "plan-state.json");
+	const stateFile = join(PATHS.COMPOSER_HOME, "plan-state.json");
 
 	return {
 		planDir,
@@ -159,7 +161,10 @@ export function generatePlanFilePath(
 
 	// Environment variable takes precedence (useful for CI/testing)
 	if (process.env.COMPOSER_PLAN_FILE) {
-		return process.env.COMPOSER_PLAN_FILE;
+		return (
+			resolveEnvPath(process.env.COMPOSER_PLAN_FILE) ??
+			process.env.COMPOSER_PLAN_FILE
+		);
 	}
 
 	// Generate a unique filename based on timestamp and optional name

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { PATHS } from "../config/constants.js";
 
 // Re-export prompts module
 export {
@@ -26,7 +26,7 @@ export interface ResolvedCommand extends CommandDefinition {
 	source: string;
 }
 
-const HOME_DIR = join(homedir(), ".composer", "commands");
+const HOME_DIR = join(PATHS.COMPOSER_HOME, "commands");
 
 const escapeRegExp = (value: string): string =>
 	value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

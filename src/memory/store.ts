@@ -6,8 +6,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import type {
 	MemoryEntry,
@@ -19,7 +19,7 @@ import type {
 
 const logger = createLogger("memory:store");
 
-const MEMORY_DIR = join(homedir(), ".composer", "memory");
+const MEMORY_DIR = join(PATHS.COMPOSER_HOME, "memory");
 const STORE_FILE = join(MEMORY_DIR, "store.json");
 const CURRENT_VERSION = 1;
 

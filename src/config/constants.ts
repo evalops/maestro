@@ -7,13 +7,18 @@
 
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { resolveEnvPath } from "../utils/path-expansion.js";
+
+const DEFAULT_COMPOSER_HOME = join(homedir(), ".composer");
+
+export const getComposerHome = (): string => DEFAULT_COMPOSER_HOME;
 
 export const getAgentDir = (): string => {
 	const envAgentDir =
-		process.env.COMPOSER_AGENT_DIR?.trim() ||
-		process.env.PLAYWRIGHT_AGENT_DIR?.trim() ||
-		process.env.CODING_AGENT_DIR?.trim();
-	return envAgentDir || join(homedir(), ".composer", "agent");
+		resolveEnvPath(process.env.COMPOSER_AGENT_DIR) ??
+		resolveEnvPath(process.env.PLAYWRIGHT_AGENT_DIR) ??
+		resolveEnvPath(process.env.CODING_AGENT_DIR);
+	return envAgentDir || join(DEFAULT_COMPOSER_HOME, "agent");
 };
 
 /**
@@ -50,38 +55,42 @@ export const TOOL_CONFIG = {
  * Storage paths configuration
  */
 export const PATHS = {
+	/** Composer home directory */
+	COMPOSER_HOME: DEFAULT_COMPOSER_HOME,
 	/** Todo store file path */
 	TODO_STORE:
-		process.env.COMPOSER_TODO_FILE ??
-		join(homedir(), ".composer", "todos.json"),
+		resolveEnvPath(process.env.COMPOSER_TODO_FILE) ??
+		join(DEFAULT_COMPOSER_HOME, "todos.json"),
 	/** Usage tracking file path */
 	USAGE_FILE:
-		process.env.COMPOSER_USAGE_FILE ??
-		join(homedir(), ".composer", "usage.json"),
+		resolveEnvPath(process.env.COMPOSER_USAGE_FILE) ??
+		join(DEFAULT_COMPOSER_HOME, "usage.json"),
 	/** Telemetry log file path */
 	TELEMETRY_LOG:
-		process.env.COMPOSER_TELEMETRY_FILE ??
-		join(homedir(), ".composer", "telemetry.log"),
+		resolveEnvPath(process.env.COMPOSER_TELEMETRY_FILE) ??
+		join(DEFAULT_COMPOSER_HOME, "telemetry.log"),
 	/** Tool failure log file path */
-	TOOL_FAILURE_LOG: join(homedir(), ".composer", "tool-failures.log"),
+	TOOL_FAILURE_LOG: join(DEFAULT_COMPOSER_HOME, "tool-failures.log"),
 	/** Background task log directory */
-	BACKGROUND_TASK_LOG_DIR: join(homedir(), ".composer", "background-tasks"),
+	BACKGROUND_TASK_LOG_DIR: join(DEFAULT_COMPOSER_HOME, "background-tasks"),
 	/** UI state file path */
 	UI_STATE_FILE:
-		process.env.COMPOSER_UI_STATE ?? resolve(getAgentDir(), "ui-state.json"),
+		resolveEnvPath(process.env.COMPOSER_UI_STATE) ??
+		resolve(getAgentDir(), "ui-state.json"),
 	/** Command prefs file path */
 	COMMAND_PREFS_FILE:
-		process.env.COMPOSER_COMMAND_PREFS ??
+		resolveEnvPath(process.env.COMPOSER_COMMAND_PREFS) ??
 		resolve(getAgentDir(), "command-prefs.json"),
 	/** Bash history file path */
 	BASH_HISTORY_FILE:
-		process.env.COMPOSER_BASH_HISTORY ??
-		join(homedir(), ".composer", "bash-history.json"),
+		resolveEnvPath(process.env.COMPOSER_BASH_HISTORY) ??
+		join(DEFAULT_COMPOSER_HOME, "bash-history.json"),
 	/** Tools install directory */
-	TOOLS_DIR: join(homedir(), ".composer", "tools"),
+	TOOLS_DIR: join(DEFAULT_COMPOSER_HOME, "tools"),
 	/** Cost tracking database path */
 	COST_DB:
-		process.env.COMPOSER_COST_DB ?? join(homedir(), ".composer", "costs.db"),
+		resolveEnvPath(process.env.COMPOSER_COST_DB) ??
+		join(DEFAULT_COMPOSER_HOME, "costs.db"),
 	/** Agent context files */
 	AGENT_CONTEXT_FILES: [
 		"AGENTS.override.md",

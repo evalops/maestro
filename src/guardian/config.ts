@@ -9,8 +9,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import type { GuardianConfig } from "./types.js";
 
@@ -67,7 +67,7 @@ export function getProjectConfigPath(root?: string): string {
  * Get the user-level config file path
  */
 export function getUserConfigPath(): string {
-	return join(homedir(), ".composer", "guardian.json");
+	return join(PATHS.COMPOSER_HOME, "guardian.json");
 }
 
 /**

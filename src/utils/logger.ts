@@ -4,8 +4,8 @@
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { PATHS } from "../config/constants.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -234,8 +234,7 @@ export function silenceLogger(): void {
  * @param filePath - Path to the log file (defaults to ~/.composer/logs/composer.log)
  */
 export function redirectLoggerToFile(filePath?: string): void {
-	const logFile =
-		filePath ?? join(homedir(), ".composer", "logs", "composer.log");
+	const logFile = filePath ?? join(PATHS.COMPOSER_HOME, "logs", "composer.log");
 
 	// Ensure directory exists
 	try {

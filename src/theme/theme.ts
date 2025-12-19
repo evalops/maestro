@@ -14,6 +14,7 @@ import { TypeCompiler } from "@sinclair/typebox/compiler";
 import chalk from "chalk";
 import { getAgentDir } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import {
 	type ColorMode,
 	bgAnsi,
@@ -546,8 +547,8 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 }
 
 function getThemesDir(): string {
-	const override = process.env.COMPOSER_THEMES_DIR?.trim();
-	if (override) return path.resolve(override);
+	const override = resolveEnvPath(process.env.COMPOSER_THEMES_DIR);
+	if (override) return override;
 	return path.resolve(getAgentDir(), "themes");
 }
 

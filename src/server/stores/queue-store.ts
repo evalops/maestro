@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getAgentDir } from "../../config/constants.js";
 import { tryParseJson } from "../../utils/json.js";
+import { resolveEnvPath } from "../../utils/path-expansion.js";
 
 type QueueMode = "one" | "all";
 
@@ -21,7 +22,7 @@ interface QueueStateFile {
 }
 
 const QUEUE_STATE_PATH =
-	process.env.COMPOSER_QUEUE_STATE ??
+	resolveEnvPath(process.env.COMPOSER_QUEUE_STATE) ??
 	resolve(getAgentDir(), "queue-state.json");
 
 const MAX_SESSIONS = 200;

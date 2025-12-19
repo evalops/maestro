@@ -49,7 +49,6 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
@@ -57,10 +56,11 @@ import type { LspServerConfig } from "../lsp/index.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
+import { PATHS } from "./constants.js";
 
 const logger = createLogger("config:lsp");
 
-const CONFIG_PATH = join(homedir(), ".composer", "config.json");
+const CONFIG_PATH = join(PATHS.COMPOSER_HOME, "config.json");
 
 const serverOverrideSchema = Type.Object({
 	enabled: Type.Optional(Type.Boolean()),

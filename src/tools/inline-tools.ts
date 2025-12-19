@@ -37,10 +37,10 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { type TSchema, Type } from "@sinclair/typebox";
 import type { AgentTool, ToolAnnotations } from "../agent/types.js";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { createTool } from "./tool-dsl.js";
 
@@ -441,7 +441,7 @@ export function loadInlineTools(projectDir?: string): AgentTool[] {
 	}
 
 	// Load user-level config (lower priority, skip if name already loaded)
-	const userConfigPath = join(homedir(), ".composer", "tools.json");
+	const userConfigPath = join(PATHS.COMPOSER_HOME, "tools.json");
 	const userConfig = loadConfigFile(userConfigPath);
 
 	if (userConfig) {
@@ -493,6 +493,6 @@ export function getInlineToolsConfigPaths(projectDir?: string): {
 	const cwd = projectDir ?? process.cwd();
 	return {
 		project: join(cwd, ".composer", "tools.json"),
-		user: join(homedir(), ".composer", "tools.json"),
+		user: join(PATHS.COMPOSER_HOME, "tools.json"),
 	};
 }

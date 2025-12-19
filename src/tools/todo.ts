@@ -71,6 +71,7 @@ import { PATHS } from "../config/constants.js";
 import { setPlanSatisfied } from "../safety/safe-mode.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import { createTool } from "./tool-dsl.js";
 
 const logger = createLogger("tools:todo");
@@ -266,7 +267,8 @@ type TodoStore = Record<
 >;
 
 export const defaultStorePath = PATHS.TODO_STORE;
-const getStorePath = () => process.env.COMPOSER_TODO_FILE ?? defaultStorePath;
+const getStorePath = () =>
+	resolveEnvPath(process.env.COMPOSER_TODO_FILE) ?? defaultStorePath;
 
 async function ensureParentDirectory(filePath: string) {
 	await mkdir(dirname(filePath), { recursive: true });

@@ -45,8 +45,9 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { resolveEnvPath } from "../utils/path-expansion.js";
+import { PATHS } from "./constants.js";
 
 const WORKSPACE_FILE = ".composer/workspace.json";
 const FRAMEWORKS: Record<string, { summary: string }> = {
@@ -65,12 +66,12 @@ const FRAMEWORKS: Record<string, { summary: string }> = {
 };
 
 const getDefaultPath = (): string =>
-	process.env.COMPOSER_DEFAULT_FRAMEWORK_FILE ??
-	join(homedir(), ".composer", "default-framework.json");
+	resolveEnvPath(process.env.COMPOSER_DEFAULT_FRAMEWORK_FILE) ??
+	join(PATHS.COMPOSER_HOME, "default-framework.json");
 
 const getPolicyPath = (): string =>
-	process.env.COMPOSER_FRAMEWORK_POLICY_FILE ??
-	join(homedir(), ".composer", "policy.json");
+	resolveEnvPath(process.env.COMPOSER_FRAMEWORK_POLICY_FILE) ??
+	join(PATHS.COMPOSER_HOME, "policy.json");
 
 const getWorkspacePath = (): string => join(process.cwd(), WORKSPACE_FILE);
 

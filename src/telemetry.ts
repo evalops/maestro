@@ -8,6 +8,7 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
+import { resolveEnvPath } from "./utils/path-expansion.js";
 import {
 	sanitizeOptionalWithStaticMask,
 	sanitizeWithStaticMask,
@@ -157,7 +158,8 @@ const telemetryFlag =
 	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
 
 const telemetryFileEnv =
-	process.env.COMPOSER_TELEMETRY_FILE ?? process.env.PLAYWRIGHT_TELEMETRY_FILE;
+	resolveEnvPath(process.env.COMPOSER_TELEMETRY_FILE) ??
+	resolveEnvPath(process.env.PLAYWRIGHT_TELEMETRY_FILE);
 
 const telemetryEndpointEnv =
 	process.env.COMPOSER_TELEMETRY_ENDPOINT ??

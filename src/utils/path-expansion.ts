@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 export function getOsHomeDir(): string {
 	return homedir();
@@ -32,4 +32,10 @@ export function expandTildePathWithHomeDir(
  */
 export function expandTildePath(path: string): string {
 	return expandTildePathWithHomeDir(path, getHomeDir());
+}
+
+export function resolveEnvPath(value?: string | null): string | null {
+	const trimmed = value?.trim();
+	if (!trimmed) return null;
+	return resolve(expandTildePath(trimmed));
 }

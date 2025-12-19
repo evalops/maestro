@@ -3,9 +3,10 @@ import { dirname, resolve } from "node:path";
 import type { UiState } from "../../cli-tui/ui-state.js";
 import { getAgentDir } from "../../config/constants.js";
 import { tryParseJson } from "../../utils/json.js";
+import { resolveEnvPath } from "../../utils/path-expansion.js";
 
 const UI_STATE_PATH =
-	process.env.COMPOSER_WEB_UI_STATE ??
+	resolveEnvPath(process.env.COMPOSER_WEB_UI_STATE) ??
 	resolve(getAgentDir(), "web-ui-state.json");
 
 const KEY_REGEX = /^[A-Za-z0-9._-]+$/;

@@ -97,10 +97,10 @@ import {
 	readFileSync,
 	watch,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
+import { PATHS } from "../config/constants.js";
 import { extractDependencies } from "../utils/dependency-extractor.js";
 import {
 	isLocalhostAlias,
@@ -242,7 +242,7 @@ const PolicySchema = Type.Object({
 
 const validatePolicy = compileTypeboxSchema(PolicySchema);
 
-const POLICY_PATH = join(homedir(), ".composer", "policy.json");
+const POLICY_PATH = join(PATHS.COMPOSER_HOME, "policy.json");
 
 let cachedPolicy: EnterprisePolicy | null = null;
 let policyWatcher: FSWatcher | undefined;

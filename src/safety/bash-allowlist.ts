@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { minimatch } from "minimatch";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 
 const logger = createLogger("safety:bash-allowlist");
 
@@ -16,10 +17,10 @@ function getPaths(): string[] {
 	const envPaths =
 		fromEnv
 			?.split(process.platform === "win32" ? ";" : ":")
-			.filter(Boolean)
-			.map((p) => p.trim()) ?? [];
+			.map((p) => resolveEnvPath(p) ?? p.trim())
+			.filter(Boolean) ?? [];
 	const workspacePath = join(process.cwd(), ".composer", "bash-allow.json");
-	const userPath = join(homedir(), ".composer", "bash-allow.json");
+	const userPath = join(PATHS.COMPOSER_HOME, "bash-allow.json");
 	return [...envPaths, workspacePath, userPath];
 }
 

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname } from "node:path";
 import { PATHS } from "../../config/constants.js";
+import { resolveEnvPath } from "../../utils/path-expansion.js";
 import type { WebServerContext } from "../app-context.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
@@ -11,7 +12,8 @@ type CommandPrefs = {
 };
 
 const getPrefsPath = () =>
-	process.env.COMPOSER_COMMAND_PREFS ?? PATHS.COMMAND_PREFS_FILE;
+	resolveEnvPath(process.env.COMPOSER_COMMAND_PREFS) ??
+	PATHS.COMMAND_PREFS_FILE;
 
 function loadPrefs(): CommandPrefs {
 	try {
